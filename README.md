@@ -25,7 +25,7 @@ To add a device, open your installation's address on it and enter the owner pass
 
 - **Keep your sidebar across devices.** Project and workspace order, nested folders, expanded sections, grouping and filters follow you between connected devices. Folders group projects, or a project's workspaces, without touching disk, and you can focus the sidebar on one project or folder with a breadcrumb back out. Offline edits sync after reconnection. Requires the updated Host daemon.
 
-- **Find any setting.** Settings is one scrolling page of eleven sections, led by what needs your attention. Search forgives typos, jumps to the exact row and shows whether a value belongs to this device, every environment or one environment. Accounts show their remaining quota, and every provider's profiles share one list. See [settings navigation and search](docs/vorteo-customizations.md#projects-devices-and-interface).
+- **Find any setting.** Settings is one scrolling page, led by what needs your attention. Search forgives typos, jumps to the exact row and shows whether a value belongs to this device, every environment or one environment. Accounts show their remaining quota, and every provider's profiles share one list. See [settings navigation and search](docs/vorteo-customizations.md#projects-devices-and-interface).
 
 - **Track a build across threads.** Each thread keeps its checklist beside the conversation when space allows, or below it in narrower layouts. The workspace flower combines task progress across its active threads, and planning instructions carry accepted checklist items into implementation. Updated daemons and clients also support agent tools and manual editing with dependencies and completion criteria. Blocked tasks explain their blocker, and eligible idle threads periodically check whether they can proceed. See [checklists and workspace progress](docs/vorteo-customizations.md#goals-queues-and-supervised-workers).
 
@@ -64,7 +64,7 @@ To add a device, open your installation's address on it and enter the owner pass
 
 - **Run tasks in either environment within one workspace.** Choose Host or Dev container in a new task while retaining draft text and uploaded files. Task tabs identify their environment; mapped directories and remembered folder choices keep later tasks in the same visible workspace. Updated daemons are required.
 
-- **Let agents use a browser.** Enable the Host or Dev daemon's headless Chromium, or run `paseo browser host`, so agents can open pages, read them, click and take screenshots. Dev's browser runs inside the container. It starts with an empty profile and never touches your logged-in browser state. It cannot reach this machine, your private networks or your tailnet unless you allow a specific address or preview port range, and it always refuses origins you deny, such as the protected interface. See [browser tools for Host agents](docs/execution-installation.md#browser-tools-for-host-agents).
+- **Let agents use a browser.** Enable the Host or Dev daemon's headless Chromium, or run `vorteo browser host`, so agents can open pages, read them, click and take screenshots. Dev's browser runs inside the container. It starts with an empty profile and never touches your logged-in browser state. It cannot reach this machine, your private networks or your tailnet unless you allow a specific address or preview port range, and it always refuses origins you deny, such as the protected interface. See [browser tools for Host agents](docs/execution-installation.md#browser-tools-for-host-agents).
 
 See the [Vorteo customizations](docs/vorteo-customizations.md) for the full feature inventory and the [Vorteo changelog](VORTEO_CHANGELOG.md) for changes by version.
 
@@ -83,6 +83,8 @@ curl -fsSL https://github.com/terran-labs/vorteo/releases/latest/download/instal
 ```
 
 Demo mode asks the setup questions, shows the plan, animates builds for five minutes and displays simulated completion. It uses an existing Node.js runtime and changes no files, services, credentials or settings. Press Ctrl+C to leave early. Add `--yes` to use the default answers.
+
+Use `vorteo` for installation and CLI commands, such as `vorteo factory project list` or `vorteo agent ls`. `vorteo status` shows installation state; `vorteo daemon status` shows daemon state. Run `vorteo help` for installation help, `vorteo agent --help` for command help, or `vorteo --json --help` for root CLI help. The `paseo` compatibility command remains available.
 
 After installation or repair, the terminal shows the connection address, password-file location and a QR code when space allows. The owner password is copied to the clipboard when available. Rerunning the installer also shows these details for an existing installation.
 

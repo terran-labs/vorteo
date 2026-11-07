@@ -21,7 +21,14 @@ export interface ControlInteractionState {
 
 export interface ControlInteractionStyleMap {
   controlRest: StyleProp<ViewStyle>;
+  /** Applied while `state.hovered` is true, for callers that still track hover in JS. */
   controlHover: StyleProp<ViewStyle>;
+  /**
+   * A CSS hover style (`hoverStyle` from `@/styles/hover`) included whenever the control is
+   * neither active nor disabled, so the browser owns hover and it never sticks. CSS `:hover`
+   * outranks the base class, which is why it is left out in those phases.
+   */
+  controlHoverable?: StyleProp<ViewStyle>;
   controlActive: StyleProp<ViewStyle>;
   controlDisabled?: StyleProp<ViewStyle>;
 }
@@ -212,6 +219,7 @@ export function resolveControlInteractionStyles(
   const phase = getControlInteractionPhase(state);
   return [
     styles.controlRest,
+    phase !== "active" && !state.disabled ? styles.controlHoverable : null,
     phase === "hover" ? styles.controlHover : null,
     phase === "active" ? styles.controlActive : null,
     state.disabled ? styles.controlDisabled : null,

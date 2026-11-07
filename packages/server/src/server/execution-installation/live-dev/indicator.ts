@@ -4,9 +4,11 @@
  * interface. Pressing it opens a panel that explains the state and offers the relevant actions.
  *
  * It is plain HTML and CSS injected by the coordinator, outside the app bundle, so it still
- * works when live code fails to compile and on the static fallback. It uses `<details>` rather
- * than script, so it needs no script permission. Colors come from CSS variables the app
- * publishes for its floating panels, with system colors before the app loads.
+ * works when live code fails to compile and on the static fallback. The panel is a `<details>`
+ * styled like the app's tooltips, tail included, so it opens without script; a few lines of
+ * inline script only close it on an outside click or Escape. Colors come from CSS variables the
+ * app publishes for its floating panels. The fallbacks are Vorteo's dark palette rather than
+ * system colors, because the static interface can lag the live checkout and not publish them.
  */
 
 export type LiveDevIndicatorState =
@@ -90,26 +92,37 @@ const COPY: Record<LiveDevIndicatorState, StateCopy> = {
   },
 };
 
+// Fallbacks sampled from the live Starship dark panel; they apply only without the app's values.
+const BACKGROUND = "var(--vorteo-floating-background,#161110)";
+const BORDER = "var(--vorteo-floating-border,#3b2a20)";
+const FOREGROUND = "var(--vorteo-floating-foreground,#f2ece8)";
+const MUTED = "var(--vorteo-floating-muted,#c9bbb2)";
+const ACCENT = "var(--vorteo-floating-accent,#c96a3e)";
+
 const TONES = {
-  success: "var(--vorteo-status-success,#22c55e)",
-  neutral: "var(--vorteo-floating-muted,GrayText)",
+  success: "var(--vorteo-status-success,#8fbf8a)",
+  neutral: MUTED,
   warning: "var(--vorteo-status-warning,#f59e0b)",
   danger: "var(--vorteo-status-danger,#ef4444)",
 } as const;
 
 const STYLE = `<style>
-#vorteo-live-dev-marker{position:fixed;right:12px;bottom:12px;z-index:2147483647;font:400 13px/1.45 var(--paseo-ui-font,system-ui),system-ui,sans-serif;color:var(--vorteo-floating-foreground,CanvasText)}
-#vorteo-live-dev-marker>summary{list-style:none;cursor:pointer;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--vorteo-floating-background,Canvas);border:1px solid var(--vorteo-floating-border,GrayText);box-shadow:0 4px 8px rgba(0,0,0,.2)}
+#vorteo-live-dev-marker{position:fixed;right:12px;bottom:12px;z-index:2147483647;font:400 13px/1.45 var(--paseo-ui-font,system-ui),system-ui,sans-serif;color:${FOREGROUND}}
+#vorteo-live-dev-marker>summary{list-style:none;cursor:pointer;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:${BACKGROUND};border:1px solid ${BORDER};box-shadow:0 4px 8px rgba(0,0,0,.2)}
 #vorteo-live-dev-marker>summary::-webkit-details-marker{display:none}
-#vorteo-live-dev-marker>summary:focus-visible{outline:2px solid var(--vorteo-floating-accent,Highlight);outline-offset:2px}
+#vorteo-live-dev-marker>summary:focus-visible{outline:2px solid ${ACCENT};outline-offset:2px}
 #vorteo-live-dev-marker svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-#vorteo-live-dev-marker .vldm-panel{position:absolute;right:0;bottom:40px;width:280px;padding:12px 14px;border-radius:16px;background:var(--vorteo-floating-background,Canvas);border:1px solid var(--vorteo-floating-border,GrayText);box-shadow:0 4px 8px rgba(0,0,0,.2)}
+#vorteo-live-dev-marker .vldm-panel{position:absolute;right:0;bottom:44px;width:280px;padding:14px 16px;border-radius:14px;background:${BACKGROUND};border:1px solid ${BORDER};box-shadow:0 4px 8px rgba(0,0,0,.2)}
+#vorteo-live-dev-marker .vldm-panel::after{content:"";position:absolute;right:11px;bottom:-6px;width:10px;height:10px;background:${BACKGROUND};border-right:1px solid ${BORDER};border-bottom:1px solid ${BORDER};transform:rotate(45deg)}
 #vorteo-live-dev-marker .vldm-title{font-weight:600;margin:0 0 4px}
-#vorteo-live-dev-marker .vldm-body,#vorteo-live-dev-marker .vldm-detail{margin:0 0 8px;color:var(--vorteo-floating-muted,inherit)}
+#vorteo-live-dev-marker .vldm-body,#vorteo-live-dev-marker .vldm-detail{margin:0 0 8px;color:${MUTED}}
 #vorteo-live-dev-marker .vldm-actions{display:flex;flex-wrap:wrap;gap:4px 12px}
-#vorteo-live-dev-marker .vldm-actions a{color:var(--vorteo-floating-accent,LinkText);text-decoration:none}
+#vorteo-live-dev-marker .vldm-actions a{color:${ACCENT};text-decoration:none}
 #vorteo-live-dev-marker .vldm-actions a:hover{text-decoration:underline}
 </style>`;
+
+/** Closes the panel on a press outside it or Escape, like the app's tooltips. */
+const DISMISS = `<script>(()=>{const close=(e)=>{const m=document.getElementById("vorteo-live-dev-marker");if(m&&m.open&&(e.type==="keydown"?e.key==="Escape":!m.contains(e.target)))m.open=false};document.addEventListener("pointerdown",close,true);document.addEventListener("keydown",close,true)})()</script>`;
 
 /** The indicator markup for `state`, with an optional server detail line. */
 export function liveDevIndicatorHtml(state: LiveDevIndicatorState, detail?: string | null): string {
@@ -124,7 +137,7 @@ export function liveDevIndicatorHtml(state: LiveDevIndicatorState, detail?: stri
     `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[copy.icon]}</svg></summary>` +
     `<div class="vldm-panel" role="status"><p class="vldm-title">${escapeHtml(copy.title)}</p>` +
     `<p class="vldm-body">${escapeHtml(copy.body)}</p>${detailLine}` +
-    `<div class="vldm-actions">${actions}</div></div></details>`
+    `<div class="vldm-actions">${actions}</div></div></details>${DISMISS}`
   );
 }
 

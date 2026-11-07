@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState, type Ref } from "react";
-import { Text, View, type PressableStateCallbackType } from "react-native";
+import { Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import { FolderInput, FolderPlus, MoreVertical, Pencil, Trash2 } from "lucide-react-native";
@@ -22,16 +22,18 @@ import { SidebarCountBadge } from "@/components/sidebar/sidebar-count-badge";
 import { useSidebarRowDensity } from "@/components/sidebar/use-sidebar-row-density";
 import { useLongPressDragInteraction } from "@/components/sidebar/use-long-press-drag-interaction";
 import { useIsCompactFormFactor } from "@/constants/layout";
-import { isNative } from "@/constants/platform";
+import { isNative, isWeb } from "@/constants/platform";
 import { useVortonTouch } from "@/vorton-touch";
 import { sidebarIndentStyle } from "@/components/sidebar/indent";
 import { sidebarContainerRowStyles } from "@/components/sidebar/container-row";
 import {
+  SIDEBAR_LEADING_HOVER_GROUP,
   SidebarFolderIcon,
   SidebarLeadingSlot,
   type SidebarDisclosure,
 } from "@/components/sidebar/leading-slot";
 import type { Theme } from "@/styles/theme";
+import { hoverGroup, hoverStyle, revealOnGroupHover } from "@/styles/hover";
 import {
   toggleSidebarFolderCollapsed,
   useCreateSidebarFolderAction,
@@ -45,7 +47,6 @@ import type { SidebarFocusTarget } from "@/sidebar-focus/model";
 import type { SidebarFolderRow as SidebarFolderRowModel } from "./tree";
 
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const ThemedMoreVertical = withUnistyles(MoreVertical);
 const ThemedFolderPlus = withUnistyles(FolderPlus);
 const ThemedFolderInput = withUnistyles(FolderInput);
@@ -56,11 +57,12 @@ const moveIcon = <ThemedFolderInput size={14} uniProps={mutedColorMapping} />;
 const renameIcon = <ThemedPencil size={14} uniProps={mutedColorMapping} />;
 const deleteIcon = <ThemedTrash2 size={14} uniProps={mutedColorMapping} />;
 
-function renderKebabIcon({ hovered }: { hovered?: boolean }) {
-  return (
-    <ThemedMoreVertical size={14} uniProps={hovered ? foregroundColorMapping : mutedColorMapping} />
-  );
-}
+// On web the kebab strokes with the trigger's CSS color, so CSS hover recolors it.
+const kebabIconMapping = isWeb ? () => ({ color: "currentColor" }) : mutedColorMapping;
+const kebabIcon = <ThemedMoreVertical size={14} uniProps={kebabIconMapping} />;
+
+/** Row hover group: the kebab reveals while the folder row is hovered or focused. */
+const FOLDER_ROW_HOVER_GROUP = "folder-row";
 
 type MenuSurface = "context" | "dropdown";
 
@@ -126,10 +128,6 @@ function FolderMenuItems({
   );
 }
 
-function folderKebabStyle({ hovered }: PressableStateCallbackType & { hovered?: boolean }) {
-  return [styles.kebab, hovered && styles.kebabHovered];
-}
-
 /** A folder's ⋮ menu. */
 function FolderKebabMenu({
   folder,
@@ -147,12 +145,12 @@ function FolderKebabMenu({
     <DropdownMenu compactMode="sheet" open={open} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger
         hitSlop={8}
-        style={folderKebabStyle}
+        style={styles.kebab}
         accessibilityRole="button"
         accessibilityLabel={t("sidebar.folders.actions.menu")}
         testID={`sidebar-folder-kebab-${folder.id}`}
       >
-        {renderKebabIcon}
+        {kebabIcon}
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" width={220} sheetTitle={t("sidebar.folders.actions.menu")}>
         <FolderMenuItems surface="dropdown" folder={folder} scope={scope} />
@@ -217,18 +215,23 @@ export function SidebarFolderRow({
     if (!touch) setIsHovered(true);
   }, [touch]);
   const handlePointerLeave = useCallback(() => setIsHovered(false), []);
+  // The fill is CSS hover so it clears when the row moves out from under a resting cursor. The
+  // dragging fill must win, and `:hover` outranks it, so the hover entry steps aside while dragging.
   const rowStyle = useMemo(
     () => [
       sidebarContainerRowStyles.row,
+      styles.rowGroup,
       density,
       sidebarIndentStyle(level),
-      (isHovered || contextMenuOpen) && sidebarContainerRowStyles.rowHovered,
+      contextMenuOpen && sidebarContainerRowStyles.rowHovered,
+      !isDragging && styles.rowHoverable,
       isDragging && styles.rowDragging,
     ],
-    [density, level, isHovered, contextMenuOpen, isDragging],
+    [density, level, contextMenuOpen, isDragging],
   );
   const accessibilityState = useMemo(() => ({ expanded: !collapsed }), [collapsed]);
-  const showActions = isHovered || menuOpen || touch || compact || isNative;
+  // The kebab stays mounted and reveals through CSS while the row is hovered or focused.
+  const alwaysShowActions = menuOpen || touch || compact || isNative;
   const countLabel = String(itemCount);
 
   return (
@@ -255,12 +258,18 @@ export function SidebarFolderRow({
         >
           <SidebarLeadingSlot
             chevron={folderChevron(rowFocus.isRoot, collapsed)}
-            revealChevron={isHovered}
+            cssHover
             testID={`sidebar-folder-leading-${folder.id}`}
           >
-            <SidebarFolderIcon />
+            <SidebarFolderIcon calm={!contextMenuOpen} cssHover />
           </SidebarLeadingSlot>
-          <Text style={sidebarContainerRowStyles.title} numberOfLines={1}>
+          <Text
+            style={[
+              sidebarContainerRowStyles.title,
+              !contextMenuOpen && sidebarContainerRowStyles.calmTitle,
+            ]}
+            numberOfLines={1}
+          >
             {folder.name}
           </Text>
           {collapsed ? (
@@ -278,10 +287,7 @@ export function SidebarFolderRow({
             testID={`sidebar-folder-focus-${folder.id}`}
           />
         ) : null}
-        <View
-          style={showActions ? undefined : styles.hidden}
-          pointerEvents={showActions ? "auto" : "none"}
-        >
+        <View style={alwaysShowActions ? undefined : styles.kebabReveal}>
           <FolderKebabMenu
             folder={folder}
             scope={scope}
@@ -305,7 +311,16 @@ const styles = StyleSheet.create((theme) => ({
     zIndex: 3,
     ...theme.shadow.md,
   },
-  hidden: { opacity: 0 },
-  kebab: { padding: 2, borderRadius: 4 },
-  kebabHovered: { backgroundColor: theme.colors.surface2 },
+  rowGroup: hoverGroup([FOLDER_ROW_HOVER_GROUP, SIDEBAR_LEADING_HOVER_GROUP]),
+  // A calm title regains full strength while the row is hovered.
+  rowHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
+  kebabReveal: revealOnGroupHover(FOLDER_ROW_HOVER_GROUP),
+  kebab: {
+    padding: 2,
+    borderRadius: 4,
+    ...hoverStyle(
+      { backgroundColor: theme.colors.surface2, color: theme.colors.foreground },
+      { color: theme.colors.foregroundMuted },
+    ),
+  },
 }));

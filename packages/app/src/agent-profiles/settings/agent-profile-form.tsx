@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
-import { Text, View, ScrollView, StyleSheet } from "react-native";
+import { Text, View, StyleSheet } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import type { AgentFeature } from "@getpaseo/protocol/agent-types";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { SelectField } from "@/components/ui/select-field";
@@ -20,6 +21,7 @@ import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { resolveProviderType } from "@getpaseo/protocol/provider-preferences";
 import { workerChoices, workerAccountProfiles } from "./worker-choices";
+import { settingsStyles } from "@/styles/settings";
 
 export interface ProfileSharedScope {
   providerType: string;
@@ -28,7 +30,9 @@ export interface ProfileSharedScope {
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <View style={styles.section}>
-      <Text accessibilityRole="header">{title}</Text>
+      <Text accessibilityRole="header" style={settingsStyles.sectionHeaderTitle}>
+        {title}
+      </Text>
       {children}
     </View>
   );
@@ -271,7 +275,9 @@ export function AgentProfileForm({
       ) : null}
       <Section title="Model">
         {sharedScope ? (
-          <Text>Applies to all {sharedScope.providerType} accounts</Text>
+          <Text style={settingsStyles.rowHint}>
+            Applies to all {sharedScope.providerType} accounts
+          </Text>
         ) : (
           <ChoiceField
             label="Provider"

@@ -44,7 +44,9 @@ it("shows a full sign-in account's usage from its own credentials inside a manag
     signIn: "full",
     platform: "linux",
     fetch: async (url, init) => {
-      expect(String(url)).toBe("https://api.anthropic.com/api/oauth/usage");
+      expect(String(url)).toBe(
+        "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1",
+      );
       tokens.push(new Headers(init?.headers).get("Authorization"));
       return usageResponse();
     },

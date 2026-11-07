@@ -2452,6 +2452,7 @@ export const ja: TranslationResources = {
       openai: {
         apiKey: "API キー",
         apiKeyHint: "ホストに保存され、再表示されません。",
+        apiKeySharedHint: en.settings.voice.openai.apiKeySharedHint,
         keyPlaceholder: "sk-...",
         savedKeyPlaceholder: "保存済み",
         missingKey: "API キーがありません",

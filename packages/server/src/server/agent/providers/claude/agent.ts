@@ -2,6 +2,12 @@ import { verifySkillSnapshot } from "../../../orchestration-skills/internal/poli
 import { ClaudeSetupTokenLoginSession } from "./setup-token-login.js";
 import { ClaudeLoginSession } from "./login.js";
 import { CLAUDE_SIGN_IN_ENV, claudeSignInMode } from "./sign-in-mode.js";
+import { ClaudeResetCreditSession } from "./reset-credits.js";
+import {
+  claudeKeychainAccount,
+  claudeKeychainServiceForConfigDir,
+  readClaudeAccountKeychainCredentials,
+} from "../../../../services/quota-fetcher/providers/claude.js";
 import {
   claudeAccountUpgradedToFullSignIn,
   claudeSetupTokenStore,
@@ -1706,6 +1712,9 @@ export function readEventIdentifiers(message: SDKMessage): EventIdentifiers {
 }
 
 export class ClaudeAgentClient implements AgentClient {
+  private readonly shutdownController = new AbortController();
+  private readonly availabilityProbes = new Set<Promise<boolean>>();
+  private readonly catalogRefreshes = new Set<Promise<ProviderCatalog>>();
   private readonly discoverModels: typeof discoverClaudeModels;
   readonly provider = "claude" as const;
   readonly capabilities = CLAUDE_CAPABILITIES;
@@ -1803,15 +1812,33 @@ export class ClaudeAgentClient implements AgentClient {
     _options: FetchCatalogOptions,
     context?: ProviderRefreshContext,
   ): Promise<ProviderCatalog> {
+    const lifetime = this.shutdownController.signal;
+    const signal = context ? AbortSignal.any([context.signal, lifetime]) : lifetime;
+    signal.throwIfAborted();
+    const refresh = this.refreshCatalog(signal, context);
+    this.catalogRefreshes.add(refresh);
+    try {
+      return await refresh;
+    } finally {
+      this.catalogRefreshes.delete(refresh);
+    }
+  }
+
+  private async refreshCatalog(
+    signal: AbortSignal,
+    context?: ProviderRefreshContext,
+  ): Promise<ProviderCatalog> {
     // Claude exposes a global catalog here; cwd/force are intentionally irrelevant.
     let claudeCodeVersion: string | undefined;
     try {
       claudeCodeVersion = await runProviderRefreshActivity(context, "version", () =>
-        this.resolveVersion(context?.signal),
+        this.resolveVersion(signal),
       );
     } catch (error) {
+      signal.throwIfAborted();
       this.logger.warn({ err: error }, "Failed to resolve Claude Code version for model catalog");
     }
+    signal.throwIfAborted();
     const env = this.buildProviderEnv();
     let discoveredModelIds = new Set<string>();
     try {
@@ -1820,7 +1847,7 @@ export class ClaudeAgentClient implements AgentClient {
           resolveBinary: this.resolveBinary,
           runtimeSettings: this.runtimeSettings,
           env,
-          signal: context?.signal,
+          signal,
         }),
       );
       discoveredModelIds = new Set(
@@ -1829,12 +1856,13 @@ export class ClaudeAgentClient implements AgentClient {
           .filter((id): id is string => id !== null),
       );
     } catch (error) {
-      context?.signal.throwIfAborted();
+      signal.throwIfAborted();
       this.logger.warn(
         { err: error },
         "Claude model discovery failed; omitting discovery-required models",
       );
     }
+    signal.throwIfAborted();
     const models = await runProviderRefreshActivity(context, "settings", () =>
       getClaudeModelsWithSettings(
         this.logger,
@@ -1843,6 +1871,7 @@ export class ClaudeAgentClient implements AgentClient {
         discoveredModelIds,
       ),
     );
+    signal.throwIfAborted();
     const modeCatalog = claudeModeCatalog(env);
     return {
       models,
@@ -1962,6 +1991,21 @@ export class ClaudeAgentClient implements AgentClient {
     });
   }
 
+  /**
+   * Claude limit resets for a full sign-in account. They use the account's own claude.ai grant,
+   * read the same way its usage is; the CLI keeps refreshing that grant on each turn.
+   */
+  async openResetCreditSession(): Promise<ClaudeResetCreditSession> {
+    const env = this.runtimeSettings?.env;
+    // Untrimmed: the usage fetcher keys its shared reset reading on the exact configured value.
+    const configDir = env?.CLAUDE_CONFIG_DIR;
+    const full = claudeSignInMode(env) === "full" && Boolean(configDir?.trim());
+    return new ClaudeResetCreditSession({
+      configDir: full && configDir ? configDir : null,
+      readAccessToken: () => readClaudeAccessToken(configDir ?? ""),
+    });
+  }
+
   async openAccountLoginSession() {
     if (process.env.VORTEO_INSTALLATION_CLIENT_CONFIG)
       throw new Error("Connect Claude through the installation subscription controls.");
@@ -1993,11 +2037,32 @@ export class ClaudeAgentClient implements AgentClient {
   }
 
   async isAvailable(signal?: AbortSignal): Promise<boolean> {
+    const lifetime = this.shutdownController.signal;
+    const probeSignal = signal ? AbortSignal.any([signal, lifetime]) : lifetime;
+    probeSignal.throwIfAborted();
+    const probe = this.checkAvailability(probeSignal);
+    this.availabilityProbes.add(probe);
+    try {
+      return await probe;
+    } finally {
+      this.availabilityProbes.delete(probe);
+    }
+  }
+
+  async shutdown(): Promise<void> {
+    this.shutdownController.abort();
+    await Promise.allSettled([...this.availabilityProbes, ...this.catalogRefreshes]);
+  }
+
+  private async checkAvailability(signal: AbortSignal): Promise<boolean> {
     const launch = await resolveProviderLaunch({
       commandConfig: this.runtimeSettings?.command,
       defaultBinary: "claude",
     });
+    signal.throwIfAborted();
     const availability = await checkProviderLaunchAvailable(launch);
+    // Executable resolution can still be running when shutdown starts.
+    signal.throwIfAborted();
     if (!availability.available) return false;
     await requireClaudeAuthentication({
       executable: availability.resolvedPath ?? launch.command,
@@ -2057,6 +2122,29 @@ export class ClaudeAgentClient implements AgentClient {
   }
 }
 
+/** Same store order as the CLI: the account's own Keychain item on macOS, then its file. */
+async function readClaudeAccessToken(configDir: string): Promise<string | null> {
+  if (!configDir) return null;
+  const token = (value: unknown): string | null => {
+    const oauth = (value as { claudeAiOauth?: { accessToken?: unknown } } | null)?.claudeAiOauth;
+    return typeof oauth?.accessToken === "string" && oauth.accessToken ? oauth.accessToken : null;
+  };
+  if (process.platform === "darwin") {
+    const item = await readClaudeAccountKeychainCredentials(
+      claudeKeychainServiceForConfigDir(configDir),
+      claudeKeychainAccount(),
+    );
+    if (item !== null && item !== undefined) return token(item);
+  }
+  try {
+    return token(
+      JSON.parse(await promises.readFile(path.join(configDir, ".credentials.json"), "utf8")),
+    );
+  } catch {
+    return null;
+  }
+}
+
 async function resolveClaudeBinary(runtimeSettings?: ProviderRuntimeSettings): Promise<string> {
   const launch = await resolveProviderLaunch({
     commandConfig: runtimeSettings?.command,
@@ -2075,11 +2163,14 @@ export async function resolveClaudeCodeVersion(
   runtimeSettings?: ProviderRuntimeSettings,
   signal?: AbortSignal,
 ): Promise<string> {
+  signal?.throwIfAborted();
   const launch = await resolveProviderLaunch({
     commandConfig: runtimeSettings?.command,
     defaultBinary: "claude",
   });
+  signal?.throwIfAborted();
   const availability = await checkProviderLaunchAvailable(launch);
+  signal?.throwIfAborted();
   if (!availability.available) {
     throw new Error("Claude binary not found while resolving Claude Code version");
   }

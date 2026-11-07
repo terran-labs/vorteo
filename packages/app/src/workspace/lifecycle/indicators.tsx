@@ -10,6 +10,8 @@ import type { SidebarWorkspaceEntry } from "@/hooks/use-sidebar-workspaces-list"
 import type { Theme } from "@/styles/theme";
 import { FACTORY_MANAGED_EXPLANATION, useFactoryMembership } from "./factory-membership";
 import { SYSTEM_MANAGED_EXPLANATION, useSystemManaged } from "./system-membership";
+import { litToneColor, useSidebarRowTone } from "@/components/sidebar/row-tone";
+import { SIDEBAR_TRAILING_ICON_SLOT } from "@/components/sidebar/trailing-icon-slot";
 
 const Shield = withUnistyles(LockKeyhole);
 const Repeat = withUnistyles(Repeat2);
@@ -19,10 +21,12 @@ const neutral = (theme: Theme) => ({
   color: theme.colors.foregroundExtraMuted,
 });
 
-const shield = <Shield size={16} uniProps={neutral} />;
-const repeat = <Repeat size={16} uniProps={neutral} />;
-const paused = <Paused size={16} uniProps={neutral} />;
+/** In a lit sidebar row the marks take the title's color; elsewhere they stay quiet. */
+function useMarkColor() {
+  return useSidebarRowTone() === "lit" ? litToneColor : neutral;
+}
 function FactoryIndicator({ workspaceId }: { workspaceId: string }) {
+  const markColor = useMarkColor();
   return (
     <IndicatorTooltip label={FACTORY_MANAGED_EXPLANATION}>
       <View
@@ -32,7 +36,7 @@ function FactoryIndicator({ workspaceId }: { workspaceId: string }) {
         accessibilityLabel={FACTORY_MANAGED_EXPLANATION}
         testID={`workspace-factory-${workspaceId}`}
       >
-        <FactoryIcon size={16} uniProps={neutral} />
+        <FactoryIcon size={16} uniProps={markColor} />
       </View>
     </IndicatorTooltip>
   );
@@ -46,6 +50,7 @@ export function WorkspaceLifecycleIndicators({
   hideFactory?: boolean;
 }) {
   const touch = useVortonTouch();
+  const markColor = useMarkColor();
   const scheduled = useWorkspaceScheduleState(workspace.serverId, workspace.workspaceId);
   const membership = useFactoryMembership(workspace.serverId, workspace.workspaceId);
   const factory = Boolean(membership);
@@ -78,7 +83,7 @@ export function WorkspaceLifecycleIndicators({
             testID={`workspace-shield-${workspace.workspaceId}`}
             tabIndex={0}
           >
-            {shield}
+            <Shield size={16} uniProps={markColor} />
           </View>
         </IndicatorTooltip>
       ) : null}
@@ -92,7 +97,11 @@ export function WorkspaceLifecycleIndicators({
             testID={`workspace-scheduled-${workspace.workspaceId}`}
             onPress={openSchedules}
           >
-            {scheduled === "paused" ? paused : repeat}
+            {scheduled === "paused" ? (
+              <Paused size={16} uniProps={markColor} />
+            ) : (
+              <Repeat size={16} uniProps={markColor} />
+            )}
           </Pressable>
         </IndicatorTooltip>
       ) : null}
@@ -110,8 +119,10 @@ function IndicatorTooltip({ label, children }: { label: string; children: ReactE
   );
 }
 const styles = StyleSheet.create({
+  // A fixed column, the same width as every other sidebar trailing icon, so locks and schedule
+  // marks line up row to row whatever follows them.
   badgeSlot: {
-    minWidth: 16,
+    width: SIDEBAR_TRAILING_ICON_SLOT,
     height: 16,
     alignItems: "center",
     justifyContent: "center",

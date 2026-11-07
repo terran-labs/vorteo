@@ -1,3 +1,4 @@
+import { cliCommand } from "@getpaseo/server/vorteo-cli";
 import type { Command } from "commander";
 import { connectToDaemon, getDaemonHost } from "../../utils/client.js";
 import type { CommandError, OutputSchema, SingleResult } from "../../output/index.js";
@@ -35,7 +36,7 @@ export async function runMoveCommand(
     throw {
       code: "MISSING_PROJECT",
       message: "A destination project is required",
-      details: "Usage: paseo workspace move <workspace-id> --project <project-id>",
+      details: `Usage: ${cliCommand()} workspace move <workspace-id> --project <project-id>`,
     } satisfies CommandError;
   const host = getDaemonHost({ target: options.daemonTarget });
   const client = await connectToDaemon({ target: options.daemonTarget }).catch((error: unknown) => {
@@ -43,7 +44,7 @@ export async function runMoveCommand(
     throw {
       code: "DAEMON_NOT_RUNNING",
       message: `Cannot connect to daemon at ${host}: ${message}`,
-      details: "Start the daemon with: paseo daemon start",
+      details: `Start the daemon with: ${cliCommand()} daemon start`,
     } satisfies CommandError;
   });
   try {

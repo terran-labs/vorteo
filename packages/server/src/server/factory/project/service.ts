@@ -1,24 +1,38 @@
+import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
 import {
   PROJECT_FACTORY_INSTRUCTION_CONFLICTS,
   PROJECT_FACTORY_RPCS,
   ProjectFactoryRepositorySchema,
+  factoryProjectClaim,
+  factoryProjectClaimRelease,
   factoryProjectConfigure,
   factoryProjectDisable,
   factoryProjectEnable,
   factoryProjectGet,
+  factoryProjectQueue,
   factoryProjectInstructionsAcknowledge,
   factoryProjectInstructionsGet,
   factoryProjectInstructionsPropose,
   factoryProjectInstructionsResolve,
   factoryProjectInstructionsSet,
+  factoryProjectList,
   factoryProjectPause,
+  factoryProjectPauseAll,
+  factoryProjectResumeAll,
   factoryProjectResume,
   factoryProjectSendThread,
   factoryProjectStatusSet,
   type ProjectFactoryInstructions,
+  type ProjectFactoryList,
   type ProjectFactoryRoleId,
   type ProjectFactoryState,
+  type ProjectFactoryQueue,
+  type ProjectFactoryClaim,
+  type ProjectFactoryClaimRelease,
+  PROJECT_FACTORY_ASSIGNED_ROLES,
+  PROJECT_FACTORY_STATUS_LINE_MAX,
+  projectFactoryClaimBranch,
 } from "@getpaseo/server/factory-project";
 
 import type { AgentStorage, StoredAgentRecord } from "../../agent/agent-storage.js";
@@ -40,6 +54,17 @@ import type {
 import { generateWorkspaceId } from "../../workspace-registry-model.js";
 import type { CharterInput } from "./charters/shared.js";
 import {
+  assignmentBlock,
+  claimIssue,
+  defaultFactoryGitHub,
+  installationIdentity,
+  readAssignment,
+  releaseClaim,
+  scanForeignClaims,
+  staleClaimsPrompt,
+  type FactoryGitHub,
+} from "./claims.js";
+import {
   charterVersion,
   effectiveInstructions,
   hasDrifted,
@@ -59,16 +84,40 @@ import {
   ProjectFactoryStateStore,
   emptyRoleState,
   projectFactoryStatePath,
+  type ClaimState,
   type ProjectState,
   type RoleState,
 } from "./state.js";
-import { computeFingerprint, defaultGhRunner, shouldWake, type GatedRole } from "./tick-gate.js";
+import {
+  computeFingerprint,
+  defaultGhRunner,
+  shouldWake,
+  type GatedRole,
+  type GhRunner,
+} from "./tick-gate.js";
+
+import { readIssueQueue } from "./queue.js";
+
+/** Opens every status line the service writes for a role `.github/factory.json` turns off. */
+const ASSIGNMENT_STATUS_PREFIX = "Off here: ";
+
+/** Sent to a paused project's Foreman by pause_all, and its counterpart from resume_all. */
+export function drainNotice(id: string): string {
+  return `Drain notice ${id}: admit no new Factory work until this project is resumed. Let running workers finish and push, then set your status line to 'Drained ${id}: <n> workers still finishing'.`;
+}
+export const DRAIN_ENDED = "Drain ended: resume normal intake.";
 
 const GATED_ROLES: ReadonlySet<string> = new Set([
   "factory-intake",
   "factory-triage",
   "factory-builds",
 ]);
+
+interface QueueCache {
+  repository: string;
+  expiresAt: number;
+  result: Promise<ProjectFactoryQueue>;
+}
 
 export type PromptOutcome = "sent" | "busy";
 
@@ -110,6 +159,10 @@ export interface ProjectFactoryServiceInput {
   /** The provider a profile launches with, for a launch configured by profile alone. */
   profileProvider?: (profileId: string) => string | null;
   schedules: Pick<ScheduleService, "list" | "pause" | "resume">;
+  /** GitHub reader shared with the tick gate; injectable for queue tests. */
+  gh?: GhRunner;
+  /** GitHub REST calls for claims and `.github/factory.json`; injectable for tests. */
+  github?: FactoryGitHub;
   /** Hash of the GitHub state a gated role reacts to; null wakes the agent. */
   fingerprint?: (role: GatedRole, repository: string) => Promise<string | null>;
   onWorkspacesChanged?: (workspaceIds: string[]) => void;
@@ -143,6 +196,7 @@ export class ProjectFactoryService {
   private readonly timerGenerations = new Map<string, number>();
   private queue: Promise<unknown> = Promise.resolve();
   private stopped = false;
+  private readonly issueQueues = new Map<string, QueueCache>();
 
   static supports(method: string): boolean {
     return PROJECT_FACTORY_RPCS.some((rpc) => rpc.name === method);
@@ -177,6 +231,8 @@ export class ProjectFactoryService {
 
   async invoke(method: string, rawInput: unknown): Promise<unknown> {
     switch (method) {
+      case factoryProjectQueue.name:
+        return this.getQueue(factoryProjectQueue.input.parse(rawInput).projectId);
       case factoryProjectGet.name:
         return this.get(factoryProjectGet.input.parse(rawInput).projectId);
       case factoryProjectEnable.name:
@@ -193,6 +249,14 @@ export class ProjectFactoryService {
         return this.setStatus(factoryProjectStatusSet.input.parse(rawInput));
       case factoryProjectSendThread.name:
         return this.sendThread(factoryProjectSendThread.input.parse(rawInput));
+      case factoryProjectList.name:
+        factoryProjectList.input.parse(rawInput);
+        return this.list();
+      case factoryProjectPauseAll.name:
+        return this.pauseAll(factoryProjectPauseAll.input.parse(rawInput).reason);
+      case factoryProjectResumeAll.name:
+        factoryProjectResumeAll.input.parse(rawInput);
+        return this.resumeAll();
       case factoryProjectInstructionsGet.name: {
         const { projectId, role } = factoryProjectInstructionsGet.input.parse(rawInput);
         return this.getInstructions(projectId, role);
@@ -207,9 +271,44 @@ export class ProjectFactoryService {
       }
       case factoryProjectInstructionsResolve.name:
         return this.resolveInstructions(factoryProjectInstructionsResolve.input.parse(rawInput));
+      case factoryProjectClaim.name:
+        return this.claim(factoryProjectClaim.input.parse(rawInput));
+      case factoryProjectClaimRelease.name:
+        return this.releaseClaim(factoryProjectClaimRelease.input.parse(rawInput));
       default:
         throw new ProjectFactoryError(`Unknown Factory method: ${method}`);
     }
+  }
+
+  private async getQueue(projectId: string): Promise<ProjectFactoryQueue> {
+    await this.requireProject(projectId);
+    const project = await this.readProject(projectId);
+    const now = this.now();
+    if (!project) return { fetchedAt: now.toISOString(), error: null, issues: [] };
+    const cached = this.issueQueues.get(projectId);
+    if (cached && cached.repository === project.repository && cached.expiresAt > now.getTime())
+      return cached.result;
+    const workspaceIds = new Set(
+      Object.values(project.roles).flatMap((role) => (role?.workspaceId ? [role.workspaceId] : [])),
+    );
+    const result = readIssueQueue({
+      repository: project.repository,
+      ownClaims: new Set(
+        Object.entries(project.claims ?? {}).flatMap(([issue, claim]) =>
+          claim.status === "held" ? [Number(issue)] : [],
+        ),
+      ),
+      gh: this.input.gh ?? defaultGhRunner,
+      agents: () => this.input.agentStorage.list(),
+      workspaceIds,
+      now,
+    });
+    this.issueQueues.set(projectId, {
+      repository: project.repository,
+      expiresAt: now.getTime() + 30_000,
+      result,
+    });
+    return result;
   }
 
   async get(projectId: string): Promise<ProjectFactoryState> {
@@ -237,13 +336,37 @@ export class ProjectFactoryService {
       const record = await this.requireActiveProject(request.projectId);
       await this.validateAdoption(request.projectId, request.adopt ?? {});
       await this.store.mutate((file) => {
+        const other = Object.entries(file.projects).find(
+          ([id, project]) =>
+            id !== request.projectId &&
+            project.enabled &&
+            sameRepository(project.repository, repository.data),
+        );
+        if (other)
+          throw new ProjectFactoryError(
+            `Project ${other[0]} already runs Factory for ${repository.data} on this installation. Turn it off there first; one installation runs one Factory per repository.`,
+          );
         const current = file.projects[request.projectId];
         file.projects[request.projectId] = {
           repository: repository.data,
-          workers: current?.workers ?? { workerProfileId: null, reviewerProfileId: null },
+          workers: current?.workers ?? {
+            plannerProfileId: null,
+            planning: true,
+            workerProfileId: null,
+            reviewerProfileId: null,
+          },
           roles: current?.roles ?? {},
           ...(current?.pausedOptimizerScheduleId
             ? { pausedOptimizerScheduleId: current.pausedOptimizerScheduleId }
+            : {}),
+          // Claims belong to the repository; turning Factory on again for it keeps them, so
+          // this installation never mistakes its own claim branches for foreign ones.
+          ...(current && sameRepository(current.repository, repository.data)
+            ? {
+                ...(current.claims ? { claims: current.claims } : {}),
+                ...(current.foreignClaims ? { foreignClaims: current.foreignClaims } : {}),
+                ...(current.assignment ? { assignment: current.assignment } : {}),
+              }
             : {}),
           enabled: true,
           paused: false,
@@ -271,6 +394,8 @@ export class ProjectFactoryService {
       await this.mutateProject(projectId, (project) => {
         if (!project.enabled) throw new ProjectFactoryError("Factory is off for this project.");
         project.paused = paused;
+        // A manual pause or resume takes the project out of any pause_all drain.
+        delete project.drain;
       });
       if (paused) this.stopTimers(projectId);
       else this.startTimers(projectId);
@@ -295,9 +420,105 @@ export class ProjectFactoryService {
       await this.mutateProject(projectId, (current) => {
         current.enabled = false;
         current.paused = false;
+        delete current.drain;
       });
       await this.reconcileOptimizerReview(projectId, await this.readProject(projectId));
       return this.describe(record, await this.readProject(projectId), null);
+    });
+  }
+
+  /**
+   * Every project the Factory service knows, with its state. A damaged state file refuses
+   * rather than reporting no projects, so pause_all can never claim a drain it did not make.
+   */
+  async list(): Promise<ProjectFactoryList> {
+    const file = await this.store.read();
+    const projects: ProjectFactoryList["projects"] = [];
+    for (const [projectId, project] of Object.entries(file.projects)) {
+      const record = await this.input.projects.get(projectId);
+      const unavailable = !record || record.archivedAt ? "unavailable" : null;
+      projects.push({
+        projectId,
+        state: unavailable ?? factoryState(project, null),
+        repository: project.repository || null,
+        paused: project.paused,
+        drain: project.drain
+          ? { id: project.drain.id, reason: project.drain.reason, pausedAt: project.drain.pausedAt }
+          : null,
+      });
+    }
+    return { projects };
+  }
+
+  /**
+   * Pauses every project whose Factory is on, before a restart or upgrade, and records which
+   * ones it paused. Projects already paused, off or unavailable are left alone, so a rerun
+   * records nothing new. Stopping heartbeats does not reach a Foreman already mid-turn, so each
+   * paused project's Foreman also gets one drain notice, steered into its turn when busy. A
+   * notice that fails is retried by the next pause_all. Each drain gets a new id and clears the
+   * Foreman's status line, so an acknowledgment of an earlier drain cannot satisfy this one.
+   * Unavailable projects keep their pending notice until they are restored.
+   */
+  private pauseAll(reason: string): Promise<ProjectFactoryList> {
+    return this.serialize(async () => {
+      const pausedAt = this.now().toISOString();
+      for (const entry of (await this.list()).projects) {
+        if (entry.state === "on") {
+          await this.mutateProject(entry.projectId, (project) => {
+            project.paused = true;
+            project.drain = { id: `drain-${randomUUID()}`, reason, pausedAt };
+            const foreman = project.roles["factory-intake"];
+            if (foreman) foreman.status = null;
+          });
+          this.stopTimers(entry.projectId);
+        }
+        if (entry.state !== "unavailable") await this.sendDrainNotice(entry.projectId);
+      }
+      return this.list();
+    });
+  }
+
+  private async sendDrainNotice(projectId: string): Promise<void> {
+    const project = await this.readProject(projectId);
+    const foreman = project?.roles["factory-intake"]?.agentId;
+    if (!project?.drain || project.drain.noticeSentAt || !foreman) return;
+    if (!(await this.notifyForeman(projectId, foreman, drainNotice(project.drain.id)))) return;
+    await this.mutateProject(projectId, (current) => {
+      if (current.drain) current.drain.noticeSentAt = this.now().toISOString();
+    });
+  }
+
+  /** Steers a Factory prompt into the Foreman's turn. Returns false when it could not be sent. */
+  private async notifyForeman(
+    projectId: string,
+    agentId: string,
+    prompt: string,
+  ): Promise<boolean> {
+    try {
+      await this.input.agents.sendPrompt(agentId, prompt, { steer: true });
+      return true;
+    } catch (error) {
+      this.logger.warn({ err: error, projectId }, "Could not send the Foreman a drain prompt");
+      return false;
+    }
+  }
+
+  /** Resumes only the projects pause_all paused; a project paused by hand stays paused. */
+  private resumeAll(): Promise<ProjectFactoryList> {
+    return this.serialize(async () => {
+      for (const entry of (await this.list()).projects) {
+        // An unavailable project keeps its drain, so restoring it leaves the record intact.
+        if (!entry.drain || entry.state === "unavailable") continue;
+        const resume = entry.state === "paused";
+        const drain = await this.mutateProject(entry.projectId, (project) => {
+          if (resume) project.paused = false;
+          delete project.drain;
+        });
+        if (resume) this.startTimers(entry.projectId);
+        const foreman = drain.roles["factory-intake"]?.agentId;
+        if (resume && foreman) await this.notifyForeman(entry.projectId, foreman, DRAIN_ENDED);
+      }
+      return this.list();
     });
   }
 
@@ -306,6 +527,8 @@ export class ProjectFactoryService {
     role?: ProjectFactoryRoleId;
     provider?: string | null;
     profileId?: string | null;
+    plannerProfileId?: string | null;
+    planning?: boolean;
     workerProfileId?: string | null;
     reviewerProfileId?: string | null;
   }): Promise<ProjectFactoryState> {
@@ -314,6 +537,9 @@ export class ProjectFactoryService {
       if (!request.role && (request.provider !== undefined || request.profileId !== undefined))
         throw new ProjectFactoryError("Name the role whose provider or profile you are setting.");
       const project = await this.mutateProject(request.projectId, (current) => {
+        if (request.plannerProfileId !== undefined)
+          current.workers.plannerProfileId = request.plannerProfileId;
+        if (request.planning !== undefined) current.workers.planning = request.planning;
         if (request.workerProfileId !== undefined)
           current.workers.workerProfileId = request.workerProfileId;
         if (request.reviewerProfileId !== undefined)
@@ -495,6 +721,8 @@ export class ProjectFactoryService {
         agent,
       );
       const now = this.now();
+      if (!(await this.assignedHere(record, roleId, role.title))) return;
+      const stale = await this.scanClaims(record, roleId);
       const current = GATED_ROLES.has(roleId)
         ? await this.readFingerprint(roleId as GatedRole, project.repository)
         : null;
@@ -504,12 +732,16 @@ export class ProjectFactoryService {
         last: roleState.gate.fingerprint,
         lastWakeAt: roleState.gate.lastWakeAt,
         now,
-        pending: undelivered || launchPending,
+        pending: undelivered || launchPending || stale.length > 0,
       });
       if (!decision.wake) return;
-      const prompt = undelivered
-        ? `${changedInstructionsPrompt(effective)}\n\n${role.tickPrompt}`
-        : role.tickPrompt;
+      const prompt = [
+        undelivered ? changedInstructionsPrompt(effective) : null,
+        role.tickPrompt,
+        stale.length > 0 ? staleClaimsPrompt(projectId, stale) : null,
+      ]
+        .filter((part) => part !== null)
+        .join("\n\n");
       const outcome = await this.input.agents.sendPrompt(agentId, prompt, { steer: false });
       // A busy agent keeps the old gate, so the next tick still sees the change.
       if (outcome === "busy") return;
@@ -518,8 +750,152 @@ export class ProjectFactoryService {
         if (!state) return;
         state.gate = { fingerprint: current, lastWakeAt: now.toISOString() };
         state.delivered = { agentId, hash };
+        markNotified(next, stale, now);
       });
     });
+  }
+
+  private installation(projectId: string): string {
+    return installationIdentity(this.input.serverId, projectId);
+  }
+
+  private github(): FactoryGitHub {
+    return this.input.github ?? defaultFactoryGitHub;
+  }
+
+  /**
+   * Whether `.github/factory.json` lets this role run here. Triage and Releases read it every
+   * tick; the Foreman refreshes it for the Overview. A role turned off says so in its status
+   * line, and clears that line once it runs here again.
+   */
+  private async assignedHere(
+    record: PersistedProjectRecord,
+    roleId: ProjectFactoryRoleId,
+    title: string,
+  ): Promise<boolean> {
+    const key = (PROJECT_FACTORY_ASSIGNED_ROLES as Partial<Record<string, "triage" | "releases">>)[
+      roleId
+    ];
+    if (!key && roleId !== "factory-intake") return true;
+    const project = await this.requireConfiguredProject(record.projectId);
+    const assignment = await readAssignment(this.github(), project.repository, this.now());
+    const block = key
+      ? assignmentBlock(assignment, key, title, this.installation(record.projectId))
+      : null;
+    await this.mutateProject(record.projectId, (next) => {
+      next.assignment = assignment;
+      const state = next.roles[roleId];
+      if (!key || !state) return;
+      const line = block?.slice(0, PROJECT_FACTORY_STATUS_LINE_MAX) ?? null;
+      if (line && state.status?.line !== line)
+        state.status = { line, updatedAt: this.now().toISOString() };
+      else if (!line && state.status?.line.startsWith(ASSIGNMENT_STATUS_PREFIX))
+        state.status = null;
+    });
+    return block === null;
+  }
+
+  /**
+   * A role's first prompt. A role `.github/factory.json` gives to another installation gets a
+   * prompt to wait instead, and its status line says why, so turning Factory on never starts a
+   * second Triage or Releases.
+   */
+  private async firstPrompt(
+    record: PersistedProjectRecord,
+    role: ProjectFactoryRole,
+  ): Promise<string> {
+    if (!(role.id in PROJECT_FACTORY_ASSIGNED_ROLES)) return role.firstPrompt;
+    if (await this.assignedHere(record, role.id, role.title)) return role.firstPrompt;
+    return `Factory was just turned on for this project, but .github/factory.json does not assign ${role.title} to this installation (${this.installation(record.projectId)}). Do nothing now; the Factory service wakes you if that changes.`;
+  }
+
+  /**
+   * On a Foreman tick, records other installations' claim branches and returns the stale ones
+   * to tell it about. Other roles get none.
+   */
+  private async scanClaims(record: PersistedProjectRecord, roleId: ProjectFactoryRoleId) {
+    if (roleId !== "factory-intake") return [];
+    const project = await this.requireConfiguredProject(record.projectId);
+    try {
+      const scan = await scanForeignClaims({
+        github: this.github(),
+        repository: project.repository,
+        installation: this.installation(record.projectId),
+        own: project.claims ?? {},
+        previous: project.foreignClaims ?? {},
+        now: this.now(),
+      });
+      await this.mutateProject(record.projectId, (next) => {
+        next.foreignClaims = scan.foreign;
+      });
+      return scan.stale;
+    } catch (error) {
+      this.logger.warn({ err: error, projectId: record.projectId }, "Factory claim scan failed");
+      return [];
+    }
+  }
+
+  private claim(request: {
+    projectId: string;
+    issue: number;
+    keep?: boolean;
+  }): Promise<ProjectFactoryClaim> {
+    return this.serialize(async () => {
+      await this.requireActiveProject(request.projectId);
+      const project = await this.requireConfiguredProject(request.projectId);
+      if (!project.enabled)
+        throw new ProjectFactoryError("Turn on Factory for this project first.");
+      return claimIssue({
+        ...this.claimContext(request.projectId, project.repository, request.issue),
+        keep: request.keep,
+      });
+    });
+  }
+
+  private releaseClaim(request: {
+    projectId: string;
+    issue: number;
+  }): Promise<ProjectFactoryClaimRelease> {
+    return this.serialize(async () => {
+      await this.requireActiveProject(request.projectId);
+      const project = await this.requireConfiguredProject(request.projectId);
+      return this.release(request.projectId, project, request.issue);
+    });
+  }
+
+  private async release(
+    projectId: string,
+    project: ProjectState,
+    issue: number,
+  ): Promise<ProjectFactoryClaimRelease> {
+    const branch = projectFactoryClaimBranch(issue);
+    const released = await releaseClaim({
+      ...this.claimContext(projectId, project.repository, issue),
+      foreign: project.foreignClaims?.[branch],
+    });
+    await this.mutateProject(projectId, (next) => {
+      if (next.foreignClaims) delete next.foreignClaims[branch];
+    });
+    return released;
+  }
+
+  private claimContext(projectId: string, repository: string, issue: number) {
+    return {
+      github: this.github(),
+      repository,
+      installation: this.installation(projectId),
+      issue,
+      now: this.now(),
+      read: async () => (await this.readProject(projectId))?.claims?.[String(issue)],
+      write: async (claim: ClaimState | undefined) => {
+        await this.mutateProject(projectId, (next) => {
+          const claims = { ...next.claims };
+          if (claim) claims[String(issue)] = claim;
+          else delete claims[String(issue)];
+          next.claims = claims;
+        });
+      },
+    };
   }
 
   /**
@@ -604,7 +980,7 @@ export class ProjectFactoryService {
         await this.input.agents.setSystemPrompt(adopted.id, instructions);
         await this.input.agents.sendPrompt(
           adopted.id,
-          `${adoptedPrompt(instructions)}\n\n${role.firstPrompt}`,
+          `${adoptedPrompt(instructions)}\n\n${await this.firstPrompt(record, role)}`,
           { steer: true },
         );
         this.logger.info({ projectId, role: role.id, agentId: adopted.id }, "Adopted Factory role");
@@ -628,7 +1004,10 @@ export class ProjectFactoryService {
       });
     } else {
       workspaceId = await this.ensureRoleWorkspace(record, role, state.workspaceId);
-      await this.createRoleAgent(record, project, role, workspaceId, instructions);
+      await this.createRoleAgent(record, project, role, workspaceId, {
+        systemPrompt: instructions,
+        firstPrompt: await this.firstPrompt(record, role),
+      });
     }
     return workspaceId ? this.bindMembership(record, role, workspaceId) : null;
   }
@@ -657,8 +1036,9 @@ export class ProjectFactoryService {
     project: ProjectState,
     role: ProjectFactoryRole,
     workspaceId: string,
-    systemPrompt: string,
+    prompts: { systemPrompt: string; firstPrompt: string },
   ): Promise<void> {
+    const { systemPrompt } = prompts;
     const configured = project.roles[role.id]?.launch;
     const launch: Launch | null = configured?.provider
       ? {
@@ -683,7 +1063,7 @@ export class ProjectFactoryService {
           workspaceId,
           config: { systemPrompt },
           labels: { [PROJECT_FACTORY_ROLE_LABEL]: roleLabelValue(record.projectId, role.id) },
-          initialPrompt: role.firstPrompt,
+          initialPrompt: prompts.firstPrompt,
           promptFailure: "log",
           background: true,
           notifyOnFinish: false,
@@ -1027,10 +1407,20 @@ export class ProjectFactoryService {
       schemaVersion: 1,
       serverId: this.input.serverId,
       projectId: record.projectId,
+      installation: this.installation(record.projectId),
+      assignment: project?.assignment ?? null,
       state,
       repository: project?.repository || null,
       reason: unavailable,
-      workers: project?.workers ?? { workerProfileId: null, reviewerProfileId: null },
+      workers: project?.workers ?? {
+        plannerProfileId: null,
+        planning: true,
+        workerProfileId: null,
+        reviewerProfileId: null,
+      },
+      drain: project?.drain
+        ? { id: project.drain.id, reason: project.drain.reason, pausedAt: project.drain.pausedAt }
+        : null,
       roles: PROJECT_FACTORY_ROLES.map((role) => {
         const roleState = project?.roles[role.id] ?? emptyRoleState();
         return {
@@ -1081,6 +1471,7 @@ export class ProjectFactoryService {
       paseoHome: this.input.paseoHome,
       isSystemProject: isSystemProject(record),
       projectId: record.projectId,
+      installation: this.installation(record.projectId),
     };
     return projectFactoryRole(roleId).charter(input);
   }
@@ -1141,6 +1532,23 @@ export class ProjectFactoryService {
 
   private timeZone(): string | undefined {
     return this.input.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  }
+}
+
+/** GitHub repository names compare without case. */
+function sameRepository(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+/** Each stale head is told once; a new head on the branch starts its clock again. */
+function markNotified(
+  project: ProjectState,
+  stale: readonly { branch: string; headSha: string }[],
+  now: Date,
+): void {
+  for (const claim of stale) {
+    const foreign = project.foreignClaims?.[claim.branch];
+    if (foreign?.headSha === claim.headSha) foreign.notifiedAt = now.toISOString();
   }
 }
 

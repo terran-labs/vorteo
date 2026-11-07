@@ -12,6 +12,16 @@ const mocks = vi.hoisted(() => ({
     | undefined
     | ((event: { preventDefault: () => void; data: { action: string } }) => void),
 }));
+vi.mock("@/execution-installation/owner-access", () => ({
+  useOwnerAccess: () => ({
+    status: "none",
+    busy: false,
+    error: null,
+    unlock: vi.fn(),
+    lock: vi.fn(),
+  }),
+}));
+vi.mock("@/components/settings/owner-lock", () => ({ OwnerLockBadge: () => null }));
 vi.mock("react-native", () => ({
   Platform: { OS: "web" },
   Alert: { alert: vi.fn() },

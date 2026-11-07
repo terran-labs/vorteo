@@ -336,6 +336,14 @@ export function EnvironmentPresetMenu(props: EnvironmentPresetMenuProps) {
       ),
     [view, props.now, props.inline],
   );
+  const isAccountLoading = useCallback(
+    (row: AgentProfilePickerRow) =>
+      !row.localEndpoint &&
+      (view.kind === "loading" ||
+        (view.kind === "ready" && view.isRefreshing) ||
+        resetLoadingProviders.has(row.provider)),
+    [view, resetLoadingProviders],
+  );
   const renderAccountDetails = useCallback(
     (row: AgentProfilePickerRow) => (
       <AccountUsageDetails
@@ -344,7 +352,6 @@ export function EnvironmentPresetMenu(props: EnvironmentPresetMenuProps) {
         now={props.now}
         serverId={serverId}
         name={row.name}
-        resetLoading={resetLoadingProviders.has(row.provider)}
         localStatus={
           row.localEndpoint
             ? (formatLocalEndpointSummary(row.localEndpoint, props.now) ?? "Local endpoint")
@@ -352,7 +359,7 @@ export function EnvironmentPresetMenu(props: EnvironmentPresetMenuProps) {
         }
       />
     ),
-    [view, props.now, serverId, resetLoadingProviders],
+    [view, props.now, serverId],
   );
   let availabilityError = error;
   if (!connected) availabilityError = "Reconnect to this environment to select a profile";
@@ -394,6 +401,7 @@ export function EnvironmentPresetMenu(props: EnvironmentPresetMenuProps) {
       renderRail={renderRail}
       renderBadge={renderBadge}
       renderAccountDetails={renderAccountDetails}
+      isAccountLoading={isAccountLoading}
     />
   );
 }

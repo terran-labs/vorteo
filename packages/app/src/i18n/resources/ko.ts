@@ -2440,6 +2440,7 @@ export const ko: TranslationResources = {
       openai: {
         apiKey: "API 키",
         apiKeyHint: "호스트에 저장되며 다시 표시되지 않습니다.",
+        apiKeySharedHint: en.settings.voice.openai.apiKeySharedHint,
         keyPlaceholder: "sk-...",
         savedKeyPlaceholder: "저장됨",
         missingKey: "API 키 없음",

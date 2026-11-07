@@ -8,6 +8,16 @@ import {
   useProviderLogin,
   useSharedInstallationSignIn,
 } from "./use-provider-login";
+vi.mock("@/execution-installation/panel", () => ({
+  PasswordFileHint: () => null,
+  useInstallationOwnerAccess: () => ({
+    status: "none",
+    busy: false,
+    error: null,
+    unlock: vi.fn(),
+    lock: vi.fn(),
+  }),
+}));
 vi.mock("@/utils/copy-to-clipboard", () => ({ copyToClipboard: vi.fn() }));
 vi.mock("@/utils/open-external-url", () => ({ openExternalUrl: vi.fn() }));
 vi.mock("./use-provider-login", () => ({

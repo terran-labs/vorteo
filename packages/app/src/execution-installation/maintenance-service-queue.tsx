@@ -116,7 +116,7 @@ const variants = {
 const labels = {
   pending: "Requested",
   approved: "Scheduled",
-  running: "Outcome unverified",
+  running: "Checking",
   succeeded: "Candidate verified",
   failed: "Needs attention",
   rejected: "Closed",

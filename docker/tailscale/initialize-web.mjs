@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
 export async function initializeWeb(source, destination) {
@@ -88,7 +89,11 @@ export async function initializeHome(home) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await initializeHome(process.env.PASEO_HOME);
-  const entry = (await fs.readFile("/etc/paseo-server-entry", "utf8")).trim();
+  // The same choice the daemon makes, so the web UI matches the daemon that runs.
+  const { resolveServerEntry } = createRequire(import.meta.url)(
+    "/usr/local/lib/paseo/server-entry.cjs",
+  );
+  const { entry } = resolveServerEntry();
   const source = path.resolve(path.dirname(entry), "../server/web-ui");
   const destination = process.env.PASEO_WEB_UI_DIST_DIR;
   if (!destination) throw new Error("PASEO_WEB_UI_DIST_DIR is required");

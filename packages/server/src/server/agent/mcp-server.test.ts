@@ -24,6 +24,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
+import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
+
+import { createServer as createHttpServer, type IncomingMessage } from "node:http";
+
+import type { AddressInfo } from "node:net";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { realpathSync } from "node:fs";
@@ -41,6 +47,7 @@ import { createTestLogger } from "../../test-utils/test-logger.js";
 import {
   createAgentMcpServer as createAgentMcpServerWithDependencies,
   createAgentMcpServer,
+  serveStatelessAgentMcpRequest,
 } from "./mcp-server.js";
 
 import { AgentManager, type ManagedAgent } from "./agent-manager.js";
@@ -1570,6 +1577,133 @@ describe("browser MCP tools", () => {
       },
       context: { agentId: "agent-1", cwd: REPO_CWD },
     });
+  });
+});
+
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  let raw = "";
+  for await (const chunk of req) raw += chunk;
+  return JSON.parse(raw);
+}
+
+// Posts one JSON-RPC message to a Streamable HTTP endpoint and decodes either a
+// JSON body or the first SSE data line.
+async function postJsonRpc(url: string, body: object, protocolVersion?: string) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      ...(protocolVersion ? { "mcp-protocol-version": protocolVersion } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  const json = text.startsWith("{")
+    ? text
+    : text
+        .split("\n")
+        .find((line) => line.startsWith("data: "))
+        ?.slice("data: ".length);
+  return { status: response.status, body: json ? JSON.parse(json) : undefined };
+}
+
+describe("Agent MCP HTTP protocol negotiation", () => {
+  // Claude CLI 2.1.318 speaks MCP 2026-07-28. It probes with server/discover and
+  // falls back to a 2025-era initialize when the probe returns a JSON-RPC error.
+  it("serves a 2026-07-28 client through discovery fallback, tools/list and tools/call", async () => {
+    const broker = new FakeBrowserToolsBroker({
+      requestId: "req-browser-negotiation",
+      ok: true,
+      result: { command: "list_tabs", tabs: [] },
+    });
+    const logger = createTestLogger();
+    const transportLogger = { debug: vi.fn(), error: vi.fn() };
+    const httpServer = createHttpServer(async (req, res) => {
+      await serveStatelessAgentMcpRequest({
+        server: await createAgentMcpServer({
+          agentManager: new BoundaryAgentManagerFake() as AgentManager,
+          agentStorage: new BoundaryAgentStorageFake() as AgentStorage,
+          providerSnapshotManager:
+            new BoundaryProviderSnapshotManagerFake() as unknown as ProviderSnapshotManager,
+          browserToolsEnabled: true,
+          browserToolsBroker: broker as BrowserToolsBroker,
+          callerAgentId: "agent-1",
+          logger,
+        }),
+        req,
+        res,
+        body: await readJsonBody(req),
+        logger: transportLogger,
+      });
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${(httpServer.address() as AddressInfo).port}/mcp/agents`;
+    const post = (body: object, protocolVersion?: string) =>
+      postJsonRpc(url, body, protocolVersion);
+
+    try {
+      const probe = await post(
+        {
+          jsonrpc: "2.0",
+          id: "server-discover-probe-1",
+          method: "server/discover",
+          params: { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } },
+        },
+        "2026-07-28",
+      );
+      // The client reads this JSON-RPC error and falls back to initialize.
+      expect(probe.status).toBe(400);
+      expect(probe.body).toMatchObject({ jsonrpc: "2.0", error: { code: expect.any(Number) } });
+      // The expected decline is not reported as a transport failure.
+      expect(transportLogger.debug).toHaveBeenCalledTimes(1);
+      expect(transportLogger.error).not.toHaveBeenCalled();
+
+      // Any other discovery failure, such as malformed JSON-RPC, is still an error.
+      const malformed = await post({ id: "server-discover-probe-2", method: "server/discover" });
+      expect(malformed.status).toBe(400);
+      expect(transportLogger.error).toHaveBeenCalledTimes(1);
+      expect(transportLogger.debug).toHaveBeenCalledTimes(1);
+      transportLogger.error.mockClear();
+
+      const initialize = await post({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2026-07-28",
+          capabilities: {},
+          clientInfo: { name: "claude-code", version: "2.1.318" },
+        },
+      });
+      // The server answers with the newest revision it implements, never 2026-07-28.
+      expect(initialize.body.result.protocolVersion).toBe(LATEST_PROTOCOL_VERSION);
+      const negotiated = initialize.body.result.protocolVersion as string;
+
+      const listed = await post({ jsonrpc: "2.0", id: 2, method: "tools/list" }, negotiated);
+      expect(listed.body.result.tools.map((tool: { name: string }) => tool.name)).toContain(
+        "browser_list_tabs",
+      );
+
+      const called = await post(
+        {
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: { name: "browser_list_tabs", arguments: {} },
+        },
+        negotiated,
+      );
+      expect(called.body.result.isError).not.toBe(true);
+      expect(called.body.result.structuredContent).toMatchObject({
+        ok: true,
+        result: { command: "list_tabs", tabs: [] },
+      });
+      expect(broker.calls).toHaveLength(1);
+      expect(transportLogger.error).not.toHaveBeenCalled();
+    } finally {
+      await new Promise((resolve) => httpServer.close(resolve));
+    }
   });
 });
 

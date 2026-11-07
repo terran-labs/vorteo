@@ -83,7 +83,7 @@ function installation() {
       type: "directory",
       kind: "deployment",
       path: container,
-      excludeTopLevel: ["data", "workspace", "logs"],
+      excludeTopLevel: ["data", "workspace", "logs", "dev-releases"],
     },
   ];
   return { state, host, container, config, sources };
@@ -543,7 +543,7 @@ posixTest("snapshot sources follow the installation layout", () => {
       type: "directory",
       kind: "deployment",
       path: container,
-      excludeTopLevel: ["data", "workspace", "logs"],
+      excludeTopLevel: ["data", "workspace", "logs", "dev-releases"],
     },
   ]);
   // Linux keeps Dev's home private to the container's user: it goes through the container.

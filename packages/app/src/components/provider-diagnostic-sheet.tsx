@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, type PressableStateCallbackType, Text, View } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import {
   AdaptiveModalSheet,
   AdaptiveTextInput,
@@ -97,9 +98,10 @@ function CustomModelRow({
   const { theme } = useUnistyles();
   const handleDelete = useCallback(() => onDelete(model.id), [model.id, onDelete]);
   const deleteButtonStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       sheetStyles.iconButton,
-      (Boolean(hovered) || pressed) && sheetStyles.iconButtonHovered,
+      sheetStyles.iconButtonHoverable,
+      pressed && sheetStyles.iconButtonHovered,
       deleting ? sheetStyles.disabled : null,
     ],
     [deleting],
@@ -303,9 +305,10 @@ function DiagnosticSubSheet({
   }, [visible, fetchDiagnostic]);
 
   const refreshButtonStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       sheetStyles.iconButton,
-      (Boolean(hovered) || pressed) && sheetStyles.iconButtonHovered,
+      sheetStyles.iconButtonHoverable,
+      pressed && sheetStyles.iconButtonHovered,
       loading ? sheetStyles.disabled : null,
     ],
     [loading],
@@ -316,9 +319,10 @@ function DiagnosticSubSheet({
   }, [fetchDiagnostic]);
 
   const copyButtonStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       sheetStyles.iconButton,
-      (Boolean(hovered) || pressed) && Boolean(diagnostic) && sheetStyles.iconButtonHovered,
+      Boolean(diagnostic) && sheetStyles.iconButtonHoverable,
+      pressed && Boolean(diagnostic) && sheetStyles.iconButtonHovered,
       diagnostic ? null : sheetStyles.disabled,
     ],
     [diagnostic],
@@ -844,6 +848,7 @@ const sheetStyles = StyleSheet.create((theme) => ({
   iconButtonHovered: {
     backgroundColor: theme.colors.surface2,
   },
+  iconButtonHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   headerActions: {
     flexDirection: "row",
     alignItems: "center",

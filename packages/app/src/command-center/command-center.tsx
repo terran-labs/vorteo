@@ -1,9 +1,9 @@
+import { usePathname } from "expo-router";
 import { useOverlayRegistration, type KeyboardInputEvent } from "@/keyboard";
 import { Modal } from "@/components/ui/modal";
 import equal from "fast-deep-equal";
 import { recordRenderProfileReasons } from "@/utils/render-profiler";
 import {
-  FlatList,
   Pressable,
   Text,
   View,
@@ -13,6 +13,7 @@ import {
   type NativeSyntheticEvent,
   type PressableStateCallbackType,
 } from "react-native";
+import { BottomSheetFlatList, FlatList } from "@/components/ui/scroll-view";
 import {
   memo,
   useCallback,
@@ -26,10 +27,11 @@ import {
 import { useTranslation } from "react-i18next";
 import { Check, ChevronRight, Folder, X } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { BottomSheetFlatList, type BottomSheetFlatListMethods } from "@gorhom/bottom-sheet";
+import { type BottomSheetFlatListMethods } from "@gorhom/bottom-sheet";
 import { useAgentDescriptor, resolveAgentLabel } from "@/agent-presentation";
 import { StatusIcon } from "@/components/status-icon";
 import { useWorkspaceStatus } from "@/workspace-status";
+import { hoverSurface, rowSurface } from "@/styles/hover";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
 import type { Theme } from "@/styles/theme";
 import { HighlightedText, type HighlightedTextProps } from "@/components/ui/highlighted-text";
@@ -451,11 +453,16 @@ const ResultRow = memo(function ResultRow({
     () => (isNative && choice ? { selected: choice.selected } : undefined),
     [choice],
   );
+  // The row fill is browser-owned hover (`rowHoverable`), so results that reflow under a resting
+  // cursor update it. It also publishes the row surface, so status-ring halos and dot borders
+  // follow it on web; the backdrop token below only tracks press and the active row.
   const style = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.row,
+      styles.rowHoverable,
       { height },
-      (Boolean(hovered) || pressed || active) && styles.activeRow,
+      (pressed || active) && styles.activeRow,
+      (pressed || active) && styles.activeRowSurface,
     ],
     [active, height],
   );
@@ -471,17 +478,11 @@ const ResultRow = memo(function ResultRow({
         result.kind === "file" ? `command-center-file-row-${result.filePath}` : choice?.testId
       }
     >
-      {(state) => (
+      {({ pressed }) => (
         <ResultContent
           result={result}
           query={query}
-          backdrop={
-            active ||
-            state.pressed ||
-            Boolean((state as PressableStateCallbackType & { hovered?: boolean }).hovered)
-              ? "surface1"
-              : "surface0"
-          }
+          backdrop={active || pressed ? "surface1" : "surface0"}
         />
       )}
     </Pressable>
@@ -786,6 +787,12 @@ export function CommandCenter() {
     isCompact ? COMMAND_CENTER_LIST_METRICS.compact : COMMAND_CENTER_LIST_METRICS.desktop,
     interaction,
   );
+  const pathname = usePathname();
+  const closeCommandCenter = state.close;
+  // Settings owns search while it is open, including navigation from outside the overlay.
+  useLayoutEffect(() => {
+    if (pathname === "/settings" || pathname.startsWith("/settings/")) closeCommandCenter();
+  }, [pathname, closeCommandCenter]);
   const showBottomSheet = isCompact && isNative;
   const modalLayer = useGlobalOverlayLayer("modal", state.open);
   const { sheetRef, handleSheetChange, handleSheetDismiss } = useIsolatedBottomSheetVisibility({
@@ -1100,6 +1107,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   row: { paddingHorizontal: theme.spacing[4], justifyContent: "center" },
   activeRow: { backgroundColor: theme.colors.surface1 },
+  rowHoverable: hoverSurface(theme.colors.surface0, theme.colors.surface1),
+  activeRowSurface: rowSurface(theme.colors.surface1),
   rowContent: {
     flexDirection: "row",
     alignItems: "center",

@@ -1,5 +1,5 @@
 import { expect, type Locator, type Page } from "@playwright/test";
-import { openSidebarHelpMenu } from "./sidebar";
+import { openSettings } from "./app";
 
 const CHANGELOG_SOURCE_URL = "https://raw.githubusercontent.com/getpaseo/paseo/main/CHANGELOG.md";
 
@@ -15,9 +15,10 @@ export async function serveChangelog(page: Page, lines: string[]): Promise<void>
   );
 }
 
+/** What's new lives in Settings, under About. */
 export async function openWhatsNew(page: Page): Promise<Locator> {
-  await openSidebarHelpMenu(page);
-  await page.getByTestId("sidebar-help-changelog").click();
+  await openSettings(page);
+  await page.getByTestId("settings-whats-new").click();
 
   const sheet = page.getByTestId("changelog-sheet");
   await expect(sheet).toBeVisible();

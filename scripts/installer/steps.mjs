@@ -15,6 +15,7 @@ import {
 import path from "node:path";
 import { writeProjectsFolderSettings } from "../lib/projects-folder.mjs";
 import { projectsAccess } from "./projects-access.mjs";
+import { DEPLOYMENT_SCRIPTS } from "./dev-release.mjs";
 import { writeSystemSource } from "../lib/system-source.mjs";
 import {
   buildCoordinatorConfig,
@@ -51,8 +52,6 @@ import {
 } from "./primitives.mjs";
 
 export { STEP_TITLES } from "./flow.mjs";
-
-const DEPLOYMENT_SCRIPTS = ["common.sh", "update.sh", "gate.sh", "connect.sh", "compose.gate.yaml"];
 
 function readJson(file) {
   return JSON.parse(readFileSync(file, "utf8"));

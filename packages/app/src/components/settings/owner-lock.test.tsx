@@ -2,13 +2,19 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { InstallationNameSection } from "@/screens/settings/general/installation-name-section";
 import { useState, type ComponentProps, type ReactNode } from "react";
 import {
   OwnerAccessSourceContext,
   useOwnerAccess,
   type OwnerAccess,
 } from "@/execution-installation/owner-access";
-import { OwnerLockBadge, OwnerLockedGroup, OwnerUnlockDialog } from "./owner-lock";
+import {
+  OwnerLockBadge,
+  OwnerLockedGroup,
+  OwnerUnlockDialog,
+  OwnerSettingsGate,
+} from "./owner-lock";
 
 const renderedLineCounts = vi.hoisted(() => new Map<string | undefined, number | undefined>());
 const windowDimensions = vi.hoisted(() => ({ fontScale: 1 }));
@@ -29,10 +35,33 @@ vi.mock("react-native", async (importOriginal) => {
   };
 });
 vi.mock("@/execution-installation/panel", () => ({
-  useInstallationOwnerClient: () => null,
+  useInstallationOwnerAccess: () => ({
+    status: "none",
+    busy: false,
+    error: null,
+    unlock: async () => {},
+    lock: async () => {},
+  }),
+  PasswordFileHint: ({ passwordFile }: { passwordFile: string }) => <span>{passwordFile}</span>,
+}));
+const installationMode = vi.hoisted(() => ({ active: false }));
+const installationTypeRow = vi.hoisted(() => vi.fn());
+vi.mock("@/screens/settings/general/installation-type-section", () => ({
+  InstallationTypeRow: () => {
+    installationTypeRow();
+    return <span>Installation type</span>;
+  },
 }));
 vi.mock("@/execution-installation/policy", () => ({
-  readExecutionInstallation: () => null,
+  readExecutionInstallation: () => (installationMode.active ? {} : null),
+}));
+vi.mock("@/execution-installation/installation-name", () => ({
+  useInstallationName: () => "Lab",
+  DEFAULT_INSTALLATION_NAME: "Vorteo",
+  saveInstallationName: vi.fn(),
+}));
+vi.mock("@/contexts/toast-context", () => ({
+  useToast: () => ({ show: vi.fn(), error: vi.fn() }),
 }));
 vi.mock("@/components/adaptive-modal-sheet", () => ({
   AdaptiveModalSheet: ({ visible, children }: { visible: boolean; children: ReactNode }) =>
@@ -60,6 +89,7 @@ vi.mock("@/components/ui/button", () => ({
   ),
 }));
 vi.mock(".", () => ({
+  SettingsSection: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   SettingsCard: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   SettingsRow: ({ label, children }: { label: string; children: ReactNode }) => (
     <div>
@@ -72,6 +102,8 @@ vi.mock("lucide-react-native", () => ({ Lock: () => <span /> }));
 afterEach(() => {
   cleanup();
   windowDimensions.fontScale = 1;
+  installationMode.active = false;
+  installationTypeRow.mockClear();
 });
 function access(status: OwnerAccess["status"]): OwnerAccess {
   return {
@@ -201,6 +233,73 @@ describe("owner access controls", () => {
     expect(error.getAttribute("aria-live")).toBe("polite");
     expect(renderedLineCounts.get("owner-unlock-error")).toBe(2);
     expect(screen.getByTestId("owner-lock-error").hasAttribute("aria-live")).toBe(false);
+  });
+  it("does not mount fetching children when locked, even when peeked, and mounts after unlock", () => {
+    const fetch = vi.fn();
+    function QueryChild() {
+      fetch();
+      return <div>Loaded settings</div>;
+    }
+    const pane = (
+      <OwnerSettingsGate title="Providers">
+        <QueryChild />
+      </OwnerSettingsGate>
+    );
+    const result = render(wrap(access("locked"), pane));
+    fireEvent.click(screen.getByRole("button", { name: "Peek at Providers" }));
+    expect(fetch).not.toHaveBeenCalled();
+    result.rerender(wrap(access("unlocked"), pane));
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Loaded settings")).toBeTruthy();
+  });
+  it("keeps the reported password path in the unlock dialog", () => {
+    const value = access("locked");
+    value.passwordFile = "/host/owner-password";
+    render(wrap(value, <OwnerUnlockDialog visible onClose={vi.fn()} />));
+    expect(screen.getByTestId("installation-password-file").textContent).toBe(value.passwordFile);
+  });
+  it("shows the current installation name and unlock before offering Save", () => {
+    installationMode.active = true;
+    const result = render(wrap(access("locked"), <InstallationNameSection />));
+    expect(screen.getByText("Installation name: Lab · Locked")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.queryByText("Installation type")).toBeNull();
+    expect(installationTypeRow).not.toHaveBeenCalled();
+    result.rerender(wrap(access("unlocked"), <InstallationNameSection />));
+    expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+    expect(screen.getByText("Installation type")).toBeTruthy();
+    expect(installationTypeRow).toHaveBeenCalledTimes(1);
+  });
+  it("keeps unrelated host controls available without installation owner access", () => {
+    render(
+      wrap(
+        access("locked"),
+        <OwnerSettingsGate title="Local account" required={false}>
+          <div>Local sign-in</div>
+        </OwnerSettingsGate>,
+      ),
+    );
+    expect(screen.getByText("Local sign-in")).toBeTruthy();
+    expect(screen.queryByText("Local account · Locked")).toBeNull();
+  });
+  it("collapses peek and closes the dialog before the next lock", () => {
+    const pane = (
+      <OwnerSettingsGate title="Providers">
+        <div>Loaded settings</div>
+      </OwnerSettingsGate>
+    );
+    const result = render(wrap(access("locked"), pane));
+    fireEvent.click(screen.getByRole("button", { name: "Peek at Providers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    result.rerender(wrap(access("unlocked"), pane));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    result.rerender(wrap(access("locked"), pane));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByText("Unlock to load these settings.")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Peek at Providers" }).getAttribute("aria-expanded"),
+    ).toBe("false");
   });
   it("subscribes through an injectable hook source", () => {
     let update: (value: OwnerAccess) => void = () => {};

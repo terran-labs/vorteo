@@ -21,7 +21,10 @@ import {
 } from "../../workspace-registry.js";
 import { charterVersion } from "./instructions.js";
 import { PROJECT_FACTORY_ROLE_LABEL, PROJECT_FACTORY_ROLES } from "./roles.js";
-import { ProjectFactoryService, type PromptOutcome } from "./service.js";
+import { DRAIN_ENDED, drainNotice, ProjectFactoryService, type PromptOutcome } from "./service.js";
+import { factoryProjectQueue } from "@getpaseo/server/factory-project";
+import type { FactoryGitHub, GitHubResponse } from "./claims.js";
+import type { GhRunner } from "./tick-gate.js";
 import { projectFactoryStatePath } from "./state.js";
 
 const T0 = "2026-11-03T12:00:00.000Z";
@@ -37,6 +40,92 @@ let schedules: FakeSchedules;
 let fingerprints: Map<string, string | null>;
 let clock: Date;
 let services: ProjectFactoryService[];
+let github: FakeGitHub;
+
+const MAIN = "m".repeat(40);
+
+/** One shared GitHub repository: ref creation is atomic, as on GitHub. */
+class FakeGitHub implements FactoryGitHub {
+  readonly refs = new Map<string, string>([["heads/main", MAIN]]);
+  readonly comments = new Map<number, { body: string; updated_at: string }[]>();
+  readonly commitDates = new Map<string, string>();
+  factoryJson: string | null = null;
+  /** Creates the next ref, then fails as if the daemon crashed before reading the response. */
+  crashAfterCreate = false;
+  /** Runs before a ref is created, as another installation acting in that moment would. */
+  beforeCreate: (() => Promise<void>) | null = null;
+
+  async rest(method: string, route: string, body?: unknown): Promise<GitHubResponse> {
+    const resource = route.replace(/^repos\/[^/]+\/[^/]+/, "");
+    const response =
+      method === "GET" ? this.read(resource) : await this.write(method, resource, body);
+    if (!response) throw new Error(`unexpected GitHub call ${method} ${route}`);
+    return response;
+  }
+
+  private read(resource: string): GitHubResponse | null {
+    const ok = (value: unknown) => ({ status: 200, body: value });
+    const missing = { status: 404, body: { message: "Not Found" } };
+    if (resource === "") return ok({ default_branch: "main" });
+    if (resource.startsWith("/git/ref/")) {
+      const sha = this.refs.get(resource.slice("/git/ref/".length));
+      return sha ? ok({ ref: `refs/${resource.slice(9)}`, object: { sha } }) : missing;
+    }
+    if (resource.startsWith("/git/matching-refs/")) {
+      const prefix = resource.slice("/git/matching-refs/".length);
+      return ok(
+        [...this.refs]
+          .filter(([name]) => name.startsWith(prefix))
+          .map(([name, sha]) => ({ ref: `refs/${name}`, object: { sha } })),
+      );
+    }
+    const comments = /^\/issues\/(\d+)\/comments/.exec(resource);
+    if (comments) return ok(this.comments.get(Number(comments[1])) ?? []);
+    if (resource.startsWith("/pulls?")) return ok([]);
+    if (resource.startsWith("/git/commits/"))
+      return ok({ committer: { date: this.commitDates.get(resource.slice(13)) ?? T0 } });
+    if (resource === "/contents/.github/factory.json")
+      return this.factoryJson === null
+        ? missing
+        : ok({ content: Buffer.from(this.factoryJson).toString("base64"), encoding: "base64" });
+    return null;
+  }
+
+  private async write(
+    method: string,
+    resource: string,
+    body: unknown,
+  ): Promise<GitHubResponse | null> {
+    if (method === "POST" && resource === "/git/refs") {
+      await this.beforeCreate?.();
+      const { ref, sha } = body as { ref: string; sha: string };
+      const name = ref.replace(/^refs\//, "");
+      if (this.refs.has(name))
+        return { status: 422, body: { message: "Reference already exists" } };
+      this.refs.set(name, sha);
+      if (this.crashAfterCreate) {
+        this.crashAfterCreate = false;
+        throw new Error("daemon stopped");
+      }
+      return { status: 201, body: { ref, object: { sha } } };
+    }
+    const rename = /^\/branches\/([^/]+)\/rename$/.exec(resource);
+    if (method === "POST" && rename) {
+      // GitHub moves the branch and its commits to the new name in one step.
+      const from = `heads/${decodeURIComponent(rename[1]!)}`;
+      const sha = this.refs.get(from);
+      if (!sha) return { status: 404, body: { message: "Branch not found" } };
+      this.refs.delete(from);
+      this.refs.set(`heads/${(body as { new_name: string }).new_name}`, sha);
+      return { status: 201, body: { commit: { sha } } };
+    }
+    if (method === "DELETE" && resource.startsWith("/git/refs/")) {
+      this.refs.delete(resource.slice("/git/refs/".length));
+      return { status: 204, body: null };
+    }
+    return null;
+  }
+}
 
 interface SentPrompt {
   agentId: string;
@@ -50,6 +139,7 @@ class FakeAgents {
   readonly switches: { agentId: string; provider: string; profileId?: string }[] = [];
   readonly switchCharters: string[] = [];
   created = 0;
+  readonly initialPrompts = new Map<string, string | undefined>();
   busy = new Set<string>();
   switchFails = false;
   /** Agents whose next prompts throw. */
@@ -69,6 +159,7 @@ class FakeAgents {
       createdAt: T0,
       updatedAt: T0,
       archivedAt: null,
+      lastStatus: "idle",
     } as unknown as StoredAgentRecord;
     this.records.set(input.id, record);
     return record;
@@ -90,6 +181,7 @@ class FakeAgents {
       labels: input.labels,
     });
     (record as { config: unknown }).config = input.config;
+    this.initialPrompts.set(id, input.initialPrompt ?? undefined);
     await input.onCreated?.({ agentId: id } as never);
     return {} as never;
   };
@@ -148,10 +240,14 @@ class FakeSchedules {
   };
 }
 
-function service(): ProjectFactoryService {
+function service(
+  gh?: GhRunner,
+  installation: { paseoHome?: string; serverId?: string } = {},
+): ProjectFactoryService {
   const instance = new ProjectFactoryService({
-    paseoHome: home,
-    serverId: "srv_test",
+    paseoHome: installation.paseoHome ?? home,
+    serverId: installation.serverId ?? "srv_test",
+    github,
     projects,
     workspaces,
     agentStorage: agents.storage,
@@ -174,6 +270,7 @@ function service(): ProjectFactoryService {
     defaultLaunch: async () => ({ provider: "claude", profileId: "default-profile" }),
     profileProvider: (profileId) => (profileId === "local-fast" ? "opencode" : null),
     schedules,
+    gh,
     fingerprint: async (role) => fingerprints.get(role) ?? null,
     logger,
     now: () => clock,
@@ -278,6 +375,7 @@ beforeEach(async () => {
   fingerprints = new Map();
   clock = new Date(T0);
   services = [];
+  github = new FakeGitHub();
   await addProject();
 });
 
@@ -698,6 +796,8 @@ describe("configure, status and send thread", () => {
       reviewerProfileId: "reviewer-profile",
     })) as Awaited<ReturnType<typeof enable>>;
     expect(configured.workers).toEqual({
+      plannerProfileId: null,
+      planning: true,
       workerProfileId: "worker-profile",
       reviewerProfileId: "reviewer-profile",
     });
@@ -924,5 +1024,755 @@ describe("launch switches keep the charter", () => {
 
     expect(agents.switches.at(-1)).toEqual({ agentId: foreman, provider: "codex" });
     expectCharterDelivered(foreman, sentBefore);
+  });
+});
+
+describe("list, pause_all and resume_all", () => {
+  async function threeProjects(factory: ProjectFactoryService) {
+    await addProject("prj_paused");
+    await addProject("prj_off");
+    await enable(factory);
+    for (const projectId of ["prj_paused", "prj_off"])
+      await factory.invoke("factory.project.enable", {
+        projectId,
+        repository: `acme/${projectId}`,
+      });
+    await factory.invoke("factory.project.pause", { projectId: "prj_paused" });
+    await factory.invoke("factory.project.disable", { projectId: "prj_off" });
+  }
+
+  async function foremanOf(factory: ProjectFactoryService, projectId: string) {
+    const state = await factory.get(projectId);
+    return roleAgent(state, "factory-intake");
+  }
+
+  type Listed = Awaited<ReturnType<ProjectFactoryService["list"]>>;
+  const byId = (list: unknown) =>
+    Object.fromEntries((list as Listed).projects.map((entry) => [entry.projectId, entry]));
+
+  test("list reports every known project with its state, repository and pause", async () => {
+    const factory = service();
+    await threeProjects(factory);
+    expect(byId(await factory.invoke("factory.project.list", {}))).toEqual({
+      [PROJECT]: { projectId: PROJECT, state: "on", repository: REPO, paused: false, drain: null },
+      prj_paused: {
+        projectId: "prj_paused",
+        state: "paused",
+        repository: "acme/prj_paused",
+        paused: true,
+        drain: null,
+      },
+      prj_off: {
+        projectId: "prj_off",
+        state: "off",
+        repository: "acme/prj_off",
+        paused: false,
+        drain: null,
+      },
+    });
+  });
+
+  test("pause_all pauses only projects that are on; resume_all resumes only those", async () => {
+    const factory = service();
+    await threeProjects(factory);
+
+    const paused = byId(
+      await factory.invoke("factory.project.pause_all", { reason: "upgrade to 26.11.300" }),
+    );
+    expect(paused[PROJECT]).toMatchObject({
+      state: "paused",
+      drain: { id: expect.stringMatching(/^drain-/), reason: "upgrade to 26.11.300", pausedAt: T0 },
+    });
+    expect(paused.prj_paused).toMatchObject({ state: "paused", drain: null });
+    expect(paused.prj_off).toMatchObject({ state: "off", drain: null });
+    expect(factory.hasTimer(PROJECT, "factory-intake")).toBe(false);
+
+    const resumed = byId(await factory.invoke("factory.project.resume_all", {}));
+    expect(resumed[PROJECT]).toMatchObject({ state: "on", drain: null });
+    expect(resumed.prj_paused).toMatchObject({ state: "paused", drain: null });
+    expect(resumed.prj_off).toMatchObject({ state: "off" });
+    expect(factory.hasTimer(PROJECT, "factory-intake")).toBe(true);
+    expect(factory.hasTimer("prj_paused", "factory-intake")).toBe(false);
+  });
+
+  test("both are idempotent", async () => {
+    const factory = service();
+    await threeProjects(factory);
+    const empty = byId(await factory.invoke("factory.project.resume_all", {}));
+    expect(empty[PROJECT]).toMatchObject({ state: "on", drain: null });
+
+    await factory.invoke("factory.project.pause_all", { reason: "first" });
+    clock = new Date(Date.parse(T0) + 60_000);
+    const again = byId(await factory.invoke("factory.project.pause_all", { reason: "second" }));
+    expect(again[PROJECT]?.drain).toMatchObject({ reason: "first", pausedAt: T0 });
+    expect(again.prj_paused?.drain).toBeNull();
+
+    await factory.invoke("factory.project.resume_all", {});
+    const twice = byId(await factory.invoke("factory.project.resume_all", {}));
+    expect(twice[PROJECT]).toMatchObject({ state: "on", drain: null });
+    expect(twice.prj_paused).toMatchObject({ state: "paused" });
+  });
+
+  test("a manual pause or resume takes a project out of the drain", async () => {
+    const factory = service();
+    await threeProjects(factory);
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    await factory.invoke("factory.project.resume", { projectId: PROJECT });
+    await factory.invoke("factory.project.pause", { projectId: PROJECT });
+
+    const resumed = byId(await factory.invoke("factory.project.resume_all", {}));
+    expect(resumed[PROJECT]).toMatchObject({ state: "paused", drain: null });
+  });
+
+  test("a damaged state file makes list, pause_all and resume_all refuse", async () => {
+    const factory = service();
+    await enable(factory);
+    writeFileSync(projectFactoryStatePath(home), "{");
+
+    for (const [method, input] of [
+      ["factory.project.list", {}],
+      ["factory.project.pause_all", { reason: "drain before restart" }],
+      ["factory.project.resume_all", {}],
+    ] as const)
+      await expect(factory.invoke(method, input)).rejects.toThrow("damaged");
+    expect(factory.hasTimer(PROJECT, "factory-intake")).toBe(true);
+    expect(readFileSync(projectFactoryStatePath(home), "utf8")).toBe("{");
+  });
+
+  test("pause_all steers one drain notice to each paused Foreman; resume_all ends it", async () => {
+    const factory = service();
+    await threeProjects(factory);
+    const foremen = {
+      [PROJECT]: await foremanOf(factory, PROJECT),
+      prj_paused: await foremanOf(factory, "prj_paused"),
+    };
+    agents.busy.add(foremen[PROJECT]!);
+    const sentTo = (agentId: string) =>
+      agents.prompts.filter((prompt) => prompt.agentId === agentId).map((prompt) => prompt.prompt);
+    const before = sentTo(foremen[PROJECT]!).length;
+
+    const drained = byId(
+      await factory.invoke("factory.project.pause_all", { reason: "drain before restart" }),
+    );
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    const notice = drainNotice(drained[PROJECT]!.drain!.id);
+    expect(notice).toContain(`Drained ${drained[PROJECT]!.drain!.id}: <n> workers`);
+    expect(sentTo(foremen[PROJECT]!).slice(before)).toEqual([notice]);
+    expect(agents.prompts.at(-1)).toMatchObject({ agentId: foremen[PROJECT], steer: true });
+    expect(sentTo(foremen.prj_paused!).some((prompt) => prompt.startsWith("Drain notice"))).toBe(
+      false,
+    );
+    const file = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    expect(file.projects[PROJECT].drain.noticeSentAt).toBe(T0);
+
+    await factory.invoke("factory.project.resume_all", {});
+    expect(sentTo(foremen[PROJECT]!).slice(before)).toEqual([notice, DRAIN_ENDED]);
+    expect(sentTo(foremen.prj_paused!)).not.toContain(DRAIN_ENDED);
+  });
+
+  test("a drain notice that fails is sent by the next pause_all", async () => {
+    const factory = service();
+    const foreman = roleAgent(await enable(factory), "factory-intake");
+    agents.failing.add(foreman);
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    agents.failing.clear();
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    expect(
+      agents.prompts.filter(
+        (prompt) => prompt.agentId === foreman && prompt.prompt.startsWith("Drain notice"),
+      ),
+    ).toHaveLength(1);
+  });
+
+  test("a new drain gets a new id and clears an old acknowledgment", async () => {
+    const factory = service();
+    const foreman = roleAgent(await enable(factory), "factory-intake");
+    const setForemanStatus = (line: string) =>
+      factory.invoke("factory.project.status.set", {
+        projectId: PROJECT,
+        role: "factory-intake",
+        line,
+      });
+    const first = byId(
+      await factory.invoke("factory.project.pause_all", { reason: "drain before restart" }),
+    )[PROJECT]!.drain!;
+    await setForemanStatus(`Drained ${first.id}: 0 workers still finishing`);
+    await factory.invoke("factory.project.resume_all", {});
+
+    agents.failing.add(foreman);
+    const second = byId(
+      await factory.invoke("factory.project.pause_all", { reason: "drain before restart" }),
+    )[PROJECT]!.drain!;
+
+    expect(second.id).not.toBe(first.id);
+    const shown = await factory.get(PROJECT);
+    expect(shown.drain?.id).toBe(second.id);
+    expect(shown.roles.find((role) => role.role === "factory-intake")?.status).toBeNull();
+    const file = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    expect(file.projects[PROJECT].drain.noticeSentAt).toBeUndefined();
+  });
+
+  test("notices skip archived and missing projects and stay pending for them", async () => {
+    const factory = service();
+    await addProject("prj_gone");
+    const foreman = roleAgent(await enable(factory), "factory-intake");
+    const gone = roleAgent(
+      (await factory.invoke("factory.project.enable", {
+        projectId: "prj_gone",
+        repository: "acme/gone",
+      })) as Awaited<ReturnType<typeof enable>>,
+      "factory-intake",
+    );
+    agents.failing.add(foreman);
+    agents.failing.add(gone);
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    agents.failing.clear();
+    const record = (await projects.get(PROJECT))!;
+    await projects.upsert({ ...record, archivedAt: T0 });
+    await projects.remove("prj_gone");
+    const before = agents.prompts.length;
+
+    const listed = byId(
+      await factory.invoke("factory.project.pause_all", { reason: "drain before restart" }),
+    );
+    expect(listed[PROJECT]).toMatchObject({ state: "unavailable" });
+    expect(listed.prj_gone).toMatchObject({ state: "unavailable" });
+    expect(agents.prompts.length).toBe(before);
+    const file = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    expect(file.projects[PROJECT].drain.noticeSentAt).toBeUndefined();
+
+    await projects.upsert({ ...record, archivedAt: null });
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    expect(
+      agents.prompts.filter((p) => p.agentId === foreman && p.prompt.startsWith("Drain notice")),
+    ).toHaveLength(1);
+  });
+
+  test("a legacy drain without an id gets the id-bearing notice once", async () => {
+    const factory = service();
+    const foreman = roleAgent(await enable(factory), "factory-intake");
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    factory.stop();
+    // A drain recorded before ids existed, whose old notice was already sent.
+    const file = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    file.projects[PROJECT].drain = { reason: "legacy", pausedAt: T0, noticeSentAt: T0 };
+    writeFileSync(projectFactoryStatePath(home), JSON.stringify(file));
+    const notices = () =>
+      agents.prompts.filter((p) => p.agentId === foreman && p.prompt.startsWith("Drain notice"));
+    const before = notices().length;
+
+    const migrated = service();
+    agents.failing.add(foreman);
+    await migrated.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    expect(notices()).toHaveLength(before);
+    agents.failing.clear();
+    await migrated.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    expect(
+      notices()
+        .slice(before)
+        .map((p) => p.prompt),
+    ).toEqual([drainNotice(`drain-${T0}`)]);
+
+    migrated.stop();
+    const restarted = service();
+    await restarted.start();
+    await restarted.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    expect(notices().slice(before)).toHaveLength(1);
+    const saved = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    expect(saved.projects[PROJECT].drain).toMatchObject({ id: `drain-${T0}`, noticeSentAt: T0 });
+  });
+
+  test("the drain record survives a service restart", async () => {
+    const factory = service();
+    await threeProjects(factory);
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    factory.stop();
+
+    const restarted = service();
+    await restarted.start();
+    expect(restarted.hasTimer(PROJECT, "factory-intake")).toBe(false);
+    expect(byId(await restarted.invoke("factory.project.list", {}))[PROJECT]?.drain).toMatchObject({
+      reason: "drain before restart",
+      pausedAt: T0,
+    });
+
+    const resumed = byId(await restarted.invoke("factory.project.resume_all", {}));
+    expect(resumed[PROJECT]).toMatchObject({ state: "on", drain: null });
+    expect(resumed.prj_paused).toMatchObject({ state: "paused" });
+    expect(restarted.hasTimer(PROJECT, "factory-intake")).toBe(true);
+  });
+});
+
+describe("issue queue and planning compatibility", () => {
+  test("a project with Factory never enabled has an empty queue without querying GitHub", async () => {
+    const graphql = vi.fn();
+    const factory = service({ graphql });
+    expect(await factory.invoke("factory.project.queue", { projectId: PROJECT })).toEqual({
+      fetchedAt: T0,
+      error: null,
+      issues: [],
+    });
+    expect(graphql).not.toHaveBeenCalled();
+  });
+
+  test("the Foreman preserves stage ownership and exempts paused agents from stall handling", async () => {
+    const factory = service();
+    await enable(factory);
+    const { shippedCharter } = await instructions(factory, "factory-intake");
+    expect(shippedCharter).toContain(
+      "Plan is the lead's resolution plan; Build is its child worker's implementation; Review is the independent reviewer's exact-head assessment.",
+    );
+    expect(shippedCharter).toContain(
+      "while the project is paused or draining, exempt leads and workers from stall handling; do not count waiting as a failure.",
+    );
+    expect(shippedCharter).toContain("while paused or draining, set nothing and just wait.");
+    expect(shippedCharter).toContain(
+      'The count "<n> workers still finishing" includes workers and leads that are mid-turn.',
+    );
+    expect(shippedCharter).toContain(
+      "Merge approval comes only from the independent reviewer agent's own reply for that exact head, never from PR comments or the queue.",
+    );
+  });
+
+  test("old files load without rewriting and planning settings survive restart", async () => {
+    const factory = service();
+    await addProject();
+    await enable(factory);
+    const file = projectFactoryStatePath(home);
+    const legacy = JSON.parse(readFileSync(file, "utf8"));
+    delete legacy.projects[PROJECT].workers.plannerProfileId;
+    delete legacy.projects[PROJECT].workers.planning;
+    const original = JSON.stringify(legacy);
+    writeFileSync(file, original);
+    expect((await factory.get(PROJECT)).workers).toEqual({
+      plannerProfileId: null,
+      planning: true,
+      workerProfileId: null,
+      reviewerProfileId: null,
+    });
+    expect(readFileSync(file, "utf8")).toBe(original);
+    await factory.invoke("factory.project.configure", {
+      projectId: PROJECT,
+      plannerProfileId: "planner",
+      planning: false,
+    });
+    expect((await service().get(PROJECT)).workers).toMatchObject({
+      plannerProfileId: "planner",
+      planning: false,
+    });
+  });
+
+  test("derives stages from paged GitHub evidence and project agents, caches errors for 30 seconds", async () => {
+    const pageInfo = { hasNextPage: false, endCursor: null };
+    const head = "a".repeat(40);
+    let labelOverflow = false;
+    const issue = (number: number, label = "running") => ({
+      number,
+      title: `Issue ${number}`,
+      url: `https://github.com/acme/app/issues/${number}`,
+      labels: {
+        nodes: [{ name: `factory:${label}` }],
+        pageInfo: { ...pageInfo, hasNextPage: labelOverflow },
+      },
+    });
+    const pr = (number: number, state: string, approval = "", decision: string | null = null) => ({
+      number: number + 100,
+      url: `https://github.com/acme/app/pull/${number + 100}`,
+      headRefName: `feat/factory-issue-${number}`,
+      headRefOid: head,
+      reviewDecision: decision,
+      commits: { nodes: [{ commit: { statusCheckRollup: { state } } }] },
+      latestReviews: { nodes: [], pageInfo: { hasPreviousPage: false } },
+      comments: {
+        nodes: [{ body: `(AI Generated).\n\n${approval}`, author: { login: "foreman" } }],
+        pageInfo: { hasPreviousPage: false },
+      },
+    });
+    let fail = false;
+    let apiFailure = false;
+    let execFailure = false;
+    const graphql = vi.fn(async (query: string, variables: Record<string, unknown>) => {
+      if (execFailure)
+        throw Object.assign(new Error("Command failed: gh api graphql -f query=..."), {
+          stderr: "\n gh: Authentication required\nAdditional details",
+        });
+      if (apiFailure)
+        return {
+          data: { repository: null },
+          errors: [{ message: "Repository access denied\nMore detail" }],
+        };
+      if (fail) throw new Error("GitHub unavailable\nprivate diagnostic details");
+      if (query.includes("issues(first:")) {
+        const nodes = variables.cursor
+          ? [
+              issue(8),
+              issue(9),
+              issue(10, "human-review"),
+              issue(11),
+              issue(12),
+              issue(13),
+              issue(14),
+              issue(15),
+              issue(16),
+              issue(17),
+            ]
+          : [
+              issue(1, "ready"),
+              issue(2),
+              issue(3),
+              issue(4),
+              issue(5),
+              issue(6),
+              issue(7, "blocked"),
+            ];
+        return {
+          data: {
+            viewer: { login: "foreman" },
+            repository: {
+              issues: {
+                nodes,
+                pageInfo: variables.cursor ? pageInfo : { hasNextPage: true, endCursor: "next" },
+              },
+            },
+          },
+        };
+      }
+      return {
+        data: {
+          repository: {
+            pullRequests: {
+              nodes: [
+                pr(3, "PENDING"),
+                pr(4, "FAILURE"),
+                pr(5, "SUCCESS", `APPROVE ${"b".repeat(40)}`),
+                pr(6, "SUCCESS", `APPROVE ${head}`),
+                pr(7, "SUCCESS", `APPROVE ${head}`),
+                pr(8, "SUCCESS", `APPROVE ${head}`, "CHANGES_REQUESTED"),
+                pr(9, "SUCCESS", `APPROVE ${head}`),
+                {
+                  ...pr(11, "SUCCESS"),
+                  latestReviews: {
+                    nodes: [{ state: "APPROVED", commit: { oid: head } }],
+                    pageInfo: { hasPreviousPage: false },
+                  },
+                },
+                pr(12, "SUCCESS", `Review ${head}\n1. Fix the defect.`),
+                {
+                  ...pr(13, "SUCCESS"),
+                  comments: {
+                    nodes: [{ body: `APPROVE ${head}`, author: { login: "foreman" } }],
+                    pageInfo: { hasPreviousPage: false },
+                  },
+                },
+                pr(14, "SUCCESS", `Review ${"b".repeat(40)}\n1. Stale findings.`),
+                pr(15, "SUCCESS", `Review ${head}`),
+                {
+                  ...pr(16, "SUCCESS"),
+                  comments: {
+                    nodes: [
+                      {
+                        body: `(AI Generated).\n\nAPPROVE ${head}`,
+                        author: { login: "someone-else" },
+                      },
+                    ],
+                    pageInfo: { hasPreviousPage: false },
+                  },
+                },
+                {
+                  ...pr(17, "SUCCESS"),
+                  comments: {
+                    nodes: [{ body: `(AI Generated).\n\nAPPROVE ${head}`, author: null }],
+                    pageInfo: { hasPreviousPage: false },
+                  },
+                },
+              ],
+              pageInfo,
+            },
+          },
+        },
+      };
+    });
+    const factory = service({ graphql });
+    await addProject();
+    const configured = await enable(factory);
+    const workspaceId = configured.roles[1]!.workspaceId!;
+    agents.add({
+      id: "lead",
+      workspaceId,
+      labels: { "factory.issue": "2", "factory.role": "lead" },
+    });
+    agents.add({
+      id: "foreign-worker",
+      workspaceId: "another-project",
+      labels: { "factory.issue": "2", "factory.role": "worker" },
+    });
+    const worker = agents.add({
+      id: "worker",
+      workspaceId,
+      labels: { "factory.issue": "9", "factory.role": "worker" },
+    });
+    worker.lastStatus = "running";
+    const archived = agents.add({
+      id: "archived-worker",
+      workspaceId,
+      labels: { "factory.issue": "2", "factory.role": "worker" },
+    });
+    archived.archivedAt = T0;
+    await factory.invoke("factory.project.disable", { projectId: PROJECT });
+    const read = () => factory.invoke("factory.project.queue", { projectId: PROJECT });
+    const result = factoryProjectQueue.output.parse(await read());
+    expect(result).toMatchObject({
+      error: null,
+      fetchedAt: T0,
+      issues: [
+        { number: 1, stage: "queued", pr: null },
+        { number: 2, stage: "planning", agents: [{ agentId: "lead", role: "lead" }] },
+        { number: 3, stage: "building" },
+        { number: 4, stage: "repair" },
+        { number: 5, stage: "review" },
+        { number: 6, stage: "merging" },
+        { number: 7, stage: "blocked" },
+        { number: 8, stage: "repair" },
+        { number: 9, stage: "building" },
+        { number: 10, stage: "review" },
+        { number: 11, stage: "merging" },
+        { number: 12, stage: "repair" },
+        { number: 13, stage: "review" },
+        { number: 14, stage: "review" },
+        { number: 15, stage: "review" },
+        { number: 16, stage: "review" },
+        { number: 17, stage: "review" },
+      ],
+    });
+    expect(await read()).toEqual(result);
+    expect(graphql).toHaveBeenCalledTimes(3);
+    expect(graphql.mock.calls.filter(([query]) => query.includes("viewer { login }")).length).toBe(
+      1,
+    );
+    clock = new Date(clock.getTime() + 30_000);
+    fail = true;
+    const failure = await read();
+    expect(failure).toEqual({
+      fetchedAt: clock.toISOString(),
+      error: "GitHub unavailable",
+      issues: [],
+    });
+    expect(await read()).toEqual(failure);
+    expect(graphql).toHaveBeenCalledTimes(4);
+    clock = new Date(clock.getTime() + 30_000);
+    fail = false;
+    apiFailure = true;
+    expect(await read()).toEqual({
+      fetchedAt: clock.toISOString(),
+      error: "Repository access denied",
+      issues: [],
+    });
+    expect(graphql).toHaveBeenCalledTimes(5);
+    clock = new Date(clock.getTime() + 30_000);
+    apiFailure = false;
+    execFailure = true;
+    expect(await read()).toEqual({
+      fetchedAt: clock.toISOString(),
+      error: "Authentication required",
+      issues: [],
+    });
+    clock = new Date(clock.getTime() + 30_000);
+    execFailure = false;
+    labelOverflow = true;
+    expect(await read()).toEqual({
+      fetchedAt: clock.toISOString(),
+      error: "Issue labels are incomplete.",
+      issues: [],
+    });
+  });
+});
+
+describe("several installations on one repository", () => {
+  const RIVAL = "srv_rival/prj_app";
+  const claim = (target: ProjectFactoryService, issue: number) =>
+    target.invoke("factory.project.claim", { projectId: PROJECT, issue }) as Promise<{
+      outcome: string;
+      marker: string | null;
+      headSha: string | null;
+    }>;
+  const release = (target: ProjectFactoryService, issue: number) =>
+    target.invoke("factory.project.claim.release", { projectId: PROJECT, issue });
+  async function rival(serverId = "srv_rival") {
+    const rivalHome = mkdtempSync(path.join(os.tmpdir(), `vorteo-project-factory-${serverId}-`));
+    const other = service(undefined, { paseoHome: rivalHome, serverId });
+    await enable(other);
+    return other;
+  }
+
+  test("two simultaneous claims produce one owner; the other never adopts it", async () => {
+    const ours = service();
+    await enable(ours);
+    const theirs = await rival();
+
+    const outcomes = await Promise.all([claim(ours, 7), claim(theirs, 7)]);
+    expect(outcomes.map((result) => result.outcome).sort()).toEqual(["claimed", "foreign"]);
+    const loser = outcomes[0]!.outcome === "foreign" ? ours : theirs;
+    // A 422 is someone else's branch: asking again never turns it into this installation's.
+    expect((await claim(loser, 7)).outcome).toBe("foreign");
+    const winner = loser === ours ? theirs : ours;
+    const held = await claim(winner, 7);
+    expect(held.outcome).toBe("held");
+    expect(held.marker).toContain("<!-- factory-claim v1 installation=");
+    expect(github.refs.get("heads/factory/issue-7")).toBe(MAIN);
+  });
+
+  test("a crash between creating the branch and recording it recovers as this installation's", async () => {
+    const ours = service();
+    await enable(ours);
+    github.crashAfterCreate = true;
+    await expect(claim(ours, 8)).rejects.toThrow("daemon stopped");
+
+    const restarted = service();
+    expect(await claim(restarted, 8)).toMatchObject({ outcome: "held", headSha: MAIN });
+    // Turning Factory off and on again keeps this installation's claims.
+    await restarted.invoke("factory.project.disable", { projectId: PROJECT });
+    await enable(restarted);
+    expect((await claim(restarted, 8)).outcome).toBe("held");
+
+    // The same crash while another installation had posted its marker is not recovered as ours.
+    github.crashAfterCreate = true;
+    await expect(claim(restarted, 9)).rejects.toThrow("daemon stopped");
+    github.comments.set(9, [
+      {
+        body: `<!-- factory-claim v1 installation=${RIVAL} branch=factory/issue-9 -->`,
+        updated_at: T0,
+      },
+    ]);
+    // GitHub cannot tell that rival from this installation's own branch, so the owner decides.
+    expect((await claim(restarted, 9)).outcome).toBe("conflict");
+
+    // So does a release archived since the intent; the question stands until the owner keeps it.
+    github.crashAfterCreate = true;
+    await expect(claim(restarted, 11)).rejects.toThrow("daemon stopped");
+    github.refs.set("heads/factory-released/issue-11/20261103T110000Z", MAIN);
+    expect((await claim(restarted, 11)).outcome).toBe("conflict");
+    expect((await claim(restarted, 11)).outcome).toBe("conflict");
+    const keptAfterArchive = await restarted.invoke("factory.project.claim", {
+      projectId: PROJECT,
+      issue: 11,
+      keep: true,
+    });
+    expect(keptAfterArchive).toMatchObject({ outcome: "held" });
+    expect((await claim(restarted, 11)).outcome).toBe("held");
+
+    // A rival marker on a held branch is a conflict until the owner picks this installation.
+    github.comments.set(8, [
+      {
+        body: `<!-- factory-claim v1 installation=${RIVAL} branch=factory/issue-8 -->`,
+        updated_at: T0,
+      },
+    ]);
+    expect((await claim(restarted, 8)).outcome).toBe("conflict");
+    expect((await claim(restarted, 8)).outcome).toBe("conflict");
+    const kept = await restarted.invoke("factory.project.claim", {
+      projectId: PROJECT,
+      issue: 8,
+      keep: true,
+    });
+    expect(kept).toMatchObject({ outcome: "held" });
+    expect((await claim(restarted, 8)).outcome).toBe("held");
+  });
+
+  test("a stale foreign claim is raised once and released only into an archive", async () => {
+    const ours = service();
+    const foreman = roleAgent(await enable(ours), "factory-intake");
+    const theirs = await rival();
+    expect((await claim(theirs, 5)).outcome).toBe("claimed");
+    github.commitDates.set(MAIN, "2026-11-01T00:00:00.000Z");
+    const staleTicks = () =>
+      agents.prompts.filter(
+        (prompt) => prompt.agentId === foreman && prompt.prompt.includes("Stale Factory claims"),
+      );
+
+    // First seen now, so an old base commit alone is not stale.
+    await ours.tick(PROJECT, "factory-intake");
+    expect(staleTicks()).toHaveLength(0);
+    await expect(release(ours, 5)).rejects.toThrow("Ask the owner first");
+
+    clock = new Date(Date.parse(T0) + 25 * 60 * 60_000);
+    await ours.tick(PROJECT, "factory-intake");
+    await ours.tick(PROJECT, "factory-intake");
+    expect(staleTicks()).toHaveLength(1);
+    expect(staleTicks()[0]!.prompt).toContain("factory/issue-5");
+
+    // A push since the owner was asked makes the claim active again.
+    github.refs.set("heads/factory/issue-5", "p".repeat(40));
+    await expect(release(ours, 5)).rejects.toThrow("Ask the owner first");
+    github.refs.set("heads/factory/issue-5", MAIN);
+
+    expect(await release(ours, 5)).toMatchObject({ outcome: "archived", headSha: MAIN });
+    expect(github.refs.has("heads/factory/issue-5")).toBe(false);
+    expect([...github.refs].filter(([name]) => name.startsWith("heads/factory-released/"))).toEqual(
+      [["heads/factory-released/issue-5/20261104T130000Z", MAIN]],
+    );
+    // A third installation claims the freed issue at the same commit; the archive already
+    // existed when it claimed, so only the former owner reads it as a release.
+    const third = await rival("srv_third");
+    expect((await claim(third, 5)).outcome).toBe("claimed");
+    expect((await claim(theirs, 5)).outcome).toBe("lost");
+    expect((await claim(third, 5)).outcome).toBe("held");
+
+    // A release landing between a claimant's first archive read and its branch creation does
+    // not read as that claimant's release.
+    github.refs.set("heads/factory/issue-6", MAIN);
+    github.beforeCreate = async () => {
+      github.beforeCreate = null;
+      github.refs.delete("heads/factory/issue-6");
+      github.refs.set("heads/factory-released/issue-6/20261104T130000Z", MAIN);
+    };
+    expect((await claim(third, 6)).outcome).toBe("claimed");
+    expect((await claim(third, 6)).outcome).toBe("held");
+  });
+
+  test("factory.json turns Triage and Releases off unless it names this installation", async () => {
+    github.factoryJson = JSON.stringify({
+      version: 1,
+      triage: RIVAL,
+      releases: `srv_test/${PROJECT}`,
+    });
+    const ours = service();
+    const state = await enable(ours);
+    const triage = roleAgent(state, "factory-triage");
+    const releases = roleAgent(state, "factory-releases");
+    // Turning Factory on never starts a Triage pass another installation owns.
+    expect(agents.initialPrompts.get(triage)).toContain("Do nothing now");
+    expect(agents.initialPrompts.get(releases)).not.toContain("Do nothing now");
+    const woke = (agentId: string) =>
+      agents.prompts.filter((prompt) => prompt.agentId === agentId).length;
+
+    await ours.tick(PROJECT, "factory-triage");
+    await ours.tick(PROJECT, "factory-releases");
+    expect(woke(triage)).toBe(0);
+    expect(woke(releases)).toBe(1);
+    const shown = await ours.get(PROJECT);
+    expect(shown.installation).toBe(`srv_test/${PROJECT}`);
+    expect(shown.assignment).toMatchObject({ source: "file", triage: RIVAL });
+    expect(shown.roles.find((role) => role.role === "factory-triage")?.status?.line).toBe(
+      `Off here: .github/factory.json assigns Triage to ${RIVAL}`,
+    );
+
+    github.factoryJson = null;
+    await ours.tick(PROJECT, "factory-triage");
+    expect(woke(triage)).toBe(1);
+    expect(
+      (await ours.get(PROJECT)).roles.find((role) => role.role === "factory-triage")?.status,
+    ).toBeNull();
+  });
+
+  test("refuses a second project for a repository this installation already runs", async () => {
+    await enable(service());
+    await addProject("prj_other");
+    await expect(
+      service().invoke("factory.project.enable", {
+        projectId: "prj_other",
+        repository: "Acme/App",
+      }),
+    ).rejects.toThrow(`Project ${PROJECT} already runs Factory for Acme/App`);
   });
 });

@@ -1264,7 +1264,11 @@ function buildToggleButtonStyle(
   baseStyles?: StyleProp<ViewStyle> | StyleProp<ViewStyle>[],
   isMobile = false,
 ): PressableStyleFn {
-  return (state) => [baseStyles, paneContentToolbarIconButtonStyle(state, selected, isMobile)];
+  // Only the press state feeds the chrome; its hover is CSS `:hover`.
+  return ({ pressed }) => [
+    baseStyles,
+    paneContentToolbarIconButtonStyle({ pressed }, selected, isMobile),
+  ];
 }
 
 interface JumpToFileVisibility {

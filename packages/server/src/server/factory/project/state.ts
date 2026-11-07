@@ -48,17 +48,90 @@ const RoleStateSchema = z.object({
 });
 export type RoleState = z.infer<typeof RoleStateSchema>;
 
+/**
+ * A claim this installation made. "pending" is written before the branch is created, so a
+ * crash between creation and the state write is recovered from this record. "conflict" means
+ * another installation's marker names the same branch; it counts as not ours until the owner
+ * decides.
+ */
+const ClaimStateSchema = z.object({
+  branch: z.string(),
+  status: z.enum(["pending", "held", "conflict"]),
+  attemptId: z.string(),
+  /** Default-branch commit the claim branch was created at. */
+  baseSha: z.string(),
+  startedAt: z.string(),
+  claimedAt: z.string().optional(),
+  /** Archive refs for this issue that existed at claim time; a new one means it was released. */
+  archivesAtClaim: z.array(z.string()),
+  /** Installations whose markers on this branch the owner overruled in a conflict. */
+  overruled: z.array(z.string()).optional(),
+});
+export type ClaimState = z.infer<typeof ClaimStateSchema>;
+
+/** A claim branch this installation did not create, as last observed. */
+const ForeignClaimSchema = z.object({
+  headSha: z.string(),
+  /** When this installation first saw this head; a lower bound on its age. */
+  seenAt: z.string(),
+  /** When the Foreman was told this head is stale; once per head. */
+  notifiedAt: z.string().optional(),
+});
+export type ForeignClaimState = z.infer<typeof ForeignClaimSchema>;
+
+const AssignmentStateSchema = z.object({
+  source: z.enum(["none", "file", "invalid", "unreadable"]),
+  triage: z.string().nullable(),
+  releases: z.string().nullable(),
+  detail: z.string().nullable(),
+  readAt: z.string(),
+});
+export type AssignmentState = z.infer<typeof AssignmentStateSchema>;
+
 const ProjectStateSchema = z.object({
   repository: z.string(),
   enabled: z.boolean(),
   paused: z.boolean(),
-  workers: z.object({ workerProfileId: nullableId, reviewerProfileId: nullableId }),
+  workers: z.object({
+    plannerProfileId: nullableId.default(null),
+    planning: z.boolean().default(true),
+    workerProfileId: nullableId,
+    reviewerProfileId: nullableId,
+  }),
   roles: z.partialRecord(ProjectFactoryRoleIdSchema, RoleStateSchema),
   /**
    * The Optimizer review heartbeat Factory owns pausing. Recorded before the pause and kept
    * until a resume succeeds, so startup can reconcile either half after a crash or failure.
    */
   pausedOptimizerScheduleId: z.string().optional(),
+  /** Claims this installation made, keyed by issue number. */
+  claims: z.record(z.string(), ClaimStateSchema).optional(),
+  /** Claim branches other installations hold, keyed by branch name. */
+  foreignClaims: z.record(z.string(), ForeignClaimSchema).optional(),
+  /** The last `.github/factory.json` read. */
+  assignment: AssignmentStateSchema.optional(),
+  /**
+   * Set when pause_all paused this project. resume_all resumes only these, and any manual
+   * pause, resume or turn off clears it, so an operator's own pause is never undone.
+   */
+  drain: z
+    .object({
+      /** New for every drain. A drain recorded before ids existed takes one from its time. */
+      id: z.string().min(1).optional(),
+      reason: z.string(),
+      pausedAt: z.string(),
+      /** When the Foreman's drain notice was queued; unset until a send succeeds. */
+      noticeSentAt: z.string().optional(),
+    })
+    // A legacy drain's notice predates ids, so its Foreman could never acknowledge it by id.
+    // Deriving the id also forgets that notice; the next pause_all sends one with the id, and
+    // the next write persists both.
+    .transform(({ id, noticeSentAt, ...drain }) =>
+      id
+        ? { ...drain, id, ...(noticeSentAt ? { noticeSentAt } : {}) }
+        : { ...drain, id: `drain-${drain.pausedAt}` },
+    )
+    .optional(),
 });
 export type ProjectState = z.infer<typeof ProjectStateSchema>;
 

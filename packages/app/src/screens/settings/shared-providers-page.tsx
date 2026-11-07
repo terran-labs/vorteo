@@ -12,6 +12,7 @@ import { useProviderDetection } from "./use-provider-detection";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import { useMutation } from "@tanstack/react-query";
 import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
 import type { InstallationEnvironment } from "@getpaseo/protocol/execution-installation";
@@ -99,9 +100,10 @@ function ProviderFamilyCard({
   );
   const chevronStyle = useMemo(() => [expanded && styles.chevronExpanded], [expanded]);
   const titleStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.title,
-      (hovered || pressed) && styles.titleHovered,
+      styles.titleHover,
+      pressed && styles.titleHovered,
     ],
     [],
   );
@@ -505,6 +507,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[2],
   },
   titleHovered: { backgroundColor: theme.colors.surface2 },
+  titleHover: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   content: { flex: 1, minWidth: 120 },
   dragHandle: {
     minWidth: 44,

@@ -1,3 +1,4 @@
+import { cliCommand } from "@getpaseo/server/vorteo-cli";
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -158,7 +159,7 @@ function isMissingFile(error: unknown): boolean {
 function invalidCredentialFile(): HubCommandError {
   return new HubCommandError(
     "HUB_CREDENTIALS_INVALID",
-    "Stored Hub login is invalid. Run `paseo hub login <origin>` to replace it.",
+    `Stored Hub login is invalid. Run \`${cliCommand()} hub login <origin>\` to replace it.`,
   );
 }
 

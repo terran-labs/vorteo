@@ -84,6 +84,14 @@ import type { PaneHost } from "@/panels/panel-manifest";
 import type { WorkspaceTabLaunchPurpose } from "@/workspace-tabs/launcher";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
 import {
+  CAN_HOVER,
+  groupHoverStyle,
+  groupHoverSurface,
+  hoverGroup,
+  hoverStyle,
+  rowSurface,
+} from "@/styles/hover";
+import {
   resolveWorkspaceTabChipBackdrop,
   type WorkspaceTabRailSurface,
 } from "@/screens/workspace/workspace-tab-chip-backdrop";
@@ -138,6 +146,9 @@ const AGENT_TOOLTIP_TITLE_MAX_LENGTH = 80;
 
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const ThemedX = withUnistyles(X);
+
+/** CSS hover group on each tab's frame: the chip and its sibling close button. */
+const TAB_HOVER_GROUP = "workspace-tab";
 const ThemedCopy = withUnistyles(Copy);
 
 const ThemedRotateCw = withUnistyles(RotateCw);
@@ -474,7 +485,8 @@ function tabKeyExtractor(tab: WorkspaceDesktopTabRowItem) {
 export interface WorkspaceDesktopTabRowItem {
   tab: WorkspaceTabDescriptor;
   isActive: boolean;
-  isCloseHovered: boolean;
+  /** @deprecated Ignored: tab hover, including over its close button, is CSS. */
+  isCloseHovered?: boolean;
   isClosingTab: boolean;
 }
 
@@ -535,7 +547,8 @@ export interface WorkspaceDesktopTabsRowProps {
   tabs: WorkspaceDesktopTabRowItem[];
   normalizedServerId: string;
   normalizedWorkspaceId: string;
-  setHoveredCloseTabKey: Dispatch<SetStateAction<string | null>>;
+  /** @deprecated Ignored: tab hover, including over its close button, is CSS. */
+  setHoveredCloseTabKey?: Dispatch<SetStateAction<string | null>>;
   onNavigateTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => Promise<void> | void;
   onCopyResumeCommand: (agentId: string) => Promise<void> | void;
@@ -673,6 +686,7 @@ function TabHandleContent({
   presentation,
   workspaceName,
   isHighlighted,
+  hoverLift = false,
   showLabel,
   backdrop,
   tabLabelSkeletonStyle,
@@ -682,6 +696,8 @@ function TabHandleContent({
   presentation: WorkspaceTabPresentation;
   workspaceName?: string | null;
   isHighlighted: boolean;
+  /** The icon follows the tab's CSS hover through `currentColor` instead of `isHighlighted`. */
+  hoverLift?: boolean;
   showLabel: boolean;
   backdrop: SurfaceBackdrop;
   tabLabelSkeletonStyle: React.ComponentProps<typeof View>["style"];
@@ -696,8 +712,13 @@ function TabHandleContent({
 
   return (
     <View style={styles.tabHandle} dataSet={tabHandleDataSet}>
-      <View style={styles.tabIcon}>
-        <WorkspaceTabIcon presentation={presentation} active={isHighlighted} backdrop={backdrop} />
+      <View style={[styles.tabIcon, hoverLift && styles.tabIconHoverLift]}>
+        <WorkspaceTabIcon
+          presentation={presentation}
+          active={isHighlighted}
+          backdrop={backdrop}
+          iconColor={hoverLift ? "currentColor" : undefined}
+        />
       </View>
       {showLabel && presentation.titleState === "loading" ? (
         <View style={tabLabelSkeletonStyle} />
@@ -747,13 +768,11 @@ function TabChip({
   showLabel,
   showCloseButton,
   rail,
-  isCloseHovered,
   isClosingTab,
   presentation,
   tooltipLabel,
   accessibilityLabel,
   resolvedTab,
-  setHoveredCloseTabKey,
   onNavigateTab,
   onCloseTab,
   dragHandleProps,
@@ -769,13 +788,11 @@ function TabChip({
   showCloseButton: boolean;
   /** The surface the row paints, so chip fills and their knockouts match the host. */
   rail: WorkspaceTabRailSurface;
-  isCloseHovered: boolean;
   isClosingTab: boolean;
   presentation: WorkspaceTabPresentation;
   tooltipLabel: string;
   accessibilityLabel: string;
   resolvedTab: WorkspaceDesktopTabActions;
-  setHoveredCloseTabKey: Dispatch<SetStateAction<string | null>>;
   onNavigateTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => Promise<void> | void;
   dragHandleProps: DraggableListDragHandleProps | undefined;
@@ -791,18 +808,26 @@ function TabChip({
   );
   const isCompact = useIsCompactFormFactor();
   const workspaceName = useSelectedWorkspaceName(isActive);
-  const [hovered, setHovered] = useState(false);
   // Only the focused pane's selected tab receives the floating surface treatment.
   const isActiveFocused = isActive && isFocused;
-  const isHovered = hovered || isCloseHovered;
-  const isHighlighted = isActiveFocused || isHovered;
-
+  // Hover is browser-owned CSS on the tab's frame group, so it cannot stick when the tab strip
+  // reflows under a resting cursor. The frame holds the chip and its close button, so hovering the
+  // close button keeps the chip lit without lifting hover state into the screen.
+  const hoverLift = CAN_HOVER && !isActiveFocused;
   const chipBackdrop: SurfaceBackdrop = resolveWorkspaceTabChipBackdrop({
     rail,
     isActiveFocused,
-    isFilled: isHovered,
+    isFilled: false,
   });
-  const showCloseControl = showCloseButton && (isHovered || isNative || isCompact || isClosingTab);
+  // Native, compact and closing tabs always show the close control; desktop reveals it on hover.
+  const closeAlwaysShown = isNative || isCompact || isClosingTab;
+  const closeRevealedOnHover = !closeAlwaysShown && CAN_HOVER;
+  // The scrim paints the chip's fill under the close control: the hover fill when hover reveals it.
+  const scrimBackdrop: SurfaceBackdrop = resolveWorkspaceTabChipBackdrop({
+    rail,
+    isActiveFocused,
+    isFilled: closeRevealedOnHover,
+  });
   const closeButtonDragBlockers = isWeb
     ? ({
         onPointerDown: (event: { stopPropagation?: () => void }) => {
@@ -819,7 +844,7 @@ function TabChip({
       styles.tab,
       tabletTabStyle(workspaceName),
       isActiveFocused && styles.tabActive,
-      !isActiveFocused && isHovered && styles.tabHovered,
+      chipSurfaceStyle(rail, isActiveFocused),
       isWeb && isDragging && ({ cursor: "grabbing" } as object),
       {
         minWidth: resolvedTabWidth,
@@ -827,16 +852,8 @@ function TabChip({
         maxWidth: resolvedTabWidth,
       },
     ],
-    [isActiveFocused, isDragging, isHovered, resolvedTabWidth, workspaceName],
+    [isActiveFocused, isDragging, rail, resolvedTabWidth, workspaceName],
   );
-
-  const handleTabPointerEnter = useCallback(() => {
-    setHovered(true);
-  }, []);
-
-  const handleTabPointerLeave = useCallback(() => {
-    setHovered(false);
-  }, []);
 
   const handleNavigateTab = useCallback(() => {
     onNavigateTab(tab.tabId);
@@ -845,14 +862,6 @@ function TabChip({
   const handleCloseButtonPressIn = useCallback((event: { stopPropagation?: () => void }) => {
     event.stopPropagation?.();
   }, []);
-
-  const handleCloseButtonHoverIn = useCallback(() => {
-    setHoveredCloseTabKey(tab.key);
-  }, [setHoveredCloseTabKey, tab.key]);
-
-  const handleCloseButtonHoverOut = useCallback(() => {
-    setHoveredCloseTabKey((current) => (current === tab.key ? null : current));
-  }, [setHoveredCloseTabKey, tab.key]);
 
   const handleCloseButtonPress = useCallback(
     (event: { stopPropagation?: () => void }) => {
@@ -867,17 +876,16 @@ function TabChip({
     tab.target.kind === "new_tab" ? tab.tabId : buildDeterministicWorkspaceTabId(tab.target);
   const tabLabelSkeletonStyle = styles.tabLabelSkeleton;
   const tabLabelStyle = useMemo(
-    () => [styles.tabLabel, isHighlighted && styles.tabLabelActive],
-    [isHighlighted],
+    () => [
+      styles.tabLabel,
+      isActiveFocused && styles.tabLabelActive,
+      hoverLift && styles.tabLabelHoverLift,
+    ],
+    [isActiveFocused, hoverLift],
   );
 
   return (
-    <View
-      ref={middleClickRef}
-      style={styles.tabHoverFrame}
-      onPointerEnter={handleTabPointerEnter}
-      onPointerLeave={handleTabPointerLeave}
-    >
+    <View ref={middleClickRef} style={styles.tabHoverFrame}>
       <ContextMenu key={tab.key}>
         <Tooltip delayDuration={400} enabledOnDesktop enabledOnMobile={false}>
           <TooltipTrigger asChild triggerRefProp="triggerRef">
@@ -896,7 +904,8 @@ function TabChip({
               <TabHandleContent
                 workspaceName={workspaceName}
                 presentation={presentation}
-                isHighlighted={isHighlighted}
+                isHighlighted={isActiveFocused}
+                hoverLift={hoverLift}
                 showLabel={showLabel}
                 backdrop={chipBackdrop}
                 tabLabelSkeletonStyle={tabLabelSkeletonStyle}
@@ -922,13 +931,10 @@ function TabChip({
 
         {showCloseButton ? (
           <View
-            pointerEvents={showCloseControl ? "box-none" : "none"}
-            style={[
-              styles.tabTrailingOverlay,
-              showCloseControl ? styles.tabTrailingOverlayShown : styles.tabTrailingOverlayHidden,
-            ]}
+            pointerEvents={closeAlwaysShown || closeRevealedOnHover ? "box-none" : "none"}
+            style={trailingOverlayStyle(closeAlwaysShown, closeRevealedOnHover)}
           >
-            <TrailingActionScrim backdrop={chipBackdrop} />
+            <TrailingActionScrim backdrop={scrimBackdrop} />
             <Pressable
               {...(closeButtonDragBlockers as object | undefined)}
               testID={closeButtonTestId}
@@ -936,13 +942,13 @@ function TabChip({
               accessibilityLabel={t("workspace.tabs.menu.close")}
               disabled={isClosingTab}
               onPressIn={handleCloseButtonPressIn}
-              onHoverIn={handleCloseButtonHoverIn}
-              onHoverOut={handleCloseButtonHoverOut}
               onPress={handleCloseButtonPress}
-              style={styles.tabCloseButton}
+              style={closeButtonStyle(closeRevealedOnHover)}
             >
-              {({ hovered: closeHovered, pressed }) => {
-                const highlighted = closeHovered || pressed;
+              {({ pressed }) => {
+                // On web the glyph draws in currentColor, lifted by the button's CSS hover.
+                if (CAN_HOVER && !isClosingTab) return <X size={12} color="currentColor" />;
+                const highlighted = pressed;
                 if (isClosingTab) {
                   return (
                     <ThemedLoadingSpinner
@@ -1057,7 +1063,6 @@ function ResolvedWorkspaceDesktopTabsRow({
   tabs,
   normalizedServerId,
   normalizedWorkspaceId,
-  setHoveredCloseTabKey,
   onNavigateTab,
   onCloseTab,
   onCopyResumeCommand,
@@ -1347,7 +1352,6 @@ function ResolvedWorkspaceDesktopTabsRow({
           showLabel={showLabel}
           showCloseButton={shouldShowCloseButton}
           rail={rail}
-          setHoveredCloseTabKey={setHoveredCloseTabKey}
           onNavigateTab={onNavigateTab}
           onCloseTab={onCloseTab}
           labels={tabMenuLabels}
@@ -1376,7 +1380,6 @@ function ResolvedWorkspaceDesktopTabsRow({
       onReloadAgent,
       onRenameTab,
       rail,
-      setHoveredCloseTabKey,
       tabMenuLabels,
       tabDropPreviewIndex,
       displayedTabs.length,
@@ -1507,7 +1510,6 @@ function ResolvedDesktopTabChip({
   showLabel,
   showCloseButton,
   rail,
-  setHoveredCloseTabKey,
   onNavigateTab,
   onCloseTab,
   labels,
@@ -1535,7 +1537,6 @@ function ResolvedDesktopTabChip({
   showLabel: boolean;
   showCloseButton: boolean;
   rail: WorkspaceTabRailSurface;
-  setHoveredCloseTabKey: Dispatch<SetStateAction<string | null>>;
   onNavigateTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => Promise<void> | void;
   labels: WorkspaceTabMenuLabels;
@@ -1617,13 +1618,11 @@ function ResolvedDesktopTabChip({
         showLabel={showLabel}
         showCloseButton={showCloseButton}
         rail={rail}
-        isCloseHovered={item.isCloseHovered}
         isClosingTab={item.isClosingTab}
         presentation={presentation}
         tooltipLabel={tooltipLabel}
         accessibilityLabel={accessibilityLabel}
         resolvedTab={resolvedTab}
-        setHoveredCloseTabKey={setHoveredCloseTabKey}
         onNavigateTab={onNavigateTab}
         onCloseTab={onCloseTab}
         dragHandleProps={dragHandleProps}
@@ -1699,14 +1698,44 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundExtraMuted,
     fontSize: theme.fontSize.sm,
   },
-  tabHovered: {
-    backgroundColor: theme.colors.surface1,
+  // Chip hover follows the frame group (chip plus close button) and publishes the surface its
+  // knockout marks paint, per rail; see resolveWorkspaceTabChipBackdrop.
+  tabHoverSurface: groupHoverSurface(TAB_HOVER_GROUP, theme.colors.surface1),
+  tabHoverSidebar: groupHoverSurface(
+    TAB_HOVER_GROUP,
+    theme.colors.surface1,
+    theme.colors.surfaceSidebarHover,
+  ),
+  tabRestSurface: rowSurface(theme.colors.surface0),
+  tabRestSidebar: rowSurface(theme.colors.surfaceSidebar),
+  tabActiveSurface: rowSurface(theme.colors.surface2),
+  tabActiveSidebar: rowSurface(theme.colors.surfaceSidebarSelected),
+  tabIconHoverLift: {
+    ...groupHoverStyle(
+      TAB_HOVER_GROUP,
+      { color: theme.colors.foreground },
+      { color: theme.colors.foregroundMuted },
+    ),
   },
+  tabLabelHoverLift: groupHoverStyle(TAB_HOVER_GROUP, { color: theme.colors.foreground }),
+  tabTrailingOverlayReveal: {
+    opacity: 0,
+    ...groupHoverStyle(TAB_HOVER_GROUP, { opacity: 1 }),
+  },
+  // Click-through until its tab is hovered, so a hidden close button cannot be pressed.
+  tabCloseButtonReveal: {
+    ...groupHoverStyle(TAB_HOVER_GROUP, { pointerEvents: "auto" }, { pointerEvents: "none" }),
+  },
+  tabCloseButtonColor: hoverStyle(
+    { color: theme.colors.foreground },
+    { color: theme.colors.foregroundMuted },
+  ),
   tabActive: {
     ...floatingControlSurface(theme),
   },
   tabHoverFrame: {
     position: "relative",
+    ...hoverGroup(TAB_HOVER_GROUP),
   },
   tabSlot: {
     position: "relative",
@@ -1845,3 +1874,26 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
   },
 }));
+
+// Declared after styles: these read it when called, never at module load.
+function chipSurfaceStyle(rail: WorkspaceTabRailSurface, isActiveFocused: boolean) {
+  if (isActiveFocused)
+    return rail === "sidebar" ? styles.tabActiveSidebar : styles.tabActiveSurface;
+  return rail === "sidebar"
+    ? [styles.tabRestSidebar, styles.tabHoverSidebar]
+    : [styles.tabRestSurface, styles.tabHoverSurface];
+}
+
+function trailingOverlayStyle(alwaysShown: boolean, revealedOnHover: boolean) {
+  if (alwaysShown) return [styles.tabTrailingOverlay, styles.tabTrailingOverlayShown];
+  if (revealedOnHover) return [styles.tabTrailingOverlay, styles.tabTrailingOverlayReveal];
+  return [styles.tabTrailingOverlay, styles.tabTrailingOverlayHidden];
+}
+
+function closeButtonStyle(revealedOnHover: boolean) {
+  return [
+    styles.tabCloseButton,
+    styles.tabCloseButtonColor,
+    revealedOnHover && styles.tabCloseButtonReveal,
+  ];
+}

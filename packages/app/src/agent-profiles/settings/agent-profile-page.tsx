@@ -1,3 +1,5 @@
+import { useOwnerAccess } from "@/execution-installation/owner-access";
+import { OwnerLockBadge } from "@/components/settings/owner-lock";
 import {
   useCallback,
   useContext,
@@ -7,7 +9,9 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Alert, Platform, ScrollView, Text, View, StyleSheet } from "react-native";
+import { Alert, Platform, Text, View, StyleSheet } from "react-native";
+import { settingsStyles } from "@/styles/settings";
+import { ScrollView } from "@/components/ui/scroll-view";
 // The app runs on expo-router's bundled React Navigation; the standalone package is a separate
 // copy whose context is never provided, so importing hooks from it crashes at runtime.
 import { NavigationContext } from "expo-router/react-navigation";
@@ -58,6 +62,8 @@ export function AgentProfilePage({
   sharedScope,
   mode = "edit",
 }: AgentProfilePageProps) {
+  const ownerAccess = useOwnerAccess();
+  const ownerLocked = ownerAccess.status === "checking" || ownerAccess.status === "locked";
   const rawModel = useAgentProfileFormModel({
     mode,
     profile,
@@ -173,29 +179,32 @@ export function AgentProfilePage({
         <Button
           testID="agent-profile-save-button"
           onPress={save}
-          disabled={!dirty || !state.canSubmit}
+          disabled={ownerLocked || !dirty || !state.canSubmit}
         >
           Save
         </Button>
       </View>
     ),
-    [close, save, dirty, state.isSubmitting, state.canSubmit],
+    [close, save, dirty, state.isSubmitting, state.canSubmit, ownerLocked],
   );
   const deleteControl =
     onDelete && sharedScope?.kind !== "defaults" ? (
-      <Button variant="ghost" onPress={remove} disabled={state.isSubmitting}>
+      <Button variant="ghost" onPress={remove} disabled={ownerLocked || state.isSubmitting}>
         Delete profile
       </Button>
     ) : null;
   const form = (
-    <AgentProfileForm
-      serverId={serverId}
-      profileId={profile.id}
-      model={model}
-      state={state}
-      sharedScope={sharedScope}
-      modelDetails={modelDetails}
-    />
+    <>
+      {ownerLocked ? <OwnerLockBadge /> : null}
+      <AgentProfileForm
+        serverId={serverId}
+        profileId={profile.id}
+        model={model}
+        state={state}
+        sharedScope={sharedScope}
+        modelDetails={modelDetails}
+      />
+    </>
   );
   if (centered)
     return (
@@ -218,7 +227,9 @@ export function AgentProfilePage({
         <Button testID="agent-profile-back-button" onPress={close}>
           Back to provider
         </Button>
-        <Text accessibilityRole="header">{state.name || profile.name}</Text>
+        <Text accessibilityRole="header" style={settingsStyles.rowTitle}>
+          {state.name || profile.name}
+        </Text>
         {form}
         {deleteControl}
       </ScrollView>

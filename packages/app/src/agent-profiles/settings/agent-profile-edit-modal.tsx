@@ -764,7 +764,6 @@ function OpenAgentProfileEditModal({
       onDismiss={onDismiss}
       footer={actions}
       desktopMaxWidth={520}
-      desktopPlacement="end"
       testID="agent-profile-edit-modal"
     >
       <View style={styles.body}>

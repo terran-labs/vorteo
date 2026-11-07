@@ -82,11 +82,15 @@ interface HostChild {
 }
 
 /** Runs the real entrypoint for home in a child on the fake provider. */
-function spawnHost(home: string, extraEnv: Record<string, string> = {}): HostChild {
+function spawnHost(
+  home: string,
+  extraEnv: Record<string, string> = {},
+  entrypoint = entrypointPath,
+): HostChild {
   const fakeClientPath = path.join(home, "fake-client.ts");
   writeFileSync(fakeClientPath, FAKE_CLIENT_MODULE);
   // node with the tsx loader rather than the tsx wrapper, so signals reach the host directly.
-  const child = spawn(process.execPath, ["--import", "tsx", entrypointPath], {
+  const child = spawn(process.execPath, ["--import", "tsx", entrypoint], {
     cwd: serverRoot,
     env: {
       PATH: process.env.PATH,
@@ -98,7 +102,7 @@ function spawnHost(home: string, extraEnv: Record<string, string> = {}): HostChi
       FAKE_UMASK_LOG: path.join(home, "umask.log"),
       ...extraEnv,
     },
-    stdio: ["ignore", "inherit", "pipe"],
+    stdio: ["ignore", "inherit", "pipe", "ipc"],
   });
   let stderr = "";
   child.stderr!.on("data", (chunk: Buffer) => {
@@ -197,6 +201,35 @@ test("keeps every host file private and serves sessions", async () => {
   expect(readFileSync(path.join(paths.directory, "host.log"), "utf8")).toContain(
     "Session host started",
   );
+}, 30_000);
+
+test("exits cleanly on SIGTERM at the first service startup await", async () => {
+  const home = mkdtempSync("/tmp/dsh-svc-");
+  cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+  const entrypoint = path.join(home, "early-start.ts");
+  const servicePath = path.join(serverRoot, "src/server/session-host/service.ts");
+  writeFileSync(
+    entrypoint,
+    `import { startSessionHostService } from ${JSON.stringify(servicePath)};
+void startSessionHostService({
+  prepareDirectory: async () => {
+    process.on("message", () => {});
+    process.send("first-startup-await");
+    // IPC keeps the child alive while startup is deliberately suspended.
+    await new Promise(() => {});
+  },
+});
+`,
+  );
+  const { child, exited } = spawnHost(home, {}, entrypoint);
+  const ready = new Promise((resolve) => child.once("message", resolve));
+  expect(await Promise.race([ready, exited])).toBe("first-startup-await");
+  const startedAt = Date.now();
+  expect(child.kill("SIGTERM")).toBe(true);
+  expect(await exited).toEqual({ code: 0, signal: null });
+  expect(Date.now() - startedAt).toBeLessThan(DEFAULT_SHUTDOWN_DEADLINE_MS);
+  // Nothing past the first await may claim a lock, rotate a token or start listening.
+  expect(existsSync(sessionHostPaths(home).directory)).toBe(false);
 }, 30_000);
 
 test("closes its sessions and exits on SIGTERM within the shutdown deadline", async () => {

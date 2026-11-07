@@ -34,9 +34,12 @@ export async function runHeadlessHostProcess(input: {
       ...(options.headed ? { headed: true } : {}),
     });
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     channel.send({
       type: "fatal",
-      message: error instanceof Error ? error.message : String(error),
+      // Keep the diagnostic tail within the existing IPC limit. Playwright
+      // launch errors end with Chromium stderr and its exit code or signal.
+      message: message.slice(-4_000),
     });
     return { done: Promise.resolve(false), close: async () => {} };
   }

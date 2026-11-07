@@ -71,7 +71,11 @@ export function installResult(plan, outputs) {
   };
 }
 
-export async function runSteps(steps, state, emit, { force = false } = {}) {
+/**
+ * Runs `steps` in order and journals each one. `stopAfter` is asked after every journaled
+ * failure or success; true ends the run there, so an exit always follows a saved step.
+ */
+export async function runSteps(steps, state, emit, { force = false, stopAfter } = {}) {
   for (const [index, step] of steps.entries()) {
     if (!force && state.journal.isDone(step)) {
       emit({ step, status: "skip", message: "Already done." });
@@ -127,6 +131,7 @@ export async function runSteps(steps, state, emit, { force = false } = {}) {
     } catch (error) {
       state.journal.mark(step, "fail", error.message);
       emit({ step, status: "fail", message: error.message, fix: error.fix ?? RERUN });
+      stopAfter?.();
       return false;
     }
     state.journal.mark(step, "done", result?.skip ?? result?.message);
@@ -138,6 +143,7 @@ export async function runSteps(steps, state, emit, { force = false } = {}) {
         message: result.message,
         ...(result.fix ? { fix: result.fix } : {}),
       });
+    if (stopAfter?.()) return false;
   }
   return true;
 }
@@ -477,7 +483,12 @@ export async function repair(context, emit) {
  * verified its tag), point the Host link at it and restart the Host daemon. The
  * coordinator replaces itself afterwards through its own link. Writes `outcome` as JSON.
  */
-export async function hostRelease(context, { revision, outcome }) {
+/**
+ * Builds the Host release for `revision`, then selects it and restarts the Host. With
+ * `buildOnly` it stops after the build, so an upgrade can build Dev from it and restart
+ * everything at the end; a later call without it reuses the built release.
+ */
+export async function hostRelease(context, { revision, outcome, buildOnly = false }) {
   const report = (value) => writeFileSync(outcome, JSON.stringify(value) + "\n", { mode: 0o600 });
   try {
     if (!/^[0-9a-f]{40}$/.test(revision ?? ""))
@@ -509,6 +520,14 @@ export async function hostRelease(context, { revision, outcome }) {
         marker,
         JSON.stringify({ revision, builtAt: context.now().toISOString() }) + "\n",
       );
+    }
+    if (buildOnly) {
+      report({
+        status: "succeeded",
+        release,
+        detail: `Built the Host release ${revision.slice(0, 12)}.`,
+      });
+      return true;
     }
     pointLink(plan.paths.hostReleaseLink, release);
     await manager.restart(plan.services.host);

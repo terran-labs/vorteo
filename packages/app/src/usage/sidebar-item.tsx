@@ -1,14 +1,9 @@
 import { router } from "expo-router";
 import { Fragment, useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  Pressable,
-  Text,
-  View,
-  type LayoutChangeEvent,
-  type PressableStateCallbackType,
-} from "react-native";
+import { Pressable, Text, View, type LayoutChangeEvent } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import { SidebarPopoverRoot, SidebarPopoverSurface } from "@/components/sidebar/sidebar-popover";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { builtinSidebarNavLabelKey } from "@/sidebar-nav/model";
@@ -158,10 +153,6 @@ function pinnedUsageLabel(label: string, sources: readonly PinnedUsageSource[]):
   return `${label}: ${windows.map((window) => window.label).join(", ")}`;
 }
 
-function triggerStyle({ hovered }: PressableStateCallbackType & { hovered?: boolean }) {
-  return hovered ? [styles.trigger, styles.triggerHovered] : styles.trigger;
-}
-
 function layoutWidth(event: LayoutChangeEvent): number {
   return event.nativeEvent.layout.width;
 }
@@ -203,7 +194,7 @@ function PinnedUsageTrigger({
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={pinnedUsageLabel(label, sources)}
-      style={triggerStyle}
+      style={styles.trigger}
       testID="sidebar-usage"
     >
       <View style={styles.line} onLayout={handleAvailableLayout}>
@@ -290,9 +281,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing[1],
     paddingHorizontal: theme.spacing[2],
     borderRadius: theme.borderRadius.lg,
-  },
-  triggerHovered: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
+    ...hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
   },
   line: {
     flex: 1,

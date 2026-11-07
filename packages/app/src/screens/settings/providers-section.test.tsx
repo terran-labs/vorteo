@@ -173,6 +173,7 @@ vi.mock("@/components/settings/headings/settings-info-tip", () => ({
 vi.mock("@/components/ui/external-link", () => ({
   ExternalLink: () => null,
   ExternalLinkLabel: () => null,
+  EXTERNAL_LINK_HOVER_GROUP: "external-link",
 }));
 
 vi.mock("@/components/ui/dropdown-menu", () => ({
@@ -340,7 +341,12 @@ function unexpectedToast(): never {
   throw new Error("Provider row interactions should not display a toast");
 }
 
-const toastApi = { show: unexpectedToast, copied: unexpectedToast, error: unexpectedToast };
+const reportedErrors: string[] = [];
+const toastApi = {
+  show: unexpectedToast,
+  copied: unexpectedToast,
+  error: (message: string) => reportedErrors.push(message),
+};
 
 const claudeEntry: ProviderSnapshotEntry = {
   provider: "claude",
@@ -398,6 +404,7 @@ describe("ProvidersSection", () => {
   let container: HTMLElement | null = null;
 
   beforeEach(() => {
+    reportedErrors.length = 0;
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     vi.stubGlobal("React", React);
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -487,7 +494,7 @@ describe("ProvidersSection", () => {
       await act(async () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
       });
-      expect(container?.textContent).toContain("Update the host to add Hoplite.");
+      expect(reportedErrors).toEqual(["Update the host to add Hoplite."]);
       expect(patchConfigMock).not.toHaveBeenCalled();
       expect(sharedSave).not.toHaveBeenCalled();
       expect(localPatch).not.toHaveBeenCalled();
@@ -495,33 +502,18 @@ describe("ProvidersSection", () => {
     },
   );
 
-  it("associates a refusal with its entry and clears it on a new attempt and retry", async () => {
+  it("reports refusals as toasts without inserting catalog rows", async () => {
     catalogState.capability = false;
     await installCatalog("hoplite");
-    await vi.waitFor(() =>
-      expect(container?.querySelector('[data-testid="catalog-error-hoplite"]')?.textContent).toBe(
-        "Update the host to add Hoplite.",
-      ),
-    );
-    expect(container?.querySelector('[data-testid="catalog-error-minimax-code"]')).toBeNull();
+    await vi.waitFor(() => expect(reportedErrors).toEqual(["Update the host to add Hoplite."]));
+    expect(container?.querySelector('[data-testid="catalog-error-hoplite"]')).toBeNull();
     await installCatalog("minimax-code");
-    await vi.waitFor(() =>
-      expect(container?.querySelector('[data-testid="catalog-error-hoplite"]')).toBeNull(),
-    );
+    expect(reportedErrors).toHaveLength(1);
     await installCatalog("hoplite");
-    await vi.waitFor(() =>
-      expect(container?.querySelector('[data-testid="catalog-error-hoplite"]')?.textContent).toBe(
-        "Update the host to add Hoplite.",
-      ),
-    );
+    await vi.waitFor(() => expect(reportedErrors).toHaveLength(2));
     catalogState.capability = true;
     await installCatalog("hoplite");
-    await vi.waitFor(() =>
-      expect(container?.querySelector('[data-testid="catalog-error-hoplite"]')).toBeNull(),
-    );
-    expect(patchConfigMock).toHaveBeenLastCalledWith({
-      providers: { hoplite: { enabled: true, removed: false } },
-    });
+    expect(reportedErrors).toHaveLength(2);
   });
 
   function managedSettings() {
@@ -615,7 +607,8 @@ describe("ProvidersSection", () => {
       if (reason === "bundled")
         expected = "Catalog enrollment requires an ACP runtime without an account identity.";
       if (reason === "save rejected") expected = "Shared revision refused";
-      expect(container?.textContent).toContain(expected);
+      expect(reportedErrors).toEqual([expected]);
+      expect(container?.textContent).not.toContain(expected);
       expect(localPatch).not.toHaveBeenCalled();
       expect(patchConfigMock).not.toHaveBeenCalled();
       expect(refreshMock).not.toHaveBeenCalled();

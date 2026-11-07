@@ -1,22 +1,14 @@
+import { useToast } from "@/contexts/toast-context";
+import { SettingsStatusLine } from "@/components/settings/settings-status-line";
+import { reportSyncError } from "@/components/settings/sync-error-notification";
 import { CardHeaderStatus } from "@/components/ui/card-header-status";
 import { ActionFooter, ActionFooterLeading } from "@/components/ui/action-footer";
 import { useMutation } from "@tanstack/react-query";
-import { useRouter } from "expo-router";
+
 import { readExecutionInstallation } from "@/execution-installation/policy";
-import {
-  ArrowDown,
-  ArrowUp,
-  ArrowUpToLine,
-  Globe,
-  Monitor,
-  Pencil,
-  Plus,
-  RotateCw,
-  SquareTerminal,
-  Trash2,
-} from "lucide-react-native";
+import { ArrowDown, ArrowUp, Pencil, Plus, SquareTerminal, Trash2 } from "lucide-react-native";
 import type { TFunction } from "i18next";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, Text, View } from "react-native";
 import { StyleSheet, useUnistyles, withUnistyles } from "react-native-unistyles";
@@ -27,7 +19,6 @@ import {
 } from "@getpaseo/protocol/terminal-profiles";
 import { ProviderUsageSettingsSection } from "@/provider-usage/settings-section";
 import { useProviderUsage } from "@/provider-usage/use-provider-usage";
-import { AgentSkillsSection } from "@/agent-skills";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { SettingsTextAreaCard } from "@/components/settings-textarea";
 import { Alert as InlineAlert } from "@/components/ui/alert";
@@ -39,16 +30,13 @@ import {
   TerminalProfileEditModal,
 } from "@/screens/settings/terminal-profile-edit-modal";
 import { startDesktopDaemon, stopDesktopDaemon } from "@/desktop/daemon/desktop-daemon";
-import { LocalDaemonSection } from "@/desktop/components/desktop-updates-section";
+
 import { useDaemonStatus } from "@/desktop/hooks/use-daemon-status";
 import { useDesktopSettings } from "@/desktop/settings/desktop-settings";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { useIsLocalDaemon } from "@/hooks/use-is-local-daemon";
 import {
-  getHostRuntimeStore,
-  isHostRuntimeConnected,
   useHostMutations,
-  useHostRuntimeClient,
   useHostRuntimeIsConnected,
   useHostRuntimeSnapshot,
   useHosts,
@@ -57,33 +45,19 @@ import { ProvidersSection } from "@/screens/settings/providers-section";
 import { HostUsageSection } from "@/usage";
 import { HostAppearanceSection } from "@/screens/settings/host-appearance-section";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
-import { useSessionStore } from "@/stores/session-store";
+
 import { settingsStyles } from "@/styles/settings";
 import type { HostConnection, HostProfile } from "@/types/host-connection";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { isConnectionError, toErrorMessage } from "@/utils/error-messages";
 import { useReportActionError } from "@/hooks/use-action-error";
-import { isVersionMismatch } from "@/desktop/updates/desktop-updates";
-import { resolveAppVersion } from "@/utils/app-version";
+
 import { formatConnectionStatus, getConnectionStatusTone } from "@/utils/daemons";
 import { formatLatency } from "@/utils/latency";
 import { ICON_SIZE } from "@/styles/theme";
 import type { Theme } from "@/styles/theme";
 import { useProviderIcon } from "@/components/provider-icons";
 import { BrowserToolsOptInCard } from "./browser-tools-card";
-import { RestartRecoveryCard } from "./restart-recovery-card";
-import { ServiceAccessSection } from "./service-access-section";
-import { IdleRuntimeCleanupCard } from "./idle-runtime-cleanup-card";
-import { restartDaemonFromSettings, updateDaemonFromSettings } from "./daemon-lifecycle";
-
-const ThemedRestart = withUnistyles(RotateCw);
-const ThemedUpdate = withUnistyles(ArrowUpToLine);
-const lifecycleIconProps = (theme: Theme) => ({
-  size: theme.iconSize.sm,
-  color: theme.colors.foreground,
-});
-const restartIcon = <ThemedRestart uniProps={lifecycleIconProps} />;
-const updateIcon = <ThemedUpdate uniProps={lifecycleIconProps} />;
 
 const ThemedArrowUp = withUnistyles(ArrowUp);
 const ThemedArrowDown = withUnistyles(ArrowDown);
@@ -128,42 +102,6 @@ function formatHostConnectionLabel(connection: HostConnection, t: TFunction): st
   return `TCP (${connection.endpoint})`;
 }
 
-function formatActiveConnectionBadge(
-  activeConnection: { type: HostConnection["type"]; display: string } | null,
-  theme: ReturnType<typeof useUnistyles>["theme"],
-  t: TFunction,
-): { icon: React.ReactNode; text: string } | null {
-  if (!activeConnection) return null;
-  if (activeConnection.type === "relay") {
-    return {
-      icon: <Globe size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />,
-      text: t("settings.host.badges.relay"),
-    };
-  }
-  if (activeConnection.type === "directSocket" || activeConnection.type === "directPipe") {
-    return {
-      icon: <Monitor size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />,
-      text: t("settings.host.badges.local"),
-    };
-  }
-  if (activeConnection.type === "remoteSsh") {
-    return {
-      icon: <Globe size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />,
-      text: t("settings.host.badges.remoteSsh"),
-    };
-  }
-  return {
-    icon: <Monitor size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />,
-    text: activeConnection.display,
-  };
-}
-
-function formatDaemonVersionBadge(version: string | null): string | null {
-  const trimmed = version?.trim();
-  if (!trimmed) return null;
-  return trimmed.startsWith("v") ? trimmed : `v${trimmed}`;
-}
-
 function useHostProfile(serverId: string): HostProfile | null {
   const daemons = useHosts();
   return daemons.find((entry) => entry.serverId === serverId) ?? null;
@@ -181,15 +119,10 @@ function HostNotFound() {
 }
 
 function HostStatusBadges({ serverId }: { serverId: string }) {
-  const { t } = useTranslation();
   const { theme } = useUnistyles();
   const snapshot = useHostRuntimeSnapshot(serverId);
-  const daemonVersion = useSessionStore(
-    (state) => state.sessions[serverId]?.serverInfo?.version ?? null,
-  );
 
   const connectionStatus = snapshot?.connectionStatus ?? "connecting";
-  const activeConnection = snapshot?.activeConnection ?? null;
   const statusLabel = formatConnectionStatus(connectionStatus);
   const statusTone = getConnectionStatusTone(connectionStatus);
   let statusVariant: StatusBadgeVariant = "muted";
@@ -204,8 +137,6 @@ function HostStatusBadges({ serverId }: { serverId: string }) {
     statusVariant = "error";
     statusDotColor = theme.colors.statusDotDanger;
   }
-  const connectionBadge = formatActiveConnectionBadge(activeConnection, theme, t);
-  const versionBadgeText = formatDaemonVersionBadge(daemonVersion);
   const statusDotStyle = useMemo(
     () => [styles.statusDot, { backgroundColor: statusDotColor }],
     [statusDotColor],
@@ -215,21 +146,6 @@ function HostStatusBadges({ serverId }: { serverId: string }) {
   return (
     <View style={styles.identityBadges} testID="host-page-identity">
       <StatusBadge label={statusLabel} variant={statusVariant} leading={statusLeading} />
-      {connectionBadge ? (
-        <View style={styles.badgePill}>
-          {connectionBadge.icon}
-          <Text style={styles.badgeText} numberOfLines={1}>
-            {connectionBadge.text}
-          </Text>
-        </View>
-      ) : null}
-      {versionBadgeText ? (
-        <View style={styles.badgePill}>
-          <Text style={styles.badgeText} numberOfLines={1}>
-            {versionBadgeText}
-          </Text>
-        </View>
-      ) : null}
     </View>
   );
 }
@@ -237,21 +153,19 @@ function HostStatusBadges({ serverId }: { serverId: string }) {
 function HostConnectionError({ serverId }: { serverId: string }) {
   const { t } = useTranslation();
   const snapshot = useHostRuntimeSnapshot(serverId);
-  const lastError = snapshot?.lastError ?? null;
-  const connectionError =
-    typeof lastError === "string" && lastError.trim().length > 0 ? lastError.trim() : null;
-  if (!connectionError) return null;
-  return (
-    <View style={styles.connectionError}>
-      <InlineAlert
-        size="sm"
-        variant="error"
-        title={toErrorMessage(connectionError)}
-        description={snapshot?.authFailureReason ? t("settings.host.password.guidance") : undefined}
-        testID="host-connection-error"
-      />
-    </View>
-  );
+  const toast = useToast();
+  useEffect(() => {
+    reportSyncError(`host-connection:${serverId}`, snapshot?.lastError, () =>
+      toast.error(toErrorMessage(snapshot?.lastError)),
+    );
+  }, [serverId, snapshot?.lastError, toast]);
+  const message = [
+    snapshot?.lastError,
+    snapshot?.authFailureReason ? t("settings.host.password.guidance") : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return <SettingsStatusLine message={message} testID="host-connection-error" />;
 }
 
 export function HostConnectionsPage({ serverId }: { serverId: string }) {
@@ -299,15 +213,12 @@ export function HostAgentsPage({ serverId }: { serverId: string }) {
           <InjectPaseoToolsCard serverId={serverId} />
           <BrowserToolsOptInCard serverId={serverId} />
           <AppendSystemPromptCard serverId={serverId} />
-          <RestartRecoveryCard serverId={serverId} />
-          <IdleRuntimeCleanupCard serverId={serverId} />
         </SettingsSection>
       ) : (
         <View style={[settingsStyles.card, styles.emptyCard]}>
           <Text style={styles.emptyText}>{t("settings.host.agents.unavailable")}</Text>
         </View>
       )}
-      <AgentSkillsSection serverId={serverId} />
     </View>
   );
 }
@@ -384,15 +295,11 @@ export function HostSettingsPage({
 }) {
   const host = useHostProfile(serverId);
   const isLocalDaemon = useIsLocalDaemon(serverId);
-  const router = useRouter();
   const installationOwned = Boolean(
     readExecutionInstallation()?.environments.some(
       (environment) => environment.serverId === serverId,
     ),
   );
-  const openInstallationControls = useCallback(() => {
-    router.push("/settings/general?installation=1");
-  }, [router]);
 
   if (!host) {
     return <HostNotFound />;
@@ -405,36 +312,9 @@ export function HostSettingsPage({
 
       <HostAppearanceSection host={host} />
 
-      {installationOwned ? (
-        <View style={settingsStyles.card}>
-          <View style={settingsStyles.row}>
-            <View style={settingsStyles.rowContent}>
-              <Text style={settingsStyles.rowTitle}>Installation maintenance</Text>
-              <Text style={settingsStyles.rowHint}>
-                Review updates and approve restarts in General settings.
-              </Text>
-            </View>
-            <Button
-              variant="outline"
-              onPress={openInstallationControls}
-              testID={`installation-maintenance-${serverId}`}
-            >
-              Open controls
-            </Button>
-          </View>
-        </View>
-      ) : null}
-      {!installationOwned && isLocalDaemon ? <LocalDaemonSection /> : null}
-      {!installationOwned && !isLocalDaemon ? (
-        <UpdateDaemonCard key={host.serverId} host={host} />
-      ) : null}
-
-      <ServiceAccessSection serverId={serverId} />
-
       <RemoveHostSection
         host={host}
         isLocalDaemon={isLocalDaemon && !installationOwned}
-        allowRestart={!installationOwned}
         onRemoved={onHostRemoved}
       />
     </View>
@@ -610,357 +490,6 @@ function ConnectionRow({
       <Button variant="ghost" textStyle={destructiveTextStyle} onPress={handlePressRemove}>
         {t("settings.host.connections.removeAction")}
       </Button>
-    </View>
-  );
-}
-
-function RestartDaemonCard({ host }: { host: HostProfile }) {
-  const { t } = useTranslation();
-  const daemonClient = useHostRuntimeClient(host.serverId);
-  const isConnected = useHostRuntimeIsConnected(host.serverId);
-  const runtime = getHostRuntimeStore();
-  const [isRestarting, setIsRestarting] = useState(false);
-  // Rendered in the card, not an Alert.alert: react-native-web's Alert is a no-op, and a failed
-  // close-terminals restart must name the processes left running until the user retries.
-  const [restartError, setRestartError] = useState<string | null>(null);
-  const isMountedRef = useRef(true);
-  // COMPAT(terminalsSurviveRestart): added in v0.12.0, remove gate after 2027-04-21.
-  const terminalsSurviveRestart = useSessionStore(
-    (state) =>
-      state.sessions[host.serverId]?.serverInfo?.features?.terminalsSurviveRestart === true,
-  );
-
-  useEffect(() => {
-    return () => {
-      isMountedRef.current = false;
-    };
-  }, []);
-
-  const isHostConnected = useCallback(
-    () => isHostRuntimeConnected(runtime.getSnapshot(host.serverId)),
-    [host.serverId, runtime],
-  );
-
-  const reportActionError = useReportActionError();
-  const waitForDaemonRestart = useCallback(
-    async (request: Promise<void>) => {
-      try {
-        await request;
-      } catch (error) {
-        if (isConnectionError(error)) reportActionError(error);
-        console.error("[HostPage] Daemon restart failed", error);
-        if (isMountedRef.current) {
-          setRestartError(error instanceof Error ? error.message : String(error));
-        }
-      } finally {
-        if (isMountedRef.current) setIsRestarting(false);
-      }
-    },
-    [reportActionError],
-  );
-
-  const startRestart = useCallback(
-    (killTerminals: boolean) => {
-      if (!daemonClient) {
-        Alert.alert(
-          t("settings.host.daemon.restart.unavailableTitle"),
-          t("settings.host.daemon.restart.unavailableMessage"),
-        );
-        return;
-      }
-      if (!isHostConnected()) {
-        Alert.alert(
-          t("settings.host.daemon.restart.offlineTitle"),
-          t("settings.host.daemon.restart.offlineMessage"),
-        );
-        return;
-      }
-
-      void confirmDialog({
-        title: t("settings.host.daemon.restart.confirmTitle", { name: host.label }),
-        message: killTerminals
-          ? t("settings.host.daemon.restart.closeTerminalsConfirmMessage")
-          : t("settings.host.daemon.restart.confirmMessage"),
-        confirmLabel: killTerminals
-          ? t("settings.host.daemon.restart.closeTerminals")
-          : t("settings.host.daemon.restart.confirm"),
-        cancelLabel: t("common.actions.cancel"),
-        destructive: true,
-      })
-        .then((confirmed) => {
-          if (!confirmed) return;
-          setRestartError(null);
-          setIsRestarting(true);
-          const restartRequest = restartDaemonFromSettings(
-            host.serverId,
-            `settings_daemon_restart_${host.serverId}`,
-            {
-              restartServer: (reason, options) =>
-                daemonClient.restartServer(reason, undefined, options),
-              getStatus: async () => ({
-                ...(await daemonClient.getDaemonStatus()),
-                serverId: daemonClient.getLastServerInfoMessage()?.serverId ?? "",
-                version: daemonClient.getLastServerInfoMessage()?.version ?? null,
-              }),
-            },
-            { killTerminals },
-          );
-          void waitForDaemonRestart(restartRequest);
-          return;
-        })
-        .catch((error) => {
-          console.error(`[HostPage] Failed to open restart confirmation for ${host.label}`, error);
-          if (isMountedRef.current) {
-            setRestartError(t("settings.host.daemon.restart.dialogFailedMessage"));
-          }
-        });
-    },
-    [daemonClient, host.label, host.serverId, isHostConnected, t, waitForDaemonRestart],
-  );
-
-  const handleRestart = useCallback(() => startRestart(false), [startRestart]);
-  const handleRestartAndCloseTerminals = useCallback(() => startRestart(true), [startRestart]);
-
-  return (
-    <View style={settingsStyles.card} testID="host-page-restart-card">
-      <View style={settingsStyles.row}>
-        <View style={settingsStyles.rowContent}>
-          <Text style={settingsStyles.rowTitle}>{t("settings.host.daemon.restart.title")}</Text>
-          <Text style={settingsStyles.rowHint}>{t("settings.host.daemon.restart.hint")}</Text>
-        </View>
-        <Button
-          variant="outline"
-          leftIcon={restartIcon}
-          onPress={handleRestart}
-          disabled={isRestarting || !daemonClient || !isConnected}
-          testID="host-page-restart-button"
-        >
-          {isRestarting
-            ? t("settings.host.daemon.restart.restarting")
-            : t("settings.host.daemon.restart.confirm")}
-        </Button>
-      </View>
-      {terminalsSurviveRestart ? (
-        <View style={settingsStyles.row}>
-          <View style={settingsStyles.rowContent}>
-            <Text style={settingsStyles.rowHint}>
-              {t("settings.host.daemon.restart.closeTerminalsHint")}
-            </Text>
-          </View>
-          <Button
-            variant="outline"
-            onPress={handleRestartAndCloseTerminals}
-            disabled={isRestarting || !daemonClient || !isConnected}
-            testID="host-page-restart-close-terminals-button"
-          >
-            {t("settings.host.daemon.restart.closeTerminals")}
-          </Button>
-        </View>
-      ) : null}
-      {restartError ? (
-        <View style={styles.updateFailure}>
-          <InlineAlert
-            size="sm"
-            variant="error"
-            title={t("settings.host.daemon.restart.requestFailedTitle")}
-            description={restartError}
-            testID="host-page-restart-error"
-          />
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-type DaemonUpdateState =
-  | { status: "idle" }
-  | { status: "complete"; workerVersion: string }
-  | { status: "updating"; phase: string }
-  | { status: "failed"; title: string; message: string };
-
-function UpdateDaemonCard({ host }: { host: HostProfile }) {
-  const { t } = useTranslation();
-  const daemonClient = useHostRuntimeClient(host.serverId);
-  const isConnected = useHostRuntimeIsConnected(host.serverId);
-  const runtime = getHostRuntimeStore();
-  const [updateState, setUpdateState] = useState<DaemonUpdateState>({ status: "idle" });
-  const isMountedRef = useRef(true);
-  const unsubscribeRef = useRef<(() => void) | null>(null);
-
-  const daemonVersion = useSessionStore(
-    (state) => state.sessions[host.serverId]?.serverInfo?.version ?? null,
-  );
-  const supportsSelfUpdate = useSessionStore(
-    (state) => state.sessions[host.serverId]?.serverInfo?.features?.daemonSelfUpdate === true,
-  );
-  const desktopManaged = useSessionStore(
-    (state) => state.sessions[host.serverId]?.serverInfo?.desktopManaged === true,
-  );
-
-  const appVersion = resolveAppVersion();
-  const hasVersionMismatch = isVersionMismatch(appVersion, daemonVersion);
-
-  useEffect(() => {
-    return () => {
-      isMountedRef.current = false;
-      unsubscribeRef.current?.();
-    };
-  }, []);
-
-  const isHostConnected = useCallback(
-    () => isHostRuntimeConnected(runtime.getSnapshot(host.serverId)),
-    [host.serverId, runtime],
-  );
-  const handleUpdate = useCallback(() => {
-    if (!daemonClient) {
-      setUpdateState({
-        status: "failed",
-        title: t("settings.host.daemon.update.unavailableTitle"),
-        message: t("settings.host.daemon.update.unavailableMessage"),
-      });
-      return;
-    }
-    if (!isHostConnected()) {
-      setUpdateState({
-        status: "failed",
-        title: t("settings.host.daemon.update.offlineTitle"),
-        message: t("settings.host.daemon.update.offlineMessage"),
-      });
-      return;
-    }
-
-    void confirmDialog({
-      title: t("settings.host.daemon.update.confirmTitle", { name: host.label }),
-      message: t("settings.host.daemon.update.confirmMessage"),
-      confirmLabel: t("settings.host.daemon.update.confirm"),
-      cancelLabel: t("common.actions.cancel"),
-      destructive: false,
-    })
-      .then((confirmed) => {
-        if (!confirmed || !isMountedRef.current) return;
-        setUpdateState({
-          status: "updating",
-          phase: t("settings.host.daemon.update.phaseStarting"),
-        });
-        const requestId = `settings_daemon_update_${host.serverId}`;
-
-        const unsubscribe = daemonClient.on("daemon.update.progress", (message) => {
-          if (message.payload.requestId !== requestId) return;
-          if (!isMountedRef.current) return;
-          const { phase } = message.payload;
-          if (phase === "starting")
-            setUpdateState({
-              status: "updating",
-              phase: t("settings.host.daemon.update.phaseStarting"),
-            });
-          else if (phase === "downloading")
-            setUpdateState({
-              status: "updating",
-              phase: t("settings.host.daemon.update.phaseDownloading"),
-            });
-          else if (phase === "installing")
-            setUpdateState({
-              status: "updating",
-              phase: t("settings.host.daemon.update.phaseInstalling"),
-            });
-          else if (phase === "complete")
-            setUpdateState({
-              status: "updating",
-              phase: t("settings.host.daemon.update.phaseComplete"),
-            });
-        });
-        unsubscribeRef.current = unsubscribe;
-
-        void updateDaemonFromSettings(host.serverId, {
-          updateDaemon: () => daemonClient.updateDaemon(requestId),
-          getStatus: async () => ({
-            ...(await daemonClient.getDaemonStatus()),
-            serverId: daemonClient.getLastServerInfoMessage()?.serverId ?? "",
-            version: daemonClient.getLastServerInfoMessage()?.version ?? null,
-          }),
-        })
-          .then(({ workerVersion }) => {
-            unsubscribeRef.current = null;
-            unsubscribe();
-            if (isMountedRef.current) setUpdateState({ status: "complete", workerVersion });
-            return undefined;
-          })
-          .catch((error) => {
-            unsubscribeRef.current = null;
-            unsubscribe();
-            console.error(`[HostPage] Failed to update daemon ${host.label}`, error);
-            if (!isMountedRef.current) return;
-            setUpdateState({
-              status: "failed",
-              title: t("settings.host.daemon.update.requestFailedTitle"),
-              message: t("settings.host.daemon.update.requestFailedMessage", {
-                error: toErrorMessage(error),
-              }),
-            });
-          });
-        return;
-      })
-      .catch((error) => {
-        console.error(`[HostPage] Failed to open update confirmation for ${host.label}`, error);
-        if (!isMountedRef.current) return;
-        setUpdateState({
-          status: "failed",
-          title: t("settings.host.daemon.update.requestFailedTitle"),
-          message: t("settings.host.daemon.update.dialogFailedMessage"),
-        });
-      });
-  }, [daemonClient, host.label, host.serverId, isHostConnected, t]);
-
-  const shouldShowUpdate = hasVersionMismatch && (supportsSelfUpdate || desktopManaged);
-  if (!shouldShowUpdate && updateState.status !== "complete") {
-    return null;
-  }
-
-  const isUpdating = updateState.status === "updating";
-  const buttonLabel = isUpdating ? updateState.phase : t("settings.host.daemon.update.confirm");
-
-  return (
-    <View style={settingsStyles.card} testID="host-page-update-card">
-      <View style={settingsStyles.row}>
-        <View style={settingsStyles.rowContent}>
-          <Text style={settingsStyles.rowTitle}>{t("settings.host.daemon.update.title")}</Text>
-          <Text style={settingsStyles.rowHint}>
-            {desktopManaged
-              ? t("settings.host.daemon.update.desktopManagedHint")
-              : t("settings.host.daemon.update.hint")}
-          </Text>
-        </View>
-        <Button
-          variant="outline"
-          leftIcon={updateIcon}
-          onPress={handleUpdate}
-          disabled={desktopManaged || isUpdating || !daemonClient || !isConnected}
-          testID="host-page-update-button"
-        >
-          {buttonLabel}
-        </Button>
-      </View>
-      {updateState.status === "complete" ? (
-        <InlineAlert
-          size="sm"
-          variant="success"
-          title={t("desktop.daemon.lifecycle.workerUpdated", {
-            version: updateState.workerVersion,
-          })}
-          description={t("desktop.daemon.lifecycle.supervisorRefresh")}
-        />
-      ) : null}
-      {updateState.status === "failed" ? (
-        <View style={styles.updateFailure}>
-          <InlineAlert
-            size="sm"
-            variant="error"
-            title={updateState.title}
-            description={updateState.message}
-            testID="host-page-update-error"
-          />
-        </View>
-      ) : null}
     </View>
   );
 }
@@ -1239,12 +768,10 @@ function AppendSystemPromptCard({ serverId }: { serverId: string }) {
 function RemoveHostSection({
   host,
   isLocalDaemon,
-  allowRestart,
   onRemoved,
 }: {
   host: HostProfile;
   isLocalDaemon: boolean;
-  allowRestart: boolean;
   onRemoved?: () => void;
 }) {
   const { t } = useTranslation();
@@ -1373,8 +900,6 @@ function RemoveHostSection({
       title={t("settings.host.daemon.dangerZone")}
       testID="host-page-remove-host-card"
     >
-      {allowRestart ? <RestartDaemonCard host={host} /> : null}
-
       <View style={settingsStyles.card}>
         <View style={settingsStyles.row}>
           <View style={settingsStyles.rowContent}>

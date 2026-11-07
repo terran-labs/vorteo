@@ -144,6 +144,20 @@ describe("exact reset time", () => {
     expect(at(2026, 10, 5, 11, 59)).toMatch(/^Thu (11:59 AM|11:59)$/);
   });
 
+  // Vorteo regression: the local day can be 25 hours when daylight saving ends.
+  it("uses the local day cutoff across a daylight saving change", () => {
+    const beforeFallback = new Date(2026, 9, 31, 12, 0).getTime();
+    const beforeCutoff = new Date(2026, 10, 1, 11, 59).toISOString();
+    const atCutoff = new Date(2026, 10, 1, 12, 0).toISOString();
+
+    expect(formatResetTime(beforeCutoff, beforeFallback)?.replace(/\s/g, " ")).toMatch(
+      /^(11:59 AM|11:59)$/,
+    );
+    expect(formatResetTime(atCutoff, beforeFallback)?.replace(/\s/g, " ")).toMatch(
+      /^Sun (12:00 PM|12:00)$/,
+    );
+  });
+
   it("adds the date after 7 days", () => {
     expect(at(2026, 10, 5, 12, 0)).toMatch(/^Nov 5, (12:00 PM|12:00)$/);
   });

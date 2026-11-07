@@ -8194,10 +8194,28 @@ test("creation lifecycle acknowledgement reaches the observer before the final r
   transport.triggerMessage(
     wrapSessionMessage({
       type: "agent.create.response",
-      payload: { requestId: request.requestId, agent: null, error: "provider unavailable" },
+      payload: {
+        requestId: request.requestId,
+        agent: null,
+        error: "provider unavailable",
+        creation: {
+          kind: "agent",
+          idempotencyKey: "observe-one",
+          revision: 1,
+          phase: "failed",
+          workspaceId: null,
+          agentId: "00000000-0000-4000-8000-000000000001",
+          error: "provider unavailable",
+          errorCode: "provider_unavailable",
+        },
+      },
     }),
   );
-  await expect(creation).rejects.toThrow("provider unavailable");
+  // The failure code survives so a relaying caller can classify the daemon's cause.
+  await expect(creation).rejects.toMatchObject({
+    message: "provider unavailable",
+    code: "provider_unavailable",
+  });
 });
 
 test("creation reconnect observation uses connection-owned subscriptions and releases on completion", async () => {

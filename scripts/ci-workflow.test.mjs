@@ -40,6 +40,7 @@ const gatedCiJobs = new Map([
   ["playwright-6", { name: "playwright (shard 6/8)", contract: "browser" }],
   ["playwright-7", { name: "playwright (shard 7/8)", contract: "browser" }],
   ["playwright-8", { name: "playwright (shard 8/8)", contract: "browser" }],
+  ["playwright-smoke", { name: "playwright (smoke)", contract: "browser" }],
   ["cli-tests-1", { name: "cli-tests (shard 1/3)", contract: "cli" }],
   ["cli-tests-2", { name: "cli-tests (shard 2/3)", contract: "cli" }],
   ["cli-tests-3", { name: "cli-tests (shard 3/3)", contract: "cli" }],
@@ -55,6 +56,8 @@ const heavyCiJobs = new Set([
   "desktop-tests-ubuntu",
   "desktop-tests-windows",
   ...Array.from({ length: 8 }, (_, index) => `playwright-${index + 1}`),
+  "playwright-smoke",
+  "playwright-installation",
   ...Array.from({ length: 3 }, (_, index) => `cli-tests-${index + 1}`),
 ]);
 
@@ -385,6 +388,33 @@ test("browser and desktop tests have exclusive, directory-owned suites", () => {
   ]);
 });
 
+/** Desktop and Windows server suites run only on manual runs; see the heavy-suites test. */
+function assertManualOnlyRouting(jobs, contextFor, selected, all) {
+  // Desktop suites (PWA is the only release channel) and Windows server suites (no Windows
+  // Host yet) run only on manual runs.
+  const manualOnly = [
+    ["desktop_apps", ["desktop-tests-ubuntu", "desktop-tests-windows"]],
+    ["windows_host", ["server-tests-windows", "server-integration-windows"]],
+  ];
+  for (const [output, jobIds] of manualOnly) {
+    const expression = new RegExp(`^      ${output}: \\$\\{\\{ (.+) \\}\\}$`, "m").exec(
+      jobs.get("changes").join("\n"),
+    )[1];
+    for (const [event, ref, expected] of [
+      ["merge_group", "refs/heads/gh-readonly-queue/main/pr-1-abc", false],
+      ["schedule", "refs/heads/main", false],
+      ["push", "refs/tags/release-26.11.500-beta", false],
+      ["workflow_dispatch", "refs/heads/main", true],
+    ]) {
+      const value = String(runInNewContext(expression, contextFor(event, ref)));
+      const outputs = { ...all, heavy: "true", [output]: value };
+      for (const jobId of jobIds) {
+        assert.equal(selected(jobs.get(jobId).join("\n"), outputs), expected, `${jobId} ${event}`);
+      }
+    }
+  }
+}
+
 test("heavy suites run only on merge groups, manual and nightly runs and release tags", () => {
   const source = readFileSync(ciWorkflowPath, "utf8");
   const trigger = source.split("jobs:", 1)[0];
@@ -394,6 +424,23 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
   assert.match(trigger, /push:\n\s+branches: \[main\]\n\s+tags: \["release-\*"\]/);
   const secretScan = readFileSync(new URL(".github/workflows/secret-scan.yml", repoRoot), "utf8");
   assert.match(secretScan.split("jobs:", 1)[0], /^  merge_group:/m, "scan is required");
+  // Pull requests, merge groups and main pushes scan the commits they add; the nightly
+  // and manual runs scan all reachable history. Branch pushes rely on their pull request.
+  const scanTrigger = secretScan.split("jobs:", 1)[0];
+  assert.match(scanTrigger, /push:\n\s+branches: \[main\]/);
+  assert.match(scanTrigger, /^  schedule:/m);
+  assert.match(scanTrigger, /^  workflow_dispatch:/m);
+  assert.match(secretScan, /pull_request\) range="\$PR_BASE\.\.\$PR_HEAD"/);
+  assert.match(secretScan, /merge_group\) range="\$QUEUE_BASE\.\.\$QUEUE_HEAD"/);
+  assert.match(secretScan, /\*\) range="--all --full-history"/);
+  assert.match(
+    secretScan,
+    /SECRET_SCAN_LOG_OPTS: \$\{\{ steps\.range\.outputs\.log_opts \}\}\n\s+run: npm run security:secrets/,
+  );
+  const secretsScript = JSON.parse(readFileSync(new URL("package.json", repoRoot), "utf8")).scripts[
+    "security:secrets"
+  ];
+  assert.match(secretsScript, /--log-opts="\$\{SECRET_SCAN_LOG_OPTS:---all --full-history\}"/);
 
   const jobs = jobBlocks(source);
   const heavy = /^      heavy: \$\{\{ (.+) \}\}$/m.exec(jobs.get("changes").join("\n"))[1];
@@ -415,19 +462,183 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
   }
 
   const condition = (job) => /^    if: \$\{\{ (.+) \}\}$/m.exec(job)?.[1] ?? "";
-  const selected = (job, outputs) =>
-    runInNewContext(condition(job), { needs: { changes: { outputs } }, cancelled: () => false });
+  const selected = (job, outputs, event = "workflow_dispatch") =>
+    runInNewContext(condition(job), {
+      ...contextFor(event),
+      needs: { changes: { outputs } },
+      cancelled: () => false,
+    });
   const all = { full: "true" };
   for (const [jobId, lines] of jobs) {
     if (jobId === "changes") continue;
     const job = lines.join("\n");
     const isHeavy = heavyCiJobs.has(jobId);
-    assert.match(job, /^    needs: changes$/m, jobId);
-    assert.equal(selected(job, { ...all, heavy: "true" }), jobId !== "cli-unit", jobId);
-    assert.equal(selected(job, { ...all, heavy: "false" }), !isHeavy, jobId);
+    // Consumers of the shared server-stack build also wait for `build`, which itself
+    // needs only `changes` so it never queues behind the required checks.
+    assert.match(
+      job,
+      isHeavy
+        ? /^    needs: \[changes, format, lint, typecheck(?:, build)?\]$/m
+        : /^    needs: (?:changes|\[changes, build\])$/m,
+      jobId,
+    );
+    // The smoke replaces the full Playwright suite only when routing says so.
+    const smoke = jobId === "playwright-smoke";
+    assert.equal(selected(job, { ...all, heavy: "true" }), jobId !== "cli-unit" && !smoke, jobId);
+    assert.equal(
+      selected(job, { ...all, heavy: "false" }, "pull_request"),
+      !isHeavy && jobId !== "build",
+      jobId,
+    );
     // Missing routing outputs fail open to the heavy suites.
-    assert.equal(selected(job, all), jobId !== "cli-unit", jobId);
+    assert.equal(selected(job, all), jobId !== "cli-unit" && !smoke, jobId);
   }
+  // Merge groups run the Playwright smoke; nightly, manual and release runs the full shards.
+  const e2e = /^      e2e: \$\{\{ (.+) \}\}$/m.exec(jobs.get("changes").join("\n"))[1];
+  for (const [event, ref, full] of [
+    ["merge_group", "refs/heads/gh-readonly-queue/main/pr-1-abc", false],
+    ["schedule", "refs/heads/main", true],
+    ["workflow_dispatch", "refs/heads/main", true],
+    ["push", "refs/tags/release-26.11.500-beta", true],
+  ]) {
+    const outputs = {
+      ...all,
+      heavy: "true",
+      e2e: String(runInNewContext(e2e, contextFor(event, ref))),
+    };
+    assert.equal(selected(jobs.get("playwright-1").join("\n"), outputs), full, event);
+    assert.equal(selected(jobs.get("playwright-smoke").join("\n"), outputs), !full, event);
+  }
+  // Model Actions' implicit success() guard as well as its dependency barrier.
+  // A plain expression evaluator would miss the skipped-needs regression.
+  function eligible(job, outputs, results, cancelled, context = contextFor("workflow_dispatch")) {
+    const dependencies = /^    needs: (.+)$/m.exec(job)[1].replace(/[[\]]/g, "").split(/, */);
+    if (dependencies.some((id) => results[id] === "in_progress")) return false;
+    const expression = condition(job);
+    const success = dependencies.every((id) => results[id] === "success");
+    const hasStatusCheck = /\b(?:success|failure|cancelled|always)\(/.test(expression);
+    if (!hasStatusCheck && !success) return false;
+    const needs = Object.fromEntries(dependencies.map((id) => [id, { result: results[id] }]));
+    needs.changes.outputs = outputs;
+    return runInNewContext(expression, {
+      ...context,
+      needs,
+      cancelled: () => cancelled,
+      success: () => success,
+    });
+  }
+  // Compare against direct changes-only dependencies using the same routing.
+  // New routing outputs or heavy jobs must not change failure/skip scheduling.
+  const eventOutputExpressions = [
+    ...jobs
+      .get("changes")
+      .join("\n")
+      .matchAll(/^      (\w+): \$\{\{ (.+) \}\}$/gm),
+  ].filter(([, , expression]) => !expression.includes("steps."));
+  const disabled = Object.fromEntries(
+    [
+      "full",
+      "format",
+      "quality",
+      "hub",
+      "server",
+      "desktop",
+      "app",
+      "sdk",
+      "browser",
+      "relay",
+      "cli",
+    ].map((key) => [key, "false"]),
+  );
+  const completed = {
+    changes: "success",
+    format: "success",
+    lint: "success",
+    typecheck: "success",
+    build: "success",
+  };
+  for (const [event, ref] of [
+    ["pull_request", "refs/pull/1/merge"],
+    ["push", "refs/heads/main"],
+    ["push", "refs/tags/release-26.11.500-beta"],
+    ["merge_group", "refs/heads/gh-readonly-queue/main/pr-1-abc"],
+    ["workflow_dispatch", "refs/heads/main"],
+    ["schedule", "refs/heads/main"],
+  ]) {
+    const eventOutputs = Object.fromEntries(
+      eventOutputExpressions.map(([, name, expression]) => [
+        name,
+        String(runInNewContext(expression, contextFor(event, ref))),
+      ]),
+    );
+    const routes = [{ full: "true", ...eventOutputs }, {}];
+    if (event === "pull_request") {
+      routes.push({ ...disabled, ...eventOutputs });
+      for (const contract of Object.keys(disabled)) {
+        routes.push({ ...disabled, [contract]: "true", ...eventOutputs });
+      }
+    }
+    for (const outputs of routes) {
+      const entries = [...jobs].filter(([id]) => id !== "changes");
+      const before = JSON.stringify(
+        entries
+          .filter(([, lines]) =>
+            eligible(
+              lines.join("\n").replace(/^    needs: .+$/m, "    needs: changes"),
+              outputs,
+              completed,
+              false,
+              contextFor(event, ref),
+            ),
+          )
+          .map(([id]) => id),
+      );
+      for (const results of [
+        completed,
+        { ...completed, lint: "failure" },
+        { ...completed, typecheck: "skipped" },
+        { ...completed, lint: "failure", typecheck: "skipped" },
+        { ...completed, build: "failure" },
+        { ...completed, build: "skipped" },
+      ]) {
+        const after = JSON.stringify(
+          entries
+            .filter(([, lines]) =>
+              eligible(lines.join("\n"), outputs, results, false, contextFor(event, ref)),
+            )
+            .map(([id]) => id),
+        );
+        assert.equal(
+          after,
+          before,
+          `${event} ${ref}: identical selected job sets after failure or skip`,
+        );
+        assert.equal(
+          entries.some(([, lines]) =>
+            eligible(lines.join("\n"), outputs, results, true, contextFor(event, ref)),
+          ),
+          false,
+        );
+      }
+    }
+  }
+  for (const id of heavyCiJobs) {
+    const job = jobs.get(id).join("\n");
+    const outputs = {
+      full: "true",
+      heavy: "true",
+      e2e: id === "playwright-smoke" ? "false" : "true",
+    };
+    assert.equal(eligible(job, outputs, completed, false), true, `${id} is selected`);
+    for (const required of ["format", "lint", "typecheck"]) {
+      assert.equal(
+        eligible(job, outputs, { ...completed, [required]: "in_progress" }, false),
+        false,
+        `${id} waits for ${required}`,
+      );
+    }
+  }
+  assertManualOnlyRouting(jobs, contextFor, selected, all);
   // Cheap runs replace the Ubuntu integration chain with server unit tests.
   const server = jobs.get("server-tests-ubuntu").join("\n");
   assert.match(
@@ -436,12 +647,103 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
   );
 });
 
+test("packaged installation browsers run only nightly and on manual dispatch", () => {
+  const jobs = jobBlocks(readFileSync(ciWorkflowPath, "utf8"));
+  const job = jobs.get("playwright-installation").join("\n");
+  const condition = /^    if: \$\{\{ (.+) \}\}$/m.exec(job)[1];
+  for (const [event_name, ref, expected] of [
+    ["schedule", "refs/heads/main", true],
+    ["workflow_dispatch", "refs/heads/task-branch", true],
+    ["pull_request", "refs/pull/185/merge", false],
+    ["merge_group", "refs/heads/gh-readonly-queue/main/pr-185", false],
+    ["push", "refs/heads/main", false],
+    ["push", "refs/tags/release-26.11.601-beta", false],
+  ]) {
+    for (const cancelled of [false, true]) {
+      assert.equal(
+        runInNewContext(condition, {
+          github: { event_name, ref },
+          cancelled: () => cancelled,
+        }),
+        expected && !cancelled,
+        `${event_name} ${ref}, cancelled=${cancelled}`,
+      );
+    }
+  }
+  assert.match(job, /^    needs: \[changes, format, lint, typecheck\]$/m);
+  assert.match(job, /^    runs-on: ubuntu-24\.04$/m);
+  assert.match(job, /node-version: "22"/);
+  assert.match(job, /run: node scripts\/npm-retry\.mjs ci/);
+  assert.match(job, /run: npx playwright install --with-deps chromium/);
+  assert.match(job, /run: npm run test:e2e:installation --workspace=@getpaseo\/app/);
+  assert.doesNotMatch(job, /run: npm run build|--project=|--grep|continue-on-error/);
+  assert.match(job, /if: \$\{\{ success\(\) \|\| failure\(\) \|\| cancelled\(\) \}\}/);
+  assert.match(job, /uses: actions\/upload-artifact@v4/);
+  assert.match(job, /packages\/app\/test-results\//);
+  assert.match(job, /packages\/app\/playwright-report\//);
+});
+
+test("heavy suites reuse one server-stack build and build locally without it", () => {
+  const jobs = jobBlocks(readFileSync(ciWorkflowPath, "utf8"));
+  const build = jobs.get("build").join("\n");
+  assert.match(build, /run: npm run build:server$/m);
+  assert.match(
+    build,
+    /uses: actions\/upload-artifact@v4\n\s+with:\n\s+name: server-stack-dist\n[\s\S]*retention-days: 1$/m,
+  );
+  // Windows builds natively; typecheck keeps its own build; cheap-only cli-unit never
+  // overlaps the heavy-only build job.
+  const consumers = [...jobs]
+    .filter(([, lines]) => /^    needs: \[.*\bbuild\]$/m.test(lines.join("\n")))
+    .map(([id]) => id);
+  assert.deepEqual(consumers, [
+    "server-tests-ubuntu",
+    "server-tests-macos",
+    "app-tests",
+    ...Array.from({ length: 8 }, (_, index) => `playwright-${index + 1}`),
+    "playwright-smoke",
+    ...Array.from({ length: 3 }, (_, index) => `cli-tests-${index + 1}`),
+  ]);
+  const unpack = /&dist_unpack\n[\s\S]*?run: (.+)$/m.exec(
+    jobs.get("server-tests-ubuntu").join("\n"),
+  );
+  assert.match(
+    unpack[1],
+    /^tar -xzf .+ && echo "PASEO_PREBUILT_SERVER_STACK=1" >> "\$GITHUB_ENV"$/,
+  );
+  // A consumer builds only when the unpack did not succeed, so a missing artifact fails open.
+  for (const id of consumers) {
+    const lines = jobs.get(id);
+    const job = lines.join("\n");
+    if (/^    steps: \*(playwright|cli)_test_steps$/m.test(job)) continue;
+    assert.match(job, /- [*&]dist_unpack$/m, id);
+    lines.forEach((line, index) => {
+      if (!/^\s+run: npm run build\b/.test(line)) return;
+      assert.equal(
+        lines[index - 1].trim(),
+        "if: ${{ env.PASEO_PREBUILT_SERVER_STACK != '1' }}",
+        `${id}: ${line.trim()}`,
+      );
+    });
+  }
+  const runner = readFileSync(new URL("packages/cli/tests/run-all.ts", repoRoot), "utf8");
+  assert.match(runner, /if \(process\.env\.PASEO_PREBUILT_SERVER_STACK === "1"\) \{/);
+});
+
 test("Nix packaging runs on main without allocating pull-request runners", () => {
   const source = readFileSync(nixWorkflowPath, "utf8");
   const trigger = source.split("jobs:", 1)[0];
   assert.match(trigger, /push:\s*\n\s+branches: \[main\]/);
   assert.doesNotMatch(trigger, /pull_request/);
   assert.doesNotMatch(source, /dorny\/paths-filter/);
+  // Desktop packages build only on manual runs while PWA is the only release channel.
+  assert.match(trigger, /^  workflow_dispatch:/m);
+  const darwin = jobBlocks(source).get("build-desktop-darwin").join("\n");
+  assert.match(darwin, /^    if: \$\{\{ github\.event_name == 'workflow_dispatch' \}\}$/m);
+  assert.match(
+    source,
+    /if: \$\{\{ github\.event_name == 'workflow_dispatch' \}\}\n\s+run: nix build \.#desktop -o result-desktop/,
+  );
 });
 
 test("container installation smokes run after merge and on demand, not on pull requests", () => {
@@ -452,13 +754,39 @@ test("container installation smokes run after merge and on demand, not on pull r
   assert.match(trigger, /^  workflow_dispatch:/m);
   assert.match(trigger, /- "docker\/\*\*"/);
   assert.match(source, /architecture: \[amd64, arm64\]/);
+  // Each architecture runs natively; QEMU emulation made the arm64 smoke the slowest job.
+  assert.match(
+    source,
+    /runs-on: \$\{\{ matrix\.architecture == 'arm64' && 'ubuntu-24\.04-arm' \|\| 'ubuntu-latest' \}\}/,
+  );
+  assert.doesNotMatch(source, /setup-qemu-action/);
   assert.match(source, /bash docker\/multiplex\/smoke.sh paseo-container:check/);
+  // Version-only manifest bumps do not rebuild the container; manual runs always do.
+  const jobs = jobBlocks(source);
+  const changes = jobs.get("changes").join("\n");
+  assert.match(changes, /node scripts\/ci-neutralize-version-bumps\.mjs[\s\S]*dorny\/paths-filter/);
+  for (const path of ["docker/**", "package-lock.json", "packages/server/**"]) {
+    assert.ok(changes.includes(`- "${path}"`), path);
+  }
+  const verify = jobs.get("verify").join("\n");
+  assert.match(verify, /^    needs: changes$/m);
+  const condition = /^    if: \$\{\{ (.+) \}\}$/m.exec(verify)[1];
+  const run = (event_name, container) =>
+    runInNewContext(condition, {
+      github: { event_name },
+      needs: { changes: { outputs: container === undefined ? {} : { container } } },
+    });
+  assert.equal(run("push", "false"), false);
+  assert.equal(run("push", "true"), true);
+  assert.equal(run("push", undefined), true);
+  assert.equal(run("workflow_dispatch", "false"), true);
+  assert.match(jobs.get("smoke").join("\n"), /^    needs: verify$/m);
 });
 
-test("desktop packaging smokes main pushes and manual runs, not pull requests", () => {
+test("desktop packaging smokes run only on manual runs while PWA is the only channel", () => {
   const source = readFileSync(new URL(".github/workflows/desktop-packages.yml", repoRoot), "utf8");
   const trigger = source.split("jobs:", 1)[0];
-  assert.match(trigger, /push:\s*\n\s+branches: \[main\]/);
+  assert.doesNotMatch(trigger, /^  push:/m);
   assert.doesNotMatch(trigger, /^  pull_request:/m);
   assert.match(trigger, /^  workflow_dispatch:/m);
   assert.doesNotMatch(source, /dorny\/paths-filter/);
@@ -498,8 +826,10 @@ test("stable iOS releases upload once and distribute to external testers before 
 test("eight Playwright shards share two-worker coverage", () => {
   const source = readFileSync(ciWorkflowPath, "utf8");
   const jobs = jobBlocks(source);
-  assert.equal(jobs.size, 25);
+  assert.equal(jobs.size, 28);
   assert.ok(jobs.has("installer-tests"));
+  // The shared server-stack build is a fan-out producer, not a result gate.
+  assert.ok(jobs.has("build"));
   for (let shard = 1; shard <= 8; shard++) {
     const job = jobs.get(`playwright-${shard}`).join("\n");
     assert.match(job, new RegExp(`PLAYWRIGHT_SHARD: "${shard}/8"`));
@@ -531,7 +861,7 @@ test("quality preserves commands and routes each domain independently after fail
   const lint = jobs.get("lint").join("\n");
   for (const command of [
     "npx --yes lockfile-lint --path package-lock.json --type npm --allowed-hosts npm --validate-https --validate-integrity",
-    "npm audit signatures",
+    "npx --yes npm@11.19.1 audit signatures",
     "npm run lint",
   ]) {
     assert.ok(
@@ -600,7 +930,11 @@ test("Windows units and integration run independently with complete routed cover
   assert.match(integration, /run: npm run test:integration --workspace=@getpaseo\/server/);
   assert.doesNotMatch(integration, /test:unit|server_plugin_tests|server_hub_contract/);
   for (const job of [windows, integration]) {
-    assert.match(job, /^    needs: changes$/m, "both phases become eligible independently");
+    assert.match(
+      job,
+      /^    needs: \[changes, format, lint, typecheck\]$/m,
+      "both phases become eligible independently after required checks finish",
+    );
     assert.match(job, /^    runs-on: windows-latest$/m);
     assert.doesNotMatch(job, /continue-on-error|maxWorkers|--exclude/);
     for (const step of [
