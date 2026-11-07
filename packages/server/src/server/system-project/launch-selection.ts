@@ -98,6 +98,11 @@ export interface DefaultLaunchInput {
    * several are usable and the owner has to choose. Without it nothing is adopted.
    */
   adoptPrimary?: (primary: DaemonPrimaryConnection | null) => void | Promise<void>;
+  /**
+   * Re-reads whether the installation's coordinator owns the primary connection. A daemon that
+   * moved back to an older coordinator then returns to the first usable launch.
+   */
+  refreshSupport?: () => Promise<void>;
 }
 
 /**
@@ -145,6 +150,31 @@ async function readUsableProviders(
 export async function resolveDefaultLaunch(
   input: DefaultLaunchInput,
   options: LaunchOptions = {},
+): Promise<Launch | null> {
+  await input.refreshSupport?.();
+  // The reads below are asynchronous. If the owner changes the primary connection, or support
+  // changes, meanwhile, select again once; a second change waits rather than launching on a
+  // superseded choice.
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const before = selectionState(input.getSettings());
+    const launch = await selectDefaultLaunch(input, options);
+    if (selectionState(input.getSettings()) === before) return launch;
+  }
+  return null;
+}
+
+/** What a selection depends on: whether the primary connection applies, and which one it is. */
+function selectionState(settings: MutableDaemonConfig): string {
+  const primary = primaryConnection(settings);
+  return JSON.stringify([
+    primaryConnectionSupported(settings),
+    primary === undefined ? "unset" : primary,
+  ]);
+}
+
+async function selectDefaultLaunch(
+  input: DefaultLaunchInput,
+  options: LaunchOptions,
 ): Promise<Launch | null> {
   const before = input.getSettings();
   if (!primaryConnectionSupported(before)) {

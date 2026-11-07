@@ -18,18 +18,31 @@ function settings(patch: Partial<MutableDaemonConfig> = {}): MutableDaemonConfig
   return { ...MutableDaemonConfigSchema.parse({ mcp: { injectIntoAgents: false } }), ...patch };
 }
 
-function launchInput(config: MutableDaemonConfig, ready: string[], usage: ProviderUsage[] = []) {
+function launchInput(
+  config: MutableDaemonConfig,
+  ready: string[],
+  usage: ProviderUsage[] = [],
+  /** Changes settings while the provider read is in flight, as an owner edit would. */
+  duringRead?: (current: MutableDaemonConfig, read: number) => MutableDaemonConfig,
+) {
   let current = config;
+  let reads = 0;
   const adoptPrimary = vi.fn((primary: MutableDaemonConfig["primaryConnection"]) => {
     current = { ...current, primaryConnection: primary };
   });
   return {
     adoptPrimary,
     current: () => current,
+    set: (next: MutableDaemonConfig) => {
+      current = next;
+    },
     input: {
       providers: {
-        listProviders: async () =>
-          ready.map((provider) => ({ provider, enabled: true, status: "ready" as const })),
+        listProviders: async () => {
+          reads += 1;
+          if (duringRead) current = duringRead(current, reads);
+          return ready.map((provider) => ({ provider, enabled: true, status: "ready" as const }));
+        },
       },
       readUsage: async () => ({ providers: usage }),
       getSettings: () => current,
@@ -198,5 +211,77 @@ describe("resolveDefaultLaunch", () => {
       ["claude", "codex"],
     );
     expect(await resolveDefaultLaunch(chosen.input)).toEqual({ provider: "codex" });
+  });
+
+  test("a supporting coordinator, then an older one on reconnect, gives the first usable launch", async () => {
+    const preferences = {
+      version: 1 as const,
+      revision: 1,
+      providers: {},
+      legacyProfiles: {},
+      installation,
+      defaultProvider: "claude",
+    };
+    const launch = launchInput(
+      settings({
+        sharedProviderPreferences: preferences,
+        installationPrimaryConnection: null,
+        installationPrimaryConnectionSupported: true,
+      }),
+      ["claude", "codex"],
+    );
+    expect(await resolveDefaultLaunch(launch.input)).toBeNull();
+    // The fresh admission read comes from an older coordinator and clears the marker.
+    const refreshSupport = vi.fn(async () => {
+      launch.set({ ...launch.current(), installationPrimaryConnectionSupported: false });
+    });
+    expect(await resolveDefaultLaunch({ ...launch.input, refreshSupport })).toEqual({
+      provider: "claude",
+    });
+    expect(refreshSupport).toHaveBeenCalledTimes(1);
+  });
+
+  test("never launches an installation primary the owner cleared or replaced during the reads", async () => {
+    const preferences = {
+      version: 1 as const,
+      revision: 1,
+      providers: {},
+      legacyProfiles: {},
+      installation,
+    };
+    const base = settings({
+      sharedProviderPreferences: preferences,
+      installationPrimaryConnection: { provider: "claude" },
+      installationPrimaryConnectionSupported: true,
+    });
+    const cleared = launchInput(base, ["claude", "codex"], [], (current, read) =>
+      read === 1 ? { ...current, installationPrimaryConnection: null } : current,
+    );
+    expect(await resolveDefaultLaunch(cleared.input)).toBeNull();
+    const replaced = launchInput(base, ["claude", "codex"], [], (current, read) =>
+      read === 1 ? { ...current, installationPrimaryConnection: { provider: "codex" } } : current,
+    );
+    expect(await resolveDefaultLaunch(replaced.input)).toEqual({ provider: "codex" });
+  });
+
+  test("never launches a superseded standalone primary, and waits if it keeps changing", async () => {
+    const replaced = launchInput(
+      settings({ primaryConnection: { provider: "claude" } }),
+      ["claude", "codex"],
+      [],
+      (current, read) =>
+        read === 1 ? { ...current, primaryConnection: { provider: "codex" } } : current,
+    );
+    expect(await resolveDefaultLaunch(replaced.input)).toEqual({ provider: "codex" });
+    const churning = launchInput(
+      settings({ primaryConnection: { provider: "claude" } }),
+      ["claude", "codex"],
+      [],
+      (current, read) => ({
+        ...current,
+        primaryConnection: { provider: read % 2 ? "codex" : "claude" },
+      }),
+    );
+    expect(await resolveDefaultLaunch(churning.input)).toBeNull();
   });
 });

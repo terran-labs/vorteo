@@ -23,6 +23,7 @@ import {
 import {
   assertPrimaryConnectionProjection,
   changesPrimaryConnectionCopy,
+  reconciledSupportMarker,
 } from "./execution-installation/settings/primary-connection.js";
 import {
   loadPersistedConfig,
@@ -868,6 +869,24 @@ export class DaemonConfigStore {
    * the answer stale; the read then repeats against the new settings instead of failing a
    * sign-in the owner cannot retry meaningfully. Persistent churn still fails.
    */
+  /**
+   * Re-reads whether the coordinator owns the primary connection, so a daemon that moved back
+   * to an older coordinator stops waiting for a choice it can never receive. A failed read keeps
+   * the last known answer.
+   */
+  public async refreshPrimaryConnectionSupport(): Promise<void> {
+    if (!this.current.sharedProviderPreferences?.installation) return;
+    let admission: InstallationSettingsAdmission | null;
+    try {
+      admission = await this.readInstallationSettingsAuthority();
+    } catch {
+      return;
+    }
+    if (!admission) return;
+    if (reconciledSupportMarker(this.current, {}, admission) === undefined) return;
+    this.applyPatch({}, admission);
+  }
+
   public async readInstallationSettingsAuthority(): Promise<InstallationSettingsAdmission | null> {
     for (let attempt = 1; ; attempt += 1) {
       const before = this.current;
@@ -919,6 +938,8 @@ export class DaemonConfigStore {
     assertInstallationSettingsProjection({ current: this.current, patch: parsed, admission });
     assertProjectPoliciesProjection({ current: this.current, patch: parsed, admission });
     assertPrimaryConnectionProjection({ current: this.current, patch: parsed, admission });
+    const marker = reconciledSupportMarker(this.current, parsed, admission);
+    if (marker !== undefined) parsed.installationPrimaryConnectionSupported = marker;
     this.validateInstallationProjection(parsed);
     if (parsed.sharedProviderPreferences) {
       const revision = this.current.sharedProviderPreferences?.revision ?? null;

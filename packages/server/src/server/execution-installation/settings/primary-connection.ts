@@ -46,6 +46,29 @@ export function changesPrimaryConnectionCopy(
 }
 
 /**
+ * The support marker a write should leave, or undefined to leave it alone. A fresh admission
+ * answer decides it: only coordinators that own the setting answer with the key. A projection
+ * without the marker comes from an older coordinator, which clears it. Clearing never grants
+ * authority, so it needs no admission; transport failures never reach here and keep it.
+ */
+export function reconciledSupportMarker(
+  current: MutableDaemonConfig,
+  patch: MutableDaemonConfigPatch,
+  admission?: InstallationSettingsAdmission,
+): boolean | undefined {
+  if (!current.sharedProviderPreferences?.installation) return undefined;
+  const known = current.installationPrimaryConnectionSupported ?? false;
+  if (admission) {
+    const supported = admission.settings.primaryConnection !== undefined;
+    return supported === known ? undefined : supported;
+  }
+  const projection = patch.expectedInstallationResourceRevision !== undefined;
+  return projection && patch.installationPrimaryConnectionSupported === undefined && known
+    ? false
+    : undefined;
+}
+
+/**
  * An installation daemon's copy only mirrors the coordinator, and its own standalone choice is
  * closed while the installation owns the setting.
  */

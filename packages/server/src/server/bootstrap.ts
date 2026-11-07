@@ -1937,6 +1937,7 @@ export async function createPaseoDaemon(
         readUsage: (options) => providerUsageService.listUsage(options),
         getSettings: () => daemonConfigStore.get(),
         adoptPrimary: adoptPrimaryConnection,
+        refreshSupport: () => daemonConfigStore.refreshPrimaryConnectionSupport(),
       }),
     profileProvider: (profileId) => profileProvider(profileId, daemonConfigStore.get()),
     accounts: daemonFactoryAccounts({
@@ -1962,6 +1963,7 @@ export async function createPaseoDaemon(
       readUsage: (options) => providerUsageService.listUsage(options),
       getSettings: () => daemonConfigStore.get(),
       adoptPrimary: adoptPrimaryConnection,
+      refreshSupport: () => daemonConfigStore.refreshPrimaryConnectionSupport(),
       // Any settings change, such as a newly connected account or a new default profile.
       onSettingsChange: (handler) => daemonConfigStore.onChange(() => handler()),
       createAgent,
