@@ -787,6 +787,20 @@ export class ProjectFactoryService {
   }
 
   /**
+   * A role's first prompt. A role `.github/factory.json` gives to another installation gets a
+   * prompt to wait instead, and its status line says why, so turning Factory on never starts a
+   * second Triage or Releases.
+   */
+  private async firstPrompt(
+    record: PersistedProjectRecord,
+    role: ProjectFactoryRole,
+  ): Promise<string> {
+    if (!(role.id in PROJECT_FACTORY_ASSIGNED_ROLES)) return role.firstPrompt;
+    if (await this.assignedHere(record, role.id, role.title)) return role.firstPrompt;
+    return `Factory was just turned on for this project, but .github/factory.json does not assign ${role.title} to this installation (${this.installation(record.projectId)}). Do nothing now; the Factory service wakes you if that changes.`;
+  }
+
+  /**
    * On a Foreman tick, records other installations' claim branches and returns the stale ones
    * to tell it about. Other roles get none.
    */
@@ -949,7 +963,7 @@ export class ProjectFactoryService {
         await this.input.agents.setSystemPrompt(adopted.id, instructions);
         await this.input.agents.sendPrompt(
           adopted.id,
-          `${adoptedPrompt(instructions)}\n\n${role.firstPrompt}`,
+          `${adoptedPrompt(instructions)}\n\n${await this.firstPrompt(record, role)}`,
           { steer: true },
         );
         this.logger.info({ projectId, role: role.id, agentId: adopted.id }, "Adopted Factory role");
@@ -973,7 +987,10 @@ export class ProjectFactoryService {
       });
     } else {
       workspaceId = await this.ensureRoleWorkspace(record, role, state.workspaceId);
-      await this.createRoleAgent(record, project, role, workspaceId, instructions);
+      await this.createRoleAgent(record, project, role, workspaceId, {
+        systemPrompt: instructions,
+        firstPrompt: await this.firstPrompt(record, role),
+      });
     }
     return workspaceId ? this.bindMembership(record, role, workspaceId) : null;
   }
@@ -1002,8 +1019,9 @@ export class ProjectFactoryService {
     project: ProjectState,
     role: ProjectFactoryRole,
     workspaceId: string,
-    systemPrompt: string,
+    prompts: { systemPrompt: string; firstPrompt: string },
   ): Promise<void> {
+    const { systemPrompt } = prompts;
     const configured = project.roles[role.id]?.launch;
     const launch: Launch | null = configured?.provider
       ? {
@@ -1028,7 +1046,7 @@ export class ProjectFactoryService {
           workspaceId,
           config: { systemPrompt },
           labels: { [PROJECT_FACTORY_ROLE_LABEL]: roleLabelValue(record.projectId, role.id) },
-          initialPrompt: role.firstPrompt,
+          initialPrompt: prompts.firstPrompt,
           promptFailure: "log",
           background: true,
           notifyOnFinish: false,

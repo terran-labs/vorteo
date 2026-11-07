@@ -1,5 +1,8 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { z } from "zod";
 import {
   projectFactoryClaimBranch,
@@ -23,13 +26,18 @@ export interface GitHubResponse {
 
 /** The GitHub REST calls Factory claims need. Tests inject an in-memory repository. */
 export interface FactoryGitHub {
-  rest(method: "GET" | "POST" | "DELETE", path: string, body?: unknown): Promise<GitHubResponse>;
+  rest(method: "GET" | "POST" | "DELETE", route: string, body?: unknown): Promise<GitHubResponse>;
+  /**
+   * Deletes a branch only if it still points at `sha`, atomically on GitHub's side. Resolves
+   * false when the branch moved, so a push in the meantime is never deleted.
+   */
+  deleteBranchAt(repository: string, branch: string, sha: string): Promise<boolean>;
 }
 
 /** Runs `gh api --include` and returns the HTTP status and parsed body, including 4xx. */
 export const defaultFactoryGitHub: FactoryGitHub = {
-  rest(method, path, body) {
-    const args = ["api", "--include", "-X", method, path];
+  rest(method, route, body) {
+    const args = ["api", "--include", "-X", method, route];
     if (body !== undefined) args.push("--input", "-");
     return new Promise((resolve, reject) => {
       const child = execFile(
@@ -45,7 +53,43 @@ export const defaultFactoryGitHub: FactoryGitHub = {
       if (body !== undefined) child.stdin?.end(JSON.stringify(body));
     });
   },
+  async deleteBranchAt(repository, branch, sha) {
+    // A deletion with an explicit lease is a compare-and-swap on the remote ref. The push runs
+    // from an empty scratch repository with gh's credentials, so no checkout or hook is involved.
+    const scratch = await mkdtemp(path.join(tmpdir(), "vorteo-factory-release-"));
+    try {
+      await run("git", ["init", "--quiet", scratch]);
+      const { status, stderr } = await run("git", [
+        "-C",
+        scratch,
+        "-c",
+        "credential.helper=",
+        "-c",
+        "credential.helper=!gh auth git-credential",
+        "push",
+        "--porcelain",
+        `--force-with-lease=refs/heads/${branch}:${sha}`,
+        `https://github.com/${repository}.git`,
+        `:refs/heads/${branch}`,
+      ]);
+      if (status === 0) return true;
+      if (/stale info|rejected/.test(stderr)) return false;
+      throw new FactoryGitHubError(firstLine(stderr) || `git push exited with ${status}.`);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  },
 };
+
+function run(command: string, args: string[]): Promise<{ status: number; stderr: string }> {
+  return new Promise((resolve) => {
+    execFile(command, args, { timeout: 60_000 }, (error, stdout, stderr) => {
+      let status = 0;
+      if (error) status = typeof error.code === "number" ? error.code : 1;
+      resolve({ status, stderr: `${stderr}\n${stdout}` });
+    });
+  });
+}
 
 function parseIncluded(stdout: string): GitHubResponse | null {
   const match = /^HTTP\/[\d.]+ (\d{3})/.exec(stdout);
@@ -195,10 +239,14 @@ export async function claimIssue(ctx: ClaimContext): Promise<ProjectFactoryClaim
     expect(created, [201], `creating ${branch}`);
   }
   const head = await readHead(ctx, branch);
-  if (recovering && head === intent.baseSha && (await foreignMarkers(ctx, branch)).length === 0) {
-    // This installation's own claim from before a crash or lost response.
-    await ctx.write({ ...intent, status: "held", claimedAt: ctx.now.toISOString() });
-    return result("held", head);
+  if (recovering && head === intent.baseSha) {
+    // This installation's own claim from before a crash or lost response, unless another
+    // installation's marker says it created the branch at the same commit. GitHub cannot tell
+    // the two apart, so that case waits for the owner instead of resolving either way.
+    const rivals = await foreignMarkers(ctx, branch);
+    const status = rivals.length === 0 ? "held" : "conflict";
+    await ctx.write({ ...intent, status, claimedAt: ctx.now.toISOString() });
+    return result(status, head);
   }
   await ctx.write(undefined);
   return result("foreign", head);
@@ -244,17 +292,13 @@ export async function releaseClaim(ctx: ReleaseContext): Promise<ProjectFactoryC
     [201],
     `archiving ${branch}`,
   );
-  // The claim branch moved since the owner was asked: keep it, and drop only the archive
-  // this call made, so its former owner does not read a release that never happened.
-  if ((await readHead(ctx, branch)) !== head) {
+  // Deleted only while it still points at the archived head. If it moved since the owner was
+  // asked, keep it, and drop only the archive this call made, so its former owner does not
+  // read a release that never happened.
+  if (!(await ctx.github.deleteBranchAt(ctx.repository, branch, head))) {
     await ctx.github.rest("DELETE", `repos/${ctx.repository}/git/refs/heads/${archivedAs}`);
     throw new FactoryGitHubError(`${branch} moved while releasing it; it is active again.`);
   }
-  expect(
-    await ctx.github.rest("DELETE", `repos/${ctx.repository}/git/refs/heads/${branch}`),
-    [204],
-    `releasing ${branch}`,
-  );
   return { issue: ctx.issue, branch, outcome: "archived", archivedAs, headSha: head };
 }
 

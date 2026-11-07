@@ -52,6 +52,15 @@ class FakeGitHub implements FactoryGitHub {
   factoryJson: string | null = null;
   /** Creates the next ref, then fails as if the daemon crashed before reading the response. */
   crashAfterCreate = false;
+  /** Runs just before a leased delete, as a push landing in that moment would. */
+  beforeDelete: (() => void) | null = null;
+
+  async deleteBranchAt(_repository: string, branch: string, sha: string): Promise<boolean> {
+    this.beforeDelete?.();
+    if (this.refs.get(`heads/${branch}`) !== sha) return false;
+    this.refs.delete(`heads/${branch}`);
+    return true;
+  }
 
   async rest(method: string, route: string, body?: unknown): Promise<GitHubResponse> {
     const resource = route.replace(/^repos\/[^/]+\/[^/]+/, "");
@@ -121,6 +130,7 @@ class FakeAgents {
   readonly switches: { agentId: string; provider: string; profileId?: string }[] = [];
   readonly switchCharters: string[] = [];
   created = 0;
+  readonly initialPrompts = new Map<string, string | undefined>();
   busy = new Set<string>();
   switchFails = false;
   /** Agents whose next prompts throw. */
@@ -162,6 +172,7 @@ class FakeAgents {
       labels: input.labels,
     });
     (record as { config: unknown }).config = input.config;
+    this.initialPrompts.set(id, input.initialPrompt ?? undefined);
     await input.onCreated?.({ agentId: id } as never);
     return {} as never;
   };
@@ -1620,7 +1631,8 @@ describe("several installations on one repository", () => {
         updated_at: T0,
       },
     ]);
-    expect((await claim(restarted, 9)).outcome).toBe("foreign");
+    // GitHub cannot tell that rival from this installation's own branch, so the owner decides.
+    expect((await claim(restarted, 9)).outcome).toBe("conflict");
 
     // A rival marker on a held branch is a conflict until the owner picks this installation.
     github.comments.set(8, [
@@ -1662,6 +1674,17 @@ describe("several installations on one repository", () => {
     expect(staleTicks()).toHaveLength(1);
     expect(staleTicks()[0]!.prompt).toContain("factory/issue-5");
 
+    // A push landing during the release keeps the branch and drops the archive it made.
+    const pushed = "p".repeat(40);
+    github.beforeDelete = () => github.refs.set("heads/factory/issue-5", pushed);
+    await expect(release(ours, 5)).rejects.toThrow("moved while releasing");
+    expect(github.refs.get("heads/factory/issue-5")).toBe(pushed);
+    expect([...github.refs.keys()].some((name) => name.startsWith("heads/factory-released/"))).toBe(
+      false,
+    );
+    github.beforeDelete = null;
+    github.refs.set("heads/factory/issue-5", MAIN);
+
     expect(await release(ours, 5)).toMatchObject({ outcome: "archived", headSha: MAIN });
     expect(github.refs.has("heads/factory/issue-5")).toBe(false);
     expect([...github.refs].filter(([name]) => name.startsWith("heads/factory-released/"))).toEqual(
@@ -1672,15 +1695,18 @@ describe("several installations on one repository", () => {
   });
 
   test("factory.json turns Triage and Releases off unless it names this installation", async () => {
-    const ours = service();
-    const state = await enable(ours);
-    const triage = roleAgent(state, "factory-triage");
-    const releases = roleAgent(state, "factory-releases");
     github.factoryJson = JSON.stringify({
       version: 1,
       triage: RIVAL,
       releases: `srv_test/${PROJECT}`,
     });
+    const ours = service();
+    const state = await enable(ours);
+    const triage = roleAgent(state, "factory-triage");
+    const releases = roleAgent(state, "factory-releases");
+    // Turning Factory on never starts a Triage pass another installation owns.
+    expect(agents.initialPrompts.get(triage)).toContain("Do nothing now");
+    expect(agents.initialPrompts.get(releases)).not.toContain("Do nothing now");
     const woke = (agentId: string) =>
       agents.prompts.filter((prompt) => prompt.agentId === agentId).length;
 
