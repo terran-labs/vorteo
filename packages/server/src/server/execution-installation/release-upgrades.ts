@@ -3,8 +3,13 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
+  CoordinatorFollowJobSchema,
   InstallationUpgradeSchema,
   UpgradeStepNameSchema,
+  type AgentUpdateStatus,
+  type CoordinatorFollowDecision,
+  type CoordinatorFollowJob,
+  type CoordinatorFollowStatus,
   type InstallationUpgrade,
   type ReleaseNotes,
   type UpgradeDecision,
@@ -105,6 +110,8 @@ export interface AdoptionOutcome {
 
 export interface UpgradePorts {
   now(): Date;
+  /** Why another installation operation keeps an upgrade from starting now, or null. */
+  conflict(): string | null;
   /** True while this installation predates the installer layout (no `deployment`). */
   adoptionRequired: boolean;
   /** Starts the installer engine's in-place adoption, detached; it restarts this coordinator. */
@@ -203,6 +210,28 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+type SwapResult = { status: "waiting" } | { status: HandoffOutcome["status"]; detail: string };
+
+/**
+ * Where a launched coordinator swap stands. The helper restarts this process, so its outcome
+ * file is read by whichever coordinator runs next; one that never reports is judged after the
+ * deadline by the release this process runs.
+ */
+function coordinatorSwapResult(
+  ports: Pick<UpgradePorts, "now" | "runningRelease" | "coordinatorDeadlineMs">,
+  input: { outcome: HandoffOutcome | null; launchedAt: string; next: string | undefined },
+): SwapResult {
+  if (input.outcome) return { status: input.outcome.status, detail: input.outcome.detail };
+  const elapsed = ports.now().getTime() - Date.parse(input.launchedAt);
+  if (elapsed < ports.coordinatorDeadlineMs) return { status: "waiting" };
+  return ports.runningRelease() === input.next
+    ? { status: "succeeded", detail: "The coordinator runs the new release." }
+    : {
+        status: "failed",
+        detail: "The coordinator handoff did not report and the previous coordinator is running.",
+      };
+}
+
 export class InstallationUpgrades {
   private records: UpgradeRecord[];
   private draining = false;
@@ -234,6 +263,11 @@ export class InstallationUpgrades {
     return next;
   }
 
+  private refuseConflict(): void {
+    const conflict = this.ports.conflict();
+    if (conflict) throw new RestartRequestError(conflict);
+  }
+
   /** Why a pending or approved upgrade was withdrawn without the owner, such as a newer release. */
   withdraw(id: string, detail: string): InstallationUpgrade {
     const record = this.records.find((item) => item.id === id);
@@ -250,6 +284,7 @@ export class InstallationUpgrades {
     const record = this.records.find((item) => item.id === id);
     if (record?.status !== "pending" || record.origin !== "update-check")
       throw new RestartRequestError("Only a pending update-check offer is approved automatically");
+    this.refuseConflict();
     return project(
       this.save(record, {
         status: "approved",
@@ -267,6 +302,7 @@ export class InstallationUpgrades {
   ): Promise<InstallationUpgrade> {
     if (this.activeRecord())
       throw new RestartRequestError("Another upgrade is already pending or running");
+    this.refuseConflict();
     const sourceCommit = await this.ports.resolveRelease(release);
     // The update check, its routes and the owner can request at once; the first one wins.
     if (this.activeRecord())
@@ -302,7 +338,8 @@ export class InstallationUpgrades {
     if (
       (decision === "approve" || decision === "approve-after-work") &&
       record.status === "pending"
-    )
+    ) {
+      this.refuseConflict();
       return project(
         this.save(record, {
           status: "approved",
@@ -311,6 +348,7 @@ export class InstallationUpgrades {
           detail: "Approved. Starting.",
         }),
       );
+    }
     // Install now on an upgrade waiting for current work: later restarts stop waiting. A Host
     // restart already queued to finish current turns is forced from Installation controls.
     if (
@@ -578,19 +616,11 @@ export class InstallationUpgrades {
       this.ports.launchCoordinatorSwap(project(launched), next, previous);
       return { status: "waiting", detail: "Restarting the coordinator on the new release." };
     }
-    const outcome = this.ports.coordinatorOutcome(record.id);
-    if (outcome?.status === "succeeded") return { status: "succeeded", detail: outcome.detail };
-    if (outcome?.status === "rolled-back") return { status: "rolled-back", detail: outcome.detail };
-    if (outcome?.status === "failed") return { status: "failed", detail: outcome.detail };
-    const elapsed = this.ports.now().getTime() - Date.parse(state.coordinatorLaunchedAt);
-    if (elapsed < this.ports.coordinatorDeadlineMs) return { status: "waiting" };
-    // The helper never reported. Judge by what this process runs.
-    return this.ports.runningRelease() === state.coordinatorNext
-      ? { status: "succeeded", detail: "The coordinator runs the new release." }
-      : {
-          status: "failed",
-          detail: "The coordinator handoff did not report and the previous coordinator is running.",
-        };
+    return coordinatorSwapResult(this.ports, {
+      outcome: this.ports.coordinatorOutcome(record.id),
+      launchedAt: state.coordinatorLaunchedAt,
+      next: state.coordinatorNext,
+    });
   }
 
   /**
@@ -768,5 +798,286 @@ export class InstallationUpgrades {
       detail: `Dev's daemon runs release ${record.sourceCommit.slice(0, 12)}; its image was kept.`,
       private: { devReplacing: false },
     };
+  }
+}
+
+const CoordinatorFollowJournalSchema = z.strictObject({
+  version: z.literal(1),
+  jobs: z.array(CoordinatorFollowJobSchema),
+});
+
+export interface CoordinatorFollowJournal {
+  read(): CoordinatorFollowJob[];
+  write(jobs: CoordinatorFollowJob[]): void;
+}
+
+export function createCoordinatorFollowJournal(directory: string): CoordinatorFollowJournal {
+  const file = path.join(directory, "journal.json");
+  return {
+    read: () =>
+      existsSync(file)
+        ? CoordinatorFollowJournalSchema.parse(JSON.parse(readFileSync(file, "utf8"))).jobs
+        : [],
+    write: (jobs) =>
+      writePrivateFileAtomicSync(
+        file,
+        JSON.stringify({ version: 1, jobs: jobs.slice(-RETAINED_UPGRADES) }, null, 2),
+      ),
+  };
+}
+
+export interface CoordinatorFollowPorts extends Pick<
+  UpgradePorts,
+  "now" | "hostRelease" | "runningRelease" | "coordinatorRelease" | "coordinatorDeadlineMs"
+> {
+  /** Null when the coordinator can replace itself; otherwise why it cannot. */
+  replacement: string | null;
+  /** Why another installation operation, such as a release upgrade, blocks this now, or null. */
+  conflict(): string | null;
+  /** True when the release holds the coordinator entrypoint this process runs. */
+  hasCoordinator(release: string): boolean;
+  /** Starts the detached swap helper; it restarts this process. */
+  launchSwap(job: CoordinatorFollowJob, next: string, previous: string): void;
+  swapOutcome(jobId: string): HandoffOutcome | null;
+}
+
+export type AgentCoordinatorFollow = NonNullable<AgentUpdateStatus["coordinatorFollow"]>;
+
+/** How long a finished job stays in the status, so the owner sees how it ended. */
+const FOLLOW_RESULT_MS = 24 * 60 * 60_000;
+
+function followIsActive(job: CoordinatorFollowJob): boolean {
+  return ["pending", "approved", "running"].includes(job.status);
+}
+
+/**
+ * Moves the coordinator onto the Host's selected release. Host source updates repoint the Host
+ * release link only, and installations that track `main` never receive the release tags that
+ * upgrades replace the coordinator for. The owner approves one job bound to the exact Host
+ * release reviewed; it then runs the release upgrade's coordinator swap. Every transition is
+ * written before its effect, so the coordinator that starts next resumes from the journal.
+ */
+export class CoordinatorFollow {
+  private jobs: CoordinatorFollowJob[];
+
+  constructor(
+    private readonly journal: CoordinatorFollowJournal,
+    private readonly ports: CoordinatorFollowPorts,
+  ) {
+    this.jobs = journal.read();
+  }
+
+  /** The job approved or running. A release upgrade must not start beside it. */
+  dispatching(): CoordinatorFollowJob | null {
+    return this.jobs.find((job) => job.status === "approved" || job.status === "running") ?? null;
+  }
+
+  job(id: string): CoordinatorFollowJob | null {
+    return this.jobs.find((job) => job.id === id) ?? null;
+  }
+
+  status(): CoordinatorFollowStatus {
+    return { ...this.availability(), job: this.shownJob() };
+  }
+
+  agentStatus(): AgentCoordinatorFollow {
+    const { available, detail, job } = this.status();
+    return { available, detail, job };
+  }
+
+  request(next: string): CoordinatorFollowJob {
+    if (this.jobs.some(followIsActive))
+      throw new RestartRequestError("A coordinator update is already waiting or running");
+    const { available, detail, current } = this.availability();
+    if (!available || !current) throw new RestartRequestError(detail);
+    if (current.hostRelease !== next)
+      throw new RestartRequestError(
+        "The Host release changed. Review the coordinator update again.",
+      );
+    const job = CoordinatorFollowJobSchema.parse({
+      id: randomUUID(),
+      revision: randomUUID(),
+      createdAt: this.ports.now().toISOString(),
+      status: "pending",
+      detail: "Waiting for owner approval.",
+      next,
+    });
+    this.jobs = [...this.jobs, job];
+    this.journal.write(this.jobs);
+    return job;
+  }
+
+  decide(
+    id: string,
+    revision: string,
+    decision: CoordinatorFollowDecision["decision"],
+  ): CoordinatorFollowJob {
+    const job = this.jobs.find((item) => item.id === id);
+    if (!job) throw new RestartRequestError("Coordinator update not found");
+    if (job.revision !== revision)
+      throw new RestartRequestError("The coordinator update changed. Review it again.");
+    if (decision === "approve" && job.status === "pending") {
+      const refusal = this.refusal(job);
+      if (refusal) {
+        this.finish(job, "cancelled", refusal);
+        throw new RestartRequestError(refusal);
+      }
+      return this.save(job, {
+        status: "approved",
+        approvedAt: this.ports.now().toISOString(),
+        detail: "Approved. Starting.",
+      });
+    }
+    if (decision === "reject" && job.status === "pending")
+      return this.finish(job, "rejected", "Rejected by the owner.");
+    if (decision === "cancel" && (job.status === "pending" || job.status === "approved"))
+      return this.finish(job, "cancelled", "Cancelled by the owner.");
+    throw new RestartRequestError(
+      `A coordinator update that is ${job.status} cannot be changed that way`,
+    );
+  }
+
+  /** Starts an approved job or follows a running one. Safe to call repeatedly. */
+  drain(): void {
+    const job = this.dispatching();
+    if (job?.status === "approved") this.dispatch(job);
+    else if (job?.status === "running") this.follow(job);
+  }
+
+  private dispatch(job: CoordinatorFollowJob): void {
+    const refusal = this.refusal(job);
+    if (refusal) {
+      this.finish(job, "failed", refusal);
+      return;
+    }
+    let previous: string;
+    try {
+      previous = this.ports.coordinatorRelease();
+    } catch (error) {
+      this.finish(job, "failed", `The coordinator release link cannot be read: ${message(error)}`);
+      return;
+    }
+    if (previous === job.next && this.ports.runningRelease() === job.next) {
+      this.finish(job, "succeeded", "The coordinator already runs the Host release.");
+      return;
+    }
+    // Recorded before the launch: the helper restarts this process.
+    const running = this.save(job, {
+      status: "running",
+      previous,
+      startedAt: this.ports.now().toISOString(),
+      detail: "Restarting the coordinator on the Host release.",
+    });
+    try {
+      this.ports.launchSwap(running, job.next, previous);
+    } catch (error) {
+      this.finish(
+        running,
+        "failed",
+        `The coordinator replacement did not start: ${message(error)}`,
+      );
+    }
+  }
+
+  private follow(job: CoordinatorFollowJob): void {
+    const result = coordinatorSwapResult(this.ports, {
+      outcome: this.ports.swapOutcome(job.id),
+      launchedAt: job.startedAt ?? job.createdAt,
+      next: job.next,
+    });
+    if (result.status === "succeeded" && this.ports.runningRelease() !== job.next) {
+      // The helper sees only a new process answer. One started outside the link runs on.
+      this.finish(
+        job,
+        "failed",
+        "The coordinator restarted but still runs its previous release. Its service does not start through the release link.",
+      );
+      return;
+    }
+    if (result.status !== "waiting") this.finish(job, result.status, result.detail);
+  }
+
+  /** Why an approved job must not start now: the reviewed Host release no longer applies. */
+  private refusal(job: CoordinatorFollowJob): string | null {
+    if (this.ports.replacement) return this.ports.replacement;
+    const conflict = this.ports.conflict();
+    if (conflict) return conflict;
+    let host: string;
+    try {
+      host = this.ports.hostRelease();
+    } catch (error) {
+      return `The Host release cannot be read: ${message(error)}`;
+    }
+    if (host !== job.next)
+      return "The Host release changed after this update was reviewed. Review it again.";
+    if (!this.ports.hasCoordinator(job.next))
+      return "The Host release has no coordinator to start.";
+    return null;
+  }
+
+  private availability(): Omit<CoordinatorFollowStatus, "job"> {
+    if (this.ports.replacement)
+      return { available: false, detail: this.ports.replacement, current: null };
+    let current: NonNullable<CoordinatorFollowStatus["current"]>;
+    try {
+      current = {
+        coordinatorRelease: this.ports.coordinatorRelease(),
+        runningRelease: this.ports.runningRelease(),
+        hostRelease: this.ports.hostRelease(),
+      };
+    } catch (error) {
+      return {
+        available: false,
+        detail: `The coordinator and Host releases cannot be read: ${message(error)}`,
+        current: null,
+      };
+    }
+    const unavailable = this.unavailableReason(current);
+    return unavailable
+      ? { available: false, detail: unavailable, current }
+      : {
+          available: true,
+          detail: "The coordinator runs an older release than the Host.",
+          current,
+        };
+  }
+
+  private unavailableReason(current: NonNullable<CoordinatorFollowStatus["current"]>) {
+    const conflict = this.ports.conflict();
+    if (conflict) return conflict;
+    const matches =
+      current.coordinatorRelease === current.hostRelease &&
+      current.runningRelease === current.hostRelease;
+    if (matches) return "The coordinator already runs the Host release.";
+    if (!this.ports.hasCoordinator(current.hostRelease))
+      return "The Host release has no coordinator to start.";
+    return null;
+  }
+
+  private shownJob(): CoordinatorFollowJob | null {
+    const active = this.jobs.find(followIsActive);
+    if (active) return active;
+    const latest = this.jobs.at(-1);
+    if (!latest?.finishedAt) return null;
+    const age = this.ports.now().getTime() - Date.parse(latest.finishedAt);
+    return age < FOLLOW_RESULT_MS ? latest : null;
+  }
+
+  private finish(
+    job: CoordinatorFollowJob,
+    status: CoordinatorFollowJob["status"],
+    detail: string,
+  ): CoordinatorFollowJob {
+    return this.save(job, { status, detail, finishedAt: this.ports.now().toISOString() });
+  }
+
+  private save(
+    job: CoordinatorFollowJob,
+    changes: Partial<CoordinatorFollowJob>,
+  ): CoordinatorFollowJob {
+    const next = CoordinatorFollowJobSchema.parse({ ...job, ...changes, revision: randomUUID() });
+    this.jobs = this.jobs.map((item) => (item.id === job.id ? next : item));
+    this.journal.write(this.jobs);
+    return next;
   }
 }

@@ -1807,13 +1807,22 @@ for (const destinationMode of ["existing", "new"] as const) {
       await page.getByTestId("agent-preset-selector").click();
       if (testInfo.project.name === "phone")
         await page.getByTestId("preset-section-environment").click();
-      await expect(page.getByTestId("execution-environment-host-icon").first()).toBeVisible();
-      await expect(page.getByTestId("execution-environment-container-icon").first()).toBeVisible();
+      const picker = page.getByTestId("account-preset-menu").filter({ visible: true });
+      await expect(
+        picker
+          .getByTestId(`preset-environment-${daemons[1]!.serverId}`)
+          .getByTestId("execution-environment-host-icon"),
+      ).toBeVisible();
+      await expect(
+        picker
+          .getByTestId(`preset-environment-${daemons[0]!.serverId}`)
+          .getByTestId("execution-environment-container-icon"),
+      ).toBeVisible();
       await page.getByTestId(`preset-environment-${destinationServerId}`).click();
       await page.getByTestId("preset-account-mock").click();
       await page.getByRole("button", { name: "Browser handoff", exact: true }).click();
       await expect(
-        page
+        picker
           .getByTestId(`execution-environment-${destinationKind}-icon`)
           .first()
           .locator("svg")
@@ -2063,15 +2072,16 @@ test("shared profile editor renders cross-environment model compatibility", asyn
     });
     expect(seeded.ok()).toBe(true);
     await page.goto(`${origin}/settings/accounts/claude`);
-    const dialog = page.getByTestId("agent-profile-page");
-    const model = page.getByTestId("agent-profile-model-trigger");
-    const modelField = page.getByTestId("agent-profile-model-field");
+    const settings = page.getByTestId("settings-scroll-page").filter({ visible: true });
+    const dialog = page.getByTestId("agent-profile-page").filter({ visible: true });
+    const model = dialog.getByTestId("agent-profile-model-trigger");
+    const modelField = dialog.getByTestId("agent-profile-model-field");
     const capture = async (name: string) => {
       await modelField.scrollIntoViewIfNeeded();
       await page.screenshot({ path: info.outputPath(`${name}.png`) });
     };
-    await expect(page.getByTestId(`agent-profile-edit-${savedAliasId}`)).toBeVisible();
-    await page.getByRole("button", { name: "Add profile", exact: true }).click();
+    await expect(settings.getByTestId(`agent-profile-edit-${savedAliasId}`)).toBeVisible();
+    await settings.getByRole("button", { name: "Add profile", exact: true }).click();
     await expect(dialog).toBeVisible();
     await expect(model).toContainText("Common Opus");
     await expect(dialog).not.toContainText("does not support this model");
@@ -2087,8 +2097,8 @@ test("shared profile editor renders cross-environment model compatibility", asyn
       modelField.getByText("Dev container does not support this model.", { exact: true }),
     ).toBeVisible();
     await capture("explicit-incompatible");
-    await page.getByRole("textbox", { name: "Name", exact: true }).fill("Explicit incompatible");
-    await page.getByTestId("agent-profile-save-button").click();
+    await dialog.getByRole("textbox", { name: "Name", exact: true }).fill("Explicit incompatible");
+    await dialog.getByTestId("agent-profile-save-button").click();
     await expect(dialog).not.toBeVisible();
     const saved = await readProfiles();
     const incompatible = saved.providers.claude.workflows.find(
@@ -2096,22 +2106,22 @@ test("shared profile editor renders cross-environment model compatibility", asyn
     );
     expect(incompatible.model).toBe("host-only-opus");
     expect(incompatible.excludedEnvironments ?? []).toEqual([]);
-    await page.getByTestId(`agent-profile-edit-${incompatible.id}`).click();
+    await settings.getByTestId(`agent-profile-edit-${incompatible.id}`).click();
     await expect(model).toContainText("Host-only Opus");
     await expect(
       modelField.getByText("Dev container does not support this model.", { exact: true }),
     ).toBeVisible();
     await capture("saved-incompatible");
-    await page.getByTestId("agent-profile-back-button").click();
+    await dialog.getByTestId("agent-profile-back-button").click();
     await expect(dialog).not.toBeVisible();
 
-    await page.getByTestId(`agent-profile-edit-${savedAliasId}`).click();
+    await settings.getByTestId(`agent-profile-edit-${savedAliasId}`).click();
     await expect(model).toHaveText("opus");
     await expect(dialog).not.toContainText("does not support this model");
     await expect(dialog).not.toContainText("compatibility is unknown");
     await capture("saved-alias");
-    await page.getByRole("textbox", { name: "Name", exact: true }).fill("Saved alias reviewed");
-    await page.getByTestId("agent-profile-save-button").click();
+    await dialog.getByRole("textbox", { name: "Name", exact: true }).fill("Saved alias reviewed");
+    await dialog.getByTestId("agent-profile-save-button").click();
     await expect(dialog).not.toBeVisible();
     const aliasSaved = await readProfiles();
     expect(
@@ -2120,14 +2130,14 @@ test("shared profile editor renders cross-environment model compatibility", asyn
       ).model,
     ).toBe("opus");
 
-    const aliasRow = page.getByTestId(`agent-profile-row-${savedAliasId}`);
+    const aliasRow = settings.getByTestId(`agent-profile-row-${savedAliasId}`);
     await expect(aliasRow).not.toContainText("is not offered by this account");
     await aliasRow.scrollIntoViewIfNeeded();
     await page.screenshot({ path: info.outputPath("valid-alias-list.png") });
 
     unknownDevCatalog = true;
     await page.reload();
-    await page.getByTestId(`agent-profile-edit-${incompatible.id}`).click();
+    await settings.getByTestId(`agent-profile-edit-${incompatible.id}`).click();
     // An unavailable source catalog may only supply the saved literal reference.
     await expect(model).toHaveText(/^(Host-only Opus|host-only-opus)$/);
     await expect(

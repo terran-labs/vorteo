@@ -7,6 +7,7 @@ import {
   factoryProjectClaim,
   factoryProjectClaimRelease,
   factoryProjectConfigure,
+  factoryProjectPickAccount,
   factoryProjectDisable,
   factoryProjectEnable,
   factoryProjectGet,
@@ -28,6 +29,7 @@ import {
   type ProjectFactoryRoleId,
   type ProjectFactoryState,
   type ProjectFactoryQueue,
+  type ProjectFactoryAccountPick,
   type ProjectFactoryClaim,
   type ProjectFactoryClaimRelease,
   PROJECT_FACTORY_ASSIGNED_ROLES,
@@ -52,6 +54,7 @@ import type {
   WorkspaceRegistry,
 } from "../../workspace-registry.js";
 import { generateWorkspaceId } from "../../workspace-registry-model.js";
+import { chooseAccount, type FactoryAccounts } from "./account-choice.js";
 import type { CharterInput } from "./charters/shared.js";
 import {
   assignmentBlock,
@@ -97,6 +100,9 @@ import {
 } from "./tick-gate.js";
 
 import { readIssueQueue } from "./queue.js";
+
+/** How many account picks the state file keeps, newest last. */
+const ACCOUNT_PICKS_KEPT = 50;
 
 /** Opens every status line the service writes for a role `.github/factory.json` turns off. */
 const ASSIGNMENT_STATUS_PREFIX = "Off here: ";
@@ -163,6 +169,8 @@ export interface ProjectFactoryServiceInput {
   gh?: GhRunner;
   /** GitHub REST calls for claims and `.github/factory.json`; injectable for tests. */
   github?: FactoryGitHub;
+  /** Accounts and their usage, for picking where new Factory agents start. */
+  accounts?: FactoryAccounts;
   /** Hash of the GitHub state a gated role reacts to; null wakes the agent. */
   fingerprint?: (role: GatedRole, repository: string) => Promise<string | null>;
   onWorkspacesChanged?: (workspaceIds: string[]) => void;
@@ -230,6 +238,8 @@ export class ProjectFactoryService {
   }
 
   async invoke(method: string, rawInput: unknown): Promise<unknown> {
+    const shared = this.invokeShared(method, rawInput);
+    if (shared) return shared;
     switch (method) {
       case factoryProjectQueue.name:
         return this.getQueue(factoryProjectQueue.input.parse(rawInput).projectId);
@@ -271,12 +281,22 @@ export class ProjectFactoryService {
       }
       case factoryProjectInstructionsResolve.name:
         return this.resolveInstructions(factoryProjectInstructionsResolve.input.parse(rawInput));
+      default:
+        throw new ProjectFactoryError(`Unknown Factory method: ${method}`);
+    }
+  }
+
+  /** Methods for sharing a repository's work across installations and accounts. */
+  private invokeShared(method: string, rawInput: unknown): Promise<unknown> | null {
+    switch (method) {
       case factoryProjectClaim.name:
         return this.claim(factoryProjectClaim.input.parse(rawInput));
       case factoryProjectClaimRelease.name:
         return this.releaseClaim(factoryProjectClaimRelease.input.parse(rawInput));
+      case factoryProjectPickAccount.name:
+        return this.pickAccount(factoryProjectPickAccount.input.parse(rawInput));
       default:
-        throw new ProjectFactoryError(`Unknown Factory method: ${method}`);
+        return null;
     }
   }
 
@@ -366,6 +386,7 @@ export class ProjectFactoryService {
                 ...(current.claims ? { claims: current.claims } : {}),
                 ...(current.foreignClaims ? { foreignClaims: current.foreignClaims } : {}),
                 ...(current.assignment ? { assignment: current.assignment } : {}),
+                ...(current.accountPicks ? { accountPicks: current.accountPicks } : {}),
               }
             : {}),
           enabled: true,
@@ -877,6 +898,48 @@ export class ProjectFactoryService {
       if (next.foreignClaims) delete next.foreignClaims[branch];
     });
     return released;
+  }
+
+  /** Picks a new agent's account by fresh remaining quota and records the choice. */
+  private pickAccount(request: {
+    projectId: string;
+    stage: ProjectFactoryAccountPick["stage"];
+    issue?: number;
+    avoid?: string;
+  }): Promise<ProjectFactoryAccountPick> {
+    return this.serialize(async () => {
+      await this.requireActiveProject(request.projectId);
+      const project = await this.requireConfiguredProject(request.projectId);
+      if (!this.input.accounts)
+        throw new ProjectFactoryError("This daemon cannot read account usage.");
+      const profileId = project.workers[`${request.stage}ProfileId`] ?? null;
+      const now = this.now();
+      const picked = await chooseAccount({
+        accounts: this.input.accounts,
+        profileId,
+        avoid: request.avoid,
+        nowMs: now.getTime(),
+      });
+      const pick: ProjectFactoryAccountPick = {
+        stage: request.stage,
+        profileId,
+        ...picked,
+        pickedAt: now.toISOString(),
+      };
+      await this.mutateProject(request.projectId, (next) => {
+        const record = {
+          stage: pick.stage,
+          ...(request.issue ? { issue: request.issue } : {}),
+          profileId: pick.profileId,
+          provider: pick.provider,
+          remainingPct: pick.remainingPct,
+          bound: pick.bound,
+          pickedAt: pick.pickedAt,
+        };
+        next.accountPicks = [...(next.accountPicks ?? []), record].slice(-ACCOUNT_PICKS_KEPT);
+      });
+      return pick;
+    });
   }
 
   private claimContext(projectId: string, repository: string, issue: number) {

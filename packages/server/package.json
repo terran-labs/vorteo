@@ -19,6 +19,11 @@
       "source": "./src/server/exports.ts",
       "default": "./dist/server/server/exports.js"
     },
+    "./vorteo-cli": {
+      "types": "./dist/server/utils/vorteo-cli.d.ts",
+      "source": "./src/utils/vorteo-cli.ts",
+      "default": "./dist/server/utils/vorteo-cli.js"
+    },
     "./utils/tool-call-parsers": {
       "types": "./dist/server/utils/tool-call-parsers.d.ts",
       "source": "./src/utils/tool-call-parsers.ts",

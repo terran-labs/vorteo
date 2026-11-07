@@ -184,6 +184,7 @@ import { formatSystemNotificationPrompt } from "./agent/agent-messages/index.js"
 import { startAgentRun } from "./agent/agent-prompt.js";
 import { switchAgentProfileCommand } from "./agent/profile-switch/command.js";
 import { ProjectFactoryService } from "./factory/project/service.js";
+import { daemonFactoryAccounts } from "./factory/project/account-choice.js";
 import { profileProvider, resolveDefaultLaunch } from "./system-project/launch-selection.js";
 import type { SessionHostConnector } from "./session-host/connector.js";
 import { bootstrapWorkspaceRegistries } from "./workspace-registry-bootstrap.js";
@@ -1924,6 +1925,11 @@ export async function createPaseoDaemon(
         getSettings: () => daemonConfigStore.get(),
       }),
     profileProvider: (profileId) => profileProvider(profileId, daemonConfigStore.get()),
+    accounts: daemonFactoryAccounts({
+      providers: providerSnapshotManager,
+      readUsage: (options) => providerUsageService.listUsage(options),
+      getSettings: () => daemonConfigStore.get(),
+    }),
     schedules: scheduleService,
     onWorkspacesChanged: (workspaceIds) => void emitWorkspaceUpdatesExternal(workspaceIds),
     logger,
