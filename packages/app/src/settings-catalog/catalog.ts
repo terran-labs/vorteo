@@ -924,6 +924,15 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
     scope: device,
   },
   {
+    id: "appearance.workspaceStatusLine",
+    pane: "appearance.appearance",
+    label: "Workspace status line",
+    labelKey: "settings.appearance.statusLine.label",
+    hintKey: "settings.appearance.statusLine.hint",
+    keywords: ["sidebar", "factory", "status", "second line", "hover"],
+    scope: device,
+  },
+  {
     id: "appearance.highlightTheme",
     pane: "appearance.appearance",
     label: "Highlight theme",

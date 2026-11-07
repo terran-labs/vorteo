@@ -65,7 +65,13 @@ export function SidebarFooterQuota({
           </Text>
         ) : null}
       </FooterQuotaTrigger>
-      <FooterQuotaPopover accounts={accounts} serverId={serverId} view={view} now={now} />
+      <FooterQuotaPopover
+        accounts={accounts}
+        serverId={serverId}
+        view={view}
+        now={now}
+        onClose={setOpen}
+      />
     </SidebarPopoverRoot>
   );
 }
@@ -100,13 +106,20 @@ function FooterQuotaPopover({
   serverId,
   view,
   now,
+  onClose,
 }: {
   accounts: readonly QuotaAccount[];
   serverId: string | null;
   view: ProviderUsageView;
   now: number;
+  onClose: (open: boolean) => void;
 }) {
-  const openUsage = useOpenUsageScreen();
+  const openUsageScreen = useOpenUsageScreen();
+  // Usage opens over the sidebar; a popover left open keeps its backdrop over Usage's controls.
+  const openUsage = useCallback(() => {
+    onClose(false);
+    openUsageScreen();
+  }, [onClose, openUsageScreen]);
   return (
     <SidebarPopoverSurface
       section="footer"
