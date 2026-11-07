@@ -59,6 +59,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 
 import { isNative } from "@/constants/platform";
 import { ScreenTitle } from "@/components/headers/screen-title";
+import { ScreenHeader } from "@/components/headers/screen-header";
+import { SidebarMenuToggle } from "@/components/headers/menu-header";
+import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useToast } from "@/contexts/toast-context";
@@ -1519,6 +1522,7 @@ function useNewWorkspaceFormStack(input: NewWorkspaceFormStackInput) {
         onPress={project.open}
         disabled={isPending}
         badgePressableStyle={isCompact ? styles.compactProjectTrigger : badgePressableStyle}
+        heading={isCompact ? t("newWorkspace.title") : undefined}
         label={project.triggerLabel}
         tooltipLabel={t("newWorkspace.tooltips.project")}
         projectViewKey={project.selectedProject?.viewKey ?? null}
@@ -1621,7 +1625,6 @@ function useNewWorkspaceFormStack(input: NewWorkspaceFormStackInput) {
 
   const fields = isCompact ? (
     <View testID="new-workspace-ref-picker-row" style={styles.formStack} pointerEvents="box-none">
-      <FormRow>{projectControl}</FormRow>
       {isolationControl ? <FormRow>{isolationControl}</FormRow> : null}
       {baseControl ? <FormRow>{baseControl}</FormRow> : null}
       <FormRow>{launchControl}</FormRow>
@@ -2283,7 +2286,7 @@ export function NewWorkspaceScreen({
       ? t("newWorkspace.refPicker.searching")
       : t("newWorkspace.refPicker.noMatchingRefs");
 
-  const { fields: formStack } = useNewWorkspaceFormStack({
+  const { fields: formStack, projectControl } = useNewWorkspaceFormStack({
     isCompact,
     isPending,
     project: {
@@ -2370,6 +2373,10 @@ export function NewWorkspaceScreen({
     },
   });
 
+  const screenHeaderLeft = useMemo(
+    () => <NewWorkspaceHeaderLeft isCompact={isCompact} projectControl={projectControl} />,
+    [isCompact, projectControl],
+  );
   const importSession = useImportSession({ serverId: selectedServerId });
 
   const isComposerFullscreen = composerEditing.isFullscreen(isTerminalLaunch);
@@ -2441,6 +2448,7 @@ export function NewWorkspaceScreen({
       <NewWorkspaceLayout
         isCompact={isCompact}
         fullscreen={isComposerFullscreen}
+        headerLeft={screenHeaderLeft}
         title={t("newWorkspace.title")}
         formStack={formStack}
         onImportSession={importSession.open}
@@ -2451,6 +2459,21 @@ export function NewWorkspaceScreen({
       {importSession.sheet}
       {projectDirectory.sheet}
     </FileDropZone>
+  );
+}
+
+function NewWorkspaceHeaderLeft({
+  isCompact,
+  projectControl,
+}: {
+  isCompact: boolean;
+  projectControl: ReactNode;
+}) {
+  return (
+    <>
+      <SidebarMenuToggle />
+      {isCompact ? <View style={styles.compactHeading}>{projectControl}</View> : null}
+    </>
   );
 }
 
@@ -2478,14 +2501,17 @@ function useNewWorkspaceComposerEditing() {
 function NewWorkspaceLayout({
   isCompact,
   fullscreen,
+  headerLeft,
   title,
   formStack,
   onImportSession,
   children,
 }: {
   isCompact: boolean;
-  /** The composer covers the screen; the header leaves and the dock fills the content. */
+  /** The composer covers the screen, so the header leaves. */
   fullscreen: boolean;
+  /** The menu toggle, and on compact layouts the title and project picker. */
+  headerLeft: ReactNode;
   title: string;
   formStack: ReactNode;
   onImportSession: () => void;
@@ -2494,7 +2520,7 @@ function NewWorkspaceLayout({
   const insets = useSafeAreaInsets();
   // At the top of the screen on compact layouts, under the composer otherwise.
   const importSessionButton = <ImportSessionButton compact={isCompact} onPress={onImportSession} />;
-  // Compact has no title: the fields name themselves. The free space above pushes them down onto
+  // Compact carries its title in the header. The free space above pushes the fields down onto
   // the composer, where the thumb is.
   // Merge 51f16b39f took upstream's compact fields, whose import button lives in a header this
   // screen does not render; keep Vorteo's top placement.
@@ -2524,27 +2550,35 @@ function NewWorkspaceLayout({
   }, []);
   const fullscreenFrame = useFullscreenSlotFrame(fullscreen, contentRef, contentSize);
   return (
-    <View
-      ref={contentRef}
-      onLayout={measureContent}
-      style={[
-        styles.content,
-        styles.vortonContent,
-        isCompact
-          ? [styles.contentCompact, { paddingBottom: isNative ? insets.bottom : 0 }]
-          : styles.contentCentered,
-      ]}
-    >
-      <KeyboardTranslateView style={[styles.centered, isCompact && styles.centeredCompact]}>
-        {setupFields}
+    <>
+      {fullscreen ? null : <ScreenHeader left={headerLeft} borderless />}
+      <View style={styles.content}>
+        <TitlebarDragRegion />
         <View
-          style={fullscreen ? [styles.fullscreenComposer, fullscreenFrame] : styles.composerSlot}
+          ref={contentRef}
+          onLayout={measureContent}
+          style={[
+            styles.content,
+            styles.vortonContent,
+            isCompact
+              ? [styles.contentCompact, { paddingBottom: isNative ? insets.bottom : 0 }]
+              : styles.contentCentered,
+          ]}
         >
-          {children}
+          <KeyboardTranslateView style={[styles.centered, isCompact && styles.centeredCompact]}>
+            {setupFields}
+            <View
+              style={
+                fullscreen ? [styles.fullscreenComposer, fullscreenFrame] : styles.composerSlot
+              }
+            >
+              {children}
+            </View>
+            {isCompact || fullscreen ? null : importSessionButton}
+          </KeyboardTranslateView>
         </View>
-        {isCompact || fullscreen ? null : importSessionButton}
-      </KeyboardTranslateView>
-    </View>
+      </View>
+    </>
   );
 }
 

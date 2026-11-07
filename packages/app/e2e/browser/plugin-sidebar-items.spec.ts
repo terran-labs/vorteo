@@ -38,22 +38,22 @@ async function qaScreenshot(page: Page, name: string, area?: Locator) {
 }
 
 /**
- * Footer rows sit in the sidebar footer block, below their full-width rule and within its span.
- * The footer's icon line moved to the toolbar above the projects (471d7f22a).
+ * Footer rows sit in the sidebar footer block, directly above the installation name and within
+ * its span. The footer's icon line moved to the toolbar above the projects (471d7f22a), and the
+ * block's top rule shows only when the list reaches it (469492c4e), so the name is the anchor.
  */
 async function expectFooterRow(page: Page, row: Locator) {
   // Polled: on compact the drawer is still sliding in when the row first shows.
   await expect
     .poll(async () => {
-      const separator = (await visibleTestId(page, "sidebar-footer-separator").boundingBox())!;
+      const identity = (await visibleTestId(page, "sidebar-identity-footer").boundingBox())!;
       const box = (await row.boundingBox())!;
       return {
-        belowSeparator: box.y >= separator.y + separator.height - 1,
-        withinSpan:
-          box.x >= separator.x - 1 && box.x + box.width <= separator.x + separator.width + 1,
+        aboveIdentity: box.y + box.height <= identity.y + 1,
+        withinSpan: box.x >= identity.x - 1 && box.x + box.width <= identity.x + identity.width + 1,
       };
     })
-    .toEqual({ belowSeparator: true, withinSpan: true });
+    .toEqual({ aboveIdentity: true, withinSpan: true });
 }
 
 function botRow(page: Page, rowId: string): Locator {

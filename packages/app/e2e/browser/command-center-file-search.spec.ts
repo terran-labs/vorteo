@@ -224,10 +224,10 @@ test.describe("Compact file search context", () => {
         .getByRole("button", { name: "Close", exact: true })
         .click();
       await expect(page.getByTestId("sheet-tab-body")).not.toBeVisible();
-      await expect(page.getByRole("button", { name: "Close menu", exact: true })).toHaveAttribute(
-        "aria-expanded",
-        "true",
-      );
+      // Vorteo renders the header menu button and the sidebar collapse control with this name.
+      await expect(
+        page.getByRole("button", { name: "Close menu", exact: true }).first(),
+      ).toHaveAttribute("aria-expanded", "true");
       await expect(page.getByTestId("sidebar-search")).toBeVisible();
     } finally {
       await seeded.cleanup();

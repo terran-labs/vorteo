@@ -7,6 +7,7 @@ import { test, expect } from "../support/fixtures";
 import { daemonWsRoutePattern } from "../support/helpers/daemon-port";
 import { getServerId } from "../support/helpers/server-id";
 import { connectSeedClient } from "../support/helpers/seed-client";
+import { openSettingsSection } from "../support/helpers/settings";
 import { waitForPaint } from "../support/helpers/viewport";
 import { createTempGitRepo } from "../support/helpers/workspace";
 import { openChangesPanel, waitForWorkspaceTabsVisible } from "../support/helpers/workspace-tabs";
@@ -1998,7 +1999,7 @@ async function changeCodeTypographyFromSettings(
 ): Promise<void> {
   await page.getByTestId("sidebar-settings").click();
   await expect(page).toHaveURL(new RegExp(`${buildSettingsSectionRoute("general")}|/settings$`));
-  await page.getByRole("button", { name: "Appearance" }).click();
+  await openSettingsSection(page, "appearance");
   // Appearance updates retain the mounted form. Keep the same size field while
   // committing the family change, then update its stored size.
   const sizeField = page.getByLabel("Code font size");
