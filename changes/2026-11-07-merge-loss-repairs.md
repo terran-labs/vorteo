@@ -17,4 +17,4 @@
 
 ## Maintenance review
 
-Restores behavior that the November 1 upstream merge's conflict resolution dropped, keeping upstream's fullscreen composer, Scripts pages, parent pill and remote host labels inside Vorteo's layouts. The upstream comparison and plugin API entries in the inventory record the result. Source only; not installed. README overview and onboarding are unchanged.
+Restores behavior that the November 1 upstream merge's conflict resolution dropped, keeping upstream's fullscreen composer, Scripts pages, parent pill and remote host labels inside Vorteo's layouts. The upstream comparison and plugin API entries in the inventory record the result. Source only; not installed. README overview and onboarding are unchanged. The upstream creation-idempotency test that injects prompt rejections through a profile launch's features is routed out, because profile launches keep their features by design.
