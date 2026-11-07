@@ -4,4 +4,4 @@
 
 ## Maintenance review
 
-CI tooling only; no shipped behavior changes. The CLI E2E runner gains a `PASEO_PREBUILT_SERVER_STACK` opt-out that only CI sets. Windows suites, the manual-only desktop suites, `cli-unit`, `quality` and `typecheck` keep their own builds. README overview and onboarding are unchanged.
+CI tooling only; no shipped behavior changes. The CLI E2E runner gains a `PASEO_PREBUILT_SERVER_STACK` opt-out that only CI sets. Windows suites, the manual-only desktop suites, `cli-unit`, `quality` and `typecheck` keep their own builds. README overview and onboarding are unchanged. Merging current main pushed the CI workflow test over the lint complexity limit, so the manual-only desktop and Windows routing check moved into a helper.

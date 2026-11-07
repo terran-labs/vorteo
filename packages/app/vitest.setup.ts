@@ -66,6 +66,17 @@ if (typeof globalThis.cancelAnimationFrame !== "function") {
   };
 }
 
+// The shared scroll view measures its edges for the overflow fade with ResizeObserver,
+// which jsdom lacks. Tests never resize, so an observer that never fires is enough; a test
+// that needs resize callbacks installs its own observer, which replaces this one.
+if (typeof globalThis.ResizeObserver !== "function") {
+  globalThis.ResizeObserver = class ResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof globalThis.ResizeObserver;
+}
+
 // The unistyles test double lives in test-stubs/react-native-unistyles.ts and
 // reaches every vitest project through the resolve.alias in vitest.config.ts —
 // no vi.mock here, so there is a single copy of the fixture theme.
