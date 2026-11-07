@@ -861,7 +861,7 @@ test("quality preserves commands and routes each domain independently after fail
   const lint = jobs.get("lint").join("\n");
   for (const command of [
     "npx --yes lockfile-lint --path package-lock.json --type npm --allowed-hosts npm --validate-https --validate-integrity",
-    "npm audit signatures",
+    "npx --yes npm@11.19.1 audit signatures",
     "npm run lint",
   ]) {
     assert.ok(
