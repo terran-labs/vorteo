@@ -677,6 +677,16 @@ test("broker settings show the release commit and mint a bounded scope only when
   expect(JSON.parse(fx.state.disk.config).previewBrokerDeployment.scope.sha256).toBe(
     sha256(readFileSync(fx.recorded.scope.path, "utf8")),
   );
+  // The restarted coordinator runs the new file but cannot read the handoff outcome: the job
+  // fails, and the minted scope its configuration pins stays in place.
+  const minted = readFileSync(fx.recorded.scope.path, "utf8");
+  fx.settings["ports"].runningSha256 = sha256(fx.state.disk.config);
+  fx.settings["ports"].outcome = () => {
+    throw new Error("Unexpected token in JSON");
+  };
+  await fx.settings.drain();
+  expect(fx.settings.status().job).toMatchObject({ status: "failed" });
+  expect(readFileSync(fx.recorded.scope.path, "utf8")).toBe(minted);
 });
 
 test.each([
@@ -709,8 +719,9 @@ test.each([
   expect(fx.settings.status().job).toMatchObject({ status: "failed" });
   expect(fx.settings.status().job?.detail).toContain(detail);
   expect(fx.calls).toEqual([]);
-  // Nothing applied, so the recorded scope keeps its exact bytes.
+  // Nothing applied, so the recorded scope keeps its exact bytes, staged beside it and renamed.
   expect(readFileSync(fx.recorded.scope.path, "utf8")).toBe("{}");
+  expect(readdirSync(path.dirname(fx.recorded.scope.path))).toEqual(["participant-scope.json"]);
 });
 
 test.each([false, true])(
