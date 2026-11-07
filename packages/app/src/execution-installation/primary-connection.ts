@@ -173,17 +173,19 @@ export async function recordPrimaryConnection(input: PrimaryConnectionInput) {
 }
 
 /**
- * The installation's primary connection for Settings. `supported` is false until the Host
- * reports the setting, so older installations never see a control they cannot save.
- * `primary` is undefined while loading or not chosen yet, and null when the owner has to choose.
+ * The installation's primary connection for Settings. `supported` needs both the Host daemon's
+ * primaryConnectionSetting and a coordinator that owns the setting: only those send the key,
+ * as null while nothing is chosen. An older coordinator would refuse the write, so its owners
+ * see no control at all. `primary` is null or undefined while none is chosen.
  */
 export function usePrimaryConnection() {
   const installation = readExecutionInstallation();
-  const supported = useHostFeature(
+  const daemonSupports = useHostFeature(
     installationHostServerId(installation),
     "primaryConnectionSetting",
   );
-  const settings = useInstallationSettings(supported);
+  const settings = useInstallationSettings(daemonSupports);
+  const supported = daemonSupports && settings.data?.settings?.primaryConnection !== undefined;
   const queryClient = useQueryClient();
   const installationId = installation?.installationId;
   const choose = useCallback(

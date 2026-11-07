@@ -301,6 +301,7 @@ export const PersistedConfigSchema = z
           .optional(),
         primaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
         installationPrimaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
+        installationPrimaryConnectionSupported: z.boolean().optional(),
         agentProfiles: z.array(AgentProfileSchema).optional(),
         sharedProviderPreferences: SharedProviderPreferencesSchema.optional(),
         cors: z

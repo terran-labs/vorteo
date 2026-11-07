@@ -1041,10 +1041,12 @@ export class InstallationSettingsService {
           patch.installationResourceBindings,
         ) &&
         (patch.installationPrimaryConnection === undefined ||
-          isDeepStrictEqual(
+          (isDeepStrictEqual(
             verifiedConfig.installationPrimaryConnection,
             patch.installationPrimaryConnection,
-          ))
+          ) &&
+            verifiedConfig.installationPrimaryConnectionSupported ===
+              patch.installationPrimaryConnectionSupported))
         ? null
         : "verification_failed",
     );
@@ -1104,7 +1106,12 @@ function environmentCopiesSettled(
     (patch.installationProjectPolicies === undefined ||
       isDeepStrictEqual(local.installationProjectPolicies, patch.installationProjectPolicies)) &&
     (patch.installationPrimaryConnection === undefined ||
-      isDeepStrictEqual(local.installationPrimaryConnection, patch.installationPrimaryConnection))
+      (isDeepStrictEqual(
+        local.installationPrimaryConnection,
+        patch.installationPrimaryConnection,
+      ) &&
+        local.installationPrimaryConnectionSupported ===
+          patch.installationPrimaryConnectionSupported))
   );
 }
 

@@ -88,6 +88,7 @@ interface SupportedMutableConfigPatch {
   installationProjectPolicies?: MutableDaemonConfig["installationProjectPolicies"];
   primaryConnection?: MutableDaemonConfig["primaryConnection"];
   installationPrimaryConnection?: MutableDaemonConfig["installationPrimaryConnection"];
+  installationPrimaryConnectionSupported?: boolean;
   agentProfiles?: MutableDaemonConfig["agentProfiles"];
   sharedProviderPreferences?: MutableDaemonConfig["sharedProviderPreferences"];
   skills?: MutableDaemonConfig["skills"];
@@ -325,6 +326,7 @@ const RELOADABLE_PATHS = [
   "daemon.installationProjectPolicies",
   "daemon.primaryConnection",
   "daemon.installationPrimaryConnection",
+  "daemon.installationPrimaryConnectionSupported",
   "daemon.agentProfiles",
   "daemon.sharedProviderPreferences",
   "app.baseUrl",
@@ -358,6 +360,7 @@ const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["daemon.installationProjectPolicies", "installationProjectPolicies"],
   ["daemon.primaryConnection", "primaryConnection"],
   ["daemon.installationPrimaryConnection", "installationPrimaryConnection"],
+  ["daemon.installationPrimaryConnectionSupported", "installationPrimaryConnectionSupported"],
   ["daemon.agentProfiles", "agentProfiles"],
   ["daemon.sharedProviderPreferences", "sharedProviderPreferences"],
   ["app.baseUrl", "app.baseUrl"],
@@ -414,16 +417,18 @@ function pickProjectPolicies(patch: MutableDaemonConfigPatch): SupportedMutableC
 
 /** Both values are replaced whole, so a choice without a profile drops the previous profile. */
 function pickPrimaryConnection(
-  patch: Pick<SupportedMutableConfigPatch, "primaryConnection" | "installationPrimaryConnection">,
+  patch: Pick<
+    SupportedMutableConfigPatch,
+    "primaryConnection" | "installationPrimaryConnection" | "installationPrimaryConnectionSupported"
+  >,
 ): SupportedMutableConfigPatch {
-  return {
-    ...(patch.primaryConnection !== undefined
-      ? { primaryConnection: patch.primaryConnection }
-      : {}),
-    ...(patch.installationPrimaryConnection !== undefined
-      ? { installationPrimaryConnection: patch.installationPrimaryConnection }
-      : {}),
-  };
+  const picked: SupportedMutableConfigPatch = {};
+  if (patch.primaryConnection !== undefined) picked.primaryConnection = patch.primaryConnection;
+  if (patch.installationPrimaryConnection !== undefined)
+    picked.installationPrimaryConnection = patch.installationPrimaryConnection;
+  if (patch.installationPrimaryConnectionSupported !== undefined)
+    picked.installationPrimaryConnectionSupported = patch.installationPrimaryConnectionSupported;
+  return picked;
 }
 
 function pickRelayPatch(

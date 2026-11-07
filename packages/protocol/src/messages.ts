@@ -440,6 +440,10 @@ export const MutableDaemonConfigSchema = z
     // COMPAT(primaryConnection): added 2026-11-05. A read-only copy of the installation's
     // primary connection with this environment's provider id. Absent on older daemons.
     installationPrimaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
+    // COMPAT(primaryConnection): added 2026-11-06. Projected only by coordinators that own the
+    // primary connection. Until it arrives, an installation daemon keeps the earlier launch
+    // rule (the first usable provider) instead of waiting for a choice it can never receive.
+    installationPrimaryConnectionSupported: z.boolean().optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
     sharedProviderPreferences: SharedProviderPreferencesSchema.optional(),
     skills: z.object({ selection: AgentSkillSelectionSchema.optional() }).strict().optional(),
@@ -479,6 +483,7 @@ export const MutableDaemonConfigPatchSchema = z
     installationProjectPolicies: InstallationProjectPoliciesWireSchema.optional(),
     primaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
     installationPrimaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
+    installationPrimaryConnectionSupported: z.boolean().optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),

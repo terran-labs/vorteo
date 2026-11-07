@@ -34,11 +34,14 @@ export function changesPrimaryConnectionCopy(
   patch: MutableDaemonConfigPatch,
 ): boolean {
   return (
-    patch.installationPrimaryConnection !== undefined &&
-    !isDeepStrictEqual(
-      patch.installationPrimaryConnection,
-      current.installationPrimaryConnection ?? null,
-    )
+    (patch.installationPrimaryConnection !== undefined &&
+      !isDeepStrictEqual(
+        patch.installationPrimaryConnection,
+        current.installationPrimaryConnection ?? null,
+      )) ||
+    (patch.installationPrimaryConnectionSupported !== undefined &&
+      patch.installationPrimaryConnectionSupported !==
+        (current.installationPrimaryConnectionSupported ?? false))
   );
 }
 
@@ -61,10 +64,18 @@ export function assertPrimaryConnectionProjection(input: {
       "Choose the primary connection in the installation's Providers settings.",
     );
   if (!changesPrimaryConnectionCopy(current, patch)) return;
-  const authorized = admission
-    ? localPrimaryConnection(admission.settings, admission.serverId)
-    : null;
-  if (!admission || !isDeepStrictEqual(patch.installationPrimaryConnection, authorized))
+  // Only a coordinator that owns the setting answers admission with the key, even when unset.
+  const supported = admission?.settings.primaryConnection !== undefined;
+  const copyMatches =
+    patch.installationPrimaryConnection === undefined ||
+    isDeepStrictEqual(
+      patch.installationPrimaryConnection,
+      admission ? localPrimaryConnection(admission.settings, admission.serverId) : null,
+    );
+  const markerMatches =
+    patch.installationPrimaryConnectionSupported === undefined ||
+    patch.installationPrimaryConnectionSupported === supported;
+  if (!admission || !copyMatches || !markerMatches)
     throw new InstallationSettingsAdmissionError(
       "The primary connection must be chosen through the installation coordinator.",
     );

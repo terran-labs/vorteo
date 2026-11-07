@@ -177,8 +177,9 @@ function ownerSettingsSnapshot(
     if (client.projectPoliciesAware) catalog.projectPolicies ??= {};
     else delete catalog.projectPolicies;
     // COMPAT(primaryConnection): added 2026-11-05, remove after 2027-05-05. Older strict clients
-    // reject the key; newer ones learn support from the daemon's primaryConnectionSetting.
-    if (!client.primaryConnectionAware) delete catalog.primaryConnection;
+    // reject the key. Newer ones read its presence, even as null, as the coordinator's support.
+    if (client.primaryConnectionAware) catalog.primaryConnection ??= null;
+    else delete catalog.primaryConnection;
   }
   return snapshot;
 }
@@ -1519,6 +1520,8 @@ export function createInstallationServer(
     if (req.query.projectPolicies !== "1") delete snapshot.settings.projectPolicies;
     // COMPAT(primaryConnection): added 2026-11-05, remove after 2027-05-05. Same strict readers.
     if (req.query.primaryConnection !== "1") delete snapshot.settings.primaryConnection;
+    // Present, even as null, so the daemon can tell this coordinator supports the setting.
+    else snapshot.settings.primaryConnection ??= null;
     res.json({
       installationId: config.public.installationId,
       serverId: environment.serverId,

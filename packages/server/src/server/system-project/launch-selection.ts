@@ -67,9 +67,9 @@ function safeProviderType(provider: string, settings: MutableDaemonConfig): stri
 }
 
 /**
- * The connection system threads launch with. An installation daemon uses the coordinator's
- * copy, where null means none is chosen; older coordinators never send one, and their daemons
- * wait too. A standalone daemon uses its own choice; undefined means it has not chosen yet.
+ * The connection system threads launch with, once supported. An installation daemon uses the
+ * coordinator's copy, where null means none is chosen. A standalone daemon uses its own choice;
+ * undefined means it has not chosen yet.
  */
 export function primaryConnection(
   settings: MutableDaemonConfig,
@@ -101,28 +101,61 @@ export interface DefaultLaunchInput {
 }
 
 /**
- * The launch a daemon-created agent would use right now: the primary connection, or null while
- * none is chosen or the primary connection is not usable. Never falls back to another
- * provider. Reads cached usage unless asked; the Optimizer refreshes it when connections change.
+ * Whether this daemon launches system threads with the primary connection. A standalone daemon
+ * owns the setting. An installation daemon waits for its coordinator's support marker, so an
+ * older coordinator, which never projects a choice, keeps the earlier launch rule instead of
+ * stalling the Optimizer and Factory.
  */
-export async function resolveDefaultLaunch(
+export function primaryConnectionSupported(settings: MutableDaemonConfig): boolean {
+  return (
+    !settings.sharedProviderPreferences?.installation ||
+    settings.installationPrimaryConnectionSupported === true
+  );
+}
+
+interface LaunchOptions {
+  wait?: boolean;
+  refreshUsage?: (readyKey: string) => boolean;
+}
+
+/** Ready providers that can run a daemon-created agent, best first, optionally only one. */
+async function readUsableProviders(
   input: DefaultLaunchInput,
-  options: { wait?: boolean; refreshUsage?: (readyKey: string) => boolean } = {},
-): Promise<Launch | null> {
-  const before = input.getSettings();
-  const chosen = primaryConnection(before);
-  if (chosen === null) return null;
+  options: LaunchOptions,
+  only?: string,
+): Promise<string[]> {
   const entries = await input.providers.listProviders({ wait: options.wait ?? false });
   const ready = entries.filter(
-    (entry) =>
-      entry.enabled && entry.status === "ready" && (!chosen || entry.provider === chosen.provider),
+    (entry) => entry.enabled && entry.status === "ready" && (!only || entry.provider === only),
   );
-  if (ready.length === 0) return null;
+  if (ready.length === 0) return [];
   const usage = await input.readUsage({
     forceRefresh: options.refreshUsage?.(ready.map((entry) => entry.provider).join(",")) ?? false,
   });
+  return usableProviders(ready, usage.providers, input.getSettings());
+}
+
+/**
+ * The launch a daemon-created agent would use right now: the primary connection, or null while
+ * none is chosen or the primary connection is not usable. Never falls back to another
+ * provider once the primary connection is supported; before that, an installation daemon keeps
+ * the earlier rule and launches with the first usable provider. Reads cached usage unless
+ * asked; the Optimizer refreshes it when connections change.
+ */
+export async function resolveDefaultLaunch(
+  input: DefaultLaunchInput,
+  options: LaunchOptions = {},
+): Promise<Launch | null> {
+  const before = input.getSettings();
+  if (!primaryConnectionSupported(before)) {
+    // COMPAT(primaryConnection): the launch rule from before the primary connection existed.
+    const [best] = await readUsableProviders(input, options);
+    return best ? selectLaunch(best, input.getSettings()) : null;
+  }
+  const chosen = primaryConnection(before);
+  if (chosen === null) return null;
+  const usable = await readUsableProviders(input, options, chosen?.provider);
   const settings = input.getSettings();
-  const usable = usableProviders(ready, usage.providers, settings);
   if (chosen) return usable.length > 0 ? primaryLaunch(chosen, settings) : null;
   // Not chosen yet on a standalone daemon: adopt the only usable provider, once.
   if (!input.adoptPrimary || usable.length === 0) return null;

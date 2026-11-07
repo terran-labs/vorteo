@@ -1585,9 +1585,18 @@ describe("DaemonConfigStore", () => {
     await expect(store.patchFromClient({ primaryConnection: copy })).rejects.toThrow(
       "Providers settings",
     );
+    // An older coordinator's admission has no primaryConnection key, so it cannot claim support.
+    await expect(
+      store.patchFromClient({ installationPrimaryConnectionSupported: true }),
+    ).rejects.toThrow("installation coordinator");
     admission.settings.primaryConnection = { providerId: definition.id };
-    await store.patchFromClient({ installationPrimaryConnection: copy });
+    await store.patchFromClient({
+      installationPrimaryConnection: copy,
+      installationPrimaryConnectionSupported: true,
+    });
     expect(store.get().installationPrimaryConnection).toEqual(copy);
+    expect(store.get().installationPrimaryConnectionSupported).toBe(true);
+    expect(loadPersistedConfig(home).daemon?.installationPrimaryConnectionSupported).toBe(true);
     expect(loadPersistedConfig(home).daemon?.installationPrimaryConnection).toEqual(copy);
   });
 

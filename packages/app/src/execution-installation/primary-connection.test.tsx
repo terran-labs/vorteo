@@ -1,16 +1,27 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderToStaticMarkup } from "react-dom/server";
 
-vi.mock("@/runtime/host-features", () => ({ useHostFeature: () => true }));
+const hook = vi.hoisted(() => ({
+  daemonSupports: true,
+  data: undefined as object | undefined,
+}));
+vi.mock("@/runtime/host-features", () => ({ useHostFeature: () => hook.daemonSupports }));
+vi.mock("./policy", () => ({
+  installationHostServerId: () => "host",
+  readExecutionInstallation: () => ({ installationId: "installation" }),
+}));
 vi.mock("./settings", () => ({
   InstallationSettingsConflictError: class InstallationSettingsConflictError extends Error {},
   requestInstallationSettings: vi.fn(),
-  useInstallationSettings: () => ({ data: undefined }),
+  useInstallationSettings: () => ({ data: hook.data }),
 }));
 
 import {
   canMakePrimary,
   confirmDisablePrimary,
   primaryConnectionAvailability,
+  usePrimaryConnection,
   confirmPrimaryConnection,
   isPrimaryConnection,
   primaryConnectionUpdate,
@@ -210,5 +221,31 @@ describe("primary connection", () => {
       "That connection is no longer available.",
     );
     expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("offers nothing unless both the Host daemon and the coordinator support the setting", () => {
+    let seen: ReturnType<typeof usePrimaryConnection> | null = null;
+    function Probe() {
+      seen = usePrimaryConnection();
+      return null;
+    }
+    const read = () => {
+      renderToStaticMarkup(
+        <QueryClientProvider client={new QueryClient()}>
+          <Probe />
+        </QueryClientProvider>,
+      );
+      return seen!;
+    };
+    // An older coordinator never sends the key, so the badge, Make primary and Status rows hide.
+    hook.data = { revision: 4, settings: { providerDefinitions: [] } };
+    expect(read()).toMatchObject({ supported: false, loaded: false });
+    // A supporting coordinator sends null while nothing is chosen.
+    hook.data = { revision: 4, settings: { providerDefinitions: [], primaryConnection: null } };
+    expect(read()).toMatchObject({ supported: true, loaded: true, primary: null });
+    // An older Host daemon hides it too.
+    hook.daemonSupports = false;
+    expect(read()).toMatchObject({ supported: false, loaded: false });
+    hook.daemonSupports = true;
   });
 });

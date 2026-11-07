@@ -558,6 +558,8 @@ function resolveProfileLists(persisted: ReturnType<typeof loadPersistedConfig>) 
     primaryConnection: persisted.daemon?.primaryConnection,
     // Present even when unset: the coordinator reads the key as support for the primary connection.
     installationPrimaryConnection: persisted.daemon?.installationPrimaryConnection ?? null,
+    installationPrimaryConnectionSupported:
+      persisted.daemon?.installationPrimaryConnectionSupported,
   };
 }
 
@@ -612,6 +614,7 @@ export type ResolvedDaemonSettings = Pick<
   | "installationProjectPolicies"
   | "primaryConnection"
   | "installationPrimaryConnection"
+  | "installationPrimaryConnectionSupported"
   | "skillSelection"
   | "pluginsEnabled"
   | "plugins"

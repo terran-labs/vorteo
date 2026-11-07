@@ -1413,8 +1413,11 @@ test("an upgrade adopts the only usable connection as primary once and projects 
   expect(adopted.revision).toBe(waiting.revision + 1);
   expect(adopted.settings?.primaryConnection).toEqual({ providerId: claude.id });
   expect(host.config.installationPrimaryConnection).toEqual({ provider: "claude-account" });
+  // The marker that moves the daemon off the earlier first-usable launch rule.
+  expect(host.config.installationPrimaryConnectionSupported).toBe(true);
   // Only a daemon that keeps a copy receives one.
   expect(container.config.installationPrimaryConnection).toBeUndefined();
+  expect(container.config.installationPrimaryConnectionSupported).toBeUndefined();
 
   // Adoption happens once: a second usable connection never replaces the choice.
   host.usableProviders = ["codex-account", "claude-account"];

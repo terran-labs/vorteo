@@ -509,6 +509,7 @@ export interface PaseoDaemonConfig {
   installationProjectPolicies?: MutableDaemonConfig["installationProjectPolicies"];
   primaryConnection?: MutableDaemonConfig["primaryConnection"];
   installationPrimaryConnection?: MutableDaemonConfig["installationPrimaryConnection"];
+  installationPrimaryConnectionSupported?: boolean;
   skillSelection?: AgentSkillSelection;
   pluginsEnabled?: boolean;
   /** Seeds the Vorteo System project at startup. Defaults on; test daemons turn it off. */
@@ -693,6 +694,7 @@ function createInitialMutableDaemonConfig(config: ResolvedDaemonSettings): Mutab
     installationProjectPolicies: config.installationProjectPolicies,
     primaryConnection: config.primaryConnection,
     installationPrimaryConnection: config.installationPrimaryConnection,
+    installationPrimaryConnectionSupported: config.installationPrimaryConnectionSupported,
   };
 
   if (config.terminalProfiles !== undefined) {

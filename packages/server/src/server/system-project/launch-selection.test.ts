@@ -51,6 +51,7 @@ describe("resolveDefaultLaunch", () => {
           defaultProvider: "claude",
         },
         installationPrimaryConnection: { provider: "codex" },
+        installationPrimaryConnectionSupported: true,
       }),
       ["claude", "codex"],
     );
@@ -95,6 +96,7 @@ describe("resolveDefaultLaunch", () => {
           installation,
         },
         installationPrimaryConnection: null,
+        installationPrimaryConnectionSupported: true,
       }),
       ["claude"],
     );
@@ -134,5 +136,67 @@ describe("resolveDefaultLaunch", () => {
     const none = launchInput(settings(), []);
     expect(await resolveDefaultLaunch(none.input)).toBeNull();
     expect(none.adoptPrimary).not.toHaveBeenCalled();
+  });
+
+  test("an older coordinator keeps the first usable launch and never waits", async () => {
+    // An installation daemon whose coordinator never projected the support marker.
+    const legacy = launchInput(
+      settings({
+        sharedProviderPreferences: {
+          version: 1,
+          revision: 1,
+          providers: {},
+          legacyProfiles: {},
+          installation,
+          defaultProvider: "codex",
+        },
+        installationPrimaryConnection: null,
+      }),
+      ["claude", "codex"],
+    );
+    expect(await resolveDefaultLaunch(legacy.input)).toEqual({ provider: "codex" });
+    expect(legacy.adoptPrimary).not.toHaveBeenCalled();
+    const none = launchInput(
+      settings({
+        sharedProviderPreferences: {
+          version: 1,
+          revision: 1,
+          providers: {},
+          legacyProfiles: {},
+          installation,
+        },
+      }),
+      [],
+    );
+    expect(await resolveDefaultLaunch(none.input)).toBeNull();
+  });
+
+  test("a supporting coordinator waits while unset and launches its primary once set", async () => {
+    const preferences = {
+      version: 1 as const,
+      revision: 1,
+      providers: {},
+      legacyProfiles: {},
+      installation,
+      defaultProvider: "claude",
+    };
+    const unset = launchInput(
+      settings({
+        sharedProviderPreferences: preferences,
+        installationPrimaryConnection: null,
+        installationPrimaryConnectionSupported: true,
+      }),
+      ["claude", "codex"],
+    );
+    expect(await resolveDefaultLaunch(unset.input)).toBeNull();
+    const chosen = launchInput(
+      settings({
+        sharedProviderPreferences: preferences,
+        installationPrimaryConnection: { provider: "codex" },
+        installationPrimaryConnectionSupported: true,
+      }),
+      ["claude", "codex"],
+    );
+    expect(await resolveDefaultLaunch(chosen.input)).toEqual({ provider: "codex" });
   });
 });
