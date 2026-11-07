@@ -177,10 +177,16 @@ let passed = 0;
 let failed = 0;
 const failures: Failure[] = [];
 
-await runCommand(
-  "Building server stack",
-  `npm --prefix ${JSON.stringify(repoRoot)} run build:server`,
-);
+// Vorteo: heavy CI runs unpack the shared server-stack build from the `build` job and
+// set this flag; everywhere else the runner builds the stack it tests.
+if (process.env.PASEO_PREBUILT_SERVER_STACK === "1") {
+  console.log("Using the prebuilt server stack (PASEO_PREBUILT_SERVER_STACK=1).\n");
+} else {
+  await runCommand(
+    "Building server stack",
+    `npm --prefix ${JSON.stringify(repoRoot)} run build:server`,
+  );
+}
 
 type TestOutcome =
   | { status: "passed"; durationMs: number }
