@@ -207,7 +207,7 @@ test.describe("New Workspace dictation submit", () => {
 });
 
 async function startDictationWithShortcut(page: Page): Promise<void> {
-  await composerLocator(page).press("Control+d");
+  await composerLocator(page).press("ControlOrMeta+d");
 }
 
 test("dictation shortcut leaves retained fullscreen and exposes recording controls", async ({
