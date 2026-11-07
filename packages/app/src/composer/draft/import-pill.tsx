@@ -24,10 +24,10 @@ export function ComposerImportPill({ onPress, disabled = false }: ComposerImport
         accessibilityLabel={t("importSession.title")}
         onPress={onPress}
         disabled={disabled}
-        style={disabled ? composerPillStyles.body : BODY_STYLE}
+        style={disabled ? composerPillStyles.body : [composerPillStyles.body, styles.bodyHoverable]}
       >
         <ThemedImportIcon size={14} uniProps={iconColorMapping} />
-        <Text style={LABEL_STYLE} numberOfLines={1}>
+        <Text style={[composerPillStyles.label, styles.labelHoverable]} numberOfLines={1}>
           {t("importSession.title")}
         </Text>
       </Pressable>
@@ -47,5 +47,3 @@ const styles = StyleSheet.create((theme) => ({
   ),
   labelHoverable: groupHoverStyle("import-pill", { color: theme.colors.foreground }),
 }));
-const BODY_STYLE = [composerPillStyles.body, styles.bodyHoverable];
-const LABEL_STYLE = [composerPillStyles.label, styles.labelHoverable];
