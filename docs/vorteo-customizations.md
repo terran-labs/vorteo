@@ -1,5 +1,41 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-07): Release preparation for beta 26.11.602 folded 17 change fragments into the changelog and this inventory: Claude refresh logging and opt-in single-refresher custody, multi-installation Factory claims, Settings contrast, render-time styles, and CI routing for arm64, Windows and the Playwright smoke. No behavior changed in the preparation itself; README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-07): Test setup only; no app behavior changes. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-07): Multi-installation Factory: daemon claims with intent recovery, foreign-claim protection, stale-claim release through an archive ref, `.github/factory.json` role gating, a duplicate-repository guard, Overview role assignment and release tag collision recovery. The shipped Foreman, Triage and Releases charters and the shared rules change, so every role's charter review fires after install. The task worktree helper accepts `factory/` branches. Wire changes add optional fields and two new RPCs only. Source only; not installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-07): Review fixes for multi-installation Factory claims: conflict on ambiguous crash recovery and assignment-gated first prompts. Source only; not installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-07): Review fix for multi-installation Factory claims: release uses GitHub's atomic branch rename instead of a separate archive and delete, removing pending-release recovery state. Source only; not installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-07): Review fix for multi-installation Factory claims: enable preserves claim, foreign-claim and assignment state for an unchanged repository. Source only; not installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-07): Review fix for multi-installation Factory claims: recovery moves the archive snapshot to the moment it raises the conflict. Source only; not installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-07): Review fix for multi-installation Factory claims: a new claim records the archive list after its branch exists, and crash recovery that meets a new archive asks the owner, keeping that question open until the owner decides. Source only; not installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Owner decision: no Windows Host for now. Routed `server-tests (windows-latest)` and `server-integration (windows-latest)` to manual runs through a new `windows_host` routing output that fails open, kept their tests, and extended the CI workflow test and testing docs. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Eleven module-level style arrays read Unistyles proxies before the persisted theme loaded, which the module-scope style rule rejects. Each array now lives in the render that uses it, with the same entries in the same order, so visuals are unchanged. The task checklist's compact ring sheet is plain React Native with no theme reads and was renamed out of the rule's pattern. The customization inventory is unchanged.
+
+Maintenance review (2026-11-06): Settings text colors now come from theme tokens throughout System and the affected rows; no behavior change. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): The shared scroll edge fade constructed `ResizeObserver` unconditionally, which threw in the app's unit test DOM and would break any older browser without it. It now treats both observers as optional and falls back to a window resize listener. Visuals are unchanged where the observers exist; the customization inventory is unchanged.
+
+Maintenance review (2026-11-06): Test-only repair for the merge-group smoke job; no shipped behavior changes. Restart controls stay where 90ea0adb4 moved them, the composer keeps queue-first sending from 471d7f22a and eb9b43e80, and narrow windows keep the icon rail from 912be3133. The routed-out upstream tests should be re-checked after each upstream merge. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): The ignored proxy test occasionally failed with `ENOTEMPTY` while removing its temporary daemon home after the worker exited. Cleanup now uses `rm` with bounded retries. The warning assertions are unchanged; product behavior and the customization inventory are unchanged.
+
+Maintenance review (2026-11-06): Host-owned Claude refresh gains opt-in coordinator custody, enabled per account with an `authority-enabled` marker in the coordinator state directory and off by default. In custody the grant lives in a coordinator-only authority directory, any new refresh token found in the account directory is adopted under the CLI's refresh and storage locks, and Host agents receive access-only copies. Removing the marker or creating `authority-disabled` returns the grant; the providers guide documents the downgrade order. Refresh logging applies to every account. Updated the full sign-in section of the providers guide and the subscription accounts entry in the customizations inventory. Focused tests and a Keychain check with throwaway items and fake tokens pass; a live refresh on the installation is pending. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Reviewed provider discovery and command cancellation ownership. The provider diagnostics inventory now records availability-probe shutdown; network gate and proxy behavior are unchanged. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Lint fix for the Windows manual-routing change: merged the desktop_apps and windows_host routing loops in the CI workflow test into one table, with release tags now asserted for both. No workflow or behavior change; README unchanged.
+
+Maintenance review (2026-11-06): Owner-approved CI optimization: the Container smoke matrix picks `ubuntu-24.04-arm` for arm64 and drops QEMU setup, verified by a manual Container run on the branch before merge. Updated the CI workflow test. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-06): Owner-approved CI optimization: scoped the Secret scan workflow by event, added a nightly full-history run, and let `security:secrets` take an optional `SECRET_SCAN_LOG_OPTS` range that defaults to full history, so the pre-push hook is unchanged. Updated publication hygiene and the CI workflow test. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-06): Reviewed refresh-state rollback compatibility, retry accounting and authenticated recovery transport. Existing account state retains its original strict schema. Added focused regressions for the review findings; README overview and onboarding remain unchanged.
