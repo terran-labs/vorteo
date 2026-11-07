@@ -448,6 +448,12 @@ test.describe("Sidebar workspace list", () => {
 
       await focusWorkspaceRowWithKeyboard(page, workspace.workspaceId);
       await expectWorkspaceHoverCardOpen(page);
+      // Vorteo keeps the row's actions button mounted (bcd8dda7a), so the first Tab stays in the
+      // row and the card stays open; the next one leaves the row.
+      await page.keyboard.press("Tab");
+      await expect(
+        page.getByTestId(`sidebar-workspace-kebab-${getServerId()}:${workspace.workspaceId}`),
+      ).toBeFocused();
       await page.keyboard.press("Tab");
       await expectWorkspaceHoverCardClosed(page);
     } finally {

@@ -3588,7 +3588,20 @@ function WorkspaceScreenContent({
             onCreateDraftTab={handleCreateDraftTab}
             onCreateTerminal={handleCreateTerminal}
             onCreateBrowser={handleCreateBrowserTab}
-          />
+          >
+            {/* Phones have no scripts button; scripts are a page of this menu. Merge 51f16b39f
+                dropped them from this header. */}
+            <WorkspaceScriptsButton
+              serverId={normalizedServerId}
+              workspaceId={normalizedWorkspaceId}
+              scripts={workspaceScripts}
+              liveTerminalIds={liveTerminalIds}
+              onScriptTerminalStarted={handleScriptTerminalStarted}
+              onViewTerminal={handleViewScriptTerminal}
+              onOpenUrlInBrowserTab={handleOpenUrlInBrowserTab}
+              presentation="menu"
+            />
+          </WorkspaceHeaderMenuMobile>
         </CompactWorkspaceHeader>
       ) : null,
     [
@@ -3621,6 +3634,11 @@ function WorkspaceScreenContent({
       tabs,
       workspaceHeaderSubtitle,
       workspaceHeaderTitle,
+      workspaceScripts,
+      liveTerminalIds,
+      handleScriptTerminalStarted,
+      handleViewScriptTerminal,
+      handleOpenUrlInBrowserTab,
     ],
   );
   const desktopSplitContent = useMemo(() => {

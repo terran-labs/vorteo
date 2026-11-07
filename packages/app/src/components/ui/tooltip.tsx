@@ -555,6 +555,9 @@ export function TooltipContent({
     onKeyDown: handleOverlayKey,
     focusBehavior: "none",
     keys: ["Escape"],
+    // A tooltip is passive: it never holds focus, so it must not wrap Tab into itself. With
+    // focus management on, Tab from a keyboard-focused trigger had nowhere to go and stuck.
+    manageFocus: false,
   });
   const [triggerRect, setTriggerRect] = useState<Rect | null>(null);
   const [contentSize, setContentSize] = useState<{ width: number; height: number } | null>(null);
