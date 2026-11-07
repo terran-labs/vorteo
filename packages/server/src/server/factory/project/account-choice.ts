@@ -99,12 +99,21 @@ export async function chooseAccount(input: {
   const none = { provider: null, remainingPct: null, bound: false, considered: [] };
   if (input.profileId && isAccountBound(input.profileId)) {
     const provider = input.accounts.profileAccount(input.profileId);
+    // The binding leaves no alternative to an avoided account, so nothing qualifies.
+    if (provider !== null && provider === input.avoid)
+      return {
+        ...none,
+        bound: true,
+        considered: [{ provider, verdict: "avoided", remainingPct: null }],
+      };
     return { ...none, provider, bound: provider !== null };
   }
   const type = input.profileId
     ? input.accounts.providerType({ profileId: input.profileId })
     : await input.accounts
         .defaultProvider()
+        // The default launch reads usage too; a failed read falls back like any other.
+        .catch(() => null)
         .then((provider) => (provider ? input.accounts.providerType({ provider }) : null));
   if (!type) return none;
   const candidates = (await input.accounts.readyProviders()).filter(

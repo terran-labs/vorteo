@@ -23,7 +23,7 @@ import { charterVersion } from "./instructions.js";
 import { PROJECT_FACTORY_ROLE_LABEL, PROJECT_FACTORY_ROLES } from "./roles.js";
 import { DRAIN_ENDED, drainNotice, ProjectFactoryService, type PromptOutcome } from "./service.js";
 import { factoryProjectQueue } from "@getpaseo/server/factory-project";
-import type { FactoryAccounts } from "./account-choice.js";
+import { daemonFactoryAccounts, type FactoryAccounts } from "./account-choice.js";
 import type { FactoryGitHub, GitHubResponse } from "./claims.js";
 import type { GhRunner } from "./tick-gate.js";
 import { projectFactoryStatePath } from "./state.js";
@@ -1860,6 +1860,8 @@ describe("account choice for new Factory agents", () => {
       workerProfileId: "local-codex",
     });
     expect(await pick()).toMatchObject({ provider: "codex-a", bound: true, considered: [] });
+    // A bound reviewer cannot leave the worker's account, so nothing qualifies.
+    expect(await pick("codex-a")).toMatchObject({ provider: null, bound: true });
 
     // Turning Factory off and on again keeps the history.
     await factory.invoke("factory.project.disable", { projectId: PROJECT });
@@ -1869,6 +1871,23 @@ describe("account choice for new Factory agents", () => {
       state.projects[PROJECT].accountPicks.map(
         (item: { provider: string | null }) => item.provider,
       ),
-    ).toEqual(["codex-b", "codex-a", null, null, "codex-a"]);
+    ).toEqual(["codex-b", "codex-a", null, null, "codex-a", null]);
+  });
+
+  test("the daemon's accounts fall back when usage cannot be read and no profile is set", async () => {
+    accounts = daemonFactoryAccounts({
+      providers: {
+        listProviders: async () => [{ provider: "codex", enabled: true, status: "ready" }] as never,
+      },
+      readUsage: async () => {
+        throw new Error("usage service down");
+      },
+      getSettings: () => ({}) as never,
+    });
+    const factory = service();
+    await enable(factory);
+    expect(
+      await factory.invoke("factory.project.pick_account", { projectId: PROJECT, stage: "worker" }),
+    ).toMatchObject({ provider: null, profileId: null });
   });
 });
