@@ -162,7 +162,8 @@ test.describe("Sidebar contribution visibility and order", () => {
     await expectFooterItemHidden(page, "usage");
     await expectFooterOrder(page, [syncKey]);
     await expectSidebarToolbar(page);
-    await expectFooterSeparator(page, true);
+    // No separator assertion here: since 469492c4e the footer's top rule shows only where the
+    // project list reaches the footer, which this short list does not.
     await openSidebarNavSettings(page);
     await moveFooterItemUp(page, syncKey);
     await expectFooterSettingsKeys(page, [syncKey, "usage", brokenKey]);

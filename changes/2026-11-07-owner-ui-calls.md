@@ -10,10 +10,12 @@
 
 - Triple click no longer toggles dictation, so it selects a line or paragraph again.
 - On touch layouts the composer's Fullscreen button sits just left of the dictation button instead of under it, so it can be pressed again.
+- The fullscreen composer on touch layouts shows only Exit and Send, as on desktop; dictation there runs from the three-finger tap or shortcut.
 
 ### Tests
 
 - The sidebar toolbar test expects History, Schedules, then Search, the full-width order the toolbar has used since bcd8dda7a.
+- The sidebar footer settings test no longer expects the footer's top rule over a short project list, which it has not drawn since 469492c4e.
 
 ## Maintenance review
 

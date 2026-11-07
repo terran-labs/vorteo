@@ -2191,13 +2191,13 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     );
     // On touch the dictation button owns the top-right corner, so Fullscreen sits just left of
     // it and the text keeps clear of both.
-    const fullscreenBesideDictation = touch && mode.showVoice;
+    const fullscreenBesideDictation = touch && mode.showVoice && !isFullscreen;
     const textInputStyle = useMemo(
       () => [
         styles.textInput,
         mode.isMonospace && styles.textInputMonospace,
         isFullscreen ? styles.fullscreenTextInput : composerHeightStyle,
-        touch && mode.showVoice && styles.touchTextInput,
+        touch && mode.showVoice && !isFullscreen && styles.touchTextInput,
         fullscreenBesideDictation && showFullscreenButton && styles.touchTextInputWithFullscreen,
       ],
       [
@@ -2299,10 +2299,12 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       () => (onQueue && !readOnly ? handleAcceptAndQueueRecording : undefined),
       [onQueue, readOnly, handleAcceptAndQueueRecording],
     );
+    // Fullscreen shows only Exit and Send, as upstream draws it; dictation there runs from the
+    // gesture or shortcut, which return to the inline composer.
     const dictationPlacement = placeDictationButton(
       voiceButton,
       touch,
-      mode.showVoice,
+      mode.showVoice && !isFullscreen,
       mobileComposer.enabled,
     );
     const sendButton = useMemo(
