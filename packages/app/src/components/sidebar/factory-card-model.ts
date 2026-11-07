@@ -26,10 +26,10 @@ export const FACTORY_STAGE_SEGMENTS = [
 ] as const;
 export type FactoryStageSegment = (typeof FACTORY_STAGE_SEGMENTS)[number];
 
-export interface FactoryStageCount {
+export interface FactoryStageCount<Issue extends FactoryQueueIssue = FactoryQueueIssue> {
   segment: FactoryStageSegment;
   count: number;
-  issues: FactoryQueueIssue[];
+  issues: Issue[];
 }
 
 export function factoryStageSegment(stage: FactoryQueueStage): FactoryStageSegment {
@@ -37,7 +37,9 @@ export function factoryStageSegment(stage: FactoryQueueStage): FactoryStageSegme
 }
 
 /** Non-empty stage segments in bar order. */
-export function factoryStageCounts(issues: readonly FactoryQueueIssue[]): FactoryStageCount[] {
+export function factoryStageCounts<Issue extends FactoryQueueIssue>(
+  issues: readonly Issue[],
+): FactoryStageCount<Issue>[] {
   return FACTORY_STAGE_SEGMENTS.flatMap((segment) => {
     const matching = issues.filter((issue) => factoryStageSegment(issue.stage) === segment);
     return matching.length > 0 ? [{ segment, count: matching.length, issues: matching }] : [];
@@ -88,7 +90,7 @@ export function factoryRunnerTrack(
 }
 
 /** Issues a runner is working on: past the queue, or already staffed. */
-export function factoryRunners(issues: readonly FactoryQueueIssue[]): FactoryQueueIssue[] {
+export function factoryRunners<Issue extends FactoryQueueIssue>(issues: readonly Issue[]): Issue[] {
   return issues.filter((issue) => issue.stage !== "queued" || issue.agents.length > 0);
 }
 

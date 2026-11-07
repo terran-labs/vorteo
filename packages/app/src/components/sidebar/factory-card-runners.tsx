@@ -25,14 +25,18 @@ import {
 const ThemedCircleAlert = withUnistyles(CircleAlert);
 const dangerColor = (theme: Theme) => ({ color: theme.colors.statusDanger });
 
+/** A runner's issue; issues merged from several Factories carry their host and project tag. */
+export type RunnerIssue = FactoryQueueIssue & { serverId?: string; tag?: string };
+
 /** In-flight issues, each opening its most relevant agent. */
 export function FactoryRunners({
   serverId,
   runners,
   onBeforeNavigate,
 }: {
-  serverId: string;
-  runners: readonly FactoryQueueIssue[];
+  /** The host of issues that do not name their own. */
+  serverId?: string;
+  runners: readonly RunnerIssue[];
   onBeforeNavigate?: () => void;
 }) {
   const { t } = useTranslation();
@@ -47,8 +51,8 @@ export function FactoryRunners({
       </View>
       {runners.map((issue) => (
         <RunnerRow
-          key={issue.number}
-          serverId={serverId}
+          key={`${issue.serverId ?? serverId}:${issue.tag ?? ""}#${issue.number}`}
+          serverId={issue.serverId ?? serverId ?? ""}
           issue={issue}
           onBeforeNavigate={onBeforeNavigate}
         />
@@ -63,7 +67,7 @@ function RunnerRow({
   onBeforeNavigate,
 }: {
   serverId: string;
-  issue: FactoryQueueIssue;
+  issue: RunnerIssue;
   onBeforeNavigate?: () => void;
 }) {
   const { t } = useTranslation();
@@ -103,6 +107,11 @@ function RunnerRow({
             <Text style={styles.title} numberOfLines={1}>
               {issue.title}
             </Text>
+            {issue.tag ? (
+              <Text style={styles.tag} numberOfLines={1}>
+                {issue.tag}
+              </Text>
+            ) : null}
           </View>
         </TooltipTrigger>
         <TooltipContent side="top" maxWidth={320}>
@@ -125,9 +134,9 @@ function RunnerRow({
   );
 }
 
-function RunnerTooltip({ issue }: { issue: FactoryQueueIssue }) {
+function RunnerTooltip({ issue }: { issue: RunnerIssue }) {
   const { t } = useTranslation();
-  const lines: string[] = [];
+  const lines: string[] = issue.tag ? [issue.tag] : [];
   if (issue.pr) {
     lines.push(
       issue.pr.checks
@@ -222,6 +231,13 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
+  },
+  // A compact project tag that gives way to the title.
+  tag: {
+    flexShrink: 2,
+    maxWidth: "40%",
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
   },
   track: { flexDirection: "row", gap: 2, paddingVertical: theme.spacing[1] },
   box: { width: 6, height: 6, borderRadius: theme.borderRadius.sm },

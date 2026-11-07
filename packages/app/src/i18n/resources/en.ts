@@ -1488,6 +1488,18 @@ export const en = {
       pullRequestChecks: "PR #{{number}} · {{checks}}",
       pullRequest: "PR #{{number}}",
       noAgents: "No agents yet. Opens the issue.",
+      allTitle: "All Factories",
+      stateSummary: "{{project}}: {{state}}",
+      openProject: "Open {{project}} Factory overview",
+      chipCounts: "{{state}}. {{inFlight}} in flight, {{needsYou}} need you",
+      chipCountsShort: "{{inFlight}} in flight · {{needsYou}} need you",
+      needsYouHeader: "Needs you · {{count}}",
+      needsYouKinds: {
+        humanReview: "#{{number}} {{title}} needs your review",
+        blocked: "#{{number}} {{title}} is blocked",
+        instructions: "{{role}} instructions need review",
+        question: "{{question}}",
+      },
     },
     statusGroupAccessibility: "{{label}} group",
     statusBucket: {

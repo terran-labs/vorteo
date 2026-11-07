@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useMemo, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
@@ -31,7 +31,6 @@ import {
   factoryRunners,
   factoryStatePill,
   type FactoryCardModel,
-  type FactoryQueueIssue,
   type FactoryStatePill,
 } from "./factory-card-model";
 import {
@@ -41,7 +40,7 @@ import {
 } from "./factory-card-hover";
 import { FactoryRoleChips, factoryChips } from "./factory-card-roles";
 import { FactoryRunners } from "./factory-card-runners";
-import { FactoryStageBar } from "./factory-card-stage-bar";
+import { FactoryStageBar, type StageBarIssue } from "./factory-card-stage-bar";
 import { useFactoryCardStore } from "./factory-card-store";
 import type { ProjectFactoryState } from "./factory-state";
 import { sidebarIndent } from "./indent";
@@ -60,10 +59,6 @@ const unpinIcon = <ThemedPinOff size={ICON_SIZE.sm} uniProps={mutedColor} />;
 
 /** The toggle's own hover group, which swaps the Factory glyph for the chevron. */
 const TOGGLE_HOVER_GROUP = "factory-card-toggle";
-
-/** Queue refresh while the stage detail is visible, and while only the collapsed bar shows. */
-const DETAIL_REFRESH_MS = 30_000;
-const SUMMARY_REFRESH_MS = 60_000;
 
 /**
  * Where the card's border sits: just outside the content inset, so the Factory icon shares the
@@ -104,14 +99,9 @@ export const FactoryCard = memo(function FactoryCard({
 }: FactoryCardProps) {
   const { t } = useTranslation();
   const collapsed = useFactoryCardStore((state) => state.collapsed.includes(card.key));
-  const toggleCollapsedKey = useFactoryCardStore((state) => state.toggleCollapsed);
-  const toggleCollapsed = useCallback(
-    () => toggleCollapsedKey(card.key),
-    [toggleCollapsedKey, card.key],
-  );
   const { plugin, route, openOverview } = useFactoryOverview(card, onWorkspacePress);
   const state = useProjectFactory(card.serverId, card.projectId, true).data;
-  const { issues, setTooltipOpen } = useFactoryQueueIssues({ card, plugin, state, collapsed });
+  const issues = useFactoryQueueIssues({ card, plugin, state, collapsed });
 
   const members = useMemo(
     () => card.members.flatMap((member) => entries.get(member.workspaceKey) ?? []),
@@ -119,7 +109,93 @@ export const FactoryCard = memo(function FactoryCard({
   );
   const chips = useMemo(() => factoryChips(state?.roles, members), [state?.roles, members]);
   const runners = useMemo(() => (issues ? factoryRunners(issues) : []), [issues]);
+  const pill = useMemo(
+    () =>
+      state
+        ? {
+            pill: factoryStatePill(state),
+            description: state.drain?.reason ?? state.reason ?? undefined,
+          }
+        : null,
+    [state],
+  );
 
+  return (
+    <FactoryCardFrame
+      cardKey={card.key}
+      level={level}
+      title={t("sidebar.factoryCard.title")}
+      subtitle={projectName}
+      pill={pill}
+      issues={issues}
+      onOpenOverview={route ? openOverview : null}
+      pinnable
+    >
+      <FactoryRoleChips
+        chips={chips}
+        activeWorkspaceSelection={activeWorkspaceSelection}
+        selectionEnabled={selectionEnabled}
+        canPinWorkspace={canPinWorkspace}
+        onToggleWorkspacePin={onToggleWorkspacePin}
+        onWorkspacePress={onWorkspacePress}
+      />
+      <FactoryRunners
+        serverId={card.serverId}
+        runners={runners}
+        onBeforeNavigate={onWorkspacePress}
+      />
+    </FactoryCardFrame>
+  );
+});
+
+export interface FactoryCardPill {
+  pill: FactoryStatePill;
+  /** The pill's tooltip detail, such as the daemon's reason. */
+  description?: string;
+}
+
+/**
+ * The shared shape of a Factory card: surface, header, stage bar and menu, with the body below.
+ *
+ * The card surface is a pressable layer behind the content rather than around it, so the chips and
+ * rows inside are never nested in another pressable and their hover replaces the card's.
+ */
+export function FactoryCardFrame({
+  cardKey,
+  level,
+  title,
+  subtitle,
+  pill,
+  badge,
+  issues,
+  onOpenOverview,
+  pinnable,
+  children,
+}: {
+  /** Collapse (and pin) state key in the device store. */
+  cardKey: string;
+  level: number;
+  title: string;
+  /** Muted text after the title, such as the project name under Pinned. */
+  subtitle: string | null;
+  pill: FactoryCardPill | null;
+  /** A compact header marker before the pill, such as the Needs you count. */
+  badge?: ReactNode;
+  /** Null hides the stage bar. */
+  issues: readonly StageBarIssue[] | null;
+  /** Null when there is no overview to open. */
+  onOpenOverview: (() => void) | null;
+  pinnable: boolean;
+  children: ReactNode;
+}) {
+  const collapsed = useFactoryCardStore((state) => state.collapsed.includes(cardKey));
+  const toggleCollapsedKey = useFactoryCardStore((state) => state.toggleCollapsed);
+  const toggleCollapsed = useCallback(
+    () => toggleCollapsedKey(cardKey),
+    [toggleCollapsedKey, cardKey],
+  );
+  const { t } = useTranslation();
+  const openOverview = useCallback(() => onOpenOverview?.(), [onOpenOverview]);
   const interaction = useLongPressDragInteraction({ menuController: null });
   const handleSurfacePress = useCallback(() => {
     // A touch that turned into a scroll is not a press, as on ordinary sidebar rows.
@@ -129,80 +205,64 @@ export const FactoryCard = memo(function FactoryCard({
     }
     openOverview();
   }, [interaction.didLongPressRef, openOverview]);
-  const pill = state ? factoryStatePill(state) : null;
 
   return (
     <ContextMenu>
       {/* Right-click anywhere on the card, including the stage bar and runners, opens its menu;
-          chips stop the event and open their workspace menu instead. */}
+          chips stop the event and open their own menu instead. */}
       <ContextMenuTrigger
         contextOnly
         style={[styles.card, cardInset(level)]}
-        testID={`factory-card-${card.key}`}
+        testID={`factory-card-${cardKey}`}
         role="group"
-        accessibilityLabel={t("sidebar.factoryCard.title")}
+        accessibilityLabel={title}
       >
         <ContextMenuTrigger
-          accessibilityRole={route ? "link" : undefined}
+          accessibilityRole={onOpenOverview ? "link" : undefined}
           accessibilityLabel={t("sidebar.factoryCard.openOverview")}
-          accessibilityHint={pill ? t(`sidebar.factoryCard.states.${pill.label}`) : undefined}
-          accessible={Boolean(route)}
+          accessibilityHint={pill ? t(`sidebar.factoryCard.states.${pill.pill.label}`) : undefined}
+          accessible={Boolean(onOpenOverview)}
           style={styles.surface}
           highlightStyle={styles.surfacePressed}
           onPress={handleSurfacePress}
           onPressIn={interaction.handlePressIn}
           onPressOut={interaction.handlePressOut}
           onTouchMove={interaction.handleTouchMove}
-          testID={`factory-card-surface-${card.key}`}
+          testID={`factory-card-surface-${cardKey}`}
         />
         <View pointerEvents="box-none" style={styles.content}>
           <FactoryCardHeader
-            cardKey={card.key}
+            cardKey={cardKey}
             collapsed={collapsed}
-            projectName={projectName}
-            state={state}
+            title={title}
+            subtitle={subtitle}
+            pill={pill}
+            badge={badge}
             issues={issues}
-            canOpenOverview={route !== null}
+            canOpenOverview={onOpenOverview !== null}
             onToggle={toggleCollapsed}
             onOpenOverview={openOverview}
-            onTooltipOpenChange={setTooltipOpen}
           />
           {collapsed ? null : (
             <>
               {issues ? (
-                <FactoryStageBar
-                  issues={issues}
-                  expanded
-                  onOpenOverview={openOverview}
-                  onTooltipOpenChange={setTooltipOpen}
-                />
+                <FactoryStageBar issues={issues} expanded onOpenOverview={openOverview} />
               ) : null}
-              <FactoryRoleChips
-                chips={chips}
-                activeWorkspaceSelection={activeWorkspaceSelection}
-                selectionEnabled={selectionEnabled}
-                canPinWorkspace={canPinWorkspace}
-                onToggleWorkspacePin={onToggleWorkspacePin}
-                onWorkspacePress={onWorkspacePress}
-              />
-              <FactoryRunners
-                serverId={card.serverId}
-                runners={runners}
-                onBeforeNavigate={onWorkspacePress}
-              />
+              {children}
             </>
           )}
         </View>
       </ContextMenuTrigger>
       <FactoryCardMenu
-        cardKey={card.key}
+        cardKey={cardKey}
         collapsed={collapsed}
+        pinnable={pinnable}
         onToggleCollapsed={toggleCollapsed}
-        onOpenOverview={route ? openOverview : null}
+        onOpenOverview={onOpenOverview}
       />
     </ContextMenu>
   );
-});
+}
 
 /** The overview route, when this host's Factory plugin offers one. */
 function useFactoryOverview(card: FactoryCardModel, onBeforeNavigate?: () => void) {
@@ -224,8 +284,23 @@ function useFactoryOverview(card: FactoryCardModel, onBeforeNavigate?: () => voi
 }
 
 /**
- * The queue behind the stage bar and runners. Null hides both: still loading, failed, or a daemon
- * without the queue. Detail views refresh faster than the collapsed bar.
+ * Each queue read is a GitHub read on the Foreman's token, so sidebar cards read it only while
+ * expanded on a running Factory, and slowly. Collapsed or paused cards show the last cached queue.
+ */
+export const FACTORY_CARD_QUEUE_REFRESH_MS = 120_000;
+
+/** Whether a sidebar card may read a Factory's queue now. */
+export function factoryCardReadsQueue(input: {
+  active: boolean;
+  collapsed: boolean;
+  state: Pick<ProjectFactoryState, "state" | "drain"> | undefined;
+}): boolean {
+  return input.active && !input.collapsed && input.state?.state === "on" && !input.state.drain;
+}
+
+/**
+ * The queue behind the stage bar and runners, shared with the overview's cache. Null hides both:
+ * not read yet, failed, or a daemon without the queue.
  */
 function useFactoryQueueIssues(input: {
   card: FactoryCardModel;
@@ -235,40 +310,39 @@ function useFactoryQueueIssues(input: {
 }) {
   const { card, plugin, state, collapsed } = input;
   const active = useRetainedPanelActive();
-  const [tooltipOpen, setTooltipOpen] = useState(false);
-  const refreshMs = !collapsed || tooltipOpen ? DETAIL_REFRESH_MS : SUMMARY_REFRESH_MS;
-  // Shares the overview's cache, so opening either shows the other's latest queue.
   const queue = useFetchQuery({
     dataShape: "value",
     queryKey: ["factoryQueue", card.serverId, card.projectId],
     staleTimeMs: 30_000,
-    enabled: active && !!plugin && !!state && state.state !== "off",
-    refetchInterval: (query) => (active && query.state.data !== null ? refreshMs : false),
+    enabled: !!plugin && factoryCardReadsQueue({ active, collapsed, state }),
+    refetchInterval: FACTORY_CARD_QUEUE_REFRESH_MS,
     queryFn: () => loadFactoryQueue(plugin!.invoke, card.projectId),
   });
-  return { issues: queue.data?.issues ?? null, setTooltipOpen };
+  return queue.data?.issues ?? null;
 }
 
 function FactoryCardHeader({
   cardKey,
   collapsed,
-  projectName,
-  state,
+  title,
+  subtitle,
+  pill,
+  badge,
   issues,
   canOpenOverview,
   onToggle,
   onOpenOverview,
-  onTooltipOpenChange,
 }: {
   cardKey: string;
   collapsed: boolean;
-  projectName: string | null;
-  state: ProjectFactoryState | undefined;
-  issues: FactoryQueueIssue[] | null;
+  title: string;
+  subtitle: string | null;
+  pill: FactoryCardPill | null;
+  badge?: ReactNode;
+  issues: readonly StageBarIssue[] | null;
   canOpenOverview: boolean;
   onToggle: () => void;
   onOpenOverview: () => void;
-  onTooltipOpenChange: (open: boolean) => void;
 }) {
   const { t } = useTranslation();
   const touch = useVortonTouch() || isNative;
@@ -284,20 +358,16 @@ function FactoryCardHeader({
       <CollapseToggle collapsed={collapsed} touch={touch} onToggle={onToggle} />
       <View pointerEvents="none" style={styles.titleRow}>
         <Text style={styles.title} numberOfLines={1}>
-          {t("sidebar.factoryCard.title")}
-          {projectName ? <Text style={styles.project}>{` · ${projectName}`}</Text> : null}
+          {title}
+          {subtitle ? <Text style={styles.project}>{` · ${subtitle}`}</Text> : null}
         </Text>
       </View>
-      {state ? (
-        <StatePill pill={factoryStatePill(state)} state={state} onPress={onOpenOverview} />
-      ) : null}
+      <View pointerEvents="box-none" style={styles.headerMarks}>
+        {badge}
+        {pill ? <StatePill pill={pill} onPress={onOpenOverview} /> : null}
+      </View>
       {collapsed && issues ? (
-        <FactoryStageBar
-          issues={issues}
-          expanded={false}
-          onOpenOverview={onOpenOverview}
-          onTooltipOpenChange={onTooltipOpenChange}
-        />
+        <FactoryStageBar issues={issues} expanded={false} onOpenOverview={onOpenOverview} />
       ) : null}
       {!collapsed && canOpenOverview ? (
         <ToolbarButton
@@ -316,11 +386,13 @@ function FactoryCardHeader({
 function FactoryCardMenu({
   cardKey,
   collapsed,
+  pinnable,
   onToggleCollapsed,
   onOpenOverview,
 }: {
   cardKey: string;
   collapsed: boolean;
+  pinnable: boolean;
   onToggleCollapsed: () => void;
   onOpenOverview: (() => void) | null;
 }) {
@@ -330,9 +402,11 @@ function FactoryCardMenu({
   const togglePinned = useCallback(() => togglePinnedKey(cardKey), [togglePinnedKey, cardKey]);
   return (
     <ContextMenuContent align="start" width={220} testID={`factory-card-menu-${cardKey}`}>
-      <ContextMenuItem leading={pinned ? unpinIcon : pinIcon} onSelect={togglePinned}>
-        {pinned ? t("sidebar.factoryCard.unpin") : t("sidebar.factoryCard.pin")}
-      </ContextMenuItem>
+      {pinnable ? (
+        <ContextMenuItem leading={pinned ? unpinIcon : pinIcon} onSelect={togglePinned}>
+          {pinned ? t("sidebar.factoryCard.unpin") : t("sidebar.factoryCard.pin")}
+        </ContextMenuItem>
+      ) : null}
       <ContextMenuItem onSelect={onToggleCollapsed}>
         {collapsed ? t("sidebar.factoryCard.expand") : t("sidebar.factoryCard.collapse")}
       </ContextMenuItem>
@@ -400,19 +474,10 @@ function CollapseToggle({
   );
 }
 
-/** On, Paused, Draining or Off, with the daemon's reason on hover. */
-function StatePill({
-  pill,
-  state,
-  onPress,
-}: {
-  pill: FactoryStatePill;
-  state: Pick<ProjectFactoryState, "reason" | "drain">;
-  onPress: () => void;
-}) {
+/** On, Paused, Draining or Off, with detail on hover. */
+function StatePill({ pill, onPress }: { pill: FactoryCardPill; onPress: () => void }) {
   const { t } = useTranslation();
-  const label = t(`sidebar.factoryCard.states.${pill.label}`);
-  const reason = state.drain?.reason ?? state.reason ?? undefined;
+  const label = t(`sidebar.factoryCard.states.${pill.pill.label}`);
   return (
     <Tooltip delayDuration={300}>
       <TooltipTrigger
@@ -424,10 +489,10 @@ function StatePill({
         style={[styles.pill, styles.passThrough]}
         testID="factory-card-state"
       >
-        <StatusBadge label={label} variant={pill.variant} size="xs" />
+        <StatusBadge label={label} variant={pill.pill.variant} size="xs" />
       </TooltipTrigger>
-      <TooltipContent side="top" maxWidth={300}>
-        <TooltipText label={label} description={reason} />
+      <TooltipContent side="top" maxWidth={320}>
+        <TooltipText label={label} description={pill.description} />
       </TooltipContent>
     </Tooltip>
   );
@@ -481,7 +546,14 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontWeight: theme.fontWeight.normal,
   },
-  pill: { marginLeft: "auto", flexShrink: 0 },
+  headerMarks: {
+    marginLeft: "auto",
+    flexShrink: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+  },
+  pill: { flexShrink: 0 },
   toggle: {
     width: 20,
     height: 20,
