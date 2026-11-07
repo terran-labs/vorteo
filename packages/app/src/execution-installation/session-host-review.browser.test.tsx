@@ -57,6 +57,7 @@ vi.mock("./installation-upgrade-card", () => ({
   InstallationUpgradeCard: () => null,
   CoordinatorFollowCard: () => null,
 }));
+vi.mock("./coordinator-settings-card", () => ({ CoordinatorSettingsCard: () => null }));
 vi.mock("./policy", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./policy")>()),
   readExecutionInstallation: () => ({ environments: capture.environments }),

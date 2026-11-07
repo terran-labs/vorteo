@@ -297,13 +297,34 @@ export async function runRestore(
   return status;
 }
 
-/** Starts the helper outside the coordinator's process group, cgroup and lifetime. */
+const SYSTEMD_RUN = "/usr/bin/systemd-run";
+
+/** Why a handoff cannot be started on this machine, or null. Check before any effect. */
+export function handoffLaunchBlocker(input: {
+  node: string;
+  helper: string;
+  services: HandoffPlan["services"];
+}): string | null {
+  if (!existsSync(input.node)) return `The Node runtime ${input.node} is missing.`;
+  if (!existsSync(input.helper))
+    return `The coordinator handoff helper ${input.helper} is missing.`;
+  if ("systemdService" in input.services.coordinator && !existsSync(SYSTEMD_RUN))
+    return `${SYSTEMD_RUN} is missing.`;
+  return null;
+}
+
+/**
+ * Starts the helper outside the coordinator's process group, cgroup and lifetime. A spawn
+ * that fails after this returns reports through `onError`; without it the failure is logged
+ * to stderr instead of crashing the coordinator.
+ */
 export function launchHandoff(input: {
   node: string;
   helper: string;
   planFile: string;
   logFile: string;
   plan: HandoffPlan;
+  onError?: (error: Error) => void;
 }): void {
   writePrivateFileAtomicSync(input.planFile, JSON.stringify(input.plan, null, 2));
   const systemd = "systemdService" in input.plan.services.coordinator;
@@ -311,7 +332,7 @@ export function launchHandoff(input: {
   // runs as its own transient user unit. launchd stops only the job's process group.
   const [command, args] = systemd
     ? [
-        "/usr/bin/systemd-run",
+        SYSTEMD_RUN,
         [
           "--user",
           "--collect",
@@ -328,6 +349,13 @@ export function launchHandoff(input: {
   const log = openSync(input.logFile, "a", 0o600);
   try {
     const child = spawn(command, args, { detached: !systemd, stdio: ["ignore", log, log] });
+    child.on("error", (error) => {
+      if (input.onError) input.onError(error);
+      else
+        process.stderr.write(
+          `Coordinator handoff ${input.plan.id} did not start: ${error.message}\n`,
+        );
+    });
     child.unref();
   } finally {
     closeSync(log);

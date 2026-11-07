@@ -264,7 +264,12 @@ export function createReleaseUpgradeRuntime(input: {
   entrypoint?: string;
   /** Replaces the GitHub Releases API in tests. */
   listReleases?: ReleaseUpdatePorts["listReleases"];
-  /** Other lifecycle work a coordinator update must not interrupt, such as coordinator requests. */
+  /** Another coordinator restart, such as a settings change, that blocks upgrades and follows. */
+  conflict?: () => string | null;
+  /**
+   * The shared coordinator restart check for a coordinator update: other coordinator
+   * restarts, approved Host jobs and open coordinator requests.
+   */
   coordinatorFollowConflict?: () => string | null;
 }): ReleaseUpgradeRuntime {
   const { config, configFile, restarts, hostUpdates, logger } = input;
@@ -633,7 +638,7 @@ export function createReleaseUpgradeRuntime(input: {
       // `coordinatorFollow` is created below from these ports; it exists before any upgrade runs.
       coordinatorFollow.dispatching()
         ? "Wait for the coordinator update to finish before upgrading."
-        : null,
+        : (input.conflict?.() ?? null),
     adoptionRequired: adoptable,
     launchAdoption: (upgrade) => launchAdoptionEngine(path.join(upgradeDirectory, upgrade.id)),
     adoptionOutcome: (upgradeId) =>
@@ -922,10 +927,6 @@ export function createReleaseUpgradeRuntime(input: {
     // lifecycle work it coordinates.
     conflict: () => {
       if (upgrades?.active()) return "Wait for the release upgrade to finish.";
-      const busy = restarts
-        .list()
-        .find((job) => job.target === "host" && ["approved", "running"].includes(job.status));
-      if (busy) return "Wait for the approved Host restart or update to finish.";
       return input.coordinatorFollowConflict?.() ?? null;
     },
     hostRelease: () => ports.hostRelease(),

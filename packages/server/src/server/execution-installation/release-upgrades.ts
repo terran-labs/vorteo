@@ -872,6 +872,10 @@ export class CoordinatorFollow {
     return this.jobs.find((job) => job.status === "approved" || job.status === "running") ?? null;
   }
 
+  job(id: string): CoordinatorFollowJob | null {
+    return this.jobs.find((job) => job.id === id) ?? null;
+  }
+
   status(): CoordinatorFollowStatus {
     return { ...this.availability(), job: this.shownJob() };
   }
