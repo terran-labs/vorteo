@@ -76,7 +76,7 @@ On daemons that advertise `agentProfileSwitch`, choosing a profile on another ac
 
 Choosing **New task instead**, or selecting a preset on an older daemon, opens an editable handoff review and creates a separate successor only after confirmation. It initially copies at most 30 recent text messages and 50,000 characters without making an inference request to the old account. Active managed workers block the handoff. It uses the selected profile’s permission mode for the new task. Attachments, tool outputs, and provider-private state are not copied automatically. The original task remains available for review. Model or reasoning changes made through Classic controls mark the original preset label as modified.
 
-Quota suggestions use fresh reported capacity on a different provider instance. Unknown, stale, and exhausted quotas do not qualify. This is advisory, not account pooling or automatic failover. One account may have multiple aliases; users should avoid treating those as separate allowances.
+Quota suggestions use fresh reported capacity on a different provider instance. Unknown, stale, and exhausted quotas do not qualify. This is advisory, not account pooling or automatic failover. One account may have multiple aliases; users should avoid treating those as separate allowances. The Factory Foreman applies the same rule when it chooses the account for a new worker, reviewer or planner; see [worker accounts](factory.md).
 
 ## Pi model details
 
