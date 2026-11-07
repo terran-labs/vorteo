@@ -219,6 +219,26 @@ describe("paseo factory project", () => {
     await expect(run("claim", "issue", "prj_app", "twelve")).rejects.toThrow("exit 1");
   });
 
+  it("picks an account exactly as the Foreman charter calls it", async () => {
+    invoke.mockResolvedValue({
+      stage: "reviewer",
+      profileId: null,
+      provider: "codex-account-a",
+      remainingPct: 64,
+      bound: false,
+      considered: [{ provider: "codex-account-a", verdict: "qualifies", remainingPct: 64 }],
+      pickedAt: "now",
+    });
+    await run("pick-account", "prj_app", "reviewer", "--issue", "12", "--avoid", "codex-account-b");
+    expect(invoke).toHaveBeenLastCalledWith("factory", "factory.project.pick_account", {
+      projectId: "prj_app",
+      stage: "reviewer",
+      issue: 12,
+      avoid: "codex-account-b",
+    });
+    expect(stdout.join("")).toContain("Account: codex-account-a (64% left");
+  });
+
   it("refuses an unknown role before calling the daemon", async () => {
     await expect(run("status", "set", "prj_app", "factory-nope", "x")).rejects.toThrow("exit 1");
     expect(invoke).not.toHaveBeenCalled();
