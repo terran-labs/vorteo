@@ -2324,9 +2324,8 @@ test("shared metadata save failure stays visible and retry updates both environm
   });
   expect(lock.ok()).toBe(true);
   await page.getByRole("button", { name: "Automatic", exact: true }).click();
-  await expect(page.getByTestId("metadata-generation-save-error")).toContainText(
-    "Unlock Installation controls",
-  );
+  await expect(page.getByTestId("app-toast")).toBeVisible();
+  await expect(page.getByTestId("app-toast")).toContainText("Unlock Installation controls");
   await expect(page.getByRole("button", { name: "Manual", exact: true })).toHaveAttribute(
     "aria-selected",
     "true",
@@ -2352,7 +2351,7 @@ test("shared metadata save failure stays visible and retry updates both environm
     "aria-selected",
     "true",
   );
-  await expect(page.getByTestId("metadata-generation-save-error")).not.toBeVisible();
+  await expect(page.getByTestId("app-toast")).not.toBeVisible();
   for (const kind of ["host", "container"] as const) {
     const client = await connectReadyInstallationDaemon(kind);
     try {
