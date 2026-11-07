@@ -1,6 +1,10 @@
 import { z } from "zod";
-import type { ProjectFactoryQueue } from "@getpaseo/server/factory-project";
+import {
+  projectFactoryClaimBranch,
+  type ProjectFactoryQueue,
+} from "@getpaseo/server/factory-project";
 import type { StoredAgentRecord } from "../../agent/agent-storage.js";
+import { markerInstallations } from "./claims.js";
 import type { GhRunner } from "./tick-gate.js";
 
 type QueueIssue = ProjectFactoryQueue["issues"][number];
@@ -16,6 +20,7 @@ const prSchema = z.object({
   url: z.string(),
   headRefName: z.string(),
   headRefOid: z.string(),
+  body: z.string().default(""),
   reviewDecision: z.string().nullable(),
   commits: z.object({
     nodes: z
@@ -47,6 +52,8 @@ interface QueueInput {
   gh: GhRunner;
   agents: () => Promise<StoredAgentRecord[]>;
   workspaceIds: ReadonlySet<string>;
+  /** Issues whose claim branch this installation created. */
+  ownClaims: ReadonlySet<number>;
   now: Date;
 }
 class QueueReadError extends Error {}
@@ -91,7 +98,7 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
         `query($owner:String!,$name:String!,$cursor:String) {
         repository(owner:$owner,name:$name) {
           pullRequests(first:100,after:$cursor,states:OPEN) {
-            nodes { number url headRefName headRefOid reviewDecision
+            nodes { number url headRefName headRefOid body reviewDecision
               commits(last:1) { nodes { commit { statusCheckRollup { state } } } }
               latestReviews(last:100) { nodes { state commit { oid } } pageInfo { hasPreviousPage } }
               comments(last:100) { nodes { body author { login } } pageInfo { hasPreviousPage } }
@@ -119,8 +126,7 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
       );
       if (!label) continue;
       const agents = issueAgents(records, input.workspaceIds, issue.number);
-      // The Foreman charter requires this exact branch suffix, avoiding issue 1 matching 10.
-      const pull = prs.find((pr) => pr.headRefName.endsWith(`/factory-issue-${issue.number}`));
+      const { pull, claim } = issuePull(prs, issue.number, input.ownClaims);
       const pr = pull ? describePr(pull, viewerLogin) : null;
       const item: QueueIssue = {
         number: issue.number,
@@ -130,6 +136,7 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
         stage: "queued",
         pr,
         agents,
+        claim,
       };
       item.stage = deriveStage(item, pull ? approvedHead(pull, viewerLogin) : false);
       queue.push(item);
@@ -151,6 +158,25 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
       issues: [],
     };
   }
+}
+
+/** The issue's pull request and, when it comes from a claim branch, that claim's owner. */
+function issuePull(prs: PullRequest[], issueNumber: number, ownClaims: ReadonlySet<number>) {
+  const branch = projectFactoryClaimBranch(issueNumber);
+  // Exact names avoid issue 1 matching 10. The `<prefix>/factory-issue-<n>` form predates
+  // claims and stays readable until those pull requests finish.
+  const pull =
+    prs.find((pr) => pr.headRefName === branch) ??
+    prs.find((pr) => pr.headRefName.endsWith(`/factory-issue-${issueNumber}`));
+  const claim: QueueIssue["claim"] =
+    pull?.headRefName === branch
+      ? {
+          branch,
+          local: ownClaims.has(issueNumber),
+          installation: markerInstallations(pull.body, branch)[0] ?? null,
+        }
+      : null;
+  return { pull, claim };
 }
 
 function firstErrorLine(text: string): string | undefined {
