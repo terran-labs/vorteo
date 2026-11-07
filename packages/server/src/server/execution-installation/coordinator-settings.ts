@@ -6,6 +6,7 @@ import {
   CoordinatorSettingsJobSchema,
   type CoordinatorFollowJob,
   type CoordinatorSettingChange,
+  type CoordinatorSettingField,
   type CoordinatorSettingsDecision,
   type CoordinatorSettingsJob,
   type CoordinatorSettingsRequest,
@@ -25,27 +26,40 @@ import {
   type CoordinatorConfigPlan,
   type HandoffOutcome,
 } from "./coordinator-handoff.js";
+import {
+  isBrokerSetting,
+  reviewBrokerSettings,
+  type BrokerSettingsReviewPorts,
+} from "./coordinator-broker-settings.js";
+import type { BrokerSetting } from "./preview-broker-configuration-checks.js";
 import { RestartRequestError } from "./restarts.js";
+import { inspectBootstrapWritableMountRoots } from "./coordinator-bootstrap-host.js";
+import { verifyBrokerExecutorInputs } from "./preview-broker-configuration-checks.js";
 import { managedServices } from "./service-control.js";
 
 /**
  * Keys of the coordinator configuration that agents may propose changing. Every other key is
  * refused. Values of keys not marked display-safe never reach the owner interface; the owner
- * sees only that they changed. Registered values are scalars, so the owner reviews the exact
- * value rather than an opaque object.
+ * sees only that they changed. Plain registered values are scalars, so the owner reviews the
+ * exact value rather than an opaque object.
  *
- * Never register a key that names something the coordinator executes or connects to, such as
- * `previewBroker` or `previewBrokerDeployment` (Docker, socket, Python, worker and module
- * paths with their digests). An approved patch would let an agent choose what runs with Host
- * privileges behind a JSON blob the owner cannot meaningfully review. Those keys change only
- * through their own reviewed deployment workflows, which inspect and bind each executable.
+ * Never register a plain key that names something the coordinator executes or connects to.
+ * An approved patch would let an agent choose what runs with Host privileges behind a value
+ * the owner cannot meaningfully review. The broker keys are registered as `reviewed: "broker"`
+ * instead: `reviewBrokerSettings` pins their Docker endpoint, Dev container, interpreters and
+ * placement to what the installation already records, confines their code to installer-managed
+ * releases, and hashes every file itself, at request and again at dispatch. The owner then
+ * reviews each changed field as a path and digest prefix verified on disk.
  */
 export const COORDINATOR_SETTINGS: readonly {
   key: keyof InstallationConfig;
   displaySafe: boolean;
+  reviewed?: "broker";
 }[] = [
   { key: "claudeHostRefresh", displaySafe: true },
   { key: "codexHostRefresh", displaySafe: true },
+  { key: "previewBrokerDeployment", displaySafe: true, reviewed: "broker" },
+  { key: "previewBroker", displaySafe: true, reviewed: "broker" },
 ];
 
 /** One readiness window; a failed restart waits twice, then restores. */
@@ -122,6 +136,15 @@ export interface CoordinatorSettingsPorts {
    */
   launch(jobId: string, onError: (error: Error) => void): void;
   outcome(jobId: string): HandoffOutcome | null;
+  /**
+   * Reviews reviewed broker keys of `candidate` against the files on disk and the values
+   * `current` records, and returns each key's changed fields. Throws when any is refused.
+   */
+  reviewBroker(input: {
+    keys: BrokerSetting[];
+    current: string;
+    candidate: string;
+  }): Promise<Record<string, CoordinatorSettingField[]>>;
   deadlineMs: number;
   warn(message: string): void;
 }
@@ -162,6 +185,8 @@ function project(record: SettingsRecord): CoordinatorSettingsJob {
  */
 export class CoordinatorSettings {
   private jobs: SettingsRecord[] = [];
+  /** The drain in progress; dispatch awaits file checks, so drains must not overlap. */
+  private draining: Promise<void> | null = null;
   /** Set when the journal could not be read; changes stay off until the next start. */
   private journalProblem: string | null = null;
 
@@ -215,11 +240,8 @@ export class CoordinatorSettings {
     };
   }
 
-  request(input: CoordinatorSettingsRequest): CoordinatorSettingsJob {
-    const blocker = this.blocker() ?? this.ports.conflict();
-    if (blocker) throw new RestartRequestError(blocker);
-    if (this.jobs.some(isActive))
-      throw new RestartRequestError("A coordinator settings change is already waiting or running");
+  async request(input: CoordinatorSettingsRequest): Promise<CoordinatorSettingsJob> {
+    this.refuseRequest();
     const keys = Object.keys(input.patch);
     if (keys.length === 0) throw new RestartRequestError("The patch changes no settings");
     for (const key of keys) this.validateEntry(key, input.patch[key]);
@@ -235,10 +257,26 @@ export class CoordinatorSettings {
       throw new RestartRequestError(`The changed configuration is invalid: ${message(error)}`);
     }
     const current = JSON.parse(text) as Record<string, unknown>;
-    const changes = keys
-      .filter((key) => JSON.stringify(current[key] ?? null) !== JSON.stringify(input.patch[key]))
-      .map((key) => this.change(key, current[key], input.patch[key]));
-    if (changes.length === 0) throw new RestartRequestError("The patch changes nothing");
+    const changed = keys.filter(
+      (key) => JSON.stringify(current[key] ?? null) !== JSON.stringify(input.patch[key]),
+    );
+    if (changed.length === 0) throw new RestartRequestError("The patch changes nothing");
+    const brokerKeys = changed.filter(isBrokerSetting);
+    let fields: Record<string, CoordinatorSettingField[]> = {};
+    if (brokerKeys.length > 0) {
+      try {
+        fields = await this.ports.reviewBroker({ keys: brokerKeys, current: text, candidate });
+      } catch (error) {
+        throw new RestartRequestError(`The broker settings were refused: ${message(error)}`);
+      }
+      // The review read files asynchronously; nothing may have started or changed meanwhile.
+      this.refuseRequest();
+      if (sha256(this.ports.readConfig()) !== input.baseSha256)
+        throw new RestartRequestError(
+          "The coordinator configuration changed since the patch was prepared. Fetch the base hash again.",
+        );
+    }
+    const changes = changed.map((key) => this.change(key, current[key], input.patch[key], fields));
     const record = SettingsRecordSchema.parse({
       id: randomUUID(),
       revision: randomUUID(),
@@ -253,6 +291,13 @@ export class CoordinatorSettings {
     this.jobs = [...this.jobs, record];
     this.journal.write(this.jobs);
     return project(record);
+  }
+
+  private refuseRequest(): void {
+    const blocker = this.blocker() ?? this.ports.conflict();
+    if (blocker) throw new RestartRequestError(blocker);
+    if (this.jobs.some(isActive))
+      throw new RestartRequestError("A coordinator settings change is already waiting or running");
   }
 
   decide(
@@ -308,10 +353,17 @@ export class CoordinatorSettings {
   }
 
   /** Advances a linked approval, starts an approved job or follows a running one. */
-  drain(): void {
+  drain(): Promise<void> {
+    this.draining ??= this.drainOnce().finally(() => {
+      this.draining = null;
+    });
+    return this.draining;
+  }
+
+  private async drainOnce(): Promise<void> {
     this.settleLinkedApproval();
     const job = this.jobs.find((item) => item.status === "approved" || item.status === "running");
-    if (job?.status === "approved") this.dispatch(job);
+    if (job?.status === "approved") await this.dispatch(job);
     else if (job?.status === "running") this.track(job);
   }
 
@@ -335,11 +387,42 @@ export class CoordinatorSettings {
     });
   }
 
-  private dispatch(job: SettingsRecord): void {
+  private async dispatch(approved: SettingsRecord): Promise<void> {
+    let job = approved;
     const refusal = this.blocker() ?? this.ports.conflict();
     if (refusal) {
       this.finish(job, "failed", refusal);
       return;
+    }
+    const brokerKeys = Object.keys(job.patch).filter(isBrokerSetting);
+    if (brokerKeys.length > 0) {
+      // Hash and confine every broker file again: one swapped after approval is refused.
+      try {
+        const text = this.ports.readConfig();
+        await this.ports.reviewBroker({
+          keys: brokerKeys,
+          current: text,
+          candidate: merge(text, job.patch),
+        });
+      } catch (error) {
+        const latest = this.jobs.find((item) => item.id === job.id);
+        if (latest?.status === "approved")
+          this.finish(
+            latest,
+            "failed",
+            `The broker settings no longer pass review: ${message(error)}. Nothing was applied.`,
+          );
+        return;
+      }
+      // The owner may have cancelled, or another restart started, during the review.
+      const latest = this.jobs.find((item) => item.id === job.id);
+      if (latest?.status !== "approved") return;
+      job = latest;
+      const conflict = this.blocker() ?? this.ports.conflict();
+      if (conflict) {
+        this.finish(job, "failed", conflict);
+        return;
+      }
     }
     let text: string;
     let candidate: string;
@@ -441,7 +524,16 @@ export class CoordinatorSettings {
     if (!entry)
       throw new RestartRequestError(`"${key}" is not a coordinator setting that can change here`);
     if (value === null) return;
-    // Registered keys hold scalars; an object would hide its contents from the owner.
+    if (entry.reviewed === "broker") {
+      // Structured, but every field is reviewed against disk and recorded values.
+      const parsed = InstallationConfigSchema.shape[entry.key].safeParse(value);
+      if (typeof value !== "object" || !parsed.success)
+        throw new RestartRequestError(
+          `"${key}" has an invalid value${parsed.success ? "" : `: ${parsed.error.issues[0]?.message}`}`,
+        );
+      return;
+    }
+    // Plain registered keys hold scalars; an object would hide its contents from the owner.
     if (typeof value === "object")
       throw new RestartRequestError(`"${key}" has an invalid value: expected a single value`);
     const parsed = InstallationConfigSchema.shape[entry.key].safeParse(value);
@@ -451,9 +543,17 @@ export class CoordinatorSettings {
       );
   }
 
-  private change(key: string, before: unknown, after: unknown): CoordinatorSettingChange {
-    const displaySafe = COORDINATOR_SETTINGS.find((item) => item.key === key)!.displaySafe;
+  private change(
+    key: string,
+    before: unknown,
+    after: unknown,
+    fields: Record<string, CoordinatorSettingField[]>,
+  ): CoordinatorSettingChange {
+    const entry = COORDINATOR_SETTINGS.find((item) => item.key === key)!;
+    const { displaySafe } = entry;
     if (!displaySafe) return { key, displaySafe };
+    // Older interfaces see "hidden → changed"; newer ones show each field.
+    if (entry.reviewed === "broker") return { key, displaySafe, fields: fields[key] ?? [] };
     return {
       key,
       displaySafe,
@@ -506,6 +606,13 @@ export class CoordinatorSettings {
   }
 }
 
+/** Docker mount inspection and executor probes on the macOS Host. */
+const nativeBrokerReview: BrokerSettingsReviewPorts = {
+  writableMountRoots: (connection) => inspectBootstrapWritableMountRoots(connection),
+  coordinatorNode: () => process.execPath,
+  executorInputs: (input) => verifyBrokerExecutorInputs(input),
+};
+
 /** Why this coordinator cannot change its own configuration, or null. */
 function settingsBlocker(config: InstallationConfig, configFile: string | undefined) {
   if (!configFile) return "This coordinator was started without its configuration file.";
@@ -524,6 +631,8 @@ export function createCoordinatorSettings(input: {
   followJob(id: string): CoordinatorFollowJob | null;
   warn(message: string): void;
   entrypoint?: string;
+  /** Replaces the native Docker inspection and executor probes; tests only. */
+  brokerReview?: BrokerSettingsReviewPorts;
 }): CoordinatorSettings {
   const { config, configFile } = input;
   const directory = path.join(config.stateDir, "coordinator-settings");
@@ -599,6 +708,25 @@ export function createCoordinatorSettings(input: {
       });
     },
     outcome: (jobId) => readHandoffOutcome(path.join(work(jobId), "outcome.json")),
+    async reviewBroker({ keys, current, candidate }) {
+      mkdirSync(directory, { recursive: true, mode: 0o700 });
+      // The deployment executor rereads the candidate as a protected, hash-pinned file.
+      const file = path.join(directory, `coordinator.json.review-${randomUUID()}`);
+      writePrivateFileAtomicSync(file, candidate);
+      try {
+        return await reviewBrokerSettings(
+          {
+            keys,
+            current: InstallationConfigSchema.parse(JSON.parse(current)),
+            candidate: InstallationConfigSchema.parse(JSON.parse(candidate)),
+            candidateFile: { path: realpathSync(file), sha256: sha256(candidate) },
+          },
+          input.brokerReview ?? nativeBrokerReview,
+        );
+      } finally {
+        rmSync(file, { force: true });
+      }
+    },
     deadlineMs: CHANGE_DEADLINE_MS,
     warn: input.warn,
   });
