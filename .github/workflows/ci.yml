@@ -168,7 +168,9 @@ jobs:
         run: npx --yes lockfile-lint --path package-lock.json --type npm --allowed-hosts npm --validate-https --validate-integrity
 
       - name: Verify dependency signatures
-        run: npm audit signatures
+        # npm 10 rejects valid keyless provenance; keep all verification on npm 11.
+        # Evidence and pin rationale: docs/development.md#dependency-signature-audit
+        run: npx --yes npm@11.19.1 audit signatures
 
       - name: Lint
         run: npm run lint

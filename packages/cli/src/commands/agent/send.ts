@@ -1,3 +1,4 @@
+import { cliCommand } from "@getpaseo/server/vorteo-cli";
 import { type Command, Option } from "commander";
 import type { ActiveTurnBehavior } from "@getpaseo/protocol/messages";
 import { collectMultiple } from "../../utils/command-options.js";
@@ -128,8 +129,7 @@ async function resolvePromptInput(options: {
     const error: CommandError = {
       code: "MISSING_PROMPT",
       message: "A prompt is required",
-      details:
-        "Usage: paseo agent send [options] <id> [prompt] | --prompt <text> | --prompt-file <path>",
+      details: `Usage: ${cliCommand()} agent send [options] <id> [prompt] | --prompt <text> | --prompt-file <path>`,
     };
     throw error;
   }
@@ -181,7 +181,7 @@ export async function runSendCommand(
     const error: CommandError = {
       code: "MISSING_AGENT_ID",
       message: "Agent ID is required",
-      details: "Usage: paseo agent send [options] <id> [prompt]",
+      details: `Usage: ${cliCommand()} agent send [options] <id> [prompt]`,
     };
     throw error;
   }

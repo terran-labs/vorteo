@@ -1,3 +1,4 @@
+import { cliCommand } from "@getpaseo/server/vorteo-cli";
 import { Command } from "commander";
 import { connectToDaemon } from "../../utils/client.js";
 import type {
@@ -96,8 +97,8 @@ function buildWaitResult(args: {
 
   if (state.status === "timeout") {
     const timeoutMessage = timeoutLabel
-      ? `Agent did not finish within ${timeoutLabel}. Run \`paseo wait ${resolvedAgentId}\` again to keep waiting.`
-      : `Agent wait timed out. Run \`paseo wait ${resolvedAgentId}\` again to keep waiting.`;
+      ? `Agent did not finish within ${timeoutLabel}. Run \`${cliCommand()} wait ${resolvedAgentId}\` again to keep waiting.`
+      : `Agent wait timed out. Run \`${cliCommand()} wait ${resolvedAgentId}\` again to keep waiting.`;
     return {
       agentId: resolvedAgentId,
       status: "timeout",
@@ -147,7 +148,7 @@ export async function runWaitCommand(
     throw {
       code: "MISSING_AGENT_ID",
       message: "Agent ID is required",
-      details: "Usage: paseo agent wait <id>",
+      details: `Usage: ${cliCommand()} agent wait <id>`,
     } satisfies CommandError;
   }
 

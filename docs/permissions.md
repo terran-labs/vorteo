@@ -41,12 +41,12 @@ Permissions are additive allows. Missing authority denies the operation. Do not 
 
 ## Service principals
 
-A service principal is a non-interactive identity for another program, such as a personal dashboard, with permissions the owner chooses. Create, list and revoke them with `paseo access service` or in the host's Settings under Service access:
+A service principal is a non-interactive identity for another program, such as a personal dashboard, with permissions the owner chooses. Create, list and revoke them with `vorteo access service` or in the host's Settings under Service access:
 
 ```sh
-paseo access service create --label "Vorton observer" --read-only
-paseo access service list
-paseo access service revoke <id>
+vorteo access service create --label "Vorton observer" --read-only
+vorteo access service list
+vorteo access service revoke <id>
 ```
 
 Pass `--expires-at <ISO time>` to make a credential stop working at that time; live sessions are disconnected when it expires. Only the principal that issued a service principal, or the owner, can change its grants or revoke it.
@@ -82,7 +82,7 @@ A service principal can also hold agent grants: resource-scoped authority over s
 | `agent.message` | `send_agent_message_request` with `activeTurnBehavior: "steer"` and text only                    |
 | `agent.cancel`  | `cancel_agent_request`                                                                           |
 
-Pass grants with `paseo access service create --grants-file <json>` and replace them with `paseo access service set-grants <id> --grants-file <json>`. Changing grants disconnects the principal's sessions so they reconnect with the new grants. Issuing grants requires the issuer to hold `workspace.read` and `workspace.write`. Daemons that support grants advertise `server_info.features.serviceAgentGrants`.
+Pass grants with `vorteo access service create --grants-file <json>` and replace them with `vorteo access service set-grants <id> --grants-file <json>`. Changing grants disconnects the principal's sessions so they reconnect with the new grants. Issuing grants requires the issuer to hold `workspace.read` and `workspace.write`. Daemons that support grants advertise `server_info.features.serviceAgentGrants`.
 
 Grant checks use exact agent IDs; prefix and title resolution would reveal other agents. A granted message is plain steering text: it cannot set a session mode, attachments, images, `origin` or sender attribution, and text starting with `/` is refused because it would run provider commands and skills, such as `/rewind`. The daemon wraps every service message between `[Message <tag> from service credential "<label>", not from the owner]` and `[End of service credential message <tag>]`, which the agent and the timeline both show, and never records it as owner evidence. The tag is random per message, so text cannot imitate either marker, and the label loses control, format, line-separator, quote and bracket characters. A leading `@` in a word becomes a full-width `＠`, because Claude expands `@path` mentions into file contents without any tool call; email-style addresses are unchanged. A granted message steers without answering the owner's pending approvals, cannot reach archived or internal agents, and does not set the agent's title. Messaging an idle agent starts a turn.
 

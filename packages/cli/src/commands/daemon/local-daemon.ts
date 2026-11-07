@@ -1,3 +1,4 @@
+import { cliCommand } from "@getpaseo/server/vorteo-cli";
 import { Command, Option } from "commander";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -103,7 +104,7 @@ export function rejectRemovedLaunchFlags(command: Command): Command {
       if (command.getOptionValueSource(name) !== "cli") continue;
       throw {
         code: "REMOVED_LAUNCH_OPTION",
-        message: `${flag.split(" ")[0]} was removed. ${configPath ? `Use paseo daemon config set ${configPath} <value> --home <path>, then start or restart.` : "Use paseo daemon run --home <path> for foreground deployment."} Deployment environment overrides belong to paseo daemon run.`,
+        message: `${flag.split(" ")[0]} was removed. ${configPath ? `Use ${cliCommand()} daemon config set ${configPath} <value> --home <path>, then start or restart.` : `Use ${cliCommand()} daemon run --home <path> for foreground deployment.`} Deployment environment overrides belong to ${cliCommand()} daemon run.`,
       };
     }
   });

@@ -1,3 +1,4 @@
+import { cliCommand } from "@getpaseo/server/vorteo-cli";
 import path from "node:path";
 import YAML from "yaml";
 import type { HubStatus } from "./daemon-client.js";
@@ -26,7 +27,7 @@ export interface HubInitScaffold {
 }
 
 export function hubLoginResumeCommand(step: "connect" | "init", origin: string): string {
-  return step === "connect" ? `paseo hub connect ${origin}` : "paseo hub init";
+  return step === "connect" ? `${cliCommand()} hub connect ${origin}` : `${cliCommand()} hub init`;
 }
 
 export function resolveHubInitConnection(

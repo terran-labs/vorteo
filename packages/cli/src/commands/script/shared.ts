@@ -1,3 +1,4 @@
+import { cliCommand } from "@getpaseo/server/vorteo-cli";
 import type { DaemonTarget } from "../../utils/daemon-target.js";
 import { resolve } from "node:path";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
@@ -31,7 +32,7 @@ export async function connectWorkspaceScriptClient(target: DaemonTarget): Promis
     throw {
       code: "DAEMON_NOT_RUNNING",
       message: `Cannot connect to daemon at ${daemonHost}: ${message}`,
-      details: "Start the daemon with: paseo daemon start",
+      details: `Start the daemon with: ${cliCommand()} daemon start`,
     } satisfies CommandError;
   }
 }

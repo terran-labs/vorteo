@@ -1,3 +1,4 @@
+import { cliCommand } from "@getpaseo/server/vorteo-cli";
 import { Command } from "commander";
 import { connectToDaemon, resolveAgentId } from "../../utils/client.js";
 import { fetchAllAgents } from "../../utils/agent-directory.js";
@@ -49,7 +50,7 @@ export async function runArchiveCommand(
     const error: CommandError = {
       code: "MISSING_AGENT_ID",
       message: "Agent ID is required",
-      details: "Usage: paseo agent archive <id-or-name>",
+      details: `Usage: ${cliCommand()} agent archive <id-or-name>`,
     };
     throw error;
   }
@@ -63,7 +64,7 @@ export async function runArchiveCommand(
       const error: CommandError = {
         code: "AGENT_NOT_FOUND",
         message: `Agent not found: ${agentIdArg}`,
-        details: 'Use "paseo ls" to list available agents',
+        details: `Use "${cliCommand()} ls" to list available agents`,
       };
       throw error;
     }
@@ -87,8 +88,7 @@ export async function runArchiveCommand(
       const error: CommandError = {
         code: "AGENT_RUNNING",
         message: `Agent ${agentId.slice(0, 7)} is currently running`,
-        details:
-          "Use --force to archive a running agent (it will interrupt the active run), or stop it first with: paseo agent stop. Use paseo agent delete to hard-delete it.",
+        details: `Use --force to archive a running agent (it will interrupt the active run), or stop it first with: ${cliCommand()} agent stop. Use ${cliCommand()} agent delete to hard-delete it.`,
       };
       throw error;
     }

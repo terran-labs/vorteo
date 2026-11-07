@@ -1,3 +1,4 @@
+import { cliCommand } from "@getpaseo/server/vorteo-cli";
 import type { Command } from "commander";
 import { connectToDaemon } from "../../utils/client.js";
 import type { AgentDeepLinkTarget } from "@getpaseo/protocol/agent-deep-link";
@@ -64,7 +65,7 @@ async function resolveAgentTarget(
       const error: CommandError = {
         code: "AGENT_NOT_FOUND",
         message: `Agent not found: ${agentId}`,
-        details: 'Use "paseo ls" to list available agents',
+        details: `Use "${cliCommand()} ls" to list available agents`,
       };
       throw error;
     }
