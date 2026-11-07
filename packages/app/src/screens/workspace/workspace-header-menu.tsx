@@ -39,6 +39,11 @@ import {
 } from "@getpaseo/protocol/terminal-profiles";
 import { buildSettingsHostSectionRoute } from "@/utils/host-routes";
 import type { Theme } from "@/styles/theme";
+import type { MenuPageDefinition } from "@/components/ui/dropdown-menu";
+import {
+  useWorkspaceScriptsMenuPages,
+  type UseWorkspaceScriptsMenuPagesInput,
+} from "@/screens/workspace/scripts";
 
 export const WorkspaceToolbarToggleContext = createContext<ReactNode>(null);
 
@@ -51,6 +56,12 @@ export const WorkspaceOverflowItemsContext = createContext<{
 interface WorkspaceMenuPresentation {
   children?: ReactNode;
   extraItems?: ReactNode;
+  /** Rows that lead the menu, ahead of plugin rows and the workspace actions. */
+  leadingItems?: ReactNode;
+  /** Pages those leading rows open, alongside the label and plugin pages. */
+  extraPages?: readonly MenuPageDefinition[];
+  /** Something inside the menu needs looking at, so the trigger carries a dot. */
+  needsAttention?: boolean;
   includeCompactPluginButtons?: boolean;
   overflow?: boolean;
   enabled?: boolean;
@@ -84,6 +95,14 @@ function WorkspaceHeaderMenuTriggerIcon() {
 }
 
 /** The ⋯ with a dot on it, for when something inside the menu needs looking at. */
+function WorkspaceHeaderMenuAttentionTriggerIcon() {
+  return (
+    <View>
+      <WorkspaceHeaderMenuTriggerIcon />
+      <View style={styles.attentionDot} testID="workspace-header-menu-attention" />
+    </View>
+  );
+}
 
 /**
  * The compact header buttons draw at 32pt, under the 44pt touch minimum, and sit flush against
@@ -102,6 +121,9 @@ function WorkspaceHeaderActionsMenu({
   normalizedWorkspaceId,
   children,
   extraItems,
+  leadingItems,
+  extraPages,
+  needsAttention,
   includeCompactPluginButtons = false,
   overflow = false,
   enabled = true,
@@ -126,6 +148,9 @@ function WorkspaceHeaderActionsMenu({
       overflow={overflow}
       enabled={enabled}
       extraItems={extraItems}
+      leadingItems={leadingItems}
+      extraPages={extraPages}
+      needsAttention={needsAttention}
       includeCompactPluginButtons={includeCompactPluginButtons}
     >
       {children}
@@ -137,6 +162,9 @@ function WorkspaceHeaderActionsMenuLoaded({
   workspace,
   children,
   extraItems,
+  leadingItems,
+  extraPages,
+  needsAttention = false,
   includeCompactPluginButtons,
   overflow,
   enabled,
@@ -164,8 +192,12 @@ function WorkspaceHeaderActionsMenuLoaded({
   const labelPages = useWorkspaceLabelMenuPages(target);
   const pluginMenu = usePluginWorkspaceMenu(workspace.serverId, workspace.workspaceId);
   const pages = useMemo(
-    () => (includeCompactPluginButtons ? [...labelPages, ...pluginMenu.pages] : labelPages),
-    [includeCompactPluginButtons, labelPages, pluginMenu.pages],
+    () => [
+      ...(extraPages ?? []),
+      ...labelPages,
+      ...(includeCompactPluginButtons ? pluginMenu.pages : []),
+    ],
+    [extraPages, includeCompactPluginButtons, labelPages, pluginMenu.pages],
   );
   const items = useMemo(
     () => (
@@ -225,9 +257,17 @@ function WorkspaceHeaderActionsMenuLoaded({
           style={workspaceHeaderMenuButtonStyle}
           hitSlop={COMPACT_HEADER_BUTTON_HIT_SLOP}
           accessibilityRole="button"
-          accessibilityLabel={t("workspace.header.actions.workspaceActions")}
+          accessibilityLabel={
+            needsAttention
+              ? t("workspace.header.actions.workspaceActionsUnhealthy")
+              : t("workspace.header.actions.workspaceActions")
+          }
         >
-          <WorkspaceHeaderMenuTriggerIcon />
+          {needsAttention ? (
+            <WorkspaceHeaderMenuAttentionTriggerIcon />
+          ) : (
+            <WorkspaceHeaderMenuTriggerIcon />
+          )}
         </DropdownMenuTrigger>
         <DropdownMenuContent
           align="start"
@@ -236,6 +276,7 @@ function WorkspaceHeaderActionsMenuLoaded({
           pages={pages}
           sheetTitle={t("workspace.header.actions.workspaceActions")}
         >
+          {leadingItems}
           {includeCompactPluginButtons && pluginMenu.rows.length > 0 ? (
             <>
               {pluginMenu.rows}
@@ -302,6 +343,7 @@ export interface WorkspaceHeaderMenuMobileProps extends WorkspaceHeaderWorkspace
   children?: ReactNode;
   normalizedServerId: string;
   normalizedWorkspaceId: string;
+  scripts: UseWorkspaceScriptsMenuPagesInput;
   showCreateBrowserTab: boolean;
   createTerminalDisabled: boolean;
   onCreateTerminalWithProfile: (profile: TerminalProfile) => void;
@@ -321,6 +363,7 @@ export interface WorkspaceHeaderMenuMobileProps extends WorkspaceHeaderWorkspace
 export function WorkspaceHeaderMenuMobile({
   normalizedServerId,
   normalizedWorkspaceId,
+  scripts,
   showCreateBrowserTab,
   createTerminalDisabled,
   onCreateTerminalWithProfile,
@@ -341,11 +384,16 @@ export function WorkspaceHeaderMenuMobile({
   const handleEditProfiles = useCallback(() => {
     router.push(buildSettingsHostSectionRoute(normalizedServerId, "terminals") as Href);
   }, [normalizedServerId, router]);
+  // The menu owns the script actions, so a restart started from a page outlives the sheet.
+  const scriptsMenu = useWorkspaceScriptsMenuPages(scripts);
 
   return (
     <WorkspaceHeaderActionsMenu
       normalizedServerId={normalizedServerId}
       normalizedWorkspaceId={normalizedWorkspaceId}
+      leadingItems={scriptsMenu.trigger}
+      extraPages={scriptsMenu.pages}
+      needsAttention={scriptsMenu.needsAttention}
       includeCompactPluginButtons
     >
       {children}

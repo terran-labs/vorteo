@@ -1,4 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
+import { stripHostEnvironment } from "./e2e/support/host-environment";
+
+stripHostEnvironment();
 
 // E2E_METRO_PORT is set dynamically by global-setup.ts after finding a free port
 // This allows multiple test runs in parallel across different worktrees
@@ -44,6 +47,9 @@ const retiredUpstreamTests = [
   // The compact sidebar's close button and New workspace nav row went with the Vorton toolbar
   // (471d7f22a); New workspace is a main menu item, so there is no row to sit beside.
   /sidebar-workspace\.spec\.ts.* places the close button beside the first nav row instead of over it/,
+  // The fixture injects prompt rejections through featureValues, but every UI launch uses a
+  // profile, and Vorteo keeps a profile launch's features out of reach of plugin hooks.
+  /creation-idempotency\.spec\.ts.* becomes an agent tab when the first prompt is rejected/,
 ];
 
 function videoMode(): "on" | "on-first-retry" | "retain-on-failure" {
