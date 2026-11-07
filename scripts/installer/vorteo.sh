@@ -229,7 +229,7 @@ vorteo_command() {
       done
       if [ -z "$explicit_target" ]; then
         case "$first:$second:$third" in
-          start:* | restart:* | reload:* | onboard:* | daemon:start:* | daemon:stop:* | daemon:restart:* | daemon:run:* | daemon:reload:* | daemon:set-password:* | daemon:config:set | daemon:config:unset)
+          start:* | restart:* | reload:* | onboard:* | daemon:start:* | daemon:stop:* | daemon:restart:* | daemon:run:* | daemon:reload:* | daemon:set-password:* | daemon:config:set | daemon:config:unset | daemon:origins:admit)
             echo "Manage this installation's daemon in Settings, Maintenance (installation controls)." >&2
             return 1
             ;;
