@@ -435,9 +435,9 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
   }
 
   const condition = (job) => /^    if: \$\{\{ (.+) \}\}$/m.exec(job)?.[1] ?? "";
-  const selected = (job, outputs) =>
+  const selected = (job, outputs, event = "workflow_dispatch") =>
     runInNewContext(condition(job), {
-      ...contextFor("workflow_dispatch"),
+      ...contextFor(event),
       needs: { changes: { outputs } },
       cancelled: () => false,
     });
@@ -454,11 +454,7 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
     // The smoke replaces the full Playwright suite only when routing says so.
     const smoke = jobId === "playwright-smoke";
     assert.equal(selected(job, { ...all, heavy: "true" }), jobId !== "cli-unit" && !smoke, jobId);
-    assert.equal(
-      selected(job, { ...all, heavy: "false" }),
-      !isHeavy || jobId === "playwright-installation",
-      jobId,
-    );
+    assert.equal(selected(job, { ...all, heavy: "false" }, "pull_request"), !isHeavy, jobId);
     // Missing routing outputs fail open to the heavy suites.
     assert.equal(selected(job, all), jobId !== "cli-unit" && !smoke, jobId);
   }
