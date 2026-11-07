@@ -189,6 +189,56 @@ describe("paseo factory project", () => {
     );
   });
 
+  it("claims and releases an issue exactly as the charters call it", async () => {
+    invoke.mockResolvedValue({
+      issue: 12,
+      branch: "factory/issue-12",
+      outcome: "claimed",
+      installation: "srv_a/prj_app",
+      headSha: "abc",
+      marker: "Factory installation: srv_a/prj_app (branch factory/issue-12)",
+    });
+    await run("claim", "issue", "prj_app", "12");
+    expect(invoke).toHaveBeenLastCalledWith("factory", "factory.project.claim", {
+      projectId: "prj_app",
+      issue: 12,
+    });
+    expect(stdout.join("")).toContain("Outcome: claimed");
+    invoke.mockResolvedValue({
+      issue: 12,
+      branch: "factory/issue-12",
+      outcome: "absent",
+      archivedAs: null,
+      headSha: null,
+    });
+    await run("claim", "release", "prj_app", "12");
+    expect(invoke).toHaveBeenLastCalledWith("factory", "factory.project.claim.release", {
+      projectId: "prj_app",
+      issue: 12,
+    });
+    await expect(run("claim", "issue", "prj_app", "twelve")).rejects.toThrow("exit 1");
+  });
+
+  it("picks an account exactly as the Foreman charter calls it", async () => {
+    invoke.mockResolvedValue({
+      stage: "reviewer",
+      profileId: null,
+      provider: "codex-account-a",
+      remainingPct: 64,
+      bound: false,
+      considered: [{ provider: "codex-account-a", verdict: "qualifies", remainingPct: 64 }],
+      pickedAt: "now",
+    });
+    await run("pick-account", "prj_app", "reviewer", "--issue", "12", "--avoid", "codex-account-b");
+    expect(invoke).toHaveBeenLastCalledWith("factory", "factory.project.pick_account", {
+      projectId: "prj_app",
+      stage: "reviewer",
+      issue: 12,
+      avoid: "codex-account-b",
+    });
+    expect(stdout.join("")).toContain("Account: codex-account-a (64% left");
+  });
+
   it("refuses an unknown role before calling the daemon", async () => {
     await expect(run("status", "set", "prj_app", "factory-nope", "x")).rejects.toThrow("exit 1");
     expect(invoke).not.toHaveBeenCalled();

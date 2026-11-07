@@ -72,6 +72,10 @@ class Deployment:
             expected = self.plan['registrations'][index]
             if state['process'] is not None and state['process'] != expected['process']:
                 raise ValueError('Broker process changed before scheduler effect')
+        else:
+            # Re-read the plist immediately before launchd uses it: its digest, Label and
+            # ProgramArguments must still equal the protected binding (observer.state raises).
+            self.observer.state(binding)
         self.record(f'effect-{index}-{action}-intent.json', {'outerPlanSha256': self.outer, 'argv': args})
         self.guard()
         result = self.observer.invoke(args)

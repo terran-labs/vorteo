@@ -643,7 +643,9 @@ function SidebarSectionButton({
   const compact = useIsCompactFormFactor();
   const itemStyle = useMemo(
     () => [
-      isSelected ? selectedSidebarItemStyle : sidebarItemStyle,
+      isSelected
+        ? [sidebarStyles.item, sidebarStyles.itemSelected]
+        : [sidebarStyles.item, sidebarStyles.itemHoverable],
       compact && sidebarStyles.touchItem,
     ],
     [compact, isSelected],
@@ -760,7 +762,7 @@ function SettingsSidebar({
             accessibilityLabel={t("settings.addHost")}
             onPress={onAddHost}
             testID="settings-add-host"
-            style={sidebarItemStyle}
+            style={[sidebarStyles.item, sidebarStyles.itemHoverable]}
           >
             <Plus
               size={theme.iconSize.md}
@@ -777,7 +779,7 @@ function SettingsSidebar({
               accessibilityLabel={t("settings.enableBuiltInDaemon")}
               onPress={enableBuiltInDaemonOption.onPress}
               testID="settings-enable-built-in-daemon"
-              style={sidebarItemStyle}
+              style={[sidebarStyles.item, sidebarStyles.itemHoverable]}
             >
               <Server
                 size={theme.iconSize.md}
@@ -1538,7 +1540,3 @@ const sidebarStyles = StyleSheet.create((theme) => ({
     justifyContent: "center",
   },
 }));
-
-// Declared after sidebarStyles: module-level arrays read it at load time.
-const sidebarItemStyle = [sidebarStyles.item, sidebarStyles.itemHoverable];
-const selectedSidebarItemStyle = [sidebarStyles.item, sidebarStyles.itemSelected];

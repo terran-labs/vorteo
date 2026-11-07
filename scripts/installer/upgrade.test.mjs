@@ -21,6 +21,9 @@ import {
   compareVersions,
   createUpgradePlan,
   describeInstalled,
+  FOLLOW_KEEP_OPEN,
+  FOLLOW_RESTART_NOTICE,
+  followHostRelease,
 } from "./upgrade.mjs";
 
 const OLD = "a".repeat(40);
@@ -159,6 +162,7 @@ function machine({
   targetHasPolicy = true,
   coordinatorStarts = true,
   devHealthy = () => true,
+  health,
   ...options
 } = {}) {
   const state = { pid: 100, restarts: [], devImage: "sha256:old", snapshots: 0, coordinatorStarts };
@@ -240,7 +244,9 @@ function machine({
               json: async () => ({ policy: { mode: "manual", channel: "stable" } }),
             }
           : { ok: false, status: 404, json: async () => ({}) };
-      return { ok: true, json: async () => ({ installationId: ID, pid: state.pid }) };
+      const body = health?.(state, paths) ?? { installationId: ID, pid: state.pid };
+      if (body instanceof Error) throw body;
+      return { ok: true, json: async () => body };
     },
     readyTimeoutMs: 30,
     upgradeModules: {
@@ -663,5 +669,180 @@ describe("upgrade", () => {
     expect(
       events.find((event) => event.step === "upgrade-verify" && event.status === "done").message,
     ).toMatch(/predates in-app update offers/);
+  });
+});
+
+/**
+ * A Host moved to NEW by Host source updates while the coordinator link still selects OLD,
+ * and a coordinator service that starts through `start` (its link by default).
+ */
+function followMachine({ start, requests = [], stateFiles = {}, ...options } = {}) {
+  const box = machine({ sourceUpdates: { currentReleaseLink: "/x" }, ...options });
+  const { context, paths } = box;
+  const next = release(path.join(paths.host, "releases", "reviewed", NEW), {
+    revision: NEW,
+    version: "26.11.302",
+    marker: "receipt",
+  });
+  const main = path.join(next, "packages/server/dist/server/server/execution-installation/main.js");
+  mkdirSync(path.dirname(main), { recursive: true });
+  writeFileSync(main, "");
+  pointLink(paths.hostReleaseLink, next);
+  const entry = path.join(start ?? paths.coordinatorReleaseLink, "packages/server/dist/main.js");
+  const plist = path.join(
+    context.home,
+    "Library",
+    "LaunchAgents",
+    `local.vorteo.${ID}.installation.plist`,
+  );
+  mkdirSync(path.dirname(plist), { recursive: true });
+  writeFileSync(plist, `<plist><array><string>${entry}</string></array></plist>`);
+  writeJson(path.join(paths.coordinatorState, "coordinator-bootstrap.json"), {
+    version: 1,
+    requests,
+  });
+  for (const [file, value] of Object.entries(stateFiles))
+    writeJson(path.join(paths.coordinatorState, file), value);
+  context.coordinatorRequestModules = {
+    openBootstrapRequests: (records) => records.filter((record) => record.status === "pending"),
+    FileBootstrapRequestJournal: class {
+      read = () => requests;
+    },
+  };
+  return { ...box, next: realpathSync(next) };
+}
+
+async function follow(context, state) {
+  const events = [];
+  const ok = await followHostRelease(context, (event) =>
+    // How many restarts had happened when each event was emitted.
+    events.push({ ...event, restartsBefore: state?.restarts.length }),
+  );
+  return { ok, events, failure: events.find((event) => event.status === "fail") };
+}
+
+const onNew = (paths) => !realpathSync(paths.coordinatorReleaseLink).endsWith(OLD);
+const notices = (events) => events.filter((event) => event.message === FOLLOW_RESTART_NOTICE);
+
+describe("coordinator follow", () => {
+  test("restarts only the coordinator on the Host release, then has nothing left to do", async () => {
+    const { context, state, paths, next } = followMachine();
+    const checked = [];
+    expect(
+      await followHostRelease(context, (event) => checked.push(event), { checkOnly: true }),
+    ).toBe(true);
+    expect(checked.at(-1).result.to.revision).toBe(NEW);
+    expect(state.restarts).toEqual([]);
+    expect(existsSync(path.join(context.root, "state", "coordinator-follow.json"))).toBe(false);
+    const { ok, failure, events } = await follow(context, state);
+    expect(failure).toBeUndefined();
+    expect(ok).toBe(true);
+    expect(realpathSync(paths.coordinatorReleaseLink)).toBe(next);
+    expect(state.restarts).toEqual([`gui/501/local.vorteo.${ID}.installation`]);
+    expect(notices(events)).toMatchObject([{ restartsBefore: 0 }]);
+    const order = events.map((event) => event.message);
+    expect(order.indexOf(FOLLOW_KEEP_OPEN)).toBeLessThan(order.indexOf(FOLLOW_RESTART_NOTICE));
+    const again = await follow(context);
+    expect(again.events.at(-1).result.moved).toBe(false);
+  });
+
+  test.each([
+    ["does not start", { coordinatorStarts: false }],
+    [
+      "answers fenced, without a top-level pid",
+      {
+        health: (state, paths) =>
+          onNew(paths)
+            ? { installationId: ID, bootstrap: { pid: state.pid, fenced: true } }
+            : undefined,
+      },
+    ],
+    [
+      "answers once, then crashes",
+      {
+        health: (state, paths) => {
+          if (!onNew(paths)) return undefined;
+          state.newAnswers = (state.newAnswers ?? 0) + 1;
+          return state.newAnswers === 1
+            ? { installationId: ID, pid: state.pid }
+            : new Error("connection refused");
+        },
+      },
+    ],
+  ])("a coordinator that %s runs the previous release again", async (_name, options) => {
+    const { context, paths } = followMachine(options);
+    const { ok, failure, events } = await follow(context);
+    expect(ok).toBe(false);
+    expect(failure.step).toBe("upgrade-coordinator");
+    expect(realpathSync(paths.coordinatorReleaseLink)).toBe(realpathSync(paths.release));
+    expect(notices(events)).toHaveLength(1);
+  });
+
+  test("an interrupted follow whose link already moved resumes and checks again", async () => {
+    const { context, state, paths, next } = followMachine();
+    // A run stopped after it moved the link and before the coordinator answered.
+    writeJson(path.join(context.root, "state", "coordinator-follow.json"), {
+      version: 1,
+      installationId: ID,
+      startedAt: "2026-11-06T00:00:00.000Z",
+      plan: {
+        version: 1,
+        kind: "coordinator-follow",
+        installationId: ID,
+        release: next,
+        from: { version: "26.11.103", revision: OLD },
+        to: { version: "26.11.302", revision: NEW },
+        steps: ["follow-check", "upgrade-coordinator", "follow-finish"],
+      },
+      steps: { "follow-check": { status: "done" } },
+      outputs: { previousCoordinator: realpathSync(paths.release) },
+    });
+    pointLink(paths.coordinatorReleaseLink, next);
+    const { ok, events } = await follow(context, state);
+    expect(ok).toBe(true);
+    expect(events.some((event) => event.step === "follow-check" && event.status === "done")).toBe(
+      true,
+    );
+    expect(state.restarts).toEqual([`gui/501/local.vorteo.${ID}.installation`]);
+    const journal = path.join(context.root, "state", "coordinator-follow.json");
+    expect(JSON.parse(readFileSync(journal, "utf8")).completedAt).toBeTruthy();
+  });
+
+  test.each([
+    ["a service pinned to a release", { start: "/pinned/release" }, /fixed release/],
+    ["an open coordinator request", { requests: [{ status: "pending" }] }, /still open/],
+    [
+      "a restart approved to wait for idle agents",
+      {
+        stateFiles: {
+          "restart-jobs.json": [{ id: "r", target: "host", status: "approved", whenIdle: true }],
+        },
+      },
+      /once agents are idle/,
+    ],
+    [
+      "a custom domain change in flight",
+      {
+        stateFiles: { "custom-domain/last.json": { id: "c", startedAt: new Date().toISOString() } },
+      },
+      /custom domain/,
+    ],
+    [
+      "a lab update",
+      {
+        stateFiles: {
+          "lab-updates/journal.json": { version: 1, updates: [{ status: "running" }] },
+        },
+      },
+      /lab update is running/,
+    ],
+  ])("refuses %s without restarting anything", async (_name, options, message) => {
+    const { context, state, paths } = followMachine(options);
+    const { ok, failure, events } = await follow(context);
+    expect(ok).toBe(false);
+    expect(failure.message).toMatch(message);
+    expect(notices(events)).toEqual([]);
+    expect(state.restarts).toEqual([]);
+    expect(realpathSync(paths.coordinatorReleaseLink)).toBe(realpathSync(paths.release));
   });
 });

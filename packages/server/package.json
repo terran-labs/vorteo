@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/server",
-  "version": "26.11.601",
+  "version": "26.11.602",
   "description": "Vorteo backend server",
   "license": "Apache-2.0",
   "files": [
@@ -18,6 +18,11 @@
       "types": "./dist/server/server/exports.d.ts",
       "source": "./src/server/exports.ts",
       "default": "./dist/server/server/exports.js"
+    },
+    "./vorteo-cli": {
+      "types": "./dist/server/utils/vorteo-cli.d.ts",
+      "source": "./src/utils/vorteo-cli.ts",
+      "default": "./dist/server/utils/vorteo-cli.js"
     },
     "./utils/tool-call-parsers": {
       "types": "./dist/server/utils/tool-call-parsers.d.ts",
@@ -150,11 +155,11 @@
     "@anthropic-ai/claude-agent-sdk": "0.3.246",
     "@anthropic-ai/claude-code": "2.1.318",
     "@anthropic-ai/sdk": "^0.104.2",
-    "@getpaseo/client": "26.11.601",
-    "@getpaseo/highlight": "26.11.601",
-    "@getpaseo/plugin": "26.11.601",
-    "@getpaseo/protocol": "26.11.601",
-    "@getpaseo/relay": "26.11.601",
+    "@getpaseo/client": "26.11.602",
+    "@getpaseo/highlight": "26.11.602",
+    "@getpaseo/plugin": "26.11.602",
+    "@getpaseo/protocol": "26.11.602",
+    "@getpaseo/relay": "26.11.602",
     "@isaacs/ttlcache": "^2.1.4",
     "@modelcontextprotocol/sdk": "1.32.1",
     "@opencode-ai/sdk": "1.14.46",

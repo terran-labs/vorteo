@@ -2,6 +2,53 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 26.11.602 - 2026-11-06
+
+Beta that logs every Claude sign-in refresh and adds opt-in single-refresher custody, with multi-installation Factory claims and lighter CI.
+
+### Maintenance
+
+- App unit tests get a no-op ResizeObserver, which jsdom lacks. The shared scroll view's edge fade measures with it, so the agent profile page's owner-lock tests failed with "ResizeObserver is not defined". Tests never resize, so the observer never needs to fire; a test that needs resize callbacks installs its own.
+- A browser test fails if any System label falls back to the default black or an inherited color, so this can't quietly return. Theme contrast for every theme stays covered by the theme tests.
+- Tests cover moving an existing login (including the macOS Keychain order), running the move again, removing a token the coordinator already held, adopting any new sign-in, waiting near expiry or while an agent's CLI holds its refresh lock, rollback, accounts without custody keeping the previous behavior, renewal continuing when the agent copy cannot be written, and concurrent triggers refreshing once, only in the coordinator's directory.
+
+### Features
+
+- Several Vorteo installations can run Factory on the same GitHub repository. The Foreman claims each issue by creating `factory/issue-<n>` on GitHub, so exactly one installation works on it, and never touches another installation's claim. A claim idle for more than a day is raised to the owner once and released only with their yes, with its commits kept.
+- `.github/factory.json` names the one installation that runs Triage and the one that runs Releases for a repository. The Factory Overview shows the assignment and flags a role that is off here.
+- `paseo factory project claim issue` and `paseo factory project claim release` expose claims; `paseo factory project show` prints the installation name and role assignment.
+
+### Fixes
+
+- Turning on Factory refuses a repository that another project on the same installation already runs.
+- `vorteo-release.mjs tag` recovers when another installation creates the same release tag first: the same commit counts as done, and another commit names the next version to prepare. Tags are never moved or reused.
+- A crash-recovered Factory claim that another installation also marks waits for the owner instead of being dropped. Turning on Factory no longer starts Triage or Releases on an installation `.github/factory.json` does not name.
+- Releasing a stale Factory claim renames its branch to `factory-released/issue-<n>/<time>` in one GitHub step, so a push landing during the release is kept, nothing is half released after a crash, and a later claim of the same issue is never mistaken for the released one.
+- Turning Factory off and on again for the same repository keeps the installation's issue claims, so it never mistakes its own claim branches for another installation's.
+- A Factory claim whose crash recovery found an earlier release stays an open question for the owner, instead of being dropped on the next check, and the owner can keep it.
+- A Factory claim made just as the issue's previous claim is released keeps its ownership instead of reading that release as its own.
+- Compose pill, track row, subagent action and Settings sidebar styles at render time so they always pick up the saved theme instead of the startup theme.
+- Settings > System is legible in dark mode again. The Host and Dev rows, their status, their Details links and System services had no text color, so they fell back to black on the dark background. They now use the Settings theme styles in a card like the other sections, and statuses show as colored badges. The Restart menu's More button no longer truncates.
+- The remaining Settings text without a color now uses the Settings theme styles: the profile page title and its loading and error lines, profile form headings and scope notes, profile skill names, the locked installation name preview, and maintenance and repair setup errors.
+- Keep scroll edge fades working in browsers and test environments that lack `ResizeObserver`; the fade then follows scrolling and window resizes instead of crashing the screen.
+- Claude full sign-in accounts can now have a single refresher. Host agents and the coordinator could all refresh the same login, and a refresh token used twice can make Claude cancel the whole sign-in. An account opted into coordinator custody keeps its login in a coordinator-only directory, the coordinator alone refreshes it, and Host agents get the current access token, as Dev already did. Custody is off by default and can be turned on and off per account; turning it off returns the login to the account's own directory.
+- The coordinator log now records every Claude refresh attempt with its outcome, old and new expiry, duration and failure reason, and warns when an access token is about to expire without a successful refresh. No token is ever logged.
+- Stop and await Claude availability probes during daemon shutdown so authentication checks cannot recreate files during test cleanup.
+- Wait for command children to close before reporting cancellation; force an aborted child to exit after a one-second cleanup grace period if it ignores its signal.
+
+### Tooling
+
+- The Windows server test jobs run only when started manually while a Windows Host is out of scope, instead of on every merge and nightly run.
+- Retry the ignored proxy test's temporary home cleanup so a daemon that is still flushing files on exit no longer fails the server suite.
+- The CI workflow test checks the manual-only desktop and Windows routing with one table, which keeps the test under the lint complexity limit.
+- The arm64 container smoke runs on GitHub's native arm64 runner instead of under QEMU emulation on an x86 runner, which made it the slowest container job.
+
+### Tests
+
+- The Playwright smoke follows the current interface: daemon restart checks open the Host restart sheet in System, active-turn steering replays no longer select the removed Default send choice, and narrow-window Settings checks wait for the header menu before opening it.
+- Browser test runs fill Playwright's transform cache for the built client and protocol modules before workers start, so two workers on a fresh runner no longer read each other's half-written module and fail with a missing `ChunkedTransport` export.
+- Three upstream Settings tests for controls Vorteo removed (the composer model selector and labeled docked navigation at 600 to 720 pixels) are routed out of the browser project by title.
+
 ## 26.11.601 - 2026-11-06
 
 Beta that keeps Claude subscription accounts signed in overnight, with lighter CI while PWA releases are the only channel.
