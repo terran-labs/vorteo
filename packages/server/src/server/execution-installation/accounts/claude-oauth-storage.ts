@@ -62,7 +62,7 @@ function toGrant(value: unknown): ClaudeOAuthGrant | null {
   };
 }
 
-async function readStorageFile(file: string): Promise<unknown | null> {
+export async function readStorageFile(file: string): Promise<unknown | null> {
   let descriptor: FileHandle;
   try {
     descriptor = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
