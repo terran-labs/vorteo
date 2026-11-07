@@ -25,7 +25,6 @@ import { groupHoverStyle, hoverGroup, hoverStyle } from "@/styles/hover";
 import { LIST_ROW_HEIGHT, LIST_ROW_TOUCH_HEIGHT } from "@/styles/list-row-metrics";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
-import { hexColorWithAlpha } from "@/utils/color";
 import { useVortonTouch } from "@/vorton-touch";
 import { useProjectFactory } from "./factory-instructions";
 import {
@@ -134,7 +133,10 @@ export const FactoryCard = memo(function FactoryCard({
 
   return (
     <ContextMenu>
-      <View
+      {/* Right-click anywhere on the card, including the stage bar and runners, opens its menu;
+          chips stop the event and open their workspace menu instead. */}
+      <ContextMenuTrigger
+        contextOnly
         style={[styles.card, cardInset(level)]}
         testID={`factory-card-${card.key}`}
         role="group"
@@ -191,7 +193,7 @@ export const FactoryCard = memo(function FactoryCard({
             </>
           )}
         </View>
-      </View>
+      </ContextMenuTrigger>
       <FactoryCardMenu
         cardKey={card.key}
         collapsed={collapsed}
@@ -416,6 +418,8 @@ function StatePill({
       <TooltipTrigger
         accessible={false}
         focusable={false}
+        tabIndex={-1}
+        aria-hidden
         onPress={onPress}
         style={[styles.pill, styles.passThrough]}
         testID="factory-card-state"
@@ -448,9 +452,9 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface1,
-    ...factoryCardSurfaceHover({ borderColor: hexColorWithAlpha(theme.colors.accent, 0.6) }),
+    ...factoryCardSurfaceHover({ borderColor: theme.colors.accent }),
   },
-  surfacePressed: { borderColor: hexColorWithAlpha(theme.colors.accent, 0.6) },
+  surfacePressed: { borderColor: theme.colors.accent },
   content: { paddingBottom: 2 },
   header: {
     flexDirection: "row",

@@ -47,6 +47,8 @@ export function FactoryStageBar({
         <TooltipTrigger
           accessible={false}
           focusable={false}
+          tabIndex={-1}
+          aria-hidden
           onPress={onOpenOverview}
           style={[styles.collapsedBar, styles.passThrough]}
           testID="factory-card-stage-bar"
@@ -72,6 +74,8 @@ export function FactoryStageBar({
             <TooltipTrigger
               accessible={false}
               focusable={false}
+              tabIndex={-1}
+              aria-hidden
               onPress={onOpenOverview}
               style={[styles.segmentHit, styles.segmentGrow(count.count), styles.passThrough]}
               testID={`factory-card-stage-${count.segment}`}
