@@ -1279,6 +1279,31 @@ function extractErrorMessage(error: unknown): string | null {
   return null;
 }
 
+const TOUCH_DICTATION_SIZE = 44;
+const TOUCH_CORNER_GAP = 4;
+/** The upstream Fullscreen glyph button's size (`presentation.tsx`). */
+const TOUCH_FULLSCREEN_SIZE = 28;
+/** Text clearance for the dictation button in the top-right corner. */
+const TOUCH_DICTATION_BAND = 56;
+
+/**
+ * Fullscreen beside the touch dictation button, vertically centered on it. The dictation button
+ * stays in the corner (1167acf35); upstream's Fullscreen (750cb82fb) would otherwise sit under it.
+ */
+function touchFullscreenPlacement(dictationTop: number) {
+  return {
+    top: dictationTop + (TOUCH_DICTATION_SIZE - TOUCH_FULLSCREEN_SIZE) / 2,
+    right: COMPOSER_CORNER_INSET + TOUCH_DICTATION_SIZE + TOUCH_CORNER_GAP,
+  };
+}
+const TOUCH_FULLSCREEN_PLACEMENT = touchFullscreenPlacement(COMPOSER_CORNER_INSET);
+const TOUCH_FULLSCREEN_PLACEMENT_MOBILE = touchFullscreenPlacement(COMPOSER_CORNER_INSET - 1);
+
+function touchFullscreenPlacementFor(besideDictation: boolean, mobile: boolean) {
+  if (!besideDictation) return undefined;
+  return mobile ? TOUCH_FULLSCREEN_PLACEMENT_MOBILE : TOUCH_FULLSCREEN_PLACEMENT;
+}
+
 function placeDictationButton(
   button: React.ReactNode,
   touch: boolean,
@@ -2158,14 +2183,32 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     // `.css-textinput-*` class and loses on source order — so a themed
     // `fontFamily` here is silently dropped while every other property lands.
     // An inline style outranks both classes. See docs/unistyles.md.
+    const showFullscreenButton = shouldShowFullscreenControl(
+      isCompact,
+      readOnly,
+      showOverlay,
+      renderedLines,
+    );
+    // On touch the dictation button owns the top-right corner, so Fullscreen sits just left of
+    // it and the text keeps clear of both.
+    const fullscreenBesideDictation = touch && mode.showVoice;
     const textInputStyle = useMemo(
       () => [
         styles.textInput,
         mode.isMonospace && styles.textInputMonospace,
         isFullscreen ? styles.fullscreenTextInput : composerHeightStyle,
         touch && mode.showVoice && styles.touchTextInput,
+        fullscreenBesideDictation && showFullscreenButton && styles.touchTextInputWithFullscreen,
       ],
-      [composerHeightStyle, mode.isMonospace, mode.showVoice, touch, isFullscreen],
+      [
+        composerHeightStyle,
+        mode.isMonospace,
+        mode.showVoice,
+        touch,
+        isFullscreen,
+        fullscreenBesideDictation,
+        showFullscreenButton,
+      ],
     );
     // Static content has no textarea to mirror, so it grows with its own text
     // instead of the measured input height.
@@ -2499,11 +2542,10 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           inputWrapperStyle={inputWrapperCombinedStyle}
           inputPointerEvents={surfacePresentation.input.pointerEvents}
           attachmentSlot={attachmentSlot}
-          showFullscreenButton={shouldShowFullscreenControl(
-            isCompact,
-            readOnly,
-            showOverlay,
-            renderedLines,
+          showFullscreenButton={showFullscreenButton}
+          fullscreenButtonPlacement={touchFullscreenPlacementFor(
+            fullscreenBesideDictation,
+            mobileComposer.enabled,
           )}
           onEnter={enterFullscreen}
           overlay={voiceOverlay}
@@ -2650,7 +2692,10 @@ const styles = StyleSheet.create((theme: Theme) => ({
     right: COMPOSER_CORNER_INSET,
     zIndex: 1,
   },
-  touchTextInput: { paddingRight: 56, minHeight: 44 },
+  touchTextInput: { paddingRight: TOUCH_DICTATION_BAND, minHeight: 44 },
+  touchTextInputWithFullscreen: {
+    paddingRight: TOUCH_DICTATION_BAND + TOUCH_FULLSCREEN_SIZE + TOUCH_CORNER_GAP,
+  },
   mobileDictationSlot: { top: COMPOSER_CORNER_INSET - 1 },
   buttonRow: {
     flexShrink: 0,
