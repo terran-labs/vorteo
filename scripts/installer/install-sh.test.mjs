@@ -884,6 +884,40 @@ process.exit(23);
       assert.equal(cli.status, 23, cli.stderr);
       assert.deepEqual(JSON.parse(cli.stdout).argv, args);
     }
+    const beforeLifecycle = readFileSync(calls, "utf8");
+    for (const args of [
+      ["start"],
+      ["restart"],
+      ["reload"],
+      ...["start", "stop", "restart", "run", "reload"].map((verb) => ["daemon", verb]),
+      ["--format", "json", "daemon", "--quiet", "restart"],
+      ["--json", "daemon", "reload", "--", "--home", "ignored"],
+    ]) {
+      assert.equal(invoke(args).status, 1);
+    }
+    assert.equal(readFileSync(calls, "utf8"), beforeLifecycle);
+    for (const args of [
+      ["--home", "selected home", "start"],
+      ["daemon", "--home=selected home", "run"],
+      ["daemon", "restart", "--home", "selected home"],
+      ["--host=selected:6767", "reload"],
+      ["daemon", "--host", "selected:6767", "stop"],
+      ["daemon", "reload", "--host=selected:6767"],
+      ["stop", "agent-id"],
+      ["run", "prompt"],
+      ["agent", "reload", "agent-id"],
+    ]) {
+      const cli = invoke(args);
+      assert.equal(cli.status, 23, cli.stderr);
+      const result = JSON.parse(cli.stdout);
+      assert.deepEqual(result.argv, args);
+      if (args.some((arg) => arg.startsWith("--home") || arg.startsWith("--host"))) {
+        assert.equal(result.home, null);
+      }
+    }
+    for (const env of [{ PASEO_HOME: "explicit home" }, { PASEO_HOST: "explicit:6767" }]) {
+      assert.equal(invoke(["daemon", "restart"], env).status, 23);
+    }
     const adoptedHome = path.join(box.dir, "adopted host state");
     const record = path.join(root, "installation.json");
     writeFileSync(record, JSON.stringify({ hostHome: adoptedHome }));
@@ -905,11 +939,16 @@ process.exit(23);
     const beforeFailure = readFileSync(calls, "utf8");
     writeFileSync(record, "invalid JSON");
     assert.equal(invoke(["ls"]).status, 1);
+    assert.equal(readFileSync(calls, "utf8"), beforeFailure);
+    const selected = invoke(["ls", "--home=selected home"]);
+    assert.equal(selected.status, 23, selected.stderr);
+    assert.equal(JSON.parse(selected.stdout).home, null);
+    const beforeMissing = readFileSync(calls, "utf8");
     rmSync(record);
     assert.equal(invoke(["ls"], { VORTEO_NODE: path.join(box.dir, "missing-node") }).status, 1);
     rmSync(build);
     assert.equal(invoke(["ls"]).status, 1);
-    assert.equal(readFileSync(calls, "utf8"), beforeFailure);
+    assert.equal(readFileSync(calls, "utf8"), beforeMissing);
   });
 
   test("update explains where updates happen and opens Settings", () => {

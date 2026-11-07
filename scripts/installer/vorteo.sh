@@ -205,6 +205,35 @@ vorteo_command() {
       ;;
     "" | help | -h | --help) usage ;;
     *)
+      # Inspect only target selectors and the command route; Commander still validates argv.
+      local explicit_target="${PASEO_HOME:-${PASEO_HOST-}}" first="" second="" arg pending="" operands=""
+      for arg in "$command" "$@"; do
+        if [ -n "$pending" ]; then
+          if [ "$pending" = target ]; then explicit_target=1; fi
+          pending=""
+          continue
+        fi
+        if [ -z "$operands" ]; then
+          case "$arg" in
+            --) operands=1; continue ;;
+            --home | --host) pending=target; continue ;;
+            --home=* | --host=*) explicit_target=1; continue ;;
+            --format | -o | --timeout | --kill-timeout | --port | --listen | --hostnames | --allowed-hosts)
+              pending=value; continue ;;
+            -*) continue ;;
+          esac
+        fi
+        if [ -z "$first" ]; then first="$arg"
+        elif [ -z "$second" ]; then second="$arg"; fi
+      done
+      if [ -z "$explicit_target" ]; then
+        case "$first:$second" in
+          start:* | restart:* | reload:* | daemon:start | daemon:stop | daemon:restart | daemon:run | daemon:reload)
+            echo "Manage this installation's daemon in Settings, Maintenance (installation controls)." >&2
+            return 1
+            ;;
+        esac
+      fi
       local cli_entry="$source_dir/packages/cli/bin/paseo"
       if [ ! -x "$(command -v "$node_bin" 2>/dev/null)" ]; then
         echo "Vorteo cannot run its configured Node runtime ($node_bin). Run: vorteo repair" >&2
@@ -214,7 +243,7 @@ vorteo_command() {
         echo "Vorteo CLI is not built in $source_dir. Run: vorteo repair" >&2
         return 1
       fi
-      if [ -z "${PASEO_HOME-}" ] && [ -z "${PASEO_HOST-}" ]; then
+      if [ -z "$explicit_target" ]; then
         PASEO_HOME=$("$node_bin" -e '
           const fs = require("node:fs"), path = require("node:path");
           const root = process.argv[1];
