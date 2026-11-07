@@ -79,10 +79,6 @@ const ForeignClaimSchema = z.object({
 });
 export type ForeignClaimState = z.infer<typeof ForeignClaimSchema>;
 
-/** A release deleted the claim branch but may not have archived it yet. */
-const PendingReleaseSchema = z.object({ sha: z.string(), archivedAs: z.string() });
-export type PendingReleaseState = z.infer<typeof PendingReleaseSchema>;
-
 const AssignmentStateSchema = z.object({
   source: z.enum(["none", "file", "invalid", "unreadable"]),
   triage: z.string().nullable(),
@@ -112,8 +108,6 @@ const ProjectStateSchema = z.object({
   claims: z.record(z.string(), ClaimStateSchema).optional(),
   /** Claim branches other installations hold, keyed by branch name. */
   foreignClaims: z.record(z.string(), ForeignClaimSchema).optional(),
-  /** Releases to finish archiving, keyed by issue number. */
-  pendingReleases: z.record(z.string(), PendingReleaseSchema).optional(),
   /** The last `.github/factory.json` read. */
   assignment: AssignmentStateSchema.optional(),
   /**

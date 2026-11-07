@@ -365,7 +365,6 @@ export class ProjectFactoryService {
             ? {
                 ...(current.claims ? { claims: current.claims } : {}),
                 ...(current.foreignClaims ? { foreignClaims: current.foreignClaims } : {}),
-                ...(current.pendingReleases ? { pendingReleases: current.pendingReleases } : {}),
                 ...(current.assignment ? { assignment: current.assignment } : {}),
               }
             : {}),
@@ -818,9 +817,6 @@ export class ProjectFactoryService {
     if (roleId !== "factory-intake") return [];
     const project = await this.requireConfiguredProject(record.projectId);
     try {
-      // A release interrupted after its delete finishes its archive before anything else.
-      for (const issue of Object.keys(project.pendingReleases ?? {}))
-        await this.release(record.projectId, project, Number(issue));
       const scan = await scanForeignClaims({
         github: this.github(),
         repository: project.repository,
@@ -873,19 +869,9 @@ export class ProjectFactoryService {
     issue: number,
   ): Promise<ProjectFactoryClaimRelease> {
     const branch = projectFactoryClaimBranch(issue);
-    const key = String(issue);
     const released = await releaseClaim({
       ...this.claimContext(projectId, project.repository, issue),
       foreign: project.foreignClaims?.[branch],
-      pending: project.pendingReleases?.[key],
-      writePending: async (pending) => {
-        await this.mutateProject(projectId, (next) => {
-          const all = { ...next.pendingReleases };
-          if (pending) all[key] = pending;
-          else delete all[key];
-          next.pendingReleases = all;
-        });
-      },
     });
     await this.mutateProject(projectId, (next) => {
       if (next.foreignClaims) delete next.foreignClaims[branch];

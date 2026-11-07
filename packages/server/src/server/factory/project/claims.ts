@@ -1,8 +1,5 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { z } from "zod";
 import {
   projectFactoryClaimBranch,
@@ -10,12 +7,7 @@ import {
   type ProjectFactoryClaimRelease,
 } from "@getpaseo/server/factory-project";
 
-import type {
-  AssignmentState,
-  ClaimState,
-  ForeignClaimState,
-  PendingReleaseState,
-} from "./state.js";
+import type { AssignmentState, ClaimState, ForeignClaimState } from "./state.js";
 
 /**
  * Several Vorteo installations can run Factory against one repository. GitHub decides which
@@ -32,11 +24,6 @@ export interface GitHubResponse {
 /** The GitHub REST calls Factory claims need. Tests inject an in-memory repository. */
 export interface FactoryGitHub {
   rest(method: "GET" | "POST" | "DELETE", route: string, body?: unknown): Promise<GitHubResponse>;
-  /**
-   * Deletes a branch only if it still points at `sha`, atomically on GitHub's side. Resolves
-   * false when the branch moved, so a push in the meantime is never deleted.
-   */
-  deleteBranchAt(repository: string, branch: string, sha: string): Promise<boolean>;
 }
 
 /** Runs `gh api --include` and returns the HTTP status and parsed body, including 4xx. */
@@ -58,43 +45,7 @@ export const defaultFactoryGitHub: FactoryGitHub = {
       if (body !== undefined) child.stdin?.end(JSON.stringify(body));
     });
   },
-  async deleteBranchAt(repository, branch, sha) {
-    // A deletion with an explicit lease is a compare-and-swap on the remote ref. The push runs
-    // from an empty scratch repository with gh's credentials, so no checkout or hook is involved.
-    const scratch = await mkdtemp(path.join(tmpdir(), "vorteo-factory-release-"));
-    try {
-      await run("git", ["init", "--quiet", scratch]);
-      const { status, stderr } = await run("git", [
-        "-C",
-        scratch,
-        "-c",
-        "credential.helper=",
-        "-c",
-        "credential.helper=!gh auth git-credential",
-        "push",
-        "--porcelain",
-        `--force-with-lease=refs/heads/${branch}:${sha}`,
-        `https://github.com/${repository}.git`,
-        `:refs/heads/${branch}`,
-      ]);
-      if (status === 0) return true;
-      if (/stale info|rejected/.test(stderr)) return false;
-      throw new FactoryGitHubError(firstLine(stderr) || `git push exited with ${status}.`);
-    } finally {
-      await rm(scratch, { recursive: true, force: true });
-    }
-  },
 };
-
-function run(command: string, args: string[]): Promise<{ status: number; stderr: string }> {
-  return new Promise((resolve) => {
-    execFile(command, args, { timeout: 60_000 }, (error, stdout, stderr) => {
-      let status = 0;
-      if (error) status = typeof error.code === "number" ? error.code : 1;
-      resolve({ status, stderr: `${stderr}\n${stdout}` });
-    });
-  });
-}
 
 function parseIncluded(stdout: string): GitHubResponse | null {
   const match = /^HTTP\/[\d.]+ (\d{3})/.exec(stdout);
@@ -259,21 +210,17 @@ export async function claimIssue(ctx: ClaimContext): Promise<ProjectFactoryClaim
 
 export interface ReleaseContext extends ClaimContext {
   foreign: ForeignClaimState | undefined;
-  /** A release this installation started and has not finished archiving. */
-  pending: PendingReleaseState | undefined;
-  writePending: (pending: PendingReleaseState | undefined) => Promise<void>;
 }
 
 /**
  * Releases a claim after the owner agreed. A conflicting claim of this installation's own is
- * only forgotten. A stale foreign claim is deleted with a lease on its exact head, then
- * archived under `factory-released/` at that head, so its commits stay reachable and nothing
- * is rewritten. The archive comes last because its former owner reads any new archive as a
- * finished release; the pending record lets a crash in between finish the archive later.
+ * only forgotten. A stale foreign claim is renamed to `factory-released/issue-<n>/<time>`:
+ * GitHub moves the branch and every commit on it in one step, so no push is lost, nothing is
+ * rewritten and there is no half-released state. Any later claim sees that archive before it
+ * can claim, so only the released claim reads it as its release.
  */
 export async function releaseClaim(ctx: ReleaseContext): Promise<ProjectFactoryClaimRelease> {
   const branch = projectFactoryClaimBranch(ctx.issue);
-  if (ctx.pending) return resumeRelease(ctx, branch, ctx.pending);
   const own = await ctx.read();
   if (own?.status === "conflict") {
     await ctx.write(undefined);
@@ -294,76 +241,19 @@ export async function releaseClaim(ctx: ReleaseContext): Promise<ProjectFactoryC
     .toISOString()
     .replace(/[-:]/g, "")
     .replace(/\.\d+Z$/, "Z");
-  const pending = { sha: head, archivedAs: `${ARCHIVE_PREFIX}/issue-${ctx.issue}/${stamp}` };
-  await ctx.writePending(pending);
-  return deleteThenArchive(ctx, branch, pending);
-}
-
-async function deleteThenArchive(
-  ctx: ReleaseContext,
-  branch: string,
-  pending: PendingReleaseState,
-): Promise<ProjectFactoryClaimRelease> {
-  // Deleted only while it still points at that head: a push since the owner was asked keeps it.
-  if (!(await ctx.github.deleteBranchAt(ctx.repository, branch, pending.sha))) {
-    await ctx.writePending(undefined);
-    throw new FactoryGitHubError(`${branch} moved while releasing it; it is active again.`);
-  }
-  return finishRelease(ctx, branch, pending);
-}
-
-/**
- * Continues a release interrupted at any point after its pending record. It archives only
- * once the claim branch is gone, so an interrupted release never reads as a finished one.
- */
-async function resumeRelease(
-  ctx: ReleaseContext,
-  branch: string,
-  pending: PendingReleaseState,
-): Promise<ProjectFactoryClaimRelease> {
-  const head = await readHead(ctx, branch);
-  // The delete never happened: retry it, still leased on the head the owner was asked about.
-  if (head === pending.sha) return deleteThenArchive(ctx, branch, pending);
-  // A head that still contains the released commit is its owner's push: the claim is active.
-  if (head !== null && (await contains(ctx, head, pending.sha))) {
-    await ctx.writePending(undefined);
-    throw new FactoryGitHubError(`${branch} moved while releasing it; it is active again.`);
-  }
-  // Gone, or deleted and claimed again from the default branch: archive the released head.
-  return finishRelease(ctx, branch, pending);
-}
-
-async function contains(ctx: ClaimContext, head: string, commit: string): Promise<boolean> {
-  const body = expect(
-    await ctx.github.rest("GET", `repos/${ctx.repository}/compare/${commit}...${head}`),
-    [200],
-    `comparing ${commit.slice(0, 9)} with ${head.slice(0, 9)}`,
+  const archivedAs = `${ARCHIVE_PREFIX}/issue-${ctx.issue}/${stamp}`;
+  const renamed = expect(
+    await ctx.github.rest(
+      "POST",
+      `repos/${ctx.repository}/branches/${encodeURIComponent(branch)}/rename`,
+      { new_name: archivedAs },
+    ),
+    [201],
+    `releasing ${branch}`,
   );
-  const status = z.object({ status: z.string() }).parse(body).status;
-  return status === "identical" || status === "ahead";
-}
-
-async function finishRelease(
-  ctx: ReleaseContext,
-  branch: string,
-  pending: PendingReleaseState,
-): Promise<ProjectFactoryClaimRelease> {
-  const created = await ctx.github.rest("POST", `repos/${ctx.repository}/git/refs`, {
-    ref: `refs/heads/${pending.archivedAs}`,
-    sha: pending.sha,
-  });
-  // 422 is an earlier attempt's archive; it counts only at the same commit.
-  if (created.status === 422 && (await readHead(ctx, pending.archivedAs)) !== pending.sha)
-    throw new FactoryGitHubError(`${pending.archivedAs} exists at another commit.`);
-  if (created.status !== 422) expect(created, [201], `archiving ${branch}`);
-  await ctx.writePending(undefined);
-  return {
-    issue: ctx.issue,
-    branch,
-    outcome: "archived",
-    archivedAs: pending.archivedAs,
-    headSha: pending.sha,
-  };
+  const headSha =
+    z.object({ commit: z.object({ sha: z.string() }) }).safeParse(renamed).data?.commit.sha ?? head;
+  return { issue: ctx.issue, branch, outcome: "archived", archivedAs, headSha };
 }
 
 async function readHead(ctx: ClaimContext, branch: string): Promise<string | null> {

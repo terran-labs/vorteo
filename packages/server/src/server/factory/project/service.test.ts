@@ -52,15 +52,6 @@ class FakeGitHub implements FactoryGitHub {
   factoryJson: string | null = null;
   /** Creates the next ref, then fails as if the daemon crashed before reading the response. */
   crashAfterCreate = false;
-  /** Runs just before a leased delete, as a push landing in that moment would. */
-  beforeDelete: (() => Promise<void>) | null = null;
-
-  async deleteBranchAt(_repository: string, branch: string, sha: string): Promise<boolean> {
-    await this.beforeDelete?.();
-    if (this.refs.get(`heads/${branch}`) !== sha) return false;
-    this.refs.delete(`heads/${branch}`);
-    return true;
-  }
 
   async rest(method: string, route: string, body?: unknown): Promise<GitHubResponse> {
     const resource = route.replace(/^repos\/[^/]+\/[^/]+/, "");
@@ -88,9 +79,6 @@ class FakeGitHub implements FactoryGitHub {
     const comments = /^\/issues\/(\d+)\/comments/.exec(resource);
     if (comments) return ok(this.comments.get(Number(comments[1])) ?? []);
     if (resource.startsWith("/pulls?")) return ok([]);
-    const compare = /^\/compare\/(\w+)\.\.\.(\w+)$/.exec(resource);
-    // Every fake commit is unrelated, so only an identical head contains a commit.
-    if (compare) return ok({ status: compare[1] === compare[2] ? "identical" : "diverged" });
     if (resource.startsWith("/git/commits/"))
       return ok({ committer: { date: this.commitDates.get(resource.slice(13)) ?? T0 } });
     if (resource === "/contents/.github/factory.json")
@@ -112,6 +100,16 @@ class FakeGitHub implements FactoryGitHub {
         throw new Error("daemon stopped");
       }
       return { status: 201, body: { ref, object: { sha } } };
+    }
+    const rename = /^\/branches\/([^/]+)\/rename$/.exec(resource);
+    if (method === "POST" && rename) {
+      // GitHub moves the branch and its commits to the new name in one step.
+      const from = `heads/${decodeURIComponent(rename[1]!)}`;
+      const sha = this.refs.get(from);
+      if (!sha) return { status: 404, body: { message: "Branch not found" } };
+      this.refs.delete(from);
+      this.refs.set(`heads/${(body as { new_name: string }).new_name}`, sha);
+      return { status: 201, body: { commit: { sha } } };
     }
     if (method === "DELETE" && resource.startsWith("/git/refs/")) {
       this.refs.delete(resource.slice("/git/refs/".length));
@@ -1592,9 +1590,9 @@ describe("several installations on one repository", () => {
     }>;
   const release = (target: ProjectFactoryService, issue: number) =>
     target.invoke("factory.project.claim.release", { projectId: PROJECT, issue });
-  async function rival() {
-    const rivalHome = mkdtempSync(path.join(os.tmpdir(), "vorteo-project-factory-rival-"));
-    const other = service(undefined, { paseoHome: rivalHome, serverId: "srv_rival" });
+  async function rival(serverId = "srv_rival") {
+    const rivalHome = mkdtempSync(path.join(os.tmpdir(), `vorteo-project-factory-${serverId}-`));
+    const other = service(undefined, { paseoHome: rivalHome, serverId });
     await enable(other);
     return other;
   }
@@ -1681,42 +1679,22 @@ describe("several installations on one repository", () => {
     expect(staleTicks()).toHaveLength(1);
     expect(staleTicks()[0]!.prompt).toContain("factory/issue-5");
 
-    // The owner checking in mid-release still holds its claim, and its push in that moment
-    // keeps the branch, with no archive left behind to read as a release.
-    const pushed = "p".repeat(40);
-    github.beforeDelete = async () => {
-      expect((await claim(theirs, 5)).outcome).toBe("held");
-      github.refs.set("heads/factory/issue-5", pushed);
-    };
-    await expect(release(ours, 5)).rejects.toThrow("moved while releasing");
-    expect(github.refs.get("heads/factory/issue-5")).toBe(pushed);
-    expect([...github.refs.keys()].some((name) => name.startsWith("heads/factory-released/"))).toBe(
-      false,
-    );
-    expect((await claim(theirs, 5)).outcome).toBe("held");
-    github.beforeDelete = null;
+    // A push since the owner was asked makes the claim active again.
+    github.refs.set("heads/factory/issue-5", "p".repeat(40));
+    await expect(release(ours, 5)).rejects.toThrow("Ask the owner first");
     github.refs.set("heads/factory/issue-5", MAIN);
 
-    // Interrupted before its delete: the owner keeps its claim, and the next call deletes first.
-    github.beforeDelete = async () => {
-      throw new Error("network down");
-    };
-    await expect(release(ours, 5)).rejects.toThrow("network down");
-    expect((await claim(theirs, 5)).outcome).toBe("held");
-    github.beforeDelete = null;
-
-    // A crash while archiving is finished by the next release call, even across a re-enable.
-    github.crashAfterCreate = true;
-    await expect(release(ours, 5)).rejects.toThrow("daemon stopped");
-    await ours.invoke("factory.project.disable", { projectId: PROJECT });
-    await enable(ours);
     expect(await release(ours, 5)).toMatchObject({ outcome: "archived", headSha: MAIN });
     expect(github.refs.has("heads/factory/issue-5")).toBe(false);
     expect([...github.refs].filter(([name]) => name.startsWith("heads/factory-released/"))).toEqual(
       [["heads/factory-released/issue-5/20261104T130000Z", MAIN]],
     );
-    // The former owner learns its claim is gone rather than working on.
+    // A third installation claims the freed issue at the same commit; the archive already
+    // existed when it claimed, so only the former owner reads it as a release.
+    const third = await rival("srv_third");
+    expect((await claim(third, 5)).outcome).toBe("claimed");
     expect((await claim(theirs, 5)).outcome).toBe("lost");
+    expect((await claim(third, 5)).outcome).toBe("held");
   });
 
   test("factory.json turns Triage and Releases off unless it names this installation", async () => {
