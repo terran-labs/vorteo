@@ -180,8 +180,8 @@ it.each(["version", "models"])(
     const [socket] = await connected;
     const pid = Number(String((await once(socket, "data"))[0]));
     await client.shutdown();
-    expect(await refresh).toMatchObject({ name: "AbortError" });
     expect(() => process.kill(pid, 0)).toThrow();
+    expect(await refresh).toMatchObject({ name: "AbortError" });
     expect(activities).toEqual(stage === "models" ? ["version", "models"] : []);
     await expect(client.fetchCatalog({ scope: "global", force: true })).rejects.toMatchObject({
       name: "AbortError",
