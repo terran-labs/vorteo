@@ -52,8 +52,8 @@ for (const width of [1280]) {
         });
       await page.setViewportSize({ width, height: 1000 });
       await gotoAppShell(page);
-      // 471d7f22a removed Paseo/Standard mode, so every Claude provider sheet shows the
-      // container sign-in instructions beside its model list.
+      // A Claude provider that cannot run shows the container sign-in instructions beside its
+      // model list; a ready one hides them.
       await page.goto(`/settings/hosts/${getServerId()}/providers`);
       await page.getByRole("button", { name: "Claude provider details", exact: true }).click();
       const instructions = page.getByTestId("claude-sign-in-instructions");

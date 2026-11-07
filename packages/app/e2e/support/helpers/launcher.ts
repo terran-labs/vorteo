@@ -15,10 +15,14 @@ export async function gotoWorkspace(page: Page, workspaceId: string): Promise<vo
 
 // ─── Tab bar queries ───────────────────────────────────────────────────────
 
-/** Wait for the workspace tab bar to be visible. */
+/** Wait for the workspace tab bar, or the compact header's tab switcher on phones, to be visible. */
 export async function waitForTabBar(page: Page): Promise<void> {
   await expect(
-    page.getByTestId("workspace-tabs-row").filter({ visible: true }).first(),
+    page
+      .getByTestId("workspace-tabs-row")
+      .or(page.getByTestId("workspace-tab-switcher-trigger"))
+      .filter({ visible: true })
+      .first(),
   ).toBeVisible({
     timeout: 30_000,
   });

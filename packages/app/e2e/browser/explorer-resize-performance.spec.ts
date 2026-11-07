@@ -43,9 +43,9 @@ async function beginResizeMeasurement(page: Page): Promise<void> {
 }
 
 async function previewExplorerResize(page: Page, distance: number) {
-  const handle = page
-    .getByTestId("workspace-explorer-sidebar-resize-handle")
-    .getByRole("separator");
+  // The docked Explorer uses the sidebar's handle (60f4899a6), which is the separator itself.
+  const root = page.getByTestId("workspace-explorer-sidebar-resize-handle");
+  const handle = root.getByRole("separator").or(root.and(page.getByRole("separator")));
   const explorer = page.getByTestId("workspace-supporting-cards");
   const bounds = await handle.boundingBox();
   if (!bounds) throw new Error("Explorer resize handle is missing");
