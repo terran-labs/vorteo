@@ -41,6 +41,9 @@ const retiredUpstreamTests = [
   // Asserts the chevron's CSS transform through an svg/../.. lookup; the testing budget in
   // AGENTS.md forbids CSS assertions.
   /usage-modal\.spec\.ts.* direct-route Usage Settings disclosure (desktop|compact) (light|dark)/,
+  // The fixture injects prompt rejections through featureValues, but every UI launch uses a
+  // profile, and Vorteo keeps a profile launch's features out of reach of plugin hooks.
+  /creation-idempotency\.spec\.ts.* becomes an agent tab when the first prompt is rejected/,
 ];
 
 function videoMode(): "on" | "on-first-retry" | "retain-on-failure" {
