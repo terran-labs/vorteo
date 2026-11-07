@@ -264,7 +264,7 @@ test.each([390])(
       outcome: "unknown",
       observedAt: "2026-10-15T20:01:00.000Z",
     });
-    expect(container.textContent).toContain("Outcome unverified");
+    expect(container.textContent).toContain("Checking");
     expect(container.textContent).toContain("Last checked");
     expect(container.textContent).not.toContain("Last verified");
     expect(container.textContent).not.toContain("Candidate verified");

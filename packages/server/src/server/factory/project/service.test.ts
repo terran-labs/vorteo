@@ -23,6 +23,7 @@ import { charterVersion } from "./instructions.js";
 import { PROJECT_FACTORY_ROLE_LABEL, PROJECT_FACTORY_ROLES } from "./roles.js";
 import { DRAIN_ENDED, drainNotice, ProjectFactoryService, type PromptOutcome } from "./service.js";
 import { factoryProjectQueue } from "@getpaseo/server/factory-project";
+import type { FactoryGitHub, GitHubResponse } from "./claims.js";
 import type { GhRunner } from "./tick-gate.js";
 import { projectFactoryStatePath } from "./state.js";
 
@@ -39,6 +40,92 @@ let schedules: FakeSchedules;
 let fingerprints: Map<string, string | null>;
 let clock: Date;
 let services: ProjectFactoryService[];
+let github: FakeGitHub;
+
+const MAIN = "m".repeat(40);
+
+/** One shared GitHub repository: ref creation is atomic, as on GitHub. */
+class FakeGitHub implements FactoryGitHub {
+  readonly refs = new Map<string, string>([["heads/main", MAIN]]);
+  readonly comments = new Map<number, { body: string; updated_at: string }[]>();
+  readonly commitDates = new Map<string, string>();
+  factoryJson: string | null = null;
+  /** Creates the next ref, then fails as if the daemon crashed before reading the response. */
+  crashAfterCreate = false;
+  /** Runs before a ref is created, as another installation acting in that moment would. */
+  beforeCreate: (() => Promise<void>) | null = null;
+
+  async rest(method: string, route: string, body?: unknown): Promise<GitHubResponse> {
+    const resource = route.replace(/^repos\/[^/]+\/[^/]+/, "");
+    const response =
+      method === "GET" ? this.read(resource) : await this.write(method, resource, body);
+    if (!response) throw new Error(`unexpected GitHub call ${method} ${route}`);
+    return response;
+  }
+
+  private read(resource: string): GitHubResponse | null {
+    const ok = (value: unknown) => ({ status: 200, body: value });
+    const missing = { status: 404, body: { message: "Not Found" } };
+    if (resource === "") return ok({ default_branch: "main" });
+    if (resource.startsWith("/git/ref/")) {
+      const sha = this.refs.get(resource.slice("/git/ref/".length));
+      return sha ? ok({ ref: `refs/${resource.slice(9)}`, object: { sha } }) : missing;
+    }
+    if (resource.startsWith("/git/matching-refs/")) {
+      const prefix = resource.slice("/git/matching-refs/".length);
+      return ok(
+        [...this.refs]
+          .filter(([name]) => name.startsWith(prefix))
+          .map(([name, sha]) => ({ ref: `refs/${name}`, object: { sha } })),
+      );
+    }
+    const comments = /^\/issues\/(\d+)\/comments/.exec(resource);
+    if (comments) return ok(this.comments.get(Number(comments[1])) ?? []);
+    if (resource.startsWith("/pulls?")) return ok([]);
+    if (resource.startsWith("/git/commits/"))
+      return ok({ committer: { date: this.commitDates.get(resource.slice(13)) ?? T0 } });
+    if (resource === "/contents/.github/factory.json")
+      return this.factoryJson === null
+        ? missing
+        : ok({ content: Buffer.from(this.factoryJson).toString("base64"), encoding: "base64" });
+    return null;
+  }
+
+  private async write(
+    method: string,
+    resource: string,
+    body: unknown,
+  ): Promise<GitHubResponse | null> {
+    if (method === "POST" && resource === "/git/refs") {
+      await this.beforeCreate?.();
+      const { ref, sha } = body as { ref: string; sha: string };
+      const name = ref.replace(/^refs\//, "");
+      if (this.refs.has(name))
+        return { status: 422, body: { message: "Reference already exists" } };
+      this.refs.set(name, sha);
+      if (this.crashAfterCreate) {
+        this.crashAfterCreate = false;
+        throw new Error("daemon stopped");
+      }
+      return { status: 201, body: { ref, object: { sha } } };
+    }
+    const rename = /^\/branches\/([^/]+)\/rename$/.exec(resource);
+    if (method === "POST" && rename) {
+      // GitHub moves the branch and its commits to the new name in one step.
+      const from = `heads/${decodeURIComponent(rename[1]!)}`;
+      const sha = this.refs.get(from);
+      if (!sha) return { status: 404, body: { message: "Branch not found" } };
+      this.refs.delete(from);
+      this.refs.set(`heads/${(body as { new_name: string }).new_name}`, sha);
+      return { status: 201, body: { commit: { sha } } };
+    }
+    if (method === "DELETE" && resource.startsWith("/git/refs/")) {
+      this.refs.delete(resource.slice("/git/refs/".length));
+      return { status: 204, body: null };
+    }
+    return null;
+  }
+}
 
 interface SentPrompt {
   agentId: string;
@@ -52,6 +139,7 @@ class FakeAgents {
   readonly switches: { agentId: string; provider: string; profileId?: string }[] = [];
   readonly switchCharters: string[] = [];
   created = 0;
+  readonly initialPrompts = new Map<string, string | undefined>();
   busy = new Set<string>();
   switchFails = false;
   /** Agents whose next prompts throw. */
@@ -93,6 +181,7 @@ class FakeAgents {
       labels: input.labels,
     });
     (record as { config: unknown }).config = input.config;
+    this.initialPrompts.set(id, input.initialPrompt ?? undefined);
     await input.onCreated?.({ agentId: id } as never);
     return {} as never;
   };
@@ -151,10 +240,14 @@ class FakeSchedules {
   };
 }
 
-function service(gh?: GhRunner): ProjectFactoryService {
+function service(
+  gh?: GhRunner,
+  installation: { paseoHome?: string; serverId?: string } = {},
+): ProjectFactoryService {
   const instance = new ProjectFactoryService({
-    paseoHome: home,
-    serverId: "srv_test",
+    paseoHome: installation.paseoHome ?? home,
+    serverId: installation.serverId ?? "srv_test",
+    github,
     projects,
     workspaces,
     agentStorage: agents.storage,
@@ -282,6 +375,7 @@ beforeEach(async () => {
   fingerprints = new Map();
   clock = new Date(T0);
   services = [];
+  github = new FakeGitHub();
   await addProject();
 });
 
@@ -1491,5 +1585,194 @@ describe("issue queue and planning compatibility", () => {
       error: "Issue labels are incomplete.",
       issues: [],
     });
+  });
+});
+
+describe("several installations on one repository", () => {
+  const RIVAL = "srv_rival/prj_app";
+  const claim = (target: ProjectFactoryService, issue: number) =>
+    target.invoke("factory.project.claim", { projectId: PROJECT, issue }) as Promise<{
+      outcome: string;
+      marker: string | null;
+      headSha: string | null;
+    }>;
+  const release = (target: ProjectFactoryService, issue: number) =>
+    target.invoke("factory.project.claim.release", { projectId: PROJECT, issue });
+  async function rival(serverId = "srv_rival") {
+    const rivalHome = mkdtempSync(path.join(os.tmpdir(), `vorteo-project-factory-${serverId}-`));
+    const other = service(undefined, { paseoHome: rivalHome, serverId });
+    await enable(other);
+    return other;
+  }
+
+  test("two simultaneous claims produce one owner; the other never adopts it", async () => {
+    const ours = service();
+    await enable(ours);
+    const theirs = await rival();
+
+    const outcomes = await Promise.all([claim(ours, 7), claim(theirs, 7)]);
+    expect(outcomes.map((result) => result.outcome).sort()).toEqual(["claimed", "foreign"]);
+    const loser = outcomes[0]!.outcome === "foreign" ? ours : theirs;
+    // A 422 is someone else's branch: asking again never turns it into this installation's.
+    expect((await claim(loser, 7)).outcome).toBe("foreign");
+    const winner = loser === ours ? theirs : ours;
+    const held = await claim(winner, 7);
+    expect(held.outcome).toBe("held");
+    expect(held.marker).toContain("<!-- factory-claim v1 installation=");
+    expect(github.refs.get("heads/factory/issue-7")).toBe(MAIN);
+  });
+
+  test("a crash between creating the branch and recording it recovers as this installation's", async () => {
+    const ours = service();
+    await enable(ours);
+    github.crashAfterCreate = true;
+    await expect(claim(ours, 8)).rejects.toThrow("daemon stopped");
+
+    const restarted = service();
+    expect(await claim(restarted, 8)).toMatchObject({ outcome: "held", headSha: MAIN });
+    // Turning Factory off and on again keeps this installation's claims.
+    await restarted.invoke("factory.project.disable", { projectId: PROJECT });
+    await enable(restarted);
+    expect((await claim(restarted, 8)).outcome).toBe("held");
+
+    // The same crash while another installation had posted its marker is not recovered as ours.
+    github.crashAfterCreate = true;
+    await expect(claim(restarted, 9)).rejects.toThrow("daemon stopped");
+    github.comments.set(9, [
+      {
+        body: `<!-- factory-claim v1 installation=${RIVAL} branch=factory/issue-9 -->`,
+        updated_at: T0,
+      },
+    ]);
+    // GitHub cannot tell that rival from this installation's own branch, so the owner decides.
+    expect((await claim(restarted, 9)).outcome).toBe("conflict");
+
+    // So does a release archived since the intent; the question stands until the owner keeps it.
+    github.crashAfterCreate = true;
+    await expect(claim(restarted, 11)).rejects.toThrow("daemon stopped");
+    github.refs.set("heads/factory-released/issue-11/20261103T110000Z", MAIN);
+    expect((await claim(restarted, 11)).outcome).toBe("conflict");
+    expect((await claim(restarted, 11)).outcome).toBe("conflict");
+    const keptAfterArchive = await restarted.invoke("factory.project.claim", {
+      projectId: PROJECT,
+      issue: 11,
+      keep: true,
+    });
+    expect(keptAfterArchive).toMatchObject({ outcome: "held" });
+    expect((await claim(restarted, 11)).outcome).toBe("held");
+
+    // A rival marker on a held branch is a conflict until the owner picks this installation.
+    github.comments.set(8, [
+      {
+        body: `<!-- factory-claim v1 installation=${RIVAL} branch=factory/issue-8 -->`,
+        updated_at: T0,
+      },
+    ]);
+    expect((await claim(restarted, 8)).outcome).toBe("conflict");
+    expect((await claim(restarted, 8)).outcome).toBe("conflict");
+    const kept = await restarted.invoke("factory.project.claim", {
+      projectId: PROJECT,
+      issue: 8,
+      keep: true,
+    });
+    expect(kept).toMatchObject({ outcome: "held" });
+    expect((await claim(restarted, 8)).outcome).toBe("held");
+  });
+
+  test("a stale foreign claim is raised once and released only into an archive", async () => {
+    const ours = service();
+    const foreman = roleAgent(await enable(ours), "factory-intake");
+    const theirs = await rival();
+    expect((await claim(theirs, 5)).outcome).toBe("claimed");
+    github.commitDates.set(MAIN, "2026-11-01T00:00:00.000Z");
+    const staleTicks = () =>
+      agents.prompts.filter(
+        (prompt) => prompt.agentId === foreman && prompt.prompt.includes("Stale Factory claims"),
+      );
+
+    // First seen now, so an old base commit alone is not stale.
+    await ours.tick(PROJECT, "factory-intake");
+    expect(staleTicks()).toHaveLength(0);
+    await expect(release(ours, 5)).rejects.toThrow("Ask the owner first");
+
+    clock = new Date(Date.parse(T0) + 25 * 60 * 60_000);
+    await ours.tick(PROJECT, "factory-intake");
+    await ours.tick(PROJECT, "factory-intake");
+    expect(staleTicks()).toHaveLength(1);
+    expect(staleTicks()[0]!.prompt).toContain("factory/issue-5");
+
+    // A push since the owner was asked makes the claim active again.
+    github.refs.set("heads/factory/issue-5", "p".repeat(40));
+    await expect(release(ours, 5)).rejects.toThrow("Ask the owner first");
+    github.refs.set("heads/factory/issue-5", MAIN);
+
+    expect(await release(ours, 5)).toMatchObject({ outcome: "archived", headSha: MAIN });
+    expect(github.refs.has("heads/factory/issue-5")).toBe(false);
+    expect([...github.refs].filter(([name]) => name.startsWith("heads/factory-released/"))).toEqual(
+      [["heads/factory-released/issue-5/20261104T130000Z", MAIN]],
+    );
+    // A third installation claims the freed issue at the same commit; the archive already
+    // existed when it claimed, so only the former owner reads it as a release.
+    const third = await rival("srv_third");
+    expect((await claim(third, 5)).outcome).toBe("claimed");
+    expect((await claim(theirs, 5)).outcome).toBe("lost");
+    expect((await claim(third, 5)).outcome).toBe("held");
+
+    // A release landing between a claimant's first archive read and its branch creation does
+    // not read as that claimant's release.
+    github.refs.set("heads/factory/issue-6", MAIN);
+    github.beforeCreate = async () => {
+      github.beforeCreate = null;
+      github.refs.delete("heads/factory/issue-6");
+      github.refs.set("heads/factory-released/issue-6/20261104T130000Z", MAIN);
+    };
+    expect((await claim(third, 6)).outcome).toBe("claimed");
+    expect((await claim(third, 6)).outcome).toBe("held");
+  });
+
+  test("factory.json turns Triage and Releases off unless it names this installation", async () => {
+    github.factoryJson = JSON.stringify({
+      version: 1,
+      triage: RIVAL,
+      releases: `srv_test/${PROJECT}`,
+    });
+    const ours = service();
+    const state = await enable(ours);
+    const triage = roleAgent(state, "factory-triage");
+    const releases = roleAgent(state, "factory-releases");
+    // Turning Factory on never starts a Triage pass another installation owns.
+    expect(agents.initialPrompts.get(triage)).toContain("Do nothing now");
+    expect(agents.initialPrompts.get(releases)).not.toContain("Do nothing now");
+    const woke = (agentId: string) =>
+      agents.prompts.filter((prompt) => prompt.agentId === agentId).length;
+
+    await ours.tick(PROJECT, "factory-triage");
+    await ours.tick(PROJECT, "factory-releases");
+    expect(woke(triage)).toBe(0);
+    expect(woke(releases)).toBe(1);
+    const shown = await ours.get(PROJECT);
+    expect(shown.installation).toBe(`srv_test/${PROJECT}`);
+    expect(shown.assignment).toMatchObject({ source: "file", triage: RIVAL });
+    expect(shown.roles.find((role) => role.role === "factory-triage")?.status?.line).toBe(
+      `Off here: .github/factory.json assigns Triage to ${RIVAL}`,
+    );
+
+    github.factoryJson = null;
+    await ours.tick(PROJECT, "factory-triage");
+    expect(woke(triage)).toBe(1);
+    expect(
+      (await ours.get(PROJECT)).roles.find((role) => role.role === "factory-triage")?.status,
+    ).toBeNull();
+  });
+
+  test("refuses a second project for a repository this installation already runs", async () => {
+    await enable(service());
+    await addProject("prj_other");
+    await expect(
+      service().invoke("factory.project.enable", {
+        projectId: "prj_other",
+        repository: "Acme/App",
+      }),
+    ).rejects.toThrow(`Project ${PROJECT} already runs Factory for Acme/App`);
   });
 });

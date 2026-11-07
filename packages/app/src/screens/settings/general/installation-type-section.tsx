@@ -25,7 +25,7 @@ const TYPES: readonly { value: InstallationType; label: string; description: str
   },
 ];
 
-/** Stable or Lab, kept by the coordinator. A row of General > About. */
+/** Stable or Lab, shared by the installation and shown beside its name. */
 export function InstallationTypeRow() {
   const client = useInstallationOwnerClient();
   const toast = useToast();
@@ -67,8 +67,8 @@ export function InstallationTypeRow() {
   if (!readExecutionInstallation()) return null;
   const selected = TYPES.find((type) => type.value === status?.type);
   let hint = selected?.description ?? "Stable installs tagged releases; Lab evolves itself.";
-  if (!client) hint = "Unlock Installation controls in Maintenance to change this.";
-  else if (!supported) hint = "Arrives with the next coordinator update.";
+  if (!client) hint = "Unlock these settings to change the installation type.";
+  else if (!supported) hint = "Available after the next System services update.";
   return (
     <SettingsRow label="Installation type" hint={hint} testID="settings-installation-type">
       <DropdownMenu>

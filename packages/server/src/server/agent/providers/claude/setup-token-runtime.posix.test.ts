@@ -72,29 +72,22 @@ test("malformed or linked receipts fail with sanitized errors", async () => {
   await expect(readClaudeSetupToken(f.env)).rejects.toThrow("Claude");
 });
 
-test("setup-token readiness requires CLI-confirmed OAuth token routing and global options precede the subcommand", async () => {
+test("setup-token readiness validates local delivery without invoking the CLI", async () => {
   const f = await fixture();
-  for (const authMethod of ["api_key", "oauth_token"]) {
-    const check = requireClaudeAuthentication({
-      executable: "/not-executed",
-      args: [],
-      runtimeSettings: { env: f.env },
-      run: async (_command, args) => {
-        expect(args).toEqual([
-          "--settings",
-          JSON.stringify({ apiKeyHelper: "" }),
-          "auth",
-          "status",
-        ]);
-        return {
-          stdout: JSON.stringify({ loggedIn: true, authMethod, apiProvider: "firstParty" }),
-          stderr: "",
-        };
-      },
-    });
-    if (authMethod === "oauth_token") await expect(check).resolves.toBeUndefined();
-    else await expect(check).rejects.toMatchObject({ code: "CHECK_FAILED" });
-  }
+  writeClaudeSetupFile(f.receipt, receipt());
+  const run = vi.fn(async () => {
+    throw new Error("Managed credential checks must not invoke the CLI");
+  });
+  const input = {
+    executable: "/not-executed",
+    args: [],
+    runtimeSettings: { env: f.env },
+    run,
+  };
+  await expect(requireClaudeAuthentication(input)).resolves.toBeUndefined();
+  writeClaudeSetupFile(f.receipt, { ...receipt(), active: false });
+  await expect(requireClaudeAuthentication(input)).rejects.toThrow("Claude");
+  expect(run).not.toHaveBeenCalled();
 });
 
 test("a managed daemon cannot use an unbound token or fall back before first delivery", async () => {

@@ -51,6 +51,7 @@ export async function discoverClaudeModels(
   try {
     signal.throwIfAborted();
     const binary = await raceProviderRefreshAbort(signal, options.resolveBinary());
+    signal.throwIfAborted();
     query = openQuery(
       {
         prompt: input,
@@ -69,6 +70,7 @@ export async function discoverClaudeModels(
       },
       {
         runtimeSettings: options.runtimeSettings,
+        assertCanSpawn: () => signal.throwIfAborted(),
         onChildProcess: (process) => {
           child = process;
         },

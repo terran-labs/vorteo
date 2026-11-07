@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { SCROLL_EDGE_STICKY_DATASET } from "@/components/ui/scroll-edge-fade";
 import { Text, View, type ViewStyle } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { isWeb } from "@/constants/platform";
 import { SettingsTabs } from "@/components/settings/settings-tabs";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
+import { selectSettingsHost, useSettingsHostSelection } from "@/navigation/settings-presentation";
 import { useHosts } from "@/runtime/host-runtime";
 import { InstallationSettingsStatus } from "@/execution-installation/settings-status";
 import { EnvironmentResourceExclusions } from "@/execution-installation/resource-exclusions";
@@ -23,9 +24,9 @@ export function EnvironmentsPane({ onHostRemoved }: { onHostRemoved: () => void 
   const hosts = useHosts();
   const focus = useSettingsFocus();
   const focusedId = focus?.kind === "environment" ? focus.serverId : null;
-  const [selectedId, setSelectedId] = useState<string | null>(focusedId);
+  const selectedId = useSettingsHostSelection();
   useEffect(() => {
-    if (focusedId) setSelectedId(focusedId);
+    if (focusedId) selectSettingsHost(focusedId);
   }, [focusedId]);
   const selected = hosts.find((host) => host.serverId === selectedId) ?? hosts[0];
   const options = useMemo(
@@ -47,7 +48,7 @@ export function EnvironmentsPane({ onHostRemoved }: { onHostRemoved: () => void 
           <SettingsTabs
             options={options}
             value={selected.serverId}
-            onValueChange={setSelectedId}
+            onValueChange={selectSettingsHost}
             testID="settings-environment-tabs"
           />
         </View>

@@ -1,17 +1,12 @@
+import { matchPanes, settingsLink, sectionForPath } from "./navigation-model";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { NativeSyntheticEvent, TextInputKeyPressEventData } from "react-native";
 import { useRouter, type Href } from "expo-router";
-import { scoreTextFields } from "@getpaseo/protocol/search/text-match";
 import { isWeb } from "@/constants/platform";
 import type { SettingsView } from "@/navigation/settings-navigation";
 import { providerRowAnchorId } from "./settings-focus";
 import { buildSettingsSectionRoute } from "@/utils/host-routes";
-import {
-  getPane,
-  getSection,
-  resolveSettingsTarget,
-  type SettingsSectionId,
-} from "@/settings-catalog/catalog";
+import { getPane, resolveSettingsTarget, type SettingsSectionId } from "@/settings-catalog/catalog";
 import { searchSettings } from "@/settings-catalog/search";
 import type {
   ResolvedSettingsEntry,
@@ -42,41 +37,10 @@ function focusAnchorId(view: SettingsView): string | null {
   return providerRowAnchorId(view.focus.providerType);
 }
 
-/**
- * The section the address names. Host overview addresses
- * (`/settings/hosts/<id>/host`) open Environments.
- */
-function sectionForPath(pathname: string): SettingsSectionId {
-  const slug = pathname.split("/")[2] ?? "";
-  return slug === "hosts" ? "environments" : resolveSettingsTarget(slug).section;
-}
-
-/** `/settings/<section>`, with `?setting=` to land on one row. */
-export function settingsLink(section: SettingsSectionId, settingId?: string): Href {
-  const path = buildSettingsSectionRoute(section);
-  return (settingId ? `${path}?setting=${encodeURIComponent(settingId)}` : path) as Href;
-}
-
-/** Panes whose own title, or whose section's, matches the query. */
-export function matchPanes(sections: readonly SettingsPageSection[], query: string): Set<string> {
-  const matched = new Set<string>();
-  if (!query.trim()) return matched;
-  const options = { typoTolerant: true, subsequence: false } as const;
-  for (const section of sections) {
-    const meta = getSection(section.id);
-    const sectionHit = scoreTextFields(query, [section.label, ...meta.keywords], options);
-    for (const pane of section.panes) {
-      if (sectionHit || scoreTextFields(query, [pane.label, ...(pane.keywords ?? [])], options)) {
-        matched.add(pane.id);
-      }
-    }
-  }
-  return matched;
-}
-
 interface SettingsNavigationInput {
   view: SettingsView;
   installationRequested: boolean;
+  restartRequestId?: string | null;
   settingId: string | null;
   isCompactLayout: boolean;
   hasInstallation: boolean;
@@ -92,6 +56,7 @@ interface SettingsNavigationInput {
 export function useSettingsNavigation({
   view,
   installationRequested,
+  restartRequestId = null,
   settingId,
   isCompactLayout,
   hasInstallation,
@@ -107,12 +72,15 @@ export function useSettingsNavigation({
   const routeSection = view.kind === "section" ? view.section : null;
   const routeTarget = useMemo(() => {
     if (!routeSection) return null;
-    // Restart approval links open the installation controls.
+    // Existing restart links reveal their review in System; installation links keep owner controls.
     if (installationRequested && hasInstallation) {
-      return { section: "maintenance" as const, pane: "maintenance.installation" };
+      return {
+        section: "system" as const,
+        pane: restartRequestId ? "system.overview" : "maintenance.installation",
+      };
     }
     return resolveSettingsTarget(routeSection);
-  }, [hasInstallation, installationRequested, routeSection]);
+  }, [hasInstallation, installationRequested, restartRequestId, routeSection]);
   const routeEntry = useMemo(
     () => (settingId ? (entries.find((entry) => entry.id === settingId) ?? null) : null),
     [entries, settingId],

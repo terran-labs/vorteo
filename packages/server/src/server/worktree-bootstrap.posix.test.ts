@@ -178,7 +178,11 @@ describe.skipIf(isPlatform("win32"))("worktree-bootstrap POSIX-only", () => {
       const webPort = Number(apiEnv.PASEO_SERVICE_WEB_PORT);
       expect(Number.isInteger(apiPort)).toBe(true);
       expect(Number.isInteger(webPort)).toBe(true);
-      expect(routeStore.listRoutes()).toEqual([
+      // Vorteo: concurrent service starts can register routes in either order.
+      const routes = routeStore
+        .listRoutes()
+        .sort((a, b) => a.scriptName.localeCompare(b.scriptName));
+      expect(routes).toEqual([
         {
           hostname: "api--feature-peer-env--repo.localhost",
           port: apiPort,

@@ -1,3 +1,4 @@
+import { cliCommand } from "@getpaseo/server/vorteo-cli";
 import type { CommandError } from "../output/index.js";
 
 export interface ResolveProviderAndModelOptions {
@@ -21,8 +22,7 @@ export function resolveProviderAndModel(
     const error: CommandError = {
       code: "MISSING_PROVIDER",
       message: "Provider is required",
-      details:
-        "Pass --provider <provider> or --provider <provider>/<model>. Use `paseo provider ls` to see providers and `paseo provider models <provider>` to see models.",
+      details: `Pass --provider <provider> or --provider <provider>/<model>. Use \`${cliCommand()} provider ls\` to see providers and \`${cliCommand()} provider models <provider>\` to see models.`,
     };
     throw error;
   }
