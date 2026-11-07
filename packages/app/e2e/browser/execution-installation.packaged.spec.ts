@@ -459,6 +459,15 @@ test.beforeAll(async () => {
       },
     },
   });
+  // Apply the final fixture revision before background polling and agent launches begin.
+  const reconciled = await settings.reconcile();
+  for (const serverId of [host.serverId, guest.serverId]) {
+    expect(reconciled.sources[serverId]).toEqual({
+      appliedRevision: reconciled.revision,
+      pendingRevision: null,
+      error: null,
+    });
+  }
   stopReconciliation.push(
     startProfileSynchronization(profiles, pino({ level: "silent" })),
     startSettingsReconciliation(settings, pino({ level: "silent" })),
@@ -1730,6 +1739,22 @@ for (const destinationMode of ["existing", "new"] as const) {
         `${origin}${buildHostAgentDetailRoute(sourceServerId, source.id, sourceWorkspace.id)}`,
       );
       await expectComposerVisible(page, { timeout: 60_000 });
+      // Compact layouts unmount the sidebar while the handoff sheet is open.
+      if (testInfo.project.name === "phone")
+        await page.getByRole("button", { name: "Open menu", exact: true }).click();
+      const currentProject = (await sourceClient.listProjects()).projects.find(
+        (project) => project.projectRootPath === sourcePath,
+      )!;
+      const projectName = await page
+        .getByTestId(`sidebar-project-row-${currentProject.projectKey}`)
+        .evaluate((element) => element.closest('[role="group"]')?.getAttribute("aria-label"));
+      expect(projectName).toBeTruthy();
+      if (testInfo.project.name === "phone")
+        await page
+          .getByRole("button", { name: "Close menu", exact: true })
+          .filter({ visible: true })
+          .first()
+          .click();
       await expect(page.getByTestId("agent-preset-selector")).toBeVisible();
       await page.getByTestId("agent-preset-selector").click();
       if (testInfo.project.name === "phone")
@@ -1752,13 +1777,6 @@ for (const destinationMode of ["existing", "new"] as const) {
       });
       await page.getByTestId("preset-use-profile").click();
       await expect(page.getByTestId("preset-handoff-modal")).toBeVisible();
-      const currentProject = (await sourceClient.listProjects()).projects.find(
-        (project) => project.projectRootPath === sourcePath,
-      )!;
-      const projectName = await page
-        .getByTestId(`sidebar-project-row-${currentProject.projectKey}`)
-        .evaluate((element) => element.closest('[role="group"]')?.getAttribute("aria-label"));
-      expect(projectName).toBeTruthy();
       await expect(page.getByTestId("preset-destination-project")).toHaveCount(0);
       await expect(page.getByTestId("preset-destination-add-project")).toHaveCount(0);
       await page
@@ -1940,7 +1958,7 @@ test("shared profile editor renders cross-environment model compatibility", asyn
       },
     });
     expect(seeded.ok()).toBe(true);
-    await page.goto(`${origin}/settings/profiles`);
+    await page.goto(`${origin}/settings/accounts/claude`);
     const dialog = page.getByTestId("agent-profile-edit-modal");
     const model = page.getByTestId("agent-profile-model-trigger");
     const modelField = page.getByTestId("agent-profile-model-field");
@@ -2038,14 +2056,14 @@ test("shared profile editor renders cross-environment model compatibility", asyn
       }
       await page.goto(pickerRoutes.get(kind)!);
       await expectComposerVisible(page, { timeout: 60_000 });
-      await page.getByTestId("agent-preset-selector").click();
+      await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
       if (info.project.name === "phone") await page.getByTestId("preset-section-account").click();
       await page
         .getByTestId(`preset-account-fixture-${kind === "host" ? "host" : "dev"}-claude`)
         .click();
       await expect(profileRow).toBeVisible();
       await profileRow.click();
-      await expect(page.getByTestId("preset-use-profile")).toBeEnabled();
+      await expect(profileRow).toHaveAttribute("aria-selected", "true");
       await expect(
         page.getByText("The selected account is unavailable. Choose another account.", {
           exact: true,
@@ -2056,7 +2074,7 @@ test("shared profile editor renders cross-environment model compatibility", asyn
     nonselectableDevModel = true;
     await page.goto(pickerRoutes.get("container")!);
     await expectComposerVisible(page, { timeout: 60_000 });
-    await page.getByTestId("agent-preset-selector").click();
+    await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
     if (info.project.name === "phone") await page.getByTestId("preset-section-account").click();
     await page.getByTestId("preset-account-fixture-dev-claude").click();
     await expect(profileRow).toHaveCount(0);
@@ -2105,7 +2123,7 @@ test("profile edits remain shared while environment exclusions change availabili
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
-  await page.goto(`${origin}/settings/profiles`);
+  await page.goto(`${origin}/settings/accounts/codex`);
   await expect(page.getByTestId("settings-host-picker")).toHaveCount(0);
   const edit = page.getByTestId(`agent-profile-edit-${sharedWorkflowId}`);
   await expect(edit).toHaveCount(1);
@@ -4066,12 +4084,11 @@ for (const sourceKind of ["host", "container"] as const) {
         "environment-notes.txt",
       );
       await expect(page.getByTestId("task-environment")).toHaveCount(0);
-      await page.getByTestId("agent-preset-selector").click();
+      await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
       if (info.project.name === "phone")
         await page.getByTestId("preset-section-environment").click();
       if (destinationKind === "host") page.once("dialog", (dialog) => void dialog.accept());
       await page.getByTestId(`preset-environment-${destinationDaemon.serverId}`).click();
-      await page.keyboard.press("Escape");
       await expect(
         page.getByText(
           `Choose this workspace's folder in ${destinationKind === "host" ? "Host" : "Dev container"}.`,
@@ -4095,7 +4112,7 @@ for (const sourceKind of ["host", "container"] as const) {
         path: info.outputPath("task-environment-draft.png"),
         fullPage: true,
       });
-      await page.getByTestId("agent-preset-selector").click();
+      await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
       if (info.project.name === "desktop") {
         await expect(page.getByTestId("preset-environment-card")).toBeVisible();
       } else {
@@ -4104,7 +4121,9 @@ for (const sourceKind of ["host", "container"] as const) {
       if (info.project.name === "phone") await page.getByTestId("preset-section-account").click();
       await page.getByTestId("preset-account-mock").click();
       await page.getByRole("button", { name: "Browser handoff", exact: true }).click();
-      await page.getByTestId("preset-use-profile").click();
+      await expect(
+        page.getByRole("button", { name: "Browser handoff", exact: true }),
+      ).toHaveAttribute("aria-selected", "true");
       await page.getByRole("button", { name: "Send message", exact: true }).click();
       await expect
         .poll(
@@ -4151,12 +4170,11 @@ for (const sourceKind of ["host", "container"] as const) {
       await openDraft(`second-environment-${sourceKind}`);
       await expectComposerVisible(page, { timeout: 60_000 });
       await expect(page.getByTestId("task-environment")).toHaveCount(0);
-      await page.getByTestId("agent-preset-selector").click();
+      await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
       if (info.project.name === "phone")
         await page.getByTestId("preset-section-environment").click();
       if (destinationKind === "host") page.once("dialog", (dialog) => void dialog.accept());
       await page.getByTestId(`preset-environment-${destinationDaemon.serverId}`).click();
-      await page.keyboard.press("Escape");
       await expect(page.getByText(destinationDirectory, { exact: true })).toBeVisible();
       await expect(page.getByTestId("task-environment-folder")).toHaveCount(0);
       expect(
@@ -4166,12 +4184,11 @@ for (const sourceKind of ["host", "container"] as const) {
       await expectComposerVisible(page, { timeout: 60_000 });
       await fillComposerDraft(page, "Keep the new workspace draft too.");
       await expect(page.getByTestId("new-workspace-environment")).toHaveCount(0);
-      await page.getByTestId("agent-preset-selector").click();
+      await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
       if (info.project.name === "phone")
         await page.getByTestId("preset-section-environment").click();
       if (destinationKind === "host") page.once("dialog", (dialog) => void dialog.accept());
       await page.getByTestId(`preset-environment-${destinationDaemon.serverId}`).click();
-      await page.keyboard.press("Escape");
       await expect(page.getByRole("textbox", { name: "Message agent..." }).first()).toHaveValue(
         "Keep the new workspace draft too.",
       );
@@ -4377,16 +4394,17 @@ test("new shared project workspace follows the existing profile environment sele
     await page.getByTestId("new-workspace-project-picker-trigger").click();
     await page.getByTestId(`new-workspace-project-picker-option-${membership.key}`).click();
     await fillComposerDraft(page, "Keep this draft and start it in Host.");
-    await page.getByTestId("agent-preset-selector").click();
+    await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
     if (info.project.name === "phone") await page.getByTestId("preset-section-environment").click();
     page.once("dialog", (dialog) => void dialog.accept());
     await page.getByTestId(`preset-environment-${daemons[1]!.serverId}`).click();
-    await page.keyboard.press("Escape");
-    await page.getByTestId("agent-preset-selector").click();
+    await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
     if (info.project.name === "phone") await page.getByTestId("preset-section-account").click();
     await page.getByTestId("preset-account-mock").click();
     await page.getByRole("button", { name: "Browser handoff", exact: true }).click();
-    await page.getByTestId("preset-use-profile").click();
+    await expect(
+      page.getByRole("button", { name: "Browser handoff", exact: true }),
+    ).toHaveAttribute("aria-selected", "true");
     await expect(page.getByRole("textbox", { name: "Message agent..." }).first()).toHaveValue(
       "Keep this draft and start it in Host.",
     );
