@@ -40,7 +40,11 @@ class MetroPort {
       status: 200,
       body: '<html><script src="/index.bundle?platform=web"></script></html>',
     });
-    this.responses.set("/index.bundle", { status: 200, body: "compiled bundle" });
+    this.responses.set("/index.bundle", {
+      status: 200,
+      body: '__d(fn, 1, {"0":2,"paths":{"2":"/icons.bundle?platform=web&modulesOnly=true"}});',
+    });
+    this.responses.set("/icons.bundle", { status: 200, body: "compiled lazy chunk" });
   }
 
   async close(): Promise<void> {
@@ -76,11 +80,11 @@ test("Metro readiness rejects another HTTP listener on the selected port", async
   );
 });
 
-test("Metro warmup compiles the document's same-origin scripts before tests start", async () => {
+test("Metro warmup compiles the document's scripts and their lazy chunks before tests start", async () => {
   endpoint = await MetroPort.listen();
   endpoint.serveWarmableDocument();
 
   await warmMetro(endpoint.port);
 
-  expect(endpoint.requests).toEqual(["/", "/index.bundle"]);
+  expect(endpoint.requests).toEqual(["/", "/index.bundle", "/icons.bundle"]);
 });
