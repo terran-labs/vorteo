@@ -4,6 +4,13 @@ import { helperReviewFixture } from "../../src/execution-installation/helper-rev
 import { NativeHelperJobSchema } from "@getpaseo/protocol/native-helper-maintenance";
 import { MaintenanceServiceJobSchema } from "@getpaseo/protocol/maintenance-service";
 import { FileBootstrapRequestJournal } from "../../../server/dist/server/server/execution-installation/coordinator-bootstrap-journal";
+import {
+  AgentCreateResponseSchema,
+  AgentCreateFailedStatusPayloadSchema,
+  AgentCreateRequestSchema,
+  CreateAgentRequestMessageSchema,
+} from "@getpaseo/protocol/messages";
+import { InstallationProfilesSnapshotSchema } from "@getpaseo/protocol/execution-installation";
 import { ProviderOverrideSchema } from "@getpaseo/protocol/provider-config";
 import { InstallationSkillPackages } from "../../../server/src/server/execution-installation/settings/skill-packages";
 import type { SkillFiles } from "../../../server/src/server/orchestration-skills/internal/inventory";
@@ -187,6 +194,52 @@ async function request(route: string, token: string, body: unknown) {
     },
     body: JSON.stringify(body),
   });
+}
+
+// Account selection applies its default. A different default makes an ignored profile click observable.
+async function withAlternativeMockDefault(page: Page, run: () => Promise<void>) {
+  const read = async () => {
+    const response = await page.request.post(`${origin}/api/installation/owner/profiles/read`, {
+      headers: { Origin: origin },
+    });
+    expect(response.ok()).toBe(true);
+    return InstallationProfilesSnapshotSchema.parse(await response.json());
+  };
+  const before = await read();
+  try {
+    const seeded = await page.request.patch(`${origin}/api/installation/owner/profiles`, {
+      headers: { Origin: origin },
+      data: {
+        expectedRevision: before.revision,
+        providers: {
+          ...before.providers,
+          mock: {
+            ...before.providers.mock,
+            defaultWorkflowId: "selection-baseline",
+            workflows: [
+              {
+                id: "selection-baseline",
+                provider: "mock",
+                name: "Selection baseline",
+                model: "max-only-thinking-stream",
+                modeId: "load-test",
+              },
+              ...before.providers.mock.workflows,
+            ],
+          },
+        },
+      },
+    });
+    expect(seeded.ok()).toBe(true);
+    await run();
+  } finally {
+    const current = await read();
+    const restored = await page.request.patch(`${origin}/api/installation/owner/profiles`, {
+      headers: { Origin: origin },
+      data: { expectedRevision: current.revision, providers: before.providers },
+    });
+    expect(restored.ok()).toBe(true);
+  }
 }
 
 test.beforeAll(async () => {
@@ -1749,12 +1802,7 @@ for (const destinationMode of ["existing", "new"] as const) {
         .getByTestId(`sidebar-project-row-${currentProject.projectKey}`)
         .evaluate((element) => element.closest('[role="group"]')?.getAttribute("aria-label"));
       expect(projectName).toBeTruthy();
-      if (testInfo.project.name === "phone")
-        await page
-          .getByRole("button", { name: "Close menu", exact: true })
-          .filter({ visible: true })
-          .first()
-          .click();
+      if (testInfo.project.name === "phone") await page.getByTestId("sidebar-collapse").click();
       await expect(page.getByTestId("agent-preset-selector")).toBeVisible();
       await page.getByTestId("agent-preset-selector").click();
       if (testInfo.project.name === "phone")
@@ -1862,18 +1910,67 @@ test("shared profile editor renders cross-environment model compatibility", asyn
   let nonselectableDevModel = false;
   const observedCatalogs = new Set<string>();
   const savedAliasId = "compatibility-saved-alias";
+  const creationError = "Synthetic alias launch captured without running a provider";
+  const capturedCreates: {
+    environment: string;
+    config: ReturnType<typeof AgentCreateRequestSchema.parse>["config"];
+  }[] = [];
   await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
     const host = new URL(socket.url()).port === String(daemons[1]!.port);
-    const provider = host ? "fixture-host-claude" : "fixture-dev-claude";
+    // Match the installation's canonical bindings; synthetic models still differ by environment.
+    const provider = "claude";
     const server = socket.connectToServer();
-    socket.onMessage((message) => server.send(message));
+    socket.onMessage((message) => {
+      if (typeof message === "string") {
+        const envelope = JSON.parse(message);
+        const createRequest = envelope.message;
+        if (
+          envelope.type === "session" &&
+          (createRequest?.type === "agent.create.request" ||
+            createRequest?.type === "create_agent_request")
+        ) {
+          const parsedCreate =
+            createRequest.type === "agent.create.request"
+              ? AgentCreateRequestSchema.parse(createRequest)
+              : CreateAgentRequestMessageSchema.parse(createRequest);
+          capturedCreates.push({
+            environment: host ? "host" : "container",
+            config: parsedCreate.config,
+          });
+          const response =
+            createRequest.type === "agent.create.request"
+              ? AgentCreateResponseSchema.parse({
+                  type: "agent.create.response",
+                  payload: {
+                    requestId: createRequest.requestId,
+                    agent: null,
+                    error: creationError,
+                  },
+                })
+              : {
+                  type: "status",
+                  payload: AgentCreateFailedStatusPayloadSchema.parse({
+                    status: "agent_create_failed",
+                    requestId: createRequest.requestId,
+                    error: creationError,
+                  }),
+                };
+          socket.send(JSON.stringify({ ...envelope, message: response }));
+          return; // Never forward synthetic Claude creation to a real daemon/provider.
+        }
+      }
+      server.send(message);
+    });
     server.onMessage((message) => {
       if (typeof message !== "string") return socket.send(message);
       const envelope = JSON.parse(message);
       if (envelope.type !== "session") return socket.send(message);
       const { type, payload } = envelope.message;
       if (payload?.config?.providers) {
-        payload.config.providers[provider] = { extends: "claude", enabled: true };
+        payload.config.providers[provider] = {
+          ...payload.config.providers[provider],
+          enabled: true,
+        };
       }
       if (type === "get_providers_snapshot_response" || type === "providers_snapshot_update") {
         observedCatalogs.add(host ? "host" : "container");
@@ -1943,8 +2040,15 @@ test("shared profile editor renders cross-environment model compatibility", asyn
             defaults: {},
             preferredModels: [],
             preferredThinkingOptions: [],
-            defaultWorkflowId: null,
+            defaultWorkflowId: "compatibility-baseline",
             workflows: [
+              {
+                id: "compatibility-baseline",
+                provider: "claude",
+                name: "Compatibility baseline",
+                model: "opus",
+                modeId: "default",
+              },
               {
                 id: savedAliasId,
                 provider: "claude",
@@ -1959,7 +2063,7 @@ test("shared profile editor renders cross-environment model compatibility", asyn
     });
     expect(seeded.ok()).toBe(true);
     await page.goto(`${origin}/settings/accounts/claude`);
-    const dialog = page.getByTestId("agent-profile-edit-modal");
+    const dialog = page.getByTestId("agent-profile-page");
     const model = page.getByTestId("agent-profile-model-trigger");
     const modelField = page.getByTestId("agent-profile-model-field");
     const capture = async (name: string) => {
@@ -1983,7 +2087,7 @@ test("shared profile editor renders cross-environment model compatibility", asyn
       modelField.getByText("Dev container does not support this model.", { exact: true }),
     ).toBeVisible();
     await capture("explicit-incompatible");
-    await page.getByTestId("agent-profile-name-input").fill("Explicit incompatible");
+    await page.getByRole("textbox", { name: "Name", exact: true }).fill("Explicit incompatible");
     await page.getByTestId("agent-profile-save-button").click();
     await expect(dialog).not.toBeVisible();
     const saved = await readProfiles();
@@ -1998,7 +2102,7 @@ test("shared profile editor renders cross-environment model compatibility", asyn
       modelField.getByText("Dev container does not support this model.", { exact: true }),
     ).toBeVisible();
     await capture("saved-incompatible");
-    await page.getByTestId("agent-profile-cancel-button").click();
+    await page.getByTestId("agent-profile-back-button").click();
     await expect(dialog).not.toBeVisible();
 
     await page.getByTestId(`agent-profile-edit-${savedAliasId}`).click();
@@ -2006,6 +2110,7 @@ test("shared profile editor renders cross-environment model compatibility", asyn
     await expect(dialog).not.toContainText("does not support this model");
     await expect(dialog).not.toContainText("compatibility is unknown");
     await capture("saved-alias");
+    await page.getByRole("textbox", { name: "Name", exact: true }).fill("Saved alias reviewed");
     await page.getByTestId("agent-profile-save-button").click();
     await expect(dialog).not.toBeVisible();
     const aliasSaved = await readProfiles();
@@ -2058,12 +2163,46 @@ test("shared profile editor renders cross-environment model compatibility", asyn
       await expectComposerVisible(page, { timeout: 60_000 });
       await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
       if (info.project.name === "phone") await page.getByTestId("preset-section-account").click();
-      await page
-        .getByTestId(`preset-account-fixture-${kind === "host" ? "host" : "dev"}-claude`)
-        .click();
+      await page.getByTestId("preset-account-claude").click();
+      if (info.project.name === "phone")
+        await expect(page.getByTestId("preset-section-profile")).toHaveAttribute(
+          "aria-label",
+          "3. Profile: Compatibility baseline",
+        );
       await expect(profileRow).toBeVisible();
       await profileRow.click();
-      await expect(profileRow).toHaveAttribute("aria-selected", "true");
+      if (info.project.name === "phone")
+        await expect(page.getByTestId("preset-section-profile")).toHaveAttribute(
+          "aria-label",
+          "3. Profile: Saved alias reviewed",
+        );
+      await fillComposerDraft(page, "Verify saved alias launch selection.");
+      const send = page.getByRole("button", { name: "Send message", exact: true });
+      await expect(send).toBeEnabled();
+      const beforeCreate = capturedCreates.length;
+      await send.click();
+      await expect.poll(() => capturedCreates.length).toBe(beforeCreate + 1);
+      expect(capturedCreates[beforeCreate]).toMatchObject({
+        environment: kind,
+        config: {
+          provider: "claude",
+          profileId: `shared-profile/claude/${savedAliasId}`,
+          model: kind === "host" ? "host-opus" : "dev-opus",
+          modeId: "default",
+        },
+      });
+      await expect(page.getByText(creationError, { exact: true }).first()).toBeVisible();
+      // The intercepted request returned before server.send; the existing workspace has no agents.
+      const verify = await connectReadyInstallationDaemon(kind);
+      try {
+        expect(
+          (await verify.fetchAgents()).entries.filter(({ agent }) =>
+            agent.cwd.endsWith("alias-picker-project"),
+          ),
+        ).toHaveLength(0);
+      } finally {
+        await verify.close();
+      }
       await expect(
         page.getByText("The selected account is unavailable. Choose another account.", {
           exact: true,
@@ -2076,7 +2215,7 @@ test("shared profile editor renders cross-environment model compatibility", asyn
     await expectComposerVisible(page, { timeout: 60_000 });
     await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
     if (info.project.name === "phone") await page.getByTestId("preset-section-account").click();
-    await page.getByTestId("preset-account-fixture-dev-claude").click();
+    await page.getByTestId("preset-account-claude").click();
     await expect(profileRow).toHaveCount(0);
     await page.screenshot({ path: info.outputPath("nonselectable-alias-dev-picker.png") });
 
@@ -2085,7 +2224,7 @@ test("shared profile editor renders cross-environment model compatibility", asyn
       body: JSON.stringify(
         {
           viewport: page.viewportSize(),
-          localProviders: ["fixture-host-claude", "fixture-dev-claude"],
+          localProviders: ["claude", "claude"],
           commonReference: "host-opus",
           devCanonicalModel: "dev-opus",
           devAliases: ["host-opus", "opus"],
@@ -2098,6 +2237,7 @@ test("shared profile editor renders cross-environment model compatibility", asyn
       ),
     });
   } finally {
+    // Playwright closes this test's page/context and its WebSocket routes after teardown.
     const current = await readProfiles();
     const restored = await page.request.patch(`${origin}/api/installation/owner/profiles`, {
       headers: { Origin: origin },
@@ -2118,6 +2258,39 @@ test("shared profile editor renders cross-environment model compatibility", asyn
 test("profile edits remain shared while environment exclusions change availability", async ({
   page,
 }) => {
+  // This case edits shared profiles without launching Codex. Report an installed fake catalog
+  // through this test's browser connection instead of changing either daemon's CLI command.
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => server.send(message));
+    server.onMessage((message) => {
+      if (typeof message !== "string") return socket.send(message);
+      const envelope = JSON.parse(message);
+      if (envelope.type !== "session") return socket.send(message);
+      const { type, payload } = envelope.message;
+      if (payload?.config?.providers)
+        payload.config.providers.codex = { ...payload.config.providers.codex, enabled: true };
+      if (type === "get_providers_snapshot_response" || type === "providers_snapshot_update") {
+        delete payload.compactSnapshot;
+        delete payload.snapshotHash;
+        delete payload.notModified;
+        payload.entries = [
+          {
+            provider: "codex",
+            enabled: true,
+            status: "ready",
+            label: "Fixture Codex",
+            defaultModeId: "default",
+            modes: [{ id: "default", label: "Default" }],
+            models: [
+              { provider: "codex", id: "fixture-model", label: "Fixture model", isDefault: true },
+            ],
+          },
+        ];
+      }
+      socket.send(JSON.stringify(envelope));
+    });
+  });
   await page.goto(origin);
   await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
@@ -2136,10 +2309,12 @@ test("profile edits remain shared while environment exclusions change availabili
   };
   const before = await readProfiles();
   await edit.click();
-  await page.getByTestId("agent-profile-name-input").fill("Shared everywhere with one exception");
-  await page.getByTestId("environment-availability-container").click();
+  await page
+    .getByRole("textbox", { name: "Name", exact: true })
+    .fill("Shared everywhere with one exception");
+  await page.getByRole("switch", { name: "Dev", exact: true }).click();
   await page.getByTestId("agent-profile-save-button").click();
-  await expect(page.getByTestId("agent-profile-edit-modal")).not.toBeVisible();
+  await expect(page.getByTestId("agent-profile-page")).not.toBeVisible();
   const saved = await readProfiles();
   expect(saved.providers.codex.workflows).toContainEqual(
     expect.objectContaining({
@@ -2169,12 +2344,12 @@ test("profile edits remain shared while environment exclusions change availabili
   }
   await page.reload();
   await edit.click();
-  await expect(page.getByTestId("agent-profile-name-input")).toHaveValue(
+  await expect(page.getByRole("textbox", { name: "Name", exact: true })).toHaveValue(
     "Shared everywhere with one exception",
   );
-  await page.getByTestId("environment-availability-container").click();
+  await page.getByRole("switch", { name: "Dev", exact: true }).click();
   await page.getByTestId("agent-profile-save-button").click();
-  await expect(page.getByTestId("agent-profile-edit-modal")).not.toBeVisible();
+  await expect(page.getByTestId("agent-profile-page")).not.toBeVisible();
   const restored = await readProfiles();
   expect(
     restored.providers.codex.workflows.find(
@@ -4063,141 +4238,166 @@ for (const sourceKind of ["host", "container"] as const) {
       await page.getByTestId("installation-password").fill(ownerPassword);
       await page.getByTestId("installation-unlock").click();
       await expect(page.getByTestId("installation-password")).not.toBeVisible();
-      const openDraft = (id: string) =>
-        page.goto(
-          `${origin}${buildHostWorkspaceOpenRoute(sourceDaemon.serverId, workspace.id, `draft:${id}`)}`,
+      await withAlternativeMockDefault(page, async () => {
+        const openDraft = (id: string) =>
+          page.goto(
+            `${origin}${buildHostWorkspaceOpenRoute(sourceDaemon.serverId, workspace.id, `draft:${id}`)}`,
+          );
+        await openDraft(`environment-${sourceKind}`);
+        await expectComposerVisible(page, { timeout: 60_000 });
+        await fillComposerDraft(page, "Keep this exact draft while switching environments.");
+        await page.getByRole("button", { name: "Add attachment", exact: true }).click();
+        const chooser = page.waitForEvent("filechooser");
+        await page.getByText("Upload file", { exact: true }).click();
+        await (
+          await chooser
+        ).setFiles({
+          name: "environment-notes.txt",
+          mimeType: "text/plain",
+          buffer: Buffer.from("Keep these attachment bytes."),
+        });
+        await expect(page.getByTestId("composer-file-attachment-pill")).toContainText(
+          "environment-notes.txt",
         );
-      await openDraft(`environment-${sourceKind}`);
-      await expectComposerVisible(page, { timeout: 60_000 });
-      await fillComposerDraft(page, "Keep this exact draft while switching environments.");
-      await page.getByRole("button", { name: "Add attachment", exact: true }).click();
-      const chooser = page.waitForEvent("filechooser");
-      await page.getByText("Upload file", { exact: true }).click();
-      await (
-        await chooser
-      ).setFiles({
-        name: "environment-notes.txt",
-        mimeType: "text/plain",
-        buffer: Buffer.from("Keep these attachment bytes."),
-      });
-      await expect(page.getByTestId("composer-file-attachment-pill")).toContainText(
-        "environment-notes.txt",
-      );
-      await expect(page.getByTestId("task-environment")).toHaveCount(0);
-      await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
-      if (info.project.name === "phone")
-        await page.getByTestId("preset-section-environment").click();
-      if (destinationKind === "host") page.once("dialog", (dialog) => void dialog.accept());
-      await page.getByTestId(`preset-environment-${destinationDaemon.serverId}`).click();
-      await expect(
-        page.getByText(
-          `Choose this workspace's folder in ${destinationKind === "host" ? "Host" : "Dev container"}.`,
-        ),
-      ).toBeVisible();
-      await expect(page.getByTestId("preset-handoff-modal")).toHaveCount(0);
-      expect((await destination.fetchWorkspaces()).entries.map((item) => item.id)).toEqual(before);
-      await page.getByTestId("task-environment-folder").click();
-      await page.getByTestId("project-directory-host-path").fill("/missing-task-directory");
-      await page.getByTestId("project-directory-open-path").click();
-      await expect(page.getByTestId("project-directory-error")).toBeVisible();
-      await page.getByRole("button", { name: "Shared folders", exact: true }).click();
-      await page.getByTestId("project-directory-root-home").click();
-      await page.getByTestId("project-directory-child-draft-destination").click();
-      await page.getByRole("button", { name: "Select this folder", exact: true }).click();
-      await expect(page.getByTestId("task-environment")).toHaveCount(0);
-      await expect(page.getByRole("textbox", { name: "Message agent..." }).first()).toHaveValue(
-        "Keep this exact draft while switching environments.",
-      );
-      await page.screenshot({
-        path: info.outputPath("task-environment-draft.png"),
-        fullPage: true,
-      });
-      await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
-      if (info.project.name === "desktop") {
-        await expect(page.getByTestId("preset-environment-card")).toBeVisible();
-      } else {
-        await expect(page.getByTestId("preset-section-environment")).toBeVisible();
-      }
-      if (info.project.name === "phone") await page.getByTestId("preset-section-account").click();
-      await page.getByTestId("preset-account-mock").click();
-      await page.getByRole("button", { name: "Browser handoff", exact: true }).click();
-      await expect(
-        page.getByRole("button", { name: "Browser handoff", exact: true }),
-      ).toHaveAttribute("aria-selected", "true");
-      await page.getByRole("button", { name: "Send message", exact: true }).click();
-      await expect
-        .poll(
-          async () =>
-            (await destination.fetchAgents()).entries.filter(
-              ({ agent }) => agent.cwd === destinationDirectory,
-            ).length,
-        )
-        .toBe(1);
-      const task = (await destination.fetchAgents()).entries.find(
-        ({ agent }) => agent.cwd === destinationDirectory,
-      )!.agent;
-      const uploadedFiles = (await readdir(uploadDirectory, { recursive: true })).filter(
-        (file) => file.endsWith("environment-notes.txt") && !previousUploads.includes(file),
-      );
-      expect(uploadedFiles).toHaveLength(1);
-      expect(await readFile(path.join(uploadDirectory, uploadedFiles[0]!), "utf8")).toBe(
-        "Keep these attachment bytes.",
-      );
-      const companion = (await destination.fetchWorkspaces()).entries.find(
-        (item) => item.id === task.workspaceId,
-      )!;
-      expect(companion.projectMembership?.environmentOwner).toEqual({
-        serverId: sourceDaemon.serverId,
-        workspaceId: workspace.id,
-      });
-      await expect(page).toHaveURL(
-        new RegExp(`/h/${sourceDaemon.serverId}/workspace/${workspace.id}`),
-      );
-      await page.reload();
-      await expectComposerVisible(page, { timeout: 60_000 });
-      if (info.project.name === "desktop") {
+        await expect(page.getByTestId("task-environment")).toHaveCount(0);
+        await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
+        if (info.project.name === "phone")
+          await page.getByTestId("preset-section-environment").click();
+        if (destinationKind === "host") page.once("dialog", (dialog) => void dialog.accept());
+        await page.getByTestId(`preset-environment-${destinationDaemon.serverId}`).click();
         await expect(
-          page.getByTestId(`sidebar-workspace-row-${sourceDaemon.serverId}:${workspace.id}`),
+          page.getByText(
+            `Choose this workspace's folder in ${destinationKind === "host" ? "Host" : "Dev container"}.`,
+          ),
         ).toBeVisible();
+        await expect(page.getByTestId("preset-handoff-modal")).toHaveCount(0);
+        expect((await destination.fetchWorkspaces()).entries.map((item) => item.id)).toEqual(
+          before,
+        );
+        await page.getByTestId("task-environment-folder").click();
+        await page.getByTestId("project-directory-host-path").fill("/missing-task-directory");
+        await page.getByTestId("project-directory-open-path").click();
+        await expect(page.getByTestId("project-directory-error")).toBeVisible();
+        await page.getByRole("button", { name: "Shared folders", exact: true }).click();
+        await page.getByTestId("project-directory-root-home").click();
+        await page.getByTestId("project-directory-child-draft-destination").click();
+        await page.getByRole("button", { name: "Select this folder", exact: true }).click();
+        await expect(page.getByTestId("task-environment")).toHaveCount(0);
+        await expect(page.getByRole("textbox", { name: "Message agent..." }).first()).toHaveValue(
+          "Keep this exact draft while switching environments.",
+        );
+        await page.screenshot({
+          path: info.outputPath("task-environment-draft.png"),
+          fullPage: true,
+        });
+        await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
+        if (info.project.name === "desktop") {
+          await expect(page.getByTestId("preset-environment-card")).toBeVisible();
+        } else {
+          await expect(page.getByTestId("preset-section-environment")).toBeVisible();
+        }
+        if (info.project.name === "phone") await page.getByTestId("preset-section-account").click();
+        await page.getByTestId("preset-account-mock").click();
+        if (info.project.name === "phone")
+          await expect(page.getByTestId("preset-section-profile")).toHaveAttribute(
+            "aria-label",
+            "3. Profile: Selection baseline",
+          );
+        await page.getByRole("button", { name: "Browser handoff", exact: true }).click();
+        if (info.project.name === "phone")
+          await expect(page.getByTestId("preset-section-profile")).toHaveAttribute(
+            "aria-label",
+            "3. Profile: Browser handoff",
+          );
+        await page.getByRole("button", { name: "Send message", exact: true }).click();
+        await expect
+          .poll(async () => {
+            let count = 0;
+            for (const { agent } of (await destination.fetchAgents()).entries) {
+              if (agent.cwd === destinationDirectory) count += 1;
+            }
+            return count;
+          })
+          .toBe(1);
+        const task = (await destination.fetchAgents()).entries.find(
+          ({ agent }) => agent.cwd === destinationDirectory,
+        )!.agent;
+        expect(task).toMatchObject({
+          provider: "mock",
+          model: "ten-second-stream",
+          currentModeId: "load-test",
+          profile: { id: "shared-profile/mock/handoff", name: "Browser handoff" },
+        });
+        await expect(page.getByTestId("agent-preset-selector")).toHaveAttribute(
+          "aria-label",
+          /^Profile \(Browser handoff,/,
+        );
+
+        const uploadedFiles = (await readdir(uploadDirectory, { recursive: true })).filter(
+          (file) => file.endsWith("environment-notes.txt") && !previousUploads.includes(file),
+        );
+        expect(uploadedFiles).toHaveLength(1);
+        expect(await readFile(path.join(uploadDirectory, uploadedFiles[0]!), "utf8")).toBe(
+          "Keep these attachment bytes.",
+        );
+        const companion = (await destination.fetchWorkspaces()).entries.find(
+          (item) => item.id === task.workspaceId,
+        )!;
+        expect(companion.projectMembership?.environmentOwner).toEqual({
+          serverId: sourceDaemon.serverId,
+          workspaceId: workspace.id,
+        });
+        await expect(page).toHaveURL(
+          new RegExp(`/h/${sourceDaemon.serverId}/workspace/${workspace.id}`),
+        );
+        await page.reload();
+        await expectComposerVisible(page, { timeout: 60_000 });
+        if (info.project.name === "desktop") {
+          await expect(
+            page.getByTestId(`sidebar-workspace-row-${sourceDaemon.serverId}:${workspace.id}`),
+          ).toBeVisible();
+          await expect(
+            page.getByTestId(`sidebar-workspace-row-${destinationDaemon.serverId}:${companion.id}`),
+          ).toHaveCount(0);
+        }
+        await page.screenshot({
+          path: info.outputPath("mixed-environment-workspace.png"),
+          fullPage: true,
+        });
+        await openDraft(`second-environment-${sourceKind}`);
+        await expectComposerVisible(page, { timeout: 60_000 });
+        await expect(page.getByTestId("task-environment")).toHaveCount(0);
+        await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
+        if (info.project.name === "phone")
+          await page.getByTestId("preset-section-environment").click();
+        if (destinationKind === "host") page.once("dialog", (dialog) => void dialog.accept());
+        await page.getByTestId(`preset-environment-${destinationDaemon.serverId}`).click();
+        await expect(page.getByText(destinationDirectory, { exact: true })).toBeVisible();
+        await expect(page.getByTestId("task-environment-folder")).toHaveCount(0);
+        expect(
+          (await destination.fetchWorkspaces()).entries.filter((item) => !before.includes(item.id)),
+        ).toHaveLength(1);
+        await page.goto(`${origin}/new?serverId=${sourceDaemon.serverId}`);
+        await expectComposerVisible(page, { timeout: 60_000 });
+        await fillComposerDraft(page, "Keep the new workspace draft too.");
+        await expect(page.getByTestId("new-workspace-environment")).toHaveCount(0);
+        await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
+        if (info.project.name === "phone")
+          await page.getByTestId("preset-section-environment").click();
+        if (destinationKind === "host") page.once("dialog", (dialog) => void dialog.accept());
+        await page.getByTestId(`preset-environment-${destinationDaemon.serverId}`).click();
+        await expect(page.getByRole("textbox", { name: "Message agent..." }).first()).toHaveValue(
+          "Keep the new workspace draft too.",
+        );
+        await expect(page.getByTestId("preset-handoff-modal")).toHaveCount(0);
+        await expect(page.getByTestId("new-workspace-environment")).toHaveCount(0);
         await expect(
-          page.getByTestId(`sidebar-workspace-row-${destinationDaemon.serverId}:${companion.id}`),
-        ).toHaveCount(0);
-      }
-      await page.screenshot({
-        path: info.outputPath("mixed-environment-workspace.png"),
-        fullPage: true,
-      });
-      await openDraft(`second-environment-${sourceKind}`);
-      await expectComposerVisible(page, { timeout: 60_000 });
-      await expect(page.getByTestId("task-environment")).toHaveCount(0);
-      await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
-      if (info.project.name === "phone")
-        await page.getByTestId("preset-section-environment").click();
-      if (destinationKind === "host") page.once("dialog", (dialog) => void dialog.accept());
-      await page.getByTestId(`preset-environment-${destinationDaemon.serverId}`).click();
-      await expect(page.getByText(destinationDirectory, { exact: true })).toBeVisible();
-      await expect(page.getByTestId("task-environment-folder")).toHaveCount(0);
-      expect(
-        (await destination.fetchWorkspaces()).entries.filter((item) => !before.includes(item.id)),
-      ).toHaveLength(1);
-      await page.goto(`${origin}/new?serverId=${sourceDaemon.serverId}`);
-      await expectComposerVisible(page, { timeout: 60_000 });
-      await fillComposerDraft(page, "Keep the new workspace draft too.");
-      await expect(page.getByTestId("new-workspace-environment")).toHaveCount(0);
-      await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
-      if (info.project.name === "phone")
-        await page.getByTestId("preset-section-environment").click();
-      if (destinationKind === "host") page.once("dialog", (dialog) => void dialog.accept());
-      await page.getByTestId(`preset-environment-${destinationDaemon.serverId}`).click();
-      await expect(page.getByRole("textbox", { name: "Message agent..." }).first()).toHaveValue(
-        "Keep the new workspace draft too.",
-      );
-      await expect(page.getByTestId("preset-handoff-modal")).toHaveCount(0);
-      await expect(page.getByTestId("new-workspace-environment")).toHaveCount(0);
-      await expect(page.getByRole("button", { name: /^(Send message|Create)$/ })).toBeInViewport();
-      await page.screenshot({
-        path: info.outputPath("new-workspace-environment.png"),
-        fullPage: true,
+          page.getByRole("button", { name: /^(Send message|Create)$/ }),
+        ).toBeInViewport();
+        await page.screenshot({
+          path: info.outputPath("new-workspace-environment.png"),
+          fullPage: true,
+        });
       });
     } finally {
       await source.close();
@@ -4389,84 +4589,119 @@ test("new shared project workspace follows the existing profile environment sele
     await page.getByTestId("installation-password").fill(ownerPassword);
     await page.getByTestId("installation-unlock").click();
     await expect(page.getByTestId("installation-password")).not.toBeVisible();
-    await page.goto(`${origin}/new?serverId=${daemons[0]!.serverId}`);
-    await expectComposerVisible(page, { timeout: 60_000 });
-    await page.getByTestId("new-workspace-project-picker-trigger").click();
-    await page.getByTestId(`new-workspace-project-picker-option-${membership.key}`).click();
-    await fillComposerDraft(page, "Keep this draft and start it in Host.");
-    await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
-    if (info.project.name === "phone") await page.getByTestId("preset-section-environment").click();
-    page.once("dialog", (dialog) => void dialog.accept());
-    await page.getByTestId(`preset-environment-${daemons[1]!.serverId}`).click();
-    await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
-    if (info.project.name === "phone") await page.getByTestId("preset-section-account").click();
-    await page.getByTestId("preset-account-mock").click();
-    await page.getByRole("button", { name: "Browser handoff", exact: true }).click();
-    await expect(
-      page.getByRole("button", { name: "Browser handoff", exact: true }),
-    ).toHaveAttribute("aria-selected", "true");
-    await expect(page.getByRole("textbox", { name: "Message agent..." }).first()).toHaveValue(
-      "Keep this draft and start it in Host.",
-    );
-    await expect(page.getByTestId("new-workspace-project-picker-trigger")).toContainText(
-      membership.name,
-    );
-    await page.getByTestId("new-workspace-project-picker-trigger").click();
-    await expect(
-      page.getByTestId(`new-workspace-project-picker-option-${remote.key}`),
-    ).toBeVisible();
-    await page.getByTestId(`new-workspace-project-picker-option-${twin.key}`).click();
-    await expect(page.getByTestId("new-workspace-project-picker-trigger")).toContainText(twin.name);
-    await page.getByTestId("new-workspace-project-picker-trigger").click();
-    await page.getByTestId(`new-workspace-project-picker-option-${membership.key}`).click();
-    await expect(page.getByTestId("new-workspace-project-picker-trigger")).toContainText(
-      membership.name,
-    );
-    await page.getByRole("button", { name: /^(Send message|Create)$/ }).click();
-    await expect
-      .poll(
-        async () =>
-          (await host.fetchAgents()).entries.filter(({ agent }) => agent.cwd === directories[1])
-            .length,
-      )
-      .toBe(1);
-    await expect
-      .poll(
-        async () =>
-          (await host.fetchWorkspaces()).entries.filter(
-            (item) => item.projectMembership?.key === membership.key,
-          ).length,
-      )
-      .toBe(2);
-    expect(
-      (await dev.fetchAgents()).entries.filter(({ agent }) => agent.cwd === directories[0]),
-    ).toHaveLength(0);
-    await page.screenshot({ path: info.outputPath("shared-project-created.png"), fullPage: true });
-    await page.goto(`${origin}/new?serverId=${daemons[1]!.serverId}`);
-    await expectComposerVisible(page, { timeout: 60_000 });
-    await page.getByTestId("new-workspace-project-picker-trigger").click();
-    await page.getByTestId(`new-workspace-project-picker-option-${remote.key}`).click();
-    await fillComposerDraft(page, "Create the remote project on Host in my chosen folder.");
-    await page.getByRole("button", { name: /^(Send message|Create)$/ }).click();
-    await expect(page.getByTestId("project-directory-browser")).toBeVisible();
-    await page.getByTestId("project-directory-host-path").fill(directories[1]!);
-    await page.getByTestId("project-directory-open-path").click();
-    await page.getByTestId("project-directory-select").click();
-    await expect
-      .poll(
-        async () =>
-          (await host.fetchWorkspaces()).entries.filter(
-            (item) => item.projectMembership?.key === remote.key,
-          ).length,
-      )
-      .toBe(1);
-    await expect
-      .poll(
-        async () =>
-          (await host.fetchAgents()).entries.filter(({ agent }) => agent.cwd === directories[1])
-            .length,
-      )
-      .toBe(2);
+    await withAlternativeMockDefault(page, async () => {
+      await page.goto(`${origin}/new?serverId=${daemons[0]!.serverId}`);
+      await expectComposerVisible(page, { timeout: 60_000 });
+      await page.getByTestId("new-workspace-project-picker-trigger").click();
+      await page.getByTestId(`new-workspace-project-picker-option-${membership.key}`).click();
+      await fillComposerDraft(page, "Keep this draft and start it in Host.");
+      await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
+      if (info.project.name === "phone")
+        await page.getByTestId("preset-section-environment").click();
+      page.once("dialog", (dialog) => void dialog.accept());
+      await page.getByTestId(`preset-environment-${daemons[1]!.serverId}`).click();
+      await expect(page.getByTestId("new-workspace-profile-selector")).toBeVisible();
+      if (info.project.name === "phone") await page.getByTestId("preset-section-account").click();
+      await page.getByTestId("preset-account-mock").click();
+      if (info.project.name === "phone")
+        await expect(page.getByTestId("preset-section-profile")).toHaveAttribute(
+          "aria-label",
+          "3. Profile: Selection baseline",
+        );
+      await page.getByRole("button", { name: "Browser handoff", exact: true }).click();
+      if (info.project.name === "phone")
+        await expect(page.getByTestId("preset-section-profile")).toHaveAttribute(
+          "aria-label",
+          "3. Profile: Browser handoff",
+        );
+      await expect(page.getByRole("textbox", { name: "Message agent..." }).first()).toHaveValue(
+        "Keep this draft and start it in Host.",
+      );
+      await expect(page.getByTestId("new-workspace-project-picker-trigger")).toContainText(
+        membership.name,
+      );
+      await page.getByTestId("new-workspace-project-picker-trigger").click();
+      await expect(
+        page.getByTestId(`new-workspace-project-picker-option-${remote.key}`),
+      ).toBeVisible();
+      await page.getByTestId(`new-workspace-project-picker-option-${twin.key}`).click();
+      await expect(page.getByTestId("new-workspace-project-picker-trigger")).toContainText(
+        twin.name,
+      );
+      await page.getByTestId("new-workspace-project-picker-trigger").click();
+      await page.getByTestId(`new-workspace-project-picker-option-${membership.key}`).click();
+      await expect(page.getByTestId("new-workspace-project-picker-trigger")).toContainText(
+        membership.name,
+      );
+      await page.getByRole("button", { name: /^(Send message|Create)$/ }).click();
+      await expect
+        .poll(async () => {
+          let count = 0;
+          for (const { agent } of (await host.fetchAgents()).entries) {
+            if (agent.cwd === directories[1]) count += 1;
+          }
+          return count;
+        })
+        .toBe(1);
+
+      const task = (await host.fetchAgents()).entries.find(
+        ({ agent }) => agent.cwd === directories[1],
+      )!.agent;
+      expect(task).toMatchObject({
+        provider: "mock",
+        model: "ten-second-stream",
+        currentModeId: "load-test",
+        profile: { id: "shared-profile/mock/handoff", name: "Browser handoff" },
+      });
+      await expect(page.getByTestId("agent-preset-selector")).toHaveAttribute(
+        "aria-label",
+        /^Profile \(Browser handoff,/,
+      );
+      await expect
+        .poll(async () => {
+          let count = 0;
+          for (const item of (await host.fetchWorkspaces()).entries) {
+            if (item.projectMembership?.key === membership.key) count += 1;
+          }
+          return count;
+        })
+        .toBe(2);
+      expect(
+        (await dev.fetchAgents()).entries.filter(({ agent }) => agent.cwd === directories[0]),
+      ).toHaveLength(0);
+      await page.screenshot({
+        path: info.outputPath("shared-project-created.png"),
+        fullPage: true,
+      });
+      await page.goto(`${origin}/new?serverId=${daemons[1]!.serverId}`);
+      await expectComposerVisible(page, { timeout: 60_000 });
+      await page.getByTestId("new-workspace-project-picker-trigger").click();
+      await page.getByTestId(`new-workspace-project-picker-option-${remote.key}`).click();
+      await fillComposerDraft(page, "Create the remote project on Host in my chosen folder.");
+      await page.getByRole("button", { name: /^(Send message|Create)$/ }).click();
+      await expect(page.getByTestId("project-directory-browser")).toBeVisible();
+      await page.getByTestId("project-directory-host-path").fill(directories[1]!);
+      await page.getByTestId("project-directory-open-path").click();
+      await page.getByTestId("project-directory-select").click();
+      await expect
+        .poll(async () => {
+          let count = 0;
+          for (const item of (await host.fetchWorkspaces()).entries) {
+            if (item.projectMembership?.key === remote.key) count += 1;
+          }
+          return count;
+        })
+        .toBe(1);
+      await expect
+        .poll(async () => {
+          let count = 0;
+          for (const { agent } of (await host.fetchAgents()).entries) {
+            if (agent.cwd === directories[1]) count += 1;
+          }
+          return count;
+        })
+        .toBe(2);
+    });
   } finally {
     await host.close();
     await dev.close();
