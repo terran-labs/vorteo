@@ -44,6 +44,10 @@ const retiredUpstreamTests = [
   // Asserts the chevron's CSS transform through an svg/../.. lookup; the testing budget in
   // AGENTS.md forbids CSS assertions.
   /usage-modal\.spec\.ts.* direct-route Usage Settings disclosure (desktop|compact) (light|dark)/,
+  // Vorteo keeps sidebar order on the Host (c5fefc7f9). Once any device has initialized it, a
+  // device's pre-beta local order is ignored by design, so upstream's restore step cannot apply.
+  // Manual drag order across sorting and reloads stays covered by this file's other Manual tests.
+  /sidebar-reorder\.spec\.ts.* Manual restores pre-beta order and keeps drag order across sorting and reloads/,
   // The compact sidebar's close button and New workspace nav row went with the Vorton toolbar
   // (471d7f22a); New workspace is a main menu item, so there is no row to sit beside.
   /sidebar-workspace\.spec\.ts.* places the close button beside the first nav row instead of over it/,

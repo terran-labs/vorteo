@@ -159,6 +159,10 @@ export async function openSubagentFromCompactTrack(
   const row = scope.getByTestId(`subagents-track-row-${childId}`).filter({ visible: true }).first();
   await row.scrollIntoViewIfNeeded();
   await expect(row).toBeInViewport();
+  // Vorteo: on phones the first tap shows the row's details and the second opens it
+  // (docs/vorteo-customizations.md, Bounded worker teams).
+  await row.click();
+  await expect(page.getByTestId(`subagents-track-tooltip-${childId}`)).toBeVisible();
   await row.click();
 }
 
