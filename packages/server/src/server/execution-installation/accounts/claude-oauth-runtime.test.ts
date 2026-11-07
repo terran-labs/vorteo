@@ -1,6 +1,6 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
 import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
@@ -17,6 +17,7 @@ import type { ClaudeHostCli } from "./claude-oauth-host.js";
 import { readClaudeOAuthGrant, type ClaudeOAuthGrant } from "./claude-oauth-storage.js";
 import {
   claudeAuthorityDir,
+  claudeAuthorityEnabledFile,
   fileCredentialStore,
   type ClaudeCredentialStore,
 } from "./claude-oauth-authority.js";
@@ -43,6 +44,8 @@ interface HarnessOptions {
   others?: InstallationProvider[];
   /** Real plaintext CLI storage in throwaway directories, read with the real grant reader. */
   custody?: boolean;
+  /** Opt the account into coordinator custody with its enable marker. */
+  enabled?: boolean;
 }
 
 function harness(
@@ -103,8 +106,14 @@ function harness(
   const configDir = join(stateDir, "host", "claude-accounts", providerId);
   mkdirSync(configDir, { recursive: true });
   // Empty raw storage: these cases cover the account directory path before adoption.
+  if (options.enabled) {
+    const marker = claudeAuthorityEnabledFile(stateDir, "one");
+    // The coordinator keeps its state directory private, as installation does.
+    mkdirSync(dirname(marker), { recursive: true, mode: 0o700 });
+    writeFileSync(marker, "");
+  }
   const store: ClaudeCredentialStore = options.custody
-    ? fileCredentialStore
+    ? { ...fileCredentialStore }
     : {
         read: async () => null,
         write: async () => {},
@@ -576,9 +585,8 @@ it("recovers only the current enabled binding in the authenticated environment",
   await expect(h.runtime.recover("host", input)).rejects.toThrow();
 });
 
-it("refreshes only in the coordinator's authority and keeps Host agents access-only", async () => {
-  const h = harness(undefined, SUPPORTED, { custody: true, everywhere: true });
-  const authority = claudeAuthorityDir(h.stateDir, "one");
+async function signedInAt(options: HarnessOptions) {
+  const h = harness(undefined, SUPPORTED, { custody: true, everywhere: true, ...options });
   const login = (n: number) => ({
     claudeAiOauth: {
       accessToken: `synthetic-access-${n}`,
@@ -589,29 +597,57 @@ it("refreshes only in the coordinator's authority and keeps Host agents access-o
   });
   // The official CLI refreshes in whichever directory it is launched with.
   h.cli.refresh.mockImplementation(async (dir: string) => {
-    if ((await h.store.read(dir))?.claudeAiOauth) await h.store.write(dir, login(2));
+    if ((await fileCredentialStore.read(dir))?.claudeAiOauth)
+      await fileCredentialStore.write(dir, login(2));
   });
   // The sign-in the official CLI saved into the account directory.
-  await h.store.write(h.configDir, login(1));
+  await fileCredentialStore.write(h.configDir, login(1));
   const started = await h.runtime.start("one");
   await until(() => h.runtime.read("one").login.status === "waiting");
   const attemptId = "attemptId" in started ? started.attemptId : "";
   await h.runtime.submit("one", attemptId, "synthetic-code#synthetic-state");
   await until(() => h.deliveries.length === 1);
-
   const agentFile = () => readFileSync(join(h.configDir, ".credentials.json"), "utf8");
+  const authority = claudeAuthorityDir(h.stateDir, "one");
+  const intoLeadWindow = () => h.advance(8 * 3_600_000 - 3 * 60_000);
+  return { h, agentFile, authority, intoLeadWindow };
+}
+
+it("refreshes only in the coordinator's authority and keeps Host agents access-only", async () => {
+  const { h, agentFile, authority, intoLeadWindow } = await signedInAt({ enabled: true });
   expect(agentFile()).toContain("synthetic-access-1");
   expect(agentFile()).not.toContain("synthetic-refresh");
-  expect((await h.store.read(authority))?.claudeAiOauth).toMatchObject({
+  expect((await fileCredentialStore.read(authority))?.claudeAiOauth).toMatchObject({
     refreshToken: "synthetic-refresh-1",
   });
 
   // Inside the lead window, concurrent triggers produce one refresh, in the authority only.
-  h.advance(8 * 3_600_000 - 3 * 60_000);
+  intoLeadWindow();
   await Promise.all([h.runtime.reconcile(), h.runtime.reconcile()]);
   expect(h.cli.refresh).toHaveBeenCalledTimes(1);
   expect(h.cli.refresh).toHaveBeenCalledWith(authority);
   expect(agentFile()).toContain("synthetic-access-2");
   expect(agentFile()).not.toContain("synthetic-refresh");
+  expect(h.deliveries.at(-1)).toMatchObject({ access: { accessToken: "synthetic-access-2" } });
+});
+
+it("without the account's enable marker keeps the previous in-directory refresh", async () => {
+  const { h, agentFile, authority, intoLeadWindow } = await signedInAt({});
+  expect(agentFile()).toContain("synthetic-refresh-1");
+  intoLeadWindow();
+  await h.runtime.reconcile();
+  expect(h.cli.refresh).toHaveBeenCalledWith(h.configDir);
+  expect(agentFile()).toContain("synthetic-refresh-2");
+  expect(await fileCredentialStore.read(authority)).toBeNull();
+});
+
+it("keeps renewing in the authority when the Host access copy cannot be written", async () => {
+  const { h, authority, intoLeadWindow } = await signedInAt({ enabled: true });
+  h.store.writeFile = async () => {
+    throw new Error("account directory unwritable");
+  };
+  intoLeadWindow();
+  await h.runtime.reconcile();
+  expect(h.cli.refresh).toHaveBeenCalledWith(authority);
   expect(h.deliveries.at(-1)).toMatchObject({ access: { accessToken: "synthetic-access-2" } });
 });

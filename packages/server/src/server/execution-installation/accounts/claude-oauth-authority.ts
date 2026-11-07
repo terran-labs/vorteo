@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdir, readFile, rm } from "node:fs/promises";
+import { access, mkdir, readFile, realpath, rm, stat, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
 import {
@@ -58,13 +58,24 @@ export interface ClaudeCredentialStore {
   remove(configDir: string): Promise<void>;
 }
 
-/** The coordinator-only directory that holds an account's refresh token. */
-export function claudeAuthorityDir(stateDir: string, definitionId: string): string {
-  const name = createHash("sha256").update(definitionId).digest("hex").slice(0, 32);
-  return join(stateDir, "claude-oauth", "authority", name);
+export function authorityName(definitionId: string): string {
+  return createHash("sha256").update(definitionId).digest("hex").slice(0, 32);
 }
 
-/** Owner kill switch: when present, logins return to the account directories. */
+/** The coordinator-only directory that holds an account's refresh token. */
+export function claudeAuthorityDir(stateDir: string, definitionId: string): string {
+  return join(stateDir, "claude-oauth", "authority", authorityName(definitionId));
+}
+
+/**
+ * Custody is opt-in per account: adoption runs only while this marker exists. Removing it returns
+ * the account's grant to its own directory on the next read.
+ */
+export function claudeAuthorityEnabledFile(stateDir: string, definitionId: string): string {
+  return join(stateDir, "claude-oauth", "authority-enabled", authorityName(definitionId));
+}
+
+/** Global kill switch: when present, every login returns to its account directory. */
 export function claudeAuthorityDisabledFile(stateDir: string): string {
   return join(stateDir, "claude-oauth", "authority-disabled");
 }
@@ -218,6 +229,119 @@ async function withLock<T>(dir: string, lock: LockOptions, run: () => Promise<T>
   }
 }
 
+/**
+ * The CLI's refresh locks (Claude Code 2.1.316 `Cki`): proper-lockfile directories at
+ * `<dir>/.oauth_refresh.lock` and then `<realpath(dir)>.lock`, stale after 60 seconds, refreshed
+ * by their holder every 5 seconds. A CLI refreshing after a 401 holds them from before its token
+ * request until after its save, and discards its own result if the stored refresh token changed
+ * meanwhile. Holding them while a grant moves keeps that refresh from consuming a token the
+ * authority has just adopted. Taken in the CLI's order, before `.storage-write.lock`.
+ */
+const REFRESH_LOCK_STALE_MS = 60_000;
+const REFRESH_LOCK_UPDATE_MS = 5_000;
+
+async function mkdirLock(path: string, lock: LockOptions, attempts: number): Promise<boolean> {
+  const now = lock.now ?? Date.now;
+  const sleep = lock.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      await mkdir(path, { mode: 0o700 });
+      return true;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "EEXIST"))
+        throw new ClaudeCredentialReadError();
+    }
+    try {
+      const held = await stat(path);
+      if (now() - held.mtimeMs > REFRESH_LOCK_STALE_MS) {
+        await rm(path, { recursive: true, force: true });
+        continue;
+      }
+    } catch {
+      continue;
+    }
+    if (attempt < attempts - 1) await sleep(250);
+  }
+  return false;
+}
+
+/** Both refresh locks, or null while a CLI holds either. Release with the returned function. */
+export async function acquireRefreshLocks(
+  dir: string,
+  lock: LockOptions = {},
+): Promise<(() => Promise<void>) | null> {
+  const attempts = lock.attempts ?? 8;
+  const paths = [join(dir, ".oauth_refresh.lock"), `${await realpath(dir).catch(() => dir)}.lock`];
+  const taken: string[] = [];
+  const release = async () => {
+    clearInterval(timer);
+    for (const path of taken.toReversed()) await rm(path, { recursive: true, force: true });
+  };
+  // Keep the locks fresh like proper-lockfile, so a waiting CLI never treats them as stale.
+  const timer = setInterval(() => {
+    const at = new Date();
+    for (const path of taken) void utimes(path, at, at).catch(() => {});
+  }, REFRESH_LOCK_UPDATE_MS);
+  timer.unref();
+  for (const path of paths) {
+    if (await mkdirLock(path, lock, attempts)) taken.push(path);
+    else {
+      await release();
+      return null;
+    }
+  }
+  return release;
+}
+
+const RETIRED_FILE = ".vorteo-retired.json";
+const OWNER_FILE = ".vorteo-owner.json";
+const RETIRED_LIMIT = 32;
+
+function tokenDigest(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+/** Digests of every refresh token the authority has held. Secret-free: one-way and salted by entropy. */
+async function readRetired(authorityDir: string): Promise<string[]> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(join(authorityDir, RETIRED_FILE), "utf8"));
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+async function remember(authorityDir: string, token: string): Promise<void> {
+  const retired = await readRetired(authorityDir);
+  const digest = tokenDigest(token);
+  if (retired.includes(digest)) return;
+  const next = [...retired, digest].slice(-RETIRED_LIMIT);
+  replaceAtomically(authorityDir, join(authorityDir, RETIRED_FILE), JSON.stringify(next));
+}
+
+/**
+ * Records the authority's current refresh token as one it has held. Called after every authority
+ * read, including after a refresh, so a copy of it found later in an account directory is known
+ * to be a leftover and is never adopted back.
+ */
+export async function rememberAuthorityToken(
+  authorityDir: string,
+  store: ClaudeCredentialStore,
+): Promise<void> {
+  const held = oauthOf(await store.read(authorityDir));
+  if (hasRefreshToken(held)) await remember(authorityDir, held.refreshToken);
+}
+
+/** Which definition an authority directory belongs to, for cleanup after removal. */
+export async function authorityOwner(authorityDir: string): Promise<string | null> {
+  try {
+    const parsed = asObject(JSON.parse(await readFile(join(authorityDir, OWNER_FILE), "utf8")));
+    return typeof parsed?.definitionId === "string" ? parsed.definitionId : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Display metadata the CLI keeps beside storage; the refresh request runs without onboarding. */
 async function seedAuthorityProfile(agentDir: string, authorityDir: string): Promise<void> {
   const target = join(authorityDir, ".claude.json");
@@ -234,14 +358,15 @@ async function seedAuthorityProfile(agentDir: string, authorityDir: string): Pro
 export type ClaudeAdoption =
   /** The account directory holds no refresh token. */
   | "none"
-  /** A refresh token was found, but too close to expiry to move safely. Retried next reconcile. */
+  /** Close to expiry, or a CLI holds its refresh lock. Retried on the next read. */
   | "deferred"
   /** The login moved into the authority and the account directory now holds access only. */
   | "adopted"
-  /** An older leftover refresh token was removed; the authority already holds a newer grant. */
+  /** A token the authority already held was removed from the account directory. */
   | "stripped";
 
 export interface ClaudeCustodyInput {
+  definitionId: string;
   agentDir: string;
   authorityDir: string;
   store: ClaudeCredentialStore;
@@ -251,54 +376,66 @@ export interface ClaudeCustodyInput {
 
 /**
  * Moves any refresh token found in the account directory into the authority. Idempotent and safe
- * to re-run: the only refresh token the coordinator never writes into an account directory is a
- * new sign-in (Vorteo sign-in, `/login` in an agent) or a pre-migration grant, and both are at
- * least as new as the authority's. An older one is a leftover from an interrupted run and is
- * dropped. The authority is written and verified before the account directory loses its token, so
- * agents always have a usable credential.
+ * to re-run. A token the authority has held before is a leftover from an interrupted run and is
+ * only removed; any other token is a new sign-in (Vorteo sign-in, `/login` in an agent) or the
+ * pre-migration grant, and is adopted. The authority is written and verified before the account
+ * directory loses its token, so agents always have a usable credential. The CLI's refresh and
+ * storage locks are held throughout.
  */
 export async function adoptClaudeGrant(input: ClaudeCustodyInput): Promise<ClaudeAdoption> {
   const lock = input.lock ?? {};
-  return withLock(input.agentDir, lock, async () => {
-    const agent = await input.store.read(input.agentDir);
-    const found = oauthOf(agent);
-    if (!hasRefreshToken(found)) return "none";
-    const held = oauthOf(await input.store.read(input.authorityDir));
-    const adopt =
-      !hasRefreshToken(held) ||
-      (found.refreshToken !== held.refreshToken && expiryOf(found) >= expiryOf(held));
-    let source: OAuth;
-    if (adopt) {
-      if (expiryOf(found) - input.now < CLAUDE_ADOPTION_MARGIN_MS) return "deferred";
-      await mkdir(input.authorityDir, { recursive: true, mode: 0o700 });
-      await withLock(input.authorityDir, lock, async () => {
-        await input.store.write(input.authorityDir, { claudeAiOauth: found });
-        const written = oauthOf(await input.store.read(input.authorityDir));
-        if (!written || written.refreshToken !== found.refreshToken)
-          throw new ClaudeCredentialReadError();
-      });
-      await seedAuthorityProfile(input.agentDir, input.authorityDir);
-      source = found;
-    } else {
-      source = held!;
-    }
-    await input.store.writeFile(input.agentDir, { ...agent, claudeAiOauth: accessOnly(source) });
-    if (hasRefreshToken(oauthOf(await input.store.read(input.agentDir))))
-      throw new ClaudeCredentialReadError();
-    await mkdir(join(input.agentDir, PROJECTION_MARKER), { recursive: true, mode: 0o700 });
-    return adopt ? "adopted" : "stripped";
-  });
+  const releaseRefresh = await acquireRefreshLocks(input.agentDir, lock);
+  if (!releaseRefresh) return "deferred";
+  try {
+    return await withLock(input.agentDir, lock, async () => {
+      const agent = await input.store.read(input.agentDir);
+      const found = oauthOf(agent);
+      if (!hasRefreshToken(found)) return "none";
+      const held = oauthOf(await input.store.read(input.authorityDir));
+      const retired = await readRetired(input.authorityDir);
+      const adopt =
+        found.refreshToken !== held?.refreshToken &&
+        !retired.includes(tokenDigest(found.refreshToken));
+      if (adopt && expiryOf(found) - input.now < CLAUDE_ADOPTION_MARGIN_MS) return "deferred";
+      // Without a live authority grant there is no access to project in place of the token.
+      if (!adopt && !hasRefreshToken(held)) return "deferred";
+      const source: OAuth = adopt ? found : held!;
+      if (adopt) {
+        await mkdir(input.authorityDir, { recursive: true, mode: 0o700 });
+        await withLock(input.authorityDir, lock, async () => {
+          await input.store.write(input.authorityDir, { claudeAiOauth: found });
+          const written = oauthOf(await input.store.read(input.authorityDir));
+          if (!written || written.refreshToken !== found.refreshToken)
+            throw new ClaudeCredentialReadError();
+          await remember(input.authorityDir, found.refreshToken);
+          replaceAtomically(
+            input.authorityDir,
+            join(input.authorityDir, OWNER_FILE),
+            JSON.stringify({ definitionId: input.definitionId }),
+          );
+        });
+        await seedAuthorityProfile(input.agentDir, input.authorityDir);
+      }
+      await input.store.writeFile(input.agentDir, { ...agent, claudeAiOauth: accessOnly(source) });
+      if (hasRefreshToken(oauthOf(await input.store.read(input.agentDir))))
+        throw new ClaudeCredentialReadError();
+      await mkdir(join(input.agentDir, PROJECTION_MARKER), { recursive: true, mode: 0o700 });
+      return adopt ? "adopted" : "stripped";
+    });
+  } finally {
+    await releaseRefresh();
+  }
 }
 
 /**
  * Copies the authority's current access into the account directory. Leaves a directory that holds
- * a refresh token alone: that is a new sign-in, which `adoptClaudeGrant` takes first.
+ * a refresh token alone: that is a new sign-in or a leftover, which `adoptClaudeGrant` handles.
  */
 export async function projectClaudeHostAccess(
-  input: Omit<ClaudeCustodyInput, "now">,
+  input: Omit<ClaudeCustodyInput, "now" | "definitionId">,
 ): Promise<"written" | "unchanged" | "skipped"> {
   const held = oauthOf(await input.store.read(input.authorityDir));
-  if (!held || typeof held.accessToken !== "string") return "skipped";
+  if (!held || typeof held.accessToken !== "string" || !held.accessToken) return "skipped";
   return withLock(input.agentDir, input.lock ?? {}, async () => {
     const agent = await input.store.read(input.agentDir);
     const current = oauthOf(agent);
@@ -313,31 +450,51 @@ export async function projectClaudeHostAccess(
   });
 }
 
+/** Deletes an authority and its stored grant. */
+export async function removeAuthority(
+  authorityDir: string,
+  store: ClaudeCredentialStore,
+): Promise<void> {
+  if (!(await exists(authorityDir))) return;
+  await store.remove(authorityDir);
+  await rm(authorityDir, { recursive: true, force: true });
+}
+
 /**
  * Rollback: returns the authority's full grant to the account directory and deletes the
- * authority, so an older coordinator or the agents' own CLIs can refresh again.
+ * authority, so an older coordinator or the agents' own CLIs can refresh again. Holds the CLI's
+ * refresh and storage locks; throws while a CLI holds them, so the next read retries.
  */
 export async function restoreClaudeGrant(
-  input: Omit<ClaudeCustodyInput, "now">,
+  input: Omit<ClaudeCustodyInput, "now" | "definitionId">,
 ): Promise<"restored" | "none"> {
   if (!(await exists(input.authorityDir))) return "none";
   const lock = input.lock ?? {};
-  return withLock(input.agentDir, lock, async () => {
-    const held = oauthOf(await input.store.read(input.authorityDir));
-    if (!hasRefreshToken(held)) {
-      await rm(input.authorityDir, { recursive: true, force: true });
-      return "none";
-    }
-    const agent = await input.store.read(input.agentDir);
-    // A newer sign-in in the account directory wins; otherwise the authority's grant returns.
-    if (!hasRefreshToken(oauthOf(agent))) {
-      await input.store.write(input.agentDir, { ...agent, claudeAiOauth: held });
-      if (oauthOf(await input.store.read(input.agentDir))?.refreshToken !== held.refreshToken)
-        throw new ClaudeCredentialReadError();
-    }
-    await input.store.remove(input.authorityDir);
-    await rm(input.authorityDir, { recursive: true, force: true });
-    await rm(join(input.agentDir, PROJECTION_MARKER), { recursive: true, force: true });
-    return "restored";
-  });
+  const releaseRefresh = await acquireRefreshLocks(input.agentDir, lock);
+  if (!releaseRefresh) throw new ClaudeCredentialReadError();
+  try {
+    return await withLock(input.agentDir, lock, async () => {
+      const held = oauthOf(await input.store.read(input.authorityDir));
+      if (!hasRefreshToken(held)) {
+        await removeAuthority(input.authorityDir, input.store);
+        return "none";
+      }
+      const agent = await input.store.read(input.agentDir);
+      const present = oauthOf(agent);
+      const retired = await readRetired(input.authorityDir);
+      // A sign-in the authority never held wins; a leftover or an access copy is replaced.
+      const newer =
+        hasRefreshToken(present) && !retired.includes(tokenDigest(present.refreshToken));
+      if (!newer) {
+        await input.store.write(input.agentDir, { ...agent, claudeAiOauth: held });
+        if (oauthOf(await input.store.read(input.agentDir))?.refreshToken !== held.refreshToken)
+          throw new ClaudeCredentialReadError();
+      }
+      await removeAuthority(input.authorityDir, input.store);
+      await rm(join(input.agentDir, PROJECTION_MARKER), { recursive: true, force: true });
+      return "restored";
+    });
+  } finally {
+    await releaseRefresh();
+  }
 }

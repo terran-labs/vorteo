@@ -71,7 +71,7 @@ it("moves an existing login into the authority once and leaves the account acces
   const { agentDir, authorityDir } = dirs();
   const store = fileCredentialStore;
   await store.write(agentDir, { claudeAiOauth: grant(1), mcpOAuth: { server: "kept" } });
-  const custody = { agentDir, authorityDir, store };
+  const custody = { definitionId: "one", agentDir, authorityDir, store };
 
   await expect(adoptClaudeGrant({ ...custody, now: NOW })).resolves.toBe("adopted");
   expect(await store.read(authorityDir)).toEqual({ claudeAiOauth: grant(1) });
@@ -93,39 +93,56 @@ it("moves an existing login into the authority once and leaves the account acces
   expect(agentBytes(agentDir)).not.toContain("synthetic-refresh");
 });
 
-it("adopts a newer sign-in, drops an older leftover and defers a token near expiry", async () => {
+it("adopts any new sign-in, drops a token it already held and defers near expiry", async () => {
   const { agentDir, authorityDir } = dirs();
   const store = fileCredentialStore;
-  const custody = { agentDir, authorityDir, store };
-  mkdirSync(authorityDir, { recursive: true });
-  await store.write(authorityDir, { claudeAiOauth: grant(2, NOW + 8 * HOUR) });
+  const custody = { definitionId: "one", agentDir, authorityDir, store };
+  await store.write(agentDir, { claudeAiOauth: grant(1) });
+  await expect(adoptClaudeGrant({ ...custody, now: NOW })).resolves.toBe("adopted");
+  // The authority refreshed to a new token.
+  await store.write(authorityDir, { claudeAiOauth: grant(2, NOW + 9 * HOUR) });
 
-  // A leftover from an interrupted run is older than the authority's grant: never replay it.
-  await store.write(agentDir, { claudeAiOauth: grant(1, NOW + 2 * HOUR) });
+  // A copy of a token the authority already held is a leftover: never replay it.
+  await store.write(agentDir, { claudeAiOauth: grant(1) });
   await expect(adoptClaudeGrant({ ...custody, now: NOW })).resolves.toBe("stripped");
-  expect((await store.read(authorityDir))?.claudeAiOauth).toEqual(grant(2, NOW + 8 * HOUR));
+  expect((await store.read(authorityDir))?.claudeAiOauth).toEqual(grant(2, NOW + 9 * HOUR));
   expect((await store.read(agentDir))?.claudeAiOauth).toMatchObject({
     accessToken: "synthetic-access-2",
   });
 
-  // A new sign-in in the account directory replaces the authority's grant.
-  await store.write(agentDir, { claudeAiOauth: grant(3, NOW + 9 * HOUR) });
+  // Any token it never held is a new sign-in, even with an earlier expiry.
+  await store.write(agentDir, { claudeAiOauth: grant(3, NOW + 2 * HOUR) });
   await expect(projectClaudeHostAccess(custody)).resolves.toBe("skipped");
   await expect(adoptClaudeGrant({ ...custody, now: NOW })).resolves.toBe("adopted");
-  expect((await store.read(authorityDir))?.claudeAiOauth).toEqual(grant(3, NOW + 9 * HOUR));
+  expect((await store.read(authorityDir))?.claudeAiOauth).toEqual(grant(3, NOW + 2 * HOUR));
 
-  // Too close to expiry, an agent CLI may be refreshing it: leave everything as it is.
+  // Too close to expiry, an older CLI without the refresh lock may be refreshing it.
   await store.write(agentDir, { claudeAiOauth: grant(4, NOW + 9 * HOUR) });
   const late = NOW + 9 * HOUR - CLAUDE_ADOPTION_MARGIN_MS + 1;
   await expect(adoptClaudeGrant({ ...custody, now: late })).resolves.toBe("deferred");
   expect((await store.read(agentDir))?.claudeAiOauth).toEqual(grant(4, NOW + 9 * HOUR));
-  expect((await store.read(authorityDir))?.claudeAiOauth).toEqual(grant(3, NOW + 9 * HOUR));
+});
+
+it("never moves a grant while an agent CLI holds its refresh lock", async () => {
+  const { agentDir, authorityDir } = dirs();
+  const store = fileCredentialStore;
+  const custody = { definitionId: "one", agentDir, authorityDir, store, lock: { attempts: 1 } };
+  await store.write(agentDir, { claudeAiOauth: grant(1) });
+  // A CLI refreshing after a 401 holds this proper-lockfile directory.
+  mkdirSync(join(agentDir, ".oauth_refresh.lock"));
+  await expect(adoptClaudeGrant({ ...custody, now: NOW })).resolves.toBe("deferred");
+  expect((await store.read(agentDir))?.claudeAiOauth).toEqual(grant(1));
+  expect(await store.read(authorityDir)).toBeNull();
+  rmSync(join(agentDir, ".oauth_refresh.lock"), { recursive: true });
+  await expect(adoptClaudeGrant({ ...custody, now: NOW })).resolves.toBe("adopted");
+  // Our own locks are released afterwards.
+  expect(readdirSync(agentDir)).not.toContain(".oauth_refresh.lock");
 });
 
 it("on macOS moves the account's Keychain item to the file only after the authority holds it", async () => {
   const { agentDir, authorityDir } = dirs();
   const store = keychainLike();
-  const custody = { agentDir, authorityDir, store };
+  const custody = { definitionId: "one", agentDir, authorityDir, store };
   store.items.set(agentDir, { claudeAiOauth: grant(1) });
 
   await expect(adoptClaudeGrant({ ...custody, now: NOW })).resolves.toBe("adopted");

@@ -284,6 +284,11 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     return this.reconciliation;
   }
 
+  /** Runs an account operation, such as sign-out, in the same per-account queue as refresh. */
+  exclusive(definitionId: string, operation: () => Promise<void>): Promise<void> {
+    return this.enqueue(definitionId, operation);
+  }
+
   /** Recovery uses the same per-account writer and retry budget as scheduled work. */
   recover(definitionId: string, expectedPolicyRevision?: number): Promise<void> {
     const revision = expectedPolicyRevision ?? this.ports.policy(definitionId).revision;
