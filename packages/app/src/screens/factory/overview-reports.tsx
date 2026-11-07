@@ -165,10 +165,13 @@ export function KpiTile({ kpi, data }: { kpi: FactoryKpi; data: FactoryOverviewD
 function QueueAgeTile({ data }: { data: FactoryOverviewData }) {
   const { t } = useTranslation();
   const queued = data.lanes.find((group) => group.lane === "queued")?.issues ?? [];
-  // The live queue does not say when an issue was opened, so the age is sample data.
-  const ages = queued
-    .map((issue) => data.history.queueAgeHours[issue.number])
-    .filter((value): value is number => value !== undefined);
+  // The live queue does not say when an issue was opened. Sample ages only describe the sample
+  // queue; matching them to live issue numbers would pass them off as readings.
+  const ages = data.sample
+    ? queued
+        .map((issue) => data.history.queueAgeHours[issue.number])
+        .filter((value): value is number => value !== undefined)
+    : [];
   return (
     <StatTile
       label={t("projectFactory.reports.kpi.queueAge")}

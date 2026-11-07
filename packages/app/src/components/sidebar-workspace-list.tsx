@@ -2286,7 +2286,8 @@ function ProjectBlock({
     sidebarProjectBlockLevels(focus);
   const installedPlugins = useInstalledPlugins();
   const pinnedFactoryKeys = useFactoryCardStore((state) => state.pinned);
-  // Pinned Factory cards show under the root Pinned section instead, never twice.
+  // Pinned Factory cards show under the root Pinned section instead, never twice. A focus hides
+  // Pinned, so a pinned card stays in its project while one is active.
   const factoryCards = useMemo(
     () =>
       factoryCardModels({
@@ -2294,8 +2295,15 @@ function ProjectBlock({
         entries: workspaceEntriesByKey,
         states: factoryStates,
         plugins: installedPlugins,
-      }).filter((card) => !pinnedFactoryKeys.includes(card.key)),
-    [groups.factory, workspaceEntriesByKey, installedPlugins, factoryStates, pinnedFactoryKeys],
+      }).filter((card) => focus !== null || !pinnedFactoryKeys.includes(card.key)),
+    [
+      groups.factory,
+      workspaceEntriesByKey,
+      installedPlugins,
+      factoryStates,
+      pinnedFactoryKeys,
+      focus,
+    ],
   );
 
   const {

@@ -116,13 +116,9 @@ export function buildSidebarProjection(input: SidebarProjectionInput): SidebarPr
         );
         const standingCollapsed =
           collapsed || input.collapsedWorkspaceGroupKeys.has(`standing:${project.viewKey}`);
+        // Factory members render as chips on the Factory card, which carry no shortcut numbers.
         return [
           { workspaces: work, collapsed },
-          {
-            workspaces: groups.factory,
-            collapsed:
-              collapsed || input.collapsedWorkspaceGroupKeys.has(`factory:${project.viewKey}`),
-          },
           { workspaces: groups.standing, collapsed: standingCollapsed },
         ];
       }),
