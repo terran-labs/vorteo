@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The `vorteo` command. install.sh puts a small shim in ~/.local/bin/vorteo that runs this
 # file from the installed release, so an in-app update also updates the command. Every
-# subcommand forwards to the installer engine (scripts/installer/main.mjs).
+# installation command uses the installer engine; other invocations run the full CLI.
 #
 #   vorteo status [--json]        Show the installation's state.
 #   vorteo doctor                 Check prerequisites and services, with a fix for each problem.
@@ -18,7 +18,8 @@
 vorteo_command() {
   local root="${VORTEO_ROOT:-$HOME/vorteo}"
   local node_bin="${VORTEO_NODE:-node}"
-  local installer="${VORTEO_SOURCE:-$root/source}/scripts/installer"
+  local source_dir="${VORTEO_SOURCE:-$root/source}"
+  local installer="$source_dir/scripts/installer"
   local install_address="https://github.com/terran-labs/vorteo/releases/latest/download/install.sh"
 
   engine() {
@@ -76,7 +77,7 @@ vorteo_command() {
     echo "Opened $1"
   }
   usage() {
-    echo "Usage: vorteo <status|doctor|open|update|repair|uninstall> [options]"
+    echo "Usage: vorteo <command> [options]"
     echo ""
     echo "  status [--json]                Show the installation's state"
     echo "  doctor                         Check prerequisites and services"
@@ -84,6 +85,12 @@ vorteo_command() {
     echo "  update                         Open Settings, Maintenance, where updates happen"
     echo "  repair                         Repair the installation"
     echo "  uninstall [--keep-data] [--yes] Remove the installation"
+    echo ""
+    echo "Other commands run the full CLI, including agent, workspace and factory."
+    echo "Installation commands win: status shows installation state; help shows this page."
+    echo "Use vorteo daemon status for daemon state, vorteo <CLI command> --help for command help,"
+    echo "or vorteo --json --help for root CLI help. The paseo compatibility command also"
+    echo "provides direct access to CLI status and help."
   }
 
   if [ ! -f "$installer/main.mjs" ]; then
@@ -198,9 +205,7 @@ vorteo_command() {
       ;;
     "" | help | -h | --help) usage ;;
     *)
-      echo "Unknown command: $command" >&2
-      usage >&2
-      return 2
+      exec "$node_bin" "$source_dir/packages/cli/bin/paseo" "$command" "$@"
       ;;
   esac
 }

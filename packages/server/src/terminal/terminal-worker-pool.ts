@@ -24,7 +24,7 @@ export class TerminalWorkerIncompatibleError extends Error {
 
   constructor(input: { paseoVersion: string; protocolVersion: unknown }) {
     super(
-      `Terminals are held by a newer Paseo (v${input.paseoVersion}, worker protocol ${String(input.protocolVersion)}). Update Paseo to v${input.paseoVersion} or later to use them, or run \`paseo daemon stop\` to close them.`,
+      `Terminals are held by a newer Paseo (v${input.paseoVersion}, worker protocol ${String(input.protocolVersion)}). Update Paseo to v${input.paseoVersion} or later to use them, or run \`vorteo daemon stop\` to close them.`,
     );
     this.name = "TerminalWorkerIncompatibleError";
     this.paseoVersion = input.paseoVersion;

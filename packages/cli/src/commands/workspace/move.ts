@@ -35,7 +35,7 @@ export async function runMoveCommand(
     throw {
       code: "MISSING_PROJECT",
       message: "A destination project is required",
-      details: "Usage: paseo workspace move <workspace-id> --project <project-id>",
+      details: "Usage: vorteo workspace move <workspace-id> --project <project-id>",
     } satisfies CommandError;
   const host = getDaemonHost({ target: options.daemonTarget });
   const client = await connectToDaemon({ target: options.daemonTarget }).catch((error: unknown) => {
@@ -43,7 +43,7 @@ export async function runMoveCommand(
     throw {
       code: "DAEMON_NOT_RUNNING",
       message: `Cannot connect to daemon at ${host}: ${message}`,
-      details: "Start the daemon with: paseo daemon start",
+      details: "Start the daemon with: vorteo daemon start",
     } satisfies CommandError;
   });
   try {

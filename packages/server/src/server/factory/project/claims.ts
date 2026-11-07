@@ -433,8 +433,8 @@ export function staleClaimsPrompt(projectId: string, stale: StaleClaim[]): strin
   const lines = stale.map((claim) => {
     const owner = claim.installation ?? "an installation that left no marker";
     return claim.unconfirmed
-      ? `- ${claim.branch} (#${claim.issue}): this installation and ${owner} both appear to own it. Ask the owner which one keeps it. If the owner picks this installation, run \`paseo factory project claim issue ${projectId} ${claim.issue} --keep\`; otherwise run \`paseo factory project claim release ${projectId} ${claim.issue}\`.`
-      : `- ${claim.branch} (#${claim.issue}) at ${claim.headSha.slice(0, 9)}, held by ${owner}, last active ${claim.lastActivityAt}. Ask the owner once whether to release it. Only if they say yes, run \`paseo factory project claim release ${projectId} ${claim.issue}\`; its commits stay under factory-released/.`;
+      ? `- ${claim.branch} (#${claim.issue}): this installation and ${owner} both appear to own it. Ask the owner which one keeps it. If the owner picks this installation, run \`vorteo factory project claim issue ${projectId} ${claim.issue} --keep\`; otherwise run \`vorteo factory project claim release ${projectId} ${claim.issue}\`.`
+      : `- ${claim.branch} (#${claim.issue}) at ${claim.headSha.slice(0, 9)}, held by ${owner}, last active ${claim.lastActivityAt}. Ask the owner once whether to release it. Only if they say yes, run \`vorteo factory project claim release ${projectId} ${claim.issue}\`; its commits stay under factory-released/.`;
   });
   return `Stale Factory claims. Ask the owner about each once with one update_questions question each; the recommended default is "Keep it". Never release one without their yes, and never work on another installation's branch.\n${lines.join("\n")}`;
 }

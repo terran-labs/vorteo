@@ -345,7 +345,7 @@ Account sign-in uses a dedicated Codex app-server process with the configured pr
 
 ### Account evidence for schedules
 
-Use `paseo schedule quota --provider <configured-account>` to inspect authenticated quota evidence. Add `--json` for the account identity, observation timestamp, reported windows and consumption meters. This command reads metadata and does not launch an agent or change schedule policy.
+Use `vorteo schedule quota --provider <configured-account>` to inspect authenticated quota evidence. Add `--json` for the account identity, observation timestamp, reported windows and consumption meters. This command reads metadata and does not launch an agent or change schedule policy.
 
 Clients use `provider.quota.get_observation.request` after checking `server_info.features.providerQuotaObservation`. Both request and response require `daemon.read`. A configured provider name alone is not authenticated account identity. Bind schedule policy to the returned account, and revalidate that binding at execution admission.
 
@@ -762,16 +762,16 @@ Start the daemon if not already running, then:
 
 ```bash
 # Launch an agent with your provider
-paseo run --provider my-provider
+vorteo run --provider my-provider
 
 # Launch with a specific model and mode
-paseo run --provider my-provider --model some-model --mode default
+vorteo run --provider my-provider --model some-model --mode default
 
 # List running agents
-paseo ls -a -g
+vorteo ls -a -g
 
 # Check if the provider reports models
-paseo models --provider my-provider
+vorteo models --provider my-provider
 ```
 
 ### E2E test patterns

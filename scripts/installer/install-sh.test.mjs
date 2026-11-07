@@ -813,6 +813,54 @@ describe("install.sh", () => {
 });
 
 describe("vorteo command", () => {
+  test("forwards CLI arguments, input and exit status while installer collisions stay local", () => {
+    const box = sandbox();
+    assert.equal(box.run(["--yes", "--no-open"]).status, 0);
+    const shim = path.join(box.home, ".local", "bin", "vorteo");
+    const cliDirectory = path.join(box.home, "vorteo", "source", "packages", "cli", "bin");
+    mkdirSync(cliDirectory, { recursive: true });
+    writeFileSync(
+      path.join(cliDirectory, "paseo"),
+      `const fs = require("node:fs");
+process.stdout.write(JSON.stringify({ argv: process.argv.slice(2), stdin: fs.readFileSync(0, "utf8") }));
+process.exit(23);
+`,
+    );
+    const invoke = (...args) =>
+      spawnSync(bash, [shim, ...args], {
+        env: box.env,
+        encoding: "utf8",
+        input: "prompt from stdin\n",
+      });
+    const forwardedArgs = ["factory", "project", "show", "two words", "", "--json"];
+    const forwarded = invoke(...forwardedArgs);
+    assert.equal(forwarded.status, 23, forwarded.stderr);
+    assert.deepEqual(JSON.parse(forwarded.stdout), {
+      argv: forwardedArgs,
+      stdin: "prompt from stdin\n",
+    });
+    const status = invoke("status", "--json");
+    assert.equal(status.status, 0, status.stderr);
+    assert.match(status.stdout, /vorteo\.example\.ts\.net/);
+    assert.equal(box.calls().at(-1).tool, "engine");
+    assert.equal(box.calls().at(-1).argv[0], "status");
+    for (const args of [[], ["help"], ["-h"], ["--help"]]) {
+      const help = invoke(...args);
+      assert.equal(help.status, 0, help.stderr);
+      assert.match(help.stdout, /Other commands run the full CLI/);
+      assert.match(help.stdout, /vorteo daemon status/);
+    }
+    for (const args of [
+      ["daemon", "status"],
+      ["agent", "--help"],
+      ["--json", "--help"],
+    ]) {
+      const cli = invoke(...args);
+      assert.equal(cli.status, 23, cli.stderr);
+      assert.deepEqual(JSON.parse(cli.stdout).argv, args);
+    }
+  });
+
   test("update explains where updates happen and opens Settings", () => {
     const box = sandbox();
     assert.equal(box.run(["--yes", "--no-open"]).status, 0);

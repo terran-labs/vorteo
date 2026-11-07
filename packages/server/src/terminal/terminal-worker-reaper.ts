@@ -85,7 +85,7 @@ export class TerminalCleanupNotConfirmedError extends Error {
               ...unresolved.map(
                 (entry) => `  pid ${entry.pid} (${entry.role}): ${entry.reason} (${entry.detail})`,
               ),
-              "Their record is kept; the next `paseo daemon stop` retries the cleanup.",
+              "Their record is kept; the next `vorteo daemon stop` retries the cleanup.",
             ]
           : []),
         ...(unreadableRecords.length > 0

@@ -57,7 +57,7 @@ function terminalPasswordPrompt(): PromptPassword {
   if (!process.stdin.isTTY) {
     throw createCommandError(
       "PASSWORD_TTY_REQUIRED",
-      "paseo daemon set-password needs a terminal to read the password",
+      "vorteo daemon set-password needs a terminal to read the password",
       "Run it in an interactive terminal, or set PASEO_PASSWORD in the daemon's environment instead.",
     );
   }
@@ -105,8 +105,8 @@ export async function setDaemonPasswordInConfig(
   return {
     action: "password_set",
     configPath,
-    restartCommand: `paseo daemon restart --home ${JSON.stringify(paseoHome)}`,
-    message: `Password written to ${configPath}\nRestart the daemon for the change to take effect.\nRun: paseo daemon restart --home ${JSON.stringify(paseoHome)}`,
+    restartCommand: `vorteo daemon restart --home ${JSON.stringify(paseoHome)}`,
+    message: `Password written to ${configPath}\nRestart the daemon for the change to take effect.\nRun: vorteo daemon restart --home ${JSON.stringify(paseoHome)}`,
   };
 }
 

@@ -198,7 +198,7 @@ Single file, validated with `PersistedConfigSchema`.
 one serialized owner. Codex discovers the shared directory. Updates retire unchanged files from
 Paseo-managed copies in `~/.codex/skills`, preserving user edits and untracked files.
 
-`paseo reload` reads and validates this file once inside the daemon. That snapshot drives resolution,
+`vorteo reload` reads and validates this file once inside the daemon. That snapshot drives resolution,
 classification, application, and reload bookkeeping. `DaemonConfigStore` owns applying runtime-safe
 fields and their removal/default semantics; session handlers and the CLI only relay the structured
 result. Normal config patches persist only the requested fields, so launch overrides and resolved
@@ -314,7 +314,7 @@ Each entry may include a Vorteo-tool policy:
 Absent `paseoTools`, or absent fields within it, means Vorteo tools are enabled and all tools are
 allowed. `enabled: false` disables the provider's Vorteo catalog; `disabledTools` lists exact tool
 IDs to omit. The policy covers the core and browser catalog, not the voice-only `speak` tool.
-Browser tools also require `daemon.browserTools.enabled` and a connected browser host: the desktop app or `paseo browser host`.
+Browser tools also require `daemon.browserTools.enabled` and a connected browser host: the desktop app or `vorteo browser host`.
 This policy controls the catalog presented to an agent. It is not an authorization boundary for
 agents that can access the host through a shell.
 
@@ -355,7 +355,7 @@ Environment variables override `config.json`:
 | `PASEO_GIT_MAX_PROCESS_CONCURRENCY`  | `maxProcessConcurrency`  |
 | `PASEO_GIT_CONCURRENCY`              | Legacy concurrency alias |
 
-`PASEO_GIT_MAX_PROCESS_CONCURRENCY` wins when it and the legacy alias are both set. Run `paseo reload`
+`PASEO_GIT_MAX_PROCESS_CONCURRENCY` wins when it and the legacy alias are both set. Run `vorteo reload`
 after changing `config.json`. Environment changes require a daemon restart; the launch environment
 remains authoritative during reload.
 

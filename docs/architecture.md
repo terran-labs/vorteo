@@ -164,20 +164,20 @@ traffic. Workspace assignments stay on the workspace directory sequence.
 
 ### `packages/cli` — Command-line client
 
-Commander.js CLI with Docker-style commands. Common agent operations are also exposed at the top level (e.g. `paseo ls`, `paseo run`).
+Commander.js CLI with Docker-style commands. Common agent operations are also exposed at the top level (e.g. `vorteo ls`, `vorteo run`).
 
-- `paseo agent ls/run/import/attach/logs/stop/delete/send/inspect/wait/archive/reload/update/mode`
-- `paseo daemon start/run/stop/restart/status/reload/config/pair/set-password`
-- `paseo terminal ls/create/capture/send-keys/kill`
-- `paseo script ls/start/stop`
-- `paseo schedule create/ls/inspect/update/pause/resume/run-once/logs/delete`
-- `paseo heartbeat create/update/delete`
-- `paseo project create/ls/rename/delete`
-- `paseo workspace create/ls/rename/archive`
-- `paseo permit allow/deny/ls`
-- `paseo provider ls/models`
-- hidden legacy `paseo worktree create/ls/archive` compatibility alias
-- `paseo speech …`
+- `vorteo agent ls/run/import/attach/logs/stop/delete/send/inspect/wait/archive/reload/update/mode`
+- `vorteo daemon start/run/stop/restart/status/reload/config/pair/set-password`
+- `vorteo terminal ls/create/capture/send-keys/kill`
+- `vorteo script ls/start/stop`
+- `vorteo schedule create/ls/inspect/update/pause/resume/run-once/logs/delete`
+- `vorteo heartbeat create/update/delete`
+- `vorteo project create/ls/rename/delete`
+- `vorteo workspace create/ls/rename/archive`
+- `vorteo permit allow/deny/ls`
+- `vorteo provider ls/models`
+- hidden legacy `vorteo worktree create/ls/archive` compatibility alias
+- `vorteo speech …`
 
 Communicates with the daemon via the same WebSocket protocol as the app.
 
@@ -505,6 +505,6 @@ Agent and terminal environments are unchanged. System proxy settings and SOCKS-o
 
 ## Deployment models
 
-1. **Local daemon** (default): `paseo daemon start` on `127.0.0.1:6767`
+1. **Local daemon** (default): `vorteo daemon start` on `127.0.0.1:6767`
 2. **Managed desktop**: Electron uses the server package’s local-instance lifecycle capability for sanitized launch, published readiness, and captured-PID stop. Only a matching `{pid, startedAt}` from a spawn in the current Desktop session authorizes automatic stop or binary replacement. Preexisting instances, including legacy `desktopManaged` records, are attach-only. Keep-running survivors attach in the next session. Explicit attached Stop requires a confirmation naming the captured home/PID. Ordinary Restart uses the worker RPC on every app platform.
 3. **Remote + relay**: Daemon behind firewall, relay bridges with E2E encryption
