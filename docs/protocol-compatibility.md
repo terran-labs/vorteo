@@ -86,6 +86,15 @@ the existing delivery path. Slow-client protections count messages queued behind
 an active transfer as well as bytes already in the socket.
 The framing module never selects an encryption construction.
 
+Drain pacing holds per physical hop, not across a routed host. The destination host
+waits only for its own socket to the routing daemon. The routing daemon forwards each
+channel frame as soon as it arrives and closes the route with `resource_limit` once the
+receiving client's socket would exceed 32 MiB. It cannot pause one route, because every
+route to that host shares one link, and pausing it would stall sibling routes. A routed
+transfer larger than 32 MiB therefore succeeds only while the receiving client keeps up
+with the host link. Per-route flow control needs a negotiated credit message from the
+routing daemon to the destination host.
+
 Native uploads retain the platform's existing queue limits. React Native's
 WebSocket does not report its queued bytes, so the client cannot wait for native
 drain. Android's installed OkHttp transport closes when a send would put more

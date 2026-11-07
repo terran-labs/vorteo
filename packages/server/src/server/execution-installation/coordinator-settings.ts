@@ -1,11 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { mkdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
 import { z } from "zod";
 import {
   CoordinatorSettingsJobSchema,
   type CoordinatorFollowJob,
   type CoordinatorSettingChange,
+  type CoordinatorSettingField,
   type CoordinatorSettingsDecision,
   type CoordinatorSettingsJob,
   type CoordinatorSettingsRequest,
@@ -25,28 +29,45 @@ import {
   type CoordinatorConfigPlan,
   type HandoffOutcome,
 } from "./coordinator-handoff.js";
+import {
+  BrokerReviewUnavailable,
+  isBrokerSetting,
+  reviewBrokerSettings,
+  type BrokerSettingsReviewPorts,
+  type BrokerSettingsReviewResult,
+} from "./coordinator-broker-settings.js";
+import type { BrokerSetting } from "./preview-broker-configuration-checks.js";
 import { RestartRequestError } from "./restarts.js";
+import { inspectBootstrapWritableMountRoots } from "./coordinator-bootstrap-host.js";
+import { verifyBrokerExecutorInputs } from "./preview-broker-configuration-checks.js";
 import { managedServices } from "./service-control.js";
 
 /**
  * Keys of the coordinator configuration that agents may propose changing. Every other key is
  * refused. Values of keys not marked display-safe never reach the owner interface; the owner
- * sees only that they changed. Registered values are scalars, so the owner reviews the exact
- * value rather than an opaque object.
+ * sees only that they changed. Plain registered values are scalars, so the owner reviews the
+ * exact value rather than an opaque object.
  *
- * Never register a key that names something the coordinator executes or connects to, such as
- * `previewBroker` or `previewBrokerDeployment` (Docker, socket, Python, worker and module
- * paths with their digests). An approved patch would let an agent choose what runs with Host
- * privileges behind a JSON blob the owner cannot meaningfully review. Those keys change only
- * through their own reviewed deployment workflows, which inspect and bind each executable.
+ * Never register a plain key that names something the coordinator executes or connects to.
+ * An approved patch would let an agent choose what runs with Host privileges behind a value
+ * the owner cannot meaningfully review. The broker keys are registered as `reviewed: "broker"`
+ * instead: `reviewBrokerSettings` pins their Docker endpoint, Dev container, interpreters and
+ * placement to what the installation already records, confines their code to installer-managed
+ * releases, and hashes every file itself, at request and again at dispatch. The owner then
+ * reviews each changed field as a path and digest prefix verified on disk.
  */
 export const COORDINATOR_SETTINGS: readonly {
   key: keyof InstallationConfig;
   displaySafe: boolean;
+  reviewed?: "broker";
 }[] = [
   { key: "claudeHostRefresh", displaySafe: true },
   { key: "codexHostRefresh", displaySafe: true },
+  { key: "previewBrokerDeployment", displaySafe: true, reviewed: "broker" },
+  { key: "previewBroker", displaySafe: true, reviewed: "broker" },
 ];
+
+const execFileAsync = promisify(execFile);
 
 /** One readiness window; a failed restart waits twice, then restores. */
 const COORDINATOR_READY_TIMEOUT_MS = 120_000;
@@ -54,12 +75,18 @@ const CHANGE_DEADLINE_MS = COORDINATOR_READY_TIMEOUT_MS * 2 + 60_000;
 /** How long a finished job stays in the status, so the owner sees how it ended. */
 const RESULT_MS = 24 * 60 * 60_000;
 const RETAINED_JOBS = 20;
+/** Dispatch reviews that may fail to run before an approved broker change fails. */
+const REVIEW_ATTEMPTS = 3;
 
 const SettingsRecordSchema = CoordinatorSettingsJobSchema.extend({
   /** The exact patch, values included. Never leaves the coordinator. */
   patch: z.record(z.string(), z.unknown()),
   /** SHA-256 of the configuration written in place, once the change started. */
   appliedSha256: z.string().optional(),
+  /** Dispatch reviews that could not run, such as a Docker inspection timeout. */
+  reviewAttempts: z.number().int().nonnegative().optional(),
+  /** The recorded participant scope was kept before dispatch minted a new one. */
+  scopeKept: z.literal(true).optional(),
 });
 type SettingsRecord = z.infer<typeof SettingsRecordSchema>;
 
@@ -122,6 +149,20 @@ export interface CoordinatorSettingsPorts {
    */
   launch(jobId: string, onError: (error: Error) => void): void;
   outcome(jobId: string): HandoffOutcome | null;
+  /** Keeps the participant scope at `file`, or that it was absent, once per job. */
+  keepScope(jobId: string, file: string): void;
+  /** Puts the kept participant scope back, if one was kept. */
+  restoreScope(jobId: string): void;
+  /**
+   * Reviews reviewed broker keys of `candidate` against the files on disk and the values
+   * `current` records, and returns each key's changed fields. Throws when any is refused.
+   */
+  reviewBroker(input: {
+    keys: BrokerSetting[];
+    current: string;
+    candidate: string;
+    phase: "request" | "dispatch";
+  }): Promise<BrokerSettingsReviewResult>;
   deadlineMs: number;
   warn(message: string): void;
 }
@@ -148,7 +189,13 @@ function merge(text: string, patch: Record<string, unknown>): string {
 }
 
 function project(record: SettingsRecord): CoordinatorSettingsJob {
-  const { patch: _patch, appliedSha256: _applied, ...job } = record;
+  const {
+    patch: _patch,
+    appliedSha256: _applied,
+    reviewAttempts: _attempts,
+    scopeKept: _kept,
+    ...job
+  } = record;
   return job;
 }
 
@@ -162,6 +209,8 @@ function project(record: SettingsRecord): CoordinatorSettingsJob {
  */
 export class CoordinatorSettings {
   private jobs: SettingsRecord[] = [];
+  /** The drain in progress; dispatch awaits file checks, so drains must not overlap. */
+  private draining: Promise<void> | null = null;
   /** Set when the journal could not be read; changes stay off until the next start. */
   private journalProblem: string | null = null;
 
@@ -215,11 +264,8 @@ export class CoordinatorSettings {
     };
   }
 
-  request(input: CoordinatorSettingsRequest): CoordinatorSettingsJob {
-    const blocker = this.blocker() ?? this.ports.conflict();
-    if (blocker) throw new RestartRequestError(blocker);
-    if (this.jobs.some(isActive))
-      throw new RestartRequestError("A coordinator settings change is already waiting or running");
+  async request(input: CoordinatorSettingsRequest): Promise<CoordinatorSettingsJob> {
+    this.refuseRequest();
     const keys = Object.keys(input.patch);
     if (keys.length === 0) throw new RestartRequestError("The patch changes no settings");
     for (const key of keys) this.validateEntry(key, input.patch[key]);
@@ -235,10 +281,37 @@ export class CoordinatorSettings {
       throw new RestartRequestError(`The changed configuration is invalid: ${message(error)}`);
     }
     const current = JSON.parse(text) as Record<string, unknown>;
-    const changes = keys
-      .filter((key) => JSON.stringify(current[key] ?? null) !== JSON.stringify(input.patch[key]))
-      .map((key) => this.change(key, current[key], input.patch[key]));
-    if (changes.length === 0) throw new RestartRequestError("The patch changes nothing");
+    const changed = keys.filter(
+      (key) => JSON.stringify(current[key] ?? null) !== JSON.stringify(input.patch[key]),
+    );
+    if (changed.length === 0) throw new RestartRequestError("The patch changes nothing");
+    const brokerKeys = changed.filter(isBrokerSetting);
+    let fields: Record<string, CoordinatorSettingField[]> = {};
+    // Unchanged keys are dropped, so an unchanged broker key never needs a field review.
+    let patch = Object.fromEntries(changed.map((key) => [key, input.patch[key]]));
+    if (brokerKeys.length > 0) {
+      try {
+        const review = await this.ports.reviewBroker({
+          keys: brokerKeys,
+          current: text,
+          candidate,
+          phase: "request",
+        });
+        fields = review.fields;
+        // The coordinator fills in values it derives itself, such as the minted scope digest.
+        patch = { ...patch, ...review.values };
+        this.ports.validate(merge(text, patch));
+      } catch (error) {
+        throw new RestartRequestError(`The broker settings were refused: ${message(error)}`);
+      }
+      // The review read files asynchronously; nothing may have started or changed meanwhile.
+      this.refuseRequest();
+      if (sha256(this.ports.readConfig()) !== input.baseSha256)
+        throw new RestartRequestError(
+          "The coordinator configuration changed since the patch was prepared. Fetch the base hash again.",
+        );
+    }
+    const changes = changed.map((key) => this.change(key, current[key], patch[key], fields));
     const record = SettingsRecordSchema.parse({
       id: randomUUID(),
       revision: randomUUID(),
@@ -248,20 +321,29 @@ export class CoordinatorSettings {
       baseSha256: input.baseSha256,
       changes,
       ...(input.requester ? { requester: input.requester } : {}),
-      patch: input.patch,
+      patch,
     });
     this.jobs = [...this.jobs, record];
     this.journal.write(this.jobs);
     return project(record);
   }
 
+  private refuseRequest(): void {
+    const blocker = this.blocker() ?? this.ports.conflict();
+    if (blocker) throw new RestartRequestError(blocker);
+    if (this.jobs.some(isActive))
+      throw new RestartRequestError("A coordinator settings change is already waiting or running");
+  }
+
   decide(
     id: string,
     revision: string,
     decision: CoordinatorSettingsDecision["decision"],
+    client: { reviewedFields?: boolean } = {},
   ): CoordinatorSettingsJob {
     const job = this.reviewed(id, revision);
     if (decision === "approve" && job.status === "pending") {
+      this.refuseBlindApproval(job, client);
       this.refuseStale(job);
       const conflict = this.ports.conflict();
       if (conflict) throw new RestartRequestError(conflict);
@@ -291,12 +373,14 @@ export class CoordinatorSettings {
     id: string,
     revision: string,
     approveFollow: () => CoordinatorFollowJob,
+    client: { reviewedFields?: boolean } = {},
   ): CoordinatorSettingsJob {
     const job = this.reviewed(id, revision);
     if (job.status !== "pending")
       throw new RestartRequestError(
         `A coordinator settings change that is ${job.status} cannot be approved`,
       );
+    this.refuseBlindApproval(job, client);
     this.refuseStale(job);
     const follow = approveFollow();
     return project(
@@ -307,11 +391,30 @@ export class CoordinatorSettings {
     );
   }
 
+  /**
+   * An owner interface that cannot show per-field changes renders reviewed broker keys as
+   * "hidden → changed", so its approval would be blind.
+   */
+  private refuseBlindApproval(job: SettingsRecord, client: { reviewedFields?: boolean }): void {
+    // COMPAT(coordinatorSettingFields): added in 26.11.6, remove after 2027-05-07 once every owner app sends reviewedFields.
+    if (Object.keys(job.patch).some(isBrokerSetting) && client.reviewedFields !== true)
+      throw new RestartRequestError(
+        "Update Vorteo to review these broker settings field by field before approving them.",
+      );
+  }
+
   /** Advances a linked approval, starts an approved job or follows a running one. */
-  drain(): void {
+  drain(): Promise<void> {
+    this.draining ??= this.drainOnce().finally(() => {
+      this.draining = null;
+    });
+    return this.draining;
+  }
+
+  private async drainOnce(): Promise<void> {
     this.settleLinkedApproval();
     const job = this.jobs.find((item) => item.status === "approved" || item.status === "running");
-    if (job?.status === "approved") this.dispatch(job);
+    if (job?.status === "approved") await this.dispatch(job);
     else if (job?.status === "running") this.track(job);
   }
 
@@ -335,11 +438,17 @@ export class CoordinatorSettings {
     });
   }
 
-  private dispatch(job: SettingsRecord): void {
+  private async dispatch(approved: SettingsRecord): Promise<void> {
+    let job = approved;
     const refusal = this.blocker() ?? this.ports.conflict();
     if (refusal) {
       this.finish(job, "failed", refusal);
       return;
+    }
+    if (Object.keys(job.patch).some(isBrokerSetting)) {
+      const reviewed = await this.reviewAtDispatch(job);
+      if (!reviewed) return;
+      job = reviewed;
     }
     let text: string;
     let candidate: string;
@@ -381,6 +490,97 @@ export class CoordinatorSettings {
       this.ports.launch(job.id, (error) => this.launchFailed(job.id, error));
     } catch (error) {
       this.launchFailed(job.id, error);
+    }
+  }
+
+  /**
+   * Gates the change before minting, keeps the scope, then reviews every broker file again.
+   * Returns the job to apply, or null when it was finished, kept for a retry or cancelled.
+   */
+  private async reviewAtDispatch(approved: SettingsRecord): Promise<SettingsRecord | null> {
+    let job = approved;
+    const brokerKeys = Object.keys(job.patch).filter(isBrokerSetting);
+    // Every gate that needs no broker review runs first: minting changes the scope file.
+    const early = this.applyBlocker(job);
+    if (early) {
+      this.finish(job, "failed", early);
+      return null;
+    }
+    const scope = (job.patch.previewBrokerDeployment as { scope?: { path?: unknown } } | null)
+      ?.scope?.path;
+    if (typeof scope === "string") {
+      this.ports.keepScope(job.id, scope);
+      job = this.save(job, { scopeKept: true });
+    }
+    // Hash and confine every broker file again: one swapped after approval is refused.
+    let review: BrokerSettingsReviewResult;
+    try {
+      const text = this.ports.readConfig();
+      review = await this.ports.reviewBroker({
+        keys: brokerKeys,
+        current: text,
+        candidate: merge(text, job.patch),
+        phase: "dispatch",
+      });
+    } catch (error) {
+      const latest = this.jobs.find((item) => item.id === job.id);
+      if (latest?.status !== "approved") {
+        this.restoreKeptScope(job);
+        return null;
+      }
+      const attempts = (latest.reviewAttempts ?? 0) + 1;
+      // A check that could not run stays approved and runs again on the next drain.
+      if (error instanceof BrokerReviewUnavailable && attempts < REVIEW_ATTEMPTS) {
+        this.restoreKeptScope(latest);
+        this.save(latest, {
+          reviewAttempts: attempts,
+          detail: `Approved. Waiting to check the broker files again: ${message(error)}`,
+        });
+        return null;
+      }
+      this.finish(
+        latest,
+        "failed",
+        `The broker settings no longer pass review: ${message(error)}. Nothing was applied.`,
+      );
+      return null;
+    }
+    // The owner may have cancelled, or another restart started, during the review.
+    const latest = this.jobs.find((item) => item.id === job.id);
+    if (latest?.status !== "approved") {
+      // A cancel finished the job before the scope was minted; put it back again.
+      this.restoreKeptScope(job);
+      return null;
+    }
+    // The participant scope was minted at its recorded path; apply its digest.
+    job = this.save(latest, { patch: { ...latest.patch, ...review.values } });
+    const conflict = this.blocker() ?? this.ports.conflict();
+    if (conflict) {
+      this.finish(job, "failed", conflict);
+      return null;
+    }
+    return job;
+  }
+
+  /** Why an approved change cannot apply now, before any broker review or effect. */
+  private applyBlocker(job: SettingsRecord): string | null {
+    try {
+      if (sha256(this.ports.readConfig()) !== job.baseSha256)
+        return "The coordinator configuration changed after this change was reviewed. Nothing was applied.";
+    } catch (error) {
+      return `The coordinator configuration could not be read: ${message(error)}`;
+    }
+    const launchBlocker = this.ports.launchBlocker();
+    return launchBlocker ? `${launchBlocker} Nothing was applied.` : null;
+  }
+
+  /** Restores the kept participant scope; a failure is reported, never thrown. */
+  private restoreKeptScope(job: SettingsRecord): void {
+    if (!job.scopeKept) return;
+    try {
+      this.ports.restoreScope(job.id);
+    } catch (error) {
+      this.ports.warn(`The participant scope could not be restored: ${message(error)}`);
     }
   }
 
@@ -441,7 +641,16 @@ export class CoordinatorSettings {
     if (!entry)
       throw new RestartRequestError(`"${key}" is not a coordinator setting that can change here`);
     if (value === null) return;
-    // Registered keys hold scalars; an object would hide its contents from the owner.
+    if (entry.reviewed === "broker") {
+      // Structured, but every field is reviewed against disk and recorded values.
+      const parsed = InstallationConfigSchema.shape[entry.key].safeParse(value);
+      if (typeof value !== "object" || !parsed.success)
+        throw new RestartRequestError(
+          `"${key}" has an invalid value${parsed.success ? "" : `: ${parsed.error.issues[0]?.message}`}`,
+        );
+      return;
+    }
+    // Plain registered keys hold scalars; an object would hide its contents from the owner.
     if (typeof value === "object")
       throw new RestartRequestError(`"${key}" has an invalid value: expected a single value`);
     const parsed = InstallationConfigSchema.shape[entry.key].safeParse(value);
@@ -451,9 +660,17 @@ export class CoordinatorSettings {
       );
   }
 
-  private change(key: string, before: unknown, after: unknown): CoordinatorSettingChange {
-    const displaySafe = COORDINATOR_SETTINGS.find((item) => item.key === key)!.displaySafe;
+  private change(
+    key: string,
+    before: unknown,
+    after: unknown,
+    fields: Record<string, CoordinatorSettingField[]>,
+  ): CoordinatorSettingChange {
+    const entry = COORDINATOR_SETTINGS.find((item) => item.key === key)!;
+    const { displaySafe } = entry;
     if (!displaySafe) return { key, displaySafe };
+    // Older interfaces see "hidden → changed"; newer ones show each field.
+    if (entry.reviewed === "broker") return { key, displaySafe, fields: fields[key] ?? [] };
     return {
       key,
       displaySafe,
@@ -495,6 +712,9 @@ export class CoordinatorSettings {
     status: CoordinatorSettingsJob["status"],
     detail: string,
   ): SettingsRecord {
+    // Anything that does not apply the change leaves the recorded scope as it was, including
+    // a handoff that rolls the coordinator back to the previous configuration.
+    if (status !== "succeeded") this.restoreKeptScope(job);
     return this.save(job, { status, detail, finishedAt: this.ports.now().toISOString() });
   }
 
@@ -504,6 +724,92 @@ export class CoordinatorSettings {
     this.journal.write(this.jobs);
     return next;
   }
+}
+
+/** Docker mount inspection, executor probes and scope writes on the macOS Host. */
+function nativeBrokerReview(directory: string): BrokerSettingsReviewPorts {
+  return {
+    writableMountRoots: (connection) => inspectBootstrapWritableMountRoots(connection),
+    coordinatorNode: () => process.execPath,
+    async executorInputs({ settings, config, writableMountRoots }) {
+      // The deployment executor rereads the candidate as a protected, hash-pinned file.
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      const text = `${JSON.stringify(config, null, 2)}\n`;
+      const file = path.join(directory, `coordinator.json.review-${randomUUID()}`);
+      await writeFile(file, text, { mode: 0o600, flag: "wx" });
+      try {
+        await verifyBrokerExecutorInputs({
+          settings,
+          config,
+          configurationFile: { path: await realpath(file), sha256: sha256(text) },
+          writableMountRoots,
+        });
+      } finally {
+        await rm(file, { force: true });
+      }
+    },
+    now: () => new Date(),
+    randomUUID,
+    async bootUUID() {
+      const { stdout } = await execFileAsync("/usr/sbin/sysctl", ["-n", "kern.bootsessionuuid"], {
+        env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
+        timeout: 10_000,
+      });
+      return stdout.trim();
+    },
+    reviewScopeFile: () => path.join(directory, `participant-scope.review-${randomUUID()}.json`),
+    removeFile: (file) => rm(file, { force: true }),
+    async writeScope(file, text) {
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      // Replace atomically beside the pinned path; the rename never follows a planted link.
+      const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${randomUUID()}`);
+      await writeFile(temporary, text, { mode: 0o600, flag: "wx" });
+      try {
+        await rename(temporary, file);
+      } catch (error) {
+        await rm(temporary, { force: true });
+        throw error;
+      }
+    },
+  };
+}
+
+/**
+ * Keeps a job's participant scope bytes, or that the file was absent, in its private work
+ * folder before dispatch mints a new scope, and puts them back atomically. The first kept copy
+ * is never overwritten, so retries cannot keep a minted scope instead of the original.
+ */
+export function createScopeCustody(work: (jobId: string) => string) {
+  const kept = (jobId: string) => path.join(work(jobId), "participant-scope.before");
+  const target = (jobId: string) => path.join(work(jobId), "participant-scope.path");
+  // Stage the bytes privately, then rename over the file: a rename replaces a planted link
+  // instead of writing through it. The work folder and the scope share the installation's
+  // volume; a cross-volume rename fails and is reported rather than applied partially.
+  const replace = (jobId: string, file: string, bytes: Buffer) => {
+    const temporary = path.join(work(jobId), `participant-scope.restore-${randomUUID()}`);
+    writePrivateFileAtomicSync(temporary, bytes);
+    try {
+      renameSync(temporary, file);
+    } catch (error) {
+      rmSync(temporary, { force: true });
+      throw error;
+    }
+  };
+  return {
+    keepScope(jobId: string, file: string) {
+      if (existsSync(target(jobId))) return;
+      mkdirSync(work(jobId), { recursive: true, mode: 0o700 });
+      if (existsSync(file)) writePrivateFileAtomicSync(kept(jobId), readFileSync(file));
+      // Written last: its presence means the kept state is complete.
+      writePrivateFileAtomicSync(target(jobId), file);
+    },
+    restoreScope(jobId: string) {
+      if (!existsSync(target(jobId))) return;
+      const file = readFileSync(target(jobId), "utf8");
+      if (existsSync(kept(jobId))) replace(jobId, file, readFileSync(kept(jobId)));
+      else rmSync(file, { force: true });
+    },
+  };
 }
 
 /** Why this coordinator cannot change its own configuration, or null. */
@@ -524,6 +830,8 @@ export function createCoordinatorSettings(input: {
   followJob(id: string): CoordinatorFollowJob | null;
   warn(message: string): void;
   entrypoint?: string;
+  /** Replaces the native Docker inspection and executor probes; tests only. */
+  brokerReview?: BrokerSettingsReviewPorts;
 }): CoordinatorSettings {
   const { config, configFile } = input;
   const directory = path.join(config.stateDir, "coordinator-settings");
@@ -599,6 +907,17 @@ export function createCoordinatorSettings(input: {
       });
     },
     outcome: (jobId) => readHandoffOutcome(path.join(work(jobId), "outcome.json")),
+    ...createScopeCustody(work),
+    reviewBroker: ({ keys, current, candidate, phase }) =>
+      reviewBrokerSettings(
+        {
+          keys,
+          current: InstallationConfigSchema.parse(JSON.parse(current)),
+          candidate: InstallationConfigSchema.parse(JSON.parse(candidate)),
+          phase,
+        },
+        input.brokerReview ?? nativeBrokerReview(directory),
+      ),
     deadlineMs: CHANGE_DEADLINE_MS,
     warn: input.warn,
   });
