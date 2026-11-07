@@ -9,7 +9,11 @@ import {
   expectComposerDraft,
   attachFileFromMenu,
 } from "../support/helpers/composer";
-import { ensureExplorerSidebar, openFilesPanel } from "../support/helpers/workspace-tabs";
+import {
+  ensureExplorerSidebar,
+  openChangesTreePanel,
+  openFilesPanel,
+} from "../support/helpers/workspace-tabs";
 
 const APP_SETTINGS_KEY = "@paseo:app-settings";
 
@@ -183,11 +187,14 @@ async function tapFirstAddedDiffLine(
 async function openReviewDiff(page: Page, workspace: Awaited<ReturnType<typeof seedChangedAgent>>) {
   await page.setViewportSize({ width: 1400, height: 900 });
   await openAgentRoute(page, { workspaceId: workspace.workspaceId, agentId: workspace.agentId });
+  // The diff counter sits in the supporting cards' toolbar, which shows only while they are open.
+  await ensureExplorerSidebar(page);
   await expect(composerChangesPill(page)).toBeVisible({ timeout: 30000 });
   if (await page.getByTestId("workspace-tab-working_diff").count()) {
     await selectDiffTab(page);
   } else {
-    await revealComposerChangesInExplorer(page);
+    // The toolbar counter opens the diff directly; only the retired composer pill revealed
+    // Changes first.
     await openComposerDiff(page);
   }
   await expect(page.getByTestId("diff-file-0-body")).toBeVisible();
@@ -784,6 +791,8 @@ async function jumpToReviewFile(page: Page, name: string) {
   await expect(reviewFileHeader(compactReviewSurface(page), name)).toBeInViewport();
 }
 async function navigateWideReviewFile(page: Page, name: string) {
+  // The toolbar counter opens the diff without expanding the Changes card, so expand it here.
+  await openChangesTreePanel(page);
   const explorer = await ensureExplorerSidebar(page);
   await explorer.getByTestId("changes-tree-panel").getByText(name, { exact: true }).click();
   await expect(reviewFileHeader(page.getByTestId("working-diff-panel"), name)).toBeInViewport();
@@ -817,7 +826,8 @@ async function openCompactReviewExplorer(
   await openAgentRoute(page, { workspaceId: workspace.workspaceId, agentId: workspace.agentId });
   await selectAgentTab(page, workspace.agentId);
   await showCompactLayout(page);
-  await composerChangesPill(page).click();
+  // Phones have no toolbar diff counter; Changes opens from the compact Explorer.
+  await openChangesTreePanel(page);
   await expect(compactReviewSurface(page).getByTestId("diff-file-0-body")).toBeVisible();
 }
 
