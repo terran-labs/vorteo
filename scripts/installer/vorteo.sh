@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The `vorteo` command. install.sh puts a small shim in ~/.local/bin/vorteo that runs this
 # file from the installed release, so an in-app update also updates the command. Every
-# subcommand forwards to the installer engine (scripts/installer/main.mjs).
+# installation command uses the installer engine; other invocations run the full CLI.
 #
 #   vorteo status [--json]        Show the installation's state.
 #   vorteo doctor                 Check prerequisites and services, with a fix for each problem.
@@ -18,7 +18,8 @@
 vorteo_command() {
   local root="${VORTEO_ROOT:-$HOME/vorteo}"
   local node_bin="${VORTEO_NODE:-node}"
-  local installer="${VORTEO_SOURCE:-$root/source}/scripts/installer"
+  local source_dir="${VORTEO_SOURCE:-$root/source}"
+  local installer="$source_dir/scripts/installer"
   local install_address="https://github.com/terran-labs/vorteo/releases/latest/download/install.sh"
 
   engine() {
@@ -76,7 +77,7 @@ vorteo_command() {
     echo "Opened $1"
   }
   usage() {
-    echo "Usage: vorteo <status|doctor|open|update|repair|uninstall> [options]"
+    echo "Usage: vorteo <command> [options]"
     echo ""
     echo "  status [--json]                Show the installation's state"
     echo "  doctor                         Check prerequisites and services"
@@ -84,6 +85,12 @@ vorteo_command() {
     echo "  update                         Open Settings, Maintenance, where updates happen"
     echo "  repair                         Repair the installation"
     echo "  uninstall [--keep-data] [--yes] Remove the installation"
+    echo ""
+    echo "Other commands run the full CLI, including agent, workspace and factory."
+    echo "Installation commands win: status shows installation state; help shows this page."
+    echo "Use vorteo daemon status for daemon state, vorteo <CLI command> --help for command help,"
+    echo "or vorteo --json --help for root CLI help. The paseo compatibility command also"
+    echo "provides direct access to CLI status and help."
   }
 
   if [ ! -f "$installer/main.mjs" ]; then
@@ -198,9 +205,66 @@ vorteo_command() {
       ;;
     "" | help | -h | --help) usage ;;
     *)
-      echo "Unknown command: $command" >&2
-      usage >&2
-      return 2
+      # Inspect only target selectors and the command route; Commander still validates argv.
+      local explicit_target="${PASEO_HOME:-${PASEO_HOST-}}" first="" second="" third="" arg pending="" operands=""
+      for arg in "$command" "$@"; do
+        if [ -n "$pending" ]; then
+          if [ "$pending" = target ]; then explicit_target=1; fi
+          pending=""
+          continue
+        fi
+        if [ -z "$operands" ]; then
+          case "$arg" in
+            --) operands=1; continue ;;
+            --home | --host) pending=target; continue ;;
+            --home=* | --host=*) explicit_target=1; continue ;;
+            --format | -o | --timeout | --kill-timeout | --port | --listen | --hostnames | --allowed-hosts)
+              pending=value; continue ;;
+            -*) continue ;;
+          esac
+        fi
+        if [ -z "$first" ]; then first="$arg"
+        elif [ -z "$second" ]; then second="$arg"
+        elif [ -z "$third" ]; then third="$arg"; fi
+      done
+      if [ -z "$explicit_target" ]; then
+        case "$first:$second:$third" in
+          start:* | restart:* | reload:* | onboard:* | daemon:start:* | daemon:stop:* | daemon:restart:* | daemon:run:* | daemon:reload:* | daemon:set-password:* | daemon:config:set | daemon:config:unset | daemon:origins:admit)
+            echo "Manage this installation's daemon in Settings, Maintenance (installation controls)." >&2
+            return 1
+            ;;
+        esac
+      fi
+      local cli_entry="$source_dir/packages/cli/bin/paseo"
+      if [ ! -x "$(command -v "$node_bin" 2>/dev/null)" ]; then
+        echo "Vorteo cannot run its configured Node runtime ($node_bin). Run: vorteo repair" >&2
+        return 1
+      fi
+      if [ ! -f "$cli_entry" ] || [ ! -f "$source_dir/packages/cli/dist/index.js" ]; then
+        echo "Vorteo CLI is not built in $source_dir. Run: vorteo repair" >&2
+        return 1
+      fi
+      if [ -z "$explicit_target" ]; then
+        PASEO_HOME=$("$node_bin" -e '
+          const fs = require("node:fs"), path = require("node:path");
+          const root = process.argv[1];
+          const records = [path.join(root, "installation.json"), path.join(root, "host", "installation.json")];
+          const record = records.find(file => fs.existsSync(file));
+          const journal = path.join(root, "state", "install.json");
+          let home;
+          if (record) home = JSON.parse(fs.readFileSync(record, "utf8")).hostHome;
+          else if (fs.existsSync(journal)) home = JSON.parse(fs.readFileSync(journal, "utf8")).plan?.paths?.hostHome;
+          else home = path.join(root, "host", "state", "host");
+          if (typeof home !== "string" || !path.isAbsolute(home)) process.exit(1);
+          process.stdout.write(home);
+        ' "$root" 2>/dev/null) || {
+          echo "Vorteo could not read the installation daemon home. Run: vorteo repair" >&2
+          return 1
+        }
+        export PASEO_HOME
+      fi
+      export VORTEO_CLI_NAME=vorteo
+      exec "$node_bin" --disable-warning=DEP0040 "$cli_entry" "$command" "$@"
       ;;
   esac
 }

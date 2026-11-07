@@ -14,6 +14,8 @@ An installation requires acceptance on the Host. Source checks alone do not esta
 
 ## Use the installation
 
+The Host installer adds `vorteo` to `~/.local/bin`. Its installation commands are `status`, `doctor`, `open`, `update`, `repair`, `uninstall` and `help`; every other invocation runs the installed source's CLI. Installation `status` and `help` take priority over the CLI commands with those names. Use `vorteo daemon status`, `vorteo <CLI command> --help` or `vorteo --json --help` to reach the corresponding CLI behavior. The `paseo` compatibility binary still exposes CLI `status` and `help` directly. Containers and standalone npm or desktop installations retain that compatibility binary; this dispatcher does not rename or install their binaries. CLI help and hints use the invoking dispatcher name and otherwise default to `paseo`. Forwarding reads the recorded daemon home, including adopted layouts; an explicit `PASEO_HOME`, `PASEO_HOST`, `--home` or `--host` keeps its normal precedence.
+
 Open the address the installer printed and enter the owner password on the welcome page, then select Connect. Leaving the page discards the password draft and any sign-in error. On a page that no installation serves, Create New installation shows the install command; Demo opens isolated sample workspaces.
 
 After the owner's first sign-in to an installation with no connected provider accounts, the home screen offers to connect Claude and Codex accounts once for the whole installation, using the same account sheets as Accounts & profiles. Skip for now hides it for that installation on that device; connecting an account and choosing Continue does the same. Claude and Codex connections are shared by Host and Dev when the coordinator enables Host-owned refresh (`claudeHostRefresh`, `codexHostRefresh`), which new installations do; see [installation account connections](providers.md#installation-account-connections). The interface registers **Dev container** and **Host: full account access** together. New work defaults to the container. Selecting the host requires confirmation. Local versus new worktree remains a separate choice within the selected environment. Any project can contain workspaces from both environments, including workspaces that use different repositories. Each environment resolves its own directory and retains its own agents and credentials.
@@ -53,14 +55,14 @@ Host agents get browser tools from a disposable headless Chromium instead of the
 
 The daemon reads `headlessHost` at startup, so a change needs a daemon restart. Older daemons ignore the setting. For the Dev daemon, see [Browser tools for Dev container agents](#browser-tools-for-dev-container-agents). An invalid `allowedHosts` entry, an unknown `headlessHost` key such as a misspelled `deniedOrigins`, or a value of the wrong type stops the browser host from starting rather than loosening its policy; the daemon itself still starts and logs the error. Older daemons, including Host releases before `vorteo.736`, refuse to start on an invalid `headlessHost` entry, so check the JSON before restarting one.
 
-Chromium never runs inside the daemon. On the first browser request the daemon starts a separate browser host process and talks to it over Node IPC. After a crash, browser requests fail fast while a backoff of 1 to 30 seconds runs, then the next request starts a new process; open tabs are lost. The daemon stops the process when it shuts down. `paseo browser host` uses the same process, so the CLI never loads Playwright either.
+Chromium never runs inside the daemon. On the first browser request the daemon starts a separate browser host process and talks to it over Node IPC. After a crash, browser requests fail fast while a backoff of 1 to 30 seconds runs, then the next request starts a new process; open tabs are lost. The daemon stops the process when it shuts down. `vorteo browser host` uses the same process, so the CLI never loads Playwright either.
 
 That process entry, `headless-host-process.js`, is deliberately outside the initial Host module contract. That contract covers the daemon worker, CLI and other startup entries, and a test checks that their traces never reach Playwright.
 
 To run a host without a restart, start it as the macOS account that runs the Host daemon:
 
 ```sh
-paseo browser host --deny-origin https://<protected-interface-origin> --allow-host localhost:8081
+vorteo browser host --deny-origin https://<protected-interface-origin> --allow-host localhost:8081
 ```
 
 The browser host process receives only `PATH`, `HOME`, `TMPDIR`, locale and `PLAYWRIGHT_BROWSERS_PATH` from its parent; SSH agent sockets, provider tokens and other variables stay behind. Each side validates every IPC message and drops malformed ones, so a misbehaving browser process cannot crash the daemon.
@@ -76,7 +78,7 @@ The browser cannot reach this machine or private networks by default. Every requ
 
 WebRTC cannot send UDP outside the proxy. `allowedHosts` and `--allow-host` open a specific private destination, as `host`, `host:port` or a port range `host:first-last`; use them for a local preview server, never for the protected interface or daemon ports. A range such as `<preview-host>.ts.net:32768-32799` covers the managed preview ports on one name without opening the host's other services, so new previews need no configuration change or restart.
 
-`deniedOrigins` and `--deny-origin` block a host on every scheme and port, even when it is also allowed. They apply to navigation, redirects, popups, frames, fetches and WebSockets. Always deny the protected interface and any `redirectOrigins`. Host agents can already read owner-account files, so this guard limits accidents and prompt injection; it does not contain a hostile Host agent. Never register a Host-side browser host, including `paseo browser host` run on the Mac, with the Dev container daemon. Guest agents could then use a browser on the host network.
+`deniedOrigins` and `--deny-origin` block a host on every scheme and port, even when it is also allowed. They apply to navigation, redirects, popups, frames, fetches and WebSockets. Always deny the protected interface and any `redirectOrigins`. Host agents can already read owner-account files, so this guard limits accidents and prompt injection; it does not contain a hostile Host agent. Never register a Host-side browser host, including `vorteo browser host` run on the Mac, with the Dev container daemon. Guest agents could then use a browser on the host network.
 
 To capture Vorteo itself, point the browser at an isolated preview or the e2e harness daemon and Metro server, never the protected interface. `--viewport 390x844` starts tabs at phone size, and `browser_resize` changes one tab. Use `--headed` to watch the browser. The command needs `playwright-core` and a Playwright Chromium build; run `npm run browser:setup` in the checkout when they are missing. Chromium comes from the account's Playwright cache, outside release custody: release installation neither pins nor verifies that executable. The command stops when its process exits and reconnects after daemon restarts.
 
@@ -366,7 +368,7 @@ A project is one identity, its project key, with a folder on each environment. T
 - **Missing projects.** The pass registers a project on each environment that has no record at that folder, using the same key and custom name, when the folder exists there. It never restores a project an environment archived, and removing a synchronized project archives its record so it is not restored from the other environment. Projects outside the Projects folder, and the folder itself, stay on their own environment. A refused change, such as a folder missing in Dev, is retried after ten minutes.
 - **Requirements.** Both daemons must advertise `features.projectSync` and the same `projectsRoot`; otherwise the pass changes nothing. The coordinator calls `project.sync.list` and `project.sync.apply`, which need `daemon.manage`.
 
-Worktrees belong to their repository's project. A new worktree is filed under the project whose folder is its main checkout even when the requesting thread names another project; the requested grouping stays in its membership. A checkout or worktree filed under the wrong project can be moved into its repository's project with `paseo workspace move <workspace-id> --project <project-id>`, which keeps its chats, folder and running agents; moves into any other project are refused.
+Worktrees belong to their repository's project. A new worktree is filed under the project whose folder is its main checkout even when the requesting thread names another project; the requested grouping stays in its membership. A checkout or worktree filed under the wrong project can be moved into its repository's project with `vorteo workspace move <workspace-id> --project <project-id>`, which keeps its chats, folder and running agents; moves into any other project are refused.
 
 ### Project exclusions
 
@@ -725,7 +727,7 @@ Installer-made installations run their coordinator through `releases/coordinator
 
 Saving a domain:
 
-1. Admits the origin to the Host and Dev daemons' `daemon.cors.allowedOrigins`, live and add-only, through the same admission the `paseo daemon origins admit` command uses. Browsers open workspace connections to those daemons directly from the custom origin.
+1. Admits the origin to the Host and Dev daemons' `daemon.cors.allowedOrigins`, live and add-only, through the same admission the `vorteo daemon origins admit` command uses. Browsers open workspace connections to those daemons directly from the custom origin.
 2. Writes the candidate configuration privately and runs the coordinator's full startup validation on it.
 3. Keeps the previous `coordinator.json` under `<stateDir>/custom-domain/<change>/`, writes the candidate in place and starts the detached coordinator handoff helper.
 4. The helper restarts only the coordinator and waits for a new process of the same installation to answer. Otherwise it restores the previous file and restarts once more. Host and Dev daemons and their agents keep running.
@@ -762,7 +764,7 @@ Before the first effect, the script must pass and writes the custody list to a p
 
 - **Boot form:** a check that reports `bootForm: "plain"` means Dev booted without the launcher. Only the boot-entry switch may change the form; every other restart fails if it changes. After a plain boot, the epoch and supervisor rules are skipped, because no launcher records them, and the owner and custody rules still apply.
 
-A failure after the restart names the difference and needs Factory's review. Nothing is retried, and the coordinator never edits Factory state. The check deliberately ignores `paseo factory setup`, which can report a latched error that only the restart clears.
+A failure after the restart names the difference and needs Factory's review. Nothing is retried, and the coordinator never edits Factory state. The check deliberately ignores `vorteo factory setup`, which can report a latched error that only the restart clears.
 
 ### Reviewed coordinator configuration changes
 
