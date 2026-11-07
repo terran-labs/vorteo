@@ -1,4 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
+import { stripHostEnvironment } from "./e2e/support/host-environment";
+
+stripHostEnvironment();
 
 // E2E_METRO_PORT is set dynamically by global-setup.ts after finding a free port
 // This allows multiple test runs in parallel across different worktrees
