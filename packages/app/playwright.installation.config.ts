@@ -8,6 +8,7 @@ export default defineConfig({
   build: { external: ["**/packages/server/dist/**"] },
   testDir: "./e2e/browser",
   testMatch: "**/execution-installation.packaged.spec.ts",
+  reporter: [["list"], ["json", { outputFile: "playwright-report/installation-results.json" }]],
   workers: 1,
   timeout: 120_000,
   expect: { timeout: 10_000 },

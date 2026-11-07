@@ -15,7 +15,7 @@ import {
 } from "../../../app/src/utils/host-routes";
 import { sidebarProjectForWorkspace } from "../support/helpers/workspace-ui";
 import { expectComposerVisible, fillComposerDraft } from "../support/helpers/composer";
-import { test, expect, type Page, type TestInfo } from "@playwright/test";
+import { test as base, expect, type Page, type Request, type TestInfo } from "@playwright/test";
 import {
   cp,
   mkdir,
@@ -57,6 +57,38 @@ import {
 import type { InstallationConfig } from "../../../server/src/server/execution-installation/config";
 import { pluginRequirements } from "../support/helpers/plugin-fixture";
 import { RestartJobSchema } from "@getpaseo/protocol/execution-installation";
+
+// Measure the first document load in each fresh test context, including failures.
+// This is browser load latency, not application readiness or later reload latency.
+const test = base.extend<{ firstLoadTiming: void }>({
+  firstLoadTiming: [
+    async ({ page }, runTest, info) => {
+      let startedAt: number | null = null;
+      let documentPath: string | null = null;
+      let loadMs: number | null = null;
+      function onRequest(navigation: Request) {
+        const isMainNavigation =
+          navigation.isNavigationRequest() && navigation.frame() === page.mainFrame();
+        if (startedAt !== null || !isMainNavigation) return;
+        startedAt = performance.now();
+        documentPath = new URL(navigation.url()).pathname;
+      }
+      function onLoad() {
+        if (startedAt !== null && loadMs === null) loadMs = performance.now() - startedAt;
+      }
+      page.on("request", onRequest);
+      page.once("load", onLoad);
+      await runTest();
+      page.off("request", onRequest);
+      page.off("load", onLoad);
+      await info.attach("first-load-timing", {
+        body: JSON.stringify({ documentPath, loadMs }),
+        contentType: "application/json",
+      });
+    },
+    { auto: true },
+  ],
+});
 
 async function openSystemPane(page: Page) {
   const restart = page
