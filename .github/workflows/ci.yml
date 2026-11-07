@@ -49,6 +49,9 @@ jobs:
       # Desktop apps are out of scope while PWA releases are the only channel: the desktop
       # suites run only on manual runs. Read as `desktop_apps != 'false'`, so missing outputs fail open.
       desktop_apps: ${{ github.event_name == 'workflow_dispatch' }}
+      # A Windows Host is out of scope for now, so the Windows server suites run only on
+      # manual runs. Read as `windows_host != 'false'`, so missing outputs fail open.
+      windows_host: ${{ github.event_name == 'workflow_dispatch' }}
       format: ${{ steps.filter.outputs.format }}
       quality: ${{ steps.filter.outputs.quality }}
       hub: ${{ steps.filter.outputs.hub }}
@@ -340,7 +343,7 @@ jobs:
   server-tests-windows:
     name: server-tests (windows-latest)
     needs: [changes, format, lint, typecheck]
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false' || needs.changes.outputs.hub != 'false') && needs.changes.outputs.heavy != 'false' }}
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false' || needs.changes.outputs.hub != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.windows_host != 'false' }}
     runs-on: windows-latest
     steps:
       - *server_capacity
@@ -363,7 +366,7 @@ jobs:
   server-integration-windows:
     name: server-integration (windows-latest)
     needs: [changes, format, lint, typecheck]
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false') && needs.changes.outputs.heavy != 'false' }}
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.windows_host != 'false' }}
     runs-on: windows-latest
     steps:
       - *server_capacity
