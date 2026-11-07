@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -14,7 +14,12 @@ import {
   type ClaudeOAuthProjectionDelivery,
 } from "./claude-oauth-delivery.js";
 import type { ClaudeHostCli } from "./claude-oauth-host.js";
-import type { ClaudeOAuthGrant } from "./claude-oauth-storage.js";
+import { readClaudeOAuthGrant, type ClaudeOAuthGrant } from "./claude-oauth-storage.js";
+import {
+  claudeAuthorityDir,
+  fileCredentialStore,
+  type ClaudeCredentialStore,
+} from "./claude-oauth-authority.js";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -36,6 +41,8 @@ interface HarnessOptions {
   setupSigningIn?: boolean;
   /** Other definitions in the installation, such as an account already on full sign-in. */
   others?: InstallationProvider[];
+  /** Real plaintext CLI storage in throwaway directories, read with the real grant reader. */
+  custody?: boolean;
 }
 
 function harness(
@@ -92,7 +99,19 @@ function harness(
     }),
     reconcile: vi.fn(async () => snapshot()),
   } as unknown as InstallationSettingsService;
-  const configDir = `/host/claude-accounts/${providerId}`;
+  // A real directory: authority custody takes the CLI's storage lock inside it.
+  const configDir = join(stateDir, "host", "claude-accounts", providerId);
+  mkdirSync(configDir, { recursive: true });
+  // Empty raw storage: these cases cover the account directory path before adoption.
+  const store: ClaudeCredentialStore = options.custody
+    ? fileCredentialStore
+    : {
+        read: async () => null,
+        write: async () => {},
+        writeFile: async () => {},
+        primaryHolds: async () => false,
+        remove: async () => {},
+      };
   const deliveries: ClaudeOAuthProjectionDelivery[] = [];
   const authorizations: string[] = [];
   const fetchFake = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
@@ -141,7 +160,11 @@ function harness(
     expiresAt: Date.now() + 3_600_000,
     scopes: ["user:inference", "user:profile"],
   };
-  const readGrant = vi.fn(async (): Promise<ClaudeOAuthGrant | null> => grant);
+  const readGrant = vi.fn(async (dir: string): Promise<ClaudeOAuthGrant | null> => {
+    if (options.custody) return readClaudeOAuthGrant(dir, { platform: "linux" });
+    return dir === configDir ? grant : null;
+  });
+  let clock = Date.now();
   const daemonFeatures = vi.fn(async (kind: "host" | "container") =>
     kind === "container" ? devFeatures : SUPPORTED,
   );
@@ -155,7 +178,9 @@ function harness(
     daemonFeatures,
     cli: cli as unknown as ClaudeHostCli,
     readGrant,
+    store,
     fetch: fetchFake as unknown as typeof fetch,
+    now: () => clock,
     setup: setupRuntime,
   });
   return {
@@ -173,6 +198,11 @@ function harness(
     providerId,
     creationId,
     stateDir,
+    store,
+    now: () => clock,
+    advance: (ms: number) => {
+      clock += ms;
+    },
     definitions: () => definitions,
   };
 }
@@ -544,4 +574,44 @@ it("recovers only the current enabled binding in the authenticated environment",
   );
   await h.runtime.signOut("one");
   await expect(h.runtime.recover("host", input)).rejects.toThrow();
+});
+
+it("refreshes only in the coordinator's authority and keeps Host agents access-only", async () => {
+  const h = harness(undefined, SUPPORTED, { custody: true, everywhere: true });
+  const authority = claudeAuthorityDir(h.stateDir, "one");
+  const login = (n: number) => ({
+    claudeAiOauth: {
+      accessToken: `synthetic-access-${n}`,
+      refreshToken: `synthetic-refresh-${n}`,
+      expiresAt: h.now() + 8 * 3_600_000,
+      scopes: ["user:inference"],
+    },
+  });
+  // The official CLI refreshes in whichever directory it is launched with.
+  h.cli.refresh.mockImplementation(async (dir: string) => {
+    if ((await h.store.read(dir))?.claudeAiOauth) await h.store.write(dir, login(2));
+  });
+  // The sign-in the official CLI saved into the account directory.
+  await h.store.write(h.configDir, login(1));
+  const started = await h.runtime.start("one");
+  await until(() => h.runtime.read("one").login.status === "waiting");
+  const attemptId = "attemptId" in started ? started.attemptId : "";
+  await h.runtime.submit("one", attemptId, "synthetic-code#synthetic-state");
+  await until(() => h.deliveries.length === 1);
+
+  const agentFile = () => readFileSync(join(h.configDir, ".credentials.json"), "utf8");
+  expect(agentFile()).toContain("synthetic-access-1");
+  expect(agentFile()).not.toContain("synthetic-refresh");
+  expect((await h.store.read(authority))?.claudeAiOauth).toMatchObject({
+    refreshToken: "synthetic-refresh-1",
+  });
+
+  // Inside the lead window, concurrent triggers produce one refresh, in the authority only.
+  h.advance(8 * 3_600_000 - 3 * 60_000);
+  await Promise.all([h.runtime.reconcile(), h.runtime.reconcile()]);
+  expect(h.cli.refresh).toHaveBeenCalledTimes(1);
+  expect(h.cli.refresh).toHaveBeenCalledWith(authority);
+  expect(agentFile()).toContain("synthetic-access-2");
+  expect(agentFile()).not.toContain("synthetic-refresh");
+  expect(h.deliveries.at(-1)).toMatchObject({ access: { accessToken: "synthetic-access-2" } });
 });
