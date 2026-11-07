@@ -112,6 +112,64 @@ export const en = {
       sample: "Sample factory",
       sampleNotice:
         "Showing a sample queue so the designs can be compared. Controls still change this project's real Factory.",
+      sampleNoticeAll:
+        "Showing three sample Factories so the designs can be compared. Stop and resume stay off while sample data shows.",
+    },
+    scope: {
+      all: "All Factories",
+      allTitle: "All Factories",
+      factories: "Factories",
+      open: "Open",
+      zoomIn: "Open the {{project}} Factory",
+      summary_one: "{{count}} Factory · {{running}} running · {{paused}} not running",
+      summary_other: "{{count}} Factories · {{running}} running · {{paused}} not running",
+      states: {
+        on: "On",
+        paused: "Paused",
+        draining: "Stopped",
+        off: "Off",
+        unavailable: "Unavailable",
+      },
+    },
+    stopAll: {
+      stop: "Stop all Factories",
+      resume: "Resume all",
+      confirm: "Stop all",
+      confirmTitle: "Stop all Factories?",
+      confirmMessage_one:
+        "Every Factory on this host stops taking new work. Running turns finish, no new Factory work starts and nothing merges until you choose Resume all.",
+      confirmMessage_other:
+        "Every Factory on all {{count}} hosts stops taking new work. Running turns finish, no new Factory work starts and nothing merges until you choose Resume all.",
+      defaultReason: "Stopped from the Factory Overview",
+      bannerTitle_one: "Factories stopped: {{count}} Factory held",
+      bannerTitle_other: "Factories stopped: {{count}} Factories held",
+      bannerDetail:
+        "{{reason}} · {{age}}. Running turns finish; nothing new starts or merges until you resume.",
+    },
+    needsYou: {
+      title: "Needs you",
+      none: "Nothing needs you",
+      count_one: "{{count}} needs you",
+      count_other: "{{count}} need you",
+      showAll: "Show all {{count}}",
+      showFewer: "Show fewer",
+      kinds: {
+        question: "Question: {{subject}}",
+        proposal: "Instructions proposal for {{subject}}",
+        instructionsReview: "{{subject}} instructions are being reviewed",
+        drain: "Factories stopped: {{subject}}",
+        humanReview: "Review {{subject}}",
+        failingChecks: "Checks failing on {{subject}}",
+        claim: "Claimed by another installation: {{subject}}",
+        awaitingApproval: "Waiting for approval: {{subject}}",
+        blocked: "Blocked: {{subject}}",
+      },
+      actions: {
+        thread: "Answer",
+        issue: "Open",
+        instructions: "Review",
+        resumeAll: "Resume",
+      },
     },
     controls: {
       modelsAndRoles: "Models & roles",

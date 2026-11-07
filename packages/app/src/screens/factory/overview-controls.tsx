@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { ChevronDown, ChevronRight } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
@@ -205,7 +205,13 @@ function RoleRow({
 }
 
 /** One line of controls with the rest behind a "Models & roles" disclosure. */
-export function FactoryControlStrip(target: ControlTarget) {
+export function FactoryControlStrip({
+  extra,
+  ...target
+}: ControlTarget & {
+  /** Installation-wide controls, set apart at the end of the line. */
+  extra?: ReactNode;
+}) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const toggle = useCallback(() => setOpen((value) => !value), []);
@@ -222,6 +228,7 @@ export function FactoryControlStrip(target: ControlTarget) {
         >
           {t("projectFactory.controls.modelsAndRoles")}
         </Button>
+        {extra ? <View style={styles.extra}>{extra}</View> : null}
       </View>
       <FactoryControlNotes {...target} />
       {open ? <FactoryModelsAndRoles {...target} /> : null}
@@ -252,6 +259,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   buttons: { flexDirection: "row", flexWrap: "wrap", gap: theme.spacing[2] },
   strip: { gap: theme.spacing[3] },
+  extra: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    paddingLeft: theme.spacing[3],
+    borderLeftWidth: 1,
+    borderLeftColor: theme.colors.border,
+  },
   stripRow: {
     flexDirection: "row",
     flexWrap: "wrap",
