@@ -340,7 +340,7 @@ export class ProjectFactoryService {
           ([id, project]) =>
             id !== request.projectId &&
             project.enabled &&
-            project.repository.toLowerCase() === repository.data.toLowerCase(),
+            sameRepository(project.repository, repository.data),
         );
         if (other)
           throw new ProjectFactoryError(
@@ -358,6 +358,15 @@ export class ProjectFactoryService {
           roles: current?.roles ?? {},
           ...(current?.pausedOptimizerScheduleId
             ? { pausedOptimizerScheduleId: current.pausedOptimizerScheduleId }
+            : {}),
+          // Claims belong to the repository; turning Factory on again for it keeps them, so
+          // this installation never mistakes its own claim branches for foreign ones.
+          ...(current && sameRepository(current.repository, repository.data)
+            ? {
+                ...(current.claims ? { claims: current.claims } : {}),
+                ...(current.foreignClaims ? { foreignClaims: current.foreignClaims } : {}),
+                ...(current.assignment ? { assignment: current.assignment } : {}),
+              }
             : {}),
           enabled: true,
           paused: false,
@@ -1516,6 +1525,11 @@ export class ProjectFactoryService {
   private timeZone(): string | undefined {
     return this.input.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   }
+}
+
+/** GitHub repository names compare without case. */
+function sameRepository(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
 }
 
 /** Each stale head is told once; a new head on the branch starts its clock again. */

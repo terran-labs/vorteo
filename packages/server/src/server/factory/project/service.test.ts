@@ -1621,6 +1621,10 @@ describe("several installations on one repository", () => {
 
     const restarted = service();
     expect(await claim(restarted, 8)).toMatchObject({ outcome: "held", headSha: MAIN });
+    // Turning Factory off and on again keeps this installation's claims.
+    await restarted.invoke("factory.project.disable", { projectId: PROJECT });
+    await enable(restarted);
+    expect((await claim(restarted, 8)).outcome).toBe("held");
 
     // The same crash while another installation had posted its marker is not recovered as ours.
     github.crashAfterCreate = true;
