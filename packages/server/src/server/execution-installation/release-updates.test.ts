@@ -37,6 +37,7 @@ function release(tag: string, changes: Record<string, unknown> = {}) {
 function harness(releases: ReturnType<typeof release>[], installedVersion = "26.11.300") {
   const upgrades = new InstallationUpgrades(createUpgradeJournal(directory), {
     now: () => new Date("2026-11-03T12:00:00Z"),
+    conflict: () => null,
     currentCommit: () => "a".repeat(40),
     resolveRelease: async () => "b".repeat(40),
   } as unknown as UpgradePorts);

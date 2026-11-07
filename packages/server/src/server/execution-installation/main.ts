@@ -34,7 +34,7 @@ import pino from "pino";
 import {
   claudeHostRefreshEnabled,
   codexHostRefreshEnabled,
-  readInstallationConfig,
+  parseInstallationConfig,
 } from "./config.js";
 import { createInstallationServer } from "./server.js";
 import {
@@ -47,7 +47,9 @@ import { createInstallationSettings, startSettingsReconciliation } from "./setti
 
 const configFile = process.argv[2];
 if (!configFile) throw new Error("Usage: installation-entrypoint <private-config-file>");
-const config = readInstallationConfig(configFile);
+// The exact bytes this coordinator runs; settings changes judge a silent restart against them.
+const configText = readFileSync(configFile, "utf8");
+const config = parseInstallationConfig(configText);
 const logger = pino({ name: "vorteo-installation" });
 const startupFence = loadCoordinatorStartupFence({
   installationId: config.public.installationId,
@@ -311,7 +313,10 @@ const app = createInstallationServer(
   coordinatorRequests,
   claudeOAuth,
   providerSecrets,
-  { configFile: realpathSync(configFile) },
+  {
+    configFile: realpathSync(configFile),
+    startupSha256: createHash("sha256").update(configText).digest("hex"),
+  },
   codexSignIn,
 );
 const telemetry = createOperationalTelemetry({

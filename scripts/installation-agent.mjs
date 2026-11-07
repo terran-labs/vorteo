@@ -143,6 +143,7 @@ if (
       requester: { type: "string" },
       "reason-file": { type: "string" },
       "request-file": { type: "string" },
+      file: { type: "string" },
       install: { type: "boolean" },
       remove: { type: "boolean" },
       restart: { type: "boolean" },
@@ -595,6 +596,36 @@ if (
       // Read-only: update policy, the last release check and the upgrade waiting or running.
       resource = "/api/installation/update-status";
       break;
+    case "request-coordinator-settings": {
+      // The owner approves in Installation controls. The base hash binds the reviewed file.
+      if (config.kind !== "host-agent")
+        throw new Error("Coordinator settings changes require the trusted Host client");
+      if (!values.file) throw new Error("Use --file with the patch of registered settings");
+      const patch = JSON.parse(readFileSync(values.file, "utf8"));
+      const baseResponse = await fetch(new URL("/api/installation/coordinator-settings", base), {
+        headers: { Authorization: `Bearer ${config.token}` },
+        redirect: "error",
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!baseResponse.ok)
+        throw new Error(
+          `Coordinator settings changes are unavailable (${baseResponse.status}). Nothing was requested.`,
+        );
+      resource = "/api/installation/coordinator-settings-requests";
+      body = {
+        patch,
+        baseSha256: (await baseResponse.json()).sha256,
+        ...(values.requester?.trim() ? { requester: values.requester.trim() } : {}),
+      };
+      break;
+    }
+    case "coordinator-settings-status":
+      if (config.kind !== "host-agent")
+        throw new Error("Coordinator settings inspection requires the trusted Host client");
+      if (!/^[a-f0-9-]{36}$/.test(positionals[1] ?? ""))
+        throw new Error("A coordinator settings change ID is required");
+      resource = `/api/installation/coordinator-settings-requests/${positionals[1]}`;
+      break;
     case "request-lab-update":
       // Approved by the Lab installation type; a Stable installation refuses it.
       if (config.kind !== "host-agent")
@@ -669,7 +700,7 @@ if (
     }
     default:
       throw new Error(
-        "Commands: overview, overview-observers list|create --label|revoke ID (Host only), request-broker-consumer-deployment --request-file, broker-deployment-status ID, request-broker-channel-rebind --request-file, broker-rebind-status ID, capabilities, request-worker-launch, worker-launch-status, request-restart, restart-status, contribution-status, request-coordinator, coordinator-status, request-helper, helper-status, request-session-host --install|--remove, session-host-status, read-instructions, request-instructions, instructions-status, request-lab-update [--reason] [--rollback-of ID], lab-update-status ID, container-agents (Host only)",
+        "Commands: overview, overview-observers list|create --label|revoke ID (Host only), request-broker-consumer-deployment --request-file, broker-deployment-status ID, request-broker-channel-rebind --request-file, broker-rebind-status ID, capabilities, request-worker-launch, worker-launch-status, request-restart, restart-status, contribution-status, request-coordinator, coordinator-status, request-helper, helper-status, request-session-host --install|--remove, session-host-status, read-instructions, request-instructions, instructions-status, request-lab-update [--reason] [--rollback-of ID], lab-update-status ID, request-coordinator-settings --file, coordinator-settings-status ID, container-agents (Host only)",
       );
   }
   let upload;
@@ -850,6 +881,14 @@ if (
     review.searchParams.set("instructions", result.id);
     const { appendSystemPrompt: _text, ...summary } = result;
     result = { ...summary, approvalUrl: review.href };
+  }
+  if (["request-coordinator-settings", "coordinator-settings-status"].includes(positionals[0])) {
+    const review = new URL(
+      "/settings/general",
+      new URL(config.publicOrigin ?? config.origin).origin,
+    );
+    review.searchParams.set("installation", "1");
+    result.approvalUrl = review.href;
   }
   if (["request-coordinator", "coordinator-status"].includes(positionals[0])) {
     const approval = new URL(

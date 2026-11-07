@@ -238,6 +238,144 @@ export const UpgradeDecisionSchema = z.strictObject({
 export type UpgradeDecision = z.infer<typeof UpgradeDecisionSchema>;
 
 /**
+ * Moves an installer-layout coordinator onto the Host's selected release, which Host source
+ * updates replace without touching the coordinator. Served under
+ * /api/installation/owner/coordinator-follow; older coordinators return 404.
+ */
+export const CoordinatorFollowJobSchema = z.object({
+  id: z.string().uuid(),
+  /** Changes on every transition; decisions must name the revision they reviewed. */
+  revision: z.string().uuid(),
+  createdAt: z.string().datetime(),
+  status: z.enum([
+    "pending",
+    "approved",
+    "running",
+    "succeeded",
+    "failed",
+    "rolled-back",
+    "rejected",
+    "cancelled",
+  ]),
+  detail: z.string(),
+  /** The Host release the owner reviewed. The coordinator moves to exactly this release. */
+  next: z.string(),
+  /** The release the coordinator link selected when the replacement started. */
+  previous: z.string().optional(),
+  approvedAt: z.string().datetime().optional(),
+  startedAt: z.string().datetime().optional(),
+  finishedAt: z.string().datetime().optional(),
+});
+export type CoordinatorFollowJob = z.infer<typeof CoordinatorFollowJobSchema>;
+
+/** Reply to POST /api/installation/owner/coordinator-follow/query. */
+export const CoordinatorFollowStatusSchema = z.object({
+  /** True when the coordinator can move onto the Host release now. */
+  available: z.boolean(),
+  /** Why it cannot, or what differs. */
+  detail: z.string(),
+  current: z
+    .object({
+      /** The release the coordinator service link selects. */
+      coordinatorRelease: z.string(),
+      /** The release the running coordinator process was started from. */
+      runningRelease: z.string(),
+      /** The Host release selected now. */
+      hostRelease: z.string(),
+    })
+    .nullable(),
+  /** The job waiting or running, or the newest one that finished recently. */
+  job: CoordinatorFollowJobSchema.nullable(),
+});
+export type CoordinatorFollowStatus = z.infer<typeof CoordinatorFollowStatusSchema>;
+
+/** POST /api/installation/owner/coordinator-follow. `next` repeats the reviewed Host release. */
+export const CoordinatorFollowRequestSchema = z.strictObject({ next: z.string().startsWith("/") });
+export type CoordinatorFollowRequest = z.infer<typeof CoordinatorFollowRequestSchema>;
+
+/** POST /api/installation/owner/coordinator-follow/:id/decision. */
+export const CoordinatorFollowDecisionSchema = z.strictObject({
+  revision: z.string().uuid(),
+  decision: z.enum(["approve", "reject", "cancel"]),
+});
+export type CoordinatorFollowDecision = z.infer<typeof CoordinatorFollowDecisionSchema>;
+
+const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+
+/**
+ * One registered key of a coordinator settings change. Keys the registry does not mark
+ * display-safe omit `before` and `after`, so the owner sees only that the key changed.
+ */
+export const CoordinatorSettingChangeSchema = z.object({
+  key: z.string(),
+  displaySafe: z.boolean(),
+  /** JSON text of the value before the change, or null when unset. */
+  before: z.string().nullable().optional(),
+  /** JSON text of the value after the change, or null when the change removes the key. */
+  after: z.string().nullable().optional(),
+});
+export type CoordinatorSettingChange = z.infer<typeof CoordinatorSettingChangeSchema>;
+
+/**
+ * Changes registered keys of the coordinator's own configuration file, then restarts the
+ * coordinator on it; the previous file is restored if it does not answer. Served under
+ * /api/installation/owner/coordinator-settings; older coordinators return 404.
+ */
+export const CoordinatorSettingsJobSchema = z.object({
+  id: z.string().uuid(),
+  /** Changes on every transition; decisions must name the revision they reviewed. */
+  revision: z.string().uuid(),
+  createdAt: z.string().datetime(),
+  status: CoordinatorFollowJobSchema.shape.status,
+  detail: z.string(),
+  /** SHA-256 of the configuration file the change was prepared against. */
+  baseSha256: Sha256Schema,
+  changes: z.array(CoordinatorSettingChangeSchema),
+  requester: z.string().optional(),
+  /**
+   * The coordinator update approved in the same owner decision. The settings apply once it
+   * succeeds; if it fails, this is cleared and the settings stay pending.
+   */
+  approvedWith: z.string().uuid().optional(),
+  approvedAt: z.string().datetime().optional(),
+  startedAt: z.string().datetime().optional(),
+  finishedAt: z.string().datetime().optional(),
+});
+export type CoordinatorSettingsJob = z.infer<typeof CoordinatorSettingsJobSchema>;
+
+/** Reply to POST /api/installation/owner/coordinator-settings/query. */
+export const CoordinatorSettingsStatusSchema = z.object({
+  /** True when this coordinator can change its settings. */
+  available: z.boolean(),
+  detail: z.string(),
+  /** The job waiting or running, or the newest one that finished recently. */
+  job: CoordinatorSettingsJobSchema.nullable(),
+});
+export type CoordinatorSettingsStatus = z.infer<typeof CoordinatorSettingsStatusSchema>;
+
+/**
+ * POST /api/installation/coordinator-settings-requests, Host agents only. A null value
+ * removes the key. `baseSha256` comes from GET /api/installation/coordinator-settings.
+ */
+export const CoordinatorSettingsRequestSchema = z.strictObject({
+  patch: z.record(z.string(), z.unknown()),
+  baseSha256: Sha256Schema,
+  requester: z.string().min(1).max(256).optional(),
+});
+export type CoordinatorSettingsRequest = z.infer<typeof CoordinatorSettingsRequestSchema>;
+
+/**
+ * POST /api/installation/owner/coordinator-settings/:id/decision. With `follow`, an approval
+ * first approves that pending coordinator update and applies the settings after it succeeds.
+ */
+export const CoordinatorSettingsDecisionSchema = z.strictObject({
+  revision: z.string().uuid(),
+  decision: z.enum(["approve", "reject", "cancel"]),
+  follow: z.strictObject({ id: z.string().uuid(), revision: z.string().uuid() }).optional(),
+});
+export type CoordinatorSettingsDecision = z.infer<typeof CoordinatorSettingsDecisionSchema>;
+
+/**
  * GET /api/installation/update-status, read-only for Host and Dev agents such as the Mechanic
  * and Builds. Older coordinators return 404.
  */
@@ -246,5 +384,13 @@ export const AgentUpdateStatusSchema = z.object({
   check: UpdateCheckSchema,
   /** The upgrade waiting for approval or running, without coordinator-private state. */
   active: InstallationUpgradeSchema.nullable(),
+  /** Absent from coordinators without the coordinator replacement. Agents never decide it. */
+  coordinatorFollow: CoordinatorFollowStatusSchema.pick({
+    available: true,
+    detail: true,
+    job: true,
+  }).optional(),
+  /** Absent from coordinators without coordinator settings changes. Agents never decide it. */
+  coordinatorSettings: CoordinatorSettingsStatusSchema.optional(),
 });
 export type AgentUpdateStatus = z.infer<typeof AgentUpdateStatusSchema>;
