@@ -56,7 +56,8 @@ export function WorkspaceLifecycleIndicators({
   const factory = Boolean(membership);
   const systemManaged = useSystemManaged(workspace.serverId, workspace.workspaceId);
   const protectedLabel = systemManaged ? SYSTEM_MANAGED_EXPLANATION : "Protected";
-  const locked = workspace.protected || (factory && hideFactory);
+  // Every Factory member is protected, so the sidebar's Factory card says it once: no lock.
+  const locked = workspace.protected && !factory;
   const label = scheduled === "paused" ? "Paused" : "Scheduled";
   const openSchedules = useCallback(
     (event: GestureResponderEvent) => {

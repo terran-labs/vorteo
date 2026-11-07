@@ -13,6 +13,8 @@ import {
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { DropdownTrigger } from "@/components/ui/dropdown-trigger";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
+import { SettingsCard, SettingsRow } from "@/components/settings";
+import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
 import { Button } from "@/components/ui/button";
 import {
   EditingTextInput as TextInput,
@@ -31,6 +33,7 @@ import {
   sanitizeFontFamily,
   useAppSettings,
   type AppSettings,
+  type WorkspaceStatusLineMode,
 } from "@/hooks/use-settings";
 import {
   DEFAULT_MONO_FONT_STACK,
@@ -529,6 +532,13 @@ export function AppearanceSection() {
     }
   }, [contentSizeDraft, settings.contentFontSize, updateSettings]);
 
+  const handleWorkspaceStatusLineChange = useCallback(
+    (workspaceStatusLine: WorkspaceStatusLineMode) => {
+      void updateSettings({ workspaceStatusLine });
+    },
+    [updateSettings],
+  );
+
   // Live-while-typing: the in-progress drafts drive the preview without
   // committing to the global theme. Empty/invalid fields fall back to the
   // theme value inside the preview.
@@ -613,6 +623,14 @@ export function AppearanceSection() {
           />
         </View>
       </SettingsSection>
+      <SettingsSection title={t("settings.appearance.statusLine.title")}>
+        <SettingsCard>
+          <WorkspaceStatusLineRow
+            value={settings.workspaceStatusLine}
+            onChange={handleWorkspaceStatusLineChange}
+          />
+        </SettingsCard>
+      </SettingsSection>
       <SettingsSection title={t("settings.appearance.syntax.title")}>
         <View style={settingsStyles.card}>
           <SyntaxRow value={settings.syntaxTheme} onChange={handleSyntaxThemeChange} />
@@ -622,6 +640,37 @@ export function AppearanceSection() {
         </View>
       </SettingsSection>
     </View>
+  );
+}
+
+const WORKSPACE_STATUS_LINE_MODES = ["off", "hover", "always"] as const;
+
+/** Off keeps rows single-line; Hover shows the line in the row's hover card; Always adds a row. */
+function WorkspaceStatusLineRow({
+  value,
+  onChange,
+}: {
+  value: WorkspaceStatusLineMode;
+  onChange: (value: WorkspaceStatusLineMode) => void;
+}) {
+  const { t } = useTranslation();
+  const options = useMemo<SegmentedControlOption<WorkspaceStatusLineMode>[]>(
+    () =>
+      WORKSPACE_STATUS_LINE_MODES.map((mode) => ({
+        value: mode,
+        label: t(`settings.appearance.statusLine.${mode}`),
+        testID: `workspace-status-line-${mode}`,
+      })),
+    [t],
+  );
+  return (
+    <SettingsRow
+      label={t("settings.appearance.statusLine.label")}
+      hint={t("settings.appearance.statusLine.hint")}
+      testID="workspace-status-line-setting"
+    >
+      <SegmentedControl options={options} value={value} onValueChange={onChange} />
+    </SettingsRow>
   );
 }
 
