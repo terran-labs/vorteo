@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { Alert, Platform, Text, View, StyleSheet } from "react-native";
+import { settingsStyles } from "@/styles/settings";
 import { ScrollView } from "@/components/ui/scroll-view";
 // The app runs on expo-router's bundled React Navigation; the standalone package is a separate
 // copy whose context is never provided, so importing hooks from it crashes at runtime.
@@ -226,7 +227,9 @@ export function AgentProfilePage({
         <Button testID="agent-profile-back-button" onPress={close}>
           Back to provider
         </Button>
-        <Text accessibilityRole="header">{state.name || profile.name}</Text>
+        <Text accessibilityRole="header" style={settingsStyles.rowTitle}>
+          {state.name || profile.name}
+        </Text>
         {form}
         {deleteControl}
       </ScrollView>

@@ -32,6 +32,8 @@ import {
   type RestorePlan,
 } from "./coordinator-handoff.js";
 import {
+  CoordinatorFollow,
+  createCoordinatorFollowJournal,
   createUpgradeJournal,
   InstallationUpgrades,
   type AdoptionOutcome,
@@ -66,9 +68,13 @@ const ADOPTION_DEADLINE_MS = 4 * 60 * 60_000;
 const INSTALLER_ENGINE = "scripts/installer/main.mjs";
 const SUPERVISOR_ENTRYPOINT = "packages/server/dist/scripts/supervisor-entrypoint.js";
 const COMMIT = /^[a-f0-9]{40}$/;
+/** Where a release holds the coordinator entrypoint. */
+const COORDINATOR_DIRECTORY = "packages/server/dist/server/server/execution-installation";
 
 export interface ReleaseUpgradeRuntime {
   upgrades: InstallationUpgrades | null;
+  /** Moves the coordinator onto the Host release that Host source updates selected. */
+  coordinatorFollow: CoordinatorFollow;
   /** The update policy and release check. Null when upgrades are unavailable. */
   updates: ReleaseUpdates | null;
   /**
@@ -83,9 +89,30 @@ export interface ReleaseUpgradeRuntime {
   upgradeStatus(): UpgradeStatus;
 }
 
+const COORDINATOR_LINK_MISSING =
+  "The installer did not record the coordinator release link. Restart the coordinator with the vorteo update command.";
+
+/**
+ * Why the coordinator cannot move itself to another release, or null. It needs the installer's
+ * coordinator release link and service descriptors, and must start through that link: a
+ * service pinned to one release keeps running it after the link moves.
+ */
+function coordinatorReplacement(
+  config: InstallationConfig,
+  services: ReturnType<typeof managedServices>,
+  entrypoint: string,
+): string | null {
+  const link = config.deployment?.coordinator?.releaseLink;
+  if (!link) return COORDINATOR_LINK_MISSING;
+  if (typeof services === "string") return services;
+  if (!entrypoint.startsWith(`${link}/`))
+    return "The coordinator service starts a fixed release instead of its release link, so moving the link would not move it. Report this; the installer cannot move it either.";
+  return null;
+}
+
 /** The release root a coordinator entrypoint runs from. */
 export function releaseOfEntrypoint(entrypoint: string): string {
-  const suffix = path.join("packages/server/dist/server/server/execution-installation");
+  const suffix = COORDINATOR_DIRECTORY;
   const directory = path.dirname(realpathSync(entrypoint));
   if (!directory.endsWith(suffix)) throw new Error("The coordinator does not run from a release");
   return directory.slice(0, -suffix.length - 1);
@@ -237,10 +264,25 @@ export function createReleaseUpgradeRuntime(input: {
   entrypoint?: string;
   /** Replaces the GitHub Releases API in tests. */
   listReleases?: ReleaseUpdatePorts["listReleases"];
+  /** Another coordinator restart, such as a settings change, that blocks upgrades and follows. */
+  conflict?: () => string | null;
+  /**
+   * The shared coordinator restart check for a coordinator update: other coordinator
+   * restarts, approved Host jobs and open coordinator requests.
+   */
+  coordinatorFollowConflict?: () => string | null;
 }): ReleaseUpgradeRuntime {
   const { config, configFile, restarts, hostUpdates, logger } = input;
   const run = input.run ?? runCommand;
   const entrypoint = input.entrypoint ?? process.argv[1] ?? "";
+  // Resolved once: a link moved later without a restart must not pass for the new release.
+  const startedRelease: { release: string } | { error: unknown } = (() => {
+    try {
+      return { release: releaseOfEntrypoint(entrypoint) };
+    } catch (error) {
+      return { error };
+    }
+  })();
   const root = snapshotRoot(config);
   const snapshots = root
     ? createInstallationSnapshots({
@@ -255,6 +297,7 @@ export function createReleaseUpgradeRuntime(input: {
       })
     : null;
   const upgradeDirectory = path.join(config.stateDir, "upgrades");
+  const followDirectory = path.join(config.stateDir, "coordinator-follow");
   const restoreDirectory = root ? path.join(root, ".restores") : null;
   const services = managedServices(config);
   const adoptable = adoptionRequired(config, configFile);
@@ -562,8 +605,40 @@ export function createReleaseUpgradeRuntime(input: {
       .find((job) => job.target === "host" && job.reason.includes(upgradeId) && job.update);
   }
 
+  /** Starts the detached helper that swaps the coordinator release; it restarts this process. */
+  function launchCoordinatorSwap(directory: string, id: string, next: string, previous: string) {
+    const link = config.deployment?.coordinator?.releaseLink;
+    if (!link || typeof services === "string")
+      throw new Error("Coordinator replacement is unavailable");
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const plan: CoordinatorSwapPlan = {
+      kind: "coordinator-swap",
+      id,
+      releaseLink: link,
+      previous,
+      next,
+      services,
+      health,
+      outcomeFile: path.join(directory, "coordinator-handoff.json"),
+      timeoutMs: COORDINATOR_READY_TIMEOUT_MS,
+    };
+    launchHandoff({
+      node: process.execPath,
+      helper: helper(),
+      planFile: path.join(directory, "coordinator-handoff-plan.json"),
+      logFile: path.join(directory, "coordinator-handoff.log"),
+      plan,
+    });
+    logger.info({ id, next }, "Coordinator handoff started");
+  }
+
   const ports: UpgradePorts = {
     now: () => new Date(),
+    conflict: () =>
+      // `coordinatorFollow` is created below from these ports; it exists before any upgrade runs.
+      coordinatorFollow.dispatching()
+        ? "Wait for the coordinator update to finish before upgrading."
+        : (input.conflict?.() ?? null),
     adoptionRequired: adoptable,
     launchAdoption: (upgrade) => launchAdoptionEngine(path.join(upgradeDirectory, upgrade.id)),
     adoptionOutcome: (upgradeId) =>
@@ -571,9 +646,7 @@ export function createReleaseUpgradeRuntime(input: {
     adoptionDeadlineMs: ADOPTION_DEADLINE_MS,
     hasContainer: managedDev(config),
     devUnmanaged: config.container !== undefined && !managedDev(config),
-    coordinatorReplacement: config.deployment?.coordinator
-      ? null
-      : "The installer did not record the coordinator release link. Restart the coordinator with the vorteo update command.",
+    coordinatorReplacement: config.deployment?.coordinator ? null : COORDINATOR_LINK_MISSING,
     currentCommit,
     // `updates` is created below from these ports; it exists before any upgrade runs.
     automaticAllowed: () => updates?.policy().mode === "automatic",
@@ -702,38 +775,17 @@ export function createReleaseUpgradeRuntime(input: {
       if (!config.sourceUpdates) throw new Error("Host source updates are unavailable");
       return realpathSync(config.sourceUpdates.currentReleaseLink);
     },
-    runningRelease: () => releaseOfEntrypoint(entrypoint),
+    runningRelease: () => {
+      if ("error" in startedRelease) throw startedRelease.error;
+      return startedRelease.release;
+    },
     coordinatorRelease() {
       const link = config.deployment?.coordinator?.releaseLink;
       if (!link) throw new Error("The coordinator release link is unknown");
       return readCurrentLink(link);
     },
-    launchCoordinatorSwap(upgrade, next, previous) {
-      const link = config.deployment?.coordinator?.releaseLink;
-      if (!link || typeof services === "string")
-        throw new Error("Coordinator replacement is unavailable");
-      const directory = path.join(upgradeDirectory, upgrade.id);
-      mkdirSync(directory, { recursive: true, mode: 0o700 });
-      const plan: CoordinatorSwapPlan = {
-        kind: "coordinator-swap",
-        id: upgrade.id,
-        releaseLink: link,
-        previous,
-        next,
-        services,
-        health,
-        outcomeFile: path.join(directory, "coordinator-handoff.json"),
-        timeoutMs: COORDINATOR_READY_TIMEOUT_MS,
-      };
-      launchHandoff({
-        node: process.execPath,
-        helper: helper(),
-        planFile: path.join(directory, "coordinator-handoff-plan.json"),
-        logFile: path.join(directory, "coordinator-handoff.log"),
-        plan,
-      });
-      logger.info({ upgradeId: upgrade.id }, "Coordinator handoff started");
-    },
+    launchCoordinatorSwap: (upgrade, next, previous) =>
+      launchCoordinatorSwap(path.join(upgradeDirectory, upgrade.id), upgrade.id, next, previous),
     coordinatorOutcome: (upgradeId) =>
       readHandoffOutcome(path.join(upgradeDirectory, upgradeId, "coordinator-handoff.json")),
     // Two readiness windows (new release, then rollback) plus restart slack.
@@ -868,6 +920,27 @@ export function createReleaseUpgradeRuntime(input: {
     ? null
     : new InstallationUpgrades(createUpgradeJournal(upgradeDirectory), ports);
 
+  const coordinatorFollow = new CoordinatorFollow(createCoordinatorFollowJournal(followDirectory), {
+    now: () => new Date(),
+    replacement: coordinatorReplacement(config, services, entrypoint),
+    // Checked at request, approval and dispatch: never restart the coordinator under other
+    // lifecycle work it coordinates.
+    conflict: () => {
+      if (upgrades?.active()) return "Wait for the release upgrade to finish.";
+      return input.coordinatorFollowConflict?.() ?? null;
+    },
+    hostRelease: () => ports.hostRelease(),
+    runningRelease: () => ports.runningRelease(),
+    coordinatorRelease: () => ports.coordinatorRelease(),
+    coordinatorDeadlineMs: ports.coordinatorDeadlineMs,
+    hasCoordinator: (release) =>
+      existsSync(path.join(release, COORDINATOR_DIRECTORY, path.basename(entrypoint))),
+    launchSwap: (job, next, previous) =>
+      launchCoordinatorSwap(path.join(followDirectory, job.id), job.id, next, previous),
+    swapOutcome: (jobId) =>
+      readHandoffOutcome(path.join(followDirectory, jobId, "coordinator-handoff.json")),
+  });
+
   /** The version in the selected Host release's manifest, such as 26.10.3001. */
   function installedVersion(): string | null {
     try {
@@ -920,6 +993,7 @@ export function createReleaseUpgradeRuntime(input: {
 
   return {
     upgrades,
+    coordinatorFollow,
     updates,
     adoptAfterSourceUpdate,
     snapshots,

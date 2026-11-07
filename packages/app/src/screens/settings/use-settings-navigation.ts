@@ -15,6 +15,9 @@ import type {
   SettingsSearchControls,
 } from "./settings-scroll-page";
 
+/** `/settings/<section>` and deeper, as opposed to the settings list at `/settings`. */
+const SECTION_ADDRESS = /^\/settings\/[^/]+/;
+
 /** Results the arrow keys can reach; matches the result list's length. */
 const KEYBOARD_RESULTS = 8;
 
@@ -120,9 +123,14 @@ export function useSettingsNavigation({
       // Keep the address on the section being read, so a reload or a copied
       // link returns here, without adding a history entry per section.
       if (isWeb && view.kind === "section" && typeof window !== "undefined") {
+        const path = window.location.pathname;
+        // Only a section address belongs to this page. A compact section page that is opening
+        // or being popped can report its top section while the address is still the settings
+        // list's; rewriting it then leaves Back on the list under a section address.
+        if (!SECTION_ADDRESS.test(path)) return;
         // An address that already opens this section keeps its precision, such
         // as /settings/connections landing on the Connections pane.
-        if (sectionForPath(window.location.pathname) !== section) {
+        if (sectionForPath(path) !== section) {
           window.history.replaceState(window.history.state, "", buildSettingsSectionRoute(section));
         }
       }

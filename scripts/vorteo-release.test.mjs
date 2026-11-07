@@ -284,6 +284,32 @@ test("a failed tag push leaves no local tag behind to block the retry", () => {
   assert.equal(run(clone, "tag", "--list", plan.name), "");
 });
 
+test("a tag another installation pushed first stands: same commit succeeds, another refuses", () => {
+  const { root, origin, clone } = fixture();
+  const env = gitleaksEnv(root);
+  const date = "2026-10-30";
+  // Another installation tags between our check and our push.
+  const rivalTags = (name, commit) => {
+    run(clone, "push", "--quiet", origin, `${commit}:refs/tags/${name}`);
+  };
+  const first = versionCommit(clone, "26.10.3000");
+  const same = prepareTag({ cwd: clone, channel: "beta", commit: "HEAD" });
+  rivalTags(same.name, first);
+  assert.equal(createTag(same, env, { date }).commit, first);
+
+  versionCommit(clone, "26.10.3001");
+  const other = prepareTag({ cwd: clone, channel: "beta", commit: "HEAD" });
+  rivalTags(other.name, first);
+  assert.throws(
+    () => createTag(other, env, { date }),
+    new RegExp(
+      `${other.name} already exists at ${first.slice(0, 9)}.*never moved or reused.*Prepare 26\\.10\\.3002 with vorteo-release\\.mjs prepare`,
+    ),
+  );
+  assert.equal(run(clone, "tag", "--list", other.name), "");
+  assert.equal(run(origin, "rev-parse", `refs/tags/${other.name}`), first);
+});
+
 test("required checks come from the checked-in main ruleset", () => {
   const mainRuleset = loadRulesets(process.cwd()).find((entry) => entry.target === "branch");
   assert.deepEqual(requiredChecks(mainRuleset), ["changes", "format", "lint", "typecheck", "scan"]);

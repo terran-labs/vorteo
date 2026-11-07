@@ -117,6 +117,27 @@ posixTest("an installation from before the installer offers upgrades, which adop
   expect(status.detail).toContain("predates the one-command installer");
 });
 
+test("the coordinator update is unavailable while the service starts a fixed release", () => {
+  const legacy = legacyInstallation();
+  const link = path.join(root, "releases", "coordinator-current");
+  legacy.config.deployment = {
+    installRoot: root,
+    sourceDirectory: path.join(root, "source"),
+    hostHome: path.join(root, "state", "host"),
+    hostReleaseLink: path.join(root, "current"),
+    coordinator: {
+      releaseLink: link,
+      service: {
+        launchdService: "gui/501/local.vorteo.791360b7-0000-4000-8000-000000000001.installation",
+      },
+    },
+  } as InstallationConfig["deployment"];
+  // `runtime` starts the coordinator from the release folder itself, not through `link`.
+  const status = runtime([], legacy).coordinatorFollow.status();
+  expect(status.available).toBe(false);
+  expect(status.detail).toContain("fixed release");
+});
+
 test("only a configuration under the old installer's record is adopted, plan copies included", () => {
   const { config } = legacyInstallation();
   const elsewhere = mkdtempSync(path.join(tmpdir(), "not-an-installation-"));

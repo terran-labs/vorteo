@@ -1,3 +1,4 @@
+import { cliCommand } from "@getpaseo/server/vorteo-cli";
 import type { Command } from "commander";
 import { connectToDaemon } from "../../utils/client.js";
 import { collectMultiple } from "../../utils/command-options.js";
@@ -44,7 +45,7 @@ function parseImportProvider(provider: string | undefined): string {
     throw {
       code: "MISSING_PROVIDER",
       message: "Provider is required",
-      details: "Usage: paseo import --provider <provider> <id>",
+      details: `Usage: ${cliCommand()} import --provider <provider> <id>`,
     } satisfies CommandError;
   }
 
@@ -104,7 +105,7 @@ export async function runImportCommand(
     throw {
       code: "MISSING_SESSION_ID",
       message: "Session ID is required",
-      details: "Usage: paseo import --provider <provider> <id>",
+      details: `Usage: ${cliCommand()} import --provider <provider> <id>`,
     } satisfies CommandError;
   }
 

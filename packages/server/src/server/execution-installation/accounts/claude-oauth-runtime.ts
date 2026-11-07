@@ -1,5 +1,7 @@
 import pino from "pino";
+import type { ClaudeOAuthRecoveryRequest } from "./claude-oauth-recovery.js";
 import { isDeepStrictEqual } from "node:util";
+import { access, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import type { ProviderLoginState } from "@getpaseo/protocol/provider-login";
@@ -21,6 +23,20 @@ import {
 import { createClaudeHostCli, type ClaudeHostCli } from "./claude-oauth-host.js";
 import { readClaudeOAuthGrant } from "./claude-oauth-storage.js";
 import { ClaudeOAuthRefresher, type ClaudeOAuthPolicy } from "./claude-oauth-refresher.js";
+import {
+  adoptClaudeGrant,
+  authorityOwner,
+  claudeAuthorityDir,
+  claudeAuthorityDisabledFile,
+  claudeAuthorityEnabledFile,
+  platformCredentialStore,
+  projectClaudeHostAccess,
+  rememberAuthorityToken,
+  removeAuthority,
+  restoreClaudeGrant,
+  type ClaudeCredentialStore,
+} from "./claude-oauth-authority.js";
+import type { HostRefreshEvent } from "./host-owned-refresher.js";
 
 // Sign-in start failures surface a short message in the interface; the cause goes to the log.
 const logger = pino({ name: "vorteo-installation" });
@@ -51,6 +67,8 @@ interface RuntimeOverrides {
   daemonFeatures?: (kind: "host" | "container") => Promise<DaemonFeatures | undefined>;
   cli?: ClaudeHostCli;
   readGrant?: typeof readClaudeOAuthGrant;
+  /** Raw CLI credential storage for authority custody. Injected by tests. */
+  store?: ClaudeCredentialStore;
   fetch?: typeof fetch;
   now?: () => number;
   /** The setup-token side of the same accounts, so the two sign-ins never overlap. */
@@ -59,8 +77,12 @@ interface RuntimeOverrides {
 
 /**
  * Owner-only coordinator service for full sign-in Claude accounts with Host-owned refresh.
- * Created only when the installation config sets `claudeHostRefresh: true`. It stores no token:
- * the Host account's own CLI storage holds the grant, and Dev receives access-only projections.
+ * Created only when the installation config sets `claudeHostRefresh: true`. It stores no token in
+ * its state: the grant lives in CLI storage for a coordinator-only authority directory, the Host
+ * account directory and Dev receive access-only projections, and the coordinator is the only
+ * refresher, for accounts opted in with `claude-oauth/authority-enabled/<hash>`. See
+ * claude-oauth-authority.ts. Removing the marker, or creating `claude-oauth/authority-disabled`,
+ * returns the login to its account directory on the next read (rollback).
  */
 export function createClaudeOAuthRuntime(
   config: InstallationConfig,
@@ -71,8 +93,10 @@ export function createClaudeOAuthRuntime(
   const assertReady = createInstallationRegistrationAdmission(config, assertRegistrationReadiness);
   const configuration = structuredClone(config);
   const file = join(config.stateDir, "claude-oauth", "state.json");
+  const diagnosticsFile = join(config.stateDir, "claude-oauth", "diagnostics.json");
   const cli = overrides.cli ?? createClaudeHostCli();
   const readGrant = overrides.readGrant ?? readClaudeOAuthGrant;
+  const store = overrides.store ?? platformCredentialStore();
   const request = overrides.fetch ?? fetch;
   const now = overrides.now ?? Date.now;
   const host = config.public.environments.find((environment) => environment.kind === "host");
@@ -121,6 +145,10 @@ export function createClaudeOAuthRuntime(
     return {
       revision: snapshot.revision,
       removed,
+      hostEnabled:
+        !removed &&
+        selected.policy.enabled !== false &&
+        !snapshot.settings?.resourceExclusions[host!.serverId]?.providerIds?.includes(selected.id),
       targets: config.public.environments
         .filter((environment) => environment.kind === "container")
         .filter((environment) => Object.hasOwn(selected.bindings, environment.serverId))
@@ -172,18 +200,146 @@ export function createClaudeOAuthRuntime(
         policyRevision: snapshot.revision,
       }),
     );
-    if (binding.providerId !== providerId) throw new ClaudeOAuthDeliveryError();
+    if (
+      binding.providerId !== providerId ||
+      fullDefinition(definitionId).snapshot.revision !== snapshot.revision
+    )
+      throw new ClaudeOAuthDeliveryError();
     directories.set(definitionId, { revision: snapshot.revision, configDir: binding.configDir });
     return binding.configDir;
+  }
+
+  const authorityDir = (definitionId: string) => claudeAuthorityDir(config.stateDir, definitionId);
+  const present = (path: string) =>
+    access(path).then(
+      () => true,
+      () => false,
+    );
+  /** Opt-in per account; the global kill switch wins. See claude-oauth-authority.ts. */
+  async function custodyEnabled(definitionId: string): Promise<boolean> {
+    if (await present(claudeAuthorityDisabledFile(config.stateDir))) return false;
+    return present(claudeAuthorityEnabledFile(config.stateDir, definitionId));
+  }
+
+  /**
+   * Without custody this is the 601 path: the account directory's own grant, after returning any
+   * authority grant to it. With custody it adopts any new refresh token from the account
+   * directory, reads the authority and projects its access back. Account directory and Host
+   * daemon failures are logged and never stop the authority's own renewal.
+   */
+  async function hostGrant(definitionId: string) {
+    const authority = authorityDir(definitionId);
+    if (!(await custodyEnabled(definitionId))) {
+      const agentDir = await hostConfigDir(definitionId);
+      // Never adopted: exactly the previous path, with no extra storage reads.
+      if (!(await present(authority))) return readGrant(agentDir);
+      try {
+        if ((await restoreClaudeGrant({ agentDir, authorityDir: authority, store })) === "restored")
+          logger.warn({ definitionId }, "Claude sign-in returned to its account directory");
+      } catch {
+        logger.warn({ definitionId }, "Claude sign-in return to its account directory is pending");
+      }
+      // Until the return finishes, the authority still holds the only renewable grant.
+      const held = (await present(authority)) ? await readGrant(authority) : null;
+      return held?.hasRefreshToken ? held : readGrant(agentDir);
+    }
+    let agentDir: string | null = null;
+    try {
+      agentDir = await hostConfigDir(definitionId);
+      const adoption = await adoptClaudeGrant({
+        definitionId,
+        agentDir,
+        authorityDir: authority,
+        store,
+        now: now(),
+      });
+      if (adoption !== "none")
+        logger[adoption === "deferred" ? "warn" : "info"](
+          { definitionId, adoption },
+          "Claude sign-in custody",
+        );
+    } catch {
+      logger.warn({ definitionId }, "Claude sign-in adoption is pending");
+    }
+    const held = await readGrant(authority);
+    if (held?.hasRefreshToken) {
+      await rememberAuthorityToken(authority, store).catch(() => {
+        logger.warn({ definitionId }, "Claude refresh token record is pending");
+      });
+      if (agentDir) {
+        try {
+          if (
+            (await projectClaudeHostAccess({ agentDir, authorityDir: authority, store })) ===
+            "written"
+          )
+            logger.info(
+              { definitionId, expiresAt: held.expiresAt },
+              "Claude Host access copy updated",
+            );
+        } catch {
+          logger.warn({ definitionId }, "Claude Host access copy is pending");
+        }
+      }
+      return held;
+    }
+    // No live authority grant: only a sign-in still waiting for adoption counts. An access-only
+    // copy left from a dead or deleted authority must ask for sign-in, not look connected.
+    if (agentDir === null) throw new ClaudeOAuthDeliveryError();
+    const own = await readGrant(agentDir);
+    return own?.hasRefreshToken ? own : null;
+  }
+
+  /** The directory the official CLI refreshes in: the authority once it holds the grant. */
+  async function refreshDir(definitionId: string): Promise<string> {
+    const authority = authorityDir(definitionId);
+    if (await present(authority)) {
+      const held = await readGrant(authority);
+      if (held?.hasRefreshToken) return authority;
+    }
+    return hostConfigDir(definitionId);
+  }
+
+  /** Deletes the authority of an account that was removed from the installation. */
+  async function purgeRemovedAuthorities(): Promise<void> {
+    const snapshot = settings.snapshot();
+    if (!snapshot.settings?.providerDefinitions || snapshot.conflicts) return;
+    const root = join(config.stateDir, "claude-oauth", "authority");
+    const names = await readdir(root).catch(() => [] as string[]);
+    for (const name of names) {
+      const dir = join(root, name);
+      const owner = await authorityOwner(dir);
+      if (!owner) continue;
+      const selected = snapshot.settings.providerDefinitions.find((item) => item.id === owner);
+      if (selected && !selected.removed) continue;
+      await refresher.exclusive(owner, () => removeAuthority(dir, store));
+      logger.info({ definitionId: owner }, "Claude authority deleted after account removal");
+    }
+  }
+
+  function logRefresh(event: HostRefreshEvent) {
+    if (event.kind === "expiring")
+      logger.warn(event, "Claude access token is expiring without a successful refresh");
+    else if (event.outcome === "refreshed") logger.info(event, "Claude sign-in refreshed");
+    else logger.warn(event, "Claude sign-in refresh did not renew the token");
   }
 
   const refresher = new ClaudeOAuthRefresher({
     installationId: config.public.installationId,
     read: () => readClaudeSetupFile(file) ?? [],
     persist: (state) => writeClaudeSetupFile(file, state),
+    diagnostics: {
+      read: () => readClaudeSetupFile(diagnosticsFile) ?? [],
+      persist: (diagnostics) => writeClaudeSetupFile(diagnosticsFile, diagnostics),
+    },
     policy,
-    grant: async (definitionId) => readGrant(await hostConfigDir(definitionId)),
-    refresh: async (definitionId) => cli.refresh(await hostConfigDir(definitionId)),
+    grant: hostGrant,
+    log: logRefresh,
+    refresh: async (definitionId) => {
+      const revision = policy(definitionId).revision;
+      const configDir = await refreshDir(definitionId);
+      if (policy(definitionId).revision !== revision) throw new ClaudeOAuthDeliveryError();
+      await cli.refresh(configDir);
+    },
     deliver: async (delivery: ClaudeOAuthProjectionDelivery) => {
       const environment = config.public.environments.find(
         (item) => item.serverId === delivery.serverId,
@@ -197,6 +353,47 @@ export function createClaudeOAuthRuntime(
     },
     now,
   });
+
+  async function recover(
+    kind: "host" | "container",
+    input: ClaudeOAuthRecoveryRequest,
+  ): Promise<void> {
+    const environment = config.public.environments.find((item) => item.kind === kind);
+    if (!environment) throw new ClaudeOAuthDeliveryError();
+    const snapshot = settings.snapshot();
+    const candidates = snapshot.settings?.providerDefinitions?.filter(
+      (item) => item.bindings[environment.serverId] === input.providerId,
+    );
+    if (candidates?.length !== 1) throw new ClaudeOAuthDeliveryError();
+    const selected = candidates[0]!;
+    const current = policy(selected.id);
+    const allowed =
+      kind === "host"
+        ? current.hostEnabled
+        : current.targets.some(
+            (target) => target.serverId === environment.serverId && !target.excluded,
+          );
+    if (!allowed || current.removed || !refresher.status(selected.id).signedIn)
+      throw new ClaudeOAuthDeliveryError();
+    assertReady(kind === "host" ? "host" : "container-daemon");
+    const binding = ClaudeOAuthBindingResponseSchema.parse(
+      await post(kind, "/api/installation/claude/oauth/binding", {
+        installationId: config.public.installationId,
+        serverId: environment.serverId,
+        definitionId: selected.id,
+        providerId: input.providerId,
+        policyRevision: current.revision,
+      }),
+    );
+    if (
+      binding.providerId !== input.providerId ||
+      binding.configDir !== input.configDir ||
+      policy(selected.id).revision !== current.revision
+    )
+      throw new ClaudeOAuthDeliveryError();
+    await refresher.recover(selected.id, current.revision);
+    if (policy(selected.id).revision !== current.revision) throw new ClaudeOAuthDeliveryError();
+  }
 
   const upgrades = new Map<string, PendingUpgrade>();
   /** The attempt that started each upgrade, so upgrade status never reports an ordinary sign-in. */
@@ -424,6 +621,7 @@ export function createClaudeOAuthRuntime(
   }
 
   return {
+    recover,
     read: (definitionId: string) => {
       definition(definitionId);
       return { login: login.read(definitionId), connection: refresher.status(definitionId) };
@@ -479,17 +677,33 @@ export function createClaudeOAuthRuntime(
       const current = login.read(definitionId);
       if (current.status !== "idle") await login.cancel(definitionId, current.attemptId);
       let warning: string | null = null;
-      try {
-        await cli.logout(await hostConfigDir(definitionId));
-      } catch {
-        warning =
-          "Claude sign-out did not finish on the Host. Its saved sign-in may remain in this account's CLI storage.";
-      }
+      // In the account's queue, so no refresh or adoption runs halfway through sign-out. The
+      // coordinator's grant goes first, so it cannot be adopted back.
+      await refresher.exclusive(definitionId, async () => {
+        const authority = authorityDir(definitionId);
+        if (await present(authority)) {
+          await cli.logout(authority).catch(() => {});
+          await removeAuthority(authority, store).catch(() => {
+            logger.warn({ definitionId }, "Claude authority deletion is pending");
+          });
+        }
+        try {
+          await cli.logout(await hostConfigDir(definitionId));
+        } catch {
+          warning =
+            "Claude sign-out did not finish on the Host. Its saved sign-in may remain in this account's CLI storage.";
+        }
+      });
       await refresher.signedOut(definitionId);
       await refresher.reconcile();
       return warning;
     },
-    reconcile: () => refresher.reconcile(),
+    reconcile: async () => {
+      await purgeRemovedAuthorities().catch(() => {
+        logger.warn("Claude authority cleanup is pending");
+      });
+      await refresher.reconcile();
+    },
     dispose: () => login.dispose(),
   };
 }

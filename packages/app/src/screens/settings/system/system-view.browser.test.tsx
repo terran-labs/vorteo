@@ -52,3 +52,35 @@ it.each([390, 1280])(
     }
   },
 );
+
+// Every label must take its color from the theme. Unstyled text falls back to React Native
+// Web's default black (or inherits its surroundings), which rendered System nearly invisible
+// in dark mode. Neither fallback is a theme color, so any label showing one has no theme color
+// of its own; theme.test.ts separately checks the theme's text contrast in every theme.
+it("gives every System label its own theme color", async () => {
+  await page.viewport(1280, 900);
+  const container = document.createElement("div");
+  container.style.color = "rgb(1, 2, 3)";
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    act(() => root.render(<Harness updating={false} />));
+    await expect.element(page.getByText("Host", { exact: true })).toBeVisible();
+    const texts = [...container.querySelectorAll("div[dir], span")].filter(
+      (element) =>
+        element.childElementCount === 0 &&
+        (element.textContent ?? "").trim() !== "" &&
+        !["Runtime details", "More"].includes(element.textContent ?? ""),
+    );
+    expect(texts.length).toBeGreaterThan(0);
+    const inherited = texts
+      .filter((element) =>
+        ["rgb(1, 2, 3)", "rgb(0, 0, 0)"].includes(getComputedStyle(element).color),
+      )
+      .map((element) => element.textContent);
+    expect(inherited).toEqual([]);
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+  }
+});

@@ -34,7 +34,13 @@ export const gotoHome = async (page: Page) => {
 export const openSettings = async (page: Page) => {
   if ((page.viewportSize()?.width ?? 1280) < 600) {
     const menu = page.getByTestId("menu-button").filter({ visible: true }).first();
-    if (await menu.isVisible()) await menu.click();
+    // isVisible() does not wait, so a page still rendering its header skipped the menu and
+    // left Settings unreachable. Give the header the same grace as the toolbar below.
+    const hasMenu = await menu
+      .waitFor({ state: "visible", timeout: 5_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (hasMenu) await menu.click();
   }
   // Navigate through the real app control so route changes stay aligned with UI behavior.
   // Settings sits in the toolbar when there is room, otherwise in its overflow menu.

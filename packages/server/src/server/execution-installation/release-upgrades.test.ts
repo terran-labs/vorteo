@@ -4,8 +4,11 @@ import path from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { HandoffOutcome } from "./coordinator-handoff.js";
 import {
+  CoordinatorFollow,
+  createCoordinatorFollowJournal,
   createUpgradeJournal,
   InstallationUpgrades,
+  type CoordinatorFollowPorts,
   type AdoptionOutcome,
   type UpgradeJournal,
   type UpgradePorts,
@@ -35,6 +38,7 @@ function fakePorts(changes: Partial<UpgradePorts> = {}) {
   let adoption: AdoptionOutcome | null = null;
   const ports: UpgradePorts = {
     now: () => new Date(clock),
+    conflict: () => null,
     adoptionRequired: false,
     launchAdoption: () => {
       calls.push("adopt");
@@ -512,3 +516,132 @@ test("an adoption that never reports fails after its deadline", async () => {
   expect(statuses(upgrades).status).toBe("failed");
   expect(upgrades.list()[0].detail).toContain("did not report");
 });
+
+/** A coordinator whose link and process are on /releases/old while the Host runs /releases/new. */
+function followPorts(changes: Partial<CoordinatorFollowPorts> = {}) {
+  const calls: string[] = [];
+  let clock = Date.parse("2026-11-05T12:00:00Z");
+  let outcome: HandoffOutcome | null = null;
+  const ports: CoordinatorFollowPorts = {
+    now: () => new Date(clock),
+    replacement: null,
+    conflict: () => null,
+    hostRelease: () => "/releases/new",
+    runningRelease: () => "/releases/old",
+    coordinatorRelease: () => "/releases/old",
+    coordinatorDeadlineMs: 60_000,
+    hasCoordinator: () => true,
+    launchSwap: (job, next, previous) => {
+      // The helper restarts this process, so the launch must already be in the journal.
+      const recorded = createCoordinatorFollowJournal(directory).read();
+      calls.push(`swap ${previous} -> ${next} ${recorded.at(-1)?.status}`);
+    },
+    swapOutcome: () => outcome,
+    ...changes,
+  };
+  return {
+    ports,
+    calls,
+    report: (status: HandoffOutcome["status"]) => {
+      outcome = {
+        id: "00000000-0000-4000-8000-000000000000",
+        status,
+        detail: `Coordinator ${status}`,
+        finishedAt: new Date(clock).toISOString(),
+      };
+    },
+    advanceClock: (ms: number) => {
+      clock += ms;
+    },
+  };
+}
+
+function approvedFollow(follow: CoordinatorFollow) {
+  const pending = follow.request("/releases/new");
+  return follow.decide(pending.id, pending.revision, "approve");
+}
+
+test.each([
+  {
+    name: "is unavailable when the coordinator already runs the Host release",
+    run: () => {
+      const fake = followPorts({
+        coordinatorRelease: () => "/releases/new",
+        runningRelease: () => "/releases/new",
+      });
+      const follow = new CoordinatorFollow(createCoordinatorFollowJournal(directory), fake.ports);
+      expect(follow.status()).toMatchObject({ available: false, job: null });
+      expect(() => follow.request("/releases/new")).toThrow("already runs");
+    },
+  },
+  {
+    name: "launches the swap once, after recording it",
+    run: () => {
+      const fake = followPorts();
+      const follow = new CoordinatorFollow(createCoordinatorFollowJournal(directory), fake.ports);
+      approvedFollow(follow);
+      follow.drain();
+      follow.drain();
+      expect(fake.calls).toEqual(["swap /releases/old -> /releases/new running"]);
+    },
+  },
+  {
+    name: "a restarted coordinator resumes and reads the helper's outcome",
+    run: () => {
+      const first = followPorts();
+      approvedFollow(new CoordinatorFollow(createCoordinatorFollowJournal(directory), first.ports));
+      new CoordinatorFollow(createCoordinatorFollowJournal(directory), first.ports).drain();
+      const second = followPorts({ runningRelease: () => "/releases/new" });
+      const resumed = new CoordinatorFollow(
+        createCoordinatorFollowJournal(directory),
+        second.ports,
+      );
+      resumed.drain();
+      expect(resumed.status().job?.status).toBe("running");
+      second.report("rolled-back");
+      resumed.drain();
+      expect(resumed.status().job?.status).toBe("rolled-back");
+      expect(second.calls).toEqual([]);
+    },
+  },
+  {
+    name: "a reported success fails while the coordinator still runs its previous release",
+    run: () => {
+      // A service pinned to a release restarts on it however the link moves.
+      const fake = followPorts();
+      const follow = new CoordinatorFollow(createCoordinatorFollowJournal(directory), fake.ports);
+      approvedFollow(follow);
+      follow.drain();
+      fake.report("succeeded");
+      follow.drain();
+      expect(follow.status().job).toMatchObject({ status: "failed" });
+      expect(follow.status().job?.detail).toContain("release link");
+    },
+  },
+  {
+    name: "a helper that never reports is judged by the running release after the deadline",
+    run: () => {
+      const fake = followPorts();
+      const follow = new CoordinatorFollow(createCoordinatorFollowJournal(directory), fake.ports);
+      approvedFollow(follow);
+      follow.drain();
+      fake.advanceClock(60_001);
+      follow.drain();
+      expect(follow.status().job).toMatchObject({ status: "failed" });
+    },
+  },
+  {
+    name: "refuses approval when the Host release changed after review",
+    run: () => {
+      let host = "/releases/new";
+      const fake = followPorts({ hostRelease: () => host });
+      const follow = new CoordinatorFollow(createCoordinatorFollowJournal(directory), fake.ports);
+      const pending = follow.request("/releases/new");
+      host = "/releases/newer";
+      expect(() => follow.decide(pending.id, pending.revision, "approve")).toThrow("changed");
+      follow.drain();
+      expect(fake.calls).toEqual([]);
+      expect(follow.status().job?.status).toBe("cancelled");
+    },
+  },
+])("coordinator follow $name", ({ run }) => run());
