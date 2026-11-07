@@ -1,5 +1,9 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type {
+  CoordinatorFollowDecision,
+  CoordinatorFollowJob,
+  CoordinatorSettingsDecision,
+  CoordinatorSettingsJob,
   InstallationUpgrade,
   UpdatePolicyChange,
   UpgradeDecision,
@@ -7,10 +11,13 @@ import type {
 } from "@getpaseo/protocol/installation-upgrades";
 import { useFetchQuery } from "@/data/query";
 import type { InstallationClient } from "./client";
-import { activeUpgrade } from "./installation-upgrades-model";
+import { activeUpgrade, coordinatorFollowInProgress } from "./installation-upgrades-model";
+import { coordinatorSettingsInProgress } from "./coordinator-settings-model";
 
 export const INSTALLATION_UPGRADES_KEY = ["installation-upgrades"] as const;
 export const INSTALLATION_SNAPSHOTS_KEY = ["installation-snapshots"] as const;
+export const COORDINATOR_FOLLOW_KEY = ["installation-coordinator-follow"] as const;
+export const COORDINATOR_SETTINGS_KEY = ["installation-coordinator-settings"] as const;
 
 function requireClient(client: InstallationClient | null): InstallationClient {
   if (!client) throw new Error("Unlock installation controls first");
@@ -78,5 +85,65 @@ export function useInstallationSnapshots(client: InstallationClient | null, rest
     refetchInterval: (query) =>
       restoring || query.state.data?.restore?.status === "running" ? 3000 : 60_000,
     retry: false,
+  });
+}
+
+/** Coordinator update status; data is null when the coordinator predates it. */
+export function useCoordinatorFollowStatus(client: InstallationClient | null) {
+  return useFetchQuery({
+    dataShape: "value",
+    queryKey: COORDINATOR_FOLLOW_KEY,
+    queryFn: () => requireClient(client).coordinatorFollowStatus(),
+    enabled: client !== null,
+    staleTimeMs: 0,
+    refetchInterval: (query) => (coordinatorFollowInProgress(query.state.data) ? 3000 : 60_000),
+    retry: false,
+  });
+}
+
+export function useCoordinatorFollowActions(client: InstallationClient | null) {
+  const queryClient = useQueryClient();
+  const refresh = () => queryClient.invalidateQueries({ queryKey: COORDINATOR_FOLLOW_KEY });
+  const start = useMutation({
+    mutationFn: (next: string) => requireClient(client).updateCoordinator(next),
+    onSettled: refresh,
+  });
+  const decide = useMutation({
+    mutationFn: (input: {
+      job: CoordinatorFollowJob;
+      decision: CoordinatorFollowDecision["decision"];
+    }) => requireClient(client).decideCoordinatorFollow(input.job, input.decision),
+    onSettled: refresh,
+  });
+  return { start, decide };
+}
+
+/** Coordinator settings status; data is null when the coordinator predates it. */
+export function useCoordinatorSettingsStatus(client: InstallationClient | null) {
+  return useFetchQuery({
+    dataShape: "value",
+    queryKey: COORDINATOR_SETTINGS_KEY,
+    queryFn: () => requireClient(client).coordinatorSettingsStatus(),
+    enabled: client !== null,
+    staleTimeMs: 0,
+    refetchInterval: (query) => (coordinatorSettingsInProgress(query.state.data) ? 3000 : 60_000),
+    retry: false,
+  });
+}
+
+export function useCoordinatorSettingsActions(client: InstallationClient | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      job: CoordinatorSettingsJob;
+      decision: CoordinatorSettingsDecision["decision"];
+      follow?: CoordinatorFollowJob | string;
+    }) => requireClient(client).decideCoordinatorSettings(input.job, input.decision, input.follow),
+    // A combined approval also changes the coordinator update.
+    onSettled: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: COORDINATOR_SETTINGS_KEY }),
+        queryClient.invalidateQueries({ queryKey: COORDINATOR_FOLLOW_KEY }),
+      ]),
   });
 }

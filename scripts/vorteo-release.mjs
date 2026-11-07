@@ -275,8 +275,12 @@ export function prepareTag({ cwd, channel, commit, remote = "origin", branch }) 
   return { root, remote, channel, commit: sha, version, name, previous };
 }
 
-/** Creates and pushes an annotated tag, then proves the remote tag resolves to the commit. */
-export function createTag(plan, env = process.env) {
+/**
+ * Creates and pushes an annotated tag, then proves the remote tag resolves to the commit.
+ * When another installation tags the same name first, its tag stands: the same commit is
+ * success, and a different commit refuses with the next version to prepare.
+ */
+export function createTag(plan, env = process.env, { date } = {}) {
   const gitleaks = findGitleaks(env);
   if (!gitleaks) throw new ReleaseRefusal("Gitleaks is needed for the pre-push secret scan.");
   const label = `Vorteo ${plan.version} (${plan.channel})`;
@@ -293,6 +297,8 @@ export function createTag(plan, env = process.env) {
   } catch (error) {
     // An unpushed local tag would block every retry.
     git(plan.root, ["tag", "--delete", plan.name], { allowFailure: true });
+    const winner = pushCollision(plan, date);
+    if (winner) return winner;
     throw error;
   }
   const pushed = remoteTags(plan.root, plan.remote).find((tag) => tag.name === plan.name);
@@ -302,6 +308,33 @@ export function createTag(plan, env = process.env) {
     );
   }
   return pushed;
+}
+
+// After a refused push, the remote tag another installation created first, if it names this
+// commit. Remote tags are permanent: never moved, deleted or reused.
+function pushCollision(plan, date) {
+  let tags;
+  try {
+    tags = remoteTags(plan.root, plan.remote);
+  } catch {
+    return null;
+  }
+  const existing = tags.find((tag) => tag.name === plan.name);
+  if (!existing) return null;
+  if (existing.commit === plan.commit) return existing;
+  let next;
+  try {
+    next = nextVersion([plan.version, ...tags.map((tag) => tag.version)], todayFrom(date));
+  } catch (error) {
+    if (error instanceof VersionError) throw new ReleaseRefusal(error.message);
+    throw error;
+  }
+  throw new ReleaseRefusal(
+    `${plan.name} already exists at ${existing.commit.slice(
+      0,
+      9,
+    )}; another installation tagged it first. Tags are permanent and never moved or reused. Prepare ${next} with vorteo-release.mjs prepare and tag that instead.`,
+  );
 }
 
 /**
@@ -473,7 +506,7 @@ function main() {
     return;
   }
   assertReleaseTagger("Creating release tags");
-  createTag(plan);
+  createTag(plan, process.env, { date: args.date });
   console.log(`Verified: ${remote} has ${plan.name} at ${plan.commit}.`);
   if (args.release) {
     const repository = resolveRepository({ root, remote, explicit: args.repo });

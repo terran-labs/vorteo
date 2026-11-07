@@ -113,7 +113,9 @@ jobs:
 
   smoke:
     needs: verify
-    runs-on: ubuntu-latest
+    # Each architecture builds on its own runner. arm64 used QEMU on x86 and took
+    # about 26.5 minutes against 20.9 for amd64; GitHub's arm64 runners are free for public repositories.
+    runs-on: ${{ matrix.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -128,7 +130,6 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
       - uses: actions/checkout@v6
-      - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
       - uses: docker/build-push-action@v7
         with:

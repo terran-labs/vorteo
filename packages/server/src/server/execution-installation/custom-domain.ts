@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdir, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "pino";
@@ -49,6 +50,8 @@ export function createCustomDomain(input: {
   configFile: string | undefined;
   logger: Logger;
   ports: CustomDomainPorts;
+  /** Another coordinator restart, such as an upgrade or settings change, in progress. */
+  restartBlocker?: () => string | null;
 }) {
   const { config, configFile, logger, ports } = input;
   const directory = path.join(config.stateDir, "custom-domain");
@@ -64,7 +67,7 @@ export function createCustomDomain(input: {
     const services = managedServices(config);
     if (typeof services === "string") return services;
     if (remoteAccess(config) === "none") return "Local-only installations have no custom domain.";
-    return null;
+    return input.restartBlocker?.() ?? null;
   }
 
   function revision(last: ChangeRecord | null): string {
@@ -146,6 +149,22 @@ export function createCustomDomain(input: {
   }
 
   let changing = false;
+
+  /**
+   * True while a change is being prepared or its coordinator restart has not reported, so
+   * other coordinator restarts wait. Synchronous for the shared restart check.
+   */
+  function running(): boolean {
+    if (changing) return true;
+    try {
+      const last = JSON.parse(readFileSync(lastFile, "utf8")) as ChangeRecord;
+      if (readHandoffOutcome(path.join(directory, last.id, "outcome.json"))) return false;
+      return ports.now().getTime() - Date.parse(last.startedAt) <= CHANGE_DEADLINE_MS;
+    } catch {
+      // No change recorded, or an unreadable record that status() reports instead.
+      return false;
+    }
+  }
 
   /** One change at a time: the checks below span awaits before the change is recorded. */
   async function change(body: unknown): Promise<CustomDomainStatus> {
@@ -250,5 +269,5 @@ export function createCustomDomain(input: {
     return status();
   }
 
-  return { status, change };
+  return { status, change, running };
 }
