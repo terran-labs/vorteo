@@ -237,6 +237,7 @@ const styles = StyleSheet.create((theme) => ({
   hint: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
   error: { color: theme.colors.statusDanger, fontSize: theme.fontSize.base },
   run: {
+    flexShrink: 1,
     flexDirection: "row",
     flexWrap: "wrap",
     alignItems: "center",

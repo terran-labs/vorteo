@@ -6,6 +6,7 @@ import { useAgentProfiles } from "@/agent-profiles";
 import { Button } from "@/components/ui/button";
 import { PressHighlight } from "@/components/ui/press-highlight";
 import { UsageMeter } from "@/usage/meter";
+import { useIsCompactFormFactor } from "@/constants/layout";
 import { formatResetIn } from "@/provider-usage/format";
 import type { QuotaAccount } from "@/provider-usage/global-quota";
 import { openExternalUrl } from "@/utils/open-external-url";
@@ -364,6 +365,8 @@ function QuotaWindowRow({
   dense?: boolean;
 }) {
   const { t } = useTranslation();
+  const compact = useIsCompactFormFactor();
+  const brief = dense || compact;
   const used = window.remaining === null ? null : 100 - window.remaining;
   let tone: "ok" | "warning" | "danger" = "ok";
   if (used !== null && used >= 90) tone = "danger";
@@ -379,12 +382,12 @@ function QuotaWindowRow({
         <UsageMeter percent={used ?? 0} tone={tone} />
       </View>
       <Text style={styles.windowValue}>{used === null ? "—" : `${Math.round(used)}%`}</Text>
-      {dense ? null : (
+      {brief ? null : (
         <Text style={styles.windowReset} numberOfLines={1}>
           {reset ? t("projectFactory.reports.resets", { time: reset }) : "—"}
         </Text>
       )}
-      {!dense && history.length > 1 ? (
+      {!brief && history.length > 1 ? (
         <View style={styles.windowSpark}>
           <Sparkline values={history} height={18} max={100} />
         </View>
@@ -779,8 +782,9 @@ export function QueueNotices({ data }: { data: FactoryOverviewData }) {
 
 const layout = StyleSheet.create((theme) => ({
   grid: { flexDirection: "row", flexWrap: "wrap", gap: theme.spacing[3], alignItems: "stretch" },
-  sm: { flexGrow: 1, flexBasis: 260, minWidth: 240 },
-  md: { flexGrow: 1, flexBasis: 340, minWidth: 280 },
-  lg: { flexGrow: 2, flexBasis: 520, minWidth: 300 },
+  // Cells shrink to the column on phones instead of holding their basis past the edge.
+  sm: { flexGrow: 1, flexShrink: 1, flexBasis: 260, maxWidth: "100%" },
+  md: { flexGrow: 1, flexShrink: 1, flexBasis: 340, maxWidth: "100%" },
+  lg: { flexGrow: 2, flexShrink: 1, flexBasis: 520, maxWidth: "100%" },
   notice: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: theme.spacing[3] },
 }));

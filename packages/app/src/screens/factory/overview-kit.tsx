@@ -184,12 +184,9 @@ export function StatTile({
 }) {
   return (
     <View style={styles.tile} testID={testID}>
-      <View style={styles.tileHeader}>
-        <Text style={styles.tileLabel} numberOfLines={1}>
-          {label}
-        </Text>
-        {sample ? <SampleTag /> : null}
-      </View>
+      <Text style={styles.tileLabel} numberOfLines={1}>
+        {label}
+      </Text>
       <Text
         style={[
           styles.tileValue,
@@ -206,6 +203,11 @@ export function StatTile({
         </Text>
       ) : null}
       {trend && trend.length > 1 ? <Sparkline values={trend} height={22} /> : null}
+      {sample ? (
+        <View style={styles.tileTag}>
+          <SampleTag />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -715,16 +717,17 @@ export interface CardContext {
 export function Lane({
   group,
   context,
-  fill,
+  width,
 }: {
   group: FactoryLaneGroup;
   context: CardContext;
-  /** Grow to share the row instead of keeping the fixed lane width. */
-  fill?: boolean;
+  /** A lane in a row takes its share of the row; alone it fills its parent. */
+  width?: number;
 }) {
   const { t } = useTranslation();
+  const sized = useMemo(() => (width ? { width } : null), [width]);
   return (
-    <View style={[styles.lane, fill && styles.laneFill]} testID={`factory-lane-${group.lane}`}>
+    <View style={[styles.lane, sized]} testID={`factory-lane-${group.lane}`}>
       <LaneHeader lane={group.lane} count={group.issues.length} />
       <View style={styles.laneBody}>
         {group.issues.length === 0 ? (
@@ -933,6 +936,8 @@ export function TrackBoxes({ issue }: { issue: Pick<FactoryIssue, "stage" | "pr"
 /** The legend for the five-box track, shown once per board. */
 export function TrackLegend() {
   const { t } = useTranslation();
+  const compact = useIsCompactFormFactor();
+  if (compact) return null;
   return (
     <Text style={styles.trackLegend}>
       {FACTORY_TRACK_STEPS.map((step) => t(`projectFactory.board.track.${step}`)).join(" · ")}
@@ -959,19 +964,32 @@ export function LaneRow({
   lanes: readonly FactoryLaneGroup[];
   context: CardContext;
 }) {
+  const [width, onLayout] = useMeasuredWidth();
+  // Lanes share the row evenly and never shrink below a readable card; past that the row scrolls.
+  const laneWidth = Math.max(
+    LANE_MIN_WIDTH,
+    Math.floor((width - LANE_GAP * (lanes.length - 1)) / lanes.length),
+  );
   return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator
-      contentContainerStyle={styles.laneRow}
-      style={styles.laneScroller}
-    >
-      {lanes.map((group) => (
-        <Lane key={group.lane} group={group} context={context} fill />
-      ))}
-    </ScrollView>
+    <View onLayout={onLayout}>
+      {width > 0 ? (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator
+          contentContainerStyle={styles.laneRow}
+          style={styles.laneScroller}
+        >
+          {lanes.map((group) => (
+            <Lane key={group.lane} group={group} context={context} width={laneWidth} />
+          ))}
+        </ScrollView>
+      ) : null}
+    </View>
   );
 }
+
+const LANE_MIN_WIDTH = 232;
+const LANE_GAP = 12;
 
 /** Compact layouts show one lane at a time behind a lane picker. */
 export function LaneTabs({
@@ -1073,12 +1091,6 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing[3],
     gap: theme.spacing[1],
   },
-  tileHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: theme.spacing[1],
-  },
   tileLabel: {
     flexShrink: 1,
     color: theme.colors.foregroundMuted,
@@ -1089,6 +1101,7 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize["3xl"],
     fontWeight: theme.fontWeight.semibold,
   },
+  tileTag: { flexDirection: "row", marginTop: "auto", paddingTop: theme.spacing[1] },
   tileDetail: {
     color: theme.colors.foregroundExtraMuted,
     fontSize: theme.fontSize.sm,
@@ -1130,9 +1143,8 @@ const styles = StyleSheet.create((theme) => ({
   meterLimit: { color: theme.colors.foregroundExtraMuted },
   meterDetail: { color: theme.colors.foregroundExtraMuted, fontSize: theme.fontSize.sm },
   laneScroller: { flexGrow: 0 },
-  laneRow: { flexGrow: 1, gap: theme.spacing[3], alignItems: "flex-start" },
+  laneRow: { gap: LANE_GAP, alignItems: "flex-start" },
   lane: {
-    width: 260,
     borderWidth: 1,
     borderColor: theme.colors.border,
     borderRadius: theme.borderRadius.xl,
@@ -1140,7 +1152,6 @@ const styles = StyleSheet.create((theme) => ({
     padding: theme.spacing[2],
     gap: theme.spacing[2],
   },
-  laneFill: { flexGrow: 1, flexBasis: 220, minWidth: 220, width: undefined },
   laneHeader: {
     flexDirection: "row",
     alignItems: "center",

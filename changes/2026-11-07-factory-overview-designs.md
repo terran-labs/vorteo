@@ -6,4 +6,4 @@
 
 ## Maintenance review
 
-Factory Overview redesign, interface only: no server, protocol or plugin changes. PageLayout gains an optional `wide` column (1440px) used only here; the default stays 720px. One focused test covers lane mapping and the five-step track. README overview and onboarding are unchanged. Not installed.
+Factory Overview redesign, interface only: no server, protocol or plugin changes. PageLayout gains an optional `wide` column (1440px) used only here; the default stays 720px. One focused test covers lane mapping and the five-step track. README overview and onboarding are unchanged. Not installed. Layout fixes after visual review: lanes share the board width with a horizontal scroll past six readable lanes, report panels shrink to the phone column, and sample tags sit on their own row in figure tiles.
