@@ -35,7 +35,56 @@ permissions:
   contents: read
 
 jobs:
+  # Every Vorteo commit bumps the version in each manifest, which matches the trigger's
+  # package paths on every push. Route on the substantive diff instead, as CI does.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      container: ${{ steps.filter.outputs.container }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Ignore version-only manifest bumps
+        if: ${{ github.event_name == 'push' }}
+        run: node scripts/ci-neutralize-version-bumps.mjs "${{ github.event.before }}"
+      - name: Detect container changes
+        id: filter
+        if: ${{ github.event_name == 'push' }}
+        uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3.0.3
+        with:
+          base: ${{ github.event.before }}
+          # An empty token diffs the local routing commit, not the API's file list.
+          token: ""
+          filters: |
+            container:
+            - ".github/workflows/docker.yml"
+            - ".dockerignore"
+            - "docker/**"
+            - "package.json"
+            - "package-lock.json"
+            - "patches/**"
+            - "scripts/**"
+            - "skills/**"
+            - "tsconfig.json"
+            - "tsconfig.base.json"
+            - "packages/app/**"
+            - "packages/cli/**"
+            - "packages/client/**"
+            - "packages/expo-two-way-audio/**"
+            - "packages/highlight/**"
+            - "packages/plugin/**"
+            - "packages/protocol/**"
+            - "packages/relay/**"
+            - "packages/server/**"
+
   verify:
+    needs: changes
+    # Manual runs always build; missing outputs fail open to building.
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.container != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

@@ -24,6 +24,7 @@ export type ClaudeOAuthRefresherPorts = HostRefresherPorts<
 >;
 
 const CLAUDE_GRANTS: HostGrantAdapter<ClaudeOAuthGrant, ClaudeAccessProjection> = {
+  refreshForHost: true,
   project: claudeAccessProjection,
   digest: accessProjectionDigest,
   needsRefresh: needsHostRefresh,

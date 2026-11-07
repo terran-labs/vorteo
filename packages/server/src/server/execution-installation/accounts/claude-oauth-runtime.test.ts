@@ -78,9 +78,10 @@ function harness(
     },
     ...(options.others ?? []),
   ];
+  const resourceExclusions: Record<string, { providerIds: string[] }> = {};
   const snapshot = () => ({
     revision,
-    settings: { providerDefinitions: definitions, resourceExclusions: {} },
+    settings: { providerDefinitions: definitions, resourceExclusions },
   });
   const settings = {
     snapshot,
@@ -159,6 +160,8 @@ function harness(
   });
   return {
     runtime,
+    fetchFake,
+    resourceExclusions,
     settings,
     setupRuntime,
     complete: (success: boolean) => complete?.(success),
@@ -486,3 +489,59 @@ it.each(["missing", "unreadable", "expired", "not renewable"] as const)(
     expect(h.readGrant).toHaveBeenCalledWith(h.configDir);
   },
 );
+
+it("recovers only the current enabled binding in the authenticated environment", async () => {
+  const h = harness(
+    (creationId) => ({ provider: "claude", creationId, signIn: "full" }),
+    SUPPORTED,
+    {
+      everywhere: true,
+      state: (definitionId) => [
+        {
+          definitionId,
+          generation: 1,
+          rotation: 0,
+          signedIn: true,
+          hostGrant: null,
+          policyRevision: 1,
+          digest: null,
+          expiresAt: null,
+          identity: null,
+          checkedAt: null,
+          refresh: null,
+          targets: [],
+        },
+      ],
+    },
+  );
+  const input = { providerId: h.providerId, configDir: h.configDir };
+  await expect(
+    h.runtime.recover("host", { ...input, configDir: "/another-account" }),
+  ).rejects.toThrow();
+  await expect(
+    h.runtime.recover("container", { ...input, providerId: "another-account" }),
+  ).rejects.toThrow();
+  h.resourceExclusions.host = { providerIds: ["one"] };
+  await expect(h.runtime.recover("host", input)).rejects.toThrow();
+  delete h.resourceExclusions.host;
+  h.definitions()[0]!.policy.enabled = false;
+  await expect(h.runtime.recover("host", input)).rejects.toThrow();
+  h.definitions()[0]!.policy.enabled = true;
+  h.fetchFake.mockImplementationOnce(async () => {
+    await h.settings.update({
+      expectedRevision: 1,
+      settings: { providerDefinitions: h.definitions() },
+    });
+    return Response.json(input);
+  });
+  await expect(h.runtime.recover("host", input)).rejects.toThrow();
+  expect(h.cli.refresh).not.toHaveBeenCalled();
+  expect(h.readGrant).not.toHaveBeenCalled();
+  await h.runtime.recover("host", input);
+  expect(h.readGrant).toHaveBeenCalledWith(h.configDir);
+  expect(h.authorizations).toContain(
+    "http://127.0.0.1:1/api/installation/claude/oauth/binding Bearer synthetic-host-password",
+  );
+  await h.runtime.signOut("one");
+  await expect(h.runtime.recover("host", input)).rejects.toThrow();
+});
