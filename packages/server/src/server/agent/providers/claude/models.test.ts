@@ -83,6 +83,7 @@ describe("Claude CLI update warnings", () => {
     const client = new ClaudeAgentClient({
       logger: createTestLogger(),
       resolveVersion: async () => version,
+      discoverModels: async () => [],
       runtimeSettings: { env: { CLAUDE_CONFIG_DIR: configDir } },
     });
     const before = await client.fetchCatalog({ scope: "global", force: true });
@@ -1035,20 +1036,26 @@ describe("Claude model discovery process", () => {
   it("closes a stalled probe when its refresh is canceled", async () => {
     const controller = new AbortController();
     const failure = new Error("refresh canceled");
+    let assertCanSpawn: (() => void) | undefined;
     let closed = false;
     const result = discoverClaudeModels(
       { resolveBinary: async () => "/claude", env: {}, signal: controller.signal },
-      () => ({
-        supportedModels: () => {
-          controller.abort(failure);
-          return new Promise(() => {});
-        },
-        close: () => {
-          closed = true;
-        },
-      }),
+      (_input, context) => {
+        assertCanSpawn = context.assertCanSpawn;
+        return {
+          supportedModels: () => {
+            controller.abort(failure);
+            return new Promise(() => {});
+          },
+          close: () => {
+            closed = true;
+          },
+        };
+      },
     );
     await expect(result).rejects.toBe(failure);
     expect(closed).toBe(true);
+    expect(assertCanSpawn).toBeTypeOf("function");
+    expect(() => assertCanSpawn?.()).toThrow(failure);
   });
 });
