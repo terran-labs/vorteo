@@ -278,8 +278,8 @@ function TrackRowContent({
       const content = typeof children === "function" ? children({ pressed }) : children;
       if (inline) return <TaskCardRow>{content}</TaskCardRow>;
       let rowStyle: StyleProp<ViewStyle> = styles.row;
-      if (pressed) rowStyle = ROW_PRESSED_STYLE;
-      else if (hoverable) rowStyle = ROW_HOVERABLE_STYLE;
+      if (pressed) rowStyle = [styles.rowActive, styles.rowPressedSurface];
+      else if (hoverable) rowStyle = [styles.row, styles.rowHoverable];
       return <View style={rowStyle}>{content}</View>;
     },
     [children, inline],
@@ -436,6 +436,3 @@ const styles = StyleSheet.create((theme) => {
     dotDone: statusDot("done"),
   };
 });
-
-const ROW_HOVERABLE_STYLE = [styles.row, styles.rowHoverable];
-const ROW_PRESSED_STYLE = [styles.rowActive, styles.rowPressedSurface];
