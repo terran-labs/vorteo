@@ -28,6 +28,7 @@ import { navigateToAgent } from "@/utils/navigate-to-agent";
 import {
   loadFactoryQueue,
   factoryAgentStatusKey,
+  factoryRoleAssignments,
   type FactoryInvoke,
   type FactoryQueue,
 } from "./queue";
@@ -197,6 +198,7 @@ function OverviewContent({
           {queue.data ? <QueueContent serverId={serverId} queue={queue.data} /> : null}
         </SettingsSection>
       ) : null}
+      <RoleAssignment state={state} />
       <SettingsSection title={t("projectFactory.roles")}>
         {state.roles.map((role) => (
           <Role key={role.role} serverId={serverId} projectId={projectId} role={role} />
@@ -222,6 +224,15 @@ function QueueContent({ serverId, queue }: { serverId: string; queue: FactoryQue
         <View key={issue.number} style={styles.item}>
           <ExternalLink href={issue.url} label={`#${issue.number} ${issue.title}`} />
           <Text style={styles.text}>{t(`projectFactory.stages.${issue.stage}`)}</Text>
+          {issue.claim && !issue.claim.local ? (
+            <Text style={styles.warning}>
+              {issue.claim.installation
+                ? t("projectFactory.assignment.claimedBy", {
+                    installation: issue.claim.installation,
+                  })
+                : t("projectFactory.assignment.claimedElsewhere")}
+            </Text>
+          ) : null}
           {issue.pr ? (
             <View style={styles.actions}>
               <ExternalLink
@@ -246,6 +257,39 @@ function QueueContent({ serverId, queue }: { serverId: string; queue: FactoryQue
         </View>
       ))}
     </>
+  );
+}
+
+function RoleAssignment({ state }: { state: ProjectFactoryState }) {
+  const { t } = useTranslation();
+  const assignments = factoryRoleAssignments(state);
+  if (!assignments) return null;
+  return (
+    <SettingsSection title={t("projectFactory.assignment.title")}>
+      {state.installation ? (
+        <Text style={styles.text}>
+          {t("projectFactory.assignment.installation", { installation: state.installation })}
+        </Text>
+      ) : null}
+      {assignments.map(({ role, runner, offHere, detail }) => (
+        <View key={role} style={styles.item}>
+          <Text style={styles.text}>
+            {`${t(`projectFactory.assignment.roles.${role}`)}: ${
+              runner.kind === "other"
+                ? runner.installation
+                : t(`projectFactory.assignment.runners.${runner.kind}`)
+            }`}
+          </Text>
+          {offHere ? (
+            <Text style={styles.warning}>
+              {detail
+                ? t("projectFactory.assignment.offHereDetail", { detail })
+                : t("projectFactory.assignment.offHere")}
+            </Text>
+          ) : null}
+        </View>
+      ))}
+    </SettingsSection>
   );
 }
 
@@ -294,6 +338,7 @@ function Role({
 
 const styles = StyleSheet.create((theme) => ({
   text: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.base },
+  warning: { color: theme.colors.statusWarning, fontSize: theme.fontSize.base },
   actions: {
     flexDirection: "row",
     flexWrap: "wrap",
