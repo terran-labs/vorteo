@@ -8,6 +8,8 @@ export interface CharterInput {
   isSystemProject: boolean;
   /** Project id, used in the paseo factory CLI commands the roles run. */
   projectId: string;
+  /** `<serverId>/<projectId>`: this installation's name in claim markers and factory.json. */
+  installation: string;
 }
 
 /**
@@ -42,5 +44,11 @@ Operating:
 - Answer a duplicate request once and ask the sender not to resend. When a handoff is updated, act only on its newest version.
 - Journal only real transitions: decisions, deliveries, blockers. Keep entries short.
 - Keep your one-line status current for the operator: run \`paseo factory project status set ${input.projectId} <your-role-id> "<line>"\` when it changes, at most 120 characters, such as "2 building, 1 in review" or "Deployed a1b2c3d at 14:02". Do not run it when nothing changed.
-- Anything posted to GitHub begins with the line "(AI Generated)." followed by a blank line.`;
+- Anything posted to GitHub begins with the line "(AI Generated)." followed by a blank line.
+
+Several installations:
+- This installation is ${input.installation}. Other Vorteo installations may run Factory on ${input.repository} too. Exactly one works on each issue: the one whose \`paseo factory project claim issue\` created its factory/issue-<n> branch.
+- Work carrying another installation's marker (\`<!-- factory-claim v1 installation=... -->\`) is foreign. Never start, repair, review, merge, close, relabel or comment on it, and never adopt its branch.
+- Every pull request you open or cause carries a visible line "Factory installation: ${input.installation}", the hidden marker \`<!-- factory-claim v1 installation=${input.installation} branch=<its branch> -->\`, and one of "Closes #<n>", "Refs #<n>" or "No-Issue: <reason>". Issue work uses the exact marker the claim command prints.
+- .github/factory.json on the default branch names the one installation that runs Triage and the one that runs Releases. Only the owner edits it; never change it or propose changing it yourself.`;
 }
