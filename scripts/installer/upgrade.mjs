@@ -17,9 +17,17 @@ import { hostClientFile } from "./coordinator-config.mjs";
 import { JOURNAL, readEnvFile } from "./detect.mjs";
 import { releaseRevision } from "./host-adoption.mjs";
 import { buildRelease, loadServerModules, waitForInstallation } from "./host-installation.mjs";
+import {
+  buildDevImage,
+  buildDevRelease,
+  currentDevRelease,
+  devUpgradeMode,
+  pruneDevReleases,
+  refreshDeploymentScripts,
+} from "./dev-release.mjs";
 import { createJournalHandle, readJournal } from "./journal.mjs";
 import { PLAN_VERSION } from "./plan.mjs";
-import { InstallerError, build, writeJson } from "./primitives.mjs";
+import { InstallerError, writeJson } from "./primitives.mjs";
 import { STEPS, pointLink } from "./steps.mjs";
 import { writeSystemSource } from "../lib/system-source.mjs";
 import { compareVersions as compareCalendarVersions, parseTag } from "../vorteo-version.mjs";
@@ -38,7 +46,8 @@ export const UPGRADE_STEP_TITLES = {
   "upgrade-settings": "Saving the installation settings",
   "upgrade-host": "Restarting the Host daemon on the new release",
   "upgrade-coordinator": "Restarting the coordinator on the new release",
-  "upgrade-dev": "Recreating Dev on the new release",
+  "upgrade-dev-build": "Building Dev's release from the new Host release",
+  "upgrade-dev": "Moving Dev to the new release",
   "upgrade-guest-client": "Refreshing the installation client in Dev",
   "upgrade-verify": "Checking readiness and in-app updates",
   "upgrade-finish": "Finishing",
@@ -249,6 +258,8 @@ export function upgradeSteps({ devContainer, upgrade, settings, restartCoordinat
   return [
     "upgrade-check",
     "upgrade-release",
+    // Dev builds from the Host release before anything restarts.
+    ...(devContainer ? ["upgrade-dev-build"] : []),
     "upgrade-snapshot",
     ...(settings ? ["upgrade-settings"] : []),
     "upgrade-host",
@@ -725,12 +736,134 @@ async function imageId(s, reference) {
   }
 }
 
+/** Waits until the coordinator reaches Dev's daemon. */
+async function waitForDev(s) {
+  const { connectInstallationDaemon } = await modules(s);
+  const current = config(s);
+  await waitFor(
+    s,
+    async () => {
+      const client = await connectInstallationDaemon(current, "container");
+      try {
+        await client.getDaemonStatus({ timeout: 15_000 });
+      } finally {
+        await client.close();
+      }
+    },
+    COORDINATOR_READY_MS,
+  );
+}
+
+/**
+ * Moves Dev to the release, refreshing the deployment's lifecycle scripts first. When the
+ * image is unchanged and Dev mounts its releases, only Dev's daemon restarts on a
+ * Host-built release (dev-release.mjs); otherwise the image is rebuilt.
+ */
+/** What dev-release.mjs needs for this upgrade. */
+function devInput(s) {
+  const { plan, install, context } = s;
+  return {
+    run: (command, args, options = {}) =>
+      context.run(command, args, { env: devEnvironment(s), ...options }),
+    docker: install.plan.executables.docker,
+    git: context.which("git") ?? install.plan.executables.git,
+    npm: install.plan.executables.npm,
+    node: install.plan.executables.node,
+    // The Host release this upgrade built; Dev installs its compiled packages.
+    hostRelease: plan.release,
+    source: plan.paths.source,
+    commit: plan.to.revision,
+    deployment: install.plan.paths.container,
+  };
+}
+
+/**
+ * Builds Dev's release, or its image when the image itself changed, from the Host release
+ * the previous step built. It runs before the snapshot and every restart, so agents are
+ * interrupted only once all builds have passed. The Dev step reuses what it recorded.
+ */
+async function devBuildStep(s) {
+  const { journal } = s;
+  const input = devInput(s);
+  // An interface upgrade would build into the same release folder.
+  assertNoInterfaceUpgrade(s);
+  if (!s.outputs.devMode) journal.output({ devMode: (await devUpgradeMode(input)).mode });
+  if (s.outputs.devMode === "release") {
+    if (!s.outputs.devPreviousRelease)
+      journal.output({ devPreviousRelease: currentDevRelease(input.deployment) });
+    const { packedFrom } = await buildDevRelease(input);
+    return { message: `Built Dev's release from ${packedFrom}.` };
+  }
+  if (!s.outputs.devPreviousImage) journal.output({ devPreviousImage: devImage(s) });
+  if (!s.outputs.devImage) {
+    const { image, packedFrom } = await buildDevImage(input);
+    journal.output({ devImage: image });
+    return { message: `Built Dev's image from ${packedFrom}.` };
+  }
+  return { skip: "Dev's image is already built." };
+}
+
+async function devStep(s) {
+  const { journal } = s;
+  const input = devInput(s);
+  // Before touching the deployment: an interface upgrade may be running its update.sh.
+  assertNoInterfaceUpgrade(s);
+  await refreshDeploymentScripts(input);
+  if (!s.outputs.devMode) journal.output({ devMode: (await devUpgradeMode(input)).mode });
+  return s.outputs.devMode === "release" ? devReleaseStep(s, input) : devImageStep(s, input);
+}
+
+/**
+ * Builds the Dev release and restarts Dev's daemon on it with update.sh --release, which
+ * restores the previous selection itself when Dev is not healthy on the new one.
+ */
+async function devReleaseStep(s, input) {
+  const { plan, context, journal } = s;
+  const { deployment, commit } = input;
+  if (!s.outputs.devPreviousRelease)
+    journal.output({ devPreviousRelease: currentDevRelease(deployment) });
+  const previous = s.outputs.devPreviousRelease;
+  await buildDevRelease(input);
+  // After the build and outside the rollback below, so a refusal never touches another
+  // upgrade's Dev.
+  assertNoInterfaceUpgrade(s);
+  const swap = (release) =>
+    context.run("/bin/bash", [path.join(deployment, "update.sh"), "--release", release], {
+      env: devEnvironment(s),
+      timeout: 15 * 60_000,
+    });
+  try {
+    // A resumed step restarts again: the link can be repointed before the restart ran.
+    if (!s.outputs.devReleaseSwapped) {
+      await swap(commit);
+      journal.output({ devReleaseSwapped: true });
+    }
+    await waitForDev(s);
+  } catch (error) {
+    // A rerun must swap again, never trust a swap this rollback undid.
+    journal.output({ devReleaseSwapped: false });
+    let restored = `Dev runs ${previous === "none" ? "its image's daemon" : `release ${previous}`} again.`;
+    try {
+      if (currentDevRelease(deployment) !== previous) await swap(previous);
+    } catch (rollbackError) {
+      restored = `The previous release did not come back either: ${rollbackError.message}`;
+    }
+    throw new InstallerError(
+      `Dev failed on the new release: ${error.message}. ${restored}`,
+      `Dev's deployment and releases are in ${deployment}. Fix the problem, then rerun the installer to resume the upgrade.`,
+      { cause: error },
+    );
+  }
+  pruneDevReleases(deployment);
+  return { message: `Dev's daemon runs ${label(plan.to)}; its image was kept.` };
+}
+
 /**
  * Builds Dev's image from the release and recreates Dev with the deployment's update.sh,
  * which waits for health and restores the previous image itself when the new one fails;
  * the same commands as the interface upgrade (release-upgrade-runtime.ts).
  */
-async function devStep(s) {
+async function devImageStep(s, input) {
   const { plan, install, context, journal } = s;
   const docker = install.plan.executables.docker;
   const deployment = install.plan.paths.container;
@@ -745,45 +878,9 @@ async function devStep(s) {
     }
   }
   if (!image) {
-    const work = path.join(plan.paths.work, plan.to.revision);
-    const sourceContext = path.join(work, "dev-source");
-    rmSync(sourceContext, { recursive: true, force: true });
-    mkdirSync(sourceContext, { recursive: true, mode: 0o700 });
-    const archive = path.join(work, "dev-source.tar");
-    await context.run(context.which("git") ?? install.plan.executables.git, [
-      "-C",
-      plan.paths.source,
-      "archive",
-      "--format=tar",
-      `--output=${archive}`,
-      plan.to.revision,
-    ]);
-    await context.run("tar", ["-xf", archive, "-C", sourceContext], { timeout: 300_000 });
-    const iid = path.join(work, "dev-image.iid");
-    rmSync(iid, { force: true });
-    await build(
-      docker,
-      [
-        "build",
-        "--build-arg",
-        `PASEO_BUILD_COMMIT=${plan.to.revision}`,
-        "--iidfile",
-        iid,
-        "-f",
-        path.join(sourceContext, "docker/base/Dockerfile"),
-        sourceContext,
-      ],
-      sourceContext,
-      path.join(install.plan.paths.logs, "dev-image-upgrade.log"),
-      {},
-      context.run,
-    );
-    image = readFileSync(iid, "utf8").trim();
+    ({ image } = await buildDevImage(input));
     journal.output({ devImage: image });
-    rmSync(work, { recursive: true, force: true });
   }
-  const { connectInstallationDaemon } = await modules(s);
-  const current = config(s);
   // After the build, which takes minutes, and outside the rollback below, so a refusal
   // never touches another upgrade's Dev.
   assertNoInterfaceUpgrade(s);
@@ -793,18 +890,7 @@ async function devStep(s) {
         env: devEnvironment(s),
         timeout: 15 * 60_000,
       });
-    await waitFor(
-      s,
-      async () => {
-        const client = await connectInstallationDaemon(current, "container");
-        try {
-          await client.getDaemonStatus({ timeout: 15_000 });
-        } finally {
-          await client.close();
-        }
-      },
-      COORDINATOR_READY_MS,
-    );
+    await waitForDev(s);
   } catch (error) {
     let restored = "Dev runs the previous image again.";
     try {
@@ -914,6 +1000,7 @@ export const UPGRADE_STEPS = {
   "upgrade-settings": settingsStep,
   "upgrade-host": hostStep,
   "upgrade-coordinator": coordinatorStep,
+  "upgrade-dev-build": devBuildStep,
   "upgrade-dev": devStep,
   "upgrade-guest-client": guestClientStep,
   "upgrade-verify": verify,
@@ -935,7 +1022,7 @@ function openUpgradeJournal(plan, context) {
   if (existing && !existing.completedAt && existing.plan.to.revision === plan.to.revision)
     return createJournalHandle(plan.paths.journal, existing, context.now);
   const carried = existing && !existing.completedAt ? existing.outputs : {};
-  const keep = ["previousHost", "previousCoordinator", "devPreviousImage"];
+  const keep = ["previousHost", "previousCoordinator", "devPreviousImage", "devPreviousRelease"];
   const data = {
     version: 1,
     installationId: plan.installationId,

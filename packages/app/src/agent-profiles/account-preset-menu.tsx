@@ -1,3 +1,5 @@
+import { resolveProviderType } from "@getpaseo/protocol/provider-preferences";
+import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { ChooserReveal } from "./chooser-reveal";
 import { ExecutionEnvironmentIcon } from "@/execution-installation/environment-icon";
 import { CliUpdateWarning } from "@/provider-selection/cli-update-warning";
@@ -10,7 +12,7 @@ import { useCallback, useMemo, useReducer, useState, type ReactNode } from "reac
 import { Keyboard, Text, View, type LayoutChangeEvent } from "react-native";
 import { BottomSheetScrollView, ScrollView } from "@/components/ui/scroll-view";
 import { useRouter } from "expo-router";
-import { buildSettingsSectionRoute } from "@/utils/host-routes";
+import { buildProviderSettingsRoute, buildSettingsSectionRoute } from "@/utils/host-routes";
 import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { ChevronDown, ChevronUp } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
@@ -648,17 +650,56 @@ function AccountChoices(props: AccountChoicesProps) {
           <Text style={styles.summary} testID="preset-catalog-error">
             {toErrorMessage(catalogError)}
           </Text>
-          <Button
-            variant="ghost"
-            size="md"
-            onPress={props.onRetry}
-            disabled={props.retrying}
-            testID="preset-retry-profiles"
-          >
-            {props.retrying ? "Retrying…" : "Retry"}
-          </Button>
+          <CatalogRecoveryActions
+            serverId={props.serverId}
+            provider={props.account.provider}
+            retrying={props.retrying}
+            onRetry={props.onRetry}
+          />
         </View>
       )}
+    </View>
+  );
+}
+
+function CatalogRecoveryActions({
+  serverId,
+  provider,
+  retrying,
+  onRetry,
+}: {
+  serverId: string | null;
+  provider: string;
+  retrying: boolean;
+  onRetry(): void;
+}) {
+  const router = useRouter();
+  const { config } = useDaemonConfig(serverId);
+  const openSettings = useCallback(() => {
+    const type = resolveProviderType(provider, config?.providers ?? {});
+    Keyboard.dismiss();
+    router.push(buildProviderSettingsRoute(type));
+  }, [provider, config?.providers, router]);
+  return (
+    <View style={styles.recoveryActions}>
+      <Button
+        variant="outline"
+        size="md"
+        onPress={onRetry}
+        disabled={retrying}
+        testID="preset-retry-profiles"
+      >
+        {retrying ? "Retrying…" : "Retry"}
+      </Button>
+      <Button
+        variant="ghost"
+        size="md"
+        accessibilityRole="link"
+        onPress={openSettings}
+        testID="preset-provider-settings"
+      >
+        Provider settings
+      </Button>
     </View>
   );
 }
@@ -972,6 +1013,12 @@ const styles = StyleSheet.create((theme) => ({
     padding: theme.spacing[1],
   },
   detailScroll: { flex: 1, minHeight: 0 },
+  recoveryActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    flexWrap: "wrap",
+  },
   choices: { padding: theme.spacing[2], gap: theme.spacing[3] },
   heading: {
     fontSize: theme.fontSize.lg,

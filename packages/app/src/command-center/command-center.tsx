@@ -1,3 +1,4 @@
+import { usePathname } from "expo-router";
 import { useOverlayRegistration, type KeyboardInputEvent } from "@/keyboard";
 import { Modal } from "@/components/ui/modal";
 import equal from "fast-deep-equal";
@@ -786,6 +787,12 @@ export function CommandCenter() {
     isCompact ? COMMAND_CENTER_LIST_METRICS.compact : COMMAND_CENTER_LIST_METRICS.desktop,
     interaction,
   );
+  const pathname = usePathname();
+  const closeCommandCenter = state.close;
+  // Settings owns search while it is open, including navigation from outside the overlay.
+  useLayoutEffect(() => {
+    if (pathname === "/settings" || pathname.startsWith("/settings/")) closeCommandCenter();
+  }, [pathname, closeCommandCenter]);
   const showBottomSheet = isCompact && isNative;
   const modalLayer = useGlobalOverlayLayer("modal", state.open);
   const { sheetRef, handleSheetChange, handleSheetDismiss } = useIsolatedBottomSheetVisibility({

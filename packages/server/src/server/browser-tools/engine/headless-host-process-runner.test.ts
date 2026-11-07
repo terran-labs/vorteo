@@ -91,17 +91,26 @@ describe("runHeadlessHostProcess", () => {
     });
   });
 
-  test("reports a launch failure as fatal", async () => {
+  test("reports a long launch failure within the fatal message limit", async () => {
     const channel = new FakeChannel();
     const run = await runHeadlessHostProcess({
       channel,
       options: { deniedHosts: [] },
       launch: async () => {
-        throw new Error("Chromium is not installed");
+        throw new Error(
+          "launch arguments ".repeat(500) +
+            "[err] zygote failed\nprocess did exit: exitCode=null, signal=SIGABRT",
+        );
       },
     });
 
-    expect(channel.sent).toEqual([{ type: "fatal", message: "Chromium is not installed" }]);
+    const fatal = parseHeadlessHostChildMessage(channel.sent[0]);
+    expect(fatal).toMatchObject({
+      type: "fatal",
+      message: expect.stringContaining(
+        "[err] zygote failed\nprocess did exit: exitCode=null, signal=SIGABRT",
+      ),
+    });
     await expect(run.done).resolves.toBe(false);
   });
 

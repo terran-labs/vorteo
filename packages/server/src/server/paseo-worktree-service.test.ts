@@ -453,7 +453,7 @@ test("registers a new worktree in the existing root project after the main check
   expect(Array.from(deps.projects.keys()).sort()).toEqual(["remote:github.com/acme/repo"]);
 });
 
-test("an explicit project FK remains unchanged when its worktree comes from another checkout", async () => {
+test("a worktree uses its repository project and leaves an unrelated explicit project unchanged", async () => {
   const { repoDir, tempDir } = createGitRepo();
   cleanupPaths.push(tempDir);
   const deps = createDeps();
@@ -478,17 +478,13 @@ test("an explicit project FK remains unchanged when its worktree comes from anot
     deps,
   );
 
-  expect(result.workspace.projectId).toBe(project.projectId);
-  expect(deps.projects.get(project.projectId)).toEqual({
-    ...project,
-    projectKey: deriveProjectKey({
-      rootPath: project.rootPath,
-      remoteUrl: null,
-      worktreeRoot: null,
-      mainRepoRoot: null,
-    }),
-    updatedAt: expect.any(String),
+  expect(result.workspace.projectId).toBe("prj_0000000000000001");
+  expect(deps.projects.get(result.workspace.projectId)).toMatchObject({
+    rootPath: path.resolve(result.repoRoot),
+    kind: "git",
+    displayName: "repo",
   });
+  expect(deps.projects.get(project.projectId)).toEqual(project);
 });
 
 test.skipIf(isPlatform("win32"))(

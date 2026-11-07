@@ -1,3 +1,4 @@
+import { OwnerSettingsGate } from "@/components/settings/owner-lock";
 import { useCallback, useState } from "react";
 import { Text, View } from "react-native";
 import {
@@ -6,7 +7,7 @@ import {
   type InstallationSettingsSnapshot,
 } from "@getpaseo/protocol/installation-settings";
 import { profilePolicyIdentity } from "@getpaseo/protocol/provider-preferences";
-import { Alert } from "@/components/ui/alert";
+import { useToast } from "@/contexts/toast-context";
 import { Switch } from "@/components/ui/switch";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { settingsStyles } from "@/styles/settings";
@@ -32,14 +33,18 @@ interface ExclusionChoice {
  */
 export function ProjectExclusionsSection(props: { rootPath: string; serverId: string }) {
   if (!readExecutionInstallation()) return null;
-  return <ProjectExclusions {...props} />;
+  return (
+    <OwnerSettingsGate title="Project exclusions">
+      <ProjectExclusions {...props} />
+    </OwnerSettingsGate>
+  );
 }
 
 function ProjectExclusions({ rootPath, serverId }: { rootPath: string; serverId: string }) {
   const { installation, data, error, save } = useInstallationSettings();
   const { profiles } = useAgentProfiles(serverId);
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const toast = useToast();
   const key = projectPolicyKey(rootPath);
   const settings = data?.settings;
   const policy = settings?.projectPolicies?.[key] ?? {};
@@ -48,30 +53,29 @@ function ProjectExclusions({ rootPath, serverId }: { rootPath: string; serverId:
     async (patch: ProjectPolicyPatch) => {
       if (!data?.settings || saving) return;
       setSaving(true);
-      setSaveError(null);
       try {
         await save({
           expectedRevision: data.revision,
           settings: { projectPolicies: nextProjectPolicies(data, key, patch) },
         });
       } catch (cause) {
-        setSaveError(cause instanceof Error ? cause.message : "Unable to change exclusions.");
+        toast.error(cause instanceof Error ? cause.message : "Unable to change exclusions.");
       } finally {
         setSaving(false);
       }
     },
-    [data, key, save, saving],
+    [data, key, save, saving, toast],
   );
   const changeEnvironments = useCallback(
     (excludedEnvironments: NonNullable<InstallationProjectPolicy["excludedEnvironments"]>) => {
       const kinds = installation?.environments.map((environment) => environment.kind) ?? [];
       if (kinds.every((kind) => excludedEnvironments.includes(kind))) {
-        setSaveError("Keep this project available in at least one environment.");
+        toast.error("Keep this project available in at least one environment.");
         return;
       }
       void change({ excludedEnvironments });
     },
-    [change, installation],
+    [change, installation, toast],
   );
 
   if (!installation) return null;
@@ -130,7 +134,6 @@ function ProjectExclusions({ rootPath, serverId }: { rootPath: string; serverId:
           ))}
         </View>
       ) : null}
-      {saveError ? <Alert variant="error" description={saveError} /> : null}
     </SettingsSection>
   );
 }

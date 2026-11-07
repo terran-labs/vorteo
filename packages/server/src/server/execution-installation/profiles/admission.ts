@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { InstallationProfilesAdmissionSchema } from "@getpaseo/protocol/execution-installation";
 import type { MutableDaemonConfig, SharedProviderPreferences } from "@getpaseo/protocol/messages";
+import { installationClientOriginAllowed } from "../client-origin.js";
 
 const ClientConfigSchema = z.object({
   origin: z.url(),
@@ -23,22 +24,16 @@ export class InstallationProfileAdmissionError extends Error {
 
 export function createInstallationProfileReader(
   configFile: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
 ): InstallationProfileReader {
   // This path is supplied by the daemon launcher, never by an RPC or profile definition.
   const config = configFile
     ? ClientConfigSchema.parse(JSON.parse(readFileSync(configFile, "utf8")))
     : null;
-  if (config) {
-    const origin = new URL(config.origin);
-    const loopback = origin.hostname === "localhost" || origin.hostname === "127.0.0.1";
-    if (
-      origin.origin !== config.origin ||
-      (origin.protocol !== "https:" && !(origin.protocol === "http:" && loopback))
-    )
-      throw new InstallationProfileAdmissionError(
-        "Installation admission requires a fixed HTTPS or loopback origin.",
-      );
-  }
+  if (config && !installationClientOriginAllowed(config.origin, config.kind, env))
+    throw new InstallationProfileAdmissionError(
+      "Installation admission requires a fixed HTTPS, loopback or gate route origin.",
+    );
   return {
     async read(binding) {
       if (!config)

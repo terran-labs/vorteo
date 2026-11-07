@@ -106,6 +106,7 @@ function bootstrapFromEnvironment(): BootstrapResult {
       platform: process.platform,
       homeDir: homedir(),
       uid: process.getuid?.(),
+      env: process.env,
     });
     if (installationClient) process.env.VORTEO_INSTALLATION_CLIENT_CONFIG = installationClient;
     const logger = createRootLogger({ log: config.log }, { paseoHome, file: false });

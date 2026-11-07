@@ -1296,6 +1296,17 @@
                       "type": "string",
                       "const": "local"
                     },
+                    "credentialsManaged": {
+                      "type": "boolean"
+                    },
+                    "apiKey": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "baseUrl": {
+                      "type": "string",
+                      "minLength": 1
+                    },
                     "model": {
                       "type": "string",
                       "minLength": 1
@@ -1314,6 +1325,9 @@
                     "provider": {
                       "type": "string",
                       "const": "openai"
+                    },
+                    "credentialsManaged": {
+                      "type": "boolean"
                     },
                     "apiKey": {
                       "type": "string",
@@ -1371,6 +1385,17 @@
                       "type": "string",
                       "const": "local"
                     },
+                    "credentialsManaged": {
+                      "type": "boolean"
+                    },
+                    "apiKey": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "baseUrl": {
+                      "type": "string",
+                      "minLength": 1
+                    },
                     "model": {
                       "type": "string",
                       "minLength": 1
@@ -1389,6 +1414,9 @@
                     "provider": {
                       "type": "string",
                       "const": "openai"
+                    },
+                    "credentialsManaged": {
+                      "type": "boolean"
                     },
                     "apiKey": {
                       "type": "string",
@@ -1433,6 +1461,17 @@
                       "type": "string",
                       "const": "local"
                     },
+                    "credentialsManaged": {
+                      "type": "boolean"
+                    },
+                    "apiKey": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "baseUrl": {
+                      "type": "string",
+                      "minLength": 1
+                    },
                     "model": {
                       "type": "string",
                       "minLength": 1
@@ -1455,6 +1494,9 @@
                     "provider": {
                       "type": "string",
                       "const": "openai"
+                    },
+                    "credentialsManaged": {
+                      "type": "boolean"
                     },
                     "apiKey": {
                       "type": "string",

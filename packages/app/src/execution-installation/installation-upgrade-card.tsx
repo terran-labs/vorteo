@@ -1,3 +1,4 @@
+import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import {
   Check,
   ChevronDown,
@@ -377,11 +378,7 @@ export function UpgradeDecisionButtons({
           />
         ))}
       </View>
-      {decide.error ? (
-        <Text accessibilityRole="alert" style={styles.error}>
-          {toErrorMessage(decide.error)}
-        </Text>
-      ) : null}
+      <SettingsStatusLine message={decide.error ? toErrorMessage(decide.error) : null} />
     </View>
   );
 }
@@ -446,11 +443,7 @@ export function UpgradeAcknowledgeButton({
           Dismiss
         </Button>
       </View>
-      {decide.error ? (
-        <Text accessibilityRole="alert" style={styles.error}>
-          {toErrorMessage(decide.error)}
-        </Text>
-      ) : null}
+      <SettingsStatusLine message={decide.error ? toErrorMessage(decide.error) : null} />
     </View>
   );
 }

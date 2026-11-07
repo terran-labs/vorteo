@@ -107,8 +107,8 @@ export async function returnAndReopenSettings(page: Page) {
 }
 export async function returnToPluginsPage(page: Page) {
   await page.getByRole("button", { name: "Back to plugins", exact: true }).click();
-  // Plugins is a section of the single settings page, which keeps its own address.
-  await expect(page).toHaveURL(/\/settings\/plugins$/);
+  // Plugins now belongs to Projects & integrations on the continuous Settings page.
+  await expect(page).toHaveURL(/\/settings\/projects$/);
   await expect(
     page.getByRole("button", { name: "Actions for settings-example", exact: true }),
   ).toBeVisible();

@@ -7,10 +7,10 @@ import type { StatusBadgeVariant } from "@/components/ui/status-badge";
 export const maintenanceTargetLabels: Record<EnrollmentTarget, string> = {
   host: "Host",
   "container-daemon": "Dev",
-  coordinator: "Coordinator",
-  supervisor: "Supervisor",
-  "maintenance-controller": "Maintenance controller",
-  "recovery-launcher": "Recovery launcher",
+  coordinator: "System services",
+  supervisor: "System services",
+  "maintenance-controller": "System services",
+  "recovery-launcher": "System services",
 };
 
 interface MaintenanceHeadline {

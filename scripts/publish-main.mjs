@@ -397,6 +397,7 @@ export async function assertMergeable(
 const MERGE_STATE_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
+      id
       state
       headRefOid
       mergeCommit { oid }
@@ -477,25 +478,58 @@ export async function waitForMerged(
   }
 }
 
+const AUTO_MERGE_REFUSAL = /auto merge is not allowed|enablePullRequestAutoMerge/i;
+
+const ENQUEUE_MUTATION = `mutation($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
+  enqueuePullRequest(input: {pullRequestId: $pullRequestId, expectedHeadOid: $expectedHeadOid}) {
+    mergeQueueEntry { id }
+  }
+}`;
+
 /**
  * Merges with a merge commit pinned to the tested head. With a merge queue, GitHub enqueues
  * it instead, using the queue's merge method. Waits until it is merged, then proves main
  * contains both the merge commit and the head.
  */
-export async function mergePullRequest(plan, pr, { gh = runGh, wait = {}, log = () => {} } = {}) {
+export async function mergePullRequest(
+  plan,
+  pr,
+  { gh = runGh, wait = {}, log = () => {}, ruleset = readMainRuleset(plan.root) } = {},
+) {
   await assertMergeable(plan, pr, { gh, log, ...wait });
   // A rerun after a timeout finds the entry still queued; enqueueing it again would fail.
-  if (!mergeState(gh, plan.repository, pr.number).isInMergeQueue) {
+  const current = mergeState(gh, plan.repository, pr.number);
+  const enqueue = () =>
     gh([
-      "pr",
-      "merge",
-      String(pr.number),
-      "-R",
-      plan.repository,
-      "--merge",
-      "--match-head-commit",
-      plan.head,
+      "api",
+      "graphql",
+      "-f",
+      `query=${ENQUEUE_MUTATION}`,
+      "-f",
+      `pullRequestId=${current.id}`,
+      "-f",
+      `expectedHeadOid=${plan.head}`,
     ]);
+  if (!current.isInMergeQueue && ruleset.rules.some((rule) => rule.type === "merge_queue")) {
+    enqueue();
+  } else if (!current.isInMergeQueue) {
+    try {
+      gh([
+        "pr",
+        "merge",
+        String(pr.number),
+        "-R",
+        plan.repository,
+        "--merge",
+        "--match-head-commit",
+        plan.head,
+      ]);
+    } catch (error) {
+      // When GitHub does not enqueue at once, gh falls back to auto-merge, which this
+      // repository disallows. Enqueue directly, pinned to the tested head.
+      if (!AUTO_MERGE_REFUSAL.test(String(error?.message ?? error))) throw error;
+      enqueue();
+    }
   }
   const merged = await waitForMerged(plan, pr, { gh, log, ...wait });
   const mainHead = fetchBase(plan.root, plan.remote, plan.branch);

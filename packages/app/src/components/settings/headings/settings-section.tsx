@@ -1,13 +1,17 @@
 import { CardHeaderStatus } from "@/components/ui/card-header-status";
-import { useMemo, type ReactNode } from "react";
+import { createContext, useContext, useMemo, type ReactNode } from "react";
 import { Text, View, type StyleProp, type ViewStyle } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { ExternalLink, type ExternalLinkProps } from "@/components/ui/external-link";
 import { SettingsInfoTip } from "./settings-info-tip";
 import { settingsStyles } from "@/styles/settings";
 
+/** The catalog supplies scope once for all existing headers within a pane. */
+export const SettingsPaneScope = createContext<string | null>(null);
+
 interface SettingsSectionProps {
   title: string;
+  scope?: string;
   /**
    * What this section is for. Renders as an info tooltip on the header; a
    * paragraph between the header and the card is wrong (docs/design.md §7).
@@ -38,6 +42,7 @@ interface SettingsSectionProps {
  */
 export function SettingsSection({
   title,
+  scope,
   info,
   link,
   trailing,
@@ -47,6 +52,8 @@ export function SettingsSection({
   flush,
   children,
 }: SettingsSectionProps) {
+  const inheritedScope = useContext(SettingsPaneScope);
+  const scopeLabel = scope ?? inheritedScope;
   const sectionStyle = useMemo(
     () => [settingsStyles.section, flush ? styles.flush : null, style],
     [flush, style],
@@ -82,6 +89,9 @@ export function SettingsSection({
             <ExternalLink {...link} />
           </View>
         ) : null}
+        {scopeLabel ? (
+          <Text style={[settingsStyles.rowHint, styles.scope]}>{scopeLabel}</Text>
+        ) : null}
         {trailing}
       </View>
       <View style={styles.content}>{children}</View>
@@ -107,6 +117,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[2],
   },
+  scope: { flexShrink: 1, maxWidth: "45%", textAlign: "right", marginTop: 0 },
   statusTitle: { maxWidth: "65%", flexShrink: 1 },
   title: { flexShrink: 1 },
   content: {

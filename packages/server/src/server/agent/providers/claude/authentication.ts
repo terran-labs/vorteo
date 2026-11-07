@@ -2,6 +2,7 @@ import { claudeConfigDir } from "./project-dir.js";
 import { readClaudeSetupToken } from "./setup-token-runtime.js";
 import { claudeSignInMode } from "./sign-in-mode.js";
 import { readClaudeOAuthGrant } from "../../../execution-installation/accounts/claude-oauth-storage.js";
+import type { recoverClaudeOAuthGrant } from "../../../execution-installation/accounts/claude-oauth-recovery.js";
 import { z } from "zod";
 import { execCommand } from "../../../../utils/spawn.js";
 import {
@@ -47,6 +48,55 @@ interface AuthenticationCheck {
   signal?: AbortSignal;
   run?: typeof execCommand;
   readGrant?: typeof readClaudeOAuthGrant;
+  recoverGrant?: typeof recoverClaudeOAuthGrant;
+  now?: () => number;
+}
+
+const recoveries = new Map<string, Promise<void>>();
+
+async function recoverGrant(
+  configDir: string,
+  recover: typeof recoverClaudeOAuthGrant,
+): Promise<void> {
+  let pending = recoveries.get(configDir);
+  if (!pending) {
+    pending = recover(configDir).finally(() => recoveries.delete(configDir));
+    recoveries.set(configDir, pending);
+  }
+  await pending;
+}
+
+async function requireFullSignIn(input: AuthenticationCheck, configDir: string): Promise<void> {
+  const readGrant = input.readGrant ?? readClaudeOAuthGrant;
+  const now = input.now ?? Date.now;
+  let grant;
+  try {
+    grant = await readGrant(configDir);
+  } catch {
+    throw new ClaudeAuthenticationError("CHECK_FAILED");
+  }
+  if (!grant || grant.expiresAt === null || grant.expiresAt <= now()) {
+    try {
+      // History discovery imports this module but does not need installation recovery dependencies.
+      await recoverGrant(
+        configDir,
+        input.recoverGrant ??
+          (async (directory) =>
+            (
+              await import("../../../execution-installation/accounts/claude-oauth-recovery.js")
+            ).recoverClaudeOAuthGrant(directory)),
+      );
+    } catch {
+      // Recovery errors can contain transport details. Only the reread decides availability.
+    }
+    try {
+      grant = await readGrant(configDir);
+    } catch {
+      throw new ClaudeAuthenticationError("CHECK_FAILED");
+    }
+    if (!grant || grant.expiresAt === null || grant.expiresAt <= now())
+      throw new ClaudeAuthenticationError("SIGN_IN_REQUIRED");
+  }
 }
 
 /** Use the CLI's effective auth configuration, including API keys and cloud providers. */
@@ -54,14 +104,7 @@ export async function requireClaudeAuthentication(input: AuthenticationCheck): P
   const run = input.run ?? execCommand;
   const env = createProviderEnv({ runtimeSettings: input.runtimeSettings });
   if (claudeSignInMode(env) === "full") {
-    let grant;
-    try {
-      grant = await (input.readGrant ?? readClaudeOAuthGrant)(claudeConfigDir(env));
-    } catch {
-      throw new ClaudeAuthenticationError("CHECK_FAILED");
-    }
-    if (!grant) throw new ClaudeAuthenticationError("SIGN_IN_REQUIRED");
-    // Expiry is handled by the refresh owner. A status read must never consume a grant.
+    await requireFullSignIn(input, claudeConfigDir(env));
     return;
   }
   const credential = await readClaudeSetupToken(env);

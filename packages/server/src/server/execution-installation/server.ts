@@ -1,3 +1,4 @@
+import { ClaudeOAuthRecoveryRequestSchema } from "./accounts/claude-oauth-recovery.js";
 import { InstallationManagement } from "./management.js";
 import { BrokerDeploymentRefused } from "./preview-broker-deployment-workflow.js";
 import { coordinatorDispatchStatuses } from "./coordinator-bootstrap-dispatch-status.js";
@@ -111,7 +112,11 @@ import {
   inspectInstallationCoordinator,
 } from "./daemon.js";
 import { CoordinatorBootstrapPreparationSchema } from "@getpaseo/protocol/coordinator-bootstrap";
-import { delegateToContainer, DelegationRequestSchema } from "./delegation.js";
+import {
+  ContainerAdmissionRefused,
+  delegateToContainer,
+  DelegationRequestSchema,
+} from "./delegation.js";
 import {
   InstallationSettingsUpdateSchema,
   type InstallationSettingsSnapshot,
@@ -1468,6 +1473,43 @@ export function createInstallationServer(
     });
   });
 
+  app
+    .route("/api/installation/claude/oauth/recovery")
+    .all((req, res, next) => {
+      res.setHeader("Cache-Control", "no-store");
+      const token = extractHttpBearerToken(req.header("authorization"));
+      if (matchesToken(token, config.hostAgentTokenHash)) res.locals.recoveryEnvironment = "host";
+      else if (matchesContainerAgent(token)) res.locals.recoveryEnvironment = "container";
+      else {
+        res.sendStatus(401);
+        return;
+      }
+      next();
+    })
+    .get((_req, res) => {
+      res.json({ available: claudeOAuth !== undefined });
+    })
+    .post((req, res) => {
+      const input = ClaudeOAuthRecoveryRequestSchema.safeParse(req.body);
+      if (!input.success) {
+        res.sendStatus(400);
+        return;
+      }
+      if (!claudeOAuth) {
+        res.sendStatus(503);
+        return;
+      }
+      const kind = z.enum(["host", "container"]).parse(res.locals.recoveryEnvironment);
+      void claudeOAuth.recover(kind, input.data).then(
+        () => {
+          return res.json({ completed: true });
+        },
+        () => {
+          res.status(409).json({ error: "Account recovery is unavailable." });
+        },
+      );
+    });
+
   app.get("/api/installation/profiles/admission", (req, res) => {
     const token = extractHttpBearerToken(req.header("authorization"));
     let kind: "host" | "container";
@@ -2788,6 +2830,11 @@ export function createInstallationServer(
       error instanceof InstallationTypeStateError
     ) {
       res.status(409).json({ error: error.message });
+      return;
+    }
+    // Dev answered with a cause the owner can act on; relay it instead of a bare 500.
+    if (error instanceof ContainerAdmissionRefused) {
+      res.status(502).json({ error: error.message });
       return;
     }
     if (error instanceof InstallationSettingsInvalidUpdate) {

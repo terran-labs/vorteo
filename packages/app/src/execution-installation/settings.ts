@@ -1,3 +1,4 @@
+import { useOwnerAccess } from "./owner-access";
 import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -44,13 +45,14 @@ async function readRefusal(response: Response): Promise<string> {
 }
 
 export function useInstallationSettings(enabled = true) {
+  const owner = useOwnerAccess();
   const installation = readExecutionInstallation();
   const queryClient = useQueryClient();
   const installationId = installation?.installationId;
   const query = useFetchQuery({
     queryKey: ["installation-settings", installationId],
     queryFn: () => requestInstallationSettings(),
-    enabled: enabled && installation !== null,
+    enabled: enabled && installation !== null && owner.status === "unlocked",
     refetchInterval: 5000,
     retry: false,
     dataShape: "value",

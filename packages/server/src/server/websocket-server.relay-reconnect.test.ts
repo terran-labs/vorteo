@@ -19,6 +19,7 @@ import {
   TerminalStreamOpcode,
 } from "@getpaseo/protocol/terminal-stream-protocol";
 import { CLIENT_CAPS } from "@getpaseo/protocol/client-capabilities";
+import type { AgentGrant } from "@getpaseo/protocol/messages";
 import { APPLICATION_SOCKET_LEASE_MS } from "./websocket/physical-socket.js";
 
 type SocketListener = (...args: unknown[]) => void;
@@ -77,6 +78,9 @@ const sessionMock = vi.hoisted(() => {
     getPermissions = vi.fn(() => this.args.permissions as string[]);
     setPermissions = (permissions: string[]) => {
       this.args.permissions = permissions;
+    };
+    setAgentGrants = (grants: readonly AgentGrant[] | undefined) => {
+      this.args.agentGrants = grants;
     };
     private routed = false;
     setRouted = (routed: boolean) => {

@@ -8,6 +8,16 @@ const relayDeploymentSpec = "**/relay-deployment-reconnect.real.spec.ts";
 // Vorteo keeps its own onboarding: upstream's first-run walkthrough is off behind
 // UPSTREAM_SETUP_ENABLED in src/onboarding/index.ts. Route its spec back in if that flag is enabled.
 const upstreamSetupWalkthroughSpec = "**/onboarding.spec.ts";
+// Upstream tests for controls Vorteo removed on purpose, routed out by title so upstream merges
+// keep applying cleanly. Re-check each one against Vorteo behavior after every upstream merge.
+// - The composer model selector: Vorteo's composer picks an account profile instead (471d7f22a).
+// - Labeled docked navigation at 600-720px: Vorteo compacts narrow windows to the icon rail,
+//   whose larger buttons leave Settings in the More menu (912be3133, ab60c1e39).
+const retiredUpstreamTests = [
+  /opening Settings closes the composer model selector until it is opened again/,
+  /opening Settings closes an existing chat's model selector until it is opened again/,
+  /docked navigation keeps its density and Settings preserves reading width/,
+];
 
 function videoMode(): "on" | "on-first-retry" | "retain-on-failure" {
   if (process.env.E2E_RECORD_VIDEO === "1") return "on";
@@ -38,6 +48,7 @@ export default defineConfig({
     {
       name: "browser",
       testIgnore: ["**/*.real.spec.ts", "**/*.packaged.spec.ts", upstreamSetupWalkthroughSpec],
+      grepInvert: retiredUpstreamTests,
       use: { ...devices["Desktop Chrome"] },
     },
     {
