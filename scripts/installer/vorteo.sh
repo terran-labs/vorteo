@@ -206,7 +206,7 @@ vorteo_command() {
     "" | help | -h | --help) usage ;;
     *)
       # Inspect only target selectors and the command route; Commander still validates argv.
-      local explicit_target="${PASEO_HOME:-${PASEO_HOST-}}" first="" second="" arg pending="" operands=""
+      local explicit_target="${PASEO_HOME:-${PASEO_HOST-}}" first="" second="" third="" arg pending="" operands=""
       for arg in "$command" "$@"; do
         if [ -n "$pending" ]; then
           if [ "$pending" = target ]; then explicit_target=1; fi
@@ -224,11 +224,12 @@ vorteo_command() {
           esac
         fi
         if [ -z "$first" ]; then first="$arg"
-        elif [ -z "$second" ]; then second="$arg"; fi
+        elif [ -z "$second" ]; then second="$arg"
+        elif [ -z "$third" ]; then third="$arg"; fi
       done
       if [ -z "$explicit_target" ]; then
-        case "$first:$second" in
-          start:* | restart:* | reload:* | daemon:start | daemon:stop | daemon:restart | daemon:run | daemon:reload)
+        case "$first:$second:$third" in
+          start:* | restart:* | reload:* | onboard:* | daemon:start:* | daemon:stop:* | daemon:restart:* | daemon:run:* | daemon:reload:* | daemon:set-password:* | daemon:config:set | daemon:config:unset)
             echo "Manage this installation's daemon in Settings, Maintenance (installation controls)." >&2
             return 1
             ;;
