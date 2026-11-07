@@ -116,6 +116,8 @@ export async function requireClaudeAuthentication(input: AuthenticationCheck): P
   const options = {
     ...createProviderEnvSpec({ runtimeSettings: input.runtimeSettings }),
     timeout: AUTH_STATUS_TIMEOUT_MS,
+    // This read-only probe has no session to preserve; cancellation must end its writer.
+    killSignal: "SIGKILL" as const,
     maxBuffer: 64 * 1024,
     signal: input.signal,
   };
