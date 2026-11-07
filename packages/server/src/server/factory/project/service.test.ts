@@ -53,10 +53,10 @@ class FakeGitHub implements FactoryGitHub {
   /** Creates the next ref, then fails as if the daemon crashed before reading the response. */
   crashAfterCreate = false;
   /** Runs just before a leased delete, as a push landing in that moment would. */
-  beforeDelete: (() => void) | null = null;
+  beforeDelete: (() => Promise<void>) | null = null;
 
   async deleteBranchAt(_repository: string, branch: string, sha: string): Promise<boolean> {
-    this.beforeDelete?.();
+    await this.beforeDelete?.();
     if (this.refs.get(`heads/${branch}`) !== sha) return false;
     this.refs.delete(`heads/${branch}`);
     return true;
@@ -1678,17 +1678,25 @@ describe("several installations on one repository", () => {
     expect(staleTicks()).toHaveLength(1);
     expect(staleTicks()[0]!.prompt).toContain("factory/issue-5");
 
-    // A push landing during the release keeps the branch and drops the archive it made.
+    // The owner checking in mid-release still holds its claim, and its push in that moment
+    // keeps the branch, with no archive left behind to read as a release.
     const pushed = "p".repeat(40);
-    github.beforeDelete = () => github.refs.set("heads/factory/issue-5", pushed);
+    github.beforeDelete = async () => {
+      expect((await claim(theirs, 5)).outcome).toBe("held");
+      github.refs.set("heads/factory/issue-5", pushed);
+    };
     await expect(release(ours, 5)).rejects.toThrow("moved while releasing");
     expect(github.refs.get("heads/factory/issue-5")).toBe(pushed);
     expect([...github.refs.keys()].some((name) => name.startsWith("heads/factory-released/"))).toBe(
       false,
     );
+    expect((await claim(theirs, 5)).outcome).toBe("held");
     github.beforeDelete = null;
     github.refs.set("heads/factory/issue-5", MAIN);
 
+    // A crash while archiving is finished by the next release call.
+    github.crashAfterCreate = true;
+    await expect(release(ours, 5)).rejects.toThrow("daemon stopped");
     expect(await release(ours, 5)).toMatchObject({ outcome: "archived", headSha: MAIN });
     expect(github.refs.has("heads/factory/issue-5")).toBe(false);
     expect([...github.refs].filter(([name]) => name.startsWith("heads/factory-released/"))).toEqual(

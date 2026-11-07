@@ -817,6 +817,9 @@ export class ProjectFactoryService {
     if (roleId !== "factory-intake") return [];
     const project = await this.requireConfiguredProject(record.projectId);
     try {
+      // A release interrupted after its delete finishes its archive before anything else.
+      for (const issue of Object.keys(project.pendingReleases ?? {}))
+        await this.release(record.projectId, project, Number(issue));
       const scan = await scanForeignClaims({
         github: this.github(),
         repository: project.repository,
@@ -859,16 +862,34 @@ export class ProjectFactoryService {
     return this.serialize(async () => {
       await this.requireActiveProject(request.projectId);
       const project = await this.requireConfiguredProject(request.projectId);
-      const branch = projectFactoryClaimBranch(request.issue);
-      const released = await releaseClaim({
-        ...this.claimContext(request.projectId, project.repository, request.issue),
-        foreign: project.foreignClaims?.[branch],
-      });
-      await this.mutateProject(request.projectId, (next) => {
-        if (next.foreignClaims) delete next.foreignClaims[branch];
-      });
-      return released;
+      return this.release(request.projectId, project, request.issue);
     });
+  }
+
+  private async release(
+    projectId: string,
+    project: ProjectState,
+    issue: number,
+  ): Promise<ProjectFactoryClaimRelease> {
+    const branch = projectFactoryClaimBranch(issue);
+    const key = String(issue);
+    const released = await releaseClaim({
+      ...this.claimContext(projectId, project.repository, issue),
+      foreign: project.foreignClaims?.[branch],
+      pending: project.pendingReleases?.[key],
+      writePending: async (pending) => {
+        await this.mutateProject(projectId, (next) => {
+          const all = { ...next.pendingReleases };
+          if (pending) all[key] = pending;
+          else delete all[key];
+          next.pendingReleases = all;
+        });
+      },
+    });
+    await this.mutateProject(projectId, (next) => {
+      if (next.foreignClaims) delete next.foreignClaims[branch];
+    });
+    return released;
   }
 
   private claimContext(projectId: string, repository: string, issue: number) {

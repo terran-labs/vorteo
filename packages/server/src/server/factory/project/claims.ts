@@ -10,7 +10,12 @@ import {
   type ProjectFactoryClaimRelease,
 } from "@getpaseo/server/factory-project";
 
-import type { AssignmentState, ClaimState, ForeignClaimState } from "./state.js";
+import type {
+  AssignmentState,
+  ClaimState,
+  ForeignClaimState,
+  PendingReleaseState,
+} from "./state.js";
 
 /**
  * Several Vorteo installations can run Factory against one repository. GitHub decides which
@@ -254,15 +259,21 @@ export async function claimIssue(ctx: ClaimContext): Promise<ProjectFactoryClaim
 
 export interface ReleaseContext extends ClaimContext {
   foreign: ForeignClaimState | undefined;
+  /** A release this installation started and has not finished archiving. */
+  pending: PendingReleaseState | undefined;
+  writePending: (pending: PendingReleaseState | undefined) => Promise<void>;
 }
 
 /**
  * Releases a claim after the owner agreed. A conflicting claim of this installation's own is
- * only forgotten. A stale foreign claim is first archived under `factory-released/` at its
- * exact head, then removed, so its commits stay reachable and nothing is rewritten.
+ * only forgotten. A stale foreign claim is deleted with a lease on its exact head, then
+ * archived under `factory-released/` at that head, so its commits stay reachable and nothing
+ * is rewritten. The archive comes last because its former owner reads any new archive as a
+ * finished release; the pending record lets a crash in between finish the archive later.
  */
 export async function releaseClaim(ctx: ReleaseContext): Promise<ProjectFactoryClaimRelease> {
   const branch = projectFactoryClaimBranch(ctx.issue);
+  if (ctx.pending) return finishRelease(ctx, branch, ctx.pending);
   const own = await ctx.read();
   if (own?.status === "conflict") {
     await ctx.write(undefined);
@@ -283,23 +294,37 @@ export async function releaseClaim(ctx: ReleaseContext): Promise<ProjectFactoryC
     .toISOString()
     .replace(/[-:]/g, "")
     .replace(/\.\d+Z$/, "Z");
-  const archivedAs = `${ARCHIVE_PREFIX}/issue-${ctx.issue}/${stamp}`;
-  expect(
-    await ctx.github.rest("POST", `repos/${ctx.repository}/git/refs`, {
-      ref: `refs/heads/${archivedAs}`,
-      sha: head,
-    }),
-    [201],
-    `archiving ${branch}`,
-  );
-  // Deleted only while it still points at the archived head. If it moved since the owner was
-  // asked, keep it, and drop only the archive this call made, so its former owner does not
-  // read a release that never happened.
+  const pending = { sha: head, archivedAs: `${ARCHIVE_PREFIX}/issue-${ctx.issue}/${stamp}` };
+  await ctx.writePending(pending);
+  // Deleted only while it still points at that head: a push since the owner was asked keeps it.
   if (!(await ctx.github.deleteBranchAt(ctx.repository, branch, head))) {
-    await ctx.github.rest("DELETE", `repos/${ctx.repository}/git/refs/heads/${archivedAs}`);
+    await ctx.writePending(undefined);
     throw new FactoryGitHubError(`${branch} moved while releasing it; it is active again.`);
   }
-  return { issue: ctx.issue, branch, outcome: "archived", archivedAs, headSha: head };
+  return finishRelease(ctx, branch, pending);
+}
+
+async function finishRelease(
+  ctx: ReleaseContext,
+  branch: string,
+  pending: PendingReleaseState,
+): Promise<ProjectFactoryClaimRelease> {
+  const created = await ctx.github.rest("POST", `repos/${ctx.repository}/git/refs`, {
+    ref: `refs/heads/${pending.archivedAs}`,
+    sha: pending.sha,
+  });
+  // 422 is an earlier attempt's archive; it counts only at the same commit.
+  if (created.status === 422 && (await readHead(ctx, pending.archivedAs)) !== pending.sha)
+    throw new FactoryGitHubError(`${pending.archivedAs} exists at another commit.`);
+  if (created.status !== 422) expect(created, [201], `archiving ${branch}`);
+  await ctx.writePending(undefined);
+  return {
+    issue: ctx.issue,
+    branch,
+    outcome: "archived",
+    archivedAs: pending.archivedAs,
+    headSha: pending.sha,
+  };
 }
 
 async function readHead(ctx: ClaimContext, branch: string): Promise<string | null> {
