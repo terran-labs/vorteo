@@ -155,6 +155,8 @@ export const UpdateCheckSchema = z.object({
   error: z.string().nullable(),
   /** The installed Host source version, such as 26.10.3001, or null when unknown. */
   installedVersion: z.string().nullable(),
+  /** Why the offer was held back, such as a source upgrade running. Absent when it was not. */
+  note: z.string().optional(),
   /** The newest installable release above the installed version, or null when current. */
   latest: z
     .object({ release: ReleaseTagSchema, channel: UpdateChannelSchema, notes: ReleaseNotesSchema })
@@ -260,6 +262,8 @@ export const SourceUpgradeSchema = InstallationUpgradeSchema.omit({
   lastRelease: ReleaseTagSchema.nullable(),
   /** Set on an owner rollback: the source upgrade whose previous Host release it reselects. */
   rollbackOf: z.string().uuid().optional(),
+  /** When a rollback's 24-hour window ends. Approval and the fetch step refuse it afterwards. */
+  rollbackUntil: z.string().datetime().optional(),
 });
 export type SourceUpgrade = z.infer<typeof SourceUpgradeSchema>;
 

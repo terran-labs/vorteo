@@ -450,20 +450,46 @@ const activeInterfaceUpgrades = (s) =>
       ["approved", "running"].includes(item.status) && !s.outputs.supersede?.includes(item.id),
   );
 
+const sourceJournal = (s) =>
+  path.join(s.install.plan.paths.coordinatorState, "source-upgrades", "journal.json");
+
 /** A source upgrade of one commit from main, approved or running in the interface. */
 const activeSourceUpgrade = (s) =>
-  (
-    readJson(path.join(s.install.plan.paths.coordinatorState, "source-upgrades", "journal.json"))
-      ?.upgrades ?? []
-  ).find((item) => ["approved", "running"].includes(item.status));
+  (readJson(sourceJournal(s))?.upgrades ?? []).find(
+    (item) =>
+      ["approved", "running"].includes(item.status) && !s.outputs.supersede?.includes(item.id),
+  );
 
-function refuseSourceUpgrade(s, fix) {
+const SOURCE_UPGRADE_FIX =
+  "Wait for it to finish; one that is only approved can be cancelled from Installation controls. If the coordinator is stopped, rerun the installer: it then replaces the source upgrade.";
+
+function refuseSourceUpgrade(s) {
   const source = activeSourceUpgrade(s);
   if (source)
     throw new InstallerError(
       `A source upgrade to commit ${String(source.sourceCommit).slice(0, 12)} started from the interface is ${source.status}.`,
-      fix,
+      SOURCE_UPGRADE_FIX,
     );
+}
+
+/**
+ * True when an active source upgrade can never advance: no coordinator answers to drive it and
+ * no Host build it launched is running. The installer is the recovery tool, so a dead
+ * coordinator's record must not lock it out.
+ */
+async function stuckSourceUpgrade(s) {
+  try {
+    await coordinatorHealth(s, s.install.plan.ports.coordinator);
+    return false;
+  } catch {
+    /* no coordinator answers */
+  }
+  try {
+    await s.context.run("pgrep", ["-f", `host-release --root ${s.install.plan.paths.root}`]);
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -477,10 +503,7 @@ function assertNoInterfaceUpgrade(s) {
       `An upgrade to ${active.release} was started from the interface and is ${active.status}.`,
       "Wait for it to finish or cancel it in Settings, then rerun the installer to resume.",
     );
-  refuseSourceUpgrade(
-    s,
-    "Wait for it to finish or cancel it in Settings, then rerun the installer to resume.",
-  );
+  refuseSourceUpgrade(s);
 }
 
 async function check(s) {
@@ -493,11 +516,10 @@ async function check(s) {
       `An upgrade to ${active[0].release} started from the interface is ${active[0].status}.`,
       "Wait for it to finish or cancel it in Settings, then rerun the installer.",
     );
-  if (active.length) s.journal.output({ supersede: active.map((item) => item.id) });
-  refuseSourceUpgrade(
-    s,
-    "Wait for it to finish or cancel it in Settings, then rerun the installer.",
-  );
+  const source = activeSourceUpgrade(s);
+  if (source && !(await stuckSourceUpgrade(s))) refuseSourceUpgrade(s);
+  const replaced = [...active, ...(source ? [source] : [])];
+  if (replaced.length) s.journal.output({ supersede: replaced.map((item) => item.id) });
   if (s.plan.devContainer) {
     try {
       await context.run(install.plan.executables.docker, [
@@ -723,13 +745,12 @@ async function coordinatorHealth(s, port) {
   return body;
 }
 
-function supersede(s) {
-  const file = interfaceJournal(s);
+/** Ends the replaced upgrades in one coordinator journal. */
+function supersedeIn(file, ids, detail) {
   const journal = readJson(file);
   if (!journal) return;
-  const detail = `Replaced by the installer's upgrade to ${label(s.plan.to)}.`;
   for (const item of journal.upgrades)
-    if (s.outputs.supersede.includes(item.id) && ["approved", "running"].includes(item.status)) {
+    if (ids.includes(item.id) && ["approved", "running"].includes(item.status)) {
       item.status = "failed";
       item.detail = detail;
       for (const step of item.steps ?? [])
@@ -737,6 +758,13 @@ function supersede(s) {
           Object.assign(step, { status: "failed", detail });
     }
   writeJson(file, journal);
+}
+
+/** Ends replaced interface and source upgrades while the coordinator is stopped. */
+function supersede(s) {
+  const detail = `Replaced by the installer's upgrade to ${label(s.plan.to)}.`;
+  for (const file of [interfaceJournal(s), sourceJournal(s)])
+    supersedeIn(file, s.outputs.supersede, detail);
 }
 
 async function coordinatorStep(s) {

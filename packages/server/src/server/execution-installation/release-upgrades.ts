@@ -90,6 +90,14 @@ export function upgradeTarget(job: UpgradeJob): string {
   return isSourceUpgrade(job) ? `commit ${job.sourceCommit.slice(0, 12)}` : job.release;
 }
 
+/** Why a rollback can no longer run because its 24-hour window ended, or null. */
+function rollbackExpired(job: UpgradeJob, now: Date): string | null {
+  if (!isSourceUpgrade(job) || !job.rollbackUntil) return null;
+  return now.getTime() >= Date.parse(job.rollbackUntil)
+    ? "The 24-hour rollback window has ended."
+    : null;
+}
+
 function automatic(job: UpgradeJob): boolean {
   return isReleaseUpgrade(job) && job.automatic === true;
 }
@@ -523,6 +531,8 @@ abstract class UpgradePipeline<Ports extends UpgradePorts = UpgradePorts> {
   }
 
   private async runFetch(record: UpgradeRecord): Promise<StepResult> {
+    const expired = rollbackExpired(record, this.ports.now());
+    if (expired) return { status: "failed", detail: `${expired} Nothing was restarted.` };
     await this.ports.fetchRelease(project(record));
     return {
       status: "succeeded",
@@ -537,6 +547,15 @@ abstract class UpgradePipeline<Ports extends UpgradePorts = UpgradePorts> {
     if (!jobId) {
       if (this.ports.currentCommit() === record.sourceCommit)
         return { status: "skipped", detail: "The Host already runs this release." };
+      // Admission proved the reviewed Host commit is in the target. A Host change since then,
+      // such as a source update while this waited for idle agents, would be silently dropped.
+      if (isSourceUpgrade(record) && this.ports.currentCommit() !== record.previousCommit)
+        return {
+          status: "failed",
+          detail:
+            "The Host changed after this source upgrade was approved, so installing it could drop that change. Nothing was restarted. Request it again.",
+          private: FORGET_DEV_BUILD,
+        };
       // Turning automatic updates off stops an automatic upgrade that has not restarted anything.
       if (automatic(record) && !this.ports.automaticAllowed())
         return {
@@ -826,6 +845,11 @@ export class InstallationUpgrades extends UpgradePipeline {
     return job && isReleaseUpgrade(job) ? job : null;
   }
 
+  /** Why another installation operation keeps a release upgrade from starting now, or null. */
+  blocked(): string | null {
+    return this.ports.conflict();
+  }
+
   /** Why a pending or approved upgrade was withdrawn without the owner, such as a newer release. */
   withdraw(id: string, detail: string): InstallationUpgrade {
     const record = this.records.find((item) => item.id === id);
@@ -927,11 +951,18 @@ export const SOURCE_ROLLBACK_WINDOW_MS = 24 * 60 * 60_000;
 
 export type SourceRollbackOffer = SourceUpgradeStatus["rollback"];
 
-function finishedAt(job: UpgradeJob): number | null {
-  const times = job.steps
-    .map((step) => (step.finishedAt ? Date.parse(step.finishedAt) : Number.NaN))
-    .filter((time) => !Number.isNaN(time));
-  return times.length ? Math.max(...times) : null;
+function hostStep(job: UpgradeJob): UpgradeStep | undefined {
+  return job.steps.find((step) => step.name === "host");
+}
+
+/** Why admission refuses a commit, or null. Checked at request and again at approval. */
+function admissionRefusal(commit: string, installed: string, facts: SourceFacts): string | null {
+  if (!facts.onMain)
+    return `Commit ${commit.slice(0, 12)} is not on main. Only commits on main can be installed.`;
+  if (!facts.containsInstalled)
+    return `Commit ${commit.slice(0, 12)} does not contain the installed Host commit ${installed.slice(0, 12)}. Installing it would be a downgrade.`;
+  if (!facts.checks.passed) return `Required checks have not passed: ${facts.checks.detail}`;
+  return null;
 }
 
 /**
@@ -969,16 +1000,8 @@ export class SourceUpgrades extends UpgradePipeline<SourceUpgradePorts> {
     if (installed === input.commit)
       throw new RestartRequestError("The Host already runs this commit.");
     const facts = await this.ports.inspectSource(input.commit, installed);
-    if (!facts.onMain)
-      throw new RestartRequestError(
-        `Commit ${input.commit.slice(0, 12)} is not on main. Only commits on main can be installed.`,
-      );
-    if (!facts.containsInstalled)
-      throw new RestartRequestError(
-        `Commit ${input.commit.slice(0, 12)} does not contain the installed Host commit ${installed.slice(0, 12)}. Installing it would be a downgrade.`,
-      );
-    if (!facts.checks.passed)
-      throw new RestartRequestError(`Required checks have not passed: ${facts.checks.detail}`);
+    const refusal = admissionRefusal(input.commit, installed, facts);
+    if (refusal) throw new RestartRequestError(refusal);
     // Admission fetched and called GitHub; another request may have won meanwhile.
     this.refuseActive();
     this.refuseConflict();
@@ -1010,10 +1033,31 @@ export class SourceUpgrades extends UpgradePipeline<SourceUpgradePorts> {
       requestedBy,
       lastRelease,
       rollbackOf: upgradeId,
+      rollbackUntil: offer.until,
     });
   }
 
-  decide(id: string, revision: string, decision: SourceUpgradeDecision["decision"]): SourceUpgrade {
+  /**
+   * Approval repeats admission (on main, no downgrade, required checks) against `main` as it
+   * is now. A refusal leaves the request pending, so it can be approved once checks pass.
+   */
+  async decide(
+    id: string,
+    revision: string,
+    decision: SourceUpgradeDecision["decision"],
+  ): Promise<SourceUpgrade> {
+    const record = this.records.find((item) => item.id === id);
+    if (
+      record?.status === "pending" &&
+      isSourceUpgrade(record) &&
+      !record.rollbackOf &&
+      record.previousCommit &&
+      (decision === "approve" || decision === "approve-after-work")
+    ) {
+      const facts = await this.ports.inspectSource(record.sourceCommit, record.previousCommit);
+      const refusal = admissionRefusal(record.sourceCommit, record.previousCommit, facts);
+      if (refusal) throw new RestartRequestError(refusal);
+    }
     const job = this.decideJob(id, revision, decision);
     if (!isSourceUpgrade(job))
       throw new Error("The source upgrade journal holds a release upgrade");
@@ -1021,14 +1065,18 @@ export class SourceUpgrades extends UpgradePipeline<SourceUpgradePorts> {
   }
 
   /**
-   * The rollback of the newest source upgrade: offered for 24 hours after it succeeded, while
-   * the Host still runs it and its previous Host release can be selected without a build.
+   * The rollback of the newest source upgrade that moved the Host: offered for 24 hours after
+   * its Host step succeeded, even when a later step failed, while the Host still runs it and
+   * its previous Host release can be selected without a build.
    */
   rollbackOffer(): SourceRollbackOffer {
-    const latest = this.list().find((job) => job.status === "succeeded");
+    const latest = this.list().find(
+      (job) => !upgradeIsActive(job) && hostStep(job)?.status === "succeeded",
+    );
     const none = (detail: string): SourceRollbackOffer => ({ available: false, detail });
     if (!latest || latest.rollbackOf) return none("No source upgrade can be rolled back.");
-    const finished = finishedAt(latest);
+    const hostFinished = hostStep(latest)?.finishedAt;
+    const finished = hostFinished ? Date.parse(hostFinished) : null;
     if (finished === null || !latest.previousCommit)
       return none("The newest source upgrade did not record what it replaced.");
     const until = finished + SOURCE_ROLLBACK_WINDOW_MS;
@@ -1054,6 +1102,8 @@ export class SourceUpgrades extends UpgradePipeline<SourceUpgradePorts> {
 
   /** The approval binds the installed commit the owner reviewed against. */
   protected override approvalRefusal(record: UpgradeRecord): string | null {
+    const expired = rollbackExpired(record, this.ports.now());
+    if (expired) return expired;
     if (this.ports.currentCommit() !== record.previousCommit)
       return "The installed Host commit changed after this source upgrade was reviewed. Request it again.";
     return null;
@@ -1066,6 +1116,7 @@ export class SourceUpgrades extends UpgradePipeline<SourceUpgradePorts> {
     requestedBy: string;
     lastRelease: string | null;
     rollbackOf?: string;
+    rollbackUntil?: string;
   }): SourceUpgrade {
     const lastRelease = ReleaseTagSchema.safeParse(input.lastRelease);
     const job = this.add({
@@ -1078,6 +1129,7 @@ export class SourceUpgrades extends UpgradePipeline<SourceUpgradePorts> {
       requestedBy: input.requestedBy,
       lastRelease: lastRelease.success ? lastRelease.data : null,
       ...(input.rollbackOf ? { rollbackOf: input.rollbackOf } : {}),
+      ...(input.rollbackUntil ? { rollbackUntil: input.rollbackUntil } : {}),
       createdAt: this.ports.now().toISOString(),
       status: "pending",
       detail: "Waiting for owner approval.",

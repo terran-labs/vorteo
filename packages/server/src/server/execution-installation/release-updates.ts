@@ -432,6 +432,13 @@ export class ReleaseUpdates {
       .list()
       .some((item) => item.release === latest.release && item.status !== "cancelled");
     if (seen) return;
+    // A source upgrade or another coordinator job holds release upgrades off; the next check
+    // offers the release once it ends. This is not a failed check.
+    const blocked = this.upgrades.blocked();
+    if (blocked) {
+      this.last = { ...this.last, note: `Not offered yet: ${blocked}` };
+      return;
+    }
     const upgrade = await this.upgrades.request(latest.release, {
       origin: "update-check",
       notes: latest.notes,
@@ -442,6 +449,7 @@ export class ReleaseUpdates {
 
   /** Reads the policy as it is now, since the owner may have changed it during the fetch. */
   private approveIfAutomatic(id: string): void {
-    if (this.policy().mode === "automatic") this.upgrades.approveAutomatically(id);
+    if (this.policy().mode === "automatic" && !this.upgrades.blocked())
+      this.upgrades.approveAutomatically(id);
   }
 }

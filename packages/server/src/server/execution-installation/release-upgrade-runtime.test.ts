@@ -183,3 +183,69 @@ test("a Host source update seen to succeed starts adoption once, detached", asyn
     delete process.env.ENGINE_LOG;
   }
 });
+
+/** An installer-made installation with one approved upgrade journaled as `kind`. */
+function installerWithApproved(kind: "release" | "source") {
+  const legacy = legacyInstallation();
+  legacy.config.deployment = {
+    installRoot: root,
+    sourceDirectory: path.join(root, "source"),
+    hostHome: path.join(root, "state", "host"),
+    hostReleaseLink: path.join(root, "releases", "host-current"),
+    coordinator: {
+      releaseLink: path.join(root, "releases", "coordinator-current"),
+      service: {
+        launchdService: "gui/501/local.vorteo.791360b7-0000-4000-8000-000000000001.installation",
+      },
+    },
+  } as InstallationConfig["deployment"];
+  const record = {
+    id: "00000000-0000-4000-8000-0000000000a1",
+    revision: "00000000-0000-4000-8000-0000000000a2",
+    sourceCommit: "2".repeat(40),
+    previousCommit: INSTALLED,
+    createdAt: "2026-11-07T12:00:00.000Z",
+    status: "approved",
+    detail: "Approved. Starting.",
+    steps: ["snapshot", "fetch", "host", "coordinator", "dev"].map((name) => ({
+      name,
+      status: "pending",
+      detail: "",
+    })),
+    private: {},
+    ...(kind === "release"
+      ? { release: "release-26.11.3001" }
+      : { kind: "source-upgrade", reason: "Hotfix", requestedBy: "Owner", lastRelease: null }),
+  };
+  touch(
+    path.join(
+      legacy.config.stateDir,
+      kind === "release" ? "upgrades" : "source-upgrades",
+      "journal.json",
+    ),
+    JSON.stringify({ version: 1, upgrades: [record] }),
+  );
+  return runtime([], legacy);
+}
+
+test("an approved source upgrade holds off release upgrades and snapshot restores", async () => {
+  const upgrades = installerWithApproved("source");
+  expect(upgrades.sourceUpgrades?.dispatching()).toBe(true);
+  // Refused by the conflict check before the release tag is ever resolved on GitHub.
+  await expect(upgrades.upgrades?.request("release-26.11.3002")).rejects.toThrow("source upgrade");
+  await expect(
+    upgrades.restore({ id: "20261107T120000Z", parts: ["coordinator-state"] }),
+  ).rejects.toThrow("running upgrade");
+});
+
+test("an approved release upgrade holds off source upgrades", async () => {
+  const upgrades = installerWithApproved("release");
+  // Refused before main is fetched.
+  await expect(
+    upgrades.sourceUpgrades?.request({
+      commit: "3".repeat(40),
+      reason: "Hotfix",
+      requestedBy: "Owner",
+    }),
+  ).rejects.toThrow("release upgrade");
+});

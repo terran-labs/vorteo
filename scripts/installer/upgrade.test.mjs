@@ -526,16 +526,37 @@ describe("upgrade", () => {
     }
   });
 
-  test("a source upgrade running in the interface makes the installer wait", async () => {
-    const { context, paths } = machine();
-    writeJson(path.join(paths.coordinatorState, "source-upgrades", "journal.json"), {
+  test.each([
+    ["a coordinator that answers makes the installer wait", false],
+    ["a stopped coordinator's record is replaced", true],
+  ])("a running source upgrade: %s", async (_name, stopped) => {
+    const { context, paths } = machine({
+      // Silent until the installer restarts the coordinator, then healthy.
+      health: (state) => (stopped && !state.restarts.length ? new Error("down") : undefined),
+    });
+    const journal = path.join(paths.coordinatorState, "source-upgrades", "journal.json");
+    writeJson(journal, {
       version: 1,
-      upgrades: [{ id: "s1", sourceCommit: "c".repeat(40), status: "running", steps: [] }],
+      upgrades: [
+        {
+          id: "s1",
+          sourceCommit: "c".repeat(40),
+          status: "running",
+          steps: [{ name: "host", status: "running" }],
+        },
+      ],
     });
     const { plan } = await upgradePlan(context);
     const { ok, failure } = await apply(context, plan);
-    expect(ok).toBe(false);
-    expect(failure.message).toMatch(/source upgrade to commit c{12} started from the interface/);
+    const [record] = JSON.parse(readFileSync(journal, "utf8")).upgrades;
+    if (stopped) {
+      expect(failure).toBeUndefined();
+      expect(record).toMatchObject({ status: "failed", steps: [{ status: "failed" }] });
+    } else {
+      expect(ok).toBe(false);
+      expect(failure.message).toMatch(/source upgrade to commit c{12} started from the interface/);
+      expect(record.status).toBe("running");
+    }
   });
 
   test.each([

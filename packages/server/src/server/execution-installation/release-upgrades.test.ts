@@ -558,21 +558,51 @@ test("approval binds the reviewed commit and the installed commit it was reviewe
     previousCommit: INSTALLED_COMMIT,
     lastRelease: "release-26.10.3000",
   });
-  expect(() =>
+  await expect(
     sources.decide(pending.id, "00000000-0000-4000-8000-0000000000ff", "approve"),
-  ).toThrow("changed");
+  ).rejects.toThrow("changed");
   installed = "d".repeat(40);
-  expect(() => sources.decide(pending.id, pending.revision, "approve")).toThrow("Request it again");
+  await expect(sources.decide(pending.id, pending.revision, "approve")).rejects.toThrow(
+    "Request it again",
+  );
   expect(sources.list()[0]).toMatchObject({ status: "cancelled" });
   await sources.drain();
   expect(fake.calls).toEqual([]);
+});
+
+test("approval repeats admission and leaves the request pending when checks no longer pass", async () => {
+  let facts: Partial<SourceFacts> = {};
+  const fake = fakeSourcePorts({}, { inspectSource: async () => ({ ...PASSING, ...facts }) });
+  const sources = new SourceUpgrades(journal, fake.ports);
+  const pending = await sources.request(SOURCE_REQUEST);
+  facts = { checks: { passed: false, detail: "missing or still running: scan." } };
+  await expect(sources.decide(pending.id, pending.revision, "approve")).rejects.toThrow("scan");
+  expect(sources.list()[0].status).toBe("pending");
+  facts = {};
+  await expect(sources.decide(pending.id, pending.revision, "approve")).resolves.toMatchObject({
+    status: "approved",
+  });
+});
+
+test("a Host change after approval fails the source upgrade before anything restarts", async () => {
+  let installed = INSTALLED_COMMIT;
+  const fake = fakeSourcePorts({}, { currentCommit: () => installed });
+  const sources = new SourceUpgrades(journal, fake.ports);
+  const pending = await sources.request(SOURCE_REQUEST);
+  await sources.decide(pending.id, pending.revision, "approve-after-work");
+  // A Host source update landed while the approved upgrade waited.
+  installed = "d".repeat(40);
+  await sources.drain();
+  expect(fake.calls).toEqual(["snapshot", "fetch"]);
+  expect(sources.list()[0]).toMatchObject({ status: "failed" });
+  expect(sources.list()[0].detail).toContain("Host changed after");
 });
 
 test("an approved source upgrade resumes from its journal and fetches the reviewed commit", async () => {
   const first = fakeSourcePorts();
   const sources = new SourceUpgrades(journal, first.ports);
   const pending = await sources.request(SOURCE_REQUEST);
-  sources.decide(pending.id, pending.revision, "approve");
+  await sources.decide(pending.id, pending.revision, "approve");
   await sources.drain();
   expect(first.calls).toEqual(["snapshot", "fetch", "host-request"]);
   expect(first.fetched).toEqual([SOURCE_COMMIT]);
@@ -596,38 +626,64 @@ test("an approved source upgrade resumes from its journal and fetches the review
   expect(JSON.stringify(resumed.list())).not.toContain("private");
 });
 
-test("the owner can roll the Host back for 24 hours after a source upgrade", async () => {
-  const fake = fakeSourcePorts({}, { currentCommit: () => SOURCE_COMMIT });
-  const sources = new SourceUpgrades(journal, {
-    ...fake.ports,
-    currentCommit: () => INSTALLED_COMMIT,
-  });
+/** A source upgrade whose Host step moved the Host, then whose coordinator rolled back. */
+async function movedHost() {
+  let installed = INSTALLED_COMMIT;
+  const fake = fakeSourcePorts({}, { currentCommit: () => installed });
+  const sources = new SourceUpgrades(journal, fake.ports);
   const pending = await sources.request(SOURCE_REQUEST);
-  sources.decide(pending.id, pending.revision, "approve");
-  // The Host now runs the source upgrade's commit.
-  const after = new SourceUpgrades(journal, fake.ports);
+  await sources.decide(pending.id, pending.revision, "approve");
+  await sources.drain();
   fake.finishHost("succeeded");
-  await after.drain();
-  await after.drain();
-  fake.reportCoordinator("succeeded");
-  await after.drain();
-  expect(after.list()[0].status).toBe("succeeded");
-  expect(after.rollbackOffer()).toMatchObject({
+  installed = SOURCE_COMMIT;
+  await sources.drain();
+  fake.reportCoordinator("rolled-back");
+  await sources.drain();
+  return { fake, sources, upgrade: sources.list()[0] };
+}
+
+test("the owner can roll the Host back for 24 hours, even after a later step failed", async () => {
+  const { fake, sources, upgrade } = await movedHost();
+  expect(upgrade.status).toBe("failed");
+  expect(sources.rollbackOffer()).toMatchObject({
     available: true,
-    upgradeId: pending.id,
+    upgradeId: upgrade.id,
     commit: INSTALLED_COMMIT,
   });
-  const rollback = await after.requestRollback(pending.id, "Owner");
+  const rollback = await sources.requestRollback(upgrade.id, "Owner");
   expect(rollback).toMatchObject({
     status: "pending",
-    rollbackOf: pending.id,
+    rollbackOf: upgrade.id,
     sourceCommit: INSTALLED_COMMIT,
     previousCommit: SOURCE_COMMIT,
+    rollbackUntil: sources.rollbackOffer().until,
   });
-  after.decide(rollback.id, rollback.revision, "cancel");
+  // The window ends before the owner answers: approval refuses and cancels the rollback.
   fake.advanceClock(24 * 60 * 60_000);
-  expect(after.rollbackOffer()).toMatchObject({ available: false });
-  await expect(after.requestRollback(pending.id, "Owner")).rejects.toThrow("24-hour");
+  await expect(sources.decide(rollback.id, rollback.revision, "approve")).rejects.toThrow(
+    "24-hour",
+  );
+  expect(sources.list()[0].status).toBe("cancelled");
+  expect(sources.rollbackOffer()).toMatchObject({ available: false });
+  await expect(sources.requestRollback(upgrade.id, "Owner")).rejects.toThrow("24-hour");
+});
+
+test("an approved rollback whose window ends before it runs fails at the fetch step", async () => {
+  const { fake, sources, upgrade } = await movedHost();
+  const rollback = await sources.requestRollback(upgrade.id, "Owner");
+  await sources.decide(rollback.id, rollback.revision, "approve");
+  const before = fake.calls.length;
+  fake.advanceClock(24 * 60 * 60_000);
+  await sources.drain();
+  expect(sources.list()[0]).toMatchObject({ status: "failed" });
+  expect(sources.list()[0].steps.map((step) => step.status)).toEqual([
+    "succeeded",
+    "failed",
+    "skipped",
+    "skipped",
+    "skipped",
+  ]);
+  expect(fake.calls.slice(before)).toEqual(["snapshot"]);
 });
 
 test("an installation from before the installer adopts its layout before the snapshot", async () => {

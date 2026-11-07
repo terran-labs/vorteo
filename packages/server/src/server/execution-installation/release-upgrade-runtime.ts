@@ -1229,7 +1229,7 @@ export function createReleaseUpgradeRuntime(input: {
       if (!snapshots || !restoreDirectory)
         throw new RestartRequestError("Snapshots are unavailable on this installation");
       if (typeof services === "string") throw new RestartRequestError(services);
-      if (upgrades?.active()?.status === "running")
+      if (upgrades?.active()?.status === "running" || sourceUpgrades?.dispatching())
         throw new RestartRequestError("Wait for the running upgrade to finish before restoring");
       if (readRestoreStatus()?.status === "running")
         throw new RestartRequestError("A restore is already running");
