@@ -30,6 +30,7 @@ import {
 import {
   CoordinatorSettings,
   createCoordinatorSettingsJournal,
+  createScopeCustody,
   sha256,
   type CoordinatorSettingsPorts,
 } from "./coordinator-settings.js";
@@ -91,6 +92,8 @@ function settingsPorts(
     launch: () => calls.push(`launch ${recorded()}`),
     outcome: () => outcome,
     reviewBroker: async () => ({ fields: {}, values: {} }),
+    keepScope: () => {},
+    restoreScope: () => {},
     deadlineMs: 60_000,
     warn: (message) => calls.push(`warn ${message}`),
     ...changes,
@@ -467,6 +470,7 @@ function brokerInstallation() {
     previewBrokerDeployment: recorded,
   })}\n`;
   const ports = settingsPorts(state, {
+    ...createScopeCustody((jobId) => path.join(root, "state/work", jobId)),
     reviewBroker: ({ keys, current, candidate, phase }) =>
       reviewBrokerSettings(
         {
@@ -657,6 +661,21 @@ test.each([
     after: (fx: BrokerFixture) => writeFileSync(fx.host.worker.path, "worker swapped"),
     detail: "digest changed",
   },
+  {
+    name: "a restart that starts after the scope was minted",
+    after: (fx: BrokerFixture) => {
+      let busy = false;
+      const review = fx.settings["ports"].reviewBroker;
+      fx.settings["ports"].reviewBroker = async (input) => {
+        const result = await review(input);
+        busy = input.phase === "dispatch";
+        return result;
+      };
+      fx.settings["ports"].conflict = () =>
+        busy ? "Wait for the coordinator update to finish." : null;
+    },
+    detail: "Wait for the coordinator update",
+  },
 ])("broker settings fail at dispatch for $name", async ({ after, detail }) => {
   const fx = brokerInstallation();
   const job = await fx.request();
@@ -666,6 +685,8 @@ test.each([
   expect(fx.settings.status().job).toMatchObject({ status: "failed" });
   expect(fx.settings.status().job?.detail).toContain(detail);
   expect(fx.calls).toEqual([]);
+  // Nothing applied, so the recorded scope keeps its exact bytes.
+  expect(readFileSync(fx.recorded.scope.path, "utf8")).toBe("{}");
 });
 
 test("broker settings retry a review that could not run, and stop after a cancel during review", async () => {
@@ -690,6 +711,14 @@ test("broker settings retry a review that could not run, and stop after a cancel
   await fx.settings.drain();
   expect(fx.settings.status().job).toMatchObject({ status: "cancelled" });
   expect(fx.calls).toEqual([]);
+  expect(readFileSync(fx.recorded.scope.path, "utf8")).toBe("{}");
+  // An unchanged broker key is dropped, so the remaining plain change needs no field review.
+  const plain = await fx.settings.request({
+    patch: { previewBrokerDeployment: fx.recorded, claudeHostRefresh: true },
+    baseSha256: sha256(fx.state.disk.config),
+  });
+  expect(plain.changes.map((change) => change.key)).toEqual(["claudeHostRefresh"]);
+  expect(fx.settings.decide(plain.id, plain.revision, "approve").status).toBe("approved");
 });
 
 test("broker settings refuse a request when the configuration changed during review", async () => {

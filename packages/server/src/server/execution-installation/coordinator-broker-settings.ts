@@ -35,10 +35,12 @@ import { verifyExecutable } from "./preview-monitor-executor.js";
  *   private review copy; only dispatch, after approval, writes the recorded scope path.
  *
  * Who this stops: Host agents run as the owner's account, so the ownership, mode and link
- * checks below stop Dev-side tampering (writable Dev mounts) and accidents, not a Host agent.
- * The real gate is the owner approving "release <commit>" together with values the requester
- * cannot choose. Dispatch repeats every check, and the executors repeat theirs before each
- * broker effect.
+ * checks below stop Dev-side tampering (writable Dev mounts) and mistakes, not a Host agent.
+ * A Host agent can also change a release's files and its commit label: the commit comes from a
+ * receipt the same account can write, or the folder name, and no artifact digest binds it to
+ * the contents. Owner approval of "release <commit>" therefore cannot detect Host-agent
+ * tampering; it confirms which release and recorded values a well-behaved requester chose.
+ * Dispatch repeats every check, and the executors repeat theirs before each broker effect.
  */
 export const BROKER_SETTINGS: readonly BrokerSetting[] = [
   "previewBrokerDeployment",

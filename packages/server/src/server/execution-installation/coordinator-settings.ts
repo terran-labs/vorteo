@@ -85,6 +85,8 @@ const SettingsRecordSchema = CoordinatorSettingsJobSchema.extend({
   appliedSha256: z.string().optional(),
   /** Dispatch reviews that could not run, such as a Docker inspection timeout. */
   reviewAttempts: z.number().int().nonnegative().optional(),
+  /** The recorded participant scope was kept before dispatch minted a new one. */
+  scopeKept: z.literal(true).optional(),
 });
 type SettingsRecord = z.infer<typeof SettingsRecordSchema>;
 
@@ -147,6 +149,10 @@ export interface CoordinatorSettingsPorts {
    */
   launch(jobId: string, onError: (error: Error) => void): void;
   outcome(jobId: string): HandoffOutcome | null;
+  /** Keeps the participant scope at `file`, or that it was absent, once per job. */
+  keepScope(jobId: string, file: string): void;
+  /** Puts the kept participant scope back, if one was kept. */
+  restoreScope(jobId: string): void;
   /**
    * Reviews reviewed broker keys of `candidate` against the files on disk and the values
    * `current` records, and returns each key's changed fields. Throws when any is refused.
@@ -183,7 +189,13 @@ function merge(text: string, patch: Record<string, unknown>): string {
 }
 
 function project(record: SettingsRecord): CoordinatorSettingsJob {
-  const { patch: _patch, appliedSha256: _applied, reviewAttempts: _attempts, ...job } = record;
+  const {
+    patch: _patch,
+    appliedSha256: _applied,
+    reviewAttempts: _attempts,
+    scopeKept: _kept,
+    ...job
+  } = record;
   return job;
 }
 
@@ -275,7 +287,8 @@ export class CoordinatorSettings {
     if (changed.length === 0) throw new RestartRequestError("The patch changes nothing");
     const brokerKeys = changed.filter(isBrokerSetting);
     let fields: Record<string, CoordinatorSettingField[]> = {};
-    let patch = input.patch;
+    // Unchanged keys are dropped, so an unchanged broker key never needs a field review.
+    let patch = Object.fromEntries(changed.map((key) => [key, input.patch[key]]));
     if (brokerKeys.length > 0) {
       try {
         const review = await this.ports.reviewBroker({
@@ -432,47 +445,10 @@ export class CoordinatorSettings {
       this.finish(job, "failed", refusal);
       return;
     }
-    const brokerKeys = Object.keys(job.patch).filter(isBrokerSetting);
-    if (brokerKeys.length > 0) {
-      // Hash and confine every broker file again: one swapped after approval is refused.
-      let review: BrokerSettingsReviewResult;
-      try {
-        const text = this.ports.readConfig();
-        review = await this.ports.reviewBroker({
-          keys: brokerKeys,
-          current: text,
-          candidate: merge(text, job.patch),
-          phase: "dispatch",
-        });
-      } catch (error) {
-        const latest = this.jobs.find((item) => item.id === job.id);
-        if (latest?.status !== "approved") return;
-        const attempts = (latest.reviewAttempts ?? 0) + 1;
-        // A check that could not run stays approved and runs again on the next drain.
-        if (error instanceof BrokerReviewUnavailable && attempts < REVIEW_ATTEMPTS) {
-          this.save(latest, {
-            reviewAttempts: attempts,
-            detail: `Approved. Waiting to check the broker files again: ${message(error)}`,
-          });
-          return;
-        }
-        this.finish(
-          latest,
-          "failed",
-          `The broker settings no longer pass review: ${message(error)}. Nothing was applied.`,
-        );
-        return;
-      }
-      // The owner may have cancelled, or another restart started, during the review.
-      const latest = this.jobs.find((item) => item.id === job.id);
-      if (latest?.status !== "approved") return;
-      // The participant scope was minted at its recorded path; apply its digest.
-      job = this.save(latest, { patch: { ...latest.patch, ...review.values } });
-      const conflict = this.blocker() ?? this.ports.conflict();
-      if (conflict) {
-        this.finish(job, "failed", conflict);
-        return;
-      }
+    if (Object.keys(job.patch).some(isBrokerSetting)) {
+      const reviewed = await this.reviewAtDispatch(job);
+      if (!reviewed) return;
+      job = reviewed;
     }
     let text: string;
     let candidate: string;
@@ -514,6 +490,97 @@ export class CoordinatorSettings {
       this.ports.launch(job.id, (error) => this.launchFailed(job.id, error));
     } catch (error) {
       this.launchFailed(job.id, error);
+    }
+  }
+
+  /**
+   * Gates the change before minting, keeps the scope, then reviews every broker file again.
+   * Returns the job to apply, or null when it was finished, kept for a retry or cancelled.
+   */
+  private async reviewAtDispatch(approved: SettingsRecord): Promise<SettingsRecord | null> {
+    let job = approved;
+    const brokerKeys = Object.keys(job.patch).filter(isBrokerSetting);
+    // Every gate that needs no broker review runs first: minting changes the scope file.
+    const early = this.applyBlocker(job);
+    if (early) {
+      this.finish(job, "failed", early);
+      return null;
+    }
+    const scope = (job.patch.previewBrokerDeployment as { scope?: { path?: unknown } } | null)
+      ?.scope?.path;
+    if (typeof scope === "string") {
+      this.ports.keepScope(job.id, scope);
+      job = this.save(job, { scopeKept: true });
+    }
+    // Hash and confine every broker file again: one swapped after approval is refused.
+    let review: BrokerSettingsReviewResult;
+    try {
+      const text = this.ports.readConfig();
+      review = await this.ports.reviewBroker({
+        keys: brokerKeys,
+        current: text,
+        candidate: merge(text, job.patch),
+        phase: "dispatch",
+      });
+    } catch (error) {
+      const latest = this.jobs.find((item) => item.id === job.id);
+      if (latest?.status !== "approved") {
+        this.restoreKeptScope(job);
+        return null;
+      }
+      const attempts = (latest.reviewAttempts ?? 0) + 1;
+      // A check that could not run stays approved and runs again on the next drain.
+      if (error instanceof BrokerReviewUnavailable && attempts < REVIEW_ATTEMPTS) {
+        this.restoreKeptScope(latest);
+        this.save(latest, {
+          reviewAttempts: attempts,
+          detail: `Approved. Waiting to check the broker files again: ${message(error)}`,
+        });
+        return null;
+      }
+      this.finish(
+        latest,
+        "failed",
+        `The broker settings no longer pass review: ${message(error)}. Nothing was applied.`,
+      );
+      return null;
+    }
+    // The owner may have cancelled, or another restart started, during the review.
+    const latest = this.jobs.find((item) => item.id === job.id);
+    if (latest?.status !== "approved") {
+      // A cancel finished the job before the scope was minted; put it back again.
+      this.restoreKeptScope(job);
+      return null;
+    }
+    // The participant scope was minted at its recorded path; apply its digest.
+    job = this.save(latest, { patch: { ...latest.patch, ...review.values } });
+    const conflict = this.blocker() ?? this.ports.conflict();
+    if (conflict) {
+      this.finish(job, "failed", conflict);
+      return null;
+    }
+    return job;
+  }
+
+  /** Why an approved change cannot apply now, before any broker review or effect. */
+  private applyBlocker(job: SettingsRecord): string | null {
+    try {
+      if (sha256(this.ports.readConfig()) !== job.baseSha256)
+        return "The coordinator configuration changed after this change was reviewed. Nothing was applied.";
+    } catch (error) {
+      return `The coordinator configuration could not be read: ${message(error)}`;
+    }
+    const launchBlocker = this.ports.launchBlocker();
+    return launchBlocker ? `${launchBlocker} Nothing was applied.` : null;
+  }
+
+  /** Restores the kept participant scope; a failure is reported, never thrown. */
+  private restoreKeptScope(job: SettingsRecord): void {
+    if (!job.scopeKept) return;
+    try {
+      this.ports.restoreScope(job.id);
+    } catch (error) {
+      this.ports.warn(`The participant scope could not be restored: ${message(error)}`);
     }
   }
 
@@ -645,6 +712,9 @@ export class CoordinatorSettings {
     status: CoordinatorSettingsJob["status"],
     detail: string,
   ): SettingsRecord {
+    // Anything that does not apply the change leaves the recorded scope as it was, including
+    // a handoff that rolls the coordinator back to the previous configuration.
+    if (status !== "succeeded") this.restoreKeptScope(job);
     return this.save(job, { status, detail, finishedAt: this.ports.now().toISOString() });
   }
 
@@ -700,6 +770,44 @@ function nativeBrokerReview(directory: string): BrokerSettingsReviewPorts {
         await rm(temporary, { force: true });
         throw error;
       }
+    },
+  };
+}
+
+/**
+ * Keeps a job's participant scope bytes, or that the file was absent, in its private work
+ * folder before dispatch mints a new scope, and puts them back atomically. The first kept copy
+ * is never overwritten, so retries cannot keep a minted scope instead of the original.
+ */
+export function createScopeCustody(work: (jobId: string) => string) {
+  const kept = (jobId: string) => path.join(work(jobId), "participant-scope.before");
+  const target = (jobId: string) => path.join(work(jobId), "participant-scope.path");
+  // Stage the bytes privately, then rename over the file: a rename replaces a planted link
+  // instead of writing through it. The work folder and the scope share the installation's
+  // volume; a cross-volume rename fails and is reported rather than applied partially.
+  const replace = (jobId: string, file: string, bytes: Buffer) => {
+    const temporary = path.join(work(jobId), `participant-scope.restore-${randomUUID()}`);
+    writePrivateFileAtomicSync(temporary, bytes);
+    try {
+      renameSync(temporary, file);
+    } catch (error) {
+      rmSync(temporary, { force: true });
+      throw error;
+    }
+  };
+  return {
+    keepScope(jobId: string, file: string) {
+      if (existsSync(target(jobId))) return;
+      mkdirSync(work(jobId), { recursive: true, mode: 0o700 });
+      if (existsSync(file)) writePrivateFileAtomicSync(kept(jobId), readFileSync(file));
+      // Written last: its presence means the kept state is complete.
+      writePrivateFileAtomicSync(target(jobId), file);
+    },
+    restoreScope(jobId: string) {
+      if (!existsSync(target(jobId))) return;
+      const file = readFileSync(target(jobId), "utf8");
+      if (existsSync(kept(jobId))) replace(jobId, file, readFileSync(kept(jobId)));
+      else rmSync(file, { force: true });
     },
   };
 }
@@ -799,6 +907,7 @@ export function createCoordinatorSettings(input: {
       });
     },
     outcome: (jobId) => readHandoffOutcome(path.join(work(jobId), "outcome.json")),
+    ...createScopeCustody(work),
     reviewBroker: ({ keys, current, candidate, phase }) =>
       reviewBrokerSettings(
         {
