@@ -4,8 +4,6 @@ import { useResponsiveSidebar } from "@/hooks/use-responsive-sidebar";
 import { useHardwareKeyboardPresent } from "@/keyboard";
 import { AddHostProvider, AddHostFlowHost } from "@/hosts/add-host";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
-import { useIsExplorerSidebarOpen } from "@/workspace-tabs/explorer-sidebar";
 import { ComposerEditingSessionsProvider } from "@/composer/editing-session";
 import { SheetHostScope } from "@/components/ui/isolated-bottom-sheet-modal";
 import "@/styles/unistyles";
@@ -138,7 +136,6 @@ import {
 } from "@/utils/desktop-window";
 import { buildOpenProjectRoute, parseServerIdFromPathname } from "@/utils/host-routes";
 
-import { parseHostWorkspaceRouteFromPathname } from "@/utils/host-routes";
 import { PluginCatalogSync } from "@/plugins";
 import { NotificationOpenRouter } from "@/notification-open/react";
 import { ensureOsNotificationPermission } from "@/utils/os-notifications";
@@ -401,7 +398,6 @@ function AppContainer({ children, chromeEnabled: chromeEnabledOverride }: AppCon
   // conflate workspace/project-specific chrome (sidebar, mobile gesture) with
   // global concerns like keyboard shortcuts. Split those out so settings (and
   // other non-workspace routes) don't need a special-case to keep shortcuts alive.
-  const isWorkspaceRoute = parseHostWorkspaceRouteFromPathname(pathname) !== null;
   const keyboardShortcutsEnabled = chromeEnabled || pathname.startsWith("/settings");
 
   useKeyboardShortcuts({
@@ -416,15 +412,10 @@ function AppContainer({ children, chromeEnabled: chromeEnabledOverride }: AppCon
   useActiveWorktreeNewAction();
   useGlobalNewWorkspaceAction();
 
-  const activeWorkspace = useActiveWorkspaceSelection();
-  const explorerVisible = useIsExplorerSidebarOpen({
-    isCompact: isCompactLayout,
-    workspaceKey: activeWorkspace
-      ? `${activeWorkspace.serverId}:${activeWorkspace.workspaceId}`
-      : null,
-  });
+  // Vorteo keeps app navigation beside Explorer: its supporting cards collapse to make room
+  // (useResponsiveSupportingCards), so upstream's rule that navigation yields to Explorer is
+  // not applied. With both, expanding the sidebar could hide it and uncover the cards for good.
   const appContentMinimumWidth = resolveDesktopAppContentMinimum({
-    explorerVisible: isWorkspaceRoute && explorerVisible,
     isSettingsRoute: pathname.includes("/settings"),
   });
   const desktopSidebarMounted = hasMountedDesktopSidebar;

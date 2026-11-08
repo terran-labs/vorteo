@@ -51,6 +51,8 @@ const retiredUpstreamTests = [
   // The compact sidebar's close button and New workspace nav row went with the Vorton toolbar
   // (471d7f22a); New workspace is a main menu item, so there is no row to sit beside.
   /sidebar-workspace\.spec\.ts.* places the close button beside the first nav row instead of over it/,
+  // Drives the composer model selector, which Vorteo replaced with the profile picker (471d7f22a).
+  /new-workspace-composer-draft\.spec\.ts.* does not restore a submitted draft after deferred publication/,
   // The fixture injects prompt rejections through featureValues, but every UI launch uses a
   // profile, and Vorteo keeps a profile launch's features out of reach of plugin hooks.
   /creation-idempotency\.spec\.ts.* becomes an agent tab when the first prompt is rejected/,
