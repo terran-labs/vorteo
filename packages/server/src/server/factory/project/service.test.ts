@@ -33,6 +33,9 @@ import {
 import type { FactoryGitHub, GitHubResponse } from "./claims.js";
 import type { GhRunner } from "./tick-gate.js";
 import { projectFactoryStatePath } from "./state.js";
+import type { DevAgent, IssueAgentHosts } from "./issue-agent-host.js";
+import { DEV_HOST_SOURCE_KEY } from "../../execution-installation/dev-host-link.js";
+import type { HostSummary } from "@getpaseo/protocol/hosts";
 
 const T0 = "2026-11-03T12:00:00.000Z";
 const PROJECT = "prj_app";
@@ -49,6 +52,7 @@ let clock: Date;
 let services: ProjectFactoryService[];
 let github: FakeGitHub;
 let accounts: FactoryAccounts;
+let issueHosts: IssueAgentHosts;
 
 const MAIN = "m".repeat(40);
 
@@ -257,6 +261,7 @@ function service(
     serverId: installation.serverId ?? "srv_test",
     github,
     accounts,
+    hosts: () => issueHosts,
     projects,
     workspaces,
     agentStorage: agents.storage,
@@ -385,6 +390,12 @@ beforeEach(async () => {
   clock = new Date(T0);
   services = [];
   github = new FakeGitHub();
+  issueHosts = {
+    directory: async () => ({ self: { serverId: "srv_test", label: "Host" }, hosts: [] }),
+    use: async () => {
+      throw new Error("no connected hosts");
+    },
+  };
   accounts = {
     readyProviders: async () => [],
     providerType: () => null,
@@ -818,6 +829,7 @@ describe("configure, status and send thread", () => {
       planning: true,
       workerProfileId: "worker-profile",
       reviewerProfileId: "reviewer-profile",
+      issueAgents: "dev",
     });
     expect(configured.roles[1]?.launch).toEqual({ provider: "codex", profileId: "fast" });
     expect(agents.switches).toEqual([]);
@@ -1353,7 +1365,7 @@ describe("issue queue and planning compatibility", () => {
     );
   });
 
-  test("old files load without rewriting and planning settings survive restart", async () => {
+  test("old files load without rewriting and planning and issue-agent settings survive restart", async () => {
     const factory = service();
     await addProject();
     await enable(factory);
@@ -1363,22 +1375,28 @@ describe("issue queue and planning compatibility", () => {
     delete legacy.projects[PROJECT].workers.planning;
     const original = JSON.stringify(legacy);
     writeFileSync(file, original);
+    // A Factory saved before the setting existed runs new issue agents in Dev.
     expect((await factory.get(PROJECT)).workers).toEqual({
       plannerProfileId: null,
       planning: true,
       workerProfileId: null,
       reviewerProfileId: null,
+      issueAgents: "dev",
     });
     expect(readFileSync(file, "utf8")).toBe(original);
     await factory.invoke("factory.project.configure", {
       projectId: PROJECT,
       plannerProfileId: "planner",
       planning: false,
+      issueAgents: "host",
     });
-    expect((await service().get(PROJECT)).workers).toMatchObject({
+    const restarted = await service().get(PROJECT);
+    expect(restarted.workers).toMatchObject({
       plannerProfileId: "planner",
       planning: false,
+      issueAgents: "host",
     });
+    expect(restarted).not.toHaveProperty("issueAgentHost");
   });
 
   test("derives stages from paged GitHub evidence and project agents, caches errors for 30 seconds", async () => {
@@ -1537,14 +1555,81 @@ describe("issue queue and planning compatibility", () => {
       labels: { "factory.issue": "2", "factory.role": "worker" },
     });
     archived.archivedAt = T0;
+    // Issue agents run in Dev by default. Dev's workspace ids differ, so its agents count by
+    // this installation's label; another installation's agent on the same Dev does not.
+    const devAgent = (
+      id: string,
+      installation: string,
+      number: string,
+      role: string,
+    ): DevAgent => ({
+      id,
+      status: "idle",
+      labels: {
+        "factory.installation": installation,
+        "factory.issue": number,
+        "factory.role": role,
+      },
+    });
+    let devReadable = true;
+    let devEnabled = true;
+    const saved = (sourceId: string, serverId: string, enabled: boolean): HostSummary => ({
+      registrationId: `reg_${serverId}`,
+      serverId,
+      label: "Dev container",
+      source: { id: sourceId, key: DEV_HOST_SOURCE_KEY },
+      metadata: {},
+      enabled,
+      status: enabled ? "online" : "disabled",
+      targetDescription: serverId,
+      lastOnlineAt: T0,
+      nextRetryAt: null,
+      error: null,
+    });
+    issueHosts = {
+      // Another producer may save its own server under the Dev key; only the owner's counts.
+      directory: async () => ({
+        self: { serverId: "srv_test", label: "Host" },
+        hosts: [saved("plugin:rogue", "srv_rogue", true), saved("owner", "srv_dev", devEnabled)],
+      }),
+      async use(serverId, action) {
+        if (serverId !== "srv_dev" || !devReadable) throw new Error("Dev route closed");
+        return action({
+          fetchAgents: async () => ({
+            entries: [
+              devAgent("dev-lead", `srv_test/${PROJECT}`, "1", "lead"),
+              devAgent("rival-worker", `srv_rival/${PROJECT}`, "1", "worker"),
+            ].map((agent) => ({ agent })),
+            pageInfo: { nextCursor: null, hasMore: false },
+          }),
+        });
+      },
+    };
+    expect((await factory.get(PROJECT)).issueAgentHost).toEqual({
+      serverId: "srv_dev",
+      unavailable: null,
+    });
+    // The owner's opt-out holds even while the other producer's entry is online.
+    devEnabled = false;
+    expect((await factory.get(PROJECT)).issueAgentHost).toEqual({
+      serverId: "srv_dev",
+      unavailable: "the Dev host is turned off",
+    });
+    devEnabled = true;
     await factory.invoke("factory.project.disable", { projectId: PROJECT });
     const read = () => factory.invoke("factory.project.queue", { projectId: PROJECT });
     const result = factoryProjectQueue.output.parse(await read());
     expect(result).toMatchObject({
       error: null,
       fetchedAt: T0,
+      issueAgentHost: { serverId: "srv_dev", unavailable: null },
       issues: [
-        { number: 1, stage: "queued", pr: null },
+        {
+          number: 1,
+          stage: "planning",
+          pr: null,
+          agents: [{ agentId: "dev-lead", role: "lead", serverId: "srv_dev" }],
+        },
         { number: 2, stage: "planning", agents: [{ agentId: "lead", role: "lead" }] },
         { number: 3, stage: "building" },
         { number: 4, stage: "repair" },
@@ -1603,6 +1688,28 @@ describe("issue queue and planning compatibility", () => {
       error: "Issue labels are incomplete.",
       issues: [],
     });
+    // After a switch to host mode, the Dev lead still running keeps its issue's stage.
+    clock = new Date(clock.getTime() + 30_000);
+    labelOverflow = false;
+    await factory.invoke("factory.project.configure", { projectId: PROJECT, issueAgents: "host" });
+    const switched = factoryProjectQueue.output.parse(await read());
+    expect(switched.issues[0]).toMatchObject({
+      number: 1,
+      stage: "planning",
+      agents: [{ agentId: "dev-lead", serverId: "srv_dev" }],
+    });
+    // An unreadable Dev still renders this host's agents and says why Dev's are missing.
+    clock = new Date(clock.getTime() + 30_000);
+    devReadable = false;
+    const local = factoryProjectQueue.output.parse(await read());
+    expect(local.issueAgentHost).toEqual({
+      serverId: "srv_dev",
+      unavailable: "Dev's agents could not be read: Dev route closed",
+    });
+    expect(local.issues.slice(0, 2)).toMatchObject([
+      { number: 1, stage: "queued", agents: [] },
+      { number: 2, stage: "planning", agents: [{ agentId: "lead", role: "lead" }] },
+    ]);
   });
 });
 

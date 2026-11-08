@@ -142,6 +142,22 @@ describe("paseo factory project", () => {
       planning: false,
       reviewerProfileId: null,
     });
+
+    // Where issue agents run is sent only when given; an older daemon refuses it.
+    const stderr: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+    invoke.mockRejectedValue(
+      new Error('Request failed: [{"code":"unrecognized_keys","keys":["issueAgents"]}]'),
+    );
+    await expect(run("configure", "prj_app", "--issue-agents", "host")).rejects.toThrow("exit 1");
+    expect(invoke).toHaveBeenLastCalledWith("factory", "factory.project.configure", {
+      projectId: "prj_app",
+      issueAgents: "host",
+    });
+    expect([...stdout, ...stderr].join("")).toContain("Update the daemon to choose where");
   });
 
   it("sets a status line exactly as the charters call it", async () => {

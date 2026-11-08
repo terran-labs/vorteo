@@ -80,6 +80,9 @@ const stateSchema: OutputSchema<ProjectFactoryState> = {
         : []),
       `Worker profile: ${state.workers.workerProfileId ?? "default"}`,
       `Reviewer profile: ${state.workers.reviewerProfileId ?? "default"}`,
+      ...(state.workers.issueAgents
+        ? [`Issue agents: ${describeIssueAgents(state.workers.issueAgents, state.issueAgentHost)}`]
+        : []),
       `Drain: ${state.drain ? `${state.drain.id} (${state.drain.reason}, ${state.drain.pausedAt})` : "none"}`,
       "",
       ["ROLE", "ID", "AGENT", "WORKSPACE", "HEARTBEAT", "LAUNCH", "INSTRUCTIONS", "STATUS"].join(
@@ -89,6 +92,15 @@ const stateSchema: OutputSchema<ProjectFactoryState> = {
     ].join("\n");
   },
 };
+
+function describeIssueAgents(
+  mode: "dev" | "host",
+  host: ProjectFactoryState["issueAgentHost"],
+): string {
+  if (mode === "host" || !host) return mode;
+  if (host.unavailable) return `dev, unavailable: ${host.unavailable}`;
+  return `dev (${host.serverId})`;
+}
 
 function describeAssignment(assignment: ProjectFactoryAssignment): string {
   if (assignment.source === "none") return "no .github/factory.json";
@@ -206,6 +218,20 @@ async function readText(file: unknown): Promise<string> {
   return readFile(file, "utf8");
 }
 
+/**
+ * Fields added later are sent only when given. An older daemon's strict input refuses one it
+ * does not know, so say to update it instead of showing the validation error.
+ */
+function refusedNewField(error: unknown, field: string, message: string): never {
+  if (
+    error instanceof Error &&
+    error.message.includes("unrecognized_keys") &&
+    error.message.includes(field)
+  )
+    throw { code: "DAEMON_UPDATE_REQUIRED", message };
+  throw error;
+}
+
 function stateCommand(
   name: string,
   description: string,
@@ -222,7 +248,17 @@ function stateCommand(
   return addJsonAndDaemonHostOptions(command).action(
     withOutput(async (projectId: string, options: CommandOptions, _command: Command) =>
       withClient(options, async (client) =>
-        single(await call(client, rpc, input(projectId, options)), stateSchema),
+        single(
+          // Only configure sends issueAgents.
+          await call(client, rpc, input(projectId, options)).catch((error: unknown) =>
+            refusedNewField(
+              error,
+              "issueAgents",
+              "Update the daemon to choose where issue agents run.",
+            ),
+          ),
+          stateSchema,
+        ),
       ),
     ),
   );
@@ -312,6 +348,7 @@ export function createFactoryProjectCommand(): Command {
           if (value !== undefined) input[key] = value;
         }
         if (options.planning !== undefined) input.planning = options.planning === "on";
+        if (options.issueAgents !== undefined) input.issueAgents = options.issueAgents;
         return input;
       },
       (command) =>
@@ -327,7 +364,13 @@ export function createFactoryProjectCommand(): Command {
             ]),
           )
           .option("--worker-profile <profile-id>", "Profile the Foreman gives workers")
-          .option("--reviewer-profile <profile-id>", "Profile the Foreman gives reviewers"),
+          .option("--reviewer-profile <profile-id>", "Profile the Foreman gives reviewers")
+          .addOption(
+            new Option(
+              "--issue-agents <dev|host>",
+              "Where new issue leads, workers and reviewers run",
+            ).choices(["dev", "host"]),
+          ),
     ),
   );
 
@@ -470,20 +513,13 @@ function createPickAccountCommand(): Command {
               ...(typeof options.issue === "string" ? { issue: parseIssue(options.issue) } : {}),
               ...(typeof options.avoid === "string" ? { avoid: options.avoid } : {}),
               ...(serverId ? { serverId } : {}),
-            }).catch((error: unknown) => {
-              // An older daemon's strict input refuses the field it does not know.
-              if (
-                serverId &&
-                error instanceof Error &&
-                error.message.includes("unrecognized_keys") &&
-                error.message.includes("serverId")
-              )
-                throw {
-                  code: "DAEMON_UPDATE_REQUIRED",
-                  message: "Update the daemon to pick accounts for another host.",
-                };
-              throw error;
-            }),
+            }).catch((error: unknown) =>
+              refusedNewField(
+                error,
+                "serverId",
+                "Update the daemon to pick accounts for another host.",
+              ),
+            ),
             pickSchema,
           ),
         );
