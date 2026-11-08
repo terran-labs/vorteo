@@ -1698,7 +1698,10 @@ async function verifyCrossEnvironmentWorkspaceMove(input: {
   await expect(row).toBeVisible();
   if (testInfo.project.name === "phone") {
     await row.tap();
-    await page.getByTestId("workspace-header-menu-trigger").tap();
+    await page
+      .getByTestId(`workspace-deck-entry-${key}`)
+      .getByTestId("workspace-header-menu-trigger")
+      .tap();
     await page.getByTestId("workspace-header-move-project").tap();
   } else {
     await row.hover();
@@ -2135,8 +2138,8 @@ test("shared profile editor renders cross-environment model compatibility", asyn
     expect(
       aliasSaved.providers.claude.workflows.find(
         (profile: { id: string }) => profile.id === savedAliasId,
-      ).model,
-    ).toBe("opus");
+      ),
+    ).toMatchObject({ model: "opus", modeId: "default" });
 
     const aliasRow = settings.getByTestId(`agent-profile-row-${savedAliasId}`);
     await expect(aliasRow).not.toContainText("is not offered by this account");
@@ -2211,9 +2214,10 @@ test("shared profile editor renders cross-environment model compatibility", asyn
           provider: "claude",
           profileId: `shared-profile/claude/${savedAliasId}`,
           model: kind === "host" ? "host-opus" : "dev-opus",
-          modeId: "default",
         },
       });
+      // Profile launches let the daemon resolve the saved permissions without a draft override.
+      expect(capturedCreates[beforeCreate]!.config).not.toHaveProperty("modeId");
       await expect(page.getByText(creationError, { exact: true }).first()).toBeVisible();
       // The intercepted request returned before server.send; the existing workspace has no agents.
       const verify = await connectReadyInstallationDaemon(kind);
