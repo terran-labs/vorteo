@@ -9,7 +9,16 @@
 // agents, ports, routes and data stay where they are; the previous release stays in
 // host/releases, so a rollback only repoints a link. The journal at state/upgrade.json
 // lets a rerun resume at the step that failed.
-import { linkSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  linkSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createServiceManager, installResult, runSteps } from "./apply.mjs";
@@ -33,6 +42,31 @@ import { writeSystemSource } from "../lib/system-source.mjs";
 import { compareVersions as compareCalendarVersions, parseTag } from "../vorteo-version.mjs";
 
 export const UPGRADE_JOURNAL = path.join("state", "upgrade.json");
+export const FOLLOW_JOURNAL = path.join("state", "coordinator-follow.json");
+// True because the follow restarts only the coordinator's own service: the Host daemon,
+// session host and Dev run as separate services that keep running.
+export const FOLLOW_RESTART_NOTICE =
+  "Restarting the coordinator now. Running Host and Dev agents keep working; Installation controls and agent maintenance requests pause until it answers.";
+export const FOLLOW_KEEP_OPEN =
+  "Keep this terminal open; if it is interrupted, run the same command again.";
+// A coordinator that answers once and then crashes must not count as ready.
+const COORDINATOR_STABLE_MS = 15_000;
+
+// custom-domain.ts CHANGE_DEADLINE_MS: two readiness windows and a minute.
+const CUSTOM_DOMAIN_DEADLINE_MS = 300_000;
+
+let switching = 0;
+let hungUp = false;
+
+/**
+ * True when a closed terminal must wait: a service switch is under way, and leaving now would
+ * strand its link without the readiness check or rollback. The process exits once it ends.
+ */
+export function deferHangup() {
+  if (!switching) return false;
+  hungUp = true;
+  return true;
+}
 const COMMIT = /^[0-9a-f]{40}$/;
 const SERVER_DIST = "packages/server/dist/server/server";
 // Present in releases whose coordinator offers release updates and update policies.
@@ -51,6 +85,8 @@ export const UPGRADE_STEP_TITLES = {
   "upgrade-guest-client": "Refreshing the installation client in Dev",
   "upgrade-verify": "Checking readiness and in-app updates",
   "upgrade-finish": "Finishing",
+  "follow-check": "Checking the coordinator and Host releases",
+  "follow-finish": "Finishing",
 };
 
 function readJson(file) {
@@ -311,6 +347,35 @@ export function summarizeUpgrade(plan) {
  * @returns {Promise<object>} what is installed, the target, how they compare, the current
  *   settings, and a plan when one is asked for and possible
  */
+/**
+ * Refuses a target that would drop a commit a source upgrade installed. Versions alone miss a
+ * release tagged from a branch that lacks it, since every commit on main raises the version.
+ */
+async function refuseDroppingSourceUpgrade(context, installPlan, installed, target, source) {
+  if (!installed.revision || installed.revision === target.revision) return;
+  const journal = readJson(
+    path.join(installPlan.paths.coordinatorState, "source-upgrades", "journal.json"),
+  );
+  const fromSource = (journal?.upgrades ?? []).some(
+    (item) =>
+      item.sourceCommit === installed.revision &&
+      (item.steps ?? []).some((step) => step.name === "host" && step.status === "succeeded"),
+  );
+  if (!fromSource) return;
+  try {
+    await git(
+      context,
+      ["merge-base", "--is-ancestor", installed.revision, target.revision],
+      source,
+    );
+  } catch {
+    throw new InstallerError(
+      `${label(target)} does not contain commit ${installed.revision.slice(0, 12)}, which a source upgrade installed. Upgrading would drop it.`,
+      "Wait for a release that includes it, or restore a snapshot from Settings to go back.",
+    );
+  }
+}
+
 export async function createUpgradePlan(
   context,
   { source, revision, release, settings: requested, settingsOnly = false },
@@ -326,6 +391,8 @@ export async function createUpgradePlan(
   const report = { installed, target, comparison, settings: current };
   if (unsupported) return { ...report, unsupported };
   const upgrade = !settingsOnly && ["newer", "different", "unfinished"].includes(comparison);
+  if (upgrade)
+    await refuseDroppingSourceUpgrade(context, installPlan, installed, target, sourceDirectory);
   const settings = changedSettings(current, requested);
   const policyChanged = Boolean(settings.updateMode || settings.updateChannel);
   const hasSettings = Object.keys(settings).length > 0;
@@ -401,12 +468,7 @@ async function stuckInterfaceUpgrade(s) {
     return false;
   }
   if (code.includes("installer-[0-9a-f]")) return false;
-  try {
-    await s.context.run("pgrep", ["-f", `host-release --root ${s.install.plan.paths.root}`]);
-    return false;
-  } catch {
-    return true;
-  }
+  return !(await hostBuildRunning(s));
 }
 
 const activeInterfaceUpgrades = (s) =>
@@ -414,6 +476,81 @@ const activeInterfaceUpgrades = (s) =>
     (item) =>
       ["approved", "running"].includes(item.status) && !s.outputs.supersede?.includes(item.id),
   );
+
+const sourceJournal = (s) =>
+  path.join(s.install.plan.paths.coordinatorState, "source-upgrades", "journal.json");
+
+/** A source upgrade of one commit from main, approved or running in the interface. */
+const activeSourceUpgrade = (s) =>
+  (readJson(sourceJournal(s))?.upgrades ?? []).find(
+    (item) =>
+      ["approved", "running"].includes(item.status) && !s.outputs.supersede?.includes(item.id),
+  );
+
+const SOURCE_UPGRADE_FIX =
+  'Wait for it to finish. One that is only approved can be cancelled by the owner with POST /api/installation/owner/source-upgrades/<id>/decision and {"revision": "<revision>", "decision": "cancel"} from /api/installation/owner/source-upgrades/query; one already running cannot be cancelled. If the coordinator has been stopped for 10 minutes with no Host build or coordinator handoff running, rerun the installer: it then replaces the source upgrade.';
+
+/** A coordinator journal untouched this long, with nothing running for it, is abandoned. */
+const SOURCE_UPGRADE_STALE_MS = 10 * 60_000;
+
+const regexpEscape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** True while a process whose arguments match `pattern` (a pgrep -f regular expression) runs. */
+async function processRunning(s, pattern) {
+  try {
+    await s.context.run("pgrep", ["-f", pattern]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True while a Host release build for this installation runs, with or without --build-only:
+ * the coordinator launches `host-release --build-only --root <root>` and
+ * `host-release --root <root>` (release-upgrade-runtime.ts).
+ */
+const hostBuildRunning = (s) =>
+  processRunning(s, `host-release.*--root ${regexpEscape(s.install.plan.paths.root)}`);
+
+function refuseSourceUpgrade(s) {
+  const source = activeSourceUpgrade(s);
+  if (source)
+    throw new InstallerError(
+      `A source upgrade to commit ${String(source.sourceCommit).slice(0, 12)} started from the interface is ${source.status}.`,
+      SOURCE_UPGRADE_FIX,
+    );
+}
+
+/**
+ * True when an active source upgrade can never advance, so the installer, the recovery tool,
+ * may replace it: its journal has not changed for 10 minutes, no Host build or coordinator
+ * handoff helper for this installation runs, and no coordinator answers health for the same
+ * two minutes the coordinator step waits. A coordinator restarting through its handoff fails
+ * the probe for up to two minutes, so one failed probe never counts.
+ */
+async function stuckSourceUpgrade(s) {
+  let modified;
+  try {
+    modified = statSync(sourceJournal(s)).mtimeMs;
+  } catch {
+    return false;
+  }
+  if (s.context.now().getTime() - modified < SOURCE_UPGRADE_STALE_MS) return false;
+  if (await hostBuildRunning(s)) return false;
+  const state = regexpEscape(config(s).stateDir);
+  if (await processRunning(s, `coordinator-handoff-main\\.js .*${state}`)) return false;
+  try {
+    await waitFor(
+      s,
+      () => coordinatorHealth(s, s.install.plan.ports.coordinator),
+      COORDINATOR_READY_MS,
+    );
+    return false;
+  } catch {
+    return true;
+  }
+}
 
 /**
  * An interface upgrade approved while this one built would change the same links. Old
@@ -426,6 +563,7 @@ function assertNoInterfaceUpgrade(s) {
       `An upgrade to ${active.release} was started from the interface and is ${active.status}.`,
       "Wait for it to finish or cancel it in Settings, then rerun the installer to resume.",
     );
+  refuseSourceUpgrade(s);
 }
 
 async function check(s) {
@@ -438,7 +576,10 @@ async function check(s) {
       `An upgrade to ${active[0].release} started from the interface is ${active[0].status}.`,
       "Wait for it to finish or cancel it in Settings, then rerun the installer.",
     );
-  if (active.length) s.journal.output({ supersede: active.map((item) => item.id) });
+  const source = activeSourceUpgrade(s);
+  if (source && !(await stuckSourceUpgrade(s))) refuseSourceUpgrade(s);
+  const replaced = [...active, ...(source ? [source] : [])];
+  if (replaced.length) s.journal.output({ supersede: replaced.map((item) => item.id) });
   if (s.plan.devContainer) {
     try {
       await context.run(install.plan.executables.docker, [
@@ -559,8 +700,12 @@ async function switchService(s, { link, service, output, ready, name, between })
   const current = realpathSync(link);
   if (!s.outputs[output] && current !== target) journal.output({ [output]: current });
   const previous = s.outputs[output];
+  // Last checks run before the link moves: a refusal after it would restart the service.
+  await s.beforeSwitch?.(name);
+  switching += 1;
   try {
     pointLink(link, plan.release);
+    s.beforeRestart?.(name);
     if (between) {
       await manager.stop(service);
       // launchd unloads after bootout returns; bootstrapping the label sooner fails.
@@ -593,7 +738,21 @@ async function switchService(s, { link, service, output, ready, name, between })
       `Its logs are in ${s.install.plan.paths.logs}. Fix the problem, then rerun the installer to resume the upgrade.`,
       { cause: error },
     );
+  } finally {
+    // The terminal closed during the switch, which has now finished either way. The run
+    // exits once the step is journaled (exitAfterHangup), so a rerun never repeats it.
+    switching -= 1;
   }
+}
+
+/**
+ * Ends the process after a deferred hangup, called by runSteps once a step is journaled.
+ * Exiting earlier would leave a finished switch recorded as unfinished, and the rerun would
+ * restart that service again, interrupting the Host's agents a second time after a Host switch.
+ */
+function exitAfterHangup() {
+  if (!switching && hungUp) process.exit(129);
+  return false;
 }
 
 async function waitFor(s, probe, timeoutMs) {
@@ -646,13 +805,12 @@ async function coordinatorHealth(s, port) {
   return body;
 }
 
-function supersede(s) {
-  const file = interfaceJournal(s);
+/** Ends the replaced upgrades in one coordinator journal. */
+function supersedeIn(file, ids, detail) {
   const journal = readJson(file);
   if (!journal) return;
-  const detail = `Replaced by the installer's upgrade to ${label(s.plan.to)}.`;
   for (const item of journal.upgrades)
-    if (s.outputs.supersede.includes(item.id) && ["approved", "running"].includes(item.status)) {
+    if (ids.includes(item.id) && ["approved", "running"].includes(item.status)) {
       item.status = "failed";
       item.detail = detail;
       for (const step of item.steps ?? [])
@@ -660,6 +818,13 @@ function supersede(s) {
           Object.assign(step, { status: "failed", detail });
     }
   writeJson(file, journal);
+}
+
+/** Ends replaced interface and source upgrades while the coordinator is stopped. */
+function supersede(s) {
+  const detail = `Replaced by the installer's upgrade to ${label(s.plan.to)}.`;
+  for (const file of [interfaceJournal(s), sourceJournal(s)])
+    supersedeIn(file, s.outputs.supersede, detail);
 }
 
 async function coordinatorStep(s) {
@@ -679,16 +844,35 @@ async function coordinatorStep(s) {
     // A stuck interface upgrade would resume in the new coordinator and move the Host back
     // to its older target. End it while no coordinator runs to rewrite the journal.
     between: s.outputs.supersede?.length ? () => supersede(s) : undefined,
-    ready: () =>
-      waitFor(
+    ready: async () => {
+      // As coordinator-handoff.ts waitForCoordinator: a new process, not fenced by a
+      // coordinator update. A fenced one answers without a top-level pid.
+      const pid = await waitFor(
         s,
         async () => {
           const health = await coordinatorHealth(s, port);
+          if (typeof health.pid !== "number" || health.bootstrap?.fenced)
+            throw new Error("the coordinator answers but is not ready");
           if (before !== null && health.pid === before)
             throw new Error("the previous coordinator is still answering");
+          return health.pid;
         },
         COORDINATOR_READY_MS,
-      ),
+      );
+      // The same process must still answer a little later; launchd restarts one that crashes.
+      await s.context.sleep(s.context.readyTimeoutMs ? 10 : COORDINATOR_STABLE_MS);
+      // A busy coordinator may miss one probe; only a new pid, a fence or silence fails it.
+      let again;
+      for (let attempt = 0; attempt < 3 && !again; attempt += 1) {
+        try {
+          again = await coordinatorHealth(s, port);
+        } catch {
+          if (attempt < 2) await s.context.sleep(s.context.readyTimeoutMs ? 1 : 2_000);
+        }
+      }
+      if (again?.pid !== pid || again.bootstrap?.fenced)
+        throw new Error("the coordinator stopped answering after it started");
+    },
   });
   return { message: `The coordinator runs ${label(s.plan.to)}.` };
 }
@@ -993,6 +1177,254 @@ async function finish(s) {
   };
 }
 
+// Coordinator follow ------------------------------------------------------------------
+
+/**
+ * The first job the coordinator would fail or strand when it restarts (restarts.ts activate):
+ * approved or running work, including restarts approved to wait for idle agents, and
+ * preparation still under way.
+ */
+function lifecycleJobConflict(state) {
+  for (const job of readJson(path.join(state, "restart-jobs.json")) ?? []) {
+    const what = `A ${job.target ?? job.kind ?? "maintenance"} job`;
+    if (job.status === "approved" && job.whenIdle)
+      return `${what} is approved to run once agents are idle.`;
+    if (["approved", "running"].includes(job.status)) return `${what} is ${job.status}.`;
+    if (job.status === "pending" && job.stage === "preparing") return `${what} is preparing.`;
+    if (job.status === "pending" && job.devRepairs?.at(-1)?.status === "preparing")
+      return "A Dev repair is preparing.";
+  }
+  return null;
+}
+
+/**
+ * Custom domain changes, lab updates, source upgrades and coordinator updates from Installation
+ * controls.
+ */
+function interfaceWorkConflict(s, state) {
+  const domain = path.join(state, "custom-domain");
+  const change = readJson(path.join(domain, "last.json"));
+  // Without an outcome the change runs until custom-domain.ts treats it as abandoned.
+  if (
+    change &&
+    !existsSync(path.join(domain, change.id, "outcome.json")) &&
+    s.context.now().getTime() - Date.parse(change.startedAt) <= CUSTOM_DOMAIN_DEADLINE_MS
+  )
+    return "A custom domain change is in progress.";
+  const active = (items, statuses) => (items ?? []).find((item) => statuses.includes(item.status));
+  const lab = active(readJson(path.join(state, "lab-updates", "journal.json"))?.updates, [
+    "approved",
+    "running",
+  ]);
+  if (lab) return `A lab update is ${lab.status}.`;
+  // Source upgrades run the interface upgrade's steps from their own journal.
+  const source = active(readJson(path.join(state, "source-upgrades", "journal.json"))?.upgrades, [
+    "approved",
+    "running",
+  ]);
+  if (source) return `A source upgrade from Installation controls is ${source.status}.`;
+  const follow = active(readJson(path.join(state, "coordinator-follow", "journal.json"))?.jobs, [
+    "pending",
+    "approved",
+    "running",
+  ]);
+  return follow ? `A coordinator update from Installation controls is ${follow.status}.` : null;
+}
+
+/** Open owner-reviewed coordinator requests, read with the release's own journal code. */
+async function coordinatorRequestConflict(s, state) {
+  const files = ["coordinator-bootstrap.json", "coordinator-bootstrap-pending.json"];
+  if (!files.some((file) => existsSync(path.join(state, file)))) return null;
+  // The release's own reader: it merges unpromoted claims and closes recovered failures.
+  const directory = path.join(s.plan.release, SERVER_DIST, "execution-installation");
+  const { openBootstrapRequests, FileBootstrapRequestJournal } = s.context
+    .coordinatorRequestModules ?? {
+    ...(await import(pathToFileURL(path.join(directory, "coordinator-bootstrap.js")))),
+    ...(await import(pathToFileURL(path.join(directory, "coordinator-bootstrap-journal.js")))),
+  };
+  const open = openBootstrapRequests(new FileBootstrapRequestJournal(state).read());
+  return open.length ? `${open.length} coordinator request(s) are still open.` : null;
+}
+
+/** Lifecycle work the coordinator drives, which restarting it would interrupt. */
+async function coordinatorLifecycleConflict(s) {
+  const state = config(s).stateDir;
+  return (
+    lifecycleJobConflict(state) ??
+    interfaceWorkConflict(s, state) ??
+    (await coordinatorRequestConflict(s, state))
+  );
+}
+
+/**
+ * Refuses unless the coordinator can move by its link alone: the Host release still is the
+ * planned one and holds a coordinator, the service starts through the link, and no work the
+ * coordinator drives is in flight.
+ */
+async function followCheck(s) {
+  const { plan, install, manager } = s;
+  const { paths, services } = install.plan;
+  if (realpathSync(paths.hostReleaseLink) !== plan.release)
+    throw new InstallerError(
+      "The Host release changed since this coordinator update started.",
+      "Rerun the command to move the coordinator to the current Host release.",
+    );
+  if (!existsSync(path.join(plan.release, SERVER_DIST, "execution-installation", "main.js")))
+    throw new InstallerError(
+      `${plan.release} has no built coordinator.`,
+      "Install a Host release that includes the coordinator, then rerun the command.",
+    );
+  if (manager.file) {
+    const definition = readFileSync(manager.file(services.coordinator), "utf8");
+    if (!definition.includes(`${paths.coordinatorReleaseLink}/`))
+      throw new InstallerError(
+        "The coordinator service starts a fixed release, not its release link, so moving the link would not move it.",
+        `Report this. The service file ${manager.file(services.coordinator)} must start main.js through ${paths.coordinatorReleaseLink}.`,
+      );
+  }
+  const conflict = await coordinatorLifecycleConflict(s);
+  if (conflict)
+    throw new InstallerError(
+      conflict,
+      "Wait for it to finish in Installation controls, then rerun the command.",
+    );
+  assertNoInterfaceUpgrade(s);
+  return { message: `Moving the coordinator from ${label(plan.from)} to ${label(plan.to)}.` };
+}
+
+function followFinish(s) {
+  s.journal.complete();
+  return {
+    message: `The coordinator runs ${label(s.plan.to)}. The previous release stays in ${s.outputs.previousCoordinator}.`,
+  };
+}
+
+/** The Host and coordinator releases of an installation whose coordinator follows its link. */
+function followReleases(install) {
+  const { paths } = install.data.plan;
+  const deployment = readJson(paths.coordinatorConfig)?.deployment;
+  if (
+    !install.data.completedAt ||
+    deployment?.coordinator?.releaseLink !== paths.coordinatorReleaseLink
+  )
+    throw new InstallerError(
+      "This installation has no recorded coordinator release link.",
+      "Run the installer with --repair, then rerun the command.",
+    );
+  const host = linkedRelease(paths.hostReleaseLink);
+  const coordinator = linkedRelease(paths.coordinatorReleaseLink);
+  if (!host || !coordinator)
+    throw new InstallerError(
+      "The Host or coordinator release link does not point at a release.",
+      "Run the installer with --repair, then rerun the command.",
+    );
+  return { host, coordinator };
+}
+
+/** The unfinished follow journal, if any, refusing one that belongs to another installation. */
+function unfinishedFollow(file, installationId) {
+  const existing = readJournal(file);
+  if (!existing || existing.completedAt) return undefined;
+  if (existing.installationId !== installationId)
+    throw new InstallerError(
+      `${file} belongs to installation ${existing.installationId}.`,
+      "Pass this installation's folder with --root.",
+    );
+  return existing;
+}
+
+/** A fresh journal, keeping what ran before a follow that stopped part way as the rollback. */
+function newFollowJournal(context, plan, unfinished) {
+  const previous = unfinished?.outputs.previousCoordinator;
+  return {
+    version: 1,
+    installationId: plan.installationId,
+    startedAt: context.now().toISOString(),
+    plan,
+    steps: {},
+    outputs: previous ? { previousCoordinator: previous } : {},
+  };
+}
+
+/**
+ * Moves the coordinator onto the release the Host runs, without touching the Host or Dev.
+ * Host source updates repoint only the Host link, and the coordinator's own requests cannot
+ * replace a coordinator that starts through its link; later moves use the coordinator update
+ * in Installation controls. The owner runs this from a terminal, like install.sh. It shares
+ * the upgrade's coordinator step and lock, so a coordinator that does not become ready runs
+ * the previous release again, and a rerun resumes from state/coordinator-follow.json.
+ * `checkOnly` runs the checks alone and changes nothing.
+ */
+export async function followHostRelease(context, emit, { checkOnly = false } = {}) {
+  const install = loadInstall(context.root);
+  const { plan: installPlan } = install.data;
+  const { host, coordinator } = followReleases(install);
+  const file = path.join(context.root, FOLLOW_JOURNAL);
+  const unfinished = unfinishedFollow(file, installPlan.installationId);
+  const resume = unfinished?.plan.release === host.release;
+  if (!resume && host.release === coordinator.release) {
+    emit({
+      result: { coordinator: { revision: host.revision, version: host.version }, moved: false },
+    });
+    return true;
+  }
+  const side = (release) => ({ version: release.version, revision: release.revision });
+  const plan = resume
+    ? unfinished.plan
+    : {
+        version: 1,
+        kind: "coordinator-follow",
+        installationId: installPlan.installationId,
+        release: host.release,
+        from: side(coordinator),
+        to: side(host),
+        steps: ["follow-check", "upgrade-coordinator", "follow-finish"],
+      };
+  const manager = createServiceManager(installPlan.services.manager, context);
+  if (checkOnly) {
+    await followCheck({ plan, install: { plan: installPlan }, context, outputs: {}, manager });
+    emit({ result: { ready: true, from: plan.from, to: plan.to } });
+    return true;
+  }
+  const unlock = lockUpgrade(context.root);
+  try {
+    const data = resume ? unfinished : newFollowJournal(context, plan, unfinished);
+    // The checks hold for one run only.
+    delete data.steps["follow-check"];
+    const journal = createJournalHandle(file, data, context.now);
+    journal.save();
+    const state = {
+      plan,
+      install: { plan: installPlan, outputs: install.data.outputs },
+      context,
+      journal,
+      outputs: data.outputs,
+      manager,
+      // The checks run again right before the link moves; work may have started meanwhile.
+      beforeSwitch: async () => {
+        const conflict = await coordinatorLifecycleConflict(state);
+        if (conflict)
+          throw new InstallerError(
+            conflict,
+            "Wait for it to finish in Installation controls, then rerun the command.",
+          );
+      },
+      // Announced once, before the first restart; a rollback restarts the same service.
+      beforeRestart: (service) => {
+        if (service !== "coordinator" || state.announced) return;
+        state.announced = true;
+        emit({ step: "upgrade-coordinator", status: "progress", message: FOLLOW_RESTART_NOTICE });
+      },
+    };
+    emit({ status: "note", message: FOLLOW_KEEP_OPEN });
+    if (!(await runSteps(plan.steps, state, emit, { stopAfter: exitAfterHangup }))) return false;
+    emit({ result: { coordinator: plan.to, moved: true } });
+    return true;
+  } finally {
+    unlock();
+  }
+}
+
 export const UPGRADE_STEPS = {
   "upgrade-check": check,
   "upgrade-release": releaseStep,
@@ -1005,6 +1437,8 @@ export const UPGRADE_STEPS = {
   "upgrade-guest-client": guestClientStep,
   "upgrade-verify": verify,
   "upgrade-finish": finish,
+  "follow-check": followCheck,
+  "follow-finish": followFinish,
 };
 
 /**
@@ -1132,7 +1566,8 @@ async function runUpgrade(plan, context, emit, install, installJournal) {
     outputs: journal.data.outputs,
     manager: createServiceManager(install.data.plan.services.manager, context),
   };
-  if (!(await runSteps(state.plan.steps, state, emit))) return false;
+  if (!(await runSteps(state.plan.steps, state, emit, { stopAfter: exitAfterHangup })))
+    return false;
   emit({
     result: {
       ...installResult(install.data.plan, install.data.outputs),

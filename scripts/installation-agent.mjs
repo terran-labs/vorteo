@@ -143,6 +143,7 @@ if (
       requester: { type: "string" },
       "reason-file": { type: "string" },
       "request-file": { type: "string" },
+      file: { type: "string" },
       install: { type: "boolean" },
       remove: { type: "boolean" },
       restart: { type: "boolean" },
@@ -150,6 +151,9 @@ if (
       "instructions-file": { type: "string" },
       "base-revision": { type: "string" },
       "rollback-of": { type: "string" },
+      next: { type: "string" },
+      action: { type: "string" },
+      commit: { type: "string" },
     },
   });
   // Vorteo :: Builds is the only writer of shared state (AGENTS.md, "Builds coordinator").
@@ -595,6 +599,156 @@ if (
       // Read-only: update policy, the last release check and the upgrade waiting or running.
       resource = "/api/installation/update-status";
       break;
+    case "request-coordinator-settings": {
+      // The owner approves in Installation controls. The base hash binds the reviewed file.
+      if (config.kind !== "host-agent")
+        throw new Error("Coordinator settings changes require the trusted Host client");
+      if (!values.file) throw new Error("Use --file with the patch of registered settings");
+      const patch = JSON.parse(readFileSync(values.file, "utf8"));
+      const baseResponse = await fetch(new URL("/api/installation/coordinator-settings", base), {
+        headers: { Authorization: `Bearer ${config.token}` },
+        redirect: "error",
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!baseResponse.ok)
+        throw new Error(
+          `Coordinator settings changes are unavailable (${baseResponse.status}). Nothing was requested.`,
+        );
+      resource = "/api/installation/coordinator-settings-requests";
+      body = {
+        patch,
+        baseSha256: (await baseResponse.json()).sha256,
+        ...(values.requester?.trim() ? { requester: values.requester.trim() } : {}),
+      };
+      break;
+    }
+    case "coordinator-settings-status":
+      if (config.kind !== "host-agent")
+        throw new Error("Coordinator settings inspection requires the trusted Host client");
+      if (!/^[a-f0-9-]{36}$/.test(positionals[1] ?? ""))
+        throw new Error("A coordinator settings change ID is required");
+      resource = `/api/installation/coordinator-settings-requests/${positionals[1]}`;
+      break;
+    case "request-coordinator-follow": {
+      // Moves the coordinator onto the Host release. The full maintenance grant approves it
+      // after the cancellation window; otherwise the owner decides in Installation controls.
+      if (config.kind !== "host-agent")
+        throw new Error("Coordinator updates require the trusted Host client");
+      let next = values.next;
+      if (!next) {
+        const statusResponse = await fetch(new URL("/api/installation/update-status", base), {
+          headers: { Authorization: `Bearer ${config.token}` },
+          redirect: "error",
+          signal: AbortSignal.timeout(60_000),
+        });
+        const follow = statusResponse.ok ? (await statusResponse.json()).coordinatorFollow : null;
+        if (!follow?.available || !follow.current?.hostRelease)
+          throw new Error(
+            `Coordinator update unavailable: ${follow?.detail ?? `status ${statusResponse.status}`}. Nothing was requested.`,
+          );
+        next = follow.current.hostRelease;
+      }
+      resource = "/api/installation/coordinator-follow";
+      body = {
+        next,
+        ...(values.requester?.trim() ? { requester: values.requester.trim() } : {}),
+      };
+      break;
+    }
+    case "coordinator-follow-status":
+      if (config.kind !== "host-agent")
+        throw new Error("Coordinator update inspection requires the trusted Host client");
+      if (!/^[a-f0-9-]{36}$/.test(positionals[1] ?? ""))
+        throw new Error("A coordinator update ID is required");
+      resource = `/api/installation/coordinator-follow/${positionals[1]}`;
+      break;
+    case "request-snapshot":
+      // Immediate under the full maintenance grant: a non-disruptive copy with a receipt in
+      // Installation controls. Without the grant it is refused and the owner takes it.
+      if (config.kind !== "host-agent")
+        throw new Error("Safety snapshots require the trusted Host client");
+      resource = "/api/installation/snapshots";
+      body = values.requester?.trim() ? { requester: values.requester.trim() } : {};
+      break;
+    case "request-helper-verification":
+      // Immediate under the full maintenance grant: read-only verification of a failed helper's
+      // installed receipts. It never installs; the receipt appears in Installation controls.
+      if (config.kind !== "host-agent")
+        throw new Error("Helper recovery verification requires the trusted Host client");
+      if (!values["request-file"])
+        throw new Error(
+          "Use --request-file with the exact helper id, revision and planSha256 from helper-status",
+        );
+      resource = "/api/installation/helpers/verify-installed";
+      body = {
+        ...JSON.parse(readFileSync(values["request-file"], "utf8")),
+        operation: "native-helper-verify-installed",
+        ...(values.requester?.trim() ? { requester: values.requester.trim() } : {}),
+      };
+      break;
+    case "request-dev-repair":
+      // Immediate under the full maintenance grant: captures the installed Host source for a
+      // pending Dev source conflict. It restarts nothing; the repaired restart follows the
+      // delegated Dev restart queue (restart-status shows it, with its window and Cancel).
+      if (config.kind !== "host-agent")
+        throw new Error("Dev repair preparation requires the trusted Host client");
+      if (
+        !/^[a-f0-9-]{36}$/.test(positionals[1] ?? "") ||
+        !/^[a-f0-9-]{36}$/.test(positionals[2] ?? "")
+      )
+        throw new Error("Usage: request-dev-repair RESTART_ID REVISION");
+      resource = "/api/installation/dev-repair/prepare";
+      body = {
+        id: positionals[1],
+        revision: positionals[2],
+        ...(values.requester?.trim() ? { requester: values.requester.trim() } : {}),
+      };
+      break;
+    case "request-installation-change":
+      // One reviewed installation change: installation-name, live-dev, installation-type,
+      // installation-settings (ordinary fields only) or custom-domain. It waits pending and
+      // cancellable; the full maintenance grant approves it after thirty seconds, otherwise the
+      // owner does in Installation controls. --file holds the request, as the owner route takes it.
+      if (config.kind !== "host-agent")
+        throw new Error("Installation changes require the trusted Host client");
+      if (!values.action || !values.file)
+        throw new Error("Usage: request-installation-change --action NAME --file request.json");
+      resource = "/api/installation/installation-changes";
+      body = {
+        action: values.action,
+        request: JSON.parse(readFileSync(values.file, "utf8")),
+        ...(values.requester?.trim() ? { requester: values.requester.trim() } : {}),
+      };
+      break;
+    case "installation-change-status":
+      if (config.kind !== "host-agent")
+        throw new Error("Installation change inspection requires the trusted Host client");
+      if (!/^[a-f0-9-]{36}$/.test(positionals[1] ?? ""))
+        throw new Error("An installation change ID is required");
+      resource = `/api/installation/installation-changes/${positionals[1]}`;
+      break;
+    case "request-source-upgrade":
+      // Installs one reviewed commit on main on a Stable installation. Admission repeats at
+      // approval (on main, no downgrade, required checks). The full maintenance grant starts it
+      // after thirty seconds; otherwise the owner approves it in Installation controls.
+      if (config.kind !== "host-agent")
+        throw new Error("Source upgrades require the trusted Host client");
+      if (!/^[a-f0-9]{40}$/.test(values.commit ?? "") || !values.reason?.trim())
+        throw new Error("Usage: request-source-upgrade --commit SHA --reason TEXT");
+      resource = "/api/installation/source-upgrades";
+      body = {
+        commit: values.commit,
+        reason: values.reason.trim(),
+        ...(values.requester?.trim() ? { requester: values.requester.trim() } : {}),
+      };
+      break;
+    case "source-upgrade-status":
+      if (config.kind !== "host-agent")
+        throw new Error("Source upgrade inspection requires the trusted Host client");
+      if (!/^[a-f0-9-]{36}$/.test(positionals[1] ?? ""))
+        throw new Error("A source upgrade ID is required");
+      resource = `/api/installation/source-upgrades/${positionals[1]}`;
+      break;
     case "request-lab-update":
       // Approved by the Lab installation type; a Stable installation refuses it.
       if (config.kind !== "host-agent")
@@ -669,7 +823,7 @@ if (
     }
     default:
       throw new Error(
-        "Commands: overview, overview-observers list|create --label|revoke ID (Host only), request-broker-consumer-deployment --request-file, broker-deployment-status ID, request-broker-channel-rebind --request-file, broker-rebind-status ID, capabilities, request-worker-launch, worker-launch-status, request-restart, restart-status, contribution-status, request-coordinator, coordinator-status, request-helper, helper-status, request-session-host --install|--remove, session-host-status, read-instructions, request-instructions, instructions-status, request-lab-update [--reason] [--rollback-of ID], lab-update-status ID, container-agents (Host only)",
+        "Commands: overview, overview-observers list|create --label|revoke ID (Host only), request-broker-consumer-deployment --request-file, broker-deployment-status ID, request-broker-channel-rebind --request-file, broker-rebind-status ID, capabilities, request-worker-launch, worker-launch-status, request-restart, restart-status, contribution-status, request-coordinator, coordinator-status, request-helper, helper-status, request-session-host --install|--remove, session-host-status, read-instructions, request-instructions, instructions-status, request-lab-update [--reason] [--rollback-of ID], lab-update-status ID, request-coordinator-settings --file, coordinator-settings-status ID, request-coordinator-follow [--next RELEASE], coordinator-follow-status ID, request-snapshot, request-helper-verification --request-file, request-dev-repair ID REVISION, request-installation-change --action NAME --file, installation-change-status ID, request-source-upgrade --commit SHA --reason TEXT, source-upgrade-status ID, container-agents (Host only)",
       );
   }
   let upload;
@@ -850,6 +1004,21 @@ if (
     review.searchParams.set("instructions", result.id);
     const { appendSystemPrompt: _text, ...summary } = result;
     result = { ...summary, approvalUrl: review.href };
+  }
+  if (
+    [
+      "request-coordinator-settings",
+      "coordinator-settings-status",
+      "request-coordinator-follow",
+      "coordinator-follow-status",
+    ].includes(positionals[0])
+  ) {
+    const review = new URL(
+      "/settings/general",
+      new URL(config.publicOrigin ?? config.origin).origin,
+    );
+    review.searchParams.set("installation", "1");
+    result.approvalUrl = review.href;
   }
   if (["request-coordinator", "coordinator-status"].includes(positionals[0])) {
     const approval = new URL(

@@ -402,6 +402,49 @@ export const factoryProjectClaimRelease = defineRpc({
   output: ProjectFactoryClaimReleaseSchema,
 });
 
+export const ProjectFactoryStageSchema = z.enum(["planner", "worker", "reviewer"]);
+
+export const ProjectFactoryAccountPickSchema = z.object({
+  stage: ProjectFactoryStageSchema,
+  /** The stage's configured profile, or null for the installation default. */
+  profileId: z.string().nullable(),
+  /** The account to launch on; null means none qualifies, so use the configured default. */
+  provider: z.string().nullable(),
+  /** The chosen account's lowest remaining window, in percent. */
+  remainingPct: z.number().nullable(),
+  /**
+   * True when the stage profile is bound to one account (a local profile or an older
+   * shared-workflow reference), so that account is used without ranking.
+   */
+  bound: z.boolean(),
+  /** Every account of the profile's provider type, with why it was or was not chosen. */
+  considered: z.array(
+    z.object({
+      provider: z.string(),
+      verdict: z.enum(["qualifies", "unknown", "stale", "exhausted", "avoided"]),
+      remainingPct: z.number().nullable(),
+    }),
+  ),
+  pickedAt: z.string(),
+});
+export type ProjectFactoryAccountPick = z.infer<typeof ProjectFactoryAccountPickSchema>;
+
+/**
+ * Picks the account a new worker, reviewer or planner starts on by the most fresh remaining
+ * quota, and records the choice. Advisory at launch: it never switches a running agent.
+ */
+export const factoryProjectPickAccount = defineRpc({
+  name: "factory.project.pick_account",
+  input: z.strictObject({
+    projectId,
+    stage: ProjectFactoryStageSchema,
+    issue: z.number().int().positive().optional(),
+    /** An account to leave out, such as the worker's when picking its reviewer. */
+    avoid: z.string().min(1).optional(),
+  }),
+  output: ProjectFactoryAccountPickSchema,
+});
+
 /** Every per-project Factory method the daemon serves natively. */
 export const PROJECT_FACTORY_RPCS = [
   factoryProjectGet,
@@ -423,4 +466,5 @@ export const PROJECT_FACTORY_RPCS = [
   factoryProjectInstructionsResolve,
   factoryProjectClaim,
   factoryProjectClaimRelease,
+  factoryProjectPickAccount,
 ] as const;

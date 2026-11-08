@@ -34,7 +34,7 @@ import pino from "pino";
 import {
   claudeHostRefreshEnabled,
   codexHostRefreshEnabled,
-  readInstallationConfig,
+  parseInstallationConfig,
 } from "./config.js";
 import { createInstallationServer } from "./server.js";
 import {
@@ -43,11 +43,14 @@ import {
   createInstallationRestartExecutor,
 } from "./daemon.js";
 import { createInstallationDaemonConnections } from "./daemon-connections.js";
+import { createDevHostLinkRuntime } from "./dev-host-link.js";
 import { createInstallationSettings, startSettingsReconciliation } from "./settings/runtime.js";
 
 const configFile = process.argv[2];
 if (!configFile) throw new Error("Usage: installation-entrypoint <private-config-file>");
-const config = readInstallationConfig(configFile);
+// The exact bytes this coordinator runs; settings changes judge a silent restart against them.
+const configText = readFileSync(configFile, "utf8");
+const config = parseInstallationConfig(configText);
 const logger = pino({ name: "vorteo-installation" });
 const startupFence = loadCoordinatorStartupFence({
   installationId: config.public.installationId,
@@ -276,6 +279,23 @@ const projectSyncTimer = setInterval(() => {
     .finally(() => (projectSyncRunning = false));
 }, 15_000);
 projectSyncTimer.unref();
+// Host agents reach Dev through an ordinary saved host, so delegated Dev agents report back.
+const devHostLink = createDevHostLinkRuntime({
+  container: config.container,
+  connect: daemonConnections.connect,
+  assertReady: () => assertRegistrationReadiness("host"),
+  logger,
+});
+let devHostLinkRunning = false;
+const devHostLinkTimer = setInterval(() => {
+  if (!synchronizing || devHostLinkRunning) return;
+  devHostLinkRunning = true;
+  void devHostLink
+    .reconcile()
+    .catch(() => logger.warn("Dev connected host registration is pending"))
+    .finally(() => (devHostLinkRunning = false));
+}, 60_000);
+devHostLinkTimer.unref();
 // Opt-in: Host-owned refresh for full sign-in Claude accounts (`claudeHostRefresh: true`).
 const claudeOAuth = claudeHostRefreshEnabled(config)
   ? createClaudeOAuthRuntime(config, settings, assertRegistrationReadiness, { setup: claudeSetup })
@@ -311,7 +331,10 @@ const app = createInstallationServer(
   coordinatorRequests,
   claudeOAuth,
   providerSecrets,
-  { configFile: realpathSync(configFile) },
+  {
+    configFile: realpathSync(configFile),
+    startupSha256: createHash("sha256").update(configText).digest("hex"),
+  },
   codexSignIn,
 );
 const telemetry = createOperationalTelemetry({

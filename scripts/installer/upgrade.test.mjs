@@ -1,4 +1,5 @@
 import {
+  utimesSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -21,6 +22,9 @@ import {
   compareVersions,
   createUpgradePlan,
   describeInstalled,
+  FOLLOW_KEEP_OPEN,
+  FOLLOW_RESTART_NOTICE,
+  followHostRelease,
 } from "./upgrade.mjs";
 
 const OLD = "a".repeat(40);
@@ -159,12 +163,16 @@ function machine({
   targetHasPolicy = true,
   coordinatorStarts = true,
   devHealthy = () => true,
+  health,
+  pgrep = () => new Error("no process"),
+  rules = [],
   ...options
 } = {}) {
   const state = { pid: 100, restarts: [], devImage: "sha256:old", snapshots: 0, coordinatorStarts };
   let paths;
   const context = fakeContext({
     rules: [
+      ...rules,
       ["git show", JSON.stringify({ version: "26.11.302" })],
       [
         (command, args) =>
@@ -197,7 +205,7 @@ function machine({
       ],
       ["docker info", "27.0.0"],
       // No Host build from an interface upgrade is running.
-      ["pgrep", new Error("no process")],
+      ["pgrep", (args) => pgrep(args)],
       ["launchctl print", new Error("Could not find service")],
       [
         "launchctl bootstrap",
@@ -240,7 +248,9 @@ function machine({
               json: async () => ({ policy: { mode: "manual", channel: "stable" } }),
             }
           : { ok: false, status: 404, json: async () => ({}) };
-      return { ok: true, json: async () => ({ installationId: ID, pid: state.pid }) };
+      const body = health?.(state, paths) ?? { installationId: ID, pid: state.pid };
+      if (body instanceof Error) throw body;
+      return { ok: true, json: async () => body };
     },
     readyTimeoutMs: 30,
     upgradeModules: {
@@ -520,6 +530,91 @@ describe("upgrade", () => {
     }
   });
 
+  const STALE = new Date("2026-10-30T11:00:00Z");
+  test.each([
+    ["a coordinator that answers makes the installer wait", { stale: true }, false],
+    ["a stopped coordinator's abandoned record is replaced", { stale: true, down: 1e9 }, true],
+    [
+      "a running build-only Host build makes the installer wait",
+      { stale: true, down: 1e9, building: true },
+      false,
+    ],
+    [
+      "a slow coordinator that answers after failed probes is waited for",
+      { stale: true, down: 2 },
+      false,
+    ],
+    ["a recently written record is waited for", { stale: false, down: 1e9 }, false],
+  ])("a running source upgrade: %s", async (_name, { stale, down = 0, building }, replaced) => {
+    let probes = 0;
+    let root;
+    const { context, paths } = machine({
+      // Silent for the first `down` probes before the installer restarts the coordinator.
+      health: (state) =>
+        !state.restarts.length && probes++ < down ? new Error("down") : undefined,
+      // The build-only Host build the coordinator starts on installer-made Hosts, matched
+      // against the pattern the installer passes to pgrep -f.
+      pgrep: ([, pattern]) =>
+        building &&
+        new RegExp(pattern).test(
+          `node main.mjs host-release --build-only --root ${root} --revision c`,
+        )
+          ? "4242"
+          : new Error("no process"),
+    });
+    root = context.root;
+    const journal = path.join(paths.coordinatorState, "source-upgrades", "journal.json");
+    writeJson(journal, {
+      version: 1,
+      upgrades: [
+        {
+          id: "s1",
+          sourceCommit: "c".repeat(40),
+          status: "running",
+          steps: [{ name: "host", status: "running" }],
+        },
+      ],
+    });
+    if (stale) utimesSync(journal, STALE, STALE);
+    const { plan } = await upgradePlan(context);
+    const { ok, failure } = await apply(context, plan);
+    const [record] = JSON.parse(readFileSync(journal, "utf8")).upgrades;
+    if (replaced) {
+      expect(failure).toBeUndefined();
+      expect(record).toMatchObject({ status: "failed", steps: [{ status: "failed" }] });
+    } else {
+      expect(ok).toBe(false);
+      expect(failure.message).toMatch(/source upgrade to commit c{12} started from the interface/);
+      expect(record.status).toBe("running");
+    }
+  });
+
+  test.each([
+    ["is refused when the target lacks it", false],
+    ["proceeds when the target contains it", true],
+  ])("an installed commit from a source upgrade %s", async (_name, contains) => {
+    const { context, paths } = machine({
+      rules: [["git merge-base", contains ? "" : new Error("not an ancestor")]],
+    });
+    writeJson(path.join(paths.coordinatorState, "source-upgrades", "journal.json"), {
+      version: 1,
+      upgrades: [
+        {
+          id: "s1",
+          sourceCommit: OLD,
+          status: "succeeded",
+          steps: [{ name: "host", status: "succeeded" }],
+        },
+      ],
+    });
+    const planning = upgradePlan(context);
+    if (contains) await expect(planning).resolves.toMatchObject({ plan: { upgrade: true } });
+    else
+      await expect(planning).rejects.toThrow(
+        /does not contain commit a{12}, which a source upgrade/,
+      );
+  });
+
   test.each([
     ["the same commit", { revision: NEW }, true],
     ["another commit", { revision: OLD }, false],
@@ -663,5 +758,189 @@ describe("upgrade", () => {
     expect(
       events.find((event) => event.step === "upgrade-verify" && event.status === "done").message,
     ).toMatch(/predates in-app update offers/);
+  });
+});
+
+/**
+ * A Host moved to NEW by Host source updates while the coordinator link still selects OLD,
+ * and a coordinator service that starts through `start` (its link by default).
+ */
+function followMachine({ start, requests = [], stateFiles = {}, ...options } = {}) {
+  const box = machine({ sourceUpdates: { currentReleaseLink: "/x" }, ...options });
+  const { context, paths } = box;
+  const next = release(path.join(paths.host, "releases", "reviewed", NEW), {
+    revision: NEW,
+    version: "26.11.302",
+    marker: "receipt",
+  });
+  const main = path.join(next, "packages/server/dist/server/server/execution-installation/main.js");
+  mkdirSync(path.dirname(main), { recursive: true });
+  writeFileSync(main, "");
+  pointLink(paths.hostReleaseLink, next);
+  const entry = path.join(start ?? paths.coordinatorReleaseLink, "packages/server/dist/main.js");
+  const plist = path.join(
+    context.home,
+    "Library",
+    "LaunchAgents",
+    `local.vorteo.${ID}.installation.plist`,
+  );
+  mkdirSync(path.dirname(plist), { recursive: true });
+  writeFileSync(plist, `<plist><array><string>${entry}</string></array></plist>`);
+  writeJson(path.join(paths.coordinatorState, "coordinator-bootstrap.json"), {
+    version: 1,
+    requests,
+  });
+  for (const [file, value] of Object.entries(stateFiles))
+    writeJson(path.join(paths.coordinatorState, file), value);
+  context.coordinatorRequestModules = {
+    openBootstrapRequests: (records) => records.filter((record) => record.status === "pending"),
+    FileBootstrapRequestJournal: class {
+      read = () => requests;
+    },
+  };
+  return { ...box, next: realpathSync(next) };
+}
+
+async function follow(context, state) {
+  const events = [];
+  const ok = await followHostRelease(context, (event) =>
+    // How many restarts had happened when each event was emitted.
+    events.push({ ...event, restartsBefore: state?.restarts.length }),
+  );
+  return { ok, events, failure: events.find((event) => event.status === "fail") };
+}
+
+const onNew = (paths) => !realpathSync(paths.coordinatorReleaseLink).endsWith(OLD);
+const notices = (events) => events.filter((event) => event.message === FOLLOW_RESTART_NOTICE);
+
+describe("coordinator follow", () => {
+  test("restarts only the coordinator on the Host release, then has nothing left to do", async () => {
+    const { context, state, paths, next } = followMachine();
+    const checked = [];
+    expect(
+      await followHostRelease(context, (event) => checked.push(event), { checkOnly: true }),
+    ).toBe(true);
+    expect(checked.at(-1).result.to.revision).toBe(NEW);
+    expect(state.restarts).toEqual([]);
+    expect(existsSync(path.join(context.root, "state", "coordinator-follow.json"))).toBe(false);
+    const { ok, failure, events } = await follow(context, state);
+    expect(failure).toBeUndefined();
+    expect(ok).toBe(true);
+    expect(realpathSync(paths.coordinatorReleaseLink)).toBe(next);
+    expect(state.restarts).toEqual([`gui/501/local.vorteo.${ID}.installation`]);
+    expect(notices(events)).toMatchObject([{ restartsBefore: 0 }]);
+    const order = events.map((event) => event.message);
+    expect(order.indexOf(FOLLOW_KEEP_OPEN)).toBeLessThan(order.indexOf(FOLLOW_RESTART_NOTICE));
+    const again = await follow(context);
+    expect(again.events.at(-1).result.moved).toBe(false);
+  });
+
+  test.each([
+    ["does not start", { coordinatorStarts: false }],
+    [
+      "answers fenced, without a top-level pid",
+      {
+        health: (state, paths) =>
+          onNew(paths)
+            ? { installationId: ID, bootstrap: { pid: state.pid, fenced: true } }
+            : undefined,
+      },
+    ],
+    [
+      "answers once, then crashes",
+      {
+        health: (state, paths) => {
+          if (!onNew(paths)) return undefined;
+          state.newAnswers = (state.newAnswers ?? 0) + 1;
+          return state.newAnswers === 1
+            ? { installationId: ID, pid: state.pid }
+            : new Error("connection refused");
+        },
+      },
+    ],
+  ])("a coordinator that %s runs the previous release again", async (_name, options) => {
+    const { context, paths } = followMachine(options);
+    const { ok, failure, events } = await follow(context);
+    expect(ok).toBe(false);
+    expect(failure.step).toBe("upgrade-coordinator");
+    expect(realpathSync(paths.coordinatorReleaseLink)).toBe(realpathSync(paths.release));
+    expect(notices(events)).toHaveLength(1);
+  });
+
+  test("an interrupted follow whose link already moved resumes and checks again", async () => {
+    const { context, state, paths, next } = followMachine();
+    // A run stopped after it moved the link and before the coordinator answered.
+    writeJson(path.join(context.root, "state", "coordinator-follow.json"), {
+      version: 1,
+      installationId: ID,
+      startedAt: "2026-11-06T00:00:00.000Z",
+      plan: {
+        version: 1,
+        kind: "coordinator-follow",
+        installationId: ID,
+        release: next,
+        from: { version: "26.11.103", revision: OLD },
+        to: { version: "26.11.302", revision: NEW },
+        steps: ["follow-check", "upgrade-coordinator", "follow-finish"],
+      },
+      steps: { "follow-check": { status: "done" } },
+      outputs: { previousCoordinator: realpathSync(paths.release) },
+    });
+    pointLink(paths.coordinatorReleaseLink, next);
+    const { ok, events } = await follow(context, state);
+    expect(ok).toBe(true);
+    expect(events.some((event) => event.step === "follow-check" && event.status === "done")).toBe(
+      true,
+    );
+    expect(state.restarts).toEqual([`gui/501/local.vorteo.${ID}.installation`]);
+    const journal = path.join(context.root, "state", "coordinator-follow.json");
+    expect(JSON.parse(readFileSync(journal, "utf8")).completedAt).toBeTruthy();
+  });
+
+  test.each([
+    ["a service pinned to a release", { start: "/pinned/release" }, /fixed release/],
+    ["an open coordinator request", { requests: [{ status: "pending" }] }, /still open/],
+    [
+      "a restart approved to wait for idle agents",
+      {
+        stateFiles: {
+          "restart-jobs.json": [{ id: "r", target: "host", status: "approved", whenIdle: true }],
+        },
+      },
+      /once agents are idle/,
+    ],
+    [
+      "a custom domain change in flight",
+      {
+        stateFiles: { "custom-domain/last.json": { id: "c", startedAt: new Date().toISOString() } },
+      },
+      /custom domain/,
+    ],
+    [
+      "a lab update",
+      {
+        stateFiles: {
+          "lab-updates/journal.json": { version: 1, updates: [{ status: "running" }] },
+        },
+      },
+      /lab update is running/,
+    ],
+    [
+      "a source upgrade",
+      {
+        stateFiles: {
+          "source-upgrades/journal.json": { version: 1, upgrades: [{ status: "approved" }] },
+        },
+      },
+      /source upgrade from Installation controls is approved/,
+    ],
+  ])("refuses %s without restarting anything", async (_name, options, message) => {
+    const { context, state, paths } = followMachine(options);
+    const { ok, failure, events } = await follow(context);
+    expect(ok).toBe(false);
+    expect(failure.message).toMatch(message);
+    expect(notices(events)).toEqual([]);
+    expect(state.restarts).toEqual([]);
+    expect(realpathSync(paths.coordinatorReleaseLink)).toBe(realpathSync(paths.release));
   });
 });

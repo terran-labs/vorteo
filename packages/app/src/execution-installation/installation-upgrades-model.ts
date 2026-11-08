@@ -1,4 +1,6 @@
 import {
+  type CoordinatorFollowJob,
+  type CoordinatorFollowStatus,
   SNAPSHOT_PART_LABELS,
   UPGRADE_STEP_LABELS,
   type InstallationSnapshot,
@@ -310,4 +312,74 @@ export function upgradeStepRows(upgrade: InstallationUpgrade): UpgradeStepRow[] 
     status: step.status,
     detail: step.detail,
   }));
+}
+
+/**
+ * What the coordinator update card shows: nothing, the offer to move onto the Host release, or
+ * a job waiting, running or recently finished. Older coordinators and installations where the
+ * coordinator already runs the Host release show nothing.
+ */
+export type CoordinatorFollowView =
+  | { kind: "hidden" }
+  | {
+      kind: "offer";
+      next: string;
+      current: string;
+      /** The last finished attempt, shown as context so a failed one can be retried. */
+      last: CoordinatorFollowJob | null;
+    }
+  | { kind: "job"; job: CoordinatorFollowJob };
+
+const FINISHED_FOLLOW = new Set<CoordinatorFollowJob["status"]>([
+  "succeeded",
+  "failed",
+  "rolled-back",
+  "rejected",
+  "cancelled",
+]);
+
+export function coordinatorFollowView(
+  status: CoordinatorFollowStatus | null | undefined,
+): CoordinatorFollowView {
+  const job = status?.job ?? null;
+  const finished = job !== null && FINISHED_FOLLOW.has(job.status);
+  // A finished attempt never hides a new offer: after a failure, rollback or a later Host
+  // update the owner can start again at once.
+  if (status?.available && status.current && (!job || finished))
+    return {
+      kind: "offer",
+      next: status.current.hostRelease,
+      current: status.current.coordinatorRelease,
+      last: job,
+    };
+  if (job) return { kind: "job", job };
+  return { kind: "hidden" };
+}
+
+/** Polling follows a job closely while it runs; the coordinator restarts during it. */
+export function coordinatorFollowInProgress(status: CoordinatorFollowStatus | null | undefined) {
+  const job = status?.job?.status;
+  return job === "approved" || job === "running";
+}
+
+/**
+ * Idle polling for requests the full grant may start after its thirty-second window: well
+ * inside it, so an open Installation controls page shows a new request, with Cancel, before it
+ * can start. Active requests poll faster.
+ */
+export const DELEGATION_VISIBLE_POLL_MS = 10_000;
+const ACTIVE_POLL_MS = 3_000;
+
+export function sourceUpgradesPollMs(
+  status: { upgrades: { status: string }[] } | null | undefined,
+): number {
+  return (status?.upgrades ?? []).some((job) =>
+    ["pending", "approved", "running"].includes(job.status),
+  )
+    ? ACTIVE_POLL_MS
+    : DELEGATION_VISIBLE_POLL_MS;
+}
+
+export function installationChangesPollMs(jobs: { finishedAt?: string }[] | undefined): number {
+  return (jobs ?? []).some((job) => !job.finishedAt) ? ACTIVE_POLL_MS : DELEGATION_VISIBLE_POLL_MS;
 }

@@ -216,8 +216,14 @@ test.describe("Pin workspace shortcut", () => {
       await page.keyboard.press(PIN_SHORTCUT);
       await expect(pinnedSection(page)).toBeVisible({ timeout: 10_000 });
 
+      // Collapsing Pinned hides its copy; the row stays in its project since 8c1575df3.
       await page.getByTestId("sidebar-pinned-section-header").click();
-      await expect(workspaceRow(page, workspace.workspaceId)).toHaveCount(0, { timeout: 10_000 });
+      await expect(
+        pinnedSection(page).getByTestId(
+          `sidebar-workspace-row-${getServerId()}:${workspace.workspaceId}`,
+        ),
+      ).toHaveCount(0, { timeout: 10_000 });
+      await expect(workspaceRow(page, workspace.workspaceId)).toHaveCount(1);
 
       await page.keyboard.press(PIN_SHORTCUT);
 

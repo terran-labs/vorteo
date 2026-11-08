@@ -16,6 +16,9 @@ import {
   writeInstructions,
   type Instructions,
 } from "./factory-instructions-model";
+import { factoryRunnerTrack, factoryStageCounts } from "./factory-card-model";
+import { aggregateFactories } from "./factory-global-model";
+import type { NeedsYouItem } from "@/screens/factory/all-factories-model";
 describe("Factory menu and repository dialog", () => {
   it("offers the actions appropriate to each state", () => {
     expect(factoryActions("off")).toEqual(["enable"]);
@@ -163,7 +166,7 @@ it("uses the existing LCS diff and collapses unchanged charter runs", () => {
   ]);
 });
 
-describe("FactoryOverviewRow routing", () => {
+describe("Factory card overview routing", () => {
   const target = {
     serverId: "host",
     projectId: "project",
@@ -183,4 +186,89 @@ describe("FactoryOverviewRow routing", () => {
       "/h/host/plugin/factory/surface/overview?param.projectId=project",
     );
   });
+});
+
+it("counts queue stages for the card's bar and places each runner on its five-step track", () => {
+  const issue = (stage: Parameters<typeof factoryRunnerTrack>[0]["stage"], number: number) => ({
+    number,
+    title: `Issue ${number}`,
+    url: `https://example.test/${number}`,
+    label: "running" as const,
+    stage,
+    pr: null,
+    agents: [] as { role: "lead" | "worker" | "reviewer"; agentId: string; status: string }[],
+  });
+  const issues = [issue("queued", 1), issue("queued", 2), issue("repair", 3), issue("blocked", 4)];
+  expect(factoryStageCounts(issues).map(({ segment, count }) => [segment, count])).toEqual([
+    ["queued", 2],
+    ["repair", 2],
+  ]);
+  expect(factoryRunnerTrack(issue("building", 5)).boxes).toEqual([
+    "done",
+    "current",
+    "pending",
+    "pending",
+    "pending",
+  ]);
+  expect(factoryRunnerTrack(issue("repair", 6))).toMatchObject({
+    step: "review",
+    boxes: ["done", "done", "danger", "pending", "pending"],
+  });
+  // Blocked stops at the latest step its agents reached.
+  const blocked = {
+    ...issue("blocked", 7),
+    agents: [{ role: "worker" as const, agentId: "a", status: "idle" }],
+  };
+  expect(factoryRunnerTrack(blocked).boxes).toEqual([
+    "done",
+    "danger",
+    "pending",
+    "pending",
+    "pending",
+  ]);
+  expect(factoryRunnerTrack(issue("queued", 8))).toMatchObject({ step: null });
+});
+
+it("sums every Factory for the All Factories card and counts what needs the owner per Factory", () => {
+  const issue = (number: number, stage: "queued" | "building" | "blocked", label = "running") => ({
+    number,
+    title: `Issue ${number}`,
+    url: "",
+    label: label as "running" | "human-review",
+    stage,
+    pr: null,
+    agents: [],
+  });
+  const factory = (
+    projectId: string,
+    state: "on" | "paused",
+    issues: ReturnType<typeof issue>[],
+  ) => ({
+    serverId: "host",
+    projectId,
+    projectName: projectId,
+    hostLabel: null,
+    listed: { state, drain: null },
+    issues,
+  });
+  const on = factory("a", "on", [issue(1, "building"), issue(2, "queued", "human-review")]);
+  const needs = (factoryKey: string, kind: "question" | "blocked") =>
+    ({ key: `${factoryKey}:${kind}`, kind, factoryKey }) as unknown as NeedsYouItem;
+  const items = [
+    needs("host:a", "question"),
+    needs("host:a", "blocked"),
+    needs("host:b", "blocked"),
+  ];
+  const aggregate = aggregateFactories([on, factory("b", "on", [issue(1, "blocked")])], items);
+  expect(aggregate.pill.label).toBe("on");
+  expect(aggregate.runners.map((runner) => `${runner.tag}#${runner.number}`)).toEqual([
+    "a#1",
+    "b#1",
+  ]);
+  expect(aggregate.needsYou).toEqual(items);
+  expect(aggregate.chips.map((chip) => [chip.name, chip.inFlight, chip.needsYou])).toEqual([
+    ["a", 1, 2],
+    ["b", 1, 1],
+  ]);
+  expect(aggregateFactories([on, factory("b", "paused", [])]).pill.label).toBe("paused");
 });

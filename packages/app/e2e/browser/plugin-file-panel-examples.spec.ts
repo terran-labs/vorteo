@@ -39,6 +39,8 @@ function samplePdf() {
 }
 
 async function openFile(page: Page, name: string) {
+  // Vorteo's supporting cards collapse again after a resize at this width, so reopen Files.
+  await openFileExplorer(page);
   await openFileFromExplorer(page, name);
   await expectFileTabOpen(page, name);
 }

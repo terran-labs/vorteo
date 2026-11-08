@@ -6,13 +6,20 @@ import { expect, test, vi } from "vitest";
 import { InstallationRestarts, type RestartExecutor } from "./restarts.js";
 import { parseLifecycleJournal, type LifecycleJob } from "./lifecycle-journal.js";
 import { compatibilityProbe } from "./preview-broker-executor.js";
+import { memoryDelegationEvidence } from "./delegated-admission.js";
 import { assertCoordinatorLifecycleIdle } from "./coordinator-bootstrap.js";
 import {
   PreviewBrokerJobSchema,
   type PreviewBrokerJob,
 } from "@getpaseo/protocol/preview-broker-maintenance";
 
-function fixture(overrides: Partial<RestartExecutor> = {}) {
+function fixture(
+  overrides: Partial<RestartExecutor> = {},
+  options: {
+    now?: () => number;
+    policy?: Partial<ConstructorParameters<typeof InstallationRestarts>[3]>;
+  } = {},
+) {
   let records: LifecycleJob[] = [];
   const journal = {
     read: () => structuredClone(records),
@@ -28,11 +35,12 @@ function fixture(overrides: Partial<RestartExecutor> = {}) {
     installBroker: install,
     ...overrides,
   };
-  const queue = new InstallationRestarts(journal, executor, Date.now, {
+  const queue = new InstallationRestarts(journal, executor, options.now ?? Date.now, {
     hostRequestsAfter: "2026-01-01T00:00:00.000Z",
     maintenanceRequestsAfter: () => "2026-01-01T00:00:00.000Z",
     authority: () => "a".repeat(64),
     cancellationDelayMs: 0,
+    ...options.policy,
   });
   const probe = compatibilityProbe(randomUUID());
   const input = { id: probe.id, plan: probe.plan, reason: "Reviewed trust migration" };
@@ -142,6 +150,113 @@ test("manual exact approval dispatches once; daemon policy cannot approve broker
   expect(f.install).toHaveBeenCalledTimes(1);
   expect(f.queue.listBrokers()[0]?.status).toBe("succeeded");
   expect(f.executor.restart).not.toHaveBeenCalled();
+});
+
+test.each(["approved", "revoked"] as const)(
+  "the full grant approves a rebind from private evidence after the window, or not once %s",
+  async (outcome) => {
+    let now = Date.parse("2026-11-07T12:00:00Z");
+    let activation: string | null = "2026-01-01T00:00:00.000Z";
+    const rebind = memoryDelegationEvidence();
+    const f = fixture(
+      {},
+      {
+        now: () => now,
+        policy: {
+          maintenanceRequestsAfter: () => activation,
+          cancellationDelayMs: 30_000,
+          brokerDelegationEvidence: { deployment: memoryDelegationEvidence(), rebind },
+        },
+      },
+    );
+    const job = await f.prepare();
+    // Every durable state of the request, as a coordinator restarted at any write would read it.
+    const written: string[] = [];
+    const write = f.journal.write;
+    f.journal.write = (jobs) => {
+      write(jobs);
+      const record = f.journal.read().find((item) => item.id === job.id);
+      if (record) written.push(PreviewBrokerJobSchema.parse(record).status);
+    };
+    await f.queue.drain();
+    // The strict record stays pending, so an older coordinator waits for the owner.
+    const held = PreviewBrokerJobSchema.parse(f.journal.read().find((item) => item.id === job.id));
+    expect(held).toMatchObject({ status: "pending", revision: job.revision });
+    expect(rebind.get(job.id)).toMatchObject({ requestRevision: job.revision });
+    if (outcome === "revoked") activation = null;
+    now += 30_000;
+    await f.queue.drain();
+    await f.queue.drain();
+    expect(f.install).toHaveBeenCalledTimes(outcome === "approved" ? 1 : 0);
+    expect(f.queue.listBrokers()[0]?.status).toBe(
+      outcome === "approved" ? "succeeded" : "rejected",
+    );
+    expect(rebind.get(job.id)).toBeUndefined();
+    // Delegated work is never persisted as approved, which a rollback reader would replay.
+    expect(written).not.toContain("approved");
+  },
+);
+
+test("revoking the full grant while a delegated rebind validates stops it before any write", async () => {
+  let now = Date.parse("2026-11-07T12:00:00Z");
+  let activation: string | null = "2026-01-01T00:00:00.000Z";
+  let dispatching = false;
+  const recorded: string[] = [];
+  const rebind = memoryDelegationEvidence();
+  const f = fixture(
+    {
+      validateBrokerPlan: async () => {
+        if (!dispatching) return;
+        // A coordinator that crashed here and rolled back would read this durable record.
+        recorded.push(...f.journal.read().map((item) => PreviewBrokerJobSchema.parse(item).status));
+        activation = null;
+      },
+    },
+    {
+      now: () => now,
+      policy: {
+        maintenanceRequestsAfter: () => activation,
+        cancellationDelayMs: 30_000,
+        brokerDelegationEvidence: { deployment: memoryDelegationEvidence(), rebind },
+      },
+    },
+  );
+  const job = await f.prepare();
+  await f.queue.drain();
+  dispatching = true;
+  now += 30_000;
+  await f.queue.drain();
+  // Still pending during validation, so a rolled-back coordinator waits for the owner.
+  expect(recorded).toEqual(["pending"]);
+  // The grant lapsed during validation: no write, and the next drain cancels it.
+  expect(f.install).not.toHaveBeenCalled();
+  await f.queue.drain();
+  expect(f.install).not.toHaveBeenCalled();
+  expect(f.queue.listBrokers()[0]).toMatchObject({ id: job.id, status: "rejected" });
+  expect(rebind.get(job.id)).toBeUndefined();
+});
+
+test("an owner approval inside the delegated window survives a later revocation", async () => {
+  let activation: string | null = "2026-01-01T00:00:00.000Z";
+  const rebind = memoryDelegationEvidence();
+  const f = fixture(
+    {},
+    {
+      now: () => Date.parse("2026-11-07T12:00:00Z"),
+      policy: {
+        maintenanceRequestsAfter: () => activation,
+        cancellationDelayMs: 30_000,
+        brokerDelegationEvidence: { deployment: memoryDelegationEvidence(), rebind },
+      },
+    },
+  );
+  await f.prepare();
+  await f.queue.drain();
+  f.queue.decideBroker(decision(f.queue.listBrokers()[0]!));
+  expect(rebind.get(f.queue.listBrokers()[0]!.id)).toBeUndefined();
+  activation = null;
+  await f.queue.drain();
+  expect(f.install).toHaveBeenCalledTimes(1);
 });
 
 test("incompatible selected or recovery reader refuses before first journal append", async () => {

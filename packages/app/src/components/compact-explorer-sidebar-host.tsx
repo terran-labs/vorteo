@@ -162,7 +162,10 @@ export function CompactExplorerSidebarHost({
         openWorkspaceTabInFocusedPane,
         revealWorkspaceTab,
       });
-      if (presentation === "overlay") showMobileAgent();
+      // The compact layout opens files in a sheet above Explorer (upstream #7693), so closing the
+      // sheet uncovers the retained file list. Other overlays reveal the file's tab instead.
+      const opensInSheet = useWorkspaceLayoutStore.getState().layoutMode === "compact";
+      if (presentation === "overlay" && !opensInSheet) showMobileAgent();
     },
     [model, openWorkspaceTabInFocusedPane, presentation, showMobileAgent],
   );

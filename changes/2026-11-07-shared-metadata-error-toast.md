@@ -1,7 +1,8 @@
 ### Maintenance
 
 - Update the packaged shared metadata case to observe the error toast after a rejected save and its absence after retry. Preserve the saved selection and both environments’ configuration checks.
+- Update the shared policy case to open Dev maintenance details through System after the old Environments shortcut was removed. Preserve policy saves, draft conflicts, retries and unlocked owner access.
 
 ## Maintenance review
 
-Changed only the metadata case’s obsolete inline-error selectors. Product behavior, shared setup, instructions and policy cases are unchanged. README overview and onboarding are unchanged.
+Corrected obsolete metadata error selectors and policy maintenance navigation. Product behavior is unchanged. The merge preserves the shared fixture and profile cases from issue 216. README overview and onboarding are unchanged.

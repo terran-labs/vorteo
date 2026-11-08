@@ -17,6 +17,7 @@ import { Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import { useFileDownload } from "@/hooks/use-file-download";
+import { useDownloadStore } from "@/stores/download-store";
 import { Button } from "@/components/ui/button";
 import { isWeb } from "@/constants/platform";
 import { useAppSettings } from "@/hooks/use-settings";
@@ -118,6 +119,7 @@ function ReadonlyTextFile({
   presentation,
 }: TextFilePanelProps & { presentation: "highlighted" | "plain" }) {
   const download = useSourceDownload({ host, workspaceId, params });
+  const downloading = useSourceDownloadPending({ host, workspaceId, params });
   const text = useFileText(file);
   const { t } = useTranslation();
   const [view, setView] = useTextFileView(params, revision);
@@ -140,6 +142,7 @@ function ReadonlyTextFile({
         size={file.size}
         textContent={text.text}
         onDownload={download}
+        downloading={downloading}
         lineCount={text.text.split("\n").length}
         view={Preview ? view : undefined}
         onViewChange={Preview ? setView : undefined}
@@ -169,6 +172,7 @@ function EditableTextFile({
   preview: Preview,
 }: TextFilePanelProps) {
   const download = useSourceDownload({ host, workspaceId, params });
+  const downloading = useSourceDownloadPending({ host, workspaceId, params });
   const { settings } = useAppSettings();
   const { t } = useTranslation();
   const [model] = useState(() => new FileEditorModel({ file }));
@@ -239,6 +243,7 @@ function EditableTextFile({
         size={file.size}
         textContent={snapshot.content}
         onDownload={download}
+        downloading={downloading}
         lineCount={snapshot.content.split("\n").length}
         view={Preview ? view : undefined}
         onViewChange={Preview ? setView : undefined}
@@ -310,4 +315,29 @@ export function useSourceDownload({
     () => download({ path: params.path, fileName: params.path.split("/").pop() || params.path }),
     [download, params.path],
   );
+}
+
+/** Whether this file's toolbar download is still in flight, so its button shows pending. */
+export function useSourceDownloadPending({
+  host,
+  workspaceId,
+  params,
+}: Pick<TextFilePanelProps, "host" | "workspaceId" | "params">): boolean {
+  const workspaceRoot = useWorkspace(workspaceId, (workspace) => workspace.directory) ?? "";
+  // The same scope `useFileDownload` records the download under.
+  const scopeId = workspaceId.trim() || workspaceRoot.trim();
+  const fileName = params.path.split("/").pop() || params.path;
+  return useDownloadStore((state) => {
+    for (const download of state.downloads.values()) {
+      if (
+        download.status === "downloading" &&
+        download.serverId === host.id &&
+        download.scopeId === scopeId &&
+        download.fileName === fileName
+      ) {
+        return true;
+      }
+    }
+    return false;
+  });
 }

@@ -8,9 +8,13 @@ import { useSessionStore } from "@/stores/session-store";
 import { FileHtmlPreview } from "./html-preview";
 import { FilePanelLoading } from "./loading";
 import { FileMarkdownPreview } from "./markdown-preview";
-import { Button } from "@/components/ui/button";
-import { useTranslation } from "react-i18next";
-import { TextFilePanel, useSourceDownload, type TextFilePreviewProps } from "./source/panel";
+import {
+  TextFilePanel,
+  useSourceDownload,
+  useSourceDownloadPending,
+  type TextFilePreviewProps,
+} from "./source/panel";
+import { TextFileToolbar } from "./source/toolbar";
 import type { RenderingFilePanel, SourceFilePanel } from "./catalog";
 
 /** Source: the text file panel with no Preview, for text files no other built-in panel claims. */
@@ -61,18 +65,17 @@ function HtmlPreview({ text }: TextFilePreviewProps) {
   );
 }
 
+/** Image: the file panel toolbar with its size and Download over the zoomable image. */
 function ImagePanel(props: PluginFilePanelProps) {
   const { file } = props;
   const download = useSourceDownload(props);
-  const { t } = useTranslation();
+  const downloading = useSourceDownloadPending(props);
   const url = useFileUrl(file);
   if (url.status === "loading") return <FilePanelLoading />;
   if (url.status === "error") return <FilePanelError message={url.error.message} />;
   return (
     <View style={styles.container}>
-      <Button variant="ghost" size="sm" onPress={download}>
-        {t("workspace.fileActions.download")}
-      </Button>
+      <TextFileToolbar size={file.size} onDownload={download} downloading={downloading} />
       <ZoomableImage uri={url.url} testID="image-file-preview" />
     </View>
   );

@@ -108,6 +108,20 @@ const ProjectStateSchema = z.object({
   claims: z.record(z.string(), ClaimStateSchema).optional(),
   /** Claim branches other installations hold, keyed by branch name. */
   foreignClaims: z.record(z.string(), ForeignClaimSchema).optional(),
+  /** Recent account picks for new Factory agents, newest last and bounded. */
+  accountPicks: z
+    .array(
+      z.object({
+        stage: z.enum(["planner", "worker", "reviewer"]),
+        issue: z.number().int().optional(),
+        profileId: z.string().nullable(),
+        provider: z.string().nullable(),
+        remainingPct: z.number().nullable(),
+        bound: z.boolean().optional(),
+        pickedAt: z.string(),
+      }),
+    )
+    .optional(),
   /** The last `.github/factory.json` read. */
   assignment: AssignmentStateSchema.optional(),
   /**

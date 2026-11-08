@@ -37,3 +37,12 @@ const styles = StyleSheet.create({
   inline: { flexShrink: 1 },
   fullscreen: { flex: 1, minHeight: 0 },
 });
+
+/** Native fullscreen sizing belongs to the native dock's slot; shared layouts get no frame. */
+export function useFullscreenSlotFrame(
+  _active: boolean,
+  _surfaceRef: unknown,
+  _surfaceSize: unknown,
+): undefined {
+  return undefined;
+}

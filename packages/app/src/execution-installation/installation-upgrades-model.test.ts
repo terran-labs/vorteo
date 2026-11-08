@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type {
+  CoordinatorFollowStatus,
+  CoordinatorSettingsStatus,
   InstallationSnapshot,
   InstallationUpgrade,
   SnapshotList,
@@ -7,6 +9,10 @@ import type {
 } from "@getpaseo/protocol/installation-upgrades";
 import {
   activeUpgrade,
+  coordinatorFollowView,
+  DELEGATION_VISIBLE_POLL_MS,
+  installationChangesPollMs,
+  sourceUpgradesPollMs,
   installationUpdateEntry,
   latestFinishedUpgrade,
   pendingUpgradeDecisions,
@@ -20,6 +26,7 @@ import {
   upgradeOffer,
   upgradeStepRows,
 } from "./installation-upgrades-model";
+import { coordinatorSettingsView } from "./coordinator-settings-model";
 
 const snapshot: InstallationSnapshot = {
   version: 1,
@@ -213,4 +220,137 @@ describe("release upgrades", () => {
       },
     ]);
   });
+});
+
+describe("coordinatorFollowView", () => {
+  const current = {
+    coordinatorRelease: "/releases/old",
+    runningRelease: "/releases/old",
+    hostRelease: "/releases/new",
+  };
+  const job: NonNullable<CoordinatorFollowStatus["job"]> = {
+    id: "6f1d7c2e-3c1b-4b8f-9d0a-1e2f3a4b5c6d",
+    revision: "7f1d7c2e-3c1b-4b8f-9d0a-1e2f3a4b5c6d",
+    createdAt: "2026-11-05T12:00:00.000Z",
+    status: "running",
+    detail: "",
+    next: "/releases/new",
+  };
+  it.each([
+    { name: "an older coordinator", status: null, kind: "hidden" },
+    {
+      name: "a coordinator on the Host release",
+      status: { available: false, detail: "", current, job: null },
+      kind: "hidden",
+    },
+    {
+      name: "a coordinator behind the Host",
+      status: { available: true, detail: "", current, job: null },
+      kind: "offer",
+    },
+    {
+      name: "a running job, even while unavailable",
+      status: { available: false, detail: "", current, job },
+      kind: "job",
+    },
+    {
+      name: "a rolled-back job when the Host is still ahead, so the owner can retry",
+      status: {
+        available: true,
+        detail: "",
+        current,
+        job: { ...job, status: "rolled-back" as const },
+      },
+      kind: "offer",
+    },
+  ])("$name shows $kind", ({ status, kind }) => {
+    expect(coordinatorFollowView(status).kind).toBe(kind);
+  });
+});
+
+describe("coordinatorSettingsView", () => {
+  const job: NonNullable<CoordinatorSettingsStatus["job"]> = {
+    id: "8f1d7c2e-3c1b-4b8f-9d0a-1e2f3a4b5c6d",
+    revision: "9f1d7c2e-3c1b-4b8f-9d0a-1e2f3a4b5c6d",
+    createdAt: "2026-11-05T12:00:00.000Z",
+    status: "pending",
+    detail: "",
+    baseSha256: "a".repeat(64),
+    changes: [
+      { key: "claudeHostRefresh", displaySafe: true, before: null, after: "true" },
+      { key: "futureSecret", displaySafe: false },
+    ],
+  };
+  const follow: CoordinatorFollowStatus = {
+    available: true,
+    detail: "",
+    current: {
+      coordinatorRelease: "/releases/old",
+      runningRelease: "/releases/old",
+      hostRelease: "/releases/new",
+    },
+    job: null,
+  };
+  it("hides without a change and redacts values that are not display-safe", () => {
+    expect(coordinatorSettingsView(null, follow).kind).toBe("hidden");
+    expect(coordinatorSettingsView({ available: true, detail: "", job }, follow)).toEqual({
+      kind: "job",
+      job,
+      rows: [
+        { key: "claudeHostRefresh", before: "not set", after: "true" },
+        { key: "futureSecret", before: "hidden", after: "changed" },
+      ],
+      follow: "/releases/new",
+    });
+  });
+  it("lists each changed field of a reviewed broker setting with its verification", () => {
+    const broker = {
+      ...job,
+      changes: [
+        {
+          key: "previewBroker",
+          displaySafe: true,
+          fields: [
+            {
+              field: "worker",
+              before: "/releases/a/worker.py · sha256 0123456789ab",
+              after: "/releases/b/worker.py · sha256 ba9876543210",
+              verified: true,
+            },
+            { field: "evidenceRoot", before: null, after: "/evidence" },
+          ],
+        },
+      ],
+    };
+    expect(
+      coordinatorSettingsView({ available: true, detail: "", job: broker }, null),
+    ).toMatchObject({
+      rows: [
+        {
+          key: "previewBroker.worker",
+          before: "/releases/a/worker.py · sha256 0123456789ab",
+          after: "/releases/b/worker.py · sha256 ba9876543210",
+          verified: true,
+        },
+        { key: "previewBroker.evidenceRoot", before: "not set", after: "/evidence" },
+      ],
+    });
+  });
+});
+
+it("an open page finds a new delegated request well before its thirty-second window ends", () => {
+  const window = 30_000;
+  // Empty or idle: the next poll still lands inside the window, so Cancel shows before dispatch.
+  for (const interval of [
+    sourceUpgradesPollMs(null),
+    sourceUpgradesPollMs({ upgrades: [] }),
+    sourceUpgradesPollMs({ upgrades: [{ status: "succeeded" }] }),
+    installationChangesPollMs(undefined),
+    installationChangesPollMs([]),
+    installationChangesPollMs([{ finishedAt: "2026-11-08T12:00:00.000Z" }]),
+  ])
+    expect(interval * 2).toBeLessThanOrEqual(window);
+  expect(sourceUpgradesPollMs({ upgrades: [{ status: "pending" }] })).toBeLessThan(
+    DELEGATION_VISIBLE_POLL_MS,
+  );
 });

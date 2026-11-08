@@ -119,6 +119,8 @@ export class DemoSession {
               workspaceFileEditing: true,
               agentQuestions: true,
               providerUsageList: true,
+              // The demo diff already covers every change, so the Changes card's All mode works.
+              checkoutDiffAll: true,
             },
           },
         }),

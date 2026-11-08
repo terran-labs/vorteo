@@ -1140,7 +1140,13 @@ async function returnToAssistant(page: Page, agentId: string): Promise<void> {
 }
 
 async function openAssistantInlinePath(page: Page, token: string): Promise<void> {
-  await page.getByText(token, { exact: true }).click();
+  // The open Files card lists the same name, so click it inside the assistant's message.
+  await page
+    .getByTestId("assistant-message")
+    .filter({ visible: true })
+    .getByText(token, { exact: true })
+    .first()
+    .click();
 }
 
 async function expectPreviewText(page: Page, text: string): Promise<void> {

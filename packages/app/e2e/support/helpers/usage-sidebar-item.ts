@@ -165,7 +165,13 @@ export async function expectUnpinnableRows(card: Locator): Promise<void> {
  * them when they are not already showing.
  */
 export async function openQuotas(page: Page): Promise<Locator> {
-  const popover = visible(page, "sidebar-footer-quota-popover");
+  // A phone opens the quotas in a bottom sheet, whose body carries the `-content` suffix.
+  const popover = page
+    .locator(
+      '[data-testid="sidebar-footer-quota-popover"]:visible, ' +
+        '[data-testid="sidebar-footer-quota-popover-content"]:visible',
+    )
+    .first();
   if (!(await popover.isVisible())) {
     await visible(page, "sidebar-footer-quota").click({ timeout: 30_000 });
   }

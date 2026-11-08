@@ -355,9 +355,13 @@ test("an unavailable B child opens its cached workspace with existing reconnecti
         connectionStatus: expect.stringMatching(/^(offline|connecting|error)$/),
       });
     await openFleetChild(page, fleet);
-    await expect(page.getByTestId("workspace-header-title").filter({ visible: true })).toHaveText(
-      "B workspace",
-    );
+    // Desktop workspaces have no title header in Vorteo; the sidebar names the cached workspace.
+    await expect(
+      page
+        .getByTestId(`sidebar-workspace-row-${fleet.remote.serverId}:${fleet.remote.workspaceId}`)
+        .filter({ visible: true })
+        .first(),
+    ).toContainText("B workspace");
     await expect(page.getByRole("button", { name: "MCP child on B", exact: true })).toBeVisible();
     await expect(page.getByText(/already connected through another route/)).toHaveCount(0);
   } finally {

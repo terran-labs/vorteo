@@ -4,12 +4,38 @@ import { BrokerDeploymentRefused } from "./preview-broker-deployment-workflow.js
 import { coordinatorDispatchStatuses } from "./coordinator-bootstrap-dispatch-status.js";
 import { localInstallationOrigin, localInstallationEnvironments } from "./local-access.js";
 import {
+  AgentActionRequestSchema,
+  QueuedAgentActionDecisionSchema,
+  type QueuedAgentAction,
+  CoordinatorFollowAgentRequestSchema,
+  CoordinatorFollowDecisionSchema,
+  CoordinatorFollowRequestSchema,
+  CoordinatorSettingsDecisionSchema,
+  CoordinatorSettingsRequestSchema,
   SnapshotRestoreRequestSchema,
+  SourceUpgradeDecisionSchema,
+  SourceUpgradeRequestSchema,
+  SourceUpgradeRollbackRequestSchema,
   UpgradeDecisionSchema,
   UpgradeRequestSchema,
   UpdatePolicyChangeSchema,
 } from "@getpaseo/protocol/installation-upgrades";
 import { createReleaseUpgradeRuntime } from "./release-upgrade-runtime.js";
+import { createAgentActions } from "./agent-actions.js";
+import { createQueuedAgentActions, type QueuedAgentActions } from "./queued-agent-actions.js";
+import { installationChangeDefinitions } from "./queued-agent-action-definitions.js";
+import { installationHealth, originCertificate } from "./origin-reachability.js";
+import { COORDINATOR_SETTINGS, createCoordinatorSettings } from "./coordinator-settings.js";
+import {
+  createDelegationEvidence,
+  delegableUnderGrant,
+  type DelegationGrant,
+} from "./delegated-admission.js";
+import {
+  coordinatorRestartBlocker,
+  type CoordinatorRestart,
+  type CoordinatorRestartState,
+} from "./coordinator-restart-guard.js";
 import {
   lookupWorkerLaunch,
   parseWorkerLaunchLookupQuery,
@@ -72,6 +98,7 @@ import { createInstallationNameStore } from "./installation-name.js";
 import {
   changeInstallationType,
   InstallationTypeStateError,
+  readInstallationType,
   reportedInstallationType,
 } from "./installation-type.js";
 import { createLabSelfUpdateRuntime } from "./lab-self-update-runtime.js";
@@ -397,10 +424,38 @@ function installationShape(config: InstallationConfig) {
 }
 
 function optionalReleaseRuntime(
-  files: { configFile: string } | undefined,
+  files: InstallationFiles | undefined,
   input: Omit<Parameters<typeof createReleaseUpgradeRuntime>[0], "configFile">,
 ) {
   return files ? createReleaseUpgradeRuntime({ ...input, configFile: files.configFile }) : null;
+}
+
+/** The private configuration file and the hash of the bytes the coordinator started with. */
+interface InstallationFiles {
+  configFile: string;
+  startupSha256?: string;
+}
+
+/** Registered coordinator.json changes restart the coordinator; one restart runs at a time. */
+function serverCoordinatorSettings(
+  config: InstallationConfig,
+  files: InstallationFiles | undefined,
+  releaseRuntime: ReturnType<typeof optionalReleaseRuntime>,
+  input: {
+    restartBlocker: () => string | null;
+    delegationGrant: () => DelegationGrant | null;
+    logger: Logger;
+  },
+) {
+  return createCoordinatorSettings({
+    delegationGrant: input.delegationGrant,
+    config,
+    configFile: files?.configFile,
+    startupSha256: files?.startupSha256,
+    conflict: input.restartBlocker,
+    followJob: (id) => releaseRuntime?.coordinatorFollow.job(id) ?? null,
+    warn: (message) => input.logger.warn(message),
+  });
 }
 
 export function createInstallationServer(
@@ -417,7 +472,7 @@ export function createInstallationServer(
   claudeOAuth?: ClaudeOAuthRuntime,
   providerSecrets?: ProviderSecretsRuntime,
   // The private configuration file, captured by safety snapshots. Omitted in tests.
-  files?: { configFile: string },
+  files?: InstallationFiles,
   codexSignIn?: CodexSignInRuntime,
   overviewDependencies?: OverviewDependencies,
 ) {
@@ -535,6 +590,42 @@ export function createInstallationServer(
   );
   // Host release selection runs only through this queue, so it never starts unguarded.
   ensureSessionHostReleaseGuard(config);
+  // Binds automatic and delegated approvals to the installation credentials and, when the full
+  // maintenance grant is active, to its epoch and the owner credential.
+  const approvalAuthority = () =>
+    createHash("sha256")
+      .update(
+        JSON.stringify({
+          installation: config.public.installationId,
+          host: config.hostAgentTokenHash,
+          container: config.containerAgentTokenHash,
+          policy: "host-only-service-permissions-v2",
+          ...(maintenanceDelegationActivation(config.stateDir)
+            ? {
+                maintenanceApprovedAfter: maintenanceDelegationActivation(config.stateDir),
+                owner: config.ownerPasswordHash,
+              }
+            : {}),
+          // Absent when off, so existing grants keep their authority.
+          ...(readOwnerDelegation(config.stateDir).hostUpdateServiceRestart
+            ? { hostUpdateServiceRestart: true }
+            : {}),
+        }),
+      )
+      .digest("hex");
+  /** The full maintenance grant, read fresh. Enrolled installations never use it. */
+  const delegationGrant = (): DelegationGrant | null => {
+    try {
+      if (!daemonAutomation.legacyPolicyAvailable()) return null;
+    } catch {
+      return null;
+    }
+    const policyActivatedAt = maintenanceDelegationActivation(config.stateDir);
+    return policyActivatedAt ? { policyActivatedAt, authoritySha256: approvalAuthority() } : null;
+  };
+  const agentActions = createAgentActions({ stateDir: config.stateDir, grant: delegationGrant });
+  // Created once its owner operations exist, below; the drain and management read it after.
+  let queuedActions: QueuedAgentActions | undefined;
   const restarts = new InstallationRestarts(
     standingRuntime.journal,
     restartExecutor,
@@ -551,28 +642,17 @@ export function createInstallationServer(
       supervisorRequestsAfter: () => daemonAutomation.activation("supervisor") ?? null,
       cancellationDelayMs: 30_000,
       hostUpdateServiceRestart: () => readOwnerDelegation(config.stateDir).hostUpdateServiceRestart,
+      // Beside the strict broker records, which older coordinators read; see DelegationEvidence.
+      brokerDelegationEvidence: {
+        deployment: createDelegationEvidence(
+          path.join(config.stateDir, "preview-broker-deployment", "delegation-evidence.json"),
+        ),
+        rebind: createDelegationEvidence(
+          path.join(config.stateDir, "preview-broker-rebind", "delegation-evidence.json"),
+        ),
+      },
       ...shape.restartPolicy,
-      authority: () =>
-        createHash("sha256")
-          .update(
-            JSON.stringify({
-              installation: config.public.installationId,
-              host: config.hostAgentTokenHash,
-              container: config.containerAgentTokenHash,
-              policy: "host-only-service-permissions-v2",
-              ...(maintenanceDelegationActivation(config.stateDir)
-                ? {
-                    maintenanceApprovedAfter: maintenanceDelegationActivation(config.stateDir),
-                    owner: config.ownerPasswordHash,
-                  }
-                : {}),
-              // Absent when off, so existing grants keep their authority.
-              ...(readOwnerDelegation(config.stateDir).hostUpdateServiceRestart
-                ? { hostUpdateServiceRestart: true }
-                : {}),
-            }),
-          )
-          .digest("hex"),
+      authority: approvalAuthority,
     },
     {
       fenced: startupFence !== undefined,
@@ -584,21 +664,76 @@ export function createInstallationServer(
     restarts,
     hostUpdates: updates.host,
     logger,
+    // The jobs these checks read are created below; they exist before any upgrade runs.
+    conflict: () => restartBlocker("upgrade"),
+    coordinatorFollowConflict: () => restartBlocker("follow"),
+    delegationGrant,
   });
   const requireReleaseRuntime = () => {
     if (!releaseRuntime) throw new RestartRequestError("Upgrades and snapshots are unavailable");
     return releaseRuntime;
   };
+  const coordinatorSettings = serverCoordinatorSettings(config, files, releaseRuntime, {
+    restartBlocker: () => restartBlocker("settings"),
+    delegationGrant,
+    logger,
+  });
+  // One check for every coordinator restart, at request, approval and dispatch.
+  const restartState: CoordinatorRestartState = {
+    upgradeActive: () =>
+      Boolean(releaseRuntime?.upgrades?.active() ?? releaseRuntime?.sourceUpgrades?.active()),
+    followDispatching: () => Boolean(releaseRuntime?.coordinatorFollow.dispatching()),
+    settingsDispatching: () => coordinatorSettings.dispatching() !== null,
+    customDomainRunning: () => customDomain.running(),
+    hostJobBusy: () =>
+      restarts
+        .list()
+        .some((job) => job.target === "host" && ["approved", "running"].includes(job.status)),
+    coordinatorRequestOpen: () =>
+      coordinatorRequests !== undefined &&
+      openBootstrapRequests(coordinatorRequests.list()).length > 0,
+    labUpdateActive: () => labRuntime.updates.activeLoaded() !== null,
+  };
+  const restartBlocker = (self: CoordinatorRestart) =>
+    coordinatorRestartBlocker(restartState, self);
   // Lab self-updates and release upgrades both replace the Host and coordinator releases.
   const labRuntime = createLabSelfUpdateRuntime({
     config,
     restarts,
     logger,
-    conflict: () =>
-      releaseRuntime?.upgrades?.active()
-        ? "Wait for the release upgrade to finish before a lab self-update."
-        : null,
+    conflict: () => {
+      if (releaseRuntime?.upgrades?.active())
+        return "Wait for the release upgrade to finish before a lab self-update.";
+      if (releaseRuntime?.sourceUpgrades?.active())
+        return "Wait for the source upgrade to finish before a lab self-update.";
+      if (releaseRuntime?.coordinatorFollow.dispatching())
+        return "Wait for the coordinator update to finish before a lab self-update.";
+      if (coordinatorSettings.dispatching())
+        return "Wait for the coordinator settings change to finish before a lab self-update.";
+      if (customDomain.running())
+        return "Wait for the custom domain change to finish before a lab self-update.";
+      return null;
+    },
   });
+  /**
+   * Why a source upgrade cannot be requested or approved now, beyond the job checks: only a
+   * Stable installation takes one, and never beside a lab self-update.
+   */
+  const sourceUpgradeBlocker = async (): Promise<string | null> => {
+    if (!releaseRuntime?.sourceUpgrades)
+      return releaseRuntime?.sourceUpgradeStatus().detail ?? "Source upgrades are unavailable";
+    try {
+      if ((await readInstallationType(config.stateDir)).type !== "stable")
+        return "Source upgrades are for Stable installations. A Lab installation updates through lab self-updates.";
+    } catch (error) {
+      if (error instanceof InstallationTypeStateError)
+        return "The installation type is unreadable, so source upgrades are refused.";
+      throw error;
+    }
+    if (await labRuntime.updates.active())
+      return "Wait for the lab self-update to finish before a source upgrade.";
+    return null;
+  };
   const startupReleased = () => {
     if (startupFence && !startupFence.released()) return false;
     restarts.activate();
@@ -687,6 +822,22 @@ export function createInstallationServer(
         void releaseRuntime?.upgrades
           ?.drain()
           .catch((error) => logger.error({ err: error }, "Installation upgrade failed"));
+        void releaseRuntime?.sourceUpgrades
+          ?.drain()
+          .catch((error) => logger.error({ err: error }, "Installation source upgrade failed"));
+        // Moving the coordinator onto the Host release restarts this process; the next one
+        // resumes the job from its journal here.
+        releaseRuntime?.coordinatorFollow.drain();
+        // A settings change also restarts this process and resumes here; a linked approval
+        // advances once the coordinator update above succeeds. Broker settings hash their
+        // files again before dispatch, so it runs beside the drain under its own guard.
+        void coordinatorSettings
+          .drain()
+          .catch((error) => logger.error({ err: error }, "Coordinator settings change failed"));
+        // Installation changes, including a custom domain change resumed after its restart.
+        void queuedActions
+          ?.drain()
+          .catch((error) => logger.error({ err: error }, "Installation change failed"));
         // Lab builds run for minutes; like upgrades they advance beside the drain.
         void labRuntime.updates
           .drain()
@@ -735,6 +886,7 @@ export function createInstallationServer(
       launch: launchHandoff,
       now: () => new Date(),
     },
+    restartBlocker: () => restartBlocker("custom-domain"),
   });
   const liveDev = createLiveDev({
     config,
@@ -868,6 +1020,11 @@ export function createInstallationServer(
       containerAgentTokenHash: config.containerAgentTokenHash,
       ownerPasswordHash: config.ownerPasswordHash,
     }),
+    {
+      follow: () => releaseRuntime?.coordinatorFollow ?? null,
+      settings: coordinatorSettings,
+      installationChanges: () => queuedActions ?? null,
+    },
   );
   function requireManagementHost(_req: Request, res: Response, next: NextFunction) {
     if (res.locals.updateRequester !== "host-agent" || !management.authority()) {
@@ -1089,9 +1246,17 @@ export function createInstallationServer(
       automaticSupported &&
       devReady,
     );
+    // Under the full grant an operation is delegated unless OWNER_ONLY_OPERATIONS names it.
+    // A coordinator settings change is delegated only when every key it may change is.
+    const ownerApprovalRequired = (operations: readonly string[]) =>
+      !(delegatedMaintenance && operations.every((operation) => delegableUnderGrant(operation)));
+    const settingsOperations = COORDINATOR_SETTINGS.map(({ key }) => `coordinator-settings:${key}`);
+    const coordinatorFollowAvailable = host && releaseRuntime !== null;
+    const coordinatorSettingsAvailable = host && coordinatorSettings.status().available;
     void (async () => {
       const brokerDeploymentAvailable = host && (await restarts.brokerDeploymentAvailable());
       const labSelfUpdateAvailable = host && (await labRuntime.blocker()) === null;
+      const sourceUpgradeAvailable = host && (await sourceUpgradeBlocker()) === null;
       const brokerCompatible = host ? ((await executor.brokerCompatible?.()) ?? false) : false;
       const monitorCompatible = host ? ((await executor.monitorCompatible?.()) ?? false) : false;
       const coordinator = await coordinatorCapability();
@@ -1141,13 +1306,26 @@ export function createInstallationServer(
                 (daemonAutomation.activation("coordinator") || delegatedMaintenance)
               ),
             },
+            // Optional: older coordinators omit them, so a missing field means unavailable.
+            coordinatorFollow: {
+              available: coordinatorFollowAvailable,
+              ownerApprovalRequired: ownerApprovalRequired(["coordinator-follow"]),
+            },
+            coordinatorSettings: {
+              available: coordinatorSettingsAvailable,
+              ownerApprovalRequired: ownerApprovalRequired(settingsOperations),
+            },
             previewBrokerDeployment: {
               available: brokerDeploymentAvailable,
-              ownerApprovalRequired: true,
+              ownerApprovalRequired: ownerApprovalRequired([
+                "broker-deployment:preview-broker-consumer-deployment",
+              ]),
             },
             previewBroker: {
               available: brokerAvailable,
-              ownerApprovalRequired: true,
+              ownerApprovalRequired: ownerApprovalRequired([
+                "broker-rebind:preview-broker-channel-rebind",
+              ]),
             },
             previewMonitor: {
               available: Boolean(
@@ -1171,6 +1349,13 @@ export function createInstallationServer(
             labSelfUpdate: {
               available: labSelfUpdateAvailable,
               ownerApprovalRequired: false,
+            },
+            // Source upgrades of a Stable installation are always the owner's decision. Only the
+            // owner routes under /api/installation/owner/source-upgrades start them.
+            sourceUpgrade: {
+              available: sourceUpgradeAvailable,
+              // A Host agent's request under the full grant starts after its window.
+              ownerApprovalRequired: ownerApprovalRequired(["source-upgrade"]),
             },
             sessionHostJob: {
               available: host && restarts.sessionHostAvailable(),
@@ -1819,6 +2004,36 @@ export function createInstallationServer(
       .then((job) => res.status(201).json(job), next);
   });
 
+  // Host agents (Builds) propose registered coordinator.json changes; the owner approves them.
+  app.get(
+    "/api/installation/coordinator-settings",
+    authenticateUpdate,
+    requireHostAgent,
+    (_req, res) => res.json(coordinatorSettings.base()),
+  );
+  app.post(
+    "/api/installation/coordinator-settings-requests",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res, next) => {
+      void Promise.resolve()
+        .then(() => coordinatorSettings.request(CoordinatorSettingsRequestSchema.parse(req.body)))
+        .then((job) => res.status(201).json(job), next);
+    },
+  );
+  app.get(
+    "/api/installation/coordinator-settings-requests/:id",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res) => {
+      const job = coordinatorSettings.get(z.string().uuid().parse(req.params.id));
+      if (!job) {
+        res.sendStatus(404);
+        return;
+      }
+      res.json(job);
+    },
+  );
   app.get("/api/installation/coordinator-requests/:id", authenticateUpdate, (req, res) => {
     const id = z.string().uuid().parse(req.params.id);
     try {
@@ -2207,6 +2422,23 @@ export function createInstallationServer(
     res.json(job);
     void restarts.drain().catch(() => logger.error("Helper lifecycle journal failed"));
   });
+  // Host agents run the same read-only verification under the full maintenance grant, with a
+  // receipt in Installation controls. It never installs, so it runs at once.
+  app.post(
+    "/api/installation/helpers/verify-installed",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res, next) => {
+      const { requester, ...decision } = (req.body ?? {}) as Record<string, unknown>;
+      const request = AgentActionRequestSchema.parse({ requester });
+      void agentActions
+        .run("request-helper-verification", request.requester, async () => {
+          const job = await restarts.verifyHelperRecovery(decision);
+          return { result: job, detail: `Verified helper recovery ${job.id}: ${job.detail}` };
+        })
+        .then(({ result, receipt }) => res.json({ job: result, receipt }), next);
+    },
+  );
   app.post("/api/installation/owner/helpers/verify-installed", (req, res, next) => {
     void restarts.verifyHelperRecovery(req.body).then((job) => res.json(job), next);
   });
@@ -2347,6 +2579,81 @@ export function createInstallationServer(
     void settings.previewSkills(input.selection).then((sources) => res.json({ sources }), next);
   });
   const installationName = createInstallationNameStore(config.stateDir);
+  // Installation changes a Host agent requests: each pending and cancellable, approved by the
+  // owner or, after its window, by the full maintenance grant.
+  queuedActions = createQueuedAgentActions({
+    stateDir: config.stateDir,
+    grant: delegationGrant,
+    definitions: installationChangeDefinitions({
+      name: installationName,
+      liveDev,
+      installationType: {
+        read: () => readInstallationType(config.stateDir),
+        // Serialized with the owner's own changes, as in the owner route.
+        change(input) {
+          const change = installationTypeChanges.then(() =>
+            changeInstallationType(config.stateDir, input),
+          );
+          installationTypeChanges = change.catch(() => undefined);
+          return change;
+        },
+      },
+      settings,
+      customDomain,
+      publicOrigin: config.public.origin,
+      health: (origin) => installationHealth(origin, config.public.installationId),
+      certificate: originCertificate,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    }),
+  });
+  const publicQueuedAction = ({ previous: _previous, ...job }: QueuedAgentAction) => job;
+  app.post(
+    "/api/installation/installation-changes",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res) => {
+      const body = z
+        .strictObject({
+          action: z.string().min(1).max(64),
+          request: z.unknown(),
+          requester: z.string().min(1).max(256).optional(),
+        })
+        .parse(req.body);
+      const job = queuedActions!.request(body.action, body.request, body.requester);
+      void queuedActions!
+        .drain()
+        .catch((error) => logger.error({ err: error }, "Installation change failed"));
+      res.status(201).json(publicQueuedAction(job));
+    },
+  );
+  app.get(
+    "/api/installation/installation-changes/:id",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res) => {
+      const job = queuedActions!.get(z.string().uuid().parse(req.params.id));
+      if (!job) {
+        res.sendStatus(404);
+        return;
+      }
+      res.json(publicQueuedAction(job));
+    },
+  );
+  app.post("/api/installation/owner/queued-actions/query", (_req, res) =>
+    res.json({ jobs: queuedActions!.list().map(publicQueuedAction) }),
+  );
+  app.post("/api/installation/owner/queued-actions/:id/decision", (req, res) => {
+    const decision = QueuedAgentActionDecisionSchema.parse(req.body);
+    const job = queuedActions!.decide(
+      z.string().uuid().parse(req.params.id),
+      decision.revision,
+      decision.decision,
+    );
+    void queuedActions!
+      .drain()
+      .catch((error) => logger.error({ err: error }, "Installation change failed"));
+    res.json(publicQueuedAction(job));
+  });
   app.patch("/api/installation/owner/name", (req, res) => {
     const input = z.strictObject({ name: z.string().nullable() }).parse(req.body);
     // An empty name restores the default rather than saving a blank title.
@@ -2566,6 +2873,33 @@ export function createInstallationServer(
         .map((job) => job.id),
     });
   });
+  // Host agents prepare the same repair under the full maintenance grant. Preparation restarts
+  // nothing; the repaired Dev restart then follows the delegated restart queue.
+  app.post(
+    "/api/installation/dev-repair/prepare",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res, next) => {
+      const input = z
+        .strictObject({
+          id: z.string().uuid(),
+          revision: z.string().uuid(),
+          requester: z.string().min(1).max(256).optional(),
+        })
+        .parse(req.body);
+      void agentActions
+        .run("request-dev-repair", input.requester, async () => {
+          const job = restarts.requestDevRepair(input.id, input.revision, true);
+          return { result: job, detail: `Started Dev repair preparation for restart ${job.id}.` };
+        })
+        .then(({ result }) => {
+          void restarts
+            .prepareBatches()
+            .catch((error) => logger.error({ err: error }, "Dev repair preparation failed"));
+          return res.status(202).json({ id: result.id, revision: result.revision });
+        }, next);
+    },
+  );
   app.post("/api/installation/owner/dev-repair/prepare", (req, res) => {
     const input = z
       .strictObject({ id: z.string().uuid(), revision: z.string().uuid() })
@@ -2691,6 +3025,26 @@ export function createInstallationServer(
       .takeSnapshot()
       .then((snapshot) => res.status(201).json(snapshot), next);
   });
+  // Host agents take the same safety snapshot under the full maintenance grant. It is a
+  // non-disruptive copy, so it runs at once and leaves a receipt in Installation controls.
+  app.post(
+    "/api/installation/snapshots",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res, next) => {
+      const { requester } = AgentActionRequestSchema.parse(req.body ?? {});
+      void agentActions
+        .run("request-snapshot", requester, async () => {
+          // Never prunes: an agent's snapshot never removes an existing rollback point.
+          const snapshot = await requireReleaseRuntime().takeSnapshot({ prune: false });
+          return { result: snapshot, detail: `Took safety snapshot ${snapshot.id}.` };
+        })
+        .then(({ result, receipt }) => res.status(201).json({ snapshot: result, receipt }), next);
+    },
+  );
+  app.post("/api/installation/owner/agent-actions/query", (_req, res) =>
+    res.json({ receipts: agentActions.list() }),
+  );
   app.post("/api/installation/owner/snapshots/restore", (req, res, next) => {
     const request = SnapshotRestoreRequestSchema.parse(req.body);
     void requireReleaseRuntime()
@@ -2721,6 +3075,177 @@ export function createInstallationServer(
     res.json(requireUpgrades().decide(req.params.id, decision.revision, decision.decision));
     void drainRestarts();
   });
+  app.post("/api/installation/owner/source-upgrades/query", (_req, res) =>
+    res.json(requireReleaseRuntime().sourceUpgradeStatus()),
+  );
+  const requireSourceUpgrades = async () => {
+    const blocker = await sourceUpgradeBlocker();
+    if (blocker) throw new RestartRequestError(blocker);
+    const sourceUpgrades = requireReleaseRuntime().sourceUpgrades;
+    if (!sourceUpgrades) throw new RestartRequestError("Source upgrades are unavailable");
+    return sourceUpgrades;
+  };
+  app.post("/api/installation/owner/source-upgrades", (req, res, next) => {
+    const request = SourceUpgradeRequestSchema.parse(req.body);
+    void requireSourceUpgrades()
+      .then((sourceUpgrades) =>
+        sourceUpgrades.request({ ...request, requestedBy: "Installation owner" }),
+      )
+      .then((upgrade) => res.status(201).json(upgrade), next);
+  });
+  // Builds requests the same source upgrade. The owner decides it in Installation controls, or
+  // the full maintenance grant starts it after the cancellation window. Rollback stays owner-only.
+  app.post(
+    "/api/installation/source-upgrades",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res, next) => {
+      const { requester, ...body } = (req.body ?? {}) as Record<string, unknown>;
+      const request = SourceUpgradeRequestSchema.parse(body);
+      const label = AgentActionRequestSchema.parse({ requester }).requester;
+      void requireSourceUpgrades()
+        .then((sourceUpgrades) =>
+          sourceUpgrades.request({
+            ...request,
+            requestedBy: label ? `Host agent ${label}` : "Host agent",
+            hostAgent: true,
+          }),
+        )
+        .then((upgrade) => res.status(201).json(upgrade), next);
+    },
+  );
+  app.get(
+    "/api/installation/source-upgrades/:id",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res) => {
+      const id = z.string().uuid().parse(req.params.id);
+      const upgrade = requireReleaseRuntime()
+        .sourceUpgrades?.list()
+        .find((job) => job.id === id);
+      if (!upgrade) {
+        res.sendStatus(404);
+        return;
+      }
+      res.json(upgrade);
+    },
+  );
+  app.post("/api/installation/owner/source-upgrades/rollback", (req, res, next) => {
+    const { upgradeId } = SourceUpgradeRollbackRequestSchema.parse(req.body);
+    void requireSourceUpgrades()
+      .then((sourceUpgrades) => sourceUpgrades.requestRollback(upgradeId, "Installation owner"))
+      .then((upgrade) => res.status(201).json(upgrade), next);
+  });
+  app.post("/api/installation/owner/source-upgrades/:id/decision", (req, res, next) => {
+    const decision = SourceUpgradeDecisionSchema.parse(req.body);
+    const id = z.string().uuid().parse(req.params.id);
+    const approving = decision.decision === "approve" || decision.decision === "approve-after-work";
+    // Rejecting or cancelling never needs the checks that approval repeats.
+    void (
+      approving ? requireSourceUpgrades() : Promise.resolve(requireReleaseRuntime().sourceUpgrades)
+    )
+      .then((sourceUpgrades) => {
+        if (!sourceUpgrades) throw new RestartRequestError("Source upgrades are unavailable");
+        return sourceUpgrades.decide(id, decision.revision, decision.decision);
+      })
+      .then((upgrade) => {
+        void drainRestarts();
+        return res.json(upgrade);
+      }, next);
+  });
+  app.post("/api/installation/owner/coordinator-follow/query", (_req, res) =>
+    res.json(requireReleaseRuntime().coordinatorFollow.status()),
+  );
+  // Lab self-updates also replace the coordinator release; one replacement runs at a time.
+  const refuseDuringLabUpdate = async () => {
+    if (await labRuntime.updates.active())
+      throw new RestartRequestError(
+        "Wait for the lab self-update to finish before updating the coordinator.",
+      );
+  };
+  app.post("/api/installation/owner/coordinator-follow", (req, res, next) => {
+    const request = CoordinatorFollowRequestSchema.parse(req.body);
+    void refuseDuringLabUpdate()
+      .then(() => requireReleaseRuntime().coordinatorFollow.request(request.next))
+      .then((job) => res.status(201).json(job), next);
+  });
+  // Host agents (Builds) request the same coordinator update. The owner decides it in
+  // Installation controls, or the full maintenance grant approves it after the cancellation window.
+  app.post(
+    "/api/installation/coordinator-follow",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res, next) => {
+      const request = CoordinatorFollowAgentRequestSchema.parse(req.body);
+      void refuseDuringLabUpdate()
+        .then(() =>
+          requireReleaseRuntime().coordinatorFollow.request(request.next, {
+            requestedBy: "host-agent",
+            requester: request.requester,
+          }),
+        )
+        .then((job) => {
+          void drainRestarts();
+          return res.status(201).json(job);
+        }, next);
+    },
+  );
+  app.get(
+    "/api/installation/coordinator-follow/:id",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res) => {
+      const job = requireReleaseRuntime().coordinatorFollow.job(
+        z.string().uuid().parse(req.params.id),
+      );
+      if (!job) {
+        res.sendStatus(404);
+        return;
+      }
+      res.json(job);
+    },
+  );
+  app.post("/api/installation/owner/coordinator-follow/:id/decision", (req, res, next) => {
+    const decision = CoordinatorFollowDecisionSchema.parse(req.body);
+    void (decision.decision === "approve" ? refuseDuringLabUpdate() : Promise.resolve())
+      .then(() =>
+        requireReleaseRuntime().coordinatorFollow.decide(
+          req.params.id,
+          decision.revision,
+          decision.decision,
+        ),
+      )
+      .then((job) => {
+        void drainRestarts();
+        return res.json(job);
+      }, next);
+  });
+  app.post("/api/installation/owner/coordinator-settings/query", (_req, res) =>
+    res.json(coordinatorSettings.status()),
+  );
+  app.post("/api/installation/owner/coordinator-settings/:id/decision", (req, res, next) => {
+    const decision = CoordinatorSettingsDecisionSchema.parse(req.body);
+    const id = z.string().uuid().parse(req.params.id);
+    void (decision.decision === "approve" ? refuseDuringLabUpdate() : Promise.resolve())
+      .then(() => {
+        const { follow } = decision;
+        const client = { reviewedFields: decision.reviewedFields === true };
+        if (decision.decision !== "approve" || !follow)
+          return coordinatorSettings.decide(id, decision.revision, decision.decision, client);
+        // One owner decision: the coordinator update first, then these settings on it.
+        return coordinatorSettings.approveWithFollow(
+          id,
+          decision.revision,
+          () =>
+            requireReleaseRuntime().coordinatorFollow.decide(follow.id, follow.revision, "approve"),
+          client,
+        );
+      })
+      .then((job) => {
+        void drainRestarts();
+        return res.json(job);
+      }, next);
+  });
   const requireUpdates = () => {
     const releaseUpdates = requireReleaseRuntime().updates;
     if (!releaseUpdates)
@@ -2747,7 +3272,13 @@ export function createInstallationServer(
   });
   // Read-only for agents: the Mechanic reports stale offers and Builds plans drains from it.
   app.get("/api/installation/update-status", authenticateUpdate, (_req, res) => {
-    res.json(requireUpdates().agentStatus());
+    res.json({
+      ...requireUpdates().agentStatus(),
+      ...(releaseRuntime
+        ? { coordinatorFollow: releaseRuntime.coordinatorFollow.agentStatus() }
+        : {}),
+      coordinatorSettings: coordinatorSettings.status(),
+    });
   });
   const webUi = (origin: string, local = false) =>
     createWebUiMiddleware({
