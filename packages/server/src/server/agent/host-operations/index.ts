@@ -188,6 +188,20 @@ const remoteCreate = z
       .optional(),
   })
   .strict();
+/**
+ * The destination's session launch replaces the provider with the preset's own, so only presets
+ * whose account the caller's provider decides can cross hosts: a canonical shared preset, which
+ * the destination resolves for that provider, or a legacy one naming that same account.
+ */
+function assertRemotePresetAccount(profileId: string, provider: string): void {
+  const [kind, account] = profileId.split("/");
+  if (kind === "shared-profile") return;
+  if (kind === "shared-workflow" && decodeURIComponent(account ?? "") === provider) return;
+  throw new Error(
+    `Preset ${profileId} cannot launch on another host for ${provider}. Use a shared preset that names this account's provider type.`,
+  );
+}
+
 const result = (structuredContent: unknown): PaseoToolResult => ({
   content: [],
   structuredContent,
@@ -216,6 +230,7 @@ export function createHostResolver(input: {
             const parsed = remoteCreate.parse(args);
             const selected = resolveRequiredProviderModel(parsed.provider);
             const provider = selected.provider;
+            if (parsed.profileId) assertRemotePresetAccount(parsed.profileId, provider);
             // The destination resolves the preset, whose model replaces the requested one,
             // as a local MCP launch does. The provider still selects the account.
             const model = parsed.profileId ? undefined : selected.model;

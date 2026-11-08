@@ -3,9 +3,25 @@ import type { HostAdd, HostSummary, HostUpdate } from "@getpaseo/protocol/hosts"
 import { createDevHostLinkRuntime, DEV_HOST_SOURCE_KEY } from "./dev-host-link.js";
 
 function fakeHostDaemon() {
-  const hosts: (HostSummary & { connection: string })[] = [];
+  const hosts: (HostSummary & { connection: string })[] = [
+    {
+      registrationId: "hst_other",
+      serverId: null,
+      label: "Another producer",
+      source: { id: "plugin:other", key: DEV_HOST_SOURCE_KEY },
+      metadata: {},
+      enabled: false,
+      status: "disabled",
+      targetDescription: "ws://example",
+      lastOnlineAt: null,
+      nextRetryAt: null,
+      error: null,
+      connection: "ws://example/ws",
+    },
+  ];
   const calls: string[] = [];
   const client = {
+    getLastServerInfoMessage: () => ({ sourceId: "owner" }),
     async listHosts() {
       return {
         self: { serverId: "srv_host", label: null },
@@ -15,7 +31,7 @@ function fakeHostDaemon() {
     async addHost(input: HostAdd) {
       calls.push("add");
       const host = {
-        registrationId: "hst_dev",
+        registrationId: `hst_${hosts.length}`,
         serverId: null,
         label: input.label ?? null,
         source: { id: "owner", key: input.sourceKey! },
@@ -55,19 +71,23 @@ describe("Dev connected host registration", () => {
     await link.reconcile();
     await link.reconcile();
     expect(daemon.calls).toEqual(["add"]);
-    expect(daemon.hosts[0]).toMatchObject({
+    expect(daemon.hosts[1]).toMatchObject({
       label: "Dev container",
       source: { key: DEV_HOST_SOURCE_KEY },
       connection: "ws://127.0.0.1:7777/ws?password=first",
     });
-    expect(JSON.stringify(daemon.hosts[0]!.metadata)).not.toContain("first");
+    expect(JSON.stringify(daemon.hosts[1]!.metadata)).not.toContain("first");
 
-    daemon.hosts[0]!.enabled = false;
-    daemon.hosts[0]!.label = "Renamed by owner";
+    daemon.hosts[1]!.enabled = false;
+    daemon.hosts[1]!.label = "Renamed by owner";
     container.password = "second";
     await link.reconcile();
     expect(daemon.calls).toEqual(["add", "update"]);
     expect(daemon.hosts[0]).toMatchObject({
+      label: "Another producer",
+      connection: "ws://example/ws",
+    });
+    expect(daemon.hosts[1]).toMatchObject({
       enabled: false,
       label: "Renamed by owner",
       connection: "ws://127.0.0.1:7777/ws?password=second",

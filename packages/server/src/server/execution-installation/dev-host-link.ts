@@ -12,7 +12,9 @@ import type { Logger } from "pino";
 export const DEV_HOST_SOURCE_KEY = "vorteo-installation-dev";
 const FINGERPRINT = "vorteo.connection-sha256";
 
-type LinkClient = Pick<DaemonClient, "listHosts" | "addHost" | "updateHost" | "close">;
+interface LinkClient extends Pick<DaemonClient, "listHosts" | "addHost" | "updateHost" | "close"> {
+  getLastServerInfoMessage(): { sourceId?: string } | null;
+}
 
 interface DevTarget {
   endpoint: string;
@@ -39,8 +41,13 @@ export function createDevHostLinkRuntime(input: {
     const metadata = { [FINGERPRINT]: createHash("sha256").update(connection).digest("hex") };
     const client = await input.connect("host");
     try {
+      // Registrations belong to a source and its key; never adopt another producer's entry.
+      const sourceId = client.getLastServerInfoMessage()?.sourceId;
+      if (!sourceId) throw new Error("The Host daemon does not report this connection's source");
       const { hosts } = await client.listHosts();
-      const saved = hosts.find((host) => host.source.key === DEV_HOST_SOURCE_KEY);
+      const saved = hosts.find(
+        (host) => host.source.id === sourceId && host.source.key === DEV_HOST_SOURCE_KEY,
+      );
       if (!saved) {
         await client.addHost({
           connection,
