@@ -13,6 +13,8 @@
 
 - Scope phone workspace actions to the destination workspace deck. Verify saved alias permissions in the shared profile record and require launch requests to leave those permissions to the daemon.
 
+- Select the visible phone workspace header when retained route screens contain the same workspace deck, preserving all project-move checks.
+
 ## Maintenance review
 
 The routed editor now displays the compatibility hints already computed by its form model. Packaged coverage uses isolated fake catalogs, current page controls and distinct default profiles so ignored profile clicks fail through their resulting agent configuration or intercepted public launch request. README overview and onboarding are unchanged.

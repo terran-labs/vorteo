@@ -1701,6 +1701,7 @@ async function verifyCrossEnvironmentWorkspaceMove(input: {
     await page
       .getByTestId(`workspace-deck-entry-${key}`)
       .getByTestId("workspace-header-menu-trigger")
+      .filter({ visible: true })
       .tap();
     await page.getByTestId("workspace-header-move-project").tap();
   } else {
