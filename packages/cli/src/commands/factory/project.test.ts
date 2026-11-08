@@ -237,6 +237,25 @@ describe("paseo factory project", () => {
       avoid: "codex-account-b",
     });
     expect(stdout.join("")).toContain("Account: codex-account-a (64% left");
+
+    // A daemon older than --server refuses the field; the operator is told to update it.
+    const stderr: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+    invoke.mockRejectedValue(
+      new Error('Request failed: [{"code":"unrecognized_keys","keys":["serverId"]}]'),
+    );
+    await expect(run("pick-account", "prj_app", "worker", "--server", "srv_dev")).rejects.toThrow(
+      "exit 1",
+    );
+    expect(invoke).toHaveBeenLastCalledWith("factory", "factory.project.pick_account", {
+      projectId: "prj_app",
+      stage: "worker",
+      serverId: "srv_dev",
+    });
+    expect([...stdout, ...stderr].join("")).toContain("Update the daemon to pick accounts");
   });
 
   it("refuses an unknown role before calling the daemon", async () => {

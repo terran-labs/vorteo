@@ -118,6 +118,8 @@ const ProjectStateSchema = z.object({
         provider: z.string().nullable(),
         remainingPct: z.number().nullable(),
         bound: z.boolean().optional(),
+        /** The connected host the agent starts on, when not this daemon. */
+        serverId: z.string().optional(),
         pickedAt: z.string(),
       }),
     )

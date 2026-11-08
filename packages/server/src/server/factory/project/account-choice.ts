@@ -2,6 +2,7 @@ import type { MutableDaemonConfig, ProviderUsage } from "@getpaseo/protocol/mess
 import { resolveProviderType } from "@getpaseo/protocol/provider-preferences";
 import type { ProjectFactoryAccountPick } from "@getpaseo/server/factory-project";
 
+import type { ProviderSnapshotEntry } from "../../agent/agent-sdk-types.js";
 import type { ProviderSnapshotManager } from "../../agent/provider-snapshot-manager.js";
 import { profileProvider, resolveDefaultLaunch } from "../../system-project/launch-selection.js";
 
@@ -10,6 +11,9 @@ import { profileProvider, resolveDefaultLaunch } from "../../system-project/laun
  * of the stage profile's provider type, the one with the most fresh remaining quota. This
  * applies the rule in docs/agent-presets.md: unknown, stale and exhausted readings never
  * qualify. It is advisory at launch only; it does not switch running agents or pool accounts.
+ *
+ * An agent bound for a connected host, such as Dev, starts on that host's own id for the same
+ * installation account. Usage is per account, so this daemon's readings still rank it.
  */
 
 /** A reading older than this is stale. Choosing refreshes usage first, so this is generous. */
@@ -29,6 +33,80 @@ export interface FactoryAccounts {
   readUsage(): Promise<UsageList>;
   /** The default launch's provider, used when the stage has no configured profile. */
   defaultProvider(): Promise<string | null>;
+  /** The installation account a local account links to, the same on every host. */
+  installationAccount(provider: string): string | null;
+  /**
+   * A connected host's ready, enabled accounts: its local id for each installation account.
+   * Rejects with FactoryDestinationUnreadableError when the host cannot be read.
+   */
+  destinationAccounts(serverId: string): Promise<Map<string, string>>;
+}
+
+/** A connected host whose accounts cannot be read. No account is picked for it. */
+export class FactoryDestinationUnreadableError extends Error {
+  constructor(
+    readonly serverId: string,
+    cause: unknown,
+  ) {
+    super(
+      `Cannot read the accounts of host ${serverId}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    );
+    this.name = "FactoryDestinationUnreadableError";
+  }
+}
+
+/** A stage profile bound to one account, which cannot launch on another host. */
+export class FactoryBoundProfileError extends Error {
+  constructor(
+    readonly profileId: string,
+    readonly serverId: string,
+  ) {
+    super(
+      `Profile ${profileId} is bound to one account and cannot launch on host ${serverId}. Configure the stage with a shared-profile/<type>/<workflow> profile.`,
+    );
+    this.name = "FactoryBoundProfileError";
+  }
+}
+
+/** The part of a connected host's client that reading its accounts needs. */
+export interface DestinationClient {
+  getDaemonConfig(): Promise<{ config: Pick<MutableDaemonConfig, "providers"> }>;
+  getProvidersSnapshot(): Promise<{
+    entries: Pick<ProviderSnapshotEntry, "provider" | "enabled" | "status">[];
+  }>;
+}
+
+/** Routes a call to a connected host, as connected-host tools do. */
+export interface DestinationHosts {
+  use<T>(serverId: string, action: (client: DestinationClient) => Promise<T>): Promise<T>;
+}
+
+/**
+ * A connected host's ready, enabled accounts: its local id for each installation account. An
+ * account excluded on that host is projected there as disabled, so it drops out.
+ */
+export async function readDestinationAccounts(
+  hosts: () => DestinationHosts,
+  serverId: string,
+): Promise<Map<string, string>> {
+  try {
+    return await hosts().use(serverId, async (client) => {
+      const [{ config }, snapshot] = await Promise.all([
+        client.getDaemonConfig(),
+        client.getProvidersSnapshot(),
+      ]);
+      const accounts = new Map<string, string>();
+      for (const entry of snapshot.entries) {
+        const shared = config.providers?.[entry.provider]?.installationAccountId;
+        if (shared && entry.enabled && entry.status === "ready" && !accounts.has(shared))
+          accounts.set(shared, entry.provider);
+      }
+      return accounts;
+    });
+  } catch (error) {
+    throw new FactoryDestinationUnreadableError(serverId, error);
+  }
 }
 
 /** Usage readings and when they were read; a reading without its own time takes this one. */
@@ -42,10 +120,10 @@ export function rankAccounts(input: {
   candidates: readonly string[];
   usage: UsageList;
   nowMs: number;
-  avoid?: string;
+  avoid?: ReadonlySet<string>;
 }): { chosen: Considered | null; considered: Considered[] } {
   const considered = input.candidates.map((provider) =>
-    judge(provider, input.usage, input.nowMs, input.avoid),
+    judge(provider, input.usage, input.nowMs, input.avoid?.has(provider) ?? false),
   );
   let chosen: Considered | null = null;
   for (const item of considered)
@@ -57,18 +135,13 @@ export function rankAccounts(input: {
   return { chosen, considered };
 }
 
-function judge(
-  provider: string,
-  usage: UsageList,
-  nowMs: number,
-  avoid: string | undefined,
-): Considered {
+function judge(provider: string, usage: UsageList, nowMs: number, avoided: boolean): Considered {
   const verdict = (value: Considered["verdict"], remainingPct: number | null = null) => ({
     provider,
     verdict: value,
     remainingPct,
   });
-  if (provider === avoid) return verdict("avoided");
+  if (avoided) return verdict("avoided");
   const reading = usage.providers.find((item) => item.providerId === provider);
   if (!reading || reading.status !== "available" || reading.authRecovery) return verdict("unknown");
   // Readings often carry no time of their own; the list's time is when they were read, as
@@ -92,30 +165,59 @@ export function isAccountBound(profileId: string | null): boolean {
   return profileId !== null && !profileId.startsWith("shared-profile/");
 }
 
-/** Chooses an account for a stage profile, or reports why none qualifies. */
-export async function chooseAccount(input: {
-  accounts: FactoryAccounts;
-  profileId: string | null;
-  avoid?: string;
-  nowMs: number;
-}): Promise<{
+interface Choice {
   provider: string | null;
   remainingPct: number | null;
   bound: boolean;
   considered: Considered[];
-}> {
-  const none = { provider: null, remainingPct: null, bound: false, considered: [] };
+}
+
+const NONE: Choice = { provider: null, remainingPct: null, bound: false, considered: [] };
+
+/** Where the agent starts: this daemon, or a connected host with its own ids for accounts. */
+interface Placement {
+  /** The account's id where the agent starts, or null when that host lacks it. */
+  place(provider: string): string | null;
+  /** A considered local account, named by its id where the agent starts. */
+  name(item: Considered, placed: string): Considered;
+}
+
+async function placement(accounts: FactoryAccounts, serverId?: string): Promise<Placement> {
+  if (!serverId) return { place: (provider) => provider, name: (item) => item };
+  const destination = await accounts.destinationAccounts(serverId);
+  return {
+    place(provider) {
+      const shared = accounts.installationAccount(provider);
+      return shared ? (destination.get(shared) ?? null) : null;
+    },
+    name: (item, placed) => ({
+      provider: placed,
+      localProvider: item.provider,
+      verdict: item.verdict,
+      remainingPct: item.remainingPct,
+    }),
+  };
+}
+
+/**
+ * Chooses an account for a stage profile, or reports why none qualifies. With a destination,
+ * only accounts that host has ready qualify, the result names them by that host's ids, and
+ * `avoid` may use either id. An unreadable destination rejects rather than falling back here,
+ * and so does a profile bound to one account, which cannot launch on another host.
+ */
+export async function chooseAccount(input: {
+  accounts: FactoryAccounts;
+  profileId: string | null;
+  avoid?: string;
+  /** A connected host the agent starts on; absent means this daemon. */
+  destination?: string;
+  nowMs: number;
+}): Promise<Choice> {
   if (input.profileId && isAccountBound(input.profileId)) {
-    const provider = input.accounts.profileAccount(input.profileId);
-    // The binding leaves no alternative to an avoided account, so nothing qualifies.
-    if (provider !== null && provider === input.avoid)
-      return {
-        ...none,
-        bound: true,
-        considered: [{ provider, verdict: "avoided", remainingPct: null }],
-      };
-    return { ...none, provider, bound: provider !== null };
+    if (input.destination) throw new FactoryBoundProfileError(input.profileId, input.destination);
+    return chooseBound(input.accounts.profileAccount(input.profileId), input.avoid);
   }
+  const where = await placement(input.accounts, input.destination);
   const type = input.profileId
     ? input.accounts.providerType({ profileId: input.profileId })
     : await input.accounts
@@ -123,22 +225,48 @@ export async function chooseAccount(input: {
         // The default launch reads usage too; a failed read falls back like any other.
         .catch(() => null)
         .then((provider) => (provider ? input.accounts.providerType({ provider }) : null));
-  if (!type) return none;
-  const candidates = (await input.accounts.readyProviders()).filter(
-    (provider) => input.accounts.providerType({ provider }) === type,
-  );
-  if (candidates.length === 0) return none;
+  if (!type) return NONE;
+  // Each candidate local account, with its id where the agent starts.
+  const placed = new Map<string, string>();
+  for (const provider of await input.accounts.readyProviders()) {
+    const id = where.place(provider);
+    if (id !== null && input.accounts.providerType({ provider }) === type) placed.set(provider, id);
+  }
+  const candidates = [...placed.keys()];
+  if (candidates.length === 0) return NONE;
   // A failed usage read leaves every account unknown, so the configured default is used.
   const usage = await input.accounts
     .readUsage()
     .catch((): UsageList => ({ fetchedAt: "", providers: [] }));
-  const ranked = rankAccounts({ candidates, usage, nowMs: input.nowMs, avoid: input.avoid });
+  // Several local aliases can name one account; avoiding it by either id avoids every alias.
+  const avoided = input.avoid === undefined ? undefined : (where.place(input.avoid) ?? input.avoid);
+  const avoid = new Set(
+    candidates.filter((provider) => provider === input.avoid || placed.get(provider) === avoided),
+  );
+  const ranked = rankAccounts({ candidates, usage, nowMs: input.nowMs, avoid });
   return {
-    provider: ranked.chosen?.provider ?? null,
+    provider: ranked.chosen ? (placed.get(ranked.chosen.provider) ?? null) : null,
     remainingPct: ranked.chosen?.remainingPct ?? null,
     bound: false,
-    considered: ranked.considered,
+    considered: ranked.considered.map((item) =>
+      where.name(item, placed.get(item.provider) ?? item.provider),
+    ),
   };
+}
+
+/**
+ * A bound profile launches on its own account, unranked. The binding leaves no alternative to
+ * an avoided account, so then nothing qualifies.
+ */
+function chooseBound(provider: string | null, avoid?: string): Choice {
+  if (provider === null) return NONE;
+  if (provider === avoid)
+    return {
+      ...NONE,
+      bound: true,
+      considered: [{ provider, verdict: "avoided", remainingPct: null }],
+    };
+  return { ...NONE, provider, bound: true };
 }
 
 /** The daemon's accounts: ready providers from the snapshot, usage refreshed on each pick. */
@@ -148,6 +276,7 @@ export function daemonFactoryAccounts(input: {
     forceRefresh: boolean;
   }) => Promise<{ fetchedAt: string; providers: ProviderUsage[] }>;
   getSettings: () => MutableDaemonConfig;
+  hosts: () => DestinationHosts;
 }): FactoryAccounts {
   const typeOf = (provider: string): string | null => {
     try {
@@ -177,6 +306,12 @@ export function daemonFactoryAccounts(input: {
     },
     async defaultProvider() {
       return (await resolveDefaultLaunch(input))?.provider ?? null;
+    },
+    installationAccount(provider) {
+      return input.getSettings().providers?.[provider]?.installationAccountId ?? null;
+    },
+    destinationAccounts(serverId) {
+      return readDestinationAccounts(input.hosts, serverId);
     },
   };
 }
