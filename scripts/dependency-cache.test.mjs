@@ -55,7 +55,13 @@ function fakeNpm(calls) {
 }
 
 const copy = (from, to) => fs.cpSync(from, to, { recursive: true, verbatimSymlinks: true });
-const options = { supported: true, npmVersion: "11.0.0", clone: copy, log: () => {} };
+const options = {
+  supported: true,
+  queue: false,
+  npmVersion: "11.0.0",
+  clone: copy,
+  log: () => {},
+};
 
 test("unsupported platforms run a plain install", (t) => {
   const parent = temporary(t);
@@ -72,6 +78,30 @@ test("unsupported platforms run a plain install", (t) => {
   assert.deepEqual(result, { source: "install" });
   assert.deepEqual(calls, [["npm", ...installModes.build]]);
   assert.equal(fs.existsSync(path.join(parent, "cache")), false);
+});
+
+test("a full install waits for the heavy-job slot unless it already holds it", (t) => {
+  const parent = temporary(t);
+  const calls = [];
+  installDependencies({
+    ...options,
+    root: checkout(parent, "one"),
+    mode: "build",
+    run: (command, args) => calls.push([command, ...args]),
+    supported: false,
+    queue: true,
+  });
+  const [[command, script, ...rest]] = calls;
+  assert.equal(command, process.execPath);
+  assert.equal(path.basename(script), "heavy-job.mjs");
+  assert.deepEqual(rest, [
+    "run",
+    "--label",
+    "dependency install",
+    "--",
+    "npm",
+    ...installModes.build,
+  ]);
 });
 
 test("a second checkout clones the cached install and keeps its own workspace links", (t) => {

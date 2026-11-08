@@ -54,6 +54,7 @@ test("heavy jobs run at background priority with capped test workers", () => {
   assert.deepEqual(mac.argv, ["taskpolicy", "-b", "nice", "-n", "10", "npm", "test"]);
   assert.equal(mac.env.VITEST_MAX_WORKERS, "2");
   assert.equal(mac.env.E2E_WORKERS, "3", "an explicit caller setting wins");
+  assert.equal(mac.env.VORTEO_HEAVY_JOB, "1", "nested callers can tell they hold the slot");
   assert.deepEqual(launchSpec(["x"], { platform: "linux", env: {} }).argv, [
     "nice",
     "-n",

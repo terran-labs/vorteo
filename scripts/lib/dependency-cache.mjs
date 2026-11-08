@@ -1,18 +1,21 @@
 // Shares installed dependencies between checkouts through APFS copy-on-write
-// clones. One "golden" install is kept per lockfile and install mode; each
+// clones on macOS and copies on Linux, such as the Dev container, whose Projects
+// folder mount cannot share blocks. One "golden" install is kept per lockfile and install mode; each
 // checkout receives its own cloned node_modules trees, so workspace links
 // (node_modules/@getpaseo/x -> ../../packages/x) still resolve inside that
 // checkout. A shared symlinked node_modules would not: Node resolves symlinks
 // to real paths, sending every workspace import into one checkout.
 //
 // Clones share disk blocks until a file changes, so a cloned install costs
-// metadata only. Unsupported platforms, and VORTEO_DEPENDENCY_CACHE=0, run a
-// normal `npm ci` instead.
+// metadata only. A Linux copy still skips the download, extraction and native
+// builds. Other platforms, and VORTEO_DEPENDENCY_CACHE=0, run a normal `npm ci`.
+// A full install waits for the machine's heavy-job slot unless it already runs in one.
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const FORMAT = 1;
 const HOUR = 60 * 60_000;
@@ -34,7 +37,7 @@ export function defaultDependencyCache(env = process.env) {
 }
 
 export function cloneSupported({ platform = process.platform, env = process.env } = {}) {
-  return platform === "darwin" && env.VORTEO_DEPENDENCY_CACHE !== "0";
+  return ["darwin", "linux"].includes(platform) && env.VORTEO_DEPENDENCY_CACHE !== "0";
 }
 
 /** "" for the root, then every workspace directory recorded by the lockfile. */
@@ -119,10 +122,15 @@ function defaultRun(command, args, cwd) {
   execFileSync(command, args, { cwd, stdio: "inherit", shell: process.platform === "win32" });
 }
 
-/** clonefile(2) per file; data blocks stay shared until either copy changes. */
+/** clonefile(2) per file on macOS; data blocks stay shared until either copy changes.
+ * GNU cp reflinks where the filesystem allows and copies otherwise. */
 function defaultClone(from, to) {
-  execFileSync("/bin/cp", ["-c", "-R", from, to], { stdio: "inherit" });
+  if (process.platform === "darwin")
+    execFileSync("/bin/cp", ["-c", "-R", from, to], { stdio: "inherit" });
+  else execFileSync("cp", ["-a", "--reflink=auto", from, to], { stdio: "inherit" });
 }
+
+const HEAVY_JOB = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "heavy-job.mjs");
 
 function readManifest(entry) {
   try {
@@ -221,13 +229,19 @@ export function installDependencies({
   run = defaultRun,
   clone = defaultClone,
   supported = cloneSupported(),
+  queue = process.env.VORTEO_HEAVY_JOB !== "1",
   npmVersion,
   log = (message) => console.log(message),
 }) {
   const args = installModes[mode];
   if (!args) throw new Error(`Unknown dependency install mode: ${mode}`);
+  function fullInstall() {
+    if (!queue) return run("npm", args, root);
+    const label = "dependency install";
+    run(process.execPath, [HEAVY_JOB, "run", "--label", label, "--", "npm", ...args], root);
+  }
   if (!supported) {
-    run("npm", args, root);
+    fullInstall();
     return { source: "install" };
   }
   fs.mkdirSync(cache, { recursive: true });
@@ -252,7 +266,7 @@ export function installDependencies({
       removeInstalled(root);
     }
   }
-  run("npm", args, root);
+  fullInstall();
   try {
     capture(root, cache, key, mode, clone);
     pruneDependencyCache(cache);
