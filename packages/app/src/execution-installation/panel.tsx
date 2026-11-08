@@ -452,6 +452,13 @@ function InstallationHistory({
   );
 }
 
+const AGENT_ACTION_OUTCOME: Record<AgentActionReceipt["outcome"], string> = {
+  started: "is running",
+  succeeded: "ran",
+  failed: "tried",
+  interrupted: "was interrupted while running",
+};
+
 /** Actions Host agents ran at once under the full maintenance grant, such as snapshots. */
 function AgentActionHistory({ receipts }: { receipts: AgentActionReceipt[] }) {
   if (!receipts.length) return null;
@@ -460,7 +467,7 @@ function AgentActionHistory({ receipts }: { receipts: AgentActionReceipt[] }) {
       {receipts.slice(0, 20).map((receipt) => (
         <Text key={receipt.id} style={styles.text}>
           {new Date(receipt.at).toLocaleString()}: {receipt.requester ?? "A Host agent"}{" "}
-          {receipt.outcome === "succeeded" ? "ran" : "tried"} {receipt.action}. {receipt.detail}
+          {AGENT_ACTION_OUTCOME[receipt.outcome]} {receipt.action}. {receipt.detail}
         </Text>
       ))}
     </HistoryGroup>

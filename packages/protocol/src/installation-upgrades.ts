@@ -95,7 +95,11 @@ export const AgentActionReceiptSchema = z.object({
   /** The Host agent's own label, such as "Builds". Display only, never authority. */
   requester: z.string().optional(),
   at: z.string().datetime(),
-  outcome: z.enum(["succeeded", "failed"]),
+  /**
+   * `started` is written before the action runs. `interrupted` means the coordinator stopped
+   * before the outcome was recorded: the effect is uncertain, and it is never replayed.
+   */
+  outcome: z.enum(["started", "succeeded", "failed", "interrupted"]),
   detail: z.string(),
 });
 export type AgentActionReceipt = z.infer<typeof AgentActionReceiptSchema>;

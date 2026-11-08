@@ -10,9 +10,37 @@ import { OWNER_ROUTE_FRONT_DOORS } from "./front-door.js";
 const read = (relative: string) =>
   readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
 
-// Calls an immediate handler must never make.
-const DISRUPTIVE =
-  /drainRestarts|\.restart\w*\(|install\w*\(|\.change\(|\.write\w*\(|writeConfig|launch\w*\(|\.decide\w*\(/;
+// Reviewed immediate doors and the only effects each may call. A new immediate door is a
+// reviewed change here, never just a route entry: an action that restarts, installs or changes
+// configuration needs a queue with a cancellation window instead.
+const PINNED_IMMEDIATE: Readonly<Record<string, readonly string[]>> = {
+  "/api/installation/owner/snapshots": ["requireReleaseRuntime", "takeSnapshot"],
+  "/api/installation/owner/helpers/verify-installed": ["verifyHelperRecovery"],
+  "/api/installation/owner/dev-repair/prepare": ["requestDevRepair", "prepareBatches"],
+};
+// Parsing, replies, error logging and the receipt wrapper: calls that change nothing.
+const PLUMBING = new Set([
+  "async",
+  "then",
+  "catch",
+  "status",
+  "json",
+  "error",
+  "run",
+  "parse",
+  "strictObject",
+  "string",
+  "uuid",
+  "min",
+  "max",
+  "optional",
+]);
+
+/** Calls in a handler that are neither plumbing nor the door's reviewed effects. */
+function unreviewedCalls(handler: string, effects: readonly string[]): string[] {
+  const calls = [...handler.matchAll(/([A-Za-z_$][\w$]*)\s*\(/g)].map((match) => match[1]!);
+  return [...new Set(calls)].filter((call) => !PLUMBING.has(call) && !effects.includes(call));
+}
 
 /** The source of the handler registered for a route, up to the next registration. */
 function handlerOf(server: string, route: string): string {
@@ -101,10 +129,13 @@ test("every owner route that changes something has an agent front door, an exclu
       expect(client, `${route} needs agent command ${door.immediate}`).toContain(
         `case "${door.immediate}"`,
       );
-      // No window protects an immediate action, so neither handler may restart, install or
-      // change configuration. Such an operation needs a queue with a cancellation window.
-      for (const handler of [handlerOf(server, route), agentHandlerOf(server, door.immediate)])
-        expect(handler, `${route} cannot be immediate`).not.toMatch(DISRUPTIVE);
+      // No window protects an immediate action: both handlers call only its reviewed effects.
+      const effects = PINNED_IMMEDIATE[route];
+      expect(effects, `${route} is not a reviewed immediate door`).toBeDefined();
+      for (const handler of [handlerOf(server, route), agentHandlerOf(server, door.immediate)]) {
+        expect(unreviewedCalls(handler, effects!), route).toEqual([]);
+        for (const effect of effects!) expect(handler, route).toContain(`${effect}(`);
+      }
     }
     if ("agent" in door)
       expect(client, `${route} needs agent command ${door.agent}`).toContain(
@@ -113,7 +144,18 @@ test("every owner route that changes something has an agent front door, an exclu
     // An exclusion is real only when the grant actually refuses it.
     if ("excluded" in door) expect(OWNER_ONLY_OPERATIONS, route).toContain(door.excluded);
   }
-  // A new route cannot join any list by adding a sentence: all three are pinned here.
+  const immediate = entries.filter(([, door]) => "immediate" in door).map(([route]) => route);
+  expect(immediate.sort()).toEqual(Object.keys(PINNED_IMMEDIATE).sort());
+  // Handlers that change configuration fail the immediate check, however they spell it.
+  const reviewed = Object.values(PINNED_IMMEDIATE).flat();
+  for (const [route, write] of [
+    ["/api/installation/owner/settings", "update"],
+    ["/api/installation/owner/installation-type/change", "changeInstallationType"],
+    ["/api/installation/owner/name", "write"],
+    ["/api/installation/owner/live-dev/change", "change"],
+  ] as const)
+    expect(unreviewedCalls(handlerOf(server, route), reviewed), route).toContain(write);
+  // A new route cannot join any list by adding a sentence: all are pinned here.
   const excluded = entries.filter(([, door]) => "excluded" in door).map(([route]) => route);
   expect(excluded.sort()).toEqual(PINNED_EXCLUSIONS);
   const gaps = entries.filter(([, door]) => "gap" in door).map(([route]) => route);
@@ -144,7 +186,11 @@ test("an immediate agent action needs the full grant and leaves a receipt either
     await expect(actions.run("request-snapshot", "Builds", perform)).rejects.toThrow("delegation");
     expect(actions.list()).toEqual([]);
     grant = { policyActivatedAt: "2026-11-01T00:00:00.000Z", authoritySha256: "a".repeat(64) };
-    await actions.run("request-snapshot", "Builds", perform);
+    // The receipt is durable before the action has any effect.
+    await actions.run("request-snapshot", "Builds", async () => {
+      expect(actions.list()[0]?.outcome).toBe("started");
+      return perform();
+    });
     await expect(
       actions.run("request-snapshot", "Builds", async () => {
         throw new Error("disk full");
@@ -154,6 +200,18 @@ test("an immediate agent action needs the full grant and leaves a receipt either
       ["failed", "Builds"],
       ["succeeded", "Builds"],
     ]);
+    // A coordinator that stopped mid-action leaves it started; the next one reports it
+    // interrupted and never replays it.
+    let release!: () => void;
+    const hanging = actions.run(
+      "request-snapshot",
+      "Builds",
+      () => new Promise<never>((_resolve, reject) => (release = () => reject(new Error("gone")))),
+    );
+    const restarted = createAgentActions({ stateDir, grant: () => grant });
+    expect(restarted.list()[0]?.outcome).toBe("interrupted");
+    release();
+    await expect(hanging).rejects.toThrow("gone");
   } finally {
     rmSync(stateDir, { recursive: true, force: true });
   }

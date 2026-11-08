@@ -50,11 +50,25 @@ export function createAgentActions(input: {
       return [];
     }
   };
-  const record = (receipt: AgentActionReceipt) => {
+  const write = (receipts: AgentActionReceipt[]) => {
     mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    const receipts = [receipt, ...read()].slice(0, RETAINED);
-    writePrivateFileAtomicSync(file, JSON.stringify({ version: 1, receipts }));
+    writePrivateFileAtomicSync(
+      file,
+      JSON.stringify({ version: 1, receipts: receipts.slice(0, RETAINED) }),
+    );
   };
+  const replace = (receipt: AgentActionReceipt) =>
+    write(read().map((item) => (item.id === receipt.id ? receipt : item)));
+  // A receipt still started belongs to an earlier coordinator that stopped mid-action.
+  const stale = read();
+  if (stale.some((receipt) => receipt.outcome === "started")) {
+    for (const receipt of stale)
+      if (receipt.outcome === "started") {
+        receipt.outcome = "interrupted";
+        receipt.detail = `${receipt.detail} The coordinator stopped before the outcome was recorded; check the result before asking again.`;
+      }
+    write(stale);
+  }
   return {
     list: read,
     async run(action, requester, perform) {
@@ -62,25 +76,27 @@ export function createAgentActions(input: {
         throw new RestartRequestError(
           "This action needs the owner's full maintenance delegation. Ask the owner to run it in Installation controls.",
         );
-      const base = {
+      const started = AgentActionReceiptSchema.parse({
         id: randomUUID(),
         action,
         ...(requester ? { requester } : {}),
         at: now().toISOString(),
-      };
+        outcome: "started",
+        detail: "Started.",
+      });
+      // Durable before any effect: an action that cannot be recorded does not run.
+      write([started, ...read()]);
       try {
         const { result, detail } = await perform();
-        const receipt = AgentActionReceiptSchema.parse({ ...base, outcome: "succeeded", detail });
-        record(receipt);
+        const receipt = { ...started, outcome: "succeeded" as const, detail };
+        replace(receipt);
         return { result, receipt };
       } catch (error) {
-        record(
-          AgentActionReceiptSchema.parse({
-            ...base,
-            outcome: "failed",
-            detail: error instanceof Error ? error.message : String(error),
-          }),
-        );
+        replace({
+          ...started,
+          outcome: "failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
         throw error;
       }
     },

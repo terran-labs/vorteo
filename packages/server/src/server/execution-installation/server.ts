@@ -2947,7 +2947,8 @@ export function createInstallationServer(
       const { requester } = AgentActionRequestSchema.parse(req.body ?? {});
       void agentActions
         .run("request-snapshot", requester, async () => {
-          const snapshot = await requireReleaseRuntime().takeSnapshot();
+          // Never prunes: an agent's snapshot never removes an existing rollback point.
+          const snapshot = await requireReleaseRuntime().takeSnapshot({ prune: false });
           return { result: snapshot, detail: `Took safety snapshot ${snapshot.id}.` };
         })
         .then(({ result, receipt }) => res.status(201).json({ snapshot: result, receipt }), next);
