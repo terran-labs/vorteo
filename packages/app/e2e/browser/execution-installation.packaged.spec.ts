@@ -2637,6 +2637,7 @@ test("shared plugins preserve source review on failure and project one catalog t
   await expect(page.getByTestId("shared-plugin-source")).toHaveValue(source);
   const unlock = await context.newPage();
   await unlock.goto(origin);
+  await openOwnerUnlock(unlock);
   await unlock.getByTestId("installation-password").fill(ownerPassword);
   await unlock.getByTestId("installation-unlock").click();
   await expect(unlock.getByTestId("installation-password")).not.toBeVisible();
@@ -3026,6 +3027,7 @@ test("personal skill exclusions retain files and recover from expired owner acce
   await expect(available).toBeChecked();
   const unlock = await context.newPage();
   await unlock.goto(origin);
+  await openOwnerUnlock(unlock);
   await unlock.getByTestId("installation-password").fill(ownerPassword);
   await unlock.getByTestId("installation-unlock").click();
   await expect(unlock.getByTestId("installation-password")).not.toBeVisible();
@@ -3142,6 +3144,7 @@ test("shared skill catalog reviews files and preserves drafts through expired ow
   );
   const unlock = await context.newPage();
   await unlock.goto(origin);
+  await openOwnerUnlock(unlock);
   await unlock.getByTestId("installation-password").fill(ownerPassword);
   await unlock.getByTestId("installation-unlock").click();
   await expect(unlock.getByTestId("installation-password")).not.toBeVisible();
