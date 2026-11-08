@@ -150,7 +150,7 @@ When the owner's full maintenance delegation is active, every fresh Host-credent
 
 For authorized work, prepare and submit required restart or installation requests without asking permission in chat to create them. Present the exact request's review link and a short description of the target and interruption to whoever decides it: the installation lead when the owner has delegated approvals, otherwise the owner. That decision in Installation controls is the approval; do not require a verbal reply before or after it. Observe the recorded decision and continue automatically when approved. Only the delegated installation lead approves on the owner's behalf, within its recorded grant. A changed source, plan or request revision requires its own button approval.
 
-### New operations ship with their front door
+### Front doors
 
 Every new installation lifecycle or settings operation ships, in the same change, with an agent request command in `scripts/installation-agent.mjs`, delegated admission under the full maintenance grant through the shared exclusion list in `delegated-admission.ts`, and live status with Cancel in Installation controls. Do not ship an owner-only operation and convert it later. The front-door test fails when an owner route in `front-door.ts` has no agent command, exclusion on that list, or pinned entry. Read-only views, owner sessions, grant management and release upgrades are pinned exemptions. Existing owner operations without an agent door are a pinned gap list; it only shrinks, and a new route never joins it.
 
