@@ -411,6 +411,7 @@ function SortPage({
             {t("sidebar.display.sort.created")}
           </MenuItem>
           <MenuItem
+            closeOnSelect={false}
             selected={preferences.workspaceSort === "lastPrompt"}
             onSelect={selectLastPrompt}
           >

@@ -142,6 +142,7 @@ import { SidebarGroupToggleRow } from "@/components/sidebar/sidebar-group-toggle
 import {
   useLimitedSidebarGroup,
   useLimitedSidebarTreeGroup,
+  useLimitedSidebarTreeRows,
 } from "@/components/sidebar/use-limited-sidebar-group";
 import {
   sidebarWorkspaceRowStyles,
@@ -2306,12 +2307,31 @@ function ProjectBlock({
     ],
   );
 
+  // A missing entry renders no row, so it counts as done (createWorkspaceVisibilityPolicy).
+  const isActiveWorkRow = useCallback(
+    (item: SidebarWorkspacePlacement) =>
+      (workspaceEntriesByKey.get(item.workspaceKey)?.statusBucket ?? "done") !== "done",
+    [workspaceEntriesByKey],
+  );
+  const isOpenWorkRow = useCallback(
+    (item: SidebarWorkspacePlacement) =>
+      selectionEnabled &&
+      activeWorkspaceSelection !== null &&
+      item.serverId === activeWorkspaceSelection.serverId &&
+      item.workspaceId === activeWorkspaceSelection.workspaceId,
+    [activeWorkspaceSelection, selectionEnabled],
+  );
+  const workRowsPolicy = useMemo(
+    () => ({ isActive: isActiveWorkRow, isOpen: isOpenWorkRow }),
+    [isActiveWorkRow, isOpenWorkRow],
+  );
   const {
     visibleItems: visibleWorkRows,
+    leadingItem: leadingWorkspace,
     expanded: workspacesExpanded,
     canToggle: canToggleWorkspaces,
     toggleExpanded: toggleWorkspacesExpanded,
-  } = useLimitedSidebarTreeGroup(workRows);
+  } = useLimitedSidebarTreeRows(workRows, workRowsPolicy);
   const rowModel = useMemo(
     () =>
       buildSidebarProjectRowModel({
@@ -2560,6 +2580,9 @@ function ProjectBlock({
     if (project.workspaces.length > 0) {
       projectChildren = (
         <>
+          {leadingWorkspace
+            ? renderWorkspaceRow(leadingWorkspace, { indentLevel: childLevel })
+            : null}
           <DraggableList
             externalDrop={workExternalDrop}
             treeDrop={isWeb ? workTreeDrop : undefined}

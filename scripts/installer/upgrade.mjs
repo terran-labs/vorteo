@@ -16,6 +16,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -346,6 +347,35 @@ export function summarizeUpgrade(plan) {
  * @returns {Promise<object>} what is installed, the target, how they compare, the current
  *   settings, and a plan when one is asked for and possible
  */
+/**
+ * Refuses a target that would drop a commit a source upgrade installed. Versions alone miss a
+ * release tagged from a branch that lacks it, since every commit on main raises the version.
+ */
+async function refuseDroppingSourceUpgrade(context, installPlan, installed, target, source) {
+  if (!installed.revision || installed.revision === target.revision) return;
+  const journal = readJson(
+    path.join(installPlan.paths.coordinatorState, "source-upgrades", "journal.json"),
+  );
+  const fromSource = (journal?.upgrades ?? []).some(
+    (item) =>
+      item.sourceCommit === installed.revision &&
+      (item.steps ?? []).some((step) => step.name === "host" && step.status === "succeeded"),
+  );
+  if (!fromSource) return;
+  try {
+    await git(
+      context,
+      ["merge-base", "--is-ancestor", installed.revision, target.revision],
+      source,
+    );
+  } catch {
+    throw new InstallerError(
+      `${label(target)} does not contain commit ${installed.revision.slice(0, 12)}, which a source upgrade installed. Upgrading would drop it.`,
+      "Wait for a release that includes it, or restore a snapshot from Settings to go back.",
+    );
+  }
+}
+
 export async function createUpgradePlan(
   context,
   { source, revision, release, settings: requested, settingsOnly = false },
@@ -361,6 +391,8 @@ export async function createUpgradePlan(
   const report = { installed, target, comparison, settings: current };
   if (unsupported) return { ...report, unsupported };
   const upgrade = !settingsOnly && ["newer", "different", "unfinished"].includes(comparison);
+  if (upgrade)
+    await refuseDroppingSourceUpgrade(context, installPlan, installed, target, sourceDirectory);
   const settings = changedSettings(current, requested);
   const policyChanged = Boolean(settings.updateMode || settings.updateChannel);
   const hasSettings = Object.keys(settings).length > 0;
@@ -436,12 +468,7 @@ async function stuckInterfaceUpgrade(s) {
     return false;
   }
   if (code.includes("installer-[0-9a-f]")) return false;
-  try {
-    await s.context.run("pgrep", ["-f", `host-release --root ${s.install.plan.paths.root}`]);
-    return false;
-  } catch {
-    return true;
-  }
+  return !(await hostBuildRunning(s));
 }
 
 const activeInterfaceUpgrades = (s) =>
@@ -449,6 +476,81 @@ const activeInterfaceUpgrades = (s) =>
     (item) =>
       ["approved", "running"].includes(item.status) && !s.outputs.supersede?.includes(item.id),
   );
+
+const sourceJournal = (s) =>
+  path.join(s.install.plan.paths.coordinatorState, "source-upgrades", "journal.json");
+
+/** A source upgrade of one commit from main, approved or running in the interface. */
+const activeSourceUpgrade = (s) =>
+  (readJson(sourceJournal(s))?.upgrades ?? []).find(
+    (item) =>
+      ["approved", "running"].includes(item.status) && !s.outputs.supersede?.includes(item.id),
+  );
+
+const SOURCE_UPGRADE_FIX =
+  'Wait for it to finish. One that is only approved can be cancelled by the owner with POST /api/installation/owner/source-upgrades/<id>/decision and {"revision": "<revision>", "decision": "cancel"} from /api/installation/owner/source-upgrades/query; one already running cannot be cancelled. If the coordinator has been stopped for 10 minutes with no Host build or coordinator handoff running, rerun the installer: it then replaces the source upgrade.';
+
+/** A coordinator journal untouched this long, with nothing running for it, is abandoned. */
+const SOURCE_UPGRADE_STALE_MS = 10 * 60_000;
+
+const regexpEscape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** True while a process whose arguments match `pattern` (a pgrep -f regular expression) runs. */
+async function processRunning(s, pattern) {
+  try {
+    await s.context.run("pgrep", ["-f", pattern]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True while a Host release build for this installation runs, with or without --build-only:
+ * the coordinator launches `host-release --build-only --root <root>` and
+ * `host-release --root <root>` (release-upgrade-runtime.ts).
+ */
+const hostBuildRunning = (s) =>
+  processRunning(s, `host-release.*--root ${regexpEscape(s.install.plan.paths.root)}`);
+
+function refuseSourceUpgrade(s) {
+  const source = activeSourceUpgrade(s);
+  if (source)
+    throw new InstallerError(
+      `A source upgrade to commit ${String(source.sourceCommit).slice(0, 12)} started from the interface is ${source.status}.`,
+      SOURCE_UPGRADE_FIX,
+    );
+}
+
+/**
+ * True when an active source upgrade can never advance, so the installer, the recovery tool,
+ * may replace it: its journal has not changed for 10 minutes, no Host build or coordinator
+ * handoff helper for this installation runs, and no coordinator answers health for the same
+ * two minutes the coordinator step waits. A coordinator restarting through its handoff fails
+ * the probe for up to two minutes, so one failed probe never counts.
+ */
+async function stuckSourceUpgrade(s) {
+  let modified;
+  try {
+    modified = statSync(sourceJournal(s)).mtimeMs;
+  } catch {
+    return false;
+  }
+  if (s.context.now().getTime() - modified < SOURCE_UPGRADE_STALE_MS) return false;
+  if (await hostBuildRunning(s)) return false;
+  const state = regexpEscape(config(s).stateDir);
+  if (await processRunning(s, `coordinator-handoff-main\\.js .*${state}`)) return false;
+  try {
+    await waitFor(
+      s,
+      () => coordinatorHealth(s, s.install.plan.ports.coordinator),
+      COORDINATOR_READY_MS,
+    );
+    return false;
+  } catch {
+    return true;
+  }
+}
 
 /**
  * An interface upgrade approved while this one built would change the same links. Old
@@ -461,6 +563,7 @@ function assertNoInterfaceUpgrade(s) {
       `An upgrade to ${active.release} was started from the interface and is ${active.status}.`,
       "Wait for it to finish or cancel it in Settings, then rerun the installer to resume.",
     );
+  refuseSourceUpgrade(s);
 }
 
 async function check(s) {
@@ -473,7 +576,10 @@ async function check(s) {
       `An upgrade to ${active[0].release} started from the interface is ${active[0].status}.`,
       "Wait for it to finish or cancel it in Settings, then rerun the installer.",
     );
-  if (active.length) s.journal.output({ supersede: active.map((item) => item.id) });
+  const source = activeSourceUpgrade(s);
+  if (source && !(await stuckSourceUpgrade(s))) refuseSourceUpgrade(s);
+  const replaced = [...active, ...(source ? [source] : [])];
+  if (replaced.length) s.journal.output({ supersede: replaced.map((item) => item.id) });
   if (s.plan.devContainer) {
     try {
       await context.run(install.plan.executables.docker, [
@@ -699,13 +805,12 @@ async function coordinatorHealth(s, port) {
   return body;
 }
 
-function supersede(s) {
-  const file = interfaceJournal(s);
+/** Ends the replaced upgrades in one coordinator journal. */
+function supersedeIn(file, ids, detail) {
   const journal = readJson(file);
   if (!journal) return;
-  const detail = `Replaced by the installer's upgrade to ${label(s.plan.to)}.`;
   for (const item of journal.upgrades)
-    if (s.outputs.supersede.includes(item.id) && ["approved", "running"].includes(item.status)) {
+    if (ids.includes(item.id) && ["approved", "running"].includes(item.status)) {
       item.status = "failed";
       item.detail = detail;
       for (const step of item.steps ?? [])
@@ -713,6 +818,13 @@ function supersede(s) {
           Object.assign(step, { status: "failed", detail });
     }
   writeJson(file, journal);
+}
+
+/** Ends replaced interface and source upgrades while the coordinator is stopped. */
+function supersede(s) {
+  const detail = `Replaced by the installer's upgrade to ${label(s.plan.to)}.`;
+  for (const file of [interfaceJournal(s), sourceJournal(s)])
+    supersedeIn(file, s.outputs.supersede, detail);
 }
 
 async function coordinatorStep(s) {
@@ -1085,7 +1197,10 @@ function lifecycleJobConflict(state) {
   return null;
 }
 
-/** Custom domain changes, lab updates and coordinator updates from Installation controls. */
+/**
+ * Custom domain changes, lab updates, source upgrades and coordinator updates from Installation
+ * controls.
+ */
 function interfaceWorkConflict(s, state) {
   const domain = path.join(state, "custom-domain");
   const change = readJson(path.join(domain, "last.json"));
@@ -1102,6 +1217,12 @@ function interfaceWorkConflict(s, state) {
     "running",
   ]);
   if (lab) return `A lab update is ${lab.status}.`;
+  // Source upgrades run the interface upgrade's steps from their own journal.
+  const source = active(readJson(path.join(state, "source-upgrades", "journal.json"))?.upgrades, [
+    "approved",
+    "running",
+  ]);
+  if (source) return `A source upgrade from Installation controls is ${source.status}.`;
   const follow = active(readJson(path.join(state, "coordinator-follow", "journal.json"))?.jobs, [
     "pending",
     "approved",
