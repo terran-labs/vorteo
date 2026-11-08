@@ -144,6 +144,13 @@ export const en = {
         "Every Factory on {{count}} hosts is paused. No new Factory work starts until you resume. Running workers finish their current task and may still push.",
       eachFactory: "Each Factory",
       inAll: "Stop or resume all Factories in All Factories",
+      nowHeld:
+        "Not resumed: another process now holds this Factory, for example Builds before a restart or update. Its reason: {{reason}}.",
+      stoppedOn: "Stopped on {{hosts}}.",
+      resumedOn: "Resumed on {{hosts}}.",
+      unreadable: "Left alone because they could not be re-checked: {{hosts}}.",
+      skipped: "Skipped because another process now holds them or they changed: {{hosts}}.",
+      failed: "Failed on {{hosts}}.",
       nothingToStop:
         "Nothing was stopped: no host still has Factories running that are not held by another process.",
       nothingToResume:
@@ -156,8 +163,6 @@ export const en = {
       resumeProjectTitle: "Resume this Factory?",
       resumeProjectMessage:
         "This Factory leaves the stop and starts taking new work again. Other stopped Factories stay stopped.",
-      resumeHeldMessage:
-        "This Factory is held by another process, for example Builds before a restart or update. Its reason: {{reason}}. Resuming it can restart work that process is waiting to stop.",
       bannerTitle_one: "Stopped: {{count}} Factory",
       bannerTitle_other: "Stopped: {{count}} Factories",
       bannerDetail:

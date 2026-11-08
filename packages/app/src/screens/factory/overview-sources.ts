@@ -29,9 +29,11 @@ import {
   canResumeHost,
   canStopHost,
   hostStopState,
+  selectFreshTargets,
   type FactoryScopeEntry,
   type HostStopState,
 } from "./all-factories-model";
+import { checkProjectResume } from "./resume-confirm";
 import { loadFactoryQueue, type FactoryInvoke, type FactoryQueue } from "./queue";
 
 const POLL_MS = 30_000;
@@ -262,10 +264,10 @@ export function useStopAll(
     () => hosts.filter((host) => canResumeHost(hostStates.get(host.serverId)!)),
     [hosts, hostStates],
   );
-  /** Re-reads each target's list now and keeps the hosts that still qualify. */
+  /** Re-reads each target's list now; a failed read leaves that host alone. */
   const fresh = useCallback(
     async (targets: readonly FactoryHost[], qualifies: (state: HostStopState) => boolean) => {
-      const lists = await Promise.all(
+      const reads = await Promise.allSettled(
         targets.map((host) =>
           client.fetchQuery({
             queryKey: factoryListQueryKey(host.serverId),
@@ -274,16 +276,7 @@ export function useStopAll(
           }),
         ),
       );
-      return targets.filter((_, index) =>
-        qualifies(
-          hostStopState(
-            lists[index]!.projects.map((project) => ({
-              status: project.state,
-              drain: project.drain,
-            })),
-          ),
-        ),
-      );
+      return selectFreshTargets(targets, reads, qualifies);
     },
     [client],
   );
@@ -294,6 +287,7 @@ export function useStopAll(
       qualifies: (state: HostStopState) => boolean;
       method: string;
       body: object;
+      doneKey: "projectFactory.stopAll.stoppedOn" | "projectFactory.stopAll.resumedOn";
       nothingLeft: string;
     }) => {
       // Pending from the first press, so a second press cannot open a second dialog.
@@ -301,21 +295,34 @@ export function useStopAll(
       setError(null);
       try {
         if (!(await input.confirm())) return;
-        const targets = await fresh(input.targets, input.qualifies);
-        if (targets.length === 0) {
-          setError(input.nothingLeft);
-          return;
-        }
+        const { act, unreadable, skipped } = await fresh(input.targets, input.qualifies);
         const results = await Promise.allSettled(
-          targets.map(async (host) => {
+          act.map(async (host) => {
             const list = ProjectFactoryListSchema.parse(
               await host.invoke(input.method, input.body),
             );
             client.setQueryData(factoryListQueryKey(host.serverId), list);
           }),
         );
-        const failed = results.find((result) => result.status === "rejected");
-        if (failed) setError(message((failed as PromiseRejectedResult).reason));
+        const done = act.filter((_, index) => results[index]!.status === "fulfilled");
+        const failed = act.flatMap((host, index) => {
+          const result = results[index]!;
+          return result.status === "rejected" ? [`${host.label} (${message(result.reason)})`] : [];
+        });
+        const names = (list: readonly FactoryHost[]) => list.map((host) => host.label).join(", ");
+        // Every host that was left alone or failed is named, beside the ones that did act.
+        const report = [
+          act.length === 0 ? input.nothingLeft : null,
+          done.length ? t(input.doneKey, { hosts: names(done) }) : null,
+          unreadable.length
+            ? t("projectFactory.stopAll.unreadable", { hosts: names(unreadable) })
+            : null,
+          skipped.length ? t("projectFactory.stopAll.skipped", { hosts: names(skipped) }) : null,
+          failed.length ? t("projectFactory.stopAll.failed", { hosts: failed.join(", ") }) : null,
+        ].filter((line): line is string => line !== null);
+        if (act.length === 0 || unreadable.length || skipped.length || failed.length) {
+          setError(report.join(" "));
+        }
         await client.invalidateQueries({ queryKey: ["projectFactory"] });
       } catch (failure) {
         setError(message(failure));
@@ -323,7 +330,7 @@ export function useStopAll(
         setPending(false);
       }
     },
-    [client, fresh],
+    [client, fresh, t],
   );
   const stop = useCallback(() => {
     void run({
@@ -338,6 +345,7 @@ export function useStopAll(
       qualifies: canStopHost,
       method: "factory.project.pause_all",
       body: { reason: OWNER_STOP_REASON },
+      doneKey: "projectFactory.stopAll.stoppedOn",
       nothingLeft: t("projectFactory.stopAll.nothingToStop"),
     });
   }, [stopTargets, run, t]);
@@ -353,6 +361,7 @@ export function useStopAll(
       qualifies: canResumeHost,
       method: "factory.project.resume_all",
       body: {},
+      doneKey: "projectFactory.stopAll.resumedOn",
       nothingLeft: t("projectFactory.stopAll.nothingToResume"),
     });
   }, [resumeTargets, run, t]);
@@ -364,6 +373,21 @@ export function useStopAll(
       setProjectErrors(({ [entry.key]: _cleared, ...rest }) => rest);
       void (async () => {
         try {
+          if (method === "resume") {
+            // Decided from a fresh read: a project another process now holds is not resumed.
+            const check = await checkProjectResume({
+              client,
+              serverId: entry.serverId,
+              projectId: entry.projectId,
+              invoke: host.invoke,
+              t,
+            });
+            if (!check.resume) {
+              const notice = check.message;
+              if (notice) setProjectErrors((current) => ({ ...current, [entry.key]: notice }));
+              return;
+            }
+          }
           const next = ProjectFactoryStateSchema.parse(
             await host.invoke(`factory.project.${method}`, { projectId: entry.projectId }),
           );
@@ -376,7 +400,7 @@ export function useStopAll(
         }
       })();
     },
-    [client, hosts],
+    [client, hosts, t],
   );
   return {
     canStop: stopTargets.length > 0,

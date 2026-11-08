@@ -139,6 +139,35 @@ export function canResumeHost(state: HostStopState): boolean {
   return state.ours && !state.foreign;
 }
 
+/**
+ * Which hosts a confirmed Stop all or Resume all may act on, from a fresh list read of each.
+ * A host whose read failed is never acted on, and one that no longer qualifies is skipped; the
+ * rest proceed, so one unreachable host does not stop the others.
+ */
+export function selectFreshTargets<Host>(
+  targets: readonly Host[],
+  reads: readonly PromiseSettledResult<{
+    projects: readonly { state: string; drain: { reason: string } | null }[];
+  }>[],
+  qualifies: (state: HostStopState) => boolean,
+): { act: Host[]; unreadable: Host[]; skipped: Host[] } {
+  const act: Host[] = [];
+  const unreadable: Host[] = [];
+  const skipped: Host[] = [];
+  targets.forEach((host, index) => {
+    const read = reads[index];
+    if (!read || read.status === "rejected") {
+      unreadable.push(host);
+      return;
+    }
+    const state = hostStopState(
+      read.value.projects.map((project) => ({ status: project.state, drain: project.drain })),
+    );
+    (qualifies(state) ? act : skipped).push(host);
+  });
+  return { act, unreadable, skipped };
+}
+
 // ---------------------------------------------------------------------------------------------
 // Needs you
 

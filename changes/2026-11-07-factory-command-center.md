@@ -5,6 +5,10 @@
 - A Stop all Factories switch, apart from a project's Pause, asks for confirmation and then pauses every Factory on the shown hosts: running turns finish, and no new Factory work starts or merges until Resume all. While a stop holds Factories, a banner shows its reason, age and Resume all.
 - Sample factory mode covers All Factories with three sample Factories, one paused.
 
+### Known limitations
+
+- Resume all re-reads each host just before acting and never resumes a host another process holds, but one request still separates that read from `resume_all`, and the daemon's `resume_all` releases every drain on the host. A hold that lands in that moment, for example Builds draining before a restart, would also be released. Closing the gap needs a daemon-side `resume_all` that releases only drains with a given reason.
+
 ## Maintenance review
 
 Factory Overview command center, interface only: it uses the existing `factory.project.list`, `pause_all` and `resume_all` RPCs and shares the sidebar card's query keys. New route `app/h/[serverId]/factory/index.tsx`, `screens/factory/routes.ts` (`allFactoriesOverviewRoute`) and pure `screens/factory/all-factories-model.ts`. One test covers needs-you ordering and stage aggregation. README overview and onboarding are unchanged. Not installed.
@@ -14,3 +18,5 @@ Review fixes: stops are grouped per host and reason, since the daemon gives each
 The sidebar project menu's Resume Factory now uses the overview's confirmation: a project stopped by Stop all asks first, one held by someone else such as Builds asks with a destructive warning, and a hand-paused project resumes at once. One shared helper serves both, and the menu test covers the held case.
 
 Second review fixes: Stop all and Resume all live only in All Factories, which sees every project on the hosts they act on; a project's view shows its own state and links there, keeping its own confirmed Pause and Resume. Both global actions re-read each host's list after the confirmation and skip any host another process now holds, saying so when nothing is left. All Factories shows Stop all and Resume all together when some hosts run and others are held by Stop all alone. Per-project pause and resume refresh the shared list. Only running or paused projects are read. Held Factories read "Held for a restart or update" in the sidebar too, and held wording names another process, for example Builds, instead of asserting Builds.
+
+Third review fixes: Stop all and Resume all re-read every host with settled reads, act on the hosts that read cleanly and still qualify, and name the hosts that acted, were left alone because they could not be re-checked, were skipped or failed. A Factory held by another process offers no Resume anywhere, in the project view, the Each Factory list or the sidebar project menu, and shows "Held for update" with its reason. Every per-project Resume re-reads the project first and stops with a message if another process now holds it.

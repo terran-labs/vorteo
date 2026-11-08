@@ -9,6 +9,7 @@ import {
   canStopHost,
   collectNeedsYou,
   hostStopState,
+  selectFreshTargets,
 } from "./all-factories-model";
 import { OWNER_STOP_REASON } from "./factory-reads";
 
@@ -248,6 +249,20 @@ it("shows one stop per host and reason, however many per-project drain ids it ho
   expect([canResumeHost(host), canStopHost(host)]).toEqual([true, false]);
   expect([canResumeHost(other), canStopHost(other)]).toEqual([false, false]);
   expect(canStopHost(hostStopState([{ status: "on", drain: null }]))).toBe(true);
+  // A host whose fresh read failed is left alone; the others still act or are skipped.
+  const running = { projects: [{ state: "on", drain: null }] };
+  const held = { projects: [{ state: "paused", drain: { reason: "drain before restart" } }] };
+  expect(
+    selectFreshTargets(
+      ["a", "b", "c"],
+      [
+        { status: "rejected", reason: new Error("offline") },
+        { status: "fulfilled", value: running },
+        { status: "fulfilled", value: held },
+      ],
+      canStopHost,
+    ),
+  ).toEqual({ act: ["b"], unreadable: ["a"], skipped: ["c"] });
   const stops = collectNeedsYou({ entries, questions: [] }).filter((item) => item.kind === "drain");
   expect(stops.map((item) => [item.serverId, item.action.kind])).toEqual([
     ["other", "stop"],

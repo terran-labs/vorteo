@@ -1,6 +1,7 @@
 import { useCallback, useState, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { ChevronDown, ChevronRight } from "lucide-react-native";
+import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import { SettingsCard, SettingsCollapsibleRow, SettingsRow } from "@/components/settings";
@@ -11,9 +12,10 @@ import { openFactoryInstructions } from "@/components/sidebar/factory-instructio
 import { FactoryModelControls } from "@/components/sidebar/factory-model-controls";
 import { freshFactoryStatus } from "@/components/sidebar/project-factory-model";
 import type { ProjectFactoryState } from "@/components/sidebar/factory-state";
+import { useInstalledPlugins } from "@/plugins/registry";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { isOwnerStop } from "./factory-reads";
-import { confirmProjectResume } from "./resume-confirm";
+import { checkProjectResume, projectResume } from "./resume-confirm";
 import { factoryRoleAssignments } from "./queue";
 
 export interface FactoryControls {
@@ -46,33 +48,52 @@ function stateVariant(state: ProjectFactoryState): StatusBadgeVariant {
 }
 
 /** State pill, Pause or Resume, and the Planning switch: the controls used most. */
-export function FactoryRunControls({ state, controls }: ControlTarget) {
+export function FactoryRunControls({ serverId, projectId, state, controls }: ControlTarget) {
   const { t } = useTranslation();
+  const client = useQueryClient();
+  const plugin = useInstalledPlugins().find(
+    (entry) => entry.id === "factory" && entry.serverId === serverId,
+  );
+  const [notice, setNotice] = useState<string | null>(null);
   // Same words as the sidebar: Stopped for Stop all, Held for update for anyone else's drain.
   const label = state.drain
     ? t(`projectFactory.scope.states.${isOwnerStop(state.drain) ? "stopped" : "held"}`)
     : t(`projectFactory.states.${state.state}`);
   const drain = state.drain ?? null;
+  const held = projectResume(drain) === "hidden";
   const { resume } = controls;
-  // Resuming one project also takes it out of a stop, so a stopped project asks first.
+  // Decided from a fresh read: a project another process now holds is not resumed.
   const resumeProject = useCallback(() => {
-    void confirmProjectResume(drain, t).then((confirmed) => {
-      if (confirmed) resume();
-      return undefined;
-    });
-  }, [drain, resume, t]);
+    if (!plugin) return;
+    setNotice(null);
+    void checkProjectResume({ client, serverId, projectId, invoke: plugin.invoke, t })
+      .then(({ resume: allowed, message }) => {
+        if (allowed) resume();
+        else setNotice(message);
+        return undefined;
+      })
+      .catch((error: unknown) => {
+        setNotice(error instanceof Error ? error.message : String(error));
+      });
+  }, [client, plugin, projectId, resume, serverId, t]);
   return (
     <View style={styles.run}>
       <StatusBadge label={label} variant={stateVariant(state)} />
+      {held && drain ? <Text style={styles.text}>{drain.reason}</Text> : null}
       {state.state === "on" ? (
         <Button onPress={controls.pause} disabled={controls.pending}>
           {t("projectFactory.pauseMenu")}
         </Button>
       ) : null}
-      {state.state === "paused" ? (
+      {state.state === "paused" && !held ? (
         <Button onPress={resumeProject} disabled={controls.pending}>
           {t("projectFactory.resumeMenu")}
         </Button>
+      ) : null}
+      {notice ? (
+        <Text style={styles.error} accessibilityRole="alert">
+          {notice}
+        </Text>
       ) : null}
       {state.workers.planning !== undefined ? (
         <View style={styles.switchGroup}>
