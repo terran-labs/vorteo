@@ -92,10 +92,7 @@ function agentHandlerOf(server: string, command: string): string {
 
 // Existing owner operations still waiting for an agent door. Shrink this list as doors ship;
 // never grow it. A new operation ships with its agent door instead (docs/task-delivery.md).
-const PINNED_GAPS = [
-  "/api/installation/owner/source-upgrades",
-  "/api/installation/owner/source-upgrades/:id/decision",
-];
+const PINNED_GAPS: string[] = [];
 
 // Routes the grant never approves, each on OWNER_ONLY_OPERATIONS.
 const PINNED_EXCLUSIONS = [
