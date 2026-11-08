@@ -558,6 +558,13 @@
                 "renameSync",
                 "rmSync"
               ],
+              // TODO: delegated broker approval evidence is read and written inside the synchronous restart drain, beside the broker journal it shadows; migrate both together.
+              "server/execution-installation/delegated-admission.ts": [
+                "existsSync",
+                "mkdirSync",
+                "readFileSync",
+                "rmSync"
+              ],
               // TODO: the shared coordinator restart check reads the last custom domain change synchronously; move it to an in-memory record loaded at startup.
               "server/execution-installation/custom-domain.ts": ["readFileSync"],
               // TODO: the boot-entry switch capability digest is synchronous like the Docker restart's; it binds the Docker executable and the owner-controlled target entry bytes.

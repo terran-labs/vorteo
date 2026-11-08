@@ -1,4 +1,5 @@
 import type { RestartJob, RestartRequest } from "@getpaseo/protocol/execution-installation";
+import { delegableUnderGrant } from "./delegated-admission.js";
 
 type RestartTarget = RestartJob["target"];
 
@@ -41,8 +42,6 @@ export interface ReviewedRestartOperation {
   /** Names the plan in refusals: "<planLabel> is unavailable or changed". */
   planLabel: string;
   automatic?: RestartOperationAutomatic;
-  /** A separate full maintenance grant can approve this exact operation. */
-  delegable?: boolean;
   /** Unavailable work cannot be drained. Requires exact immediate interruption approval. */
   immediateOnly?: boolean;
   /** A worker launch request may accompany it. Omitted means refused. */
@@ -79,7 +78,6 @@ export interface ReviewedRestartOperation {
 export const RESTART_OPERATIONS: readonly ReviewedRestartOperation[] = [
   {
     field: "supervisorPlanSha256",
-    delegable: true,
     target: "container-daemon",
     label: "Supervisor maintenance",
     planLabel: "Supervisor maintenance plan",
@@ -94,7 +92,6 @@ export const RESTART_OPERATIONS: readonly ReviewedRestartOperation[] = [
   },
   {
     field: "factoryRuntimePlanSha256",
-    delegable: true,
     target: "container-daemon",
     label: "Factory adoption",
     planLabel: "Factory adoption plan",
@@ -123,7 +120,6 @@ export const RESTART_OPERATIONS: readonly ReviewedRestartOperation[] = [
   },
   {
     field: "engineRestartPlanSha256",
-    delegable: true,
     target: "container-daemon",
     label: "Docker restart",
     planLabel: "Docker restart plan",
@@ -144,7 +140,6 @@ export const RESTART_OPERATIONS: readonly ReviewedRestartOperation[] = [
   },
   {
     field: "engineRecoveryPlanSha256",
-    delegable: true,
     target: "container-daemon",
     label: "Degraded Docker recovery",
     planLabel: "Degraded Docker recovery plan",
@@ -165,7 +160,6 @@ export const RESTART_OPERATIONS: readonly ReviewedRestartOperation[] = [
   },
   {
     field: "hostLauncherPlanSha256",
-    delegable: true,
     target: "host",
     label: "Host launcher update",
     planLabel: "Host launcher update plan",
@@ -189,9 +183,9 @@ export const RESTART_OPERATIONS: readonly ReviewedRestartOperation[] = [
     target: "container-daemon",
     label: "Dev boot-entry switch",
     planLabel: "Dev boot-entry switch plan",
-    // It replaces Dev's boot path and restarts all of Dev, so only the owner approves it:
-    // never automatic and, unlike the other plans, not delegable under full delegation.
-    // That makes owner review implicit, so an explicit requireOwnerApproval is redundant.
+    // It replaces Dev's boot path and restarts all of Dev: never automatic, so only the owner
+    // or the full maintenance grant approves it. Dispatch still checks every pin. Review is
+    // therefore implicit, so an explicit requireOwnerApproval is redundant.
     automatic: "never",
     refusesRedundantOwnerApproval: true,
     reviewMessage: "Review this exact Dev boot-entry switch before approval",
@@ -213,6 +207,11 @@ export const DEFAULT_SHARED_TARGET_MESSAGE =
 
 export function operationFor(field: RestartPlanField): ReviewedRestartOperation {
   return RESTART_OPERATIONS.find((operation) => operation.field === field)!;
+}
+
+/** Under the full maintenance grant every plan is delegable unless OWNER_ONLY_OPERATIONS names it. */
+export function delegablePlan(operation: ReviewedRestartOperation): boolean {
+  return delegableUnderGrant(`restart-plan:${operation.field}`);
 }
 
 /** New operations default to never automatic. */
@@ -251,7 +250,7 @@ export function automaticPermitted(
     return (
       policy === "allowed" ||
       (policy === "standing" && standing) ||
-      (delegatedMaintenance && operation.delegable === true)
+      (delegatedMaintenance && delegablePlan(operation))
     );
   });
 }
@@ -282,7 +281,7 @@ export function reviewedPlanCapabilities(
     const plan = advertisedPlan(operation);
     capabilities[operation.capability] = {
       available: Boolean(plan && operation.run(executor)),
-      ownerApprovalRequired: !(delegatedMaintenance && operation.delegable),
+      ownerApprovalRequired: !(delegatedMaintenance && delegablePlan(operation)),
       ...(plan ? { sha256: plan } : {}),
     };
   }

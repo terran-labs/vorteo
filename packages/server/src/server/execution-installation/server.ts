@@ -4,6 +4,7 @@ import { BrokerDeploymentRefused } from "./preview-broker-deployment-workflow.js
 import { coordinatorDispatchStatuses } from "./coordinator-bootstrap-dispatch-status.js";
 import { localInstallationOrigin, localInstallationEnvironments } from "./local-access.js";
 import {
+  CoordinatorFollowAgentRequestSchema,
   CoordinatorFollowDecisionSchema,
   CoordinatorFollowRequestSchema,
   CoordinatorSettingsDecisionSchema,
@@ -17,7 +18,12 @@ import {
   UpdatePolicyChangeSchema,
 } from "@getpaseo/protocol/installation-upgrades";
 import { createReleaseUpgradeRuntime } from "./release-upgrade-runtime.js";
-import { createCoordinatorSettings } from "./coordinator-settings.js";
+import { COORDINATOR_SETTINGS, createCoordinatorSettings } from "./coordinator-settings.js";
+import {
+  createDelegationEvidence,
+  delegableUnderGrant,
+  type DelegationGrant,
+} from "./delegated-admission.js";
 import {
   coordinatorRestartBlocker,
   type CoordinatorRestart,
@@ -428,9 +434,14 @@ function serverCoordinatorSettings(
   config: InstallationConfig,
   files: InstallationFiles | undefined,
   releaseRuntime: ReturnType<typeof optionalReleaseRuntime>,
-  input: { restartBlocker: () => string | null; logger: Logger },
+  input: {
+    restartBlocker: () => string | null;
+    delegationGrant: () => DelegationGrant | null;
+    logger: Logger;
+  },
 ) {
   return createCoordinatorSettings({
+    delegationGrant: input.delegationGrant,
     config,
     configFile: files?.configFile,
     startupSha256: files?.startupSha256,
@@ -572,6 +583,39 @@ export function createInstallationServer(
   );
   // Host release selection runs only through this queue, so it never starts unguarded.
   ensureSessionHostReleaseGuard(config);
+  // Binds automatic and delegated approvals to the installation credentials and, when the full
+  // maintenance grant is active, to its epoch and the owner credential.
+  const approvalAuthority = () =>
+    createHash("sha256")
+      .update(
+        JSON.stringify({
+          installation: config.public.installationId,
+          host: config.hostAgentTokenHash,
+          container: config.containerAgentTokenHash,
+          policy: "host-only-service-permissions-v2",
+          ...(maintenanceDelegationActivation(config.stateDir)
+            ? {
+                maintenanceApprovedAfter: maintenanceDelegationActivation(config.stateDir),
+                owner: config.ownerPasswordHash,
+              }
+            : {}),
+          // Absent when off, so existing grants keep their authority.
+          ...(readOwnerDelegation(config.stateDir).hostUpdateServiceRestart
+            ? { hostUpdateServiceRestart: true }
+            : {}),
+        }),
+      )
+      .digest("hex");
+  /** The full maintenance grant, read fresh. Enrolled installations never use it. */
+  const delegationGrant = (): DelegationGrant | null => {
+    try {
+      if (!daemonAutomation.legacyPolicyAvailable()) return null;
+    } catch {
+      return null;
+    }
+    const policyActivatedAt = maintenanceDelegationActivation(config.stateDir);
+    return policyActivatedAt ? { policyActivatedAt, authoritySha256: approvalAuthority() } : null;
+  };
   const restarts = new InstallationRestarts(
     standingRuntime.journal,
     restartExecutor,
@@ -588,28 +632,17 @@ export function createInstallationServer(
       supervisorRequestsAfter: () => daemonAutomation.activation("supervisor") ?? null,
       cancellationDelayMs: 30_000,
       hostUpdateServiceRestart: () => readOwnerDelegation(config.stateDir).hostUpdateServiceRestart,
+      // Beside the strict broker records, which older coordinators read; see DelegationEvidence.
+      brokerDelegationEvidence: {
+        deployment: createDelegationEvidence(
+          path.join(config.stateDir, "preview-broker-deployment", "delegation-evidence.json"),
+        ),
+        rebind: createDelegationEvidence(
+          path.join(config.stateDir, "preview-broker-rebind", "delegation-evidence.json"),
+        ),
+      },
       ...shape.restartPolicy,
-      authority: () =>
-        createHash("sha256")
-          .update(
-            JSON.stringify({
-              installation: config.public.installationId,
-              host: config.hostAgentTokenHash,
-              container: config.containerAgentTokenHash,
-              policy: "host-only-service-permissions-v2",
-              ...(maintenanceDelegationActivation(config.stateDir)
-                ? {
-                    maintenanceApprovedAfter: maintenanceDelegationActivation(config.stateDir),
-                    owner: config.ownerPasswordHash,
-                  }
-                : {}),
-              // Absent when off, so existing grants keep their authority.
-              ...(readOwnerDelegation(config.stateDir).hostUpdateServiceRestart
-                ? { hostUpdateServiceRestart: true }
-                : {}),
-            }),
-          )
-          .digest("hex"),
+      authority: approvalAuthority,
     },
     {
       fenced: startupFence !== undefined,
@@ -624,6 +657,7 @@ export function createInstallationServer(
     // The jobs these checks read are created below; they exist before any upgrade runs.
     conflict: () => restartBlocker("upgrade"),
     coordinatorFollowConflict: () => restartBlocker("follow"),
+    delegationGrant,
   });
   const requireReleaseRuntime = () => {
     if (!releaseRuntime) throw new RestartRequestError("Upgrades and snapshots are unavailable");
@@ -631,6 +665,7 @@ export function createInstallationServer(
   };
   const coordinatorSettings = serverCoordinatorSettings(config, files, releaseRuntime, {
     restartBlocker: () => restartBlocker("settings"),
+    delegationGrant,
     logger,
   });
   // One check for every coordinator restart, at request, approval and dispatch.
@@ -971,6 +1006,10 @@ export function createInstallationServer(
       containerAgentTokenHash: config.containerAgentTokenHash,
       ownerPasswordHash: config.ownerPasswordHash,
     }),
+    {
+      follow: () => releaseRuntime?.coordinatorFollow ?? null,
+      settings: coordinatorSettings,
+    },
   );
   function requireManagementHost(_req: Request, res: Response, next: NextFunction) {
     if (res.locals.updateRequester !== "host-agent" || !management.authority()) {
@@ -1192,6 +1231,13 @@ export function createInstallationServer(
       automaticSupported &&
       devReady,
     );
+    // Under the full grant an operation is delegated unless OWNER_ONLY_OPERATIONS names it.
+    // A coordinator settings change is delegated only when every key it may change is.
+    const ownerApprovalRequired = (operations: readonly string[]) =>
+      !(delegatedMaintenance && operations.every((operation) => delegableUnderGrant(operation)));
+    const settingsOperations = COORDINATOR_SETTINGS.map(({ key }) => `coordinator-settings:${key}`);
+    const coordinatorFollowAvailable = host && releaseRuntime !== null;
+    const coordinatorSettingsAvailable = host && coordinatorSettings.status().available;
     void (async () => {
       const brokerDeploymentAvailable = host && (await restarts.brokerDeploymentAvailable());
       const labSelfUpdateAvailable = host && (await labRuntime.blocker()) === null;
@@ -1245,13 +1291,26 @@ export function createInstallationServer(
                 (daemonAutomation.activation("coordinator") || delegatedMaintenance)
               ),
             },
+            // Optional: older coordinators omit them, so a missing field means unavailable.
+            coordinatorFollow: {
+              available: coordinatorFollowAvailable,
+              ownerApprovalRequired: ownerApprovalRequired(["coordinator-follow"]),
+            },
+            coordinatorSettings: {
+              available: coordinatorSettingsAvailable,
+              ownerApprovalRequired: ownerApprovalRequired(settingsOperations),
+            },
             previewBrokerDeployment: {
               available: brokerDeploymentAvailable,
-              ownerApprovalRequired: true,
+              ownerApprovalRequired: ownerApprovalRequired([
+                "broker-deployment:preview-broker-consumer-deployment",
+              ]),
             },
             previewBroker: {
               available: brokerAvailable,
-              ownerApprovalRequired: true,
+              ownerApprovalRequired: ownerApprovalRequired([
+                "broker-rebind:preview-broker-channel-rebind",
+              ]),
             },
             previewMonitor: {
               available: Boolean(
@@ -2918,6 +2977,42 @@ export function createInstallationServer(
       .then(() => requireReleaseRuntime().coordinatorFollow.request(request.next))
       .then((job) => res.status(201).json(job), next);
   });
+  // Host agents (Builds) request the same coordinator update. The owner decides it in
+  // Installation controls, or the full maintenance grant approves it after the cancellation window.
+  app.post(
+    "/api/installation/coordinator-follow",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res, next) => {
+      const request = CoordinatorFollowAgentRequestSchema.parse(req.body);
+      void refuseDuringLabUpdate()
+        .then(() =>
+          requireReleaseRuntime().coordinatorFollow.request(request.next, {
+            requestedBy: "host-agent",
+            requester: request.requester,
+          }),
+        )
+        .then((job) => {
+          void drainRestarts();
+          return res.status(201).json(job);
+        }, next);
+    },
+  );
+  app.get(
+    "/api/installation/coordinator-follow/:id",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res) => {
+      const job = requireReleaseRuntime().coordinatorFollow.job(
+        z.string().uuid().parse(req.params.id),
+      );
+      if (!job) {
+        res.sendStatus(404);
+        return;
+      }
+      res.json(job);
+    },
+  );
   app.post("/api/installation/owner/coordinator-follow/:id/decision", (req, res, next) => {
     const decision = CoordinatorFollowDecisionSchema.parse(req.body);
     void (decision.decision === "approve" ? refuseDuringLabUpdate() : Promise.resolve())

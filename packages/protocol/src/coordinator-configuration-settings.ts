@@ -28,12 +28,6 @@ export interface ReviewedConfigurationSettingDefinition {
   /** Whether an owner-reviewed runner renewal may carry the change. `"alone"` admits
    * it only as the renewal's single configuration change. */
   renewal: boolean | "alone";
-  /**
-   * Only the owner's own review admits the change, even under full maintenance delegation.
-   * For settings whose later operation the owner approves by digest alone, so the owner must
-   * see the plan itself once, in the coordinator review that installs it.
-   */
-  ownerReviewOnly?: boolean;
   /** COMPAT(bootstrapConfigurationChanges): the plan field that set this before
    * `configurationChanges`. Retain until 2027-04-23, the latest legacy field date.
    * Settings added after the registry have none and change only through
@@ -138,7 +132,6 @@ export const REVIEWED_CONFIGURATION_SETTINGS = {
     value: BootEntrySwitchConfigurationSchema,
     renewal: true,
     // The switch approval names only the plan digest; its entries are reviewed here.
-    ownerReviewOnly: true,
   },
   // Records that the coordinator launcher sets VORTEO_RELEASE_SEALS=enabled. The same
   // change lets the candidate launcher add (or, with null, remove) exactly that variable;
@@ -217,17 +210,6 @@ function legacyValue(
   definition: ReviewedConfigurationSettingDefinition,
 ): unknown {
   return definition.legacyField === undefined ? undefined : plan[definition.legacyField];
-}
-
-/** Whether a plan changes a setting that only the owner's own review may admit. */
-export function plansOwnerReviewOnlyChange(
-  plan: CoordinatorBootstrapPlan,
-  registry: ReviewedConfigurationRegistry = REVIEWED_CONFIGURATION_SETTINGS,
-): boolean {
-  return (plan.configurationChanges ?? []).some(
-    (change) =>
-      Object.hasOwn(registry, change.setting) && registry[change.setting]!.ownerReviewOnly === true,
-  );
 }
 
 /** Whether a plan changes any registered setting, valid or not. */

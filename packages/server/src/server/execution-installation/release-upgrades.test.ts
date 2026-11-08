@@ -918,4 +918,92 @@ test.each([
       expect(follow.status().job?.status).toBe("cancelled");
     },
   },
+  {
+    name: "leaves a Host-agent request pending for the owner without the full grant",
+    run: () => {
+      const fake = followPorts({ delegationGrant: () => null });
+      const follow = new CoordinatorFollow(createCoordinatorFollowJournal(directory), fake.ports);
+      follow.request("/releases/new", { requestedBy: "host-agent", requester: "Builds" });
+      fake.advanceClock(60_000);
+      follow.drain();
+      expect(follow.status().job).toMatchObject({ status: "pending", requester: "Builds" });
+      expect(follow.status().job?.delegatedApproval).toBeUndefined();
+      expect(fake.calls).toEqual([]);
+    },
+  },
+  {
+    name: "starts a Host-agent request under the full grant only after the cancellation window",
+    run: () => {
+      const grant = {
+        policyActivatedAt: "2026-11-01T00:00:00.000Z",
+        authoritySha256: "a".repeat(64),
+      };
+      const fake = followPorts({ delegationGrant: () => grant, cancellationDelayMs: 30_000 });
+      const follow = new CoordinatorFollow(createCoordinatorFollowJournal(directory), fake.ports);
+      follow.request("/releases/new", { requestedBy: "host-agent" });
+      follow.drain();
+      const held = follow.status().job;
+      expect(held).toMatchObject({
+        status: "pending",
+        delegatedApproval: { requestRevision: held?.revision },
+      });
+      fake.advanceClock(29_000);
+      follow.drain();
+      expect(fake.calls).toEqual([]);
+      fake.advanceClock(1_000);
+      follow.drain();
+      expect(fake.calls).toEqual(["swap /releases/old -> /releases/new running"]);
+    },
+  },
+  {
+    name: "cancels a delegated request when the grant or the Host release changes before dispatch",
+    run: () => {
+      for (const change of ["revoked", "rotated", "release"] as const) {
+        let grant: { policyActivatedAt: string; authoritySha256: string } | null = {
+          policyActivatedAt: "2026-11-01T00:00:00.000Z",
+          authoritySha256: "a".repeat(64),
+        };
+        let host = "/releases/new";
+        const fake = followPorts({ delegationGrant: () => grant, hostRelease: () => host });
+        rmSync(directory, { recursive: true, force: true });
+        directory = mkdtempSync(path.join(tmpdir(), "release-upgrades-"));
+        const follow = new CoordinatorFollow(createCoordinatorFollowJournal(directory), fake.ports);
+        follow.request("/releases/new", { requestedBy: "host-agent" });
+        follow.drain();
+        if (change === "revoked") grant = null;
+        else if (change === "rotated") grant = { ...grant!, authoritySha256: "b".repeat(64) };
+        else host = "/releases/newer";
+        fake.advanceClock(30_000);
+        follow.drain();
+        expect(follow.status().job?.status, change).toBe("cancelled");
+        expect(fake.calls, change).toEqual([]);
+      }
+    },
+  },
+  {
+    name: "rechecks the grant for a delegated approval recovered from the journal",
+    run: () => {
+      const grant = {
+        policyActivatedAt: "2026-11-01T00:00:00.000Z",
+        authoritySha256: "a".repeat(64),
+      };
+      const before = followPorts({ delegationGrant: () => grant });
+      const followJournal = createCoordinatorFollowJournal(directory);
+      const first = new CoordinatorFollow(followJournal, before.ports);
+      first.request("/releases/new", { requestedBy: "host-agent" });
+      first.drain();
+      // The coordinator stopped after recording the approval and before dispatching it.
+      followJournal.write([{ ...first.status().job!, status: "approved" }]);
+      const after = followPorts({
+        delegationGrant: () => ({ ...grant, authoritySha256: "b".repeat(64) }),
+      });
+      const recovered = new CoordinatorFollow(
+        createCoordinatorFollowJournal(directory),
+        after.ports,
+      );
+      recovered.drain();
+      expect(recovered.status().job?.status).toBe("cancelled");
+      expect(after.calls).toEqual([]);
+    },
+  },
 ])("coordinator follow $name", ({ run }) => run());
