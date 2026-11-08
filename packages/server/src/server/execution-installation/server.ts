@@ -176,6 +176,12 @@ import {
 import { ServicePrincipalStore } from "../authorization/service-principals.js";
 import { FactoryGate, factoryRestartClass } from "./factory-gate.js";
 import {
+  FACTORY_HOME_ROUTE,
+  FactoryHomeRequestSchema,
+  createFactoryHomeAuthority,
+  readDaemonFactoryList,
+} from "./factory-home.js";
+import {
   delegatedHandler,
   changeMaintenanceDelegation,
   maintenanceDelegationStatus,
@@ -1744,6 +1750,29 @@ export function createInstallationServer(
       settings: snapshot.settings,
       installationInstructions: kind === "host" ? installationHostInstructions(config) : "",
     });
+  });
+
+  // One environment per repository runs Factory; see factory-home.ts.
+  const factoryHome = createFactoryHomeAuthority({
+    environments: config.public.environments.map((environment) => environment.kind),
+    read: async (kind) => readDaemonFactoryList(await connectInstallationDaemon(config, kind)),
+  });
+  app.post(FACTORY_HOME_ROUTE, (req, res, next) => {
+    const token = extractHttpBearerToken(req.header("authorization"));
+    let kind: "host" | "container";
+    if (matchesToken(token, config.hostAgentTokenHash)) kind = "host";
+    else if (matchesContainerAgent(token)) kind = "container";
+    else {
+      res.sendStatus(401);
+      return;
+    }
+    const request = FactoryHomeRequestSchema.safeParse(req.body);
+    if (!request.success) {
+      res.sendStatus(400);
+      return;
+    }
+    res.setHeader("Cache-Control", "no-store");
+    factoryHome.decide(kind, request.data).then((answer) => res.json(answer), next);
   });
 
   // Agents may propose shared agent instructions. Request-only credentials never apply them.

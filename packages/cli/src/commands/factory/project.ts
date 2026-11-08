@@ -71,6 +71,11 @@ const stateSchema: OutputSchema<ProjectFactoryState> = {
       `Factory: ${state.state}${state.reason ? ` (${state.reason})` : ""}`,
       `Repository: ${state.repository ?? "none"}`,
       ...(state.installation ? [`Installation: ${state.installation}`] : []),
+      ...(state.home
+        ? [
+            `Factory home: ${state.home.environment === "host" ? "Host" : "Dev"}${state.home.here ? " (this environment)" : `, project ${state.home.projectId ?? "unknown"}; roles here stand down`}`,
+          ]
+        : []),
       ...(state.assignment ? [`Role assignment: ${describeAssignment(state.assignment)}`] : []),
       ...(state.workers.plannerProfileId !== undefined
         ? [`Planner profile: ${state.workers.plannerProfileId ?? "default"}`]
