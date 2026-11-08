@@ -18,6 +18,9 @@ const PINNED_GAPS = [
   "/api/installation/owner/name",
   "/api/installation/owner/settings",
   "/api/installation/owner/snapshots",
+  "/api/installation/owner/source-upgrades",
+  "/api/installation/owner/source-upgrades/:id/decision",
+  "/api/installation/owner/source-upgrades/rollback",
 ];
 
 // Routes the grant never approves, each on OWNER_ONLY_OPERATIONS.

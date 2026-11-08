@@ -108,6 +108,14 @@ export const OWNER_ROUTE_FRONT_DOORS: Readonly<Record<string, FrontDoor>> = {
     gap: "Change the installation type; its request must show the disruption in Installation controls.",
   },
   "/api/installation/owner/live-dev/change": { gap: "Turn live dev on or off." },
+  // Stable source upgrades reached main on 2026-11-07, before this rule, with owner-only approval.
+  "/api/installation/owner/source-upgrades": { gap: "Request a Stable source upgrade." },
+  "/api/installation/owner/source-upgrades/rollback": {
+    gap: "Roll back a Stable source upgrade.",
+  },
+  "/api/installation/owner/source-upgrades/:id/decision": {
+    gap: "Approve a Stable source upgrade under the grant.",
+  },
   "/api/installation/owner/settings": {
     // appendSystemPrompt in the same body is an instruction change and stays excluded.
     gap: "Ordinary installation settings (autoArchiveAfterMerge, terminal profiles, metadata generation and similar fields).",
