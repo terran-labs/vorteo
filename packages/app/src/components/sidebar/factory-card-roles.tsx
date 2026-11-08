@@ -283,3 +283,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   chipTextMuted: { color: theme.colors.foregroundMuted },
 }));
+
+/** Shared with the All Factories card, whose per-Factory chips take the same shape. */
+export { styles as factoryChipStyles };

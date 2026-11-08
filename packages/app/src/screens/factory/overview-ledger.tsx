@@ -9,8 +9,14 @@ import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/s
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { hoverStyle } from "@/styles/hover";
 import {
+  DrainBanners,
+  FactoriesStrip,
+  NeedsYouPanel,
+  ScopeControls,
+  StopSwitch,
+} from "./overview-command";
+import {
   FactoryControlNotes,
-  FactoryControlStrip,
   FactoryModelsAndRoles,
   FactoryRunControls,
 } from "./overview-controls";
@@ -24,7 +30,7 @@ import {
   TrackLegend,
   type CardContext,
 } from "./overview-kit";
-import type { FactoryLane } from "./overview-model";
+import { factoryIssueKey, type FactoryLane } from "./overview-model";
 import {
   AccountPicksPanel,
   BudgetPanel,
@@ -50,14 +56,30 @@ const LEDGER_KPIS: FactoryKpi[] = ["tokens", "spend", "costPerPr", "passRate", "
 export function LedgerOverview({ data }: { data: FactoryOverviewData }) {
   const compact = useIsCompactFormFactor();
   const [filter, setFilter] = useState<LaneFilter>("all");
+  const [project, setProject] = useState<string | null>(null);
+  // The project filter narrows the lanes; reports keep every Factory in scope.
+  const view = useMemo(
+    () =>
+      project
+        ? {
+            ...data,
+            lanes: data.lanes.map((group) => ({
+              ...group,
+              issues: group.issues.filter((issue) => issue.origin?.key === project),
+            })),
+          }
+        : data,
+    [data, project],
+  );
+  const rail = { data: view, filter, onFilter: setFilter, project, onProject: setProject };
   return (
-    <View style={compact ? styles.stack : styles.columns} testID="factory-overview-ledger">
-      {compact ? (
-        <CompactRail data={data} filter={filter} onFilter={setFilter} />
-      ) : (
-        <Rail data={data} filter={filter} onFilter={setFilter} />
-      )}
-      <Main data={data} filter={filter} />
+    <View style={styles.stack} testID="factory-overview-ledger">
+      {data.scope === "all" ? <NeedsYouPanel data={data} expanded /> : null}
+      <DrainBanners data={data} />
+      <View style={compact ? styles.stack : styles.columns}>
+        {compact ? <CompactRail {...rail} /> : <Rail {...rail} />}
+        <Main data={view} filter={filter} />
+      </View>
     </View>
   );
 }
@@ -66,29 +88,43 @@ interface RailProps {
   data: FactoryOverviewData;
   filter: LaneFilter;
   onFilter: (filter: LaneFilter) => void;
+  project: string | null;
+  onProject: (key: string | null) => void;
 }
 
-function Rail({ data, filter, onFilter }: RailProps) {
+function Rail({ data, filter, onFilter, project, onProject }: RailProps) {
   const { t } = useTranslation();
-  const target = {
+  const focus = data.focus;
+  const target = focus && {
     serverId: data.serverId,
-    projectId: data.projectId,
-    state: data.state,
-    controls: data.controls,
+    projectId: focus.projectId,
+    state: focus.state,
+    controls: focus.controls,
   };
+  const count = data.lanes.reduce((total, group) => total + group.issues.length, 0);
   return (
     <View style={styles.rail} testID="factory-ledger-rail">
-      <View style={styles.railBlock}>
-        <FactoryRunControls {...target} />
-        <FactoryControlNotes {...target} />
-      </View>
-      <FactoryModelsAndRoles {...target} />
+      {target ? (
+        <>
+          <View style={styles.railBlock}>
+            <FactoryRunControls {...target} />
+            <FactoryControlNotes {...target} />
+            <StopSwitch data={data} />
+          </View>
+          <FactoryModelsAndRoles {...target} />
+        </>
+      ) : (
+        <>
+          <ScopeControls data={data} />
+          <FactoriesStrip data={data} layout="rail" selected={project} onSelect={onProject} />
+        </>
+      )}
       {data.queue.data ? (
         <View style={styles.filterCard} accessibilityRole="tablist">
           <FilterRow
             value="all"
             label={t("projectFactory.board.allWork")}
-            count={data.queue.data.issues.length}
+            count={count}
             selected={filter === "all"}
             onFilter={onFilter}
           />
@@ -104,7 +140,7 @@ function Rail({ data, filter, onFilter }: RailProps) {
           ))}
         </View>
       ) : null}
-      <RoutingPanel data={data} />
+      {focus ? <RoutingPanel data={data} /> : null}
     </View>
   );
 }
@@ -141,29 +177,27 @@ function FilterRow({
   );
 }
 
-function CompactRail({ data, filter, onFilter }: RailProps) {
+function CompactRail({ data, filter, onFilter, project, onProject }: RailProps) {
   const { t } = useTranslation();
   const options = useMemo<SegmentedControlOption<LaneFilter>[]>(
     () => [
       {
         value: "all",
-        label: `${t("projectFactory.board.allWork")} ${data.queue.data?.issues.length ?? 0}`,
+        label: `${t("projectFactory.board.allWork")} ${data.lanes.reduce((total, group) => total + group.issues.length, 0)}`,
       },
       ...data.lanes.map((group) => ({
         value: group.lane,
         label: `${t(`projectFactory.stages.${group.lane}`)} ${group.issues.length}`,
       })),
     ],
-    [data.lanes, data.queue.data?.issues.length, t],
+    [data.lanes, t],
   );
   return (
     <View style={styles.compactRail}>
-      <FactoryControlStrip
-        serverId={data.serverId}
-        projectId={data.projectId}
-        state={data.state}
-        controls={data.controls}
-      />
+      <ScopeControls data={data} />
+      {data.scope === "all" ? (
+        <FactoriesStrip data={data} layout="rail" selected={project} onSelect={onProject} />
+      ) : null}
       {data.queue.data ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
           <SegmentedControl options={options} value={filter} onValueChange={onFilter} size="sm" />
@@ -199,6 +233,7 @@ function Main({ data, filter }: { data: FactoryOverviewData; filter: LaneFilter 
   );
   return (
     <View style={styles.main}>
+      {data.scope === "project" ? <NeedsYouPanel data={data} /> : null}
       <KpiStrip data={data} kpis={LEDGER_KPIS} />
       {data.queue.data || data.queue.error || data.queue.loading ? (
         <SettingsSection title={t("projectFactory.board.workInProgress")} trailing={meta} flush>
@@ -208,7 +243,7 @@ function Main({ data, filter }: { data: FactoryOverviewData; filter: LaneFilter 
               <LaneHeader lane={group.lane} count={group.issues.length} />
               <View style={styles.cards}>
                 {group.issues.map((issue) => (
-                  <View key={issue.number} style={styles.cardCell}>
+                  <View key={factoryIssueKey(issue)} style={styles.cardCell}>
                     <IssueCard issue={issue} lane={group.lane} context={context} />
                   </View>
                 ))}

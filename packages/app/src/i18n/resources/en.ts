@@ -28,7 +28,6 @@ export const en = {
     roles: "Roles",
     openThread: "Open thread",
     saving: "Saving…",
-    draining: "Draining: {{reason}}",
     pausedAt: "Paused {{time}}",
     pullRequest: "PR #{{number}}",
     states: {
@@ -112,6 +111,90 @@ export const en = {
       sample: "Sample factory",
       sampleNotice:
         "Showing a sample queue so the designs can be compared. Controls still change this project's real Factory.",
+      sampleNoticeAll:
+        "Showing three sample Factories so the designs can be compared. Stop and resume stay off while sample data shows.",
+    },
+    scope: {
+      all: "All Factories",
+      allTitle: "All Factories",
+      factories: "Factories",
+      open: "Open",
+      zoomIn: "Open the {{project}} Factory",
+      pause: "Pause",
+      resume: "Resume",
+      summary_one: "{{count}} Factory · {{running}} running · {{paused}} not running",
+      summary_other: "{{count}} Factories · {{running}} running · {{paused}} not running",
+      states: {
+        on: "On",
+        paused: "Paused",
+        stopped: "Stopped",
+        held: "Held for update",
+        off: "Off",
+        unavailable: "Unavailable",
+      },
+    },
+    stopAll: {
+      stop: "Stop all Factories",
+      resume: "Resume all",
+      confirm: "Stop all",
+      confirmTitle: "Stop all Factories?",
+      confirmMessage_one:
+        "Every Factory on this host is paused. No new Factory work starts until you resume. Running workers finish their current task and may still push.",
+      confirmMessage_other:
+        "Every Factory on {{count}} hosts is paused. No new Factory work starts until you resume. Running workers finish their current task and may still push.",
+      eachFactory: "Each Factory",
+      inAll: "Stop or resume all Factories in All Factories",
+      nowHeld:
+        "Not resumed: another process now holds this Factory, for example Builds before a restart or update. Its reason: {{reason}}.",
+      stoppedOn: "Stopped on {{hosts}}.",
+      resumedOn: "Resumed on {{hosts}}.",
+      unreadable: "Left alone because they could not be re-checked: {{hosts}}.",
+      skipped: "Skipped because another process now holds them or they changed: {{hosts}}.",
+      failed: "Failed on {{hosts}}.",
+      nothingToStop:
+        "Nothing was stopped: no host still has Factories running that are not held by another process.",
+      nothingToResume:
+        "Nothing was resumed: another process now holds these hosts, or the stop already ended.",
+      resumeTitle: "Resume all Factories?",
+      resumeMessage_one:
+        "Releases Stop all on this host, and its Factories start taking new work again. Factories held for a restart or update stay held.",
+      resumeMessage_other:
+        "Releases Stop all on {{count}} hosts, and their Factories start taking new work again. Factories held for a restart or update stay held.",
+      resumeProjectTitle: "Resume this Factory?",
+      resumeProjectMessage:
+        "This Factory leaves the stop and starts taking new work again. Other stopped Factories stay stopped.",
+      bannerTitle_one: "Stopped: {{count}} Factory",
+      bannerTitle_other: "Stopped: {{count}} Factories",
+      bannerDetail:
+        "{{reason}} · {{age}}. No new Factory work starts. Running workers finish their current task and may still push.",
+      heldTitle_one: "Held for a restart or update: {{count}} Factory",
+      heldTitle_other: "Held for a restart or update: {{count}} Factories",
+      heldDetail:
+        "{{reason}} · {{age}}. Held by another process, for example Builds before a restart or update, which resumes them when it finishes.",
+    },
+    needsYou: {
+      title: "Needs you",
+      none: "Nothing needs you",
+      count: "Needs you · {{count}}",
+      showAll: "Show all {{count}}",
+      showFewer: "Show fewer",
+      kinds: {
+        question: "Question: {{subject}}",
+        proposal: "Instructions proposal for {{subject}}",
+        drain: "Factories stopped: {{subject}}",
+        held: "Held for a restart or update: {{subject}}",
+        humanReview: "Review {{subject}}",
+        failingChecks: "Checks failing on {{subject}}",
+        claim: "Claimed by another installation: {{subject}}",
+        awaitingApproval: "Waiting for approval: {{subject}}",
+        blocked: "Blocked: {{subject}}",
+      },
+      actions: {
+        thread: "Answer",
+        issue: "Open",
+        instructions: "Review",
+        stop: "See above",
+      },
     },
     controls: {
       modelsAndRoles: "Models & roles",
@@ -167,7 +250,7 @@ export const en = {
         queueAge: "Oldest queued",
         queueAgeDetail: "{{count}} waiting",
       },
-      heroDetail: "{{needsYou}} need you · {{blocked}} blocked · {{queued}} queued",
+      heroDetail: "Needs you · {{needsYou}} · {{blocked}} blocked · {{queued}} queued",
       pipeline: "Pipeline",
       inRepair: "{{count}} in repair",
       velocity: "Merged per day",
@@ -1448,7 +1531,8 @@ export const en = {
       states: {
         on: "On",
         paused: "Paused",
-        draining: "Draining",
+        stopped: "Stopped",
+        held: "Held for update",
         off: "Off",
         unavailable: "Unavailable",
       },
@@ -1488,6 +1572,12 @@ export const en = {
       pullRequestChecks: "PR #{{number}} · {{checks}}",
       pullRequest: "PR #{{number}}",
       noAgents: "No agents yet. Opens the issue.",
+      allTitle: "All Factories",
+      stateSummary: "{{project}}: {{state}}",
+      openProject: "Open {{project}} Factory overview",
+      chipCounts: "{{state}}. {{inFlight}} in flight. Needs you · {{needsYou}}",
+      chipCountsShort: "{{inFlight}} in flight · Needs you · {{needsYou}}",
+      needsYouHeader: "Needs you · {{count}}",
     },
     statusGroupAccessibility: "{{label}} group",
     statusBucket: {

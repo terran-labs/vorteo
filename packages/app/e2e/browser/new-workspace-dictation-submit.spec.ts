@@ -244,7 +244,7 @@ test("dictation shortcut leaves retained fullscreen and exposes recording contro
     await resizeComposerViewport(page, "portrait");
     await enterComposerFullscreen(page);
     await resizeComposerViewport(page, "landscape");
-    await composerLocator(page).press("Control+Shift+d");
+    await composerLocator(page).press("ControlOrMeta+Shift+d");
     await expect(page.getByRole("button", { name: "Exit fullscreen", exact: true })).toHaveCount(0);
     await expect(
       page.getByText("Realtime voice is disabled in this test.", { exact: true }),
