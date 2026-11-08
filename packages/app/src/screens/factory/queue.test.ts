@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { loadFactoryQueue, factoryAgentStatusKey, type FactoryInvoke } from "./queue";
 import { ProjectFactoryStateSchema } from "@/components/sidebar/factory-state";
 import { FACTORY_LANES, factoryLanes, factoryTrack } from "./overview-model";
-import { aggregateStageCounts, collectNeedsYou } from "./all-factories-model";
+import { activeDrains, aggregateStageCounts, collectNeedsYou } from "./all-factories-model";
+import { OWNER_STOP_REASON } from "./factory-reads";
 
 const emptyQueue = { fetchedAt: "2026-11-04T12:00:00Z", error: null, issues: [] };
 const oldState = {
@@ -200,4 +201,43 @@ it("orders what needs the owner across Factories: questions and proposals before
     "blocked:1",
   ]);
   expect(aggregateStageCounts([entry.issues, null]).review).toBe(3);
+});
+
+it("shows one stop per host and reason, however many per-project drain ids it holds", () => {
+  const entry = (projectId: string, serverId: string, drain: object | null) => ({
+    key: `${serverId}:${projectId}`,
+    serverId,
+    projectId,
+    name: projectId,
+    hostLabel: null,
+    state: null,
+    status: "paused" as const,
+    drain: drain as { id: string; reason: string; pausedAt: string } | null,
+    issues: [],
+  });
+  const ours = (id: string, pausedAt: string) => ({ id, reason: OWNER_STOP_REASON, pausedAt });
+  const entries = [
+    entry("a", "host", ours("drain-a", "2026-11-07T10:00:02Z")),
+    entry("b", "host", ours("drain-b", "2026-11-07T10:00:01Z")),
+    entry("c", "other", {
+      id: "drain-c",
+      reason: "drain before restart",
+      pausedAt: "2026-11-07T09:00:00Z",
+    }),
+    entry("d", "other", null),
+  ];
+  expect(activeDrains(entries)).toEqual([
+    expect.objectContaining({
+      serverId: "host",
+      projects: 2,
+      owner: true,
+      pausedAt: "2026-11-07T10:00:01Z",
+    }),
+    expect.objectContaining({ serverId: "other", projects: 1, owner: false }),
+  ]);
+  const stops = collectNeedsYou({ entries, questions: [] }).filter((item) => item.kind === "drain");
+  expect(stops.map((item) => [item.serverId, item.action.kind])).toEqual([
+    ["other", "stop"],
+    ["host", "stop"],
+  ]);
 });

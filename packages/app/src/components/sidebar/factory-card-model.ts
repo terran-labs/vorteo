@@ -1,3 +1,4 @@
+import { isOwnerStop } from "@/screens/factory/factory-reads";
 import type { FactoryQueue } from "@/screens/factory/queue";
 import type {
   SidebarWorkspaceEntry,
@@ -114,13 +115,16 @@ export function factoryShortName(title: string): string {
 
 export type FactoryStatePill =
   | { label: "on"; variant: "success" }
-  | { label: "paused" | "draining"; variant: "warning" }
+  | { label: "paused" | "stopped" | "held"; variant: "warning" }
   | { label: "off" | "unavailable"; variant: "muted" };
 
 export function factoryStatePill(
   state: Pick<ProjectFactoryState, "state" | "drain">,
 ): FactoryStatePill {
-  if (state.drain) return { label: "draining", variant: "warning" };
+  // Stop all Factories reads "Stopped"; any other drain is held for a restart or update.
+  if (state.drain) {
+    return { label: isOwnerStop(state.drain) ? "stopped" : "held", variant: "warning" };
+  }
   if (state.state === "on") return { label: "on", variant: "success" };
   if (state.state === "paused") return { label: "paused", variant: "warning" };
   return { label: state.state, variant: "muted" };

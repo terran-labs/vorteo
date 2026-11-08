@@ -12,31 +12,25 @@ import { useInstalledPlugins } from "@/plugins/registry";
 import { useHosts } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { confirmDialog } from "@/utils/confirm-dialog";
-import { ProjectFactoryListSchema } from "../../../../../plugins/factory/shared/project";
+import {
+  ProjectFactoryListSchema,
+  type ProjectFactoryList,
+} from "../../../../../plugins/factory/shared/project";
+import { isListedFactory } from "@/components/sidebar/factory-global-model";
+import {
+  boundedFactoryRead,
+  factoryListQueryKey,
+  loadFactoryList,
+  OWNER_STOP_REASON,
+} from "./factory-reads";
 import {
   factoryQuestions,
   factoryScopeKey,
   type FactoryQuestion,
   type FactoryScopeEntry,
+  type FactoryStop,
 } from "./all-factories-model";
 import { loadFactoryQueue, type FactoryInvoke, type FactoryQueue } from "./queue";
-
-type FactoryList = ReturnType<typeof ProjectFactoryListSchema.parse>;
-
-/** At most this many Factory requests run at once, however many projects the installation has. */
-const MAX_CONCURRENT = 4;
-let running = 0;
-const waiting: (() => void)[] = [];
-async function bounded<T>(task: () => Promise<T>): Promise<T> {
-  if (running >= MAX_CONCURRENT) await new Promise<void>((resolve) => waiting.push(resolve));
-  running += 1;
-  try {
-    return await task();
-  } finally {
-    running -= 1;
-    waiting.shift()?.();
-  }
-}
 
 const POLL_MS = 30_000;
 
@@ -63,7 +57,7 @@ export function useFactoryHosts(): FactoryHost[] {
   );
 }
 
-function combineLists(results: { data?: FactoryList }[]) {
+function combineLists(results: { data?: ProjectFactoryList }[]) {
   return results.map((result) => result.data ?? null);
 }
 function combineStates(results: { data?: ProjectFactoryState }[]) {
@@ -88,14 +82,11 @@ export function useAllFactories(active: boolean): {
   const lists = useFetchQueries(
     hosts.map((host) => ({
       dataShape: "value" as const,
-      queryKey: ["factoryList", host.serverId],
+      queryKey: factoryListQueryKey(host.serverId),
       staleTimeMs: POLL_MS,
       enabled: active,
       refetchInterval: active ? POLL_MS : false,
-      queryFn: () =>
-        bounded(async () =>
-          ProjectFactoryListSchema.parse(await host.invoke("factory.project.list", {})),
-        ),
+      queryFn: () => boundedFactoryRead(() => loadFactoryList(host.invoke)),
     })),
     combineLists,
   );
@@ -106,7 +97,12 @@ export function useAllFactories(active: boolean): {
       ),
     [hosts, lists],
   );
-  const live = useMemo(() => projects.filter(({ project }) => project.state !== "off"), [projects]);
+  const shown = useMemo(
+    () => projects.filter(({ project }) => project.state !== "off" || project.drain !== null),
+    [projects],
+  );
+  // Unavailable projects render from their list entry; only running or paused ones are read.
+  const live = useMemo(() => shown.filter(({ project }) => isListedFactory(project)), [shown]);
   const states = useFetchQueries(
     live.map(({ host, project }) => ({
       dataShape: "value" as const,
@@ -115,7 +111,7 @@ export function useAllFactories(active: boolean): {
       enabled: active,
       refetchInterval: active ? POLL_MS : false,
       queryFn: () =>
-        bounded(async () =>
+        boundedFactoryRead(async () =>
           ProjectFactoryStateSchema.parse(
             await host.invoke("factory.project.get", { projectId: project.projectId }),
           ),
@@ -129,16 +125,21 @@ export function useAllFactories(active: boolean): {
       queryKey: ["factoryQueue", host.serverId, project.projectId],
       staleTimeMs: POLL_MS,
       enabled: active,
-      refetchInterval: active ? POLL_MS : false,
-      queryFn: () => bounded(() => loadFactoryQueue(host.invoke, project.projectId)),
+      // A daemon without the queue answers null; never poll it again.
+      refetchInterval: (query: { state: { data: unknown } }) =>
+        active && query.state.data !== null ? POLL_MS : false,
+      queryFn: () => boundedFactoryRead(() => loadFactoryQueue(host.invoke, project.projectId)),
     })),
     combineQueues,
   );
   const names = useProjectNames();
   const entries = useMemo(() => {
-    const multiHost = new Set(live.map(({ host }) => host.serverId)).size > 1;
-    return live.map(({ host, project }, index): FactoryScopeEntry => {
-      const state = states[index] ?? null;
+    const multiHost = new Set(shown.map(({ host }) => host.serverId)).size > 1;
+    const read = new Map(live.map((item, index) => [item, index]));
+    return shown.map((item): FactoryScopeEntry => {
+      const { host, project } = item;
+      const index = read.get(item);
+      const state = index === undefined ? null : (states[index] ?? null);
       return {
         key: factoryScopeKey(host.serverId, project.projectId),
         serverId: host.serverId,
@@ -148,10 +149,10 @@ export function useAllFactories(active: boolean): {
         state,
         status: state?.state ?? project.state,
         drain: project.drain ?? state?.drain ?? null,
-        issues: queues[index]?.queue?.issues ?? null,
+        issues: index === undefined ? null : (queues[index]?.queue?.issues ?? null),
       };
     });
-  }, [live, states, queues, names]);
+  }, [shown, live, states, queues, names]);
   const updatedAt = Math.max(0, ...queues.map((entry) => entry.at));
   const loading = hosts.length > 0 && lists.some((list) => list === null);
   return { entries, loading, updatedAt, hosts };
@@ -197,21 +198,53 @@ export function useFactoryQuestions(entries: readonly FactoryScopeEntry[]): Fact
 }
 
 export interface StopAllControls {
-  /** Confirms, then pauses every Factory on these hosts. */
+  /** What the one global control does now: stop running hosts, resume our stop, or nothing. */
+  mode: "stop" | "resume" | "none";
+  /** Confirms, then pauses every Factory on the hosts that are not stopped yet. */
   stop: () => void;
-  /** Releases exactly what pause_all held. */
-  resume: (serverId?: string) => void;
+  /**
+   * Confirms, then releases our stop on each host held only by it. resume_all releases every
+   * drain on a host, so a host that someone else, such as Builds, also holds is left alone.
+   */
+  resumeAll: () => void;
+  /** One project's own pause or resume, as in the single-project view. */
+  setProject: (entry: FactoryScopeEntry, method: "pause" | "resume") => void;
   pending: boolean;
+  /** The project key whose pause or resume is in flight. */
+  projectPending: string | null;
+  projectErrors: Readonly<Record<string, string>>;
   error: string | null;
+  /** Some shown host runs the Factory plugin. */
   available: boolean;
 }
 
-/** The installation-wide stop switch: factory.project.pause_all and resume_all per host. */
-export function useStopAll(hosts: readonly FactoryHost[], hostCount: number): StopAllControls {
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** The installation-wide stop control over factory.project.pause_all and resume_all, per host. */
+export function useStopAll(
+  hosts: readonly FactoryHost[],
+  stops: readonly FactoryStop[],
+): StopAllControls {
   const { t } = useTranslation();
   const client = useQueryClient();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [projectPending, setProjectPending] = useState<string | null>(null);
+  const [projectErrors, setProjectErrors] = useState<Record<string, string>>({});
+  const stopTargets = useMemo(
+    () => hosts.filter((host) => !stops.some((stop) => stop.serverId === host.serverId)),
+    [hosts, stops],
+  );
+  const resumeTargets = useMemo(
+    () =>
+      hosts.filter((host) => {
+        const own = stops.filter((stop) => stop.serverId === host.serverId);
+        return own.length > 0 && own.every((stop) => stop.owner);
+      }),
+    [hosts, stops],
+  );
   const run = useCallback(
     async (targets: readonly FactoryHost[], method: string, input: object) => {
       setPending(true);
@@ -220,14 +253,11 @@ export function useStopAll(hosts: readonly FactoryHost[], hostCount: number): St
         const results = await Promise.allSettled(
           targets.map(async (host) => {
             const list = ProjectFactoryListSchema.parse(await host.invoke(method, input));
-            client.setQueryData(["factoryList", host.serverId], list);
+            client.setQueryData(factoryListQueryKey(host.serverId), list);
           }),
         );
         const failed = results.find((result) => result.status === "rejected");
-        if (failed) {
-          const reason = (failed as PromiseRejectedResult).reason;
-          setError(reason instanceof Error ? reason.message : String(reason));
-        }
+        if (failed) setError(message((failed as PromiseRejectedResult).reason));
         await client.invalidateQueries({ queryKey: ["projectFactory"] });
       } finally {
         setPending(false);
@@ -239,22 +269,59 @@ export function useStopAll(hosts: readonly FactoryHost[], hostCount: number): St
     void (async () => {
       const confirmed = await confirmDialog({
         title: t("projectFactory.stopAll.confirmTitle"),
-        message: t("projectFactory.stopAll.confirmMessage", { count: hostCount }),
+        message: t("projectFactory.stopAll.confirmMessage", { count: stopTargets.length }),
         confirmLabel: t("projectFactory.stopAll.confirm"),
         destructive: true,
       });
       if (!confirmed) return;
-      await run(hosts, "factory.project.pause_all", {
-        reason: t("projectFactory.stopAll.defaultReason"),
-      });
+      await run(stopTargets, "factory.project.pause_all", { reason: OWNER_STOP_REASON });
     })();
-  }, [hostCount, hosts, run, t]);
-  const resume = useCallback(
-    (serverId?: string) => {
-      const targets = serverId ? hosts.filter((host) => host.serverId === serverId) : hosts;
-      void run(targets, "factory.project.resume_all", {});
+  }, [stopTargets, run, t]);
+  const resumeAll = useCallback(() => {
+    void (async () => {
+      const confirmed = await confirmDialog({
+        title: t("projectFactory.stopAll.resumeTitle"),
+        message: t("projectFactory.stopAll.resumeMessage", { count: resumeTargets.length }),
+        confirmLabel: t("projectFactory.stopAll.resume"),
+      });
+      if (!confirmed) return;
+      await run(resumeTargets, "factory.project.resume_all", {});
+    })();
+  }, [resumeTargets, run, t]);
+  const setProject = useCallback(
+    (entry: FactoryScopeEntry, method: "pause" | "resume") => {
+      const host = hosts.find((candidate) => candidate.serverId === entry.serverId);
+      if (!host) return;
+      setProjectPending(entry.key);
+      setProjectErrors(({ [entry.key]: _cleared, ...rest }) => rest);
+      void (async () => {
+        try {
+          const next = ProjectFactoryStateSchema.parse(
+            await host.invoke(`factory.project.${method}`, { projectId: entry.projectId }),
+          );
+          client.setQueryData(["projectFactory", entry.serverId, entry.projectId], next);
+          await client.invalidateQueries({ queryKey: factoryListQueryKey(entry.serverId) });
+        } catch (failure) {
+          setProjectErrors((current) => ({ ...current, [entry.key]: message(failure) }));
+        } finally {
+          setProjectPending(null);
+        }
+      })();
     },
-    [hosts, run],
+    [client, hosts],
   );
-  return { stop, resume, pending, error, available: hosts.length > 0 };
+  let mode: StopAllControls["mode"] = "none";
+  if (resumeTargets.length) mode = "resume";
+  else if (stopTargets.length) mode = "stop";
+  return {
+    mode,
+    stop,
+    resumeAll,
+    setProject,
+    pending,
+    projectPending,
+    projectErrors,
+    error,
+    available: hosts.length > 0,
+  };
 }

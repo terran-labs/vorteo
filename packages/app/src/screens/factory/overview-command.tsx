@@ -1,8 +1,10 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { router } from "expo-router";
 import {
+  ChevronDown,
   ChevronLeft,
+  ChevronRight,
   CircleAlert,
   CircleX,
   FilePen,
@@ -28,10 +30,12 @@ import { hoverStyle } from "@/styles/hover";
 import type { Theme } from "@/styles/theme";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { openExternalUrl } from "@/utils/open-external-url";
+import { isOwnerStop } from "./factory-reads";
 import {
   aggregateStageCounts,
   needsYouByFactory,
   type FactoryScopeEntry,
+  type FactoryStop,
   type NeedsYouItem,
   type NeedsYouKind,
 } from "./all-factories-model";
@@ -39,6 +43,7 @@ import { FactoryControlStrip } from "./overview-controls";
 import type { FactoryOverviewData } from "./overview-data";
 import { SampleTag, StageRing } from "./overview-kit";
 import { FACTORY_LANES } from "./overview-model";
+import { useFactoryOverviewStore } from "./overview-store";
 import { allFactoriesOverviewRoute } from "./routes";
 
 // ---------------------------------------------------------------------------------------------
@@ -52,7 +57,6 @@ const accentIcon = (theme: Theme) => ({ color: theme.colors.statusDotRunning });
 const KIND_ICONS: Record<NeedsYouKind, LucideIcon> = {
   question: MessageCircleQuestionMark,
   proposal: FilePen,
-  instructionsReview: FilePen,
   drain: OctagonPause,
   humanReview: Hand,
   failingChecks: CircleX,
@@ -106,49 +110,40 @@ export function ScopeBack({ serverId }: { serverId: string }) {
 // ---------------------------------------------------------------------------------------------
 // Stop switch and drain banner
 
-/** Stop or resume every Factory on the shown hosts; distinct from one project's Pause. */
+/**
+ * The one global stop control, apart from a project's Pause: Resume all while our stop holds a
+ * host that nobody else holds, otherwise Stop all Factories while any host runs. Both confirm.
+ */
 export function StopSwitch({ data }: { data: FactoryOverviewData }) {
   const { t } = useTranslation();
   const { stopAll, drains } = data;
-  const resumeAll = useCallback(() => stopAll.resume(), [stopAll]);
   if (!stopAll.available) return null;
-  return drains.length ? (
-    <Button
-      variant="outline"
-      leftIcon={Play}
-      onPress={resumeAll}
-      disabled={stopAll.pending || data.sample}
-      testID="factory-resume-all"
-    >
-      {t("projectFactory.stopAll.resume")}
-    </Button>
-  ) : (
-    <Button
-      variant="outline"
-      leftIcon={OctagonPause}
-      onPress={stopAll.stop}
-      disabled={stopAll.pending || data.sample}
-      testID="factory-stop-all"
-    >
-      {t("projectFactory.stopAll.stop")}
-    </Button>
-  );
+  if (stopAll.mode !== "none") {
+    const resume = stopAll.mode === "resume";
+    return (
+      <Button
+        variant="outline"
+        leftIcon={resume ? Play : OctagonPause}
+        onPress={resume ? stopAll.resumeAll : stopAll.stop}
+        disabled={stopAll.pending || data.sample}
+        testID={resume ? "factory-resume-all" : "factory-stop-all"}
+      >
+        {t(resume ? "projectFactory.stopAll.resume" : "projectFactory.stopAll.stop")}
+      </Button>
+    );
+  }
+  // A single Factory's state pill already says it is held.
+  if (data.focus || drains.length === 0) return null;
+  return <StatusBadge variant="warning" label={t("projectFactory.scope.states.held")} />;
 }
 
-/** Calm, persistent notice while pause_all holds Factories, with the way back. */
+/** Calm, persistent notice for each stop holding Factories, with the way back when it is ours. */
 export function DrainBanners({ data }: { data: FactoryOverviewData }) {
   if (!data.drains.length && !data.stopAll.error) return null;
   return (
     <View style={styles.banners}>
-      {data.drains.map((entry) => (
-        <DrainBanner
-          key={`${entry.serverId}:${entry.drain.id}`}
-          serverId={entry.serverId}
-          reason={entry.drain.reason}
-          pausedAt={entry.drain.pausedAt}
-          projects={entry.projects}
-          data={data}
-        />
+      {data.drains.map((stop) => (
+        <DrainBanner key={stop.key} stop={stop} data={data} />
       ))}
       {data.stopAll.error ? (
         <Text style={styles.error} accessibilityRole="alert">
@@ -159,39 +154,31 @@ export function DrainBanners({ data }: { data: FactoryOverviewData }) {
   );
 }
 
-function DrainBanner({
-  serverId,
-  reason,
-  pausedAt,
-  projects,
-  data,
-}: {
-  serverId: string;
-  reason: string;
-  pausedAt: string;
-  projects: number;
-  data: FactoryOverviewData;
-}) {
+function DrainBanner({ stop, data }: { stop: FactoryStop; data: FactoryOverviewData }) {
   const { t } = useTranslation();
-  const date = useMemo(() => new Date(pausedAt), [pausedAt]);
+  const date = useMemo(() => new Date(stop.pausedAt), [stop.pausedAt]);
   const age = useTimeAgo(date);
-  const host = data.factories.find((entry) => entry.serverId === serverId)?.hostLabel;
-  const resume = useCallback(() => data.stopAll.resume(serverId), [data.stopAll, serverId]);
+  const host = data.factories.find((entry) => entry.serverId === stop.serverId)?.hostLabel;
   return (
     <View style={styles.banner} testID="factory-drain-banner" accessibilityRole="alert">
       <ThemedIcon icon="drain" />
       <View style={styles.bannerText}>
         <Text style={styles.bannerTitle}>
-          {t("projectFactory.stopAll.bannerTitle", { count: projects })}
+          {t(
+            stop.owner ? "projectFactory.stopAll.bannerTitle" : "projectFactory.stopAll.heldTitle",
+            { count: stop.projects },
+          )}
           {host ? <Text style={styles.muted}>{` · ${host}`}</Text> : null}
         </Text>
-        <Text style={styles.muted} numberOfLines={2}>
-          {t("projectFactory.stopAll.bannerDetail", { reason, age })}
+        <Text style={styles.muted}>
+          {t(
+            stop.owner
+              ? "projectFactory.stopAll.bannerDetail"
+              : "projectFactory.stopAll.heldDetail",
+            { reason: stop.reason, age },
+          )}
         </Text>
       </View>
-      <Button onPress={resume} disabled={data.stopAll.pending || data.sample}>
-        {t("projectFactory.stopAll.resume")}
-      </Button>
     </View>
   );
 }
@@ -206,7 +193,6 @@ function ThemedIcon({ icon }: { icon: NeedsYouKind }) {
  * end, or for every Factory a summary and the stop switch.
  */
 export function ScopeControls({ data }: { data: FactoryOverviewData }) {
-  const { t } = useTranslation();
   const stop = useMemo(() => <StopSwitch data={data} />, [data]);
   if (data.focus) {
     return (
@@ -219,17 +205,106 @@ export function ScopeControls({ data }: { data: FactoryOverviewData }) {
       />
     );
   }
+  return <AllScopeControls data={data} stop={stop} />;
+}
+
+function AllScopeControls({ data, stop }: { data: FactoryOverviewData; stop: ReactNode }) {
+  const { t } = useTranslation();
+  const open = useFactoryOverviewStore((store) => store.stopListOpen);
+  const setOpen = useFactoryOverviewStore((store) => store.setStopListOpen);
+  const toggle = useCallback(() => setOpen(!open), [open, setOpen]);
   const running = data.factories.filter((entry) => entry.status === "on").length;
   return (
-    <View style={styles.allControls} testID="factory-all-controls">
-      <Text style={styles.muted}>
-        {t("projectFactory.scope.summary", {
-          count: data.factories.length,
-          running,
-          paused: data.factories.length - running,
-        })}
-      </Text>
-      {stop}
+    <View style={styles.allBlock} testID="factory-all-controls">
+      <View style={styles.allControls}>
+        <Text style={styles.muted}>
+          {t("projectFactory.scope.summary", {
+            count: data.factories.length,
+            running,
+            paused: data.factories.length - running,
+          })}
+        </Text>
+        <View style={styles.allActions}>
+          {stop}
+          <Button
+            variant="ghost"
+            size="sm"
+            leftIcon={open ? ChevronDown : ChevronRight}
+            onPress={toggle}
+            accessibilityState={open ? EXPANDED : COLLAPSED}
+            testID="factory-stop-list-toggle"
+          >
+            {t("projectFactory.stopAll.eachFactory")}
+          </Button>
+        </View>
+      </View>
+      {open ? <FactoryStopList data={data} /> : null}
+    </View>
+  );
+}
+
+const EXPANDED = { expanded: true };
+const COLLAPSED = { expanded: false };
+
+/** Every Factory in scope with its state and its own Pause or Resume, as in a project's view. */
+function FactoryStopList({ data }: { data: FactoryOverviewData }) {
+  return (
+    <View style={styles.stopList} testID="factory-stop-list">
+      {data.factories.map((entry) => (
+        <FactoryStopRow key={entry.key} entry={entry} data={data} />
+      ))}
+    </View>
+  );
+}
+
+function FactoryStopRow({ entry, data }: { entry: FactoryScopeEntry; data: FactoryOverviewData }) {
+  const { t } = useTranslation();
+  const { stopAll } = data;
+  const drain = entry.drain ?? entry.state?.drain ?? null;
+  const pill = factoryStatePill({ state: entry.status, drain });
+  // A stopped project resumes only with Resume all; a held one waits for whoever holds it.
+  let method: "pause" | "resume" | null = null;
+  if (!drain && entry.status === "on") method = "pause";
+  else if (!drain && entry.status === "paused") method = "resume";
+  const act = useCallback(() => {
+    if (method) stopAll.setProject(entry, method);
+  }, [entry, method, stopAll]);
+  const error = stopAll.projectErrors[entry.key];
+  return (
+    <View style={styles.stopRow} testID={`factory-stop-row-${entry.projectId}`}>
+      <View style={styles.stopName}>
+        <Text style={styles.tileName} numberOfLines={1}>
+          {entry.name}
+          {entry.hostLabel ? <Text style={styles.muted}>{` · ${entry.hostLabel}`}</Text> : null}
+        </Text>
+        {pill.label === "held" && drain ? (
+          <Text style={styles.muted} numberOfLines={1}>
+            {drain.reason}
+          </Text>
+        ) : null}
+        {error ? (
+          <Text style={styles.error} accessibilityRole="alert">
+            {error}
+          </Text>
+        ) : null}
+      </View>
+      <StatusBadge
+        size="xs"
+        variant={pill.variant}
+        label={t(`projectFactory.scope.states.${pill.label}`)}
+      />
+      <View style={styles.stopAction}>
+        {method ? (
+          <Button
+            size="sm"
+            onPress={act}
+            disabled={data.sample || stopAll.projectPending !== null}
+            testID={`factory-stop-row-${method}-${entry.projectId}`}
+          >
+            {t(method === "pause" ? "projectFactory.scope.pause" : "projectFactory.scope.resume")}
+          </Button>
+        ) : null}
+      </View>
     </View>
   );
 }
@@ -297,7 +372,6 @@ function NeedsYouRow({ item, data }: { item: NeedsYouItem; data: FactoryOverview
   const { t } = useTranslation();
   const date = useMemo(() => (item.at ? new Date(item.at) : null), [item.at]);
   const age = useTimeAgo(date);
-  const { stopAll } = data;
   const act = useCallback(() => {
     const { action } = item;
     switch (action.kind) {
@@ -317,12 +391,15 @@ function NeedsYouRow({ item, data }: { item: NeedsYouItem; data: FactoryOverview
           role: action.role,
         });
         return;
-      case "resumeAll":
-        stopAll.resume(action.serverId);
+      case "stop":
+        // The banner above shows the stop and owns resuming it.
+        return;
     }
-  }, [item, stopAll]);
+  }, [item]);
   const compact = useIsCompactFormFactor();
-  const summary = t(`projectFactory.needsYou.kinds.${item.kind}`, {
+  const kindKey =
+    item.kind === "drain" && !isOwnerStop({ reason: item.subject }) ? "held" : item.kind;
+  const summary = t(`projectFactory.needsYou.kinds.${kindKey}`, {
     subject: needsYouSubject(item),
   });
   const actionLabel = t(`projectFactory.needsYou.actions.${item.action.kind}`);
@@ -330,7 +407,7 @@ function NeedsYouRow({ item, data }: { item: NeedsYouItem; data: FactoryOverview
   return (
     <PressHighlight
       onPress={act}
-      disabled={data.sample}
+      disabled={data.sample || item.action.kind === "stop"}
       accessibilityRole="button"
       accessibilityLabel={summary}
       style={styles.row}
@@ -383,7 +460,11 @@ export function FactoriesStrip({
 }) {
   const counts = useMemo(() => needsYouByFactory(data.needsYou), [data.needsYou]);
   return (
-    <View style={layout === "rail" ? styles.railList : styles.cards} testID="factory-strip">
+    <View
+      style={layout === "rail" ? styles.railList : styles.cards}
+      accessibilityRole={layout === "rail" ? "tablist" : undefined}
+      testID="factory-strip"
+    >
       {data.factories.map((entry) => (
         <FactoryTile
           key={entry.key}
@@ -515,6 +596,25 @@ const styles = StyleSheet.create((theme) => ({
   muted: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
   error: { color: theme.colors.statusDanger, fontSize: theme.fontSize.sm },
   spacer: { flex: 1 },
+  allBlock: { gap: theme.spacing[2] },
+  allActions: { flexDirection: "row", alignItems: "center", gap: theme.spacing[2] },
+  stopList: {
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.xl,
+    backgroundColor: theme.colors.surface1,
+    paddingHorizontal: theme.spacing[3],
+    paddingVertical: theme.spacing[1],
+  },
+  stopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[3],
+    minHeight: 40,
+    paddingVertical: theme.spacing[1],
+  },
+  stopName: { flex: 1, minWidth: 0, gap: 2 },
+  stopAction: { width: 84, alignItems: "flex-end" },
   allControls: {
     flexDirection: "row",
     flexWrap: "wrap",

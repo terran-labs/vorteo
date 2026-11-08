@@ -11,7 +11,9 @@ import { openFactoryInstructions } from "@/components/sidebar/factory-instructio
 import { FactoryModelControls } from "@/components/sidebar/factory-model-controls";
 import { freshFactoryStatus } from "@/components/sidebar/project-factory-model";
 import type { ProjectFactoryState } from "@/components/sidebar/factory-state";
+import { confirmDialog } from "@/utils/confirm-dialog";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
+import { isOwnerStop } from "./factory-reads";
 import { factoryRoleAssignments } from "./queue";
 
 export interface FactoryControls {
@@ -46,9 +48,34 @@ function stateVariant(state: ProjectFactoryState): StatusBadgeVariant {
 /** State pill, Pause or Resume, and the Planning switch: the controls used most. */
 export function FactoryRunControls({ state, controls }: ControlTarget) {
   const { t } = useTranslation();
+  // Same words as the sidebar: Stopped for Stop all, Held for update for anyone else's drain.
   const label = state.drain
-    ? t("projectFactory.draining", { reason: state.drain.reason })
+    ? t(`projectFactory.scope.states.${isOwnerStop(state.drain) ? "stopped" : "held"}`)
     : t(`projectFactory.states.${state.state}`);
+  const drain = state.drain ?? null;
+  const { resume } = controls;
+  // Resuming one project also takes it out of a stop, so a stopped project asks first.
+  const resumeProject = useCallback(() => {
+    if (!drain) {
+      resume();
+      return;
+    }
+    const owner = isOwnerStop(drain);
+    void confirmDialog({
+      title: t("projectFactory.stopAll.resumeProjectTitle"),
+      message: t(
+        owner
+          ? "projectFactory.stopAll.resumeProjectMessage"
+          : "projectFactory.stopAll.resumeHeldMessage",
+        { reason: drain.reason },
+      ),
+      confirmLabel: t("projectFactory.resumeMenu"),
+      destructive: !owner,
+    }).then((confirmed) => {
+      if (confirmed) resume();
+      return undefined;
+    });
+  }, [drain, resume, t]);
   return (
     <View style={styles.run}>
       <StatusBadge label={label} variant={stateVariant(state)} />
@@ -58,7 +85,7 @@ export function FactoryRunControls({ state, controls }: ControlTarget) {
         </Button>
       ) : null}
       {state.state === "paused" ? (
-        <Button onPress={controls.resume} disabled={controls.pending}>
+        <Button onPress={resumeProject} disabled={controls.pending}>
           {t("projectFactory.resumeMenu")}
         </Button>
       ) : null}

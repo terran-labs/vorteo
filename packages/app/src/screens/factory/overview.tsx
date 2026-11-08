@@ -249,7 +249,8 @@ function useOverviewData(input: {
       stopHosts ? factoryHosts.filter((host) => stopHosts.includes(host.serverId)) : factoryHosts,
     [factoryHosts, stopHosts],
   );
-  const stopAll = useStopAll(stopTargets, stopTargets.length);
+  const liveStops = useMemo(() => activeDrains(liveEntries), [liveEntries]);
+  const stopAll = useStopAll(stopTargets, liveStops);
   const openAgent = useCallback(
     (agentId: string, host?: string) => navigateToAgent({ serverId: host ?? serverId, agentId }),
     [serverId],
@@ -436,7 +437,7 @@ function AllContent({ serverId, active }: { serverId: string; active: boolean })
   const client = useQueryClient();
   const all = useAllFactories(active);
   const reload = useCallback(() => {
-    void client.invalidateQueries({ queryKey: ["factoryList"] });
+    void client.invalidateQueries({ queryKey: ["factoryProjectList"] });
     void client.invalidateQueries({ queryKey: ["factoryQueue"] });
   }, [client]);
   const liveQueue = useMemo<LiveQueue>(

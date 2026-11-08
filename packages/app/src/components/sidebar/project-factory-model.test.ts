@@ -18,6 +18,7 @@ import {
 } from "./factory-instructions-model";
 import { factoryRunnerTrack, factoryStageCounts } from "./factory-card-model";
 import { aggregateFactories } from "./factory-global-model";
+import type { NeedsYouItem } from "@/screens/factory/all-factories-model";
 describe("Factory menu and repository dialog", () => {
   it("offers the actions appropriate to each state", () => {
     expect(factoryActions("off")).toEqual(["enable"]);
@@ -228,7 +229,7 @@ it("counts queue stages for the card's bar and places each runner on its five-st
   expect(factoryRunnerTrack(issue("queued", 8))).toMatchObject({ step: null });
 });
 
-it("sums every Factory for the All Factories card and gathers what needs the owner", () => {
+it("sums every Factory for the All Factories card and counts what needs the owner per Factory", () => {
   const issue = (number: number, stage: "queued" | "building" | "blocked", label = "running") => ({
     number,
     title: `Issue ${number}`,
@@ -249,27 +250,24 @@ it("sums every Factory for the All Factories card and gathers what needs the own
     hostLabel: null,
     listed: { state, drain: null },
     issues,
-    questions: [] as string[],
   });
   const on = factory("a", "on", [issue(1, "building"), issue(2, "queued", "human-review")]);
-  const review = { title: "Foreman", instructions: { review: "proposed" as const } };
-  const aggregate = aggregateFactories([
-    { ...on, state: { reason: null, roles: [review] as never }, questions: ["Ship it?"] },
-    factory("b", "on", [issue(1, "blocked")]),
-  ]);
+  const needs = (factoryKey: string, kind: "question" | "blocked") =>
+    ({ key: `${factoryKey}:${kind}`, kind, factoryKey }) as unknown as NeedsYouItem;
+  const items = [
+    needs("host:a", "question"),
+    needs("host:a", "blocked"),
+    needs("host:b", "blocked"),
+  ];
+  const aggregate = aggregateFactories([on, factory("b", "on", [issue(1, "blocked")])], items);
   expect(aggregate.pill.label).toBe("on");
   expect(aggregate.runners.map((runner) => `${runner.tag}#${runner.number}`)).toEqual([
     "a#1",
     "b#1",
   ]);
-  expect(aggregate.needsYou.map((item) => item.kind)).toEqual([
-    "humanReview",
-    "instructions",
-    "question",
-    "blocked",
-  ]);
+  expect(aggregate.needsYou).toEqual(items);
   expect(aggregate.chips.map((chip) => [chip.name, chip.inFlight, chip.needsYou])).toEqual([
-    ["a", 1, 3],
+    ["a", 1, 2],
     ["b", 1, 1],
   ]);
   expect(aggregateFactories([on, factory("b", "paused", [])]).pill.label).toBe("paused");

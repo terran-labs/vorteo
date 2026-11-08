@@ -2,6 +2,7 @@ import type { AgentQuestion } from "@getpaseo/protocol/agent-questions";
 import type { ProjectFactoryState } from "@/components/sidebar/factory-state";
 import { groupQuestions } from "@/open-questions/model";
 import type { Agent } from "@/stores/session-store";
+import { isOwnerStop } from "./factory-reads";
 import { FACTORY_LANES, factoryLane, type FactoryIssue, type FactoryLane } from "./overview-model";
 
 /**
@@ -63,19 +64,40 @@ export function aggregateStageCounts(
   return counts;
 }
 
-/** Drains currently holding Factories, one per host and drain. */
-export function activeDrains(
-  entries: readonly FactoryScopeEntry[],
-): { serverId: string; drain: FactoryDrain; projects: number }[] {
-  const drains = new Map<string, { serverId: string; drain: FactoryDrain; projects: number }>();
+/** One pause_all on one host. The daemon gives each project its own drain id. */
+export interface FactoryStop {
+  key: string;
+  serverId: string;
+  reason: string;
+  /** The earliest project's pause. */
+  pausedAt: string;
+  projects: number;
+  /** Started by Stop all Factories; otherwise someone else, such as Builds, holds it. */
+  owner: boolean;
+}
+
+function drainOf(entry: FactoryScopeEntry): FactoryDrain | null {
+  return entry.drain ?? entry.state?.drain ?? null;
+}
+
+/** Stops holding Factories, one per host and reason, however many projects each holds. */
+export function activeDrains(entries: readonly FactoryScopeEntry[]): FactoryStop[] {
+  const stops = new Map<string, FactoryStop>();
   for (const entry of entries) {
-    const drain = entry.drain ?? entry.state?.drain ?? null;
+    const drain = drainOf(entry);
     if (!drain) continue;
-    const key = `${entry.serverId}:${drain.id}`;
-    const current = drains.get(key);
-    drains.set(key, { serverId: entry.serverId, drain, projects: (current?.projects ?? 0) + 1 });
+    const key = `${entry.serverId}:${drain.reason}`;
+    const current = stops.get(key);
+    stops.set(key, {
+      key,
+      serverId: entry.serverId,
+      reason: drain.reason,
+      pausedAt: current && current.pausedAt < drain.pausedAt ? current.pausedAt : drain.pausedAt,
+      projects: (current?.projects ?? 0) + 1,
+      owner: isOwnerStop(drain),
+    });
   }
-  return [...drains.values()];
+  return [...stops.values()];
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -85,7 +107,6 @@ export function activeDrains(
 export const NEEDS_YOU_KINDS = [
   "question",
   "proposal",
-  "instructionsReview",
   "drain",
   "humanReview",
   "failingChecks",
@@ -104,7 +125,8 @@ export type NeedsYouAction =
       projectId: string;
       role: ProjectFactoryState["roles"][number]["role"];
     }
-  | { kind: "resumeAll"; serverId: string };
+  /** Shown only; the banner owns resuming, behind a confirmation. */
+  | { kind: "stop" };
 
 export interface NeedsYouItem {
   key: string;
@@ -218,7 +240,24 @@ export function collectNeedsYou(input: {
       action: { kind: "thread", serverId, agentId },
     });
   }
-  const drains = new Set<string>();
+  for (const stop of activeDrains(input.entries)) {
+    const entry = input.entries.find(
+      (candidate) =>
+        candidate.serverId === stop.serverId && drainOf(candidate)?.reason === stop.reason,
+    )!;
+    items.push({
+      key: `stop:${stop.key}`,
+      kind: "drain",
+      subject: stop.reason,
+      number: null,
+      factoryKey: entry.key,
+      projectLabel: entry.hostLabel ?? entry.name,
+      serverId: stop.serverId,
+      projectId: entry.projectId,
+      at: stop.pausedAt,
+      action: { kind: "stop" },
+    });
+  }
   for (const entry of input.entries) {
     const base = {
       factoryKey: entry.key,
@@ -227,12 +266,12 @@ export function collectNeedsYou(input: {
       projectId: entry.projectId,
     };
     for (const role of entry.state?.roles ?? []) {
-      const review = role.instructions.review;
-      if (review === "none") continue;
+      // "needed" is the Mechanic's own review; only a proposal waits for the owner.
+      if (role.instructions.review !== "proposed") continue;
       items.push({
         ...base,
         key: `instructions:${entry.key}:${role.role}`,
-        kind: review === "proposed" ? "proposal" : "instructionsReview",
+        kind: "proposal",
         subject: role.title,
         number: null,
         at: null,
@@ -242,19 +281,6 @@ export function collectNeedsYou(input: {
           projectId: entry.projectId,
           role: role.role,
         },
-      });
-    }
-    const drain = entry.drain ?? entry.state?.drain ?? null;
-    if (drain && !drains.has(`${entry.serverId}:${drain.id}`)) {
-      drains.add(`${entry.serverId}:${drain.id}`);
-      items.push({
-        ...base,
-        key: `drain:${entry.serverId}:${drain.id}`,
-        kind: "drain",
-        subject: drain.reason,
-        number: null,
-        at: drain.pausedAt,
-        action: { kind: "resumeAll", serverId: entry.serverId },
       });
     }
     for (const issue of entry.issues ?? []) {

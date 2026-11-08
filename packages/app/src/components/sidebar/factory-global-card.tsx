@@ -19,10 +19,12 @@ import { loadFactoryQueue, type FactoryQueue } from "@/screens/factory/queue";
 import { useSessionStore } from "@/stores/session-store";
 import type { Theme } from "@/styles/theme";
 import { useVortonTouch } from "@/vorton-touch";
+import type { ProjectFactoryList } from "../../../../../plugins/factory/shared/project";
 import {
-  ProjectFactoryListSchema,
-  type ProjectFactoryList,
-} from "../../../../../plugins/factory/shared/project";
+  boundedFactoryRead,
+  factoryListQueryKey,
+  loadFactoryList,
+} from "@/screens/factory/factory-reads";
 import {
   FACTORY_CARD_QUEUE_REFRESH_MS,
   FactoryCardFrame,
@@ -37,8 +39,14 @@ import {
   isListedFactory,
   type FactoryChipSummary,
   type FactorySummaryInput,
-  type NeedsYouItem,
 } from "./factory-global-model";
+import {
+  collectNeedsYou,
+  factoryScopeKey,
+  type FactoryScopeEntry,
+  type NeedsYouItem,
+} from "@/screens/factory/all-factories-model";
+import { useFactoryQuestions } from "@/screens/factory/overview-sources";
 import { ProjectFactoryStateSchema, type ProjectFactoryState } from "./factory-state";
 import { factoryOverviewRoute } from "./project-factory-model";
 
@@ -47,27 +55,7 @@ export const ALL_FACTORIES_CARD_KEY = "all";
 
 /** Factory state and list reads are local daemon reads, refreshed like the project cards. */
 const STATE_REFRESH_MS = 60_000;
-/** Hosts and projects are read a few at a time, so many Factories never flood a daemon. */
-const MAX_CONCURRENT_READS = 3;
 const MAX_NEEDS_YOU_LINES = 8;
-
-let runningReads = 0;
-const waitingReads: (() => void)[] = [];
-async function boundedRead<T>(read: () => Promise<T>): Promise<T> {
-  // A finished read hands its slot straight to the next waiting one.
-  if (runningReads >= MAX_CONCURRENT_READS) {
-    await new Promise<void>((resume) => waitingReads.push(resume));
-  } else {
-    runningReads += 1;
-  }
-  try {
-    return await read();
-  } finally {
-    const next = waitingReads.shift();
-    if (next) next();
-    else runningReads -= 1;
-  }
-}
 
 interface ListedFactory {
   project: ProjectFactoryList["projects"][number];
@@ -75,23 +63,6 @@ interface ListedFactory {
 }
 
 type SessionSnapshot = ReturnType<typeof useSessionStore.getState>["sessions"][string];
-
-/** Open questions asked by agents in the Factory's member workspaces. */
-function factoryQuestions(session: SessionSnapshot | undefined, projectId: string): string[] {
-  if (!session) return [];
-  const members = new Set<string>();
-  for (const workspace of session.workspaces.values()) {
-    if (workspace.factoryMembership?.projectId === projectId) members.add(workspace.id);
-  }
-  const questions: string[] = [];
-  for (const agent of session.agents.values()) {
-    if (agent.archivedAt || !members.has(agent.workspaceId ?? "")) continue;
-    for (const question of agent.questions ?? []) {
-      if (question.status === "open") questions.push(question.question);
-    }
-  }
-  return questions;
-}
 
 function factoryProjectName(session: SessionSnapshot | undefined, projectId: string): string {
   const member = Array.from(session?.workspaces.values() ?? []).find(
@@ -121,13 +92,10 @@ function useAllFactories(collapsed: boolean) {
     factoryPlugins.map((plugin) => ({
       dataShape: "value" as const,
       staleTimeMs: 30_000,
-      queryKey: ["factoryProjectList", plugin.serverId],
+      queryKey: factoryListQueryKey(plugin.serverId),
       enabled: active,
       refetchInterval: active ? STATE_REFRESH_MS : false,
-      queryFn: () =>
-        boundedRead(async () =>
-          ProjectFactoryListSchema.parse(await plugin.invoke("factory.project.list", {})),
-        ),
+      queryFn: () => boundedFactoryRead(() => loadFactoryList(plugin.invoke)),
     })),
     combineData<ProjectFactoryList>,
   );
@@ -148,7 +116,7 @@ function useAllFactories(collapsed: boolean) {
       enabled: active,
       refetchInterval: active ? STATE_REFRESH_MS : false,
       queryFn: () =>
-        boundedRead(async () =>
+        boundedFactoryRead(async () =>
           ProjectFactoryStateSchema.parse(
             await plugin.invoke("factory.project.get", { projectId: project.projectId }),
           ),
@@ -162,8 +130,9 @@ function useAllFactories(collapsed: boolean) {
       staleTimeMs: 30_000,
       queryKey: ["factoryQueue", plugin.serverId, project.projectId],
       enabled: factoryCardReadsQueue({ active, collapsed, state: project }),
-      refetchInterval: FACTORY_CARD_QUEUE_REFRESH_MS,
-      queryFn: () => boundedRead(() => loadFactoryQueue(plugin.invoke, project.projectId)),
+      refetchInterval: (query: { state: { data: unknown } }) =>
+        query.state.data !== null ? FACTORY_CARD_QUEUE_REFRESH_MS : false,
+      queryFn: () => boundedFactoryRead(() => loadFactoryQueue(plugin.invoke, project.projectId)),
     })),
     combineData<FactoryQueue | null>,
   );
@@ -184,11 +153,28 @@ function useAllFactories(collapsed: boolean) {
         listed: project,
         state: states[index],
         issues: queues[index]?.issues ?? null,
-        questions: factoryQuestions(session, project.projectId),
       };
     });
   }, [listed, states, queues, sessions, hosts]);
-  return { factories, plugins: factoryPlugins };
+  // The overview's needs-you model, so the card and the overview count the same things.
+  const entries = useMemo(
+    (): FactoryScopeEntry[] =>
+      factories.map((factory, index) => ({
+        key: factoryScopeKey(factory.serverId, factory.projectId),
+        serverId: factory.serverId,
+        projectId: factory.projectId,
+        name: factory.projectName,
+        hostLabel: factory.hostLabel,
+        state: states[index] ?? null,
+        status: factory.listed.state,
+        drain: factory.listed.drain,
+        issues: factory.issues ? [...factory.issues] : null,
+      })),
+    [factories, states],
+  );
+  const questions = useFactoryQuestions(entries);
+  const needsYou = useMemo(() => collectNeedsYou({ entries, questions }), [entries, questions]);
+  return { factories, needsYou, plugins: factoryPlugins };
 }
 
 /**
@@ -211,8 +197,8 @@ export const AllFactoriesCard = memo(function AllFactoriesCard({
   const collapsed = useFactoryCardStore((state) =>
     state.collapsed.includes(ALL_FACTORIES_CARD_KEY),
   );
-  const { factories, plugins } = useAllFactories(collapsed);
-  const aggregate = useMemo(() => aggregateFactories(factories), [factories]);
+  const { factories, needsYou, plugins } = useAllFactories(collapsed);
+  const aggregate = useMemo(() => aggregateFactories(factories, needsYou), [factories, needsYou]);
   const firstServerId = factories[0]?.serverId ?? null;
   const openOverview = useCallback(() => {
     if (!firstServerId) return;
@@ -273,18 +259,9 @@ const ThemedActivity = withUnistyles(Activity);
 const inFlightIcon = <ThemedActivity size={11} uniProps={mutedColor} />;
 
 function needsYouLine(t: ReturnType<typeof useTranslation>["t"], item: NeedsYouItem): string {
-  let text: string;
-  if (item.kind === "instructions") {
-    text = t("sidebar.factoryCard.needsYouKinds.instructions", { role: item.role });
-  } else if (item.kind === "question") {
-    text = t("sidebar.factoryCard.needsYouKinds.question", { question: item.question });
-  } else {
-    text = t(`sidebar.factoryCard.needsYouKinds.${item.kind}`, {
-      number: item.number,
-      title: item.title,
-    });
-  }
-  return `${text} · ${item.tag}`;
+  const subject = item.number !== null ? `#${item.number} ${item.subject}` : item.subject;
+  const text = t(`projectFactory.needsYou.kinds.${item.kind}`, { subject });
+  return `${text} · ${item.projectLabel}`;
 }
 
 /** What waits on the owner across every Factory; opens the overview like the card. */
@@ -298,8 +275,8 @@ function NeedsYouBadge({
   const { t } = useTranslation();
   const shown = items.slice(0, MAX_NEEDS_YOU_LINES);
   const more = items.length - shown.length;
-  const lines = shown.map((item, index) => ({
-    key: `${item.kind}:${item.tag}:${index}`,
+  const lines = shown.map((item) => ({
+    key: item.key,
     text: needsYouLine(t, item),
   }));
   if (more > 0)

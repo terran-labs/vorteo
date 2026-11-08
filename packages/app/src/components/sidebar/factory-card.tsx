@@ -312,16 +312,20 @@ function useFactoryQueueIssues(input: {
   const { card, plugin, state, collapsed } = input;
   const active = useRetainedPanelActive();
   const queryKey = ["factoryQueue", card.serverId, card.projectId];
-  // A card with nothing cached reads once, so a collapsed or paused card still has a stage bar.
-  const cached = useQueryClient().getQueryData(queryKey) !== undefined;
+  // A card with nothing read yet reads once, so a collapsed or paused card still has a stage bar.
+  // A failed or empty one-off read counts as read: it is not retried until the card polls.
+  const read = useQueryClient().getQueryState(queryKey) !== undefined;
   const readable = active && !!plugin && !!state && state.state !== "off";
+  const polling = !!plugin && factoryCardReadsQueue({ active, collapsed, state });
   const queue = useFetchQuery({
     dataShape: "value",
     queryKey,
     staleTimeMs: 30_000,
-    enabled:
-      (!!plugin && factoryCardReadsQueue({ active, collapsed, state })) || (readable && !cached),
-    refetchInterval: FACTORY_CARD_QUEUE_REFRESH_MS,
+    enabled: polling || (readable && !read),
+    retry: polling ? undefined : false,
+    // A daemon without the queue answers null; never poll it again.
+    refetchInterval: (query) =>
+      polling && query.state.data !== null ? FACTORY_CARD_QUEUE_REFRESH_MS : false,
     queryFn: () => loadFactoryQueue(plugin!.invoke, card.projectId),
   });
   return queue.data?.issues ?? null;
