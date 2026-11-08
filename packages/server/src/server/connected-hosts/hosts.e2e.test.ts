@@ -1,6 +1,7 @@
 import { z } from "zod";
 import pino from "pino";
 import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
+import { planProviderPreferencesMigration } from "../agent/provider-preferences/migration.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, expect, test } from "vitest";
@@ -1554,6 +1555,25 @@ test(
       }),
     });
     const b = await daemon();
+    const { preferences } = planProviderPreferencesMigration({
+      profiles: [
+        {
+          id: "issue-worker",
+          name: "Issue worker",
+          provider: "claude",
+          model: "sonnet",
+          instructions: "DESTINATION_PRESET_MARKER",
+        },
+      ],
+      providers: {},
+    });
+    const bClient = (await api(b)).client;
+    const current = (await bClient.getDaemonConfig()).config.sharedProviderPreferences;
+    const revision = current?.revision ?? null;
+    await bClient.patchDaemonConfig({
+      sharedProviderPreferences: { ...preferences, revision: (revision ?? 0) + 1 },
+      expectedProviderPreferencesRevision: revision,
+    });
     const { paseo, client: aClient } = await api(a);
     await paseo.hosts.add({ connection: `127.0.0.1:${b.port}`, label: "Fleet B" });
     const directory = await online(paseo);
@@ -1604,18 +1624,42 @@ test(
       serverId,
       workspaceId: destination.workspaceId,
       title: "B child",
-      provider: "claude/claude-test",
+      provider: "claude/claude-other",
+      profileId: "shared-profile/claude/issue-worker",
+      labels: { "factory.issue": "7", "factory.role": "lead" },
       initialPrompt: "Finish destination delegation",
     });
+    // A preset bound to another account would silently replace the requested one.
+    const crossAccount = await mcp.callTool({
+      name: "create_agent",
+      arguments: {
+        serverId,
+        workspaceId: destination.workspaceId,
+        title: "Cross-account child",
+        provider: "codex/gpt-5.4-mini",
+        profileId: "shared-workflow/claude/issue-worker",
+        initialPrompt: "Must not start",
+      },
+    });
+    expect(crossAccount.isError).toBe(true);
+    expect(JSON.stringify(crossAccount.structuredContent)).toContain(
+      "cannot launch on another host",
+    );
     expect(self.serverId).toBe(directory.self.serverId);
     expect(remote.serverId).toBe(serverId);
     const bApi = await api(b);
-    expect(
-      (await bApi.paseo.agents.ref(String(remote.agentId)).refresh())?.agent.labels,
-    ).toMatchObject({
+    const remoteAgent = (await bApi.paseo.agents.ref(String(remote.agentId)).refresh())?.agent;
+    expect(remoteAgent?.labels).toMatchObject({
+      "factory.issue": "7",
+      "factory.role": "lead",
       "paseo.parent-agent-id": parent.id,
       "paseo.parent-server-id": directory.self.serverId,
     });
+    // The destination resolves the preset, so its model and instructions apply there.
+    expect(remoteAgent?.model).toBe("sonnet");
+    expect(JSON.stringify(await bApi.client.fetchAgent(String(remote.agentId)))).toContain(
+      "issue-worker",
+    );
     await expect
       .poll(() => parentPrompts.join("\n"), { timeout: 10000 })
       .toContain(`Agent ${self.agentId}`);
