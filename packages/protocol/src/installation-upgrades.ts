@@ -84,6 +84,30 @@ export type SnapshotList = z.infer<typeof SnapshotListSchema>;
  * POST /api/installation/owner/snapshots/restore. `parts` must repeat exactly the
  * part kinds the confirmation named, so a changed snapshot cannot be restored blind.
  */
+/**
+ * One action a Host agent ran at once under the full maintenance grant: a read-only or
+ * non-disruptive action, such as a safety snapshot, that has no window to cancel.
+ */
+export const AgentActionReceiptSchema = z.object({
+  id: z.string().uuid(),
+  /** The agent request command, such as "request-snapshot". */
+  action: z.string(),
+  /** The Host agent's own label, such as "Builds". Display only, never authority. */
+  requester: z.string().optional(),
+  at: z.string().datetime(),
+  outcome: z.enum(["succeeded", "failed"]),
+  detail: z.string(),
+});
+export type AgentActionReceipt = z.infer<typeof AgentActionReceiptSchema>;
+
+/** POST /api/installation/owner/agent-actions/query, newest first. Older coordinators answer 404. */
+export const AgentActionReceiptsSchema = z.object({ receipts: z.array(AgentActionReceiptSchema) });
+
+/** Body of a Host-agent immediate action request. */
+export const AgentActionRequestSchema = z.strictObject({
+  requester: z.string().min(1).max(256).optional(),
+});
+
 export const SnapshotRestoreRequestSchema = z.strictObject({
   id: InstallationSnapshotSchema.shape.id,
   parts: z.array(SnapshotPartKindSchema).min(1),

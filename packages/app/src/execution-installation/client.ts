@@ -57,6 +57,7 @@ import {
 } from "@getpaseo/protocol/instruction-requests";
 
 import {
+  AgentActionReceiptsSchema,
   CoordinatorFollowJobSchema,
   CoordinatorFollowStatusSchema,
   CoordinatorSettingsJobSchema,
@@ -66,6 +67,7 @@ import {
   SnapshotListSchema,
   SnapshotRestoreStatusSchema,
   UpgradeStatusSchema,
+  type AgentActionReceipt,
   type CoordinatorFollowDecision,
   type CoordinatorFollowJob,
   type CoordinatorFollowStatus,
@@ -196,6 +198,7 @@ const SNAPSHOT_RESTORE_READER = tolerant(SnapshotRestoreStatusSchema);
 const UPGRADE_STATUS_READER = tolerant(UpgradeStatusSchema);
 const UPGRADE_READER = tolerant(InstallationUpgradeSchema);
 const COORDINATOR_FOLLOW_STATUS_READER = tolerant(CoordinatorFollowStatusSchema);
+const AGENT_ACTIONS_READER = tolerant(AgentActionReceiptsSchema);
 const COORDINATOR_FOLLOW_READER = tolerant(CoordinatorFollowJobSchema);
 const COORDINATOR_SETTINGS_STATUS_READER = tolerant(CoordinatorSettingsStatusSchema);
 const COORDINATOR_SETTINGS_READER = tolerant(CoordinatorSettingsJobSchema);
@@ -875,6 +878,17 @@ export class InstallationClient {
     if (result.id !== upgrade.id)
       throw new Error("Upgrade receipt changed. Refresh before another action.");
     return result;
+  }
+
+  /** Actions Host agents ran at once under the full maintenance grant, newest first. */
+  async agentActionReceipts(): Promise<AgentActionReceipt[]> {
+    try {
+      return AGENT_ACTIONS_READER.parse(await this.request("agent-actions/query", {})).receipts;
+    } catch (error) {
+      // COMPAT(agentActions): older coordinators answer 404; they ran no immediate agent actions.
+      if (error instanceof InstallationRouteUnavailable) return [];
+      throw error;
+    }
   }
 
   /** Null when the coordinator cannot move itself onto the Host release, so the card hides. */

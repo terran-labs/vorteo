@@ -1,23 +1,44 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
+import { createAgentActions } from "./agent-actions.js";
 import { OWNER_ONLY_OPERATIONS } from "./delegated-admission.js";
 import { OWNER_ROUTE_FRONT_DOORS } from "./front-door.js";
 
 const read = (relative: string) =>
   readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
 
+// Calls an immediate handler must never make.
+const DISRUPTIVE =
+  /drainRestarts|\.restart\w*\(|install\w*\(|\.change\(|\.write\w*\(|writeConfig|launch\w*\(|\.decide\w*\(/;
+
+/** The source of the handler registered for a route, up to the next registration. */
+function handlerOf(server: string, route: string): string {
+  const start = server.indexOf(`"${route}"`);
+  expect(start, route).toBeGreaterThan(0);
+  const end = server.indexOf("app.", start);
+  return server.slice(start, end === -1 ? undefined : end);
+}
+
+/** The Host-agent route an immediate command calls, found through the client's resource. */
+function agentHandlerOf(server: string, command: string): string {
+  const client = read("../../../../../scripts/installation-agent.mjs");
+  const block = client.slice(client.indexOf(`case "${command}"`));
+  const resource = /resource = "([^"]+)"/.exec(block)?.[1];
+  expect(resource, command).toBeDefined();
+  return handlerOf(server, resource!);
+}
+
 // Existing owner operations still waiting for an agent door. Shrink this list as doors ship;
 // never grow it. A new operation ships with its agent door instead (docs/task-delivery.md).
 const PINNED_GAPS = [
   "/api/installation/owner/custom-domain/change",
-  "/api/installation/owner/dev-repair/prepare",
-  "/api/installation/owner/helpers/verify-installed",
   "/api/installation/owner/installation-type/change",
   "/api/installation/owner/live-dev/change",
   "/api/installation/owner/name",
   "/api/installation/owner/settings",
-  "/api/installation/owner/snapshots",
   "/api/installation/owner/source-upgrades",
   "/api/installation/owner/source-upgrades/:id/decision",
 ];
@@ -76,6 +97,15 @@ test("every owner route that changes something has an agent front door, an exclu
 
   const entries = Object.entries(OWNER_ROUTE_FRONT_DOORS);
   for (const [route, door] of entries) {
+    if ("immediate" in door) {
+      expect(client, `${route} needs agent command ${door.immediate}`).toContain(
+        `case "${door.immediate}"`,
+      );
+      // No window protects an immediate action, so neither handler may restart, install or
+      // change configuration. Such an operation needs a queue with a cancellation window.
+      for (const handler of [handlerOf(server, route), agentHandlerOf(server, door.immediate)])
+        expect(handler, `${route} cannot be immediate`).not.toMatch(DISRUPTIVE);
+    }
     if ("agent" in door)
       expect(client, `${route} needs agent command ${door.agent}`).toContain(
         `case "${door.agent}"`,
@@ -102,4 +132,29 @@ test("every owner route that changes something has an agent front door, an exclu
     "source-upgrade-rollback",
     "account-credentials",
   ]);
+});
+
+test("an immediate agent action needs the full grant and leaves a receipt either way", async () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "agent-actions-"));
+  try {
+    let grant: { policyActivatedAt: string; authoritySha256: string } | null = null;
+    const actions = createAgentActions({ stateDir, grant: () => grant });
+    const perform = async () => ({ result: 1, detail: "Took safety snapshot." });
+    // Without the grant nothing runs and nothing is recorded: the owner acts instead.
+    await expect(actions.run("request-snapshot", "Builds", perform)).rejects.toThrow("delegation");
+    expect(actions.list()).toEqual([]);
+    grant = { policyActivatedAt: "2026-11-01T00:00:00.000Z", authoritySha256: "a".repeat(64) };
+    await actions.run("request-snapshot", "Builds", perform);
+    await expect(
+      actions.run("request-snapshot", "Builds", async () => {
+        throw new Error("disk full");
+      }),
+    ).rejects.toThrow("disk full");
+    expect(actions.list().map(({ outcome, requester }) => [outcome, requester])).toEqual([
+      ["failed", "Builds"],
+      ["succeeded", "Builds"],
+    ]);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
 });
