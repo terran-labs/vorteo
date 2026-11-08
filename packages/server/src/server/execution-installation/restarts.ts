@@ -1955,8 +1955,13 @@ export class InstallationRestarts {
     return this.executor.supportsUpdate?.(target) ?? target === "host";
   }
 
-  /** Owner preparation captures source once; it grants no lifecycle approval. */
-  requestDevRepair(id: string, revision: string): RestartJob {
+  /**
+   * Preparation captures source once; it grants no lifecycle approval. The owner's preparation
+   * makes the repaired restart owner-approved. A Host agent's, which the caller admits only under
+   * the full maintenance grant, leaves the restart's own approval setting, so the repaired restart
+   * follows the delegated Dev restart queue with its window, Cancel and dispatch checks.
+   */
+  requestDevRepair(id: string, revision: string, delegated = false): RestartJob {
     this.requireActive();
     const job = this.jobs.find((item) => item.id === id);
     if (!job || job.revision !== revision)
@@ -1980,7 +1985,7 @@ export class InstallationRestarts {
     const next: RestartJob = {
       ...job,
       revision: randomUUID(),
-      requireOwnerApproval: true,
+      requireOwnerApproval: delegated ? job.requireOwnerApproval : true,
       update: undefined,
       devRepairs: [
         ...(job.devRepairs ?? []),
@@ -2017,13 +2022,16 @@ export class InstallationRestarts {
       if (current?.status !== "pending" || current.revision !== job.revision) return;
       // Retain every original contribution. Normal batch validation proves the
       // new owner source contains them before any exact installation review.
+      // A restart that still needs no owner approval was prepared by a Host agent under the full
+      // grant (requestDevRepair); the grant is checked again when the repaired restart is approved.
+      const delegated = !current.requireOwnerApproval;
       const contribution: SourceContribution = {
         id: attempt.id,
         update,
         reason: "Repair Dev from the captured installed Host source",
-        requestedBy: "owner",
+        requestedBy: delegated ? "host-agent" : "owner",
         createdAt: attempt.createdAt,
-        requireOwnerApproval: true,
+        requireOwnerApproval: !delegated,
         status: "queued",
         detail: "Awaiting integration",
       };

@@ -3,6 +3,9 @@
  * Each route is exactly one of:
  * - `agent`: an agent request command in scripts/installation-agent.mjs, which Builds uses and
  *   the full maintenance grant approves unless OWNER_ONLY_OPERATIONS names the operation;
+ * - `immediate`: an agent request command for a read-only or non-disruptive action, which runs at
+ *   once under the grant and leaves a receipt in Installation controls (agent-actions.ts). The
+ *   front-door test refuses it for any handler that restarts, installs or changes configuration;
  * - `excluded`: an operation on OWNER_ONLY_OPERATIONS, so it stays with the owner;
  * - `exempt`: owner session, grant management or a read-only view, which never get an agent door;
  * - `gap`: an existing owner operation still waiting for its agent door. The list is pinned in
@@ -12,6 +15,7 @@
  */
 export type FrontDoor =
   | { agent: string }
+  | { immediate: string }
   | { excluded: string; why: string }
   | { exempt: "session" | "grant" | "read" | "alternate"; why: string }
   | { gap: string };
@@ -59,6 +63,12 @@ export const OWNER_ROUTE_FRONT_DOORS: Readonly<Record<string, FrontDoor>> = {
   "/api/installation/owner/session-host/request": { agent: "request-session-host" },
   "/api/installation/owner/lab-updates": { agent: "request-lab-update" },
   "/api/installation/owner/lab-updates/cancel": { agent: "request-lab-update" },
+  // Read-only verification of installed receipts: immediate, with a receipt.
+  "/api/installation/owner/helpers/verify-installed": { immediate: "request-helper-verification" },
+  // Preparation restarts nothing; the repaired restart takes the delegated restart queue.
+  "/api/installation/owner/dev-repair/prepare": { immediate: "request-dev-repair" },
+  // A non-disruptive copy: immediate, with a receipt.
+  "/api/installation/owner/snapshots": { immediate: "request-snapshot" },
   // Agents cancel retained requests through management-cancel.
   "/api/installation/owner/maintenance-services/cancel": { agent: "management-cancel" },
   // Every queue drain observes the same uncertain outcome; agents follow it with the status command.
@@ -100,25 +110,20 @@ export const OWNER_ROUTE_FRONT_DOORS: Readonly<Record<string, FrontDoor>> = {
   "/api/installation/owner/update-policy": UPGRADES,
   "/api/installation/owner/update-check": UPGRADES,
 
+  // Queued installation changes (queued-agent-action-definitions.ts): pending and cancellable,
+  // approved by the owner or by the full grant after its window. The test pins each action to
+  // the owner operation it calls. Ordinary settings only; the rest of the body is guardrails.
+  "/api/installation/owner/name": { agent: "request-installation-change" },
+  "/api/installation/owner/custom-domain/change": { agent: "request-installation-change" },
+  "/api/installation/owner/installation-type/change": { agent: "request-installation-change" },
+  "/api/installation/owner/live-dev/change": { agent: "request-installation-change" },
+  "/api/installation/owner/settings": { agent: "request-installation-change" },
+  "/api/installation/owner/queued-actions/:id/decision": { agent: "request-installation-change" },
+
   // Pinned gaps: existing owner operations waiting for their agent doors (Builds, 2026-11-08).
-  "/api/installation/owner/helpers/verify-installed": { gap: "Verify an installed native helper." },
-  "/api/installation/owner/dev-repair/prepare": { gap: "Prepare a Dev repair plan." },
-  "/api/installation/owner/snapshots": { gap: "Take a safety snapshot." },
-  "/api/installation/owner/name": { gap: "Rename the installation." },
-  "/api/installation/owner/custom-domain/change": {
-    gap: "Change the custom domain; its request must show the disruption in Installation controls.",
-  },
-  "/api/installation/owner/installation-type/change": {
-    gap: "Change the installation type; its request must show the disruption in Installation controls.",
-  },
-  "/api/installation/owner/live-dev/change": { gap: "Turn live dev on or off." },
   // Stable source upgrades reached main on 2026-11-07, before this rule, with owner-only approval.
   "/api/installation/owner/source-upgrades": { gap: "Request a Stable source upgrade." },
   "/api/installation/owner/source-upgrades/:id/decision": {
     gap: "Approve a Stable source upgrade under the grant.",
-  },
-  "/api/installation/owner/settings": {
-    // appendSystemPrompt in the same body is an instruction change and stays excluded.
-    gap: "Ordinary installation settings (autoArchiveAfterMerge, terminal profiles, metadata generation and similar fields).",
   },
 };
