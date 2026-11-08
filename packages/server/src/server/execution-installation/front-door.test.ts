@@ -208,8 +208,13 @@ test("an immediate agent action needs the full grant and leaves a receipt either
       "Builds",
       () => new Promise<never>((_resolve, reject) => (release = () => reject(new Error("gone")))),
     );
+    // Retention never evicts the running action's receipt, however many finish meanwhile.
+    for (let index = 0; index < 60; index += 1)
+      await actions.run("request-snapshot", "Builds", perform);
+    expect(actions.list().filter((receipt) => receipt.outcome === "started")).toHaveLength(1);
+    expect(actions.list()).toHaveLength(51);
     const restarted = createAgentActions({ stateDir, grant: () => grant });
-    expect(restarted.list()[0]?.outcome).toBe("interrupted");
+    expect(restarted.list().find((receipt) => receipt.outcome === "interrupted")).toBeDefined();
     release();
     await expect(hanging).rejects.toThrow("gone");
   } finally {

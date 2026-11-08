@@ -50,15 +50,26 @@ export function createAgentActions(input: {
       return [];
     }
   };
+  // Retention never evicts a started or interrupted receipt: the first still awaits its outcome,
+  // and the second records an uncertain effect the owner should see. Both are rare.
   const write = (receipts: AgentActionReceipt[]) => {
+    let settled = 0;
+    const kept = receipts.filter(
+      (receipt) =>
+        receipt.outcome === "started" || receipt.outcome === "interrupted" || ++settled <= RETAINED,
+    );
     mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    writePrivateFileAtomicSync(
-      file,
-      JSON.stringify({ version: 1, receipts: receipts.slice(0, RETAINED) }),
+    writePrivateFileAtomicSync(file, JSON.stringify({ version: 1, receipts: kept }));
+  };
+  // An outcome always lands, even for a receipt the history no longer holds.
+  const replace = (receipt: AgentActionReceipt) => {
+    const receipts = read();
+    write(
+      receipts.some((item) => item.id === receipt.id)
+        ? receipts.map((item) => (item.id === receipt.id ? receipt : item))
+        : [receipt, ...receipts],
     );
   };
-  const replace = (receipt: AgentActionReceipt) =>
-    write(read().map((item) => (item.id === receipt.id ? receipt : item)));
   // A receipt still started belongs to an earlier coordinator that stopped mid-action.
   const stale = read();
   if (stale.some((receipt) => receipt.outcome === "started")) {
