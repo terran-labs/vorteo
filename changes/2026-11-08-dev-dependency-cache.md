@@ -1,15 +1,12 @@
-### Features
-
-- Dev container checkouts reuse a cached dependency install. On Linux the dependency cache copies a finished install of the same lockfile into each new worktree instead of running a full `npm ci`, which skips the download, extraction and native builds. Each environment keeps installs built for its own platform.
-
 ### Fixes
 
-- Vorteo's dependencies install inside the Dev container again. Node's built-in `fs.cpSync` directory copy fails with a permission error on Dev's shared Projects folder, on Node 22 and 24 alike, and `@shopify/react-native-skia` uses it during install. Linux installs now load `scripts/lib/cp-sync-js.cjs`, which keeps every `fs.cpSync` call on Node's ordinary copy path, and the Linux dependency cache copies with `cp -R`, because `cp -a` cannot preserve permissions on some directories there.
+- Vorteo's dependencies install inside the Dev container. Node's built-in `fs.cpSync` directory copy fails with a permission error on Dev's shared Projects folder, on Node 22 and 24 alike, and `@shopify/react-native-skia` uses it during install, so every `npm ci` there failed. Linux installs now load `scripts/lib/cp-sync-js.cjs`, which keeps every `fs.cpSync` call on Node's ordinary copy path.
 
 ### Maintenance
 
 - In task worktrees and `paseo.json` workspace setup, a full dependency install now waits for the environment's heavy-job slot, as the queue's rules already required. Heavy jobs mark their commands with `VORTEO_HEAVY_JOB=1`, so an install that already runs inside one, or as Builds, does not wait on itself. Installer, coordinator, web build and live dev installs keep running at once, since they can run while the Builds gate holds the slot.
+- The dependency cache stays macOS-only. Measured in Dev, copying a cached install onto the shared Projects folder took about 1m45s against about 2 minutes for `npm ci`, for a 5.6 GB cache.
 
 ## Maintenance review
 
-Step 3 of running Factory issue agents in Dev, chosen by the owner on 2026-11-08. `scripts/lib/dependency-cache.mjs` enables the cache on Linux with `cp -a --reflink=auto` and queues full installs through `scripts/heavy-job.mjs`; `launchSpec` sets the nested-job marker. The cache and heavy-job tests cover the queued install, the Builds exemption and the marker. Review fix: queuing is opt-in for task worktrees and `paseo.json` setup (`install-dependencies.mjs --queue`), because the installer, the coordinator's protected preparer and web builds can run while the Builds gate holds the slot, and the protected tooling does not ship `heavy-job.mjs`. Updated the shared dependency installs and heavy-job docs and the inventory entry. README overview and onboarding are unchanged. Not installed.
+Step 3 of running Factory issue agents in Dev. The owner first chose a Dev dependency cache (2026-11-08). Built and measured in Dev, it saved under a minute per worktree, so the owner was asked and this variant keeps the cache macOS-only. Shipped: the `fs.cpSync` shim for Linux installs (`scripts/lib/cp-sync-js.cjs`, preloaded through `NODE_OPTIONS` by `scripts/lib/dependency-cache.mjs`), opt-in queued full installs for task worktrees and `install-dependencies.mjs --queue` (paseo.json setup), and the `VORTEO_HEAVY_JOB` marker in `scripts/heavy-job.mjs`. Tests cover the queued install, the Builds exemption, the Linux shim command and the marker. Updated the shared dependency installs and heavy-job docs and the inventory entry. README overview and onboarding are unchanged. Not installed.

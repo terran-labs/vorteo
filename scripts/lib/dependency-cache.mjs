@@ -1,14 +1,15 @@
 // Shares installed dependencies between checkouts through APFS copy-on-write
-// clones on macOS and copies on Linux, such as the Dev container, whose Projects
-// folder mount cannot share blocks. One "golden" install is kept per lockfile and install mode; each
+// clones. One "golden" install is kept per lockfile and install mode; each
 // checkout receives its own cloned node_modules trees, so workspace links
 // (node_modules/@getpaseo/x -> ../../packages/x) still resolve inside that
 // checkout. A shared symlinked node_modules would not: Node resolves symlinks
 // to real paths, sending every workspace import into one checkout.
 //
 // Clones share disk blocks until a file changes, so a cloned install costs
-// metadata only. A Linux copy still skips the download, extraction and native
-// builds. Other platforms, and VORTEO_DEPENDENCY_CACHE=0, run a normal `npm ci`.
+// metadata only. Unsupported platforms, and VORTEO_DEPENDENCY_CACHE=0, run a
+// normal `npm ci`. Linux is unsupported on purpose: in the Dev container, copying a
+// cached install onto the shared Projects folder took 1m45s against about 2 minutes for
+// `npm ci`, for a 5.6 GB cache.
 // Agent checkouts opt in to `queue`, so their full installs wait for the machine's
 // heavy-job slot. Installer, coordinator and Builds paths never queue: they can run while
 // the Builds gate holds that slot, and the coordinator's protected tooling has no queue.
@@ -39,7 +40,7 @@ export function defaultDependencyCache(env = process.env) {
 }
 
 export function cloneSupported({ platform = process.platform, env = process.env } = {}) {
-  return ["darwin", "linux"].includes(platform) && env.VORTEO_DEPENDENCY_CACHE !== "0";
+  return platform === "darwin" && env.VORTEO_DEPENDENCY_CACHE !== "0";
 }
 
 /** "" for the root, then every workspace directory recorded by the lockfile. */
@@ -124,13 +125,9 @@ function defaultRun(command, args, cwd) {
   execFileSync(command, args, { cwd, stdio: "inherit", shell: process.platform === "win32" });
 }
 
-/** clonefile(2) per file on macOS; data blocks stay shared until either copy changes.
- * On Linux a plain recursive copy: the Dev container's virtiofs mount refuses `cp -a`'s
- * permission preservation on some directories, and new files keep their owner's mode bits. */
+/** clonefile(2) per file; data blocks stay shared until either copy changes. */
 function defaultClone(from, to) {
-  if (process.platform === "darwin")
-    execFileSync("/bin/cp", ["-c", "-R", from, to], { stdio: "inherit" });
-  else execFileSync("cp", ["-R", from, to], { stdio: "inherit" });
+  execFileSync("/bin/cp", ["-c", "-R", from, to], { stdio: "inherit" });
 }
 
 const LIB = path.dirname(fileURLToPath(import.meta.url));
