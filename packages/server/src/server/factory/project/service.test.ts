@@ -2159,6 +2159,16 @@ describe("account choice for new Factory agents", () => {
       expect(await pick(input)).toMatchObject(expected);
     expect(await pick({})).not.toHaveProperty("serverId");
 
+    // Installation policy wins while the destination still reports the account ready.
+    authority.settings.providerDefinitions = [
+      definition(
+        "setup/same",
+        { srv_test: "codex-account-same", srv_dev: "codex-account-same" },
+        { policy: { enabled: false } },
+      ),
+    ];
+    expect(await pick({ serverId: "srv_dev" })).toMatchObject({ provider: null });
+
     // Without installation settings, only a shared installation account id links accounts,
     // and avoiding one by either id avoids every local alias of it.
     authority = null;
@@ -2191,7 +2201,7 @@ describe("account choice for new Factory agents", () => {
       state.projects[PROJECT].accountPicks.map(
         (item: { serverId?: string }) => item.serverId ?? null,
       ),
-    ).toEqual([null, null, "srv_dev", "srv_dev", null, "srv_dev", "srv_dev", "srv_dev"]);
+    ).toEqual([null, null, "srv_dev", "srv_dev", null, "srv_dev", "srv_dev", "srv_dev", "srv_dev"]);
   });
 
   test("the daemon's accounts fall back when usage cannot be read and no profile is set", async () => {

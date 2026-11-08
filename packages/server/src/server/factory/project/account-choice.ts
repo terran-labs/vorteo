@@ -141,7 +141,14 @@ function definedAccounts(
   for (const definition of authority.settings.providerDefinitions ?? []) {
     const local = definition.bindings[authority.serverId];
     const remote = definition.bindings[serverId];
-    if (definition.removed || excluded.includes(definition.id) || !local || !remote) continue;
+    if (
+      definition.removed ||
+      definition.policy.enabled === false ||
+      excluded.includes(definition.id) ||
+      !local ||
+      !remote
+    )
+      continue;
     if (ready.has(remote) && !accounts.has(local)) accounts.set(local, remote);
   }
   return accounts;
