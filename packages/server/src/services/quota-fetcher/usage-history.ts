@@ -7,11 +7,19 @@ import type { ProviderUsage, ProviderUsageWindow } from "../../server/messages.j
 /** Long enough for a weekly window plus a day of the previous one. */
 const RETENTION_MS = 8 * 24 * 60 * 60 * 1000;
 /**
- * One sample per five-minute bucket: a reading replaces the latest sample only when both fall in
- * the same bucket. The buckets are fixed, so frequent polling cannot keep sliding one sample
- * forward and stop the series from growing.
+ * One sample per one-minute bucket, matching the daemon's background sampler: a reading replaces
+ * the latest sample only when both fall in the same bucket. The buckets are fixed, so frequent
+ * polling cannot keep sliding one sample forward and stop the series from growing.
  */
-const SAMPLE_BUCKET_MS = 5 * 60 * 1000;
+const SAMPLE_BUCKET_MS = 60 * 1000;
+/**
+ * Samples older than this are thinned to one per {@link COARSE_BUCKET_MS}. Eight days of
+ * one-minute samples is 11,520 points per window, about 230 KB of JSON, so twenty account
+ * windows would rewrite a 4.6 MB file every minute. Keeping full resolution for two days and
+ * five-minute resolution after that holds each window near 4,600 points, about 1.8 MB for twenty.
+ */
+const FINE_RETENTION_MS = 48 * 60 * 60 * 1000;
+const COARSE_BUCKET_MS = 5 * 60 * 1000;
 /** Points sent per window; the sidebar chart is a few dozen pixels wide. */
 const MAX_SENT_POINTS = 96;
 const WRITE_DELAY_MS = 5_000;
@@ -27,6 +35,28 @@ function windowUsed(window: ProviderUsageWindow): number | null {
   if (typeof window.usedPct === "number") used = window.usedPct;
   else if (typeof window.remainingPct === "number") used = 100 - window.remainingPct;
   return used !== null && Number.isFinite(used) ? Math.min(100, Math.max(0, used)) : null;
+}
+
+/**
+ * Keeps the newest sample in each five-minute bucket older than the fine window. Points are
+ * oldest first, so a later point in the same bucket replaces the one before it.
+ */
+function coarsen(points: [number, number][], fineCutoff: number): [number, number][] {
+  const kept: [number, number][] = [];
+  for (const point of points) {
+    const previous = kept[kept.length - 1];
+    if (
+      point[0] < fineCutoff &&
+      previous &&
+      previous[0] < fineCutoff &&
+      Math.floor(previous[0] / COARSE_BUCKET_MS) === Math.floor(point[0] / COARSE_BUCKET_MS)
+    ) {
+      kept[kept.length - 1] = point;
+    } else {
+      kept.push(point);
+    }
+  }
+  return kept;
 }
 
 /** Evenly thins a series to at most `max` points, always keeping the newest. */
@@ -70,6 +100,7 @@ export class ProviderUsageHistory {
   async record(providers: readonly ProviderUsage[], at = this.now()): Promise<void> {
     await this.load();
     const cutoff = at - RETENTION_MS;
+    const fineCutoff = at - FINE_RETENTION_MS;
     let changed = false;
     for (const provider of providers) {
       if (provider.status !== "available") continue;
@@ -83,7 +114,7 @@ export class ProviderUsageHistory {
           last && Math.floor(last[0] / SAMPLE_BUCKET_MS) === Math.floor(at / SAMPLE_BUCKET_MS);
         if (sameBucket) points[points.length - 1] = [at, used];
         else points.push([at, used]);
-        this.series.set(key, points);
+        this.series.set(key, coarsen(points, fineCutoff));
         changed = true;
       }
     }

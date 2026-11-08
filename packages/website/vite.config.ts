@@ -7,6 +7,7 @@ import { cloudflare } from "@cloudflare/vite-plugin";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { languageAlternates, LOCALES, localizePath } from "./src/i18n/locale";
+import { parseWebsiteTestVars } from "./src/website-test-vars";
 
 const repoRoot = path.resolve(__dirname, "../..");
 const siteHost = "https://paseo.sh";
@@ -116,6 +117,8 @@ const sitemapPages = [
 });
 
 export default defineConfig((): UserConfig => {
+  // Browser tests pass their bindings explicitly; deploy builds set none.
+  const testVars = parseWebsiteTestVars(process.env.WEBSITE_TEST_VARS);
   return {
     server: {
       host: "0.0.0.0",
@@ -129,7 +132,10 @@ export default defineConfig((): UserConfig => {
       },
     },
     plugins: [
-      cloudflare({ viteEnvironment: { name: "ssr" } }),
+      cloudflare({
+        viteEnvironment: { name: "ssr" },
+        ...(Object.keys(testVars).length > 0 ? { config: { vars: testVars } } : {}),
+      }),
       tsConfigPaths({ projects: [path.join(__dirname, "tsconfig.json")] }),
       tanstackStart({
         router: {
