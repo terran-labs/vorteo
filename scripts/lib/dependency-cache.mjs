@@ -7,12 +7,18 @@
 //
 // Clones share disk blocks until a file changes, so a cloned install costs
 // metadata only. Unsupported platforms, and VORTEO_DEPENDENCY_CACHE=0, run a
-// normal `npm ci` instead.
+// normal `npm ci`. Linux is unsupported on purpose: in the Dev container, copying a
+// cached install onto the shared Projects folder took 1m45s against about 2 minutes for
+// `npm ci`, for a 5.6 GB cache.
+// Agent checkouts opt in to `queue`, so their full installs wait for the machine's
+// heavy-job slot. Installer, coordinator and Builds paths never queue: they can run while
+// the Builds gate holds that slot, and the coordinator's protected tooling has no queue.
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const FORMAT = 1;
 const HOUR = 60 * 60_000;
@@ -124,6 +130,17 @@ function defaultClone(from, to) {
   execFileSync("/bin/cp", ["-c", "-R", from, to], { stdio: "inherit" });
 }
 
+const LIB = path.dirname(fileURLToPath(import.meta.url));
+const HEAVY_JOB = path.join(LIB, "..", "heavy-job.mjs");
+const CP_SYNC_JS = path.join(LIB, "cp-sync-js.cjs");
+
+/** The npm command for a full install. Linux installs load the fs.cpSync workaround. */
+function npmCommand(args, platform) {
+  if (platform !== "linux") return ["npm", ...args];
+  const nodeOptions = [process.env.NODE_OPTIONS, `--require "${CP_SYNC_JS}"`].filter(Boolean);
+  return ["env", `NODE_OPTIONS=${nodeOptions.join(" ")}`, "npm", ...args];
+}
+
 function readManifest(entry) {
   try {
     const manifest = JSON.parse(fs.readFileSync(path.join(entry, MANIFEST), "utf8"));
@@ -221,13 +238,24 @@ export function installDependencies({
   run = defaultRun,
   clone = defaultClone,
   supported = cloneSupported(),
+  queue = false,
+  platform = process.platform,
   npmVersion,
   log = (message) => console.log(message),
 }) {
   const args = installModes[mode];
   if (!args) throw new Error(`Unknown dependency install mode: ${mode}`);
+  function fullInstall() {
+    // Inside a heavy job the slot is already ours, and Builds' commands may run while its gate
+    // holds the slot; waiting for it again would never end.
+    const holdsSlot = process.env.VORTEO_HEAVY_JOB === "1" || process.env.VORTEO_BUILDS === "1";
+    const [command, ...rest] = npmCommand(args, platform);
+    if (!queue || holdsSlot) return run(command, rest, root);
+    const label = "dependency install";
+    run(process.execPath, [HEAVY_JOB, "run", "--label", label, "--", command, ...rest], root);
+  }
   if (!supported) {
-    run("npm", args, root);
+    fullInstall();
     return { source: "install" };
   }
   fs.mkdirSync(cache, { recursive: true });
@@ -252,7 +280,7 @@ export function installDependencies({
       removeInstalled(root);
     }
   }
-  run("npm", args, root);
+  fullInstall();
   try {
     capture(root, cache, key, mode, clone);
     pruneDependencyCache(cache);
