@@ -34,7 +34,8 @@ Trusted server plugins retain the authority of their runtime; they are not sandb
 Agent MCP discovers destination IDs with `list_hosts`. `create_workspace`, `list_workspaces`,
 `create_agent`, `send_agent_prompt`, `get_agent_status`, `get_agent_activity`, and `list_agents`
 accept `serverId`; omission selects the calling daemon. Remote creation requires a
-destination workspace and explicit provider/model. Caller filesystem defaults apply only on the
+destination workspace and explicit provider/model. An optional `profileId` names a saved preset on the destination, which
+resolves it as a local launch would: the preset's model and instructions apply, and the provider still selects the account. Caller filesystem defaults apply only on the
 calling daemon. Prompting a remote child acknowledges acceptance and uses the existing idle wait for
 finish notifications. Remote agent lists have no caller-directory default; pass `cwd` to filter them.
 

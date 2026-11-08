@@ -1553,7 +1553,17 @@ test(
         },
       }),
     });
-    const b = await daemon();
+    const b = await daemon({
+      agentProfiles: [
+        {
+          id: "issue-worker",
+          name: "Issue worker",
+          provider: "claude",
+          model: "sonnet",
+          instructions: "DESTINATION_PRESET_MARKER",
+        },
+      ],
+    });
     const { paseo, client: aClient } = await api(a);
     await paseo.hosts.add({ connection: `127.0.0.1:${b.port}`, label: "Fleet B" });
     const directory = await online(paseo);
@@ -1604,18 +1614,26 @@ test(
       serverId,
       workspaceId: destination.workspaceId,
       title: "B child",
-      provider: "claude/claude-test",
+      provider: "claude/claude-other",
+      profileId: "issue-worker",
+      labels: { "factory.issue": "7", "factory.role": "lead" },
       initialPrompt: "Finish destination delegation",
     });
     expect(self.serverId).toBe(directory.self.serverId);
     expect(remote.serverId).toBe(serverId);
     const bApi = await api(b);
-    expect(
-      (await bApi.paseo.agents.ref(String(remote.agentId)).refresh())?.agent.labels,
-    ).toMatchObject({
+    const remoteAgent = (await bApi.paseo.agents.ref(String(remote.agentId)).refresh())?.agent;
+    expect(remoteAgent?.labels).toMatchObject({
+      "factory.issue": "7",
+      "factory.role": "lead",
       "paseo.parent-agent-id": parent.id,
       "paseo.parent-server-id": directory.self.serverId,
     });
+    // The destination resolves the preset, so its model and instructions apply there.
+    expect(remoteAgent?.model).toBe("sonnet");
+    expect(JSON.stringify(await bApi.client.fetchAgent(String(remote.agentId)))).toContain(
+      "issue-worker",
+    );
     await expect
       .poll(() => parentPrompts.join("\n"), { timeout: 10000 })
       .toContain(`Agent ${self.agentId}`);

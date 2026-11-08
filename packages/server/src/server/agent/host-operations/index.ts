@@ -172,6 +172,7 @@ export function createToolHosts(hosts: ConnectedHosts): ToolHosts {
 const remoteCreate = z
   .object({
     provider: z.string().min(1),
+    profileId: z.string().min(1).optional(),
     title: z.string().trim().min(1).max(60),
     initialPrompt: z.string().min(1),
     workspaceId: z.string().min(1),
@@ -213,7 +214,11 @@ export function createHostResolver(input: {
         action({
           async createAgent(args) {
             const parsed = remoteCreate.parse(args);
-            const { provider, model } = resolveRequiredProviderModel(parsed.provider);
+            const selected = resolveRequiredProviderModel(parsed.provider);
+            const provider = selected.provider;
+            // The destination resolves the preset, whose model replaces the requested one,
+            // as a local MCP launch does. The provider still selects the account.
+            const model = parsed.profileId ? undefined : selected.model;
             const workspace = (await client.fetchWorkspaces({})).entries.find(
               (row) => row.id === parsed.workspaceId,
             );
@@ -229,6 +234,7 @@ export function createHostResolver(input: {
                 provider,
                 model,
                 cwd: workspace.workspaceDirectory,
+                ...(parsed.profileId ? { profileId: parsed.profileId } : {}),
                 title: parsed.title,
                 modeId: parsed.settings?.modeId,
                 thinkingOptionId: parsed.settings?.thinkingOptionId,
