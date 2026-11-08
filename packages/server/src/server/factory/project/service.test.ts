@@ -1994,8 +1994,9 @@ describe("account choice for new Factory agents", () => {
           ],
         },
       ],
-      // Avoiding Dev's account avoids every local alias of it.
+      // Avoiding the account by Dev's id or a local id avoids every local alias of it.
       [{ serverId: "srv_dev", avoid: "codex-primary" }, { provider: "codex-dev-c" }],
+      [{ serverId: "srv_dev", avoid: "codex-host-a" }, { provider: "codex-dev-c" }],
     ] as const)
       expect(await pick(input)).toMatchObject(expected);
     expect(await pick({})).not.toHaveProperty("serverId");
@@ -2022,7 +2023,7 @@ describe("account choice for new Factory agents", () => {
       state.projects[PROJECT].accountPicks.map(
         (item: { serverId?: string }) => item.serverId ?? null,
       ),
-    ).toEqual([null, null, "srv_dev", "srv_dev", null]);
+    ).toEqual([null, null, "srv_dev", "srv_dev", "srv_dev", null]);
   });
 
   test("the daemon's accounts fall back when usage cannot be read and no profile is set", async () => {
