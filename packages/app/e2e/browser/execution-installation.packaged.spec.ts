@@ -4226,9 +4226,11 @@ test("shared policy saves preserve drafts and show retryable errors", async ({ p
     }
   }
   await page.goto(`${origin}/settings/environments`);
+  await expect(page.getByTestId("settings-environment-tabs")).toBeVisible();
   await expect(page.getByTestId("host-page-restart-button")).toHaveCount(0);
   const details = await openSystemDetails(page, "Dev");
   await expect(details.getByTestId("installation-card")).toBeVisible();
+  await expect(page.getByTestId("host-page-restart-button")).toHaveCount(0);
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
 });
 

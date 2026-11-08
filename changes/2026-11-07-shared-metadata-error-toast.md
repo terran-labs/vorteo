@@ -1,7 +1,7 @@
 ### Maintenance
 
 - Update the packaged shared metadata case to observe the error toast after a rejected save and its absence after retry. Preserve the saved selection and both environments’ configuration checks.
-- Update the shared policy case to open Dev maintenance details through System after the old Environments shortcut was removed. Preserve policy saves, draft conflicts, retries and unlocked owner access.
+- Update the shared policy case to open Dev maintenance details through System after the old Environments shortcut was removed. Wait for Environments to render before checking that no direct restart button appears, and repeat that check after Dev details open. Preserve policy saves, draft conflicts, retries and unlocked owner access.
 
 ## Maintenance review
 
