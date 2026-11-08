@@ -25,16 +25,22 @@ export interface FactoryAccounts {
   providerType(providerOrProfile: { provider?: string; profileId?: string }): string | null;
   /** The account an account-bound profile launches on. */
   profileAccount(profileId: string): string | null;
-  /** Usage readings, refreshed now. */
-  readUsage(): Promise<ProviderUsage[]>;
+  /** Usage readings, refreshed now, with the time the list was read. */
+  readUsage(): Promise<UsageList>;
   /** The default launch's provider, used when the stage has no configured profile. */
   defaultProvider(): Promise<string | null>;
+}
+
+/** Usage readings and when they were read; a reading without its own time takes this one. */
+export interface UsageList {
+  fetchedAt: string;
+  providers: ProviderUsage[];
 }
 
 /** Ranks candidates by their lowest remaining window. Ties keep candidate order. */
 export function rankAccounts(input: {
   candidates: readonly string[];
-  usage: readonly ProviderUsage[];
+  usage: UsageList;
   nowMs: number;
   avoid?: string;
 }): { chosen: Considered | null; considered: Considered[] } {
@@ -53,7 +59,7 @@ export function rankAccounts(input: {
 
 function judge(
   provider: string,
-  usage: readonly ProviderUsage[],
+  usage: UsageList,
   nowMs: number,
   avoid: string | undefined,
 ): Considered {
@@ -63,9 +69,11 @@ function judge(
     remainingPct,
   });
   if (provider === avoid) return verdict("avoided");
-  const reading = usage.find((item) => item.providerId === provider);
+  const reading = usage.providers.find((item) => item.providerId === provider);
   if (!reading || reading.status !== "available" || reading.authRecovery) return verdict("unknown");
-  const fetchedAt = Date.parse(reading.fetchedAt ?? "");
+  // Readings often carry no time of their own; the list's time is when they were read, as
+  // quota reserve polling also assumes.
+  const fetchedAt = Date.parse(reading.fetchedAt ?? usage.fetchedAt);
   if (!Number.isFinite(fetchedAt) || nowMs - fetchedAt > ACCOUNT_READING_MAX_AGE_MS)
     return verdict("stale");
   const remaining = reading.windows.map((window) => window.remainingPct);
@@ -121,7 +129,9 @@ export async function chooseAccount(input: {
   );
   if (candidates.length === 0) return none;
   // A failed usage read leaves every account unknown, so the configured default is used.
-  const usage = await input.accounts.readUsage().catch((): ProviderUsage[] => []);
+  const usage = await input.accounts
+    .readUsage()
+    .catch((): UsageList => ({ fetchedAt: "", providers: [] }));
   const ranked = rankAccounts({ candidates, usage, nowMs: input.nowMs, avoid: input.avoid });
   return {
     provider: ranked.chosen?.provider ?? null,
@@ -134,7 +144,9 @@ export async function chooseAccount(input: {
 /** The daemon's accounts: ready providers from the snapshot, usage refreshed on each pick. */
 export function daemonFactoryAccounts(input: {
   providers: Pick<ProviderSnapshotManager, "listProviders">;
-  readUsage: (options: { forceRefresh: boolean }) => Promise<{ providers: ProviderUsage[] }>;
+  readUsage: (options: {
+    forceRefresh: boolean;
+  }) => Promise<{ fetchedAt: string; providers: ProviderUsage[] }>;
   getSettings: () => MutableDaemonConfig;
 }): FactoryAccounts {
   const typeOf = (provider: string): string | null => {
@@ -160,8 +172,8 @@ export function daemonFactoryAccounts(input: {
       const account = profileId ? profileProvider(profileId, input.getSettings()) : provider;
       return account ? typeOf(account) : null;
     },
-    async readUsage() {
-      return (await input.readUsage({ forceRefresh: true })).providers;
+    readUsage() {
+      return input.readUsage({ forceRefresh: true });
     },
     async defaultProvider() {
       return (await resolveDefaultLaunch(input))?.provider ?? null;
