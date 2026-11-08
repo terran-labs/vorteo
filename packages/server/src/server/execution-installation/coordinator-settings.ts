@@ -41,6 +41,7 @@ import { RestartRequestError } from "./restarts.js";
 import {
   delegatedAdmissionStep,
   delegatedApproval,
+  delegatedDispatchHolds,
   delegatedPlanDigest,
   type DelegationGrant,
 } from "./delegated-admission.js";
@@ -517,6 +518,27 @@ export class CoordinatorSettings {
     }
   }
 
+  /**
+   * Cancels a change the full grant approved when that grant no longer holds: revoked, renewed,
+   * credentials rotated or its keys newly excluded. The plan was bound at admission; the broker
+   * review completes it with coordinator-computed digests afterwards. Owner approvals pass.
+   */
+  private delegationLapsed(job: SettingsRecord): boolean {
+    if (
+      delegatedDispatchHolds(job.delegatedApproval, this.ports.delegationGrant?.() ?? null, {
+        operations: settingsOperations(job),
+      })
+    )
+      return false;
+    this.restoreKeptScope(job);
+    this.finish(
+      job,
+      "cancelled",
+      "Delegated approval changed before dispatch. Nothing was applied.",
+    );
+    return true;
+  }
+
   /** Why a pending change cannot be approved now, without throwing. */
   private staleOrBlocked(job: SettingsRecord): string | null {
     const blocker = this.blocker() ?? this.ports.conflict();
@@ -532,6 +554,7 @@ export class CoordinatorSettings {
 
   private async dispatch(approved: SettingsRecord): Promise<void> {
     let job = approved;
+    if (this.delegationLapsed(job)) return;
     const refusal = this.blocker() ?? this.ports.conflict();
     if (refusal) {
       this.finish(job, "failed", refusal);
@@ -541,6 +564,8 @@ export class CoordinatorSettings {
       const reviewed = await this.reviewAtDispatch(job);
       if (!reviewed) return;
       job = reviewed;
+      // The grant may have been revoked or the credentials rotated during the review.
+      if (this.delegationLapsed(job)) return;
     }
     let text: string;
     let candidate: string;
@@ -565,6 +590,7 @@ export class CoordinatorSettings {
       this.finish(job, "failed", `${launchBlocker} Nothing was applied.`);
       return;
     }
+    if (this.delegationLapsed(job)) return;
     // Recorded before any effect: the handoff restarts this process.
     const running = this.save(job, {
       status: "running",

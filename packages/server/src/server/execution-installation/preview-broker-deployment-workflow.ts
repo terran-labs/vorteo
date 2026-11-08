@@ -133,7 +133,11 @@ export class PreviewBrokerDeploymentWorkflow {
       this.queue.replace({ ...job, detail });
   }
 
-  async dispatch(id: string): Promise<void> {
+  /**
+   * `authorized` re-reads any delegated approval after validation, immediately before effects;
+   * when it fails, nothing starts and the request stays approved for the queue to cancel.
+   */
+  async dispatch(id: string, authorized: () => boolean = () => true): Promise<void> {
     this.queue.requireActive();
     const job = this.current(id);
     if (job.status !== "approved" || !job.approvedAt || digest(job.plan) !== job.planSha256)
@@ -145,6 +149,7 @@ export class PreviewBrokerDeploymentWorkflow {
       assertPrepared();
       await this.executor().validateBrokerDeploymentPlan(structuredClone(job.plan));
       assertPrepared();
+      if (!authorized() || this.current(id).status !== "approved") return;
       const dispatched: PreviewBrokerDeploymentJob = {
         ...job,
         status: "running",

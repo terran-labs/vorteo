@@ -706,4 +706,30 @@ test.each([
       }
     },
   },
+  {
+    name: "rechecks the grant for a delegated approval recovered from the journal",
+    run: () => {
+      const grant = {
+        policyActivatedAt: "2026-11-01T00:00:00.000Z",
+        authoritySha256: "a".repeat(64),
+      };
+      const before = followPorts({ delegationGrant: () => grant });
+      const followJournal = createCoordinatorFollowJournal(directory);
+      const first = new CoordinatorFollow(followJournal, before.ports);
+      first.request("/releases/new", { requestedBy: "host-agent" });
+      first.drain();
+      // The coordinator stopped after recording the approval and before dispatching it.
+      followJournal.write([{ ...first.status().job!, status: "approved" }]);
+      const after = followPorts({
+        delegationGrant: () => ({ ...grant, authoritySha256: "b".repeat(64) }),
+      });
+      const recovered = new CoordinatorFollow(
+        createCoordinatorFollowJournal(directory),
+        after.ports,
+      );
+      recovered.drain();
+      expect(recovered.status().job?.status).toBe("cancelled");
+      expect(after.calls).toEqual([]);
+    },
+  },
 ])("coordinator follow $name", ({ run }) => run());

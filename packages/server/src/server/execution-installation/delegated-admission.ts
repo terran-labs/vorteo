@@ -22,11 +22,17 @@ import { writePrivateFileAtomicSync } from "../private-files.js";
  * - `coordinator-settings:<key>`: a coordinator settings change to that registered key.
  * - `broker-deployment:<operation>` and `broker-rebind:<operation>`: preview broker changes.
  * - `instruction-requests`: a change to the installation-wide agent instructions.
+ * - `agent-guardrails`: any other edit to agent instructions, skills or plugins.
+ * - `snapshot-restore`: restoring a pre-install safety snapshot.
  */
 export const OWNER_ONLY_OPERATIONS: readonly string[] = [
   // Owner decision 2026-11-07: agents never edit their own guardrails. An approved request
   // rewrites every agent's instructions, including the requester's.
   "instruction-requests",
+  "agent-guardrails",
+  // Builds charter: restoring a pre-install snapshot is the owner's decision. It rolls the
+  // whole installation back, including work agents did since.
+  "snapshot-restore",
 ];
 
 /** Whether the full maintenance grant may approve the operation. Default in. */
@@ -84,6 +90,28 @@ export function delegatedApprovalHolds(
     grant.authoritySha256 === approval.authoritySha256 &&
     current.revision === approval.requestRevision &&
     current.planSha256 === approval.planSha256
+  );
+}
+
+/**
+ * Whether an approved request may still dispatch on its delegated approval: the same grant and
+ * credentials, the same plan and no new exclusion. Approval itself issues a new revision, so the
+ * revision was bound at admission instead. Omit `planSha256` when the executor itself completes
+ * the plan after approval, such as coordinator-computed digests; the plan was bound at admission.
+ * True when the owner, not the grant, approved it.
+ */
+export function delegatedDispatchHolds(
+  approval: DelegatedMaintenanceApproval | undefined,
+  grant: DelegationGrant | null,
+  current: { operations: readonly string[]; planSha256?: string },
+): boolean {
+  if (!approval) return true;
+  return (
+    current.operations.every((operation) => delegableUnderGrant(operation)) &&
+    grant !== null &&
+    grant.policyActivatedAt === approval.policyActivatedAt &&
+    grant.authoritySha256 === approval.authoritySha256 &&
+    (current.planSha256 === undefined || current.planSha256 === approval.planSha256)
   );
 }
 

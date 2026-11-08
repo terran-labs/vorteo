@@ -7,7 +7,43 @@ import { OWNER_ROUTE_FRONT_DOORS } from "./front-door.js";
 const read = (relative: string) =>
   readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
 
-test("every owner route that changes something has an agent front door or a stated exemption", () => {
+// Existing owner operations still waiting for an agent door. Shrink this list as doors ship;
+// never grow it. A new operation ships with its agent door instead (docs/task-delivery.md).
+const PINNED_GAPS = [
+  "/api/installation/owner/connections",
+  "/api/installation/owner/custom-domain/change",
+  "/api/installation/owner/dev-repair/prepare",
+  "/api/installation/owner/helpers/verify-installed",
+  "/api/installation/owner/installation-type/change",
+  "/api/installation/owner/live-dev/change",
+  "/api/installation/owner/name",
+  "/api/installation/owner/profiles",
+  "/api/installation/owner/profiles/resolve",
+  "/api/installation/owner/profiles/synchronize",
+  "/api/installation/owner/settings",
+  "/api/installation/owner/snapshots",
+];
+
+// Routes that never get an agent door: owner session, grant management, read-only views and
+// release upgrades, which the update policy approves.
+const PINNED_EXEMPTIONS = [
+  "/api/installation/owner/daemon-automation/change",
+  "/api/installation/owner/lock",
+  "/api/installation/owner/maintenance-delegation/change",
+  "/api/installation/owner/maintenance-permissions/change",
+  "/api/installation/owner/profiles/read",
+  "/api/installation/owner/restarts/impact",
+  "/api/installation/owner/session",
+  "/api/installation/owner/settings/read",
+  "/api/installation/owner/settings/skills/preview",
+  "/api/installation/owner/unlock",
+  "/api/installation/owner/update-check",
+  "/api/installation/owner/update-policy",
+  "/api/installation/owner/upgrades",
+  "/api/installation/owner/upgrades/:id/decision",
+];
+
+test("every owner route that changes something has an agent front door, an exclusion or a pinned entry", () => {
   const server = read("./server.ts");
   const client = read("../../../../../scripts/installation-agent.mjs");
   // Every owner route registered in server.ts, whatever its HTTP method.
@@ -25,17 +61,29 @@ test("every owner route that changes something has an agent front door or a stat
   expect(unlisted, "add these routes to OWNER_ROUTE_FRONT_DOORS").toEqual([]);
   const stale = Object.keys(OWNER_ROUTE_FRONT_DOORS).filter((route) => !routes.has(route));
   expect(stale, "remove routes server.ts no longer registers").toEqual([]);
-  for (const [route, door] of Object.entries(OWNER_ROUTE_FRONT_DOORS)) {
-    if ("exempt" in door) expect(door.exempt.length, route).toBeGreaterThan(20);
-    else
+
+  const entries = Object.entries(OWNER_ROUTE_FRONT_DOORS);
+  for (const [route, door] of entries) {
+    if ("agent" in door)
       expect(client, `${route} needs agent command ${door.agent}`).toContain(
         `case "${door.agent}"`,
       );
+    // An exclusion is real only when the grant actually refuses it.
+    if ("excluded" in door) expect(OWNER_ONLY_OPERATIONS, route).toContain(door.excluded);
   }
+  // A new route cannot join either list by adding a sentence: both are pinned here.
+  const gaps = entries.filter(([, door]) => "gap" in door).map(([route]) => route);
+  expect(gaps.sort()).toEqual(PINNED_GAPS);
+  const exempt = entries.filter(([, door]) => "exempt" in door).map(([route]) => route);
+  expect(exempt.sort()).toEqual(PINNED_EXEMPTIONS);
   // Agents can never grant themselves the authority that approves their own requests.
-  expect(
-    OWNER_ROUTE_FRONT_DOORS["/api/installation/owner/maintenance-delegation/change"],
-  ).toHaveProperty("exempt");
-  // Excluded operations are named on purpose; each still has an agent request route.
-  expect(OWNER_ONLY_OPERATIONS).toEqual(["instruction-requests"]);
+  expect(OWNER_ROUTE_FRONT_DOORS["/api/installation/owner/maintenance-delegation/change"]).toEqual(
+    expect.objectContaining({ exempt: "grant" }),
+  );
+  // The exclusions are named on purpose: guardrail edits and snapshot restore.
+  expect(OWNER_ONLY_OPERATIONS).toEqual([
+    "instruction-requests",
+    "agent-guardrails",
+    "snapshot-restore",
+  ]);
 });

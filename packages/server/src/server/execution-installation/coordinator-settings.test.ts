@@ -735,6 +735,28 @@ test("revoking the full grant before the window ends cancels a delegated setting
   expect(calls).toEqual([]);
 });
 
+test("revoking the full grant during the dispatch broker review cancels a delegated change", async () => {
+  const fx = brokerInstallation();
+  let grant: { policyActivatedAt: string; authoritySha256: string } | null = {
+    policyActivatedAt: "2026-11-01T00:00:00.000Z",
+    authoritySha256: "a".repeat(64),
+  };
+  fx.settings["ports"].delegationGrant = () => grant;
+  fx.settings["ports"].cancellationDelayMs = 30_000;
+  const review = fx.settings["ports"].reviewBroker.bind(fx.settings["ports"]);
+  fx.settings["ports"].reviewBroker = async (input) => {
+    const result = await review(input);
+    if (input.phase === "dispatch") grant = null;
+    return result;
+  };
+  await fx.request();
+  await fx.settings.drain();
+  fx.state.clock.now += 30_000;
+  await fx.settings.drain();
+  expect(fx.settings.status().job?.status).toBe("cancelled");
+  expect(fx.calls).toEqual([]);
+});
+
 test("broker settings retry a review that could not run, and stop after a cancel during review", async () => {
   const fx = brokerInstallation();
   const job = await fx.request();

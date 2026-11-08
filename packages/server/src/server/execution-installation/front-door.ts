@@ -1,29 +1,38 @@
 /**
  * The front door for every owner-authenticated installation route that changes something.
- * Each route either has an agent request command in scripts/installation-agent.mjs, which
- * Builds uses and the full maintenance grant can approve (see OWNER_ONLY_OPERATIONS), or a
- * stated reason it stays with the owner. A new owner route fails the front-door test until it
- * is listed here, so a new lifecycle or settings operation cannot ship owner-only by default.
- * Read-only routes ending in `/query` are exempt without an entry.
+ * Each route is exactly one of:
+ * - `agent`: an agent request command in scripts/installation-agent.mjs, which Builds uses and
+ *   the full maintenance grant approves unless OWNER_ONLY_OPERATIONS names the operation;
+ * - `excluded`: an operation on OWNER_ONLY_OPERATIONS, so it stays with the owner;
+ * - `exempt`: owner session, grant management or a read-only view, which never get an agent door;
+ * - `gap`: an existing owner operation still waiting for its agent door. The list is pinned in
+ *   the front-door test: Builds tracks each entry, and no new route may join it.
+ * A new owner route fails the front-door test until it is listed here. Read-only routes ending in
+ * `/query` are exempt without an entry.
  */
-export type FrontDoor = { agent: string } | { exempt: string };
+export type FrontDoor =
+  | { agent: string }
+  | { excluded: string; why: string }
+  | { exempt: "session" | "grant" | "read" | "alternate"; why: string }
+  | { gap: string };
 
-const GRANT =
-  "Grant management: agents never grant, widen or choose their own authority, so it stays with the owner.";
-const SESSION = "Owner sign-in and session control; agents never hold an owner session.";
-const READ = "Read-only owner view; it changes nothing.";
-const UPGRADES =
-  "Release upgrades follow the owner's update policy, whose automatic mode approves them without an owner click.";
-const CREDENTIALS =
-  "Accounts and credentials: the full maintenance grant never alters accounts or credentials.";
-const GUARDRAILS =
-  "Installation-wide agent settings, which include agent instructions: agents never edit their own guardrails (owner decision 2026-11-07).";
-const MANAGEMENT =
-  "Owner cancellation; agents cancel retained requests through management-cancel instead.";
-const OBSERVE =
-  "Re-reads an uncertain outcome that every queue drain also observes; it approves nothing.";
-const OWNER_ONLY_TODAY =
-  "Owner-only today with no agent request route. Tracked gap: add an agent command and delegated admission.";
+const GRANT = {
+  exempt: "grant",
+  why: "Grant management: agents never grant, widen or choose their own authority.",
+} as const;
+const SESSION = {
+  exempt: "session",
+  why: "Owner sign-in and session control; agents never hold an owner session.",
+} as const;
+const READ = { exempt: "read", why: "Read-only owner view; it changes nothing." } as const;
+const UPGRADES = {
+  exempt: "alternate",
+  why: "Release upgrades follow the owner's update policy; Builds installs source through request-restart --update.",
+} as const;
+const GUARDRAILS = {
+  excluded: "agent-guardrails",
+  why: "Edits agent instructions, skills or plugins: agents never edit their own guardrails (owner decision 2026-11-07).",
+} as const;
 
 export const OWNER_ROUTE_FRONT_DOORS: Readonly<Record<string, FrontDoor>> = {
   // Queues an agent requests and the owner, or the full grant, approves.
@@ -46,39 +55,57 @@ export const OWNER_ROUTE_FRONT_DOORS: Readonly<Record<string, FrontDoor>> = {
   "/api/installation/owner/session-host/request": { agent: "request-session-host" },
   "/api/installation/owner/lab-updates": { agent: "request-lab-update" },
   "/api/installation/owner/lab-updates/cancel": { agent: "request-lab-update" },
-  // Agents request it; OWNER_ONLY_OPERATIONS keeps its approval with the owner.
-  "/api/installation/owner/instruction-requests/decision": { agent: "request-instructions" },
+  // Agents cancel retained requests through management-cancel.
+  "/api/installation/owner/maintenance-services/cancel": { agent: "management-cancel" },
+  // Every queue drain observes the same uncertain outcome; agents follow it with the status command.
+  "/api/installation/owner/broker-deployments/observe": { agent: "broker-deployment-status" },
 
-  "/api/installation/owner/maintenance-delegation/change": { exempt: GRANT },
-  "/api/installation/owner/maintenance-permissions/change": { exempt: GRANT },
-  "/api/installation/owner/daemon-automation/change": { exempt: GRANT },
-  "/api/installation/owner/session": { exempt: SESSION },
-  "/api/installation/owner/lock": { exempt: SESSION },
-  "/api/installation/owner/unlock": { exempt: SESSION },
-  "/api/installation/owner/restarts/impact": { exempt: READ },
-  "/api/installation/owner/profiles/read": { exempt: READ },
-  "/api/installation/owner/settings/read": { exempt: READ },
-  "/api/installation/owner/settings/skills/preview": { exempt: READ },
-  "/api/installation/owner/upgrades": { exempt: UPGRADES },
-  "/api/installation/owner/upgrades/:id/decision": { exempt: UPGRADES },
-  "/api/installation/owner/update-policy": { exempt: UPGRADES },
-  "/api/installation/owner/update-check": { exempt: UPGRADES },
-  "/api/installation/owner/connections": { exempt: CREDENTIALS },
-  "/api/installation/owner/profiles": { exempt: CREDENTIALS },
-  "/api/installation/owner/profiles/resolve": { exempt: CREDENTIALS },
-  "/api/installation/owner/profiles/synchronize": { exempt: CREDENTIALS },
-  "/api/installation/owner/settings": { exempt: GUARDRAILS },
-  "/api/installation/owner/settings/plugins/resolve": { exempt: GUARDRAILS },
-  "/api/installation/owner/settings/skills/package": { exempt: GUARDRAILS },
-  "/api/installation/owner/settings/skills/prepare": { exempt: GUARDRAILS },
-  "/api/installation/owner/maintenance-services/cancel": { exempt: MANAGEMENT },
-  "/api/installation/owner/broker-deployments/observe": { exempt: OBSERVE },
-  "/api/installation/owner/helpers/verify-installed": { exempt: OWNER_ONLY_TODAY },
-  "/api/installation/owner/dev-repair/prepare": { exempt: OWNER_ONLY_TODAY },
-  "/api/installation/owner/name": { exempt: OWNER_ONLY_TODAY },
-  "/api/installation/owner/custom-domain/change": { exempt: OWNER_ONLY_TODAY },
-  "/api/installation/owner/installation-type/change": { exempt: OWNER_ONLY_TODAY },
-  "/api/installation/owner/live-dev/change": { exempt: OWNER_ONLY_TODAY },
-  "/api/installation/owner/snapshots": { exempt: OWNER_ONLY_TODAY },
-  "/api/installation/owner/snapshots/restore": { exempt: OWNER_ONLY_TODAY },
+  // Agents request them; OWNER_ONLY_OPERATIONS keeps their approval with the owner.
+  "/api/installation/owner/instruction-requests/decision": {
+    excluded: "instruction-requests",
+    why: "Agents request it with request-instructions; only the owner approves it (owner decision 2026-11-07).",
+  },
+  "/api/installation/owner/snapshots/restore": {
+    excluded: "snapshot-restore",
+    why: "Restoring a pre-install snapshot is the owner's decision under the Builds charter.",
+  },
+  "/api/installation/owner/settings/plugins/resolve": GUARDRAILS,
+  "/api/installation/owner/settings/skills/package": GUARDRAILS,
+  "/api/installation/owner/settings/skills/prepare": GUARDRAILS,
+
+  "/api/installation/owner/maintenance-delegation/change": GRANT,
+  "/api/installation/owner/maintenance-permissions/change": GRANT,
+  "/api/installation/owner/daemon-automation/change": GRANT,
+  "/api/installation/owner/session": SESSION,
+  "/api/installation/owner/lock": SESSION,
+  "/api/installation/owner/unlock": SESSION,
+  "/api/installation/owner/restarts/impact": READ,
+  "/api/installation/owner/profiles/read": READ,
+  "/api/installation/owner/settings/read": READ,
+  "/api/installation/owner/settings/skills/preview": READ,
+  "/api/installation/owner/upgrades": UPGRADES,
+  "/api/installation/owner/upgrades/:id/decision": UPGRADES,
+  "/api/installation/owner/update-policy": UPGRADES,
+  "/api/installation/owner/update-check": UPGRADES,
+
+  // Pinned gaps: existing owner operations waiting for their agent doors (Builds, 2026-11-08).
+  "/api/installation/owner/helpers/verify-installed": { gap: "Verify an installed native helper." },
+  "/api/installation/owner/dev-repair/prepare": { gap: "Prepare a Dev repair plan." },
+  "/api/installation/owner/snapshots": { gap: "Take a safety snapshot." },
+  "/api/installation/owner/name": { gap: "Rename the installation." },
+  "/api/installation/owner/custom-domain/change": {
+    gap: "Change the custom domain; its request must show the disruption in Installation controls.",
+  },
+  "/api/installation/owner/installation-type/change": {
+    gap: "Change the installation type; its request must show the disruption in Installation controls.",
+  },
+  "/api/installation/owner/live-dev/change": { gap: "Turn live dev on or off." },
+  "/api/installation/owner/settings": {
+    // appendSystemPrompt in the same body is an instruction change and stays excluded.
+    gap: "Ordinary installation settings (autoArchiveAfterMerge, terminal profiles, metadata generation and similar fields).",
+  },
+  "/api/installation/owner/connections": { gap: "Connect or disconnect provider accounts." },
+  "/api/installation/owner/profiles": { gap: "Edit provider profiles." },
+  "/api/installation/owner/profiles/resolve": { gap: "Resolve a provider profile conflict." },
+  "/api/installation/owner/profiles/synchronize": { gap: "Synchronize provider profiles." },
 };

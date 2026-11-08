@@ -187,6 +187,39 @@ test.each(["approved", "revoked"] as const)(
   },
 );
 
+test("revoking the full grant while a delegated rebind validates stops it before any write", async () => {
+  let now = Date.parse("2026-11-07T12:00:00Z");
+  let activation: string | null = "2026-01-01T00:00:00.000Z";
+  let dispatching = false;
+  const rebind = memoryDelegationEvidence();
+  const f = fixture(
+    {
+      validateBrokerPlan: async () => {
+        if (dispatching) activation = null;
+      },
+    },
+    {
+      now: () => now,
+      policy: {
+        maintenanceRequestsAfter: () => activation,
+        cancellationDelayMs: 30_000,
+        brokerDelegationEvidence: { deployment: memoryDelegationEvidence(), rebind },
+      },
+    },
+  );
+  const job = await f.prepare();
+  await f.queue.drain();
+  dispatching = true;
+  now += 30_000;
+  await f.queue.drain();
+  // Approved, then the grant lapsed during validation: no write, and the next drain cancels it.
+  expect(f.install).not.toHaveBeenCalled();
+  await f.queue.drain();
+  expect(f.install).not.toHaveBeenCalled();
+  expect(f.queue.listBrokers()[0]).toMatchObject({ id: job.id, status: "rejected" });
+  expect(rebind.get(job.id)).toBeUndefined();
+});
+
 test("incompatible selected or recovery reader refuses before first journal append", async () => {
   const f = fixture({ brokerCompatible: async () => false });
   await expect(f.prepare()).rejects.toThrow("compatible");

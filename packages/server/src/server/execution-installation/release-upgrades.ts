@@ -22,6 +22,7 @@ import { RestartRequestError } from "./restarts.js";
 import {
   delegatedAdmissionStep,
   delegatedApproval,
+  delegatedDispatchHolds,
   delegatedPlanDigest,
   type DelegationGrant,
 } from "./delegated-admission.js";
@@ -1016,6 +1017,17 @@ export class CoordinatorFollow {
   }
 
   private dispatch(job: CoordinatorFollowJob): void {
+    // A delegated approval holds only while its grant does, including one recovered from the
+    // journal after a restart between approval and dispatch.
+    if (
+      !delegatedDispatchHolds(job.delegatedApproval, this.ports.delegationGrant?.() ?? null, {
+        operations: [FOLLOW_OPERATION],
+        planSha256: followPlan(job),
+      })
+    ) {
+      this.finish(job, "cancelled", "Delegated approval changed before dispatch. Nothing started.");
+      return;
+    }
     const refusal = this.refusal(job);
     if (refusal) {
       this.finish(job, "failed", refusal);
