@@ -191,11 +191,15 @@ test("revoking the full grant while a delegated rebind validates stops it before
   let now = Date.parse("2026-11-07T12:00:00Z");
   let activation: string | null = "2026-01-01T00:00:00.000Z";
   let dispatching = false;
+  const recorded: string[] = [];
   const rebind = memoryDelegationEvidence();
   const f = fixture(
     {
       validateBrokerPlan: async () => {
-        if (dispatching) activation = null;
+        if (!dispatching) return;
+        // A coordinator that crashed here and rolled back would read this durable record.
+        recorded.push(...f.journal.read().map((item) => PreviewBrokerJobSchema.parse(item).status));
+        activation = null;
       },
     },
     {
@@ -212,12 +216,37 @@ test("revoking the full grant while a delegated rebind validates stops it before
   dispatching = true;
   now += 30_000;
   await f.queue.drain();
-  // Approved, then the grant lapsed during validation: no write, and the next drain cancels it.
+  // Still pending during validation, so a rolled-back coordinator waits for the owner.
+  expect(recorded).toEqual(["pending"]);
+  // The grant lapsed during validation: no write, and the next drain cancels it.
   expect(f.install).not.toHaveBeenCalled();
   await f.queue.drain();
   expect(f.install).not.toHaveBeenCalled();
   expect(f.queue.listBrokers()[0]).toMatchObject({ id: job.id, status: "rejected" });
   expect(rebind.get(job.id)).toBeUndefined();
+});
+
+test("an owner approval inside the delegated window survives a later revocation", async () => {
+  let activation: string | null = "2026-01-01T00:00:00.000Z";
+  const rebind = memoryDelegationEvidence();
+  const f = fixture(
+    {},
+    {
+      now: () => Date.parse("2026-11-07T12:00:00Z"),
+      policy: {
+        maintenanceRequestsAfter: () => activation,
+        cancellationDelayMs: 30_000,
+        brokerDelegationEvidence: { deployment: memoryDelegationEvidence(), rebind },
+      },
+    },
+  );
+  await f.prepare();
+  await f.queue.drain();
+  f.queue.decideBroker(decision(f.queue.listBrokers()[0]!));
+  expect(rebind.get(f.queue.listBrokers()[0]!.id)).toBeUndefined();
+  activation = null;
+  await f.queue.drain();
+  expect(f.install).toHaveBeenCalledTimes(1);
 });
 
 test("incompatible selected or recovery reader refuses before first journal append", async () => {

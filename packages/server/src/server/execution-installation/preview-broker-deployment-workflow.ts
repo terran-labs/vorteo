@@ -134,13 +134,22 @@ export class PreviewBrokerDeploymentWorkflow {
   }
 
   /**
-   * `authorized` re-reads any delegated approval after validation, immediately before effects;
-   * when it fails, nothing starts and the request stays approved for the queue to cancel.
+   * Dispatches an owner-approved request. With `claim`, it dispatches a pending request the full
+   * grant approved instead: the durable record stays pending through validation, so a rolled-back
+   * coordinator that reads it waits for the owner, and `claim` rechecks the delegated evidence and
+   * approves it in the same synchronous step that records the dispatch. It returns null when the
+   * evidence no longer holds; nothing starts.
    */
-  async dispatch(id: string, authorized: () => boolean = () => true): Promise<void> {
+  async dispatch(
+    id: string,
+    claim?: (job: PreviewBrokerDeploymentJob) => PreviewBrokerDeploymentJob | null,
+  ): Promise<void> {
     this.queue.requireActive();
-    const job = this.current(id);
-    if (job.status !== "approved" || !job.approvedAt || digest(job.plan) !== job.planSha256)
+    let job = this.current(id);
+    const dispatchable = claim
+      ? job.status === "pending" && job.stage === "prepared"
+      : job.status === "approved" && Boolean(job.approvedAt);
+    if (!dispatchable || digest(job.plan) !== job.planSha256)
       throw new BrokerDeploymentRefused("Deployment has no exact dispatch approval");
     const assertPrepared = this.reservation();
     try {
@@ -149,7 +158,13 @@ export class PreviewBrokerDeploymentWorkflow {
       assertPrepared();
       await this.executor().validateBrokerDeploymentPlan(structuredClone(job.plan));
       assertPrepared();
-      if (!authorized() || this.current(id).status !== "approved") return;
+      if (claim) {
+        const current = this.current(id);
+        if (current.status !== "pending" || current.revision !== job.revision) return;
+        const claimed = claim(current);
+        if (!claimed) return;
+        job = claimed;
+      }
       const dispatched: PreviewBrokerDeploymentJob = {
         ...job,
         status: "running",

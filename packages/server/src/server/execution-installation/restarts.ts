@@ -31,7 +31,6 @@ import {
   delegableUnderGrant,
   delegatedAdmissionStep,
   delegatedApproval,
-  delegatedDispatchHolds,
   type DelegationEvidence,
   type DelegationGrant,
 } from "./delegated-admission.js";
@@ -127,6 +126,8 @@ type NativeMaintenanceJob = NativeHelperJob | PreviewMonitorJob | SessionHostJob
 /** Native maintenance is delegable by default; only OWNER_ONLY_OPERATIONS excludes one. */
 const delegableNative = (job: NativeMaintenanceJob) =>
   delegableUnderGrant(`native:${job.operation}`);
+/** Broker operation names as OWNER_ONLY_OPERATIONS lists them. */
+const brokerOperationPrefix = { deployment: "broker-deployment", rebind: "broker-rebind" } as const;
 
 /** Approval evidence is journal-private; old clients keep their original wire shape. */
 function publicNativeJob<T extends NativeMaintenanceJob>(job: T): Omit<T, "delegatedApproval"> {
@@ -696,7 +697,11 @@ export class InstallationRestarts {
   }
 
   decideBrokerDeployment(input: unknown): PreviewBrokerDeploymentJob {
-    return this.deploymentWorkflow().decide(input);
+    const job = this.deploymentWorkflow().decide(input);
+    // An owner approval replaces any delegated one, so a later revocation cannot cancel it.
+    if (job.status === "approved")
+      this.approvalPolicy.brokerDelegationEvidence?.deployment.delete(job.id);
+    return job;
   }
 
   async observeBrokerDeployment(id: string): Promise<void> {
@@ -774,6 +779,14 @@ export class InstallationRestarts {
   }
 
   decideBroker(input: unknown): PreviewBrokerJob {
+    const job = this.decideBrokerRecord(input);
+    // An owner approval replaces any delegated one, so a later revocation cannot cancel it.
+    if (job.status === "approved")
+      this.approvalPolicy.brokerDelegationEvidence?.rebind.delete(job.id);
+    return job;
+  }
+
+  private decideBrokerRecord(input: unknown): PreviewBrokerJob {
     this.requireActive();
     const decision = PreviewBrokerDecisionSchema.parse(input);
     const job = this.brokers.find((item) => item.id === decision.id);
@@ -860,7 +873,13 @@ export class InstallationRestarts {
     }
   }
 
-  private async dispatchBroker(job: PreviewBrokerJob): Promise<void> {
+  /**
+   * With `delegated`, dispatches a pending request the full grant approved: its record stays
+   * pending through validation, so a rolled-back coordinator waits for the owner, and the claim
+   * below rechecks the evidence and approves it in the same synchronous step that records the
+   * dispatch.
+   */
+  private async dispatchBroker(job: PreviewBrokerJob, delegated = false): Promise<void> {
     try {
       if (
         !this.executor.validateBrokerPlan ||
@@ -871,10 +890,19 @@ export class InstallationRestarts {
       if (createHash("sha256").update(JSON.stringify(job.plan)).digest("hex") !== job.planSha256)
         throw new Error("Broker plan changed");
       await this.executor.validateBrokerPlan(structuredClone(job.plan));
-      const current = this.brokers.find((item) => item.id === job.id);
-      if (current?.status !== "approved" || current.revision !== job.revision) return;
-      // Revocation during validation: the next drain cancels it before any effect.
-      if (!this.brokerDelegationHolds("rebind", current)) return;
+      let current = this.brokers.find((item) => item.id === job.id);
+      if (!current || current.revision !== job.revision) return;
+      if (delegated) {
+        // Revoked, rotated or changed during validation: nothing starts.
+        if (!this.delegatedBrokerReady("rebind", current)) return;
+        current = this.decideBroker({
+          operation: current.operation,
+          id: current.id,
+          revision: current.revision,
+          planSha256: current.planSha256,
+          decision: "approve",
+        });
+      } else if (current.status !== "approved") return;
       const dispatched: PreviewBrokerJob = {
         ...current,
         status: "running",
@@ -2741,72 +2769,71 @@ export class InstallationRestarts {
     );
   }
 
+  /** The active full grant as the broker queues see it; null when none applies. */
+  private brokerGrant(): DelegationGrant | null {
+    const activation = this.approvalPolicy.maintenanceRequestsAfter?.();
+    const authority = this.approvalPolicy.authority?.();
+    return activation && authority
+      ? { policyActivatedAt: activation, authoritySha256: authority }
+      : null;
+  }
+
   /**
-   * Whether an approved broker job may still dispatch on its delegated evidence, if it has any.
-   * Read before dispatch and again after asynchronous validation, immediately before effects.
+   * Whether a pending broker request holds a delegated approval that may be claimed now: present,
+   * readable evidence for this exact revision and plan under the current grant, after its window.
+   * Missing or unreadable evidence never dispatches; the request waits for the owner.
    */
-  private brokerDelegationHolds(
+  private delegatedBrokerReady(
     queue: "deployment" | "rebind",
     job: PreviewBrokerJob | PreviewBrokerDeploymentJob,
   ): boolean {
-    const evidence = this.approvalPolicy.brokerDelegationEvidence?.[queue];
-    const activation = this.approvalPolicy.maintenanceRequestsAfter?.();
-    const authority = this.approvalPolicy.authority?.();
-    return delegatedDispatchHolds(
-      evidence?.get(job.id),
-      activation && authority
-        ? { policyActivatedAt: activation, authoritySha256: authority }
-        : null,
-      {
-        operations: [
-          `${queue === "deployment" ? "broker-deployment" : "broker-rebind"}:${job.operation}`,
-        ],
-        planSha256: job.planSha256,
-      },
+    const store = this.approvalPolicy.brokerDelegationEvidence?.[queue];
+    if (!store || job.status !== "pending" || job.stage !== "prepared") return false;
+    return (
+      delegatedAdmissionStep(
+        { ...job, delegatedApproval: store.get(job.id) },
+        {
+          grant: this.brokerGrant(),
+          operations: [`${brokerOperationPrefix[queue]}:${job.operation}`],
+          planSha256: job.planSha256,
+          now: this.now(),
+        },
+      ) === "ready"
+    );
+  }
+
+  /** Approved broker requests, and delegated ones ready to claim, can dispatch now. */
+  private brokerDispatchWaiting(): boolean {
+    return (
+      [...this.brokers, ...this.brokerDeployments].some((job) => job.status === "approved") ||
+      this.brokerDeployments.some((job) => this.delegatedBrokerReady("deployment", job)) ||
+      this.brokers.some((job) => this.delegatedBrokerReady("rebind", job))
     );
   }
 
   private async drainBrokers(): Promise<void> {
     if (this.brokerDispatchFenced()) return;
-    for (const job of this.brokerDeployments.filter((item) => item.status === "approved")) {
+    for (const job of this.brokerDeployments) {
       if (this.brokerRecoveryRequired()) break;
-      if (!this.brokerDelegationHolds("deployment", job)) {
-        this.cancelLapsedBroker("deployment", job);
-        continue;
-      }
-      await this.deploymentWorkflow().dispatch(job.id, () =>
-        this.brokerDelegationHolds("deployment", job),
-      );
+      if (job.status === "approved") await this.deploymentWorkflow().dispatch(job.id);
+      else if (this.delegatedBrokerReady("deployment", job))
+        await this.deploymentWorkflow().dispatch(job.id, (current) =>
+          this.delegatedBrokerReady("deployment", current)
+            ? this.decideBrokerDeployment({
+                operation: current.operation,
+                id: current.id,
+                revision: current.revision,
+                planSha256: current.planSha256,
+                decision: "approve",
+              })
+            : null,
+        );
     }
-    for (const job of this.brokers.filter((item) => item.status === "approved")) {
+    for (const job of this.brokers) {
       if (this.brokerRecoveryRequired()) break;
-      if (!this.brokerDelegationHolds("rebind", job)) {
-        this.cancelLapsedBroker("rebind", job);
-        continue;
-      }
-      await this.dispatchBroker(job);
+      if (job.status === "approved") await this.dispatchBroker(job);
+      else if (this.delegatedBrokerReady("rebind", job)) await this.dispatchBroker(job, true);
     }
-  }
-
-  /** The grant behind a delegated broker approval no longer holds: cancel it before any effect. */
-  private cancelLapsedBroker(
-    queue: "deployment" | "rebind",
-    job: PreviewBrokerJob | PreviewBrokerDeploymentJob,
-  ): void {
-    const decision = {
-      operation: job.operation,
-      id: job.id,
-      revision: job.revision,
-      planSha256: job.planSha256,
-      decision: "cancel" as const,
-    };
-    try {
-      if (queue === "deployment") this.decideBrokerDeployment(decision);
-      else this.decideBroker(decision);
-    } catch {
-      // It changed meanwhile; the next drain re-reads it.
-    }
-    this.approvalPolicy.brokerDelegationEvidence?.[queue].delete(job.id);
   }
 
   private async drainMonitors(): Promise<void> {
@@ -2936,8 +2963,7 @@ export class InstallationRestarts {
         if (rollback) await this.dispatchHelper(rollback);
         return;
       }
-      if ([...this.brokers, ...this.brokerDeployments].some((job) => job.status === "approved"))
-        await this.drainBrokers();
+      if (this.brokerDispatchWaiting()) await this.drainBrokers();
       if (this.brokerRecoveryRequired()) return;
       if (this.monitors.some((job) => job.status === "approved")) await this.drainMonitors();
       if (this.previewRecoveryRequired()) return;
@@ -3022,7 +3048,7 @@ export class InstallationRestarts {
           decision,
         }),
       note: (job, detail) => this.deploymentWorkflow().note(job.id, job.revision, detail),
-      operation: (job) => `broker-deployment:${job.operation}`,
+      operation: (job) => `${brokerOperationPrefix.deployment}:${job.operation}`,
     });
     this.admitDelegatedBrokerQueue(grant, {
       store: evidence.rebind,
@@ -3036,7 +3062,7 @@ export class InstallationRestarts {
           decision,
         }),
       note: (job, detail) => this.replaceBroker({ ...job, detail }),
-      operation: (job) => `broker-rebind:${job.operation}`,
+      operation: (job) => `${brokerOperationPrefix.rebind}:${job.operation}`,
     });
   }
 
@@ -3052,8 +3078,6 @@ export class InstallationRestarts {
   ): void {
     for (const job of queue.jobs) {
       const approval = queue.store.get(job.id);
-      // An approved job keeps its evidence until dispatch, which checks the grant again.
-      if (job.status === "approved") continue;
       if (job.status !== "pending") {
         // Decided by the owner, management or dispatch: the evidence is spent.
         if (approval) queue.store.delete(job.id);
@@ -3080,11 +3104,8 @@ export class InstallationRestarts {
         } else if (step === "invalid") {
           queue.decide(job, "cancel");
           queue.store.delete(job.id);
-        } else if (step === "ready" && !this.brokerDispatchFenced()) {
-          // Approved only when this drain can dispatch it, so the strict record a rolled-back
-          // coordinator reads stays pending for as long as dispatch has to wait.
-          queue.decide(job, "approve");
         }
+        // A ready request stays pending; drainBrokers claims it at dispatch.
       } catch {
         // A request that changed meanwhile keeps its own state; the next drain re-reads it.
       }
