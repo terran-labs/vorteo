@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import type { DelegationGrant } from "./delegated-admission.js";
 import {
   closeSync,
   existsSync,
@@ -302,6 +303,8 @@ export function createReleaseUpgradeRuntime(input: {
    * restarts, approved Host jobs and open coordinator requests.
    */
   coordinatorFollowConflict?: () => string | null;
+  /** The active full maintenance grant; a Host-agent coordinator update is delegated under it. */
+  delegationGrant?: () => DelegationGrant | null;
 }): ReleaseUpgradeRuntime {
   const { config, configFile, restarts, hostUpdates, logger } = input;
   const run = input.run ?? runCommand;
@@ -1133,6 +1136,8 @@ export function createReleaseUpgradeRuntime(input: {
       existsSync(path.join(release, COORDINATOR_DIRECTORY, path.basename(entrypoint))),
     launchSwap: (job, next, previous) =>
       launchCoordinatorSwap(path.join(followDirectory, job.id), job.id, next, previous),
+    delegationGrant: () => input.delegationGrant?.() ?? null,
+    cancellationDelayMs: 30_000,
     swapOutcome: (jobId) =>
       readHandoffOutcome(path.join(followDirectory, jobId, "coordinator-handoff.json")),
   });

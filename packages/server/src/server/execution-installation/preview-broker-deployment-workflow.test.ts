@@ -69,6 +69,7 @@ function fixture() {
   });
   let jobs: PreviewBrokerDeploymentJob[] = [];
   const unrelated: string[] = [];
+  const written: string[] = [];
   const observation = (job: PreviewBrokerDeploymentJob): PreviewBrokerDeploymentObservation => ({
     kind: "committed",
     id: job.id,
@@ -94,6 +95,7 @@ function fixture() {
     jobs: () => structuredClone(jobs),
     replace: (job) => {
       jobs = [...jobs.filter((prior) => prior.id !== job.id), structuredClone(job)];
+      written.push(job.status);
     },
     executor,
     now: Date.now,
@@ -108,7 +110,7 @@ function fixture() {
       decision: "approve",
     });
   };
-  return { workflow, input, executor, unrelated, approve, jobs: () => jobs };
+  return { workflow, input, executor, unrelated, approve, written, jobs: () => jobs };
 }
 
 describe("broker consumer deployment queue boundary", () => {
@@ -121,6 +123,20 @@ describe("broker consumer deployment queue boundary", () => {
     expect(f.jobs()[0].status).toBe("succeeded");
     expect(f.executor.executeBrokerDeployment).toHaveBeenCalledTimes(1);
     await expect(f.workflow.dispatch(f.input.id)).rejects.toThrow("dispatch approval");
+  });
+
+  it("claims delegated work from pending straight to running, or starts nothing", async () => {
+    for (const holds of [true, false]) {
+      const f = fixture();
+      await f.workflow.prepare(f.input, "host-agent");
+      const claim = (job: PreviewBrokerDeploymentJob) =>
+        holds ? { ...job, approvedAt: new Date().toISOString() } : null;
+      await f.workflow.dispatch(f.input.id, claim);
+      // A rollback reader never finds a persisted approval it would replay.
+      expect(f.written, String(holds)).not.toContain("approved");
+      expect(f.jobs()[0].status, String(holds)).toBe(holds ? "succeeded" : "pending");
+      expect(f.executor.executeBrokerDeployment).toHaveBeenCalledTimes(holds ? 1 : 0);
+    }
   });
 
   it("composes full queue reservation into the effect boundary", async () => {

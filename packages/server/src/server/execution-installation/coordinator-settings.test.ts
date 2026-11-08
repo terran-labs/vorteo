@@ -236,6 +236,30 @@ test.each([
     },
   },
   {
+    name: "a combined owner approval inside the delegated window survives a later revocation",
+    run: async () => {
+      const state = installation();
+      let grant: { policyActivatedAt: string; authoritySha256: string } | null = {
+        policyActivatedAt: "2026-11-01T00:00:00.000Z",
+        authoritySha256: "a".repeat(64),
+      };
+      const { settings, calls } = settingsPorts(state, { delegationGrant: () => grant });
+      await requestRefresh(state, settings);
+      await settings.drain();
+      const held = settings.status().job!;
+      expect(held.delegatedApproval).toBeDefined();
+      state.follow.job = followJob("pending");
+      settings.approveWithFollow(held.id, held.revision, () => {
+        state.follow.job = followJob("approved");
+        return state.follow.job;
+      });
+      grant = null;
+      state.follow.job = followJob("succeeded");
+      await settings.drain();
+      expect(calls).toEqual(["write running", "launch running"]);
+    },
+  },
+  {
     name: "a combined approval leaves the settings pending when the update rolls back",
     run: async () => {
       const state = installation();
@@ -687,6 +711,74 @@ test.each([
   expect(fx.calls).toEqual([]);
   // Nothing applied, so the recorded scope keeps its exact bytes.
   expect(readFileSync(fx.recorded.scope.path, "utf8")).toBe("{}");
+});
+
+test.each([false, true])(
+  "the full grant applies broker settings only after the window and reviews every file again (swapped %s)",
+  async (swapped) => {
+    const fx = brokerInstallation();
+    const grant = {
+      policyActivatedAt: "2026-11-01T00:00:00.000Z",
+      authoritySha256: "a".repeat(64),
+    };
+    fx.settings["ports"].delegationGrant = () => grant;
+    fx.settings["ports"].cancellationDelayMs = 30_000;
+    await fx.request();
+    await fx.settings.drain();
+    // Pending and cancellable in Installation controls until the window ends.
+    expect(fx.settings.status().job).toMatchObject({
+      status: "pending",
+      delegatedApproval: { authoritySha256: "a".repeat(64) },
+    });
+    fx.state.clock.now += 29_000;
+    await fx.settings.drain();
+    expect(fx.settings.status().job?.status).toBe("pending");
+    fx.state.clock.now += 1_000;
+    if (swapped) writeFileSync(fx.host.worker.path, "worker swapped");
+    await fx.settings.drain();
+    if (swapped) {
+      expect(fx.settings.status().job?.detail).toContain("digest changed");
+      expect(fx.calls).toEqual([]);
+    } else expect(fx.calls).toEqual(["write running", "launch running"]);
+  },
+);
+
+test("revoking the full grant before the window ends cancels a delegated settings change", async () => {
+  const state = installation();
+  let grant: { policyActivatedAt: string; authoritySha256: string } | null = {
+    policyActivatedAt: "2026-11-01T00:00:00.000Z",
+    authoritySha256: "a".repeat(64),
+  };
+  const { settings, calls } = settingsPorts(state, { delegationGrant: () => grant });
+  await requestRefresh(state, settings);
+  await settings.drain();
+  grant = null;
+  state.clock.now += 30_000;
+  await settings.drain();
+  expect(settings.status().job?.status).toBe("cancelled");
+  expect(calls).toEqual([]);
+});
+
+test("revoking the full grant during the dispatch broker review cancels a delegated change", async () => {
+  const fx = brokerInstallation();
+  let grant: { policyActivatedAt: string; authoritySha256: string } | null = {
+    policyActivatedAt: "2026-11-01T00:00:00.000Z",
+    authoritySha256: "a".repeat(64),
+  };
+  fx.settings["ports"].delegationGrant = () => grant;
+  fx.settings["ports"].cancellationDelayMs = 30_000;
+  const review = fx.settings["ports"].reviewBroker.bind(fx.settings["ports"]);
+  fx.settings["ports"].reviewBroker = async (input) => {
+    const result = await review(input);
+    if (input.phase === "dispatch") grant = null;
+    return result;
+  };
+  await fx.request();
+  await fx.settings.drain();
+  fx.state.clock.now += 30_000;
+  await fx.settings.drain();
+  expect(fx.settings.status().job?.status).toBe("cancelled");
+  expect(fx.calls).toEqual([]);
 });
 
 test("broker settings retry a review that could not run, and stop after a cancel during review", async () => {

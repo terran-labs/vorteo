@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DelegatedMaintenanceApprovalSchema } from "./maintenance-approval.js";
 
 // Owner-only installation upgrades and safety snapshots, served under
 // /api/installation/owner/. Older coordinators return 404 for these routes.
@@ -337,6 +338,15 @@ export const CoordinatorFollowJobSchema = z.object({
   next: z.string(),
   /** The release the coordinator link selected when the replacement started. */
   previous: z.string().optional(),
+  /** Absent for owner requests and from older coordinators. */
+  requestedBy: z.enum(["owner", "host-agent"]).optional(),
+  /** The Host agent's own label, such as "Builds". Display only, never authority. */
+  requester: z.string().optional(),
+  /**
+   * Set when the full maintenance grant approved a Host-agent request. The job stays pending,
+   * cancellable, until `dispatchAfter`, then starts if the same grant, revision and release hold.
+   */
+  delegatedApproval: DelegatedMaintenanceApprovalSchema.optional(),
   approvedAt: z.string().datetime().optional(),
   startedAt: z.string().datetime().optional(),
   finishedAt: z.string().datetime().optional(),
@@ -367,6 +377,16 @@ export type CoordinatorFollowStatus = z.infer<typeof CoordinatorFollowStatusSche
 /** POST /api/installation/owner/coordinator-follow. `next` repeats the reviewed Host release. */
 export const CoordinatorFollowRequestSchema = z.strictObject({ next: z.string().startsWith("/") });
 export type CoordinatorFollowRequest = z.infer<typeof CoordinatorFollowRequestSchema>;
+
+/**
+ * POST /api/installation/coordinator-follow, Host agents only. `next` names the Host release the
+ * request was prepared against; it is refused when that release is no longer selected.
+ */
+export const CoordinatorFollowAgentRequestSchema = z.strictObject({
+  next: z.string().startsWith("/"),
+  requester: z.string().min(1).max(256).optional(),
+});
+export type CoordinatorFollowAgentRequest = z.infer<typeof CoordinatorFollowAgentRequestSchema>;
 
 /** POST /api/installation/owner/coordinator-follow/:id/decision. */
 export const CoordinatorFollowDecisionSchema = z.strictObject({
@@ -426,6 +446,8 @@ export const CoordinatorSettingsJobSchema = z.object({
    * succeeds; if it fails, this is cleared and the settings stay pending.
    */
   approvedWith: z.string().uuid().optional(),
+  /** Set when the full maintenance grant approved it; pending and cancellable until `dispatchAfter`. */
+  delegatedApproval: DelegatedMaintenanceApprovalSchema.optional(),
   approvedAt: z.string().datetime().optional(),
   startedAt: z.string().datetime().optional(),
   finishedAt: z.string().datetime().optional(),
@@ -479,12 +501,17 @@ export const AgentUpdateStatusSchema = z.object({
   check: UpdateCheckSchema,
   /** The upgrade waiting for approval or running, without coordinator-private state. */
   active: InstallationUpgradeSchema.nullable(),
-  /** Absent from coordinators without the coordinator replacement. Agents never decide it. */
+  /** Absent from coordinators without the coordinator replacement. Agents request it but never decide it. */
   coordinatorFollow: CoordinatorFollowStatusSchema.pick({
     available: true,
     detail: true,
     job: true,
-  }).optional(),
+  })
+    .extend({
+      /** The releases a request must name; absent from older coordinators. */
+      current: CoordinatorFollowStatusSchema.shape.current.optional(),
+    })
+    .optional(),
   /** Absent from coordinators without coordinator settings changes. Agents never decide it. */
   coordinatorSettings: CoordinatorSettingsStatusSchema.optional(),
 });
