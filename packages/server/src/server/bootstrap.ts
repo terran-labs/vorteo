@@ -1934,6 +1934,8 @@ export async function createPaseoDaemon(
       readUsage: (options) => providerUsageService.listUsage(options),
       getSettings: () => daemonConfigStore.get(),
       hosts: factoryHosts,
+      serverId,
+      readInstallationSettings: () => daemonConfigStore.readInstallationSettingsAuthority(),
     }),
     hosts: factoryHosts,
     schedules: scheduleService,
