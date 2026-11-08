@@ -238,11 +238,10 @@ export async function chooseAccount(input: {
   const usage = await input.accounts
     .readUsage()
     .catch((): UsageList => ({ fetchedAt: "", providers: [] }));
-  // Several local aliases can name one account; avoiding it avoids every alias.
+  // Several local aliases can name one account; avoiding it by either id avoids every alias.
+  const avoided = input.avoid === undefined ? undefined : (where.place(input.avoid) ?? input.avoid);
   const avoid = new Set(
-    candidates.filter(
-      (provider) => provider === input.avoid || placed.get(provider) === input.avoid,
-    ),
+    candidates.filter((provider) => provider === input.avoid || placed.get(provider) === avoided),
   );
   const ranked = rankAccounts({ candidates, usage, nowMs: input.nowMs, avoid });
   return {
