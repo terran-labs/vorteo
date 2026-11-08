@@ -267,7 +267,12 @@ export function createQueuedAgentActions(input: {
     await finishRestore(restoring, action);
   }
 
-  /** Restores at most once, then records whether the previous value is back. */
+  /**
+   * Restores at most once, then records whether the previous value is back. The restore is
+   * compare-and-set against `restoreRevision`, so it is safe to call again when the coordinator
+   * stopped after recording the attempt but before the restore changed anything: the state is
+   * then still at that revision. Any other revision means the restore ran or the owner changed it.
+   */
   async function finishRestore(job: QueuedAgentAction, action: QueuedActionDefinition) {
     if (action.settled && !(await action.settled())) return;
     const back = JSON.stringify(await action.capture()) === JSON.stringify(job.previous ?? null);
@@ -276,21 +281,35 @@ export function createQueuedAgentActions(input: {
       return;
     }
     if (job.restoreAttempted) {
-      finish(
-        job,
-        "failed",
-        `${job.detail} The restore did not take effect; check it in Installation controls.`,
-      );
-      return;
+      const { revision } = await action.state(job.request);
+      if (revision !== job.restoreRevision) {
+        finish(
+          job,
+          "failed",
+          `${job.detail} The restore did not take effect or the value changed since; check it in Installation controls.`,
+        );
+        return;
+      }
     }
-    const attempting = save(job, { restoreAttempted: true });
+    const attempting = job.restoreAttempted ? job : save(job, { restoreAttempted: true });
     try {
       await action.restore!(job.previous, job.restoreRevision ?? "");
     } catch (error) {
       finish(attempting, "failed", `${job.detail} Not restored: ${message(error)}`);
       return;
     }
-    await finishRestore(jobs.find((item) => item.id === job.id)!, action);
+    const latest = jobs.find((item) => item.id === job.id)!;
+    // Settles first when the restore restarts the coordinator; the next one reconciles it.
+    if (action.settled && !(await action.settled())) return;
+    const restored =
+      JSON.stringify(await action.capture()) === JSON.stringify(job.previous ?? null);
+    finish(
+      latest,
+      "failed",
+      restored
+        ? `${job.detail} Restored the previous value.`
+        : `${job.detail} The restore did not take effect; check it in Installation controls.`,
+    );
   }
 
   return {

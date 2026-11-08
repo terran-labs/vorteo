@@ -230,3 +230,27 @@ test("a restore never overwrites a change the owner made during verification", a
   expect(actions.list()[0]).toMatchObject({ status: "failed" });
   expect(actions.list()[0]?.detail).toContain("Not restored");
 });
+
+test("a restore interrupted before it changed anything runs on resume, once", async () => {
+  const clock = { now: Date.parse("2026-11-08T12:00:00Z") };
+  const fake = domain({ reachable: () => "domain did not answer" });
+  const restore = fake.definition.restore!;
+  let crash = true;
+  // The coordinator stops after recording the attempt and before the restore runs.
+  fake.definition.restore = async (previous, revision) => {
+    if (crash) return new Promise<never>(() => {});
+    return restore(previous, revision);
+  };
+  const first = queue(fake.definition, clock);
+  const job = first.request("custom-domain", { origin: "https://new.example" }, "Builds");
+  first.decide(job.id, job.revision, "approve");
+  void first.drain();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(first.list()[0]).toMatchObject({ status: "restoring", restoreAttempted: true });
+  crash = false;
+  const next = queue(fake.definition, clock);
+  await next.drain();
+  expect(fake.value()).toBe("old");
+  expect(next.list()[0]?.detail).toContain("Restored the previous value");
+  expect(fake.calls.filter((call) => call.startsWith("restore"))).toHaveLength(1);
+});
