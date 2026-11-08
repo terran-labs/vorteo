@@ -47,8 +47,16 @@ export interface InstallationChangePorts {
     }): Promise<{ revision: number }>;
   };
   customDomain: {
-    status(): Promise<{ origin: string | null; revision: string }>;
-    change(input: unknown): Promise<{ origin: string | null; revision: string }>;
+    status(): Promise<{
+      origin: string | null;
+      revision: string;
+      lastChange: { id: string } | null;
+    }>;
+    /** `options.id` names the change, as a queued restore does to recognize it later. */
+    change(
+      input: unknown,
+      options?: { id?: string },
+    ): Promise<{ origin: string | null; revision: string }>;
     /** True while a change or its coordinator restart has not reported. */
     running(): boolean;
   };
@@ -232,14 +240,18 @@ export function installationChangeDefinitions(
           applied: current.origin === requested,
           revision: current.revision,
           detail: `the custom domain is ${current.origin ?? "none"}`,
+          ...(current.lastChange ? { operation: current.lastChange.id } : {}),
         };
       },
       reachable(request) {
         const { origin } = CustomDomainChangeSchema.parse(request);
         return reachable(ports, origin ? [ports.publicOrigin, origin] : [ports.publicOrigin]);
       },
-      async restore(previous, revision) {
-        await ports.customDomain.change({ expectedRevision: revision, origin: previous });
+      async restore(previous, revision, operation) {
+        await ports.customDomain.change(
+          { expectedRevision: revision, origin: previous },
+          { id: operation },
+        );
       },
     },
   ];

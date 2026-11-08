@@ -22,7 +22,7 @@ function domain(
   } = {},
 ) {
   const calls: string[] = [];
-  const state = { value: "old", revision: 1 };
+  const state = { value: "old", revision: 1, operation: undefined as string | undefined };
   const definition: QueuedActionDefinition = {
     name: "custom-domain",
     schema: z.strictObject({ origin: z.string() }),
@@ -47,14 +47,16 @@ function domain(
         applied: state.value === (request as { origin: string }).origin,
         revision: String(state.revision),
         detail: `the value is ${state.value}`,
+        ...(state.operation ? { operation: state.operation } : {}),
       };
     },
     reachable: async () => options.reachable?.() ?? null,
-    async restore(previous, revision) {
+    async restore(previous, revision, operation) {
       calls.push(`restore ${String(previous)}`);
       if (String(state.revision) !== revision) throw new Error("the value changed since");
       state.value = String(previous);
       state.revision += 1;
+      state.operation = operation;
     },
   };
   return { definition, calls, state, value: () => state.value };
@@ -194,8 +196,8 @@ test("a restore is resumed after a restart and never started twice", async () =>
   const fake = domain({ settled: () => settled, reachable: () => "domain did not answer" });
   const restore = fake.definition.restore!;
   // The restore restarts the coordinator: it is still settling when this process stops.
-  fake.definition.restore = async (previous, revision) => {
-    await restore(previous, revision);
+  fake.definition.restore = async (previous, revision, operation) => {
+    await restore(previous, revision, operation);
     settled = false;
   };
   const first = queue(fake.definition, clock);
@@ -237,9 +239,9 @@ test("a restore interrupted before it changed anything runs on resume, once", as
   const restore = fake.definition.restore!;
   let crash = true;
   // The coordinator stops after recording the attempt and before the restore runs.
-  fake.definition.restore = async (previous, revision) => {
+  fake.definition.restore = async (previous, revision, operation) => {
     if (crash) return new Promise<never>(() => {});
-    return restore(previous, revision);
+    return restore(previous, revision, operation);
   };
   const first = queue(fake.definition, clock);
   const job = first.request("custom-domain", { origin: "https://new.example" }, "Builds");
@@ -261,9 +263,11 @@ test("a restore interrupted after it changed the revision but not the value is r
   const restore = fake.definition.restore!;
   let crash = true;
   // Like the custom domain: the revision moves before the value is written, then it stops.
-  fake.definition.restore = async (previous, revision) => {
-    if (!crash) return restore(previous, revision);
+  fake.definition.restore = async (previous, revision, operation) => {
+    if (!crash) return restore(previous, revision, operation);
+    // Records its own change first, then stops before writing the value.
     fake.state.revision += 1;
+    fake.state.operation = operation;
     return new Promise<never>(() => {});
   };
   const first = queue(fake.definition, clock);
@@ -276,4 +280,32 @@ test("a restore interrupted after it changed the revision but not the value is r
   await next.drain();
   expect(fake.value()).toBe("old");
   expect(next.list()[0]?.detail).toContain("Restored the previous value");
+});
+
+test("a resumed restore never undoes an owner who changed the value away and back", async () => {
+  const clock = { now: Date.parse("2026-11-08T12:00:00Z") };
+  const fake = domain({ reachable: () => "domain did not answer" });
+  const restore = fake.definition.restore!;
+  let crash = true;
+  fake.definition.restore = async (previous, revision, operation) => {
+    if (crash) return new Promise<never>(() => {});
+    return restore(previous, revision, operation);
+  };
+  const first = queue(fake.definition, clock);
+  const job = first.request("custom-domain", { origin: "https://new.example" }, "Builds");
+  first.decide(job.id, job.revision, "approve");
+  void first.drain();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  // The owner switches away and deliberately back before recovery resumes.
+  fake.state.value = "elsewhere";
+  fake.state.revision += 1;
+  fake.state.operation = "owner-1";
+  fake.state.value = "https://new.example";
+  fake.state.revision += 1;
+  fake.state.operation = "owner-2";
+  crash = false;
+  const next = queue(fake.definition, clock);
+  await next.drain();
+  expect(fake.value()).toBe("https://new.example");
+  expect(next.list()[0]?.detail).toContain("changed since");
 });

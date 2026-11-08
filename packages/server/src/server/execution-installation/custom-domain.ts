@@ -167,17 +167,21 @@ export function createCustomDomain(input: {
   }
 
   /** One change at a time: the checks below span awaits before the change is recorded. */
-  async function change(body: unknown): Promise<CustomDomainStatus> {
+  /**
+   * `options.id` names the change, so a queued restore can recognize its own change after a
+   * coordinator restart; owner changes use a random one.
+   */
+  async function change(body: unknown, options: { id?: string } = {}): Promise<CustomDomainStatus> {
     if (changing) throw new CustomDomainConflict("A custom domain change is still running.");
     changing = true;
     try {
-      return await applyChange(body);
+      return await applyChange(body, options.id);
     } finally {
       changing = false;
     }
   }
 
-  async function applyChange(body: unknown): Promise<CustomDomainStatus> {
+  async function applyChange(body: unknown, changeId?: string): Promise<CustomDomainStatus> {
     const request = CustomDomainChangeSchema.parse(body);
     const reason = blocker();
     if (reason) throw new CustomDomainUnavailable(reason);
@@ -204,7 +208,7 @@ export function createCustomDomain(input: {
     const next = JSON.parse(raw) as Record<string, unknown>;
     if (request.origin) next.recoveryOrigin = request.origin;
     else delete next.recoveryOrigin;
-    const id = randomUUID();
+    const id = changeId ?? randomUUID();
     const work = path.join(directory, id);
     await mkdir(work, { recursive: true, mode: 0o700 });
     const backupFile = path.join(work, "coordinator.json.before");

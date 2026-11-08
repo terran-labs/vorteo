@@ -140,6 +140,8 @@ export const QueuedAgentActionSchema = z.object({
   restoreRevision: z.string().optional(),
   /** How many restores were started; bounded, so a failing restore cannot loop restarts. */
   restoreAttempts: z.number().int().min(0).optional(),
+  /** The id of the latest restore attempt, so recovery recognizes its own interrupted change. */
+  restoreOperation: z.string().uuid().optional(),
   approvedAt: z.string().datetime().optional(),
   startedAt: z.string().datetime().optional(),
   finishedAt: z.string().datetime().optional(),

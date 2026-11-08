@@ -45,11 +45,20 @@ export interface QueuedActionDefinition {
    * Whether the requested state is in effect now, the revision of that state for a
    * compare-and-set restore, and a description of the current value.
    */
-  state(request: unknown): Promise<{ applied: boolean; revision: string; detail: string }>;
+  state(request: unknown): Promise<{
+    applied: boolean;
+    revision: string;
+    detail: string;
+    /** The id of the operation that last changed the value, where the owner operation records one. */
+    operation?: string;
+  }>;
   /** For changes that can interrupt remote access: null when both addresses answer, else evidence. */
   reachable?(request: unknown): Promise<string | null>;
-  /** Puts `previous` back only if the state is still at `revision`; refuses otherwise. */
-  restore?(previous: unknown, revision: string): Promise<void>;
+  /**
+   * Puts `previous` back only if the state is still at `revision`; refuses otherwise. `operation`
+   * names the change where the owner operation records one, so recovery can recognize it.
+   */
+  restore?(previous: unknown, revision: string, operation: string): Promise<void>;
 }
 
 const JournalSchema = z.strictObject({
@@ -285,9 +294,17 @@ export function createQueuedAgentActions(input: {
     }
     const attempts = job.restoreAttempts ?? 0;
     const state = await action.state(job.request);
-    if (attempts > 0 && !state.applied) {
-      finish(job, "failed", `${job.detail} The value changed since, so it was not restored.`);
-      return;
+    let revision = job.restoreRevision ?? "";
+    if (attempts > 0) {
+      // Retry only when the earlier attempt changed nothing, or when the last change is that
+      // attempt itself, interrupted. Any other change is a newer decision, matching value or not.
+      const untouched = state.revision === job.restoreRevision;
+      const ours = state.operation !== undefined && state.operation === job.restoreOperation;
+      if (!untouched && !ours) {
+        finish(job, "failed", `${job.detail} The value changed since, so it was not restored.`);
+        return;
+      }
+      revision = state.revision;
     }
     if (attempts >= RESTORE_ATTEMPTS) {
       finish(
@@ -297,12 +314,10 @@ export function createQueuedAgentActions(input: {
       );
       return;
     }
-    const attempting = save(job, { restoreAttempts: attempts + 1 });
+    const restoreId = randomUUID();
+    const attempting = save(job, { restoreAttempts: attempts + 1, restoreOperation: restoreId });
     try {
-      await action.restore!(
-        job.previous,
-        attempts === 0 ? (job.restoreRevision ?? "") : state.revision,
-      );
+      await action.restore!(job.previous, revision, restoreId);
     } catch (error) {
       finish(attempting, "failed", `${job.detail} Not restored: ${message(error)}`);
       return;
