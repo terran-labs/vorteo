@@ -1193,6 +1193,7 @@ export const ru: TranslationResources = {
     },
   },
   sidebar: {
+    factoryCard: en.sidebar.factoryCard,
     statusGroupAccessibility: "Группа «{{label}}»",
     statusBucket: {
       needsInput: "Ожидает ввода",
@@ -2654,6 +2655,7 @@ export const ru: TranslationResources = {
       },
     },
     appearance: {
+      statusLine: en.settings.appearance.statusLine,
       theme: {
         title: "Тема",
         accessibilityLabel: "Тема: {{value}}",

@@ -1,6 +1,10 @@
 import { ComposerDockBackground } from "./internal/background";
 export { ComposerDockBackground } from "./internal/background";
-export { ComposerFullscreenBody, ComposerFullscreenFooter } from "./internal/fullscreen";
+export {
+  ComposerFullscreenBody,
+  ComposerFullscreenFooter,
+  useFullscreenSlotFrame,
+} from "./internal/fullscreen";
 import { ScrollView } from "@/components/ui/scroll-view";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useIsCompactFormFactor } from "@/constants/layout";

@@ -543,10 +543,11 @@ function SidebarToolbar({
   const handleNewWorkspace = useOpenNewWorkspace(onBeforeNavigate);
   const handleNewFolder = useCreateSidebarFolderAction(ROOT_FOLDER_SCOPE, null);
   const setCommandCenterOpen = useKeyboardShortcutsStore((state) => state.setCommandCenterOpen);
+  // Search opens above the compact sidebar and leaves it in place, so canceling returns to it
+  // (upstream #7693). Choosing a result reveals its destination when navigation commits.
   const handleSearch = useCallback(() => {
-    onBeforeNavigate?.();
     setCommandCenterOpen(true);
-  }, [onBeforeNavigate, setCommandCenterOpen]);
+  }, [setCommandCenterOpen]);
 
   const settingsKeys = useShortcutKeys("toggle-settings");
   const searchKeys = useShortcutKeys("toggle-command-center");

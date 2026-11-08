@@ -1,4 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
+import { stripHostEnvironment } from "./e2e/support/host-environment";
+
+stripHostEnvironment();
 
 // Uses the packaged application and real isolated daemons, without starting Metro.
 // The daemon helper's temporary CORS origin is replaced before browser navigation.

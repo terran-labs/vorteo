@@ -1202,6 +1202,7 @@ export const fr: TranslationResources = {
     },
   },
   sidebar: {
+    factoryCard: en.sidebar.factoryCard,
     statusGroupAccessibility: "Groupe {{label}}",
     statusBucket: {
       needsInput: "Attend une réponse",
@@ -2664,6 +2665,7 @@ export const fr: TranslationResources = {
       },
     },
     appearance: {
+      statusLine: en.settings.appearance.statusLine,
       theme: {
         title: "Thème",
         accessibilityLabel: "Thème : {{value}}",
