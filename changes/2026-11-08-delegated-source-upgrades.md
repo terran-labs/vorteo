@@ -8,4 +8,4 @@
 
 ## Maintenance review
 
-Added a Host-agent source upgrade request whose delegated approval is kept beside the strict upgrade journal. Admission runs again while the record is pending, then one write moves it straight to running, so a rolled-back coordinator never finds an approved record to replay. A lapsed grant returns the request to the owner, and owner decisions clear the evidence. Not yet installed. README overview and onboarding are unchanged.
+Added a Host-agent source upgrade request whose delegated approval is kept beside the strict upgrade journal. Admission runs again while the record is pending, then one write moves it straight to running, so a rolled-back coordinator never finds an approved record to replay. A lapsed grant returns the request to the owner, and owner decisions clear the evidence. The status shows when a delegated request starts and that current work finishes first, projected from that evidence while the grant holds, without changing the record. Not yet installed. README overview and onboarding are unchanged.

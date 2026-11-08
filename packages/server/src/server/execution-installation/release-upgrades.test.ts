@@ -627,10 +627,19 @@ test.each(["delegated", "revoked", "owner"] as const)(
     const sources = new SourceUpgrades(journal, fake.ports);
     const pending = await sources.request({ ...SOURCE_REQUEST, hostAgent: true });
     expect(evidence.get(pending.id)).toBeDefined();
+    // The owner sees that it starts on its own unless cancelled; the stored record is unchanged.
+    expect(pending.detail).toContain("Starts after");
+    expect(sources.list()[0]?.detail).toContain("Starts after");
+    expect(sources.list()[0]?.revision).toBe(pending.revision);
+    expect(JSON.stringify(createUpgradeJournal(directory).read())).not.toContain("Starts after");
     time += 29_000;
     await sources.drain();
     expect(sources.list()[0]).toMatchObject({ status: "pending" });
-    if (outcome === "revoked") grant = null;
+    if (outcome === "revoked") {
+      grant = null;
+      // Revoked: the owner-approval wording returns at once, before any drain.
+      expect(sources.list()[0]?.detail).not.toContain("delegation");
+    }
     if (outcome === "owner") await sources.decide(pending.id, pending.revision, "cancel");
     time += 1_000;
     await sources.drain();

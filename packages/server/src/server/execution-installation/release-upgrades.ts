@@ -28,6 +28,7 @@ import {
   delegableUnderGrant,
   delegatedAdmissionStep,
   delegatedApproval,
+  delegatedApprovalHolds,
   delegatedDispatchHolds,
   delegatedPlanDigest,
   type DelegationEvidence,
@@ -1032,8 +1033,37 @@ function admissionRefusal(commit: string, installed: string, facts: SourceFacts)
  * release it replaced for 24 hours, as another source upgrade with its own approval.
  */
 export class SourceUpgrades extends UpgradePipeline<SourceUpgradePorts> {
+  /**
+   * A delegated request is shown with its start time, projected from the side evidence: the
+   * stored record and the revision its approval binds stay unchanged.
+   */
   list(): SourceUpgrade[] {
-    return this.jobs().filter(isSourceUpgrade);
+    return this.jobs()
+      .filter(isSourceUpgrade)
+      .map((job) => this.projectDelegated(job));
+  }
+
+  /**
+   * The detail a pending request shows while a valid delegated approval covers it: when it
+   * starts, that current work finishes first, and, after the window, what it is waiting for. A
+   * revoked or changed grant shows the record's own owner-approval detail again.
+   */
+  private projectDelegated(job: SourceUpgrade): SourceUpgrade {
+    if (job.status !== "pending") return job;
+    const approval = this.ports.delegationEvidence?.get(job.id);
+    if (
+      !approval ||
+      !delegatedApprovalHolds(approval, this.ports.delegationGrant?.() ?? null, {
+        revision: job.revision,
+        planSha256: sourcePlan(job),
+      })
+    )
+      return job;
+    const detail =
+      this.ports.now().getTime() < Date.parse(approval.dispatchAfter)
+        ? `Approved under owner maintenance delegation. Starts after ${approval.dispatchAfter} unless cancelled; current work finishes before the Host restarts.`
+        : "Approved under owner maintenance delegation. Starts once admission passes again and no other upgrade runs; current work finishes before the Host restarts. Cancel to stop it.";
+    return Object.assign(structuredClone(job), { detail });
   }
 
   active(): SourceUpgrade | null {
@@ -1086,7 +1116,7 @@ export class SourceUpgrades extends UpgradePipeline<SourceUpgradePorts> {
           cancellationDelayMs: this.ports.cancellationDelayMs ?? 30_000,
         }),
       );
-    return created;
+    return this.projectDelegated(created);
   }
 
   /**
