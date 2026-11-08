@@ -424,10 +424,11 @@ const pickSchema: OutputSchema<ProjectFactoryAccountPick> = {
     return [
       `Stage: ${value.stage}`,
       `Profile: ${value.profileId ?? "default"}`,
+      ...(value.serverId ? [`Host: ${value.serverId}`] : []),
       describePickedAccount(value),
       ...value.considered.map(
         (item) =>
-          `  ${item.provider}: ${item.verdict}${item.remainingPct === null ? "" : ` ${item.remainingPct}%`}`,
+          `  ${item.provider}${item.localProvider ? ` (here ${item.localProvider})` : ""}: ${item.verdict}${item.remainingPct === null ? "" : ` ${item.remainingPct}%`}`,
       ),
     ].join("\n");
   },
@@ -449,6 +450,10 @@ function createPickAccountCommand(): Command {
       .argument("<stage>", "planner, worker or reviewer")
       .option("--issue <n>", "Issue the agent is for, recorded with the choice")
       .option("--avoid <provider>", "Account to leave out, such as the worker's")
+      .option(
+        "--server <server-id>",
+        "Connected host the agent starts on; picks that host's id for the account",
+      )
       .allowExcessArguments(false),
   ).action(
     withOutput(
@@ -456,6 +461,7 @@ function createPickAccountCommand(): Command {
         const parsed = ProjectFactoryStageSchema.safeParse(stage);
         if (!parsed.success)
           throw { code: "INVALID_STAGE", message: "Use planner, worker or reviewer." };
+        const serverId = typeof options.server === "string" ? options.server : undefined;
         return withClient(options, async (client) =>
           single(
             await call(client, factoryProjectPickAccount, {
@@ -463,6 +469,20 @@ function createPickAccountCommand(): Command {
               stage: parsed.data,
               ...(typeof options.issue === "string" ? { issue: parseIssue(options.issue) } : {}),
               ...(typeof options.avoid === "string" ? { avoid: options.avoid } : {}),
+              ...(serverId ? { serverId } : {}),
+            }).catch((error: unknown) => {
+              // An older daemon's strict input refuses the field it does not know.
+              if (
+                serverId &&
+                error instanceof Error &&
+                error.message.includes("unrecognized_keys") &&
+                error.message.includes("serverId")
+              )
+                throw {
+                  code: "DAEMON_UPDATE_REQUIRED",
+                  message: "Update the daemon to pick accounts for another host.",
+                };
+              throw error;
             }),
             pickSchema,
           ),

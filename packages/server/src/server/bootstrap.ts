@@ -1929,6 +1929,10 @@ export async function createPaseoDaemon(
       providers: providerSnapshotManager,
       readUsage: (options) => providerUsageService.listUsage(options),
       getSettings: () => daemonConfigStore.get(),
+      hosts: () => {
+        if (!wsServer) throw new Error("Daemon is not accepting host operations");
+        return wsServer.toolHosts();
+      },
     }),
     schedules: scheduleService,
     onWorkspacesChanged: (workspaceIds) => void emitWorkspaceUpdatesExternal(workspaceIds),

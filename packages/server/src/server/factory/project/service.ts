@@ -906,6 +906,7 @@ export class ProjectFactoryService {
     stage: ProjectFactoryAccountPick["stage"];
     issue?: number;
     avoid?: string;
+    serverId?: string;
   }): Promise<ProjectFactoryAccountPick> {
     return this.serialize(async () => {
       await this.requireActiveProject(request.projectId);
@@ -914,16 +915,19 @@ export class ProjectFactoryService {
         throw new ProjectFactoryError("This daemon cannot read account usage.");
       const profileId = project.workers[`${request.stage}ProfileId`] ?? null;
       const now = this.now();
+      const destination = request.serverId === this.input.serverId ? undefined : request.serverId;
       const picked = await chooseAccount({
         accounts: this.input.accounts,
         profileId,
         avoid: request.avoid,
+        destination,
         nowMs: now.getTime(),
       });
       const pick: ProjectFactoryAccountPick = {
         stage: request.stage,
         profileId,
         ...picked,
+        ...(destination ? { serverId: destination } : {}),
         pickedAt: now.toISOString(),
       };
       await this.mutateProject(request.projectId, (next) => {
@@ -934,6 +938,7 @@ export class ProjectFactoryService {
           provider: pick.provider,
           remainingPct: pick.remainingPct,
           bound: pick.bound,
+          ...(destination ? { serverId: destination } : {}),
           pickedAt: pick.pickedAt,
         };
         next.accountPicks = [...(next.accountPicks ?? []), record].slice(-ACCOUNT_PICKS_KEPT);
