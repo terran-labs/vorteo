@@ -132,6 +132,13 @@ const ProjectStateSchema = z.object({
   /** The last `.github/factory.json` read. */
   assignment: AssignmentStateSchema.optional(),
   /**
+   * The installation environment that runs this repository's Factory, from the coordinator's
+   * last answer. Absent outside an installation and before the first answer.
+   */
+  home: z
+    .object({ environment: z.enum(["host", "container"]), projectId: z.string().nullable() })
+    .optional(),
+  /**
    * Set when pause_all paused this project. resume_all resumes only these, and any manual
    * pause, resume or turn off clears it, so an operator's own pause is never undone.
    */

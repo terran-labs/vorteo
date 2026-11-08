@@ -184,6 +184,7 @@ import { formatSystemNotificationPrompt } from "./agent/agent-messages/index.js"
 import { startAgentRun } from "./agent/agent-prompt.js";
 import { switchAgentProfileCommand } from "./agent/profile-switch/command.js";
 import { ProjectFactoryService } from "./factory/project/service.js";
+import { createFactoryHomeClient } from "./execution-installation/factory-home.js";
 import { daemonFactoryAccounts } from "./factory/project/account-choice.js";
 import { profileProvider, resolveDefaultLaunch } from "./system-project/launch-selection.js";
 import type { SessionHostConnector } from "./session-host/connector.js";
@@ -1885,6 +1886,7 @@ export async function createPaseoDaemon(
   projectFactoryService = new ProjectFactoryService({
     paseoHome: config.paseoHome,
     serverId,
+    home: createFactoryHomeClient(process.env.VORTEO_INSTALLATION_CLIENT_CONFIG),
     projects: projectRegistry,
     workspaces: workspaceRegistry,
     agentStorage,

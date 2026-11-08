@@ -132,12 +132,29 @@ export function FactoryControlNotes({ state, controls }: ControlTarget) {
   );
 }
 
+/** The installation environment that runs this repository's Factory. */
+function FactoryHomeRow({ home }: { home: NonNullable<ProjectFactoryState["home"]> }) {
+  const { t } = useTranslation();
+  const environment = t(`projectFactory.home.environments.${home.environment}`);
+  return (
+    <SettingsRow
+      label={t("projectFactory.home.label", { environment })}
+      hint={
+        home.here
+          ? t("projectFactory.home.here")
+          : t("projectFactory.home.elsewhere", { environment })
+      }
+    />
+  );
+}
+
 /** Stage models, every role and role assignment, folded into one card of collapsible rows. */
 export function FactoryModelsAndRoles({ serverId, projectId, state }: ControlTarget) {
   const { t } = useTranslation();
   const assignments = factoryRoleAssignments(state);
   return (
     <SettingsCard testID="factory-models-and-roles">
+      {state.home ? <FactoryHomeRow home={state.home} /> : null}
       <SettingsCollapsibleRow
         label={t("projectFactory.issueStages")}
         summary={t("projectFactory.controls.stageSummary")}

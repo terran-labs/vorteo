@@ -62,7 +62,19 @@ Several Vorteo installations can run Factory against the same GitHub repository.
 
 Triage and Releases read it on every tick and when Factory is turned on, and the Foreman refreshes it for the Overview. A role whose entry names another installation, or no installation, does not wake and says so in its status line, such as "Off here: .github/factory.json assigns Triage to srv_x/prj_y". An invalid or unreadable file turns both roles off here until it reads cleanly. Without the file, every installation keeps single-installation behavior. Only the owner edits the file; roles never do. The Factory Overview shows the current assignment and flags a role that is off here. Before labeling, Triage compares the files changed by other installations' open PRs with an issue's scope and asks the owner instead of labeling on overlap. If two installations race for a release tag, Releases reads the existing tag and prepares the next version; tags are never moved or reused. On Vorteo, `scripts/vorteo-release.mjs tag` does this itself.
 
-**One Factory per repository per installation.** Turning on Factory refuses a repository that another project on the same installation already runs.
+**One Factory per repository per installation.** Turning on Factory refuses a repository that another project on the same daemon already runs.
+
+## One Factory home per installation
+
+An installation with a Host and a Dev environment runs a repository's Factory in one of them, its Factory home. A project synchronized into both environments, or two clones of one repository, can otherwise have Factory on twice, with two Builds and two Mechanics; on Vorteo System that would mean two installation lifecycle owners. The Host is the default home.
+
+The Host's installation coordinator decides, from both daemons' live `factory.project.list`, so there is no lock record to go stale and nothing to migrate. Turning Factory on records it as on first, then asks the coordinator with `POST /api/installation/factory-home`, authenticated by the daemon's installation credential. The coordinator answers one request at a time:
+
+- A claim is refused while the other environment runs Factory for the repository, on or paused. The refusal names that environment and project, and the daemon puts the project back as it was. Because each daemon records Factory as on before asking, two environments turning it on at once never both win; at worst both are refused and one retries.
+- A claim also needs the other environment's answer: while the coordinator, or the other daemon, cannot be read, turning Factory on is refused in either environment. A Host-only installation has no other environment to read.
+- Before each heartbeat Dev asks whether it is still the home. When the Host runs the repository too, as after an earlier release let both turn it on, Dev's roles skip the heartbeat and their status line reads "Off here: Factory home is the Host environment, which runs `<owner/name>`." An unanswered check keeps the last recorded decision, also across restarts: a coordinator restart neither stops a Dev home nor revives a Dev Factory that stood down. The Host never asks before a heartbeat, so its running Factories are never interrupted.
+
+`vorteo factory project show` prints the Factory home, and the Factory Overview shows it in Models & roles. A daemon outside an installation has no home and keeps the per-daemon check above. A coordinator from before this release has no home route: the Host keeps its earlier behavior and Dev refuses to turn Factory on until the coordinator is updated. A Dev daemon from before this release does not ask, so update the coordinator, the Host and Dev together.
 
 The sections below describe the earlier read-only observer and controller boundary. They remain until that code is removed.
 

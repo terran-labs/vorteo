@@ -99,6 +99,19 @@ export const ProjectFactoryStateSchema = z.object({
   installation: z.string().min(1).optional(),
   /** The last `.github/factory.json` read; null before the first. Optional for older daemons. */
   assignment: ProjectFactoryAssignmentSchema.nullable().optional(),
+  /**
+   * The installation environment that runs Factory for this repository; `here` is false when
+   * another one does. Null outside an installation or while Factory is off. Optional for older
+   * daemons.
+   */
+  home: z
+    .object({
+      environment: z.enum(["host", "container"]),
+      projectId: z.string().nullable(),
+      here: z.boolean(),
+    })
+    .nullable()
+    .optional(),
   state: z.enum(["off", "on", "paused", "unavailable"]),
   repository: ProjectFactoryRepositorySchema.nullable(),
   /** Human-readable; set for "unavailable". */
