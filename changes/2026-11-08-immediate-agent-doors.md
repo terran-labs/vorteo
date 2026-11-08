@@ -6,7 +6,7 @@
 ### Maintenance
 
 - The front-door test accepts immediate agent requests only for a pinned, reviewed set of routes, each limited to its reviewed effects.
-- An agent snapshot never removes an existing snapshot, and each agent action's receipt is written before it runs and is never trimmed from history until its outcome is recorded.
+- An agent snapshot never removes an existing snapshot, and each agent action's receipt is written before it runs and is never trimmed from history before its outcome is recorded; the outcome then moves to the top.
 
 ## Maintenance review
 

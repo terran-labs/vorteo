@@ -61,15 +61,9 @@ export function createAgentActions(input: {
     mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     writePrivateFileAtomicSync(file, JSON.stringify({ version: 1, receipts: kept }));
   };
-  // An outcome always lands, even for a receipt the history no longer holds.
-  const replace = (receipt: AgentActionReceipt) => {
-    const receipts = read();
-    write(
-      receipts.some((item) => item.id === receipt.id)
-        ? receipts.map((item) => (item.id === receipt.id ? receipt : item))
-        : [receipt, ...receipts],
-    );
-  };
+  // A recorded outcome moves to the front, newest settled first, so retention keeps it.
+  const replace = (receipt: AgentActionReceipt) =>
+    write([receipt, ...read().filter((item) => item.id !== receipt.id)]);
   // A receipt still started belongs to an earlier coordinator that stopped mid-action.
   const stale = read();
   if (stale.some((receipt) => receipt.outcome === "started")) {

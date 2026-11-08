@@ -214,9 +214,12 @@ test("an immediate agent action needs the full grant and leaves a receipt either
     expect(actions.list().filter((receipt) => receipt.outcome === "started")).toHaveLength(1);
     expect(actions.list()).toHaveLength(51);
     const restarted = createAgentActions({ stateDir, grant: () => grant });
-    expect(restarted.list().find((receipt) => receipt.outcome === "interrupted")).toBeDefined();
+    const interrupted = restarted.list().find((receipt) => receipt.outcome === "interrupted");
+    expect(interrupted).toBeDefined();
     release();
     await expect(hanging).rejects.toThrow("gone");
+    // Its outcome, recorded after 60 newer receipts, is still in the history.
+    expect(actions.list()[0]).toMatchObject({ id: interrupted!.id, outcome: "failed" });
   } finally {
     rmSync(stateDir, { recursive: true, force: true });
   }
