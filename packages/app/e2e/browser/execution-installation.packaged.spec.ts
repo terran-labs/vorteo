@@ -1696,14 +1696,22 @@ async function verifyCrossEnvironmentWorkspaceMove(input: {
   const key = `${input.destinationServerId}:${workspaceId}`;
   const row = page.getByTestId(`sidebar-workspace-row-${key}`);
   await expect(row).toBeVisible();
-  if (testInfo.project.name === "desktop") await row.hover();
-  await page.getByTestId(`sidebar-workspace-kebab-${key}`).click();
-  await page.getByTestId(`sidebar-workspace-menu-move-project-${key}`).click();
+  if (testInfo.project.name === "phone") {
+    await row.tap();
+    await page.getByTestId("workspace-header-menu-trigger").tap();
+    await page.getByTestId("workspace-header-move-project").tap();
+  } else {
+    await row.hover();
+    await page.getByTestId(`sidebar-workspace-kebab-${key}`).click();
+    await page.getByTestId(`sidebar-workspace-menu-move-project-${key}`).click();
+  }
   await page.getByTestId("project-move-project").click();
   await page.getByText(target.projectDisplayName, { exact: true }).last().click();
   await page.screenshot({ path: testInfo.outputPath("workspace-move-review.png"), fullPage: true });
   await page.getByTestId("project-move-confirm").click();
   await expect(page.getByTestId("project-move-modal")).toHaveCount(0);
+  if (testInfo.project.name === "phone")
+    await page.getByRole("button", { name: "Open menu", exact: true }).click();
   const targetRowId = `sidebar-project-row-${target.projectKey}`;
   await expect.poll(() => sidebarProjectForWorkspace(row)).toBe(targetRowId);
   const moved = (await destinationClient.fetchWorkspaces()).entries.find(
@@ -2137,6 +2145,11 @@ test("shared profile editor renders cross-environment model compatibility", asyn
 
     unknownDevCatalog = true;
     await page.reload();
+    // The section address survives reload; the provider's local expansion does not.
+    const providerDetails = settings.getByTestId("provider-family-open-claude");
+    await expect(providerDetails).toHaveAttribute("aria-expanded", "false");
+    await providerDetails.click();
+    await expect(providerDetails).toHaveAttribute("aria-expanded", "true");
     await settings.getByTestId(`agent-profile-edit-${incompatible.id}`).click();
     // An unavailable source catalog may only supply the saved literal reference.
     await expect(model).toHaveText(/^(Host-only Opus|host-only-opus)$/);

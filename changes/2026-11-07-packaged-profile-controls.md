@@ -9,6 +9,8 @@
 
 - Scope compatibility editor controls to the visible Settings screen and environment icons to the open profile picker, excluding retained hidden screens and sidebar rows. Merge current main validation and dependency-order fixes into the task branch.
 
+- Reopen provider details after reloading Settings, and use the compact workspace header menu for cross-environment project moves while retaining directory, membership, chat and reload checks.
+
 ## Maintenance review
 
 The routed editor now displays the compatibility hints already computed by its form model. Packaged coverage uses isolated fake catalogs, current page controls and distinct default profiles so ignored profile clicks fail through their resulting agent configuration or intercepted public launch request. README overview and onboarding are unchanged.
