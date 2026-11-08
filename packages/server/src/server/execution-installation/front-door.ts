@@ -3,6 +3,9 @@
  * Each route is exactly one of:
  * - `agent`: an agent request command in scripts/installation-agent.mjs, which Builds uses and
  *   the full maintenance grant approves unless OWNER_ONLY_OPERATIONS names the operation;
+ * - `immediate`: an agent request command for a read-only or non-disruptive action, which runs at
+ *   once under the grant and leaves a receipt in Installation controls (agent-actions.ts). The
+ *   front-door test refuses it for any handler that restarts, installs or changes configuration;
  * - `excluded`: an operation on OWNER_ONLY_OPERATIONS, so it stays with the owner;
  * - `exempt`: owner session, grant management or a read-only view, which never get an agent door;
  * - `gap`: an existing owner operation still waiting for its agent door. The list is pinned in
@@ -12,6 +15,7 @@
  */
 export type FrontDoor =
   | { agent: string }
+  | { immediate: string }
   | { excluded: string; why: string }
   | { exempt: "session" | "grant" | "read" | "alternate"; why: string }
   | { gap: string };
@@ -59,6 +63,12 @@ export const OWNER_ROUTE_FRONT_DOORS: Readonly<Record<string, FrontDoor>> = {
   "/api/installation/owner/session-host/request": { agent: "request-session-host" },
   "/api/installation/owner/lab-updates": { agent: "request-lab-update" },
   "/api/installation/owner/lab-updates/cancel": { agent: "request-lab-update" },
+  // Read-only verification of installed receipts: immediate, with a receipt.
+  "/api/installation/owner/helpers/verify-installed": { immediate: "request-helper-verification" },
+  // Preparation restarts nothing; the repaired restart takes the delegated restart queue.
+  "/api/installation/owner/dev-repair/prepare": { immediate: "request-dev-repair" },
+  // A non-disruptive copy: immediate, with a receipt.
+  "/api/installation/owner/snapshots": { immediate: "request-snapshot" },
   // Agents cancel retained requests through management-cancel.
   "/api/installation/owner/maintenance-services/cancel": { agent: "management-cancel" },
   // Every queue drain observes the same uncertain outcome; agents follow it with the status command.
@@ -101,9 +111,6 @@ export const OWNER_ROUTE_FRONT_DOORS: Readonly<Record<string, FrontDoor>> = {
   "/api/installation/owner/update-check": UPGRADES,
 
   // Pinned gaps: existing owner operations waiting for their agent doors (Builds, 2026-11-08).
-  "/api/installation/owner/helpers/verify-installed": { gap: "Verify an installed native helper." },
-  "/api/installation/owner/dev-repair/prepare": { gap: "Prepare a Dev repair plan." },
-  "/api/installation/owner/snapshots": { gap: "Take a safety snapshot." },
   "/api/installation/owner/name": { gap: "Rename the installation." },
   "/api/installation/owner/custom-domain/change": {
     gap: "Change the custom domain; its request must show the disruption in Installation controls.",

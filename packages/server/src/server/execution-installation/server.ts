@@ -4,6 +4,7 @@ import { BrokerDeploymentRefused } from "./preview-broker-deployment-workflow.js
 import { coordinatorDispatchStatuses } from "./coordinator-bootstrap-dispatch-status.js";
 import { localInstallationOrigin, localInstallationEnvironments } from "./local-access.js";
 import {
+  AgentActionRequestSchema,
   CoordinatorFollowAgentRequestSchema,
   CoordinatorFollowDecisionSchema,
   CoordinatorFollowRequestSchema,
@@ -18,6 +19,7 @@ import {
   UpdatePolicyChangeSchema,
 } from "@getpaseo/protocol/installation-upgrades";
 import { createReleaseUpgradeRuntime } from "./release-upgrade-runtime.js";
+import { createAgentActions } from "./agent-actions.js";
 import { COORDINATOR_SETTINGS, createCoordinatorSettings } from "./coordinator-settings.js";
 import {
   createDelegationEvidence,
@@ -616,6 +618,7 @@ export function createInstallationServer(
     const policyActivatedAt = maintenanceDelegationActivation(config.stateDir);
     return policyActivatedAt ? { policyActivatedAt, authoritySha256: approvalAuthority() } : null;
   };
+  const agentActions = createAgentActions({ stateDir: config.stateDir, grant: delegationGrant });
   const restarts = new InstallationRestarts(
     standingRuntime.journal,
     restartExecutor,
@@ -2406,6 +2409,23 @@ export function createInstallationServer(
     res.json(job);
     void restarts.drain().catch(() => logger.error("Helper lifecycle journal failed"));
   });
+  // Host agents run the same read-only verification under the full maintenance grant, with a
+  // receipt in Installation controls. It never installs, so it runs at once.
+  app.post(
+    "/api/installation/helpers/verify-installed",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res, next) => {
+      const { requester, ...decision } = (req.body ?? {}) as Record<string, unknown>;
+      const request = AgentActionRequestSchema.parse({ requester });
+      void agentActions
+        .run("request-helper-verification", request.requester, async () => {
+          const job = await restarts.verifyHelperRecovery(decision);
+          return { result: job, detail: `Verified helper recovery ${job.id}: ${job.detail}` };
+        })
+        .then(({ result, receipt }) => res.json({ job: result, receipt }), next);
+    },
+  );
   app.post("/api/installation/owner/helpers/verify-installed", (req, res, next) => {
     void restarts.verifyHelperRecovery(req.body).then((job) => res.json(job), next);
   });
@@ -2765,6 +2785,33 @@ export function createInstallationServer(
         .map((job) => job.id),
     });
   });
+  // Host agents prepare the same repair under the full maintenance grant. Preparation restarts
+  // nothing; the repaired Dev restart then follows the delegated restart queue.
+  app.post(
+    "/api/installation/dev-repair/prepare",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res, next) => {
+      const input = z
+        .strictObject({
+          id: z.string().uuid(),
+          revision: z.string().uuid(),
+          requester: z.string().min(1).max(256).optional(),
+        })
+        .parse(req.body);
+      void agentActions
+        .run("request-dev-repair", input.requester, async () => {
+          const job = restarts.requestDevRepair(input.id, input.revision, true);
+          return { result: job, detail: `Started Dev repair preparation for restart ${job.id}.` };
+        })
+        .then(({ result }) => {
+          void restarts
+            .prepareBatches()
+            .catch((error) => logger.error({ err: error }, "Dev repair preparation failed"));
+          return res.status(202).json({ id: result.id, revision: result.revision });
+        }, next);
+    },
+  );
   app.post("/api/installation/owner/dev-repair/prepare", (req, res) => {
     const input = z
       .strictObject({ id: z.string().uuid(), revision: z.string().uuid() })
@@ -2890,6 +2937,26 @@ export function createInstallationServer(
       .takeSnapshot()
       .then((snapshot) => res.status(201).json(snapshot), next);
   });
+  // Host agents take the same safety snapshot under the full maintenance grant. It is a
+  // non-disruptive copy, so it runs at once and leaves a receipt in Installation controls.
+  app.post(
+    "/api/installation/snapshots",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res, next) => {
+      const { requester } = AgentActionRequestSchema.parse(req.body ?? {});
+      void agentActions
+        .run("request-snapshot", requester, async () => {
+          // Never prunes: an agent's snapshot never removes an existing rollback point.
+          const snapshot = await requireReleaseRuntime().takeSnapshot({ prune: false });
+          return { result: snapshot, detail: `Took safety snapshot ${snapshot.id}.` };
+        })
+        .then(({ result, receipt }) => res.status(201).json({ snapshot: result, receipt }), next);
+    },
+  );
+  app.post("/api/installation/owner/agent-actions/query", (_req, res) =>
+    res.json({ receipts: agentActions.list() }),
+  );
   app.post("/api/installation/owner/snapshots/restore", (req, res, next) => {
     const request = SnapshotRestoreRequestSchema.parse(req.body);
     void requireReleaseRuntime()

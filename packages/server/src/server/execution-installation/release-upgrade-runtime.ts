@@ -66,6 +66,7 @@ import {
   snapshotPartKinds,
   snapshotRoot,
   snapshotSources,
+  SNAPSHOT_RETENTION,
   type InstallationSnapshots,
 } from "./snapshots.js";
 import type { InstallationSourceUpdates } from "./source-updates.js";
@@ -100,7 +101,11 @@ export interface ReleaseUpgradeRuntime {
   adoptAfterSourceUpdate(): void;
   snapshots: InstallationSnapshots | null;
   snapshotList(): SnapshotList;
-  takeSnapshot(): ReturnType<InstallationSnapshots["take"]>;
+  /**
+   * `prune: false` keeps every existing snapshot and refuses once retention is two over its limit:
+   * an agent's snapshot must never delete the owner's or an upgrade's rollback point.
+   */
+  takeSnapshot(options?: { prune?: boolean }): ReturnType<InstallationSnapshots["take"]>;
   restore(request: SnapshotRestoreRequest): Promise<SnapshotRestoreStatus>;
   upgradeStatus(): UpgradeStatus;
 }
@@ -284,6 +289,24 @@ function readAdoptionOutcome(file: string): AdoptionOutcome | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Takes an owner-reason safety snapshot. With `prune`, the oldest beyond retention go, as for the
+ * owner's own snapshot. Without it nothing is removed, and the snapshot is refused once retention
+ * is two over its limit, so an agent's snapshot never deletes an existing rollback point.
+ */
+export async function takeSafetySnapshot(
+  snapshots: Pick<InstallationSnapshots, "list" | "take" | "prune">,
+  prune: boolean,
+) {
+  if (!prune && snapshots.list().length >= SNAPSHOT_RETENTION + 2)
+    throw new RestartRequestError(
+      "Snapshot retention is full. Ask the owner to take the next snapshot in Installation controls, which removes the oldest.",
+    );
+  const snapshot = await snapshots.take({ reason: "owner" });
+  if (prune) snapshots.prune([snapshot.id]);
+  return snapshot;
 }
 
 export function createReleaseUpgradeRuntime(input: {
@@ -1248,17 +1271,15 @@ export function createReleaseUpgradeRuntime(input: {
         detail: snapshots
           ? `Snapshots are kept in ${snapshots.root}.`
           : "Snapshots need an installation made by the one-command installer.",
-        retention: 5,
+        retention: SNAPSHOT_RETENTION,
         snapshots: snapshots?.list() ?? [],
         restore: readRestoreStatus(),
       };
     },
-    async takeSnapshot() {
+    async takeSnapshot(options = {}) {
       if (!snapshots)
         throw new RestartRequestError("Snapshots are unavailable on this installation");
-      const snapshot = await snapshots.take({ reason: "owner" });
-      snapshots.prune([snapshot.id]);
-      return snapshot;
+      return takeSafetySnapshot(snapshots, options.prune ?? true);
     },
     async restore(request) {
       if (!snapshots || !restoreDirectory)

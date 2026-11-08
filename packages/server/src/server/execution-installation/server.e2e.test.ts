@@ -275,6 +275,20 @@ test("only the Host agent requests a coordinator update, and only the owner deci
     ).toBe(401);
 });
 
+test("immediate agent actions need the Host agent and the full grant", async () => {
+  const f = await fixture();
+  const routes = [
+    ["/api/installation/snapshots", {}],
+    ["/api/installation/dev-repair/prepare", { id: randomUUID(), revision: randomUUID() }],
+  ] as const;
+  for (const [route, body] of routes) {
+    expect((await f.request(route, undefined, body)).status, route).toBe(401);
+    expect((await f.request(route, "guest-agent-test-token", body)).status, route).toBe(403);
+    // No grant in this fixture: the Host agent is refused and nothing is recorded.
+    expect((await f.request(route, "host-agent-test-token", body)).status, route).toBe(409);
+  }
+});
+
 test("service maintenance status and cancellation require owner access", async () => {
   const f = await fixture();
   const query = "/api/installation/owner/maintenance-services/query";

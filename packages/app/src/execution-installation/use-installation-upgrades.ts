@@ -17,6 +17,7 @@ import { coordinatorSettingsInProgress } from "./coordinator-settings-model";
 export const INSTALLATION_UPGRADES_KEY = ["installation-upgrades"] as const;
 export const INSTALLATION_SNAPSHOTS_KEY = ["installation-snapshots"] as const;
 export const COORDINATOR_FOLLOW_KEY = ["installation-coordinator-follow"] as const;
+export const AGENT_ACTIONS_KEY = ["installation-agent-actions"] as const;
 export const COORDINATOR_SETTINGS_KEY = ["installation-coordinator-settings"] as const;
 
 function requireClient(client: InstallationClient | null): InstallationClient {
@@ -89,6 +90,19 @@ export function useInstallationSnapshots(client: InstallationClient | null, rest
 }
 
 /** Coordinator update status; data is null when the coordinator predates it. */
+/** Receipts for actions Host agents ran at once under the full maintenance grant. */
+export function useAgentActionReceipts(client: InstallationClient | null) {
+  return useFetchQuery({
+    dataShape: "value",
+    queryKey: AGENT_ACTIONS_KEY,
+    queryFn: () => requireClient(client).agentActionReceipts(),
+    enabled: client !== null,
+    staleTimeMs: 0,
+    refetchInterval: 60_000,
+    retry: false,
+  });
+}
+
 export function useCoordinatorFollowStatus(client: InstallationClient | null) {
   return useFetchQuery({
     dataShape: "value",
