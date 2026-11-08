@@ -1,7 +1,10 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { ProjectFactoryRoleIdSchema } from "@getpaseo/server/factory-project";
+import {
+  ProjectFactoryIssueAgentsSchema,
+  ProjectFactoryRoleIdSchema,
+} from "@getpaseo/server/factory-project";
 
 import { writeJsonFileAtomic } from "../../atomic-file.js";
 
@@ -97,6 +100,8 @@ const ProjectStateSchema = z.object({
     planning: z.boolean().default(true),
     workerProfileId: nullableId,
     reviewerProfileId: nullableId,
+    /** Absent means "dev", so existing Factories move new issue agents to Dev. */
+    issueAgents: ProjectFactoryIssueAgentsSchema.optional(),
   }),
   roles: z.partialRecord(ProjectFactoryRoleIdSchema, RoleStateSchema),
   /**

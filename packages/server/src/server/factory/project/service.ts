@@ -25,6 +25,8 @@ import {
   factoryProjectSendThread,
   factoryProjectStatusSet,
   type ProjectFactoryInstructions,
+  type ProjectFactoryIssueAgentHost,
+  type ProjectFactoryIssueAgents,
   type ProjectFactoryList,
   type ProjectFactoryRoleId,
   type ProjectFactoryState,
@@ -99,7 +101,13 @@ import {
   type GhRunner,
 } from "./tick-gate.js";
 
-import { readIssueQueue } from "./queue.js";
+import {
+  devHostState,
+  NO_DEV_HOST,
+  readDevAgents,
+  type IssueAgentHosts,
+} from "./issue-agent-host.js";
+import { readIssueQueue, type DevQueueAgents } from "./queue.js";
 
 /** How many account picks the state file keeps, newest last. */
 const ACCOUNT_PICKS_KEPT = 50;
@@ -171,12 +179,23 @@ export interface ProjectFactoryServiceInput {
   github?: FactoryGitHub;
   /** Accounts and their usage, for picking where new Factory agents start. */
   accounts?: FactoryAccounts;
+  /** Connected hosts, for finding Dev and its issue agents when issue agents run there. */
+  hosts?: () => IssueAgentHosts;
   /** Hash of the GitHub state a gated role reacts to; null wakes the agent. */
   fingerprint?: (role: GatedRole, repository: string) => Promise<string | null>;
   onWorkspacesChanged?: (workspaceIds: string[]) => void;
   logger: Logger;
   now?: () => Date;
   timeZone?: string;
+}
+
+/** Where a project's issue agents run; absent from older state means Dev. */
+function issueAgentsIn(project: Pick<ProjectState, "workers">): ProjectFactoryIssueAgents {
+  return project.workers.issueAgents ?? "dev";
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 class ProjectFactoryError extends Error {
@@ -321,6 +340,10 @@ export class ProjectFactoryService {
       gh: this.input.gh ?? defaultGhRunner,
       agents: () => this.input.agentStorage.list(),
       workspaceIds,
+      devAgents: async () => {
+        const host = await this.observedDev(project);
+        return host ? this.devQueueAgents(projectId, host) : undefined;
+      },
       now,
     });
     this.issueQueues.set(projectId, {
@@ -341,7 +364,56 @@ export class ProjectFactoryService {
       return this.describe(record, undefined, error.message);
     }
     if (record.archivedAt) return this.describe(record, project, "This project is archived.");
-    return this.describe(record, project, null);
+    const state = this.describe(record, project, null);
+    const host = project ? await this.observedDev(project) : null;
+    return host ? { ...state, issueAgentHost: host } : state;
+  }
+
+  /**
+   * The Dev to report and read agents from. Placement and observation differ: issue agents
+   * started on Dev before a switch to host mode still run there, so whenever the owner's Dev
+   * host exists it is observed. In dev mode a missing Dev is reported as unavailable.
+   */
+  private async observedDev(
+    project: Pick<ProjectState, "workers">,
+  ): Promise<ProjectFactoryIssueAgentHost | null> {
+    const host = await this.devHost();
+    return host ?? (issueAgentsIn(project) === "dev" ? NO_DEV_HOST : null);
+  }
+
+  /** Dev's availability from this daemon's saved hosts, or null with none saved. */
+  private async devHost(): Promise<ProjectFactoryIssueAgentHost | null> {
+    if (!this.input.hosts)
+      return { serverId: null, unavailable: "this daemon cannot reach connected hosts" };
+    try {
+      return devHostState(await this.input.hosts().directory());
+    } catch (error) {
+      return {
+        serverId: null,
+        unavailable: `connected hosts could not be read: ${errorText(error)}`,
+      };
+    }
+  }
+
+  /** Dev's issue agents for the queue; when Dev cannot be read, none, with the reason. */
+  private async devQueueAgents(
+    projectId: string,
+    host: ProjectFactoryIssueAgentHost,
+  ): Promise<DevQueueAgents> {
+    const installation = this.installation(projectId);
+    if (host.unavailable || !host.serverId || !this.input.hosts)
+      return { host, installation, agents: [] };
+    try {
+      const agents = await readDevAgents({
+        hosts: this.input.hosts(),
+        serverId: host.serverId,
+        installation,
+      });
+      return { host, installation, agents };
+    } catch (error) {
+      const unavailable = `Dev's agents could not be read: ${errorText(error)}`;
+      return { host: { serverId: host.serverId, unavailable }, installation, agents: [] };
+    }
   }
 
   async enable(request: {
@@ -552,6 +624,7 @@ export class ProjectFactoryService {
     planning?: boolean;
     workerProfileId?: string | null;
     reviewerProfileId?: string | null;
+    issueAgents?: ProjectFactoryIssueAgents;
   }): Promise<ProjectFactoryState> {
     return this.serialize(async () => {
       const record = await this.requireActiveProject(request.projectId);
@@ -565,6 +638,7 @@ export class ProjectFactoryService {
           current.workers.workerProfileId = request.workerProfileId;
         if (request.reviewerProfileId !== undefined)
           current.workers.reviewerProfileId = request.reviewerProfileId;
+        if (request.issueAgents !== undefined) current.workers.issueAgents = request.issueAgents;
         if (!request.role) return;
         const role = (current.roles[request.role] ??= emptyRoleState());
         if (request.provider !== undefined) role.launch.provider = request.provider;
@@ -1480,12 +1554,15 @@ export class ProjectFactoryService {
       state,
       repository: project?.repository || null,
       reason: unavailable,
-      workers: project?.workers ?? {
-        plannerProfileId: null,
-        planning: true,
-        workerProfileId: null,
-        reviewerProfileId: null,
-      },
+      workers: project
+        ? { ...project.workers, issueAgents: issueAgentsIn(project) }
+        : {
+            plannerProfileId: null,
+            planning: true,
+            workerProfileId: null,
+            reviewerProfileId: null,
+            issueAgents: "dev",
+          },
       drain: project?.drain
         ? { id: project.drain.id, reason: project.drain.reason, pausedAt: project.drain.pausedAt }
         : null,
@@ -1530,7 +1607,7 @@ export class ProjectFactoryService {
 
   private charterText(
     record: PersistedProjectRecord,
-    project: Pick<ProjectState, "repository">,
+    project: Pick<ProjectState, "repository" | "workers">,
     roleId: ProjectFactoryRoleId,
   ): string {
     const input: CharterInput = {
@@ -1540,6 +1617,7 @@ export class ProjectFactoryService {
       isSystemProject: isSystemProject(record),
       projectId: record.projectId,
       installation: this.installation(record.projectId),
+      issueAgents: issueAgentsIn(project),
     };
     return projectFactoryRole(roleId).charter(input);
   }
