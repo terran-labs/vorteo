@@ -2562,6 +2562,7 @@ test("shared metadata save failure stays visible and retry updates both environm
     }
   }
   await page.goto(origin);
+  await page.goto(`${origin}/settings`);
   await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
