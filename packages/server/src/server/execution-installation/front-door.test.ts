@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import { createAgentActions } from "./agent-actions.js";
+import { ORDINARY_SETTINGS } from "./queued-agent-action-definitions.js";
 import { OWNER_ONLY_OPERATIONS } from "./delegated-admission.js";
 import { OWNER_ROUTE_FRONT_DOORS } from "./front-door.js";
 
@@ -18,6 +19,36 @@ const PINNED_IMMEDIATE: Readonly<Record<string, readonly string[]>> = {
   "/api/installation/owner/helpers/verify-installed": ["verifyHelperRecovery"],
   "/api/installation/owner/dev-repair/prepare": ["requestDevRepair", "prepareBatches"],
 };
+// Each queued installation change and the owner operation both its definition and the owner's
+// route call, so a definition can never do something its owner route does not.
+const PINNED_QUEUED = {
+  "installation-name": [
+    "/api/installation/owner/name",
+    "installationName.write(",
+    "ports.name.write(",
+  ],
+  "live-dev": [
+    "/api/installation/owner/live-dev/change",
+    "liveDev.change(",
+    "ports.liveDev.change(",
+  ],
+  "installation-type": [
+    "/api/installation/owner/installation-type/change",
+    "changeInstallationType(",
+    "ports.installationType.change(",
+  ],
+  "installation-settings": [
+    "/api/installation/owner/settings",
+    "settings.update(",
+    "ports.settings.update(",
+  ],
+  "custom-domain": [
+    "/api/installation/owner/custom-domain/change",
+    "customDomain.change(",
+    "ports.customDomain.change(",
+  ],
+} as const;
+
 // Parsing, replies, error logging and the receipt wrapper: calls that change nothing.
 const PLUMBING = new Set([
   "async",
@@ -62,11 +93,6 @@ function agentHandlerOf(server: string, command: string): string {
 // Existing owner operations still waiting for an agent door. Shrink this list as doors ship;
 // never grow it. A new operation ships with its agent door instead (docs/task-delivery.md).
 const PINNED_GAPS = [
-  "/api/installation/owner/custom-domain/change",
-  "/api/installation/owner/installation-type/change",
-  "/api/installation/owner/live-dev/change",
-  "/api/installation/owner/name",
-  "/api/installation/owner/settings",
   "/api/installation/owner/source-upgrades",
   "/api/installation/owner/source-upgrades/:id/decision",
 ];
@@ -155,6 +181,25 @@ test("every owner route that changes something has an agent front door, an exclu
     ["/api/installation/owner/live-dev/change", "change"],
   ] as const)
     expect(unreviewedCalls(handlerOf(server, route), reviewed), route).toContain(write);
+  // Every queued definition is pinned to the operation its owner route performs.
+  const definitions = read("./queued-agent-action-definitions.ts");
+  const named = [...definitions.matchAll(/name: "([a-z-]+)"/g)].map((match) => match[1]!);
+  expect(named.sort()).toEqual(Object.keys(PINNED_QUEUED).sort());
+  for (const [action, [route, ownerCall, definitionCall]] of Object.entries(PINNED_QUEUED)) {
+    expect(OWNER_ROUTE_FRONT_DOORS[route], action).toEqual({
+      agent: "request-installation-change",
+    });
+    expect(handlerOf(server, route).replace(/\s+/g, ""), action).toContain(ownerCall);
+    const block = definitions.slice(definitions.indexOf(`name: "${action}"`));
+    const end = block.indexOf("\n    {", 1);
+    expect(end === -1 ? block : block.slice(0, end), action).toContain(definitionCall);
+  }
+  // Ordinary settings exclude every guardrail and credential field.
+  expect(ORDINARY_SETTINGS).toEqual([
+    "autoArchiveAfterMerge",
+    "metadataGeneration",
+    "terminalProfiles",
+  ]);
   // A new route cannot join any list by adding a sentence: all are pinned here.
   const excluded = entries.filter(([, door]) => "excluded" in door).map(([route]) => route);
   expect(excluded.sort()).toEqual(PINNED_EXCLUSIONS);

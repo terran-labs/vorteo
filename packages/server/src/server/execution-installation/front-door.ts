@@ -110,22 +110,20 @@ export const OWNER_ROUTE_FRONT_DOORS: Readonly<Record<string, FrontDoor>> = {
   "/api/installation/owner/update-policy": UPGRADES,
   "/api/installation/owner/update-check": UPGRADES,
 
+  // Queued installation changes (queued-agent-action-definitions.ts): pending and cancellable,
+  // approved by the owner or by the full grant after its window. The test pins each action to
+  // the owner operation it calls. Ordinary settings only; the rest of the body is guardrails.
+  "/api/installation/owner/name": { agent: "request-installation-change" },
+  "/api/installation/owner/custom-domain/change": { agent: "request-installation-change" },
+  "/api/installation/owner/installation-type/change": { agent: "request-installation-change" },
+  "/api/installation/owner/live-dev/change": { agent: "request-installation-change" },
+  "/api/installation/owner/settings": { agent: "request-installation-change" },
+  "/api/installation/owner/queued-actions/:id/decision": { agent: "request-installation-change" },
+
   // Pinned gaps: existing owner operations waiting for their agent doors (Builds, 2026-11-08).
-  "/api/installation/owner/name": { gap: "Rename the installation." },
-  "/api/installation/owner/custom-domain/change": {
-    gap: "Change the custom domain; its request must show the disruption in Installation controls.",
-  },
-  "/api/installation/owner/installation-type/change": {
-    gap: "Change the installation type; its request must show the disruption in Installation controls.",
-  },
-  "/api/installation/owner/live-dev/change": { gap: "Turn live dev on or off." },
   // Stable source upgrades reached main on 2026-11-07, before this rule, with owner-only approval.
   "/api/installation/owner/source-upgrades": { gap: "Request a Stable source upgrade." },
   "/api/installation/owner/source-upgrades/:id/decision": {
     gap: "Approve a Stable source upgrade under the grant.",
-  },
-  "/api/installation/owner/settings": {
-    // appendSystemPrompt in the same body is an instruction change and stays excluded.
-    gap: "Ordinary installation settings (autoArchiveAfterMerge, terminal profiles, metadata generation and similar fields).",
   },
 };

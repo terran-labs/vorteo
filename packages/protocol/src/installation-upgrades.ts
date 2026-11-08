@@ -107,6 +107,41 @@ export type AgentActionReceipt = z.infer<typeof AgentActionReceiptSchema>;
 /** POST /api/installation/owner/agent-actions/query, newest first. Older coordinators answer 404. */
 export const AgentActionReceiptsSchema = z.object({ receipts: z.array(AgentActionReceiptSchema) });
 
+/**
+ * One installation change a Host agent requested, such as renaming the installation. It waits
+ * pending, cancellable, for the owner or for the full maintenance grant's cancellation window.
+ */
+export const QueuedAgentActionSchema = z.object({
+  id: z.string().uuid(),
+  revision: z.string().uuid(),
+  /** The reviewed action, such as "installation-name", named with request-installation-change. */
+  action: z.string(),
+  request: z.unknown(),
+  /** The Host agent's own label. Display only, never authority. */
+  requester: z.string().optional(),
+  /** What the owner should expect when it runs. */
+  disruption: z.string(),
+  createdAt: z.string().datetime(),
+  status: z.enum(["pending", "approved", "running", "succeeded", "failed", "cancelled"]),
+  detail: z.string(),
+  delegatedApproval: DelegatedMaintenanceApprovalSchema.optional(),
+  /** Coordinator-private: what a failed verification restores. Never sent to clients. */
+  previous: z.unknown().optional(),
+  approvedAt: z.string().datetime().optional(),
+  startedAt: z.string().datetime().optional(),
+  finishedAt: z.string().datetime().optional(),
+});
+export type QueuedAgentAction = z.infer<typeof QueuedAgentActionSchema>;
+
+/** POST /api/installation/owner/queued-actions/query. Older coordinators answer 404. */
+export const QueuedAgentActionsSchema = z.object({ jobs: z.array(QueuedAgentActionSchema) });
+
+/** POST /api/installation/owner/queued-actions/:id/decision. */
+export const QueuedAgentActionDecisionSchema = z.strictObject({
+  revision: z.string().uuid(),
+  decision: z.enum(["approve", "cancel"]),
+});
+
 /** Body of a Host-agent immediate action request. */
 export const AgentActionRequestSchema = z.strictObject({
   requester: z.string().min(1).max(256).optional(),

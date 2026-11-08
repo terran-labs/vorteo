@@ -275,6 +275,22 @@ test("only the Host agent requests a coordinator update, and only the owner deci
     ).toBe(401);
 });
 
+test("installation changes are Host-agent requests that wait for approval", async () => {
+  const f = await fixture();
+  const route = "/api/installation/installation-changes";
+  const body = { action: "installation-name", request: { name: "Lab Mac" } };
+  expect((await f.request(route, undefined, body)).status).toBe(401);
+  expect((await f.request(route, "guest-agent-test-token", body)).status).toBe(403);
+  const created = await f.request(route, "host-agent-test-token", body);
+  expect(created.status).toBe(201);
+  // No grant in this fixture: it waits for the owner and never reports its restore value.
+  const job = (await created.json()) as Record<string, unknown>;
+  expect(job).toMatchObject({ status: "pending", action: "installation-name" });
+  expect(job).not.toHaveProperty("previous");
+  const unknown = { action: "connections", request: {} };
+  expect((await f.request(route, "host-agent-test-token", unknown)).status).toBe(409);
+});
+
 test("immediate agent actions need the Host agent and the full grant", async () => {
   const f = await fixture();
   const routes = [
