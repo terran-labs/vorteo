@@ -57,6 +57,9 @@ const JournalSchema = z.strictObject({
   jobs: z.array(QueuedAgentActionSchema),
 });
 
+/** Restores started for one request at most; a failing restore must not loop restarts. */
+const RESTORE_ATTEMPTS = 2;
+
 /** How long a finished request stays in Installation controls. */
 const RETAINED = 20;
 
@@ -268,48 +271,49 @@ export function createQueuedAgentActions(input: {
   }
 
   /**
-   * Restores at most once, then records whether the previous value is back. The restore is
-   * compare-and-set against `restoreRevision`, so it is safe to call again when the coordinator
-   * stopped after recording the attempt but before the restore changed anything: the state is
-   * then still at that revision. Any other revision means the restore ran or the owner changed it.
+   * Restores the previous value, at most RESTORE_ATTEMPTS times, and records whether it is back.
+   * The first attempt is compare-and-set against `restoreRevision`, read before the reachability
+   * wait, so an owner change during the wait is never overwritten. A later attempt, after a
+   * coordinator that stopped mid-restore, retries only while the value is still the one this
+   * request set: any other value means the owner changed it, and it stays.
    */
   async function finishRestore(job: QueuedAgentAction, action: QueuedActionDefinition) {
     if (action.settled && !(await action.settled())) return;
-    const back = JSON.stringify(await action.capture()) === JSON.stringify(job.previous ?? null);
-    if (back) {
+    if (await isBack(job, action)) {
       finish(job, "failed", `${job.detail} Restored the previous value.`);
       return;
     }
-    if (job.restoreAttempted) {
-      const { revision } = await action.state(job.request);
-      if (revision !== job.restoreRevision) {
-        finish(
-          job,
-          "failed",
-          `${job.detail} The restore did not take effect or the value changed since; check it in Installation controls.`,
-        );
-        return;
-      }
+    const attempts = job.restoreAttempts ?? 0;
+    const state = await action.state(job.request);
+    if (attempts > 0 && !state.applied) {
+      finish(job, "failed", `${job.detail} The value changed since, so it was not restored.`);
+      return;
     }
-    const attempting = job.restoreAttempted ? job : save(job, { restoreAttempted: true });
+    if (attempts >= RESTORE_ATTEMPTS) {
+      finish(
+        job,
+        "failed",
+        `${job.detail} The restore did not take effect after ${attempts} attempts; check it in Installation controls.`,
+      );
+      return;
+    }
+    const attempting = save(job, { restoreAttempts: attempts + 1 });
     try {
-      await action.restore!(job.previous, job.restoreRevision ?? "");
+      await action.restore!(
+        job.previous,
+        attempts === 0 ? (job.restoreRevision ?? "") : state.revision,
+      );
     } catch (error) {
       finish(attempting, "failed", `${job.detail} Not restored: ${message(error)}`);
       return;
     }
-    const latest = jobs.find((item) => item.id === job.id)!;
-    // Settles first when the restore restarts the coordinator; the next one reconciles it.
+    // A restore that restarts the coordinator settles first; the next one reconciles it.
     if (action.settled && !(await action.settled())) return;
-    const restored =
-      JSON.stringify(await action.capture()) === JSON.stringify(job.previous ?? null);
-    finish(
-      latest,
-      "failed",
-      restored
-        ? `${job.detail} Restored the previous value.`
-        : `${job.detail} The restore did not take effect; check it in Installation controls.`,
-    );
+    await finishRestore(jobs.find((item) => item.id === job.id)!, action);
+  }
+
+  async function isBack(job: QueuedAgentAction, action: QueuedActionDefinition) {
+    return JSON.stringify(await action.capture()) === JSON.stringify(job.previous ?? null);
   }
 
   return {

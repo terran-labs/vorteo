@@ -138,8 +138,8 @@ export const QueuedAgentActionSchema = z.object({
   previous: z.unknown().optional(),
   /** The state revision a restore requires: it is refused if the value changed since. */
   restoreRevision: z.string().optional(),
-  /** The restore was started; it is never started twice. */
-  restoreAttempted: z.boolean().optional(),
+  /** How many restores were started; bounded, so a failing restore cannot loop restarts. */
+  restoreAttempts: z.number().int().min(0).optional(),
   approvedAt: z.string().datetime().optional(),
   startedAt: z.string().datetime().optional(),
   finishedAt: z.string().datetime().optional(),

@@ -202,7 +202,7 @@ test("a restore is resumed after a restart and never started twice", async () =>
   const job = first.request("custom-domain", { origin: "https://new.example" }, "Builds");
   first.decide(job.id, job.revision, "approve");
   await first.drain();
-  expect(first.list()[0]).toMatchObject({ status: "restoring", restoreAttempted: true });
+  expect(first.list()[0]).toMatchObject({ status: "restoring", restoreAttempts: 1 });
   settled = true;
   const next = queue(fake.definition, clock);
   await next.drain();
@@ -246,11 +246,34 @@ test("a restore interrupted before it changed anything runs on resume, once", as
   first.decide(job.id, job.revision, "approve");
   void first.drain();
   await new Promise((resolve) => setTimeout(resolve, 10));
-  expect(first.list()[0]).toMatchObject({ status: "restoring", restoreAttempted: true });
+  expect(first.list()[0]).toMatchObject({ status: "restoring", restoreAttempts: 1 });
   crash = false;
   const next = queue(fake.definition, clock);
   await next.drain();
   expect(fake.value()).toBe("old");
   expect(next.list()[0]?.detail).toContain("Restored the previous value");
   expect(fake.calls.filter((call) => call.startsWith("restore"))).toHaveLength(1);
+});
+
+test("a restore interrupted after it changed the revision but not the value is retried", async () => {
+  const clock = { now: Date.parse("2026-11-08T12:00:00Z") };
+  const fake = domain({ reachable: () => "domain did not answer" });
+  const restore = fake.definition.restore!;
+  let crash = true;
+  // Like the custom domain: the revision moves before the value is written, then it stops.
+  fake.definition.restore = async (previous, revision) => {
+    if (!crash) return restore(previous, revision);
+    fake.state.revision += 1;
+    return new Promise<never>(() => {});
+  };
+  const first = queue(fake.definition, clock);
+  const job = first.request("custom-domain", { origin: "https://new.example" }, "Builds");
+  first.decide(job.id, job.revision, "approve");
+  void first.drain();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  crash = false;
+  const next = queue(fake.definition, clock);
+  await next.drain();
+  expect(fake.value()).toBe("old");
+  expect(next.list()[0]?.detail).toContain("Restored the previous value");
 });
