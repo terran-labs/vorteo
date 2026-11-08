@@ -1,5 +1,6 @@
 ### Features
 
+- Installation controls show Stable source upgrades under **Source upgrades**, with when a delegated one starts, and Install, Reject and Cancel.
 - Builds can request a Stable source upgrade with `request-source-upgrade` and follow it with `source-upgrade-status`. Under full maintenance delegation it starts after a thirty-second window, finishing current turns before the Host restarts; otherwise the owner approves it. Rollbacks stay with the owner.
 
 ### Maintenance

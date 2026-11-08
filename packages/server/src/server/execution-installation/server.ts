@@ -1354,7 +1354,8 @@ export function createInstallationServer(
             // owner routes under /api/installation/owner/source-upgrades start them.
             sourceUpgrade: {
               available: sourceUpgradeAvailable,
-              ownerApprovalRequired: true,
+              // A Host agent's request under the full grant starts after its window.
+              ownerApprovalRequired: ownerApprovalRequired(["source-upgrade"]),
             },
             sessionHostJob: {
               available: host && restarts.sessionHostAvailable(),
