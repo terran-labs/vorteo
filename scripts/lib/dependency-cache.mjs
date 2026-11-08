@@ -9,7 +9,9 @@
 // Clones share disk blocks until a file changes, so a cloned install costs
 // metadata only. A Linux copy still skips the download, extraction and native
 // builds. Other platforms, and VORTEO_DEPENDENCY_CACHE=0, run a normal `npm ci`.
-// A full install waits for the machine's heavy-job slot unless it already runs in one.
+// Agent checkouts opt in to `queue`, so their full installs wait for the machine's
+// heavy-job slot. Installer, coordinator and Builds paths never queue: they can run while
+// the Builds gate holds that slot, and the coordinator's protected tooling has no queue.
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -229,14 +231,17 @@ export function installDependencies({
   run = defaultRun,
   clone = defaultClone,
   supported = cloneSupported(),
-  queue = process.env.VORTEO_HEAVY_JOB !== "1",
+  queue = false,
   npmVersion,
   log = (message) => console.log(message),
 }) {
   const args = installModes[mode];
   if (!args) throw new Error(`Unknown dependency install mode: ${mode}`);
   function fullInstall() {
-    if (!queue) return run("npm", args, root);
+    // Inside a heavy job the slot is already ours, and Builds' commands may run while its gate
+    // holds the slot; waiting for it again would never end.
+    const holdsSlot = process.env.VORTEO_HEAVY_JOB === "1" || process.env.VORTEO_BUILDS === "1";
+    if (!queue || holdsSlot) return run("npm", args, root);
     const label = "dependency install";
     run(process.execPath, [HEAVY_JOB, "run", "--label", label, "--", "npm", ...args], root);
   }

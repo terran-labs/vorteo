@@ -80,7 +80,7 @@ test("unsupported platforms run a plain install", (t) => {
   assert.equal(fs.existsSync(path.join(parent, "cache")), false);
 });
 
-test("a full install waits for the heavy-job slot unless it already holds it", (t) => {
+test("an opted-in full install waits for the heavy-job slot", (t) => {
   const parent = temporary(t);
   const calls = [];
   installDependencies({
@@ -102,6 +102,20 @@ test("a full install waits for the heavy-job slot unless it already holds it", (
     "npm",
     ...installModes.build,
   ]);
+
+  // Builds' commands can run while its gate holds the slot, so they install at once.
+  process.env.VORTEO_BUILDS = "1";
+  t.after(() => delete process.env.VORTEO_BUILDS);
+  calls.length = 0;
+  installDependencies({
+    ...options,
+    root: checkout(parent, "two"),
+    mode: "build",
+    run: (command, args) => calls.push([command, ...args]),
+    supported: false,
+    queue: true,
+  });
+  assert.deepEqual(calls, [["npm", ...installModes.build]]);
 });
 
 test("a second checkout clones the cached install and keeps its own workspace links", (t) => {
