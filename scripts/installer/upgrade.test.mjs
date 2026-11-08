@@ -165,12 +165,14 @@ function machine({
   devHealthy = () => true,
   health,
   pgrep = () => new Error("no process"),
+  rules = [],
   ...options
 } = {}) {
   const state = { pid: 100, restarts: [], devImage: "sha256:old", snapshots: 0, coordinatorStarts };
   let paths;
   const context = fakeContext({
     rules: [
+      ...rules,
       ["git show", JSON.stringify({ version: "26.11.302" })],
       [
         (command, args) =>
@@ -585,6 +587,32 @@ describe("upgrade", () => {
       expect(failure.message).toMatch(/source upgrade to commit c{12} started from the interface/);
       expect(record.status).toBe("running");
     }
+  });
+
+  test.each([
+    ["is refused when the target lacks it", false],
+    ["proceeds when the target contains it", true],
+  ])("an installed commit from a source upgrade %s", async (_name, contains) => {
+    const { context, paths } = machine({
+      rules: [["git merge-base", contains ? "" : new Error("not an ancestor")]],
+    });
+    writeJson(path.join(paths.coordinatorState, "source-upgrades", "journal.json"), {
+      version: 1,
+      upgrades: [
+        {
+          id: "s1",
+          sourceCommit: OLD,
+          status: "succeeded",
+          steps: [{ name: "host", status: "succeeded" }],
+        },
+      ],
+    });
+    const planning = upgradePlan(context);
+    if (contains) await expect(planning).resolves.toMatchObject({ plan: { upgrade: true } });
+    else
+      await expect(planning).rejects.toThrow(
+        /does not contain commit a{12}, which a source upgrade/,
+      );
   });
 
   test.each([

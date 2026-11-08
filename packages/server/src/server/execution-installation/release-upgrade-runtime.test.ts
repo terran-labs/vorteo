@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,6 +25,7 @@ import {
   upgradeBlocker,
 } from "./release-upgrade-runtime.js";
 import type { InstallationRestarts } from "./restarts.js";
+import type { CommandRunner } from "./service-control.js";
 
 // Host snapshots and upgrades run only on macOS and Linux Hosts; Windows Hosts are #35.
 const posixTest = test.skipIf(process.platform === "win32");
@@ -107,7 +109,7 @@ function hostUpdate(id: string, status: RestartJob["status"]): RestartJob {
   } as RestartJob;
 }
 
-function runtime(jobs: RestartJob[], legacy = legacyInstallation()) {
+function runtime(jobs: RestartJob[], legacy = legacyInstallation(), run?: CommandRunner) {
   return createReleaseUpgradeRuntime({
     config: legacy.config,
     configFile: legacy.configFile,
@@ -115,6 +117,7 @@ function runtime(jobs: RestartJob[], legacy = legacyInstallation()) {
     hostUpdates: null,
     logger: createTestLogger(),
     entrypoint: path.join(legacy.release, COORDINATOR),
+    ...(run ? { run } : {}),
   });
 }
 
@@ -329,4 +332,68 @@ test("source upgrade routes accept only the owner of a Stable installation", asy
   } finally {
     await new Promise((resolve) => listener.close(resolve));
   }
+});
+
+test("a release upgrade that would drop a source-upgraded Host commit fails at its fetch step", async () => {
+  const installation = installerInstallation();
+  const release = "release-26.11.3002";
+  const releaseCommit = "4".repeat(40);
+  // The installer-built Host runs INSTALLED, which a source upgrade installed.
+  const hostRelease = path.join(root, "releases", INSTALLED);
+  touch(path.join(hostRelease, ".installer-release.json"), JSON.stringify({ revision: INSTALLED }));
+  symlinkSync(hostRelease, path.join(root, "releases", "host-current"));
+  touch(
+    path.join(installation.config.stateDir, "source-upgrades", "journal.json"),
+    JSON.stringify({
+      version: 1,
+      upgrades: [
+        {
+          id: "00000000-0000-4000-8000-0000000000b1",
+          revision: "00000000-0000-4000-8000-0000000000b2",
+          kind: "source-upgrade",
+          reason: "Hotfix",
+          requestedBy: "Owner",
+          lastRelease: null,
+          sourceCommit: INSTALLED,
+          previousCommit: "5".repeat(40),
+          createdAt: "2026-11-07T12:00:00.000Z",
+          status: "succeeded",
+          detail: "Upgraded.",
+          steps: ["snapshot", "fetch", "host", "coordinator", "dev"].map((name) => ({
+            name,
+            status: "succeeded",
+            detail: "",
+          })),
+          private: {},
+        },
+      ],
+    }),
+  );
+  const commands: string[] = [];
+  const run: CommandRunner = async (command, args) => {
+    const line = [command, ...args].join(" ");
+    commands.push(line);
+    if (line.includes("ls-remote")) return `${releaseCommit}\trefs/tags/${release}\n`;
+    if (line.includes("rev-parse")) return releaseCommit;
+    if (line.includes("merge-base")) throw new Error("not an ancestor");
+    return "";
+  };
+  const upgrades = runtime([], installation, run).upgrades;
+  if (!upgrades) throw new Error("Release upgrades are unavailable");
+  const pending = await upgrades.request(release);
+  upgrades.decide(pending.id, pending.revision, "approve");
+  await upgrades.drain();
+  const [upgrade] = upgrades.list();
+  expect(upgrade.status).toBe("failed");
+  expect(upgrade.steps.map((step) => step.status)).toEqual([
+    "succeeded",
+    "failed",
+    "skipped",
+    "skipped",
+    "skipped",
+  ]);
+  expect(upgrade.detail).toContain("which a source upgrade installed");
+  expect(commands).toContainEqual(
+    expect.stringContaining(`merge-base --is-ancestor ${INSTALLED} ${releaseCommit}`),
+  );
 });

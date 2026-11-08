@@ -347,6 +347,35 @@ export function summarizeUpgrade(plan) {
  * @returns {Promise<object>} what is installed, the target, how they compare, the current
  *   settings, and a plan when one is asked for and possible
  */
+/**
+ * Refuses a target that would drop a commit a source upgrade installed. Versions alone miss a
+ * release tagged from a branch that lacks it, since every commit on main raises the version.
+ */
+async function refuseDroppingSourceUpgrade(context, installPlan, installed, target, source) {
+  if (!installed.revision || installed.revision === target.revision) return;
+  const journal = readJson(
+    path.join(installPlan.paths.coordinatorState, "source-upgrades", "journal.json"),
+  );
+  const fromSource = (journal?.upgrades ?? []).some(
+    (item) =>
+      item.sourceCommit === installed.revision &&
+      (item.steps ?? []).some((step) => step.name === "host" && step.status === "succeeded"),
+  );
+  if (!fromSource) return;
+  try {
+    await git(
+      context,
+      ["merge-base", "--is-ancestor", installed.revision, target.revision],
+      source,
+    );
+  } catch {
+    throw new InstallerError(
+      `${label(target)} does not contain commit ${installed.revision.slice(0, 12)}, which a source upgrade installed. Upgrading would drop it.`,
+      "Wait for a release that includes it, or restore a snapshot from Settings to go back.",
+    );
+  }
+}
+
 export async function createUpgradePlan(
   context,
   { source, revision, release, settings: requested, settingsOnly = false },
@@ -362,6 +391,8 @@ export async function createUpgradePlan(
   const report = { installed, target, comparison, settings: current };
   if (unsupported) return { ...report, unsupported };
   const upgrade = !settingsOnly && ["newer", "different", "unfinished"].includes(comparison);
+  if (upgrade)
+    await refuseDroppingSourceUpgrade(context, installPlan, installed, target, sourceDirectory);
   const settings = changedSettings(current, requested);
   const policyChanged = Boolean(settings.updateMode || settings.updateChannel);
   const hasSettings = Object.keys(settings).length > 0;
