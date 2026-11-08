@@ -14,7 +14,12 @@ import type {
 } from "@getpaseo/protocol/installation-upgrades";
 import { useFetchQuery } from "@/data/query";
 import type { InstallationClient } from "./client";
-import { activeUpgrade, coordinatorFollowInProgress } from "./installation-upgrades-model";
+import {
+  activeUpgrade,
+  coordinatorFollowInProgress,
+  installationChangesPollMs,
+  sourceUpgradesPollMs,
+} from "./installation-upgrades-model";
 import { coordinatorSettingsInProgress } from "./coordinator-settings-model";
 
 export const INSTALLATION_UPGRADES_KEY = ["installation-upgrades"] as const;
@@ -23,6 +28,7 @@ export const COORDINATOR_FOLLOW_KEY = ["installation-coordinator-follow"] as con
 export const AGENT_ACTIONS_KEY = ["installation-agent-actions"] as const;
 export const INSTALLATION_CHANGES_KEY = ["installation-changes"] as const;
 export const SOURCE_UPGRADES_KEY = ["installation-source-upgrades"] as const;
+
 export const COORDINATOR_SETTINGS_KEY = ["installation-coordinator-settings"] as const;
 
 function requireClient(client: InstallationClient | null): InstallationClient {
@@ -116,12 +122,7 @@ export function useSourceUpgrades(client: InstallationClient | null) {
     queryFn: () => requireClient(client).sourceUpgradeStatus(),
     enabled: client !== null,
     staleTimeMs: 0,
-    refetchInterval: (query) =>
-      (query.state.data?.upgrades ?? []).some((job) =>
-        ["pending", "approved", "running"].includes(job.status),
-      )
-        ? 3000
-        : 60_000,
+    refetchInterval: (query) => sourceUpgradesPollMs(query.state.data),
     retry: false,
   });
 }
@@ -148,8 +149,7 @@ export function useInstallationChanges(client: InstallationClient | null) {
     queryFn: () => requireClient(client).installationChanges(),
     enabled: client !== null,
     staleTimeMs: 0,
-    refetchInterval: (query) =>
-      (query.state.data ?? []).some((job) => !job.finishedAt) ? 3000 : 60_000,
+    refetchInterval: (query) => installationChangesPollMs(query.state.data),
     retry: false,
   });
 }
