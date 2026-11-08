@@ -122,11 +122,24 @@ export const QueuedAgentActionSchema = z.object({
   /** What the owner should expect when it runs. */
   disruption: z.string(),
   createdAt: z.string().datetime(),
-  status: z.enum(["pending", "approved", "running", "succeeded", "failed", "cancelled"]),
+  /** `restoring` puts the previous value back after a change left the installation unreachable. */
+  status: z.enum([
+    "pending",
+    "approved",
+    "running",
+    "restoring",
+    "succeeded",
+    "failed",
+    "cancelled",
+  ]),
   detail: z.string(),
   delegatedApproval: DelegatedMaintenanceApprovalSchema.optional(),
   /** Coordinator-private: what a failed verification restores. Never sent to clients. */
   previous: z.unknown().optional(),
+  /** The state revision a restore requires: it is refused if the value changed since. */
+  restoreRevision: z.string().optional(),
+  /** The restore was started; it is never started twice. */
+  restoreAttempted: z.boolean().optional(),
   approvedAt: z.string().datetime().optional(),
   startedAt: z.string().datetime().optional(),
   finishedAt: z.string().datetime().optional(),

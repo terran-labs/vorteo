@@ -102,6 +102,16 @@ export function installationChangeDefinitions(
         const next = ports.name.write(name?.trim() ? name : null);
         return `Renamed the installation to ${next ?? "the default name"}.`;
       },
+      async state(request) {
+        const { name } = NameRequestSchema.parse(request);
+        const current = ports.name.read() ?? null;
+        const wanted = name?.trim() ? name.trim() : null;
+        return {
+          applied: (current?.trim() ?? null) === wanted,
+          revision: "",
+          detail: `the name is ${current ?? "the default"}`,
+        };
+      },
     },
     {
       name: "live-dev",
@@ -115,10 +125,18 @@ export function installationChangeDefinitions(
         const after = await ports.liveDev.change(LiveDevRequestSchema.parse(request));
         return `Delivery mode is now ${after.mode}.`;
       },
-      verify: () => reachable(ports, [ports.publicOrigin]),
-      async restore(previous) {
+      async state(request) {
+        const { mode } = LiveDevRequestSchema.parse(request);
         const current = await ports.liveDev.status();
-        await ports.liveDev.change({ expectedRevision: current.revision, mode: previous });
+        return {
+          applied: current.mode === mode,
+          revision: current.revision,
+          detail: `delivery mode is ${current.mode}`,
+        };
+      },
+      reachable: () => reachable(ports, [ports.publicOrigin]),
+      async restore(previous, revision) {
+        await ports.liveDev.change({ expectedRevision: revision, mode: previous });
       },
     },
     {
@@ -134,6 +152,18 @@ export function installationChangeDefinitions(
         const after = await ports.installationType.change(request);
         return `The installation is now ${after.type} on the ${after.releaseChannel} channel.`;
       },
+      async state(request) {
+        const change = InstallationTypeChangeSchema.parse(request);
+        const current = await ports.installationType.read();
+        return {
+          applied:
+            (change.type === undefined || current.type === change.type) &&
+            (change.releaseChannel === undefined ||
+              current.releaseChannel === change.releaseChannel),
+          revision: current.revision,
+          detail: `the installation is ${current.type} on the ${current.releaseChannel} channel`,
+        };
+      },
     },
     {
       name: "installation-settings",
@@ -147,6 +177,23 @@ export function installationChangeDefinitions(
       async apply(request) {
         const snapshot = await ports.settings.update(OrdinarySettingsRequestSchema.parse(request));
         return `Settings saved as revision ${snapshot.revision}.`;
+      },
+      async state(request) {
+        const { settings } = OrdinarySettingsRequestSchema.parse(request);
+        const snapshot = ports.settings.snapshot();
+        const current = snapshot.settings ?? {};
+        const differs = Object.keys(settings).filter(
+          (key) =>
+            JSON.stringify(current[key] ?? null) !==
+            JSON.stringify((settings as Record<string, unknown>)[key]),
+        );
+        return {
+          applied: differs.length === 0,
+          revision: String(snapshot.revision),
+          detail: differs.length
+            ? `${differs.join(", ")} differ from the request`
+            : "the settings match the request",
+        };
       },
     },
     {
@@ -177,13 +224,22 @@ export function installationChangeDefinitions(
       },
       // The change restarts the coordinator; the next one follows it from the journal.
       settled: async () => !ports.customDomain.running(),
-      async verify() {
-        const { origin } = await ports.customDomain.status();
+      async state(request) {
+        const requested = CustomDomainChangeSchema.parse(request).origin;
+        const current = await ports.customDomain.status();
+        return {
+          // The handoff restores the previous file itself when the coordinator does not answer.
+          applied: current.origin === requested,
+          revision: current.revision,
+          detail: `the custom domain is ${current.origin ?? "none"}`,
+        };
+      },
+      reachable(request) {
+        const { origin } = CustomDomainChangeSchema.parse(request);
         return reachable(ports, origin ? [ports.publicOrigin, origin] : [ports.publicOrigin]);
       },
-      async restore(previous) {
-        const current = await ports.customDomain.status();
-        await ports.customDomain.change({ expectedRevision: current.revision, origin: previous });
+      async restore(previous, revision) {
+        await ports.customDomain.change({ expectedRevision: revision, origin: previous });
       },
     },
   ];

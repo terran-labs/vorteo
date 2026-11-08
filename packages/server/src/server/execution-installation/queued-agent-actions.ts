@@ -41,10 +41,15 @@ export interface QueuedActionDefinition {
    * Absent means the change is complete when `apply` returns.
    */
   settled?(): Promise<boolean>;
-  /** After the change: null when the owner can still reach the installation, else the evidence. */
-  verify?(): Promise<string | null>;
-  /** Puts `previous` back after a failed verification. */
-  restore?(previous: unknown): Promise<void>;
+  /**
+   * Whether the requested state is in effect now, the revision of that state for a
+   * compare-and-set restore, and a description of the current value.
+   */
+  state(request: unknown): Promise<{ applied: boolean; revision: string; detail: string }>;
+  /** For changes that can interrupt remote access: null when both addresses answer, else evidence. */
+  reachable?(request: unknown): Promise<string | null>;
+  /** Puts `previous` back only if the state is still at `revision`; refuses otherwise. */
+  restore?(previous: unknown, revision: string): Promise<void>;
 }
 
 const JournalSchema = z.strictObject({
@@ -123,7 +128,7 @@ export function createQueuedAgentActions(input: {
 
   async function drainOnce(): Promise<void> {
     for (const job of jobs.filter((item) => item.status === "pending")) admit(job);
-    const running = jobs.find((item) => item.status === "running");
+    const running = jobs.find((item) => item.status === "running" || item.status === "restoring");
     if (running) return follow(running);
     const approved = jobs.find((item) => item.status === "approved");
     if (approved) await dispatch(approved);
@@ -183,13 +188,6 @@ export function createQueuedAgentActions(input: {
       finish(job, "failed", `Preflight refused the change: ${message(error)}. Nothing changed.`);
       return;
     }
-    // The grant may have lapsed, or the owner cancelled, during the preflight.
-    const current = jobs.find((item) => item.id === job.id);
-    if (current?.status !== "approved" || current.revision !== job.revision) return;
-    if (lapsed()) {
-      finish(job, "cancelled", "Delegated approval changed before dispatch. Nothing changed.");
-      return;
-    }
     let previous: unknown;
     try {
       previous = await action.capture();
@@ -199,6 +197,19 @@ export function createQueuedAgentActions(input: {
         "failed",
         `The current value could not be read: ${message(error)}. Nothing changed.`,
       );
+      return;
+    }
+    // The owner may have cancelled, or the grant lapsed, during the preflight or the capture:
+    // checked last, immediately before the running record and the effect.
+    const current = jobs.find((item) => item.id === job.id);
+    if (current?.status !== "approved" || current.revision !== job.revision) return;
+    if (lapsed()) {
+      finish(job, "cancelled", "Delegated approval changed before dispatch. Nothing changed.");
+      return;
+    }
+    const blocked = input.conflict?.();
+    if (blocked) {
+      finish(job, "failed", `${blocked} Nothing changed.`);
       return;
     }
     // Recorded with the value to restore before any effect: a change that restarts the
@@ -221,27 +232,65 @@ export function createQueuedAgentActions(input: {
     await follow(save(latest, { detail }));
   }
 
-  /** Completes a running change: waits for it to settle, verifies access and restores on failure. */
+  /**
+   * Completes a running change, also after a coordinator restart: once it settles, success
+   * requires the requested state in effect and, for remote-access changes, both addresses
+   * answering. Otherwise the previous value is restored once, durably, never recursively.
+   */
   async function follow(job: QueuedAgentAction) {
     const action = definition(job.action);
     if (action.settled && !(await action.settled())) return;
-    const evidence = await action.verify?.();
+    if (job.status === "restoring") return finishRestore(job, action);
+    const state = await action.state(job.request);
+    // Not in effect: the coordinator stopped before applying it, or the handoff restored the
+    // previous configuration itself. There is nothing of this request's to undo.
+    if (!state.applied) {
+      finish(job, "failed", `The change did not take effect: ${state.detail}`);
+      return;
+    }
+    const evidence = (await action.reachable?.(job.request)) ?? null;
     if (!evidence) {
       finish(job, "succeeded", job.detail);
       return;
     }
     if (!action.restore || job.previous === undefined) {
-      finish(job, "failed", `${evidence} The previous value could not be restored automatically.`);
+      finish(job, "failed", `${evidence} The previous value cannot be restored automatically.`);
       return;
     }
-    // Failed first, so a restore that restarts the coordinator is never restored again.
-    finish(job, "failed", `${evidence} Restoring the previous value.`);
-    try {
-      await action.restore(job.previous);
-    } catch (error) {
-      const latest = jobs.find((item) => item.id === job.id)!;
-      save(latest, { detail: `${evidence} The restore failed: ${message(error)}` });
+    // Durable before the restore: a restore that restarts the coordinator resumes here, and the
+    // revision read before the reachability wait refuses it if the owner changed the value since.
+    const restoring = save(job, {
+      status: "restoring",
+      restoreRevision: state.revision,
+      detail: evidence,
+    });
+    await finishRestore(restoring, action);
+  }
+
+  /** Restores at most once, then records whether the previous value is back. */
+  async function finishRestore(job: QueuedAgentAction, action: QueuedActionDefinition) {
+    if (action.settled && !(await action.settled())) return;
+    const back = JSON.stringify(await action.capture()) === JSON.stringify(job.previous ?? null);
+    if (back) {
+      finish(job, "failed", `${job.detail} Restored the previous value.`);
+      return;
     }
+    if (job.restoreAttempted) {
+      finish(
+        job,
+        "failed",
+        `${job.detail} The restore did not take effect; check it in Installation controls.`,
+      );
+      return;
+    }
+    const attempting = save(job, { restoreAttempted: true });
+    try {
+      await action.restore!(job.previous, job.restoreRevision ?? "");
+    } catch (error) {
+      finish(attempting, "failed", `${job.detail} Not restored: ${message(error)}`);
+      return;
+    }
+    await finishRestore(jobs.find((item) => item.id === job.id)!, action);
   }
 
   return {
@@ -300,6 +349,7 @@ export function createQueuedAgentActions(input: {
 }
 
 function finished(job: QueuedAgentAction) {
+  // "restoring" is active: it still owes its outcome.
   return job.status === "succeeded" || job.status === "failed" || job.status === "cancelled";
 }
 

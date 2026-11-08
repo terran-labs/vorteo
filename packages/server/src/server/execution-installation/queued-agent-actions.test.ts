@@ -13,10 +13,16 @@ afterEach(() => rmSync(stateDir, { recursive: true, force: true }));
 
 const GRANT = { policyActivatedAt: "2026-11-01T00:00:00.000Z", authoritySha256: "a".repeat(64) };
 
-/** A domain-like change: a value, a reachability check and a restore, all recorded. */
-function domain(options: { reachable?: () => string | null; settled?: () => boolean } = {}) {
+/** A domain-like change with a revisioned value, a reachability check and a CAS restore. */
+function domain(
+  options: {
+    reachable?: () => string | null;
+    settled?: () => boolean;
+    capture?: () => Promise<void>;
+  } = {},
+) {
   const calls: string[] = [];
-  let value = "old";
+  const state = { value: "old", revision: 1 };
   const definition: QueuedActionDefinition = {
     name: "custom-domain",
     schema: z.strictObject({ origin: z.string() }),
@@ -25,20 +31,33 @@ function domain(options: { reachable?: () => string | null; settled?: () => bool
       calls.push("preflight");
       if ((request as { origin: string }).origin === "bad") throw new Error("no certificate");
     },
-    capture: async () => value,
+    async capture() {
+      await options.capture?.();
+      return state.value;
+    },
     async apply(request) {
       calls.push("apply");
-      value = (request as { origin: string }).origin;
-      return `Moved to ${value}.`;
+      state.value = (request as { origin: string }).origin;
+      state.revision += 1;
+      return `Moved to ${state.value}.`;
     },
     ...(options.settled ? { settled: async () => options.settled!() } : {}),
-    verify: async () => options.reachable?.() ?? null,
-    async restore(previous) {
+    async state(request) {
+      return {
+        applied: state.value === (request as { origin: string }).origin,
+        revision: String(state.revision),
+        detail: `the value is ${state.value}`,
+      };
+    },
+    reachable: async () => options.reachable?.() ?? null,
+    async restore(previous, revision) {
       calls.push(`restore ${String(previous)}`);
-      value = String(previous);
+      if (String(state.revision) !== revision) throw new Error("the value changed since");
+      state.value = String(previous);
+      state.revision += 1;
     },
   };
-  return { definition, calls, value: () => value };
+  return { definition, calls, state, value: () => state.value };
 }
 
 function queue(
@@ -138,4 +157,76 @@ test("without the grant a request waits for the owner, who can approve or cancel
   await actions.drain();
   expect(actions.list()[0]).toMatchObject({ status: "cancelled" });
   expect(fake.calls).toEqual([]);
+});
+
+test("a cancel during the capture stops the change before any effect", async () => {
+  const clock = { now: Date.parse("2026-11-08T12:00:00Z") };
+  let cancel = () => {};
+  const fake = domain({ capture: async () => cancel() });
+  const actions = queue(fake.definition, clock);
+  const job = actions.request("custom-domain", { origin: "https://new.example" }, "Builds");
+  const approved = actions.decide(job.id, job.revision, "approve");
+  cancel = () => void actions.decide(approved.id, approved.revision, "cancel");
+  await actions.drain();
+  expect(actions.list()[0]).toMatchObject({ status: "cancelled" });
+  expect(fake.calls).toEqual(["preflight"]);
+});
+
+test("a coordinator that stopped before applying reports the change as not in effect", async () => {
+  const clock = { now: Date.parse("2026-11-08T12:00:00Z") };
+  const fake = domain();
+  const first = queue(fake.definition, clock);
+  const job = first.request("custom-domain", { origin: "https://new.example" }, "Builds");
+  first.decide(job.id, job.revision, "approve");
+  // Simulate the crash: the running record exists, but apply never ran.
+  fake.definition.apply = async () => new Promise<never>(() => {});
+  void first.drain();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const next = queue({ ...fake.definition, apply: async () => "unused" }, clock);
+  await next.drain();
+  expect(next.list()[0]).toMatchObject({ status: "failed" });
+  expect(next.list()[0]?.detail).toContain("did not take effect");
+});
+
+test("a restore is resumed after a restart and never started twice", async () => {
+  const clock = { now: Date.parse("2026-11-08T12:00:00Z") };
+  let settled = true;
+  const fake = domain({ settled: () => settled, reachable: () => "domain did not answer" });
+  const restore = fake.definition.restore!;
+  // The restore restarts the coordinator: it is still settling when this process stops.
+  fake.definition.restore = async (previous, revision) => {
+    await restore(previous, revision);
+    settled = false;
+  };
+  const first = queue(fake.definition, clock);
+  const job = first.request("custom-domain", { origin: "https://new.example" }, "Builds");
+  first.decide(job.id, job.revision, "approve");
+  await first.drain();
+  expect(first.list()[0]).toMatchObject({ status: "restoring", restoreAttempted: true });
+  settled = true;
+  const next = queue(fake.definition, clock);
+  await next.drain();
+  expect(next.list()[0]).toMatchObject({ status: "failed" });
+  expect(next.list()[0]?.detail).toContain("Restored the previous value");
+  expect(fake.calls.filter((call) => call.startsWith("restore"))).toHaveLength(1);
+});
+
+test("a restore never overwrites a change the owner made during verification", async () => {
+  const clock = { now: Date.parse("2026-11-08T12:00:00Z") };
+  let fake!: ReturnType<typeof domain>;
+  fake = domain({
+    reachable: () => {
+      // The owner changes the value while reachability is being checked.
+      fake.state.value = "owner";
+      fake.state.revision += 1;
+      return "domain did not answer";
+    },
+  });
+  const actions = queue(fake.definition, clock);
+  const job = actions.request("custom-domain", { origin: "https://new.example" }, "Builds");
+  actions.decide(job.id, job.revision, "approve");
+  await actions.drain();
+  expect(fake.value()).toBe("owner");
+  expect(actions.list()[0]).toMatchObject({ status: "failed" });
+  expect(actions.list()[0]?.detail).toContain("Not restored");
 });
