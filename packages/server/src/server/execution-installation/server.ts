@@ -5,6 +5,8 @@ import { coordinatorDispatchStatuses } from "./coordinator-bootstrap-dispatch-st
 import { localInstallationOrigin, localInstallationEnvironments } from "./local-access.js";
 import {
   AgentActionRequestSchema,
+  QueuedAgentActionDecisionSchema,
+  type QueuedAgentAction,
   CoordinatorFollowAgentRequestSchema,
   CoordinatorFollowDecisionSchema,
   CoordinatorFollowRequestSchema,
@@ -20,6 +22,9 @@ import {
 } from "@getpaseo/protocol/installation-upgrades";
 import { createReleaseUpgradeRuntime } from "./release-upgrade-runtime.js";
 import { createAgentActions } from "./agent-actions.js";
+import { createQueuedAgentActions, type QueuedAgentActions } from "./queued-agent-actions.js";
+import { installationChangeDefinitions } from "./queued-agent-action-definitions.js";
+import { installationHealth, originCertificate } from "./origin-reachability.js";
 import { COORDINATOR_SETTINGS, createCoordinatorSettings } from "./coordinator-settings.js";
 import {
   createDelegationEvidence,
@@ -619,6 +624,8 @@ export function createInstallationServer(
     return policyActivatedAt ? { policyActivatedAt, authoritySha256: approvalAuthority() } : null;
   };
   const agentActions = createAgentActions({ stateDir: config.stateDir, grant: delegationGrant });
+  // Created once its owner operations exist, below; the drain and management read it after.
+  let queuedActions: QueuedAgentActions | undefined;
   const restarts = new InstallationRestarts(
     standingRuntime.journal,
     restartExecutor,
@@ -827,6 +834,10 @@ export function createInstallationServer(
         void coordinatorSettings
           .drain()
           .catch((error) => logger.error({ err: error }, "Coordinator settings change failed"));
+        // Installation changes, including a custom domain change resumed after its restart.
+        void queuedActions
+          ?.drain()
+          .catch((error) => logger.error({ err: error }, "Installation change failed"));
         // Lab builds run for minutes; like upgrades they advance beside the drain.
         void labRuntime.updates
           .drain()
@@ -1012,6 +1023,7 @@ export function createInstallationServer(
     {
       follow: () => releaseRuntime?.coordinatorFollow ?? null,
       settings: coordinatorSettings,
+      installationChanges: () => queuedActions ?? null,
     },
   );
   function requireManagementHost(_req: Request, res: Response, next: NextFunction) {
@@ -2566,6 +2578,81 @@ export function createInstallationServer(
     void settings.previewSkills(input.selection).then((sources) => res.json({ sources }), next);
   });
   const installationName = createInstallationNameStore(config.stateDir);
+  // Installation changes a Host agent requests: each pending and cancellable, approved by the
+  // owner or, after its window, by the full maintenance grant.
+  queuedActions = createQueuedAgentActions({
+    stateDir: config.stateDir,
+    grant: delegationGrant,
+    definitions: installationChangeDefinitions({
+      name: installationName,
+      liveDev,
+      installationType: {
+        read: () => readInstallationType(config.stateDir),
+        // Serialized with the owner's own changes, as in the owner route.
+        change(input) {
+          const change = installationTypeChanges.then(() =>
+            changeInstallationType(config.stateDir, input),
+          );
+          installationTypeChanges = change.catch(() => undefined);
+          return change;
+        },
+      },
+      settings,
+      customDomain,
+      publicOrigin: config.public.origin,
+      health: (origin) => installationHealth(origin, config.public.installationId),
+      certificate: originCertificate,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    }),
+  });
+  const publicQueuedAction = ({ previous: _previous, ...job }: QueuedAgentAction) => job;
+  app.post(
+    "/api/installation/installation-changes",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res) => {
+      const body = z
+        .strictObject({
+          action: z.string().min(1).max(64),
+          request: z.unknown(),
+          requester: z.string().min(1).max(256).optional(),
+        })
+        .parse(req.body);
+      const job = queuedActions!.request(body.action, body.request, body.requester);
+      void queuedActions!
+        .drain()
+        .catch((error) => logger.error({ err: error }, "Installation change failed"));
+      res.status(201).json(publicQueuedAction(job));
+    },
+  );
+  app.get(
+    "/api/installation/installation-changes/:id",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res) => {
+      const job = queuedActions!.get(z.string().uuid().parse(req.params.id));
+      if (!job) {
+        res.sendStatus(404);
+        return;
+      }
+      res.json(publicQueuedAction(job));
+    },
+  );
+  app.post("/api/installation/owner/queued-actions/query", (_req, res) =>
+    res.json({ jobs: queuedActions!.list().map(publicQueuedAction) }),
+  );
+  app.post("/api/installation/owner/queued-actions/:id/decision", (req, res) => {
+    const decision = QueuedAgentActionDecisionSchema.parse(req.body);
+    const job = queuedActions!.decide(
+      z.string().uuid().parse(req.params.id),
+      decision.revision,
+      decision.decision,
+    );
+    void queuedActions!
+      .drain()
+      .catch((error) => logger.error({ err: error }, "Installation change failed"));
+    res.json(publicQueuedAction(job));
+  });
   app.patch("/api/installation/owner/name", (req, res) => {
     const input = z.strictObject({ name: z.string().nullable() }).parse(req.body);
     // An empty name restores the default rather than saving a blank title.
