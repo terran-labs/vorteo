@@ -1,4 +1,5 @@
 import {
+  utimesSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -163,12 +164,15 @@ function machine({
   coordinatorStarts = true,
   devHealthy = () => true,
   health,
+  pgrep = () => new Error("no process"),
+  rules = [],
   ...options
 } = {}) {
   const state = { pid: 100, restarts: [], devImage: "sha256:old", snapshots: 0, coordinatorStarts };
   let paths;
   const context = fakeContext({
     rules: [
+      ...rules,
       ["git show", JSON.stringify({ version: "26.11.302" })],
       [
         (command, args) =>
@@ -201,7 +205,7 @@ function machine({
       ],
       ["docker info", "27.0.0"],
       // No Host build from an interface upgrade is running.
-      ["pgrep", new Error("no process")],
+      ["pgrep", (args) => pgrep(args)],
       ["launchctl print", new Error("Could not find service")],
       [
         "launchctl bootstrap",
@@ -526,6 +530,91 @@ describe("upgrade", () => {
     }
   });
 
+  const STALE = new Date("2026-10-30T11:00:00Z");
+  test.each([
+    ["a coordinator that answers makes the installer wait", { stale: true }, false],
+    ["a stopped coordinator's abandoned record is replaced", { stale: true, down: 1e9 }, true],
+    [
+      "a running build-only Host build makes the installer wait",
+      { stale: true, down: 1e9, building: true },
+      false,
+    ],
+    [
+      "a slow coordinator that answers after failed probes is waited for",
+      { stale: true, down: 2 },
+      false,
+    ],
+    ["a recently written record is waited for", { stale: false, down: 1e9 }, false],
+  ])("a running source upgrade: %s", async (_name, { stale, down = 0, building }, replaced) => {
+    let probes = 0;
+    let root;
+    const { context, paths } = machine({
+      // Silent for the first `down` probes before the installer restarts the coordinator.
+      health: (state) =>
+        !state.restarts.length && probes++ < down ? new Error("down") : undefined,
+      // The build-only Host build the coordinator starts on installer-made Hosts, matched
+      // against the pattern the installer passes to pgrep -f.
+      pgrep: ([, pattern]) =>
+        building &&
+        new RegExp(pattern).test(
+          `node main.mjs host-release --build-only --root ${root} --revision c`,
+        )
+          ? "4242"
+          : new Error("no process"),
+    });
+    root = context.root;
+    const journal = path.join(paths.coordinatorState, "source-upgrades", "journal.json");
+    writeJson(journal, {
+      version: 1,
+      upgrades: [
+        {
+          id: "s1",
+          sourceCommit: "c".repeat(40),
+          status: "running",
+          steps: [{ name: "host", status: "running" }],
+        },
+      ],
+    });
+    if (stale) utimesSync(journal, STALE, STALE);
+    const { plan } = await upgradePlan(context);
+    const { ok, failure } = await apply(context, plan);
+    const [record] = JSON.parse(readFileSync(journal, "utf8")).upgrades;
+    if (replaced) {
+      expect(failure).toBeUndefined();
+      expect(record).toMatchObject({ status: "failed", steps: [{ status: "failed" }] });
+    } else {
+      expect(ok).toBe(false);
+      expect(failure.message).toMatch(/source upgrade to commit c{12} started from the interface/);
+      expect(record.status).toBe("running");
+    }
+  });
+
+  test.each([
+    ["is refused when the target lacks it", false],
+    ["proceeds when the target contains it", true],
+  ])("an installed commit from a source upgrade %s", async (_name, contains) => {
+    const { context, paths } = machine({
+      rules: [["git merge-base", contains ? "" : new Error("not an ancestor")]],
+    });
+    writeJson(path.join(paths.coordinatorState, "source-upgrades", "journal.json"), {
+      version: 1,
+      upgrades: [
+        {
+          id: "s1",
+          sourceCommit: OLD,
+          status: "succeeded",
+          steps: [{ name: "host", status: "succeeded" }],
+        },
+      ],
+    });
+    const planning = upgradePlan(context);
+    if (contains) await expect(planning).resolves.toMatchObject({ plan: { upgrade: true } });
+    else
+      await expect(planning).rejects.toThrow(
+        /does not contain commit a{12}, which a source upgrade/,
+      );
+  });
+
   test.each([
     ["the same commit", { revision: NEW }, true],
     ["another commit", { revision: OLD }, false],
@@ -835,6 +924,15 @@ describe("coordinator follow", () => {
         },
       },
       /lab update is running/,
+    ],
+    [
+      "a source upgrade",
+      {
+        stateFiles: {
+          "source-upgrades/journal.json": { version: 1, upgrades: [{ status: "approved" }] },
+        },
+      },
+      /source upgrade from Installation controls is approved/,
     ],
   ])("refuses %s without restarting anything", async (_name, options, message) => {
     const { context, state, paths } = followMachine(options);
