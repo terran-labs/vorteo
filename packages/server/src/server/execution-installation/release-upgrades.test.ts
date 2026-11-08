@@ -497,6 +497,7 @@ function fakeSourcePorts(
     inspectSource: async () => ({ ...PASSING, ...facts }),
     lastRelease: async () => "release-26.10.3000",
     rollbackBlocker: () => null,
+    installationBlocker: async () => null,
     ...changes,
   };
   return { ...fake, ports, fetched };
@@ -624,6 +625,63 @@ test("an approved source upgrade resumes from its journal and fetches the review
   expect(resumed.list()[0].detail).toContain(SOURCE_COMMIT.slice(0, 12));
   // A release journal in another folder never sees the source record.
   expect(JSON.stringify(resumed.list())).not.toContain("private");
+});
+
+test("an installation switched to Lab mid-upgrade stops before the next step restarts anything", async () => {
+  let lab: string | null = null;
+  const fake = fakeSourcePorts({}, { installationBlocker: async () => lab });
+  const sources = new SourceUpgrades(journal, fake.ports);
+  const pending = await sources.request(SOURCE_REQUEST);
+  await sources.decide(pending.id, pending.revision, "approve");
+  await sources.drain();
+  expect(fake.calls).toEqual(["snapshot", "fetch", "host-request"]);
+  // The Host restart already requested finishes; the owner switches the type meanwhile.
+  lab = "The installation became Lab, so the source upgrade stopped.";
+  fake.finishHost("succeeded");
+  await sources.drain();
+  expect(fake.calls).toEqual(["snapshot", "fetch", "host-request"]);
+  expect(sources.list()[0]).toMatchObject({ status: "failed" });
+  expect(sources.list()[0].steps.map((step) => step.status)).toEqual([
+    "succeeded",
+    "succeeded",
+    "succeeded",
+    "failed",
+    "skipped",
+  ]);
+  expect(sources.list()[0].detail).toContain("became Lab");
+});
+
+test.each([
+  { name: "restarts the Host only after the Host and Dev builds", changed: false },
+  { name: "fails without a restart when the Host changed during the Dev build", changed: true },
+])("a source upgrade on an installer-built Host $name", async ({ changed }) => {
+  let installed = INSTALLED_COMMIT;
+  const fake = fakeSourcePorts(
+    {},
+    {
+      directHost: true,
+      directHostBuild: true,
+      currentCommit: () => installed,
+      buildDevImage: async () => {
+        fake.calls.push("dev-build");
+        if (changed) installed = "d".repeat(40);
+        return "sha256:new";
+      },
+    },
+  );
+  const sources = new SourceUpgrades(journal, fake.ports);
+  const pending = await sources.request(SOURCE_REQUEST);
+  await sources.decide(pending.id, pending.revision, "approve");
+  await sources.drain();
+  await sources.drain();
+  if (changed) {
+    expect(fake.calls).toEqual(["snapshot", "fetch", "host-build", "dev-build"]);
+    expect(sources.list()[0]).toMatchObject({ status: "failed" });
+    expect(sources.list()[0].detail).toContain("Host changed after");
+  } else {
+    expect(fake.calls).toEqual(["snapshot", "fetch", "host-build", "dev-build", "host-request"]);
+    expect(sources.list()[0].status).toBe("running");
+  }
 });
 
 /** A source upgrade whose Host step moved the Host, then whose coordinator rolled back. */

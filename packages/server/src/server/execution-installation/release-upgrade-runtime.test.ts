@@ -1,9 +1,21 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { RestartJob } from "@getpaseo/protocol/execution-installation";
+import { createHash } from "node:crypto";
+import { hashDaemonPassword } from "../auth.js";
 import { createTestLogger } from "../../test-utils/test-logger.js";
+import { createInstallationServer } from "./server.js";
 import type { InstallationConfig } from "./config.js";
 import {
   adoptionRequired,
@@ -184,8 +196,8 @@ test("a Host source update seen to succeed starts adoption once, detached", asyn
   }
 });
 
-/** An installer-made installation with one approved upgrade journaled as `kind`. */
-function installerWithApproved(kind: "release" | "source") {
+/** An installation the one-command installer made, with its deployment block. */
+function installerInstallation() {
   const legacy = legacyInstallation();
   legacy.config.deployment = {
     installRoot: root,
@@ -199,6 +211,12 @@ function installerWithApproved(kind: "release" | "source") {
       },
     },
   } as InstallationConfig["deployment"];
+  return legacy;
+}
+
+/** An installer-made installation with one approved upgrade journaled as `kind`. */
+function installerWithApproved(kind: "release" | "source") {
+  const legacy = installerInstallation();
   const record = {
     id: "00000000-0000-4000-8000-0000000000a1",
     revision: "00000000-0000-4000-8000-0000000000a2",
@@ -248,4 +266,67 @@ test("an approved release upgrade holds off source upgrades", async () => {
       requestedBy: "Owner",
     }),
   ).rejects.toThrow("release upgrade");
+});
+
+test("source upgrade routes accept only the owner of a Stable installation", async () => {
+  const installation = installerInstallation();
+  // The coordinator keeps its state in a private directory under its canonical path.
+  const stateDir = path.join(realpathSync(root), "state", "coordinator");
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  chmodSync(stateDir, 0o700);
+  const config = {
+    ...installation.config,
+    stateDir,
+    ownerPasswordHash: hashDaemonPassword("owner-pass"),
+    hostAgentTokenHash: createHash("sha256").update("host-agent-key").digest("hex"),
+  } as InstallationConfig;
+  touch(
+    path.join(config.stateDir, "installation-type.json"),
+    JSON.stringify({ version: 1, type: "lab", changedAt: "2026-11-07T12:00:00.000Z" }),
+  );
+  const app = createInstallationServer(
+    config,
+    { restart: async () => Promise.reject(new Error("No daemon restart")) } as never,
+    createTestLogger(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { configFile: installation.configFile },
+  );
+  const listener = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve) => listener.once("listening", resolve));
+  const address = listener.address();
+  if (!address || typeof address === "string") throw new Error("Missing test address");
+  config.listenPort = address.port;
+  const post = (route: string, token: string, body: unknown) =>
+    fetch(`http://127.0.0.1:${address.port}/api/installation/owner/source-upgrades${route}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        // Loopback requests carry the local origin.
+        origin: `http://127.0.0.1:${address.port}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  const request = { commit: "3".repeat(40), reason: "Hotfix" };
+  try {
+    // Agent request keys never reach owner routes.
+    expect((await post("", "host-agent-key", request)).status).toBe(401);
+    expect((await post("/query", "host-agent-key", {})).status).toBe(401);
+    // The owner of a Lab installation is refused before anything is fetched.
+    const refused = await post("", "owner-pass", request);
+    expect(refused.status).toBeGreaterThanOrEqual(400);
+    expect(JSON.stringify(await refused.json())).toContain("Stable installations");
+    const status = await post("/query", "owner-pass", {});
+    expect(status.status).toBe(200);
+    expect((await status.json()).upgrades).toEqual([]);
+  } finally {
+    await new Promise((resolve) => listener.close(resolve));
+  }
 });

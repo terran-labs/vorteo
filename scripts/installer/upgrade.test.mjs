@@ -1,4 +1,5 @@
 import {
+  utimesSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -163,6 +164,7 @@ function machine({
   coordinatorStarts = true,
   devHealthy = () => true,
   health,
+  pgrep = () => new Error("no process"),
   ...options
 } = {}) {
   const state = { pid: 100, restarts: [], devImage: "sha256:old", snapshots: 0, coordinatorStarts };
@@ -201,7 +203,7 @@ function machine({
       ],
       ["docker info", "27.0.0"],
       // No Host build from an interface upgrade is running.
-      ["pgrep", new Error("no process")],
+      ["pgrep", (args) => pgrep(args)],
       ["launchctl print", new Error("Could not find service")],
       [
         "launchctl bootstrap",
@@ -526,14 +528,39 @@ describe("upgrade", () => {
     }
   });
 
+  const STALE = new Date("2026-10-30T11:00:00Z");
   test.each([
-    ["a coordinator that answers makes the installer wait", false],
-    ["a stopped coordinator's record is replaced", true],
-  ])("a running source upgrade: %s", async (_name, stopped) => {
+    ["a coordinator that answers makes the installer wait", { stale: true }, false],
+    ["a stopped coordinator's abandoned record is replaced", { stale: true, down: 1e9 }, true],
+    [
+      "a running build-only Host build makes the installer wait",
+      { stale: true, down: 1e9, building: true },
+      false,
+    ],
+    [
+      "a slow coordinator that answers after failed probes is waited for",
+      { stale: true, down: 2 },
+      false,
+    ],
+    ["a recently written record is waited for", { stale: false, down: 1e9 }, false],
+  ])("a running source upgrade: %s", async (_name, { stale, down = 0, building }, replaced) => {
+    let probes = 0;
+    let root;
     const { context, paths } = machine({
-      // Silent until the installer restarts the coordinator, then healthy.
-      health: (state) => (stopped && !state.restarts.length ? new Error("down") : undefined),
+      // Silent for the first `down` probes before the installer restarts the coordinator.
+      health: (state) =>
+        !state.restarts.length && probes++ < down ? new Error("down") : undefined,
+      // The build-only Host build the coordinator starts on installer-made Hosts, matched
+      // against the pattern the installer passes to pgrep -f.
+      pgrep: ([, pattern]) =>
+        building &&
+        new RegExp(pattern).test(
+          `node main.mjs host-release --build-only --root ${root} --revision c`,
+        )
+          ? "4242"
+          : new Error("no process"),
     });
+    root = context.root;
     const journal = path.join(paths.coordinatorState, "source-upgrades", "journal.json");
     writeJson(journal, {
       version: 1,
@@ -546,10 +573,11 @@ describe("upgrade", () => {
         },
       ],
     });
+    if (stale) utimesSync(journal, STALE, STALE);
     const { plan } = await upgradePlan(context);
     const { ok, failure } = await apply(context, plan);
     const [record] = JSON.parse(readFileSync(journal, "utf8")).upgrades;
-    if (stopped) {
+    if (replaced) {
       expect(failure).toBeUndefined();
       expect(record).toMatchObject({ status: "failed", steps: [{ status: "failed" }] });
     } else {

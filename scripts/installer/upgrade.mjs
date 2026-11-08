@@ -16,6 +16,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -436,12 +437,7 @@ async function stuckInterfaceUpgrade(s) {
     return false;
   }
   if (code.includes("installer-[0-9a-f]")) return false;
-  try {
-    await s.context.run("pgrep", ["-f", `host-release --root ${s.install.plan.paths.root}`]);
-    return false;
-  } catch {
-    return true;
-  }
+  return !(await hostBuildRunning(s));
 }
 
 const activeInterfaceUpgrades = (s) =>
@@ -461,7 +457,30 @@ const activeSourceUpgrade = (s) =>
   );
 
 const SOURCE_UPGRADE_FIX =
-  "Wait for it to finish; one that is only approved can be cancelled from Installation controls. If the coordinator is stopped, rerun the installer: it then replaces the source upgrade.";
+  'Wait for it to finish. One that is only approved can be cancelled by the owner with POST /api/installation/owner/source-upgrades/<id>/decision and {"revision": "<revision>", "decision": "cancel"} from /api/installation/owner/source-upgrades/query; one already running cannot be cancelled. If the coordinator has been stopped for 10 minutes with no Host build or coordinator handoff running, rerun the installer: it then replaces the source upgrade.';
+
+/** A coordinator journal untouched this long, with nothing running for it, is abandoned. */
+const SOURCE_UPGRADE_STALE_MS = 10 * 60_000;
+
+const regexpEscape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** True while a process whose arguments match `pattern` (a pgrep -f regular expression) runs. */
+async function processRunning(s, pattern) {
+  try {
+    await s.context.run("pgrep", ["-f", pattern]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True while a Host release build for this installation runs, with or without --build-only:
+ * the coordinator launches `host-release --build-only --root <root>` and
+ * `host-release --root <root>` (release-upgrade-runtime.ts).
+ */
+const hostBuildRunning = (s) =>
+  processRunning(s, `host-release.*--root ${regexpEscape(s.install.plan.paths.root)}`);
 
 function refuseSourceUpgrade(s) {
   const source = activeSourceUpgrade(s);
@@ -473,19 +492,29 @@ function refuseSourceUpgrade(s) {
 }
 
 /**
- * True when an active source upgrade can never advance: no coordinator answers to drive it and
- * no Host build it launched is running. The installer is the recovery tool, so a dead
- * coordinator's record must not lock it out.
+ * True when an active source upgrade can never advance, so the installer, the recovery tool,
+ * may replace it: its journal has not changed for 10 minutes, no Host build or coordinator
+ * handoff helper for this installation runs, and no coordinator answers health for the same
+ * two minutes the coordinator step waits. A coordinator restarting through its handoff fails
+ * the probe for up to two minutes, so one failed probe never counts.
  */
 async function stuckSourceUpgrade(s) {
+  let modified;
   try {
-    await coordinatorHealth(s, s.install.plan.ports.coordinator);
-    return false;
+    modified = statSync(sourceJournal(s)).mtimeMs;
   } catch {
-    /* no coordinator answers */
+    return false;
   }
+  if (s.context.now().getTime() - modified < SOURCE_UPGRADE_STALE_MS) return false;
+  if (await hostBuildRunning(s)) return false;
+  const state = regexpEscape(config(s).stateDir);
+  if (await processRunning(s, `coordinator-handoff-main\\.js .*${state}`)) return false;
   try {
-    await s.context.run("pgrep", ["-f", `host-release --root ${s.install.plan.paths.root}`]);
+    await waitFor(
+      s,
+      () => coordinatorHealth(s, s.install.plan.ports.coordinator),
+      COORDINATOR_READY_MS,
+    );
     return false;
   } catch {
     return true;

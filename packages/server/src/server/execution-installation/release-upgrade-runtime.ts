@@ -68,6 +68,7 @@ import {
   type InstallationSnapshots,
 } from "./snapshots.js";
 import type { InstallationSourceUpdates } from "./source-updates.js";
+import { readInstallationType } from "./installation-type.js";
 
 const COORDINATOR_READY_TIMEOUT_MS = 120_000;
 const UPGRADE_REASON_PREFIX = "Release upgrade";
@@ -663,6 +664,19 @@ export function createReleaseUpgradeRuntime(input: {
     logger.info({ id, next }, "Coordinator handoff started");
   }
 
+  /** True when the Host commit was installed by a source upgrade. */
+  function sourceInstalled(commit: string): boolean {
+    return Boolean(
+      sourceUpgrades
+        ?.list()
+        .some(
+          (item) =>
+            item.sourceCommit === commit &&
+            item.steps.some((step) => step.name === "host" && step.status === "succeeded"),
+        ),
+    );
+  }
+
   /** Fetches `main` of the release repository into the source checkout's source-upgrade ref. */
   async function fetchMain(source: string): Promise<void> {
     await git([
@@ -837,6 +851,14 @@ export function createReleaseUpgradeRuntime(input: {
       if (commit !== upgrade.sourceCommit)
         throw new Error(
           `Release ${upgrade.release} now names ${commit}, not the reviewed ${upgrade.sourceCommit}. Request the upgrade again.`,
+        );
+      // A Host the installer builds takes any revision, so a release cut without a commit a
+      // source upgrade installed would silently drop it. Restart-queue Hosts refuse that when
+      // staging the bundle.
+      const installed = currentCommit();
+      if (installed && sourceInstalled(installed) && !(await contains(source, commit, installed)))
+        throw new Error(
+          `Release ${upgrade.release} does not contain commit ${installed.slice(0, 12)}, which a source upgrade installed. Nothing was restarted. Wait for a release that includes it.`,
         );
     },
     async requestHostUpdate(upgrade) {
@@ -1077,6 +1099,14 @@ export function createReleaseUpgradeRuntime(input: {
     },
     lastRelease,
     rollbackBlocker,
+    async installationBlocker() {
+      try {
+        if ((await readInstallationType(config.stateDir)).type === "stable") return null;
+        return "The installation became Lab, so the source upgrade stopped.";
+      } catch {
+        return "The installation type is unreadable, so the source upgrade stopped.";
+      }
+    },
   };
   const sourceUpgrades = sourceBlocker
     ? null

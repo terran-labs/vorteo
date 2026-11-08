@@ -329,6 +329,14 @@ abstract class UpgradePipeline<Ports extends UpgradePorts = UpgradePorts> {
       throw new RestartRequestError("Another upgrade is already pending or running");
   }
 
+  /**
+   * Why the upgrade must stop before its next step or before it restarts the Host, or null.
+   * Restarts already started finish; nothing new restarts.
+   */
+  protected stepRefusal(): Promise<string | null> {
+    return Promise.resolve(null);
+  }
+
   /** Why an approval must be refused now, beyond conflicts; the record is then cancelled. */
   protected approvalRefusal(_record: UpgradeRecord): string | null {
     return null;
@@ -417,7 +425,11 @@ abstract class UpgradePipeline<Ports extends UpgradePorts = UpgradePorts> {
       record = this.saveStep(record, index, { status: "running", detail: "", startedAt: now });
     let result: StepResult;
     try {
-      result = await this.run(step.name, record);
+      // Checked where a step starts, so nothing new restarts once the check fails.
+      const refusal = step.status === "pending" ? await this.stepRefusal() : null;
+      result = refusal
+        ? { status: "failed", detail: `${refusal} Nothing more was restarted.` }
+        : await this.run(step.name, record);
     } catch (error) {
       result = { status: "failed", detail: message(error) };
     }
@@ -547,15 +559,8 @@ abstract class UpgradePipeline<Ports extends UpgradePorts = UpgradePorts> {
     if (!jobId) {
       if (this.ports.currentCommit() === record.sourceCommit)
         return { status: "skipped", detail: "The Host already runs this release." };
-      // Admission proved the reviewed Host commit is in the target. A Host change since then,
-      // such as a source update while this waited for idle agents, would be silently dropped.
-      if (isSourceUpgrade(record) && this.ports.currentCommit() !== record.previousCommit)
-        return {
-          status: "failed",
-          detail:
-            "The Host changed after this source upgrade was approved, so installing it could drop that change. Nothing was restarted. Request it again.",
-          private: FORGET_DEV_BUILD,
-        };
+      const changed = this.hostChanged(record);
+      if (changed) return changed;
       // Turning automatic updates off stops an automatic upgrade that has not restarted anything.
       if (automatic(record) && !this.ports.automaticAllowed())
         return {
@@ -610,6 +615,8 @@ abstract class UpgradePipeline<Ports extends UpgradePorts = UpgradePorts> {
         const busy = await this.ports.busy("host");
         if (busy) return { status: "waiting", detail: `Waiting for current Host work: ${busy}` };
       }
+      const stop = await this.beforeHostRestart(record);
+      if (stop) return stop;
       const created = await this.ports.requestHostUpdate(project(record));
       return {
         status: "waiting",
@@ -623,6 +630,31 @@ abstract class UpgradePipeline<Ports extends UpgradePorts = UpgradePorts> {
     if (job.status === "running") return { status: "waiting" };
     if (job.status === "failed") return { status: "failed", detail: job.detail };
     return { status: "succeeded", detail: job.detail };
+  }
+
+  /**
+   * Admission proved the reviewed Host commit is in the target. A Host change since then, such
+   * as a source update while this waited for idle agents, would be silently dropped.
+   */
+  private hostChanged(record: UpgradeRecord): StepResult | null {
+    if (!isSourceUpgrade(record) || this.ports.currentCommit() === record.previousCommit)
+      return null;
+    return {
+      status: "failed",
+      detail:
+        "The Host changed after this source upgrade was approved, so installing it could drop that change. Nothing was restarted. Request it again.",
+      private: FORGET_DEV_BUILD,
+    };
+  }
+
+  /** The builds before a Host restart can take an hour; check again immediately before it. */
+  private async beforeHostRestart(record: UpgradeRecord): Promise<StepResult | null> {
+    const changed = this.hostChanged(record);
+    if (changed) return changed;
+    const refusal = await this.stepRefusal();
+    return refusal
+      ? { status: "failed", detail: `${refusal} Nothing was restarted.`, private: FORGET_DEV_BUILD }
+      : null;
   }
 
   private async runCoordinator(record: UpgradeRecord): Promise<StepResult> {
@@ -944,6 +976,8 @@ export interface SourceUpgradePorts extends UpgradePorts {
   lastRelease(commit: string): Promise<string | null>;
   /** Null when the Host release built for `commit` can be selected again without a build. */
   rollbackBlocker(commit: string): string | null;
+  /** Why a source upgrade must stop now, such as the installation having become Lab, or null. */
+  installationBlocker(): Promise<string | null>;
 }
 
 /** How long after a source upgrade finished the owner can roll the Host back to its predecessor. */
@@ -1098,6 +1132,11 @@ export class SourceUpgrades extends UpgradePipeline<SourceUpgradePorts> {
       detail: `Selects the Host release of ${latest.previousCommit.slice(0, 12)} again without a build.`,
       ...offer,
     };
+  }
+
+  /** Only a Stable installation continues a source upgrade, checked before every step. */
+  protected override stepRefusal(): Promise<string | null> {
+    return this.ports.installationBlocker();
   }
 
   /** The approval binds the installed commit the owner reviewed against. */

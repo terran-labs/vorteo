@@ -37,10 +37,14 @@ function release(tag: string, changes: Record<string, unknown> = {}) {
 }
 
 /** Upgrades whose steps never run here; only offers and decisions matter. */
-function harness(releases: ReturnType<typeof release>[], installedVersion = "26.11.300") {
+function harness(
+  releases: ReturnType<typeof release>[],
+  installedVersion = "26.11.300",
+  conflict: () => string | null = () => null,
+) {
   const upgrades = new InstallationUpgrades(createUpgradeJournal(directory), {
     now: () => new Date("2026-11-03T12:00:00Z"),
-    conflict: () => null,
+    conflict,
     currentCommit: () => "a".repeat(40),
     resolveRelease: async () => "b".repeat(40),
   } as unknown as UpgradePorts);
@@ -105,6 +109,24 @@ test("one offer per release: newer replaces, declined is not offered again", asy
   upgrades.decide(second.id, second.revision, "reject");
   await updates.check();
   expect(upgrades.active()).toBeNull();
+});
+
+test("a check while a source upgrade holds release upgrades off notes it instead of failing", async () => {
+  // Applies to every installation, Lab included: any coordinator job that blocks release
+  // upgrades defers the offer to a later check.
+  let blocked: string | null = "Wait for the source upgrade to finish before upgrading.";
+  const { upgrades, updates } = harness([release("release-26.11.400")], "26.11.300", () => blocked);
+  await updates.check();
+  expect(updates.lastCheck()).toMatchObject({
+    error: null,
+    note: "Not offered yet: Wait for the source upgrade to finish before upgrading.",
+    latest: { release: "release-26.11.400" },
+  });
+  expect(upgrades.active()).toBeNull();
+  blocked = null;
+  await updates.check();
+  expect(updates.lastCheck().note).toBeUndefined();
+  expect(upgrades.active()).toMatchObject({ release: "release-26.11.400" });
 });
 
 test("switching to automatic approves the standing offer to install after current work", async () => {
