@@ -368,11 +368,13 @@ test("direct-route hidden usage sends no requests until opened", async ({ page }
   await page.setViewportSize(WIDE);
   await gotoAppShell(page);
   await expectConnectedFixtureHome(page);
+  // The readiness check's Settings page mounts its own Usage pane; count only later requests.
+  const baseline = usage.listRequests().length;
   await expectNoUsageItem(page);
-  expect(usage.listRequests()).toHaveLength(0);
+  expect(usage.listRequests()).toHaveLength(baseline);
   await openUsage(page);
-  await usage.waitForListRequests(1);
-  expect(usage.listRequests()).toHaveLength(1);
+  await usage.waitForListRequests(baseline + 1);
+  expect(usage.listRequests()).toHaveLength(baseline + 1);
 });
 
 test("direct-route saved visible sidebar preference cannot load usage before entry", async ({
@@ -384,16 +386,19 @@ test("direct-route saved visible sidebar preference cannot load usage before ent
   await page.setViewportSize(WIDE);
   await gotoAppShell(page);
   await expectConnectedFixtureHome(page);
+  // The readiness check's Settings page mounts its own Usage pane; count only later requests.
+  let baseline = usage.listRequests().length;
   await expectSavedVisiblePreference(page);
   await expectNoUsageItem(page);
-  expect(usage.listRequests()).toHaveLength(0);
+  expect(usage.listRequests()).toHaveLength(baseline);
   await page.reload();
   await expectConnectedFixtureHome(page);
+  baseline = usage.listRequests().length;
   await expectSavedVisiblePreference(page);
   await expectNoUsageItem(page);
-  expect(usage.listRequests()).toHaveLength(0);
+  expect(usage.listRequests()).toHaveLength(baseline);
   await openUsage(page);
-  await usage.waitForListRequests(1);
-  expect(usage.listRequests()).toHaveLength(1);
+  await usage.waitForListRequests(baseline + 1);
+  expect(usage.listRequests()).toHaveLength(baseline + 1);
   await expectReportPercentages(usageModal(page), "used");
 });

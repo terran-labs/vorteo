@@ -1,5 +1,9 @@
 export { ComposerDockBackground } from "./internal/background";
-export { ComposerFullscreenBody, ComposerFullscreenFooter } from "./internal/fullscreen";
+export {
+  ComposerFullscreenBody,
+  ComposerFullscreenFooter,
+  useFullscreenSlotFrame,
+} from "./internal/fullscreen";
 import { ScrollView } from "@/components/ui/scroll-view";
 import { useState, useCallback, useMemo, useRef, type ReactNode } from "react";
 import { View } from "react-native";
@@ -57,13 +61,19 @@ export function ComposerDock({
   return (
     <View ref={surfaceRef} style={styles.surface} onLayout={measureViewport}>
       <View style={styles.content}>{content}</View>
-      <View
-        style={
-          fullscreen ? [styles.fullscreenComposer, fullscreenFrame] : [styles.composer, constraint]
-        }
-      >
-        {composer}
-      </View>
+      {/* A host that places its composer elsewhere passes none; an empty fixed frame would
+          cover the screen and swallow every touch while fullscreen. */}
+      {composer == null ? null : (
+        <View
+          style={
+            fullscreen
+              ? [styles.fullscreenComposer, fullscreenFrame]
+              : [styles.composer, constraint]
+          }
+        >
+          {composer}
+        </View>
+      )}
       {overlay}
     </View>
   );

@@ -42,6 +42,8 @@ export type WorkspaceTitleSource = "title" | "branch";
 export type PullRequestOpenLocation = "main" | "side" | "explorer";
 /** What a sidebar workspace row shows in the space to the right of its title. */
 export type SidebarWorkspaceTrailing = "diff" | "timestamp" | "none";
+/** Where a sidebar workspace row shows its status line, such as a Factory role's latest report. */
+export type WorkspaceStatusLineMode = "off" | "hover" | "always";
 /** How much of an agent's work the chat shows between the user's message and the reply. */
 export type ChatDisplay = "full" | "collapseToolCalls" | "collapseTurns";
 
@@ -110,6 +112,7 @@ export interface AppSettings {
   syntaxTheme: SyntaxThemeId; // default "one"
   workspaceTitleSource: WorkspaceTitleSource;
   sidebarWorkspaceTrailing: SidebarWorkspaceTrailing;
+  workspaceStatusLine: WorkspaceStatusLineMode;
   sidebarRowItems: SidebarRowItems;
   sidebarChecksDisplay: SidebarChecksDisplay;
   /** Top-level sidebar rows in display order; empty means the default order, all visible. */
@@ -174,6 +177,7 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   syntaxTheme: "one",
   workspaceTitleSource: "title",
   sidebarWorkspaceTrailing: "timestamp",
+  workspaceStatusLine: "off",
   sidebarRowItems: DEFAULT_SIDEBAR_ROW_ITEMS,
   sidebarChecksDisplay: DEFAULT_SIDEBAR_CHECKS_DISPLAY,
   sidebarNavItems: [],
@@ -279,6 +283,7 @@ const StoredAppSettingsSchema = z
     syntaxTheme: z.string().refine(isSyntaxThemeId).catch("one"),
     workspaceTitleSource: z.enum(["title", "branch"]).catch("title"),
     sidebarWorkspaceTrailing: z.enum(["diff", "timestamp", "none"]).catch("timestamp"),
+    workspaceStatusLine: z.enum(["off", "hover", "always"]).catch("off"),
     sidebarRowItems: SidebarRowItemsSchema,
     sidebarChecksDisplay: z
       .enum(["iconAndText", "icon", "none"])

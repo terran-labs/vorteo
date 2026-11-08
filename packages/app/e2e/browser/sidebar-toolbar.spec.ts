@@ -18,7 +18,8 @@ test("Vorton toolbar keeps navigation and sidebar actions above the projects", a
     const names = await navigationButtons.evaluateAll((buttons) =>
       buttons.map((button) => button.getAttribute("aria-label")),
     );
-    expect(names).toEqual(["Search", "History", "Schedules", "Settings", "More sidebar actions"]);
+    // Full width: navigation first, then search and settings after the gap (ToolbarOrder, bcd8dda7a).
+    expect(names).toEqual(["History", "Schedules", "Search", "Settings", "More sidebar actions"]);
     await toolbar.getByTestId("sidebar-search").click();
     await expect(page.getByTestId("command-center-panel")).toBeVisible();
     await page.keyboard.press("Escape");

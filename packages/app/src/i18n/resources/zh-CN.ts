@@ -1164,6 +1164,7 @@ export const zhCN: TranslationResources = {
     },
   },
   sidebar: {
+    factoryCard: en.sidebar.factoryCard,
     statusGroupAccessibility: "{{label}} 分组",
     statusBucket: {
       needsInput: "需要输入",
@@ -2572,6 +2573,7 @@ export const zhCN: TranslationResources = {
       },
     },
     appearance: {
+      statusLine: en.settings.appearance.statusLine,
       theme: {
         title: "主题",
         accessibilityLabel: "主题：{{value}}",

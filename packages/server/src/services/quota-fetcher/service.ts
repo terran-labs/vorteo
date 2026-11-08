@@ -9,8 +9,30 @@ import type { ProviderApiFetch, ProviderUsageConfigMap, ProviderUsageFetcher } f
 import { unavailableUsage } from "./usage.js";
 import { ProviderUsageHistory } from "./usage-history.js";
 
-/** Background readings keep the history going while no client is polling. */
-const HISTORY_SAMPLE_INTERVAL_MS = 10 * 60 * 1000;
+/**
+ * Background readings log usage every minute whether or not any client is open. Logging is
+ * daemon-owned; clients only choose how often they refresh what they display.
+ */
+const HISTORY_SAMPLE_INTERVAL_MS = 60 * 1000;
+/** A provider that rate-limits or fails waits twice as long each time, up to this. */
+const MAX_BACKOFF_MS = 10 * 60 * 1000;
+
+interface ProviderBackoff {
+  intervalMs: number;
+  retryAtMs: number;
+}
+
+/**
+ * A reading that means the provider refused or failed: a fetch error, or a fetcher reporting
+ * that the provider is limiting usage checks (Claude answers 429 that way, keeping its last good
+ * reading). Missing credentials and expired sign-ins are not failures; asking again is cheap.
+ */
+function failedReading(usage: ProviderUsage): "rate-limited" | "failed" | null {
+  if (usage.details?.some((detail) => detail.id.endsWith("-rate-limited"))) return "rate-limited";
+  if (usage.status === "error")
+    return /\b429\b|rate limit/i.test(usage.error ?? "") ? "rate-limited" : "failed";
+  return null;
+}
 
 export interface ProviderUsageServiceOptions {
   logger: Logger;
@@ -44,6 +66,11 @@ export class ProviderUsageService {
   private readonly claudeLimitObservations: ClaudeLimitObservations;
   private readonly history: ProviderUsageHistory;
   private sampler: ReturnType<typeof setInterval> | null = null;
+  private readonly sampleIntervalMs: number;
+  /** Per provider ID: how long to wait after a refusal or failure, and until when. */
+  private readonly backoff = new Map<string, ProviderBackoff>();
+  /** Each provider's latest reading, served while it backs off. */
+  private readonly lastReading = new Map<string, ProviderUsage>();
 
   invalidate(): void {
     this.generation += 1;
@@ -74,6 +101,7 @@ export class ProviderUsageService {
           });
     this.cacheTtlMs = options.cacheTtlMs ?? DEFAULT_PROVIDER_USAGE_CACHE_TTL_MS;
     this.now = options.now ?? Date.now;
+    this.sampleIntervalMs = HISTORY_SAMPLE_INTERVAL_MS;
     this.history = new ProviderUsageHistory({
       file: options.historyFile ?? null,
       logger: this.logger,
@@ -82,17 +110,23 @@ export class ProviderUsageService {
   }
 
   /**
-   * Reads usage every ten minutes so the history keeps growing while nobody has the app open.
-   * The two-minute cache absorbs overlap with client polls.
+   * Reads usage every minute so the history keeps growing while nobody has the app open. Each
+   * sample bypasses the two-minute cache so every minute gets a real reading; the reading then
+   * refills the cache that client polls share. Providers in back-off are skipped.
    */
-  startHistorySampling(intervalMs = HISTORY_SAMPLE_INTERVAL_MS): void {
+  startHistorySampling(intervalMs = this.sampleIntervalMs): void {
     if (this.sampler) return;
     this.sampler = setInterval(() => {
-      void this.listUsage().catch((error: unknown) => {
+      void this.sampleUsage().catch((error: unknown) => {
         this.logger.debug({ err: error }, "Background usage sample failed");
       });
     }, intervalMs);
     this.sampler.unref?.();
+  }
+
+  /** One background reading, as the sampler takes it each minute. */
+  sampleUsage(): Promise<ProviderUsageListResult> {
+    return this.listUsage({ forceRefresh: true, background: true });
   }
 
   async stopHistorySampling(): Promise<void> {
@@ -101,7 +135,14 @@ export class ProviderUsageService {
     await this.history.flush();
   }
 
-  async listUsage(options?: { forceRefresh?: boolean }): Promise<ProviderUsageListResult> {
+  /**
+   * `forceRefresh` bypasses the cache. A forced read from a client (a sign-in finishing, the
+   * Refresh button) also skips back-off; the background sampler's never does.
+   */
+  async listUsage(options?: {
+    forceRefresh?: boolean;
+    background?: boolean;
+  }): Promise<ProviderUsageListResult> {
     const nowMs = this.now();
     if (
       !options?.forceRefresh &&
@@ -115,7 +156,8 @@ export class ProviderUsageService {
       return this.inFlight;
     }
 
-    const request = this.fetchFreshUsage(nowMs);
+    const respectBackoff = options?.background === true || options?.forceRefresh !== true;
+    const request = this.fetchFreshUsage(nowMs, respectBackoff);
     this.inFlight = request;
     try {
       return await request;
@@ -126,28 +168,49 @@ export class ProviderUsageService {
     }
   }
 
-  private async fetchFreshUsage(nowMs: number): Promise<ProviderUsageListResult> {
+  private async fetchFreshUsage(
+    nowMs: number,
+    respectBackoff: boolean,
+  ): Promise<ProviderUsageListResult> {
     const generation = this.generation;
     const fetchers = this.getFetchers();
-    const settled = await Promise.allSettled(fetchers.map((fetcher) => fetcher.fetchUsage()));
+    const settled = await Promise.allSettled(
+      fetchers.map((fetcher) => {
+        const waiting = respectBackoff ? this.backoff.get(fetcher.providerId) : undefined;
+        const previous = this.lastReading.get(fetcher.providerId);
+        if (waiting && nowMs < waiting.retryAtMs && previous) return null;
+        return fetcher.fetchUsage();
+      }),
+    );
+    const fresh: ProviderUsage[] = [];
     const providers = settled.map((result, index) => {
       const fetcher = fetchers[index];
-      if (result.status === "fulfilled") {
-        return result.value;
+      if (result.status === "fulfilled" && result.value === null) {
+        // Backing off: show the last reading, and log nothing new for this minute.
+        return this.lastReading.get(fetcher.providerId)!;
       }
-      this.logger.debug(
-        { err: result.reason, providerId: fetcher.providerId },
-        "Provider usage fetch failed",
-      );
-      return unavailableUsage({
-        providerId: fetcher.providerId,
-        displayName: fetcher.displayName,
-        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-      });
+      let usage: ProviderUsage;
+      if (result.status === "fulfilled" && result.value) {
+        usage = result.value;
+      } else {
+        const reason = result.status === "rejected" ? result.reason : undefined;
+        this.logger.debug(
+          { err: reason, providerId: fetcher.providerId },
+          "Provider usage fetch failed",
+        );
+        usage = unavailableUsage({
+          providerId: fetcher.providerId,
+          displayName: fetcher.displayName,
+          error: reason instanceof Error ? reason.message : String(reason),
+        });
+      }
+      this.lastReading.set(fetcher.providerId, usage);
+      if (this.updateBackoff(fetcher.providerId, usage, nowMs)) fresh.push(usage);
+      return usage;
     });
 
     try {
-      await this.history.record(providers, nowMs);
+      await this.history.record(fresh, nowMs);
     } catch (error) {
       this.logger.warn({ err: error }, "Could not record provider usage history");
     }
@@ -157,5 +220,31 @@ export class ProviderUsageService {
     };
     if (generation === this.generation) this.cached = { fetchedAtMs: nowMs, result };
     return result;
+  }
+
+  /**
+   * Doubles a provider's wait after each refusal or failure, from twice the sample interval up
+   * to ten minutes, and clears it on success. Returns whether the reading is good to log.
+   */
+  private updateBackoff(providerId: string, usage: ProviderUsage, nowMs: number): boolean {
+    const failure = failedReading(usage);
+    const previous = this.backoff.get(providerId);
+    if (!failure) {
+      if (previous) {
+        this.backoff.delete(providerId);
+        this.logger.info({ providerId }, "Provider usage checks resumed after back-off");
+      }
+      return true;
+    }
+    const intervalMs = Math.min(
+      MAX_BACKOFF_MS,
+      previous ? previous.intervalMs * 2 : this.sampleIntervalMs * 2,
+    );
+    this.backoff.set(providerId, { intervalMs, retryAtMs: nowMs + intervalMs });
+    this.logger.info(
+      { providerId, reason: failure, backoffMs: intervalMs },
+      "Provider usage checks backing off",
+    );
+    return false;
   }
 }

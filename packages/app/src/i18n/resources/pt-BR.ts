@@ -1199,6 +1199,7 @@ export const ptBR: TranslationResources = {
     },
   },
   sidebar: {
+    factoryCard: en.sidebar.factoryCard,
     statusGroupAccessibility: "Grupo {{label}}",
     statusBucket: {
       needsInput: "Precisa de resposta",
@@ -2642,6 +2643,7 @@ export const ptBR: TranslationResources = {
       },
     },
     appearance: {
+      statusLine: en.settings.appearance.statusLine,
       theme: {
         title: "Tema",
         accessibilityLabel: "Tema: {{value}}",

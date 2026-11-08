@@ -1,4 +1,4 @@
-import { FactoryRoleStatus } from "./factory-status";
+import { WorkspaceStatusLine } from "./factory-status";
 import { useTranslation } from "react-i18next";
 import { useProjectFactory } from "./factory-instructions";
 import { useSidebarWidth } from "./sidebar-width";
@@ -201,7 +201,7 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   children?: ReactNode;
 }) {
   const {
-    settings: { workspaceTitleSource },
+    settings: { workspaceTitleSource, workspaceStatusLine },
   } = useAppSettings();
   const workspaceLabel = resolveSidebarWorkspacePrimaryLabel({
     workspace,
@@ -261,15 +261,7 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
                 {children}
               </View>
             </View>
-            <FactoryRoleStatus
-              serverId={workspace.serverId}
-              projectId={workspace.projectId ?? ""}
-              workspaceId={workspace.workspaceId}
-              enabled={Boolean(
-                workspace.factoryMembership ||
-                workspace.systemMembership?.role === "optimization-runner",
-              )}
-            />
+            <WorkspaceStatusLine workspace={workspace} enabled={workspaceStatusLine === "always"} />
             <WorkspaceMetaRow
               currentBranch={workspace.currentBranch}
               projectName={leadingProjectName}
@@ -289,7 +281,7 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   );
 });
 
-function WorkspaceStatusIndicator({
+export function WorkspaceStatusIndicator({
   serverId,
   workspaceId,
   bucket,

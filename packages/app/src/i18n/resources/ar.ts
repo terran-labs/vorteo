@@ -1173,6 +1173,7 @@ export const ar: TranslationResources = {
     },
   },
   sidebar: {
+    factoryCard: en.sidebar.factoryCard,
     statusGroupAccessibility: "مجموعة {{label}}",
     statusBucket: {
       needsInput: "تحتاج إدخالاً",
@@ -2640,6 +2641,7 @@ export const ar: TranslationResources = {
       },
     },
     appearance: {
+      statusLine: en.settings.appearance.statusLine,
       theme: {
         title: "سمة",
         accessibilityLabel: "الموضوع:{{value}}",
