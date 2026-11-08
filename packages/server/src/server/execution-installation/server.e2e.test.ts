@@ -287,6 +287,15 @@ test("installation changes are Host-agent requests that wait for approval", asyn
   const job = (await created.json()) as Record<string, unknown>;
   expect(job).toMatchObject({ status: "pending", action: "installation-name" });
   expect(job).not.toHaveProperty("previous");
+  // Source upgrades take the same Host-agent boundary.
+  const upgrade = { commit: "a".repeat(40), reason: "Hotfix" };
+  expect((await f.request("/api/installation/source-upgrades", undefined, upgrade)).status).toBe(
+    401,
+  );
+  expect(
+    (await f.request("/api/installation/source-upgrades", "guest-agent-test-token", upgrade))
+      .status,
+  ).toBe(403);
   const unknown = { action: "connections", request: {} };
   expect((await f.request(route, "host-agent-test-token", unknown)).status).toBe(409);
 });

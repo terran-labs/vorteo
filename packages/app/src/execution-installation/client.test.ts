@@ -819,3 +819,46 @@ test("snapshot and upgrade queries hide on older coordinators and bind restore p
   expect(status.snapshotId).toBe(snapshot.id);
   expect(requests.at(-1)).toEqual(["snapshots/restore", { id: snapshot.id, parts: ["host-home"] }]);
 });
+
+test("a source upgrade cancel names the exact revision shown, and older coordinators hide the card", async () => {
+  let available = true;
+  const sent: Array<{ path: string; body: unknown }> = [];
+  const upgrade = {
+    kind: "source-upgrade",
+    id: "6c0f2a1e-3b4d-4e5f-8a9b-0c1d2e3f4a5b",
+    revision: "7d1e3b2f-4c5e-4f60-9b1a-2d3e4f5a6b7c",
+    sourceCommit: "a".repeat(40),
+    previousCommit: "b".repeat(40),
+    createdAt: "2026-11-08T12:00:00.000Z",
+    status: "pending",
+    detail:
+      "Approved under owner maintenance delegation. Starts after 2026-11-08T12:00:30.000Z unless cancelled.",
+    steps: [],
+    reason: "Hotfix",
+    requestedBy: "Host agent Builds",
+    lastRelease: null,
+  };
+  const client = new InstallationClient(installation, {
+    request: async (path, _password, body) => {
+      if (path === "unlock")
+        return {
+          installationId: installation.installationId,
+          connections: installation.environments.map((item) =>
+            Object.assign({}, item, { password: "fixture" }),
+          ),
+        };
+      if (!available) throw new InstallationRouteUnavailable("Unavailable");
+      sent.push({ path, body });
+      return { ...upgrade, status: "cancelled" };
+    },
+    register: { installExecutionEnvironments: async () => {} },
+  });
+  await client.unlock("fixture");
+  await client.decideSourceUpgrade(upgrade as never, "cancel");
+  expect(sent.at(-1)).toEqual({
+    path: `source-upgrades/${upgrade.id}/decision`,
+    body: { revision: upgrade.revision, decision: "cancel" },
+  });
+  available = false;
+  await expect(client.sourceUpgradeStatus()).resolves.toBeNull();
+});

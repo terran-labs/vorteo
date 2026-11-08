@@ -120,10 +120,7 @@ export const OWNER_ROUTE_FRONT_DOORS: Readonly<Record<string, FrontDoor>> = {
   "/api/installation/owner/settings": { agent: "request-installation-change" },
   "/api/installation/owner/queued-actions/:id/decision": { agent: "request-installation-change" },
 
-  // Pinned gaps: existing owner operations waiting for their agent doors (Builds, 2026-11-08).
-  // Stable source upgrades reached main on 2026-11-07, before this rule, with owner-only approval.
-  "/api/installation/owner/source-upgrades": { gap: "Request a Stable source upgrade." },
-  "/api/installation/owner/source-upgrades/:id/decision": {
-    gap: "Approve a Stable source upgrade under the grant.",
-  },
+  // Stable source upgrades: requested by Builds, approved by the owner or the full grant.
+  "/api/installation/owner/source-upgrades": { agent: "request-source-upgrade" },
+  "/api/installation/owner/source-upgrades/:id/decision": { agent: "request-source-upgrade" },
 };

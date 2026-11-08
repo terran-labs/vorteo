@@ -361,3 +361,25 @@ export function coordinatorFollowInProgress(status: CoordinatorFollowStatus | nu
   const job = status?.job?.status;
   return job === "approved" || job === "running";
 }
+
+/**
+ * Idle polling for requests the full grant may start after its thirty-second window: well
+ * inside it, so an open Installation controls page shows a new request, with Cancel, before it
+ * can start. Active requests poll faster.
+ */
+export const DELEGATION_VISIBLE_POLL_MS = 10_000;
+const ACTIVE_POLL_MS = 3_000;
+
+export function sourceUpgradesPollMs(
+  status: { upgrades: { status: string }[] } | null | undefined,
+): number {
+  return (status?.upgrades ?? []).some((job) =>
+    ["pending", "approved", "running"].includes(job.status),
+  )
+    ? ACTIVE_POLL_MS
+    : DELEGATION_VISIBLE_POLL_MS;
+}
+
+export function installationChangesPollMs(jobs: { finishedAt?: string }[] | undefined): number {
+  return (jobs ?? []).some((job) => !job.finishedAt) ? ACTIVE_POLL_MS : DELEGATION_VISIBLE_POLL_MS;
+}

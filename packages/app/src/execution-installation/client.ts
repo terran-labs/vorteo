@@ -60,6 +60,8 @@ import {
   AgentActionReceiptsSchema,
   QueuedAgentActionSchema,
   QueuedAgentActionsSchema,
+  SourceUpgradeSchema,
+  SourceUpgradeStatusSchema,
   CoordinatorFollowJobSchema,
   CoordinatorFollowStatusSchema,
   CoordinatorSettingsJobSchema,
@@ -71,6 +73,9 @@ import {
   UpgradeStatusSchema,
   type AgentActionReceipt,
   type QueuedAgentAction,
+  type SourceUpgrade,
+  type SourceUpgradeDecision,
+  type SourceUpgradeStatus,
   type CoordinatorFollowDecision,
   type CoordinatorFollowJob,
   type CoordinatorFollowStatus,
@@ -204,6 +209,8 @@ const COORDINATOR_FOLLOW_STATUS_READER = tolerant(CoordinatorFollowStatusSchema)
 const AGENT_ACTIONS_READER = tolerant(AgentActionReceiptsSchema);
 const INSTALLATION_CHANGES_READER = tolerant(QueuedAgentActionsSchema);
 const INSTALLATION_CHANGE_READER = tolerant(QueuedAgentActionSchema);
+const SOURCE_UPGRADE_STATUS_READER = tolerant(SourceUpgradeStatusSchema);
+const SOURCE_UPGRADE_READER = tolerant(SourceUpgradeSchema);
 const COORDINATOR_FOLLOW_READER = tolerant(CoordinatorFollowJobSchema);
 const COORDINATOR_SETTINGS_STATUS_READER = tolerant(CoordinatorSettingsStatusSchema);
 const COORDINATOR_SETTINGS_READER = tolerant(CoordinatorSettingsJobSchema);
@@ -894,6 +901,33 @@ export class InstallationClient {
       if (error instanceof InstallationRouteUnavailable) return [];
       throw error;
     }
+  }
+
+  /** Null on coordinators without Stable source upgrades, so the card hides. */
+  async sourceUpgradeStatus(): Promise<SourceUpgradeStatus | null> {
+    try {
+      return SOURCE_UPGRADE_STATUS_READER.parse(await this.request("source-upgrades/query", {}));
+    } catch (error) {
+      // COMPAT(sourceUpgrades): older coordinators answer 404 for these routes.
+      if (error instanceof InstallationRouteUnavailable) return null;
+      throw error;
+    }
+  }
+
+  /** Decides the exact revision shown, so a changed request must be reviewed again. */
+  async decideSourceUpgrade(
+    upgrade: SourceUpgrade,
+    decision: SourceUpgradeDecision["decision"],
+  ): Promise<SourceUpgrade> {
+    const result = SOURCE_UPGRADE_READER.parse(
+      await this.request(`source-upgrades/${upgrade.id}/decision`, {
+        revision: upgrade.revision,
+        decision,
+      }),
+    );
+    if (result.id !== upgrade.id)
+      throw new Error("Source upgrade receipt changed. Refresh before another action.");
+    return result;
   }
 
   /** Installation changes Host agents requested; empty on coordinators without them. */

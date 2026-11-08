@@ -96,6 +96,7 @@ import { InstallationClient, requestInstallationOwner, hasInstallationConnection
 import { SafetySnapshotsCard } from "./safety-snapshots";
 import { CoordinatorFollowCard } from "./installation-upgrade-card";
 import { InstallationChangesCard } from "./installation-change-card";
+import { SourceUpgradesCard } from "./source-upgrades-card";
 import { CoordinatorSettingsCard } from "./coordinator-settings-card";
 import {
   InstallationPanelModel,
@@ -630,6 +631,7 @@ function InstallationSystemDetailsBody({
                 <CoordinatorFollowCard client={panelClient} />
                 <CoordinatorSettingsCard client={panelClient} />
                 <InstallationChangesCard client={panelClient} />
+                <SourceUpgradesCard client={panelClient} />
               </>
             ) : null}
             {hasDev && target === "host" ? (

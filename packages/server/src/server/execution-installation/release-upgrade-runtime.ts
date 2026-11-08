@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import type { DelegationGrant } from "./delegated-admission.js";
+import { createDelegationEvidence, type DelegationGrant } from "./delegated-admission.js";
 import {
   closeSync,
   existsSync,
@@ -1133,6 +1133,11 @@ export function createReleaseUpgradeRuntime(input: {
         return "The installation type is unreadable, so the source upgrade stopped.";
       }
     },
+    delegationGrant: () => input.delegationGrant?.() ?? null,
+    delegationEvidence: createDelegationEvidence(
+      path.join(config.stateDir, "source-upgrades", "delegation-evidence.json"),
+    ),
+    cancellationDelayMs: 30_000,
   };
   const sourceUpgrades = sourceBlocker
     ? null

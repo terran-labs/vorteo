@@ -1354,7 +1354,8 @@ export function createInstallationServer(
             // owner routes under /api/installation/owner/source-upgrades start them.
             sourceUpgrade: {
               available: sourceUpgradeAvailable,
-              ownerApprovalRequired: true,
+              // A Host agent's request under the full grant starts after its window.
+              ownerApprovalRequired: ownerApprovalRequired(["source-upgrade"]),
             },
             sessionHostJob: {
               available: host && restarts.sessionHostAvailable(),
@@ -3092,6 +3093,43 @@ export function createInstallationServer(
       )
       .then((upgrade) => res.status(201).json(upgrade), next);
   });
+  // Builds requests the same source upgrade. The owner decides it in Installation controls, or
+  // the full maintenance grant starts it after the cancellation window. Rollback stays owner-only.
+  app.post(
+    "/api/installation/source-upgrades",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res, next) => {
+      const { requester, ...body } = (req.body ?? {}) as Record<string, unknown>;
+      const request = SourceUpgradeRequestSchema.parse(body);
+      const label = AgentActionRequestSchema.parse({ requester }).requester;
+      void requireSourceUpgrades()
+        .then((sourceUpgrades) =>
+          sourceUpgrades.request({
+            ...request,
+            requestedBy: label ? `Host agent ${label}` : "Host agent",
+            hostAgent: true,
+          }),
+        )
+        .then((upgrade) => res.status(201).json(upgrade), next);
+    },
+  );
+  app.get(
+    "/api/installation/source-upgrades/:id",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res) => {
+      const id = z.string().uuid().parse(req.params.id);
+      const upgrade = requireReleaseRuntime()
+        .sourceUpgrades?.list()
+        .find((job) => job.id === id);
+      if (!upgrade) {
+        res.sendStatus(404);
+        return;
+      }
+      res.json(upgrade);
+    },
+  );
   app.post("/api/installation/owner/source-upgrades/rollback", (req, res, next) => {
     const { upgradeId } = SourceUpgradeRollbackRequestSchema.parse(req.body);
     void requireSourceUpgrades()
