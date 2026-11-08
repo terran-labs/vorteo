@@ -762,11 +762,15 @@ jobs:
     steps: *playwright_test_steps
 
   playwright-installation:
-    name: playwright (packaged installation)
-    needs: [changes, format, lint, typecheck]
+    name: playwright (packaged installation, ${{ matrix.project }})
+    needs: [changes, format, lint, typecheck, build]
     if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [desktop, phone]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -778,14 +782,24 @@ jobs:
       - name: Install Chromium and system dependencies
         timeout-minutes: 10
         run: npx playwright install --with-deps chromium
-      # The installation script builds the server stack and packaged web app.
+      - *dist_download
+      - *dist_unpack
+      - name: Build server stack
+        if: ${{ env.PASEO_PREBUILT_SERVER_STACK != '1' }}
+        run: npm run build:server
+      - name: Build packaged web app
+        run: npm run build:daemon-web-ui
       - name: Run packaged installation browser tests
-        run: npm run test:e2e:installation --workspace=@getpaseo/app
+        timeout-minutes: 75
+        working-directory: packages/app
+        run: npx playwright test --config=playwright.installation.config.ts --project=${{ matrix.project }}
+        env:
+          E2E_METRO_PORT: "1"
       - name: Upload installation results and first-load timings
         if: ${{ success() || failure() || cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-installation-results
+          name: playwright-installation-results-${{ matrix.project }}
           path: |
             packages/app/test-results/
             packages/app/playwright-report/

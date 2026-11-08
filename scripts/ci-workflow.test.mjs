@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync, spawn } from "node:child_process";
 import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -114,12 +114,13 @@ test("gated checks are statically named jobs with real job-level gating", () => 
   const trigger = workflowSource.split("jobs:", 1)[0];
 
   assert.match(trigger, /^\s+merge_group:\s*$/m);
-  assert.doesNotMatch(workflowSource, /strategy:\s*\n\s+matrix:/);
+
   assert.doesNotMatch(workflowSource, /RUN_TESTS|Skip unaffected|No .* changes detected/);
 
   for (const [jobId, expected] of gatedCiJobs) {
     const job = jobs.get(jobId)?.join("\n");
     assert.ok(job, `missing static job ${jobId}`);
+    assert.doesNotMatch(job, /strategy:/);
     assert.match(job, new RegExp(`^    name: ${expected.name.replace(/[()]/g, "\\$&")}$`, "m"));
     assert.match(job, /needs\.changes\.outputs\.full != 'false'/);
     for (const contract of expected.contracts ?? [expected.contract]) {
@@ -670,13 +671,33 @@ test("packaged installation browsers run only nightly and on manual dispatch", (
       );
     }
   }
-  assert.match(job, /^    needs: \[changes, format, lint, typecheck\]$/m);
+  assert.match(job, /^    needs: \[changes, format, lint, typecheck, build\]$/m);
   assert.match(job, /^    runs-on: ubuntu-24\.04$/m);
   assert.match(job, /node-version: "22"/);
   assert.match(job, /run: node scripts\/npm-retry\.mjs ci/);
   assert.match(job, /run: npx playwright install --with-deps chromium/);
-  assert.match(job, /run: npm run test:e2e:installation --workspace=@getpaseo\/app/);
-  assert.doesNotMatch(job, /run: npm run build|--project=|--grep|continue-on-error/);
+  assert.match(job, /fail-fast: false/);
+  assert.match(job, /project: \[desktop, phone\]/);
+  assert.match(job, /^    timeout-minutes: 90$/m);
+  assert.match(job, /timeout-minutes: 75/);
+  assert.match(job, /working-directory: packages\/app/);
+  assert.match(
+    job,
+    /npx playwright test --config=playwright.installation.config.ts --project=\$\{\{ matrix.project \}\}/,
+  );
+  assert.match(job, /E2E_METRO_PORT: "1"/);
+  assert.match(job, /run: npm run build:daemon-web-ui/);
+  assert.doesNotMatch(job, /--grep|--shard|continue-on-error|test:e2e:installation/);
+  assert.match(job, /name: playwright-installation-results-\$\{\{ matrix.project \}\}/);
+  assert.match(job, /retention-days: 7/);
+  const config = readFileSync(
+    new URL("packages/app/playwright.installation.config.ts", repoRoot),
+    "utf8",
+  );
+  assert.match(config, /workers: 1/);
+  assert.match(config, /playwright-installation-reporter.mjs/);
+  assert.match(config, /installation-results.json/);
+  assert.doesNotMatch(config, /fullyParallel|grep|shard/);
   assert.match(job, /if: \$\{\{ success\(\) \|\| failure\(\) \|\| cancelled\(\) \}\}/);
   assert.match(job, /uses: actions\/upload-artifact@v4/);
   assert.match(job, /packages\/app\/test-results\//);
@@ -701,6 +722,7 @@ test("heavy suites reuse one server-stack build and build locally without it", (
     "server-tests-macos",
     "app-tests",
     ...Array.from({ length: 8 }, (_, index) => `playwright-${index + 1}`),
+    "playwright-installation",
     "playwright-smoke",
     ...Array.from({ length: 3 }, (_, index) => `cli-tests-${index + 1}`),
   ]);
@@ -719,6 +741,7 @@ test("heavy suites reuse one server-stack build and build locally without it", (
     assert.match(job, /- [*&]dist_unpack$/m, id);
     lines.forEach((line, index) => {
       if (!/^\s+run: npm run build\b/.test(line)) return;
+      if (line.trim() === "run: npm run build:daemon-web-ui") return;
       assert.equal(
         lines[index - 1].trim(),
         "if: ${{ env.PASEO_PREBUILT_SERVER_STACK != '1' }}",
@@ -1189,6 +1212,116 @@ test("Nix desktop packaging resolves the workspace-local builder", () => {
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout.trim(), "workspace-builder");
   } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("installation results survive termination before reporter finalization", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "installation-reporter-"));
+  const outputFile = join(directory, "results.jsonl");
+  writeFileSync(outputFile, '{"event":"result","id":"stale","status":"passed"}\n');
+  const reporterUrl = new URL("scripts/playwright-installation-reporter.mjs", repoRoot).href;
+  const script = `
+    import Reporter from ${JSON.stringify(reporterUrl)};
+    const reporter = new Reporter({ outputFile: ${JSON.stringify(outputFile)} });
+    function testcase(id) {
+      return {
+        id, parent: { project: () => ({ name: "phone" }) },
+        titlePath: () => ["phone", "fixture", id],
+        location: { file: "fixture.spec.ts", line: 1, column: 1 },
+        expectedStatus: "passed", annotations: [],
+      };
+    }
+    const tests = ["pass", "fail", "running", "unstarted"].map(testcase);
+    reporter.onBegin({}, { allTests: () => tests });
+    for (const [index, status] of ["passed", "failed"].entries()) {
+      const result = {
+        status, duration: 123 + index, retry: 0, startTime: new Date(),
+        errors: index ? [{ message: "assertion failed" }] : [],
+        attachments: [{ name: "first-load-timing", body: Buffer.from('{"documentPath":"/","loadMs":42}') }],
+      };
+      reporter.onTestBegin(tests[index], result);
+      reporter.onTestEnd(tests[index], result);
+    }
+    reporter.onTestBegin(tests[2], { retry: 0, startTime: new Date() });
+    process.send("written");
+    setInterval(() => {}, 1000);
+  `;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+    stdio: ["ignore", "pipe", "pipe", "ipc"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      const deadline = setTimeout(() => reject(new Error(`Reporter stalled: ${stderr}`)), 10000);
+      child.once("error", reject);
+      child.once("message", () => child.kill("SIGKILL"));
+      child.once("close", (code, signal) => {
+        clearTimeout(deadline);
+        if (signal === "SIGKILL") resolve();
+        else reject(new Error(`Reporter exited ${code}: ${stderr}`));
+      });
+    });
+    const records = readFileSync(outputFile, "utf8").trim().split("\n").map(JSON.parse);
+    assert.deepEqual(
+      records.map(({ event }) => event),
+      ["inventory", "start", "result", "start", "result", "start"],
+    );
+    assert.deepEqual(
+      records[0].tests.map(({ id, status }) => [id, status]),
+      [
+        ["pass", "incomplete"],
+        ["fail", "incomplete"],
+        ["running", "incomplete"],
+        ["unstarted", "incomplete"],
+      ],
+    );
+    const results = records.filter(({ event }) => event === "result");
+    assert.deepEqual(
+      results.map(({ id, project, status, duration, retry, errors, firstLoadTimings }) => ({
+        id,
+        project,
+        status,
+        duration,
+        retry,
+        errors,
+        firstLoadTimings,
+      })),
+      [
+        {
+          id: "pass",
+          project: "phone",
+          status: "passed",
+          duration: 123,
+          retry: 0,
+          errors: [],
+          firstLoadTimings: [{ documentPath: "/", loadMs: 42 }],
+        },
+        {
+          id: "fail",
+          project: "phone",
+          status: "failed",
+          duration: 124,
+          retry: 0,
+          errors: [{ message: "assertion failed" }],
+          firstLoadTimings: [{ documentPath: "/", loadMs: 42 }],
+        },
+      ],
+    );
+    const logged = stdout.split("\n").filter((line) => line.startsWith("INSTALLATION_RESULT "));
+    assert.deepEqual(
+      logged.map((line) => JSON.parse(line.slice("INSTALLATION_RESULT ".length))),
+      results,
+    );
+  } finally {
+    child.kill("SIGKILL");
     rmSync(directory, { recursive: true, force: true });
   }
 });
