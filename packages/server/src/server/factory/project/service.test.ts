@@ -383,7 +383,7 @@ beforeEach(async () => {
     readyProviders: async () => [],
     providerType: () => null,
     profileAccount: () => null,
-    readUsage: async () => [],
+    readUsage: async () => ({ fetchedAt: T0, providers: [] }),
     defaultProvider: async () => null,
   };
   await addProject();
@@ -1812,8 +1812,9 @@ describe("account choice for new Factory agents", () => {
       providerType: ({ provider, profileId }) =>
         (profileId ?? provider ?? "").includes("claude") ? "claude" : "codex",
       profileAccount: (profileId) => (profileId === "local-codex" ? "codex-a" : null),
-      readUsage: async () =>
-        [
+      readUsage: async () => ({
+        fetchedAt: T0,
+        providers: [
           reading("codex-a", [80, 40]),
           reading("codex-b", [70, 90]),
           reading("codex-stale", [99], "2026-11-03T11:50:00.000Z"),
@@ -1821,6 +1822,7 @@ describe("account choice for new Factory agents", () => {
           reading("codex-unknown", [null]),
           reading("claude-x", [100]),
         ] as never,
+      }),
       defaultProvider: async () => "codex-a",
     };
     const pick = (avoid?: string) =>
@@ -1872,6 +1874,30 @@ describe("account choice for new Factory agents", () => {
         (item: { provider: string | null }) => item.provider,
       ),
     ).toEqual(["codex-b", "codex-a", null, null, "codex-a", null]);
+  });
+
+  test("the daemon's accounts date a reading by its usage list when it has no time of its own", async () => {
+    accounts = daemonFactoryAccounts({
+      providers: {
+        listProviders: async () => [{ provider: "codex", enabled: true, status: "ready" }] as never,
+      },
+      readUsage: async () => ({
+        fetchedAt: T0,
+        providers: [
+          {
+            providerId: "codex",
+            status: "available",
+            windows: [{ id: "weekly", label: "Weekly", remainingPct: 48 }],
+          },
+        ] as never,
+      }),
+      getSettings: () => ({}) as never,
+    });
+    const factory = service();
+    await enable(factory);
+    expect(
+      await factory.invoke("factory.project.pick_account", { projectId: PROJECT, stage: "worker" }),
+    ).toMatchObject({ provider: "codex", remainingPct: 48 });
   });
 
   test("the daemon's accounts fall back when usage cannot be read and no profile is set", async () => {
