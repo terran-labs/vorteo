@@ -2,8 +2,21 @@ import type { AgentUsage } from "@getpaseo/protocol/agent-types";
 import type { ProjectFactoryState } from "@/components/sidebar/factory-state";
 import type { FactoryQueue } from "./queue";
 
-export type FactoryIssue = FactoryQueue["issues"][number];
+/** Which Factory an issue belongs to, set when the overview shows several Factories. */
+export interface FactoryIssueOrigin {
+  key: string;
+  serverId: string;
+  projectId: string;
+  label: string;
+}
+
+export type FactoryIssue = FactoryQueue["issues"][number] & { origin?: FactoryIssueOrigin };
 export type FactoryStage = FactoryIssue["stage"];
+
+/** Issue numbers repeat across repositories, so scoped views key issues by Factory too. */
+export function factoryIssueKey(issue: Pick<FactoryIssue, "number" | "origin">): string {
+  return `${issue.origin?.key ?? ""}#${issue.number}`;
+}
 
 /** Board lanes in pipeline order. Repair shares the Review lane and carries a badge instead. */
 export const FACTORY_LANES = [
@@ -108,7 +121,18 @@ export interface FactoryAgentInfo {
   usage: AgentUsage | undefined;
   createdAt: Date | null;
 }
-export type FactoryAgentLookup = (agentId: string) => FactoryAgentInfo | undefined;
+/** Agents live per host, so a lookup names the host that owns the thread. */
+export type FactoryAgentLookup = (
+  agentId: string,
+  serverId: string,
+) => FactoryAgentInfo | undefined;
+
+/** A role thread of one Factory, for usage totals across Factories. */
+export interface FactoryRoleThread {
+  serverId: string;
+  role: ProjectFactoryState["roles"][number]["role"];
+  agentId: string | null;
+}
 
 /** Totals stay null when no agent reported the value, so the interface renders "—", not 0. */
 export interface UsageTotals {
@@ -146,10 +170,6 @@ export function addUsage(total: UsageTotals, usage: AgentUsage | undefined): Usa
   };
 }
 
-export function sumUsage(agentIds: readonly string[], lookup: FactoryAgentLookup): UsageTotals {
-  return agentIds.reduce((total, id) => addUsage(total, lookup(id)?.usage), EMPTY_USAGE);
-}
-
 export interface FactoryProviderSpend {
   provider: string;
   usage: UsageTotals;
@@ -160,29 +180,32 @@ export interface FactoryUsageSummary {
   total: UsageTotals;
   byCategory: Record<FactoryCategory, UsageTotals>;
   byProvider: FactoryProviderSpend[];
-  byIssue: Map<number, UsageTotals>;
+  /** Keyed by {@link factoryIssueKey}. */
+  byIssue: Map<string, UsageTotals>;
   /** When each issue's first known thread started; null when no thread is loaded. */
-  startedAt: Map<number, Date | null>;
+  startedAt: Map<string, Date | null>;
 }
 
 /** Usage of every Factory thread the client has loaded: issue agents and role agents. */
 export function factoryUsage(
   issues: readonly FactoryIssue[],
-  roles: ProjectFactoryState["roles"],
+  roles: readonly FactoryRoleThread[],
   lookup: FactoryAgentLookup,
+  /** The host of issues without an origin: the single Factory's host. */
+  serverId: string,
 ): FactoryUsageSummary {
   const byCategory = Object.fromEntries(
     FACTORY_CATEGORIES.map((category) => [category, EMPTY_USAGE]),
   ) as Record<FactoryCategory, UsageTotals>;
   const providers = new Map<string, FactoryProviderSpend>();
-  const byIssue = new Map<number, UsageTotals>();
-  const startedAt = new Map<number, Date | null>();
+  const byIssue = new Map<string, UsageTotals>();
+  const startedAt = new Map<string, Date | null>();
   let total = EMPTY_USAGE;
   const seen = new Set<string>();
-  const count = (agentId: string, category: FactoryCategory) => {
-    if (seen.has(agentId)) return;
-    seen.add(agentId);
-    const info = lookup(agentId);
+  const count = (agentId: string, host: string, category: FactoryCategory) => {
+    if (seen.has(`${host}:${agentId}`)) return;
+    seen.add(`${host}:${agentId}`);
+    const info = lookup(agentId, host);
     if (!info) return;
     total = addUsage(total, info.usage);
     byCategory[category] = addUsage(byCategory[category], info.usage);
@@ -197,17 +220,18 @@ export function factoryUsage(
   for (const issue of issues) {
     let issueTotal = EMPTY_USAGE;
     let first: Date | null = null;
+    const host = issue.origin?.serverId ?? serverId;
     for (const agent of issue.agents) {
-      count(agent.agentId, issueAgentCategory(agent.role, issue.stage));
-      const info = lookup(agent.agentId);
+      count(agent.agentId, host, issueAgentCategory(agent.role, issue.stage));
+      const info = lookup(agent.agentId, host);
       issueTotal = addUsage(issueTotal, info?.usage);
       if (info?.createdAt && (!first || info.createdAt < first)) first = info.createdAt;
     }
-    byIssue.set(issue.number, issueTotal);
-    startedAt.set(issue.number, first);
+    byIssue.set(factoryIssueKey(issue), issueTotal);
+    startedAt.set(factoryIssueKey(issue), first);
   }
   for (const role of roles) {
-    if (role.agentId) count(role.agentId, roleCategory(role.role));
+    if (role.agentId) count(role.agentId, role.serverId, roleCategory(role.role));
   }
   const byProvider = [...providers.values()].sort(
     (a, b) => (b.usage.costUsd ?? 0) - (a.usage.costUsd ?? 0),

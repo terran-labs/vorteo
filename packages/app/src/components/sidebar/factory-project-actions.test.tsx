@@ -12,6 +12,7 @@ const fixture = vi.hoisted(() => {
     plugin: { id: "factory", serverId: "host", invoke },
     checkout: vi.fn(),
     error: vi.fn(),
+    confirm: vi.fn(),
     t: (key: string) => key,
   };
 });
@@ -22,6 +23,7 @@ vi.mock("@/runtime/host-runtime", () => ({
   getHostRuntimeStore: () => ({ getClient: () => ({ getCheckoutStatus: fixture.checkout }) }),
 }));
 vi.mock("@/contexts/toast-context", () => ({ useToast: () => ({ error: fixture.error }) }));
+vi.mock("@/utils/confirm-dialog", () => ({ confirmDialog: fixture.confirm }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: fixture.t }) }));
 vi.mock("./project-menu-item", () => ({
   ProjectMenuItem: ({
@@ -90,6 +92,7 @@ beforeEach(() => {
   vi.stubGlobal("React", React);
   fixture.invoke.mockReset();
   fixture.checkout.mockReset();
+  fixture.confirm.mockReset();
 });
 afterEach(cleanup);
 function renderActions(showDialog = false) {
@@ -142,6 +145,24 @@ it("uses returned state after pausing", async () => {
   expect(fixture.invoke).toHaveBeenLastCalledWith("factory.project.pause", {
     projectId: "project",
   });
+});
+it("offers no Resume for a project another process holds, and re-checks before resuming", async () => {
+  const drain = { id: "drain-1", reason: "drain before restart", pausedAt: "2026-11-07T12:00:00Z" };
+  fixture.invoke.mockResolvedValueOnce({ ...off, state: "paused", drain });
+  renderActions();
+  await screen.findByText("projectFactory.needsYou.kinds.held");
+  expect(screen.queryByText("projectFactory.resumeMenu")).toBeNull();
+  cleanup();
+  // Paused by hand when the menu opened, but held by the time Resume is pressed.
+  fixture.invoke
+    .mockResolvedValueOnce({ ...off, state: "paused", drain: null })
+    .mockResolvedValueOnce({ ...off, state: "paused", drain });
+  renderActions();
+  fireEvent.click(await screen.findByText("projectFactory.resumeMenu"));
+  await screen.findByText("projectFactory.stopAll.nowHeld");
+  expect(screen.queryByText("projectFactory.resumeMenu")).toBeNull();
+  expect(fixture.invoke).not.toHaveBeenCalledWith("factory.project.resume", expect.anything());
+  expect(fixture.confirm).not.toHaveBeenCalled();
 });
 it("opens the enable dialog from the off menu action", async () => {
   fixture.invoke.mockResolvedValue(off);

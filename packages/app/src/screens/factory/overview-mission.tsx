@@ -3,7 +3,7 @@ import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import { SettingsSection } from "@/components/settings";
-import { FactoryControlStrip } from "./overview-controls";
+import { DrainBanners, FactoriesStrip, NeedsYouPanel, ScopeControls } from "./overview-command";
 import type { FactoryOverviewData } from "./overview-data";
 import {
   FactoryBoard,
@@ -55,18 +55,17 @@ export function MissionOverview({ data }: { data: FactoryOverviewData }) {
   const boardMeta = useMemo(() => <TrackLegend />, []);
   return (
     <View style={styles.page} testID="factory-overview-mission">
+      {data.scope === "all" ? <NeedsYouPanel data={data} expanded /> : null}
+      <DrainBanners data={data} />
       <View style={styles.band}>
         <Hero data={data} />
         <View style={styles.bandControls}>
-          <FactoryControlStrip
-            serverId={data.serverId}
-            projectId={data.projectId}
-            state={data.state}
-            controls={data.controls}
-          />
+          <ScopeControls data={data} />
         </View>
       </View>
+      {data.scope === "project" ? <NeedsYouPanel data={data} /> : null}
       <KpiStrip data={data} kpis={MISSION_KPIS} />
+      {data.scope === "all" ? <FactoriesStrip data={data} /> : null}
       {data.queue.data ? (
         <Panel
           title={t("projectFactory.reports.pipeline")}

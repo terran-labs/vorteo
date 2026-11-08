@@ -11,6 +11,8 @@ export type FactoryOverviewVariant = (typeof FACTORY_OVERVIEW_VARIANTS)[number];
 const persistedSchema = z.object({
   variant: z.enum(FACTORY_OVERVIEW_VARIANTS),
   sample: z.boolean(),
+  /** Optional so state saved before the per-Factory list still loads. */
+  stopListOpen: z.boolean().optional(),
 });
 
 interface FactoryOverviewStoreState {
@@ -19,6 +21,9 @@ interface FactoryOverviewStoreState {
   sample: boolean;
   setVariant: (variant: FactoryOverviewVariant) => void;
   setSample: (sample: boolean) => void;
+  /** The per-Factory pause and resume list under All Factories' stop control. */
+  stopListOpen: boolean;
+  setStopListOpen: (open: boolean) => void;
 }
 
 // Remembered per device, like other view preferences.
@@ -29,12 +34,18 @@ export const useFactoryOverviewStore = create<FactoryOverviewStoreState>()(
       sample: false,
       setVariant: (variant) => set({ variant }),
       setSample: (sample) => set({ sample }),
+      stopListOpen: false,
+      setStopListOpen: (stopListOpen) => set({ stopListOpen }),
     }),
     {
       name: "factory-overview-view",
       version: 1,
       storage: createValidatedPersistStorage(AsyncStorage, persistedSchema),
-      partialize: (state) => ({ variant: state.variant, sample: state.sample }),
+      partialize: (state) => ({
+        variant: state.variant,
+        sample: state.sample,
+        stopListOpen: state.stopListOpen,
+      }),
     },
   ),
 );

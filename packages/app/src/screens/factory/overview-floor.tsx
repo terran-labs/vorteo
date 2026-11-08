@@ -3,7 +3,7 @@ import { View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import { SettingsSection } from "@/components/settings";
-import { FactoryControlStrip } from "./overview-controls";
+import { DrainBanners, FactoriesStrip, NeedsYouPanel, ScopeControls } from "./overview-command";
 import type { FactoryOverviewData } from "./overview-data";
 import {
   FactoryBoard,
@@ -61,14 +61,21 @@ export function FloorOverview({ data }: { data: FactoryOverviewData }) {
   );
   return (
     <View style={styles.page} testID="factory-overview-floor">
-      <View style={styles.strip}>
-        <FactoryControlStrip
-          serverId={data.serverId}
-          projectId={data.projectId}
-          state={data.state}
-          controls={data.controls}
-        />
+      {data.scope === "all" ? (
+        <View style={styles.block}>
+          <NeedsYouPanel data={data} expanded />
+        </View>
+      ) : null}
+      <View style={styles.block}>
+        <DrainBanners data={data} />
+        <ScopeControls data={data} />
+        {data.scope === "project" ? <NeedsYouPanel data={data} /> : null}
       </View>
+      {data.scope === "all" ? (
+        <SettingsSection title={t("projectFactory.scope.factories")}>
+          <FactoriesStrip data={data} />
+        </SettingsSection>
+      ) : null}
       {data.queue.data || data.queue.error || data.queue.loading ? (
         <SettingsSection title={t("projectFactory.board.title")} trailing={boardMeta}>
           <QueueNotices data={data} />
@@ -107,7 +114,7 @@ export function FloorOverview({ data }: { data: FactoryOverviewData }) {
 
 const styles = StyleSheet.create((theme) => ({
   page: {},
-  strip: { marginBottom: theme.spacing[6] },
+  block: { marginBottom: theme.spacing[6], gap: theme.spacing[3] },
   meta: { flexDirection: "row", alignItems: "center", gap: theme.spacing[3], flexWrap: "wrap" },
   reports: { gap: theme.spacing[3] },
 }));
