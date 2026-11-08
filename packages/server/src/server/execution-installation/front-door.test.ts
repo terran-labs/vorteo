@@ -20,7 +20,6 @@ const PINNED_GAPS = [
   "/api/installation/owner/snapshots",
   "/api/installation/owner/source-upgrades",
   "/api/installation/owner/source-upgrades/:id/decision",
-  "/api/installation/owner/source-upgrades/rollback",
 ];
 
 // Routes the grant never approves, each on OWNER_ONLY_OPERATIONS.
@@ -34,6 +33,7 @@ const PINNED_EXCLUSIONS = [
   "/api/installation/owner/settings/skills/package",
   "/api/installation/owner/settings/skills/prepare",
   "/api/installation/owner/snapshots/restore",
+  "/api/installation/owner/source-upgrades/rollback",
 ];
 
 // Routes that never get an agent door: owner session, grant management, read-only views and
@@ -94,11 +94,12 @@ test("every owner route that changes something has an agent front door, an exclu
   expect(OWNER_ROUTE_FRONT_DOORS["/api/installation/owner/maintenance-delegation/change"]).toEqual(
     expect.objectContaining({ exempt: "grant" }),
   );
-  // The exclusions are named on purpose: guardrail edits, snapshot restore and credentials.
+  // The exclusions are named on purpose: guardrail edits, install rollback and credentials.
   expect(OWNER_ONLY_OPERATIONS).toEqual([
     "instruction-requests",
     "agent-guardrails",
     "snapshot-restore",
+    "source-upgrade-rollback",
     "account-credentials",
   ]);
 });

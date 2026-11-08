@@ -77,6 +77,10 @@ export const OWNER_ROUTE_FRONT_DOORS: Readonly<Record<string, FrontDoor>> = {
   "/api/installation/owner/profiles": CREDENTIALS,
   "/api/installation/owner/profiles/resolve": CREDENTIALS,
   "/api/installation/owner/profiles/synchronize": CREDENTIALS,
+  "/api/installation/owner/source-upgrades/rollback": {
+    excluded: "source-upgrade-rollback",
+    why: "Rolling back an install is the owner's decision under the Builds charter.",
+  },
   "/api/installation/owner/settings/plugins/resolve": GUARDRAILS,
   "/api/installation/owner/settings/skills/package": GUARDRAILS,
   "/api/installation/owner/settings/skills/prepare": GUARDRAILS,
@@ -110,9 +114,6 @@ export const OWNER_ROUTE_FRONT_DOORS: Readonly<Record<string, FrontDoor>> = {
   "/api/installation/owner/live-dev/change": { gap: "Turn live dev on or off." },
   // Stable source upgrades reached main on 2026-11-07, before this rule, with owner-only approval.
   "/api/installation/owner/source-upgrades": { gap: "Request a Stable source upgrade." },
-  "/api/installation/owner/source-upgrades/rollback": {
-    gap: "Roll back a Stable source upgrade.",
-  },
   "/api/installation/owner/source-upgrades/:id/decision": {
     gap: "Approve a Stable source upgrade under the grant.",
   },
