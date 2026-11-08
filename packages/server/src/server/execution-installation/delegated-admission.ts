@@ -24,6 +24,7 @@ import { writePrivateFileAtomicSync } from "../private-files.js";
  * - `instruction-requests`: a change to the installation-wide agent instructions.
  * - `agent-guardrails`: any other edit to agent instructions, skills or plugins.
  * - `snapshot-restore`: restoring a pre-install safety snapshot.
+ * - `account-credentials`: connecting, editing or synchronizing provider accounts.
  */
 export const OWNER_ONLY_OPERATIONS: readonly string[] = [
   // Owner decision 2026-11-07: agents never edit their own guardrails. An approved request
@@ -33,6 +34,9 @@ export const OWNER_ONLY_OPERATIONS: readonly string[] = [
   // Builds charter: restoring a pre-install snapshot is the owner's decision. It rolls the
   // whole installation back, including work agents did since.
   "snapshot-restore",
+  // Every Factory charter forbids agents to touch credentials or account settings, and the
+  // maintenance grant never alters credentials.
+  "account-credentials",
 ];
 
 /** Whether the full maintenance grant may approve the operation. Default in. */

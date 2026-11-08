@@ -29,6 +29,10 @@ const UPGRADES = {
   exempt: "alternate",
   why: "Release upgrades follow the owner's update policy; Builds installs source through request-restart --update.",
 } as const;
+const CREDENTIALS = {
+  excluded: "account-credentials",
+  why: "Accounts and credentials: Factory charters forbid agents to touch them, and the grant never alters them.",
+} as const;
 const GUARDRAILS = {
   excluded: "agent-guardrails",
   why: "Edits agent instructions, skills or plugins: agents never edit their own guardrails (owner decision 2026-11-07).",
@@ -69,6 +73,10 @@ export const OWNER_ROUTE_FRONT_DOORS: Readonly<Record<string, FrontDoor>> = {
     excluded: "snapshot-restore",
     why: "Restoring a pre-install snapshot is the owner's decision under the Builds charter.",
   },
+  "/api/installation/owner/connections": CREDENTIALS,
+  "/api/installation/owner/profiles": CREDENTIALS,
+  "/api/installation/owner/profiles/resolve": CREDENTIALS,
+  "/api/installation/owner/profiles/synchronize": CREDENTIALS,
   "/api/installation/owner/settings/plugins/resolve": GUARDRAILS,
   "/api/installation/owner/settings/skills/package": GUARDRAILS,
   "/api/installation/owner/settings/skills/prepare": GUARDRAILS,
@@ -104,8 +112,4 @@ export const OWNER_ROUTE_FRONT_DOORS: Readonly<Record<string, FrontDoor>> = {
     // appendSystemPrompt in the same body is an instruction change and stays excluded.
     gap: "Ordinary installation settings (autoArchiveAfterMerge, terminal profiles, metadata generation and similar fields).",
   },
-  "/api/installation/owner/connections": { gap: "Connect or disconnect provider accounts." },
-  "/api/installation/owner/profiles": { gap: "Edit provider profiles." },
-  "/api/installation/owner/profiles/resolve": { gap: "Resolve a provider profile conflict." },
-  "/api/installation/owner/profiles/synchronize": { gap: "Synchronize provider profiles." },
 };

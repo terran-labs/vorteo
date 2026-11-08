@@ -10,18 +10,27 @@ const read = (relative: string) =>
 // Existing owner operations still waiting for an agent door. Shrink this list as doors ship;
 // never grow it. A new operation ships with its agent door instead (docs/task-delivery.md).
 const PINNED_GAPS = [
-  "/api/installation/owner/connections",
   "/api/installation/owner/custom-domain/change",
   "/api/installation/owner/dev-repair/prepare",
   "/api/installation/owner/helpers/verify-installed",
   "/api/installation/owner/installation-type/change",
   "/api/installation/owner/live-dev/change",
   "/api/installation/owner/name",
+  "/api/installation/owner/settings",
+  "/api/installation/owner/snapshots",
+];
+
+// Routes the grant never approves, each on OWNER_ONLY_OPERATIONS.
+const PINNED_EXCLUSIONS = [
+  "/api/installation/owner/connections",
+  "/api/installation/owner/instruction-requests/decision",
   "/api/installation/owner/profiles",
   "/api/installation/owner/profiles/resolve",
   "/api/installation/owner/profiles/synchronize",
-  "/api/installation/owner/settings",
-  "/api/installation/owner/snapshots",
+  "/api/installation/owner/settings/plugins/resolve",
+  "/api/installation/owner/settings/skills/package",
+  "/api/installation/owner/settings/skills/prepare",
+  "/api/installation/owner/snapshots/restore",
 ];
 
 // Routes that never get an agent door: owner session, grant management, read-only views and
@@ -71,7 +80,9 @@ test("every owner route that changes something has an agent front door, an exclu
     // An exclusion is real only when the grant actually refuses it.
     if ("excluded" in door) expect(OWNER_ONLY_OPERATIONS, route).toContain(door.excluded);
   }
-  // A new route cannot join either list by adding a sentence: both are pinned here.
+  // A new route cannot join any list by adding a sentence: all three are pinned here.
+  const excluded = entries.filter(([, door]) => "excluded" in door).map(([route]) => route);
+  expect(excluded.sort()).toEqual(PINNED_EXCLUSIONS);
   const gaps = entries.filter(([, door]) => "gap" in door).map(([route]) => route);
   expect(gaps.sort()).toEqual(PINNED_GAPS);
   const exempt = entries.filter(([, door]) => "exempt" in door).map(([route]) => route);
@@ -80,10 +91,11 @@ test("every owner route that changes something has an agent front door, an exclu
   expect(OWNER_ROUTE_FRONT_DOORS["/api/installation/owner/maintenance-delegation/change"]).toEqual(
     expect.objectContaining({ exempt: "grant" }),
   );
-  // The exclusions are named on purpose: guardrail edits and snapshot restore.
+  // The exclusions are named on purpose: guardrail edits, snapshot restore and credentials.
   expect(OWNER_ONLY_OPERATIONS).toEqual([
     "instruction-requests",
     "agent-guardrails",
     "snapshot-restore",
+    "account-credentials",
   ]);
 });
