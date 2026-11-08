@@ -418,7 +418,9 @@ function FactorySummaryChip({
         <TooltipText
           label={`${name} · ${state}`}
           description={[
-            chip.reason,
+            chip.held && chip.reason
+              ? t("projectFactory.needsYou.kinds.held", { subject: chip.reason })
+              : chip.reason,
             t("sidebar.factoryCard.chipCountsShort", {
               inFlight: chip.inFlight,
               needsYou: chip.needsYou,

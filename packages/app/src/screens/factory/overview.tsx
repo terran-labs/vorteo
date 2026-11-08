@@ -59,6 +59,7 @@ import {
   useProjectNames,
   useStopAll,
 } from "./overview-sources";
+import { factoryListQueryKey } from "./factory-reads";
 import { projectFactoryOverviewRoute } from "./routes";
 import { useFactoryOverviewStore, type FactoryOverviewVariant } from "./overview-store";
 import { loadFactoryQueue, type FactoryInvoke, type FactoryQueue } from "./queue";
@@ -235,22 +236,18 @@ function useOverviewData(input: {
   focus: FactoryOverviewData["focus"];
   entries: FactoryScopeEntry[];
   queue: LiveQueue;
-  stopHosts: string[] | null;
   active: boolean;
 }): FactoryOverviewData {
-  const { scope, serverId, focus, entries: liveEntries, queue, stopHosts, active } = input;
+  const { scope, serverId, focus, entries: liveEntries, queue, active } = input;
   const sample = useFactoryOverviewStore((store) => store.sample);
   const sessions = useSessionStore((store) => store.sessions);
   const usage = useProviderUsage(serverId, { pollUsage: true, enabled: active });
   const liveQuestions = useFactoryQuestions(liveEntries);
   const factoryHosts = useFactoryHosts();
-  const stopTargets = useMemo(
-    () =>
-      stopHosts ? factoryHosts.filter((host) => stopHosts.includes(host.serverId)) : factoryHosts,
-    [factoryHosts, stopHosts],
-  );
-  const liveStops = useMemo(() => activeDrains(liveEntries), [liveEntries]);
-  const stopAll = useStopAll(stopTargets, liveStops);
+  // Global stop and resume act on whole hosts, so only All Factories, which sees every project
+  // on each host, offers them.
+  const stopHosts = useMemo(() => (scope === "all" ? factoryHosts : []), [scope, factoryHosts]);
+  const stopAll = useStopAll(stopHosts, liveEntries);
   const openAgent = useCallback(
     (agentId: string, host?: string) => navigateToAgent({ serverId: host ?? serverId, agentId }),
     [serverId],
@@ -360,7 +357,11 @@ function ProjectContent({
       ProjectFactoryStateSchema.parse(
         await invoke(`factory.project.${method}`, { projectId, ...input }),
       ),
-    onSuccess: (next) => client.setQueryData(["projectFactory", serverId, projectId], next),
+    onSuccess: (next) => {
+      client.setQueryData(["projectFactory", serverId, projectId], next);
+      // The list carries pause and drain state for the sidebar and All Factories.
+      void client.invalidateQueries({ queryKey: factoryListQueryKey(serverId) });
+    },
   });
   const { mutate } = mutation;
   const pause = useCallback(() => mutate({ method: "pause" }), [mutate]);
@@ -419,14 +420,12 @@ function ProjectContent({
     }),
     [queue.data, queue.isLoading, queue.isFetching, queue.error, reload, queue.dataUpdatedAt],
   );
-  const stopHosts = useMemo(() => [serverId], [serverId]);
   const data = useOverviewData({
     scope: "project",
     serverId,
     focus,
     entries,
     queue: liveQueue,
-    stopHosts,
     active,
   });
   return <DesignFrame data={data} />;
@@ -463,7 +462,6 @@ function AllContent({ serverId, active }: { serverId: string; active: boolean })
     focus: null,
     entries: all.entries,
     queue: liveQueue,
-    stopHosts: null,
     active,
   });
   return <DesignFrame data={data} />;

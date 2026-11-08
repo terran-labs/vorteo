@@ -1,3 +1,4 @@
+import type { TFunction } from "i18next";
 import { isOwnerStop } from "@/screens/factory/factory-reads";
 import type { FactoryQueue } from "@/screens/factory/queue";
 import type {
@@ -117,6 +118,17 @@ export type FactoryStatePill =
   | { label: "on"; variant: "success" }
   | { label: "paused" | "stopped" | "held"; variant: "warning" }
   | { label: "off" | "unavailable"; variant: "muted" };
+
+/** The pill's tooltip detail: the drain or daemon reason, with a held drain named as such. */
+export function factoryStateReason(
+  state: Pick<ProjectFactoryState, "drain" | "reason">,
+  t: TFunction,
+): string | undefined {
+  if (state.drain && !isOwnerStop(state.drain)) {
+    return t("projectFactory.needsYou.kinds.held", { subject: state.drain.reason });
+  }
+  return state.drain?.reason ?? state.reason ?? undefined;
+}
 
 export function factoryStatePill(
   state: Pick<ProjectFactoryState, "state" | "drain">,

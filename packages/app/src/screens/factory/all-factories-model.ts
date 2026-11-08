@@ -100,6 +100,45 @@ export function activeDrains(entries: readonly FactoryScopeEntry[]): FactoryStop
   return [...stops.values()];
 }
 
+/** What one host's Factories allow the global stop control to do. */
+export interface HostStopState {
+  /** Some Factory is on and not stopped, so Stop all has something to stop. */
+  running: boolean;
+  /** Stop all holds some Factory. */
+  ours: boolean;
+  /** Someone else, such as Builds before a restart, holds some Factory. */
+  foreign: boolean;
+}
+
+/**
+ * Read from scope entries, or list entries with their state as status. resume_all releases every drain on a host, so a host
+ * with any foreign drain is never resumed, and never stopped again on top of it.
+ */
+export function hostStopState(
+  projects: readonly { status: string; drain?: { reason: string } | null }[],
+): HostStopState {
+  let running = false;
+  let ours = false;
+  let foreign = false;
+  for (const project of projects) {
+    if (project.drain) {
+      if (isOwnerStop(project.drain)) ours = true;
+      else foreign = true;
+    } else if (project.status === "on") {
+      running = true;
+    }
+  }
+  return { running, ours, foreign };
+}
+
+export function canStopHost(state: HostStopState): boolean {
+  return state.running && !state.foreign;
+}
+
+export function canResumeHost(state: HostStopState): boolean {
+  return state.ours && !state.foreign;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Needs you
 

@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/contexts/toast-context";
 import { useInstalledPlugins } from "@/plugins/registry";
 import { useMenuContext } from "@/components/ui/menu";
+import { factoryListQueryKey } from "@/screens/factory/factory-reads";
 import { confirmProjectResume } from "@/screens/factory/resume-confirm";
 import { openFactoryInstructions } from "./factory-instructions";
 import { openFactoryDialog, factoryActions, type ProjectFactoryState } from "./project-factory";
@@ -50,11 +51,15 @@ export function FactoryProjectActions({
   const applyFactoryState = useCallback(
     (state: ProjectFactoryState) => {
       setFactoryState(state);
-      if (settingsTarget)
-        factoryQueryClient.setQueryData(
-          ["projectFactory", settingsTarget.serverId, settingsTarget.projectId],
-          state,
-        );
+      if (!settingsTarget) return;
+      factoryQueryClient.setQueryData(
+        ["projectFactory", settingsTarget.serverId, settingsTarget.projectId],
+        state,
+      );
+      // The list carries pause and drain state for the All Factories card and overview.
+      void factoryQueryClient.invalidateQueries({
+        queryKey: factoryListQueryKey(settingsTarget.serverId),
+      });
     },
     [settingsTarget, factoryQueryClient],
   );

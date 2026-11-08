@@ -143,6 +143,11 @@ export const en = {
       confirmMessage_other:
         "Every Factory on {{count}} hosts is paused. No new Factory work starts until you resume. Running workers finish their current task and may still push.",
       eachFactory: "Each Factory",
+      inAll: "Stop or resume all Factories in All Factories",
+      nothingToStop:
+        "Nothing was stopped: no host still has Factories running that are not held by another process.",
+      nothingToResume:
+        "Nothing was resumed: another process now holds these hosts, or the stop already ended.",
       resumeTitle: "Resume all Factories?",
       resumeMessage_one:
         "Releases Stop all on this host, and its Factories start taking new work again. Factories held for a restart or update stay held.",
@@ -152,7 +157,7 @@ export const en = {
       resumeProjectMessage:
         "This Factory leaves the stop and starts taking new work again. Other stopped Factories stay stopped.",
       resumeHeldMessage:
-        "This Factory is held for a restart or update ({{reason}}). Resuming it can restart work Builds is waiting to stop before it restarts or updates.",
+        "This Factory is held by another process, for example Builds before a restart or update. Its reason: {{reason}}. Resuming it can restart work that process is waiting to stop.",
       bannerTitle_one: "Stopped: {{count}} Factory",
       bannerTitle_other: "Stopped: {{count}} Factories",
       bannerDetail:
@@ -160,7 +165,7 @@ export const en = {
       heldTitle_one: "Held for a restart or update: {{count}} Factory",
       heldTitle_other: "Held for a restart or update: {{count}} Factories",
       heldDetail:
-        "{{reason}} · {{age}}. Builds stopped these Factories before a restart or update and will resume them when it finishes.",
+        "{{reason}} · {{age}}. Held by another process, for example Builds before a restart or update, which resumes them when it finishes.",
     },
     needsYou: {
       title: "Needs you",

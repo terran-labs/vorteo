@@ -16,7 +16,6 @@ import {
   ProjectFactoryListSchema,
   type ProjectFactoryList,
 } from "../../../../../plugins/factory/shared/project";
-import { isListedFactory } from "@/components/sidebar/factory-global-model";
 import {
   boundedFactoryRead,
   factoryListQueryKey,
@@ -27,8 +26,11 @@ import {
   factoryQuestions,
   factoryScopeKey,
   type FactoryQuestion,
+  canResumeHost,
+  canStopHost,
+  hostStopState,
   type FactoryScopeEntry,
-  type FactoryStop,
+  type HostStopState,
 } from "./all-factories-model";
 import { loadFactoryQueue, type FactoryInvoke, type FactoryQueue } from "./queue";
 
@@ -101,8 +103,11 @@ export function useAllFactories(active: boolean): {
     () => projects.filter(({ project }) => project.state !== "off" || project.drain !== null),
     [projects],
   );
-  // Unavailable projects render from their list entry; only running or paused ones are read.
-  const live = useMemo(() => shown.filter(({ project }) => isListedFactory(project)), [shown]);
+  // Only running or paused projects are read; unavailable ones render from their list entry.
+  const live = useMemo(
+    () => shown.filter(({ project }) => project.state === "on" || project.state === "paused"),
+    [shown],
+  );
   const states = useFetchQueries(
     live.map(({ host, project }) => ({
       dataShape: "value" as const,
@@ -198,17 +203,20 @@ export function useFactoryQuestions(entries: readonly FactoryScopeEntry[]): Fact
 }
 
 export interface StopAllControls {
-  /** What the one global control does now: stop running hosts, resume our stop, or nothing. */
-  mode: "stop" | "resume" | "none";
-  /** Confirms, then pauses every Factory on the hosts that are not stopped yet. */
+  /** Some host has Factories running that nobody else holds. */
+  canStop: boolean;
+  /** Some host is held by Stop all alone. */
+  canResume: boolean;
+  /** Confirms, re-reads each host, then pauses every Factory on the hosts still running. */
   stop: () => void;
   /**
-   * Confirms, then releases our stop on each host held only by it. resume_all releases every
-   * drain on a host, so a host that someone else, such as Builds, also holds is left alone.
+   * Confirms, re-reads each host, then releases our stop on each host still held by it alone.
+   * resume_all releases every drain on a host, so a host anyone else holds is left alone.
    */
   resumeAll: () => void;
   /** One project's own pause or resume, as in the single-project view. */
   setProject: (entry: FactoryScopeEntry, method: "pause" | "resume") => void;
+  /** A global stop or resume is confirming or running. */
   pending: boolean;
   /** The project key whose pause or resume is in flight. */
   projectPending: string | null;
@@ -222,10 +230,13 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** The installation-wide stop control over factory.project.pause_all and resume_all, per host. */
+/**
+ * The installation-wide stop control over factory.project.pause_all and resume_all, per host.
+ * Only the All Factories view offers it: it sees every project on each host it acts on.
+ */
 export function useStopAll(
   hosts: readonly FactoryHost[],
-  stops: readonly FactoryStop[],
+  entries: readonly FactoryScopeEntry[],
 ): StopAllControls {
   const { t } = useTranslation();
   const client = useQueryClient();
@@ -233,60 +244,117 @@ export function useStopAll(
   const [error, setError] = useState<string | null>(null);
   const [projectPending, setProjectPending] = useState<string | null>(null);
   const [projectErrors, setProjectErrors] = useState<Record<string, string>>({});
+  const hostStates = useMemo(
+    () =>
+      new Map(
+        hosts.map((host) => [
+          host.serverId,
+          hostStopState(entries.filter((entry) => entry.serverId === host.serverId)),
+        ]),
+      ),
+    [hosts, entries],
+  );
   const stopTargets = useMemo(
-    () => hosts.filter((host) => !stops.some((stop) => stop.serverId === host.serverId)),
-    [hosts, stops],
+    () => hosts.filter((host) => canStopHost(hostStates.get(host.serverId)!)),
+    [hosts, hostStates],
   );
   const resumeTargets = useMemo(
-    () =>
-      hosts.filter((host) => {
-        const own = stops.filter((stop) => stop.serverId === host.serverId);
-        return own.length > 0 && own.every((stop) => stop.owner);
-      }),
-    [hosts, stops],
+    () => hosts.filter((host) => canResumeHost(hostStates.get(host.serverId)!)),
+    [hosts, hostStates],
+  );
+  /** Re-reads each target's list now and keeps the hosts that still qualify. */
+  const fresh = useCallback(
+    async (targets: readonly FactoryHost[], qualifies: (state: HostStopState) => boolean) => {
+      const lists = await Promise.all(
+        targets.map((host) =>
+          client.fetchQuery({
+            queryKey: factoryListQueryKey(host.serverId),
+            queryFn: () => loadFactoryList(host.invoke),
+            staleTime: 0,
+          }),
+        ),
+      );
+      return targets.filter((_, index) =>
+        qualifies(
+          hostStopState(
+            lists[index]!.projects.map((project) => ({
+              status: project.state,
+              drain: project.drain,
+            })),
+          ),
+        ),
+      );
+    },
+    [client],
   );
   const run = useCallback(
-    async (targets: readonly FactoryHost[], method: string, input: object) => {
+    async (input: {
+      targets: readonly FactoryHost[];
+      confirm: () => Promise<boolean>;
+      qualifies: (state: HostStopState) => boolean;
+      method: string;
+      body: object;
+      nothingLeft: string;
+    }) => {
+      // Pending from the first press, so a second press cannot open a second dialog.
       setPending(true);
       setError(null);
       try {
+        if (!(await input.confirm())) return;
+        const targets = await fresh(input.targets, input.qualifies);
+        if (targets.length === 0) {
+          setError(input.nothingLeft);
+          return;
+        }
         const results = await Promise.allSettled(
           targets.map(async (host) => {
-            const list = ProjectFactoryListSchema.parse(await host.invoke(method, input));
+            const list = ProjectFactoryListSchema.parse(
+              await host.invoke(input.method, input.body),
+            );
             client.setQueryData(factoryListQueryKey(host.serverId), list);
           }),
         );
         const failed = results.find((result) => result.status === "rejected");
         if (failed) setError(message((failed as PromiseRejectedResult).reason));
         await client.invalidateQueries({ queryKey: ["projectFactory"] });
+      } catch (failure) {
+        setError(message(failure));
       } finally {
         setPending(false);
       }
     },
-    [client],
+    [client, fresh],
   );
   const stop = useCallback(() => {
-    void (async () => {
-      const confirmed = await confirmDialog({
-        title: t("projectFactory.stopAll.confirmTitle"),
-        message: t("projectFactory.stopAll.confirmMessage", { count: stopTargets.length }),
-        confirmLabel: t("projectFactory.stopAll.confirm"),
-        destructive: true,
-      });
-      if (!confirmed) return;
-      await run(stopTargets, "factory.project.pause_all", { reason: OWNER_STOP_REASON });
-    })();
+    void run({
+      targets: stopTargets,
+      confirm: () =>
+        confirmDialog({
+          title: t("projectFactory.stopAll.confirmTitle"),
+          message: t("projectFactory.stopAll.confirmMessage", { count: stopTargets.length }),
+          confirmLabel: t("projectFactory.stopAll.confirm"),
+          destructive: true,
+        }),
+      qualifies: canStopHost,
+      method: "factory.project.pause_all",
+      body: { reason: OWNER_STOP_REASON },
+      nothingLeft: t("projectFactory.stopAll.nothingToStop"),
+    });
   }, [stopTargets, run, t]);
   const resumeAll = useCallback(() => {
-    void (async () => {
-      const confirmed = await confirmDialog({
-        title: t("projectFactory.stopAll.resumeTitle"),
-        message: t("projectFactory.stopAll.resumeMessage", { count: resumeTargets.length }),
-        confirmLabel: t("projectFactory.stopAll.resume"),
-      });
-      if (!confirmed) return;
-      await run(resumeTargets, "factory.project.resume_all", {});
-    })();
+    void run({
+      targets: resumeTargets,
+      confirm: () =>
+        confirmDialog({
+          title: t("projectFactory.stopAll.resumeTitle"),
+          message: t("projectFactory.stopAll.resumeMessage", { count: resumeTargets.length }),
+          confirmLabel: t("projectFactory.stopAll.resume"),
+        }),
+      qualifies: canResumeHost,
+      method: "factory.project.resume_all",
+      body: {},
+      nothingLeft: t("projectFactory.stopAll.nothingToResume"),
+    });
   }, [resumeTargets, run, t]);
   const setProject = useCallback(
     (entry: FactoryScopeEntry, method: "pause" | "resume") => {
@@ -310,11 +378,9 @@ export function useStopAll(
     },
     [client, hosts],
   );
-  let mode: StopAllControls["mode"] = "none";
-  if (resumeTargets.length) mode = "resume";
-  else if (stopTargets.length) mode = "stop";
   return {
-    mode,
+    canStop: stopTargets.length > 0,
+    canResume: resumeTargets.length > 0,
     stop,
     resumeAll,
     setProject,

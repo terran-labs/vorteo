@@ -37,6 +37,8 @@ export interface FactoryChipSummary {
   pill: FactoryStatePill;
   /** The daemon's reason or drain reason, for the chip's tooltip. */
   reason: string | null;
+  /** Another process, such as Builds before a restart, holds this Factory. */
+  held: boolean;
   inFlight: number;
   needsYou: number;
 }
@@ -94,6 +96,7 @@ export function aggregateFactories(
       hostLabel: factory.hostLabel,
       pill: pills[index]!,
       reason: factory.listed.drain?.reason ?? factory.state?.reason ?? null,
+      held: pills[index]!.label === "held",
       inFlight: factoryRunners(own).length,
       needsYou: needsYouCounts.get(factoryCardKey(factory.serverId, factory.projectId)) ?? 0,
     })),

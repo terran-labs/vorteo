@@ -31,6 +31,7 @@ import { useProjectFactory } from "./factory-instructions";
 import {
   factoryRunners,
   factoryStatePill,
+  factoryStateReason,
   type FactoryCardModel,
   type FactoryStatePill,
 } from "./factory-card-model";
@@ -115,10 +116,10 @@ export const FactoryCard = memo(function FactoryCard({
       state
         ? {
             pill: factoryStatePill(state),
-            description: state.drain?.reason ?? state.reason ?? undefined,
+            description: factoryStateReason(state, t),
           }
         : null,
-    [state],
+    [state, t],
   );
 
   return (

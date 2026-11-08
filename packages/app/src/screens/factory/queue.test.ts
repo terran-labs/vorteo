@@ -2,7 +2,14 @@ import { describe, expect, it } from "vitest";
 import { loadFactoryQueue, factoryAgentStatusKey, type FactoryInvoke } from "./queue";
 import { ProjectFactoryStateSchema } from "@/components/sidebar/factory-state";
 import { FACTORY_LANES, factoryLanes, factoryTrack } from "./overview-model";
-import { activeDrains, aggregateStageCounts, collectNeedsYou } from "./all-factories-model";
+import {
+  activeDrains,
+  aggregateStageCounts,
+  canResumeHost,
+  canStopHost,
+  collectNeedsYou,
+  hostStopState,
+} from "./all-factories-model";
 import { OWNER_STOP_REASON } from "./factory-reads";
 
 const emptyQueue = { fetchedAt: "2026-11-04T12:00:00Z", error: null, issues: [] };
@@ -235,6 +242,12 @@ it("shows one stop per host and reason, however many per-project drain ids it ho
     }),
     expect.objectContaining({ serverId: "other", projects: 1, owner: false }),
   ]);
+  // A host anyone else holds is never resumed or stopped on top; ours resumes, running ones stop.
+  const host = hostStopState(entries.filter((item) => item.serverId === "host"));
+  const other = hostStopState(entries.filter((item) => item.serverId === "other"));
+  expect([canResumeHost(host), canStopHost(host)]).toEqual([true, false]);
+  expect([canResumeHost(other), canStopHost(other)]).toEqual([false, false]);
+  expect(canStopHost(hostStopState([{ status: "on", drain: null }]))).toBe(true);
   const stops = collectNeedsYou({ entries, questions: [] }).filter((item) => item.kind === "drain");
   expect(stops.map((item) => [item.serverId, item.action.kind])).toEqual([
     ["other", "stop"],

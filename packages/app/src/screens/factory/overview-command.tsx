@@ -111,30 +111,63 @@ export function ScopeBack({ serverId }: { serverId: string }) {
 // Stop switch and drain banner
 
 /**
- * The one global stop control, apart from a project's Pause: Resume all while our stop holds a
- * host that nobody else holds, otherwise Stop all Factories while any host runs. Both confirm.
+ * The global stop control, apart from a project's Pause. In All Factories it offers Stop all for
+ * hosts still running and Resume all for hosts held by Stop all alone, both confirmed. A single
+ * project's view only links there: resume_all acts on a whole host, which that view cannot see.
  */
 export function StopSwitch({ data }: { data: FactoryOverviewData }) {
   const { t } = useTranslation();
   const { stopAll, drains } = data;
-  if (!stopAll.available) return null;
-  if (stopAll.mode !== "none") {
-    const resume = stopAll.mode === "resume";
+  const zoomOut = useCallback(
+    () => router.navigate(allFactoriesOverviewRoute(data.serverId)),
+    [data.serverId],
+  );
+  if (data.focus) {
     return (
       <Button
-        variant="outline"
-        leftIcon={resume ? Play : OctagonPause}
-        onPress={resume ? stopAll.resumeAll : stopAll.stop}
-        disabled={stopAll.pending || data.sample}
-        testID={resume ? "factory-resume-all" : "factory-stop-all"}
+        variant="ghost"
+        size="sm"
+        onPress={zoomOut}
+        style={styles.inAll}
+        testID="factory-stop-in-all"
       >
-        {t(resume ? "projectFactory.stopAll.resume" : "projectFactory.stopAll.stop")}
+        {t("projectFactory.stopAll.inAll")}
       </Button>
     );
   }
-  // A single Factory's state pill already says it is held.
-  if (data.focus || drains.length === 0) return null;
-  return <StatusBadge variant="warning" label={t("projectFactory.scope.states.held")} />;
+  if (!stopAll.available) return null;
+  const busy = stopAll.pending || stopAll.projectPending !== null || data.sample;
+  if (!stopAll.canStop && !stopAll.canResume) {
+    return drains.length ? (
+      <StatusBadge variant="warning" label={t("projectFactory.scope.states.held")} />
+    ) : null;
+  }
+  return (
+    <View style={styles.allActions}>
+      {stopAll.canResume ? (
+        <Button
+          variant="outline"
+          leftIcon={Play}
+          onPress={stopAll.resumeAll}
+          disabled={busy}
+          testID="factory-resume-all"
+        >
+          {t("projectFactory.stopAll.resume")}
+        </Button>
+      ) : null}
+      {stopAll.canStop ? (
+        <Button
+          variant="outline"
+          leftIcon={OctagonPause}
+          onPress={stopAll.stop}
+          disabled={busy}
+          testID="factory-stop-all"
+        >
+          {t("projectFactory.stopAll.stop")}
+        </Button>
+      ) : null}
+    </View>
+  );
 }
 
 /** Calm, persistent notice for each stop holding Factories, with the way back when it is ours. */
@@ -298,7 +331,7 @@ function FactoryStopRow({ entry, data }: { entry: FactoryScopeEntry; data: Facto
           <Button
             size="sm"
             onPress={act}
-            disabled={data.sample || stopAll.projectPending !== null}
+            disabled={data.sample || stopAll.pending || stopAll.projectPending !== null}
             testID={`factory-stop-row-${method}-${entry.projectId}`}
           >
             {t(method === "pause" ? "projectFactory.scope.pause" : "projectFactory.scope.resume")}
@@ -597,6 +630,7 @@ const styles = StyleSheet.create((theme) => ({
   error: { color: theme.colors.statusDanger, fontSize: theme.fontSize.sm },
   spacer: { flex: 1 },
   allBlock: { gap: theme.spacing[2] },
+  inAll: { alignSelf: "flex-start" },
   allActions: { flexDirection: "row", alignItems: "center", gap: theme.spacing[2] },
   stopList: {
     borderWidth: 1,
