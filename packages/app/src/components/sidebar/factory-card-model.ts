@@ -1,3 +1,5 @@
+import type { TFunction } from "i18next";
+import { isOwnerStop } from "@/screens/factory/factory-reads";
 import type { FactoryQueue } from "@/screens/factory/queue";
 import type {
   SidebarWorkspaceEntry,
@@ -26,10 +28,10 @@ export const FACTORY_STAGE_SEGMENTS = [
 ] as const;
 export type FactoryStageSegment = (typeof FACTORY_STAGE_SEGMENTS)[number];
 
-export interface FactoryStageCount {
+export interface FactoryStageCount<Issue extends FactoryQueueIssue = FactoryQueueIssue> {
   segment: FactoryStageSegment;
   count: number;
-  issues: FactoryQueueIssue[];
+  issues: Issue[];
 }
 
 export function factoryStageSegment(stage: FactoryQueueStage): FactoryStageSegment {
@@ -37,7 +39,9 @@ export function factoryStageSegment(stage: FactoryQueueStage): FactoryStageSegme
 }
 
 /** Non-empty stage segments in bar order. */
-export function factoryStageCounts(issues: readonly FactoryQueueIssue[]): FactoryStageCount[] {
+export function factoryStageCounts<Issue extends FactoryQueueIssue>(
+  issues: readonly Issue[],
+): FactoryStageCount<Issue>[] {
   return FACTORY_STAGE_SEGMENTS.flatMap((segment) => {
     const matching = issues.filter((issue) => factoryStageSegment(issue.stage) === segment);
     return matching.length > 0 ? [{ segment, count: matching.length, issues: matching }] : [];
@@ -88,7 +92,7 @@ export function factoryRunnerTrack(
 }
 
 /** Issues a runner is working on: past the queue, or already staffed. */
-export function factoryRunners(issues: readonly FactoryQueueIssue[]): FactoryQueueIssue[] {
+export function factoryRunners<Issue extends FactoryQueueIssue>(issues: readonly Issue[]): Issue[] {
   return issues.filter((issue) => issue.stage !== "queued" || issue.agents.length > 0);
 }
 
@@ -112,13 +116,27 @@ export function factoryShortName(title: string): string {
 
 export type FactoryStatePill =
   | { label: "on"; variant: "success" }
-  | { label: "paused" | "draining"; variant: "warning" }
+  | { label: "paused" | "stopped" | "held"; variant: "warning" }
   | { label: "off" | "unavailable"; variant: "muted" };
+
+/** The pill's tooltip detail: the drain or daemon reason, with a held drain named as such. */
+export function factoryStateReason(
+  state: Pick<ProjectFactoryState, "drain" | "reason">,
+  t: TFunction,
+): string | undefined {
+  if (state.drain && !isOwnerStop(state.drain)) {
+    return t("projectFactory.needsYou.kinds.held", { subject: state.drain.reason });
+  }
+  return state.drain?.reason ?? state.reason ?? undefined;
+}
 
 export function factoryStatePill(
   state: Pick<ProjectFactoryState, "state" | "drain">,
 ): FactoryStatePill {
-  if (state.drain) return { label: "draining", variant: "warning" };
+  // Stop all Factories reads "Stopped"; any other drain is held for a restart or update.
+  if (state.drain) {
+    return { label: isOwnerStop(state.drain) ? "stopped" : "held", variant: "warning" };
+  }
   if (state.state === "on") return { label: "on", variant: "success" };
   if (state.state === "paused") return { label: "paused", variant: "warning" };
   return { label: state.state, variant: "muted" };

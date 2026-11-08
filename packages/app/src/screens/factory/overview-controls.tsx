@@ -1,6 +1,7 @@
-import { useCallback, useState } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { ChevronDown, ChevronRight } from "lucide-react-native";
+import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import { SettingsCard, SettingsCollapsibleRow, SettingsRow } from "@/components/settings";
@@ -11,7 +12,10 @@ import { openFactoryInstructions } from "@/components/sidebar/factory-instructio
 import { FactoryModelControls } from "@/components/sidebar/factory-model-controls";
 import { freshFactoryStatus } from "@/components/sidebar/project-factory-model";
 import type { ProjectFactoryState } from "@/components/sidebar/factory-state";
+import { useInstalledPlugins } from "@/plugins/registry";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
+import { isOwnerStop } from "./factory-reads";
+import { checkProjectResume, projectResume } from "./resume-confirm";
 import { factoryRoleAssignments } from "./queue";
 
 export interface FactoryControls {
@@ -44,23 +48,52 @@ function stateVariant(state: ProjectFactoryState): StatusBadgeVariant {
 }
 
 /** State pill, Pause or Resume, and the Planning switch: the controls used most. */
-export function FactoryRunControls({ state, controls }: ControlTarget) {
+export function FactoryRunControls({ serverId, projectId, state, controls }: ControlTarget) {
   const { t } = useTranslation();
+  const client = useQueryClient();
+  const plugin = useInstalledPlugins().find(
+    (entry) => entry.id === "factory" && entry.serverId === serverId,
+  );
+  const [notice, setNotice] = useState<string | null>(null);
+  // Same words as the sidebar: Stopped for Stop all, Held for update for anyone else's drain.
   const label = state.drain
-    ? t("projectFactory.draining", { reason: state.drain.reason })
+    ? t(`projectFactory.scope.states.${isOwnerStop(state.drain) ? "stopped" : "held"}`)
     : t(`projectFactory.states.${state.state}`);
+  const drain = state.drain ?? null;
+  const held = projectResume(drain) === "hidden";
+  const { resume } = controls;
+  // Decided from a fresh read: a project another process now holds is not resumed.
+  const resumeProject = useCallback(() => {
+    if (!plugin) return;
+    setNotice(null);
+    void checkProjectResume({ client, serverId, projectId, invoke: plugin.invoke, t })
+      .then(({ resume: allowed, message }) => {
+        if (allowed) resume();
+        else setNotice(message);
+        return undefined;
+      })
+      .catch((error: unknown) => {
+        setNotice(error instanceof Error ? error.message : String(error));
+      });
+  }, [client, plugin, projectId, resume, serverId, t]);
   return (
     <View style={styles.run}>
       <StatusBadge label={label} variant={stateVariant(state)} />
+      {held && drain ? <Text style={styles.text}>{drain.reason}</Text> : null}
       {state.state === "on" ? (
         <Button onPress={controls.pause} disabled={controls.pending}>
           {t("projectFactory.pauseMenu")}
         </Button>
       ) : null}
-      {state.state === "paused" ? (
-        <Button onPress={controls.resume} disabled={controls.pending}>
+      {state.state === "paused" && !held ? (
+        <Button onPress={resumeProject} disabled={controls.pending}>
           {t("projectFactory.resumeMenu")}
         </Button>
+      ) : null}
+      {notice ? (
+        <Text style={styles.error} accessibilityRole="alert">
+          {notice}
+        </Text>
       ) : null}
       {state.workers.planning !== undefined ? (
         <View style={styles.switchGroup}>
@@ -205,7 +238,13 @@ function RoleRow({
 }
 
 /** One line of controls with the rest behind a "Models & roles" disclosure. */
-export function FactoryControlStrip(target: ControlTarget) {
+export function FactoryControlStrip({
+  extra,
+  ...target
+}: ControlTarget & {
+  /** Installation-wide controls, set apart at the end of the line. */
+  extra?: ReactNode;
+}) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const toggle = useCallback(() => setOpen((value) => !value), []);
@@ -222,6 +261,7 @@ export function FactoryControlStrip(target: ControlTarget) {
         >
           {t("projectFactory.controls.modelsAndRoles")}
         </Button>
+        {extra ? <View style={styles.extra}>{extra}</View> : null}
       </View>
       <FactoryControlNotes {...target} />
       {open ? <FactoryModelsAndRoles {...target} /> : null}
@@ -252,6 +292,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   buttons: { flexDirection: "row", flexWrap: "wrap", gap: theme.spacing[2] },
   strip: { gap: theme.spacing[3] },
+  extra: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    paddingLeft: theme.spacing[3],
+    borderLeftWidth: 1,
+    borderLeftColor: theme.colors.border,
+  },
   stripRow: {
     flexDirection: "row",
     flexWrap: "wrap",

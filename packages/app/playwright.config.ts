@@ -51,6 +51,14 @@ const retiredUpstreamTests = [
   // The compact sidebar's close button and New workspace nav row went with the Vorton toolbar
   // (471d7f22a); New workspace is a main menu item, so there is no row to sit beside.
   /sidebar-workspace\.spec\.ts.* places the close button beside the first nav row instead of over it/,
+  // Drives the composer model selector, which Vorteo replaced with the profile picker (471d7f22a).
+  /new-workspace-composer-draft\.spec\.ts.* does not restore a submitted draft after deferred publication/,
+  // Upstream collapses workspace groups to 7 rows; Vorteo's folder trees keep 20 (8ccc81917). The
+  // open and active rows these tests check stay visible past the limit (selectLimitedTreeRows,
+  // covered in tree.test.ts); their seeded counts assume 7.
+  /sidebar-reorder\.spec\.ts.* compact groups retain active overflow and reveal the current ordered rows/,
+  /sidebar-reorder\.spec\.ts.* collapsed groups lead with the open workspace instead of hiding it behind Show more/,
+  /sidebar-reorder\.spec\.ts.* a Manual drag in a collapsed group keeps the open workspace's saved place/,
   // The fixture injects prompt rejections through featureValues, but every UI launch uses a
   // profile, and Vorteo keeps a profile launch's features out of reach of plugin hooks.
   /creation-idempotency\.spec\.ts.* becomes an agent tab when the first prompt is rejected/,

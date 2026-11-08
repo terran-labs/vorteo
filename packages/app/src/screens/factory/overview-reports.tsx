@@ -25,6 +25,7 @@ import {
   categorySwatchStyles,
 } from "./overview-kit";
 import {
+  factoryIssueKey,
   FACTORY_CATEGORIES,
   dayLabels,
   factoryLane,
@@ -403,7 +404,7 @@ export function BudgetPanel({ data }: { data: FactoryOverviewData }) {
   const { t } = useTranslation();
   const { month, ticketCapUsd } = data.history;
   const costs = [...data.usage.byIssue.entries()]
-    .map(([number, usage]) => ({ number, usd: usage.costUsd }))
+    .map(([key, usage]) => ({ number: Number(key.split("#").pop()), usd: usage.costUsd }))
     .filter((entry): entry is { number: number; usd: number } => entry.usd !== null)
     .sort((a, b) => b.usd - a.usd);
   const worst = costs[0];
@@ -496,7 +497,8 @@ export function RoutingPanel({ data }: { data: FactoryOverviewData }) {
         : t("projectFactory.defaultModel"),
     [profiles, t],
   );
-  const { workers, roles } = data.state;
+  if (!data.focus) return null;
+  const { workers, roles } = data.focus.state;
   const rows: { key: string; label: string; value: string }[] = [
     ...(workers.plannerProfileId !== undefined
       ? [{ key: "plan", label: t("projectFactory.plan"), value: name(workers.plannerProfileId) }]
@@ -541,14 +543,14 @@ export function LedgerTable({ data }: { data: FactoryOverviewData }) {
       </View>
       {issues.map((issue) => (
         <LedgerRow
-          key={issue.number}
+          key={factoryIssueKey(issue)}
           number={issue.number}
           title={issue.title}
           url={issue.url}
           lane={factoryLane(issue.stage)}
-          tokens={data.usage.byIssue.get(issue.number)?.tokens ?? null}
-          usd={data.usage.byIssue.get(issue.number)?.costUsd ?? null}
-          hours={hoursSince(data.usage.startedAt.get(issue.number) ?? null, data.now)}
+          tokens={data.usage.byIssue.get(factoryIssueKey(issue))?.tokens ?? null}
+          usd={data.usage.byIssue.get(factoryIssueKey(issue))?.costUsd ?? null}
+          hours={hoursSince(data.usage.startedAt.get(factoryIssueKey(issue)) ?? null, data.now)}
         />
       ))}
       <LedgerTotal data={data} />

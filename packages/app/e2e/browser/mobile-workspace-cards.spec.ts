@@ -37,11 +37,15 @@ for (const width of [390, 680]) {
       });
       await page.setViewportSize({ width, height: 1000 });
       await openAgentRoute(page, agent);
-      const header = page.getByTestId("screen-header").filter({ visible: true });
-      await expect(header.getByRole("button", { name: "Open menu", exact: true })).toBeVisible();
-      await expect(header.getByTestId("workspace-header-menu-trigger")).toBeVisible();
-      await expect(header.getByTestId("workspace-explorer-toggle")).toHaveCount(0);
-      await expect(header.getByTestId("workspace-scripts-button")).toHaveCount(0);
+      // The phone header keeps upstream's Explorer toggle beside the workspace menu (owner
+      // decision, 2026-11-07); scripts stay in the menu rather than a header button.
+      const visible = (testID: string) => page.getByTestId(testID).filter({ visible: true });
+      await expect(
+        page.getByRole("button", { name: "Open menu", exact: true }).filter({ visible: true }),
+      ).toBeVisible();
+      await expect(visible("workspace-header-menu-trigger")).toBeVisible();
+      await expect(visible("workspace-explorer-toggle")).toBeVisible();
+      await expect(visible("workspace-scripts-button")).toHaveCount(0);
       const files = page.getByTestId("supporting-card-files").filter({ visible: true });
       await files.scrollIntoViewIfNeeded();
       await expect(files).toBeVisible();
@@ -57,7 +61,7 @@ for (const width of [390, 680]) {
       await files.getByTestId("supporting-card-files-toggle").click();
       await expect(files.getByTestId("file-explorer-tree-scroll")).toBeVisible();
       await expect(queue).toBeAttached();
-      await header.getByTestId("workspace-header-menu-trigger").click();
+      await visible("workspace-header-menu-trigger").click();
       await expect(page.getByTestId("workspace-scripts-item-check")).toBeVisible();
       await page.getByTestId("workspace-scripts-start-check").click();
       // The script's output proves it ran on any shell.

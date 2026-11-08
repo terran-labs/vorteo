@@ -16,6 +16,7 @@ import { hoverStyle } from "@/styles/hover";
 import type { Theme } from "@/styles/theme";
 import { openExternalUrl } from "@/utils/open-external-url";
 import {
+  factoryIssueKey,
   FACTORY_CATEGORIES,
   FACTORY_LANES,
   FACTORY_TRACK_STEPS,
@@ -707,9 +708,9 @@ export function LaneHeader({ lane, count }: { lane: FactoryLane; count: number }
 
 export interface CardContext {
   /** Opens an agent thread; undefined for sample threads that do not exist. */
-  openAgent?: (agentId: string) => void;
-  usage?: Map<number, UsageTotals>;
-  startedAt?: Map<number, Date | null>;
+  openAgent?: (agentId: string, serverId?: string) => void;
+  usage?: Map<string, UsageTotals>;
+  startedAt?: Map<string, Date | null>;
   /** Show per-issue cost and age on the card. */
   ledger?: boolean;
 }
@@ -734,7 +735,12 @@ export function Lane({
           <Text style={styles.laneEmpty}>{t("projectFactory.board.empty")}</Text>
         ) : null}
         {group.issues.map((issue) => (
-          <IssueCard key={issue.number} issue={issue} lane={group.lane} context={context} />
+          <IssueCard
+            key={factoryIssueKey(issue)}
+            issue={issue}
+            lane={group.lane}
+            context={context}
+          />
         ))}
       </View>
     </View>
@@ -765,6 +771,11 @@ export function IssueCard({
   }, [issue.url]);
   return (
     <View style={[styles.card, stripeStyles[lane]]} testID={`factory-issue-${issue.number}`}>
+      {issue.origin ? (
+        <Text style={styles.cardProject} numberOfLines={1}>
+          {issue.origin.label}
+        </Text>
+      ) : null}
       <PressHighlight onPress={open} accessibilityRole="link" style={styles.cardTitleRow}>
         <Text style={styles.cardNumber}>#{issue.number}</Text>
         <Text style={styles.cardTitle} numberOfLines={2}>
@@ -848,7 +859,7 @@ function AgentChips({
   openAgent,
 }: {
   issue: FactoryIssue;
-  openAgent?: (agentId: string) => void;
+  openAgent?: (agentId: string, serverId?: string) => void;
 }) {
   return (
     <View style={styles.chips}>
@@ -858,6 +869,7 @@ function AgentChips({
           agentId={agent.agentId}
           role={agent.role}
           status={agent.status}
+          serverId={issue.origin?.serverId}
           openAgent={openAgent}
         />
       ))}
@@ -884,15 +896,17 @@ function AgentChip({
   agentId,
   role,
   status,
+  serverId,
   openAgent,
 }: {
   agentId: string;
   role: FactoryIssue["agents"][number]["role"];
   status: string;
-  openAgent?: (agentId: string) => void;
+  serverId?: string;
+  openAgent?: (agentId: string, serverId?: string) => void;
 }) {
   const { t } = useTranslation();
-  const press = useCallback(() => openAgent?.(agentId), [agentId, openAgent]);
+  const press = useCallback(() => openAgent?.(agentId, serverId), [agentId, openAgent, serverId]);
   const roleLabel = t(`projectFactory.agents.${role}`);
   const statusLabel = t(factoryAgentStatusKey(status));
   return (
@@ -946,8 +960,8 @@ export function TrackLegend() {
 }
 
 function IssueCost({ issue, context }: { issue: FactoryIssue; context: CardContext }) {
-  const usage = context.usage?.get(issue.number);
-  const started = context.startedAt?.get(issue.number) ?? null;
+  const usage = context.usage?.get(factoryIssueKey(issue));
+  const started = context.startedAt?.get(factoryIssueKey(issue)) ?? null;
   const age = useTimeAgo(started);
   return (
     <Text style={styles.cardCost} numberOfLines={1}>
@@ -1189,6 +1203,11 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: 10,
     gap: theme.spacing[2],
     ...hoverStyle({ borderColor: theme.colors.borderAccent }),
+  },
+  cardProject: {
+    color: theme.colors.foregroundExtraMuted,
+    fontSize: theme.fontSize.sm,
+    marginBottom: -theme.spacing[1],
   },
   cardTitleRow: { flexDirection: "row", gap: theme.spacing[1.5], alignItems: "flex-start" },
   cardNumber: {
