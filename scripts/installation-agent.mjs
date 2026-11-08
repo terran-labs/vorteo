@@ -153,6 +153,7 @@ if (
       "rollback-of": { type: "string" },
       next: { type: "string" },
       action: { type: "string" },
+      commit: { type: "string" },
     },
   });
   // Vorteo :: Builds is the only writer of shared state (AGENTS.md, "Builds coordinator").
@@ -726,6 +727,28 @@ if (
         throw new Error("An installation change ID is required");
       resource = `/api/installation/installation-changes/${positionals[1]}`;
       break;
+    case "request-source-upgrade":
+      // Installs one reviewed commit on main on a Stable installation. Admission repeats at
+      // approval (on main, no downgrade, required checks). The full maintenance grant starts it
+      // after thirty seconds; otherwise the owner approves it in Installation controls.
+      if (config.kind !== "host-agent")
+        throw new Error("Source upgrades require the trusted Host client");
+      if (!/^[a-f0-9]{40}$/.test(values.commit ?? "") || !values.reason?.trim())
+        throw new Error("Usage: request-source-upgrade --commit SHA --reason TEXT");
+      resource = "/api/installation/source-upgrades";
+      body = {
+        commit: values.commit,
+        reason: values.reason.trim(),
+        ...(values.requester?.trim() ? { requester: values.requester.trim() } : {}),
+      };
+      break;
+    case "source-upgrade-status":
+      if (config.kind !== "host-agent")
+        throw new Error("Source upgrade inspection requires the trusted Host client");
+      if (!/^[a-f0-9-]{36}$/.test(positionals[1] ?? ""))
+        throw new Error("A source upgrade ID is required");
+      resource = `/api/installation/source-upgrades/${positionals[1]}`;
+      break;
     case "request-lab-update":
       // Approved by the Lab installation type; a Stable installation refuses it.
       if (config.kind !== "host-agent")
@@ -800,7 +823,7 @@ if (
     }
     default:
       throw new Error(
-        "Commands: overview, overview-observers list|create --label|revoke ID (Host only), request-broker-consumer-deployment --request-file, broker-deployment-status ID, request-broker-channel-rebind --request-file, broker-rebind-status ID, capabilities, request-worker-launch, worker-launch-status, request-restart, restart-status, contribution-status, request-coordinator, coordinator-status, request-helper, helper-status, request-session-host --install|--remove, session-host-status, read-instructions, request-instructions, instructions-status, request-lab-update [--reason] [--rollback-of ID], lab-update-status ID, request-coordinator-settings --file, coordinator-settings-status ID, request-coordinator-follow [--next RELEASE], coordinator-follow-status ID, request-snapshot, request-helper-verification --request-file, request-dev-repair ID REVISION, request-installation-change --action NAME --file, installation-change-status ID, container-agents (Host only)",
+        "Commands: overview, overview-observers list|create --label|revoke ID (Host only), request-broker-consumer-deployment --request-file, broker-deployment-status ID, request-broker-channel-rebind --request-file, broker-rebind-status ID, capabilities, request-worker-launch, worker-launch-status, request-restart, restart-status, contribution-status, request-coordinator, coordinator-status, request-helper, helper-status, request-session-host --install|--remove, session-host-status, read-instructions, request-instructions, instructions-status, request-lab-update [--reason] [--rollback-of ID], lab-update-status ID, request-coordinator-settings --file, coordinator-settings-status ID, request-coordinator-follow [--next RELEASE], coordinator-follow-status ID, request-snapshot, request-helper-verification --request-file, request-dev-repair ID REVISION, request-installation-change --action NAME --file, installation-change-status ID, request-source-upgrade --commit SHA --reason TEXT, source-upgrade-status ID, container-agents (Host only)",
       );
   }
   let upload;
