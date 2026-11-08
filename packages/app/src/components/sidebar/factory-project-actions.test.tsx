@@ -12,6 +12,7 @@ const fixture = vi.hoisted(() => {
     plugin: { id: "factory", serverId: "host", invoke },
     checkout: vi.fn(),
     error: vi.fn(),
+    confirm: vi.fn(),
     t: (key: string) => key,
   };
 });
@@ -22,6 +23,7 @@ vi.mock("@/runtime/host-runtime", () => ({
   getHostRuntimeStore: () => ({ getClient: () => ({ getCheckoutStatus: fixture.checkout }) }),
 }));
 vi.mock("@/contexts/toast-context", () => ({ useToast: () => ({ error: fixture.error }) }));
+vi.mock("@/utils/confirm-dialog", () => ({ confirmDialog: fixture.confirm }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: fixture.t }) }));
 vi.mock("./project-menu-item", () => ({
   ProjectMenuItem: ({
@@ -140,6 +142,23 @@ it("uses returned state after pausing", async () => {
   fireEvent.click(await screen.findByText("projectFactory.pauseMenu"));
   await screen.findByText("projectFactory.resumeMenu");
   expect(fixture.invoke).toHaveBeenLastCalledWith("factory.project.pause", {
+    projectId: "project",
+  });
+});
+it("asks with a destructive warning before resuming a project Builds holds", async () => {
+  const drain = { id: "drain-1", reason: "drain before restart", pausedAt: "2026-11-07T12:00:00Z" };
+  fixture.invoke
+    .mockResolvedValueOnce({ ...off, state: "paused", drain })
+    .mockResolvedValueOnce({ ...off, state: "on", drain: null });
+  fixture.confirm.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+  renderActions();
+  fireEvent.click(await screen.findByText("projectFactory.resumeMenu"));
+  await waitFor(() => expect(fixture.confirm).toHaveBeenCalledTimes(1));
+  expect(fixture.confirm.mock.calls[0]![0]).toMatchObject({ destructive: true });
+  expect(fixture.invoke).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByText("projectFactory.resumeMenu"));
+  await screen.findByText("projectFactory.pauseMenu");
+  expect(fixture.invoke).toHaveBeenLastCalledWith("factory.project.resume", {
     projectId: "project",
   });
 });

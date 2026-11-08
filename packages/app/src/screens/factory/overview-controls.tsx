@@ -11,9 +11,9 @@ import { openFactoryInstructions } from "@/components/sidebar/factory-instructio
 import { FactoryModelControls } from "@/components/sidebar/factory-model-controls";
 import { freshFactoryStatus } from "@/components/sidebar/project-factory-model";
 import type { ProjectFactoryState } from "@/components/sidebar/factory-state";
-import { confirmDialog } from "@/utils/confirm-dialog";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { isOwnerStop } from "./factory-reads";
+import { confirmProjectResume } from "./resume-confirm";
 import { factoryRoleAssignments } from "./queue";
 
 export interface FactoryControls {
@@ -56,22 +56,7 @@ export function FactoryRunControls({ state, controls }: ControlTarget) {
   const { resume } = controls;
   // Resuming one project also takes it out of a stop, so a stopped project asks first.
   const resumeProject = useCallback(() => {
-    if (!drain) {
-      resume();
-      return;
-    }
-    const owner = isOwnerStop(drain);
-    void confirmDialog({
-      title: t("projectFactory.stopAll.resumeProjectTitle"),
-      message: t(
-        owner
-          ? "projectFactory.stopAll.resumeProjectMessage"
-          : "projectFactory.stopAll.resumeHeldMessage",
-        { reason: drain.reason },
-      ),
-      confirmLabel: t("projectFactory.resumeMenu"),
-      destructive: !owner,
-    }).then((confirmed) => {
+    void confirmProjectResume(drain, t).then((confirmed) => {
       if (confirmed) resume();
       return undefined;
     });

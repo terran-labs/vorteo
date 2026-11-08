@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/contexts/toast-context";
 import { useInstalledPlugins } from "@/plugins/registry";
 import { useMenuContext } from "@/components/ui/menu";
+import { confirmProjectResume } from "@/screens/factory/resume-confirm";
 import { openFactoryInstructions } from "./factory-instructions";
 import { openFactoryDialog, factoryActions, type ProjectFactoryState } from "./project-factory";
 import { ProjectMenuItem, type ProjectMenuSurface } from "./project-menu-item";
@@ -72,11 +73,18 @@ export function FactoryProjectActions({
         return;
       }
       setFactoryPending(true);
-      void factoryPlugin
-        .invoke(`factory.project.${action}`, {
-          projectId: settingsTarget.projectId,
+      // A stopped or held project confirms first, as the overview's project Resume does.
+      void (
+        action === "resume" ? confirmProjectResume(factoryState?.drain, t) : Promise.resolve(true)
+      )
+        .then(async (confirmed) => {
+          if (!confirmed) return undefined;
+          const state = await factoryPlugin.invoke(`factory.project.${action}`, {
+            projectId: settingsTarget.projectId,
+          });
+          applyFactoryState(state as ProjectFactoryState);
+          return state;
         })
-        .then((state) => applyFactoryState(state as ProjectFactoryState))
         .catch((error) =>
           toast.error(error instanceof Error ? error.message : t("projectFactory.failed")),
         )
