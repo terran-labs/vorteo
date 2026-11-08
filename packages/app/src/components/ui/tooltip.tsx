@@ -393,10 +393,16 @@ export function TooltipTrigger({
     if (!ctx.enabled) clearOpenTimer();
   }, [ctx.enabled, clearOpenTimer]);
 
+  // On a narrow window with a mouse, hover opens the tooltip just before the click that should
+  // show it; that click must not toggle it shut. Only a press-opened tooltip toggles closed.
+  const openedByHoverRef = useRef(false);
   const handleHoverIn = useCallback(
     (e?: unknown) => {
       if (isCallable(onHoverIn)) onHoverIn(e);
-      if (!ctx.touch || isHoverPointer(e)) scheduleOpen();
+      if (!ctx.touch || isHoverPointer(e)) {
+        openedByHoverRef.current = true;
+        scheduleOpen();
+      }
     },
     [onHoverIn, scheduleOpen, ctx.touch],
   );
@@ -404,6 +410,7 @@ export function TooltipTrigger({
   const handleHoverOut = useCallback(
     (e?: unknown) => {
       if (isCallable(onHoverOut)) onHoverOut(e);
+      openedByHoverRef.current = false;
       if (!ctx.touch || isHoverPointer(e)) close();
     },
     [onHoverOut, close, ctx.touch],
@@ -436,7 +443,9 @@ export function TooltipTrigger({
       }
       if (ctx.openOnPress) {
         clearOpenTimer();
-        ctx.setOpen(ctx.touch ? !ctx.open : true);
+        const hoverOpened = openedByHoverRef.current;
+        openedByHoverRef.current = false;
+        ctx.setOpen(ctx.touch && !hoverOpened ? !ctx.open : true);
         return;
       }
       close();
