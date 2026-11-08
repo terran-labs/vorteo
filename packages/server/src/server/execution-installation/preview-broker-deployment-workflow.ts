@@ -125,6 +125,14 @@ export class PreviewBrokerDeploymentWorkflow {
     return structuredClone(this.current(job.id));
   }
 
+  /** Updates the visible detail of a pending request without changing its revision. */
+  note(id: string, revision: string, detail: string): void {
+    this.queue.requireActive();
+    const job = this.current(id);
+    if (job.status === "pending" && job.revision === revision)
+      this.queue.replace({ ...job, detail });
+  }
+
   async dispatch(id: string): Promise<void> {
     this.queue.requireActive();
     const job = this.current(id);

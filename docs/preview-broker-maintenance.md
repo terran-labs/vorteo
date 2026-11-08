@@ -93,8 +93,8 @@ compatibility with every broker record and configuration field.
 ## Acceptance boundaries
 
 Source tests and review do not authorize trust activation. Installation requires
-a separately reviewed supported plan. The owner must approve the exact request
-at action time. Hostname changes remain a separate decision. This operation
+a separately reviewed supported plan. The owner, or the full maintenance grant
+after its cancellation window, approves the exact request at action time. Hostname changes remain a separate decision. This operation
 starts no application and restarts no Host or Dev daemon.
 
 After a confirmed commit, separately verify both broker readbacks, preserved
@@ -157,10 +157,11 @@ candidate: protected files and their SHA256 pins, consumer and participant scope
 and the retained recovery reader probe. Preparation, approval and claim each
 repeat these checks.
 
-Full maintenance delegation may approve attaching either section, as the owner
-decided on 2026-11-03; without it the owner approves the renewal in installation
-controls. The consumer deployment and channel rebind in steps 2 and 4 stay
-owner-only. Builds submits each request below.
+Full maintenance delegation approves attaching either section (owner decision of
+2026-11-03) and, since 2026-11-07, the consumer deployment and channel rebind in
+steps 2 and 4, each after a thirty-second cancellation window. Without the grant
+the owner approves each step in installation controls. Builds submits each
+request below.
 
 1. Attach `previewBrokerDeployment` through a renewal. Prepare the protected
    participant scope first. Its `validUntil` must cover the renewal, its approval
@@ -169,17 +170,16 @@ owner-only. Builds submits each request below.
 <preparation.json>` and follow it with `coordinator-status <id>` until the
    renewal succeeds. `capabilities` then reports `previewBrokerDeployment`
    available.
-2. Submit `request-broker-consumer-deployment --request-file <file>`. The owner
-   approves the exact request in installation controls. Follow it with
+2. Submit `request-broker-consumer-deployment --request-file <file>`. The owner,
+   or the full grant, approves the exact request. Follow it with
    `broker-deployment-status <id>` until it reports `succeeded`.
 3. Attach `previewBroker` through a second renewal. Its `consumerFiles` pin the
    eight deployed consumer files by their committed SHA256 values, four beside
    each config path, and `channel_identity.py` matches `identityModule`. Submit
    and follow it as in step 1. `capabilities` then reports `previewBroker`
    available.
-4. Submit `request-broker-channel-rebind --request-file <file>`. The owner
-   approves the exact request through the broker rebind decision route in
-   installation controls. Follow it with `broker-rebind-status <id>` until it
+4. Submit `request-broker-channel-rebind --request-file <file>`. The owner,
+   or the full grant, approves the exact request. Follow it with `broker-rebind-status <id>` until it
    reports `succeeded`.
 5. Read back both renewals with `coordinator-status`, both capabilities, the
    succeeded deployment and rebind statuses. Then complete the acceptance

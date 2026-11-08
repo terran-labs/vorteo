@@ -151,6 +151,7 @@ if (
       "instructions-file": { type: "string" },
       "base-revision": { type: "string" },
       "rollback-of": { type: "string" },
+      next: { type: "string" },
     },
   });
   // Vorteo :: Builds is the only writer of shared state (AGENTS.md, "Builds coordinator").
@@ -626,6 +627,39 @@ if (
         throw new Error("A coordinator settings change ID is required");
       resource = `/api/installation/coordinator-settings-requests/${positionals[1]}`;
       break;
+    case "request-coordinator-follow": {
+      // Moves the coordinator onto the Host release. The full maintenance grant approves it
+      // after the cancellation window; otherwise the owner decides in Installation controls.
+      if (config.kind !== "host-agent")
+        throw new Error("Coordinator updates require the trusted Host client");
+      let next = values.next;
+      if (!next) {
+        const statusResponse = await fetch(new URL("/api/installation/update-status", base), {
+          headers: { Authorization: `Bearer ${config.token}` },
+          redirect: "error",
+          signal: AbortSignal.timeout(60_000),
+        });
+        const follow = statusResponse.ok ? (await statusResponse.json()).coordinatorFollow : null;
+        if (!follow?.available || !follow.current?.hostRelease)
+          throw new Error(
+            `Coordinator update unavailable: ${follow?.detail ?? `status ${statusResponse.status}`}. Nothing was requested.`,
+          );
+        next = follow.current.hostRelease;
+      }
+      resource = "/api/installation/coordinator-follow";
+      body = {
+        next,
+        ...(values.requester?.trim() ? { requester: values.requester.trim() } : {}),
+      };
+      break;
+    }
+    case "coordinator-follow-status":
+      if (config.kind !== "host-agent")
+        throw new Error("Coordinator update inspection requires the trusted Host client");
+      if (!/^[a-f0-9-]{36}$/.test(positionals[1] ?? ""))
+        throw new Error("A coordinator update ID is required");
+      resource = `/api/installation/coordinator-follow/${positionals[1]}`;
+      break;
     case "request-lab-update":
       // Approved by the Lab installation type; a Stable installation refuses it.
       if (config.kind !== "host-agent")
@@ -700,7 +734,7 @@ if (
     }
     default:
       throw new Error(
-        "Commands: overview, overview-observers list|create --label|revoke ID (Host only), request-broker-consumer-deployment --request-file, broker-deployment-status ID, request-broker-channel-rebind --request-file, broker-rebind-status ID, capabilities, request-worker-launch, worker-launch-status, request-restart, restart-status, contribution-status, request-coordinator, coordinator-status, request-helper, helper-status, request-session-host --install|--remove, session-host-status, read-instructions, request-instructions, instructions-status, request-lab-update [--reason] [--rollback-of ID], lab-update-status ID, request-coordinator-settings --file, coordinator-settings-status ID, container-agents (Host only)",
+        "Commands: overview, overview-observers list|create --label|revoke ID (Host only), request-broker-consumer-deployment --request-file, broker-deployment-status ID, request-broker-channel-rebind --request-file, broker-rebind-status ID, capabilities, request-worker-launch, worker-launch-status, request-restart, restart-status, contribution-status, request-coordinator, coordinator-status, request-helper, helper-status, request-session-host --install|--remove, session-host-status, read-instructions, request-instructions, instructions-status, request-lab-update [--reason] [--rollback-of ID], lab-update-status ID, request-coordinator-settings --file, coordinator-settings-status ID, request-coordinator-follow [--next RELEASE], coordinator-follow-status ID, container-agents (Host only)",
       );
   }
   let upload;
@@ -882,7 +916,14 @@ if (
     const { appendSystemPrompt: _text, ...summary } = result;
     result = { ...summary, approvalUrl: review.href };
   }
-  if (["request-coordinator-settings", "coordinator-settings-status"].includes(positionals[0])) {
+  if (
+    [
+      "request-coordinator-settings",
+      "coordinator-settings-status",
+      "request-coordinator-follow",
+      "coordinator-follow-status",
+    ].includes(positionals[0])
+  ) {
     const review = new URL(
       "/settings/general",
       new URL(config.publicOrigin ?? config.origin).origin,

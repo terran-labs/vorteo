@@ -28,6 +28,13 @@ import {
   type ReviewedRestartOperation,
 } from "./restart-operations.js";
 import {
+  delegableUnderGrant,
+  delegatedAdmissionStep,
+  delegatedApproval,
+  type DelegationEvidence,
+  type DelegationGrant,
+} from "./delegated-admission.js";
+import {
   reserveWorkerLaunch,
   progressWorkerLaunch,
   retainedWorkerLaunchForCause,
@@ -116,14 +123,9 @@ export interface RestartStartupOptions {
 }
 
 type NativeMaintenanceJob = NativeHelperJob | PreviewMonitorJob | SessionHostJob;
-const DELEGATED_NATIVE_OPERATIONS: ReadonlySet<NativeMaintenanceJob["operation"]> = new Set([
-  "native-helper-install",
-  "native-helper-rollback",
-  "preview-monitor-replace",
-  "session-host-install",
-  "session-host-remove",
-  "session-host-restart",
-]);
+/** Native maintenance is delegable by default; only OWNER_ONLY_OPERATIONS excludes one. */
+const delegableNative = (job: NativeMaintenanceJob) =>
+  delegableUnderGrant(`native:${job.operation}`);
 
 /** Approval evidence is journal-private; old clients keep their original wire shape. */
 function publicNativeJob<T extends NativeMaintenanceJob>(job: T): Omit<T, "delegatedApproval"> {
@@ -152,6 +154,8 @@ export interface RestartApprovalPolicy {
   supervisorRequestsAfter?: () => string | null;
   /** Owner delegation: automatic Host source updates may replace the supervisor. */
   hostUpdateServiceRestart?: () => boolean;
+  /** Private delegated approval evidence for the strict broker queues. Omitted: owner only. */
+  brokerDelegationEvidence?: { deployment: DelegationEvidence; rebind: DelegationEvidence };
   /** Daemon targets that exist. Omitted means Host and Dev; Host-only installations pass ["host"]. */
   daemonTargets?: readonly RestartJob["target"][];
 }
@@ -2856,6 +2860,7 @@ export class InstallationRestarts {
       // while the installed helper selection remains ambiguous.
       if (this.previewRecoveryRequired()) return;
       this.approveDelegatedNativeRequests();
+      this.approveDelegatedBrokers();
       if (this.helperRecoveryRequired()) {
         const blocked = this.helpers.filter(
           (job) => job.stage === "recovery_required" || job.status === "running",
@@ -2911,7 +2916,7 @@ export class InstallationRestarts {
     const activation = this.approvalPolicy.maintenanceRequestsAfter?.();
     const authority = this.approvalPolicy.authority?.();
     if (
-      !DELEGATED_NATIVE_OPERATIONS.has(job.operation) ||
+      !delegableNative(job) ||
       activation !== approval.policyActivatedAt ||
       authority !== approval.authoritySha256 ||
       job.revision !== approval.requestRevision ||
@@ -2927,6 +2932,100 @@ export class InstallationRestarts {
     return this.now() >= Date.parse(approval.dispatchAfter);
   }
 
+  /**
+   * Broker deployments and rebinds keep their strict records pending through the cancellation
+   * window and hold the delegated approval in private evidence beside them, so a rolled-back
+   * coordinator sees a pending request and waits for the owner. When the window ends, the
+   * existing owner transition approves the exact revision and plan, and dispatch revalidates
+   * the plan as for any approval.
+   */
+  private approveDelegatedBrokers(): void {
+    const evidence = this.approvalPolicy.brokerDelegationEvidence;
+    if (!evidence) return;
+    const activation = this.approvalPolicy.maintenanceRequestsAfter?.();
+    const authority = this.approvalPolicy.authority?.();
+    const grant =
+      activation && authority
+        ? { policyActivatedAt: activation, authoritySha256: authority }
+        : null;
+    this.admitDelegatedBrokerQueue(grant, {
+      store: evidence.deployment,
+      jobs: this.listBrokerDeployments(),
+      decide: (job, decision) =>
+        this.decideBrokerDeployment({
+          operation: job.operation,
+          id: job.id,
+          revision: job.revision,
+          planSha256: job.planSha256,
+          decision,
+        }),
+      note: (job, detail) => this.deploymentWorkflow().note(job.id, job.revision, detail),
+      operation: (job) => `broker-deployment:${job.operation}`,
+    });
+    this.admitDelegatedBrokerQueue(grant, {
+      store: evidence.rebind,
+      jobs: this.listBrokers(),
+      decide: (job, decision) =>
+        this.decideBroker({
+          operation: job.operation,
+          id: job.id,
+          revision: job.revision,
+          planSha256: job.planSha256,
+          decision,
+        }),
+      note: (job, detail) => this.replaceBroker({ ...job, detail }),
+      operation: (job) => `broker-rebind:${job.operation}`,
+    });
+  }
+
+  private admitDelegatedBrokerQueue<J extends PreviewBrokerJob | PreviewBrokerDeploymentJob>(
+    grant: DelegationGrant | null,
+    queue: {
+      store: DelegationEvidence;
+      jobs: J[];
+      decide(job: J, decision: "approve" | "cancel"): unknown;
+      note(job: J, detail: string): void;
+      operation(job: J): string;
+    },
+  ): void {
+    for (const job of queue.jobs) {
+      const approval = queue.store.get(job.id);
+      if (job.status !== "pending") {
+        // Decided by the owner, management or dispatch: the evidence is spent.
+        if (approval) queue.store.delete(job.id);
+        continue;
+      }
+      if (job.stage !== "prepared") continue;
+      const step = delegatedAdmissionStep(
+        { ...job, delegatedApproval: approval },
+        { grant, operations: [queue.operation(job)], planSha256: job.planSha256, now: this.now() },
+      );
+      try {
+        if (step === "attach" && grant) {
+          const next = delegatedApproval(grant, {
+            requestRevision: job.revision,
+            planSha256: job.planSha256,
+            now: this.now(),
+            cancellationDelayMs: this.approvalPolicy.cancellationDelayMs ?? 30_000,
+          });
+          queue.store.set(job.id, next);
+          queue.note(
+            job,
+            `Approved under owner maintenance delegation. Starts after ${next.dispatchAfter} unless cancelled.`,
+          );
+        } else if (step === "invalid") {
+          queue.decide(job, "cancel");
+          queue.store.delete(job.id);
+        } else if (step === "ready") {
+          queue.decide(job, "approve");
+          queue.store.delete(job.id);
+        }
+      } catch {
+        // A request that changed meanwhile keeps its own state; the next drain re-reads it.
+      }
+    }
+  }
+
   private approveDelegatedNativeRequests(): void {
     const activation = this.approvalPolicy.maintenanceRequestsAfter?.();
     const authority = this.approvalPolicy.authority?.();
@@ -2938,7 +3037,7 @@ export class InstallationRestarts {
       if (
         !activation ||
         !authority ||
-        !DELEGATED_NATIVE_OPERATIONS.has(job.operation) ||
+        !delegableNative(job) ||
         job.status !== "pending" ||
         job.stage !== "prepared" ||
         job.requestedBy !== "host-agent" ||

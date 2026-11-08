@@ -6,13 +6,20 @@ import { expect, test, vi } from "vitest";
 import { InstallationRestarts, type RestartExecutor } from "./restarts.js";
 import { parseLifecycleJournal, type LifecycleJob } from "./lifecycle-journal.js";
 import { compatibilityProbe } from "./preview-broker-executor.js";
+import { memoryDelegationEvidence } from "./delegated-admission.js";
 import { assertCoordinatorLifecycleIdle } from "./coordinator-bootstrap.js";
 import {
   PreviewBrokerJobSchema,
   type PreviewBrokerJob,
 } from "@getpaseo/protocol/preview-broker-maintenance";
 
-function fixture(overrides: Partial<RestartExecutor> = {}) {
+function fixture(
+  overrides: Partial<RestartExecutor> = {},
+  options: {
+    now?: () => number;
+    policy?: Partial<ConstructorParameters<typeof InstallationRestarts>[3]>;
+  } = {},
+) {
   let records: LifecycleJob[] = [];
   const journal = {
     read: () => structuredClone(records),
@@ -28,11 +35,12 @@ function fixture(overrides: Partial<RestartExecutor> = {}) {
     installBroker: install,
     ...overrides,
   };
-  const queue = new InstallationRestarts(journal, executor, Date.now, {
+  const queue = new InstallationRestarts(journal, executor, options.now ?? Date.now, {
     hostRequestsAfter: "2026-01-01T00:00:00.000Z",
     maintenanceRequestsAfter: () => "2026-01-01T00:00:00.000Z",
     authority: () => "a".repeat(64),
     cancellationDelayMs: 0,
+    ...options.policy,
   });
   const probe = compatibilityProbe(randomUUID());
   const input = { id: probe.id, plan: probe.plan, reason: "Reviewed trust migration" };
@@ -143,6 +151,41 @@ test("manual exact approval dispatches once; daemon policy cannot approve broker
   expect(f.queue.listBrokers()[0]?.status).toBe("succeeded");
   expect(f.executor.restart).not.toHaveBeenCalled();
 });
+
+test.each(["approved", "revoked"] as const)(
+  "the full grant approves a rebind from private evidence after the window, or not once %s",
+  async (outcome) => {
+    let now = Date.parse("2026-11-07T12:00:00Z");
+    let activation: string | null = "2026-01-01T00:00:00.000Z";
+    const rebind = memoryDelegationEvidence();
+    const f = fixture(
+      {},
+      {
+        now: () => now,
+        policy: {
+          maintenanceRequestsAfter: () => activation,
+          cancellationDelayMs: 30_000,
+          brokerDelegationEvidence: { deployment: memoryDelegationEvidence(), rebind },
+        },
+      },
+    );
+    const job = await f.prepare();
+    await f.queue.drain();
+    // The strict record stays pending, so an older coordinator waits for the owner.
+    const held = PreviewBrokerJobSchema.parse(f.journal.read().find((item) => item.id === job.id));
+    expect(held).toMatchObject({ status: "pending", revision: job.revision });
+    expect(rebind.get(job.id)).toMatchObject({ requestRevision: job.revision });
+    if (outcome === "revoked") activation = null;
+    now += 30_000;
+    await f.queue.drain();
+    await f.queue.drain();
+    expect(f.install).toHaveBeenCalledTimes(outcome === "approved" ? 1 : 0);
+    expect(f.queue.listBrokers()[0]?.status).toBe(
+      outcome === "approved" ? "succeeded" : "rejected",
+    );
+    expect(rebind.get(job.id)).toBeUndefined();
+  },
+);
 
 test("incompatible selected or recovery reader refuses before first journal append", async () => {
   const f = fixture({ brokerCompatible: async () => false });

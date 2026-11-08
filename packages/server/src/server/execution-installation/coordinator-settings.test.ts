@@ -689,6 +689,52 @@ test.each([
   expect(readFileSync(fx.recorded.scope.path, "utf8")).toBe("{}");
 });
 
+test.each([false, true])(
+  "the full grant applies broker settings only after the window and reviews every file again (swapped %s)",
+  async (swapped) => {
+    const fx = brokerInstallation();
+    const grant = {
+      policyActivatedAt: "2026-11-01T00:00:00.000Z",
+      authoritySha256: "a".repeat(64),
+    };
+    fx.settings["ports"].delegationGrant = () => grant;
+    fx.settings["ports"].cancellationDelayMs = 30_000;
+    await fx.request();
+    await fx.settings.drain();
+    // Pending and cancellable in Installation controls until the window ends.
+    expect(fx.settings.status().job).toMatchObject({
+      status: "pending",
+      delegatedApproval: { authoritySha256: "a".repeat(64) },
+    });
+    fx.state.clock.now += 29_000;
+    await fx.settings.drain();
+    expect(fx.settings.status().job?.status).toBe("pending");
+    fx.state.clock.now += 1_000;
+    if (swapped) writeFileSync(fx.host.worker.path, "worker swapped");
+    await fx.settings.drain();
+    if (swapped) {
+      expect(fx.settings.status().job?.detail).toContain("digest changed");
+      expect(fx.calls).toEqual([]);
+    } else expect(fx.calls).toEqual(["write running", "launch running"]);
+  },
+);
+
+test("revoking the full grant before the window ends cancels a delegated settings change", async () => {
+  const state = installation();
+  let grant: { policyActivatedAt: string; authoritySha256: string } | null = {
+    policyActivatedAt: "2026-11-01T00:00:00.000Z",
+    authoritySha256: "a".repeat(64),
+  };
+  const { settings, calls } = settingsPorts(state, { delegationGrant: () => grant });
+  await requestRefresh(state, settings);
+  await settings.drain();
+  grant = null;
+  state.clock.now += 30_000;
+  await settings.drain();
+  expect(settings.status().job?.status).toBe("cancelled");
+  expect(calls).toEqual([]);
+});
+
 test("broker settings retry a review that could not run, and stop after a cancel during review", async () => {
   const fx = brokerInstallation();
   const job = await fx.request();
