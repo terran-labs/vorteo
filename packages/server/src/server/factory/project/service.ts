@@ -101,7 +101,12 @@ import {
   type GhRunner,
 } from "./tick-gate.js";
 
-import { devHostState, readDevAgents, type IssueAgentHosts } from "./issue-agent-host.js";
+import {
+  devHostState,
+  NO_DEV_HOST,
+  readDevAgents,
+  type IssueAgentHosts,
+} from "./issue-agent-host.js";
 import { readIssueQueue, type DevQueueAgents } from "./queue.js";
 
 /** How many account picks the state file keeps, newest last. */
@@ -335,9 +340,10 @@ export class ProjectFactoryService {
       gh: this.input.gh ?? defaultGhRunner,
       agents: () => this.input.agentStorage.list(),
       workspaceIds,
-      ...(issueAgentsIn(project) === "dev"
-        ? { devAgents: async () => this.devQueueAgents(projectId, await this.devHost()) }
-        : {}),
+      devAgents: async () => {
+        const host = await this.observedDev(project);
+        return host ? this.devQueueAgents(projectId, host) : undefined;
+      },
       now,
     });
     this.issueQueues.set(projectId, {
@@ -359,12 +365,24 @@ export class ProjectFactoryService {
     }
     if (record.archivedAt) return this.describe(record, project, "This project is archived.");
     const state = this.describe(record, project, null);
-    if (!project || issueAgentsIn(project) === "host") return state;
-    return { ...state, issueAgentHost: await this.devHost() };
+    const host = project ? await this.observedDev(project) : null;
+    return host ? { ...state, issueAgentHost: host } : state;
   }
 
-  /** Dev's availability from this daemon's saved hosts. Reads no remote host. */
-  private async devHost(): Promise<ProjectFactoryIssueAgentHost> {
+  /**
+   * The Dev to report and read agents from. Placement and observation differ: issue agents
+   * started on Dev before a switch to host mode still run there, so whenever the owner's Dev
+   * host exists it is observed. In dev mode a missing Dev is reported as unavailable.
+   */
+  private async observedDev(
+    project: Pick<ProjectState, "workers">,
+  ): Promise<ProjectFactoryIssueAgentHost | null> {
+    const host = await this.devHost();
+    return host ?? (issueAgentsIn(project) === "dev" ? NO_DEV_HOST : null);
+  }
+
+  /** Dev's availability from this daemon's saved hosts, or null with none saved. */
+  private async devHost(): Promise<ProjectFactoryIssueAgentHost | null> {
     if (!this.input.hosts)
       return { serverId: null, unavailable: "this daemon cannot reach connected hosts" };
     try {

@@ -35,11 +35,30 @@ export interface IssueAgentHosts {
   use<T>(serverId: string, action: (client: DevAgentsClient) => Promise<T>): Promise<T>;
 }
 
-/** Dev's availability from this daemon's saved hosts. */
-export function devHostState(directory: HostDirectory): ProjectFactoryIssueAgentHost {
-  const saved = directory.hosts.filter((host) => host.source.key === DEV_HOST_SOURCE_KEY);
-  const host = saved.find((item) => item.enabled && item.status === "online") ?? saved[0];
-  if (!host) return { serverId: null, unavailable: "no Dev host is saved on this daemon" };
+/**
+ * The source that saves the installation's Dev host. The coordinator connects with the
+ * environment password, password admission's principal is "owner" (session-admission-auth.ts),
+ * and a session's principal is the source id of the hosts it saves (websocket-server.ts).
+ * Registrations are namespaced by source and key, and any `tunnel.manage` producer can save
+ * one under the Dev key, so only the owner's entry counts.
+ */
+export const DEV_HOST_SOURCE_ID = "owner";
+
+/** Dev reported when the owner has no Dev host saved on this daemon. */
+export const NO_DEV_HOST: ProjectFactoryIssueAgentHost = {
+  serverId: null,
+  unavailable: "no Dev host is saved on this daemon",
+};
+
+/**
+ * Dev's availability from the owner's saved Dev host, or null when there is none. Same-key
+ * entries from other sources never count, even when the owner's is turned off or offline.
+ */
+export function devHostState(directory: HostDirectory): ProjectFactoryIssueAgentHost | null {
+  const host = directory.hosts.find(
+    (item) => item.source.id === DEV_HOST_SOURCE_ID && item.source.key === DEV_HOST_SOURCE_KEY,
+  );
+  if (!host) return null;
   const { serverId } = host;
   if (!host.enabled || host.status === "disabled")
     return { serverId, unavailable: "the Dev host is turned off" };

@@ -111,7 +111,10 @@ export const ProjectFactoryStateSchema = z.object({
     /** Absent from older daemons, which run issue agents here. */
     issueAgents: ProjectFactoryIssueAgentsSchema.optional(),
   }),
-  /** With issue agents in Dev, Dev's availability; only `get` reports it. */
+  /**
+   * Dev's availability, set when issue agents run in Dev or the owner's Dev host exists, since
+   * agents started there keep running after a switch. Only `get` reports it.
+   */
   issueAgentHost: ProjectFactoryIssueAgentHostSchema.nullable().optional(),
   /** The current pause_all drain, if any. Optional so older daemons still parse. */
   drain: ProjectFactoryDrainSchema.nullable().optional(),
@@ -145,8 +148,8 @@ export const ProjectFactoryQueueSchema = z.object({
   fetchedAt: z.string(),
   error: z.string().nullable(),
   /**
-   * With issue agents in Dev, whether Dev's agents could be read. When not, `agents` lists
-   * only this host's, so an issue may show fewer agents than it has.
+   * Whether Dev's agents could be read, set whenever Dev is observed (see the project state).
+   * When not, `agents` lists only this host's, so an issue may show fewer agents than it has.
    */
   issueAgentHost: ProjectFactoryIssueAgentHostSchema.nullable().optional(),
   issues: z.array(

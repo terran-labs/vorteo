@@ -63,8 +63,11 @@ interface QueueInput {
   gh: GhRunner;
   agents: () => Promise<StoredAgentRecord[]>;
   workspaceIds: ReadonlySet<string>;
-  /** Never rejects: an unreadable Dev comes back with no agents and the reason. */
-  devAgents?: () => Promise<DevQueueAgents>;
+  /**
+   * Never rejects: an unreadable Dev comes back with no agents and the reason. Undefined when
+   * there is no Dev to read.
+   */
+  devAgents?: () => Promise<DevQueueAgents | undefined>;
   /** Issues whose claim branch this installation created. */
   ownClaims: ReadonlySet<number>;
   now: Date;
