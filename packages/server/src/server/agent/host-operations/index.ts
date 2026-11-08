@@ -360,7 +360,12 @@ export function createHostResolver(input: {
           },
           async createWorkspace(args) {
             const isolation = z.enum(["local", "worktree"]).parse(args.isolation);
-            const path = z.string().min(1).parse(args.path);
+            // Locally path defaults to the caller's workspace, which does not exist over there.
+            if (typeof args.path !== "string" || args.path.length === 0)
+              throw new Error(
+                "Creating a workspace on another host needs path, a folder on that host; the caller's own directory does not apply there.",
+              );
+            const { path } = args;
             const response = await client.createWorkspace({
               source:
                 isolation === "local"
