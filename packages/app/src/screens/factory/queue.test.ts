@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { loadFactoryQueue, factoryAgentStatusKey, type FactoryInvoke } from "./queue";
 import { ProjectFactoryStateSchema } from "@/components/sidebar/factory-state";
+import { FACTORY_LANES, factoryLanes, factoryTrack } from "./overview-model";
 
 const emptyQueue = { fetchedAt: "2026-11-04T12:00:00Z", error: null, issues: [] };
 const oldState = {
@@ -91,4 +92,45 @@ it("localizes known agent statuses and hides unknown wire values", () => {
   expect(factoryAgentStatusKey("future_internal_status")).toBe(
     "projectFactory.agentStatuses.unknown",
   );
+});
+
+it("places repair work in the Review lane and maps each stage onto the five-box track", () => {
+  const stages = [
+    "queued",
+    "planning",
+    "building",
+    "review",
+    "repair",
+    "merging",
+    "blocked",
+  ] as const;
+  const issues = stages.map((stage, index) => ({
+    number: index,
+    title: stage,
+    url: `https://github.com/owner/repo/issues/${index}`,
+    label: "running" as const,
+    stage,
+    pr: null,
+    agents: [],
+  }));
+  const lanes = factoryLanes(issues);
+  expect(lanes.map((group) => group.lane)).toEqual([...FACTORY_LANES]);
+  expect(
+    lanes.find((group) => group.lane === "review")?.issues.map((issue) => issue.stage),
+  ).toEqual(["review", "repair"]);
+  expect(issues.map((issue) => factoryTrack(issue).join(","))).toEqual([
+    "pending,pending,pending,pending,pending",
+    "active,pending,pending,pending,pending",
+    "done,active,pending,pending,pending",
+    "done,done,active,pending,pending",
+    "done,done,failed,pending,pending",
+    "done,done,done,active,pending",
+    "blocked,pending,pending,pending,pending",
+  ]);
+  expect(
+    factoryTrack({
+      stage: "blocked",
+      pr: { number: 1, url: "", headSha: "", checks: null, reviewDecision: null },
+    }),
+  ).toEqual(["done", "done", "blocked", "pending", "pending"]);
 });

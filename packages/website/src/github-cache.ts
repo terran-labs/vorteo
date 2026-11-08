@@ -3,6 +3,14 @@ export const GITHUB_CACHE_TTL_MS = 5 * 60 * 1000;
 export interface WebsiteCacheContext {
   cache: KVNamespace | null;
   waitUntil: (promise: Promise<unknown>) => void;
+  /** The GitHub REST API origin; browser tests point it at a local fixture server. */
+  githubApiUrl?: string;
+}
+
+export const DEFAULT_GITHUB_API_URL = "https://api.github.com";
+
+export function githubApiUrl(context: WebsiteCacheContext, path: string): string {
+  return `${(context.githubApiUrl ?? DEFAULT_GITHUB_API_URL).replace(/\/+$/, "")}${path}`;
 }
 
 interface CachedValue<T> {

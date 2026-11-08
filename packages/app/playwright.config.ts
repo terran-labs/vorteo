@@ -59,6 +59,9 @@ const retiredUpstreamTests = [
   /sidebar-reorder\.spec\.ts.* compact groups retain active overflow and reveal the current ordered rows/,
   /sidebar-reorder\.spec\.ts.* collapsed groups lead with the open workspace instead of hiding it behind Show more/,
   /sidebar-reorder\.spec\.ts.* a Manual drag in a collapsed group keeps the open workspace's saved place/,
+  // The fixture injects prompt rejections through featureValues, but every UI launch uses a
+  // profile, and Vorteo keeps a profile launch's features out of reach of plugin hooks.
+  /creation-idempotency\.spec\.ts.* becomes an agent tab when the first prompt is rejected/,
 ];
 
 function videoMode(): "on" | "on-first-retry" | "retain-on-failure" {
