@@ -2358,8 +2358,10 @@ function ComposerContentImpl({
       narrowDesktop && styles.narrowDesktopInputArea,
       mobileComposer.enabled && styles.mobileInputArea,
       isComposerLocked && styles.inputAreaLocked,
+      // Last, so fullscreen editing drops the inline paddings and fills the frame.
+      isFullscreen && styles.inputAreaFullscreen,
     ],
-    [columnWidth, isComposerLocked, mobileComposer.enabled, narrowDesktop],
+    [columnWidth, isComposerLocked, isFullscreen, mobileComposer.enabled, narrowDesktop],
   );
 
   const messageInputContainerStyle = useMemo(
@@ -2479,6 +2481,9 @@ function ComposerContentImpl({
               styles.inputAreaContent,
               styles.bottomCardStack,
               (columnWidth !== undefined || narrowDesktop) && styles.columnInputContent,
+              // Fullscreen editing fills the dock frame; without it the editor keeps its inline
+              // height at the bottom of the fixed frame (lost in merge 51f16b39f).
+              isFullscreen && styles.fullscreenFill,
             ]}
           >
             {sendErrorNode}
@@ -2500,7 +2505,8 @@ function ComposerContentImpl({
               />
             ) : null}
 
-            {agentControls ? (
+            {/* Fullscreen editing shows only Exit and the submit action. */}
+            {agentControls && !isFullscreen ? (
               <LaunchPickerCollapse collapsed={isSubmitLoading} stackGap={BOTTOM_CARD_STACK_GAP}>
                 {leftContent}
               </LaunchPickerCollapse>
@@ -2658,7 +2664,11 @@ const styles = StyleSheet.create((theme: Theme) => ({
     flex: 1,
     minHeight: 0,
     alignItems: "stretch",
+    // Longhands too: the narrow desktop and column paddings use them, and on web a longhand
+    // outranks the shorthand regardless of order.
     paddingHorizontal: 0,
+    paddingLeft: 0,
+    paddingRight: 0,
     paddingBottom: 0,
   },
   fullscreenFill: {

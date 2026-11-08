@@ -11,6 +11,7 @@ import { buildLlmsTxt } from "~/llms";
 interface WebsiteEnv {
   WEBSITE_CACHE?: KVNamespace;
   PLUGINS_REGISTRY_URL?: string;
+  GITHUB_API_URL?: string;
 }
 
 function markdownResponse(body: string): Response {
@@ -111,6 +112,7 @@ export default {
       const version = await getLatestAndroidVersion({
         cache: env.WEBSITE_CACHE ?? null,
         waitUntil: (promise) => context.waitUntil(promise),
+        githubApiUrl: env.GITHUB_API_URL,
       });
       return plainTextResponse(`${getAndroidVersionCode(version)}\n`);
     }

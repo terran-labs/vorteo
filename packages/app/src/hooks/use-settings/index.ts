@@ -55,6 +55,7 @@ import {
   type SidebarWorkspaceTrailing,
   type SettingsDeps,
   type WorkspaceTitleSource,
+  type WorkspaceStatusLineMode,
 } from "./storage";
 
 export {
@@ -100,6 +101,7 @@ export type {
   SettingsDeps,
   SidebarWorkspaceTrailing,
   WorkspaceTitleSource,
+  WorkspaceStatusLineMode,
 };
 
 /**

@@ -46,6 +46,7 @@ import {
 import { DropdownTrigger } from "@/components/ui/dropdown-trigger";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { AppearanceSection } from "@/screens/settings/appearance/appearance-section";
+import { SidebarNavSection } from "@/screens/settings/sidebar/sidebar-nav-section";
 import { HostVoicePage } from "@/screens/settings/voice/voice-page";
 import { OpenLocationSection } from "@/screens/settings/open-location/open-location-section";
 import { TerminalSection } from "@/screens/settings/terminal/terminal-section";
@@ -939,6 +940,7 @@ const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
   ),
   "terminal.profiles": installationPane("terminals"),
   "appearance.appearance": () => <AppearanceSection />,
+  "appearance.sidebar": () => <SidebarNavSection />,
   "appearance.language": (context) => (
     <LanguageSection settings={context.settings} handleLanguageChange={context.onLanguageChange} />
   ),
