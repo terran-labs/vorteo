@@ -170,6 +170,14 @@ test.each(["approved", "revoked"] as const)(
       },
     );
     const job = await f.prepare();
+    // Every durable state of the request, as a coordinator restarted at any write would read it.
+    const written: string[] = [];
+    const write = f.journal.write;
+    f.journal.write = (jobs) => {
+      write(jobs);
+      const record = f.journal.read().find((item) => item.id === job.id);
+      if (record) written.push(PreviewBrokerJobSchema.parse(record).status);
+    };
     await f.queue.drain();
     // The strict record stays pending, so an older coordinator waits for the owner.
     const held = PreviewBrokerJobSchema.parse(f.journal.read().find((item) => item.id === job.id));
@@ -184,6 +192,8 @@ test.each(["approved", "revoked"] as const)(
       outcome === "approved" ? "succeeded" : "rejected",
     );
     expect(rebind.get(job.id)).toBeUndefined();
+    // Delegated work is never persisted as approved, which a rollback reader would replay.
+    expect(written).not.toContain("approved");
   },
 );
 

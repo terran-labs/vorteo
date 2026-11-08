@@ -410,6 +410,8 @@ export class CoordinatorSettings {
     return project(
       this.save(job, {
         approvedWith: follow.id,
+        // The owner's approval replaces a delegated one, so a later revocation cannot cancel it.
+        delegatedApproval: undefined,
         detail: "Approved with the coordinator update. Applies after it succeeds.",
       }),
     );

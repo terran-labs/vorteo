@@ -876,8 +876,8 @@ export class InstallationRestarts {
   /**
    * With `delegated`, dispatches a pending request the full grant approved: its record stays
    * pending through validation, so a rolled-back coordinator waits for the owner, and the claim
-   * below rechecks the evidence and approves it in the same synchronous step that records the
-   * dispatch.
+   * below rechecks the evidence and writes pending straight to running in one journal write. The
+   * spent evidence is removed on the next admission pass, once the record is no longer pending.
    */
   private async dispatchBroker(job: PreviewBrokerJob, delegated = false): Promise<void> {
     try {
@@ -895,13 +895,9 @@ export class InstallationRestarts {
       if (delegated) {
         // Revoked, rotated or changed during validation: nothing starts.
         if (!this.delegatedBrokerReady("rebind", current)) return;
-        current = this.decideBroker({
-          operation: current.operation,
-          id: current.id,
-          revision: current.revision,
-          planSha256: current.planSha256,
-          decision: "approve",
-        });
+        // Claimed in memory and written once as running below: no approved record is ever
+        // persisted for delegated work, so a crash leaves it pending or running, never replayable.
+        current = { ...current, approvedAt: new Date(this.now()).toISOString() };
       } else if (current.status !== "approved") return;
       const dispatched: PreviewBrokerJob = {
         ...current,
@@ -2817,15 +2813,10 @@ export class InstallationRestarts {
       if (this.brokerRecoveryRequired()) break;
       if (job.status === "approved") await this.deploymentWorkflow().dispatch(job.id);
       else if (this.delegatedBrokerReady("deployment", job))
+        // The claim is built in memory: the workflow writes it as running in one journal write.
         await this.deploymentWorkflow().dispatch(job.id, (current) =>
           this.delegatedBrokerReady("deployment", current)
-            ? this.decideBrokerDeployment({
-                operation: current.operation,
-                id: current.id,
-                revision: current.revision,
-                planSha256: current.planSha256,
-                decision: "approve",
-              })
+            ? { ...current, approvedAt: new Date(this.now()).toISOString() }
             : null,
         );
     }

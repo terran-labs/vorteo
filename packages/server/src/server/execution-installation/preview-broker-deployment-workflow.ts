@@ -136,9 +136,9 @@ export class PreviewBrokerDeploymentWorkflow {
   /**
    * Dispatches an owner-approved request. With `claim`, it dispatches a pending request the full
    * grant approved instead: the durable record stays pending through validation, so a rolled-back
-   * coordinator that reads it waits for the owner, and `claim` rechecks the delegated evidence and
-   * approves it in the same synchronous step that records the dispatch. It returns null when the
-   * evidence no longer holds; nothing starts.
+   * coordinator that reads it waits for the owner. `claim` rechecks the delegated evidence and
+   * returns the approved fields in memory, which are written once, straight to running. It returns
+   * null when the evidence no longer holds; nothing starts.
    */
   async dispatch(
     id: string,

@@ -236,6 +236,30 @@ test.each([
     },
   },
   {
+    name: "a combined owner approval inside the delegated window survives a later revocation",
+    run: async () => {
+      const state = installation();
+      let grant: { policyActivatedAt: string; authoritySha256: string } | null = {
+        policyActivatedAt: "2026-11-01T00:00:00.000Z",
+        authoritySha256: "a".repeat(64),
+      };
+      const { settings, calls } = settingsPorts(state, { delegationGrant: () => grant });
+      await requestRefresh(state, settings);
+      await settings.drain();
+      const held = settings.status().job!;
+      expect(held.delegatedApproval).toBeDefined();
+      state.follow.job = followJob("pending");
+      settings.approveWithFollow(held.id, held.revision, () => {
+        state.follow.job = followJob("approved");
+        return state.follow.job;
+      });
+      grant = null;
+      state.follow.job = followJob("succeeded");
+      await settings.drain();
+      expect(calls).toEqual(["write running", "launch running"]);
+    },
+  },
+  {
     name: "a combined approval leaves the settings pending when the update rolls back",
     run: async () => {
       const state = installation();
