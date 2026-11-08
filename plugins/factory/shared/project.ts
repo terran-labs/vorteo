@@ -417,10 +417,20 @@ export const ProjectFactoryAccountPickSchema = z.object({
    * shared-workflow reference), so that account is used without ranking.
    */
   bound: z.boolean(),
-  /** Every account of the profile's provider type, with why it was or was not chosen. */
+  /**
+   * The connected host the agent starts on, when not this daemon. Then `provider` and each
+   * considered `provider` are that host's local account ids.
+   */
+  serverId: z.string().optional(),
+  /**
+   * Every account of the profile's provider type, with why it was or was not chosen. For
+   * another host, only accounts that host has ready are listed.
+   */
   considered: z.array(
     z.object({
       provider: z.string(),
+      /** For another host, this daemon's id for the same account, whose usage ranked it. */
+      localProvider: z.string().optional(),
       verdict: z.enum(["qualifies", "unknown", "stale", "exhausted", "avoided"]),
       remainingPct: z.number().nullable(),
     }),
@@ -439,8 +449,16 @@ export const factoryProjectPickAccount = defineRpc({
     projectId,
     stage: ProjectFactoryStageSchema,
     issue: z.number().int().positive().optional(),
-    /** An account to leave out, such as the worker's when picking its reviewer. */
+    /**
+     * An account to leave out, such as the worker's when picking its reviewer. For another
+     * host, either that host's id or this daemon's id for the account.
+     */
     avoid: z.string().min(1).optional(),
+    /**
+     * The connected host the agent will start on; absent means this daemon. The pick then
+     * names that host's account for the same installation account.
+     */
+    serverId: z.string().min(1).optional(),
   }),
   output: ProjectFactoryAccountPickSchema,
 });
