@@ -58,6 +58,7 @@ const copy = (from, to) => fs.cpSync(from, to, { recursive: true, verbatimSymlin
 const options = {
   supported: true,
   queue: false,
+  platform: "darwin",
   npmVersion: "11.0.0",
   clone: copy,
   log: () => {},
@@ -91,8 +92,8 @@ test("an opted-in full install waits for the heavy-job slot", (t) => {
     supported: false,
     queue: true,
   });
-  const [[command, script, ...rest]] = calls;
-  assert.equal(command, process.execPath);
+  const [[queuedCommand, script, ...rest]] = calls;
+  assert.equal(queuedCommand, process.execPath);
   assert.equal(path.basename(script), "heavy-job.mjs");
   assert.deepEqual(rest, [
     "run",
@@ -116,6 +117,21 @@ test("an opted-in full install waits for the heavy-job slot", (t) => {
     queue: true,
   });
   assert.deepEqual(calls, [["npm", ...installModes.build]]);
+
+  // Linux installs load the fs.cpSync workaround for the Dev container's virtiofs mount.
+  calls.length = 0;
+  installDependencies({
+    ...options,
+    root: checkout(parent, "three"),
+    mode: "build",
+    run: (command, args) => calls.push([command, ...args]),
+    supported: false,
+    platform: "linux",
+  });
+  const [[env, nodeOptions, ...npm]] = calls;
+  assert.equal(env, "env");
+  assert.match(nodeOptions, /^NODE_OPTIONS=.*--require ".*cp-sync-js\.cjs"$/);
+  assert.deepEqual(npm, ["npm", ...installModes.build]);
 });
 
 test("a second checkout clones the cached install and keeps its own workspace links", (t) => {

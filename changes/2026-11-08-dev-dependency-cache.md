@@ -2,6 +2,10 @@
 
 - Dev container checkouts reuse a cached dependency install. On Linux the dependency cache copies a finished install of the same lockfile into each new worktree instead of running a full `npm ci`, which skips the download, extraction and native builds. Each environment keeps installs built for its own platform.
 
+### Fixes
+
+- Vorteo's dependencies install inside the Dev container again. Node's built-in `fs.cpSync` directory copy fails with a permission error on Dev's shared Projects folder, on Node 22 and 24 alike, and `@shopify/react-native-skia` uses it during install. Linux installs now load `scripts/lib/cp-sync-js.cjs`, which keeps every `fs.cpSync` call on Node's ordinary copy path, and the Linux dependency cache copies with `cp -R`, because `cp -a` cannot preserve permissions on some directories there.
+
 ### Maintenance
 
 - In task worktrees and `paseo.json` workspace setup, a full dependency install now waits for the environment's heavy-job slot, as the queue's rules already required. Heavy jobs mark their commands with `VORTEO_HEAVY_JOB=1`, so an install that already runs inside one, or as Builds, does not wait on itself. Installer, coordinator, web build and live dev installs keep running at once, since they can run while the Builds gate holds the slot.

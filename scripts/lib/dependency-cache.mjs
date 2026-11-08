@@ -125,14 +125,24 @@ function defaultRun(command, args, cwd) {
 }
 
 /** clonefile(2) per file on macOS; data blocks stay shared until either copy changes.
- * GNU cp reflinks where the filesystem allows and copies otherwise. */
+ * On Linux a plain recursive copy: the Dev container's virtiofs mount refuses `cp -a`'s
+ * permission preservation on some directories, and new files keep their owner's mode bits. */
 function defaultClone(from, to) {
   if (process.platform === "darwin")
     execFileSync("/bin/cp", ["-c", "-R", from, to], { stdio: "inherit" });
-  else execFileSync("cp", ["-a", "--reflink=auto", from, to], { stdio: "inherit" });
+  else execFileSync("cp", ["-R", from, to], { stdio: "inherit" });
 }
 
-const HEAVY_JOB = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "heavy-job.mjs");
+const LIB = path.dirname(fileURLToPath(import.meta.url));
+const HEAVY_JOB = path.join(LIB, "..", "heavy-job.mjs");
+const CP_SYNC_JS = path.join(LIB, "cp-sync-js.cjs");
+
+/** The npm command for a full install. Linux installs load the fs.cpSync workaround. */
+function npmCommand(args, platform) {
+  if (platform !== "linux") return ["npm", ...args];
+  const nodeOptions = [process.env.NODE_OPTIONS, `--require "${CP_SYNC_JS}"`].filter(Boolean);
+  return ["env", `NODE_OPTIONS=${nodeOptions.join(" ")}`, "npm", ...args];
+}
 
 function readManifest(entry) {
   try {
@@ -232,6 +242,7 @@ export function installDependencies({
   clone = defaultClone,
   supported = cloneSupported(),
   queue = false,
+  platform = process.platform,
   npmVersion,
   log = (message) => console.log(message),
 }) {
@@ -241,9 +252,10 @@ export function installDependencies({
     // Inside a heavy job the slot is already ours, and Builds' commands may run while its gate
     // holds the slot; waiting for it again would never end.
     const holdsSlot = process.env.VORTEO_HEAVY_JOB === "1" || process.env.VORTEO_BUILDS === "1";
-    if (!queue || holdsSlot) return run("npm", args, root);
+    const [command, ...rest] = npmCommand(args, platform);
+    if (!queue || holdsSlot) return run(command, rest, root);
     const label = "dependency install";
-    run(process.execPath, [HEAVY_JOB, "run", "--label", label, "--", "npm", ...args], root);
+    run(process.execPath, [HEAVY_JOB, "run", "--label", label, "--", command, ...rest], root);
   }
   if (!supported) {
     fullInstall();
