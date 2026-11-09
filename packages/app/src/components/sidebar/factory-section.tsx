@@ -1,3 +1,4 @@
+import { SidebarDisclosureBody } from "./disclosure-body";
 import { useQueryClient } from "@tanstack/react-query";
 import { memo, useCallback, useMemo, type ReactNode } from "react";
 import { View } from "react-native";
@@ -202,6 +203,8 @@ export function FactorySectionRow({
             accessibilityState={selected ? SELECTED_STATE : undefined}
             aria-current={selected ? "page" : undefined}
             testID={`factory-section-overview-${sectionKey}`}
+            style={styles.overviewButton}
+            hitSlop={overviewHitSlop}
           >
             {t("sidebar.factoryCard.overview")}
           </Button>
@@ -234,7 +237,7 @@ export function FactorySectionRow({
           onOpenOverview={onOpenOverview}
         />
       </ContextMenu>
-      {collapsed ? null : children}
+      <SidebarDisclosureBody expanded={!collapsed}>{children}</SidebarDisclosureBody>
     </>
   );
 }
@@ -369,6 +372,7 @@ function StatePill({ pill, onPress }: { pill: FactorySectionPill; onPress: () =>
 }
 
 const styles = StyleSheet.create((theme) => ({
+  overviewButton: { height: 28, minHeight: 28, paddingVertical: 0 },
   accessory: {
     flexShrink: 0,
     flexDirection: "row",
@@ -377,3 +381,5 @@ const styles = StyleSheet.create((theme) => ({
   },
   pill: { flexShrink: 0 },
 }));
+
+const overviewHitSlop = { top: 8, bottom: 8 };

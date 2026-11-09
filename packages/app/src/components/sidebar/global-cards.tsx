@@ -58,5 +58,5 @@ export function SidebarGlobalCards({ onBeforeNavigate }: { onBeforeNavigate?: ()
 }
 
 const styles = StyleSheet.create({
-  stack: { flexShrink: 0 },
+  stack: { flexShrink: 1, minHeight: 0 },
 });

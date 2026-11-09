@@ -1,12 +1,14 @@
 # Mobile panels
 
-Compact layouts have three mutually exclusive destinations:
+The shared compact panel controller retains three mutually exclusive destinations:
 
 - `agent-list` on the left
 - `agent` in the center
 - `file-explorer` on the right
 
-They are one interaction, not two independent drawers. The implementation lives in
+Phone workspaces expose Files, Changes and pull requests through their detail tiles and sheets. They hide the Explorer toolbar button; the right panel remains a fallback for callers without a workspace. Tablets and wider layouts retain Explorer. See [Explorer sidebar](explorer-sidebar.md).
+
+The panel destinations are one interaction, not two independent drawers. The implementation lives in
 `packages/app/src/mobile-panels/`.
 
 ## Ownership

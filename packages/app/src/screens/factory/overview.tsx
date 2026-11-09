@@ -27,12 +27,10 @@ import {
   scopedIssues,
   type FactoryScopeEntry,
 } from "./all-factories-model";
-import { ScopeBack } from "./overview-command";
+import { FactoryScopeSelector } from "./scope-selector";
 import type { FactoryControls } from "./overview-controls";
 import type { FactoryOverviewData } from "./overview-data";
 import { FloorOverview } from "./overview-floor";
-import { LedgerOverview } from "./overview-ledger";
-import { MissionOverview } from "./overview-mission";
 import {
   addUsage,
   factoryLanes,
@@ -53,7 +51,7 @@ import {
 import { useAllFactories, useFactoryHosts, useProjectNames, useStopAll } from "./overview-sources";
 import { factoryListQueryKey } from "./factory-reads";
 import { projectFactoryOverviewRoute } from "./routes";
-import { useFactoryOverviewStore, type FactoryOverviewVariant } from "./overview-store";
+import { useFactoryOverviewStore } from "./overview-store";
 import { loadFactoryQueue, type FactoryInvoke, type FactoryQueue } from "./queue";
 
 interface Target {
@@ -84,6 +82,10 @@ function AllOverview({ serverId }: { serverId: string }) {
   const catalogStatus = usePluginCatalogStatus(serverId);
   const hosts = useFactoryHosts();
   const bar = useMemo(() => <DesignBar />, []);
+  const titleContent = useMemo(
+    () => <FactoryScopeSelector serverId={serverId} projectId={null} />,
+    [serverId],
+  );
   return (
     <PageLayout
       title={t("projectFactory.scope.allTitle")}
@@ -91,6 +93,8 @@ function AllOverview({ serverId }: { serverId: string }) {
       actions={compact ? undefined : bar}
       wide
       headerTitle
+      fullWidth
+      titleContent={titleContent}
     >
       {compact ? bar : null}
       {hosts.length === 0 && catalogStatus !== "loading" ? (
@@ -117,7 +121,11 @@ function ProjectOverview({ serverId, projectId }: Target) {
   const name = useProjectNames()(serverId, projectId);
   const unavailable = !plugin && catalogStatus !== "loading";
   const loading = !factory.data && !factory.error && !unavailable;
-  const bar = useMemo(() => <DesignBar back={serverId} />, [serverId]);
+  const bar = useMemo(() => <DesignBar />, []);
+  const titleContent = useMemo(
+    () => <FactoryScopeSelector serverId={serverId} projectId={projectId} />,
+    [serverId, projectId],
+  );
   return (
     <PageLayout
       title={
@@ -127,6 +135,8 @@ function ProjectOverview({ serverId, projectId }: Target) {
       actions={compact ? undefined : bar}
       wide
       headerTitle
+      fullWidth
+      titleContent={titleContent}
     >
       {compact ? bar : null}
       {factory.error ? (
@@ -163,29 +173,11 @@ function ProjectOverview({ serverId, projectId }: Target) {
   );
 }
 
-/** Scope, design and data toggles; the owner compares the three designs at both zoom levels. */
-function DesignBar({ back }: { back?: string }) {
+/** Keep the explicit sample-data switch separate from Factory scope. */
+function DesignBar() {
   const { t } = useTranslation();
-  const variant = useFactoryOverviewStore((store) => store.variant);
   const sample = useFactoryOverviewStore((store) => store.sample);
-  const setVariant = useFactoryOverviewStore((store) => store.setVariant);
   const setSample = useFactoryOverviewStore((store) => store.setSample);
-  const variants = useMemo<SegmentedControlOption<FactoryOverviewVariant>[]>(
-    () => [
-      { value: "floor", label: t("projectFactory.design.floor"), testID: "factory-design-floor" },
-      {
-        value: "mission",
-        label: t("projectFactory.design.mission"),
-        testID: "factory-design-mission",
-      },
-      {
-        value: "ledger",
-        label: t("projectFactory.design.ledger"),
-        testID: "factory-design-ledger",
-      },
-    ],
-    [t],
-  );
   const sources = useMemo<SegmentedControlOption<"live" | "sample">[]>(
     () => [
       { value: "live", label: t("projectFactory.design.live"), testID: "factory-data-live" },
@@ -199,8 +191,6 @@ function DesignBar({ back }: { back?: string }) {
   );
   return (
     <View style={styles.bar} testID="factory-design-bar">
-      {back ? <ScopeBack serverId={back} /> : null}
-      <SegmentedControl options={variants} value={variant} onValueChange={setVariant} size="sm" />
       <SegmentedControl
         options={sources}
         value={sample ? "sample" : "live"}
@@ -221,8 +211,8 @@ interface LiveQueue {
 }
 
 /**
- * Assembles what every design renders from the Factories in scope: board, figures, usage,
- * needs-you items, drains and the stop switch. Sample mode swaps in the sample Factories.
+ * Assembles the board, reports and operating controls for the selected Factory scope.
+ * Sample mode swaps in the sample Factories.
  */
 function useOverviewData(input: {
   scope: "project" | "all";
@@ -459,7 +449,6 @@ function AllContent({ serverId, active }: { serverId: string; active: boolean })
 
 function DesignFrame({ data }: { data: FactoryOverviewData }) {
   const { t } = useTranslation();
-  const variant = useFactoryOverviewStore((store) => store.variant);
   return (
     <View style={styles.content}>
       {data.sample ? (
@@ -471,20 +460,9 @@ function DesignFrame({ data }: { data: FactoryOverviewData }) {
           )}
         </Text>
       ) : null}
-      <Design variant={variant} data={data} />
+      <FloorOverview data={data} />
     </View>
   );
-}
-
-function Design({ variant, data }: { variant: FactoryOverviewVariant; data: FactoryOverviewData }) {
-  switch (variant) {
-    case "floor":
-      return <FloorOverview data={data} />;
-    case "mission":
-      return <MissionOverview data={data} />;
-    case "ledger":
-      return <LedgerOverview data={data} />;
-  }
 }
 
 /** Sample role threads have no ids, so their share joins the category and provider totals. */

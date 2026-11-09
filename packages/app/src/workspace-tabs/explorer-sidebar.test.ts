@@ -27,6 +27,8 @@ const checkout = { serverId: "server-1", cwd: "/repo", isGit: true };
 
 beforeEach(() => {
   useWorkspaceLayoutStore.setState({
+    layoutMode: "split-panes",
+    sheetsByWorkspace: {},
     layoutByWorkspace: {},
     explorerSidebarPaneIdByWorkspace: {},
     sidePaneIdByWorkspace: {},
@@ -50,7 +52,14 @@ describe("Explorer sidebar", () => {
     );
   });
 
-  it("selects the checkout-bound Changes view inside the compact overlay", () => {
+  it("opens workspace Changes in a phone sheet", () => {
+    openExplorerSidebarView({
+      isCompact: false,
+      workspaceKey: WORKSPACE_KEY,
+      checkout,
+      view: "changes",
+    });
+    useWorkspaceLayoutStore.getState().setLayoutMode("compact");
     openExplorerSidebarView({
       isCompact: true,
       workspaceKey: WORKSPACE_KEY,
@@ -58,12 +67,21 @@ describe("Explorer sidebar", () => {
       view: "changes",
     });
 
-    expect(usePanelStore.getState().mobilePanel.target).toBe("file-explorer");
-    expect(usePanelStore.getState().explorerTab).toBe("changes");
-    expect(usePanelStore.getState().explorerTabByCheckout).toEqual({
-      "server-1::/repo": "changes",
-    });
-    expect(useWorkspaceLayoutStore.getState().layoutByWorkspace[WORKSPACE_KEY]).toBeUndefined();
+    expect(usePanelStore.getState().mobilePanel.target).toBe("agent");
+    expect(
+      useWorkspaceLayoutStore
+        .getState()
+        .sheetsByWorkspace[WORKSPACE_KEY].map((sheet) => sheet.tab.target.kind),
+    ).toEqual(["changes_tree"]);
+    const input = { isCompact: true, workspaceKey: WORKSPACE_KEY, checkout };
+    toggleExplorerSidebar(input);
+    expect(isExplorerSidebarOpen(input)).toBe(false);
+    toggleExplorerSidebar(input);
+    expect(isExplorerSidebarOpen(input)).toBe(true);
+    expect(
+      useWorkspaceLayoutStore.getState().sheetsByWorkspace[WORKSPACE_KEY][0].tab.target.kind,
+    ).toBe("files");
+    expect(usePanelStore.getState().mobilePanel.target).toBe("agent");
   });
 
   it("creates a dedicated desktop Explorer containing only its requested tree", () => {
@@ -105,9 +123,10 @@ describe("Explorer sidebar", () => {
     expect(activeExplorerTarget).toBe("files");
   });
 
-  it("toggles the compact Explorer without changing its selected view", () => {
+  it("toggles the wide native Explorer without changing its selected view", () => {
     const input = {
-      isCompact: true,
+      isCompact: false,
+      supportsPaneSplits: false,
       workspaceKey: WORKSPACE_KEY,
       checkout,
     };

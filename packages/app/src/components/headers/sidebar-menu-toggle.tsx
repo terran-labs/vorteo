@@ -3,7 +3,7 @@ import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { View, type StyleProp, type ViewStyle } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { PanelLeft } from "lucide-react-native";
+import { PanelLeft, PanelLeftClose } from "lucide-react-native";
 import { HeaderToggleButton, headerIconSlotStyle } from "./header-toggle-button";
 import { selectIsAgentListOpen, usePanelStore } from "@/stores/panel-store";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -15,6 +15,7 @@ import {
   mutedIconColorMapping,
 } from "@/components/ui/icon-button-chrome";
 
+const ThemedPanelLeftClose = withUnistyles(PanelLeftClose);
 const ThemedPanelLeft = withUnistyles(PanelLeft);
 
 interface SidebarMenuToggleProps {
@@ -76,6 +77,24 @@ function SidebarMenuToggleButton({
   if (isMobile) toggleLabel = isOpen ? t("shell.menu.close") : t("shell.menu.open");
   const accessibilityState = useMemo(() => ({ expanded }), [expanded]);
 
+  let icon = (
+    <ThemedPanelLeft
+      size={iconButtonChromeGlyphSize("large")}
+      strokeWidth={1.5}
+      uniProps={extraMutedIdleIcon ? extraMutedIconColorMapping : mutedIconColorMapping}
+    />
+  );
+  if (isMobile) {
+    icon = isOpen ? (
+      <ThemedPanelLeftClose
+        size={iconButtonChromeGlyphSize("large")}
+        strokeWidth={1.5}
+        uniProps={mutedIconColorMapping}
+      />
+    ) : (
+      <MobileMenuIcon extraMuted={extraMutedIdleIcon} />
+    );
+  }
   return (
     <HeaderToggleButton
       onPress={handlePress}
@@ -90,15 +109,7 @@ function SidebarMenuToggleButton({
       accessibilityLabel={toggleLabel}
       accessibilityState={accessibilityState}
     >
-      {isMobile ? (
-        <MobileMenuIcon extraMuted={extraMutedIdleIcon} />
-      ) : (
-        <ThemedPanelLeft
-          size={iconButtonChromeGlyphSize("large")}
-          strokeWidth={1.5}
-          uniProps={extraMutedIdleIcon ? extraMutedIconColorMapping : mutedIconColorMapping}
-        />
-      )}
+      {icon}
     </HeaderToggleButton>
   );
 }

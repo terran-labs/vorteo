@@ -1,4 +1,4 @@
-import { useMobileComposerLayout, COMPOSER_CORNER_INSET } from "@/composer/mobile-layout";
+import { useMobileComposerLayout } from "@/composer/mobile-layout";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { useMemo } from "react";
 import { View, Text, Pressable } from "react-native";
@@ -208,9 +208,9 @@ export function DictationOverlay({
       overlayStyles.actionButton,
       OVERLAY_ACCEPT_BUTTON_BG,
       touch && overlayStyles.touchEdit,
-      mobileComposer.enabled && overlayStyles.mobileEdit,
+      touch && { bottom: 7 + (OVERLAY_BUTTON_SIZE + 9) * (onAcceptAndQueue ? 2 : 1) },
     ],
-    [touch, mobileComposer.enabled],
+    [touch, onAcceptAndQueue],
   );
   const overlayLoadingStyle = useMemo(
     () => [
@@ -233,8 +233,7 @@ export function DictationOverlay({
             overlayStyles.actionButton,
             OVERLAY_ACCEPT_BUTTON_BG,
             touch && overlayStyles.touchSubmit,
-            touch && { transform: [{ translateX: -(OVERLAY_BUTTON_SIZE + theme.spacing[2]) }] },
-            mobileComposer.enabled && { bottom: mobileComposer.bottomPadding + 1 },
+            touch && { bottom: 7 + OVERLAY_BUTTON_SIZE + 9 },
             actionsDisabled && overlayStyles.buttonDisabled,
           ]}
         >
@@ -242,10 +241,7 @@ export function DictationOverlay({
         </Pressable>
       ) : null,
     [
-      mobileComposer.enabled,
-      mobileComposer.bottomPadding,
       touch,
-      theme.spacing,
       onAcceptAndQueue,
       actionsDisabled,
       isFailed,
@@ -433,21 +429,19 @@ const overlayStyles = StyleSheet.create((theme) => ({
   mobileBackground: { position: "absolute", top: -9, bottom: -16, left: -16, right: -16 },
   touchCancel: {
     position: "absolute",
-    left: { xs: theme.spacing[3] + 1 - 6, md: theme.spacing[4] + 1 - 6 },
-    bottom: { xs: theme.spacing[3] + 1 - 6, md: theme.spacing[4] + 1 - 6 },
+    left: 7,
+    bottom: 7,
   },
   touchSubmit: {
     position: "absolute",
-    right: { xs: theme.spacing[3] + 1 - 6, md: theme.spacing[4] + 1 - 6 },
-    bottom: { xs: theme.spacing[3] + 1 - 6, md: theme.spacing[4] + 1 - 6 },
+    right: 7,
+    bottom: 7,
   },
   touchEdit: {
     position: "absolute",
-    top: COMPOSER_CORNER_INSET + 1,
-    right: COMPOSER_CORNER_INSET + 1,
+    right: 7,
   },
   touchActions: { position: "static" },
-  mobileEdit: { top: COMPOSER_CORNER_INSET },
   touchCenter: { alignSelf: "stretch", paddingHorizontal: 56, paddingTop: 8, paddingBottom: 8 },
   // The full-width background extends 9px above and 16px below the field.
   // Offset its contents by half that difference to center in the visible green area.

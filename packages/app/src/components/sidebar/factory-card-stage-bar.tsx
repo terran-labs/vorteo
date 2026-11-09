@@ -22,15 +22,17 @@ export type StageBarIssue = FactoryQueueIssue & { tag?: string };
 export function FactoryStageBar({
   issues,
   onPress,
+  fullWidth = false,
 }: {
   issues: readonly StageBarIssue[];
   onPress: () => void;
+  fullWidth?: boolean;
 }) {
   const { t } = useTranslation();
   const counts = useMemo(() => factoryStageCounts(issues), [issues]);
   if (counts.length === 0) {
     return (
-      <View pointerEvents="none" style={styles.bar}>
+      <View pointerEvents="none" style={[styles.bar, fullWidth && styles.fullWidth]}>
         <Text style={styles.idleText} numberOfLines={1}>
           {t("sidebar.factoryCard.idle")}
         </Text>
@@ -38,7 +40,7 @@ export function FactoryStageBar({
     );
   }
   return (
-    <View style={styles.bar} testID="factory-card-stage-bar">
+    <View style={[styles.bar, fullWidth && styles.fullWidth]} testID="factory-card-stage-bar">
       {counts.map((count) => (
         <Tooltip key={count.segment} delayDuration={200}>
           <TooltipTrigger
@@ -107,6 +109,7 @@ const styles = StyleSheet.create((theme) => ({
     gap: 2,
     alignSelf: "stretch",
   },
+  fullWidth: { width: "100%", height: 10 },
   // Taller than the bar so a pointer can find a segment.
   segmentHit: {
     alignSelf: "stretch",

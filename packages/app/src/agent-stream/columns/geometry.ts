@@ -46,7 +46,10 @@ export function resizeColumn(input: {
   if (input.standaloneText)
     return {
       cards: 0,
-      text: resolveStandaloneTextWidth(containerWidth, Math.max(MIN_TEXT_WIDTH, requested.text)),
+      text: resolveStandaloneTextWidth(
+        containerWidth,
+        Math.max(Math.min(MIN_TEXT_WIDTH, Math.max(320, containerWidth * 0.6)), requested.text),
+      ),
     };
   return resolveColumnWidths(containerWidth, requested);
 }

@@ -115,14 +115,14 @@ export const en = {
       ledger: "Ledger",
       live: "Live",
       sample: "Sample factory",
-      sampleNotice:
-        "Showing a sample queue so the designs can be compared. Controls still change this project's real Factory.",
+      sampleNotice: "Showing a sample queue. Controls still change this project's real Factory.",
       sampleNoticeAll:
-        "Showing three sample Factories so the designs can be compared. Stop and resume stay off while sample data shows.",
+        "Showing three sample Factories. Stop and resume stay off while sample data shows.",
     },
     scope: {
       all: "All Factories",
       allTitle: "All Factories",
+      pipelineSummary: "{{queued}} queued · {{active}} active · {{review}} review",
       factories: "Factories",
       open: "Open",
       zoomIn: "Open the {{project}} Factory",

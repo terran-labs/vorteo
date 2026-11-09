@@ -1,33 +1,17 @@
 import { useCallback, useMemo, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { router } from "expo-router";
-import {
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  OctagonPause,
-  Play,
-  ZoomIn,
-} from "lucide-react-native";
+import { OctagonPause, Play } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
-import { PressHighlight } from "@/components/ui/press-highlight";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { factoryStatePill } from "@/components/sidebar/factory-card-model";
 import { useTimeAgo } from "@/hooks/use-time-ago";
 import { hoverStyle } from "@/styles/hover";
 import type { Theme } from "@/styles/theme";
-import {
-  aggregateStageCounts,
-  type FactoryScopeEntry,
-  type FactoryStop,
-} from "./all-factories-model";
+import type { FactoryStop } from "./all-factories-model";
 import { FactoryControlStrip } from "./overview-controls";
 import type { FactoryOverviewData } from "./overview-data";
-import { StageRing } from "./overview-kit";
-import { FACTORY_LANES } from "./overview-model";
-import { useFactoryOverviewStore } from "./overview-store";
 import { allFactoriesOverviewRoute } from "./routes";
 
 // ---------------------------------------------------------------------------------------------
@@ -38,23 +22,6 @@ const ThemedOctagonPause = withUnistyles(OctagonPause);
 
 // ---------------------------------------------------------------------------------------------
 // Scope
-
-/** "All Factories" from a project's overview: zooms out to every Factory in the installation. */
-export function ScopeBack({ serverId }: { serverId: string }) {
-  const { t } = useTranslation();
-  const back = useCallback(() => router.navigate(allFactoriesOverviewRoute(serverId)), [serverId]);
-  return (
-    <Button
-      variant="ghost"
-      size="sm"
-      leftIcon={ChevronLeft}
-      onPress={back}
-      testID="factory-scope-all"
-    >
-      {t("projectFactory.scope.all")}
-    </Button>
-  );
-}
 
 // ---------------------------------------------------------------------------------------------
 // Stop switch and drain banner
@@ -187,9 +154,6 @@ export function ScopeControls({ data }: { data: FactoryOverviewData }) {
 
 function AllScopeControls({ data, stop }: { data: FactoryOverviewData; stop: ReactNode }) {
   const { t } = useTranslation();
-  const open = useFactoryOverviewStore((store) => store.stopListOpen);
-  const setOpen = useFactoryOverviewStore((store) => store.setStopListOpen);
-  const toggle = useCallback(() => setOpen(!open), [open, setOpen]);
   const running = data.factories.filter((entry) => entry.status === "on").length;
   return (
     <View style={styles.allBlock} testID="factory-all-controls">
@@ -201,227 +165,8 @@ function AllScopeControls({ data, stop }: { data: FactoryOverviewData; stop: Rea
             paused: data.factories.length - running,
           })}
         </Text>
-        <View style={styles.allActions}>
-          {stop}
-          <Button
-            variant="ghost"
-            size="sm"
-            leftIcon={open ? ChevronDown : ChevronRight}
-            onPress={toggle}
-            accessibilityState={open ? EXPANDED : COLLAPSED}
-            testID="factory-stop-list-toggle"
-          >
-            {t("projectFactory.stopAll.eachFactory")}
-          </Button>
-        </View>
+        <View style={styles.allActions}>{stop}</View>
       </View>
-      {open ? <FactoryStopList data={data} /> : null}
-    </View>
-  );
-}
-
-const EXPANDED = { expanded: true };
-const COLLAPSED = { expanded: false };
-
-/** Every Factory in scope with its state and its own Pause or Resume, as in a project's view. */
-function FactoryStopList({ data }: { data: FactoryOverviewData }) {
-  return (
-    <View style={styles.stopList} testID="factory-stop-list">
-      {data.factories.map((entry) => (
-        <FactoryStopRow key={entry.key} entry={entry} data={data} />
-      ))}
-    </View>
-  );
-}
-
-function FactoryStopRow({ entry, data }: { entry: FactoryScopeEntry; data: FactoryOverviewData }) {
-  const { t } = useTranslation();
-  const { stopAll } = data;
-  const drain = entry.drain ?? entry.state?.drain ?? null;
-  const pill = factoryStatePill({ state: entry.status, drain });
-  // A stopped project resumes only with Resume all; a held one waits for whoever holds it.
-  let method: "pause" | "resume" | null = null;
-  if (!drain && entry.status === "on") method = "pause";
-  else if (!drain && entry.status === "paused") method = "resume";
-  const act = useCallback(() => {
-    if (method) stopAll.setProject(entry, method);
-  }, [entry, method, stopAll]);
-  const error = stopAll.projectErrors[entry.key];
-  return (
-    <View style={styles.stopRow} testID={`factory-stop-row-${entry.projectId}`}>
-      <View style={styles.stopName}>
-        <Text style={styles.tileName} numberOfLines={1}>
-          {entry.name}
-          {entry.hostLabel ? <Text style={styles.muted}>{` · ${entry.hostLabel}`}</Text> : null}
-        </Text>
-        {pill.label === "held" && drain ? (
-          <Text style={styles.muted} numberOfLines={1}>
-            {drain.reason}
-          </Text>
-        ) : null}
-        {error ? (
-          <Text style={styles.error} accessibilityRole="alert">
-            {error}
-          </Text>
-        ) : null}
-      </View>
-      <StatusBadge
-        size="xs"
-        variant={pill.variant}
-        label={t(`projectFactory.scope.states.${pill.label}`)}
-      />
-      <View style={styles.stopAction}>
-        {method ? (
-          <Button
-            size="sm"
-            onPress={act}
-            disabled={data.sample || stopAll.pending || stopAll.projectPending !== null}
-            testID={`factory-stop-row-${method}-${entry.projectId}`}
-          >
-            {t(method === "pause" ? "projectFactory.scope.pause" : "projectFactory.scope.resume")}
-          </Button>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
-// ---------------------------------------------------------------------------------------------
-// Per-Factory strip
-
-/** One card or rail row per Factory, with its state, stage counts and zoom. */
-export function FactoriesStrip({
-  data,
-  layout = "cards",
-  selected,
-  onSelect,
-}: {
-  data: FactoryOverviewData;
-  layout?: "cards" | "rail";
-  selected?: string | null;
-  onSelect?: (key: string | null) => void;
-}) {
-  return (
-    <View
-      style={layout === "rail" ? styles.railList : styles.cards}
-      accessibilityRole={layout === "rail" ? "tablist" : undefined}
-      testID="factory-strip"
-    >
-      {data.factories.map((entry) => (
-        <FactoryTile
-          key={entry.key}
-          entry={entry}
-          layout={layout}
-          selected={selected === entry.key}
-          onSelect={onSelect}
-          zoomIn={data.zoomIn}
-          sample={data.sample}
-        />
-      ))}
-    </View>
-  );
-}
-
-function FactoryTile({
-  entry,
-  layout,
-  selected,
-  onSelect,
-  zoomIn,
-  sample,
-}: {
-  entry: FactoryScopeEntry;
-  layout: "cards" | "rail";
-  selected: boolean;
-  onSelect?: (key: string | null) => void;
-  zoomIn: (serverId: string, projectId: string) => void;
-  sample: boolean;
-}) {
-  const { t } = useTranslation();
-  const pill = factoryStatePill({ state: entry.status, drain: entry.drain ?? entry.state?.drain });
-  const zoom = useCallback(
-    () => zoomIn(entry.serverId, entry.projectId),
-    [entry.projectId, entry.serverId, zoomIn],
-  );
-  const select = useCallback(
-    () => onSelect?.(selected ? null : entry.key),
-    [entry.key, onSelect, selected],
-  );
-  const zoomButton = (
-    <Button
-      variant="ghost"
-      size="sm"
-      leftIcon={ZoomIn}
-      onPress={zoom}
-      disabled={sample}
-      accessibilityLabel={t("projectFactory.scope.zoomIn", { project: entry.name })}
-      testID={`factory-zoom-${entry.projectId}`}
-    >
-      {layout === "rail" ? null : t("projectFactory.scope.open")}
-    </Button>
-  );
-  const body = (
-    <>
-      <View style={styles.tileHeader}>
-        <Text style={styles.tileName} numberOfLines={1}>
-          {entry.name}
-        </Text>
-        <StatusBadge
-          size="xs"
-          variant={pill.variant}
-          label={t(`projectFactory.scope.states.${pill.label}`)}
-        />
-      </View>
-      {entry.hostLabel ? (
-        <Text style={styles.muted} numberOfLines={1}>
-          {entry.hostLabel}
-        </Text>
-      ) : null}
-      <MiniStages entry={entry} />
-    </>
-  );
-  if (layout === "rail") {
-    return (
-      <View style={[styles.railRow, selected && styles.railSelected]}>
-        <PressHighlight
-          onPress={select}
-          accessibilityRole="tab"
-          accessibilityState={selected ? SELECTED : UNSELECTED}
-          style={styles.railBody}
-          testID={`factory-filter-${entry.projectId}`}
-        >
-          {body}
-        </PressHighlight>
-        {zoomButton}
-      </View>
-    );
-  }
-  return (
-    <View style={styles.tile} testID={`factory-tile-${entry.projectId}`}>
-      {body}
-      <View style={styles.tileFooter}>{zoomButton}</View>
-    </View>
-  );
-}
-
-const SELECTED = { selected: true };
-const UNSELECTED = { selected: false };
-
-/** Issues per stage as a thin bar of proportional segments, colored like the lane stripes. */
-function MiniStages({ entry }: { entry: FactoryScopeEntry }) {
-  const { t } = useTranslation();
-  const counts = useMemo(() => aggregateStageCounts([entry.issues]), [entry.issues]);
-  const total = FACTORY_LANES.reduce((sum, lane) => sum + counts[lane], 0);
-  if (entry.issues === null) return <Text style={styles.muted}>—</Text>;
-  if (total === 0) return <Text style={styles.muted}>{t("projectFactory.idle")}</Text>;
-  return (
-    <View style={styles.mini}>
-      {FACTORY_LANES.filter((lane) => counts[lane] > 0).map((lane) => (
-        <View key={lane} style={styles.miniItem}>
-          <StageRing lane={lane} />
-          <Text style={styles.miniCount}>{counts[lane]}</Text>
-        </View>
-      ))}
     </View>
   );
 }
