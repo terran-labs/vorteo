@@ -1,4 +1,5 @@
 import { supportsDesktopPaneSplits } from "@/constants/layout";
+import { requestSupportingCard } from "./supporting-card-requests";
 import { revealWorkspaceTab } from "./navigation";
 import {
   collectAllPanes,
@@ -70,11 +71,8 @@ export function openComposerChanges(input: OpenWorkspaceChangesInput): string | 
 export function openWorkspacePullRequest(input: OpenWorkspacePullRequestInput): string | null {
   if (!input.workspaceKey) return null;
   if (input.isCompact) {
-    return useWorkspaceLayoutStore.getState().openTab({
-      workspaceKey: input.workspaceKey,
-      target: { kind: "pull_request" },
-      intent: "reveal",
-    });
+    requestSupportingCard(input.workspaceKey, "pull_request", "inline");
+    return null;
   }
   let tabId: string | null;
   if (supportingViewsBelongInExplorer(input) || input.destination === "explorer") {

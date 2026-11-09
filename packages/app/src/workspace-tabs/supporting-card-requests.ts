@@ -10,8 +10,14 @@ interface SupportingCardRequests {
 // a folded card even when its tab was already the selected supporting view.
 export const useSupportingCardRequests = create<SupportingCardRequests>(() => ({ requests: {} }));
 
-export function requestSupportingCard(workspaceKey: string, kind: WorkspaceTabTarget["kind"]) {
-  usePanelStore.getState().setSupportingCardExpanded(kind === "files" ? "files" : "changes", true);
+export function requestSupportingCard(
+  workspaceKey: string,
+  kind: WorkspaceTabTarget["kind"],
+  layout: "inline" | "sidebar" = "sidebar",
+) {
+  usePanelStore
+    .getState()
+    .setSupportingCardExpanded(kind === "files" ? "files" : "changes", true, layout);
   useSupportingCardRequests.setState((state) => ({
     requests: {
       ...state.requests,

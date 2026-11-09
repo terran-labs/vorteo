@@ -4,10 +4,12 @@ import { StyleSheet, withUnistyles } from "react-native-unistyles";
 
 const SIZE = 40;
 const RADIUS = 17;
-const SEGMENTS = 32;
+export const CONTEXT_RING_SEGMENTS = 32;
+export const CONTEXT_RING_FILL_RATIO = 0.65;
+const SEGMENTS = CONTEXT_RING_SEGMENTS;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 const STEP = CIRCUMFERENCE / SEGMENTS;
-const DASH = `${STEP * 0.65} ${STEP * 0.35}`;
+const DASH = `${STEP * CONTEXT_RING_FILL_RATIO} ${STEP * (1 - CONTEXT_RING_FILL_RATIO)}`;
 
 /** Equal arc lengths and equal gaps keep context capacity distinct from a loading spinner. */
 export function ContextUsageRing({ percentage }: { percentage: number }) {
@@ -44,7 +46,7 @@ function RingGraphic({ filled, track, ink }: { filled: number; track: string; in
           r={RADIUS}
           fill="none"
           strokeWidth={3}
-          strokeDasharray={`${STEP * 0.65} ${CIRCUMFERENCE - STEP * 0.65}`}
+          strokeDasharray={`${STEP * CONTEXT_RING_FILL_RATIO} ${CIRCUMFERENCE - STEP * CONTEXT_RING_FILL_RATIO}`}
           transform={`rotate(${-90 + (index * 360) / SEGMENTS} 20 20)`}
         />
       ))}

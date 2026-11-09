@@ -14,7 +14,7 @@ export interface ColumnWidths {
 }
 
 export function resolveStandaloneTextWidth(containerWidth: number, preferred: number): number {
-  return Math.max(0, Math.min(preferred, MAX_TEXT_WIDTH, containerWidth - COLUMN_MARGIN * 2));
+  return Math.max(0, Math.min(preferred, MAX_TEXT_WIDTH, containerWidth));
 }
 
 export function resolveColumnWidths(containerWidth: number, preferred: ColumnWidths): ColumnWidths {

@@ -107,8 +107,8 @@ export function CardDisclosure({
     metadataWidth,
   );
   const countLayout = useMemo(
-    () => ({ compact: tile.compact, narrow: stacked }),
-    [tile.compact, stacked],
+    () => ({ compact: tile.compact, narrow: compactTile }),
+    [tile.compact, compactTile],
   );
   const label = status ? `${title} (${status})` : title;
   const indicator = compactTile ? compactIndicator : null;

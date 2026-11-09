@@ -52,7 +52,7 @@ describe("Explorer sidebar", () => {
     );
   });
 
-  it("opens workspace Changes in a phone sheet", () => {
+  it("opens workspace Changes in place on phones", () => {
     openExplorerSidebarView({
       isCompact: false,
       workspaceKey: WORKSPACE_KEY,
@@ -68,19 +68,14 @@ describe("Explorer sidebar", () => {
     });
 
     expect(usePanelStore.getState().mobilePanel.target).toBe("agent");
-    expect(
-      useWorkspaceLayoutStore
-        .getState()
-        .sheetsByWorkspace[WORKSPACE_KEY].map((sheet) => sheet.tab.target.kind),
-    ).toEqual(["changes_tree"]);
+    expect(usePanelStore.getState().inlineCardExpanded.changes).toBe(true);
+    expect(useWorkspaceLayoutStore.getState().sheetsByWorkspace[WORKSPACE_KEY] ?? []).toEqual([]);
     const input = { isCompact: true, workspaceKey: WORKSPACE_KEY, checkout };
     toggleExplorerSidebar(input);
     expect(isExplorerSidebarOpen(input)).toBe(false);
     toggleExplorerSidebar(input);
     expect(isExplorerSidebarOpen(input)).toBe(true);
-    expect(
-      useWorkspaceLayoutStore.getState().sheetsByWorkspace[WORKSPACE_KEY][0].tab.target.kind,
-    ).toBe("files");
+    expect(usePanelStore.getState().inlineCardExpanded.files).toBe(true);
     expect(usePanelStore.getState().mobilePanel.target).toBe("agent");
   });
 

@@ -8,6 +8,7 @@ vi.mock("@react-native-async-storage/async-storage", () => ({
   },
 }));
 
+import { useSupportingCardRequests } from "./supporting-card-requests";
 import { DEFAULT_APP_SETTINGS } from "@/hooks/use-settings";
 import { usePanelStore } from "@/stores/panel-store";
 import {
@@ -43,7 +44,7 @@ beforeEach(() => {
 });
 
 describe("openWorkspaceChanges", () => {
-  it("opens Changes in a phone sheet", () => {
+  it("opens Changes in the inline phone card", () => {
     useWorkspaceLayoutStore.getState().setLayoutMode("compact");
     openWorkspaceChanges({
       isCompact: true,
@@ -53,11 +54,9 @@ describe("openWorkspaceChanges", () => {
     });
 
     expect(usePanelStore.getState().mobilePanel.target).toBe("agent");
-    expect(
-      useWorkspaceLayoutStore
-        .getState()
-        .sheetsByWorkspace[WORKSPACE_KEY].map((sheet) => sheet.tab.target.kind),
-    ).toEqual(["changes_tree"]);
+    expect(usePanelStore.getState().inlineCardExpanded.changes).toBe(true);
+    expect(useSupportingCardRequests.getState().requests[WORKSPACE_KEY].kind).toBe("changes_tree");
+    expect(useWorkspaceLayoutStore.getState().sheetsByWorkspace[WORKSPACE_KEY] ?? []).toEqual([]);
   });
 });
 
@@ -111,17 +110,15 @@ describe("openComposerChanges", () => {
     expect(sideTabKinds).toContain("working_diff");
   });
 
-  it("reuses the phone Changes sheet", () => {
+  it("reuses the inline phone Changes card", () => {
     useWorkspaceLayoutStore.getState().setLayoutMode("compact");
     openComposerChanges({ ...input, isCompact: true });
     openComposerChanges({ ...input, isCompact: true });
 
     expect(usePanelStore.getState().mobilePanel.target).toBe("agent");
-    expect(
-      useWorkspaceLayoutStore
-        .getState()
-        .sheetsByWorkspace[WORKSPACE_KEY].map((sheet) => sheet.tab.target.kind),
-    ).toEqual(["changes_tree"]);
+    expect(usePanelStore.getState().inlineCardExpanded.changes).toBe(true);
+    expect(useSupportingCardRequests.getState().requests[WORKSPACE_KEY].kind).toBe("changes_tree");
+    expect(useWorkspaceLayoutStore.getState().sheetsByWorkspace[WORKSPACE_KEY] ?? []).toEqual([]);
   });
 });
 
@@ -133,17 +130,17 @@ describe("openWorkspacePullRequest", () => {
   };
 
   it.each(["main", "side", "explorer"] as const)(
-    "opens the phone PR view in a sheet when the desktop preference is %s",
+    "opens the inline phone PR view when the desktop preference is %s",
     (destination) => {
       useWorkspaceLayoutStore.getState().setLayoutMode("compact");
       openWorkspacePullRequest({ ...input, isCompact: true, destination });
 
       expect(usePanelStore.getState().mobilePanel.target).toBe("agent");
-      expect(
-        useWorkspaceLayoutStore
-          .getState()
-          .sheetsByWorkspace[WORKSPACE_KEY].map((sheet) => sheet.tab.target.kind),
-      ).toEqual(["pull_request"]);
+      expect(usePanelStore.getState().inlineCardExpanded.changes).toBe(true);
+      expect(useSupportingCardRequests.getState().requests[WORKSPACE_KEY].kind).toBe(
+        "pull_request",
+      );
+      expect(useWorkspaceLayoutStore.getState().sheetsByWorkspace[WORKSPACE_KEY] ?? []).toEqual([]);
     },
   );
 

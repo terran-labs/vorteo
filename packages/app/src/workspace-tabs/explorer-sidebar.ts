@@ -54,11 +54,7 @@ export function openExplorerSidebarView(
   input: ExplorerSidebarInput & { view: ExplorerSidebarView },
 ): void {
   if (input.isCompact && input.workspaceKey) {
-    useWorkspaceLayoutStore.getState().openTab({
-      workspaceKey: input.workspaceKey,
-      target: VIEW_TARGETS[input.view],
-      intent: "reveal",
-    });
+    requestSupportingCard(input.workspaceKey, VIEW_TARGETS[input.view].kind, "inline");
     return;
   }
   if (usesCompactExplorerSidebar(input)) {
@@ -98,9 +94,9 @@ export function showExplorerSidebar(input: ExplorerSidebarInput): void {
 
 export function hideExplorerSidebar(input: ExplorerSidebarInput): void {
   if (input.isCompact && input.workspaceKey) {
-    const store = useWorkspaceLayoutStore.getState();
-    const tabId = explorerSheetId(store, input.workspaceKey);
-    if (tabId) store.closeTab(input.workspaceKey, tabId);
+    const panel = usePanelStore.getState();
+    panel.setSupportingCardExpanded("files", false, "inline");
+    panel.setSupportingCardExpanded("changes", false, "inline");
     return;
   }
   if (usesCompactExplorerSidebar(input)) {
@@ -133,20 +129,26 @@ export function toggleExplorerSidebar(input: ExplorerSidebarInput): void {
 
 export function useIsExplorerSidebarOpen(input: ExplorerSidebarQuery): boolean {
   const compactOpen = usePanelStore(selectIsCompactFileExplorerOpen);
+  const inlineOpen = usePanelStore((state) =>
+    Boolean(state.inlineCardExpanded.files || state.inlineCardExpanded.changes),
+  );
   const workspaceOpen = useWorkspaceLayoutStore((state) => {
     if (!input.workspaceKey) return false;
-    if (input.isCompact) return explorerSheetId(state, input.workspaceKey) !== null;
+    if (input.isCompact) return false;
     return (
       canUseExplorerSidebar(input) && selectIsExplorerSidebarVisible(state, input.workspaceKey)
     );
   });
-  if (input.isCompact && input.workspaceKey) return workspaceOpen;
+  if (input.isCompact && input.workspaceKey) return inlineOpen;
   return usesCompactExplorerSidebar(input) ? compactOpen : workspaceOpen;
 }
 
 export function isExplorerSidebarOpen(input: ExplorerSidebarQuery): boolean {
   if (input.isCompact && input.workspaceKey)
-    return explorerSheetId(useWorkspaceLayoutStore.getState(), input.workspaceKey) !== null;
+    return Boolean(
+      usePanelStore.getState().inlineCardExpanded.files ||
+      usePanelStore.getState().inlineCardExpanded.changes,
+    );
   if (usesCompactExplorerSidebar(input)) {
     return selectIsCompactFileExplorerOpen(usePanelStore.getState());
   }
@@ -155,16 +157,6 @@ export function isExplorerSidebarOpen(input: ExplorerSidebarQuery): boolean {
     canUseExplorerSidebar(input) &&
     selectIsExplorerSidebarVisible(useWorkspaceLayoutStore.getState(), input.workspaceKey),
   );
-}
-
-function explorerSheetId(
-  state: ReturnType<typeof useWorkspaceLayoutStore.getState>,
-  workspaceKey: string,
-): string | null {
-  const sheet = state.sheetsByWorkspace[workspaceKey]?.findLast(({ tab }) =>
-    ["files", "changes_tree", "pull_request"].includes(tab.target.kind),
-  );
-  return sheet?.tab.tabId ?? null;
 }
 
 /** Incoming callers identify a workspace; fork callers may provide its exact checkout. */
