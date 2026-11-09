@@ -23,7 +23,6 @@ import { useSessionStore } from "@/stores/session-store";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import {
   activeDrains,
-  collectNeedsYou,
   factoryScopeKey,
   scopedIssues,
   type FactoryScopeEntry,
@@ -49,16 +48,9 @@ import {
   SAMPLE_ROLE_USAGE,
   sampleAgentLookup,
   sampleFactoryEntries,
-  sampleFactoryQuestions,
   sampleQuotaAccounts,
 } from "./overview-sample";
-import {
-  useAllFactories,
-  useFactoryHosts,
-  useFactoryQuestions,
-  useProjectNames,
-  useStopAll,
-} from "./overview-sources";
+import { useAllFactories, useFactoryHosts, useProjectNames, useStopAll } from "./overview-sources";
 import { factoryListQueryKey } from "./factory-reads";
 import { projectFactoryOverviewRoute } from "./routes";
 import { useFactoryOverviewStore, type FactoryOverviewVariant } from "./overview-store";
@@ -98,6 +90,7 @@ function AllOverview({ serverId }: { serverId: string }) {
       testID="factory-overview"
       actions={compact ? undefined : bar}
       wide
+      headerTitle
     >
       {compact ? bar : null}
       {hosts.length === 0 && catalogStatus !== "loading" ? (
@@ -133,6 +126,7 @@ function ProjectOverview({ serverId, projectId }: Target) {
       testID="factory-overview"
       actions={compact ? undefined : bar}
       wide
+      headerTitle
     >
       {compact ? bar : null}
       {factory.error ? (
@@ -242,7 +236,6 @@ function useOverviewData(input: {
   const sample = useFactoryOverviewStore((store) => store.sample);
   const sessions = useSessionStore((store) => store.sessions);
   const usage = useProviderUsage(serverId, { pollUsage: true, enabled: active });
-  const liveQuestions = useFactoryQuestions(liveEntries);
   const factoryHosts = useFactoryHosts();
   // Global stop and resume act on whole hosts, so only All Factories, which sees every project
   // on each host, offers them.
@@ -262,7 +255,6 @@ function useOverviewData(input: {
   const now = queue.updatedAt || openedAt;
   return useMemo<FactoryOverviewData>(() => {
     const entries = sample ? sampleScope(scope, serverId, now) : liveEntries;
-    const questions = sample ? sampleFactoryQuestions(entries[0]!, now) : liveQuestions;
     const issues = scope === "all" ? scopedIssues(entries) : (entries[0]?.issues ?? []);
     const lookup: FactoryAgentLookup = sample
       ? sampleAgentLookup(now)
@@ -292,7 +284,6 @@ function useOverviewData(input: {
       serverId,
       focus,
       factories: entries,
-      needsYou: collectNeedsYou({ entries, questions }),
       drains: activeDrains(entries),
       stopAll,
       zoomIn,
@@ -322,7 +313,6 @@ function useOverviewData(input: {
     serverId,
     now,
     liveEntries,
-    liveQuestions,
     sessions,
     usage.view,
     queue,

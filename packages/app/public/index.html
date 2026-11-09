@@ -143,13 +143,20 @@
         height: 11px;
         z-index: 2147483647;
         pointer-events: none;
-        background-color: var(--colors-surface-sidebar, #f4f4f5);
+        /* Compact layouts set the toolbar surface; wide layouts keep the sidebar surface. */
+        background-color: var(
+          --vorteo-top-inset-background,
+          var(--colors-surface-sidebar, #f4f4f5)
+        );
         -webkit-background-clip: text;
         background-clip: text;
       }
       @media (prefers-color-scheme: dark) {
         html[data-vorton-ios-standalone="true"] #vorton-ios-status-strip {
-          background-color: var(--colors-surface-sidebar, #141716);
+          background-color: var(
+            --vorteo-top-inset-background,
+            var(--colors-surface-sidebar, #141716)
+          );
         }
       }
       button,
@@ -475,7 +482,8 @@
           transparent calc(100% - 1px),
           #000 calc(100% - 0.5px)
         );
-        animation: boot-spin 1.6s linear infinite;
+        /* Matches SPINNER_PERIOD_MS in src/styles/spinner.ts. */
+        animation: boot-spin 2.7s linear infinite;
       }
       @keyframes boot-spin {
         to {

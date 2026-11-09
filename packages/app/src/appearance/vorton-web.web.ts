@@ -34,6 +34,22 @@ html :is(button, [role="button"], [role="tab"], [role="menuitem"], [role="combob
 }
 html[data-vorton-touch="true"] [data-vorton-action-slot] { min-width: 44px; min-height: 44px; }
 html[data-vorton-touch="true"] [data-vorton-action-slot] > * { min-width: 44px; min-height: 44px; }
+/* Inline pills keep their visual size; the centered ::after supplies the 44px touch target. */
+html[data-vorton-touch="true"] [data-vorton-inline-pill] {
+  min-height: 0 !important;
+  min-width: 0 !important;
+  position: relative;
+  overflow: visible;
+}
+html[data-vorton-touch="true"] [data-vorton-inline-pill]::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: max(100%, 44px);
+  height: 44px;
+  transform: translate(-50%, -50%);
+}
 `;
 export function applyVortonWeb(touch: boolean): () => void {
   const root = document.documentElement;

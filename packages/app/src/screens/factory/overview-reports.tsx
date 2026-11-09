@@ -35,16 +35,19 @@ import {
   formatUsd,
   hoursSince,
   median,
+  shownReports,
   type FactoryCategory,
+  type FactoryReport,
 } from "./overview-model";
 import type { FactoryOverviewData } from "./overview-data";
 
 // ---------------------------------------------------------------------------------------------
 // Key figures
 
-export type FactoryKpi =
+/** Figures that can stand in a key-figure strip. */
+export type FactoryKpi = Extract<
+  FactoryReport,
   | "inFlight"
-  | "needsYou"
   | "merged7d"
   | "cycleTime"
   | "tokens"
@@ -52,7 +55,8 @@ export type FactoryKpi =
   | "monthCap"
   | "passRate"
   | "costPerPr"
-  | "queueAge";
+  | "queueAge"
+>;
 
 function sum(values: readonly number[]): number {
   return values.reduce((total, value) => total + value, 0);
@@ -73,16 +77,6 @@ export function KpiTile({ kpi, data }: { kpi: FactoryKpi; data: FactoryOverviewD
             queued: figures.counts.queued,
             blocked: figures.counts.blocked,
           })}
-          sample={sample}
-        />
-      );
-    case "needsYou":
-      return (
-        <StatTile
-          label={k("needsYou")}
-          value={String(figures.needsYou)}
-          detail={k("needsYouDetail", { count: figures.repairs })}
-          tone={figures.needsYou ? "warning" : undefined}
           sample={sample}
         />
       );
@@ -190,9 +184,12 @@ export function KpiStrip({
   data: FactoryOverviewData;
   kpis: readonly FactoryKpi[];
 }) {
+  // Live mode never shows a sample-backed figure.
+  const shown = shownReports(kpis, data.sample);
+  if (shown.length === 0) return null;
   return (
     <View style={styles.kpis}>
-      {kpis.map((kpi) => (
+      {shown.map((kpi) => (
         <KpiTile key={kpi} kpi={kpi} data={data} />
       ))}
     </View>
@@ -612,9 +609,10 @@ function LedgerTotal({ data }: { data: FactoryOverviewData }) {
   );
 }
 
-/** Small legend explaining the dash, shown once under report grids. */
-export function ReportsFootnote() {
+/** Small legend explaining sample data and the dash; Live mode shows no sample data to explain. */
+export function ReportsFootnote({ data }: { data: FactoryOverviewData }) {
   const { t } = useTranslation();
+  if (!data.sample) return null;
   return (
     <View style={styles.footRow}>
       <SampleTag />
@@ -782,6 +780,66 @@ export function QueueNotices({ data }: { data: FactoryOverviewData }) {
         <Text style={styles.muted}>{t("projectFactory.idle")}</Text>
       ) : null}
     </>
+  );
+}
+
+export type ReportPanelKind = Exclude<FactoryReport, FactoryKpi>;
+
+/** One panel in a design's report grid, with the cell size it takes. */
+export interface ReportPanelItem {
+  report: ReportPanelKind;
+  size?: "sm" | "md" | "lg";
+  /** The compact form, where the panel has one. */
+  dense?: boolean;
+}
+
+function ReportPanel({ item, data }: { item: ReportPanelItem; data: FactoryOverviewData }) {
+  switch (item.report) {
+    case "velocityChart":
+      return <VelocityPanel data={data} />;
+    case "costPerPrChart":
+      return <CostPerPrPanel data={data} />;
+    case "tokenHistoryChart":
+      return <TokenHistoryPanel data={data} />;
+    case "budgets":
+      return <BudgetPanel data={data} />;
+    case "accountPicks":
+      return <AccountPicksPanel data={data} />;
+    case "categories":
+      return <CategoryPanel data={data} />;
+    case "quota":
+      // Sample accounts stand in only in Sample factory mode, so Live hides nothing here.
+      return <QuotaPanel data={data} dense={item.dense} />;
+    case "providerSpend":
+      return <ProviderSpendPanel data={data} />;
+    case "ledger":
+      return <LedgerTable data={data} />;
+  }
+}
+
+/** Whether any of these panels shows in the current mode, so a design can hide its heading. */
+export function hasReportPanels(items: readonly ReportPanelItem[], sample: boolean): boolean {
+  return shownReports(items, sample).length > 0;
+}
+
+/** A design's report grid; Live mode leaves out every sample-backed panel and reflows the rest. */
+export function ReportPanels({
+  data,
+  items,
+}: {
+  data: FactoryOverviewData;
+  items: readonly ReportPanelItem[];
+}) {
+  const shown = shownReports(items, data.sample);
+  if (shown.length === 0) return null;
+  return (
+    <ReportGrid>
+      {shown.map((item) => (
+        <ReportCell key={item.report} size={item.size}>
+          <ReportPanel item={item} data={data} />
+        </ReportCell>
+      ))}
+    </ReportGrid>
   );
 }
 

@@ -1,3 +1,4 @@
+import { SPINNER_PERIOD_MS } from "@/styles/spinner";
 import { STATUS_INDICATOR_FILLED_DOT_SIZE } from "@/utils/status-indicator-geometry";
 
 // The running indicator is a status dot with a rotating ring around it, and the whole set of
@@ -26,13 +27,13 @@ export const STATUS_RING_FRAME_SIZE = STATUS_RING_SIZE + STATUS_RING_HALO_INSET 
 export const STATUS_RING_TRACK_OPACITY = 0.3;
 export const STATUS_RING_HEAD_OPACITY = 0.9;
 
-// One period for every ring in the app. Each platform owns one mount-independent timeline: web
-// animations share an absolute document-timeline start, while native publishes this wall-clock
-// phase from one UI-thread clock. A row that appears mid-flight therefore lands in step with the
-// rings already turning.
-export const STATUS_RING_PERIOD_MS = 900;
-/** The sidebar's calmer tempo: a third of the default rate, still phase-locked to wall time. */
-export const STATUS_RING_CALM_PERIOD_MS = STATUS_RING_PERIOD_MS * 3;
+// One period for every ring in the app, the shared calm spinner tempo. Each platform owns one
+// mount-independent timeline: web animations share an absolute document-timeline start, while
+// native publishes this wall-clock phase from one UI-thread clock. A row that appears mid-flight
+// therefore lands in step with the rings already turning.
+export const STATUS_RING_PERIOD_MS = SPINNER_PERIOD_MS;
+/** The calm tempo is now every ring's tempo; kept so callers passing `tempo="calm"` still match. */
+export const STATUS_RING_CALM_PERIOD_MS = STATUS_RING_PERIOD_MS;
 
 export function getStatusRingRotation(nowMs: number, periodMs = STATUS_RING_PERIOD_MS): number {
   "worklet";
