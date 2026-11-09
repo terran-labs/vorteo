@@ -2601,11 +2601,45 @@ export async function createPaseoDaemon(
       label: "drain plugin lifecycle events",
     }).catch((error) => logger.warn({ err: error }, "Plugin lifecycle events did not finish"));
     step("flush agents");
-    logger.info({ phase: "manager-flush-enter" }, "SHUTDOWN_DIAGNOSTIC");
-    await agentManager.flushForShutdown().catch(() => undefined);
-    logger.info({ phase: "manager-flush-exit" }, "SHUTDOWN_DIAGNOSTIC");
+    let diagnosticLastTick = performance.now();
+    let diagnosticLastCpu = process.cpuUsage();
+    const diagnosticHeartbeat = setInterval(() => {
+      const now = performance.now();
+      const cpu = process.cpuUsage();
+      logger.info(
+        {
+          phase: "flush-heartbeat",
+          monoMs: now,
+          intervalMs: now - diagnosticLastTick,
+          delayMs: Math.max(0, now - diagnosticLastTick - 100),
+          cpuUserMicros: cpu.user - diagnosticLastCpu.user,
+          cpuSystemMicros: cpu.system - diagnosticLastCpu.system,
+        },
+        "SHUTDOWN_DIAGNOSTIC",
+      );
+      diagnosticLastTick = now;
+      diagnosticLastCpu = cpu;
+    }, 100);
+    diagnosticHeartbeat.unref();
+    logger.info({ phase: "manager-flush-enter", monoMs: performance.now() }, "SHUTDOWN_DIAGNOSTIC");
+    try {
+      await agentManager.flushForShutdown().catch(() => undefined);
+    } finally {
+      clearInterval(diagnosticHeartbeat);
+      logger.info(
+        {
+          phase: "manager-flush-exit",
+          monoMs: performance.now(),
+          sinceLastHeartbeatMs: performance.now() - diagnosticLastTick,
+        },
+        "SHUTDOWN_DIAGNOSTIC",
+      );
+    }
     detachAgentStoragePersistence();
-    logger.info({ phase: "persistence-detached" }, "SHUTDOWN_DIAGNOSTIC");
+    logger.info(
+      { phase: "persistence-detached", monoMs: performance.now() },
+      "SHUTDOWN_DIAGNOSTIC",
+    );
     step("agent storage");
     await agentStorage.flush().catch(() => undefined);
     step("provider runtime");

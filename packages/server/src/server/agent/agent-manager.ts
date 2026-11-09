@@ -1564,7 +1564,7 @@ export class AgentManager {
   private diagnosticSequence = 0;
   private readonly diagnosticTasks = new Map<
     Promise<unknown>,
-    { id: number; category: string; started: number; caller: string }
+    { id: number; category: string; started: number; startedMonoMs: number; caller: string }
   >();
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly agentRegistrationTasks = new Set<Promise<void>>();
@@ -8520,14 +8520,23 @@ export class AgentManager {
       id: ++this.diagnosticSequence,
       category: "background",
       started: Date.now(),
+      startedMonoMs: performance.now(),
       caller: new Error().stack?.split("\n").slice(2, 5).join(" | ") ?? "",
     };
     this.diagnosticTasks.set(task, diagnostic);
-    this.logger.info({ diagnostic, phase: "enqueue" }, "SHUTDOWN_DIAGNOSTIC");
+    this.logger.info(
+      { diagnostic, phase: "enqueue", monoMs: performance.now() },
+      "SHUTDOWN_DIAGNOSTIC",
+    );
     this.backgroundTasks.add(task);
     void task.finally(() => {
       this.logger.info(
-        { diagnostic, phase: "settled", elapsedMs: Date.now() - diagnostic.started },
+        {
+          diagnostic,
+          phase: "settled",
+          elapsedMs: performance.now() - diagnostic.startedMonoMs,
+          monoMs: performance.now(),
+        },
         "SHUTDOWN_DIAGNOSTIC",
       );
       this.diagnosticTasks.delete(task);
@@ -8544,14 +8553,23 @@ export class AgentManager {
       id: ++this.diagnosticSequence,
       category: "registration",
       started: Date.now(),
+      startedMonoMs: performance.now(),
       caller: new Error().stack?.split("\n").slice(2, 5).join(" | ") ?? "",
     };
     this.diagnosticTasks.set(settled, diagnostic);
-    this.logger.info({ diagnostic, phase: "enqueue" }, "SHUTDOWN_DIAGNOSTIC");
+    this.logger.info(
+      { diagnostic, phase: "enqueue", monoMs: performance.now() },
+      "SHUTDOWN_DIAGNOSTIC",
+    );
     this.agentRegistrationTasks.add(settled);
     void settled.then(() => {
       this.logger.info(
-        { diagnostic, phase: "settled", elapsedMs: Date.now() - diagnostic.started },
+        {
+          diagnostic,
+          phase: "settled",
+          elapsedMs: performance.now() - diagnostic.startedMonoMs,
+          monoMs: performance.now(),
+        },
         "SHUTDOWN_DIAGNOSTIC",
       );
       this.diagnosticTasks.delete(settled);
@@ -8581,6 +8599,7 @@ export class AgentManager {
     this.logger.info(
       {
         phase: "stream-flush-enter",
+        monoMs: performance.now(),
         background: this.backgroundTasks.size,
         registrations: this.agentRegistrationTasks.size,
         buffers: Reflect.get(this.agentStreamCoalescer, "buffers").size,
@@ -8588,7 +8607,10 @@ export class AgentManager {
       "SHUTDOWN_DIAGNOSTIC",
     );
     this.agentStreamCoalescer.flushAll();
-    this.logger.info({ phase: "stream-flush-exit" }, "SHUTDOWN_DIAGNOSTIC");
+    this.logger.info(
+      { phase: "stream-flush-exit", monoMs: performance.now() },
+      "SHUTDOWN_DIAGNOSTIC",
+    );
     // Drain tasks, including tasks spawned while awaiting.
     while (
       this.backgroundTasks.size > 0 ||
@@ -8600,6 +8622,7 @@ export class AgentManager {
       this.logger.info(
         {
           phase: "tasks-wait-enter",
+          monoMs: performance.now(),
           tasks: pending.map((task) => this.diagnosticTasks.get(task)),
           background: this.backgroundTasks.size,
           registrations: this.agentRegistrationTasks.size,
@@ -8610,6 +8633,7 @@ export class AgentManager {
       this.logger.info(
         {
           phase: "tasks-wait-exit",
+          monoMs: performance.now(),
           background: this.backgroundTasks.size,
           registrations: this.agentRegistrationTasks.size,
         },
