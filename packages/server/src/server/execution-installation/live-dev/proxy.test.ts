@@ -168,7 +168,8 @@ test("a stale mode change is refused and an unreadable record never reads as liv
     await expect(
       changeLiveDevMode(stateDir, { expectedRevision: initial.revision, mode: "reliable" }),
     ).rejects.toBeInstanceOf(LiveDevStateError);
-    await writeFile(path.join(stateDir, "live-dev.json"), '{"version":1,"mode":"live"');
+    // Delivery mode follows the installation type, so its record is the one that matters.
+    await writeFile(path.join(stateDir, "installation-type.json"), '{"version":1,"type":"lab"');
     await expect(readLiveDevMode(stateDir)).rejects.toBeInstanceOf(LiveDevStateError);
     // The owner can repair it by choosing Reliable, and only Reliable.
     await expect(

@@ -15,13 +15,14 @@ const TYPES: readonly { value: InstallationType; label: string; description: str
   {
     value: "stable",
     label: "Stable",
-    description: "Installs tagged releases through tracked updates you approve.",
+    description:
+      "Serves the published interface and installs tagged releases through tracked updates you approve.",
   },
   {
     value: "lab",
     label: "Lab",
     description:
-      "Evolves itself from its live checkout: changes rebuild and swap in here first, then reach main once they are stable.",
+      "Live development: your browser runs the live checkout with hot reload, and daemon changes rebuild and swap in here first, then reach main once they are stable.",
   },
 ];
 
