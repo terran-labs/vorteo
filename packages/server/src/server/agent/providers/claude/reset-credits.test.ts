@@ -90,6 +90,28 @@ describe("ClaudeResetCreditSession", () => {
     });
     const headers = (init?.headers ?? {}) as Record<string, string>;
     expect(headers.Authorization).toBe("Bearer token-1");
+    // Claude offers resets to Claude Code, so Vorteo's reads identify as the installed CLI.
+    expect(headers["User-Agent"]).toMatch(/^claude-cli\/\d+\.\d+\.\d+ \(external, cli\)$/);
+  });
+
+  test("labels grants that name the limits they clear instead of a type", async () => {
+    const fetchApi = vi.fn<typeof fetch>();
+    recordClaudeResetStatus(configDir, {
+      eligible: true,
+      grants: [
+        { id: "fable", label: "Fable reset", resets_left: 2, clears: ["seven_day_omelette"] },
+        { id: "both", label: "Full", resets_left: 1, clears: ["five_hour", "seven_day"] },
+      ],
+    });
+    const snapshot = await session(fetchApi).read();
+    expect(snapshot).toMatchObject({
+      status: "available",
+      availableCount: 3,
+      credits: [
+        { id: "fable", resetType: "weekly" },
+        { id: "both", resetType: "full" },
+      ],
+    });
   });
 
   test("refuses to spend a reset when the signed-in account changed", async () => {

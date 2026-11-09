@@ -24,6 +24,22 @@ export const CLAUDE_OAUTH_BETA = "oauth-2025-04-20";
 /** The exact query Claude Code sends for its reset read. Vorteo shows no spend from this call. */
 export const CLAUDE_USAGE_WITH_RESETS_PATH = "/api/oauth/usage?cedar_ember=1&skip_spend=1";
 const RESET_PROGRAM = "cedar_ember";
+/** Used until the daemon has read the installed Claude Code version. */
+const FALLBACK_CLAUDE_CODE_VERSION = "2.1.316";
+let installedClaudeCodeVersion: string | null = null;
+
+/** Provider refresh reports the installed CLI version, so Vorteo's reads match what that CLI sends. */
+export function noteClaudeCodeVersion(version: string) {
+  installedClaudeCodeVersion = version;
+}
+
+/**
+ * Claude offers reset grants to Claude Code, which identifies itself with this User-Agent. Vorteo
+ * reads them with the same account sign-in Claude Code uses, so it sends the same identifier.
+ */
+export function claudeCodeUserAgent(): string {
+  return `claude-cli/${installedClaudeCodeVersion ?? FALLBACK_CLAUDE_CODE_VERSION} (external, cli)`;
+}
 const GRANT_ID = /^[a-z0-9_-]{1,40}$/;
 const REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** Usage polls refresh the shared reading every couple of minutes; reuse it within this window. */
@@ -42,6 +58,8 @@ const GrantSchema = z.object({
   usable_now: z.boolean().catch(false),
   use_requires_limit: z.boolean().catch(true),
   type: z.enum(["session", "weekly", "full"]).optional().catch(undefined),
+  /** Current grants name the limits they clear instead of carrying `type`. */
+  clears: z.array(z.string()).optional().catch(undefined),
   unavailable_reason: z.string().nullish().catch(null),
 });
 
@@ -106,6 +124,16 @@ export function recordClaudeResetStatus(configDir: string, block: unknown, now =
   statusByConfigDir.set(configDir, { status: parseClaudeResetStatus(block), fetchedAt: now });
 }
 
+/** What Claude said about resets, without grant IDs or labels, for the daemon log. */
+export function summarizeClaudeResetBlock(block: unknown): string {
+  if (block === undefined || block === null) return "absent";
+  const status = parseClaudeResetStatus(block);
+  if (!status) return "unparseable";
+  if (!status.eligible) return `ineligible:${status.ineligibleReason ?? "unspecified"}`;
+  const left = status.grants.reduce((sum, grant) => sum + grant.resets_left, 0);
+  return `eligible grants=${status.grants.length} left=${left}`;
+}
+
 export function forgetClaudeResetStatus(configDir: string) {
   statusByConfigDir.delete(configDir);
 }
@@ -156,8 +184,25 @@ const RESET_TYPE_DESCRIPTIONS: Record<string, string> = {
   full: "Clears the session and weekly limits.",
 };
 
+/**
+ * Grants without `type` list the limits they clear, such as `five_hour` or `seven_day_omelette`.
+ * Any weekly limit together with the session limit is a full reset; only weekly limits is weekly.
+ */
+export function claudeGrantResetType(
+  grant: ClaudeResetGrant,
+): "session" | "weekly" | "full" | null {
+  if (grant.type) return grant.type;
+  const clears = grant.clears ?? [];
+  if (clears.length === 0) return null;
+  const weekly = clears.some((limit) => limit.startsWith("seven_day"));
+  const session = clears.some((limit) => !limit.startsWith("seven_day"));
+  if (weekly && session) return "full";
+  return weekly ? "weekly" : "session";
+}
+
 function grantDescription(grant: ClaudeResetGrant): string | null {
-  const parts = [grant.type ? RESET_TYPE_DESCRIPTIONS[grant.type] : undefined];
+  const type = claudeGrantResetType(grant);
+  const parts = [type ? RESET_TYPE_DESCRIPTIONS[type] : undefined];
   if (grant.paused) parts.push("Paused by Claude.");
   else if (!grant.usable_now && grant.use_requires_limit) {
     parts.push("Usable once this account reaches a usage limit.");
@@ -193,7 +238,7 @@ export function claudeResetSnapshot(
       grantedAt: epochSeconds(grant.starts_at) ?? 0,
       expiresAt: epochSeconds(grant.ends_at),
       status: !grant.paused && grant.resets_left > 0 ? "available" : "unavailable",
-      resetType: grant.type ?? "session",
+      resetType: claudeGrantResetType(grant) ?? "session",
     })),
   };
 }
@@ -359,6 +404,11 @@ export class ClaudeResetCreditSession implements ProviderResetCreditSession {
   }
 
   private headers(token: string, extra: Record<string, string>): Record<string, string> {
-    return { Authorization: `Bearer ${token}`, "anthropic-beta": CLAUDE_OAUTH_BETA, ...extra };
+    return {
+      Authorization: `Bearer ${token}`,
+      "anthropic-beta": CLAUDE_OAUTH_BETA,
+      "User-Agent": claudeCodeUserAgent(),
+      ...extra,
+    };
   }
 }

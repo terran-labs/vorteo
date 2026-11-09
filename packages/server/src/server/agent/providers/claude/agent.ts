@@ -2,7 +2,7 @@ import { verifySkillSnapshot } from "../../../orchestration-skills/internal/poli
 import { ClaudeSetupTokenLoginSession } from "./setup-token-login.js";
 import { ClaudeLoginSession } from "./login.js";
 import { CLAUDE_SIGN_IN_ENV, claudeSignInMode } from "./sign-in-mode.js";
-import { ClaudeResetCreditSession } from "./reset-credits.js";
+import { ClaudeResetCreditSession, noteClaudeCodeVersion } from "./reset-credits.js";
 import {
   claudeKeychainAccount,
   claudeKeychainServiceForConfigDir,
@@ -2190,6 +2190,7 @@ export async function resolveClaudeCodeVersion(
   if (!version) {
     throw new Error("Unable to parse Claude Code version from --version output");
   }
+  noteClaudeCodeVersion(version.join("."));
   return version.join(".");
 }
 
