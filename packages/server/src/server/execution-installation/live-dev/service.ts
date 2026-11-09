@@ -308,7 +308,9 @@ export function createLiveDev(options: LiveDevServiceOptions) {
   }
 
   const timer = setInterval(() => {
-    void changes.then(followInstallationType);
+    // In the owner change chain, so a poll can never cache a reading older than a change.
+    const poll = changes.then(followInstallationType);
+    changes = poll.catch(() => undefined);
     if (record?.mode === "live") void supervisor?.checkRestartRequest();
   }, RESTART_REQUEST_POLL_MS);
   timer.unref();

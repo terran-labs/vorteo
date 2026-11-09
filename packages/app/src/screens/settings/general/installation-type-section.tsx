@@ -22,7 +22,7 @@ const TYPES: readonly { value: InstallationType; label: string; description: str
     value: "lab",
     label: "Lab",
     description:
-      "Live development: your browser runs the live checkout with hot reload, and daemon changes rebuild and swap in here first, then reach main once they are stable.",
+      "Live development: your browser runs the Host's live checkout with hot reload, including uncommitted edits by Host agents, and daemon changes rebuild and swap in here first, then reach main once they are stable.",
   },
 ];
 
