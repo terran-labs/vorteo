@@ -101,15 +101,18 @@ describe("ClaudeResetCreditSession", () => {
       grants: [
         { id: "fable", label: "Fable reset", resets_left: 2, clears: ["seven_day_omelette"] },
         { id: "both", label: "Full", resets_left: 1, clears: ["five_hour", "seven_day"] },
+        { id: "mixed", label: "Mixed", resets_left: 1, clears: ["five_hour", "seven_day_opus"] },
       ],
     });
     const snapshot = await session(fetchApi).read();
+    // A model's weekly limit must not read as clearing the account's weekly limit.
     expect(snapshot).toMatchObject({
       status: "available",
-      availableCount: 3,
+      availableCount: 4,
       credits: [
-        { id: "fable", resetType: "weekly" },
+        { id: "fable", resetType: "model_weekly" },
         { id: "both", resetType: "full" },
+        { id: "mixed", resetType: "other" },
       ],
     });
   });

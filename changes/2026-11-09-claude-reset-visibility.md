@@ -1,7 +1,7 @@
 ### Fixes
 
-- Show free Claude limit resets, such as Fable resets, in the account picker by identifying Claude usage reads as the installed Claude Code CLI.
-- Label Claude resets from the limits they clear, so a weekly reset is no longer described as a 5-hour session reset.
+- Show free Claude limit resets, such as Fable resets, in the account picker by identifying Claude usage and reset requests as the installed Claude Code CLI.
+- Label Claude resets from the limits they clear. A reset for one model's weekly limit, such as Fable, no longer reads as a 5-hour session reset or as clearing the overall weekly limit.
 - Show the selected account's available resets in the composer's profile button caption.
 
 ### Maintenance

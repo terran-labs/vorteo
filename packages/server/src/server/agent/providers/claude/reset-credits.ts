@@ -129,7 +129,11 @@ export function summarizeClaudeResetBlock(block: unknown): string {
   if (block === undefined || block === null) return "absent";
   const status = parseClaudeResetStatus(block);
   if (!status) return "unparseable";
-  if (!status.eligible) return `ineligible:${status.ineligibleReason ?? "unspecified"}`;
+  if (!status.eligible) {
+    // Claude's reasons are short slugs such as "surface"; anything else is not logged verbatim.
+    const reason = status.ineligibleReason ?? "unspecified";
+    return `ineligible:${/^[a-z0-9_]{1,40}$/.test(reason) ? reason : "other"}`;
+  }
   const left = status.grants.reduce((sum, grant) => sum + grant.resets_left, 0);
   return `eligible grants=${status.grants.length} left=${left}`;
 }
@@ -182,21 +186,25 @@ const RESET_TYPE_DESCRIPTIONS: Record<string, string> = {
   session: "Clears the 5-hour session limit. Still counts toward the weekly limit.",
   weekly: "Clears the weekly limit.",
   full: "Clears the session and weekly limits.",
+  model_weekly: "Clears a weekly limit for one model, not the overall weekly limit.",
 };
 
+type ClaudeResetType = "session" | "weekly" | "full" | "model_weekly" | "other";
+
 /**
- * Grants without `type` list the limits they clear, such as `five_hour` or `seven_day_omelette`.
- * Any weekly limit together with the session limit is a full reset; only weekly limits is weekly.
+ * Grants without `type` list the limits they clear. `five_hour` and `seven_day` are the account
+ * limits; other `seven_day_*` names, such as `seven_day_omelette`, are one model's weekly limit.
+ * Unrecognized names get no description rather than a guess.
  */
-export function claudeGrantResetType(
-  grant: ClaudeResetGrant,
-): "session" | "weekly" | "full" | null {
+export function claudeGrantResetType(grant: ClaudeResetGrant): ClaudeResetType | null {
   if (grant.type) return grant.type;
-  const clears = grant.clears ?? [];
-  if (clears.length === 0) return null;
-  const weekly = clears.some((limit) => limit.startsWith("seven_day"));
-  const session = clears.some((limit) => !limit.startsWith("seven_day"));
-  if (weekly && session) return "full";
+  const clears = new Set(grant.clears ?? []);
+  if (clears.size === 0) return null;
+  const session = clears.delete("five_hour");
+  const weekly = clears.delete("seven_day");
+  const modelWeekly = [...clears].every((limit) => limit.startsWith("seven_day_"));
+  if (clears.size > 0) return session || weekly || !modelWeekly ? "other" : "model_weekly";
+  if (session && weekly) return "full";
   return weekly ? "weekly" : "session";
 }
 
@@ -238,6 +246,7 @@ export function claudeResetSnapshot(
       grantedAt: epochSeconds(grant.starts_at) ?? 0,
       expiresAt: epochSeconds(grant.ends_at),
       status: !grant.paused && grant.resets_left > 0 ? "available" : "unavailable",
+      // Grants from before `clears` carried neither field and were session resets.
       resetType: claudeGrantResetType(grant) ?? "session",
     })),
   };
@@ -405,10 +414,10 @@ export class ClaudeResetCreditSession implements ProviderResetCreditSession {
 
   private headers(token: string, extra: Record<string, string>): Record<string, string> {
     return {
+      ...extra,
       Authorization: `Bearer ${token}`,
       "anthropic-beta": CLAUDE_OAUTH_BETA,
       "User-Agent": claudeCodeUserAgent(),
-      ...extra,
     };
   }
 }
