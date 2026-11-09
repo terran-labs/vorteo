@@ -16,6 +16,9 @@ const KindSchema = z.enum([
   "monitor",
   "helper",
   "session-host",
+  "coordinator-follow",
+  "coordinator-settings",
+  "installation-change",
 ]);
 const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const CancellationSchema = z.strictObject({
@@ -31,6 +34,22 @@ interface ManagedJob {
   id: string;
   revision: string;
   status: string;
+}
+/** Coordinator updates and settings changes; both restart the coordinator once approved. */
+export interface CoordinatorRestartQueues {
+  follow(): {
+    list(): ManagedJob[];
+    decide(id: string, revision: string, decision: "cancel"): ManagedJob;
+  } | null;
+  settings: {
+    list(): ManagedJob[];
+    decide(id: string, revision: string, decision: "cancel"): ManagedJob;
+  };
+  /** Installation changes Host agents requested; null until the server has created them. */
+  installationChanges?: () => {
+    list(): ManagedJob[];
+    decide(id: string, revision: string, decision: "cancel"): ManagedJob;
+  } | null;
 }
 interface Queue {
   list(): ManagedJob[];
@@ -48,6 +67,7 @@ export class InstallationManagement {
     private readonly restarts: InstallationRestarts,
     private readonly coordinator: BootstrapReconciliationLedger | undefined,
     private readonly credentials: () => ManagementCredentials,
+    private readonly coordinatorRestarts?: CoordinatorRestartQueues,
   ) {}
 
   available() {
@@ -138,6 +158,30 @@ export class InstallationManagement {
       "session-host": {
         list: () => r.listSessionHosts(),
         cancel: (input) => r.decideSessionHost(planDecision(input, r.listSessionHosts())),
+      },
+      "coordinator-follow": {
+        list: () => this.coordinatorRestarts?.follow()?.list() ?? [],
+        cancel: (input) => {
+          const follow = this.coordinatorRestarts?.follow();
+          if (!follow) throw new RestartRequestError("Coordinator updates are unavailable");
+          return follow.decide(input.id, input.revision, "cancel");
+        },
+      },
+      "installation-change": {
+        list: () => this.coordinatorRestarts?.installationChanges?.()?.list() ?? [],
+        cancel: (input) => {
+          const changes = this.coordinatorRestarts?.installationChanges?.();
+          if (!changes) throw new RestartRequestError("Installation changes are unavailable");
+          return changes.decide(input.id, input.revision, "cancel");
+        },
+      },
+      "coordinator-settings": {
+        list: () => this.coordinatorRestarts?.settings.list() ?? [],
+        cancel: (input) => {
+          if (!this.coordinatorRestarts)
+            throw new RestartRequestError("Coordinator settings changes are unavailable");
+          return this.coordinatorRestarts.settings.decide(input.id, input.revision, "cancel");
+        },
       },
     };
   }

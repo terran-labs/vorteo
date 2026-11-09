@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DelegatedMaintenanceApprovalSchema } from "./maintenance-approval.js";
 
 // Owner-only installation upgrades and safety snapshots, served under
 // /api/installation/owner/. Older coordinators return 404 for these routes.
@@ -83,6 +84,84 @@ export type SnapshotList = z.infer<typeof SnapshotListSchema>;
  * POST /api/installation/owner/snapshots/restore. `parts` must repeat exactly the
  * part kinds the confirmation named, so a changed snapshot cannot be restored blind.
  */
+/**
+ * One action a Host agent ran at once under the full maintenance grant: a read-only or
+ * non-disruptive action, such as a safety snapshot, that has no window to cancel.
+ */
+export const AgentActionReceiptSchema = z.object({
+  id: z.string().uuid(),
+  /** The agent request command, such as "request-snapshot". */
+  action: z.string(),
+  /** The Host agent's own label, such as "Builds". Display only, never authority. */
+  requester: z.string().optional(),
+  at: z.string().datetime(),
+  /**
+   * `started` is written before the action runs. `interrupted` means the coordinator stopped
+   * before the outcome was recorded: the effect is uncertain, and it is never replayed.
+   */
+  outcome: z.enum(["started", "succeeded", "failed", "interrupted"]),
+  detail: z.string(),
+});
+export type AgentActionReceipt = z.infer<typeof AgentActionReceiptSchema>;
+
+/** POST /api/installation/owner/agent-actions/query, newest first. Older coordinators answer 404. */
+export const AgentActionReceiptsSchema = z.object({ receipts: z.array(AgentActionReceiptSchema) });
+
+/**
+ * One installation change a Host agent requested, such as renaming the installation. It waits
+ * pending, cancellable, for the owner or for the full maintenance grant's cancellation window.
+ */
+export const QueuedAgentActionSchema = z.object({
+  id: z.string().uuid(),
+  revision: z.string().uuid(),
+  /** The reviewed action, such as "installation-name", named with request-installation-change. */
+  action: z.string(),
+  request: z.unknown(),
+  /** The Host agent's own label. Display only, never authority. */
+  requester: z.string().optional(),
+  /** What the owner should expect when it runs. */
+  disruption: z.string(),
+  createdAt: z.string().datetime(),
+  /** `restoring` puts the previous value back after a change left the installation unreachable. */
+  status: z.enum([
+    "pending",
+    "approved",
+    "running",
+    "restoring",
+    "succeeded",
+    "failed",
+    "cancelled",
+  ]),
+  detail: z.string(),
+  delegatedApproval: DelegatedMaintenanceApprovalSchema.optional(),
+  /** Coordinator-private: what a failed verification restores. Never sent to clients. */
+  previous: z.unknown().optional(),
+  /** The state revision a restore requires: it is refused if the value changed since. */
+  restoreRevision: z.string().optional(),
+  /** How many restores were started; bounded, so a failing restore cannot loop restarts. */
+  restoreAttempts: z.number().int().min(0).optional(),
+  /** The id of the latest restore attempt, so recovery recognizes its own interrupted change. */
+  restoreOperation: z.string().uuid().optional(),
+  approvedAt: z.string().datetime().optional(),
+  startedAt: z.string().datetime().optional(),
+  finishedAt: z.string().datetime().optional(),
+});
+export type QueuedAgentAction = z.infer<typeof QueuedAgentActionSchema>;
+
+/** POST /api/installation/owner/queued-actions/query. Older coordinators answer 404. */
+export const QueuedAgentActionsSchema = z.object({ jobs: z.array(QueuedAgentActionSchema) });
+
+/** POST /api/installation/owner/queued-actions/:id/decision. */
+export const QueuedAgentActionDecisionSchema = z.strictObject({
+  revision: z.string().uuid(),
+  decision: z.enum(["approve", "cancel"]),
+});
+
+/** Body of a Host-agent immediate action request. */
+export const AgentActionRequestSchema = z.strictObject({
+  requester: z.string().min(1).max(256).optional(),
+});
+
 export const SnapshotRestoreRequestSchema = z.strictObject({
   id: InstallationSnapshotSchema.shape.id,
   parts: z.array(SnapshotPartKindSchema).min(1),
@@ -337,6 +416,15 @@ export const CoordinatorFollowJobSchema = z.object({
   next: z.string(),
   /** The release the coordinator link selected when the replacement started. */
   previous: z.string().optional(),
+  /** Absent for owner requests and from older coordinators. */
+  requestedBy: z.enum(["owner", "host-agent"]).optional(),
+  /** The Host agent's own label, such as "Builds". Display only, never authority. */
+  requester: z.string().optional(),
+  /**
+   * Set when the full maintenance grant approved a Host-agent request. The job stays pending,
+   * cancellable, until `dispatchAfter`, then starts if the same grant, revision and release hold.
+   */
+  delegatedApproval: DelegatedMaintenanceApprovalSchema.optional(),
   approvedAt: z.string().datetime().optional(),
   startedAt: z.string().datetime().optional(),
   finishedAt: z.string().datetime().optional(),
@@ -367,6 +455,16 @@ export type CoordinatorFollowStatus = z.infer<typeof CoordinatorFollowStatusSche
 /** POST /api/installation/owner/coordinator-follow. `next` repeats the reviewed Host release. */
 export const CoordinatorFollowRequestSchema = z.strictObject({ next: z.string().startsWith("/") });
 export type CoordinatorFollowRequest = z.infer<typeof CoordinatorFollowRequestSchema>;
+
+/**
+ * POST /api/installation/coordinator-follow, Host agents only. `next` names the Host release the
+ * request was prepared against; it is refused when that release is no longer selected.
+ */
+export const CoordinatorFollowAgentRequestSchema = z.strictObject({
+  next: z.string().startsWith("/"),
+  requester: z.string().min(1).max(256).optional(),
+});
+export type CoordinatorFollowAgentRequest = z.infer<typeof CoordinatorFollowAgentRequestSchema>;
 
 /** POST /api/installation/owner/coordinator-follow/:id/decision. */
 export const CoordinatorFollowDecisionSchema = z.strictObject({
@@ -426,6 +524,8 @@ export const CoordinatorSettingsJobSchema = z.object({
    * succeeds; if it fails, this is cleared and the settings stay pending.
    */
   approvedWith: z.string().uuid().optional(),
+  /** Set when the full maintenance grant approved it; pending and cancellable until `dispatchAfter`. */
+  delegatedApproval: DelegatedMaintenanceApprovalSchema.optional(),
   approvedAt: z.string().datetime().optional(),
   startedAt: z.string().datetime().optional(),
   finishedAt: z.string().datetime().optional(),
@@ -479,12 +579,17 @@ export const AgentUpdateStatusSchema = z.object({
   check: UpdateCheckSchema,
   /** The upgrade waiting for approval or running, without coordinator-private state. */
   active: InstallationUpgradeSchema.nullable(),
-  /** Absent from coordinators without the coordinator replacement. Agents never decide it. */
+  /** Absent from coordinators without the coordinator replacement. Agents request it but never decide it. */
   coordinatorFollow: CoordinatorFollowStatusSchema.pick({
     available: true,
     detail: true,
     job: true,
-  }).optional(),
+  })
+    .extend({
+      /** The releases a request must name; absent from older coordinators. */
+      current: CoordinatorFollowStatusSchema.shape.current.optional(),
+    })
+    .optional(),
   /** Absent from coordinators without coordinator settings changes. Agents never decide it. */
   coordinatorSettings: CoordinatorSettingsStatusSchema.optional(),
 });

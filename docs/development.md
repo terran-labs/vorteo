@@ -857,6 +857,7 @@ node scripts/heavy-job.mjs status
 - **Memory guard, not load.** The holder starts only when memory allows. Critical macOS memory pressure, under 10% free memory, or swap-outs above 1 MiB/s defer the start, and the reason is printed. Load average is ignored: the Dev virtual machine, the Host daemon and indexing keep it high on an otherwise healthy machine. Routine "warn" pressure does not defer.
 - **Background priority.** The job runs under `taskpolicy -b nice -n 10` on macOS and `nice -n 10` elsewhere, so it uses efficiency cores and throttled I/O while agents, the Dev machine and the interface keep priority.
 - **Bounded tests.** The queue sets `VITEST_MAX_WORKERS=2` and `E2E_WORKERS=1` unless the caller already set them.
+- **Nested callers.** A job's commands see `VORTEO_HEAVY_JOB=1`. A dependency install that finds it runs at once instead of waiting for the slot its own job holds.
 
 The queue lives in `~/.local/share/vorteo-host/state/heavy-jobs` and serializes work on one computer. `VORTEO_HEAVY_QUEUE_DIR` overrides it; a Dev container has its own queue.
 
