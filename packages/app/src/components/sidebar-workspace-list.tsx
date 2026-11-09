@@ -3988,8 +3988,9 @@ const styles = StyleSheet.create((theme) => ({
     // The plus strokes with this color on web.
     _web: { color: theme.colors.foregroundMuted },
   },
+  // Small actions inside sidebar rows hover one step above the row's own hover, like the kebab.
   projectIconActionButtonHoverable: hoverStyle({
-    backgroundColor: theme.colors.interactionHighlight,
+    backgroundColor: theme.colors.surface2,
     color: theme.colors.foreground,
   }),
   projectIconActionButtonPressed: {

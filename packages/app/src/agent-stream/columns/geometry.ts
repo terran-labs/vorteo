@@ -2,6 +2,8 @@ export const COLUMN_BREAKPOINT = 1080;
 export const COLUMN_MARGIN = 16;
 export const CARD_GAP = 8;
 export const COLUMN_GAP = COLUMN_MARGIN * 2;
+/** The composer's field sits this far inside a sized text column; the column handle aligns to it. */
+export const COLUMN_COMPOSER_INSET = 8;
 export const MIN_TEXT_WIDTH = 560;
 export const MIN_CARDS_WIDTH = 220;
 export const MAX_TEXT_WIDTH = 1600;

@@ -2,7 +2,6 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipText } from "@/componen
 import { CardTileContext } from "./card-grid";
 import { CompactCountBadgeContext } from "@/components/ui/count-badge";
 import { TruncatedText } from "@/components/ui/truncated-text";
-import { FLOATING_PANEL_RADIUS } from "@/styles/floating-panel";
 import { useCallback, useMemo, useState, useContext, useEffect, type ReactNode } from "react";
 import { Pressable, Text, View, type LayoutChangeEvent } from "react-native";
 import { ChevronDown, ChevronRight } from "lucide-react-native";
@@ -190,7 +189,8 @@ export function CollapsibleCardBody({
 const styles = StyleSheet.create((theme) => ({
   hoverTarget: { flex: 1, minWidth: 0 },
   trigger: {
-    borderRadius: FLOATING_PANEL_RADIUS,
+    // Card headers hover like sidebar rows: the same quiet fill and row radius.
+    borderRadius: theme.borderRadius.lg,
     paddingLeft: TASK_CARD_ICON_CENTER - 10,
     paddingRight: theme.spacing[2],
   },
@@ -212,7 +212,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   compactMetadata: { marginLeft: 0, minWidth: 0, flexShrink: 1 },
   stackedMetadata: { maxWidth: "100%", justifyContent: "center", flexWrap: "wrap", gap: 2 },
-  hoverable: hoverStyle({ backgroundColor: theme.colors.interactionHighlight }),
+  hoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
   status: {
     fontSize: Math.round(theme.fontSize.sm * 0.8),
     fontWeight: theme.fontWeight.normal,
