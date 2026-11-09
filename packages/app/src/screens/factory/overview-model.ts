@@ -245,7 +245,6 @@ export function factoryUsage(
 export interface FactoryQueueFigures {
   counts: Record<FactoryLane, number>;
   inFlight: number;
-  needsYou: number;
   repairs: number;
   /** Share of pull requests with finished checks that pass; null when none have finished. */
   checkPassRate: number | null;
@@ -271,7 +270,6 @@ export function factoryQueueFigures(issues: readonly FactoryIssue[]): FactoryQue
     counts,
     inFlight: issues.filter((issue) => issue.stage !== "queued" && issue.stage !== "blocked")
       .length,
-    needsYou: issues.filter((issue) => issue.label === "human-review").length,
     repairs: issues.filter((issue) => issue.stage === "repair").length,
     checkPassRate: finished ? passing / finished : null,
     checksFinished: finished,
@@ -331,4 +329,49 @@ export function dayLabels(count: number, now: number): string[] {
     const date = new Date(now - (count - 1 - index) * 86_400_000);
     return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
   });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Which reports are backed by sample data
+
+/**
+ * Every figure and panel the designs can show, marked true when its value comes from sample
+ * history the daemon does not record yet. Live mode shows only the false ones, so no sample value
+ * ever appears beside live data; Sample factory mode shows them all, tagged.
+ */
+export const FACTORY_REPORTS = {
+  // Figures
+  inFlight: false,
+  merged7d: true,
+  cycleTime: true,
+  tokens: false,
+  spend: false,
+  monthCap: true,
+  passRate: false,
+  costPerPr: true,
+  queueAge: true,
+  // Panels
+  velocityChart: true,
+  costPerPrChart: true,
+  tokenHistoryChart: true,
+  budgets: true,
+  accountPicks: true,
+  categories: false,
+  quota: false,
+  providerSpend: false,
+  ledger: false,
+} as const satisfies Record<string, boolean>;
+export type FactoryReport = keyof typeof FACTORY_REPORTS;
+
+function reportOf(item: FactoryReport | { report: FactoryReport }): FactoryReport {
+  return typeof item === "string" ? item : item.report;
+}
+
+/** The reports to render: all of them in Sample factory mode, only live-backed ones in Live. */
+export function shownReports<Item extends { report: FactoryReport } | FactoryReport>(
+  items: readonly Item[],
+  sample: boolean,
+): Item[] {
+  if (sample) return [...items];
+  return items.filter((item) => !FACTORY_REPORTS[reportOf(item)]);
 }

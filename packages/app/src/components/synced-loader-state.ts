@@ -1,4 +1,7 @@
-const SYNCED_LOADER_DURATION_MS = 950;
+import { SPINNER_PERIOD_MS } from "@/styles/spinner";
+
+// One trip of the snake around the grid takes the shared calm spinner period.
+const SYNCED_LOADER_DURATION_MS = SPINNER_PERIOD_MS;
 export const SYNCED_LOADER_DOT_COUNT = 6;
 
 const SYNCED_LOADER_OPACITY_STATES = [

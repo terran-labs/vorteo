@@ -1,4 +1,5 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Text, View, type LayoutChangeEvent, type PressableStateCallbackType } from "react-native";
 import { PressHighlight } from "@/components/ui/press-highlight";
 import { router } from "expo-router";
@@ -14,6 +15,14 @@ import { buildSettingsSectionRoute } from "@/utils/host-routes";
 import { useVortonUpdate } from "@/vorton-updates/use-update";
 import { SidebarFooterQuota } from "@/provider-usage/footer-quota";
 import { FLOATING_PANEL_CONTROL_HEIGHT, FLOATING_PANEL_RADIUS } from "@/styles/floating-panel";
+import { useIsCompactFormFactor } from "@/constants/layout";
+import { useVortonTouch } from "@/vorton-touch";
+
+/**
+ * On a phone the sidebar fills the screen, so this last row sits in the display's rounded bottom
+ * corners, which safe-area insets do not describe. Inset both ends by roughly the corner's reach.
+ */
+const SCREEN_CORNER_ALLOWANCE = 20;
 
 /**
  * The same compact row closes the main and settings sidebars. On the left, one block names the
@@ -29,6 +38,21 @@ export function SidebarIdentityFooter({
   versionTestID?: string;
 }) {
   const name = useInstallationName();
+  const insets = useSafeAreaInsets();
+  const compact = useIsCompactFormFactor();
+  const touch = useVortonTouch();
+  const cornerInset = compact && touch;
+  // A margin rather than padding, so the measured row width (and the quota chart) shrinks too.
+  const footerStyle = useMemo(
+    () => [
+      styles.footer,
+      cornerInset && {
+        marginLeft: insets.left + SCREEN_CORNER_ALLOWANCE,
+        marginRight: insets.right + SCREEN_CORNER_ALLOWANCE,
+      },
+    ],
+    [cornerInset, insets.left, insets.right],
+  );
   const rule = useFooterLeadingRule("identity");
   const { checkNow } = useVortonUpdate();
   const appVersion = resolveAppVersion();
@@ -56,7 +80,7 @@ export function SidebarIdentityFooter({
   return (
     <>
       {rule ? <SidebarSectionRule /> : null}
-      <View style={styles.footer} onLayout={measureRow} testID="sidebar-identity-footer">
+      <View style={footerStyle} onLayout={measureRow} testID="sidebar-identity-footer">
         <PressHighlight
           onPress={openUpdates}
           accessibilityRole="button"

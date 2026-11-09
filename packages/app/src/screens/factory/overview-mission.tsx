@@ -3,7 +3,7 @@ import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import { SettingsSection } from "@/components/settings";
-import { DrainBanners, FactoriesStrip, NeedsYouPanel, ScopeControls } from "./overview-command";
+import { DrainBanners, FactoriesStrip, ScopeControls } from "./overview-command";
 import type { FactoryOverviewData } from "./overview-data";
 import {
   FactoryBoard,
@@ -15,19 +15,24 @@ import {
 } from "./overview-kit";
 import { FACTORY_LANES, type FactoryLane } from "./overview-model";
 import {
-  AccountPicksPanel,
-  BudgetPanel,
-  CategoryPanel,
   KpiStrip,
   QueueNotices,
-  QuotaPanel,
-  ReportCell,
-  ReportGrid,
+  ReportPanels,
   ReportsFootnote,
-  TokenHistoryPanel,
-  VelocityPanel,
   type FactoryKpi,
+  type ReportPanelItem,
 } from "./overview-reports";
+
+const MISSION_TOP_PANELS: ReportPanelItem[] = [
+  { report: "quota", size: "lg" },
+  { report: "categories" },
+];
+const MISSION_PANELS: ReportPanelItem[] = [
+  { report: "tokenHistoryChart", size: "lg" },
+  { report: "budgets" },
+  { report: "velocityChart" },
+  { report: "accountPicks", size: "sm" },
+];
 
 const MISSION_KPIS: FactoryKpi[] = [
   "merged7d",
@@ -55,7 +60,6 @@ export function MissionOverview({ data }: { data: FactoryOverviewData }) {
   const boardMeta = useMemo(() => <TrackLegend />, []);
   return (
     <View style={styles.page} testID="factory-overview-mission">
-      {data.scope === "all" ? <NeedsYouPanel data={data} expanded /> : null}
       <DrainBanners data={data} />
       <View style={styles.band}>
         <Hero data={data} />
@@ -63,7 +67,6 @@ export function MissionOverview({ data }: { data: FactoryOverviewData }) {
           <ScopeControls data={data} />
         </View>
       </View>
-      {data.scope === "project" ? <NeedsYouPanel data={data} /> : null}
       <KpiStrip data={data} kpis={MISSION_KPIS} />
       {data.scope === "all" ? <FactoriesStrip data={data} /> : null}
       {data.queue.data ? (
@@ -75,35 +78,15 @@ export function MissionOverview({ data }: { data: FactoryOverviewData }) {
           <Pipeline data={data} />
         </Panel>
       ) : null}
-      <ReportGrid>
-        <ReportCell size="lg">
-          <QuotaPanel data={data} />
-        </ReportCell>
-        <ReportCell>
-          <CategoryPanel data={data} />
-        </ReportCell>
-      </ReportGrid>
-      <ReportGrid>
-        <ReportCell size="lg">
-          <TokenHistoryPanel data={data} />
-        </ReportCell>
-        <ReportCell>
-          <BudgetPanel data={data} />
-        </ReportCell>
-        <ReportCell>
-          <VelocityPanel data={data} />
-        </ReportCell>
-        <ReportCell size="sm">
-          <AccountPicksPanel data={data} />
-        </ReportCell>
-      </ReportGrid>
+      <ReportPanels data={data} items={MISSION_TOP_PANELS} />
+      <ReportPanels data={data} items={MISSION_PANELS} />
       {data.queue.data || data.queue.error || data.queue.loading ? (
         <SettingsSection title={t("projectFactory.board.title")} trailing={boardMeta} flush>
           <QueueNotices data={data} />
           {data.queue.data ? <FactoryBoard lanes={data.lanes} context={context} /> : null}
         </SettingsSection>
       ) : null}
-      <ReportsFootnote />
+      <ReportsFootnote data={data} />
     </View>
   );
 }
@@ -120,7 +103,6 @@ function Hero({ data }: { data: FactoryOverviewData }) {
       <Text style={styles.heroValue}>{figures.inFlight}</Text>
       <Text style={styles.heroDetail}>
         {t("projectFactory.reports.heroDetail", {
-          needsYou: figures.needsYou,
           blocked: figures.counts.blocked,
           queued: figures.counts.queued,
         })}

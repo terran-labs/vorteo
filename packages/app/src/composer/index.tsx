@@ -2652,9 +2652,11 @@ const styles = StyleSheet.create((theme: Theme) => ({
     paddingBottom: 12,
     flexShrink: 1,
   },
+  // The mobile field draws no frame, so its controls measure from the screen edges: keep the
+  // bottom margin equal to the side margins.
   mobileInputArea: {
     paddingHorizontal: theme.spacing[2],
-    paddingBottom: MOBILE_COMPOSER_MARGIN,
+    paddingBottom: theme.spacing[2],
     paddingTop: 0,
   },
   inputAreaLocked: {
