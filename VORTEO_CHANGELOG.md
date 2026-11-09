@@ -2,6 +2,12 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-09
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
 ## 26.11.701 - 2026-11-07
 
 Beta that adds an All Factories view with a Needs you panel and a Stop all switch, delegates coordinator updates, settings and routine installation changes under the full maintenance grant, gives the Foreman stricter dispatch rules, and fixes Factory account picks.

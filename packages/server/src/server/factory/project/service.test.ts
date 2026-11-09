@@ -29,7 +29,9 @@ import {
   readDestinationAccounts,
   type DestinationHosts,
   type FactoryAccounts,
+  type InstallationAccountsAuthority,
 } from "./account-choice.js";
+import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
 import type { FactoryGitHub, GitHubResponse } from "./claims.js";
 import type { GhRunner } from "./tick-gate.js";
 import { projectFactoryStatePath } from "./state.js";
@@ -407,7 +409,6 @@ beforeEach(async () => {
     profileAccount: () => null,
     readUsage: async () => ({ fetchedAt: T0, providers: [] }),
     defaultProvider: async () => null,
-    installationAccount: () => null,
     destinationAccounts: async () => new Map(),
   };
   await addProject();
@@ -2041,7 +2042,6 @@ describe("account choice for new Factory agents", () => {
         ] as never,
       }),
       defaultProvider: async () => "codex-a",
-      installationAccount: () => null,
       destinationAccounts: async () => new Map(),
     };
     const pick = (avoid?: string) =>
@@ -2116,6 +2116,8 @@ describe("account choice for new Factory agents", () => {
           throw new Error("no connected hosts");
         },
       }),
+      serverId: "srv_test",
+      readInstallationSettings: async () => null,
     });
     const factory = service();
     await enable(factory);
@@ -2125,12 +2127,15 @@ describe("account choice for new Factory agents", () => {
   });
 
   test("an agent bound for another host starts on that host's id for the same account", async () => {
-    // Host accounts and the installation account each links to; a2 is a second alias of a.
-    const host: Record<string, { shared: string; remainingPct: number }> = {
+    // a2 aliases a only through a local installation account id; lookalike has the same id on
+    // both hosts but no definition, so nothing proves it is one account.
+    const host: Record<string, { shared?: string; remainingPct: number }> = {
       "codex-host-a": { shared: "acct-a", remainingPct: 40 },
       "codex-host-a2": { shared: "acct-a", remainingPct: 95 },
       "codex-host-b": { shared: "acct-b", remainingPct: 90 },
       "codex-host-c": { shared: "acct-c", remainingPct: 60 },
+      "codex-account-same": { remainingPct: 85 },
+      "codex-lookalike": { remainingPct: 99 },
     };
     const usage = (providerId: string, remainingPct: number): ProviderUsage => ({
       providerId,
@@ -2139,6 +2144,36 @@ describe("account choice for new Factory agents", () => {
       planLabel: null,
       windows: [{ id: "weekly", label: "Weekly", remainingPct }],
     });
+    const definition = (
+      id: string,
+      bindings: Record<string, string>,
+      extra: Partial<InstallationProvider> = {},
+    ): InstallationProvider => ({ id, providerType: "codex", bindings, policy: {}, ...extra });
+    let authority: InstallationAccountsAuthority | null = {
+      serverId: "srv_test",
+      settings: {
+        providerDefinitions: [
+          definition("account/a", { srv_test: "codex-host-a", srv_dev: "codex-primary" }),
+          // Excluded for Dev, though ready there.
+          definition("account/b", { srv_test: "codex-host-b", srv_dev: "codex-dev-b" }),
+          definition("account/c", { srv_test: "codex-host-c", srv_dev: "codex-dev-c" }),
+          // A managed setup gets the same deterministic id in every environment.
+          definition(
+            "setup/same",
+            { srv_test: "codex-account-same", srv_dev: "codex-account-same" },
+            {
+              accountSetup: {
+                provider: "codex",
+                creationId: "0b6f6f5e-7a8e-4a7e-9c1e-3f1d2c4b5a69",
+              },
+            },
+          ),
+        ],
+        resourceExclusions: {
+          srv_dev: { providerIds: ["account/b"], terminalProfileIds: [], metadataProviderIds: [] },
+        },
+      },
+    };
     let reachable = true;
     const dev: DestinationHosts = {
       async use(serverId, action) {
@@ -2150,16 +2185,19 @@ describe("account choice for new Factory agents", () => {
                 "codex-primary": { extends: "codex", installationAccountId: "acct-a" },
                 "codex-dev-b": { extends: "codex", installationAccountId: "acct-b" },
                 "codex-dev-c": { extends: "codex", installationAccountId: "acct-c" },
+                "codex-account-same": { extends: "codex" },
+                "codex-lookalike": { extends: "codex" },
               },
             },
           }),
           getProvidersSnapshot: async () => ({
             entries: [
-              { provider: "codex-primary", enabled: true, status: "ready" },
-              // Excluded on Dev: projected there as disabled.
-              { provider: "codex-dev-b", enabled: false, status: "ready" },
-              { provider: "codex-dev-c", enabled: true, status: "ready" },
-            ],
+              "codex-primary",
+              "codex-dev-b",
+              "codex-dev-c",
+              "codex-account-same",
+              "codex-lookalike",
+            ].map((provider) => ({ provider, enabled: true, status: "ready" as const })),
           }),
         });
       },
@@ -2173,8 +2211,18 @@ describe("account choice for new Factory agents", () => {
         providers: Object.entries(host).map(([id, item]) => usage(id, item.remainingPct)),
       }),
       defaultProvider: async () => "codex-host-a",
-      installationAccount: (provider) => host[provider]?.shared ?? null,
-      destinationAccounts: (serverId) => readDestinationAccounts(() => dev, serverId),
+      destinationAccounts: (serverId) =>
+        readDestinationAccounts({
+          hosts: () => dev,
+          serverId,
+          authority,
+          localProviders: Object.fromEntries(
+            Object.entries(host).map(([id, item]) => [
+              id,
+              { extends: "codex", ...(item.shared ? { installationAccountId: item.shared } : {}) },
+            ]),
+          ),
+        }),
     };
     const factory = service();
     await enable(factory);
@@ -2187,28 +2235,51 @@ describe("account choice for new Factory agents", () => {
 
     for (const [input, expected] of [
       // This daemon, named or not, ranks its own accounts as before.
-      [{}, { provider: "codex-host-a2", remainingPct: 95 }],
-      [{ serverId: "srv_test" }, { provider: "codex-host-a2", remainingPct: 95 }],
-      // Dev lacks b; a2 ranks best and is named by Dev's id for its account.
+      [{}, { provider: "codex-lookalike", remainingPct: 99 }],
+      [{ serverId: "srv_test" }, { provider: "codex-lookalike", remainingPct: 99 }],
+      // Only definitions binding both hosts map: b is excluded for Dev, and neither the alias
+      // a2 nor the same-id lookalike has one. The managed setup's identical id qualifies.
       [
         { serverId: "srv_dev" },
         {
           serverId: "srv_dev",
-          provider: "codex-primary",
-          remainingPct: 95,
+          provider: "codex-account-same",
+          remainingPct: 85,
           considered: [
             { provider: "codex-primary", localProvider: "codex-host-a", verdict: "qualifies" },
-            { provider: "codex-primary", localProvider: "codex-host-a2", verdict: "qualifies" },
             { provider: "codex-dev-c", localProvider: "codex-host-c", verdict: "qualifies" },
+            {
+              provider: "codex-account-same",
+              localProvider: "codex-account-same",
+              verdict: "qualifies",
+            },
           ],
         },
       ],
-      // Avoiding the account by Dev's id or a local id avoids every local alias of it.
-      [{ serverId: "srv_dev", avoid: "codex-primary" }, { provider: "codex-dev-c" }],
-      [{ serverId: "srv_dev", avoid: "codex-host-a" }, { provider: "codex-dev-c" }],
+      [{ serverId: "srv_dev", avoid: "codex-account-same" }, { provider: "codex-dev-c" }],
     ] as const)
       expect(await pick(input)).toMatchObject(expected);
     expect(await pick({})).not.toHaveProperty("serverId");
+
+    // Installation policy wins while the destination still reports the account ready.
+    authority.settings.providerDefinitions = [
+      definition(
+        "setup/same",
+        { srv_test: "codex-account-same", srv_dev: "codex-account-same" },
+        { policy: { enabled: false } },
+      ),
+    ];
+    expect(await pick({ serverId: "srv_dev" })).toMatchObject({ provider: null });
+
+    // Without installation settings, only a shared installation account id links accounts,
+    // and avoiding one by either id avoids every local alias of it.
+    authority = null;
+    for (const [input, expected] of [
+      [{ serverId: "srv_dev" }, { provider: "codex-primary", remainingPct: 95 }],
+      [{ serverId: "srv_dev", avoid: "codex-primary" }, { provider: "codex-dev-b" }],
+      [{ serverId: "srv_dev", avoid: "codex-host-a" }, { provider: "codex-dev-b" }],
+    ] as const)
+      expect(await pick(input)).toMatchObject(expected);
 
     // An unreadable or unknown host fails rather than falling back to this daemon's accounts.
     reachable = false;
@@ -2232,7 +2303,7 @@ describe("account choice for new Factory agents", () => {
       state.projects[PROJECT].accountPicks.map(
         (item: { serverId?: string }) => item.serverId ?? null,
       ),
-    ).toEqual([null, null, "srv_dev", "srv_dev", "srv_dev", null]);
+    ).toEqual([null, null, "srv_dev", "srv_dev", null, "srv_dev", "srv_dev", "srv_dev", "srv_dev"]);
   });
 
   test("the daemon's accounts fall back when usage cannot be read and no profile is set", async () => {
@@ -2249,6 +2320,8 @@ describe("account choice for new Factory agents", () => {
           throw new Error("no connected hosts");
         },
       }),
+      serverId: "srv_test",
+      readInstallationSettings: async () => null,
     });
     const factory = service();
     await enable(factory);

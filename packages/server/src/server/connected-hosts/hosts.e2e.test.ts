@@ -1645,6 +1645,13 @@ test(
     expect(JSON.stringify(crossAccount.structuredContent)).toContain(
       "cannot launch on another host",
     );
+    // The caller's directory is not a folder on the destination, so path is required there.
+    const noPath = await mcp.callTool({
+      name: "create_workspace",
+      arguments: { serverId, isolation: "local", title: "No path" },
+    });
+    expect(noPath.isError).toBe(true);
+    expect(JSON.stringify(noPath)).toContain("Creating a workspace on another host needs path");
     expect(self.serverId).toBe(directory.self.serverId);
     expect(remote.serverId).toBe(serverId);
     const bApi = await api(b);

@@ -1,3 +1,4 @@
+import type { InstallationSettings } from "@getpaseo/protocol/installation-settings";
 import type { MutableDaemonConfig, ProviderUsage } from "@getpaseo/protocol/messages";
 import { resolveProviderType } from "@getpaseo/protocol/provider-preferences";
 import type { ProjectFactoryAccountPick } from "@getpaseo/server/factory-project";
@@ -13,7 +14,9 @@ import { profileProvider, resolveDefaultLaunch } from "../../system-project/laun
  * qualify. It is advisory at launch only; it does not switch running agents or pool accounts.
  *
  * An agent bound for a connected host, such as Dev, starts on that host's own id for the same
- * installation account. Usage is per account, so this daemon's readings still rank it.
+ * installation account. Usage is per account, so this daemon's readings still rank it. Only
+ * the installation's provider definitions prove two local ids are one account; matching ids
+ * alone never do.
  */
 
 /** A reading older than this is stale. Choosing refreshes usage first, so this is generous. */
@@ -33,11 +36,10 @@ export interface FactoryAccounts {
   readUsage(): Promise<UsageList>;
   /** The default launch's provider, used when the stage has no configured profile. */
   defaultProvider(): Promise<string | null>;
-  /** The installation account a local account links to, the same on every host. */
-  installationAccount(provider: string): string | null;
   /**
-   * A connected host's ready, enabled accounts: its local id for each installation account.
-   * Rejects with FactoryDestinationUnreadableError when the host cannot be read.
+   * For each local account that a connected host has as the same installation account, ready
+   * and enabled there, that host's local id. Rejects with FactoryDestinationUnreadableError
+   * when the host or the installation's settings cannot be read.
    */
   destinationAccounts(serverId: string): Promise<Map<string, string>>;
 }
@@ -83,30 +85,94 @@ export interface DestinationHosts {
 }
 
 /**
- * A connected host's ready, enabled accounts: its local id for each installation account. An
- * account excluded on that host is projected there as disabled, so it drops out.
+ * The installation's provider definitions as this daemon's settings authority returns them.
+ * Bindings are keyed by each environment daemon's own server id: the coordinator writes them
+ * over connections that refuse any daemon reporting a different id.
  */
-export async function readDestinationAccounts(
-  hosts: () => DestinationHosts,
-  serverId: string,
-): Promise<Map<string, string>> {
-  try {
-    return await hosts().use(serverId, async (client) => {
+export interface InstallationAccountsAuthority {
+  /** This daemon's server id in the installation. */
+  serverId: string;
+  settings: Pick<InstallationSettings, "providerDefinitions" | "resourceExclusions">;
+}
+
+/**
+ * Maps local accounts to a connected host's ready, enabled ones. With installation settings,
+ * one definition, not removed and not excluded for that host, must bind both ids. Without
+ * them, only a shared installation account id links two entries. An account excluded on that
+ * host is also projected there as disabled, so it drops out either way.
+ */
+export async function readDestinationAccounts(input: {
+  hosts: () => DestinationHosts;
+  serverId: string;
+  authority: InstallationAccountsAuthority | null;
+  localProviders: MutableDaemonConfig["providers"];
+}): Promise<Map<string, string>> {
+  const { serverId } = input;
+  const destination = await input
+    .hosts()
+    .use(serverId, async (client) => {
       const [{ config }, snapshot] = await Promise.all([
         client.getDaemonConfig(),
         client.getProvidersSnapshot(),
       ]);
-      const accounts = new Map<string, string>();
-      for (const entry of snapshot.entries) {
-        const shared = config.providers?.[entry.provider]?.installationAccountId;
-        if (shared && entry.enabled && entry.status === "ready" && !accounts.has(shared))
-          accounts.set(shared, entry.provider);
-      }
-      return accounts;
+      return { config, snapshot };
+    })
+    .catch((error: unknown) => {
+      throw new FactoryDestinationUnreadableError(serverId, error);
     });
-  } catch (error) {
-    throw new FactoryDestinationUnreadableError(serverId, error);
+  const ready = new Set(
+    destination.snapshot.entries
+      .filter((entry) => entry.enabled && entry.status === "ready")
+      .map((entry) => entry.provider),
+  );
+  return input.authority
+    ? definedAccounts(input.authority, serverId, ready)
+    : sharedAccountIds(input.localProviders, destination.config.providers, ready);
+}
+
+/** Accounts one installation definition binds on both daemons. */
+function definedAccounts(
+  authority: InstallationAccountsAuthority,
+  serverId: string,
+  ready: ReadonlySet<string>,
+): Map<string, string> {
+  const accounts = new Map<string, string>();
+  const excluded = authority.settings.resourceExclusions[serverId]?.providerIds ?? [];
+  for (const definition of authority.settings.providerDefinitions ?? []) {
+    const local = definition.bindings[authority.serverId];
+    const remote = definition.bindings[serverId];
+    if (
+      definition.removed ||
+      definition.policy.enabled === false ||
+      excluded.includes(definition.id) ||
+      !local ||
+      !remote
+    )
+      continue;
+    if (ready.has(remote) && !accounts.has(local)) accounts.set(local, remote);
   }
+  return accounts;
+}
+
+/** Without installation settings, accounts that share an installation account id. */
+function sharedAccountIds(
+  local: MutableDaemonConfig["providers"],
+  remote: MutableDaemonConfig["providers"],
+  ready: ReadonlySet<string>,
+): Map<string, string> {
+  const remoteByAccount = new Map<string, string>();
+  for (const id of ready) {
+    const shared = remote?.[id]?.installationAccountId;
+    if (shared && !remoteByAccount.has(shared)) remoteByAccount.set(shared, id);
+  }
+  const accounts = new Map<string, string>();
+  for (const [id, provider] of Object.entries(local ?? {})) {
+    const match = provider.installationAccountId
+      ? remoteByAccount.get(provider.installationAccountId)
+      : undefined;
+    if (match) accounts.set(id, match);
+  }
+  return accounts;
 }
 
 /** Usage readings and when they were read; a reading without its own time takes this one. */
@@ -186,10 +252,7 @@ async function placement(accounts: FactoryAccounts, serverId?: string): Promise<
   if (!serverId) return { place: (provider) => provider, name: (item) => item };
   const destination = await accounts.destinationAccounts(serverId);
   return {
-    place(provider) {
-      const shared = accounts.installationAccount(provider);
-      return shared ? (destination.get(shared) ?? null) : null;
-    },
+    place: (provider) => destination.get(provider) ?? null,
     name: (item, placed) => ({
       provider: placed,
       localProvider: item.provider,
@@ -277,6 +340,10 @@ export function daemonFactoryAccounts(input: {
   }) => Promise<{ fetchedAt: string; providers: ProviderUsage[] }>;
   getSettings: () => MutableDaemonConfig;
   hosts: () => DestinationHosts;
+  /** This daemon's server id. */
+  serverId: string;
+  /** The installation's settings authority, as provider removal reads it; null without one. */
+  readInstallationSettings: () => Promise<InstallationAccountsAuthority | null>;
 }): FactoryAccounts {
   const typeOf = (provider: string): string | null => {
     try {
@@ -307,11 +374,21 @@ export function daemonFactoryAccounts(input: {
     async defaultProvider() {
       return (await resolveDefaultLaunch(input))?.provider ?? null;
     },
-    installationAccount(provider) {
-      return input.getSettings().providers?.[provider]?.installationAccountId ?? null;
-    },
-    destinationAccounts(serverId) {
-      return readDestinationAccounts(input.hosts, serverId);
+    async destinationAccounts(serverId) {
+      const authority = await input.readInstallationSettings().catch((error: unknown) => {
+        throw new FactoryDestinationUnreadableError(serverId, error);
+      });
+      if (authority && authority.serverId !== input.serverId)
+        throw new FactoryDestinationUnreadableError(
+          serverId,
+          new Error("the installation's settings name another daemon"),
+        );
+      return readDestinationAccounts({
+        hosts: input.hosts,
+        serverId,
+        authority,
+        localProviders: input.getSettings().providers,
+      });
     },
   };
 }
