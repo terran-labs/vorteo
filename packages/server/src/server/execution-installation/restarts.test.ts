@@ -1,5 +1,9 @@
 import { installContainerSource } from "./container-updates.js";
 import * as lifecycleJournal from "./lifecycle-journal.js";
+import type { LifecycleJob } from "./lifecycle-journal.js";
+import { FileBootstrapRequestJournal } from "./coordinator-bootstrap-journal.js";
+import { PreviewBrokerDeploymentPreparationSchema } from "@getpaseo/protocol/preview-broker-deployment";
+import type { BrokerDeploymentExecutor } from "./preview-broker-deployment-workflow.js";
 import { z } from "zod";
 import {
   mkdtemp,
@@ -59,6 +63,231 @@ class MemoryJournal implements RestartJournal {
     this.jobs = structuredClone(jobs);
   }
 }
+
+class CanonicalLifecycleJournal implements RestartJournal {
+  jobs: LifecycleJob[] = [];
+  failWrite = false;
+
+  read(): LifecycleJob[] {
+    return structuredClone(this.jobs);
+  }
+
+  write(jobs: LifecycleJob[]): void {
+    if (this.failWrite) throw new Error("disk unavailable");
+    this.jobs = lifecycleJournal.parseLifecycleJournal(jobs);
+  }
+}
+
+function brokerDeploymentPreparation() {
+  const id = randomUUID();
+  const hash = "a".repeat(64);
+  const file = { path: "/protected/file", sha256: hash };
+  const expected = { kind: "present", sha256: hash, identity: Array(9).fill("1") };
+  const consumer = { expected, candidate: file, mode: 0o600 };
+  const target = (root: string) => ({
+    root,
+    directory: [1, 2, 501, 20, 0o700],
+    preservationSha256: hash,
+    files: {
+      "https_broker.py": consumer,
+      "https-preview.py": consumer,
+      "host_config.py": consumer,
+      "channel_identity.py": { ...consumer, expected: { kind: "absent" } },
+    },
+  });
+  const input = PreviewBrokerDeploymentPreparationSchema.parse({
+    id,
+    reason: "Deploy reviewed broker consumers",
+    plan: {
+      version: 1,
+      operation: "preview-broker-consumer-deployment",
+      id,
+      installationId: randomUUID(),
+      sourceCommit: "a".repeat(40),
+      evidenceDirectory: `/evidence/${id}`,
+      evidenceDirectoryIdentity: [1, 2, 501, 20, 0o700],
+      bootUUID: randomUUID(),
+      targets: [target("/host"), target("/dev")],
+      registrations: [
+        {
+          root: "/host",
+          domain: "gui/501",
+          enabled: true,
+          override: "absent",
+          label: "host",
+          plist: file,
+          disposition: "absent",
+          process: null,
+        },
+        {
+          root: "/dev",
+          domain: "gui/501",
+          enabled: true,
+          override: "absent",
+          label: "dev",
+          plist: file,
+          disposition: "absent",
+          process: null,
+        },
+      ],
+      participantEvidence: [file],
+      manualParticipants: [],
+    },
+  });
+  return input;
+}
+
+function inertBrokerDeploymentExecutor(): BrokerDeploymentExecutor {
+  return {
+    brokerDeploymentCompatible: vi.fn(async () => true),
+    validateBrokerDeploymentPlan: vi.fn(async () => {}),
+    executeBrokerDeployment: vi.fn(async () => {
+      throw new Error("Unexpected broker deployment execution");
+    }),
+    observeBrokerDeployment: vi.fn(async () => {
+      throw new Error("Unexpected broker deployment observation");
+    }),
+  };
+}
+
+async function brokerDeploymentJournal(storage: "memory" | "file") {
+  if (storage === "memory") {
+    const journal = new CanonicalLifecycleJournal();
+    return { journal, reopen: () => journal.read(), cleanup: async () => {} };
+  }
+  const directory = await realpath(await mkdtemp(path.join(tmpdir(), "deployment-journal-")));
+  try {
+    await chmod(directory, 0o700);
+    const file = new FileBootstrapRequestJournal(directory);
+    const journal: RestartJournal = {
+      read: () => file.readLifecycle(),
+      write: (jobs) => file.writeLifecycle(jobs),
+    };
+    return {
+      journal,
+      reopen: () => new FileBootstrapRequestJournal(directory).readLifecycle(),
+      cleanup: () => rm(directory, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+test.each([
+  { storage: "memory", rejected: false, status: "pending", stage: "prepared" },
+  { storage: "memory", rejected: true, status: "failed", stage: "preparing" },
+  { storage: "file", rejected: false, status: "pending", stage: "prepared" },
+  { storage: "file", rejected: true, status: "failed", stage: "preparing" },
+] as const)(
+  "broker deployment snapshot persists $status through the $storage journal",
+  async ({ storage, rejected, status, stage }) => {
+    const f = await brokerDeploymentJournal(storage);
+    try {
+      const input = brokerDeploymentPreparation();
+      const brokerDeployment = inertBrokerDeploymentExecutor();
+      if (rejected)
+        vi.mocked(brokerDeployment.validateBrokerDeploymentPlan).mockRejectedValueOnce(
+          new Error("Candidate validation refused"),
+        );
+      const restart = vi.fn(async () => "unexpected restart");
+      const queue = new InstallationRestarts(f.journal, { restart, brokerDeployment });
+      const result = await queue.prepareBrokerDeployment(input, "host-agent");
+      expect(result).toMatchObject({
+        id: input.id,
+        reason: input.reason,
+        requestedBy: "host-agent",
+        plan: input.plan,
+        planSha256: createHash("sha256").update(JSON.stringify(input.plan)).digest("hex"),
+        status,
+        stage,
+      });
+      expect(result.approvedAt).toBeUndefined();
+      expect(queue.listBrokerDeployments()).toEqual([result]);
+      expect(f.reopen()).toEqual([result]);
+      expect(brokerDeployment.validateBrokerDeploymentPlan).toHaveBeenCalledExactlyOnceWith(
+        input.plan,
+      );
+      expect(brokerDeployment.executeBrokerDeployment).not.toHaveBeenCalled();
+      expect(brokerDeployment.observeBrokerDeployment).not.toHaveBeenCalled();
+      expect(restart).not.toHaveBeenCalled();
+    } finally {
+      await f.cleanup();
+    }
+  },
+);
+
+test("broker deployment snapshot rejects a genuine second file journal writer", async () => {
+  const directory = await realpath(await mkdtemp(path.join(tmpdir(), "deployment-conflict-")));
+  try {
+    await chmod(directory, 0o700);
+    const file = new FileBootstrapRequestJournal(directory);
+    const secondWriter = new FileBootstrapRequestJournal(directory);
+    const journal: RestartJournal = {
+      read: () => file.readLifecycle(),
+      write: (jobs) => file.writeLifecycle(jobs),
+    };
+    let resumeValidation!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      resumeValidation = resolve;
+    });
+    let signalValidationStarted!: () => void;
+    const validationStarted = new Promise<void>((resolve) => {
+      signalValidationStarted = resolve;
+    });
+    const brokerDeployment = inertBrokerDeploymentExecutor();
+    vi.mocked(brokerDeployment.validateBrokerDeploymentPlan).mockImplementation(async () => {
+      signalValidationStarted();
+      await paused;
+    });
+    const queue = new InstallationRestarts(journal, {
+      restart: async () => "unexpected restart",
+      brokerDeployment,
+    });
+    const preparing = queue.prepareBrokerDeployment(brokerDeploymentPreparation(), "host-agent");
+    const refused = expect(preparing).rejects.toThrow(
+      "Full installation journal reservation changed",
+    );
+    try {
+      await validationStarted;
+      secondWriter.mutateLifecycle(
+        (jobs) => jobs.map((job) => ({ ...job, detail: "Changed by a second writer" })),
+        undefined,
+      );
+    } finally {
+      resumeValidation();
+    }
+    const competing = secondWriter.readLifecycle();
+    await refused;
+    expect(new FileBootstrapRequestJournal(directory).readLifecycle()).toEqual(competing);
+    expect(competing).toHaveLength(1);
+    expect(competing[0].detail).toBe("Changed by a second writer");
+    expect(brokerDeployment.executeBrokerDeployment).not.toHaveBeenCalled();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("broker deployment snapshot advances only after a successful journal write", async () => {
+  const journal = new CanonicalLifecycleJournal();
+  const brokerDeployment = inertBrokerDeploymentExecutor();
+  const queue = new InstallationRestarts(journal, {
+    restart: async () => "unexpected restart",
+    brokerDeployment,
+  });
+  const input = brokerDeploymentPreparation();
+  journal.failWrite = true;
+  await expect(queue.prepareBrokerDeployment(input, "host-agent")).rejects.toThrow(
+    "disk unavailable",
+  );
+  expect(journal.read()).toEqual([]);
+  expect(queue.listBrokerDeployments()).toEqual([]);
+  expect(brokerDeployment.validateBrokerDeploymentPlan).not.toHaveBeenCalled();
+  journal.failWrite = false;
+  const result = await queue.prepareBrokerDeployment(input, "host-agent");
+  expect(result).toMatchObject({ id: input.id, status: "pending", stage: "prepared" });
+  expect(journal.read()).toEqual([result]);
+});
 
 test("force restart persists continuation intent before capture and releases only after readiness", async () => {
   const journal = new MemoryJournal();
@@ -1097,15 +1326,15 @@ test("old requests remain pending and duplicate legacy requests retain receipts"
   );
   journal.jobs.push({
     ...original,
-    id: "legacy-duplicate",
-    revision: "legacy-revision",
+    id: "10000000-0000-4000-8000-000000000041",
+    revision: "10000000-0000-4000-8000-000000000042",
     requestedBy: "owner",
   });
   const restored = new InstallationRestarts(journal, { restart: async () => "ready" }, () => now);
   expect(restored.list().map((job) => [job.id, job.status])).toEqual([
     [expired.id, "pending"],
     [original.id, "rejected"],
-    ["legacy-duplicate", "pending"],
+    ["10000000-0000-4000-8000-000000000041", "pending"],
   ]);
   expect(() => restored.decide(original.id, original.revision, "approve")).toThrow(
     "already decided",
@@ -3464,7 +3693,7 @@ function delegatedServiceRestartFixture(input: {
     cancellationDelayMs: input.cancellationDelayMs,
     hostUpdateServiceRestart: () => enabled,
     // As in production, the setting is part of the automatic grant's authority.
-    authority: () => (enabled ? "authority-with-service-restart" : "authority"),
+    authority: () => (enabled ? "a".repeat(64) : "b".repeat(64)),
   });
   queue.contribute(
     { target: "host", reason: "Routine Host update", requester: "Nova integration" },
