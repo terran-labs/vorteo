@@ -269,7 +269,8 @@ for (const panel of COMPACT_PANELS) {
       repoPrefix: "composer-focus-panel-",
       title: `Composer focus under ${panel.name}`,
     });
-    const draft = "Line one\nLine two\nLine three";
+    const draft =
+      "Line one\nLine two\nLine three\nLine four\nLine five\nLine six\nLine seven\nLine eight";
     try {
       await resizeComposerViewport(page, "portrait");
       await openAgentRoute(page, agent);

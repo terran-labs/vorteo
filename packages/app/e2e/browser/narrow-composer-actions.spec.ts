@@ -2,7 +2,11 @@ import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { test, expect } from "../support/fixtures";
 import { seedMockAgentWorkspace, openAgentRoute } from "../support/helpers/mock-agent";
 import { connectDaemonClient } from "../support/helpers/daemon-client-loader";
-import { fillComposerDraft, expectComposerVisible } from "../support/helpers/composer";
+import {
+  fillComposerDraft,
+  expectComposerVisible,
+  attachComposerTestImage,
+} from "../support/helpers/composer";
 
 for (const hasTouch of [false, true]) {
   test.describe(hasTouch ? "touch" : "mouse", () => {
@@ -46,7 +50,15 @@ for (const hasTouch of [false, true]) {
         await expect
           .poll(async () => (await client.readMessageQueue(agent.agentId)).snapshot?.items.length)
           .toBe(2);
+        if (hasTouch) {
+          await page.setViewportSize({ width: 1024, height: 768 });
+          await attachComposerTestImage(page);
+        }
         await fillComposerDraft(page, "Send immediately from the lower button");
+        await expect(send).toBeEnabled();
+        await expect(page.getByRole("button", { name: "Queue message", exact: true })).toHaveCount(
+          1,
+        );
         if (hasTouch) await send.tap();
         else await send.click();
         await expect(input).toHaveValue("");

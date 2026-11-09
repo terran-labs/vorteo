@@ -1,5 +1,6 @@
 import {
   CardGridContext,
+  CardGridLayoutContext,
   CardGridInsetContext,
   CardTileContext,
   cardGridCollapsedStyle,
@@ -79,8 +80,35 @@ function useCardTile(bodyVisible: boolean) {
   const column = useContext(CardColumnContext);
   const compact = grid && !bodyVisible && !column?.allCollapsed;
   const tile = useMemo(() => ({ compact, width }), [compact, width]);
-  const rootStyle = [grid && cardGridExpandedStyle, compact && cardGridCollapsedStyle];
-  return { tile, setWidth, rootStyle };
+  const id = useId();
+  const layout = useContext(CardGridLayoutContext);
+  const active = useRetainedPanelActive();
+  const register = grid ? layout?.register : undefined;
+  const forget = grid ? layout?.forget : undefined;
+  useLayoutEffect(() => {
+    register?.(id, active ? compact : null);
+  }, [register, id, compact, active]);
+  useLayoutEffect(
+    () => () => {
+      register?.(id, null);
+      forget?.(id);
+    },
+    [register, forget, id],
+  );
+  const basis = layout?.widths.get(id);
+  const rootStyle = [
+    grid && cardGridExpandedStyle,
+    compact && cardGridCollapsedStyle,
+    compact && basis !== undefined && { flexBasis: basis },
+  ];
+  const reportLayout = grid ? layout?.onTileLayout : undefined;
+  const onOrderLayout = useCallback(
+    (event: import("react-native").LayoutChangeEvent) => {
+      reportLayout?.(id, event);
+    },
+    [reportLayout, id],
+  );
+  return { tile, setWidth, rootStyle, onOrderLayout };
 }
 
 /** Every tile reports, so a resize anywhere re-measures the collapsed rows it may have moved. */
@@ -150,7 +178,7 @@ function TaskCardView({
   testID?: string;
   style?: StyleProp<ViewStyle>;
 }) {
-  const { tile, setWidth, rootStyle } = useCardTile(bodyVisible);
+  const { tile, setWidth, rootStyle, onOrderLayout } = useCardTile(bodyVisible);
   const compact = tile.compact;
   const divider = useScrollDivider();
   const { inset: panelInset, onLayout: onPanelLayout } = usePanelSpacing();
@@ -219,7 +247,14 @@ function TaskCardView({
     }),
     [maxHeight, dragging],
   );
-  const onGridLayout = useTileLayout(id);
+  const reportGridLayout = useTileLayout(id);
+  const onGridLayout = useCallback(
+    (event: import("react-native").LayoutChangeEvent) => {
+      reportGridLayout(event);
+      onOrderLayout(event);
+    },
+    [reportGridLayout, onOrderLayout],
+  );
   const parentDrag = useContext(QueueDragScrollContext);
   const { scrollEnabled, onDragActive } = useQueueDragScroll(true);
   const setDragging = useCallback(

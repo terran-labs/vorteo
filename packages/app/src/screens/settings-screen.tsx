@@ -1,4 +1,5 @@
 import { OwnerLockBadge } from "@/components/settings/owner-lock";
+import { SettingsCloseGesture } from "./settings/close-gesture";
 import { SettingsPaneScope, SettingsCard, SettingsDetailRow } from "@/components/settings";
 import { selectSettingsHost } from "@/navigation/settings-presentation";
 import { useHardwareKeyboardPresent } from "@/keyboard";
@@ -81,7 +82,12 @@ import { openChangelog } from "@/changelog";
 import { useAppDiagnosticStore } from "@/diagnostics/store";
 import { settingsStyles } from "@/styles/settings";
 import { hoverStyle } from "@/styles/hover";
-import { floatingPanelStyles, FLOATING_PANEL_INSET } from "@/styles/floating-panel";
+import {
+  floatingPanelStyles,
+  FLOATING_PANEL_INSET,
+  FLOATING_PANEL_RADIUS,
+  FLOATING_PANEL_CONTROL_HEIGHT,
+} from "@/styles/floating-panel";
 import { THINKING_TONE_NATIVE_PCM_BASE64 } from "@/utils/thinking-tone.native-pcm";
 import { toErrorMessage } from "@/utils/error-messages";
 import { useVoiceAudioEngineOptional } from "@/contexts/voice-context";
@@ -821,7 +827,7 @@ function SettingsSidebar({
                 Back
               </Button>
               <View style={sidebarStyles.search}>
-                <SettingsSearchBox search={search} />
+                <SettingsSearchBox search={search} fitPlaceholder />
               </View>
             </View>
           </View>
@@ -1097,7 +1103,7 @@ export default function SettingsScreen({
     () =>
       isCompactLayout ? (
         <View style={styles.headerSearch} testID="settings-header-search">
-          <SettingsSearchBox search={search} />
+          <SettingsSearchBox search={search} fitPlaceholder />
         </View>
       ) : undefined,
     [isCompactLayout, search],
@@ -1310,37 +1316,43 @@ export default function SettingsScreen({
   // Keep the phone header mounted while results replace the index, preserving input focus.
   if (isCompactLayout && view.kind === "root") {
     return (
-      <View style={styles.container}>
-        <BackHeader
-          title={t("settings.title")}
-          onBack={handleBackToWorkspace}
-          rightContent={headerSearch}
-        />
-        {searching ? (
-          scrollPage
-        ) : (
-          <ScrollView
-            style={styles.scrollView}
-            contentContainerStyle={insetBottomStyle}
-            keyboardShouldPersistTaps="handled"
-          >
-            <SettingsSidebar
-              sections={sections}
-              selectedSection={null}
-              onSelectSection={selectSection}
-              onAddHost={handleAddHost}
-              onBackToWorkspace={handleBackToWorkspace}
-              search={search}
-              layout="mobile"
-            />
-          </ScrollView>
-        )}
-      </View>
+      <SettingsCloseGesture onClose={handleBackToWorkspace}>
+        <View style={styles.container}>
+          <BackHeader
+            title={t("settings.title")}
+            onBack={handleBackToWorkspace}
+            rightContent={headerSearch}
+          />
+          {searching ? (
+            scrollPage
+          ) : (
+            <ScrollView
+              style={styles.scrollView}
+              contentContainerStyle={insetBottomStyle}
+              keyboardShouldPersistTaps="handled"
+            >
+              <SettingsSidebar
+                sections={sections}
+                selectedSection={null}
+                onSelectSection={selectSection}
+                onAddHost={handleAddHost}
+                onBackToWorkspace={handleBackToWorkspace}
+                search={search}
+                layout="mobile"
+              />
+            </ScrollView>
+          )}
+        </View>
+      </SettingsCloseGesture>
     );
   }
 
   if (isCompactLayout) {
-    return <View style={styles.container}>{detailPage}</View>;
+    return (
+      <SettingsCloseGesture onClose={handleBackToWorkspace}>
+        <View style={styles.container}>{detailPage}</View>
+      </SettingsCloseGesture>
+    );
   }
 
   // Desktop split view — mirrors AppContainer: sidebar owns the titlebar drag
@@ -1415,7 +1427,11 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[3],
   },
-  headerSearch: { width: 164, height: 44, flexDirection: "row" },
+  headerSearch: {
+    height: FLOATING_PANEL_CONTROL_HEIGHT,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+  },
   aboutUpdateActions: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -1458,7 +1474,13 @@ const sidebarStyles = StyleSheet.create((theme) => ({
     // Font changes must preserve the sidebar offset, not anchor its group headings.
     ...(isWeb ? { overflowAnchor: "none" as const } : {}),
   },
-  search: { flex: 1, minWidth: 0, flexDirection: "row" },
+  search: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    marginLeft: theme.spacing[2],
+  },
   ownerSlot: { minHeight: 84, paddingHorizontal: theme.spacing[2] },
   modeHeader: {
     height: VORTON_HEADER_HEIGHT,
@@ -1472,7 +1494,10 @@ const sidebarStyles = StyleSheet.create((theme) => ({
     flexShrink: 0,
     minWidth: 0,
     justifyContent: "flex-start",
-    borderRadius: theme.borderRadius.md,
+    borderRadius: FLOATING_PANEL_RADIUS,
+    height: FLOATING_PANEL_CONTROL_HEIGHT,
+    minHeight: FLOATING_PANEL_CONTROL_HEIGHT,
+    paddingHorizontal: theme.spacing[3],
   },
   sidebarDragArea: {
     position: "relative",

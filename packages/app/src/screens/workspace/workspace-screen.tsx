@@ -1352,8 +1352,9 @@ function WorkspaceScreenContent({
   useEffect(() => {
     // Back dismisses the compact overlay only. On a wide native layout the
     // explorer is a tab, `showMobileAgent` has no rendered consumer, and
-    // returning true would swallow Back with nothing to show for it.
-    if (!isRouteFocused || isWeb || !isMobile || !isExplorerSidebarShowing) {
+    // returning true would swallow Back with nothing to show for it. Phone workspaces show
+    // Files and Changes as inline cards, not an overlay, so Back is not theirs to take.
+    if (!isRouteFocused || isWeb || !isMobile || persistenceKey || !isExplorerSidebarShowing) {
       return;
     }
 
@@ -1363,7 +1364,7 @@ function WorkspaceScreenContent({
     });
 
     return () => handler.remove();
-  }, [isExplorerSidebarShowing, isMobile, isRouteFocused, showMobileAgent]);
+  }, [isExplorerSidebarShowing, isMobile, isRouteFocused, persistenceKey, showMobileAgent]);
 
   const workspaceLayout = useWorkspaceLayoutStore((state) =>
     persistenceKey ? (state.layoutByWorkspace[persistenceKey] ?? null) : null,

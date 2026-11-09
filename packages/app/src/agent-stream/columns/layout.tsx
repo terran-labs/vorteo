@@ -137,7 +137,7 @@ export function StreamColumns({
 }) {
   const { split, sizedText, widths, onLayout } = layout;
   const textOffset = layout.standaloneText
-    ? Math.max(COLUMN_MARGIN, (layout.containerWidth - widths.text) / 2)
+    ? Math.max(0, (layout.containerWidth - widths.text) / 2)
     : resolveTextOffset(layout.containerWidth, widths);
   const textStyle = useMemo(
     () => [
@@ -203,7 +203,9 @@ export function StreamColumns({
           >
             <View style={textStyle} testID="thread-text-column">
               {children[0]}
-              {sizedText ? <ColumnResizeHandle column="text" {...layout} /> : null}
+              {sizedText ? (
+                <ColumnResizeHandle column="text" {...layout} hasComposer={Boolean(composer)} />
+              ) : null}
             </View>
             {outline}
             {split && isNative ? <ColumnFade /> : null}
