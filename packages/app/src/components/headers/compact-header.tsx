@@ -26,6 +26,7 @@ interface CompactHeaderProps {
   /** Back button action. Defaults to navigating back. */
   onBack?: () => void;
   title?: string;
+  titleContent?: ReactNode;
   titleTestID?: string;
   /** A line under the title. */
   subtitle?: ReactNode;
@@ -48,6 +49,7 @@ export function CompactHeader({
   navigation,
   onBack,
   title,
+  titleContent,
   titleTestID,
   subtitle,
   loading = false,
@@ -76,12 +78,14 @@ export function CompactHeader({
             {navigation === "menu" ? <SidebarMenuToggle /> : <BackButton onBack={onBack} />}
           </View>
           <View style={styles.titleGroup}>
-            <CompactHeaderTitle
-              loading={loading}
-              title={title}
-              titleTestID={titleTestID}
-              subtitle={subtitle}
-            />
+            {titleContent ?? (
+              <CompactHeaderTitle
+                loading={loading}
+                title={title}
+                titleTestID={titleTestID}
+                subtitle={subtitle}
+              />
+            )}
           </View>
           {actions ? <View style={styles.island}>{actions}</View> : null}
         </View>

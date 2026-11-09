@@ -61,7 +61,15 @@ import {
   type ComponentProps,
 } from "react";
 import { Pressable, Text, View } from "react-native";
-import { CheckSquare, Square, Info, ChevronDown, ChevronUp, Copy } from "lucide-react-native";
+import {
+  CheckSquare,
+  Square,
+  Info,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  TriangleAlert,
+} from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { isWeb } from "@/constants/platform";
 import { Field, FormTextInput } from "@/components/ui/form-field";
@@ -2421,12 +2429,15 @@ function SystemAttentionNoticeBody({ model }: { model: InstallationPanelModel })
     <Button
       variant="ghost"
       onPress={open}
+      leftIcon={TriangleAlert}
+      textStyle={styles.systemNoticeText}
       testID="installation-restart-banner"
     >{`System needs attention (${count})`}</Button>
   ) : null;
 }
 
 const styles = StyleSheet.create((theme) => ({
+  systemNoticeText: { fontSize: theme.fontSize.sm, color: theme.colors.foreground },
   reviewControl: (touch: boolean) => ({
     minHeight: touch ? CONTROL_HEIGHTS.md.xs : CONTROL_HEIGHTS.md.md,
   }),

@@ -14,6 +14,9 @@ const PageScrollView = Platform.OS === "android" ? KeyboardAwareScrollView : Scr
 
 interface PageLayoutProps {
   title?: string;
+  titleContent?: ReactNode;
+  /** Let horizontal working surfaces reach the page viewport. */
+  fullWidth?: boolean;
   /** Compact back button. Defaults to navigating back. */
   onBack?: () => void;
   testID?: string;
@@ -39,6 +42,8 @@ interface PageLayoutProps {
  */
 export function PageLayout({
   title,
+  titleContent,
+  fullWidth = false,
   onBack,
   testID,
   titleTestID,
@@ -54,9 +59,16 @@ export function PageLayout({
   const showTitle = !isCompact && !headerTitle && title !== undefined;
   let header = <MenuHeader borderless />;
   if (isCompact) {
-    header = <BackHeader title={title} onBack={onBack} rightContent={actions} />;
+    header = (
+      <BackHeader
+        title={title}
+        titleContent={titleContent}
+        onBack={onBack}
+        rightContent={actions}
+      />
+    );
   } else if (headerTitle) {
-    header = <MenuHeader title={title} rightContent={actions} />;
+    header = <MenuHeader title={title} titleContent={titleContent} rightContent={actions} />;
   }
 
   return (
@@ -74,7 +86,14 @@ export function PageLayout({
         automaticallyAdjustKeyboardInsets
         keyboardShouldPersistTaps="handled"
       >
-        <View style={[styles.content, wide && styles.wide, headerTitle && styles.headerTitled]}>
+        <View
+          style={[
+            styles.content,
+            wide && styles.wide,
+            fullWidth && styles.fullWidth,
+            headerTitle && styles.headerTitled,
+          ]}
+        >
           {showTitle ? (
             <View style={styles.titleRow} testID={titleTestID}>
               <Text style={styles.title} testID="page-title">
@@ -115,6 +134,7 @@ const styles = StyleSheet.create((theme) => ({
   headerTitled: {
     paddingTop: theme.spacing[4],
   },
+  fullWidth: { maxWidth: "100%" },
   wide: {
     maxWidth: 1440,
   },

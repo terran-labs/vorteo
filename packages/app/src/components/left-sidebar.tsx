@@ -1001,9 +1001,9 @@ function MobileSidebar({
           )}
 
           <SidebarFooterBlock>
+            <InstallationRestartBanner placement="sidebar" />
             <SidebarGlobalCards onBeforeNavigate={closeSidebar} />
             <SidebarSyncNotice />
-            <InstallationRestartBanner placement="sidebar" />
             <DemoControls />
             <SidebarFooterRows onBeforeNavigate={closeSidebar} />
             <SidebarIdentityFooter />
@@ -1315,9 +1315,9 @@ function DesktopSidebar({
           )}
 
           <SidebarFooterBlock>
+            <InstallationRestartBanner placement={compact ? "rail" : "sidebar"} />
             {!compact ? <SidebarGlobalCards /> : null}
             <SidebarSyncNotice compact={compact} />
-            <InstallationRestartBanner placement={compact ? "rail" : "sidebar"} />
             {!compact ? <DemoControls /> : null}
             {!compact ? <SidebarFooterRows /> : null}
             {!compact ? <SidebarIdentityFooter /> : null}

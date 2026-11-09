@@ -3,16 +3,9 @@ import { View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import { SettingsSection } from "@/components/settings";
-import { DrainBanners, FactoriesStrip, ScopeControls } from "./overview-command";
+import { DrainBanners, ScopeControls } from "./overview-command";
 import type { FactoryOverviewData } from "./overview-data";
-import {
-  FactoryBoard,
-  SampleTag,
-  SnapshotAge,
-  TrackLegend,
-  type CardContext,
-} from "./overview-kit";
-import { shownReports } from "./overview-model";
+import { FactoryBoard, SampleTag, SnapshotAge, type CardContext } from "./overview-kit";
 import {
   hasReportPanels,
   KpiStrip,
@@ -24,21 +17,19 @@ import {
 } from "./overview-reports";
 
 const FLOOR_PANELS: ReportPanelItem[] = [
-  { report: "velocityChart", size: "lg" },
-  { report: "categories" },
-  { report: "tokenHistoryChart", size: "lg" },
+  { report: "ledger", size: "lg" },
+  { report: "providerSpend" },
+  { report: "quota", dense: true },
   { report: "budgets" },
-  { report: "quota", size: "lg" },
-  { report: "costPerPrChart" },
+  { report: "accountPicks", size: "sm" },
 ];
-
 const FLOOR_KPIS: FactoryKpi[] = [
   "inFlight",
-  "merged7d",
-  "cycleTime",
   "tokens",
   "spend",
+  "costPerPr",
   "passRate",
+  "queueAge",
 ];
 
 /**
@@ -55,12 +46,10 @@ export function FloorOverview({ data }: { data: FactoryOverviewData }) {
     [data.openAgent, data.usage],
   );
   // Live mode drops sample-backed reports; with none left the heading goes too.
-  const hasReports =
-    shownReports(FLOOR_KPIS, data.sample).length > 0 || hasReportPanels(FLOOR_PANELS, data.sample);
+  const hasReports = hasReportPanels(FLOOR_PANELS, data.sample);
   const boardMeta = useMemo(
     () => (
       <View style={styles.meta}>
-        <TrackLegend />
         <SnapshotAge at={data.queue.data?.fetchedAt} />
         {data.sample ? <SampleTag /> : null}
       </View>
@@ -73,11 +62,7 @@ export function FloorOverview({ data }: { data: FactoryOverviewData }) {
         <DrainBanners data={data} />
         <ScopeControls data={data} />
       </View>
-      {data.scope === "all" ? (
-        <SettingsSection title={t("projectFactory.scope.factories")}>
-          <FactoriesStrip data={data} />
-        </SettingsSection>
-      ) : null}
+      <KpiStrip data={data} kpis={FLOOR_KPIS} />
       {data.queue.data || data.queue.error || data.queue.loading ? (
         <SettingsSection title={t("projectFactory.board.title")} trailing={boardMeta}>
           <QueueNotices data={data} />
@@ -87,7 +72,6 @@ export function FloorOverview({ data }: { data: FactoryOverviewData }) {
       {hasReports ? (
         <SettingsSection title={t("projectFactory.reports.title")}>
           <View style={styles.reports}>
-            <KpiStrip data={data} kpis={FLOOR_KPIS} />
             <ReportPanels data={data} items={FLOOR_PANELS} />
             <ReportsFootnote data={data} />
           </View>
