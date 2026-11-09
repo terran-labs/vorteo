@@ -1561,6 +1561,11 @@ export class AgentManager {
   private readonly registry?: AgentStorage;
   private readonly durableTimelineStore?: AgentTimelineStore;
   private readonly previousStatuses = new Map<string, AgentLifecycleStatus>();
+  private diagnosticSequence = 0;
+  private readonly diagnosticTasks = new Map<
+    Promise<unknown>,
+    { id: number; category: string; started: number; caller: string }
+  >();
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly agentRegistrationTasks = new Set<Promise<void>>();
   private readonly inFlightAgentCloses = new Map<string, Promise<void>>();
@@ -8511,8 +8516,21 @@ export class AgentManager {
   }
 
   private trackBackgroundTask(task: Promise<void>): void {
+    const diagnostic = {
+      id: ++this.diagnosticSequence,
+      category: "background",
+      started: Date.now(),
+      caller: new Error().stack?.split("\n").slice(2, 5).join(" | ") ?? "",
+    };
+    this.diagnosticTasks.set(task, diagnostic);
+    this.logger.info({ diagnostic, phase: "enqueue" }, "SHUTDOWN_DIAGNOSTIC");
     this.backgroundTasks.add(task);
     void task.finally(() => {
+      this.logger.info(
+        { diagnostic, phase: "settled", elapsedMs: Date.now() - diagnostic.started },
+        "SHUTDOWN_DIAGNOSTIC",
+      );
+      this.diagnosticTasks.delete(task);
       this.backgroundTasks.delete(task);
     });
   }
@@ -8522,8 +8540,21 @@ export class AgentManager {
       () => undefined,
       () => undefined,
     );
+    const diagnostic = {
+      id: ++this.diagnosticSequence,
+      category: "registration",
+      started: Date.now(),
+      caller: new Error().stack?.split("\n").slice(2, 5).join(" | ") ?? "",
+    };
+    this.diagnosticTasks.set(settled, diagnostic);
+    this.logger.info({ diagnostic, phase: "enqueue" }, "SHUTDOWN_DIAGNOSTIC");
     this.agentRegistrationTasks.add(settled);
     void settled.then(() => {
+      this.logger.info(
+        { diagnostic, phase: "settled", elapsedMs: Date.now() - diagnostic.started },
+        "SHUTDOWN_DIAGNOSTIC",
+      );
+      this.diagnosticTasks.delete(settled);
       this.agentRegistrationTasks.delete(settled);
       return undefined;
     });
@@ -8547,7 +8578,17 @@ export class AgentManager {
   }
 
   private async flushTasks(options: { includeAgentRegistrations: boolean }): Promise<void> {
+    this.logger.info(
+      {
+        phase: "stream-flush-enter",
+        background: this.backgroundTasks.size,
+        registrations: this.agentRegistrationTasks.size,
+        buffers: Reflect.get(this.agentStreamCoalescer, "buffers").size,
+      },
+      "SHUTDOWN_DIAGNOSTIC",
+    );
     this.agentStreamCoalescer.flushAll();
+    this.logger.info({ phase: "stream-flush-exit" }, "SHUTDOWN_DIAGNOSTIC");
     // Drain tasks, including tasks spawned while awaiting.
     while (
       this.backgroundTasks.size > 0 ||
@@ -8556,7 +8597,24 @@ export class AgentManager {
       const pending = options.includeAgentRegistrations
         ? [...this.backgroundTasks, ...this.agentRegistrationTasks]
         : [...this.backgroundTasks];
+      this.logger.info(
+        {
+          phase: "tasks-wait-enter",
+          tasks: pending.map((task) => this.diagnosticTasks.get(task)),
+          background: this.backgroundTasks.size,
+          registrations: this.agentRegistrationTasks.size,
+        },
+        "SHUTDOWN_DIAGNOSTIC",
+      );
       await Promise.allSettled(pending);
+      this.logger.info(
+        {
+          phase: "tasks-wait-exit",
+          background: this.backgroundTasks.size,
+          registrations: this.agentRegistrationTasks.size,
+        },
+        "SHUTDOWN_DIAGNOSTIC",
+      );
     }
   }
 

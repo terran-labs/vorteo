@@ -1,0 +1,74 @@
+name: Isolated shutdown diagnostic
+
+# Builds publishes this exact branch once after review. No default-branch edit needed.
+on:
+  push:
+    branches: [diag/shutdown-e875]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: isolated-shutdown-e875
+  cancel-in-progress: false
+
+jobs:
+  shutdown-diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ONNXRUNTIME_NODE_INSTALL: skip
+      PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD: "0"
+      PASEO_DICTATION_ENABLED: "0"
+      PASEO_VOICE_MODE_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.4"
+          cache: npm
+      - name: Record environment
+        run: |
+          export VORTEO_SHUTDOWN_DIAGNOSTIC_DIR="$RUNNER_TEMP/shutdown-diagnostic"
+          echo "VORTEO_SHUTDOWN_DIAGNOSTIC_DIR=$VORTEO_SHUTDOWN_DIAGNOSTIC_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$VORTEO_SHUTDOWN_DIAGNOSTIC_DIR"
+          { git rev-parse HEAD; node --version; npm --version; uname -a; cat /etc/os-release; } > "$VORTEO_SHUTDOWN_DIAGNOSTIC_DIR/environment.log"
+      - name: Install locked dependencies
+        run: node scripts/npm-retry.mjs ci
+      - name: Match provider CLI setup
+        run: |
+          node scripts/npm-retry.mjs install -g @anthropic-ai/claude-code @openai/codex@0.105.0 opencode-ai
+          npm ls -g --depth=0 --json > "$VORTEO_SHUTDOWN_DIAGNOSTIC_DIR/provider-versions.json"
+      - name: Download the failed run's exact server stack
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: "13663661988"
+          path: ${{ runner.temp }}/server-stack-dist
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: "42595736494"
+      - name: Unpack the original compiled dependencies
+        run: tar -xzf "$RUNNER_TEMP/server-stack-dist/server-stack-dist.tgz"
+      - name: Run shutdown test once
+        timeout-minutes: 8
+        run: node scripts/shutdown-diagnostic.mjs
+      - name: Retain daemon logs if the test step times out
+        if: ${{ always() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/shutdown-diagnostic"
+          for home in /tmp/paseo-stop-supervisor-*; do
+            if [ -f "$home/daemon.log" ]; then
+              cp "$home/daemon.log" "$RUNNER_TEMP/shutdown-diagnostic/$(basename "$home").log"
+            fi
+          done
+      - name: Retain diagnostic evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: shutdown-diagnostic-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/shutdown-diagnostic
+          retention-days: 7
+          if-no-files-found: error

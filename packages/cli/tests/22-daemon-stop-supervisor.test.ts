@@ -7,7 +7,7 @@
 
 import assert from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, mkdir, copyFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { $ } from "zx";
@@ -114,6 +114,7 @@ const cliRoot = join(import.meta.dirname, "..");
 
 let supervisorProcess: ChildProcess | null = null;
 let recentSupervisorLogs = "";
+let diagnosticSupervisorLogs = "";
 
 try {
   console.log("Test 1: start supervisor-entrypoint in dev mode with isolated PASEO_HOME");
@@ -136,9 +137,11 @@ try {
   );
 
   supervisorProcess.stdout?.on("data", (chunk) => {
+    diagnosticSupervisorLogs += chunk.toString();
     recentSupervisorLogs = (recentSupervisorLogs + chunk.toString()).slice(-8000);
   });
   supervisorProcess.stderr?.on("data", (chunk) => {
+    diagnosticSupervisorLogs += chunk.toString();
     recentSupervisorLogs = (recentSupervisorLogs + chunk.toString()).slice(-8000);
   });
 
@@ -244,6 +247,12 @@ try {
   }
 
   await $`PASEO_HOME=${paseoHome} PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD=${testEnv.PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD} PASEO_DICTATION_ENABLED=${testEnv.PASEO_DICTATION_ENABLED} PASEO_VOICE_MODE_ENABLED=${testEnv.PASEO_VOICE_MODE_ENABLED} npx paseo daemon stop --home ${paseoHome} --force`.nothrow();
+  const diagnosticDir = process.env.VORTEO_SHUTDOWN_DIAGNOSTIC_DIR!;
+  await mkdir(diagnosticDir, { recursive: true });
+  await writeFile(join(diagnosticDir, "supervisor.log"), diagnosticSupervisorLogs);
+  await copyFile(join(paseoHome, "daemon.log"), join(diagnosticDir, "daemon.log")).catch((error) =>
+    console.error("Diagnostic log retention failed", error),
+  );
   await rm(paseoHome, { recursive: true, force: true });
 }
 

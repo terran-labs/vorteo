@@ -2601,8 +2601,11 @@ export async function createPaseoDaemon(
       label: "drain plugin lifecycle events",
     }).catch((error) => logger.warn({ err: error }, "Plugin lifecycle events did not finish"));
     step("flush agents");
+    logger.info({ phase: "manager-flush-enter" }, "SHUTDOWN_DIAGNOSTIC");
     await agentManager.flushForShutdown().catch(() => undefined);
+    logger.info({ phase: "manager-flush-exit" }, "SHUTDOWN_DIAGNOSTIC");
     detachAgentStoragePersistence();
+    logger.info({ phase: "persistence-detached" }, "SHUTDOWN_DIAGNOSTIC");
     step("agent storage");
     await agentStorage.flush().catch(() => undefined);
     step("provider runtime");
