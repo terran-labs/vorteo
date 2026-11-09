@@ -644,6 +644,8 @@ Installer demo: `install.sh --demo` embeds the production animation and shared i
 
 Welcome presentation: wide screens split owner sign-in and password help into two columns; compact screens stack them. The whole command field is an accessible copy target with toast feedback; hovering the block highlights its copy icon. Interactive installation completion omits agent-only result markers.
 
+Installer update animation: terminal upgrades show the same build animation as fresh installs while building the Host and Dev releases. Completion, failure and interrupted input restore the ordinary terminal; redirected output keeps plain progress messages.
+
 Installer presentation review: the elapsed timer is assigned before export to preserve shell failure reporting. the startup logo has a leading blank line, and the build animation centers within the current terminal dimensions on every frame. Progress remains visible below the artwork; small terminals retain the compact status display.
 
 Maintenance review (2026-11-02): the reviewed `installationLead` coordinator setting names the agent thread to notify about coordinator updates that fail before starting or stall after approval. The coordinator sends each notice once, only while that thread is idle, under a stable message identity; a notice grants no approval or installation authority. The setting changes only through a reviewed coordinator update. Source only; not installed. README overview and onboarding are unchanged.
