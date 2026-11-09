@@ -1,5 +1,4 @@
 import type { ProjectFactoryList } from "../../../../../plugins/factory/shared/project";
-import { needsYouByFactory, type NeedsYouItem } from "@/screens/factory/all-factories-model";
 import {
   factoryCardKey,
   factoryRunners,
@@ -40,14 +39,12 @@ export interface FactoryChipSummary {
   /** Another process, such as Builds before a restart, holds this Factory. */
   held: boolean;
   inFlight: number;
-  needsYou: number;
 }
 
 export interface FactoryAggregate {
   pill: FactoryStatePill;
   issues: TaggedFactoryIssue[];
   runners: TaggedFactoryIssue[];
-  needsYou: NeedsYouItem[];
   chips: FactoryChipSummary[];
 }
 
@@ -60,12 +57,7 @@ export function isListedFactory(project: Pick<ListedFactory, "state" | "drain">)
  * Every Factory merged into one card: On only when all are on, Paused when any is paused or
  * drained, otherwise Off. Issues and runners keep their project's tag.
  */
-export function aggregateFactories(
-  factories: readonly FactorySummaryInput[],
-  /** From collectNeedsYou, so the card and the overview count the same things. */
-  needsYou: readonly NeedsYouItem[] = [],
-): FactoryAggregate {
-  const needsYouCounts = needsYouByFactory(needsYou);
+export function aggregateFactories(factories: readonly FactorySummaryInput[]): FactoryAggregate {
   const tagged = factories.map((factory) => {
     const tag = factory.hostLabel
       ? `${factory.projectName} · ${factory.hostLabel}`
@@ -87,7 +79,6 @@ export function aggregateFactories(
     pill,
     issues,
     runners: factoryRunners(issues),
-    needsYou: [...needsYou],
     chips: tagged.map(({ factory, issues: own }, index) => ({
       key: factoryCardKey(factory.serverId, factory.projectId),
       serverId: factory.serverId,
@@ -98,7 +89,6 @@ export function aggregateFactories(
       reason: factory.listed.drain?.reason ?? factory.state?.reason ?? null,
       held: pills[index]!.label === "held",
       inFlight: factoryRunners(own).length,
-      needsYou: needsYouCounts.get(factoryCardKey(factory.serverId, factory.projectId)) ?? 0,
     })),
   };
 }

@@ -1,7 +1,11 @@
 import { useCallback, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
-import { StyleSheet } from "react-native-unistyles";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { MessageCircle } from "lucide-react-native";
+import type { Theme } from "@/styles/theme";
+import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
+import { sidebarIndent } from "./indent";
 import { Tooltip, TooltipContent, TooltipText, TooltipTrigger } from "@/components/ui/tooltip";
 import { WorkspaceRenameModal } from "@/components/workspace-rename-modal";
 import type { SidebarWorkspaceEntry } from "@/hooks/use-sidebar-workspaces-list";
@@ -22,6 +26,16 @@ import { useFactoryStatusAge } from "./factory-status";
 import { freshFactoryStatus } from "./project-factory-model";
 import { SidebarWorkspaceContextMenu } from "./sidebar-workspace-menu";
 import { WorkspaceStatusIndicator, isSidebarRowCalm } from "./sidebar-workspace-row-content";
+
+const ThemedMessage = withUnistyles(MessageCircle);
+const accentColor = (theme: Theme) => ({ color: theme.colors.accent });
+const talkIcon = <ThemedMessage size={12} uniProps={accentColor} />;
+
+/** Gutter between tiles, on each side of a cell. */
+const CELL_GUTTER = 2;
+const TILE_PADDING = 8;
+/** Cell gutter, tile border and tile padding before a tile's status icon. */
+const TILE_ICON_INSET = CELL_GUTTER + 1 + TILE_PADDING;
 
 type RoleStatus = ProjectFactoryState["roles"][number]["status"];
 
@@ -68,47 +82,108 @@ export function factoryChips(
   return chips;
 }
 
-export function FactoryRoleChips({
-  chips,
-  activeWorkspaceSelection,
-  selectionEnabled,
-  canPinWorkspace,
-  onToggleWorkspacePin,
-  onWorkspacePress,
-}: {
-  chips: readonly FactoryChip[];
+/** The Foreman is the place to talk to the Factory, so it leads; the other members are its crew. */
+export function splitForeman(chips: readonly FactoryChip[]): {
+  foreman: FactoryChip | null;
+  crew: FactoryChip[];
+} {
+  const foreman =
+    chips.find((chip) => chip.key === "factory-intake") ??
+    chips.find(
+      (chip) => chip.isRole && chip.label === fallbackFactoryRoleTitle("factory-intake"),
+    ) ??
+    null;
+  return { foreman, crew: chips.filter((chip) => chip !== foreman) };
+}
+
+interface ChipSelectionProps {
   activeWorkspaceSelection: ActiveWorkspaceSelection | null;
   selectionEnabled: boolean;
   canPinWorkspace: boolean;
   onToggleWorkspacePin: ToggleSidebarWorkspacePin;
   onWorkspacePress?: () => void;
-}) {
+}
+
+function chipSelected(chip: FactoryChip, props: ChipSelectionProps): boolean {
+  return Boolean(
+    chip.entry &&
+    props.selectionEnabled &&
+    props.activeWorkspaceSelection?.serverId === chip.entry.serverId &&
+    props.activeWorkspaceSelection.workspaceId === chip.entry.workspaceId,
+  );
+}
+
+/**
+ * Where a tile row starts so the status icon inside a tile shares the icon rail of sidebar rows
+ * at `level`: the cell gutter, the tile border and the tile padding sit before the icon.
+ */
+export function factoryTileRowStyle(level: number) {
+  return inlineUnistylesStyle({ paddingLeft: Math.max(0, sidebarIndent(level) - TILE_ICON_INSET) });
+}
+
+function FactoryTile({
+  chip,
+  primary = false,
+  ...props
+}: ChipSelectionProps & { chip: FactoryChip; primary?: boolean }) {
+  return chip.entry ? (
+    <WorkspaceChip
+      chip={chip}
+      workspace={chip.entry}
+      primary={primary}
+      selected={chipSelected(chip, props)}
+      canPin={props.canPinWorkspace}
+      onToggleWorkspacePin={props.onToggleWorkspacePin}
+      onWorkspacePress={props.onWorkspacePress}
+    />
+  ) : (
+    <View
+      pointerEvents="none"
+      style={[styles.chip, primary && styles.chipPrimary, styles.chipEmpty]}
+    >
+      <View style={styles.indicatorSlot} />
+      <Text style={[styles.chipText, styles.chipTextMuted]} numberOfLines={1}>
+        {chip.label}
+      </Text>
+    </View>
+  );
+}
+
+/** The Foreman as a full-width tile that reads as the Factory's conversation. */
+export function FactoryForemanTile({
+  chip,
+  level,
+  ...props
+}: ChipSelectionProps & { chip: FactoryChip; level: number }) {
+  return (
+    <View
+      pointerEvents="box-none"
+      style={[styles.grid, factoryTileRowStyle(level)]}
+      testID="factory-card-foreman"
+    >
+      <View pointerEvents="box-none" style={styles.cellFull}>
+        <FactoryTile chip={chip} primary {...props} />
+      </View>
+    </View>
+  );
+}
+
+/** Two columns of quieter tiles, one per crew member. */
+export function FactoryRoleChips({
+  chips,
+  level,
+  ...props
+}: ChipSelectionProps & { chips: readonly FactoryChip[]; level: number }) {
   if (chips.length === 0) return null;
   return (
-    <View pointerEvents="box-none" style={styles.grid} testID="factory-card-roles">
+    <View
+      pointerEvents="box-none"
+      style={[styles.grid, factoryTileRowStyle(level)]}
+      testID="factory-card-roles"
+    >
       {chips.map((chip) => (
         <View key={chip.key} pointerEvents="box-none" style={styles.cell}>
-          {chip.entry ? (
-            <WorkspaceChip
-              chip={chip}
-              workspace={chip.entry}
-              selected={
-                selectionEnabled &&
-                activeWorkspaceSelection?.serverId === chip.entry.serverId &&
-                activeWorkspaceSelection.workspaceId === chip.entry.workspaceId
-              }
-              canPin={canPinWorkspace}
-              onToggleWorkspacePin={onToggleWorkspacePin}
-              onWorkspacePress={onWorkspacePress}
-            />
-          ) : (
-            <View pointerEvents="none" style={[styles.chip, styles.chipEmpty]}>
-              <View style={styles.indicatorSlot} />
-              <Text style={[styles.chipText, styles.chipTextMuted]} numberOfLines={1}>
-                {chip.label}
-              </Text>
-            </View>
-          )}
+          <FactoryTile chip={chip} {...props} />
         </View>
       ))}
     </View>
@@ -132,6 +207,7 @@ function ChipTooltipText({ chip }: { chip: FactoryChip }) {
 /** A role's workspace: it opens, menus and reports status exactly as the workspace row would. */
 function WorkspaceChip({
   chip,
+  primary = false,
   workspace,
   selected,
   canPin,
@@ -139,6 +215,8 @@ function WorkspaceChip({
   onWorkspacePress,
 }: {
   chip: FactoryChip;
+  /** The Foreman's full-width tile, marked as where to talk to the Factory. */
+  primary?: boolean;
   workspace: SidebarWorkspaceEntry;
   selected: boolean;
   canPin: boolean;
@@ -165,9 +243,11 @@ function WorkspaceChip({
     () => [
       styles.chip,
       touch && styles.chipTouch,
-      selected ? styles.chipSelected : styles.chipHoverable,
+      primary && styles.chipPrimary,
+      selected && (primary ? styles.chipPrimarySelected : styles.chipSelected),
+      !selected && (primary ? styles.chipPrimaryHoverable : styles.chipHoverable),
     ],
-    [selected, touch],
+    [selected, touch, primary],
   );
   return (
     <>
@@ -193,7 +273,11 @@ function WorkspaceChip({
               openInFileManagerPath={workspace.workspaceDirectory}
               disabled={actions.isArchiving}
               accessibilityRole="button"
-              accessibilityLabel={t("sidebar.factoryCard.openRole", { role: chip.label })}
+              accessibilityLabel={
+                primary
+                  ? t("sidebar.factoryCard.talkLabel", { role: chip.label })
+                  : t("sidebar.factoryCard.openRole", { role: chip.label })
+              }
               accessibilityState={accessibilityState}
               aria-selected={selected}
               style={chipStyle}
@@ -212,9 +296,24 @@ function WorkspaceChip({
                   lit={!calm}
                 />
               </View>
-              <Text style={[styles.chipText, calm && styles.chipTextMuted]} numberOfLines={1}>
+              <Text
+                style={[
+                  styles.chipText,
+                  primary && styles.chipTextPrimary,
+                  calm && !primary && styles.chipTextMuted,
+                ]}
+                numberOfLines={1}
+              >
                 {chip.label}
               </Text>
+              {primary ? (
+                <View style={styles.talk}>
+                  {talkIcon}
+                  <Text style={styles.talkText} numberOfLines={1}>
+                    {t("sidebar.factoryCard.talk")}
+                  </Text>
+                </View>
+              ) : null}
             </SidebarWorkspaceContextMenu>
           </View>
         </TooltipTrigger>
@@ -233,39 +332,51 @@ function WorkspaceChip({
 }
 
 const styles = StyleSheet.create((theme) => ({
+  // Rows of tiles end where sidebar rows end their content.
   grid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    paddingHorizontal: theme.spacing[2],
-    paddingTop: theme.spacing[1],
-    paddingBottom: theme.spacing[2],
+    paddingRight: theme.spacing[2] - CELL_GUTTER,
+    paddingBottom: theme.spacing[1],
     rowGap: theme.spacing[1],
   },
   // Two columns; the gutter is the cells' padding so wrapping never leaves a ragged gap.
   cell: {
     width: "50%",
-    paddingHorizontal: 2,
+    paddingHorizontal: CELL_GUTTER,
   },
+  cellFull: { width: "100%", paddingHorizontal: CELL_GUTTER },
   triggerSlot: { width: "100%" },
   chip: {
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[1],
     minHeight: LIST_ROW_HEIGHT - 4,
-    paddingHorizontal: theme.spacing[2],
+    paddingHorizontal: TILE_PADDING,
     borderRadius: theme.borderRadius.md,
     borderWidth: 1,
     borderColor: "transparent",
-    backgroundColor: theme.colors.surface2,
+    // Translucent, so tiles read on every theme's sidebar surface.
+    backgroundColor: theme.colors.interactionHighlight,
   },
+  chipPrimary: {
+    backgroundColor: theme.colors.accentSubtle,
+    borderColor: theme.colors.accent,
+  },
+  chipPrimaryHoverable: hoverStyle({ backgroundColor: theme.colors.accentSubtleHovered }),
   chipTouch: { minHeight: LIST_ROW_TOUCH_HEIGHT },
   chipHoverable: hoverStyle({
-    backgroundColor: theme.colors.surface3,
+    backgroundColor: theme.colors.surface2,
     borderColor: theme.colors.borderAccent,
   }),
+  // Tiles already rest on a fill, so selection adds an outline as well as a stronger fill.
   chipSelected: {
-    backgroundColor: theme.colors.surfaceSidebarSelected,
-    borderColor: theme.colors.borderAccent,
+    backgroundColor: theme.colors.surface3,
+    borderColor: theme.colors.foregroundMuted,
+  },
+  chipPrimarySelected: {
+    backgroundColor: theme.colors.accentSubtleHovered,
+    borderColor: theme.colors.accent,
   },
   chipPressed: { backgroundColor: theme.colors.surface3 },
   chipEmpty: { opacity: 0.6 },
@@ -282,6 +393,9 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: theme.fontWeight.normal,
   },
   chipTextMuted: { color: theme.colors.foregroundMuted },
+  chipTextPrimary: { fontSize: theme.fontSize.base, fontWeight: theme.fontWeight.medium },
+  talk: { flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 1, minWidth: 0 },
+  talkText: { color: theme.colors.accent, fontSize: theme.fontSize.sm },
 }));
 
 /** Shared with the All Factories card, whose per-Factory chips take the same shape. */

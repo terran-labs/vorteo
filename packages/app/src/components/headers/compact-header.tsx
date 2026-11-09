@@ -5,6 +5,7 @@ import { router } from "expo-router";
 import { ArrowLeft } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { useIsFloatingHeader } from "@/components/floating-header";
 import { HeaderToggleButton } from "@/components/headers/header-toggle-button";
 import { SidebarMenuToggle } from "@/components/headers/sidebar-menu-toggle";
 import {
@@ -36,10 +37,12 @@ interface CompactHeaderProps {
 
 /**
  * The phone header: the navigation button and the screen's actions sit in islands, with the title
- * left-aligned between them. Neither the header nor its islands draw a background, so it reads the
- * same in flow and floating over content (see `FloatingHeaderLayout`, whose fade gives the icons
- * contrast). Its height matches the old flat header, so anything
- * offset by the header height still lines up.
+ * left-aligned between them. In flow it paints the toolbar surface and divider the open sidebar's
+ * toolbar uses, from the screen's top edge with the safe area included; the shell gives the status
+ * bar region the same surface. Floating over content
+ * it draws no background; `FloatingHeaderLayout`'s fade in the same surface gives the icons
+ * contrast. Its height matches the old flat header, so anything offset by the header height
+ * still lines up.
  */
 export function CompactHeader({
   navigation,
@@ -51,16 +54,18 @@ export function CompactHeader({
   actions,
 }: CompactHeaderProps) {
   const insets = useSafeAreaInsets();
+  const floating = useIsFloatingHeader();
   const rootStyle = useMemo(
     () => [
       styles.root,
+      !floating && styles.surface,
       {
         paddingTop: insets.top + HEADER_TOP_PADDING_MOBILE,
         marginLeft: insets.left,
         marginRight: insets.right,
       },
     ],
-    [insets.top, insets.left, insets.right],
+    [floating, insets.top, insets.left, insets.right],
   );
 
   return (
@@ -141,6 +146,12 @@ function BackButton({ onBack }: { onBack?: () => void }) {
 const styles = StyleSheet.create((theme) => ({
   root: {
     paddingHorizontal: theme.spacing[3],
+  },
+  // The same surface and divider as the open sidebar's toolbar.
+  surface: {
+    backgroundColor: theme.colors.surfaceWorkspace,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.divider,
   },
   row: {
     height: HEADER_INNER_HEIGHT_MOBILE,

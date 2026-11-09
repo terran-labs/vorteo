@@ -2,7 +2,6 @@ import { useCallback, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { projectNameForWorkspace } from "@/hooks/sidebar-workspaces-view-model";
-import { selectPendingArchiveAgentIds, usePendingArchiveState } from "@/hooks/use-archive-agent";
 import { useFetchQueries } from "@/data/query";
 import {
   ProjectFactoryStateSchema,
@@ -23,9 +22,7 @@ import {
   OWNER_STOP_REASON,
 } from "./factory-reads";
 import {
-  factoryQuestions,
   factoryScopeKey,
-  type FactoryQuestion,
   canResumeHost,
   canStopHost,
   hostStopState,
@@ -181,27 +178,6 @@ export function useProjectNames(): (serverId: string, projectId: string) => stri
     },
     [sessions],
   );
-}
-
-/** Open questions from these Factories' threads, read from the session store like the card. */
-export function useFactoryQuestions(entries: readonly FactoryScopeEntry[]): FactoryQuestion[] {
-  const sessions = useSessionStore((store) => store.sessions);
-  const pending = usePendingArchiveState();
-  return useMemo(() => {
-    const serverIds = new Set(entries.map((entry) => entry.serverId));
-    const hosts = [...serverIds].flatMap((serverId) => {
-      const session = sessions[serverId];
-      if (!session) return [];
-      return [
-        {
-          serverId,
-          agents: session.agents.values(),
-          pendingArchive: selectPendingArchiveAgentIds(pending, serverId),
-        },
-      ];
-    });
-    return factoryQuestions(entries, hosts);
-  }, [entries, pending, sessions]);
 }
 
 export interface StopAllControls {

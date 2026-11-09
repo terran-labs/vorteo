@@ -10,6 +10,7 @@ import Animated, {
   withRepeat,
   withTiming,
 } from "react-native-reanimated";
+import { SPINNER_PERIOD_MS } from "@/styles/spinner";
 import { LOADING_INDICATOR } from "@/styles/theme";
 
 interface LoadingSpinnerProps {
@@ -33,7 +34,10 @@ export function LoadingSpinner({ color, size = "small", style }: LoadingSpinnerP
       : Math.min(LOADING_INDICATOR.smallStroke, diameter / 10);
   const rotation = useSharedValue(0);
   useEffect(() => {
-    rotation.value = withRepeat(withTiming(360, { duration: 900, easing: Easing.linear }), -1);
+    rotation.value = withRepeat(
+      withTiming(360, { duration: SPINNER_PERIOD_MS, easing: Easing.linear }),
+      -1,
+    );
     return () => cancelAnimation(rotation);
   }, [rotation]);
   const animatedStyle = useAnimatedStyle(() => ({

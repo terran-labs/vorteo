@@ -1299,7 +1299,23 @@ function touchFullscreenPlacement(dictationTop: number) {
   };
 }
 const TOUCH_FULLSCREEN_PLACEMENT = touchFullscreenPlacement(COMPOSER_CORNER_INSET);
-const TOUCH_FULLSCREEN_PLACEMENT_MOBILE = touchFullscreenPlacement(COMPOSER_CORNER_INSET - 1);
+/**
+ * Phone controls on the right edge share one rail measured from the surface's padding box: the
+ * toolbar's 12px padding less its 6px bleed puts Send/Stop 6px from the right and bottom edges,
+ * and dictation and Queue use the same inset above it. Positioning them inside the text surface or
+ * the toolbar row instead offsets each by a different padding, which made Queue overlap dictation.
+ */
+const MOBILE_RAIL_INSET = 6;
+/** The surface's compact top and horizontal padding, which the text surface sits inside. */
+const MOBILE_SURFACE_PADDING_TOP = 8;
+const MOBILE_SURFACE_PADDING_X = 12;
+const TOUCH_FULLSCREEN_PLACEMENT_MOBILE = {
+  top:
+    MOBILE_RAIL_INSET -
+    MOBILE_SURFACE_PADDING_TOP +
+    (TOUCH_DICTATION_SIZE - TOUCH_FULLSCREEN_SIZE) / 2,
+  right: MOBILE_RAIL_INSET - MOBILE_SURFACE_PADDING_X + TOUCH_DICTATION_SIZE + TOUCH_CORNER_GAP,
+};
 
 function touchFullscreenPlacementFor(besideDictation: boolean, mobile: boolean) {
   if (!besideDictation) return undefined;
@@ -1312,16 +1328,18 @@ function placeDictationButton(
   showVoice: boolean,
   mobile: boolean,
 ) {
+  const slot =
+    touch && showVoice ? (
+      <View
+        style={mobile ? styles.mobileDictationSlot : styles.touchDictationSlot}
+        testID="composer-dictation-slot"
+      >
+        {button}
+      </View>
+    ) : null;
   return {
-    top:
-      touch && showVoice ? (
-        <View
-          style={[styles.touchDictationSlot, mobile && styles.mobileDictationSlot]}
-          testID="composer-dictation-slot"
-        >
-          {button}
-        </View>
-      ) : null,
+    top: mobile ? null : slot,
+    rail: mobile ? slot : null,
     bottom: touch ? null : button,
   };
 }
@@ -2162,7 +2180,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         taskCardStyles.surface,
         touch && !mobileComposer.enabled && styles.touchInputSurface,
         mobileComposer.enabled && { paddingBottom: mobileComposer.bottomPadding },
-        isCompact && !isFullscreen && styles.inputWrapperCompact,
+        // The mobile surface is transparent, so a shadow would only draw a stray edge line.
+        isCompact && !isFullscreen && !mobileComposer.enabled && styles.inputWrapperCompact,
         readOnly && styles.inputWrapperReadOnly,
         inputWrapperStyle,
         mobileComposer.enabled && styles.mobileInputSurface,
@@ -2308,7 +2327,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       voiceButton,
       touch,
       mode.showVoice,
-      mobileComposer.enabled,
+      mobileComposer.enabled && !isFullscreen,
     );
     const sendButton = useMemo(
       () => (
@@ -2453,7 +2472,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
             {leftContent}
           </View>
 
-          {mobileQueueButton}
           {/* Right: voice button, contextual button (realtime/send/cancel) */}
           <View style={styles.rightButtonGroup}>
             {beforeVoiceContent}
@@ -2476,7 +2494,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         rightContent,
         sendButton,
         dictationPlacement.bottom,
-        mobileQueueButton,
       ],
     );
     const voiceOverlay = useMemo(
@@ -2561,6 +2578,12 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
             mobileComposer.enabled,
           )}
           onEnter={enterFullscreen}
+          rail={
+            <>
+              {dictationPlacement.rail}
+              {mobileQueueButton}
+            </>
+          }
           overlay={voiceOverlay}
         />
       </View>
@@ -2625,13 +2648,13 @@ const styles = StyleSheet.create((theme: Theme) => ({
     borderColor: "transparent",
     borderRadius: 0,
   },
-  // Three 44px actions, two 8px gaps, and matching 8px top/bottom insets.
+  // The rail's three 44px actions with 6px edge insets and two 9px gaps, plus the 1px borders.
   mobileQueueSurface: { minHeight: 164, justifyContent: "space-between" },
   mobileQueueButton: {
     position: "absolute",
     zIndex: 1,
-    bottom: 59,
-    right: 7,
+    bottom: MOBILE_RAIL_INSET + TOUCH_DICTATION_SIZE + 9,
+    right: MOBILE_RAIL_INSET,
   },
   // The band the fullscreen glyph sits in is the input's own padding, so a tap
   // anywhere in it (under the glyph, or where the glyph would be) is a tap on the
@@ -2709,7 +2732,12 @@ const styles = StyleSheet.create((theme: Theme) => ({
   touchTextInputWithFullscreen: {
     paddingRight: TOUCH_DICTATION_BAND + TOUCH_FULLSCREEN_SIZE + TOUCH_CORNER_GAP,
   },
-  mobileDictationSlot: { top: COMPOSER_CORNER_INSET - 1 },
+  mobileDictationSlot: {
+    position: "absolute",
+    top: MOBILE_RAIL_INSET,
+    right: MOBILE_RAIL_INSET,
+    zIndex: 1,
+  },
   buttonRow: {
     flexShrink: 0,
     flexDirection: "row",

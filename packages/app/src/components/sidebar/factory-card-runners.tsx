@@ -8,7 +8,13 @@ import { Tooltip, TooltipContent, TooltipText, TooltipTrigger } from "@/componen
 import { StatusRing } from "@/components/status-ring";
 import { factoryAgentStatusKey } from "@/screens/factory/queue";
 import { hoverStyle } from "@/styles/hover";
-import { LIST_ROW_HEIGHT, LIST_ROW_TOUCH_HEIGHT } from "@/styles/list-row-metrics";
+import {
+  LIST_ROW_HEIGHT,
+  LIST_ROW_SPACING,
+  LIST_ROW_TOUCH_HEIGHT,
+} from "@/styles/list-row-metrics";
+import { FactorySubheading } from "./factory-subheading";
+import { sidebarIndentStyle } from "./indent";
 import { isNative } from "@/constants/platform";
 import type { Theme } from "@/styles/theme";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
@@ -32,28 +38,31 @@ export type RunnerIssue = FactoryQueueIssue & { serverId?: string; tag?: string 
 export function FactoryRunners({
   serverId,
   runners,
+  level,
   onBeforeNavigate,
 }: {
   /** The host of issues that do not name their own. */
   serverId?: string;
   runners: readonly RunnerIssue[];
+  /** The Runners subheading's level; rows sit one further in. */
+  level: number;
   onBeforeNavigate?: () => void;
 }) {
   const { t } = useTranslation();
   if (runners.length === 0) return null;
   return (
-    <View pointerEvents="box-none" style={styles.section} testID="factory-card-runners">
-      <View pointerEvents="none" style={styles.header}>
-        <Text style={styles.headerText}>{t("sidebar.factoryCard.runners")}</Text>
-        <Text style={styles.headerText}>
-          {t("sidebar.factoryCard.runnersActive", { count: runners.length })}
-        </Text>
-      </View>
+    <View pointerEvents="box-none" testID="factory-card-runners">
+      <FactorySubheading
+        label={t("sidebar.factoryCard.runners")}
+        trailing={t("sidebar.factoryCard.runnersActive", { count: runners.length })}
+        level={level}
+      />
       {runners.map((issue) => (
         <RunnerRow
           key={`${issue.serverId ?? serverId}:${issue.tag ?? ""}#${issue.number}`}
           serverId={issue.serverId ?? serverId ?? ""}
           issue={issue}
+          level={level + 1}
           onBeforeNavigate={onBeforeNavigate}
         />
       ))}
@@ -64,10 +73,12 @@ export function FactoryRunners({
 function RunnerRow({
   serverId,
   issue,
+  level,
   onBeforeNavigate,
 }: {
   serverId: string;
   issue: RunnerIssue;
+  level: number;
   onBeforeNavigate?: () => void;
 }) {
   const { t } = useTranslation();
@@ -87,7 +98,7 @@ function RunnerRow({
         title: issue.title,
       })}
       onPress={open}
-      style={[styles.row, touch && styles.rowTouch, styles.rowHoverable]}
+      style={[styles.row, sidebarIndentStyle(level), touch && styles.rowTouch, styles.rowHoverable]}
       highlightStyle={styles.rowPressed}
       testID={`factory-card-runner-${issue.number}`}
     >
@@ -181,36 +192,18 @@ function TrackTooltip({ issue }: { issue: FactoryQueueIssue }) {
 }
 
 const styles = StyleSheet.create((theme) => ({
-  section: {
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.divider,
-    paddingTop: theme.spacing[1],
-    paddingBottom: theme.spacing[1],
-  },
-  header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    paddingHorizontal: theme.spacing[3],
-    paddingVertical: 2,
-  },
-  headerText: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
-    fontWeight: theme.fontWeight.medium,
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-  },
   row: {
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
-    minHeight: LIST_ROW_HEIGHT - 4,
-    marginHorizontal: 2,
-    paddingHorizontal: theme.spacing[2],
-    borderRadius: theme.borderRadius.md,
+    // The workspace rows' rhythm: same height, spacing, right edge and corner radius.
+    minHeight: LIST_ROW_HEIGHT,
+    marginBottom: LIST_ROW_SPACING,
+    paddingRight: theme.spacing[2],
+    borderRadius: theme.borderRadius.lg,
   },
   rowTouch: { minHeight: LIST_ROW_TOUCH_HEIGHT },
-  rowHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
+  rowHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
   rowPressed: { backgroundColor: theme.colors.surface2 },
   summary: {
     flex: 1,

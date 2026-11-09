@@ -1,10 +1,6 @@
 import type { ProjectFactoryState } from "@/components/sidebar/factory-state";
 import type { QuotaAccount } from "@/provider-usage/global-quota";
-import {
-  factoryScopeKey,
-  type FactoryQuestion,
-  type FactoryScopeEntry,
-} from "./all-factories-model";
+import { factoryScopeKey, type FactoryScopeEntry } from "./all-factories-model";
 import {
   FACTORY_CATEGORIES,
   type FactoryAgentInfo,
@@ -494,37 +490,5 @@ export function sampleFactoryEntries(serverId: string, now: number): FactoryScop
     entry("sample-vorteo", "Vorteo", SAMPLE_ISSUES, { proposal: true }),
     entry("sample-website", "Website", SAMPLE_SITE_ISSUES, {}),
     entry("sample-handbook", "Handbook", SAMPLE_DOCS_ISSUES, { paused: true }),
-  ];
-}
-
-/** Sample open questions from the first sample Factory's threads. */
-export function sampleFactoryQuestions(entry: FactoryScopeEntry, now: number): FactoryQuestion[] {
-  const question = (id: string, text: string, minutesAgo: number, agentId: string) => ({
-    factoryKey: entry.key,
-    serverId: entry.serverId,
-    agentId,
-    question: {
-      id,
-      question: text,
-      why: "Sample question.",
-      recommendedDefault: "Yes",
-      askedAt: new Date(now - minutesAgo * 60_000).toISOString(),
-      askedBy: "sample",
-      status: "open" as const,
-    },
-  });
-  return [
-    question(
-      "00000000-0000-4000-8000-000000000001",
-      "Ship #377 to the beta channel today?",
-      42,
-      "sample-worker-377",
-    ),
-    question(
-      "00000000-0000-4000-8000-000000000002",
-      "Keep the retired checklist storage for one more release?",
-      180,
-      "sample-worker-372",
-    ),
   ];
 }
