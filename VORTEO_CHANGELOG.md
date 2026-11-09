@@ -2,6 +2,18 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 26.11.901 - 2026-11-09
+
+This candidate includes the reviewed shutdown registration repair alongside the interface and installer updates prepared in 26.11.900. Release validation and installed acceptance are required before promotion.
+
+### Fixes
+
+- Stop agent creation before starting a provider session when shutdown begins during setup. Sessions already starting still complete their required cleanup.
+
+### Maintenance
+
+- Isolate the supervisor stop regression from automatic System agent startup while preserving its shutdown and no-respawn assertions.
+
 ## 26.11.900 - 2026-11-09
 
 Release preparation combines the reviewed interface, Factory and installation updates. Physical iOS keyboard, safe-area and native hit-target acceptance remains unverified.
