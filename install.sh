@@ -2343,7 +2343,7 @@ function createRenderer({
     start(event) {
       clearSpinner();
       active = label(event);
-      showBanner = banner && ["dev-images", "release"].includes(event.step);
+      showBanner = banner && ["dev-images", "release", "upgrade-release", "upgrade-dev-build"].includes(event.step);
       counter = event.index ? `[${event.index}/${event.total}] ` : "";
       started = Date.now();
       lastOutput = null;
