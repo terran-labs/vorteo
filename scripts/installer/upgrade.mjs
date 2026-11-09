@@ -229,7 +229,7 @@ async function targetRelease(context, source, revision, release) {
   } catch {
     throw new InstallerError(
       `${source} does not hold commit ${revision}.`,
-      "Rerun the installer; it fetches the release first.",
+      `Rerun the installer; it fetches the release first. With --source, fetch main into that checkout (git -C ${source} fetch origin main), then rerun.`,
     );
   }
   let version = null;
@@ -362,6 +362,16 @@ async function refuseDroppingSourceUpgrade(context, installPlan, installed, targ
       (item.steps ?? []).some((step) => step.name === "host" && step.status === "succeeded"),
   );
   if (!fromSource) return;
+  const commit = installed.revision.slice(0, 12);
+  // Without the commit, merge-base fails too, and would wrongly report that the target drops it.
+  try {
+    await git(context, ["cat-file", "-e", `${installed.revision}^{commit}`], source);
+  } catch {
+    throw new InstallerError(
+      `${source} does not hold commit ${commit}, which a source upgrade installed, so the installer cannot check that ${label(target)} keeps it.`,
+      `Fetch main into that checkout (git -C ${source} fetch origin main), then rerun.`,
+    );
+  }
   try {
     await git(
       context,
@@ -370,8 +380,8 @@ async function refuseDroppingSourceUpgrade(context, installPlan, installed, targ
     );
   } catch {
     throw new InstallerError(
-      `${label(target)} does not contain commit ${installed.revision.slice(0, 12)}, which a source upgrade installed. Upgrading would drop it.`,
-      "Wait for a release that includes it, or restore a snapshot from Settings to go back.",
+      `${label(target)} does not contain commit ${commit}, which a source upgrade installed. Upgrading would drop it.`,
+      "Fix forward: land the change on main and source-upgrade to it again, or wait for a release that includes it. Restore a snapshot from Settings only to recover damaged installation state.",
     );
   }
 }
@@ -510,45 +520,62 @@ async function processRunning(s, pattern) {
  * the coordinator launches `host-release --build-only --root <root>` and
  * `host-release --root <root>` (release-upgrade-runtime.ts).
  */
-const hostBuildRunning = (s) =>
-  processRunning(s, `host-release.*--root ${regexpEscape(s.install.plan.paths.root)}`);
+const hostBuildPattern = (s) => `host-release.*--root ${regexpEscape(s.install.plan.paths.root)}`;
+const hostBuildRunning = (s) => processRunning(s, hostBuildPattern(s));
 
-function refuseSourceUpgrade(s) {
+/** `hold` says why the installer may not replace it, with its own fix when it has one. */
+function refuseSourceUpgrade(s, hold) {
   const source = activeSourceUpgrade(s);
   if (source)
     throw new InstallerError(
-      `A source upgrade to commit ${String(source.sourceCommit).slice(0, 12)} started from the interface is ${source.status}.`,
-      SOURCE_UPGRADE_FIX,
+      [
+        `A source upgrade to commit ${String(source.sourceCommit).slice(0, 12)} started from the interface is ${source.status}.`,
+        hold?.reason,
+      ]
+        .filter(Boolean)
+        .join(" "),
+      hold?.fix ?? SOURCE_UPGRADE_FIX,
     );
 }
 
 /**
- * True when an active source upgrade can never advance, so the installer, the recovery tool,
- * may replace it: its journal has not changed for 10 minutes, no Host build or coordinator
- * handoff helper for this installation runs, and no coordinator answers health for the same
- * two minutes the coordinator step waits. A coordinator restarting through its handoff fails
- * the probe for up to two minutes, so one failed probe never counts.
+ * Why an active source upgrade may still advance, or null when it never can, so the installer,
+ * the recovery tool, may replace it: its journal has not changed for 10 minutes, no Host build
+ * or coordinator handoff helper for this installation runs, and no coordinator answers health
+ * for the same two minutes the coordinator step waits. A coordinator restarting through its
+ * handoff fails the probe for up to two minutes, so one failed probe never counts.
+ * @returns {Promise<{reason: string, fix?: string} | null>}
  */
-async function stuckSourceUpgrade(s) {
+async function sourceUpgradeHold(s) {
   let modified;
   try {
     modified = statSync(sourceJournal(s)).mtimeMs;
   } catch {
-    return false;
+    return { reason: "Its record could not be read." };
   }
-  if (s.context.now().getTime() - modified < SOURCE_UPGRADE_STALE_MS) return false;
-  if (await hostBuildRunning(s)) return false;
+  if (s.context.now().getTime() - modified < SOURCE_UPGRADE_STALE_MS)
+    return { reason: "Its record changed in the last 10 minutes." };
+  const build = hostBuildPattern(s);
+  if (await processRunning(s, build))
+    return {
+      reason: `A Host build for this installation is still running (pgrep -f '${build}' lists it).`,
+      fix: "Wait for the build to finish. If it is hung, stop the process that command lists, then rerun the installer: it then replaces the source upgrade.",
+    };
   const state = regexpEscape(config(s).stateDir);
-  if (await processRunning(s, `coordinator-handoff-main\\.js .*${state}`)) return false;
+  const handoff = `coordinator-handoff-main\\.js .*${state}`;
+  if (await processRunning(s, handoff))
+    return {
+      reason: `A coordinator handoff for this installation is still running (pgrep -f '${handoff}' lists it).`,
+    };
   try {
     await waitFor(
       s,
       () => coordinatorHealth(s, s.install.plan.ports.coordinator),
       COORDINATOR_READY_MS,
     );
-    return false;
+    return { reason: "The coordinator is running and can still advance it." };
   } catch {
-    return true;
+    return null;
   }
 }
 
@@ -577,7 +604,10 @@ async function check(s) {
       "Wait for it to finish or cancel it in Settings, then rerun the installer.",
     );
   const source = activeSourceUpgrade(s);
-  if (source && !(await stuckSourceUpgrade(s))) refuseSourceUpgrade(s);
+  if (source) {
+    const hold = await sourceUpgradeHold(s);
+    if (hold) refuseSourceUpgrade(s, hold);
+  }
   const replaced = [...active, ...(source ? [source] : [])];
   if (replaced.length) s.journal.output({ supersede: replaced.map((item) => item.id) });
   if (s.plan.devContainer) {
