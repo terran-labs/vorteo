@@ -1,3 +1,4 @@
+import { SidebarDisclosureBody } from "./disclosure-body";
 import {
   createContext,
   useCallback,
@@ -114,6 +115,8 @@ export function sectionDividerBleedStyle(bleed: number, padding = 0) {
 
 /** Dragging never lets the cards take more than this share of the window. */
 const MAX_DRAGGED_SHARE = 0.75;
+// Keep the toolbar, notice, section heading and identity footer inside a short viewport.
+const SIDEBAR_FIXED_RESERVE = 280;
 
 /**
  * A collapsible section of the sidebar footer block. It sits inside the navigation card without
@@ -156,12 +159,15 @@ export function GlobalCard({
   const { height: windowHeight } = useWindowDimensions();
   const dragged = useDraggedCardHeight(testID);
   const [bodyHeight, setBodyHeight] = useState(0);
-  const maxDraggedHeight = Math.round(windowHeight * MAX_DRAGGED_SHARE);
+  const maxDraggedHeight = Math.max(
+    44,
+    Math.min(Math.round(windowHeight * MAX_DRAGGED_SHARE), windowHeight - SIDEBAR_FIXED_RESERVE),
+  );
   // A height dragged on a taller window still leaves the workspace list its room here.
   const bodyStyle = useMemo(
     () =>
       dragged.height === undefined
-        ? { maxHeight: maxBodyHeight }
+        ? { maxHeight: Math.min(maxBodyHeight, maxDraggedHeight) }
         : { height: Math.min(dragged.height, maxDraggedHeight) },
     [dragged.height, maxBodyHeight, maxDraggedHeight],
   );
@@ -169,7 +175,7 @@ export function GlobalCard({
     setBodyHeight(event.nativeEvent.layout.height);
   }, []);
   return (
-    <View testID={`${testID}-section`}>
+    <View style={styles.sectionContainer} testID={`${testID}-section`}>
       <SidebarSectionRule testID={`${testID}-rule`} lineHidden={leading && !listReaches}>
         {expanded ? (
           <DraggedCardHeightHandle
@@ -181,13 +187,7 @@ export function GlobalCard({
           />
         ) : null}
       </SidebarSectionRule>
-      <TaskCard
-        scrollBody={false}
-        flushBody
-        testID={testID}
-        bodyVisible={expanded}
-        style={styles.section}
-      >
+      <TaskCard scrollBody={false} flushBody testID={testID} style={styles.section}>
         <TaskCardHeader>
           <CardDisclosure
             icon={icon}
@@ -198,11 +198,11 @@ export function GlobalCard({
             testID={`${testID}-toggle`}
           />
         </TaskCardHeader>
-        {expanded ? (
+        <SidebarDisclosureBody expanded={expanded}>
           <SectionBody style={bodyStyle} onLayout={onBodyLayout} testID={`${testID}-body-scroll`}>
             {children}
           </SectionBody>
-        ) : null}
+        </SidebarDisclosureBody>
       </TaskCard>
     </View>
   );
@@ -247,7 +247,14 @@ function SectionBody({
 
 // The navigation card supplies the surface; a section only contributes its rule and content.
 const styles = StyleSheet.create({
-  section: { backgroundColor: "transparent", borderWidth: 0, borderRadius: 0 },
+  sectionContainer: { flexShrink: 1, minHeight: 0 },
+  section: {
+    flexShrink: 1,
+    minHeight: 0,
+    backgroundColor: "transparent",
+    borderWidth: 0,
+    borderRadius: 0,
+  },
   // Scrolling content runs to the next section's rule instead of stopping at the body inset.
-  flushScroll: { marginBottom: -TASK_CARD_BOTTOM_INSET },
+  flushScroll: { flexShrink: 1, minHeight: 0, marginBottom: -TASK_CARD_BOTTOM_INSET },
 });

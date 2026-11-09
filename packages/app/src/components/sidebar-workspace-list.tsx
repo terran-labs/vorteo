@@ -1,3 +1,4 @@
+import { SidebarDisclosureBody } from "./sidebar/disclosure-body";
 import { ProjectMenuItem, type ProjectMenuSurface } from "./sidebar/project-menu-item";
 import { FactoryProjectActions } from "./sidebar/factory-project-actions";
 import { FactorySection } from "./sidebar/factory-section";
@@ -1987,20 +1988,18 @@ function ProjectSection({
         />
       )}
       {summary}
-      {collapsed ? null : (
-        <>
-          {beforeList}
-          {renderList(group.visibleItems)}
-          {group.canToggle ? (
-            <SidebarGroupToggleRow
-              expanded={group.expanded}
-              onPress={group.toggleExpanded}
-              level={itemLevel}
-              testID={`sidebar-${section}-show-more-${projectKey}`}
-            />
-          ) : null}
-        </>
-      )}
+      <SidebarDisclosureBody expanded={!collapsed}>
+        {beforeList}
+        {renderList(group.visibleItems)}
+        {group.canToggle ? (
+          <SidebarGroupToggleRow
+            expanded={group.expanded}
+            onPress={group.toggleExpanded}
+            level={itemLevel}
+            testID={`sidebar-${section}-show-more-${projectKey}`}
+          />
+        ) : null}
+      </SidebarDisclosureBody>
     </>
   );
 }
@@ -2576,7 +2575,7 @@ function ProjectBlock({
   }, [onToggleCollapsed, project.viewKey]);
 
   let projectChildren = null;
-  if (!collapsed) {
+  {
     if (project.workspaces.length > 0) {
       projectChildren = (
         <>
@@ -2684,7 +2683,7 @@ function ProjectBlock({
         </ProjectDropTarget>
       ) : null}
 
-      {projectChildren}
+      <SidebarDisclosureBody expanded={!collapsed}>{projectChildren}</SidebarDisclosureBody>
     </View>
   );
 }
@@ -3758,7 +3757,7 @@ function ProjectModeListContent({
             collapsed={pinnedCollapsed}
             onToggle={togglePinnedCollapsed}
           />
-          {pinnedCollapsed ? null : pinnedRows}
+          <SidebarDisclosureBody expanded={!pinnedCollapsed}>{pinnedRows}</SidebarDisclosureBody>
         </View>
       ) : null}
       {/* The header carries the display menu, which is the only way back out of a filter, so it
@@ -3774,7 +3773,10 @@ function ProjectModeListContent({
           persistentActions={focusCreateAction}
         />
       ) : null}
-      {pinnedFocused ? pinnedRows : listBody}
+      {/* Folder and Show more changes alter this flat list's measured height. */}
+      <SidebarDisclosureBody expanded>
+        {pinnedFocused ? pinnedRows : listBody}
+      </SidebarDisclosureBody>
       {listFooterComponent}
     </>
   );

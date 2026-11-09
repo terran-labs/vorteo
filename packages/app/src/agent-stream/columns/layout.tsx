@@ -2,7 +2,6 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { useCallback, useId, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { StreamColumnWidthContext } from "./column-width";
 import { Text, View, type LayoutChangeEvent } from "react-native";
-import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
@@ -22,7 +21,6 @@ import {
   resolveColumnWidths,
   resolveTextOffset,
   resolveStandaloneTextWidth,
-  MIN_TEXT_WIDTH,
   type ColumnWidths,
 } from "./geometry";
 
@@ -73,6 +71,7 @@ export function useStreamColumns(
   cards: { showTaskCards?: boolean; trailingCards?: ReactNode; externalCards?: boolean },
   defaultTextWidth: number,
 ) {
+  const compact = useIsCompactFormFactor();
   const enabled = !!cards.showTaskCards || !!cards.trailingCards;
   const standaloneText = !!cards.externalCards;
   const savedText = useSettings((settings) => settings.threadTextWidth);
@@ -114,7 +113,7 @@ export function useStreamColumns(
   return {
     split,
     standaloneText,
-    sizedText: split || (standaloneText && containerWidth >= MIN_TEXT_WIDTH + COLUMN_MARGIN * 2),
+    sizedText: !compact && (split || (standaloneText && containerWidth >= 320 + COLUMN_MARGIN * 2)),
     saveError,
     contentMaxWidth: split || standaloneText ? widths.text : defaultTextWidth,
     containerWidth,
@@ -137,9 +136,6 @@ export function StreamColumns({
   children: [ReactNode, ReactNode];
 }) {
   const { split, sizedText, widths, onLayout } = layout;
-  const { width: viewportWidth } = useWindowDimensions();
-  const compact = useIsCompactFormFactor();
-  const narrowDesktop = !compact && viewportWidth <= 1200;
   const textOffset = layout.standaloneText
     ? Math.max(COLUMN_MARGIN, (layout.containerWidth - widths.text) / 2)
     : resolveTextOffset(layout.containerWidth, widths);
@@ -153,11 +149,9 @@ export function StreamColumns({
   const composerStyle = useMemo(
     () => [
       styles.composer,
-      sizedText &&
-        !narrowDesktop &&
-        inlineUnistylesStyle({ width: widths.text, marginLeft: textOffset }),
+      sizedText && inlineUnistylesStyle({ width: widths.text, marginLeft: textOffset }),
     ],
-    [sizedText, widths.text, textOffset, narrowDesktop],
+    [sizedText, widths.text, textOffset],
   );
   const cardsStyle = useMemo(
     () => [

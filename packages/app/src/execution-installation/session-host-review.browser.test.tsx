@@ -19,6 +19,7 @@ import type { SessionHostAction, SessionHostOverview } from "./session-host-revi
 
 vi.mock("./use-installation-upgrades", () => ({
   useInstallationUpgradeStatus: () => ({ data: null }),
+  useAgentActionReceipts: () => ({ data: [] }),
 }));
 vi.mock("@/contexts/toast-api-context", () => ({
   useToast: () => ({ error: vi.fn(), show: vi.fn() }),

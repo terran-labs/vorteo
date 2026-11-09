@@ -12,6 +12,10 @@ vi.mock("react-native", async (original) => ({
   Dimensions: { get: () => ({ width: 1800, height: 1000 }) },
 }));
 vi.mock("@/constants/platform", () => ({ isWeb: true }));
+vi.mock("@/constants/layout", async (original) => ({
+  ...(await original<typeof import("@/constants/layout")>()),
+  useIsCompactFormFactor: () => false,
+}));
 vi.mock("@/storage/app-storage", () => ({
   default: {
     getItem: async () => null,
@@ -36,6 +40,9 @@ vi.mock("@/agent-stream/task-card", () => ({
 }));
 vi.mock("@/agent-stream/task-card-icon", () => ({ TaskCardIcon: () => null }));
 vi.mock("lucide-react-native", () => ({ X: () => null }));
+vi.mock("@/stores/workspace-layout-store", () => ({
+  useWorkspaceLayoutStore: { getState: () => ({ openTab: vi.fn() }) },
+}));
 vi.mock("@/agent-stream/card-disclosure", () => ({
   CardDisclosure: ({
     title,

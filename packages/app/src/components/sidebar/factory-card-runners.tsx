@@ -82,6 +82,12 @@ function RunnerRow({
   onBeforeNavigate?: () => void;
 }) {
   const { t } = useTranslation();
+  const boxStyle: Record<FactoryTrackBox, object> = {
+    done: styles.done,
+    current: styles.current,
+    danger: styles.danger,
+    pending: styles.pending,
+  };
   const touch = useVortonTouch() || isNative;
   const track = factoryRunnerTrack(issue);
   const open = useCallback(() => {
@@ -239,10 +245,3 @@ const styles = StyleSheet.create((theme) => ({
   danger: { backgroundColor: theme.colors.statusDanger },
   pending: { backgroundColor: theme.colors.border },
 }));
-
-const boxStyle: Record<FactoryTrackBox, object> = {
-  done: styles.done,
-  current: styles.current,
-  danger: styles.danger,
-  pending: styles.pending,
-};

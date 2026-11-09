@@ -1327,11 +1327,19 @@ function placeDictationButton(
   touch: boolean,
   showVoice: boolean,
   mobile: boolean,
+  queue: boolean,
 ) {
   const slot =
     touch && showVoice ? (
       <View
-        style={mobile ? styles.mobileDictationSlot : styles.touchDictationSlot}
+        style={
+          mobile
+            ? [
+                styles.mobileDictationSlot,
+                { bottom: MOBILE_RAIL_INSET + (TOUCH_DICTATION_SIZE + 9) * (queue ? 2 : 1) },
+              ]
+            : styles.touchDictationSlot
+        }
         testID="composer-dictation-slot"
       >
         {button}
@@ -1422,8 +1430,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const touch = useVortonTouch();
     const mobileComposer = useMobileComposerLayout();
     const showMobileQueue = useMemo(
-      () => mobileComposer.enabled && Boolean(onQueue) && !readOnly,
-      [mobileComposer.enabled, onQueue, readOnly],
+      () => touch && Boolean(onQueue) && !readOnly,
+      [touch, onQueue, readOnly],
     );
     const showSubmitModifiers = supportsSubmitModifiers({
       isWeb,
@@ -2327,7 +2335,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       voiceButton,
       touch,
       mode.showVoice,
-      mobileComposer.enabled && !isFullscreen,
+      touch && !isFullscreen,
+      showMobileQueue,
     );
     const sendButton = useMemo(
       () => (
@@ -2640,7 +2649,9 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   touchInputSurface: {
     paddingTop: COMPOSER_CORNER_INSET,
-    paddingBottom: { xs: theme.spacing[3] - 6, md: theme.spacing[4] - 6 },
+    paddingBottom: MOBILE_RAIL_INSET,
+    paddingHorizontal: MOBILE_SURFACE_PADDING_X,
+    minHeight: 111,
     gap: theme.spacing[2],
   },
   mobileInputSurface: {
@@ -2734,7 +2745,6 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   mobileDictationSlot: {
     position: "absolute",
-    top: MOBILE_RAIL_INSET,
     right: MOBILE_RAIL_INSET,
     zIndex: 1,
   },
