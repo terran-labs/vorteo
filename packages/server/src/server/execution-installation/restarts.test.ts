@@ -1326,15 +1326,15 @@ test("old requests remain pending and duplicate legacy requests retain receipts"
   );
   journal.jobs.push({
     ...original,
-    id: "legacy-duplicate",
-    revision: "legacy-revision",
+    id: "10000000-0000-4000-8000-000000000041",
+    revision: "10000000-0000-4000-8000-000000000042",
     requestedBy: "owner",
   });
   const restored = new InstallationRestarts(journal, { restart: async () => "ready" }, () => now);
   expect(restored.list().map((job) => [job.id, job.status])).toEqual([
     [expired.id, "pending"],
     [original.id, "rejected"],
-    ["legacy-duplicate", "pending"],
+    ["10000000-0000-4000-8000-000000000041", "pending"],
   ]);
   expect(() => restored.decide(original.id, original.revision, "approve")).toThrow(
     "already decided",
@@ -3693,7 +3693,7 @@ function delegatedServiceRestartFixture(input: {
     cancellationDelayMs: input.cancellationDelayMs,
     hostUpdateServiceRestart: () => enabled,
     // As in production, the setting is part of the automatic grant's authority.
-    authority: () => (enabled ? "authority-with-service-restart" : "authority"),
+    authority: () => (enabled ? "a".repeat(64) : "b".repeat(64)),
   });
   queue.contribute(
     { target: "host", reason: "Routine Host update", requester: "Nova integration" },
