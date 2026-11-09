@@ -2,7 +2,7 @@
 
 - Give card and sidebar section headers, including Open questions and Quota, the same quiet hover fill and 8px corners as the workspace rows.
 - Match small sidebar row actions (the project add button and the workspace menu trigger) to the row's kebab hover.
-- Align the conversation resize bar with the message field's right edge.
+- Align the conversation resize bar with the message field's right edge; read-only threads keep it on the column edge.
 
 ## Maintenance review
 

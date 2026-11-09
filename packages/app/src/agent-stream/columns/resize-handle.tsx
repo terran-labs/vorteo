@@ -17,6 +17,8 @@ interface ColumnResizeHandleProps {
   widths: ColumnWidths;
   containerWidth: number;
   standaloneText?: boolean;
+  /** Read-only threads have no message field, so the text handle stays on the column edge. */
+  hasComposer?: boolean;
   onPreview: (column: keyof ColumnWidths, width: number) => void;
   onCommit: (column: keyof ColumnWidths, width: number) => void;
 }
@@ -26,6 +28,7 @@ export function ColumnResizeHandle({
   widths,
   containerWidth,
   standaloneText,
+  hasComposer = false,
   onPreview,
   onCommit,
 }: ColumnResizeHandleProps) {
@@ -37,7 +40,8 @@ export function ColumnResizeHandle({
     isWeb && standaloneText && column === "text"
       ? (resolveSidebarResizeHandleGeometry(finePointer).width - (containerWidth - widths.text)) / 2
       : 0;
-  const handleInset = column === "text" ? Math.max(COLUMN_COMPOSER_INSET, reachInset) : 0;
+  const handleInset =
+    column === "text" ? Math.max(hasComposer ? COLUMN_COMPOSER_INSET : 0, reachInset) : 0;
   const initial = useRef({ widths, pointerX: 0 });
   const [pressed, setPressed] = useState(false);
   const begin = useCallback(() => {

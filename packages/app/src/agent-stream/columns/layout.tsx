@@ -203,7 +203,9 @@ export function StreamColumns({
           >
             <View style={textStyle} testID="thread-text-column">
               {children[0]}
-              {sizedText ? <ColumnResizeHandle column="text" {...layout} /> : null}
+              {sizedText ? (
+                <ColumnResizeHandle column="text" {...layout} hasComposer={Boolean(composer)} />
+              ) : null}
             </View>
             {outline}
             {split && isNative ? <ColumnFade /> : null}

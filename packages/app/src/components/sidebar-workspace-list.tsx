@@ -3994,7 +3994,7 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foreground,
   }),
   projectIconActionButtonPressed: {
-    backgroundColor: theme.colors.interactionHighlight,
+    backgroundColor: theme.colors.surface2,
     _web: { color: theme.colors.foreground },
   },
   // Project actions stay mounted; CSS shows them while the project row is hovered or focused.
