@@ -93,9 +93,69 @@ test("force restart persists continuation intent before capture and releases onl
   await queue.drain();
   expect(calls).toEqual(["capture", "restart", "ready"]);
   expect(queue.list()[0]?.holdReleased).toBe(true);
+  expect(queue.list()[0]?.detail).toBe("replacement verified");
   await queue.drain();
   expect(calls).toEqual(["capture", "restart", "ready"]);
 });
+
+test.each(["legacy", "continuation"] as const)(
+  "%s hold release retry restores completed detail after journal recovery without restarting",
+  async (adapter) => {
+    const journal = new MemoryJournal();
+    const restart = vi.fn(async () => "replacement verified");
+    const release = vi.fn(async () => true);
+    release.mockRejectedValueOnce(new Error("target offline\nprivate diagnostic continuation"));
+    const progress = vi.fn();
+    const executor: RestartExecutor = {
+      restart,
+      restartWhenIdle: restart,
+      inspect: async () => idleImpact("host"),
+      holdCurrentTurns: async () => {},
+      releaseCurrentTurns: async () => {
+        await release();
+      },
+      ...(adapter === "continuation"
+        ? { captureRestartContinuation: async () => {}, releaseRestartContinuation: release }
+        : {}),
+    };
+    const queue = new InstallationRestarts(
+      journal,
+      executor,
+      Date.now,
+      {},
+      {
+        fenced: false,
+        progress,
+      },
+    );
+    const request = queue.request({ target: "host", reason: "Release completed hold" }, "owner");
+    queue.decide(request.id, request.revision, "finish-current-turns");
+    await queue.drain();
+    expect(journal.jobs[0]).toMatchObject({ status: "succeeded", detail: "replacement verified" });
+    await queue.drain();
+    expect(journal.jobs[0]).toMatchObject({
+      status: "succeeded",
+      detail: "Waiting for the environment to release its restart hold.",
+    });
+    expect(journal.jobs[0].holdReleased).not.toBe(true);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(progress).toHaveBeenLastCalledWith("Restart hold release failed", {
+      jobId: request.id,
+      target: "host",
+      detail: "target offline",
+    });
+    const reopened = new InstallationRestarts(journal, executor);
+    await reopened.drain();
+    expect(journal.jobs[0]).toMatchObject({
+      status: "succeeded",
+      detail: "Restart completed and its hold was released.",
+      holdReleased: true,
+    });
+    await reopened.drain();
+    expect(release).toHaveBeenCalledTimes(2);
+    expect(restart).toHaveBeenCalledTimes(1);
+  },
+);
 
 test("cancellation during durable capture prevents force dispatch", async () => {
   let finishCapture!: () => void;
