@@ -29,6 +29,14 @@ export function FactoryStageBar({
   fullWidth?: boolean;
 }) {
   const { t } = useTranslation();
+  const segmentColor: Record<FactoryStageSegment, object> = {
+    queued: styles.queued,
+    planning: styles.planning,
+    building: styles.building,
+    review: styles.review,
+    repair: styles.repair,
+    merging: styles.merging,
+  };
   const counts = useMemo(() => factoryStageCounts(issues), [issues]);
   if (counts.length === 0) {
     return (
@@ -147,12 +155,3 @@ const styles = StyleSheet.create((theme) => ({
   repair: { backgroundColor: theme.colors.statusDanger },
   merging: { backgroundColor: theme.colors.statusSuccess },
 }));
-
-const segmentColor: Record<FactoryStageSegment, object> = {
-  queued: styles.queued,
-  planning: styles.planning,
-  building: styles.building,
-  review: styles.review,
-  repair: styles.repair,
-  merging: styles.merging,
-};
