@@ -1,16 +1,16 @@
-name: Isolated shutdown contention diagnostic
+name: Instrumented CLI shard 3 diagnostic
 
 # Builds publishes this exact branch once after review. No default-branch edit needed.
 on:
   push:
-    branches: [diag/shutdown-contention-e875]
+    branches: [diag/shutdown-shard3-e875]
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: isolated-shutdown-contention-e875
+  group: instrumented-shutdown-shard3-e875
   cancel-in-progress: false
 
 jobs:
@@ -52,8 +52,8 @@ jobs:
           run-id: "42595736494"
       - name: Unpack the original compiled dependencies
         run: tar -xzf "$RUNNER_TEMP/server-stack-dist/server-stack-dist.tgz"
-      - name: Run shutdown test once with bounded contention
-        timeout-minutes: 8
+      - name: Run original CLI shard 3 once
+        timeout-minutes: 12
         run: node scripts/shutdown-diagnostic.mjs
       - name: Retain daemon logs if the test step times out
         if: ${{ always() }}
