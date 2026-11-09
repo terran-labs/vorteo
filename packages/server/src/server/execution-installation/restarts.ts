@@ -62,7 +62,7 @@ import {
   type NativeHelperJob,
   type NativeHelperPlan,
 } from "@getpaseo/protocol/native-helper-maintenance";
-import type { LifecycleJob } from "./lifecycle-journal.js";
+import { parseLifecycleJournal, type LifecycleJob } from "./lifecycle-journal.js";
 import {
   MaintenanceServiceJobSchema,
   type MaintenanceServiceJob,
@@ -3711,7 +3711,7 @@ export class InstallationRestarts {
     for (const job of remaining.values()) activity?.change(undefined, job);
     next.push(...remaining.values());
     this.journal.write(next, evidence);
-    this.snapshot = next;
+    this.snapshot = parseLifecycleJournal(next);
     this.jobs = jobs;
     this.helpers = helpers;
     this.monitors = monitors;
