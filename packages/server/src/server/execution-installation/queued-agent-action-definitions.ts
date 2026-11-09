@@ -150,10 +150,14 @@ export function installationChangeDefinitions(
     {
       name: "installation-type",
       schema: InstallationTypeChangeSchema,
-      disruption: (request) =>
-        InstallationTypeChangeSchema.parse(request).type === "lab"
-          ? "Makes this a Lab installation: the owner's browser runs the Host's live checkout, including uncommitted Host-agent edits, and lab self-updates that rebuild and restart the coordinator and Host daemon are approved automatically. Open pages reload."
-          : "Changes which updates this installation is offered and serves the published interface. Open pages may reload.",
+      disruption: (request) => {
+        const { type } = InstallationTypeChangeSchema.parse(request);
+        if (type === "lab")
+          return "Makes this a Lab installation: the owner's browser runs the Host's live checkout, including uncommitted Host-agent edits, and lab self-updates that rebuild and restart the coordinator and Host daemon are approved automatically. Open pages reload.";
+        if (type === "stable")
+          return "Makes this a Stable installation: every browser runs the published build and only tagged releases install. Open pages may reload.";
+        return "Changes only the release channel this installation follows. Nothing restarts.";
+      },
       async capture() {
         const { type, releaseChannel } = await ports.installationType.read();
         return { type, releaseChannel };
