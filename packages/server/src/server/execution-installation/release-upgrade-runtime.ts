@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { createDelegationEvidence, type DelegationGrant } from "./delegated-admission.js";
 import {
   closeSync,
   existsSync,
@@ -65,6 +66,7 @@ import {
   snapshotPartKinds,
   snapshotRoot,
   snapshotSources,
+  SNAPSHOT_RETENTION,
   type InstallationSnapshots,
 } from "./snapshots.js";
 import type { InstallationSourceUpdates } from "./source-updates.js";
@@ -99,7 +101,11 @@ export interface ReleaseUpgradeRuntime {
   adoptAfterSourceUpdate(): void;
   snapshots: InstallationSnapshots | null;
   snapshotList(): SnapshotList;
-  takeSnapshot(): ReturnType<InstallationSnapshots["take"]>;
+  /**
+   * `prune: false` keeps every existing snapshot and refuses once retention is two over its limit:
+   * an agent's snapshot must never delete the owner's or an upgrade's rollback point.
+   */
+  takeSnapshot(options?: { prune?: boolean }): ReturnType<InstallationSnapshots["take"]>;
   restore(request: SnapshotRestoreRequest): Promise<SnapshotRestoreStatus>;
   upgradeStatus(): UpgradeStatus;
 }
@@ -285,6 +291,24 @@ function readAdoptionOutcome(file: string): AdoptionOutcome | null {
   }
 }
 
+/**
+ * Takes an owner-reason safety snapshot. With `prune`, the oldest beyond retention go, as for the
+ * owner's own snapshot. Without it nothing is removed, and the snapshot is refused once retention
+ * is two over its limit, so an agent's snapshot never deletes an existing rollback point.
+ */
+export async function takeSafetySnapshot(
+  snapshots: Pick<InstallationSnapshots, "list" | "take" | "prune">,
+  prune: boolean,
+) {
+  if (!prune && snapshots.list().length >= SNAPSHOT_RETENTION + 2)
+    throw new RestartRequestError(
+      "Snapshot retention is full. Ask the owner to take the next snapshot in Installation controls, which removes the oldest.",
+    );
+  const snapshot = await snapshots.take({ reason: "owner" });
+  if (prune) snapshots.prune([snapshot.id]);
+  return snapshot;
+}
+
 export function createReleaseUpgradeRuntime(input: {
   config: InstallationConfig;
   configFile: string;
@@ -302,6 +326,8 @@ export function createReleaseUpgradeRuntime(input: {
    * restarts, approved Host jobs and open coordinator requests.
    */
   coordinatorFollowConflict?: () => string | null;
+  /** The active full maintenance grant; a Host-agent coordinator update is delegated under it. */
+  delegationGrant?: () => DelegationGrant | null;
 }): ReleaseUpgradeRuntime {
   const { config, configFile, restarts, hostUpdates, logger } = input;
   const run = input.run ?? runCommand;
@@ -1107,6 +1133,11 @@ export function createReleaseUpgradeRuntime(input: {
         return "The installation type is unreadable, so the source upgrade stopped.";
       }
     },
+    delegationGrant: () => input.delegationGrant?.() ?? null,
+    delegationEvidence: createDelegationEvidence(
+      path.join(config.stateDir, "source-upgrades", "delegation-evidence.json"),
+    ),
+    cancellationDelayMs: 30_000,
   };
   const sourceUpgrades = sourceBlocker
     ? null
@@ -1133,6 +1164,8 @@ export function createReleaseUpgradeRuntime(input: {
       existsSync(path.join(release, COORDINATOR_DIRECTORY, path.basename(entrypoint))),
     launchSwap: (job, next, previous) =>
       launchCoordinatorSwap(path.join(followDirectory, job.id), job.id, next, previous),
+    delegationGrant: () => input.delegationGrant?.() ?? null,
+    cancellationDelayMs: 30_000,
     swapOutcome: (jobId) =>
       readHandoffOutcome(path.join(followDirectory, jobId, "coordinator-handoff.json")),
   });
@@ -1243,17 +1276,15 @@ export function createReleaseUpgradeRuntime(input: {
         detail: snapshots
           ? `Snapshots are kept in ${snapshots.root}.`
           : "Snapshots need an installation made by the one-command installer.",
-        retention: 5,
+        retention: SNAPSHOT_RETENTION,
         snapshots: snapshots?.list() ?? [],
         restore: readRestoreStatus(),
       };
     },
-    async takeSnapshot() {
+    async takeSnapshot(options = {}) {
       if (!snapshots)
         throw new RestartRequestError("Snapshots are unavailable on this installation");
-      const snapshot = await snapshots.take({ reason: "owner" });
-      snapshots.prune([snapshot.id]);
-      return snapshot;
+      return takeSafetySnapshot(snapshots, options.prune ?? true);
     },
     async restore(request) {
       if (!snapshots || !restoreDirectory)

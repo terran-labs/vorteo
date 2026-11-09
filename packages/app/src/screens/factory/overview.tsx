@@ -23,17 +23,14 @@ import { useSessionStore } from "@/stores/session-store";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import {
   activeDrains,
-  collectNeedsYou,
   factoryScopeKey,
   scopedIssues,
   type FactoryScopeEntry,
 } from "./all-factories-model";
-import { ScopeBack } from "./overview-command";
+import { FactoryScopeSelector } from "./scope-selector";
 import type { FactoryControls } from "./overview-controls";
 import type { FactoryOverviewData } from "./overview-data";
 import { FloorOverview } from "./overview-floor";
-import { LedgerOverview } from "./overview-ledger";
-import { MissionOverview } from "./overview-mission";
 import {
   addUsage,
   factoryLanes,
@@ -49,19 +46,12 @@ import {
   SAMPLE_ROLE_USAGE,
   sampleAgentLookup,
   sampleFactoryEntries,
-  sampleFactoryQuestions,
   sampleQuotaAccounts,
 } from "./overview-sample";
-import {
-  useAllFactories,
-  useFactoryHosts,
-  useFactoryQuestions,
-  useProjectNames,
-  useStopAll,
-} from "./overview-sources";
+import { useAllFactories, useFactoryHosts, useProjectNames, useStopAll } from "./overview-sources";
 import { factoryListQueryKey } from "./factory-reads";
 import { projectFactoryOverviewRoute } from "./routes";
-import { useFactoryOverviewStore, type FactoryOverviewVariant } from "./overview-store";
+import { useFactoryOverviewStore } from "./overview-store";
 import { loadFactoryQueue, type FactoryInvoke, type FactoryQueue } from "./queue";
 
 interface Target {
@@ -92,12 +82,19 @@ function AllOverview({ serverId }: { serverId: string }) {
   const catalogStatus = usePluginCatalogStatus(serverId);
   const hosts = useFactoryHosts();
   const bar = useMemo(() => <DesignBar />, []);
+  const titleContent = useMemo(
+    () => <FactoryScopeSelector serverId={serverId} projectId={null} />,
+    [serverId],
+  );
   return (
     <PageLayout
       title={t("projectFactory.scope.allTitle")}
       testID="factory-overview"
       actions={compact ? undefined : bar}
       wide
+      headerTitle
+      fullWidth
+      titleContent={titleContent}
     >
       {compact ? bar : null}
       {hosts.length === 0 && catalogStatus !== "loading" ? (
@@ -124,7 +121,11 @@ function ProjectOverview({ serverId, projectId }: Target) {
   const name = useProjectNames()(serverId, projectId);
   const unavailable = !plugin && catalogStatus !== "loading";
   const loading = !factory.data && !factory.error && !unavailable;
-  const bar = useMemo(() => <DesignBar back={serverId} />, [serverId]);
+  const bar = useMemo(() => <DesignBar />, []);
+  const titleContent = useMemo(
+    () => <FactoryScopeSelector serverId={serverId} projectId={projectId} />,
+    [serverId, projectId],
+  );
   return (
     <PageLayout
       title={
@@ -133,6 +134,9 @@ function ProjectOverview({ serverId, projectId }: Target) {
       testID="factory-overview"
       actions={compact ? undefined : bar}
       wide
+      headerTitle
+      fullWidth
+      titleContent={titleContent}
     >
       {compact ? bar : null}
       {factory.error ? (
@@ -169,29 +173,11 @@ function ProjectOverview({ serverId, projectId }: Target) {
   );
 }
 
-/** Scope, design and data toggles; the owner compares the three designs at both zoom levels. */
-function DesignBar({ back }: { back?: string }) {
+/** Keep the explicit sample-data switch separate from Factory scope. */
+function DesignBar() {
   const { t } = useTranslation();
-  const variant = useFactoryOverviewStore((store) => store.variant);
   const sample = useFactoryOverviewStore((store) => store.sample);
-  const setVariant = useFactoryOverviewStore((store) => store.setVariant);
   const setSample = useFactoryOverviewStore((store) => store.setSample);
-  const variants = useMemo<SegmentedControlOption<FactoryOverviewVariant>[]>(
-    () => [
-      { value: "floor", label: t("projectFactory.design.floor"), testID: "factory-design-floor" },
-      {
-        value: "mission",
-        label: t("projectFactory.design.mission"),
-        testID: "factory-design-mission",
-      },
-      {
-        value: "ledger",
-        label: t("projectFactory.design.ledger"),
-        testID: "factory-design-ledger",
-      },
-    ],
-    [t],
-  );
   const sources = useMemo<SegmentedControlOption<"live" | "sample">[]>(
     () => [
       { value: "live", label: t("projectFactory.design.live"), testID: "factory-data-live" },
@@ -205,8 +191,6 @@ function DesignBar({ back }: { back?: string }) {
   );
   return (
     <View style={styles.bar} testID="factory-design-bar">
-      {back ? <ScopeBack serverId={back} /> : null}
-      <SegmentedControl options={variants} value={variant} onValueChange={setVariant} size="sm" />
       <SegmentedControl
         options={sources}
         value={sample ? "sample" : "live"}
@@ -227,8 +211,8 @@ interface LiveQueue {
 }
 
 /**
- * Assembles what every design renders from the Factories in scope: board, figures, usage,
- * needs-you items, drains and the stop switch. Sample mode swaps in the sample Factories.
+ * Assembles the board, reports and operating controls for the selected Factory scope.
+ * Sample mode swaps in the sample Factories.
  */
 function useOverviewData(input: {
   scope: "project" | "all";
@@ -242,7 +226,6 @@ function useOverviewData(input: {
   const sample = useFactoryOverviewStore((store) => store.sample);
   const sessions = useSessionStore((store) => store.sessions);
   const usage = useProviderUsage(serverId, { pollUsage: true, enabled: active });
-  const liveQuestions = useFactoryQuestions(liveEntries);
   const factoryHosts = useFactoryHosts();
   // Global stop and resume act on whole hosts, so only All Factories, which sees every project
   // on each host, offers them.
@@ -262,7 +245,6 @@ function useOverviewData(input: {
   const now = queue.updatedAt || openedAt;
   return useMemo<FactoryOverviewData>(() => {
     const entries = sample ? sampleScope(scope, serverId, now) : liveEntries;
-    const questions = sample ? sampleFactoryQuestions(entries[0]!, now) : liveQuestions;
     const issues = scope === "all" ? scopedIssues(entries) : (entries[0]?.issues ?? []);
     const lookup: FactoryAgentLookup = sample
       ? sampleAgentLookup(now)
@@ -292,7 +274,6 @@ function useOverviewData(input: {
       serverId,
       focus,
       factories: entries,
-      needsYou: collectNeedsYou({ entries, questions }),
       drains: activeDrains(entries),
       stopAll,
       zoomIn,
@@ -322,7 +303,6 @@ function useOverviewData(input: {
     serverId,
     now,
     liveEntries,
-    liveQuestions,
     sessions,
     usage.view,
     queue,
@@ -469,7 +449,6 @@ function AllContent({ serverId, active }: { serverId: string; active: boolean })
 
 function DesignFrame({ data }: { data: FactoryOverviewData }) {
   const { t } = useTranslation();
-  const variant = useFactoryOverviewStore((store) => store.variant);
   return (
     <View style={styles.content}>
       {data.sample ? (
@@ -481,20 +460,9 @@ function DesignFrame({ data }: { data: FactoryOverviewData }) {
           )}
         </Text>
       ) : null}
-      <Design variant={variant} data={data} />
+      <FloorOverview data={data} />
     </View>
   );
-}
-
-function Design({ variant, data }: { variant: FactoryOverviewVariant; data: FactoryOverviewData }) {
-  switch (variant) {
-    case "floor":
-      return <FloorOverview data={data} />;
-    case "mission":
-      return <MissionOverview data={data} />;
-    case "ledger":
-      return <LedgerOverview data={data} />;
-  }
 }
 
 /** Sample role threads have no ids, so their share joins the category and provider totals. */

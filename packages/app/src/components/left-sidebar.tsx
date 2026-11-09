@@ -922,6 +922,22 @@ function MobileSidebar({
     [insetsTop, insetsBottom, theme.colors.surfaceSidebar, theme.spacing, touch],
   );
 
+  // The compact header's toolbar surface runs from the screen edge, safe area included, to the
+  // toolbar's divider, so the open sidebar's top bar matches the header it replaces.
+  const toolbarBandStyle = useMemo(
+    () => [
+      styles.mobileToolbarBand,
+      inlineUnistylesStyle({
+        height:
+          insetsTop +
+          spacingInset +
+          (touch ? 44 : FLOATING_PANEL_CONTROL_HEIGHT) +
+          theme.spacing[1],
+      }),
+    ],
+    [insetsTop, spacingInset, touch, theme.spacing],
+  );
+
   const navigation = useMemo(
     () => <SidebarNavRows style={styles.scrollingNavGroup} onBeforeNavigate={closeSidebar} />,
     [closeSidebar],
@@ -944,6 +960,7 @@ function MobileSidebar({
       closeGesture={closeGesture}
       panelStyle={mobileSidebarInsetStyle}
     >
+      <View style={toolbarBandStyle} pointerEvents="none" />
       <View
         style={[styles.sidebarContent, inlineUnistylesStyle({ padding: spacingInset })]}
         onLayout={onPanelLayout}
@@ -984,9 +1001,9 @@ function MobileSidebar({
           )}
 
           <SidebarFooterBlock>
+            <InstallationRestartBanner placement="sidebar" />
             <SidebarGlobalCards onBeforeNavigate={closeSidebar} />
             <SidebarSyncNotice />
-            <InstallationRestartBanner placement="sidebar" />
             <DemoControls />
             <SidebarFooterRows onBeforeNavigate={closeSidebar} />
             <SidebarIdentityFooter />
@@ -1298,9 +1315,9 @@ function DesktopSidebar({
           )}
 
           <SidebarFooterBlock>
+            <InstallationRestartBanner placement={compact ? "rail" : "sidebar"} />
             {!compact ? <SidebarGlobalCards /> : null}
             <SidebarSyncNotice compact={compact} />
-            <InstallationRestartBanner placement={compact ? "rail" : "sidebar"} />
             {!compact ? <DemoControls /> : null}
             {!compact ? <SidebarFooterRows /> : null}
             {!compact ? <SidebarIdentityFooter /> : null}
@@ -1343,6 +1360,15 @@ const styles = StyleSheet.create((theme) => ({
   narrowNavigationRow: { justifyContent: "flex-start", minHeight: 36 },
   // The same margin sits above the first button as on either side of it.
   railToolbar: { alignItems: "center", gap: 0, paddingTop: COMPACT_RAIL_MARGIN },
+  mobileToolbarBand: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: theme.colors.surfaceWorkspace,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.divider,
+  },
   sidebarContent: {
     flex: 1,
     minHeight: 0,

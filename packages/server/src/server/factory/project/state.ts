@@ -1,7 +1,10 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { ProjectFactoryRoleIdSchema } from "@getpaseo/server/factory-project";
+import {
+  ProjectFactoryIssueAgentsSchema,
+  ProjectFactoryRoleIdSchema,
+} from "@getpaseo/server/factory-project";
 
 import { writeJsonFileAtomic } from "../../atomic-file.js";
 
@@ -97,6 +100,8 @@ const ProjectStateSchema = z.object({
     planning: z.boolean().default(true),
     workerProfileId: nullableId,
     reviewerProfileId: nullableId,
+    /** Absent means "dev", so existing Factories move new issue agents to Dev. */
+    issueAgents: ProjectFactoryIssueAgentsSchema.optional(),
   }),
   roles: z.partialRecord(ProjectFactoryRoleIdSchema, RoleStateSchema),
   /**
@@ -118,12 +123,21 @@ const ProjectStateSchema = z.object({
         provider: z.string().nullable(),
         remainingPct: z.number().nullable(),
         bound: z.boolean().optional(),
+        /** The connected host the agent starts on, when not this daemon. */
+        serverId: z.string().optional(),
         pickedAt: z.string(),
       }),
     )
     .optional(),
   /** The last `.github/factory.json` read. */
   assignment: AssignmentStateSchema.optional(),
+  /**
+   * The installation environment that runs this repository's Factory, from the coordinator's
+   * last answer. Absent outside an installation and before the first answer.
+   */
+  home: z
+    .object({ environment: z.enum(["host", "container"]), projectId: z.string().nullable() })
+    .optional(),
   /**
    * Set when pause_all paused this project. resume_all resumes only these, and any manual
    * pause, resume or turn off clears it, so an operator's own pause is never undone.

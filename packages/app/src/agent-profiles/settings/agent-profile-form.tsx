@@ -72,7 +72,9 @@ function ChoiceField({
   options,
   onChange,
   disabled,
+  hint,
 }: {
+  hint?: string;
   label: string;
   value: string;
   options: AgentProfileFormOption[];
@@ -86,6 +88,7 @@ function ChoiceField({
   return (
     <SelectField
       label={label}
+      hint={hint}
       testID={`agent-profile-${label.toLowerCase()}-field`}
       triggerTestID={`agent-profile-${label.toLowerCase()}-trigger`}
       value={value}
@@ -295,6 +298,7 @@ export function AgentProfileForm({
         )}
         <ChoiceField
           label="Model"
+          hint={state.compatibilityWarnings.join(" ")}
           value={state.modelId}
           options={state.modelOptions}
           onChange={model.setModel}

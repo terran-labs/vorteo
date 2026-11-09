@@ -1,7 +1,8 @@
+import { SidebarDisclosureBody } from "./sidebar/disclosure-body";
 import { ProjectMenuItem, type ProjectMenuSurface } from "./sidebar/project-menu-item";
 import { FactoryProjectActions } from "./sidebar/factory-project-actions";
-import { FactoryCard } from "./sidebar/factory-card";
-import { AllFactoriesCard } from "./sidebar/factory-global-card";
+import { FactorySection } from "./sidebar/factory-section";
+import { AllFactoriesSection } from "./sidebar/factory-all-section";
 import { factoryCardModels } from "./sidebar/factory-card-model";
 import { useFactoryCardStore } from "./sidebar/factory-card-store";
 import { FactoryInstructionsPanel, useProjectFactories } from "./sidebar/factory-instructions";
@@ -1987,20 +1988,18 @@ function ProjectSection({
         />
       )}
       {summary}
-      {collapsed ? null : (
-        <>
-          {beforeList}
-          {renderList(group.visibleItems)}
-          {group.canToggle ? (
-            <SidebarGroupToggleRow
-              expanded={group.expanded}
-              onPress={group.toggleExpanded}
-              level={itemLevel}
-              testID={`sidebar-${section}-show-more-${projectKey}`}
-            />
-          ) : null}
-        </>
-      )}
+      <SidebarDisclosureBody expanded={!collapsed}>
+        {beforeList}
+        {renderList(group.visibleItems)}
+        {group.canToggle ? (
+          <SidebarGroupToggleRow
+            expanded={group.expanded}
+            onPress={group.toggleExpanded}
+            level={itemLevel}
+            testID={`sidebar-${section}-show-more-${projectKey}`}
+          />
+        ) : null}
+      </SidebarDisclosureBody>
     </>
   );
 }
@@ -2576,7 +2575,7 @@ function ProjectBlock({
   }, [onToggleCollapsed, project.viewKey]);
 
   let projectChildren = null;
-  if (!collapsed) {
+  {
     if (project.workspaces.length > 0) {
       projectChildren = (
         <>
@@ -2609,7 +2608,7 @@ function ProjectBlock({
           ) : null}
           {isSidebarSectionShown(focus, "factory")
             ? factoryCards.map((card) => (
-                <FactoryCard
+                <FactorySection
                   key={card.key}
                   card={card}
                   entries={workspaceEntriesByKey}
@@ -2684,7 +2683,7 @@ function ProjectBlock({
         </ProjectDropTarget>
       ) : null}
 
-      {projectChildren}
+      <SidebarDisclosureBody expanded={!collapsed}>{projectChildren}</SidebarDisclosureBody>
     </View>
   );
 }
@@ -3702,7 +3701,7 @@ function ProjectModeListContent({
   const pinnedRows = (
     <>
       {pinnedFactoryCards.map(({ card, projectName }) => (
-        <FactoryCard
+        <FactorySection
           key={card.key}
           card={card}
           entries={workspaceEntriesByKey}
@@ -3746,7 +3745,7 @@ function ProjectModeListContent({
     <>
       {listTopComponent}
       {/* The main sidebar only; a single project's rail flyout has no global section. */}
-      <AllFactoriesCard
+      <AllFactoriesSection
         mainSidebar={rootFolders}
         focused={focus !== null}
         onBeforeNavigate={onWorkspacePress}
@@ -3758,7 +3757,7 @@ function ProjectModeListContent({
             collapsed={pinnedCollapsed}
             onToggle={togglePinnedCollapsed}
           />
-          {pinnedCollapsed ? null : pinnedRows}
+          <SidebarDisclosureBody expanded={!pinnedCollapsed}>{pinnedRows}</SidebarDisclosureBody>
         </View>
       ) : null}
       {/* The header carries the display menu, which is the only way back out of a filter, so it
@@ -3774,7 +3773,10 @@ function ProjectModeListContent({
           persistentActions={focusCreateAction}
         />
       ) : null}
-      {pinnedFocused ? pinnedRows : listBody}
+      {/* Folder and Show more changes alter this flat list's measured height. */}
+      <SidebarDisclosureBody expanded>
+        {pinnedFocused ? pinnedRows : listBody}
+      </SidebarDisclosureBody>
       {listFooterComponent}
     </>
   );

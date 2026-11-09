@@ -19,6 +19,7 @@ import type { SessionHostAction, SessionHostOverview } from "./session-host-revi
 
 vi.mock("./use-installation-upgrades", () => ({
   useInstallationUpgradeStatus: () => ({ data: null }),
+  useAgentActionReceipts: () => ({ data: [] }),
 }));
 vi.mock("@/contexts/toast-api-context", () => ({
   useToast: () => ({ error: vi.fn(), show: vi.fn() }),
@@ -58,6 +59,8 @@ vi.mock("./installation-upgrade-card", () => ({
   CoordinatorFollowCard: () => null,
 }));
 vi.mock("./coordinator-settings-card", () => ({ CoordinatorSettingsCard: () => null }));
+vi.mock("./installation-change-card", () => ({ InstallationChangesCard: () => null }));
+vi.mock("./source-upgrades-card", () => ({ SourceUpgradesCard: () => null }));
 vi.mock("./policy", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./policy")>()),
   readExecutionInstallation: () => ({ environments: capture.environments }),

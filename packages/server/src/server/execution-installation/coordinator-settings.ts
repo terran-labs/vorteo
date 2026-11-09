@@ -38,6 +38,13 @@ import {
 } from "./coordinator-broker-settings.js";
 import type { BrokerSetting } from "./preview-broker-configuration-checks.js";
 import { RestartRequestError } from "./restarts.js";
+import {
+  delegatedAdmissionStep,
+  delegatedApproval,
+  delegatedDispatchHolds,
+  delegatedPlanDigest,
+  type DelegationGrant,
+} from "./delegated-admission.js";
 import { inspectBootstrapWritableMountRoots } from "./coordinator-bootstrap-host.js";
 import { verifyBrokerExecutorInputs } from "./preview-broker-configuration-checks.js";
 import { managedServices } from "./service-control.js";
@@ -165,7 +172,18 @@ export interface CoordinatorSettingsPorts {
   }): Promise<BrokerSettingsReviewResult>;
   deadlineMs: number;
   warn(message: string): void;
+  /** The active full maintenance grant, read fresh; null when none applies. */
+  delegationGrant?(): DelegationGrant | null;
+  /** The cancellation window before delegated work starts. */
+  cancellationDelayMs?: number;
 }
+
+/** The operation names full delegation checks against OWNER_ONLY_OPERATIONS. */
+const settingsOperations = (job: SettingsRecord) =>
+  Object.keys(job.patch).map((key) => `coordinator-settings:${key}`);
+/** Binds a delegated approval to the exact request: its base and patch as proposed. */
+const settingsPlan = (job: SettingsRecord) =>
+  delegatedPlanDigest("coordinator-settings", { baseSha256: job.baseSha256, patch: job.patch });
 
 export function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
@@ -248,6 +266,11 @@ export class CoordinatorSettings {
   dispatching(): CoordinatorSettingsJob | null {
     const job = this.jobs.find((item) => item.status === "approved" || item.status === "running");
     return job ? project(job) : null;
+  }
+
+  /** Every retained job, for installation management. */
+  list(): CoordinatorSettingsJob[] {
+    return this.jobs.map(project);
   }
 
   get(id: string): CoordinatorSettingsJob | null {
@@ -352,6 +375,7 @@ export class CoordinatorSettings {
           status: "approved",
           approvedAt: this.ports.now().toISOString(),
           approvedWith: undefined,
+          delegatedApproval: undefined,
           detail: "Approved. Starting.",
         }),
       );
@@ -386,6 +410,8 @@ export class CoordinatorSettings {
     return project(
       this.save(job, {
         approvedWith: follow.id,
+        // The owner's approval replaces a delegated one, so a later revocation cannot cancel it.
+        delegatedApproval: undefined,
         detail: "Approved with the coordinator update. Applies after it succeeds.",
       }),
     );
@@ -413,6 +439,7 @@ export class CoordinatorSettings {
 
   private async drainOnce(): Promise<void> {
     this.settleLinkedApproval();
+    this.admitDelegated();
     const job = this.jobs.find((item) => item.status === "approved" || item.status === "running");
     if (job?.status === "approved") await this.dispatch(job);
     else if (job?.status === "running") this.track(job);
@@ -438,8 +465,98 @@ export class CoordinatorSettings {
     });
   }
 
+  /**
+   * Full maintenance delegation approves a fresh Host-agent change for exactly its base and
+   * patch, after the cancellation window. It stays pending until then, so the owner can still
+   * cancel it and a rollback runtime that ignores the evidence waits for the owner. There is no
+   * owner interface to render broker fields, so the broker review that runs at request runs
+   * again at dispatch, as for every approval.
+   */
+  private admitDelegated(): void {
+    const job = this.jobs.find((item) => item.status === "pending" && !item.approvedWith);
+    if (!job) return;
+    const now = this.ports.now().getTime();
+    const grant = this.ports.delegationGrant?.() ?? null;
+    // Only authenticated Host agents can request settings changes.
+    const step = delegatedAdmissionStep(
+      { ...job, requestedBy: "host-agent" },
+      {
+        grant,
+        operations: settingsOperations(job),
+        planSha256: settingsPlan(job),
+        now,
+      },
+    );
+    if (step === "attach" && grant) {
+      const revision = randomUUID();
+      const approval = delegatedApproval(grant, {
+        requestRevision: revision,
+        planSha256: settingsPlan(job),
+        now,
+        cancellationDelayMs: this.ports.cancellationDelayMs ?? 30_000,
+      });
+      this.save(job, {
+        revision,
+        delegatedApproval: approval,
+        detail: `Approved under owner maintenance delegation. Starts after ${approval.dispatchAfter} unless cancelled.`,
+      });
+    } else if (step === "invalid") {
+      this.finish(
+        job,
+        "cancelled",
+        "Delegated approval changed before dispatch. Nothing was applied.",
+      );
+    } else if (step === "ready") {
+      const refusal = this.staleOrBlocked(job);
+      if (refusal) {
+        this.finish(job, "cancelled", refusal);
+        return;
+      }
+      this.save(job, {
+        status: "approved",
+        approvedAt: this.ports.now().toISOString(),
+        detail: "Approved under owner maintenance delegation. Starting.",
+      });
+    }
+  }
+
+  /**
+   * Cancels a change the full grant approved when that grant no longer holds: revoked, renewed,
+   * credentials rotated or its keys newly excluded. The plan was bound at admission; the broker
+   * review completes it with coordinator-computed digests afterwards. Owner approvals pass.
+   */
+  private delegationLapsed(job: SettingsRecord): boolean {
+    if (
+      delegatedDispatchHolds(job.delegatedApproval, this.ports.delegationGrant?.() ?? null, {
+        operations: settingsOperations(job),
+      })
+    )
+      return false;
+    this.restoreKeptScope(job);
+    this.finish(
+      job,
+      "cancelled",
+      "Delegated approval changed before dispatch. Nothing was applied.",
+    );
+    return true;
+  }
+
+  /** Why a pending change cannot be approved now, without throwing. */
+  private staleOrBlocked(job: SettingsRecord): string | null {
+    const blocker = this.blocker() ?? this.ports.conflict();
+    if (blocker) return blocker;
+    try {
+      if (sha256(this.ports.readConfig()) !== job.baseSha256)
+        return "The coordinator configuration changed after this change was prepared. Ask for it again.";
+    } catch (error) {
+      return `The coordinator configuration could not be read: ${message(error)}`;
+    }
+    return null;
+  }
+
   private async dispatch(approved: SettingsRecord): Promise<void> {
     let job = approved;
+    if (this.delegationLapsed(job)) return;
     const refusal = this.blocker() ?? this.ports.conflict();
     if (refusal) {
       this.finish(job, "failed", refusal);
@@ -449,6 +566,8 @@ export class CoordinatorSettings {
       const reviewed = await this.reviewAtDispatch(job);
       if (!reviewed) return;
       job = reviewed;
+      // The grant may have been revoked or the credentials rotated during the review.
+      if (this.delegationLapsed(job)) return;
     }
     let text: string;
     let candidate: string;
@@ -473,6 +592,7 @@ export class CoordinatorSettings {
       this.finish(job, "failed", `${launchBlocker} Nothing was applied.`);
       return;
     }
+    if (this.delegationLapsed(job)) return;
     // Recorded before any effect: the handoff restarts this process.
     const running = this.save(job, {
       status: "running",
@@ -719,7 +839,11 @@ export class CoordinatorSettings {
   }
 
   private save(job: SettingsRecord, changes: Partial<SettingsRecord>): SettingsRecord {
-    const next = SettingsRecordSchema.parse({ ...job, ...changes, revision: randomUUID() });
+    const next = SettingsRecordSchema.parse({
+      ...job,
+      ...changes,
+      revision: changes.revision ?? randomUUID(),
+    });
     this.jobs = this.jobs.map((item) => (item.id === job.id ? next : item));
     this.journal.write(this.jobs);
     return next;
@@ -832,6 +956,8 @@ export function createCoordinatorSettings(input: {
   entrypoint?: string;
   /** Replaces the native Docker inspection and executor probes; tests only. */
   brokerReview?: BrokerSettingsReviewPorts;
+  /** The active full maintenance grant; a Host-agent change is delegated under it. */
+  delegationGrant?: () => DelegationGrant | null;
 }): CoordinatorSettings {
   const { config, configFile } = input;
   const directory = path.join(config.stateDir, "coordinator-settings");
@@ -865,6 +991,8 @@ export function createCoordinatorSettings(input: {
     runningSha256: input.startupSha256 ?? null,
     conflict: input.conflict,
     followJob: input.followJob,
+    delegationGrant: () => input.delegationGrant?.() ?? null,
+    cancellationDelayMs: 30_000,
     writeConfig(jobId, previous, next) {
       mkdirSync(work(jobId), { recursive: true, mode: 0o700 });
       writePrivateFileAtomicSync(backup(jobId), previous);

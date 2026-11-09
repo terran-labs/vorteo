@@ -10,7 +10,7 @@ import { useSessionStore } from "@/stores/session-store";
 import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
 import { CompactAccountButton } from "./compact-account-button";
-import { useVortonTouch } from "@/vorton-touch";
+import { VORTON_INLINE_PILL } from "@/vorton-touch";
 import { providerUsageQueryKey } from "./use-provider-usage";
 import { currentResetPreparation, resetPresentation, selectableResetCredits } from "./reset-state";
 import { providerResetQueryOptions } from "./reset-query";
@@ -224,7 +224,6 @@ export function ProviderResetControl(props: {
     select,
   } = useResetControl(props);
   const { name, providerId } = props;
-  const touch = useVortonTouch();
   const { visible, showBadge, badge, enabled } = resetPresentation({
     supported,
     connected,
@@ -272,8 +271,8 @@ export function ProviderResetControl(props: {
   );
   if (!visible) return null;
   const BadgeButton = props.compact ? CompactAccountButton : Button;
-  // The compact badge sits beside a two-line account row; keep it to one text line tall.
-  const shortBadge = props.compact && !touch;
+  // The compact badge sits inside a one-line row of an account tile, so it keeps one text line's
+  // height on every layout. Touch layouts extend its hit area instead of its visual height.
   return (
     <>
       {showBadge ? (
@@ -281,7 +280,9 @@ export function ProviderResetControl(props: {
           dense={props.compact}
           variant="ghost"
           size="sm"
-          style={shortBadge ? styles.shortBadge : undefined}
+          style={props.compact ? styles.shortBadge : undefined}
+          dataSet={props.compact ? VORTON_INLINE_PILL : undefined}
+          hitSlop={props.compact ? INLINE_PILL_HIT_SLOP : undefined}
           onPress={show}
           accessibilityLabel={`${name}: ${badge}`}
           textStyle={[styles.text, props.compact && styles.compactText]}
@@ -321,6 +322,9 @@ export function ProviderResetControl(props: {
     </>
   );
 }
+
+/** Grows the 20px pill's native hit area to 44px; the web rule does the same through CSS. */
+const INLINE_PILL_HIT_SLOP = { top: 12, bottom: 12, left: 4, right: 4 };
 
 const styles = StyleSheet.create((theme) => ({
   compactText: { fontSize: theme.fontSize.sm - 2, lineHeight: 16 },

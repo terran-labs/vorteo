@@ -196,6 +196,7 @@ vi.mock("lucide-react-native", () => ({
   Info: () => null,
   Files: () => null,
   GitCompareArrows: () => null,
+  GitPullRequest: () => null,
   BookOpen: () => null,
   ChevronDown: () => null,
   ChevronRight: () => null,

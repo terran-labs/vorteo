@@ -22,9 +22,39 @@ const CSS = `
 }
 `;
 
+let shellTheme: Theme | null = null;
+let compactTopChrome = false;
+
+/**
+ * Compact layouts put the toolbar surface at the top edge, so the status bar region above it
+ * (the iOS status strip's sampled color and the theme-color hint) uses the same surface.
+ */
+export function applyShellTopChrome(compact: boolean): void {
+  compactTopChrome = compact;
+  if (shellTheme) applyTopChrome(shellTheme);
+}
+
+function applyTopChrome(theme: Theme): void {
+  if (typeof document === "undefined") return;
+  const root = document.documentElement;
+  if (compactTopChrome) {
+    root.style.setProperty("--vorteo-top-inset-background", theme.colors.surfaceWorkspace);
+  } else {
+    root.style.removeProperty("--vorteo-top-inset-background");
+  }
+  let tint = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+  if (!tint) {
+    tint = document.createElement("meta");
+    tint.name = "theme-color";
+    document.head.appendChild(tint);
+  }
+  tint.content = compactTopChrome ? theme.colors.surfaceWorkspace : theme.colors.surface0;
+}
+
 /** Keep browser chrome hints and the entire canvas on the central content color. */
 export function applyShellAppearance(theme: Theme, persist = true): void {
   if (typeof document === "undefined") return;
+  shellTheme = theme;
   if (persist) applyBootLogo(theme);
   const root = document.documentElement;
   root.dataset.vorteoAppearance = theme.appearance?.id ?? "plugin";
@@ -54,13 +84,7 @@ export function applyShellAppearance(theme: Theme, persist = true): void {
   document.body.style.backgroundColor = theme.colors.surface0;
   const appRoot = document.getElementById("root");
   if (appRoot) appRoot.style.backgroundColor = theme.colors.surface0;
-  let tint = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
-  if (!tint) {
-    tint = document.createElement("meta");
-    tint.name = "theme-color";
-    document.head.appendChild(tint);
-  }
-  tint.content = theme.colors.surface0;
+  applyTopChrome(theme);
   // Rewrite the rules every time so a reloaded module replaces stale ones.
   let style = document.getElementById(STYLE_ID);
   if (!style) {

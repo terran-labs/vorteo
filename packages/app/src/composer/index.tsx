@@ -1,4 +1,3 @@
-import { type ReactNode } from "react";
 import { FLOATING_PANEL_INSET } from "@/styles/floating-panel";
 import { StreamColumnWidthContext } from "@/agent-stream/columns/layout";
 
@@ -46,7 +45,6 @@ import {
 import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { NEW_WORKSPACE_CARD_HEIGHT, useIsCompactFormFactor } from "@/constants/layout";
-import { useVortonTouch } from "@/vorton-touch";
 import { usePanelStore } from "@/stores/panel-store";
 import { useHasFinePointer } from "@/hooks/use-fine-pointer";
 import { useShallow } from "zustand/shallow";
@@ -68,7 +66,6 @@ import {
   DraftAgentControls,
   type DraftAgentControlsProps,
 } from "@/composer/agent-controls";
-import { ContextWindowMeter } from "@/components/context-window-meter";
 import { useImageAttachmentPicker } from "@/hooks/use-image-attachment-picker";
 import {
   selectAgentSentMessages,
@@ -302,47 +299,6 @@ function buildAgentStateSelector(serverId: string, agentId: string) {
       model: agent?.model ?? null,
     };
   };
-}
-
-function renderContextWindowMeter(
-  serverId: string,
-  agentId: string,
-  contextWindowMaxTokens: number | null,
-  contextWindowUsedTokens: number | null,
-  totalCostUsd: number | null,
-  estimatedCostUsd: number | null,
-  showPercentage: boolean,
-  pending: boolean,
-  glyphSize: number,
-): ReactElement | null {
-  const hasData = contextWindowMaxTokens !== null && contextWindowUsedTokens !== null;
-  if (!hasData && !pending) {
-    return null;
-  }
-  return (
-    <ContextWindowMeter
-      serverId={serverId}
-      agentId={agentId}
-      maxTokens={contextWindowMaxTokens}
-      usedTokens={contextWindowUsedTokens}
-      totalCostUsd={totalCostUsd}
-      estimatedCostUsd={estimatedCostUsd}
-      showPercentage={showPercentage}
-      pending={pending}
-      glyphSize={glyphSize}
-    />
-  );
-}
-
-function resolveContextWindowPlacement(
-  meter: ReactElement | null,
-  reserveSlot: boolean,
-  touch: boolean,
-): ReactNode {
-  if (touch && !meter) return null;
-  return reserveSlot ? (
-    <View style={[styles.contextWindowMeterSlot, touch && styles.touchMeterSlot]}>{meter}</View>
-  ) : null;
 }
 
 interface RenderLeftContentArgs {
@@ -1293,7 +1249,6 @@ function ComposerContentImpl({
   const agentState = useSessionStore(useShallow(buildAgentStateSelector(serverId, agentId)));
 
   const isCompactFormFactor = useIsCompactFormFactor();
-  const touch = useVortonTouch();
   const isCompactLayout = resolveCompactLayout(isCompactLayoutOverride, isCompactFormFactor);
   const isDesktopWebBreakpoint = resolveIsDesktopWebBreakpoint(isCompactFormFactor);
   const hasFinePointer = useHasFinePointer();
@@ -2103,20 +2058,6 @@ function ComposerContentImpl({
     ],
   );
 
-  const contextWindowMeterGlyphSize = isCompactLayout ? ICON_SIZE.md : buttonIconSize;
-  const contextWindowMeter = renderContextWindowMeter(
-    serverId,
-    agentId,
-    agentState.contextWindowMaxTokens,
-    agentState.contextWindowUsedTokens,
-    agentState.totalCostUsd,
-    agentState.estimatedCostUsd,
-    false,
-    hasAgent,
-    contextWindowMeterGlyphSize,
-  );
-  const beforeVoiceContent = resolveContextWindowPlacement(contextWindowMeter, hasAgent, touch);
-
   const hasGithubAttachment = useMemo(
     () =>
       selectedAttachments.some(
@@ -2559,7 +2500,6 @@ function ComposerContentImpl({
                   autoFocusKey={`${serverId}:${agentId}:${autoFocusKey ?? ""}`}
                   disabled={isSubmitLoading}
                   leftContent={agentControls ? null : leftContent}
-                  beforeVoiceContent={beforeVoiceContent}
                   rightContent={rightContent}
                   activeActionContent={activeActionContent}
                   voiceServerId={serverId}
@@ -2652,9 +2592,11 @@ const styles = StyleSheet.create((theme: Theme) => ({
     paddingBottom: 12,
     flexShrink: 1,
   },
+  // The mobile field draws no frame, so its controls measure from the screen edges: keep the
+  // bottom margin equal to the side margins.
   mobileInputArea: {
     paddingHorizontal: theme.spacing[2],
-    paddingBottom: MOBILE_COMPOSER_MARGIN,
+    paddingBottom: theme.spacing[2],
     paddingTop: 0,
   },
   inputAreaLocked: {

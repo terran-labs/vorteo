@@ -3245,6 +3245,83 @@ test("reserves worker capacity during startup and preserves a quota pause that a
   await manager.closeAgent(root.id);
 });
 
+test.each(["catalog", "availability", "launch context", "restart drain"] as const)(
+  "does not start a provider session when shutdown interrupts %s setup",
+  async (phase) => {
+    const setupStarted = deferred<void>();
+    const setupAllowed = deferred<void>();
+    const agentId = "00000000-0000-4000-8000-000000000097";
+    async function holdSetup() {
+      setupStarted.resolve();
+      await setupAllowed.promise;
+    }
+    class HeldSetupClient extends TestAgentClient {
+      override async fetchCatalog() {
+        if (phase === "catalog") await holdSetup();
+        return super.fetchCatalog();
+      }
+      override async isAvailable() {
+        if (phase === "availability") await holdSetup();
+        return true;
+      }
+    }
+    const client = new HeldSetupClient();
+    const attachedAgents = new Set<string>();
+    const holdContext = phase === "launch context" || phase === "restart drain";
+    const manager = new AgentManager({
+      clients: { codex: client },
+      logger,
+      idFactory: () => agentId,
+      pluginAgentTools: {
+        isToolPluginAvailable: () => true,
+        detachTools: (id) => {
+          attachedAgents.delete(id);
+        },
+        callTool: async () => ({ content: [] }),
+      },
+      pluginLifecycle: {
+        emit() {},
+        async before(name, request) {
+          if (name === "agent.open.before" && "tools" in request) {
+            attachedAgents.add(request.agentId);
+            request.tools = [
+              {
+                name: "inspect",
+                description: "Inspect the fixture",
+                inputSchema: {},
+                pluginId: "fixture",
+                pluginInstanceId: "fixture-instance",
+              },
+            ];
+            if (holdContext) await holdSetup();
+          }
+          return request;
+        },
+      },
+    });
+    const creation = manager
+      .createAgent({ provider: "codex", cwd: process.cwd() }, undefined, {})
+      .catch((error: unknown) => error);
+    await setupStarted.promise;
+    if (phase === "restart drain") manager.beginRestartDrain(randomUUID());
+    else manager.prepareForShutdown();
+    const flushing = manager.flushForShutdown();
+    setupAllowed.resolve();
+
+    const rejection = await creation;
+    if (phase === "restart drain") {
+      expect(rejection).toBeInstanceOf(Error);
+      expect(rejection).toHaveProperty("message", expect.stringContaining("New work is held"));
+    } else expect(rejection).toBeInstanceOf(AgentManagerShuttingDownError);
+    await flushing;
+    expect(client.createdConfigs).toEqual([]);
+    expect(manager.listAgents()).toEqual([]);
+    expect(manager.getPaseoToolPolicy(agentId)).toBeUndefined();
+    expect(manager.getPluginTools(agentId)).toEqual([]);
+    expect(attachedAgents.has(agentId)).toBe(false);
+  },
+);
+
 test("does not register a session that finishes starting after shutdown begins", async () => {
   const client = new HeldAgentCreationClient();
   const manager = new AgentManager({

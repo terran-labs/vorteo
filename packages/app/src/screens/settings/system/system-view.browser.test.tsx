@@ -22,7 +22,17 @@ function Harness({ updating }: { updating: boolean }) {
     ],
     [updating],
   );
-  return <SystemView environments={rows} services={updating ? null : "attention"} />;
+  return (
+    <SystemView
+      environments={rows}
+      services={updating ? null : "attention"}
+      servicesReason={
+        updating
+          ? undefined
+          : "A service needs attention. Review its current status before continuing."
+      }
+    />
+  );
 }
 it.each([390, 1280])(
   "keeps rows within the pane and preserves page height through polls at %spx",
@@ -35,6 +45,11 @@ it.each([390, 1280])(
     const root = createRoot(container);
     try {
       act(() => root.render(<Harness updating={false} />));
+      // React Native Web delivers measured layout through ResizeObserver after paint.
+      await act(async () => {
+        await new Promise(requestAnimationFrame);
+        await new Promise(requestAnimationFrame);
+      });
       const height = container.getBoundingClientRect().height;
       expect(container.scrollWidth).toBeLessThanOrEqual(container.clientWidth);
       const button = page.getByRole("button", { name: "Approve restart", exact: true });

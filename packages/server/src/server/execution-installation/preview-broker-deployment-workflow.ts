@@ -125,10 +125,31 @@ export class PreviewBrokerDeploymentWorkflow {
     return structuredClone(this.current(job.id));
   }
 
-  async dispatch(id: string): Promise<void> {
+  /** Updates the visible detail of a pending request without changing its revision. */
+  note(id: string, revision: string, detail: string): void {
     this.queue.requireActive();
     const job = this.current(id);
-    if (job.status !== "approved" || !job.approvedAt || digest(job.plan) !== job.planSha256)
+    if (job.status === "pending" && job.revision === revision)
+      this.queue.replace({ ...job, detail });
+  }
+
+  /**
+   * Dispatches an owner-approved request. With `claim`, it dispatches a pending request the full
+   * grant approved instead: the durable record stays pending through validation, so a rolled-back
+   * coordinator that reads it waits for the owner. `claim` rechecks the delegated evidence and
+   * returns the approved fields in memory, which are written once, straight to running. It returns
+   * null when the evidence no longer holds; nothing starts.
+   */
+  async dispatch(
+    id: string,
+    claim?: (job: PreviewBrokerDeploymentJob) => PreviewBrokerDeploymentJob | null,
+  ): Promise<void> {
+    this.queue.requireActive();
+    let job = this.current(id);
+    const dispatchable = claim
+      ? job.status === "pending" && job.stage === "prepared"
+      : job.status === "approved" && Boolean(job.approvedAt);
+    if (!dispatchable || digest(job.plan) !== job.planSha256)
       throw new BrokerDeploymentRefused("Deployment has no exact dispatch approval");
     const assertPrepared = this.reservation();
     try {
@@ -137,6 +158,13 @@ export class PreviewBrokerDeploymentWorkflow {
       assertPrepared();
       await this.executor().validateBrokerDeploymentPlan(structuredClone(job.plan));
       assertPrepared();
+      if (claim) {
+        const current = this.current(id);
+        if (current.status !== "pending" || current.revision !== job.revision) return;
+        const claimed = claim(current);
+        if (!claimed) return;
+        job = claimed;
+      }
       const dispatched: PreviewBrokerDeploymentJob = {
         ...job,
         status: "running",

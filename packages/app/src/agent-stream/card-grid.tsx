@@ -41,7 +41,7 @@ const gridStyle = {
   alignContent: "flex-start",
   alignItems: "flex-start",
   rowGap: CARD_GAP,
-  columnGap: 4,
+  columnGap: CARD_GAP,
   width: "100%",
   minWidth: 0,
 } as const;

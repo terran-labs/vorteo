@@ -1,5 +1,6 @@
+import { SidebarDisclosureBody } from "./disclosure-body";
 import { useScrollReporter } from "../use-scroll-divider";
-import { AllFactoriesCard } from "./factory-global-card";
+import { AllFactoriesSection } from "./factory-all-section";
 import { NestableScrollDivider } from "../nestable-scroll-divider";
 import { useWorkspaceSessionMenu } from "@/workspace/use-workspace-session-menu";
 import type { SidebarSurfaceBackdrop } from "@/styles/surface-backdrop";
@@ -236,7 +237,7 @@ export function SidebarStatusWorkspaceList({
   const content = (
     <>
       {listTopComponent}
-      <AllFactoriesCard onBeforeNavigate={onWorkspacePress} />
+      <AllFactoriesSection onBeforeNavigate={onWorkspacePress} />
       {pinnedWorkspaces.length > 0 ? (
         <View style={styles.pinnedSection} testID="sidebar-pinned-section">
           <PinnedSectionRow
@@ -244,30 +245,28 @@ export function SidebarStatusWorkspaceList({
             collapsed={pinnedCollapsed}
             onToggle={togglePinnedCollapsed}
           />
-          {pinnedCollapsed ? null : (
-            <>
-              {leadingPinnedWorkspace ? renderPinnedWorkspaceRow(leadingPinnedWorkspace) : null}
-              <DraggableList
-                testID="sidebar-pinned-list"
-                data={visiblePinnedWorkspaces}
-                keyExtractor={statusWorkspaceKeyExtractor}
-                renderItem={renderPinnedWorkspace}
-                onDragEnd={onPinnedWorkspaceReorder}
-                scrollEnabled={false}
-                useDragHandle
-                nestable={platformIsNative}
-                simultaneousGestureRef={parentGestureRef}
-                gestureHostPresented={dragGestureHostActive}
+          <SidebarDisclosureBody expanded={!pinnedCollapsed}>
+            {leadingPinnedWorkspace ? renderPinnedWorkspaceRow(leadingPinnedWorkspace) : null}
+            <DraggableList
+              testID="sidebar-pinned-list"
+              data={visiblePinnedWorkspaces}
+              keyExtractor={statusWorkspaceKeyExtractor}
+              renderItem={renderPinnedWorkspace}
+              onDragEnd={onPinnedWorkspaceReorder}
+              scrollEnabled={false}
+              useDragHandle
+              nestable={platformIsNative}
+              simultaneousGestureRef={parentGestureRef}
+              gestureHostPresented={dragGestureHostActive}
+            />
+            {canTogglePinnedWorkspaces ? (
+              <SidebarGroupToggleRow
+                expanded={pinnedWorkspacesExpanded}
+                onPress={togglePinnedWorkspacesExpanded}
+                testID="sidebar-pinned-show-more"
               />
-              {canTogglePinnedWorkspaces ? (
-                <SidebarGroupToggleRow
-                  expanded={pinnedWorkspacesExpanded}
-                  onPress={togglePinnedWorkspacesExpanded}
-                  testID="sidebar-pinned-show-more"
-                />
-              ) : null}
-            </>
-          )}
+            ) : null}
+          </SidebarDisclosureBody>
         </View>
       ) : null}
       {listHeaderComponent}
@@ -426,7 +425,7 @@ function StatusGroupRows({
   return (
     <View style={collapsed ? undefined : styles.statusGroupBlockExpanded}>
       <StatusGroupHeader group={group} collapsed={collapsed} />
-      {!collapsed ? (
+      <SidebarDisclosureBody expanded={!collapsed}>
         <View
           style={styles.statusWorkspaceListContainer}
           testID={`sidebar-status-group-rows-${group.key}`}
@@ -442,7 +441,7 @@ function StatusGroupRows({
             />
           ) : null}
         </View>
-      ) : null}
+      </SidebarDisclosureBody>
     </View>
   );
 }
