@@ -186,7 +186,16 @@ export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
     id: "appearance.appearance",
     section: "interface",
     label: "Appearance",
-    legacySlugs: ["appearance.appearance", "appearance", "sidebar"],
+    legacySlugs: ["appearance.appearance", "appearance"],
+  },
+  {
+    // Which sidebar rows show and in what order, per device. The old Sidebar page's address
+    // opens it.
+    id: "appearance.sidebar",
+    section: "interface",
+    label: "Sidebar",
+    legacySlugs: ["appearance.sidebar", "sidebar"],
+    keywords: ["sidebar items", "navigation", "plugins", "order", "reorder", "hide", "show"],
   },
   {
     id: "appearance.language",
@@ -866,6 +875,25 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
     scope: installation,
   },
 
+  // Sidebar
+  {
+    id: "appearance.sidebar.header",
+    pane: "appearance.sidebar",
+    label: "Header",
+    labelKey: "settings.appearance.sidebar.header.title",
+    hint: "Choose which items appear at the top of the sidebar and in what order",
+    keywords: ["sidebar items", "sidebar header", "plugin items", "reorder", "hide"],
+    scope: device,
+  },
+  {
+    id: "appearance.sidebar.footer",
+    pane: "appearance.sidebar",
+    label: "Footer",
+    labelKey: "settings.appearance.sidebar.footer.title",
+    hint: "Choose which rows appear at the bottom of the sidebar and in what order",
+    keywords: ["sidebar items", "sidebar footer", "plugin rows", "reorder", "hide"],
+    scope: device,
+  },
   // Appearance
   {
     id: "appearance.theme",
@@ -921,6 +949,15 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
     label: "Content width",
     labelKey: "settings.appearance.layout.contentWidth",
     keywords: ["max width", "column", "wide screens"],
+    scope: device,
+  },
+  {
+    id: "appearance.workspaceStatusLine",
+    pane: "appearance.appearance",
+    label: "Workspace status line",
+    labelKey: "settings.appearance.statusLine.label",
+    hintKey: "settings.appearance.statusLine.hint",
+    keywords: ["sidebar", "factory", "status", "second line", "hover"],
     scope: device,
   },
   {

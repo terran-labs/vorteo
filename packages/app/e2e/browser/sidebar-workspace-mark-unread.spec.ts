@@ -8,7 +8,11 @@ import {
 } from "../support/helpers/mock-agent";
 import { expectOpenTabCount } from "../support/helpers/sheet";
 import { getServerId } from "../support/helpers/server-id";
-import { openMobileAgentSidebar, closeMobileAgentSidebar } from "../support/helpers/sidebar";
+import {
+  openMobileAgentSidebar,
+  closeMobileAgentSidebar,
+  openWorkspaceSidebarKebab,
+} from "../support/helpers/sidebar";
 
 interface FinishedWorkspaces {
   subject: MockAgentWorkspace;
@@ -50,8 +54,8 @@ async function openWorkspace(page: Page, workspaceId: string) {
 }
 
 async function chooseReadAction(page: Page, workspaceId: string, action: "read" | "unread") {
-  await workspaceRow(page, workspaceId).hover();
-  await page.getByTestId(`sidebar-workspace-kebab-${getServerId()}:${workspaceId}`).click();
+  // Compact rows have no kebab (2415534c8); the helper falls back to the row's context menu.
+  await openWorkspaceSidebarKebab(page, workspaceId);
   const item = page.getByRole("menuitem", { name: `Mark as ${action}`, exact: true });
   await expect(item).toBeVisible();
   await item.click();

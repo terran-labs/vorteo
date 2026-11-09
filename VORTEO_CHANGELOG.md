@@ -2,6 +2,167 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 26.11.700 - 2026-11-07
+
+Beta that lets Stable installations take one reviewed commit from main with the owner's approval, samples account usage every minute in the background, adds the sidebar Factory card, and fixes dozens of interface bugs found by the nightly browser run.
+
+### Tests
+
+- The website browser tests serve GitHub release and star data from their local fixture server, so CI's shared GitHub rate limit no longer breaks the agents and download pages mid-run.
+- The website test fixture's release uses the stable Linux asset name, so the server accepts it as a ready release.
+- The fullscreen dictation browser test also presses the platform's realtime voice shortcut, Cmd+Shift+D on macOS and Ctrl+Shift+D elsewhere, so the whole test runs on a Mac.
+- The phone workspace header test expects the Explorer button the owner chose to keep, and an upstream test that drives the removed composer model selector is routed out.
+- The plugin file panel test reopens Files after its compact round trip, since Vorteo's cards collapse again after a resize.
+- Three upstream sidebar tests that seed counts for a 7-row limit are routed out; Vorteo's folder trees keep 20 rows, and one unit case covers the restored rules.
+- The sidebar toolbar test expects History, Schedules, then Search, the full-width order the toolbar has used since bcd8dda7a.
+- The sidebar footer settings test no longer expects the footer's top rule over a short project list, which it has not drawn since 469492c4e.
+- Bring two browser harness files in line with main after merging it into the composer and sidebar decisions branch.
+- The footer usage meter tests count requests only after their Settings readiness check, whose Usage pane makes its own.
+- The sidebar items order test starts from the registry's plugin ID order, which is deterministic.
+- The fullscreen dictation browser test presses the platform's own dictation shortcut, Cmd+D on macOS and Ctrl+D elsewhere, so it runs on a Mac.
+
+### Security
+
+- Website browser tests no longer copy the whole process environment, which can hold tokens, into the preview build's .dev.vars. Only the registry and GitHub API addresses the tests need reach the test Worker, as plain vars.
+
+### Fixes
+
+- Forward CLI commands to the recorded installation daemon home, including adopted layouts, while preserving explicit target overrides.
+- Keep command hints compatible with standalone and Dev callers. Report missing CLI builds or Node runtimes with a repair instruction.
+- Refuse daemon origin admission against the implicit managed Host while preserving origin inspection.
+- Refuse daemon lifecycle commands against the implicit managed Host target and direct callers to installation controls.
+- Treat CLI home and host selectors as explicit targets without reading installation metadata or changing arguments.
+- Run the full CLI through `vorteo` while keeping installation commands local. Forwarded commands preserve arguments, input and exit status; installer `status` and `help` take priority.
+- Show `vorteo` in dispatcher-invoked CLI help, actionable hints and Vorteo user guides. Standalone and Dev callers retain `paseo` hints.
+- Refuse onboarding, daemon password changes and config set/unset when the target is the implicit managed Host. Keep config reads and daemon status available.
+- The Usage settings card follows the app language again; its Settings, Percentages, Used and Remaining labels were stuck in English.
+- Touch fullscreen editing keeps the dictation button, as the owner decided, beside Exit and the submit action.
+- Tab no longer gets stuck on a control whose tooltip is showing, such as a sidebar row's or the breadcrumb's actions button.
+- Phones list the workspace's scripts in the Workspace actions menu again.
+- Choosing Last prompt in the sidebar sort menu keeps the menu open, like Manual and Created.
+- Source upgrades repeat their admission checks at approval and fail before any restart if the Host changed after approval. Snapshot restores wait for a running source upgrade.
+- A source upgrade rollback stays offered when the Host moved but a later step failed, and is refused at approval or fetch once its 24-hour window ends.
+- The installer replaces a source upgrade left running by a stopped coordinator instead of refusing forever. The update check skips offering a release during a source upgrade without reporting an error.
+- The installer refuses to upgrade to a release that does not contain a commit a source upgrade installed, instead of silently dropping it.
+- The installer replaces a source upgrade only when its record is abandoned: unchanged for 10 minutes, with no Host build, including build-only builds, or coordinator handoff running, and no coordinator answering for two minutes. Release upgrade takeover now also recognizes build-only Host builds.
+- A source upgrade stops before its next step, and before the Host restart, once the installation becomes Lab. It checks again right before the Host restart that the Host has not changed.
+- On installer-built Hosts, a release upgrade refuses a release that does not contain a commit a source upgrade installed.
+- The update check notes, rather than reports as an error, a release it holds back while another job blocks release upgrades. This applies to every installation, Lab included.
+- Search from the phone sidebar no longer closes the sidebar, so cancelling Search returns to it.
+- Subagents no longer open as their own tabs when a workspace loads before its workspace list arrives; they stay under their parent as before.
+- The Claude provider details sheet shows the container sign-in steps only when Claude cannot run, not when it is already signed in.
+- Expanding the sidebar from the icon rail on a narrow window keeps it open; it had vanished and uncovered the Files and Changes cards instead.
+- App navigation stays beside Explorer again; Vorteo's supporting cards give way when the window is narrow.
+- Project groups longer than their Show more limit keep active workspaces visible, with the folders that hold them, and lead with the open workspace when the limit would hide it.
+- Restart in a Host's System restart sheet works again. Since the System consolidation it asked the daemon to finish current turns without the approved request that hold needs, so every restart failed. It now restarts directly, as the Host page did. Letting current turns finish remains an installation restart option.
+- Closing a compact bottom sheet while it is still opening, for example with Escape, now closes it instead of leaving it stuck open.
+- Going back from a compact Settings section to the Settings list no longer leaves a section address such as `/settings/interface` in the address bar.
+- On phones, opening a file from Explorer keeps Explorer underneath its sheet, so closing the sheet returns to the file list.
+- Fix the peer service environment test flaking when concurrent services register routes in a different order. Compare routes by script name while preserving exact route and environment assertions.
+- Triple click no longer toggles dictation, so it selects a line or paragraph again.
+- On touch layouts the composer's Fullscreen button sits just left of the dictation button instead of under it, so it can be pressed again.
+- The fullscreen composer on touch layouts keeps the dictation button beside Exit and Send.
+- On a narrow window used with a mouse, clicking a control shows its tooltip instead of opening it on hover and closing it on the same click; a second click hides it.
+- New workspace has its header again. Compact layouts show the menu button, the New workspace title and the project picker in it, and the header steps aside while the composer is fullscreen.
+- Import session is back on New workspace: at the top on compact layouts and under the composer on wide ones.
+- A subagent's composer cards lead with a pill that names its parent and returns to it.
+- Subagent rows for agents on another host name that host.
+- Images keep Download in the file toolbar, beside their size, and the button shows a pending state while the download runs. Text files show the same pending state.
+- The compact workspace menu has its Scripts row again. It opens a page listing every script, each script has its own page to run, view or stop it, and the menu button carries a dot while a running service is unhealthy.
+- Pressing a workspace row in the collapsed sidebar's project flyout closes the flyout.
+- The demo's Changes card shows its changes instead of asking to update the host.
+- Open Usage in the sidebar's quota popover closes the popover, so its backdrop no longer blocks the Usage screen's controls.
+- An `agent.create` plugin hook can rewrite a launch again, such as its model or provider features, as upstream intends. The provider, tool access, the profile and its account environment, skills and the quota reserve stay as admitted, and a profile launch also keeps its model, reasoning, features and instructions.
+- The workspace hover card lists running services with preview links again.
+- The composer's shortcut focus hint no longer shows on touch layouts.
+- A missing worktree service reports "Vorteo worktree service is not configured".
+- The fullscreen composer fills the screen on phones and narrow windows again. It had kept its inline height at the bottom while an empty full-screen layer blocked Exit, Send, Queue and Create.
+- Fullscreen Send follows the configured queue behavior while an agent runs instead of always sending.
+- The New workspace screen gets the same fullscreen editor, without its launch pickers, and its Import session action is back: at the top on phones and under the composer on wide screens.
+- On phones the New workspace submit button is labeled Create again instead of Send message.
+- Factory workspaces no longer show a lock icon in the sidebar.
+- A pinned Factory card stays visible in its project while a sidebar focus hides the Pinned section.
+- Sidebar keyboard shortcuts no longer count Factory workspaces, which now appear as chips on the Factory card, so the numbers match the rows on screen.
+- Sidebar Factory cards refresh their queue every two minutes only while expanded and the Factory is on. A collapsed card shows its last known stage bar, which keeps GitHub reads on the Foreman's token low.
+- The Factory Overview's oldest-queued figure shows "—" for the live queue instead of borrowing sample ages.
+- Factory account picks keep a profile that is bound to one account on that account, fall back to the configured default when usage cannot be read, reach workers created by a planning lead, and survive turning Factory off and on.
+- Factory account picks fall back to the configured default when usage cannot be read and no stage profile is set, and a reviewer profile bound to the worker's account reports that no account qualifies instead of returning the avoided one.
+- Browser tests started from an agent shell on a managed Host no longer hand the Host's installation client, daemon home or agent identity to their isolated daemons, so agent creation works there without stripping the environment by hand.
+- Broker settings changes now take all release code from one installed Host or coordinator release at fixed paths, and show the owner that release's commit. Retained older releases, build caches, source checkouts and mixed modules are refused.
+- The coordinator writes the broker participant scope itself when an approved change applies, limited to 24 hours on the current boot with no manual participants. An owner interface too old to show each changed field can no longer approve broker settings.
+- The broker deployment worker checks each launch agent's arguments again immediately before launchd loads it.
+- A broker settings change that does not apply restores the participant scope it replaced, and a request that repeats an unchanged broker value no longer blocks approval of its other settings.
+- The context window meter no longer passes native-only accessibility props to web SVG elements, which logged React warnings on every workspace.
+- Stop Claude catalog version and model discovery processes during daemon shutdown, including refreshes that already passed availability checks.
+- Isolate the accounts first screen browser tests from installation settings so the unused gate dependency does not load the Host runtime and plugin navigation.
+- Keep usage reset weekdays correct across daylight saving changes by using local calendar day and week cutoffs.
+- Handle SIGTERM and SIGINT before session host startup awaits, and close a listener still starting before exiting.
+- Host source updates no longer prune the release an installer-layout coordinator runs through its own link, which would have left its next start nothing to run or roll back to.
+- The installer upgrade's coordinator step no longer accepts a fenced coordinator, or one that answers once and then crashes, as ready.
+- **Update the coordinator** is unavailable when the coordinator service starts a fixed release instead of its release link, and fails, rather than reporting success, when the coordinator restarts on its previous release. It judges the release the coordinator started from, not where its link points now.
+
+- A closed terminal during an installer service switch now exits only after the step is journaled, so a rerun never restarts that service a second time, and a coordinator that misses one stability probe gets two more tries before a rollback.
+- Coordinator settings changes no longer accept preview broker keys, which name programs the coordinator runs; those keep their own reviewed deployment workflows.
+- Coordinator updates, coordinator settings changes and custom domain changes share one restart check, so none starts beside another, a release upgrade, an approved Host job, an open coordinator request or a lab self-update.
+- A coordinator settings change whose restart cannot be followed, or whose handoff helper is missing or fails to start, now fails cleanly and restores the previous configuration. An unreadable settings journal is moved aside instead of stopping the coordinator.
+
+### Tooling
+
+- Repair stale browser tests: question cards advance with Next after single-select picks, the add-host chooser stays open after Cancel, the model picker opens drilled into the selected provider, folder rows show home-relative paths, phone workspaces wait for the compact tab switcher, desktop workspaces are named by their sidebar row instead of a title header, and Files card names no longer collide with assistant file links. Demo tests check the task row rather than the open question that names it.
+- Profile editor feature fields carry stable test IDs again, so the Codex speed test can find the Speed control.
+- Route out the upstream compact sidebar close-button test: Vorteo has no close button or built-in nav rows in that sidebar.
+- The Explorer resize test finds the docked handle, which is itself the separator, and the demo test closes the focused row's workspace card before the project flyout. Both now reach assertions that still fail on product behavior.
+- Sidebar browser tests follow the current sidebar: view preferences open from the main menu and are closed after a choice, pinned workspaces are addressed in their project or under Pinned, row actions count as hidden at zero opacity, plugin footer rows sit above the installation name, phone quotas open in a sheet, grouped project rows and the Environment host tiles are matched directly, and Explorer at half width hides app navigation while it is open.
+- Browser tests that open Settings follow the reorganized sections: Appearance is a pane in Interface, the language menu is chosen from Interface > Language instead of the ambiguous System button, Help lives in System > About, and the Vorteo update check sits behind System > Updates > Details. A shared `chooseSettingsLanguage` helper replaces both copies of the old language step.
+- The upstream 50 MiB routed-host timeline test no longer runs in Vorteo's server suite. It is turned off by title in the server's test config, the same way retired upstream Playwright tests are, and still runs when named with `-t`.
+- Seventeen upstream browser tests that check behavior Vorteo changed on purpose are routed out of the browser project by title: the composer diff pill, the context window meter's tooltip, empty state and keyboard trigger, a Command Center check that waits for the removed mode selector, custom model removal at 390 pixels below the Claude sign-in guidance, the inline provider install error, and a Usage Settings disclosure test that asserts CSS. Each entry names the Vorteo commit or testing rule that justifies it and matches its spec file, so a retired title cannot hide a namesake elsewhere.
+- The Playwright Metro warm-up also compiles the app's lazily loaded chunks before tests start. The icon chunk alone took about 20 seconds on a cold runner, which made the first test to render plugin icons time out.
+- The composer-diff-stat review comment and feedback tests open the supporting cards before using the toolbar diff counter, which shows only while those cards are open, and open the diff with one press of the counter. Phone layouts reach the diff through the compact Explorer's Changes tab, and wide file navigation expands the Changes card first.
+- The upstream phone sheet test now taps a Subagents card row twice, matching Vorteo's phone behavior where the first tap shows the row's details and the second opens the subagent.
+- Merge-group, nightly, manual and release CI runs build the server stack once in a new `build` job and share it with the Ubuntu server, app, Playwright and CLI E2E jobs and the macOS file-observation job, which previously each rebuilt it. Jobs fall back to building locally when the shared build is unavailable, and the required checks are unchanged.
+
+### Features
+
+- Stable installations can install one reviewed commit from `main` before the next release. The coordinator checks that the commit is on `main`, is not a downgrade and passed the required checks, waits for the owner's approval, and installs it through the release upgrade's tracked steps. For 24 hours the owner can roll an installer-built Host back to the release it replaced. Owner routes only; Settings controls follow.
+- The sidebar shows each project's Factory as one card: its state, a stage bar of queued and in-flight issues, role chips that open each role's workspace, and runners with a five-step track that open their agent. Click the card to open the Factory Overview.
+- Collapse the Factory card to one row from its icon, or pin it from its right-click menu, available anywhere on the card, to the top of the sidebar, where it names its project. Both are remembered on this device.
+- Settings > Interface > Appearance adds Workspace status line: Off, Hover or Always. Off, the default, keeps every sidebar row on one line; Factory roles no longer force a second row.
+- The Factory Foreman starts each new lead, worker and reviewer on the account with the most fresh remaining quota for its profile's provider, skipping unknown, stale and exhausted accounts, and records every choice. A reviewer avoids the worker's account, and with no qualifying account the configured default is used. `vorteo factory project pick-account` shows the choice and why each other account was skipped.
+- The Factory Overview offers three designs to compare, chosen at the top of the page and remembered on this device: Floor (board first), Mission (dashboard first) and Ledger (a dense operator view with a control rail). Each keeps every existing control and shows the work as status lanes with compact issue cards, a five-step track, pull request checks and review state, agent threads to open, "Needs you" and repair badges, and claims held by another installation.
+- Reports show velocity, cycle time, token use by work category, quota windows per provider account with reset times, estimated API-equivalent dollars, budgets, cost per merged pull request, check pass rate and model routing. Queue, quota, open-thread usage and routing are live; history, caps and account picks are sample figures, and every sample-backed tile says so.
+- A Sample factory switch replaces the live queue with a fixed sample queue so the designs can be judged when the real queue is short. Controls still act on the real Factory.
+
+### Maintenance
+
+- Pin the CI signature audit client to npm 11.19.1 so valid keyless provenance reaches certificate verification. Record the retained failure evidence and limits of the historical diagnosis.
+- The protocol compatibility guide now says that a routed host transfer larger than 32 MiB has no end-to-end flow control. The routing daemon closes the route when the receiving client falls behind the host link. This explains the intermittent failure of the upstream 50 MiB routed timeline test in the merge queue.
+- Restore upstream network-test cleanup without retries so an ENOTEMPTY failure remains visible for writer diagnosis. This supersedes `changes/2026-11-06-network-test-cleanup-retry.md`, which is absent from this branch.
+- The desktop Import session browser test runs again now that wide layouts have the button.
+- Adopt Paseo [#8743](https://github.com/getpaseo/paseo/pull/8743) to settle metadata observation before removing the missing-folder test fixture and drain queued Git trace writes before cleanup.
+- `.github/factory.json` assigns this repository's Factory Triage and Releases roles to the Vorteo lab installation, so another installation running Factory on terran-labs/vorteo leaves both roles off.
+- Strengthen the Claude catalog shutdown regression to check child exit before awaiting the refresh, so the test detects shutdown returning before cleanup.
+- Run packaged installation browser coverage on nightly and manual CI, with per-case results, first-load timings and failure diagnostics.
+- Evaluate lightweight CI job selection with the pull-request event, preserving the routing contract within the lint complexity limit when combined with Windows manual routing.
+
+### Improvements
+
+- The daemon logs account usage every minute whether or not any client is open, instead of every 10 minutes. Each background reading bypasses the 2-minute cache, and client polls keep sharing it. History keeps one sample per minute for 48 hours and one per 5 minutes after that, for 8 days.
+- A provider that answers 429 or fails a usage check now backs off on its own: it waits 2 minutes, then twice as long after each further refusal, up to 10 minutes, and returns to every minute after a success. Back-off is logged at info level with the provider ID and reason only.
+- The sidebar quota meter refreshes its display only while it is on screen: its sidebar open and the app visible.
+- Settings > Interface has a Sidebar pane again, with the Header and Footer cards that order and hide sidebar items. The old `/settings/sidebar` address opens it, and Settings search finds it.
+- A three-finger tap on a touchscreen toggles dictation into the message field, like the middle click that a trackpad three-finger tap can send.
+
+### Added
+
+- Builds can request preview broker configuration changes through **Coordinator settings** on installer-layout installations. The coordinator pins the Docker endpoint, Dev container, Python and broker placement to recorded values, accepts code only from installer-managed releases, and hashes every file itself before approval and again before applying. The owner reviews each changed field as a path and digest prefix marked verified on disk.
+- Installation controls offer to update the installation coordinator when it runs an older release than the Host, as happens after Host source updates on an installation that follows `main`. The owner approves the exact Host release; the coordinator restarts on it and rolls back automatically if it does not answer within two minutes. Agents keep running and see the offer read-only in `update-status`.
+- The installer engine's `coordinator-follow` command moves an installer-layout coordinator onto the release the Host runs, from a terminal on the Host, when its coordinator predates **Update the coordinator** in Installation controls. It refuses while restarts, maintenance preparation, coordinator requests, custom domain changes or lab and release upgrades are in flight, and checks again just before it moves the link. It announces the restart, restarts only the coordinator while running Host and Dev agents keep working, and rolls back unless a new, unfenced coordinator answers and is still up 15 seconds later. A closed terminal waits for the switch to finish. `--check` reports whether it can move without changing anything.
+- Installation controls show a **Coordinator settings** card when Builds requests a change to the coordinator's registered settings (Host-owned Claude and Codex refresh). The owner sees each value before and after, and approves or rejects it. When a coordinator update also waits, one decision approves both and applies the settings after the update succeeds. The coordinator restarts on the new settings and restores the previous ones if it does not answer within two minutes. Agents see the change read-only in `update-status`.
+
+### Live tweaks
+
+- Live dev sync and promote rebuild server declarations, after installing changed dependencies, when the merge changes server sources, so the commit hook's typecheck no longer reads stale declarations.
+
 ## 26.11.602 - 2026-11-06
 
 Beta that logs every Claude sign-in refresh and adds opt-in single-refresher custody, with multi-installation Factory claims and lighter CI.

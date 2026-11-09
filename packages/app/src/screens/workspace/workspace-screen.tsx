@@ -528,6 +528,26 @@ function WorkspaceHeaderTitleBar({
   onViewScriptTerminal,
   onOpenUrlInBrowserTab,
 }: WorkspaceHeaderTitleBarProps) {
+  const compactHeaderScripts = useMemo(
+    () => ({
+      serverId: normalizedServerId,
+      workspaceId: normalizedWorkspaceId,
+      scripts: workspaceScripts,
+      liveTerminalIds,
+      onScriptTerminalStarted,
+      onViewTerminal: onViewScriptTerminal,
+      onOpenUrlInBrowserTab,
+    }),
+    [
+      normalizedServerId,
+      normalizedWorkspaceId,
+      workspaceScripts,
+      liveTerminalIds,
+      onScriptTerminalStarted,
+      onViewScriptTerminal,
+      onOpenUrlInBrowserTab,
+    ],
+  );
   return (
     <View style={styles.headerTitleContainer}>
       {isLoading ? (
@@ -555,18 +575,8 @@ function WorkspaceHeaderTitleBar({
             onCreateTerminal={onCreateTerminal}
             onCreateTerminalWithProfile={onCreateTerminalWithProfile}
             onCreateBrowser={onCreateBrowser}
-          >
-            <WorkspaceScriptsButton
-              serverId={normalizedServerId}
-              workspaceId={normalizedWorkspaceId}
-              scripts={workspaceScripts}
-              liveTerminalIds={liveTerminalIds}
-              onScriptTerminalStarted={onScriptTerminalStarted}
-              onViewTerminal={onViewScriptTerminal}
-              onOpenUrlInBrowserTab={onOpenUrlInBrowserTab}
-              presentation="menu"
-            />
-          </WorkspaceHeaderMenuMobile>
+            scripts={compactHeaderScripts}
+          />
         ) : null}
       </View>
     </View>
@@ -3299,6 +3309,27 @@ function WorkspaceScreenContent({
     workspaceKey: persistenceKey,
   });
 
+  // The compact header menu carries scripts as pages, since the header has no room for a button.
+  const compactHeaderScripts = useMemo(
+    () => ({
+      serverId: normalizedServerId,
+      workspaceId: normalizedWorkspaceId,
+      scripts: workspaceScripts,
+      liveTerminalIds,
+      onScriptTerminalStarted: handleScriptTerminalStarted,
+      onViewTerminal: handleViewScriptTerminal,
+      onOpenUrlInBrowserTab: handleOpenUrlInBrowserTab,
+    }),
+    [
+      normalizedServerId,
+      normalizedWorkspaceId,
+      workspaceScripts,
+      liveTerminalIds,
+      handleScriptTerminalStarted,
+      handleViewScriptTerminal,
+      handleOpenUrlInBrowserTab,
+    ],
+  );
   const singleScriptMenu = useMemo(
     () =>
       workspaceDescriptor?.scripts.length === 1 ? (
@@ -3588,24 +3619,13 @@ function WorkspaceScreenContent({
             onCreateDraftTab={handleCreateDraftTab}
             onCreateTerminal={handleCreateTerminal}
             onCreateBrowser={handleCreateBrowserTab}
-          >
-            {/* Phones have no scripts button; scripts are a page of this menu. Merge 51f16b39f
-                dropped them from this header. */}
-            <WorkspaceScriptsButton
-              serverId={normalizedServerId}
-              workspaceId={normalizedWorkspaceId}
-              scripts={workspaceScripts}
-              liveTerminalIds={liveTerminalIds}
-              onScriptTerminalStarted={handleScriptTerminalStarted}
-              onViewTerminal={handleViewScriptTerminal}
-              onOpenUrlInBrowserTab={handleOpenUrlInBrowserTab}
-              presentation="menu"
-            />
-          </WorkspaceHeaderMenuMobile>
+            scripts={compactHeaderScripts}
+          />
         </CompactWorkspaceHeader>
       ) : null,
     [
       activeTabKey,
+      compactHeaderScripts,
       createTerminalDisabled,
       explorerSidebarToggleAccessibilityState,
       explorerSidebarToggleLabel,
@@ -3634,11 +3654,6 @@ function WorkspaceScreenContent({
       tabs,
       workspaceHeaderSubtitle,
       workspaceHeaderTitle,
-      workspaceScripts,
-      liveTerminalIds,
-      handleScriptTerminalStarted,
-      handleViewScriptTerminal,
-      handleOpenUrlInBrowserTab,
     ],
   );
   const desktopSplitContent = useMemo(() => {

@@ -1,46 +1,117 @@
-import { projectNameForWorkspace } from "@/hooks/sidebar-workspaces-view-model";
+import { router } from "expo-router";
 import { useIsFocused } from "expo-router/react-navigation";
 import { useDirectoryDemand } from "@/hooks/use-directory-demand";
-import { useCallback } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import { PageLayout } from "@/components/page-layout";
-import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
-import { ExternalLink } from "@/components/ui/external-link";
-import {
-  useProjectFactory,
-  openFactoryInstructions,
-} from "@/components/sidebar/factory-instructions";
-import { FactoryModelControls } from "@/components/sidebar/factory-model-controls";
-import { FactoryStatusLine } from "@/components/sidebar/factory-status";
+import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
+import { useProjectFactory } from "@/components/sidebar/factory-instructions";
 import {
   ProjectFactoryStateSchema,
   type ProjectFactoryState,
 } from "@/components/sidebar/factory-state";
+import { useIsCompactFormFactor } from "@/constants/layout";
 import { useInstalledPlugins, usePluginCatalogStatus } from "@/plugins/registry";
 import { useFetchQuery } from "@/data/query";
+import { quotaAccounts } from "@/provider-usage/global-quota";
+import { useProviderUsage } from "@/provider-usage/use-provider-usage";
 import { useSessionStore } from "@/stores/session-store";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import {
-  loadFactoryQueue,
-  factoryAgentStatusKey,
-  factoryRoleAssignments,
-  type FactoryInvoke,
-  type FactoryQueue,
-} from "./queue";
+  activeDrains,
+  collectNeedsYou,
+  factoryScopeKey,
+  scopedIssues,
+  type FactoryScopeEntry,
+} from "./all-factories-model";
+import { ScopeBack } from "./overview-command";
+import type { FactoryControls } from "./overview-controls";
+import type { FactoryOverviewData } from "./overview-data";
+import { FloorOverview } from "./overview-floor";
+import { LedgerOverview } from "./overview-ledger";
+import { MissionOverview } from "./overview-mission";
+import {
+  addUsage,
+  factoryLanes,
+  factoryQueueFigures,
+  factoryUsage,
+  type FactoryAgentLookup,
+  type FactoryCategory,
+  type FactoryUsageSummary,
+} from "./overview-model";
+import {
+  SAMPLE_ACCOUNT_SPEND,
+  SAMPLE_HISTORY,
+  SAMPLE_ROLE_USAGE,
+  sampleAgentLookup,
+  sampleFactoryEntries,
+  sampleFactoryQuestions,
+  sampleQuotaAccounts,
+} from "./overview-sample";
+import {
+  useAllFactories,
+  useFactoryHosts,
+  useFactoryQuestions,
+  useProjectNames,
+  useStopAll,
+} from "./overview-sources";
+import { factoryListQueryKey } from "./factory-reads";
+import { projectFactoryOverviewRoute } from "./routes";
+import { useFactoryOverviewStore, type FactoryOverviewVariant } from "./overview-store";
+import { loadFactoryQueue, type FactoryInvoke, type FactoryQueue } from "./queue";
 
 interface Target {
   serverId: string;
   projectId: string;
 }
 
-export function FactoryOverview({ serverId, projectId }: Target) {
+/** One project's Factory, or every Factory in the installation when projectId is null. */
+export function FactoryOverview({
+  serverId,
+  projectId,
+}: {
+  serverId: string;
+  projectId: string | null;
+}) {
+  return projectId ? (
+    <ProjectOverview serverId={serverId} projectId={projectId} />
+  ) : (
+    <AllOverview serverId={serverId} />
+  );
+}
+
+function AllOverview({ serverId }: { serverId: string }) {
   const { t } = useTranslation();
   const focused = useIsFocused();
+  const compact = useIsCompactFormFactor();
+  useDirectoryDemand(focused ? serverId : null);
+  const catalogStatus = usePluginCatalogStatus(serverId);
+  const hosts = useFactoryHosts();
+  const bar = useMemo(() => <DesignBar />, []);
+  return (
+    <PageLayout
+      title={t("projectFactory.scope.allTitle")}
+      testID="factory-overview"
+      actions={compact ? undefined : bar}
+      wide
+    >
+      {compact ? bar : null}
+      {hosts.length === 0 && catalogStatus !== "loading" ? (
+        <Text style={styles.text}>{t("projectFactory.states.unavailable")}</Text>
+      ) : null}
+      {focused ? <AllContent serverId={serverId} active={focused} /> : null}
+    </PageLayout>
+  );
+}
+
+function ProjectOverview({ serverId, projectId }: Target) {
+  const { t } = useTranslation();
+  const focused = useIsFocused();
+  const compact = useIsCompactFormFactor();
   useDirectoryDemand(focused ? serverId : null);
   const catalogStatus = usePluginCatalogStatus(serverId);
   const factory = useProjectFactory(serverId, projectId, focused);
@@ -50,25 +121,20 @@ export function FactoryOverview({ serverId, projectId }: Target) {
   const plugin = useInstalledPlugins().find(
     (entry) => entry.id === "factory" && entry.serverId === serverId,
   );
-  const name = useSessionStore((store) => {
-    const session = store.sessions[serverId];
-    const workspace = Array.from(session?.workspaces.values() ?? []).find(
-      (entry) => entry.projectId === projectId,
-    );
-    const project = session?.projects.get(projectId);
-    return workspace
-      ? projectNameForWorkspace(workspace)
-      : (project?.projectCustomName ?? project?.projectDisplayName);
-  });
+  const name = useProjectNames()(serverId, projectId);
   const unavailable = !plugin && catalogStatus !== "loading";
   const loading = !factory.data && !factory.error && !unavailable;
+  const bar = useMemo(() => <DesignBar back={serverId} />, [serverId]);
   return (
     <PageLayout
       title={
         name ? t("projectFactory.projectHeading", { project: name }) : t("projectFactory.overview")
       }
       testID="factory-overview"
+      actions={compact ? undefined : bar}
+      wide
     >
+      {compact ? bar : null}
       {factory.error ? (
         <View>
           <Text style={styles.text} accessibilityRole="alert">
@@ -90,9 +156,10 @@ export function FactoryOverview({ serverId, projectId }: Target) {
         </View>
       ) : null}
       {factory.data && factory.data.state !== "off" && plugin && focused ? (
-        <OverviewContent
+        <ProjectContent
           serverId={serverId}
           projectId={projectId}
+          name={name}
           state={factory.data}
           invoke={plugin.invoke}
           active={focused}
@@ -102,27 +169,206 @@ export function FactoryOverview({ serverId, projectId }: Target) {
   );
 }
 
-function OverviewContent({
+/** Scope, design and data toggles; the owner compares the three designs at both zoom levels. */
+function DesignBar({ back }: { back?: string }) {
+  const { t } = useTranslation();
+  const variant = useFactoryOverviewStore((store) => store.variant);
+  const sample = useFactoryOverviewStore((store) => store.sample);
+  const setVariant = useFactoryOverviewStore((store) => store.setVariant);
+  const setSample = useFactoryOverviewStore((store) => store.setSample);
+  const variants = useMemo<SegmentedControlOption<FactoryOverviewVariant>[]>(
+    () => [
+      { value: "floor", label: t("projectFactory.design.floor"), testID: "factory-design-floor" },
+      {
+        value: "mission",
+        label: t("projectFactory.design.mission"),
+        testID: "factory-design-mission",
+      },
+      {
+        value: "ledger",
+        label: t("projectFactory.design.ledger"),
+        testID: "factory-design-ledger",
+      },
+    ],
+    [t],
+  );
+  const sources = useMemo<SegmentedControlOption<"live" | "sample">[]>(
+    () => [
+      { value: "live", label: t("projectFactory.design.live"), testID: "factory-data-live" },
+      { value: "sample", label: t("projectFactory.design.sample"), testID: "factory-data-sample" },
+    ],
+    [t],
+  );
+  const setSource = useCallback(
+    (value: "live" | "sample") => setSample(value === "sample"),
+    [setSample],
+  );
+  return (
+    <View style={styles.bar} testID="factory-design-bar">
+      {back ? <ScopeBack serverId={back} /> : null}
+      <SegmentedControl options={variants} value={variant} onValueChange={setVariant} size="sm" />
+      <SegmentedControl
+        options={sources}
+        value={sample ? "sample" : "live"}
+        onValueChange={setSource}
+        size="sm"
+      />
+    </View>
+  );
+}
+
+interface LiveQueue {
+  data: FactoryQueue | null;
+  loading: boolean;
+  fetching: boolean;
+  error: Error | null;
+  reload: () => void;
+  updatedAt: number;
+}
+
+/**
+ * Assembles what every design renders from the Factories in scope: board, figures, usage,
+ * needs-you items, drains and the stop switch. Sample mode swaps in the sample Factories.
+ */
+function useOverviewData(input: {
+  scope: "project" | "all";
+  serverId: string;
+  focus: FactoryOverviewData["focus"];
+  entries: FactoryScopeEntry[];
+  queue: LiveQueue;
+  active: boolean;
+}): FactoryOverviewData {
+  const { scope, serverId, focus, entries: liveEntries, queue, active } = input;
+  const sample = useFactoryOverviewStore((store) => store.sample);
+  const sessions = useSessionStore((store) => store.sessions);
+  const usage = useProviderUsage(serverId, { pollUsage: true, enabled: active });
+  const liveQuestions = useFactoryQuestions(liveEntries);
+  const factoryHosts = useFactoryHosts();
+  // Global stop and resume act on whole hosts, so only All Factories, which sees every project
+  // on each host, offers them.
+  const stopHosts = useMemo(() => (scope === "all" ? factoryHosts : []), [scope, factoryHosts]);
+  const stopAll = useStopAll(stopHosts, liveEntries);
+  const openAgent = useCallback(
+    (agentId: string, host?: string) => navigateToAgent({ serverId: host ?? serverId, agentId }),
+    [serverId],
+  );
+  const zoomIn = useCallback(
+    (host: string, projectId: string) =>
+      router.navigate(projectFactoryOverviewRoute(host, projectId)),
+    [],
+  );
+  // The clock advances when fresh queues land, so ages and day labels hold between polls.
+  const [openedAt] = useState(() => Date.now());
+  const now = queue.updatedAt || openedAt;
+  return useMemo<FactoryOverviewData>(() => {
+    const entries = sample ? sampleScope(scope, serverId, now) : liveEntries;
+    const questions = sample ? sampleFactoryQuestions(entries[0]!, now) : liveQuestions;
+    const issues = scope === "all" ? scopedIssues(entries) : (entries[0]?.issues ?? []);
+    const lookup: FactoryAgentLookup = sample
+      ? sampleAgentLookup(now)
+      : (agentId, host) => {
+          const agent = sessions[host]?.agents.get(agentId);
+          return agent
+            ? { provider: agent.provider, usage: agent.lastUsage, createdAt: agent.createdAt }
+            : undefined;
+        };
+    const roles = sample
+      ? []
+      : entries.flatMap((entry) =>
+          (entry.state?.roles ?? []).map((role) => ({
+            serverId: entry.serverId,
+            role: role.role,
+            agentId: role.agentId,
+          })),
+        );
+    const summary = factoryUsage(issues, roles, lookup, serverId);
+    const live = quotaAccounts(usage.view, now);
+    const sampleQuota = sample && live.length === 0;
+    const shownQueue: FactoryQueue | null = sample
+      ? { fetchedAt: new Date(now - 90_000).toISOString(), error: null, issues }
+      : queue.data && { ...queue.data, issues };
+    return {
+      scope,
+      serverId,
+      focus,
+      factories: entries,
+      needsYou: collectNeedsYou({ entries, questions }),
+      drains: activeDrains(entries),
+      stopAll,
+      zoomIn,
+      sample,
+      queue: {
+        data: shownQueue,
+        loading: !sample && queue.loading,
+        fetching: queue.fetching,
+        error: sample ? null : queue.error,
+        reload: queue.reload,
+      },
+      lanes: factoryLanes(issues),
+      figures: factoryQueueFigures(issues),
+      usage: sample ? withSampleRoles(summary) : summary,
+      quota: {
+        accounts: sampleQuota ? sampleQuotaAccounts(now) : live,
+        sample: sampleQuota,
+        spend: sampleQuota ? SAMPLE_ACCOUNT_SPEND : {},
+      },
+      history: SAMPLE_HISTORY,
+      openAgent: sample ? undefined : openAgent,
+      now,
+    };
+  }, [
+    sample,
+    scope,
+    serverId,
+    now,
+    liveEntries,
+    liveQuestions,
+    sessions,
+    usage.view,
+    queue,
+    focus,
+    stopAll,
+    zoomIn,
+    openAgent,
+  ]);
+}
+
+function sampleScope(scope: "project" | "all", serverId: string, now: number) {
+  const entries = sampleFactoryEntries(serverId, now);
+  return scope === "all" ? entries : entries.slice(0, 1);
+}
+
+function ProjectContent({
   serverId,
   projectId,
+  name,
   state,
   invoke,
   active,
-}: Target & { state: ProjectFactoryState; invoke: FactoryInvoke; active: boolean }) {
-  const { t } = useTranslation();
+}: Target & {
+  name: string | undefined;
+  state: ProjectFactoryState;
+  invoke: FactoryInvoke;
+  active: boolean;
+}) {
   const client = useQueryClient();
   const mutation = useMutation({
     mutationFn: async ({ method, input }: { method: string; input?: { planning: boolean } }) =>
       ProjectFactoryStateSchema.parse(
         await invoke(`factory.project.${method}`, { projectId, ...input }),
       ),
-    onSuccess: (next) => client.setQueryData(["projectFactory", serverId, projectId], next),
+    onSuccess: (next) => {
+      client.setQueryData(["projectFactory", serverId, projectId], next);
+      // The list carries pause and drain state for the sidebar and All Factories.
+      void client.invalidateQueries({ queryKey: factoryListQueryKey(serverId) });
+    },
   });
-  const pause = useCallback(() => mutation.mutate({ method: "pause" }), [mutation]);
-  const resume = useCallback(() => mutation.mutate({ method: "resume" }), [mutation]);
-  const planning = useCallback(
-    (value: boolean) => mutation.mutate({ method: "configure", input: { planning: value } }),
-    [mutation],
+  const { mutate } = mutation;
+  const pause = useCallback(() => mutate({ method: "pause" }), [mutate]);
+  const resume = useCallback(() => mutate({ method: "resume" }), [mutate]);
+  const setPlanning = useCallback(
+    (value: boolean) => mutate({ method: "configure", input: { planning: value } }),
+    [mutate],
   );
   const queue = useFetchQuery({
     dataShape: "value",
@@ -132,219 +378,150 @@ function OverviewContent({
     refetchInterval: (query) => (active && query.state.data !== null ? 30_000 : false),
     queryFn: () => loadFactoryQueue(invoke, projectId),
   });
-  const reloadQueue = useCallback(() => {
-    void queue.refetch();
-  }, [queue]);
-  const drain = state.drain;
-  const showQueue = queue.data != null || queue.isError;
-  const status = drain
-    ? t("projectFactory.draining", { reason: drain.reason })
-    : t(`projectFactory.states.${state.state}`);
-  return (
-    <>
-      <View style={styles.actions}>
-        <Text style={styles.text}>{status}</Text>
-        {state.state === "on" ? (
-          <Button onPress={pause} disabled={mutation.isPending}>
-            {t("projectFactory.pauseMenu")}
-          </Button>
-        ) : null}
-        {state.state === "paused" ? (
-          <Button onPress={resume} disabled={mutation.isPending}>
-            {t("projectFactory.resumeMenu")}
-          </Button>
-        ) : null}
-      </View>
-      {drain ? (
-        <Text style={styles.text}>
-          {t("projectFactory.pausedAt", { time: new Date(drain.pausedAt).toLocaleString() })}
-        </Text>
-      ) : null}
-      {state.reason ? <Text style={styles.text}>{state.reason}</Text> : null}
-      {mutation.isPending ? <Text style={styles.text}>{t("projectFactory.saving")}</Text> : null}
-      {mutation.error ? (
-        <Text style={styles.text} accessibilityRole="alert">
-          {mutation.error.message}
-        </Text>
-      ) : null}
-      <SettingsSection title={t("projectFactory.issueStages")}>
-        <Text style={styles.text}>{t("projectFactory.nextIssue")}</Text>
-        {state.workers.planning !== undefined ? (
-          <View style={styles.actions}>
-            <Text style={styles.text}>{t("projectFactory.planning")}</Text>
-            <Switch
-              value={state.workers.planning}
-              onValueChange={planning}
-              disabled={mutation.isPending}
-              accessibilityLabel={t("projectFactory.planning")}
-            />
-          </View>
-        ) : null}
-        <FactoryModelControls serverId={serverId} projectId={projectId} stages />
-      </SettingsSection>
-      {showQueue ? (
-        <SettingsSection title={t("projectFactory.workInProgress")}>
-          {queue.error ? (
-            <Text style={styles.text} accessibilityRole="alert">
-              {queue.error.message}
-            </Text>
-          ) : null}
-          {queue.error || queue.data?.error ? (
-            <Button onPress={reloadQueue} disabled={queue.isFetching}>
-              {t("common.actions.retry")}
-            </Button>
-          ) : null}
-          {queue.isLoading ? <Text style={styles.text}>{t("common.loading")}</Text> : null}
-          {queue.data ? <QueueContent serverId={serverId} queue={queue.data} /> : null}
-        </SettingsSection>
-      ) : null}
-      <RoleAssignment state={state} />
-      <SettingsSection title={t("projectFactory.roles")}>
-        {state.roles.map((role) => (
-          <Role key={role.role} serverId={serverId} projectId={projectId} role={role} />
-        ))}
-      </SettingsSection>
-    </>
+  const { refetch } = queue;
+  const reload = useCallback(() => {
+    void refetch();
+  }, [refetch]);
+  const controls = useMemo<FactoryControls>(
+    () => ({
+      pause,
+      resume,
+      setPlanning,
+      pending: mutation.isPending,
+      error: mutation.error,
+    }),
+    [pause, resume, setPlanning, mutation.isPending, mutation.error],
   );
+  const focus = useMemo(() => ({ projectId, state, controls }), [projectId, state, controls]);
+  const entries = useMemo<FactoryScopeEntry[]>(
+    () => [
+      {
+        key: factoryScopeKey(serverId, projectId),
+        serverId,
+        projectId,
+        name: name ?? projectId,
+        hostLabel: null,
+        state,
+        status: state.state,
+        drain: state.drain ?? null,
+        issues: queue.data?.issues ?? null,
+      },
+    ],
+    [serverId, projectId, name, state, queue.data],
+  );
+  const liveQueue = useMemo<LiveQueue>(
+    () => ({
+      data: queue.data ?? null,
+      loading: queue.isLoading,
+      fetching: queue.isFetching,
+      error: queue.error,
+      reload,
+      updatedAt: queue.dataUpdatedAt,
+    }),
+    [queue.data, queue.isLoading, queue.isFetching, queue.error, reload, queue.dataUpdatedAt],
+  );
+  const data = useOverviewData({
+    scope: "project",
+    serverId,
+    focus,
+    entries,
+    queue: liveQueue,
+    active,
+  });
+  return <DesignFrame data={data} />;
 }
 
-function QueueContent({ serverId, queue }: { serverId: string; queue: FactoryQueue }) {
+/** Every Factory on every Factory host of the installation. */
+function AllContent({ serverId, active }: { serverId: string; active: boolean }) {
+  const client = useQueryClient();
+  const all = useAllFactories(active);
+  const reload = useCallback(() => {
+    void client.invalidateQueries({ queryKey: ["factoryProjectList"] });
+    void client.invalidateQueries({ queryKey: ["factoryQueue"] });
+  }, [client]);
+  const liveQueue = useMemo<LiveQueue>(
+    () => ({
+      data: all.hosts.length
+        ? {
+            fetchedAt: new Date(all.updatedAt || Date.now()).toISOString(),
+            error: null,
+            issues: [],
+          }
+        : null,
+      loading: all.loading,
+      fetching: false,
+      error: null,
+      reload,
+      updatedAt: all.updatedAt,
+    }),
+    [all.hosts.length, all.updatedAt, all.loading, reload],
+  );
+  const data = useOverviewData({
+    scope: "all",
+    serverId,
+    focus: null,
+    entries: all.entries,
+    queue: liveQueue,
+    active,
+  });
+  return <DesignFrame data={data} />;
+}
+
+function DesignFrame({ data }: { data: FactoryOverviewData }) {
   const { t } = useTranslation();
+  const variant = useFactoryOverviewStore((store) => store.variant);
   return (
-    <>
-      {queue.error ? (
-        <Text style={styles.text} accessibilityRole="alert">
-          {queue.error}
+    <View style={styles.content}>
+      {data.sample ? (
+        <Text style={styles.notice} testID="factory-sample-notice">
+          {t(
+            data.scope === "all"
+              ? "projectFactory.design.sampleNoticeAll"
+              : "projectFactory.design.sampleNotice",
+          )}
         </Text>
       ) : null}
-      {queue.issues.length === 0 && !queue.error ? (
-        <Text style={styles.text}>{t("projectFactory.idle")}</Text>
-      ) : null}
-      {queue.issues.map((issue) => (
-        <View key={issue.number} style={styles.item}>
-          <ExternalLink href={issue.url} label={`#${issue.number} ${issue.title}`} />
-          <Text style={styles.text}>{t(`projectFactory.stages.${issue.stage}`)}</Text>
-          {issue.claim && !issue.claim.local ? (
-            <Text style={styles.warning}>
-              {issue.claim.installation
-                ? t("projectFactory.assignment.claimedBy", {
-                    installation: issue.claim.installation,
-                  })
-                : t("projectFactory.assignment.claimedElsewhere")}
-            </Text>
-          ) : null}
-          {issue.pr ? (
-            <View style={styles.actions}>
-              <ExternalLink
-                href={issue.pr.url}
-                label={t("projectFactory.pullRequest", { number: issue.pr.number })}
-              />
-              {issue.pr.checks ? (
-                <Text style={styles.text}>{t(`projectFactory.checks.${issue.pr.checks}`)}</Text>
-              ) : null}
-            </View>
-          ) : null}
-          <View style={styles.actions}>
-            {issue.agents.map((agent) => (
-              <AgentButton
-                key={agent.agentId}
-                serverId={serverId}
-                agentId={agent.agentId}
-                label={`${t(`projectFactory.agents.${agent.role}`)}: ${t(factoryAgentStatusKey(agent.status))}`}
-              />
-            ))}
-          </View>
-        </View>
-      ))}
-    </>
+      <Design variant={variant} data={data} />
+    </View>
   );
 }
 
-function RoleAssignment({ state }: { state: ProjectFactoryState }) {
-  const { t } = useTranslation();
-  const assignments = factoryRoleAssignments(state);
-  if (!assignments) return null;
-  return (
-    <SettingsSection title={t("projectFactory.assignment.title")}>
-      {state.installation ? (
-        <Text style={styles.text}>
-          {t("projectFactory.assignment.installation", { installation: state.installation })}
-        </Text>
-      ) : null}
-      {assignments.map(({ role, runner, offHere, detail }) => (
-        <View key={role} style={styles.item}>
-          <Text style={styles.text}>
-            {`${t(`projectFactory.assignment.roles.${role}`)}: ${
-              runner.kind === "other"
-                ? runner.installation
-                : t(`projectFactory.assignment.runners.${runner.kind}`)
-            }`}
-          </Text>
-          {offHere ? (
-            <Text style={styles.warning}>
-              {detail
-                ? t("projectFactory.assignment.offHereDetail", { detail })
-                : t("projectFactory.assignment.offHere")}
-            </Text>
-          ) : null}
-        </View>
-      ))}
-    </SettingsSection>
-  );
+function Design({ variant, data }: { variant: FactoryOverviewVariant; data: FactoryOverviewData }) {
+  switch (variant) {
+    case "floor":
+      return <FloorOverview data={data} />;
+    case "mission":
+      return <MissionOverview data={data} />;
+    case "ledger":
+      return <LedgerOverview data={data} />;
+  }
 }
 
-function AgentButton({
-  serverId,
-  agentId,
-  label,
-}: {
-  serverId: string;
-  agentId: string;
-  label: string;
-}) {
-  const open = useCallback(() => {
-    navigateToAgent({ serverId, agentId });
-  }, [serverId, agentId]);
-  return <Button onPress={open}>{label}</Button>;
-}
-
-function Role({
-  serverId,
-  projectId,
-  role,
-}: Target & { role: ProjectFactoryState["roles"][number] }) {
-  const { t } = useTranslation();
-  const instructions = useCallback(
-    () => openFactoryInstructions({ serverId, projectId, role: role.role }),
-    [serverId, projectId, role.role],
-  );
-  return (
-    <SettingsSection title={role.title}>
-      <FactoryStatusLine status={role.status} />
-      <View style={styles.actions}>
-        {role.agentId ? (
-          <AgentButton
-            serverId={serverId}
-            agentId={role.agentId}
-            label={t("projectFactory.openThread")}
-          />
-        ) : null}
-        <Button onPress={instructions}>{t("projectFactory.instructions")}</Button>
-      </View>
-      <FactoryModelControls serverId={serverId} projectId={projectId} role={role.role} />
-    </SettingsSection>
-  );
+/** Sample role threads have no ids, so their share joins the category and provider totals. */
+function withSampleRoles(summary: FactoryUsageSummary): FactoryUsageSummary {
+  const byCategory = { ...summary.byCategory };
+  let total = summary.total;
+  for (const [category, entry] of Object.entries(SAMPLE_ROLE_USAGE)) {
+    if (!entry) continue;
+    const usage = { inputTokens: entry.tokens, estimatedCostUsd: entry.usd };
+    byCategory[category as FactoryCategory] = addUsage(
+      byCategory[category as FactoryCategory],
+      usage,
+    );
+    total = addUsage(total, usage);
+  }
+  return { ...summary, byCategory, total };
 }
 
 const styles = StyleSheet.create((theme) => ({
   text: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.base },
-  warning: { color: theme.colors.statusWarning, fontSize: theme.fontSize.base },
-  actions: {
+  notice: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
+  bar: {
     flexDirection: "row",
     flexWrap: "wrap",
     alignItems: "center",
-    gap: theme.spacing[3],
-    marginBottom: theme.spacing[3],
+    gap: theme.spacing[2],
+    marginBottom: theme.spacing[2],
   },
-  item: { gap: theme.spacing[2], paddingVertical: theme.spacing[3] },
+  content: { gap: theme.spacing[3] },
 }));

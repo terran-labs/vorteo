@@ -379,6 +379,32 @@ function unionGit(paths, args) {
 }
 
 /**
+ * The CLI and desktop typecheck against the server's built declarations, and the commit hook's
+ * fresh-declarations step rebuilds only protocol and client. A merge that changes server sources
+ * would leave the hook's typecheck reading stale declarations, so rebuild them before committing.
+ * Build output goes to stderr, keeping stdout for the command's result. A refused build aborts
+ * the merge like any other failure.
+ */
+function rebuildMergedServer(paths, log) {
+  const changed = git(paths.checkout, [
+    "diff",
+    "--cached",
+    "--name-only",
+    "HEAD",
+    "--",
+    "packages/server/",
+  ]);
+  if (!changed) return;
+  // A merge that also changes dependencies needs them installed before the build can succeed.
+  refreshDependencies(paths, log);
+  log("The merge changes server sources; rebuilding server declarations for the commit hook.");
+  execFileSync("nice", ["-n", "10", "npm", "run", "build:server"], {
+    cwd: paths.checkout,
+    stdio: ["ignore", process.stderr, process.stderr],
+  });
+}
+
+/**
  * Merges only when Git can do it without conflicts, checked first in memory, so conflict
  * markers never reach the watched tree and the owner's tab.
  */
@@ -407,6 +433,7 @@ function merge(paths, by, commitish, label, log) {
         stdio: "ignore",
       });
       git(paths.checkout, ["add", "--", ...UNION_FILES]);
+      rebuildMergedServer(paths, log);
       // Repository hooks run on the merge commit as on any other.
       git(paths.checkout, ["commit", "-m", `Merge ${label} into ${LIVE_BRANCH}`]);
     } catch (error) {

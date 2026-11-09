@@ -1,14 +1,16 @@
-import { factoryOverviewRoute } from "./sidebar/project-factory-model";
 import { ProjectMenuItem, type ProjectMenuSurface } from "./sidebar/project-menu-item";
 import { FactoryProjectActions } from "./sidebar/factory-project-actions";
-import { FactoryFolderStatus } from "./sidebar/factory-status";
+import { FactoryCard } from "./sidebar/factory-card";
+import { AllFactoriesCard } from "./sidebar/factory-global-card";
+import { factoryCardModels } from "./sidebar/factory-card-model";
+import { useFactoryCardStore } from "./sidebar/factory-card-store";
 import { FactoryInstructionsPanel, useProjectFactories } from "./sidebar/factory-instructions";
 import { ProjectFactoryDialog } from "./sidebar/project-factory";
 import { projectFactoryTargets } from "./sidebar/project-factory-model";
 import { hasActiveSidebarLabelFilter } from "@/stores/sidebar-view-store";
 import { useScrollReporter } from "./use-scroll-divider";
 import { NestableScrollDivider } from "./nestable-scroll-divider";
-import { splitFactoryWorkspaces, factoryOverviewTargets } from "@/workspace/lifecycle/grouping";
+import { splitFactoryWorkspaces } from "@/workspace/lifecycle/grouping";
 import { useWorkspaceSessionMenu } from "@/workspace/use-workspace-session-menu";
 import { useWorkspaceMenuActions } from "@/workspace/use-workspace-menu-actions";
 import {
@@ -76,7 +78,6 @@ import {
   MoreVertical,
   Plus,
   Trash2,
-  Factory,
   LockKeyhole,
   FolderInput,
   FolderPlus,
@@ -136,10 +137,7 @@ import {
   SidebarWorkspaceMenu,
 } from "@/components/sidebar/sidebar-workspace-menu";
 import { useLongPressDragInteraction } from "@/components/sidebar/use-long-press-drag-interaction";
-import {
-  SidebarGroupToggleRow,
-  SidebarListActionRow,
-} from "@/components/sidebar/sidebar-group-toggle-row";
+import { SidebarGroupToggleRow } from "@/components/sidebar/sidebar-group-toggle-row";
 
 import {
   useLimitedSidebarGroup,
@@ -542,43 +540,6 @@ const prBadgeStyles = StyleSheet.create((theme) => ({
     ...groupHoverStyle(PR_BADGE_HOVER_GROUP, { color: theme.colors.foreground }),
   },
 }));
-
-function FactoryOverviewRow({
-  target,
-  level,
-  disambiguate,
-}: {
-  target: { serverId: string; projectId: string; installationId: string };
-  level: number;
-  disambiguate: boolean;
-}) {
-  const { t } = useTranslation();
-  const hosts = useHosts();
-  const plugin = useInstalledPlugins().find(
-    (entry) => entry.id === "factory" && entry.serverId === target.serverId,
-  );
-  const route = factoryOverviewRoute(target, plugin);
-  const openOverview = useCallback(() => {
-    if (route) router.navigate(route);
-  }, [route]);
-  if (!route) return null;
-  const hostName =
-    hosts.find((host) => host.serverId === target.serverId)?.label.trim() ||
-    t("projectFactory.unknownHost");
-  return (
-    <SidebarListActionRow
-      icon={Factory}
-      label={
-        disambiguate
-          ? t("projectFactory.overviewHost", { host: hostName })
-          : t("projectFactory.overview")
-      }
-      level={level}
-      testID={`sidebar-factory-overview-${target.serverId}-${target.projectId}`}
-      onPress={openOverview}
-    />
-  );
-}
 
 function ProjectRowTrailingActions({
   projectViewKey,
@@ -1736,6 +1697,7 @@ function WorkspaceRowItem({
   indentLevel,
   selectionEnabled,
   activeWorkspaceSelection,
+  onWorkspacePress,
   drag,
   isDragging = false,
   dragHandleProps,
@@ -1744,11 +1706,13 @@ function WorkspaceRowItem({
     if (!workspace.serverId) {
       return;
     }
+    // Lets a host surface such as the rail flyout close before the route changes.
+    onWorkspacePress?.();
     navigateToWorkspace({
       serverId: workspace.serverId,
       workspaceId: workspace.workspaceId,
     });
-  }, [workspace.serverId, workspace.workspaceId]);
+  }, [onWorkspacePress, workspace.serverId, workspace.workspaceId]);
 
   return (
     <WorkspaceRow
@@ -2322,27 +2286,25 @@ function ProjectBlock({
   const { showHeader, childLevel, sectionLevel, sectionItemLevel } =
     sidebarProjectBlockLevels(focus);
   const installedPlugins = useInstalledPlugins();
-  const overviewTargets = useMemo(
+  const pinnedFactoryKeys = useFactoryCardStore((state) => state.pinned);
+  // Pinned Factory cards show under the root Pinned section instead, never twice. A focus hides
+  // Pinned, so a pinned card stays in its project while one is active.
+  const factoryCards = useMemo(
     () =>
-      factoryOverviewTargets(
-        groups.factory,
-        workspaceEntriesByKey,
-        new Set(
-          installedPlugins
-            .filter((plugin) => plugin.id === "factory")
-            .map((plugin) => plugin.serverId),
-        ),
-        factoryStates,
-      ).filter(
-        (target) =>
-          factoryOverviewRoute(
-            target,
-            installedPlugins.find(
-              (plugin) => plugin.id === "factory" && plugin.serverId === target.serverId,
-            ),
-          ) !== null,
-      ),
-    [groups.factory, workspaceEntriesByKey, installedPlugins, factoryStates],
+      factoryCardModels({
+        members: groups.factory,
+        entries: workspaceEntriesByKey,
+        states: factoryStates,
+        plugins: installedPlugins,
+      }).filter((card) => focus !== null || !pinnedFactoryKeys.includes(card.key)),
+    [
+      groups.factory,
+      workspaceEntriesByKey,
+      installedPlugins,
+      factoryStates,
+      pinnedFactoryKeys,
+      focus,
+    ],
   );
 
   // A missing entry renders no row, so it counts as done (createWorkspaceVisibilityPolicy).
@@ -2490,10 +2452,6 @@ function ProjectBlock({
       parentGestureRef,
       dragGestureHostActive,
     ],
-  );
-  const renderFactoryList = useCallback(
-    (items: SidebarWorkspacePlacement[]) => renderSectionList("factory", items),
-    [renderSectionList],
   );
   const renderStandingList = useCallback(
     (items: SidebarWorkspacePlacement[]) => renderSectionList("standing", items),
@@ -2649,35 +2607,22 @@ function ProjectBlock({
               testID={`sidebar-project-show-more-${project.viewKey}`}
             />
           ) : null}
-          <ProjectSection
-            projectKey={project.viewKey}
-            section="factory"
-            summary={overviewTargets.map((target) => (
-              <FactoryFolderStatus
-                key={`${target.serverId}:${target.projectId}`}
-                serverId={target.serverId}
-                projectId={target.projectId}
-              />
-            ))}
-            title={t("projectFactory.folder")}
-            items={groups.factory}
-            focus={focus}
-            level={sectionLevel}
-            itemLevel={sectionItemLevel}
-            beforeList={
-              overviewTargets.length > 0
-                ? overviewTargets.map((target) => (
-                    <FactoryOverviewRow
-                      key={`${target.serverId}:${target.projectId}`}
-                      target={target}
-                      disambiguate={overviewTargets.length > 1}
-                      level={sectionItemLevel}
-                    />
-                  ))
-                : null
-            }
-            renderList={renderFactoryList}
-          />
+          {isSidebarSectionShown(focus, "factory")
+            ? factoryCards.map((card) => (
+                <FactoryCard
+                  key={card.key}
+                  card={card}
+                  entries={workspaceEntriesByKey}
+                  projectName={null}
+                  level={childLevel}
+                  activeWorkspaceSelection={activeWorkspaceSelection}
+                  selectionEnabled={selectionEnabled}
+                  canPinWorkspace={supportsPinningByServerId.get(card.serverId) === true}
+                  onToggleWorkspacePin={onToggleWorkspacePin}
+                  onWorkspacePress={onWorkspacePress}
+                />
+              ))
+            : null}
           <ProjectSection
             projectKey={project.viewKey}
             section="standing"
@@ -3099,22 +3044,44 @@ function useProjectModeView(input: {
     supportsFactoryByServerId,
     factoryPollingTargets,
   );
+  const projectGroups = useMemo(
+    () =>
+      projects.map((project) => {
+        const hostProjects = new Set(
+          project.hosts.map((host) => JSON.stringify([host.serverId, host.projectId])),
+        );
+        const states = factoryStates.filter((state) =>
+          hostProjects.has(JSON.stringify([state.serverId, state.projectId])),
+        );
+        const groups = splitFactoryWorkspaces(
+          project.workspaces,
+          workspaceEntriesByKey,
+          supportsFactoryByServerId,
+          states,
+        );
+        return { project, groups, states };
+      }),
+    [projects, workspaceEntriesByKey, supportsFactoryByServerId, factoryStates],
+  );
+  const installedPlugins = useInstalledPlugins();
+  const pinnedFactoryKeys = useFactoryCardStore((state) => state.pinned);
+  // In pin order, each naming its project because Pinned sits outside every project.
+  const pinnedFactoryCards = useMemo(() => {
+    const cards = projectGroups.flatMap(({ project, groups, states }) =>
+      factoryCardModels({
+        members: groups.factory,
+        entries: workspaceEntriesByKey,
+        states,
+        plugins: installedPlugins,
+      }).map((card) => ({ card, projectName: project.projectName })),
+    );
+    return pinnedFactoryKeys.flatMap((key) => cards.filter(({ card }) => card.key === key));
+  }, [projectGroups, workspaceEntriesByKey, installedPlugins, pinnedFactoryKeys]);
   const focusWorld = useMemo(
     () =>
       buildSidebarFocusWorld({
         folderState: folderState ?? EMPTY_SIDEBAR_FOLDER_STATE,
-        projects: projects.map((project) => {
-          const hostProjects = new Set(
-            project.hosts.map((host) => JSON.stringify([host.serverId, host.projectId])),
-          );
-          const groups = splitFactoryWorkspaces(
-            project.workspaces,
-            workspaceEntriesByKey,
-            supportsFactoryByServerId,
-            factoryStates.filter((state) =>
-              hostProjects.has(JSON.stringify([state.serverId, state.projectId])),
-            ),
-          );
+        projects: projectGroups.map(({ project, groups }) => {
           const sections: SidebarFocusSection[] = [];
           if (groups.standing.length > 0) sections.push("standing");
           if (groups.factory.length > 0) sections.push("factory");
@@ -3126,17 +3093,9 @@ function useProjectModeView(input: {
           };
         }),
         hideEmptyFolders,
-        hasPinned,
+        hasPinned: hasPinned || pinnedFactoryCards.length > 0,
       }),
-    [
-      folderState,
-      projects,
-      workspaceEntriesByKey,
-      supportsFactoryByServerId,
-      factoryStates,
-      hideEmptyFolders,
-      hasPinned,
-    ],
+    [folderState, projectGroups, hideEmptyFolders, hasPinned, pinnedFactoryCards.length],
   );
   // The compact rail's single-project flyout has no room for a focused view: it never shows
   // focus itself, and its Focus buttons focus the sidebar instead.
@@ -3201,6 +3160,7 @@ function useProjectModeView(input: {
     return { kind: "project" };
   }, [focus, focusProjectKey]);
   return {
+    pinnedFactoryCards,
     focusContext: rootFolders ? focusController : focusElsewhere,
     focus,
     focusWorld,
@@ -3283,6 +3243,7 @@ function ProjectModeListContent({
   const hideEmptyFolders = hasActiveHostFilter || hasActiveProjectFilter || hasActiveLabelFilter;
 
   const {
+    pinnedFactoryCards,
     focusContext,
     focus,
     focusWorld,
@@ -3740,6 +3701,20 @@ function ProjectModeListContent({
   // breadcrumb in place of the projects.
   const pinnedRows = (
     <>
+      {pinnedFactoryCards.map(({ card, projectName }) => (
+        <FactoryCard
+          key={card.key}
+          card={card}
+          entries={workspaceEntriesByKey}
+          projectName={projectName}
+          level={pinnedFocused ? 0 : 1}
+          activeWorkspaceSelection={activeWorkspaceSelection}
+          selectionEnabled={selectionEnabled}
+          canPinWorkspace={supportsPinningByServerId.get(card.serverId) === true}
+          onToggleWorkspacePin={onToggleWorkspacePin}
+          onWorkspacePress={onWorkspacePress}
+        />
+      ))}
       {leadingPinnedChat ? renderPinnedChatRow(leadingPinnedChat) : null}
       <DraggableList
         testID="sidebar-pinned-list"
@@ -3770,10 +3745,16 @@ function ProjectModeListContent({
   const content = (
     <>
       {listTopComponent}
-      {pinnedChats.length > 0 && focus === null ? (
+      {/* The main sidebar only; a single project's rail flyout has no global section. */}
+      <AllFactoriesCard
+        mainSidebar={rootFolders}
+        focused={focus !== null}
+        onBeforeNavigate={onWorkspacePress}
+      />
+      {pinnedChats.length + pinnedFactoryCards.length > 0 && focus === null ? (
         <View style={styles.pinnedSection} testID="sidebar-pinned-section">
           <PinnedSectionRow
-            count={pinnedChats.length}
+            count={pinnedChats.length + pinnedFactoryCards.length}
             collapsed={pinnedCollapsed}
             onToggle={togglePinnedCollapsed}
           />
