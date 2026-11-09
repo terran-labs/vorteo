@@ -7,7 +7,7 @@ import {
   useWorkspaceLayoutStore,
 } from "@/stores/workspace-layout-store";
 import type { WorkspaceTabTarget } from "@/workspace-tabs/model";
-import { requestSupportingCard } from "./supporting-card-requests";
+import { hasInlineDetailTiles, requestSupportingCard } from "./supporting-card-requests";
 
 export type ExplorerSidebarView = "changes" | "files" | "pr";
 export type ExplorerSidebarPresentation = "overlay" | "dock" | "pane";
@@ -49,12 +49,24 @@ function canUseExplorerSidebar(
   return resolveExplorerSidebarPresentation(input) === "pane";
 }
 
+/**
+ * Phones expand the detail tile in the visible conversation. Where none is shown, such as from a
+ * terminal or draft, the view opens in a sheet as before.
+ */
+export function revealCompactDetail(workspaceKey: string, target: WorkspaceTabTarget): void {
+  if (hasInlineDetailTiles(workspaceKey)) {
+    requestSupportingCard(workspaceKey, target.kind, "inline");
+    return;
+  }
+  useWorkspaceLayoutStore.getState().openTab({ workspaceKey, target, intent: "reveal" });
+}
+
 /** Reveals the Explorer sidebar and selects one of its navigation trees. */
 export function openExplorerSidebarView(
   input: ExplorerSidebarInput & { view: ExplorerSidebarView },
 ): void {
   if (input.isCompact && input.workspaceKey) {
-    requestSupportingCard(input.workspaceKey, VIEW_TARGETS[input.view].kind, "inline");
+    revealCompactDetail(input.workspaceKey, VIEW_TARGETS[input.view]);
     return;
   }
   if (usesCompactExplorerSidebar(input)) {
@@ -94,6 +106,13 @@ export function showExplorerSidebar(input: ExplorerSidebarInput): void {
 
 export function hideExplorerSidebar(input: ExplorerSidebarInput): void {
   if (input.isCompact && input.workspaceKey) {
+    if (!hasInlineDetailTiles(input.workspaceKey)) {
+      // The fallback for callers outside a conversation is a sheet; close that instead.
+      const store = useWorkspaceLayoutStore.getState();
+      const tabId = explorerSheetId(store, input.workspaceKey);
+      if (tabId) store.closeTab(input.workspaceKey, tabId);
+      return;
+    }
     const panel = usePanelStore.getState();
     panel.setSupportingCardExpanded("files", false, "inline");
     panel.setSupportingCardExpanded("changes", false, "inline");
@@ -144,11 +163,13 @@ export function useIsExplorerSidebarOpen(input: ExplorerSidebarQuery): boolean {
 }
 
 export function isExplorerSidebarOpen(input: ExplorerSidebarQuery): boolean {
-  if (input.isCompact && input.workspaceKey)
-    return Boolean(
-      usePanelStore.getState().inlineCardExpanded.files ||
-      usePanelStore.getState().inlineCardExpanded.changes,
-    );
+  if (input.isCompact && input.workspaceKey) {
+    if (!hasInlineDetailTiles(input.workspaceKey)) {
+      return explorerSheetId(useWorkspaceLayoutStore.getState(), input.workspaceKey) !== null;
+    }
+    const { inlineCardExpanded } = usePanelStore.getState();
+    return Boolean(inlineCardExpanded.files || inlineCardExpanded.changes);
+  }
   if (usesCompactExplorerSidebar(input)) {
     return selectIsCompactFileExplorerOpen(usePanelStore.getState());
   }
@@ -157,6 +178,16 @@ export function isExplorerSidebarOpen(input: ExplorerSidebarQuery): boolean {
     canUseExplorerSidebar(input) &&
     selectIsExplorerSidebarVisible(useWorkspaceLayoutStore.getState(), input.workspaceKey),
   );
+}
+
+function explorerSheetId(
+  state: ReturnType<typeof useWorkspaceLayoutStore.getState>,
+  workspaceKey: string,
+): string | null {
+  const sheet = state.sheetsByWorkspace[workspaceKey]?.findLast(({ tab }) =>
+    ["files", "changes_tree", "pull_request"].includes(tab.target.kind),
+  );
+  return sheet?.tab.tabId ?? null;
 }
 
 /** Incoming callers identify a workspace; fork callers may provide its exact checkout. */

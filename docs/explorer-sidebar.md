@@ -48,7 +48,10 @@ ones above it, except ones holding unsaved work, which stay where they are. Open
 dismisses the sheets above it, since the tab would sit under them. The stack is not persisted.
 Phone detail tiles and the Explorer keyboard toggle request inline cards before tab resolution,
 so a retained desktop tab cannot redirect them into a hidden dock. Explicit pane destinations
-still preserve their requested placement; their compact fallback remains a sheet.
+still preserve their requested placement; their compact fallback remains a sheet. When no
+conversation with detail tiles is visible, as from a terminal, draft or file, phone navigation
+opens the view in a sheet instead. Inline tiles hold their panel's view state, such as folded files
+and the Commits section, for as long as the conversation stays mounted, because they have no layout tab.
 
 Both kinds render the same `SheetPane` (`packages/app/src/screens/workspace/sheet-pane/`): the
 header (icon, title, Back when there is a list to return to, Open as tab, Close), the pane, its

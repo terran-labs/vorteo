@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { useWorkspace } from "@/stores/session-store-hooks";
 import { usePanelStore } from "@/stores/panel-store";
@@ -9,6 +9,7 @@ import type { WorkspaceTabDescriptor } from "@/screens/workspace/workspace-tabs-
 import { buildDeterministicWorkspaceTabId } from "@/workspace-tabs/identity";
 import type { WorkspaceTabTarget } from "@/workspace-tabs/model";
 import {
+  registerInlineDetailTiles,
   requestSupportingCard,
   useSupportingCardRequests,
 } from "@/workspace-tabs/supporting-card-requests";
@@ -38,60 +39,91 @@ export function InlineFilesCard({
   const isGit = workspace?.projectKind === "git";
   const hasPullRequest = useHasPullRequest({ serverId, cwd, enabled: active && isGit });
   const workspaceKey = `${serverId}:${workspaceId}`;
+  // Only the visible conversation receives phone navigation; hidden retained ones defer to sheets.
+  useEffect(
+    () => (active ? registerInlineDetailTiles(workspaceKey) : undefined),
+    [active, workspaceKey],
+  );
+  const requestedChangesKind = useSupportingCardRequests(
+    (state) => state.inlineChangesKind[workspaceKey] ?? "changes_tree",
+  );
+  // Changes and the pull request share the phone's "changes" disclosure; without a pull request
+  // tile, its saved choice falls back to Changes.
+  const changesKind = hasPullRequest ? requestedChangesKind : "changes_tree";
   return (
     <>
-      <WorkspaceDetailTile kind="files" workspaceKey={workspaceKey} />
-      {isGit ? <WorkspaceDetailTile kind="changes_tree" workspaceKey={workspaceKey} /> : null}
+      <WorkspaceDetailTile
+        kind="files"
+        workspaceKey={workspaceKey}
+        active={active}
+        changesKind={changesKind}
+      />
+      {isGit ? (
+        <WorkspaceDetailTile
+          kind="changes_tree"
+          workspaceKey={workspaceKey}
+          active={active}
+          changesKind={changesKind}
+        />
+      ) : null}
       {hasPullRequest ? (
-        <WorkspaceDetailTile kind="pull_request" workspaceKey={workspaceKey} />
+        <WorkspaceDetailTile
+          kind="pull_request"
+          workspaceKey={workspaceKey}
+          active={active}
+          changesKind={changesKind}
+        />
       ) : null}
     </>
   );
 }
 
-function WorkspaceDetailTile({ kind, workspaceKey }: { kind: DetailKind; workspaceKey: string }) {
+function WorkspaceDetailTile({
+  kind,
+  workspaceKey,
+  active,
+  changesKind,
+}: {
+  kind: DetailKind;
+  workspaceKey: string;
+  active: boolean;
+  changesKind: "changes_tree" | "pull_request";
+}) {
   const host = useSheetPaneHostIfAny();
-  // Changes and the pull request share the phone's "changes" disclosure; the most recent request
-  // decides which of the two is open, so they never expand together.
-  const changesOpen = usePanelStore((state) => state.inlineCardExpanded.changes ?? false);
-  const filesOpen = usePanelStore((state) => state.inlineCardExpanded.files ?? false);
-  const requestedKind = useSupportingCardRequests(
-    (state) => state.requests[workspaceKey]?.kind ?? null,
-  );
-  const expanded =
-    kind === "files"
-      ? filesOpen
-      : changesOpen && (requestedKind === "pull_request") === (kind === "pull_request");
+  const disclosure = kind === "files" ? "files" : "changes";
+  const open = usePanelStore((state) => state.inlineCardExpanded[disclosure] ?? false);
+  const expanded = open && (kind === "files" || kind === changesKind);
+  const collapse = useCallback(() => {
+    usePanelStore.getState().setSupportingCardExpanded(disclosure, false, "inline");
+  }, [disclosure]);
   const toggle = useCallback(() => {
-    if (expanded) {
-      usePanelStore
-        .getState()
-        .setSupportingCardExpanded(kind === "files" ? "files" : "changes", false, "inline");
-      return;
-    }
-    requestSupportingCard(workspaceKey, kind, "inline");
-  }, [expanded, kind, workspaceKey]);
+    if (expanded) collapse();
+    else requestSupportingCard(workspaceKey, kind, "inline");
+  }, [collapse, expanded, kind, workspaceKey]);
+  // These panels keep view state such as folded files and commits on their tab. The tile has no
+  // layout tab, so it holds that state for as long as the conversation stays mounted.
+  const [tabState, setTabState] = useState<WorkspaceTabDescriptor["state"]>(undefined);
   const tab = useMemo<WorkspaceTabDescriptor>(() => {
     const target = { kind } as WorkspaceTabTarget;
     const tabId = buildDeterministicWorkspaceTabId(target);
-    return { key: tabId, tabId, kind, target };
-  }, [kind]);
-  const collapse = useCallback(() => {
-    usePanelStore
-      .getState()
-      .setSupportingCardExpanded(kind === "files" ? "files" : "changes", false, "inline");
-  }, [kind]);
-  const content = useMemo(
-    () => (host && expanded ? host.buildContent(tab, collapse) : null),
-    [host, expanded, tab, collapse],
-  );
+    return { key: tabId, tabId, kind, target, state: tabState };
+  }, [kind, tabState]);
+  const showBody = expanded && active && host !== null;
+  const content = useMemo(() => {
+    if (!showBody || !host) return null;
+    const model = host.buildContent(tab, collapse);
+    return {
+      ...model,
+      paneContextValue: { ...model.paneContextValue, setCurrentTabState: setTabState },
+    };
+  }, [showBody, host, tab, collapse]);
   const icon = useMemo(() => <TaskCardIcon kind={iconKinds[kind]} />, [kind]);
   return (
-    <TaskCard bodyVisible={expanded} panelHeight="fill" testID={`supporting-card-${kind}`}>
+    <TaskCard bodyVisible={showBody} panelHeight="fill" testID={`supporting-card-${kind}`}>
       <TaskCardHeader>
         <CardDisclosure
           title={titles[kind]}
-          expanded={expanded}
+          expanded={showBody}
           onPress={toggle}
           icon={icon}
           testID={`supporting-card-${kind}-toggle`}
@@ -101,7 +133,7 @@ function WorkspaceDetailTile({ kind, workspaceKey }: { kind: DetailKind; workspa
         <WorkspacePaneContent
           content={content}
           isWorkspaceFocused={host.isWorkspaceFocused}
-          isPaneFocused={host.isWorkspaceFocused}
+          isPaneFocused={host.isWorkspaceFocused && active}
         />
       ) : null}
     </TaskCard>

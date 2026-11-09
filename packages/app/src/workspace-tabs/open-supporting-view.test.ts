@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@react-native-async-storage/async-storage", () => ({
   default: {
@@ -8,7 +8,7 @@ vi.mock("@react-native-async-storage/async-storage", () => ({
   },
 }));
 
-import { useSupportingCardRequests } from "./supporting-card-requests";
+import { registerInlineDetailTiles, useSupportingCardRequests } from "./supporting-card-requests";
 import { DEFAULT_APP_SETTINGS } from "@/hooks/use-settings";
 import { usePanelStore } from "@/stores/panel-store";
 import {
@@ -26,7 +26,12 @@ import {
 const WORKSPACE_KEY = "server-1:workspace-1";
 const checkout = { serverId: "server-1", cwd: "/repo", isGit: true };
 
+// A visible conversation shows the phone detail tiles these cases expand.
+let releaseInlineTiles = () => {};
+afterEach(() => releaseInlineTiles());
+
 beforeEach(() => {
+  releaseInlineTiles = registerInlineDetailTiles(WORKSPACE_KEY);
   usePanelStore.setState({
     mobilePanel: { target: "agent", revision: 0 },
     explorerTabByCheckout: {},
