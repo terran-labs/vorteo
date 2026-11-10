@@ -73,7 +73,6 @@ export function createProviderUsageFetchers(
           displayName: configured?.label,
           strictClaudeHome: claudeHome !== undefined,
           signIn: claudeSignInMode(configured?.env),
-          env: configured?.env,
           limitObservations: options.claudeLimitObservations,
         }),
       ];
@@ -89,7 +88,6 @@ export function createProviderUsageFetchers(
         displayName: configuredCodex?.label ?? "Codex",
         codexHome,
         strictCodexHome: codexHome !== undefined,
-        env: configuredCodex?.env,
       }),
     ];
   });
@@ -105,7 +103,6 @@ export function createProviderUsageFetchers(
           claudeHome: provider.env?.CLAUDE_CONFIG_DIR,
           strictClaudeHome: true,
           signIn: claudeSignInMode(provider.env),
-          env: provider.env,
           limitObservations: options.claudeLimitObservations,
         }),
       );
@@ -123,7 +120,6 @@ export function createProviderUsageFetchers(
         displayName: provider.label ?? providerId,
         codexHome,
         strictCodexHome: true,
-        env: provider.env,
       }),
     );
   }
