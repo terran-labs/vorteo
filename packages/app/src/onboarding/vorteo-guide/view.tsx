@@ -89,7 +89,11 @@ export function VorteoGuideView({
     >
       <View style={styles.content}>
         <DropdownMenu>
-          <DropdownTrigger accessibilityLabel={t("vorteoSetup.chooseStep")}>
+          <DropdownTrigger
+            accessibilityLabel={t("vorteoSetup.chooseStepCurrent", {
+              step: t(`vorteoSetup.${step}`),
+            })}
+          >
             {t(`vorteoSetup.${step}`)}
           </DropdownTrigger>
           <DropdownMenuContent width={260}>

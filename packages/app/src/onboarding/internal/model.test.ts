@@ -295,7 +295,7 @@ describe("Vorteo authenticated setup", () => {
     expect(storage.records.get("two")?.disposition).toBe("completed");
   });
 
-  it("does not complete setup when visiting Settings or accept a stale completion", async () => {
+  it("resumes where the owner left for Settings and rejects a stale completion", async () => {
     const storage = new InstallationGuideStorage();
     const model = createVorteoGuide({
       savePrimaryConnection: async () => {},
@@ -304,14 +304,28 @@ describe("Vorteo authenticated setup", () => {
     });
     await model.ready;
     model.applyGate(GUIDE_HOST);
+    model.goTo("providers");
     const state = model.getState();
     if (state.status !== "open") throw new Error("Expected open guide");
     await model.pause();
+    // Visiting Settings is neither Skip nor Finish, but it keeps the step.
+    expect(storage.records.get("one")).toMatchObject({ disposition: "paused", step: "providers" });
     model.reopen(GUIDE_HOST);
     model.next(state.visit);
-    expect(model.getState()).toMatchObject({ status: "open", stepIndex: 0 });
-    expect(storage.records.size).toBe(0);
-    await model.complete();
+    expect(model.getState()).toMatchObject({ status: "open", stepIndex: 1 });
+
+    // After a reload the paused guide stays closed until reopened, then resumes at its step.
+    const reloaded = createVorteoGuide({
+      savePrimaryConnection: async () => {},
+      installationId: "one",
+      storage,
+    });
+    await reloaded.ready;
+    reloaded.applyGate(GUIDE_HOST);
+    expect(reloaded.getState()).toEqual({ status: "hidden" });
+    reloaded.reopen(GUIDE_HOST);
+    expect(reloaded.getState()).toMatchObject({ status: "open", stepIndex: 1 });
+    await reloaded.complete();
     expect(storage.records.get("one")?.disposition).toBe("completed");
   });
 });

@@ -7,6 +7,7 @@ import { StyleSheet } from "react-native-unistyles";
 import { SkeletonPulse, useSkeletonPulse } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { useTimeAgo } from "@/hooks/use-time-ago";
+import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { projectIconRadius } from "@/components/project-icon-view";
 import { settingsStyles } from "@/styles/settings";
 import { ICON_SIZE } from "@/styles/theme";
@@ -16,6 +17,7 @@ import type {
   ProjectSuggestionsController,
   SuggestionRow as SuggestionRowModel,
 } from "./use-project-suggestions";
+import { PROVIDER_LIST_FAILURE } from "./use-provider-suggestions";
 
 const INITIAL_SKELETON_ROWS = [0, 1, 2];
 const TRAILING_SKELETON_ROWS = [0];
@@ -54,6 +56,7 @@ export function ProjectSuggestionList({
       {list.failedProviders.map((provider) => (
         <HistoryFailure
           key={provider}
+          serverId={serverId}
           provider={provider}
           retry={list.retryProvider}
           loading={list.retryingProviders.includes(provider)}
@@ -76,11 +79,13 @@ export function ProjectSuggestionList({
 }
 
 function HistoryFailure({
+  serverId,
   provider,
   retry,
   loading,
   disabled,
 }: {
+  serverId: string;
   provider: string;
   retry: (provider: string) => void;
   loading: boolean;
@@ -88,9 +93,16 @@ function HistoryFailure({
 }) {
   const { t } = useTranslation();
   const retryHistory = useCallback(() => retry(provider), [retry, provider]);
+  // The same shared snapshot query the suggestions read, so this adds no request.
+  const { entries } = useProvidersSnapshot(serverId);
+  const label = entries?.find((entry) => entry.provider === provider)?.label ?? provider;
+  const description =
+    provider === PROVIDER_LIST_FAILURE
+      ? t("vorteoSetup.providerListFailed")
+      : t("vorteoSetup.historyFailed", { provider: label });
   return (
     <View style={settingsStyles.row}>
-      <Alert variant="warning" description={t("vorteoSetup.historyFailed", { provider })} />
+      <Alert variant="warning" description={description} />
       <Button variant="outline" onPress={retryHistory} loading={loading} disabled={disabled}>
         {t("vorteoSetup.historyRetry")}
       </Button>

@@ -248,14 +248,15 @@ export function ThemePreviewGrid({
     [commit, selectTheme],
   );
   const followSystem = useCallback(() => select("auto"), [select]);
-  const systemSelected = useMemo(() => ({ selected: settings.theme === "auto" }), [settings.theme]);
+  const followsSystem = settings.theme === "auto";
   return (
     <View style={styles.controls}>
+      {/* A toggle like the preset cards: filled while chosen, announced through aria-pressed. */}
       <Button
-        variant="outline"
+        variant={followsSystem ? "default" : "outline"}
         onPress={followSystem}
         disabled={saving}
-        accessibilityState={systemSelected}
+        aria-pressed={followsSystem}
         testID="theme-follow-system"
       >
         {t("vorteoSetup.followSystem")}

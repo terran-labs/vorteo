@@ -3,10 +3,18 @@ import type { InstallationSettingsSnapshot } from "@getpaseo/protocol/installati
 import type { PrimaryConnectionChoice } from "@/execution-installation/primary-connection";
 import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import type { ProviderUsage } from "@/provider-usage/types";
-import { createOnboardingModel, type OnboardingModel } from "../internal/model";
+import { i18n } from "@/i18n/i18next";
+import {
+  createOnboardingModel,
+  type OnboardingModel,
+  type OnboardingStepId,
+} from "../internal/model";
 
 export interface GuideRecord {
-  disposition: "skipped" | "completed";
+  /** "paused" means the owner left for Settings or Add host and may come back. */
+  disposition: "skipped" | "completed" | "paused";
+  /** The step a paused guide reopens at. */
+  step?: OnboardingStepId;
   updatedAt: string;
 }
 
@@ -33,7 +41,7 @@ export interface GuideSnapshotRefresh {
 /** Manual retries must obey the same capability boundary as automatic snapshot reads. */
 export function refreshGuideProviderSnapshot(snapshot: GuideSnapshotRefresh): Promise<void> {
   if (!snapshot.supportsSnapshot) {
-    return Promise.reject(new Error("Provider snapshots are not supported by this host"));
+    return Promise.reject(new Error(i18n.t("vorteoSetup.snapshotUnsupported")));
   }
   return snapshot.refresh();
 }
@@ -89,20 +97,25 @@ export function createVorteoGuide(input: {
   let activeHost: GuideHost | null = null;
   let primaryRuntimeProviderId: string | null = null;
   let disposition: GuideRecord["disposition"] = "completed";
-  let remember = true;
+  // Where Show setup again resumes after the owner left for Settings or Add host.
+  let pausedStep: OnboardingStepId | null = null;
   const options = { includePhoneStep: true };
   // Reuse upstream's navigation and visit tokens. Completion here records the guide only,
-  // never whether credentials have reached all environments or an account is usable.
+  // never whether credentials have reached all environments or an account is usable. Any
+  // record, including a paused one, keeps the guide from reopening by itself on reload.
   const model = createOnboardingModel({
     storage: {
-      isCompleted: async () => (await input.storage.read(input.installationId)) !== null,
+      isCompleted: async () => {
+        const record = await input.storage.read(input.installationId);
+        if (record?.disposition === "paused") pausedStep = record.step ?? null;
+        return record !== null;
+      },
       markCompleted: () =>
-        remember
-          ? input.storage.write(input.installationId, {
-              disposition,
-              updatedAt: new Date().toISOString(),
-            })
-          : Promise.resolve(),
+        input.storage.write(input.installationId, {
+          disposition,
+          ...(disposition === "paused" && pausedStep ? { step: pausedStep } : {}),
+          updatedAt: new Date().toISOString(),
+        }),
     },
   });
   const canEnter = (host: GuideHost | null): host is GuideHost =>
@@ -136,10 +149,7 @@ export function createVorteoGuide(input: {
         await input.savePrimaryConnection(request);
       } catch (error) {
         if (error instanceof PrimaryConnectionUnavailableError)
-          throw new Error(
-            "This connection is no longer available in installation settings. Refresh and choose again.",
-            { cause: error },
-          );
+          throw new Error(i18n.t("vorteoSetup.primaryUnavailable"), { cause: error });
         throw error;
       }
       return currentVisit() ? "saved" : "stale";
@@ -162,16 +172,20 @@ export function createVorteoGuide(input: {
       if (!canEnter(host)) return;
       activeHost = host;
       disposition = "completed";
-      remember = true;
       model.reopen(host.serverId, options);
+      if (pausedStep) model.goTo(pausedStep);
+      pausedStep = null;
     },
     skip() {
       disposition = "skipped";
       return model.complete();
     },
     pause() {
-      // Visiting existing Settings is neither Skip nor Finish. The menu can reopen the guide.
-      remember = false;
+      // Visiting existing Settings is neither Skip nor Finish. Show setup again in More resumes
+      // at this step, and a reload does not restart the guide from the first step.
+      const state = model.getState();
+      disposition = "paused";
+      pausedStep = state.status === "open" ? (state.steps[state.stepIndex] ?? null) : null;
       return model.complete();
     },
   };

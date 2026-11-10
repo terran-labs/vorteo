@@ -44,6 +44,8 @@ function getGuide(installationId: string): VorteoGuideModel {
 
 function useGuideHost(): GuideHost | null {
   const installation = readExecutionInstallation();
+  // readExecutionInstallation returns a new object on every render; memoize on its identity.
+  const installationId = installation?.installationId;
   const serverId = installationHostServerId(installation);
   const { supported: supportsPrimaryConnection } = usePrimaryConnection();
   const ownerClient = useInstallationOwnerClient();
@@ -62,9 +64,9 @@ function useGuideHost(): GuideHost | null {
   });
   return useMemo(
     () =>
-      installation && serverId
+      installationId && serverId
         ? {
-            installationId: installation.installationId,
+            installationId,
             serverId,
             ownerAuthenticated: ownerClient !== null,
             isConnected,
@@ -74,7 +76,7 @@ function useGuideHost(): GuideHost | null {
           }
         : null,
     [
-      installation,
+      installationId,
       serverId,
       ownerClient,
       isConnected,

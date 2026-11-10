@@ -3792,23 +3792,26 @@ export const en = {
     reopen: "Show setup again",
     followSystem: "Follow system",
     stepCounter: "Step {{current}} of {{total}}",
-    chooseStep: "Choose setup step",
+    chooseStepCurrent: "Choose setup step, current: {{step}}",
     appearance: "Appearance",
     providers: "Choose a provider",
     projects: "Projects",
     orchestration: "Agent tools and skills",
     phone: "Other devices and CLI",
     accountsHint:
-      "Choose one provider on Host. Sign in once through the installation connection controls; Host shares supported connections with Dev. Pending delivery is not readiness.",
+      "Choose one provider on Host. Sign in once through the installation connection controls; Host shares supported connections with Dev.",
     manageAccounts: "Settings > Providers",
     moreProviders: "Add more providers later in Settings",
-    chooseProvider: "Choose an installed provider",
+    chooseProviderCurrent: "Choose an installed provider, current: {{provider}}",
     useProvider: "Use {{provider}}, already signed in",
     connectProvider: "Connect {{provider}}",
     skipProvider: "Skip for now",
     primaryLocalOnly:
       "This host cannot save a primary connection yet. Your choice stays in this guide and is not saved to installation settings.",
     retryPrimary: "Retry saving primary connection",
+    primaryUnavailable:
+      "This connection is no longer available in installation settings. Refresh and choose again.",
+    snapshotUnsupported: "Provider snapshots are not supported by this host.",
     signInUnknown:
       "Sign-in is not verified. Open Providers settings to check this connection or update Host for shared sign-in.",
     profilesHint:
@@ -3816,7 +3819,7 @@ export const en = {
     offline: "Offline, verification pending",
     unknown: "Readiness unavailable. Update this host to check provider accounts.",
     noAccounts:
-      "No installed provider is confirmed on Host. Open Providers settings for install instructions, then return here. Setup checks again while this step is open.",
+      "No installed provider is confirmed on Host. Open Providers settings for install instructions, then choose More > Show setup again to continue from this step. Setup checks again while this step is open.",
     projectHint:
       "Add an existing project from your Projects folder. Nothing is moved or copied. The host checks access before adding it.",
     projectsFolder: "Projects folder: {{path}}",
@@ -3828,6 +3831,8 @@ export const en = {
       "History suggestions require an updated host. You can still add a project manually.",
     historyFailed:
       "Could not read history for {{provider}}. Other providers' results remain available.",
+    providerListFailed:
+      "Could not read the provider list, so history suggestions are unavailable. You can still add a project manually.",
     historyRetry: "Retry history",
     skillsUnchanged: "No skill changes were applied.",
     preferencesHint:
@@ -3848,7 +3853,7 @@ export const en = {
     cliHint:
       "If the agent CLI is installed in your environment, run paseo --help to see its commands. The vorteo command manages the installation; it is a different tool. Setup does not install or replace either command.",
     finishHint:
-      "Finish records that you went through this guide. Account readiness and pending delivery remain visible in Accounts.",
+      "Finish records that you went through this guide. Account readiness and pending delivery remain visible in Providers.",
     saveFailed:
       "Could not save setup progress. You can continue working and reopen setup from More.",
   },

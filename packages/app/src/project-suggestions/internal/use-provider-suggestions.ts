@@ -23,6 +23,9 @@ export type ProjectSuggestionsState =
       retryProvider: (provider: string) => void;
     };
 
+/** Stands in for a provider when the provider list itself could not be read. */
+export const PROVIDER_LIST_FAILURE = "providers";
+
 function suggestionsQueryKey(serverId: string, provider: string) {
   return ["project-suggestions", serverId, provider] as const;
 }
@@ -79,8 +82,8 @@ export function useProviderSuggestions(serverId: string): ProjectSuggestionsStat
         return {
           status: "ready",
           providers: [],
-          failedProviders: ["providers"],
-          retryingProviders: snapshot.isRefreshing ? ["providers"] : [],
+          failedProviders: [PROVIDER_LIST_FAILURE],
+          retryingProviders: snapshot.isRefreshing ? [PROVIDER_LIST_FAILURE] : [],
           retryProvider,
         };
       return { status: "loading" };

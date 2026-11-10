@@ -4,7 +4,8 @@ import { readValidatedJson } from "@/storage/validated-storage";
 import type { GuideStorage } from "./model";
 
 const recordSchema = z.object({
-  disposition: z.enum(["skipped", "completed"]),
+  disposition: z.enum(["skipped", "completed", "paused"]),
+  step: z.enum(["appearance", "providers", "projects", "orchestration", "phone"]).optional(),
   updatedAt: z.string(),
 });
 

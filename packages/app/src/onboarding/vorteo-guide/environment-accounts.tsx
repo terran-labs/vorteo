@@ -1,4 +1,5 @@
 import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
+import { primaryConnectionBinding } from "@getpaseo/protocol/installation-settings";
 import { useCallback, useEffect, useState } from "react";
 import { Text } from "react-native";
 import { useTranslation } from "react-i18next";
@@ -15,6 +16,7 @@ import { AddClaudeAccountButton, AddCodexAccountButton } from "@/provider-usage/
 import { useInstallationConnectOnce } from "@/provider-usage/use-provider-login";
 import { useProviderUsage } from "@/provider-usage/use-provider-usage";
 import { usePrimaryConnection } from "@/execution-installation/primary-connection";
+import { useInstallationSettings } from "@/execution-installation/settings";
 import { useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { settingsStyles } from "@/styles/settings";
 import { toErrorMessage } from "@/utils/error-messages";
@@ -36,7 +38,8 @@ export function EnvironmentAccounts({
   onSettings,
 }: EnvironmentAccountsProps) {
   const { t } = useTranslation();
-  const { supported: primarySupported } = usePrimaryConnection();
+  const { supported: primarySupported, primary } = usePrimaryConnection();
+  const savedPrimary = useSavedPrimaryRuntimeId(primarySupported, primary, serverId);
   const connected = useHostRuntimeIsConnected(serverId);
   const snapshot = useProvidersSnapshot(serverId, { enabled: connected });
   const { view: usage } = useProviderUsage(serverId);
@@ -59,7 +62,9 @@ export function EnvironmentAccounts({
   );
   const readings = usage.kind === "ready" && !usage.refreshError ? usage.payload.providers : [];
   const preferred =
-    installed.find((entry) => guideProviderSignedIn(entry, readings)) ?? installed[0];
+    installed.find((entry) => entry.provider === savedPrimary) ??
+    installed.find((entry) => guideProviderSignedIn(entry, readings)) ??
+    installed[0];
   const choice = installed.find((entry) => entry.provider === selected) ?? preferred;
   const noProvider = snapshotAvailable && !snapshot.isLoading && installed.length === 0;
   const refreshing = snapshot.isRefreshing || isPending;
@@ -130,6 +135,24 @@ export function EnvironmentAccounts({
   );
 }
 
+/** The saved primary connection, as this Host's runtime provider id. */
+function useSavedPrimaryRuntimeId(
+  supported: boolean,
+  primary: ReturnType<typeof usePrimaryConnection>["primary"],
+  serverId: string,
+): string | undefined {
+  const settings = useInstallationSettings(supported);
+  if (!primary) return undefined;
+  const definition = primaryConnectionBinding(
+    {
+      primaryConnection: primary,
+      providerDefinitions: settings.data?.settings?.providerDefinitions ?? [],
+    },
+    serverId,
+  );
+  return definition?.bindings[serverId];
+}
+
 interface ProviderDetectionProps {
   connected: boolean;
   supported: boolean;
@@ -198,7 +221,9 @@ function InstalledChoice({
     <>
       {installed.length > 1 ? (
         <DropdownMenu>
-          <DropdownTrigger accessibilityLabel={t("vorteoSetup.chooseProvider")}>
+          <DropdownTrigger
+            accessibilityLabel={t("vorteoSetup.chooseProviderCurrent", { provider: label })}
+          >
             {label}
           </DropdownTrigger>
           <DropdownMenuContent>

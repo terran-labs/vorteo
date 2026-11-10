@@ -11,7 +11,7 @@ Connect multiple Codex and Claude accounts and distribute tasks across them. See
 
 To add a device, open your installation's address on it and enter the owner password on the welcome page. Vorteo connects every environment for you.
 
-After sign-in, the setup guide helps you choose an appearance, choose one detected Host provider, add projects from your Projects folder or agent history, and review agent tools and skills. You can skip it and reopen it from **More > Show setup again** in the sidebar. Sign-in uses the existing installation connection controls, with supported Host-owned sharing to Dev. Use records the verified connection as primary on supported hosts; older hosts keep the choice only in the guide. You can skip provider selection and add more providers later in Settings. Finishing the guide does not verify account readiness. Device help includes the installation address and a QR code for opening the Vorteo PWA.
+After sign-in, the setup guide helps you choose an appearance, choose one detected Host provider, add projects from your Projects folder, including folders under it where agents have already worked, and review agent tools and skills. You can skip it and reopen it from **More > Show setup again** in the sidebar. Sign-in uses the existing installation connection controls, with supported Host-owned sharing to Dev. Use records the verified connection as primary on supported hosts; older hosts keep the choice only in the guide. You can skip provider selection and add more providers later in Settings. Finishing the guide does not verify account readiness. Device help includes the installation address and a QR code for opening the Vorteo PWA.
 
 ## Enhanced Security
 
