@@ -127,11 +127,13 @@ export function createOutboxStorage(
             current?.order ??
             (current
               ? undefined
-              : nextOutboxOrder(
+              : // A reissued command keeps its place in line; new commits take the next slot.
+                (value.order ??
+                nextOutboxOrder(
                   (await requestValue(store.getAll())).map((record: unknown) =>
                     OutboxRecordSchema.parse(record),
                   ),
-                ));
+                )));
           await requestValue(store.put({ ...value, order }, encoded));
         } else await requestValue(store.delete(encoded));
         return true;

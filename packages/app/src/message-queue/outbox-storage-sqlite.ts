@@ -59,11 +59,13 @@ export function createSqliteOutboxStorage(
             current?.order ??
             (current
               ? undefined
-              : nextOutboxOrder(
+              : // A reissued command keeps its place in line; new commits take the next slot.
+                (value.order ??
+                nextOutboxOrder(
                   (await tx.all<{ payload: string }>("SELECT payload FROM operations")).map((row) =>
                     OutboxRecordSchema.parse(JSON.parse(row.payload)),
                   ),
-                ));
+                )));
           await tx.run("INSERT OR REPLACE INTO operations (key, payload) VALUES (?, ?)", [
             encoded,
             JSON.stringify({ ...value, order }),

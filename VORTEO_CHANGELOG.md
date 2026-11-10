@@ -14,6 +14,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - The Queue card no longer appears expanded and empty while the queue loads or while a send now, pause, delete, reorder or edit is still syncing for a message that has already left the queue. It shows only when it has a message, an error or a change to recover.
 - On New workspace, Import session now fades away with the launch controls when the first message is submitting, and returns if creation fails.
+- A queue pause refused because the queue changed no longer strands later messages on this device. The app checks the current queue, drops a pause it already satisfies and resends it against current state. A refused resume stays for review without holding later messages, and Retry now applies it to the current queue. Rejected pause, delete and similar commands offer Dismiss instead of keeping a local copy.
 
 ## 26.11.901 - 2026-11-09
 

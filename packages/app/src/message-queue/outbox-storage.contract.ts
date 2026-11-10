@@ -43,6 +43,14 @@ export function outboxStorageContract(
       const saved = records[0];
       await second.exchange(outboxKey(saved), 0, { ...saved, revision: 1, order: 999 });
       expect((await first.read(outboxKey(saved)))?.order).toBe(1);
+      // A reissued command inserted under a new key keeps the place it was given.
+      const reissued = {
+        ...saved,
+        revision: 0,
+        operation: { ...saved.operation, operationId: "z~r1" },
+      };
+      await first.exchange(outboxKey(reissued), null, reissued);
+      expect((await second.read(outboxKey(reissued)))?.order).toBe(1);
     } finally {
       await fixture.close();
     }
