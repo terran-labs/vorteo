@@ -677,17 +677,41 @@ test("broker settings show the release commit and mint a bounded scope only when
   expect(JSON.parse(fx.state.disk.config).previewBrokerDeployment.scope.sha256).toBe(
     sha256(readFileSync(fx.recorded.scope.path, "utf8")),
   );
-  // The restarted coordinator runs the new file but cannot read the handoff outcome: the job
-  // fails, and the minted scope its configuration pins stays in place.
-  const minted = readFileSync(fx.recorded.scope.path, "utf8");
-  fx.settings["ports"].runningSha256 = sha256(fx.state.disk.config);
-  fx.settings["ports"].outcome = () => {
-    throw new Error("Unexpected token in JSON");
-  };
-  await fx.settings.drain();
-  expect(fx.settings.status().job).toMatchObject({ status: "failed" });
-  expect(readFileSync(fx.recorded.scope.path, "utf8")).toBe(minted);
 });
+
+test.each([
+  { running: "new", scope: "minted" },
+  { running: "previous", scope: "kept" },
+])(
+  "broker settings with an unreadable outcome while the $running configuration runs keep the $scope scope",
+  async ({ running }) => {
+    const fx = brokerInstallation();
+    const base = sha256(fx.state.disk.config);
+    const job = await fx.request();
+    fx.settings.decide(job.id, job.revision, "approve", { reviewedFields: true });
+    fx.state.clock.now += 60_000;
+    await fx.settings.drain();
+    const minted = readFileSync(fx.recorded.scope.path, "utf8");
+    expect(minted).not.toBe("{}");
+    // The restarted coordinator cannot read the handoff outcome. The new configuration pins
+    // the minted scope; the previous one still runs with the kept scope.
+    fx.settings["ports"].runningSha256 = running === "new" ? sha256(fx.state.disk.config) : base;
+    fx.settings["ports"].outcome = () => {
+      throw new Error("Unexpected token in JSON");
+    };
+    // A restore stages beside the scope file, never in the job's work folder, so it works when
+    // the two sit on different volumes.
+    const work = path.join(fx.root, "state/work", job.id);
+    chmodSync(work, 0o500);
+    try {
+      await fx.settings.drain();
+    } finally {
+      chmodSync(work, 0o700);
+    }
+    expect(fx.settings.status().job).toMatchObject({ status: "failed" });
+    expect(readFileSync(fx.recorded.scope.path, "utf8")).toBe(running === "new" ? minted : "{}");
+  },
+);
 
 test.each([
   {

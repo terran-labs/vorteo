@@ -922,8 +922,8 @@ export function createScopeCustody(work: (jobId: string) => string) {
   // rename stays on the scope's volume and replaces a planted link instead of following it.
   const replace = (file: string, bytes: Buffer) => {
     const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${randomUUID()}`);
-    writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" });
     try {
+      writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" });
       renameSync(temporary, file);
     } catch (error) {
       rmSync(temporary, { force: true });
