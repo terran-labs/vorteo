@@ -9,6 +9,7 @@ vi.mock("@react-native-async-storage/async-storage", () => ({
 }));
 
 import { usePanelStore } from "@/stores/panel-store";
+import { registerInlineDetailTiles } from "./supporting-card-requests";
 import {
   collectAllTabs,
   findPaneById,
@@ -52,7 +53,8 @@ describe("Explorer sidebar", () => {
     );
   });
 
-  it("opens workspace Changes in a phone sheet", () => {
+  it("opens workspace Changes in place on phones", () => {
+    const releaseInlineTiles = registerInlineDetailTiles(WORKSPACE_KEY);
     openExplorerSidebarView({
       isCompact: false,
       workspaceKey: WORKSPACE_KEY,
@@ -68,19 +70,26 @@ describe("Explorer sidebar", () => {
     });
 
     expect(usePanelStore.getState().mobilePanel.target).toBe("agent");
-    expect(
-      useWorkspaceLayoutStore
-        .getState()
-        .sheetsByWorkspace[WORKSPACE_KEY].map((sheet) => sheet.tab.target.kind),
-    ).toEqual(["changes_tree"]);
+    expect(usePanelStore.getState().inlineCardExpanded.changes).toBe(true);
+    expect(useWorkspaceLayoutStore.getState().sheetsByWorkspace[WORKSPACE_KEY] ?? []).toEqual([]);
     const input = { isCompact: true, workspaceKey: WORKSPACE_KEY, checkout };
     toggleExplorerSidebar(input);
     expect(isExplorerSidebarOpen(input)).toBe(false);
     toggleExplorerSidebar(input);
     expect(isExplorerSidebarOpen(input)).toBe(true);
+
+    // Without a visible conversation, such as from a terminal, phones fall back to a sheet.
+    releaseInlineTiles();
+    openExplorerSidebarView({ ...input, view: "files" });
     expect(
-      useWorkspaceLayoutStore.getState().sheetsByWorkspace[WORKSPACE_KEY][0].tab.target.kind,
-    ).toBe("files");
+      useWorkspaceLayoutStore
+        .getState()
+        .sheetsByWorkspace[WORKSPACE_KEY]?.map(({ tab }) => tab.target.kind),
+    ).toEqual(["files"]);
+    expect(isExplorerSidebarOpen(input)).toBe(true);
+    toggleExplorerSidebar(input);
+    expect(useWorkspaceLayoutStore.getState().sheetsByWorkspace[WORKSPACE_KEY] ?? []).toEqual([]);
+    expect(usePanelStore.getState().inlineCardExpanded.files).toBe(true);
     expect(usePanelStore.getState().mobilePanel.target).toBe("agent");
   });
 

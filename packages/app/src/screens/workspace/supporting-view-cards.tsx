@@ -9,8 +9,7 @@ import { WorkspacePaneContent, type WorkspacePaneContentModel } from "./workspac
 import { WorkspaceTabPresentationResolver } from "./workspace-tab-presentation";
 import { deriveWorkspacePaneState } from "./workspace-pane-state";
 import type { WorkspaceTabDescriptor } from "./workspace-tabs-types";
-import { useWorkspaceLayoutStore, type SplitPane } from "@/stores/workspace-layout-store";
-import { useIsCompactFormFactor } from "@/constants/layout";
+import { type SplitPane } from "@/stores/workspace-layout-store";
 import type { WorkspaceTab } from "@/workspace-tabs/model";
 
 export interface SupportingViewCardsProps {
@@ -54,34 +53,16 @@ function SupportingViewCard({
   tab: WorkspaceTabDescriptor;
   selected: boolean;
 }) {
-  const isCompact = useIsCompactFormFactor();
   const [disclosed, setExpanded] = useCardDisclosure(tab.kind === "files" ? "files" : "changes");
-  const expanded = !isCompact && disclosed;
+  const expanded = disclosed;
   const icon = useMemo(
     () => <TaskCardIcon kind={tab.kind === "files" ? "files" : "changes"} />,
     [tab.kind],
   );
   const toggle = useCallback(() => {
-    if (isCompact) {
-      useWorkspaceLayoutStore.getState().openTab({
-        workspaceKey: `${normalizedServerId}:${normalizedWorkspaceId}`,
-        target: tab.target,
-        intent: "reveal",
-      });
-      return;
-    }
     setExpanded((current) => !current);
     if (!expanded) onSelectTab(pane.id, tab.tabId);
-  }, [
-    isCompact,
-    normalizedServerId,
-    normalizedWorkspaceId,
-    tab,
-    expanded,
-    setExpanded,
-    onSelectTab,
-    pane.id,
-  ]);
+  }, [tab, expanded, setExpanded, onSelectTab, pane.id]);
   const content = useMemo(
     () => buildPaneContentModel({ paneId: pane.id, tab }),
     [buildPaneContentModel, pane.id, tab],

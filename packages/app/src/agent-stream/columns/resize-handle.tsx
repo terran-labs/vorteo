@@ -6,7 +6,10 @@ import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
 import {
   SIDEBAR_RESIZE_ACTIVATION_OFFSET,
   SIDEBAR_RESIZE_FAIL_OFFSET,
+  resolveSidebarResizeHandleGeometry,
 } from "@/components/sidebar-resize-handle-layout";
+import { useHasFinePointer } from "@/hooks/use-fine-pointer";
+import { isWeb } from "@/constants/platform";
 import { resizeColumn, type ColumnWidths } from "./geometry";
 
 interface ColumnResizeHandleProps {
@@ -26,6 +29,17 @@ export function ColumnResizeHandle({
   onPreview,
   onCommit,
 }: ColumnResizeHandleProps) {
+  const finePointer = useHasFinePointer();
+  // The shared web handle straddles its edge. Move only its overlay inward when
+  // the centered conversation exhausts the gutter, keeping the full target reachable.
+  const handleInset =
+    isWeb && standaloneText && column === "text"
+      ? Math.max(
+          0,
+          (resolveSidebarResizeHandleGeometry(finePointer).width - (containerWidth - widths.text)) /
+            2,
+        )
+      : 0;
   const initial = useRef({ widths, pointerX: 0 });
   const [pressed, setPressed] = useState(false);
   const begin = useCallback(() => {
@@ -83,7 +97,7 @@ export function ColumnResizeHandle({
     [column, widths, containerWidth, standaloneText, onPreview, onCommit],
   );
   return (
-    <View pointerEvents="box-none" style={absoluteFill}>
+    <View pointerEvents="box-none" style={[absoluteFill, { right: handleInset }]}>
       <SidebarResizeHandle
         edge={column === "cards" ? "left" : "right"}
         gesture={gesture}

@@ -11,7 +11,8 @@ import {
 describe("thread columns", () => {
   it("resizes reading width after the workspace has already reserved the shared card group", () => {
     expect(resolveStandaloneTextWidth(900, 820)).toBe(820);
-    expect(resolveStandaloneTextWidth(600, 820)).toBe(568);
+    expect(resolveStandaloneTextWidth(600, 820)).toBe(600);
+    expect(resolveStandaloneTextWidth(1200, 1600)).toBe(1200);
     expect(
       resizeColumn({
         column: "text",

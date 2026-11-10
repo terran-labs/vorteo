@@ -1,3 +1,4 @@
+import { CARD_GAP } from "@/agent-stream/columns/geometry";
 import { useMobileComposerLayout } from "@/composer/mobile-layout";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { useMemo } from "react";
@@ -208,7 +209,7 @@ export function DictationOverlay({
       overlayStyles.actionButton,
       OVERLAY_ACCEPT_BUTTON_BG,
       touch && overlayStyles.touchEdit,
-      touch && { bottom: 7 + (OVERLAY_BUTTON_SIZE + 9) * (onAcceptAndQueue ? 2 : 1) },
+      touch && { bottom: 7 + (OVERLAY_BUTTON_SIZE + CARD_GAP) * (onAcceptAndQueue ? 2 : 1) },
     ],
     [touch, onAcceptAndQueue],
   );
@@ -233,7 +234,7 @@ export function DictationOverlay({
             overlayStyles.actionButton,
             OVERLAY_ACCEPT_BUTTON_BG,
             touch && overlayStyles.touchSubmit,
-            touch && { bottom: 7 + OVERLAY_BUTTON_SIZE + 9 },
+            touch && { bottom: 7 + OVERLAY_BUTTON_SIZE + CARD_GAP },
             actionsDisabled && overlayStyles.buttonDisabled,
           ]}
         >

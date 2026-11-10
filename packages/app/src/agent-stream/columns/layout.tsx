@@ -137,7 +137,7 @@ export function StreamColumns({
 }) {
   const { split, sizedText, widths, onLayout } = layout;
   const textOffset = layout.standaloneText
-    ? Math.max(COLUMN_MARGIN, (layout.containerWidth - widths.text) / 2)
+    ? Math.max(0, (layout.containerWidth - widths.text) / 2)
     : resolveTextOffset(layout.containerWidth, widths);
   const textStyle = useMemo(
     () => [
