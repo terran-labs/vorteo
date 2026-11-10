@@ -56,7 +56,7 @@ function hostFirst(left: Placement, right: Placement): number {
 function chooseKey(placements: readonly Placement[]): string | null | "conflict" {
   const ordered = [...placements].sort(hostFirst);
   // Factory bindings compare their project's key, so it can never change.
-  // COMPAT(retiredFactoryCheckpoint): added 2026-11-10; current daemons always report false.
+  // COMPAT(retiredFactoryCheckpoint): added after 26.11.902; current daemons always report false.
   // Remove the factory flag's handling here after 2027-05-10, once Host and Dev floors include
   // this release.
   const factory = new Set(

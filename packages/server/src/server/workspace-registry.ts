@@ -86,7 +86,7 @@ const PersistedProjectRecordSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   archivedAt: z.string().nullable(),
-  // COMPAT(retiredFactoryCheckpoint): added 2026-11-10; preserve inert controller metadata
+  // COMPAT(retiredFactoryCheckpoint): added after 26.11.902; preserve inert controller metadata
   // without validating its retired format. Drop after 2027-05-10 with a one-time cleanup.
   factoryInstallation: z.unknown().optional(),
   // Daemon startup seeding owns this marker; ordinary requests cannot set or clear it.

@@ -149,7 +149,7 @@ const PROJECT_FACTORY_INSTALLATION_PREFIX = "project-factory:";
  * controller wrote are inert: they no longer block archive, moves or System adoption, and
  * clients never see them.
  */
-// COMPAT(retiredFactoryMembership): added 2026-11-10; drop retired memberships on load and
+// COMPAT(retiredFactoryMembership): added after 26.11.902; drop retired memberships on load and
 // remove this filter after 2027-05-10, once no retained registry holds one.
 export function activeFactoryMembership(
   workspace: Pick<PersistedWorkspaceRecord, "factoryMembership">,

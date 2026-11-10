@@ -998,6 +998,9 @@ test("Factory adoption failure and coordinator recovery never replay selected so
   retired.decide(later.id, later.revision, "approve");
   await retired.drain();
   expect(plainRestart).toHaveBeenCalledOnce();
+  // Clearing the fence never replays the adoption.
+  expect(attempts).toBe(1);
+  expect(retired.list().find((item) => item.id === job.id)?.status).toBe("failed");
 });
 
 test.each([false, true])(

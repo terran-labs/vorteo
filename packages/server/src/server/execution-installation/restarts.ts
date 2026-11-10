@@ -2280,12 +2280,13 @@ export class InstallationRestarts {
    * no adoption can succeed, so a fence left from before would block Dev restarts and broker
    * dispatch for good. Clear it at startup and record why on the failed request.
    */
-  // COMPAT(retiredFactoryAdoption): added in 26.11.903; remove once every installation has
-  // started this release, which clears any retained fence on its first activation.
+  // COMPAT(retiredFactoryAdoption): added after 26.11.902; remove once every installation has
+  // started a release with it, which clears any retained fence on its first activation.
   private retireAdoptionFences(jobs: RestartJob[]): RestartJob[] {
     if (!this.executor.factoryRuntimeAdoptionRetired) return jobs;
     return jobs.map((job) =>
-      job.factoryRuntimeRecoveryRequired && !job.factoryRuntimeRecoveredBy
+      // Any job factoryRecoveryRequired() would count, provided it is a failed adoption.
+      job.factoryRuntimeRecoveryRequired && job.status === "failed" && job.factoryRuntimePlanSha256
         ? {
             ...job,
             factoryRuntimeRecoveryRequired: false,
