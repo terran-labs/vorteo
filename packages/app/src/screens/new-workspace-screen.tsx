@@ -152,6 +152,7 @@ import { buildNewWorkspaceProjectIconTargets } from "./new-workspace/project-ico
 import { useNewWorkspaceProjectPicker } from "./new-workspace/project-picker";
 
 import { ImportSessionButton } from "./new-workspace/import-session-button";
+import { LaunchPickerCollapse } from "@/composer/draft/launch-transition";
 import { useImportSession } from "@/hooks/use-import-session";
 import {
   buildTerminalsQueryKey,
@@ -2452,6 +2453,7 @@ export function NewWorkspaceScreen({
         title={t("newWorkspace.title")}
         formStack={formStack}
         onImportSession={importSession.open}
+        submitting={isPending}
       >
         {composer}
         {errorMessage ? <Text style={styles.errorText}>{errorMessage}</Text> : null}
@@ -2505,6 +2507,7 @@ function NewWorkspaceLayout({
   title,
   formStack,
   onImportSession,
+  submitting,
   children,
 }: {
   isCompact: boolean;
@@ -2515,11 +2518,18 @@ function NewWorkspaceLayout({
   title: string;
   formStack: ReactNode;
   onImportSession: () => void;
+  /** The first message is submitting; Import session leaves with the composer's launch controls. */
+  submitting: boolean;
   children: ReactNode;
 }) {
   const insets = useSafeAreaInsets();
   // At the top of the screen on compact layouts, under the composer otherwise.
-  const importSessionButton = <ImportSessionButton compact={isCompact} onPress={onImportSession} />;
+  // Shares the composer's collapse and pending flag so both tuck away together.
+  const importSessionButton = (
+    <LaunchPickerCollapse collapsed={submitting} stackGap={0}>
+      <ImportSessionButton compact={isCompact} onPress={onImportSession} />
+    </LaunchPickerCollapse>
+  );
   // Compact carries its title in the header. The free space above pushes the fields down onto
   // the composer, where the thumb is.
   // Merge 51f16b39f took upstream's compact fields, whose import button lives in a header this

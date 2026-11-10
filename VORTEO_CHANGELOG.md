@@ -13,6 +13,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ### Fixes
 
 - The Queue card no longer appears expanded and empty while the queue loads or while a send now, pause, delete, reorder or edit is still syncing for a message that has already left the queue. It shows only when it has a message, an error or a change to recover.
+- On New workspace, Import session now fades away with the launch controls when the first message is submitting, and returns if creation fails.
 
 ## 26.11.901 - 2026-11-09
 

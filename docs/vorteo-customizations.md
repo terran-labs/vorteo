@@ -2,6 +2,8 @@
 
 Release preparation 26.11.901 preserves the reviewed interface and installer batch and adds shutdown admission checks. Running provider requests retain their existing cleanup ownership; physical iOS acceptance remains unverified.
 
+Maintenance review (2026-11-09): New workspace wraps Import session in the composer's launch picker collapse, driven by the same pending flag, so it leaves with the profile selector while the first message submits and returns if creation fails. Interface only; no new test, since existing browser specs use the button before submitting. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-09): The shared Queue card now shows only when its body has a row, an error or a recovery action. Loading and in-flight commands against an emptied queue previously left an expanded empty card. The existing queue view test covers an in-flight edit for a delivered message. Interface only; README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-09): The agent lifecycle now rechecks shutdown after asynchronous setup and before provider session creation, releasing temporary launch context on rejection. Existing cleanup ownership and deadlines remain unchanged. This does not cancel provider requests already running or establish the cause of the original uninstrumented CI timeout. Nine focused lifecycle cases and the isolated supervisor stop fixture pass. Builds reviewed the rejection cleanup correction; final normal hooks and exact-commit review remain pending. README overview and onboarding are unchanged.
