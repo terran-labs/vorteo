@@ -28,7 +28,6 @@ import {
   ApiNumberSchema,
   fetchProviderApi,
   toneFromUsedPct,
-  hasAuthEnvironment,
   unavailableUsage,
   windowFromUsedPct,
 } from "../usage.js";
@@ -102,16 +101,6 @@ interface ClaudeCredentialRecord {
   oauth: { accessToken: string } & NonNullable<ClaudeCredentials["claudeAiOauth"]>;
 }
 
-/** Environment that lets Claude Code authenticate without the OAuth credentials store. */
-const CLAUDE_AUTH_ENV = [
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "CLAUDE_CODE_OAUTH_TOKEN",
-  "ANTHROPIC_BASE_URL",
-  "CLAUDE_CODE_USE_BEDROCK",
-  "CLAUDE_CODE_USE_VERTEX",
-] as const;
-
 interface ClaudeQuotaProviderOptions {
   logger: Logger;
   claudeHome?: string;
@@ -125,8 +114,6 @@ interface ClaudeQuotaProviderOptions {
   claudeAccountKeychainReader?: (service: string, account: string) => Promise<unknown | null>;
   platform?: typeof process.platform;
   fetch?: ProviderApiFetch;
-  /** The provider's configured environment, which can authenticate without the OAuth store. */
-  env?: Readonly<Record<string, string | undefined>>;
   /** Clock for access-token expiry. Injected by tests. */
   now?: () => number;
   /** Last usage-limit stops, shown when a setup-token credential cannot read usage. */
@@ -480,7 +467,6 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
   private readonly fetchApi: ProviderApiFetch;
   private readonly now: () => number;
   private readonly limitObservations: ClaudeLimitObservationReader | undefined;
-  private readonly env: Readonly<Record<string, string | undefined>>;
 
   constructor(options: ClaudeQuotaProviderOptions) {
     this.logger = options.logger.child({ module: "claude-quota-provider" });
@@ -502,7 +488,6 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
     this.fetchApi = options.fetch ?? fetch;
     this.now = options.now ?? Date.now;
     this.limitObservations = options.limitObservations;
-    this.env = options.env ?? {};
   }
 
   async fetchUsage(): Promise<ProviderUsage> {
@@ -523,10 +508,9 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
     }
     const credentials = await this.readCredentials();
     if (!credentials) {
-      // An API key, OAuth token, gateway or cloud provider in the environment still runs agents.
-      return hasAuthEnvironment(CLAUDE_AUTH_ENV, this.env)
-        ? unavailableUsage(this)
-        : { ...unavailableUsage(this), credentialsMissing: true };
+      // Not proof of no credentials: API keys, tokens, cloud providers and apiKeyHelper all run
+      // agents without this store, which Vorteo does not own. The reading stays unconfirmed.
+      return unavailableUsage(this);
     }
     return this.usageFromCredentials(credentials, CLAUDE_NATIVE_RECOVERY);
   }

@@ -2,14 +2,13 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { CodexQuotaProvider } from "./codex.js";
 import { evaluateQuotaReserve } from "../../../server/agent/quota-reserve/evaluate.js";
 
 const homes: string[] = [];
 
 afterEach(async () => {
-  vi.unstubAllEnvs();
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
 });
 
@@ -118,28 +117,24 @@ it.each([
   ]);
 });
 
-it("reports missing credentials only when no ChatGPT sign-in or API key can authenticate", async () => {
-  for (const name of ["OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL"]) vi.stubEnv(name, "");
-  const read = async (auth: unknown, env?: Record<string, string>) => {
+it("never claims a native Codex home has no credentials, and accepts API-key sign-in", async () => {
+  const read = async (auth: unknown) => {
     const home = await mkdtemp(join(tmpdir(), "paseo-codex-credentials-"));
     homes.push(home);
     if (auth !== undefined) await writeFile(join(home, "auth.json"), JSON.stringify(auth));
     const fetch = async () => {
       throw new Error("No usage request without a ChatGPT sign-in");
     };
-    const provider = new CodexQuotaProvider({
+    return new CodexQuotaProvider({
       logger: pino({ level: "silent" }),
       codexHome: home,
       strictCodexHome: true,
       fetch,
-      ...(env ? { env } : {}),
-    });
-    return provider.fetchUsage();
+    }).fetchUsage();
   };
-  expect((await read(undefined)).credentialsMissing).toBe(true);
-  // API-key sign-in writes the key with null tokens; it runs agents but has no usage to read.
-  const apiKey = await read({ OPENAI_API_KEY: "sk-test", tokens: null });
-  expect(apiKey.status).toBe("unavailable");
-  expect(apiKey.credentialsMissing).toBeUndefined();
-  expect((await read(undefined, { OPENAI_API_KEY: "sk-test" })).credentialsMissing).toBeUndefined();
+  // An API key elsewhere may still authenticate, so neither reading proves a missing sign-in.
+  for (const usage of [await read(undefined), await read({ OPENAI_API_KEY: "sk", tokens: null })]) {
+    expect(usage.status).toBe("unavailable");
+    expect(usage.credentialsMissing).toBeUndefined();
+  }
 });
