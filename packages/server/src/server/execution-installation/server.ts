@@ -3320,6 +3320,12 @@ export function createInstallationServer(
       coordinatorSettings: coordinatorSettings.status(),
     });
   });
+  // Only the canonical origin's boot page links to the private recovery origin; the recovery
+  // and local origins are already the way around the canonical gateway.
+  const recoveryLink = (origin: string) =>
+    config.recoveryOrigin && origin === config.public.origin
+      ? { recoveryOrigin: config.recoveryOrigin }
+      : {};
   const webUi = (origin: string, local = false) =>
     createWebUiMiddleware({
       enabled: true,
@@ -3334,6 +3340,7 @@ export function createInstallationServer(
         profileSharing: true,
         idleRestarts: Boolean(executor.inspect && executor.restartWhenIdle),
         gracefulRestarts: Boolean(executor.holdCurrentTurns && executor.releaseCurrentTurns),
+        ...(local ? {} : recoveryLink(origin)),
       }),
     });
   const canonicalWebUi = webUi(config.public.origin);
@@ -3346,6 +3353,7 @@ export function createInstallationServer(
     profileSharing: true,
     idleRestarts: Boolean(executor.inspect && executor.restartWhenIdle),
     gracefulRestarts: Boolean(executor.holdCurrentTurns && executor.releaseCurrentTurns),
+    ...recoveryLink(origin),
   });
   const liveDevWebUi = liveDev.middleware(liveDevConfigFor(config.public.origin));
   const recoveryWebUi = config.recoveryOrigin ? webUi(config.recoveryOrigin) : canonicalWebUi;
