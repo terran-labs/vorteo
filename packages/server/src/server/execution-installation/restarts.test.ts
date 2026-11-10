@@ -985,6 +985,19 @@ test("Factory adoption failure and coordinator recovery never replay selected so
     interrupted.list().find((item) => item.id === job.id)?.factoryRuntimeRecoveryRequired,
   ).toBe(true);
   expect(plainRestart).not.toHaveBeenCalled();
+  // With adoption retired no recovery can succeed, so startup clears the fence and says why.
+  const retired = new InstallationRestarts(journal, {
+    ...executor,
+    factoryRuntimePlan: () => undefined,
+    factoryRuntimeAdoptionRetired: true,
+  });
+  const cleared = retired.list().find((item) => item.id === job.id);
+  expect(cleared?.factoryRuntimeRecoveryRequired).toBe(false);
+  expect(cleared?.detail).toContain("Factory adoption was retired");
+  const later = retired.list().find((item) => item.id === plain.id)!;
+  retired.decide(later.id, later.revision, "approve");
+  await retired.drain();
+  expect(plainRestart).toHaveBeenCalledOnce();
 });
 
 test.each([false, true])(

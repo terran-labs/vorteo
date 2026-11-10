@@ -501,6 +501,7 @@ export function createInstallationRestartExecutor(
     // Factory runtime adoption started the retired controller runtime, which this release no
     // longer ships. A recorded adoption plan is never advertised, and a request is refused.
     factoryRuntimePlan: () => undefined,
+    factoryRuntimeAdoptionRetired: true,
     async adoptFactoryRuntime() {
       throw new Error(
         "Factory runtime adoption was retired with the Factory controller; Dev runs the plain supervisor. Nothing was changed.",
