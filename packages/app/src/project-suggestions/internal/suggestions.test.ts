@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   addSuggestedProjects,
+  requestProviderSuggestions,
   isStillReading,
   isSuggestionChecked,
   mergeProviderSuggestions,
@@ -140,4 +141,43 @@ describe("isStillReading", () => {
     expect(isStillReading([answered, { ...answered, provider: "pi" }])).toBe(false);
     expect(isStillReading([])).toBe(false);
   });
+});
+
+it("does not issue history requests without advertised support, including retries", async () => {
+  const requests: string[][] = [];
+  const request = async (options: { providers: string[] }) => {
+    requests.push(options.providers);
+    return [];
+  };
+  await expect(
+    requestProviderSuggestions({ supported: false, provider: "claude-account-one", request }),
+  ).rejects.toThrow("not supported");
+  expect(requests).toEqual([]);
+  await requestProviderSuggestions({ supported: true, provider: "claude-account-one", request });
+  expect(requests).toEqual([["claude-account-one"]]);
+});
+
+it("limits history choices to the advertised folder and preserves server admission failures", async () => {
+  const rows = mergeProviderSuggestions(
+    [
+      {
+        provider: "claude",
+        status: "answered",
+        suggestions: [
+          suggestion("/Projects/app"),
+          suggestion("/Projects"),
+          suggestion("/Projects-elsewhere/app"),
+          suggestion("/outside/app"),
+        ],
+      },
+    ],
+    new Set(),
+    "/Projects",
+  );
+  expect(rows.map((row) => row.rootPath)).toEqual(["/Projects/app"]);
+  const failures = await addSuggestedProjects(
+    rows.map((row) => row.rootPath),
+    async () => ({ ok: false, error: "Project resolves outside Projects folder" }),
+  );
+  expect([...failures]).toEqual([["/Projects/app", "Project resolves outside Projects folder"]]);
 });
