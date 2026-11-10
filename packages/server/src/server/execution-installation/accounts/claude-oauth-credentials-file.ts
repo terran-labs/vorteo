@@ -19,7 +19,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { ClaudeOAuthDeliveryError, type ClaudeAccessProjection } from "./claude-oauth-delivery.js";
 
 /**
- * Claude Code 2.1.284 through 2.1.318 (Linux) keeps OAuth only in `<CLAUDE_CONFIG_DIR>/.credentials.json`, checks
+ * Claude Code 2.1.284 through 2.1.321 (Linux) keeps OAuth only in `<CLAUDE_CONFIG_DIR>/.credentials.json`, checks
  * the file's mtime before every model request, and guards every read-modify-write of it with a
  * proper-lockfile mkdir lock at `.storage-write.lock` that it treats as stale after 15 seconds.
  * Taking the same lock keeps a concurrent CLI save (for example MCP OAuth) from overwriting a

@@ -1,11 +1,15 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 import type { Logger } from "pino";
 
 import type { AgentModelDefinition } from "../../agent-sdk-types.js";
 import {
+  buildThinkingOptions,
+  CLAUDE_DEFAULT_THINKING_OPTION_ID,
   getClaudeCustomModelThinkingOptions,
   getClaudeManifestModels,
+  isClaudeManifestModelId,
   normalizeClaudeManifestModelId,
   normalizeClaudeRuntimeModelId as normalizeClaudeManifestRuntimeModelId,
 } from "./model-manifest.js";
@@ -57,13 +61,77 @@ export function getClaudeContextWindowMaxTokens(
   return findClaudeModel(modelId)?.contextWindowMaxTokens;
 }
 
+// Fast mode support for models Claude Code advertised but the curated manifest does not
+// describe. Refreshed on every catalog refresh so feature gating follows the installed CLI.
+const discoveredFastModeModelIds = new Set<string>();
+
+export function discoveredClaudeModelSupportsFastMode(modelId: string | null | undefined): boolean {
+  return !!modelId && discoveredFastModeModelIds.has(modelId.trim());
+}
+
+/**
+ * Build catalog entries for models Claude Code advertises that the curated manifest lacks, so a
+ * new release appears as soon as the installed CLI supports it. Curated entries keep priority
+ * because they carry context windows and capabilities the CLI does not report.
+ */
+export function getDiscoveredClaudeModels(
+  advertisedModels: readonly ModelInfo[],
+): AgentModelDefinition[] {
+  const definitions: AgentModelDefinition[] = [];
+  discoveredFastModeModelIds.clear();
+  for (const advertised of advertisedModels) {
+    // "default" is a pointer to another advertised row, labelled for Claude Code's own picker.
+    if (advertised.value === "default") continue;
+    const id = (advertised.resolvedModel ?? advertised.value).trim();
+    if (
+      !id ||
+      isClaudeManifestModelId(id) ||
+      normalizeClaudeManifestModelId(id) !== null ||
+      definitions.some((model) => model.id === id)
+    ) {
+      continue;
+    }
+    const definition: AgentModelDefinition = {
+      provider: "claude",
+      id,
+      label: advertised.displayName.trim() || id,
+      description: advertised.description.trim() || "Reported by Claude Code",
+    };
+    if (id.toLowerCase().endsWith("[1m]")) {
+      definition.contextWindowMaxTokens = 1_000_000;
+    }
+    const effortLevels = advertised.supportedEffortLevels;
+    if (effortLevels && effortLevels.length > 0) {
+      const defaultThinkingOptionId = effortLevels.includes(CLAUDE_DEFAULT_THINKING_OPTION_ID)
+        ? CLAUDE_DEFAULT_THINKING_OPTION_ID
+        : effortLevels[0];
+      // Disabled thinking stays manifest-only; the session launcher rejects it elsewhere.
+      definition.thinkingOptions = buildThinkingOptions(
+        effortLevels,
+        false,
+        defaultThinkingOptionId,
+      );
+      definition.defaultThinkingOptionId = defaultThinkingOptionId;
+    }
+    if (advertised.supportsFastMode === true) {
+      discoveredFastModeModelIds.add(id);
+    }
+    definitions.push(definition);
+  }
+  return definitions;
+}
+
 export async function getClaudeModelsWithSettings(
   logger: Logger,
   configDir: string,
   claudeCodeVersion?: string,
   discoveredModelIds: ReadonlySet<string> = new Set(),
+  advertisedModels: readonly ModelInfo[] = [],
 ): Promise<AgentModelDefinition[]> {
-  const hardcodedModels = getClaudeManifestModels(claudeCodeVersion, discoveredModelIds);
+  const hardcodedModels = [
+    ...getDiscoveredClaudeModels(advertisedModels),
+    ...getClaudeManifestModels(claudeCodeVersion, discoveredModelIds),
+  ];
   const settingsModels = await readClaudeSettingsModels(logger, configDir);
   if (settingsModels.length === 0) {
     return hardcodedModels;

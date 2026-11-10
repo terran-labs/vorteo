@@ -16,7 +16,7 @@ import { execCommand } from "../../../utils/spawn.js";
  * The coordinator runs as the same user on the Host and receives the account's exact
  * CLAUDE_CONFIG_DIR from the Host daemon, so the CLI derives the same storage it would.
  *
- * Storage naming and lock compatibility were checked against Claude Code 2.1.318.
+ * Storage naming and lock compatibility were checked against Claude Code 2.1.321.
  * Live refresh persistence still needs installation acceptance across multiple rotations.
  */
 

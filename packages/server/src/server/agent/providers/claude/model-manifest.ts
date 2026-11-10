@@ -70,7 +70,7 @@ export const CLAUDE_MODEL_MANIFEST = [
   {
     id: "claude-fable-5-1",
     label: "Fable 5.1",
-    description: "Fable 5.1 · Most powerful model",
+    description: "Fable 5.1 · Previous release",
     contextWindowMaxTokens: 1_000_000,
     effortLevels: CLAUDE_EFFORT_LEVELS.xhigh,
   },
@@ -202,7 +202,7 @@ function getDefaultThinkingOptionId(model: ClaudeModelManifestEntry): ClaudeEffo
   return model.defaultThinkingOptionId ?? CLAUDE_DEFAULT_THINKING_OPTION_ID;
 }
 
-function buildThinkingOptions(
+export function buildThinkingOptions(
   effortLevels: readonly ClaudeEffortLevel[] | undefined,
   supportsThinkingDisabled: boolean,
   defaultThinkingOptionId: ClaudeEffortLevel,
@@ -461,8 +461,10 @@ export function normalizeClaudeRuntimeModelId(value: string | null | undefined):
     }
   }
 
+  // The lookahead keeps an unknown minor release such as "claude-fable-5-2" from collapsing to
+  // "claude-fable-5"; a dated suffix ("claude-opus-5-20260301") still names the major entry.
   const singleSegmentMatch = trimmed.match(
-    /claude[-_ ](mythos|fable|opus|sonnet|haiku)[-_ ]+(\d+)(\[1m\])?/i,
+    /claude[-_ ](mythos|fable|opus|sonnet|haiku)[-_ ]+(\d+)(?![-.]\d{1,2}(?!\d))(\[1m\])?/i,
   );
   if (!singleSegmentMatch) {
     return null;
