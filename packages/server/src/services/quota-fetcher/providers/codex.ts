@@ -114,7 +114,7 @@ export class CodexQuotaProvider implements ProviderUsageFetcher {
     const auth = credentials?.auth;
     const accessToken = auth?.tokens?.access_token;
     if (!credentials || !auth || !accessToken) {
-      return unavailableUsage(this);
+      return { ...unavailableUsage(this), credentialsMissing: true };
     }
 
     const { account_id } = auth.tokens ?? {};

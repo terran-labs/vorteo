@@ -78,11 +78,15 @@ const PRIMARY_UNAVAILABLE: AttentionItem = {
   hint: "It is off, signed out, not ready or not connected on the Host or where Factory runs, so system threads there wait.",
 };
 
-/** Local provider ids whose usage reading asks for a new sign-in. */
+/** Local provider ids whose usage reading asks for a new sign-in or finds no credentials. */
 function useSignedOut(serverId: string | null): Set<string> {
   const { view } = useProviderUsage(serverId, { enabled: Boolean(serverId) });
   const providers = view.kind === "ready" ? view.payload.providers : [];
-  return new Set(providers.filter((usage) => usage.authRecovery).map((usage) => usage.providerId));
+  return new Set(
+    providers
+      .filter((usage) => usage.authRecovery || usage.credentialsMissing)
+      .map((usage) => usage.providerId),
+  );
 }
 
 type Availability = ReturnType<typeof primaryConnectionAvailability>;

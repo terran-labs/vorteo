@@ -260,15 +260,14 @@ export function createInstallationSettings(
           client.getDaemonConfig(),
         ]);
         const ready = snapshot.entries.filter((entry) => entry.enabled && entry.status === "ready");
-        const { uncertain } = classifyProviders(ready, usage.providers);
+        const { failing, unconfirmed } = classifyProviders(ready, usage.providers);
         const loading = snapshot.entries
           .filter((entry) => entry.enabled && entry.status === "loading")
           .map((entry) => entry.provider);
         return {
-          usable: usableProviders(ready, usage.providers, daemon.config).filter(
-            (provider) => !uncertain.includes(provider),
-          ),
-          pending: [...loading, ...uncertain],
+          usable: usableProviders(ready, usage.providers, daemon.config),
+          pending: [...loading, ...failing],
+          unconfirmed,
         };
       } finally {
         await client.close();

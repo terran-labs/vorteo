@@ -7330,6 +7330,9 @@ export const ProviderUsageSchema = z.object({
   authRecovery: z
     .object({ instructions: z.string(), method: z.literal("device_code").optional() })
     .optional(),
+  // No credentials exist for this account, so it cannot start agents until someone signs in.
+  // Omitted when credentials exist or the daemon predates the field.
+  credentialsMissing: z.boolean().optional(),
   planLabel: z.string().nullable(),
   sourceLabel: z.string().nullable().optional(),
   fetchedAt: z.string().nullable().optional(),

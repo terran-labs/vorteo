@@ -142,6 +142,22 @@ describe("resolveDefaultLaunch", () => {
     );
     expect(await resolveDefaultLaunch(usageError.input)).toEqual({ provider: "claude" });
 
+    // A setup-token connection that has never hit a limit has no reading, and still launches.
+    const setupToken = launchInput(
+      settings({ primaryConnection: { provider: "claude" } }),
+      ["claude"],
+      [{ providerId: "claude", status: "unavailable" } as ProviderUsage],
+    );
+    expect(await resolveDefaultLaunch(setupToken.input)).toEqual({ provider: "claude" });
+
+    // No credentials at all: launching would only fail, so it waits like a sign out.
+    const noCredentials = launchInput(
+      settings({ primaryConnection: { provider: "claude" } }),
+      ["claude"],
+      [{ providerId: "claude", status: "unavailable", credentialsMissing: true } as ProviderUsage],
+    );
+    expect(await resolveDefaultLaunch(noCredentials.input)).toBeNull();
+
     const ownerChooses = launchInput(settings({ primaryConnection: null }), ["claude"]);
     expect(await resolveDefaultLaunch(ownerChooses.input)).toBeNull();
     expect(ownerChooses.adoptPrimary).not.toHaveBeenCalled();
@@ -161,6 +177,16 @@ describe("resolveDefaultLaunch", () => {
     );
     expect(await resolveDefaultLaunch(unsettled.input)).toBeNull();
     expect(unsettled.adoptPrimary).not.toHaveBeenCalled();
+
+    // A settled reading that cannot confirm Codex, such as a setup-token connection, leaves the
+    // choice to the owner rather than adopting Claude or retrying forever.
+    const unconfirmed = launchInput(
+      settings(),
+      ["claude", "codex"],
+      [{ providerId: "codex", status: "unavailable" } as ProviderUsage],
+    );
+    expect(await resolveDefaultLaunch(unconfirmed.input)).toBeNull();
+    expect(unconfirmed.adoptPrimary).toHaveBeenCalledWith(null);
 
     const several = launchInput(settings(), ["claude", "codex"]);
     expect(await resolveDefaultLaunch(several.input)).toBeNull();
@@ -192,6 +218,16 @@ describe("resolveDefaultLaunch", () => {
     );
     expect(await resolveDefaultLaunch(legacy.input)).toEqual({ provider: "codex" });
     expect(legacy.adoptPrimary).not.toHaveBeenCalled();
+    // The earlier rule skips readings that are unavailable or failed without a sign-in request.
+    const unconfirmed = launchInput(
+      legacy.current(),
+      ["claude", "codex"],
+      [
+        { providerId: "codex", status: "unavailable" } as ProviderUsage,
+        { providerId: "claude", status: "error" } as ProviderUsage,
+      ],
+    );
+    expect(await resolveDefaultLaunch(unconfirmed.input)).toBeNull();
     const none = launchInput(
       settings({
         sharedProviderPreferences: {

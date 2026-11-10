@@ -60,11 +60,11 @@ export interface SettingsEnvironment {
   ): Promise<void>;
   previewSkills(selection: AgentSkillSelection): Promise<AgentSkillsSaveResult>;
   /**
-   * Local provider ids that can run a system thread now, best first, and those whose readiness
-   * is not settled yet: still loading, or ready with a usage reading that failed without asking
-   * for a new sign in.
+   * Local provider ids that can run a system thread now, best first; those whose readiness is
+   * not settled yet, still loading or ready with a usage reading that failed; and ready ones
+   * whose settled reading neither confirms nor refuses a sign in.
    */
-  readProviderReadiness(): Promise<{ usable: string[]; pending: string[] }>;
+  readProviderReadiness(): Promise<{ usable: string[]; pending: string[]; unconfirmed: string[] }>;
   patch(
     patch: MutableDaemonConfigPatch,
     confirmedSkillRemovals?: readonly string[],
@@ -340,16 +340,19 @@ export class InstallationSettingsService {
    * Upgrades an installation that has never chosen a primary connection, once. The only usable
    * connection becomes primary; with several the owner chooses, so it is set to null. With none
    * it stays unchosen and a later pass, or the setup guide, decides. A failed read retries, and
-   * so does a pass where any eligible connection is still loading or has a usage error that
-   * does not ask for a new sign in: right after the upgrade restart, that connection may be
-   * usable too, and adopting the only one ready so far would choose for the owner.
+   * so does a pass where any eligible connection is still loading or its usage reading failed:
+   * right after the upgrade restart, that connection may be usable too, and adopting the only
+   * one ready so far would choose for the owner. An eligible connection whose settled reading
+   * cannot confirm a sign in, such as a setup-token connection, may be usable as well, so the
+   * owner chooses.
    */
   private async adoptPrimaryConnection(): Promise<void> {
     const previous = this.snapshot();
     if (!previous.settings?.providerDefinitions) return;
     const usable = new Set<string>();
+    let unconfirmed = false;
     for (const environment of this.environments) {
-      let readiness: { usable: string[]; pending: string[] };
+      let readiness: { usable: string[]; pending: string[]; unconfirmed: string[] };
       try {
         readiness = await environment.readProviderReadiness();
       } catch {
@@ -365,16 +368,17 @@ export class InstallationSettingsService {
             !excluded?.includes(entry.id),
         );
       if (readiness.pending.some((localId) => eligible(localId))) return;
+      if (readiness.unconfirmed.some((localId) => eligible(localId))) unconfirmed = true;
       for (const localId of readiness.usable) {
         const definition = eligible(localId);
         if (definition) usable.add(adoptionIdentity(definition, previous.settings));
       }
     }
-    if (usable.size === 0 || previous.revision !== this.state.revision) return;
+    if ((usable.size === 0 && !unconfirmed) || previous.revision !== this.state.revision) return;
     const [only] = usable;
     const settings: InstallationSettings = {
       ...structuredClone(previous.settings),
-      primaryConnection: usable.size === 1 ? { providerId: only! } : null,
+      primaryConnection: usable.size === 1 && !unconfirmed ? { providerId: only! } : null,
     };
     this.validateResources(settings);
     const next = { ...previous, revision: previous.revision + 1, settings };

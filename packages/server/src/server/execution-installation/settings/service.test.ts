@@ -1484,6 +1484,18 @@ test("an upgrade with several usable connections leaves the choice to the owner"
     },
   });
   expect(removed.settings?.primaryConnection).toBeNull();
+
+  // Codex's settled reading cannot confirm a sign in, as with a setup-token connection, so the
+  // owner chooses even though Claude is the only confirmed connection.
+  const unconfirmed = fixture();
+  unconfirmed.host.config.installationPrimaryConnection = null;
+  unconfirmed.host.config.providers = {
+    "claude-account": { extends: "claude", label: "Claude 1", enabled: true },
+    "codex-account": { extends: "codex", label: "Codex 1", enabled: true },
+  };
+  unconfirmed.host.usableProviders = ["claude-account"];
+  unconfirmed.host.unconfirmedProviders = ["codex-account"];
+  expect((await unconfirmed.service.reconcile()).settings?.primaryConnection).toBeNull();
 });
 
 function removeDefinition<T extends { id: string; removed?: boolean }>(

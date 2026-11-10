@@ -114,11 +114,21 @@ export class SettingsEnvironmentFake implements SettingsEnvironment {
 
   /** Local provider ids that read as usable; null makes the read fail. */
   usableProviders: string[] | null = [];
-  /** Local provider ids still loading or with an unsettled usage reading. */
+  /** Local provider ids still loading or with a failed usage reading. */
   pendingProviders: string[] = [];
-  async readProviderReadiness(): Promise<{ usable: string[]; pending: string[] }> {
+  /** Local provider ids whose settled usage reading cannot confirm a sign in. */
+  unconfirmedProviders: string[] = [];
+  async readProviderReadiness(): Promise<{
+    usable: string[];
+    pending: string[];
+    unconfirmed: string[];
+  }> {
     if (this.offline || this.usableProviders === null) throw new Error("environment offline");
-    return { usable: [...this.usableProviders], pending: [...this.pendingProviders] };
+    return {
+      usable: [...this.usableProviders],
+      pending: [...this.pendingProviders],
+      unconfirmed: [...this.unconfirmedProviders],
+    };
   }
 
   async previewSkills(selection: AgentSkillSelection): Promise<AgentSkillsSaveResult> {

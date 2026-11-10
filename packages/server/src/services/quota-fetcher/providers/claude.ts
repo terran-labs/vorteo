@@ -508,7 +508,7 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
     }
     const credentials = await this.readCredentials();
     if (!credentials) {
-      return unavailableUsage(this);
+      return { ...unavailableUsage(this), credentialsMissing: true };
     }
     return this.usageFromCredentials(credentials, CLAUDE_NATIVE_RECOVERY);
   }
@@ -552,6 +552,7 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
     if (!credentials)
       return {
         ...unavailableUsage(this),
+        credentialsMissing: true,
         details: [
           {
             id: "claude-sign-in",
