@@ -166,6 +166,14 @@ export function useMessageQueue(serverId: string, agentId: string) {
       });
       await flushMessageOutbox(serverId);
     },
+    dismissCommand: async (record: OutboxRecord) => {
+      await messageOutbox.dismissCommand({
+        serverId,
+        agentId,
+        operationId: record.operation.operationId,
+      });
+      await refreshMessageOutbox(serverId);
+    },
     keepLocalCopy: async (record: OutboxRecord) => {
       await messageOutbox.keepRejectedCopy({
         serverId,
