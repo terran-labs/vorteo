@@ -2,6 +2,53 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 26.11.902 - 2026-11-09
+
+Hourly blocked-work reviews, which reread whole conversations and could spend a large share of a weekly Claude limit, are now off by default. When an owner turns them back on in Settings, a blocked thread gets at most three reviews, at 5, 15 and 30 minutes, inside the prompt cache window, then none until someone writes to it. This release also brings Lab live development, Claude reset visibility, and phone, tablet and queue refinements.
+
+### Fixes
+
+- Keep tablet workspace tabs at the standard height while retaining the workspace name.
+- Keep Send distinct from the separate Queue action on touch tablets, including drafts with images.
+- Bring conversation content eight pixels closer to the composer edges and allow tablet column resizing to the available boundary.
+- Give expanded context charts the same evenly segmented capacity ring as collapsed tiles, retaining category colors and adding a blue, violet and green sweep when only totals are available.
+- Round Settings search and Back controls to the surrounding panel radius, match their hit-area height, and right-align the search field at its placeholder width.
+- Reduce the shared phone toolbar height and balance collapsed detail tiles across rows without counting hidden cards.
+- Expand phone Files, Changes and pull request details in place with the other conversation cards.
+- Keep fullscreen editing in the existing editor, with actions along the bottom and profile and browser controls hidden.
+- Use matching gaps between composer actions and detail tiles, center the empty phone placeholder, and keep recording at a fixed height.
+- Route the phone right-edge opener to Settings and give Settings its own return-to-workspace swipe, while keeping an open sidebar's close gesture separate.
+- When the installer refuses a release that would drop a commit a source upgrade installed, it now advises fixing forward on main and source-upgrading again, keeping snapshot restores for damaged state.
+- When the installer will not take over a source upgrade, it says why, such as a Host build still running, and how to clear it.
+- A `--source` checkout that lacks the installed commit now gets a clear error suggesting a fetch of main, instead of a false report that the release drops the commit.
+- Start live development on installations whose main address is a custom domain, using their private `.ts.net` address for the dev server.
+- Give card and sidebar section headers, including Open questions and Quota, the same quiet hover fill and 8px corners as the workspace rows.
+- Match small sidebar row actions (the project add button and the workspace menu trigger) to the row's kebab hover.
+- Align the conversation resize bar with the message field's right edge; read-only threads keep it on the column edge.
+- Dragging the docked Explorer's edge no longer rewrites the app's shared stylesheet on every frame, so resizing stays smooth.
+- Show free Claude limit resets, such as Fable resets, in the account picker by identifying Claude usage and reset requests as the installed Claude Code CLI.
+- Label Claude resets from the limits they clear. A reset for one model's weekly limit, such as Fable, no longer reads as a 5-hour session reset or as clearing the overall weekly limit.
+- Show the selected account's available resets in the composer's profile button caption.
+
+### Live tweaks
+
+- Remove the extra space above the Queue card's connection error by making its Retry action compact.
+- Show only the warning icon for System attention in the collapsed sidebar, with the message in a tooltip.
+
+### Features
+
+- Make Lab the single switch for live development: choosing Lab serves your browser from the live checkout with hot reload and enables lab self-updates, and Stable serves the published interface. The separate Delivery mode switch is replaced by a read-only Live development status.
+
+### Maintenance
+
+- Log each change in Claude's reset eligibility per account, without grant identifiers or labels, to confirm what Claude returns.
+- Separate bounded browser restart prerequisites from the restart behavior budget, and give the fixture ownership of acquired resources through teardown.
+
+### Changes
+
+- Blocked-work review is now off by default. Each review resumes the thread's whole conversation, so a few blocked threads could use a large share of a weekly provider limit. Turn it back on in Settings, System, **Review blocked work**; the change applies without a restart.
+- When blocked-work review is turned on, a stopped thread now gets at most three reviews, about 5, 15 and 30 minutes apart, then waits until someone messages it. The short gaps reuse the provider's prompt cache, so each review costs a fraction of the old hourly review, which reread the whole conversation every hour indefinitely. Blockers waiting on an open question are skipped, and the setting is renamed **Review blocked work**.
+
 ## Unreleased - 2026-11-10
 
 ### Maintenance
