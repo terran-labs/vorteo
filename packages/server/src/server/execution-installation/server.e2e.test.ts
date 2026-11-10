@@ -77,6 +77,7 @@ import {
   SourceContributionSchema,
   InstallationUnlockSchema,
   InstallationProfilesSnapshotSchema,
+  validateExecutionInstallation,
 } from "@getpaseo/protocol/execution-installation";
 
 // The installation client refuses request commands outside the builds coordinator.
@@ -4414,6 +4415,16 @@ test("native recovery origin serves the interface and authenticated controls ind
     "host-agent-test-token",
   ])
     expect(html).not.toContain(secret);
+  // Only the canonical page links to recovery, outside the strictly validated descriptor.
+  expect(html).not.toContain("__VORTEO_RECOVERY_ORIGIN__");
+  const canonical = await (
+    await request("/", undefined, undefined, "https://owner.example.test", "owner.example.test")
+  ).text();
+  expect(canonical).toContain(`window.__VORTEO_RECOVERY_ORIGIN__=${JSON.stringify(origin)}`);
+  const descriptor = /window\.__VORTEO_EXECUTION_INSTALLATION__=(\{.*?\});/.exec(canonical)?.[1];
+  expect(validateExecutionInstallation(JSON.parse(descriptor ?? "null"))).not.toHaveProperty(
+    "recoveryOrigin",
+  );
   expect((await request("/api/installation/owner/unlock", undefined, {})).status).toBe(401);
   expect(
     (await request("/api/installation/owner/unlock", "guest-agent-test-token", {})).status,
