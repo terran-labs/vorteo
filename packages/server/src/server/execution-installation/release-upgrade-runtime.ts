@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { createDelegationEvidence, type DelegationGrant } from "./delegated-admission.js";
 import {
   closeSync,
   existsSync,
@@ -14,10 +15,10 @@ import type { Logger } from "pino";
 import {
   SnapshotPartKindSchema,
   SnapshotRestoreStatusSchema,
-  type InstallationUpgrade,
   type SnapshotList,
   type SnapshotRestoreRequest,
   type SnapshotRestoreStatus,
+  type SourceUpgradeStatus,
   type UpgradeStatus,
 } from "@getpaseo/protocol/installation-upgrades";
 import type { RestartJob, SourceUpdate } from "@getpaseo/protocol/execution-installation";
@@ -36,14 +37,22 @@ import {
   createCoordinatorFollowJournal,
   createUpgradeJournal,
   InstallationUpgrades,
+  isSourceUpgrade,
+  SourceUpgrades,
+  upgradeTarget,
   type AdoptionOutcome,
+  type SourceUpgradePorts,
+  type UpgradeJob,
   type UpgradePorts,
 } from "./release-upgrades.js";
 import { VORTEO_RELEASE_GIT_URL, VORTEO_RELEASE_REPOSITORY } from "./release-source.js";
 import {
   ReleaseUpdates,
   createUpdatePolicyStore,
+  fetchCheckRuns,
   fetchGitHubReleases,
+  requiredChecksOf,
+  summarizeRequiredChecks,
   type ReleaseUpdatePorts,
 } from "./release-updates.js";
 import { RestartRequestError, type InstallationRestarts } from "./restarts.js";
@@ -57,12 +66,17 @@ import {
   snapshotPartKinds,
   snapshotRoot,
   snapshotSources,
+  SNAPSHOT_RETENTION,
   type InstallationSnapshots,
 } from "./snapshots.js";
 import type { InstallationSourceUpdates } from "./source-updates.js";
+import { readInstallationType } from "./installation-type.js";
 
 const COORDINATOR_READY_TIMEOUT_MS = 120_000;
 const UPGRADE_REASON_PREFIX = "Release upgrade";
+const SOURCE_UPGRADE_REASON_PREFIX = "Source upgrade";
+/** Where source upgrades keep the fetched `main` in the source checkout. */
+const SOURCE_MAIN_REF = "refs/vorteo-source-upgrade/main";
 // Adoption may build the Dev and gate images and a release before it restarts anything.
 const ADOPTION_DEADLINE_MS = 4 * 60 * 60_000;
 const INSTALLER_ENGINE = "scripts/installer/main.mjs";
@@ -73,6 +87,9 @@ const COORDINATOR_DIRECTORY = "packages/server/dist/server/server/execution-inst
 
 export interface ReleaseUpgradeRuntime {
   upgrades: InstallationUpgrades | null;
+  /** Owner-approved upgrades to one reviewed commit on main. Null when unavailable. */
+  sourceUpgrades: SourceUpgrades | null;
+  sourceUpgradeStatus(): SourceUpgradeStatus;
   /** Moves the coordinator onto the Host release that Host source updates selected. */
   coordinatorFollow: CoordinatorFollow;
   /** The update policy and release check. Null when upgrades are unavailable. */
@@ -84,7 +101,11 @@ export interface ReleaseUpgradeRuntime {
   adoptAfterSourceUpdate(): void;
   snapshots: InstallationSnapshots | null;
   snapshotList(): SnapshotList;
-  takeSnapshot(): ReturnType<InstallationSnapshots["take"]>;
+  /**
+   * `prune: false` keeps every existing snapshot and refuses once retention is two over its limit:
+   * an agent's snapshot must never delete the owner's or an upgrade's rollback point.
+   */
+  takeSnapshot(options?: { prune?: boolean }): ReturnType<InstallationSnapshots["take"]>;
   restore(request: SnapshotRestoreRequest): Promise<SnapshotRestoreStatus>;
   upgradeStatus(): UpgradeStatus;
 }
@@ -182,6 +203,22 @@ export function upgradeBlocker(config: InstallationConfig, adoptable = false): s
 }
 
 /**
+ * Why source upgrades cannot run, or null. They need the installer layout itself; an
+ * installation from before the installer moves to it through a release upgrade first.
+ */
+function sourceUpgradeBlocker(blocker: string | null, adoptable: boolean): string | null {
+  if (blocker) return blocker;
+  return adoptable
+    ? "Source upgrades need an installation made by the one-command installer. Install a release upgrade first."
+    : null;
+}
+
+function hostUpdateRequester(upgrade: UpgradeJob): string {
+  if (isSourceUpgrade(upgrade)) return "Source upgrade";
+  return upgrade.automatic ? "Automatic release update policy" : "Release upgrade";
+}
+
+/**
  * True when upgrades rebuild Dev: an installation with Dev whose deployment the installer
  * manages. Adoption records `containerDirectory` only for such a Dev; an installation not yet
  * adopted keeps the old behavior until adoption decides.
@@ -254,6 +291,24 @@ function readAdoptionOutcome(file: string): AdoptionOutcome | null {
   }
 }
 
+/**
+ * Takes an owner-reason safety snapshot. With `prune`, the oldest beyond retention go, as for the
+ * owner's own snapshot. Without it nothing is removed, and the snapshot is refused once retention
+ * is two over its limit, so an agent's snapshot never deletes an existing rollback point.
+ */
+export async function takeSafetySnapshot(
+  snapshots: Pick<InstallationSnapshots, "list" | "take" | "prune">,
+  prune: boolean,
+) {
+  if (!prune && snapshots.list().length >= SNAPSHOT_RETENTION + 2)
+    throw new RestartRequestError(
+      "Snapshot retention is full. Ask the owner to take the next snapshot in Installation controls, which removes the oldest.",
+    );
+  const snapshot = await snapshots.take({ reason: "owner" });
+  if (prune) snapshots.prune([snapshot.id]);
+  return snapshot;
+}
+
 export function createReleaseUpgradeRuntime(input: {
   config: InstallationConfig;
   configFile: string;
@@ -271,6 +326,8 @@ export function createReleaseUpgradeRuntime(input: {
    * restarts, approved Host jobs and open coordinator requests.
    */
   coordinatorFollowConflict?: () => string | null;
+  /** The active full maintenance grant; a Host-agent coordinator update is delegated under it. */
+  delegationGrant?: () => DelegationGrant | null;
 }): ReleaseUpgradeRuntime {
   const { config, configFile, restarts, hostUpdates, logger } = input;
   const run = input.run ?? runCommand;
@@ -353,7 +410,7 @@ export function createReleaseUpgradeRuntime(input: {
   const hostBuildOutcome = (upgradeId: string) =>
     path.join(upgradeDirectory, upgradeId, "host-build.json");
 
-  function launchHostBuild(upgrade: InstallationUpgrade): void {
+  function launchHostBuild(upgrade: UpgradeJob): void {
     const deployment = config.deployment;
     if (!deployment) throw new Error("The installation deployment is unknown");
     const directory = path.join(upgradeDirectory, upgrade.id);
@@ -376,7 +433,7 @@ export function createReleaseUpgradeRuntime(input: {
     );
   }
 
-  function launchDirectHostRelease(upgrade: InstallationUpgrade): string {
+  function launchDirectHostRelease(upgrade: UpgradeJob): string {
     const deployment = config.deployment;
     if (!deployment) throw new Error("The installation deployment is unknown");
     const directory = path.join(upgradeDirectory, upgrade.id);
@@ -503,7 +560,8 @@ export function createReleaseUpgradeRuntime(input: {
     job.target === "host" &&
     job.update !== undefined &&
     job.status === "succeeded" &&
-    !job.reason.startsWith(UPGRADE_REASON_PREFIX);
+    !job.reason.startsWith(UPGRADE_REASON_PREFIX) &&
+    !job.reason.startsWith(SOURCE_UPGRADE_REASON_PREFIX);
   // Source updates that finished before this process started never trigger adoption.
   const earlierUpdates = new Set<string>();
   if (adoptable) {
@@ -541,7 +599,7 @@ export function createReleaseUpgradeRuntime(input: {
   }
 
   /** Stage base..release as a bundle with the integration ref, exactly as Host agents upload. */
-  async function stageHostUpdate(upgrade: InstallationUpgrade): Promise<SourceUpdate> {
+  async function stageHostUpdate(upgrade: UpgradeJob): Promise<SourceUpdate> {
     const settings = config.sourceUpdates;
     const source = config.deployment?.sourceDirectory;
     const base = currentCommit();
@@ -572,7 +630,7 @@ export function createReleaseUpgradeRuntime(input: {
     await git(["-C", scratch, "merge-base", "--is-ancestor", base, upgrade.sourceCommit]).catch(
       () => {
         throw new Error(
-          `Release ${upgrade.release} does not contain the installed Host source ${base}.`,
+          `${upgradeTarget(upgrade)} does not contain the installed Host source ${base}.`,
         );
       },
     );
@@ -632,13 +690,118 @@ export function createReleaseUpgradeRuntime(input: {
     logger.info({ id, next }, "Coordinator handoff started");
   }
 
+  /** True when the Host commit was installed by a source upgrade. */
+  function sourceInstalled(commit: string): boolean {
+    return Boolean(
+      sourceUpgrades
+        ?.list()
+        .some(
+          (item) =>
+            item.sourceCommit === commit &&
+            item.steps.some((step) => step.name === "host" && step.status === "succeeded"),
+        ),
+    );
+  }
+
+  /** Fetches `main` of the release repository into the source checkout's source-upgrade ref. */
+  async function fetchMain(source: string): Promise<void> {
+    await git([
+      "-C",
+      source,
+      "fetch",
+      "--quiet",
+      "--no-tags",
+      VORTEO_RELEASE_GIT_URL,
+      `+refs/heads/main:${SOURCE_MAIN_REF}`,
+    ]);
+  }
+
+  /** True when `ancestor` is an ancestor of, or equal to, `commit` in the source checkout. */
+  async function contains(source: string, commit: string, ancestor: string): Promise<boolean> {
+    try {
+      await git(["-C", source, "merge-base", "--is-ancestor", ancestor, commit]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** The fetch step of a source upgrade: the commit must still be on main. */
+  async function fetchSource(source: string, upgrade: UpgradeJob): Promise<void> {
+    if (!isSourceUpgrade(upgrade)) throw new Error("Not a source upgrade");
+    if (upgrade.rollbackOf) {
+      // A rollback reselects a release already built; nothing is fetched.
+      const refusal = rollbackBlocker(upgrade.sourceCommit);
+      if (refusal) throw new Error(refusal);
+      return;
+    }
+    await fetchMain(source);
+    if (!(await contains(source, SOURCE_MAIN_REF, upgrade.sourceCommit)))
+      throw new Error(
+        `Commit ${upgrade.sourceCommit} is no longer on main. Nothing was restarted. Request the source upgrade again.`,
+      );
+    if (
+      upgrade.previousCommit &&
+      !(await contains(source, upgrade.sourceCommit, upgrade.previousCommit))
+    )
+      throw new Error(
+        `Commit ${upgrade.sourceCommit} does not contain the Host commit it was reviewed against.`,
+      );
+  }
+
+  /** Why the Host release built for `commit` cannot be selected again without a build, or null. */
+  function rollbackBlocker(commit: string): string | null {
+    const link = config.deployment?.hostReleaseLink;
+    if (!directHostUpgrades(config) || !link)
+      return "Rolling back needs a Host the installer builds. This Host updates through Host source updates, which cannot install an older commit.";
+    if (installerRevision(path.join(path.dirname(link), commit)) !== commit)
+      return `The Host release of ${commit.slice(0, 12)} is no longer installed, so it cannot be selected again.`;
+    return null;
+  }
+
+  async function lastRelease(commit: string): Promise<string | null> {
+    const source = config.deployment?.sourceDirectory;
+    if (!source) return null;
+    try {
+      return await git(
+        ["-C", source, "describe", "--tags", "--abbrev=0", "--match", "release-*", commit],
+        30_000,
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Reads the required check names from the commit's own `main` ruleset and their results from
+   * the public GitHub API. Anything it cannot read refuses the request; it never passes blind.
+   */
+  async function requiredChecks(source: string, commit: string) {
+    try {
+      const ruleset = await git(
+        ["-C", source, "show", `${commit}:.github/rulesets/main.json`],
+        30_000,
+      );
+      return summarizeRequiredChecks(await fetchCheckRuns(commit), requiredChecksOf(ruleset));
+    } catch (error) {
+      return {
+        passed: false,
+        detail: `they could not be verified (${error instanceof Error ? error.message : String(error)}).`,
+      };
+    }
+  }
+
   const ports: UpgradePorts = {
     now: () => new Date(),
-    conflict: () =>
-      // `coordinatorFollow` is created below from these ports; it exists before any upgrade runs.
-      coordinatorFollow.dispatching()
-        ? "Wait for the coordinator update to finish before upgrading."
-        : (input.conflict?.() ?? null),
+    conflict: () => {
+      // `coordinatorFollow` and `sourceUpgrades` are created below from these ports; they exist
+      // before any upgrade runs.
+      if (coordinatorFollow.dispatching())
+        return "Wait for the coordinator update to finish before upgrading.";
+      if (sourceUpgrades?.dispatching())
+        return "Wait for the source upgrade to finish before upgrading.";
+      return input.conflict?.() ?? null;
+    },
     adoptionRequired: adoptable,
     launchAdoption: (upgrade) => launchAdoptionEngine(path.join(upgradeDirectory, upgrade.id)),
     adoptionOutcome: (upgradeId) =>
@@ -691,7 +854,7 @@ export function createReleaseUpgradeRuntime(input: {
       const snapshot = await snapshots.take({
         reason: "upgrade",
         upgradeId: upgrade.id,
-        release: upgrade.release,
+        ...(isSourceUpgrade(upgrade) ? {} : { release: upgrade.release }),
       });
       snapshots.prune([snapshot.id]);
       return snapshot.id;
@@ -699,6 +862,7 @@ export function createReleaseUpgradeRuntime(input: {
     async fetchRelease(upgrade) {
       const source = config.deployment?.sourceDirectory;
       if (!source) throw new Error("The source directory is unknown");
+      if (isSourceUpgrade(upgrade)) return fetchSource(source, upgrade);
       const ref = `refs/tags/${upgrade.release}`;
       await git([
         "-C",
@@ -714,6 +878,14 @@ export function createReleaseUpgradeRuntime(input: {
         throw new Error(
           `Release ${upgrade.release} now names ${commit}, not the reviewed ${upgrade.sourceCommit}. Request the upgrade again.`,
         );
+      // A Host the installer builds takes any revision, so a release cut without a commit a
+      // source upgrade installed would silently drop it. Restart-queue Hosts refuse that when
+      // staging the bundle.
+      const installed = currentCommit();
+      if (installed && sourceInstalled(installed) && !(await contains(source, commit, installed)))
+        throw new Error(
+          `Release ${upgrade.release} does not contain commit ${installed.slice(0, 12)}, which a source upgrade installed. Nothing was restarted. Wait for a release that includes it.`,
+        );
     },
     async requestHostUpdate(upgrade) {
       if (directHostUpgrades(config)) return launchDirectHostRelease(upgrade);
@@ -724,14 +896,14 @@ export function createReleaseUpgradeRuntime(input: {
       const job = restarts.request(
         {
           target: "host",
-          reason: `${UPGRADE_REASON_PREFIX} to ${upgrade.release} (${upgrade.id})`,
-          requester: upgrade.automatic ? "Automatic release update policy" : "Release upgrade",
+          reason: `${isSourceUpgrade(upgrade) ? SOURCE_UPGRADE_REASON_PREFIX : UPGRADE_REASON_PREFIX} to ${upgradeTarget(upgrade)} (${upgrade.id})`,
+          requester: hostUpdateRequester(upgrade),
         },
         "owner",
         update,
       );
-      // The owner, or the owner's automatic update policy, approved this exact release; the
-      // bundle is derived from its reviewed commit. An upgrade approved to install after current
+      // The owner, or the owner's automatic update policy, approved this exact release or
+      // commit; the bundle is derived from that reviewed commit. An upgrade approved to install after current
       // work takes the automatic updates' path: hold new work, build, then restart when idle.
       if (upgrade.restart === "after-work")
         restarts.decide(job.id, job.revision, "finish-current-turns", update.sha256);
@@ -920,6 +1092,60 @@ export function createReleaseUpgradeRuntime(input: {
     ? null
     : new InstallationUpgrades(createUpgradeJournal(upgradeDirectory), ports);
 
+  const sourceBlocker = sourceUpgradeBlocker(blocker, adoptable);
+  const sourcePorts: SourceUpgradePorts = {
+    ...ports,
+    adoptionRequired: false,
+    conflict: () => {
+      if (upgrades?.dispatching()) return "Wait for the release upgrade to finish.";
+      if (coordinatorFollow.dispatching()) return "Wait for the coordinator update to finish.";
+      return input.conflict?.() ?? null;
+    },
+    async inspectSource(commit, installed) {
+      const source = config.deployment?.sourceDirectory;
+      if (!source) throw new RestartRequestError("The source directory is unknown");
+      try {
+        await fetchMain(source);
+      } catch (error) {
+        throw new RestartRequestError(
+          `main could not be fetched from ${VORTEO_RELEASE_REPOSITORY}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      const onMain = await contains(source, SOURCE_MAIN_REF, commit);
+      const containsInstalled = onMain && (await contains(source, commit, installed));
+      return {
+        onMain,
+        containsInstalled,
+        checks:
+          onMain && containsInstalled
+            ? await requiredChecks(source, commit)
+            : { passed: false, detail: "not checked." },
+        lastRelease: onMain ? await lastRelease(commit) : null,
+      };
+    },
+    lastRelease,
+    rollbackBlocker,
+    async installationBlocker() {
+      try {
+        if ((await readInstallationType(config.stateDir)).type === "stable") return null;
+        return "The installation became Lab, so the source upgrade stopped.";
+      } catch {
+        return "The installation type is unreadable, so the source upgrade stopped.";
+      }
+    },
+    delegationGrant: () => input.delegationGrant?.() ?? null,
+    delegationEvidence: createDelegationEvidence(
+      path.join(config.stateDir, "source-upgrades", "delegation-evidence.json"),
+    ),
+    cancellationDelayMs: 30_000,
+  };
+  const sourceUpgrades = sourceBlocker
+    ? null
+    : new SourceUpgrades(
+        createUpgradeJournal(path.join(config.stateDir, "source-upgrades")),
+        sourcePorts,
+      );
+
   const coordinatorFollow = new CoordinatorFollow(createCoordinatorFollowJournal(followDirectory), {
     now: () => new Date(),
     replacement: coordinatorReplacement(config, services, entrypoint),
@@ -927,6 +1153,7 @@ export function createReleaseUpgradeRuntime(input: {
     // lifecycle work it coordinates.
     conflict: () => {
       if (upgrades?.active()) return "Wait for the release upgrade to finish.";
+      if (sourceUpgrades?.active()) return "Wait for the source upgrade to finish.";
       return input.coordinatorFollowConflict?.() ?? null;
     },
     hostRelease: () => ports.hostRelease(),
@@ -937,6 +1164,8 @@ export function createReleaseUpgradeRuntime(input: {
       existsSync(path.join(release, COORDINATOR_DIRECTORY, path.basename(entrypoint))),
     launchSwap: (job, next, previous) =>
       launchCoordinatorSwap(path.join(followDirectory, job.id), job.id, next, previous),
+    delegationGrant: () => input.delegationGrant?.() ?? null,
+    cancellationDelayMs: 30_000,
     swapOutcome: (jobId) =>
       readHandoffOutcome(path.join(followDirectory, jobId, "coordinator-handoff.json")),
   });
@@ -991,8 +1220,52 @@ export function createReleaseUpgradeRuntime(input: {
     }
   }
 
+  /** The release the installed Host commit came from, or the one a source upgrade is ahead of. */
+  function installedRelease(commit: string): { release: string | null; aheadOf: string | null } {
+    const release = upgrades
+      ?.list()
+      .find((item) => item.status === "succeeded" && item.sourceCommit === commit)?.release;
+    if (release) return { release, aheadOf: null };
+    const source = sourceUpgrades
+      ?.list()
+      .find((item) => item.status === "succeeded" && item.sourceCommit === commit);
+    return { release: null, aheadOf: source ? source.lastRelease : null };
+  }
+
+  function sourceUpgradeStatus(): SourceUpgradeStatus {
+    const commit = currentCommit();
+    const installed = commit ? installedRelease(commit) : null;
+    const ahead = Boolean(
+      commit &&
+      !installed?.release &&
+      sourceUpgrades
+        ?.list()
+        .some((item) => item.status === "succeeded" && item.sourceCommit === commit),
+    );
+    return {
+      available: sourceUpgrades !== null,
+      detail:
+        sourceBlocker ??
+        "A source upgrade installs one reviewed commit from main the way a release upgrade installs a release. The owner approves each one.",
+      current: commit
+        ? {
+            sourceCommit: commit,
+            lastRelease: installed?.release ?? installed?.aheadOf ?? null,
+            ahead,
+          }
+        : null,
+      rollback: sourceUpgrades?.rollbackOffer() ?? {
+        available: false,
+        detail: sourceBlocker ?? "",
+      },
+      upgrades: sourceUpgrades?.list() ?? [],
+    };
+  }
+
   return {
     upgrades,
+    sourceUpgrades,
+    sourceUpgradeStatus,
     coordinatorFollow,
     updates,
     adoptAfterSourceUpdate,
@@ -1003,23 +1276,21 @@ export function createReleaseUpgradeRuntime(input: {
         detail: snapshots
           ? `Snapshots are kept in ${snapshots.root}.`
           : "Snapshots need an installation made by the one-command installer.",
-        retention: 5,
+        retention: SNAPSHOT_RETENTION,
         snapshots: snapshots?.list() ?? [],
         restore: readRestoreStatus(),
       };
     },
-    async takeSnapshot() {
+    async takeSnapshot(options = {}) {
       if (!snapshots)
         throw new RestartRequestError("Snapshots are unavailable on this installation");
-      const snapshot = await snapshots.take({ reason: "owner" });
-      snapshots.prune([snapshot.id]);
-      return snapshot;
+      return takeSafetySnapshot(snapshots, options.prune ?? true);
     },
     async restore(request) {
       if (!snapshots || !restoreDirectory)
         throw new RestartRequestError("Snapshots are unavailable on this installation");
       if (typeof services === "string") throw new RestartRequestError(services);
-      if (upgrades?.active()?.status === "running")
+      if (upgrades?.active()?.status === "running" || sourceUpgrades?.dispatching())
         throw new RestartRequestError("Wait for the running upgrade to finish before restoring");
       if (readRestoreStatus()?.status === "running")
         throw new RestartRequestError("A restore is already running");
@@ -1075,6 +1346,7 @@ export function createReleaseUpgradeRuntime(input: {
     },
     upgradeStatus() {
       const commit = currentCommit();
+      const installed = commit ? installedRelease(commit) : null;
       return {
         available: upgrades !== null,
         detail: upgradeDetail(),
@@ -1082,11 +1354,8 @@ export function createReleaseUpgradeRuntime(input: {
         current: commit
           ? {
               sourceCommit: commit,
-              release:
-                upgrades
-                  ?.list()
-                  .find((item) => item.status === "succeeded" && item.sourceCommit === commit)
-                  ?.release ?? null,
+              release: installed?.release ?? null,
+              ...(installed?.aheadOf ? { aheadOf: installed.aheadOf } : {}),
             }
           : null,
         container: managedDev(config),

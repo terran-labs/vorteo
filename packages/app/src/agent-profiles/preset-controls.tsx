@@ -129,7 +129,7 @@ export function PresetControls({
       : storedProfileId;
   const hasLocalEndpoint = profiles.rows.some((row) => Boolean(row.localEndpoint));
   const active = panelActive;
-  const { view } = usePresetData(serverId, active);
+  const { view, resetCounts } = usePresetData(serverId, active);
   // Refresh visible usage in the background without gating the menu.
   const refreshRef = useRef(profiles.refreshStatus);
   refreshRef.current = profiles.refreshStatus;
@@ -166,6 +166,7 @@ export function PresetControls({
       entries,
       view,
       now,
+      resetCounts,
     });
   const show = useCallback(() => {
     setOpen(true);
@@ -273,7 +274,7 @@ export function PresetControls({
 const styles = StyleSheet.create((theme) => ({
   inline: { height: NEW_WORKSPACE_CARD_HEIGHT, width: "100%" },
   inlineCompact: { height: 340, width: "100%" },
-  touchControls: { flex: 1, flexWrap: "nowrap" },
+  touchControls: { flexShrink: 1, flexWrap: "nowrap" },
   centerControls: { justifyContent: "center", marginHorizontal: 8 },
   controls: {
     minWidth: 0,

@@ -417,7 +417,13 @@ export async function expectComposerDraftSelection(
 }
 export async function expectComposerFullscreenControls(page: Page): Promise<void> {
   await expect(page.getByRole("button", { name: "Exit fullscreen", exact: true })).toBeVisible();
-  await expect(page.getByTestId("composer-fullscreen").getByRole("button")).toHaveCount(2);
+  // Fullscreen keeps Exit, Queue and Send beside optional dictation.
+  await expect(
+    page
+      .getByTestId("composer-fullscreen")
+      .getByRole("button")
+      .and(page.locator(':not([aria-label$="dictation"])')),
+  ).toHaveCount(3);
   await expect(composerInput(page)).toHaveCount(1);
 }
 /** The fullscreen frame and its submit button sit inside the browser's visible viewport. */

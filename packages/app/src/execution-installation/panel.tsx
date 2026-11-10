@@ -1,6 +1,7 @@
 import { toErrorMessage } from "@/utils/error-messages";
 import { SettingsStatusLine } from "@/components/settings/settings-status-line";
-import { useInstallationUpgradeStatus } from "./use-installation-upgrades";
+import { useAgentActionReceipts, useInstallationUpgradeStatus } from "./use-installation-upgrades";
+import type { AgentActionReceipt } from "@getpaseo/protocol/installation-upgrades";
 import { systemAttentionCount } from "@/screens/settings/system/system-adapter-model";
 import { usePanelOwnerAccess } from "./panel-owner-access";
 import { OwnerLockBadge } from "@/components/settings/owner-lock";
@@ -60,7 +61,15 @@ import {
   type ComponentProps,
 } from "react";
 import { Pressable, Text, View } from "react-native";
-import { CheckSquare, Square, Info, ChevronDown, ChevronUp, Copy } from "lucide-react-native";
+import {
+  CheckSquare,
+  Square,
+  Info,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  TriangleAlert,
+} from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { isWeb } from "@/constants/platform";
 import { Field, FormTextInput } from "@/components/ui/form-field";
@@ -94,6 +103,8 @@ import { installationHasDev, readExecutionInstallation } from "./policy";
 import { InstallationClient, requestInstallationOwner, hasInstallationConnections } from "./client";
 import { SafetySnapshotsCard } from "./safety-snapshots";
 import { CoordinatorFollowCard } from "./installation-upgrade-card";
+import { InstallationChangesCard } from "./installation-change-card";
+import { SourceUpgradesCard } from "./source-upgrades-card";
 import { CoordinatorSettingsCard } from "./coordinator-settings-card";
 import {
   InstallationPanelModel,
@@ -409,7 +420,8 @@ function InstallationHistory({
   onToggle: () => void;
   controlSize: "sm" | "md";
 }) {
-  const historyCount = history.length + useCoordinatorHistoryCount();
+  const receipts = useAgentActionReceipts(useInstallationOwnerClient()).data ?? [];
+  const historyCount = history.length + receipts.length + useCoordinatorHistoryCount();
   const bootstrapModel = getBootstrapPanel();
   return (
     <View testID="restart-history" style={[styles.cardBody, settingsStyles.rowBorder]}>
@@ -443,9 +455,32 @@ function InstallationHistory({
           ) : null}
           {bootstrapModel ? <BootstrapHistory model={bootstrapModel} /> : null}
           <CoordinatorRecoveryHistory />
+          <AgentActionHistory receipts={receipts} />
         </SettingsExpansion>
       ) : null}
     </View>
+  );
+}
+
+const AGENT_ACTION_OUTCOME: Record<AgentActionReceipt["outcome"], string> = {
+  started: "is running",
+  succeeded: "ran",
+  failed: "tried",
+  interrupted: "was interrupted while running",
+};
+
+/** Actions Host agents ran at once under the full maintenance grant, such as snapshots. */
+function AgentActionHistory({ receipts }: { receipts: AgentActionReceipt[] }) {
+  if (!receipts.length) return null;
+  return (
+    <HistoryGroup title="Agent actions" testID="agent-action-history">
+      {receipts.slice(0, 20).map((receipt) => (
+        <Text key={receipt.id} style={styles.text}>
+          {new Date(receipt.at).toLocaleString()}: {receipt.requester ?? "A Host agent"}{" "}
+          {AGENT_ACTION_OUTCOME[receipt.outcome]} {receipt.action}. {receipt.detail}
+        </Text>
+      ))}
+    </HistoryGroup>
   );
 }
 
@@ -485,7 +520,7 @@ function InstallationSystemAdvancedBody({ model }: { model: InstallationPanelMod
     <>
       <DaemonAutomationControl model={model} state={state} />
       <CustomDomainCard model={model} state={state} />
-      <DeliveryModeCard model={model} state={state} />
+      <DeliveryModeCard state={state} />
     </>
   ) : null;
 }
@@ -603,6 +638,8 @@ function InstallationSystemDetailsBody({
                 <SafetySnapshotsCard client={panelClient} />
                 <CoordinatorFollowCard client={panelClient} />
                 <CoordinatorSettingsCard client={panelClient} />
+                <InstallationChangesCard client={panelClient} />
+                <SourceUpgradesCard client={panelClient} />
               </>
             ) : null}
             {hasDev && target === "host" ? (
@@ -1576,31 +1613,24 @@ function DeliveryModeSettingBody({ model }: { model: InstallationPanelModel }) {
     loaded.current = true;
     void model.refresh();
   }, [model, needsLoad]);
-  return <DeliveryModeCard model={model} state={state} />;
+  return <DeliveryModeCard state={state} />;
 }
 
-/** Reliable serves the published interface; Live dev serves the Host's live checkout. */
-function DeliveryModeCard({
-  model,
-  state,
-}: {
-  model: InstallationPanelModel;
-  state: ReturnType<InstallationPanelModel["getState"]>;
-}) {
+/**
+ * Live development status. Lab serves the Host's live checkout and Stable the published
+ * interface, so the installation type is the only switch; this card reports what is served.
+ */
+function DeliveryModeCard({ state }: { state: ReturnType<InstallationPanelModel["getState"]> }) {
   const status = state.liveDev;
   const live = status?.mode === "live";
-  const toggle = useCallback(
-    () => void model.changeLiveDev(live ? "reliable" : "live"),
-    [model, live],
-  );
   if (!status) return null;
   return (
     <View style={[styles.cardBody, settingsStyles.rowBorder]} testID="delivery-mode-card">
-      <Text style={settingsStyles.rowTitle}>Delivery mode</Text>
+      <Text style={settingsStyles.rowTitle}>Live development</Text>
       <Text style={styles.text}>
         {live
-          ? "Live dev. Your browser runs the interface from the Host's live checkout, and edits there appear within seconds. Other browsers and the recovery address keep the published interface."
-          : "Reliable. Every browser runs the published interface, and changes arrive through tracked updates."}
+          ? "On, because this is a Lab installation. Your browser runs the interface from the Host's live checkout, and edits there appear within seconds. Other browsers keep the published interface."
+          : "Off. Every browser runs the published interface. Choose Lab as the installation type to turn on live development."}
       </Text>
       {live ? (
         <Text style={styles.text} testID="delivery-mode-server">
@@ -1610,18 +1640,10 @@ function DeliveryModeCard({
       {!status.available && status.reason ? <Text style={styles.text}>{status.reason}</Text> : null}
       {!live && status.available ? (
         <Text style={styles.text}>
-          Live dev runs uncommitted edits by Host agents in your signed-in browser without a
+          Live development runs uncommitted edits by Host agents in your signed-in browser without a
           publication step. Dev container agents cannot reach the live checkout.
         </Text>
       ) : null}
-      <Button
-        size="md"
-        disabled={state.busy || (!live && !status.available)}
-        onPress={toggle}
-        testID="delivery-mode-change"
-      >
-        {live ? "Switch to Reliable" : "Switch to Live dev"}
-      </Button>
       {live ? (
         <Text style={styles.text}>
           If a live edit breaks the interface, open the safe interface at /?interface=safe.
@@ -2378,26 +2400,59 @@ export function InstallationRestartBanner({
   placement?: "floating" | "sidebar" | "rail";
 }) {
   const model = useInstallationSystemModel();
-  return model && placement !== "floating" ? <SystemAttentionNoticeBody model={model} /> : null;
+  return model && placement !== "floating" ? (
+    <SystemAttentionNoticeBody model={model} rail={placement === "rail"} />
+  ) : null;
 }
 export const SystemAttentionNotice = InstallationRestartBanner;
-function SystemAttentionNoticeBody({ model }: { model: InstallationPanelModel }) {
+/** The collapsed sidebar shows only the warning icon; its message moves to the tooltip. */
+function SystemAttentionNoticeBody({
+  model,
+  rail,
+}: {
+  model: InstallationPanelModel;
+  rail: boolean;
+}) {
   const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
   const router = useRouter();
   const open = useCallback(() => router.push("/settings/system"), [router]);
   const client = useInstallationOwnerClient();
   const upgrades = useInstallationUpgradeStatus(client);
   const count = systemAttentionCount(state, upgrades.data?.upgrades);
-  return count ? (
+  if (!count) return null;
+  const label = `System needs attention (${count})`;
+  if (rail)
+    return (
+      <Tooltip delayDuration={300}>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            onPress={open}
+            leftIcon={TriangleAlert}
+            accessibilityLabel={label}
+            testID="installation-restart-banner"
+          />
+        </TooltipTrigger>
+        <TooltipContent side="right" align="center" offset={8}>
+          <Text style={styles.systemNoticeText}>{label}</Text>
+        </TooltipContent>
+      </Tooltip>
+    );
+  return (
     <Button
       variant="ghost"
       onPress={open}
+      leftIcon={TriangleAlert}
+      textStyle={styles.systemNoticeText}
       testID="installation-restart-banner"
-    >{`System needs attention (${count})`}</Button>
-  ) : null;
+    >
+      {label}
+    </Button>
+  );
 }
 
 const styles = StyleSheet.create((theme) => ({
+  systemNoticeText: { fontSize: theme.fontSize.sm, color: theme.colors.foreground },
   reviewControl: (touch: boolean) => ({
     minHeight: touch ? CONTROL_HEIGHTS.md.xs : CONTROL_HEIGHTS.md.md,
   }),

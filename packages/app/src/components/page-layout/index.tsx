@@ -14,6 +14,9 @@ const PageScrollView = Platform.OS === "android" ? KeyboardAwareScrollView : Scr
 
 interface PageLayoutProps {
   title?: string;
+  titleContent?: ReactNode;
+  /** Let horizontal working surfaces reach the page viewport. */
+  fullWidth?: boolean;
   /** Compact back button. Defaults to navigating back. */
   onBack?: () => void;
   testID?: string;
@@ -22,6 +25,13 @@ interface PageLayoutProps {
   actions?: ReactNode;
   /** Persistent controls above the scrolling content column. */
   fixedHeader?: ReactNode;
+  /** A working surface, such as a dashboard: widens the column from 720 to 1440. */
+  wide?: boolean;
+  /**
+   * Put the title and actions in the screen header, as History does, instead of a document
+   * heading inside the page. The content then starts right under the header's border.
+   */
+  headerTitle?: boolean;
   children: ReactNode;
 }
 
@@ -32,26 +42,41 @@ interface PageLayoutProps {
  */
 export function PageLayout({
   title,
+  titleContent,
+  fullWidth = false,
   onBack,
   testID,
   titleTestID,
   actions,
   fixedHeader,
+  wide = false,
+  headerTitle = false,
   children,
 }: PageLayoutProps) {
   const isCompact = useIsCompactFormFactor();
   const insets = useSafeAreaInsets();
   const scrollContentStyle = useMemo(() => ({ paddingBottom: insets.bottom }), [insets.bottom]);
-  const showTitle = !isCompact && title !== undefined;
+  const showTitle = !isCompact && !headerTitle && title !== undefined;
+  let header = <MenuHeader borderless />;
+  if (isCompact) {
+    header = (
+      <BackHeader
+        title={title}
+        titleContent={titleContent}
+        onBack={onBack}
+        rightContent={actions}
+      />
+    );
+  } else if (headerTitle) {
+    header = <MenuHeader title={title} titleContent={titleContent} rightContent={actions} />;
+  }
 
   return (
     <View style={styles.container}>
-      {isCompact ? (
-        <BackHeader title={title} onBack={onBack} rightContent={actions} />
-      ) : (
-        <MenuHeader borderless />
-      )}
-      {fixedHeader ? <View style={styles.fixedHeader}>{fixedHeader}</View> : null}
+      {header}
+      {fixedHeader ? (
+        <View style={[styles.fixedHeader, wide && styles.wide]}>{fixedHeader}</View>
+      ) : null}
       <PageScrollView
         // Leave room for field borders and padding around the focused native input.
         {...(Platform.OS === "android" ? { bottomOffset: SPACING[4] } : {})}
@@ -61,7 +86,14 @@ export function PageLayout({
         automaticallyAdjustKeyboardInsets
         keyboardShouldPersistTaps="handled"
       >
-        <View style={styles.content}>
+        <View
+          style={[
+            styles.content,
+            wide && styles.wide,
+            fullWidth && styles.fullWidth,
+            headerTitle && styles.headerTitled,
+          ]}
+        >
           {showTitle ? (
             <View style={styles.titleRow} testID={titleTestID}>
               <Text style={styles.title} testID="page-title">
@@ -98,6 +130,13 @@ const styles = StyleSheet.create((theme) => ({
     width: "100%",
     maxWidth: 720,
     alignSelf: "center",
+  },
+  headerTitled: {
+    paddingTop: theme.spacing[4],
+  },
+  fullWidth: { maxWidth: "100%" },
+  wide: {
+    maxWidth: 1440,
   },
   titleRow: {
     flexDirection: "row",

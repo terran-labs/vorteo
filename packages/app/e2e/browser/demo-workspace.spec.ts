@@ -103,6 +103,10 @@ test("opens a populated demo without connecting to a real host", async ({ page }
   await page.mouse.move(900, 800);
   await page.waitForTimeout(350);
   await expect(railHelp).toBeVisible();
+  // The focused row's workspace card closes first, as in the compact rail flyout test below.
+  await expect(page.getByTestId("workspace-hover-card")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("workspace-hover-card")).toBeHidden();
   await page.keyboard.press("Escape");
   await expect(railHelp).toHaveCount(0);
   await expect(railProject).toBeFocused();
@@ -606,8 +610,6 @@ test("compact rail focuses projects from its flyout", async ({ page }) => {
     .poll(() => create.evaluate((group) => group.contains(document.activeElement)))
     .toBe(true);
   await expect(actions).toHaveCSS("opacity", "1");
-  await page.getByTestId("sidebar-focus-crumb-all").focus();
-  await expect(actions).toHaveCSS("opacity", "0");
 
   await page.getByTestId("sidebar-focus-crumb-all").click();
   await expect(page.getByTestId("sidebar-focus-breadcrumb")).toHaveCount(0);

@@ -817,7 +817,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   triggerHoverable: hoverStyle(
     {
-      borderRadius: theme.borderRadius.base,
+      borderRadius: theme.borderRadius.md,
       backgroundColor: theme.colors.surface2,
       color: theme.colors.foreground,
     },

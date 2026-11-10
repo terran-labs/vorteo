@@ -8,6 +8,8 @@ import {
   SidebarPopoverSurface,
   useSidebarPopoverAnchor,
 } from "@/components/sidebar/sidebar-popover";
+import { useRetainedPanelActive } from "@/components/retained-panel";
+import { useAppVisible } from "@/hooks/use-app-visible";
 import { useUsageHostId } from "@/usage/hosts";
 import { useOpenUsageScreen } from "@/usage/sidebar-item";
 import { quotaAccounts, type QuotaAccount } from "./global-quota";
@@ -37,7 +39,12 @@ export function SidebarFooterQuota({
   identityWidth: number;
 }) {
   const serverId = useUsageHostId();
-  const { view } = useProviderUsage(serverId, { pollUsage: true });
+  // Poll for display only while the meter is on screen: its sidebar open and the app visible.
+  // The daemon logs usage history on its own schedule either way.
+  const panelActive = useRetainedPanelActive();
+  const appVisible = useAppVisible();
+  const shown = panelActive && appVisible;
+  const { view } = useProviderUsage(serverId, { enabled: shown, pollUsage: shown });
   // Readings refresh every minute, so minute-precision countdowns only need the render time.
   const now = useMemo(() => (view.kind === "ready" ? Date.now() : 0), [view]);
   const accounts = useMemo(() => quotaAccounts(view, now), [view, now]);
@@ -65,7 +72,13 @@ export function SidebarFooterQuota({
           </Text>
         ) : null}
       </FooterQuotaTrigger>
-      <FooterQuotaPopover accounts={accounts} serverId={serverId} view={view} now={now} />
+      <FooterQuotaPopover
+        accounts={accounts}
+        serverId={serverId}
+        view={view}
+        now={now}
+        onClose={setOpen}
+      />
     </SidebarPopoverRoot>
   );
 }
@@ -100,13 +113,20 @@ function FooterQuotaPopover({
   serverId,
   view,
   now,
+  onClose,
 }: {
   accounts: readonly QuotaAccount[];
   serverId: string | null;
   view: ProviderUsageView;
   now: number;
+  onClose: (open: boolean) => void;
 }) {
-  const openUsage = useOpenUsageScreen();
+  const openUsageScreen = useOpenUsageScreen();
+  // Usage opens over the sidebar; a popover left open keeps its backdrop over Usage's controls.
+  const openUsage = useCallback(() => {
+    onClose(false);
+    openUsageScreen();
+  }, [onClose, openUsageScreen]);
   return (
     <SidebarPopoverSurface
       section="footer"

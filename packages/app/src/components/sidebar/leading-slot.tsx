@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { ChevronDown, ChevronRight, Folder, Pin } from "lucide-react-native";
+import { ChevronDown, ChevronRight, Factory, Folder, Pin } from "lucide-react-native";
 import { CAN_HOVER, groupHoverStyle } from "@/styles/hover";
 import type { Theme } from "@/styles/theme";
 
@@ -13,6 +13,7 @@ const LEADING_SLOT_HEIGHT = 20;
 
 const ThemedFolder = withUnistyles(Folder);
 const ThemedPin = withUnistyles(Pin);
+const ThemedFactory = withUnistyles(Factory);
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const calmColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundExtraMuted });
 
@@ -105,6 +106,21 @@ export function SidebarPinIcon({
     );
   }
   return <ThemedPin size={14} uniProps={calm ? calmColorMapping : mutedColorMapping} />;
+}
+
+/** The Factory sections' glyph, sized and colored like the folder glyph. */
+export function SidebarFactoryIcon({
+  calm = false,
+  cssHover = false,
+}: { calm?: boolean; cssHover?: boolean } = {}) {
+  if (cssHover && CAN_HOVER) {
+    return (
+      <View style={calm ? styles.calmGlyph : styles.mutedGlyph}>
+        <Factory size={14} color="currentColor" />
+      </View>
+    );
+  }
+  return <ThemedFactory size={14} uniProps={calm ? calmColorMapping : mutedColorMapping} />;
 }
 
 const styles = StyleSheet.create((theme) => ({

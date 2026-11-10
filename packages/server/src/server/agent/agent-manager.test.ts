@@ -2985,6 +2985,46 @@ test("the blocked-work review skips a thread waiting for its usage limit to rese
   expect(blockedReviewDue({ ...base, config: { usageLimitHold: released } }, now)).toBe(true);
 });
 
+test("blocked-work reviews follow a three-step ladder that only a real prompt restarts", () => {
+  const at = (minutes: number) =>
+    new Date(Date.parse("2026-11-09T12:00:00.000Z") + minutes * 60_000);
+  const base = {
+    id: "ladder",
+    provider: "claude",
+    labels: {},
+    createdAt: at(-60).toISOString(),
+    lastActivityAt: at(0).toISOString(),
+    persistence: { provider: "claude", sessionId: "session" },
+    tasks: [{ id: "t", text: "Blocked", completed: false, status: "blocked" }],
+  } as unknown as StoredAgentRecord;
+  expect(blockedReviewDue(base, at(4).getTime())).toBe(false);
+  expect(blockedReviewDue(base, at(5).getTime())).toBe(true);
+  // Each review's own prompt lands seconds after its claim and must not reset the count.
+  const reviewed = (count: number, minutes: number): StoredAgentRecord => ({
+    ...base,
+    lastActivityAt: at(minutes).toISOString(),
+    lastBlockedReviewAt: at(minutes).toISOString(),
+    lastUserMessageAt: at(minutes - 0.5).toISOString(),
+    blockedReviewCount: count,
+  });
+  expect(blockedReviewDue(reviewed(1, 6), at(20).getTime())).toBe(false);
+  expect(blockedReviewDue(reviewed(1, 6), at(21).getTime())).toBe(true);
+  expect(blockedReviewDue(reviewed(2, 22), at(52).getTime())).toBe(true);
+  expect(isFinalBlockedReview(reviewed(2, 22))).toBe(true);
+  expect(blockedReviewDue(reviewed(3, 53), at(60 * 24).getTime())).toBe(false);
+  const prompted = { ...reviewed(3, 53), lastUserMessageAt: at(90).toISOString() };
+  expect(blockedReviewsUsed(prompted)).toBe(0);
+  expect(
+    blockedReviewDue({ ...prompted, lastActivityAt: at(91).toISOString() }, at(96).getTime()),
+  ).toBe(true);
+  // A blocker the owner is asked about wakes the thread when answered, so it needs no review.
+  const asked = {
+    ...base,
+    questions: [{ id: "q", status: "open", blocks: ["t"] }],
+  } as unknown as StoredAgentRecord;
+  expect(blockedReviewDue(asked, at(60).getTime())).toBe(false);
+});
+
 test("a usage limit holds a standalone thread for its reset without pausing it", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "paseo-usage-limit-hold-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
@@ -3244,6 +3284,83 @@ test("reserves worker capacity during startup and preserves a quota pause that a
   await manager.closeAgent(child.id);
   await manager.closeAgent(root.id);
 });
+
+test.each(["catalog", "availability", "launch context", "restart drain"] as const)(
+  "does not start a provider session when shutdown interrupts %s setup",
+  async (phase) => {
+    const setupStarted = deferred<void>();
+    const setupAllowed = deferred<void>();
+    const agentId = "00000000-0000-4000-8000-000000000097";
+    async function holdSetup() {
+      setupStarted.resolve();
+      await setupAllowed.promise;
+    }
+    class HeldSetupClient extends TestAgentClient {
+      override async fetchCatalog() {
+        if (phase === "catalog") await holdSetup();
+        return super.fetchCatalog();
+      }
+      override async isAvailable() {
+        if (phase === "availability") await holdSetup();
+        return true;
+      }
+    }
+    const client = new HeldSetupClient();
+    const attachedAgents = new Set<string>();
+    const holdContext = phase === "launch context" || phase === "restart drain";
+    const manager = new AgentManager({
+      clients: { codex: client },
+      logger,
+      idFactory: () => agentId,
+      pluginAgentTools: {
+        isToolPluginAvailable: () => true,
+        detachTools: (id) => {
+          attachedAgents.delete(id);
+        },
+        callTool: async () => ({ content: [] }),
+      },
+      pluginLifecycle: {
+        emit() {},
+        async before(name, request) {
+          if (name === "agent.open.before" && "tools" in request) {
+            attachedAgents.add(request.agentId);
+            request.tools = [
+              {
+                name: "inspect",
+                description: "Inspect the fixture",
+                inputSchema: {},
+                pluginId: "fixture",
+                pluginInstanceId: "fixture-instance",
+              },
+            ];
+            if (holdContext) await holdSetup();
+          }
+          return request;
+        },
+      },
+    });
+    const creation = manager
+      .createAgent({ provider: "codex", cwd: process.cwd() }, undefined, {})
+      .catch((error: unknown) => error);
+    await setupStarted.promise;
+    if (phase === "restart drain") manager.beginRestartDrain(randomUUID());
+    else manager.prepareForShutdown();
+    const flushing = manager.flushForShutdown();
+    setupAllowed.resolve();
+
+    const rejection = await creation;
+    if (phase === "restart drain") {
+      expect(rejection).toBeInstanceOf(Error);
+      expect(rejection).toHaveProperty("message", expect.stringContaining("New work is held"));
+    } else expect(rejection).toBeInstanceOf(AgentManagerShuttingDownError);
+    await flushing;
+    expect(client.createdConfigs).toEqual([]);
+    expect(manager.listAgents()).toEqual([]);
+    expect(manager.getPaseoToolPolicy(agentId)).toBeUndefined();
+    expect(manager.getPluginTools(agentId)).toEqual([]);
+    expect(attachedAgents.has(agentId)).toBe(false);
+  },
+);
 
 test("does not register a session that finishes starting after shutdown begins", async () => {
   const client = new HeldAgentCreationClient();
@@ -14998,7 +15115,11 @@ import { createAgentQueueDelivery } from "../message-queue/agent-delivery.js";
 
 import { BlockedTaskReviewService } from "./task-checklist/review-service.js";
 
-import { blockedReviewDue } from "./task-checklist/blocked-review.js";
+import {
+  blockedReviewDue,
+  blockedReviewsUsed,
+  isFinalBlockedReview,
+} from "./task-checklist/blocked-review.js";
 
 import { MessageQueueService } from "../message-queue/service.js";
 
@@ -15885,10 +16006,20 @@ test("periodic review scan honors the hourly cooldown and stops without creating
       activeTurnId: null,
     });
     expect(blockedReviewDue(storage.getLoadedRecord(agent.id)!, now)).toBe(true);
+    // The host setting defaults to off; a disabled service must not prompt the thread.
+    await new BlockedTaskReviewService({
+      agentManager: manager,
+      agentStorage: storage,
+      logger,
+      enabled: () => false,
+      now: () => now,
+    }).tick();
+    expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBeUndefined();
     const reviews = new BlockedTaskReviewService({
       agentManager: manager,
       agentStorage: storage,
       logger,
+      enabled: () => true,
       now: () => now,
     });
     await reviews.tick();
@@ -16068,6 +16199,7 @@ test.each([
       agentManager: manager,
       agentStorage: storage,
       logger,
+      enabled: () => true,
       now: () => now,
     });
     let agentId: string | undefined;

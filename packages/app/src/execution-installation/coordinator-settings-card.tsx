@@ -89,6 +89,7 @@ export function CoordinatorSettingsCard({ client }: { client: InstallationClient
           <Text style={styles.text} selectable>
             {row.before} → {row.after}
           </Text>
+          {row.verified ? <Text style={styles.text}>Verified on disk</Text> : null}
         </View>
       ))}
       {waiting || canCancel ? (

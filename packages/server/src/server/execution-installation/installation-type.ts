@@ -14,7 +14,8 @@ import {
  * What the installation is for, in protected coordinator state beside live-dev.json. A missing
  * file is Stable. An unreadable one is never read as Lab, because Lab auto-approves lab
  * self-updates that rebuild and restart the coordinator and Host daemon from the live checkout.
- * The owner route serializes changes, so a compare-and-set cannot interleave.
+ * The owner routes, including the legacy delivery mode route, share one queue, so a
+ * compare-and-set cannot interleave.
  */
 const StoredInstallationTypeSchema = z.strictObject({
   version: z.literal(1),

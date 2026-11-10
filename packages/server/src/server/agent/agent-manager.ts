@@ -3,7 +3,9 @@ import type { HeldRestart } from "@getpaseo/protocol/messages";
 import {
   blockedReviewDue,
   hasReviewableBlockedWork,
+  isFinalBlockedReview,
   BLOCKED_REVIEW_PROMPT,
+  FINAL_BLOCKED_REVIEW_NOTE,
 } from "./task-checklist/blocked-review.js";
 import { JournalError } from "./journal/model.js";
 import {
@@ -1967,7 +1969,10 @@ export class AgentManager {
           if (!(await registry.claimBlockedReview(agentId, this.now()))) return null;
           if (!eligible() || !queueAllowsStart()) return null;
           // No await between the last admission check and synchronous run reservation.
-          return this.streamAgent(agentId, BLOCKED_REVIEW_PROMPT, {
+          const prompt = isFinalBlockedReview(record)
+            ? BLOCKED_REVIEW_PROMPT + FINAL_BLOCKED_REVIEW_NOTE
+            : BLOCKED_REVIEW_PROMPT;
+          return this.streamAgent(agentId, prompt, {
             origin: "agent",
           });
         });
@@ -3140,11 +3145,14 @@ export class AgentManager {
         config: structuredClone(config),
         env: { ...options.env },
       });
-      // Hooks may supply defaults, but cannot rewrite the admitted Vorton launch.
+      // Hooks may rewrite the launch, as upstream intends, but not the fields Vorteo admitted:
+      // the provider, tool access, the profile and its account, skills and the quota reserve.
+      // A profile launch also keeps its model, reasoning, features and instructions.
       config = {
-        ...request.config,
         ...config,
+        ...request.config,
         internal: config.internal,
+        provider: config.provider,
         toolAccess: config.toolAccess,
         profileId: config.profileId,
         profileLaunch: config.profileLaunch,
@@ -3221,15 +3229,18 @@ export class AgentManager {
     if ((await this.readStoredToolAccess(resolvedAgentId)) === "none")
       config = { ...config, toolAccess: "none" };
     await this.deleteAgentState(resolvedAgentId);
+    this.assertAcceptingAgentRegistrations();
     const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
       config,
       resolvedAgentId,
       { env: options?.env },
     );
+    this.assertAcceptingAgentRegistrations();
     this.requireEnabledProvider(storedConfig.provider);
     const client = await this.requireAvailableClient({
       provider: storedConfig.provider,
     });
+    this.assertAcceptingAgentRegistrations();
     this.paseoToolPolicies.set(resolvedAgentId, paseoToolPolicy);
     function buildCreateOpening() {
       return {
@@ -3251,6 +3262,14 @@ export class AgentManager {
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const createOptions = this.buildCreateSessionOptions(options);
     assertInternalBindings();
+    // Setup may yield while shutdown closes ingress. No session owns this context yet.
+    try {
+      this.assertAcceptingAgentRegistrations();
+    } catch (error) {
+      this.paseoToolPolicies.delete(resolvedAgentId);
+      this.detachPluginTools(resolvedAgentId);
+      throw error;
+    }
     const session = await client.createSession(providerLaunchConfig, launchContext, createOptions);
     await this.requireExternalMcpSupport(session, providerLaunchConfig, launchContext);
     const parentId = options.labels?.[PARENT_AGENT_ID_LABEL];

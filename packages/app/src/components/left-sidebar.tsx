@@ -543,10 +543,11 @@ function SidebarToolbar({
   const handleNewWorkspace = useOpenNewWorkspace(onBeforeNavigate);
   const handleNewFolder = useCreateSidebarFolderAction(ROOT_FOLDER_SCOPE, null);
   const setCommandCenterOpen = useKeyboardShortcutsStore((state) => state.setCommandCenterOpen);
+  // Search opens above the compact sidebar and leaves it in place, so canceling returns to it
+  // (upstream #7693). Choosing a result reveals its destination when navigation commits.
   const handleSearch = useCallback(() => {
-    onBeforeNavigate?.();
     setCommandCenterOpen(true);
-  }, [onBeforeNavigate, setCommandCenterOpen]);
+  }, [setCommandCenterOpen]);
 
   const settingsKeys = useShortcutKeys("toggle-settings");
   const searchKeys = useShortcutKeys("toggle-command-center");
@@ -903,7 +904,11 @@ function MobileSidebar({
 }: MobileSidebarProps) {
   const touch = useVortonTouch();
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
-  const { gesture: closeGesture, gestureRef: closeGestureRef } = useCloseAgentListGesture();
+  const {
+    gesture: closeGesture,
+    gestureRef: closeGestureRef,
+    edgeRef,
+  } = useCloseAgentListGesture();
 
   const handleWorkspacePress = useCallback(() => {
     closeSidebar();
@@ -919,6 +924,22 @@ function MobileSidebar({
       backgroundColor: theme.colors.surfaceSidebar,
     }),
     [insetsTop, insetsBottom, theme.colors.surfaceSidebar, theme.spacing, touch],
+  );
+
+  // The compact header's toolbar surface runs from the screen edge, safe area included, to the
+  // toolbar's divider, so the open sidebar's top bar matches the header it replaces.
+  const toolbarBandStyle = useMemo(
+    () => [
+      styles.mobileToolbarBand,
+      inlineUnistylesStyle({
+        height:
+          insetsTop +
+          spacingInset +
+          (touch ? 44 : FLOATING_PANEL_CONTROL_HEIGHT) +
+          theme.spacing[1],
+      }),
+    ],
+    [insetsTop, spacingInset, touch, theme.spacing],
   );
 
   const navigation = useMemo(
@@ -940,9 +961,11 @@ function MobileSidebar({
   return (
     <MobilePanelOverlay
       panel="agent-list"
+      edgeRef={edgeRef}
       closeGesture={closeGesture}
       panelStyle={mobileSidebarInsetStyle}
     >
+      <View style={toolbarBandStyle} pointerEvents="none" />
       <View
         style={[styles.sidebarContent, inlineUnistylesStyle({ padding: spacingInset })]}
         onLayout={onPanelLayout}
@@ -983,9 +1006,9 @@ function MobileSidebar({
           )}
 
           <SidebarFooterBlock>
+            <InstallationRestartBanner placement="sidebar" />
             <SidebarGlobalCards onBeforeNavigate={closeSidebar} />
             <SidebarSyncNotice />
-            <InstallationRestartBanner placement="sidebar" />
             <DemoControls />
             <SidebarFooterRows onBeforeNavigate={closeSidebar} />
             <SidebarIdentityFooter />
@@ -1297,9 +1320,9 @@ function DesktopSidebar({
           )}
 
           <SidebarFooterBlock>
+            <InstallationRestartBanner placement={compact ? "rail" : "sidebar"} />
             {!compact ? <SidebarGlobalCards /> : null}
             <SidebarSyncNotice compact={compact} />
-            <InstallationRestartBanner placement={compact ? "rail" : "sidebar"} />
             {!compact ? <DemoControls /> : null}
             {!compact ? <SidebarFooterRows /> : null}
             {!compact ? <SidebarIdentityFooter /> : null}
@@ -1342,6 +1365,15 @@ const styles = StyleSheet.create((theme) => ({
   narrowNavigationRow: { justifyContent: "flex-start", minHeight: 36 },
   // The same margin sits above the first button as on either side of it.
   railToolbar: { alignItems: "center", gap: 0, paddingTop: COMPACT_RAIL_MARGIN },
+  mobileToolbarBand: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: theme.colors.surfaceWorkspace,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.divider,
+  },
   sidebarContent: {
     flex: 1,
     minHeight: 0,

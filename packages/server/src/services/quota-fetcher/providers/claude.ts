@@ -20,7 +20,9 @@ import type {
 import {
   CLAUDE_API_ORIGIN,
   CLAUDE_USAGE_WITH_RESETS_PATH,
+  claudeCodeUserAgent,
   recordClaudeResetStatus,
+  summarizeClaudeResetBlock,
 } from "../../../server/agent/providers/claude/reset-credits.js";
 import {
   ApiNumberSchema,
@@ -642,7 +644,15 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
       return unavailableUsage(this);
     }
 
-    if (this.claudeHome) recordClaudeResetStatus(this.claudeHome, resp.cedar_ember, this.now());
+    if (this.claudeHome) {
+      recordClaudeResetStatus(this.claudeHome, resp.cedar_ember, this.now());
+      // Log only changes: polls repeat every few minutes and the answer rarely moves.
+      const summary = summarizeClaudeResetBlock(resp.cedar_ember);
+      if (lastResetSummary.get(this.providerId) !== summary) {
+        lastResetSummary.set(this.providerId, summary);
+        this.logger.info({ providerId: this.providerId, resets: summary }, "Claude reset status");
+      }
+    }
 
     const scoped = reconcileScopedLimits(
       legacyScopedLimits(resp),
@@ -779,6 +789,7 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
           Authorization: `Bearer ${token}`,
           Accept: "application/json",
           "anthropic-beta": CLAUDE_OAUTH_BETA,
+          "User-Agent": claudeCodeUserAgent(),
         },
       },
     );
@@ -790,6 +801,8 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
     return ClaudeUsageResponseSchema.parse(await res.json());
   }
 }
+
+const lastResetSummary = new Map<string, string>();
 
 interface UsageBackoff {
   /** Until when Claude asked this account not to be polled. */

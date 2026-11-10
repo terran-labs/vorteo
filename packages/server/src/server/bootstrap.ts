@@ -184,6 +184,7 @@ import { formatSystemNotificationPrompt } from "./agent/agent-messages/index.js"
 import { startAgentRun } from "./agent/agent-prompt.js";
 import { switchAgentProfileCommand } from "./agent/profile-switch/command.js";
 import { ProjectFactoryService } from "./factory/project/service.js";
+import { createFactoryHomeClient } from "./execution-installation/factory-home.js";
 import { daemonFactoryAccounts } from "./factory/project/account-choice.js";
 import { profileProvider, resolveDefaultLaunch } from "./system-project/launch-selection.js";
 import type { SessionHostConnector } from "./session-host/connector.js";
@@ -550,6 +551,7 @@ export interface PaseoDaemonConfig {
   downloadTokenTtlMs?: number;
   agentProviderSettings?: AgentProviderRuntimeSettingsMap;
   idleRuntimeCleanup?: boolean;
+  blockedWorkReview?: boolean;
   resumeOnStartup?: boolean;
   resumePrompt?: string;
   providerCatalogRefreshTimeoutMs?: number;
@@ -684,6 +686,7 @@ function createInitialMutableDaemonConfig(config: ResolvedDaemonSettings): Mutab
     autoArchiveAfterMerge: config.autoArchiveAfterMerge ?? false,
     enableTerminalAgentHooks: config.enableTerminalAgentHooks ?? false,
     idleRuntimeCleanup: config.idleRuntimeCleanup !== false,
+    blockedWorkReview: config.blockedWorkReview === true,
     resumeOnStartup: config.resumeOnStartup === true,
     resumePrompt: config.resumePrompt ?? "Resume working.",
     appendSystemPrompt: config.appendSystemPrompt ?? "",
@@ -1830,7 +1833,13 @@ export async function createPaseoDaemon(
     createPaseoWorktreeWorkspace: createSchedulePaseoWorktreeExternal,
     archiveWorkspace: archiveScheduleWorkspaceExternal,
   });
-  const blockedTaskReviews = new BlockedTaskReviewService({ agentManager, agentStorage, logger });
+  const blockedTaskReviews = new BlockedTaskReviewService({
+    agentManager,
+    agentStorage,
+    logger,
+    // Read on every scan so the host setting applies without a restart.
+    enabled: () => daemonConfigStore.get().blockedWorkReview === true,
+  });
   const usageLimitResumes = new UsageLimitResumeService({
     agentManager,
     agentStorage,
@@ -1891,9 +1900,14 @@ export async function createPaseoDaemon(
       current.primaryConnection === undefined ? { primaryConnection: primary } : {},
     );
   };
+  const factoryHosts = () => {
+    if (!wsServer) throw new Error("Daemon is not accepting host operations");
+    return wsServer.toolHosts();
+  };
   projectFactoryService = new ProjectFactoryService({
     paseoHome: config.paseoHome,
     serverId,
+    home: createFactoryHomeClient(process.env.VORTEO_INSTALLATION_CLIENT_CONFIG),
     projects: projectRegistry,
     workspaces: workspaceRegistry,
     agentStorage,
@@ -1944,7 +1958,11 @@ export async function createPaseoDaemon(
       providers: providerSnapshotManager,
       readUsage: (options) => providerUsageService.listUsage(options),
       getSettings: () => daemonConfigStore.get(),
+      hosts: factoryHosts,
+      serverId,
+      readInstallationSettings: () => daemonConfigStore.readInstallationSettingsAuthority(),
     }),
+    hosts: factoryHosts,
     schedules: scheduleService,
     onWorkspacesChanged: (workspaceIds) => void emitWorkspaceUpdatesExternal(workspaceIds),
     logger,

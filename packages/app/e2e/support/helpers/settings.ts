@@ -97,6 +97,28 @@ export async function revealSettingsLocation(page: Page, slug: string): Promise<
   await anchor.scrollIntoViewIfNeeded();
 }
 
+/**
+ * Chooses an app language from Interface > Language. The pane's trigger is named after the
+ * current choice, and System is also a Settings section, so scope the trigger to the pane.
+ */
+export async function chooseSettingsLanguage(
+  page: Page,
+  option: string,
+  current: string | RegExp = /^System(?:\s|$)/,
+): Promise<void> {
+  await revealSettingsLocation(page, "appearance.language");
+  await page
+    .getByTestId("settings-pane-appearance.language")
+    .filter({ visible: true })
+    .first()
+    .getByRole(
+      "button",
+      typeof current === "string" ? { name: current, exact: true } : { name: current },
+    )
+    .click();
+  await page.getByRole("menuitem", { name: option, exact: true }).click();
+}
+
 export async function revealSettingsSidebarSection(
   page: Page,
   section: SettingsSection,

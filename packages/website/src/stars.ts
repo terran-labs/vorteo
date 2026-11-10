@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getWebsiteCacheContext } from "./cloudflare-cache";
-import { getBlockingColdCache } from "./github-cache";
+import { getBlockingColdCache, githubApiUrl, type WebsiteCacheContext } from "./github-cache";
 
 interface GitHubRepo {
   stargazers_count: number;
@@ -12,11 +12,11 @@ function formatStars(count: number): string {
   return `${k % 1 === 0 ? k.toFixed(0) : k.toFixed(1)}k`;
 }
 
-const GITHUB_REPO_URL = "https://api.github.com/repos/getpaseo/paseo";
+const GITHUB_REPO_PATH = "/repos/getpaseo/paseo";
 const STARS_CACHE_KEY = "github-stars:v1";
 
-async function fetchStarCount(): Promise<string> {
-  const res = await fetch(GITHUB_REPO_URL, {
+async function fetchStarCount(context: WebsiteCacheContext): Promise<string> {
+  const res = await fetch(githubApiUrl(context, GITHUB_REPO_PATH), {
     headers: {
       Accept: "application/vnd.github+json",
       "User-Agent": "paseo-website",
@@ -38,11 +38,12 @@ function isStars(value: unknown): value is string {
 }
 
 export const getStarCount = createServerFn({ method: "GET" }).handler(async () => {
+  const context = getWebsiteCacheContext();
   const stars = await getBlockingColdCache({
-    context: getWebsiteCacheContext(),
+    context,
     key: STARS_CACHE_KEY,
     isValue: isStars,
-    fetchFresh: fetchStarCount,
+    fetchFresh: () => fetchStarCount(context),
   });
   return { stars };
 });

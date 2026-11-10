@@ -1189,6 +1189,7 @@ export const ja: TranslationResources = {
     },
   },
   sidebar: {
+    factoryCard: en.sidebar.factoryCard,
     statusGroupAccessibility: "{{label}} グループ",
     statusBucket: {
       needsInput: "入力待ち",
@@ -2630,6 +2631,7 @@ export const ja: TranslationResources = {
       },
     },
     appearance: {
+      statusLine: en.settings.appearance.statusLine,
       theme: {
         title: "テーマ",
         accessibilityLabel: "テーマ: {{value}}",
@@ -2943,6 +2945,11 @@ export const ja: TranslationResources = {
           title: "アイドル状態のエージェントを解放",
           hint: "1 時間のアイドル状態の後にメモリを解放します。",
           info: "会話を保持したままエージェントのプロセスを停止します。メッセージを送信すると再開します。\n\n実行中の作業、保留中の通知、プロバイダーの安全性チェックがある場合は解放しません。",
+        },
+        blockedWorkReview: {
+          title: "ブロック中の作業をレビュー",
+          hint: "既定ではオフです。スレッドが停止した後に最大3回の短いレビューを行い、その後はメッセージを待ちます。",
+          info: "ブロック中のタスクまたは目標を残してスレッドが停止すると、約5分、15分、30分の間隔で最大3回、ブロック要因を再確認して作業を続けるよう促すメッセージを送ります。その後は、誰かがスレッドにメッセージを送るまでレビューを停止します。\n\n各レビューはスレッドの会話を再開します。短い間隔ではプロバイダーのプロンプトキャッシュを再利用するためコールド再開よりはるかに安価ですが、ブロック中のスレッドが多いと積み重なります。\n\n未回答の質問を待っているブロック要因は対象外です。回答するとスレッドが再開します。",
         },
       },
       workspaces: {

@@ -1,3 +1,4 @@
+import { CARD_GAP } from "@/agent-stream/columns/geometry";
 import { taskCardStyles } from "@/agent-stream/task-card-styles";
 import { useMobileComposerLayout, COMPOSER_CORNER_INSET } from "../mobile-layout";
 import { useKeyboardFocusSurface } from "@/keyboard";
@@ -908,12 +909,14 @@ function resolveModifiedSendButton(input: {
   action: "default" | "alternate" | "newline" | "send";
   queues: boolean;
   disabled: boolean;
+  /** The caller named its submit action, such as Create on the new workspace screen. */
+  namedSubmit: boolean;
   t: ReturnType<typeof useTranslation>["t"];
   baseline: SendButtonPresentation;
 }): SendButtonPresentation {
   const presentation = { ...input.baseline };
   if (input.queues) presentation.buttonIcon = "queue";
-  if (input.action === "send") {
+  if (input.action === "send" && !input.namedSubmit) {
     presentation.submitAccessibilityLabel = input.t("composer.input.sendMessage");
     presentation.sendTooltipLabel = presentation.submitAccessibilityLabel;
   }
@@ -1120,7 +1123,8 @@ function computeIsDictationStartEnabled(
   return (isReadyForDictation ?? isConnected) && !disabled;
 }
 
-function resolveMaxInputHeight(windowHeight: number, compact: boolean): number {
+function resolveMaxInputHeight(windowHeight: number, compact: boolean, touch: boolean): number {
+  if (touch) return 142;
   if (compact) return DEFAULT_MAX_INPUT_HEIGHT;
   if (!Number.isFinite(windowHeight) || windowHeight <= 0) return DEFAULT_MAX_INPUT_HEIGHT;
   return Math.max(DEFAULT_MAX_INPUT_HEIGHT, Math.floor(windowHeight * MAX_INPUT_VIEWPORT_RATIO));
@@ -1279,22 +1283,43 @@ function extractErrorMessage(error: unknown): string | null {
   return null;
 }
 
+const TOUCH_DICTATION_SIZE = 44;
+const TOUCH_DICTATION_BAND = 56;
+/**
+ * Phone controls on the right edge share one rail measured from the surface's padding box: the
+ * toolbar's 12px padding less its 6px bleed puts Send/Stop 6px from the right and bottom edges,
+ * and dictation and Queue use the same inset above it. Positioning them inside the text surface or
+ * the toolbar row instead offsets each by a different padding, which made Queue overlap dictation.
+ */
+const MOBILE_RAIL_INSET = 6;
+/** The surface's compact top and horizontal padding, which the text surface sits inside. */
+const MOBILE_SURFACE_PADDING_X = 12;
 function placeDictationButton(
   button: React.ReactNode,
   touch: boolean,
   showVoice: boolean,
   mobile: boolean,
+  queue: boolean,
 ) {
+  const slot =
+    touch && showVoice ? (
+      <View
+        style={
+          mobile
+            ? [
+                styles.mobileDictationSlot,
+                { bottom: MOBILE_RAIL_INSET + (TOUCH_DICTATION_SIZE + CARD_GAP) * (queue ? 2 : 1) },
+              ]
+            : styles.touchDictationSlot
+        }
+        testID="composer-dictation-slot"
+      >
+        {button}
+      </View>
+    ) : null;
   return {
-    top:
-      touch && showVoice ? (
-        <View
-          style={[styles.touchDictationSlot, mobile && styles.mobileDictationSlot]}
-          testID="composer-dictation-slot"
-        >
-          {button}
-        </View>
-      ) : null,
+    top: mobile ? null : slot,
+    rail: mobile ? slot : null,
     bottom: touch ? null : button,
   };
 }
@@ -1317,8 +1342,10 @@ function shouldShowFullscreenControl(
   readOnly: boolean,
   overlayVisible: boolean,
   renderedLines: number,
+  measuredHeight: unknown,
 ) {
-  return compact && !readOnly && !overlayVisible && renderedLines > 2;
+  const hasRoom = isWeb ? measuredHeight === 142 : renderedLines >= 7;
+  return compact && !readOnly && !overlayVisible && hasRoom;
 }
 
 export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
@@ -1376,9 +1403,11 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
 
     const touch = useVortonTouch();
     const mobileComposer = useMobileComposerLayout();
+    const editingSession = useComposerEditingSession(inputMode, props.editingSession);
+    const isFullscreen = useComposerFullscreen(editingSession);
     const showMobileQueue = useMemo(
-      () => mobileComposer.enabled && Boolean(onQueue) && !readOnly,
-      [mobileComposer.enabled, onQueue, readOnly],
+      () => (touch || isFullscreen) && Boolean(onQueue) && !readOnly,
+      [touch, isFullscreen, onQueue, readOnly],
     );
     const showSubmitModifiers = supportsSubmitModifiers({
       isWeb,
@@ -1395,10 +1424,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     );
 
     const { height: windowHeight } = useWindowDimensions();
-    const editingSession = useComposerEditingSession(inputMode, props.editingSession);
-    const isFullscreen = useComposerFullscreen(editingSession);
     const [renderedLines, setRenderedLines] = useState(1);
-    const maxInputHeight = resolveMaxInputHeight(windowHeight, isCompact);
+    const maxInputHeight = resolveMaxInputHeight(windowHeight, isCompact, touch);
     const buttonIconSize = touch || !isWeb ? ICON_SIZE.lg : ICON_SIZE.md;
     const toast = useToast();
     const voice = useVoiceOptional();
@@ -2000,7 +2027,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const submitAccessibilityLabel = resolveSubmitAccessibilityLabel({
       submitButtonAccessibilityLabel,
       canPressLoadingButton,
-      defaultActionQueues,
+      defaultActionQueues: !isFullscreen && defaultActionQueues,
       defaultSendBehavior,
       isAgentRunning,
       t,
@@ -2028,7 +2055,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const sendTooltipLabel = resolveSendTooltipLabel({
       disabledReason: props.submitDisabledReason,
       submitButtonAccessibilityLabel,
-      defaultActionQueues,
+      defaultActionQueues: !isFullscreen && defaultActionQueues,
       t,
     });
 
@@ -2040,14 +2067,15 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       canQueue: Boolean(onQueue),
       defaultActionQueues,
       separateQueueAction: useMemo(
-        () => mobileComposer.enabled && inputMode === "chat" && !readOnly,
-        [mobileComposer.enabled, inputMode, readOnly],
+        () => showMobileQueue && inputMode === "chat" && !isFullscreen,
+        [showMobileQueue, inputMode, isFullscreen],
       ),
     });
     const buttonPresentation = resolveModifiedSendButton({
       action: submitAction.action,
       queues: submitAction.queues,
       disabled,
+      namedSubmit: Boolean(submitButtonAccessibilityLabel),
       t,
       baseline: {
         buttonIcon: submitIcon,
@@ -2128,17 +2156,26 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       void handleStopRealtimeVoice();
     }, [handleStopRealtimeVoice]);
 
+    const showFullscreenButton = shouldShowFullscreenControl(
+      touch,
+      readOnly,
+      showOverlay,
+      renderedLines,
+      composerHeightStyle.height,
+    );
     const inputWrapperCombinedStyle = useMemo(
       () => [
         styles.inputWrapper,
         taskCardStyles.surface,
         touch && !mobileComposer.enabled && styles.touchInputSurface,
         mobileComposer.enabled && { paddingBottom: mobileComposer.bottomPadding },
-        isCompact && !isFullscreen && styles.inputWrapperCompact,
+        // The mobile surface is transparent, so a shadow would only draw a stray edge line.
+        isCompact && !isFullscreen && !mobileComposer.enabled && styles.inputWrapperCompact,
         readOnly && styles.inputWrapperReadOnly,
         inputWrapperStyle,
         mobileComposer.enabled && styles.mobileInputSurface,
         showMobileQueue && styles.mobileQueueSurface,
+        showFullscreenButton && styles.fourActionSurface,
         { opacity: surfacePresentation.input.opacity },
       ],
       [
@@ -2149,6 +2186,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         mobileComposer.enabled,
         mobileComposer.bottomPadding,
         showMobileQueue,
+        showFullscreenButton,
         isFullscreen,
         isCompact,
       ],
@@ -2163,9 +2201,18 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         styles.textInput,
         mode.isMonospace && styles.textInputMonospace,
         isFullscreen ? styles.fullscreenTextInput : composerHeightStyle,
-        touch && mode.showVoice && styles.touchTextInput,
+        touch && mode.showVoice && !isFullscreen && styles.touchTextInput,
+        mobileComposer.enabled && !hasLiveText && !isFullscreen && styles.mobileEmptyTextInput,
       ],
-      [composerHeightStyle, mode.isMonospace, mode.showVoice, touch, isFullscreen],
+      [
+        composerHeightStyle,
+        mode.isMonospace,
+        mode.showVoice,
+        touch,
+        isFullscreen,
+        mobileComposer.enabled,
+        hasLiveText,
+      ],
     );
     // Static content has no textarea to mirror, so it grows with its own text
     // instead of the measured input height.
@@ -2215,19 +2262,33 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       [isDictating, isRealtimeVoiceForCurrentAgent, voice?.isMuted, buttonIconSize],
     );
 
-    const voiceButton = (
-      <VoiceButtonTooltip
-        visible={mode.showVoice}
-        onVoicePress={handleVoicePress}
-        isDictationStartEnabled={isDictationStartEnabled}
-        voiceButtonAccessibilityLabel={voiceButtonAccessibilityLabel}
-        voiceButtonStyle={voiceButtonStyle}
-        renderVoiceButtonIcon={renderVoiceButtonIcon}
-        voiceTooltipText={voiceTooltipText}
-        isRealtimeVoiceForCurrentAgent={isRealtimeVoiceForCurrentAgent}
-        voiceMuteToggleKeys={voiceMuteToggleKeys}
-        dictationToggleKeys={dictationToggleKeys}
-      />
+    const voiceButton = useMemo(
+      () => (
+        <VoiceButtonTooltip
+          visible={mode.showVoice}
+          onVoicePress={handleVoicePress}
+          isDictationStartEnabled={isDictationStartEnabled}
+          voiceButtonAccessibilityLabel={voiceButtonAccessibilityLabel}
+          voiceButtonStyle={voiceButtonStyle}
+          renderVoiceButtonIcon={renderVoiceButtonIcon}
+          voiceTooltipText={voiceTooltipText}
+          isRealtimeVoiceForCurrentAgent={isRealtimeVoiceForCurrentAgent}
+          voiceMuteToggleKeys={voiceMuteToggleKeys}
+          dictationToggleKeys={dictationToggleKeys}
+        />
+      ),
+      [
+        mode.showVoice,
+        handleVoicePress,
+        isDictationStartEnabled,
+        voiceButtonAccessibilityLabel,
+        voiceButtonStyle,
+        renderVoiceButtonIcon,
+        voiceTooltipText,
+        isRealtimeVoiceForCurrentAgent,
+        voiceMuteToggleKeys,
+        dictationToggleKeys,
+      ],
     );
 
     const mobileQueueButton = useMemo(
@@ -2242,7 +2303,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
             style={[
               styles.sendButton,
               styles.touchButton,
-              styles.mobileQueueButton,
+              !isFullscreen && styles.mobileQueueButton,
               !highlightQueue && styles.sendButtonNewline,
               isSendButtonDisabled && styles.buttonDisabled,
             ]}
@@ -2250,7 +2311,14 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
             <ThemedListPlus size={buttonIconSize} uniProps={iconAccentForegroundMapping} />
           </Pressable>
         ) : null,
-      [showMobileQueue, isSendButtonDisabled, handleQueueMessage, buttonIconSize, highlightQueue],
+      [
+        showMobileQueue,
+        isSendButtonDisabled,
+        handleQueueMessage,
+        buttonIconSize,
+        highlightQueue,
+        isFullscreen,
+      ],
     );
     const queueRecordingAction = useMemo(
       () => (onQueue && !readOnly ? handleAcceptAndQueueRecording : undefined),
@@ -2260,7 +2328,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       voiceButton,
       touch,
       mode.showVoice,
-      mobileComposer.enabled,
+      touch && !isFullscreen,
+      showMobileQueue,
     );
     const sendButton = useMemo(
       () => (
@@ -2273,20 +2342,26 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           onDefaultSendAction={isFullscreen ? handleSendMessage : handleButtonAction}
           onLongPressSend={handleLongPressSend}
           isSendButtonDisabled={isFullscreen ? isPresentedSendDisabled : buttonDisabled}
-          submitAccessibilityLabel={buttonPresentation.submitAccessibilityLabel}
+          submitAccessibilityLabel={
+            isFullscreen ? submitAccessibilityLabel : buttonPresentation.submitAccessibilityLabel
+          }
           submitAccessibilityHint={submitAccessibilityHint}
           sendButtonCombinedStyle={sendButtonCombinedStyle}
           isSubmitLoading={isSubmitLoading}
-          submitIcon={buttonIcon}
+          submitIcon={isFullscreen ? submitIcon : buttonIcon}
           submitLabel={submitLabel}
           submitButtonTestID={submitButtonTestID}
           buttonIconSize={buttonIconSize}
           sendKeys={buttonKeys}
           allowDisabledTooltip={Boolean(props.submitDisabledReason)}
-          sendTooltipLabel={buttonPresentation.sendTooltipLabel}
+          sendTooltipLabel={isFullscreen ? sendTooltipLabel : buttonPresentation.sendTooltipLabel}
         />
       ),
       [
+        handleSendMessage,
+        submitAccessibilityLabel,
+        submitIcon,
+        sendTooltipLabel,
         isFullscreen,
         buttonKind,
         buttonDisabled,
@@ -2294,7 +2369,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         buttonIcon,
         buttonKeys,
         handleButtonAction,
-        handleSendMessage,
         props.submitDisabledReason,
         activeActionContent,
         canPressLoadingButton,
@@ -2343,7 +2417,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
             fullscreen={isFullscreen}
             compact={isCompact}
             onRenderedLinesChange={setRenderedLines}
-            focusHintVisible={!isFullscreen && isWeb && !isInputFocused && !value}
+            focusHintVisible={!isFullscreen && isWeb && !touch && !isInputFocused && !value}
             focusInputKeys={focusInputKeys}
             focusHintLabel={t("composer.input.focusHint", {
               shortcut: focusInputKeys ? formatShortcut(focusInputKeys[0], getShortcutOs()) : "",
@@ -2353,6 +2427,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       ),
       [
         readOnly,
+        touch,
         textReplacement,
         assignTextInput,
         textInputStyle,
@@ -2397,7 +2472,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
             {leftContent}
           </View>
 
-          {mobileQueueButton}
           {/* Right: voice button, contextual button (realtime/send/cancel) */}
           <View style={styles.rightButtonGroup}>
             {beforeVoiceContent}
@@ -2420,7 +2494,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         rightContent,
         sendButton,
         dictationPlacement.bottom,
-        mobileQueueButton,
       ],
     );
     const voiceOverlay = useMemo(
@@ -2470,10 +2543,26 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         handleRealtimeVoiceStop,
       ],
     );
+    const rootStyle = useMemo(
+      () => [
+        isFullscreen ? styles.fullscreenContainer : styles.container,
+        touch && showOverlay && styles.recordingContainer,
+      ],
+      [isFullscreen, touch, showOverlay],
+    );
+    const fullscreenControls = useMemo(
+      () => (
+        <>
+          {mode.showVoice ? voiceButton : null}
+          {mobileQueueButton}
+        </>
+      ),
+      [mode.showVoice, voiceButton, mobileQueueButton],
+    );
     return (
       <View
         ref={rootRef}
-        style={isFullscreen ? styles.fullscreenContainer : styles.container}
+        style={rootStyle}
         testID="message-input-root"
         onLayout={handleComposerLayout}
       >
@@ -2484,10 +2573,9 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         />
         <ComposerInputPresentation
           fullscreen={isFullscreen}
-          sendIconSize={buttonIconSize}
           surface={
             <>
-              {dictationPlacement.top}
+              {isFullscreen ? null : dictationPlacement.top}
               {textSurface}
             </>
           }
@@ -2499,13 +2587,15 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           inputWrapperStyle={inputWrapperCombinedStyle}
           inputPointerEvents={surfacePresentation.input.pointerEvents}
           attachmentSlot={attachmentSlot}
-          showFullscreenButton={shouldShowFullscreenControl(
-            isCompact,
-            readOnly,
-            showOverlay,
-            renderedLines,
-          )}
+          showFullscreenButton={showFullscreenButton}
           onEnter={enterFullscreen}
+          rail={
+            <>
+              {dictationPlacement.rail}
+              {mobileQueueButton}
+            </>
+          }
+          fullscreenControls={fullscreenControls}
           overlay={voiceOverlay}
         />
       </View>
@@ -2518,6 +2608,7 @@ const styles = StyleSheet.create((theme: Theme) => ({
     flexShrink: 1,
     position: "relative",
   },
+  recordingContainer: { height: 162, flexShrink: 0, overflow: "hidden" },
   fullscreenContainer: {
     flex: 1,
     position: "relative",
@@ -2562,7 +2653,9 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   touchInputSurface: {
     paddingTop: COMPOSER_CORNER_INSET,
-    paddingBottom: { xs: theme.spacing[3] - 6, md: theme.spacing[4] - 6 },
+    paddingBottom: MOBILE_RAIL_INSET,
+    paddingHorizontal: MOBILE_SURFACE_PADDING_X,
+    minHeight: 111,
     gap: theme.spacing[2],
   },
   mobileInputSurface: {
@@ -2570,13 +2663,14 @@ const styles = StyleSheet.create((theme: Theme) => ({
     borderColor: "transparent",
     borderRadius: 0,
   },
-  // Three 44px actions, two 8px gaps, and matching 8px top/bottom insets.
-  mobileQueueSurface: { minHeight: 164, justifyContent: "space-between" },
+  // The rail's three 44px actions with 6px edge insets and two shared card gaps, plus the 1px borders.
+  fourActionSurface: { minHeight: 214 },
+  mobileQueueSurface: { minHeight: 162, justifyContent: "space-between" },
   mobileQueueButton: {
     position: "absolute",
     zIndex: 1,
-    bottom: 59,
-    right: 7,
+    bottom: MOBILE_RAIL_INSET + TOUCH_DICTATION_SIZE + CARD_GAP,
+    right: MOBILE_RAIL_INSET,
   },
   // The band the fullscreen glyph sits in is the input's own padding, so a tap
   // anywhere in it (under the glyph, or where the glyph would be) is a tap on the
@@ -2650,8 +2744,18 @@ const styles = StyleSheet.create((theme: Theme) => ({
     right: COMPOSER_CORNER_INSET,
     zIndex: 1,
   },
-  touchTextInput: { paddingRight: 56, minHeight: 44 },
-  mobileDictationSlot: { top: COMPOSER_CORNER_INSET - 1 },
+  mobileEmptyTextInput: {
+    height: 90,
+    textAlign: "center",
+    paddingTop: (90 - theme.fontSize.content * 1.4) / 2,
+    paddingBottom: 0,
+  },
+  touchTextInput: { paddingRight: TOUCH_DICTATION_BAND, minHeight: 44 },
+  mobileDictationSlot: {
+    position: "absolute",
+    right: MOBILE_RAIL_INSET,
+    zIndex: 1,
+  },
   buttonRow: {
     flexShrink: 0,
     flexDirection: "row",

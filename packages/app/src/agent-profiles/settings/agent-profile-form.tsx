@@ -72,7 +72,9 @@ function ChoiceField({
   options,
   onChange,
   disabled,
+  hint,
 }: {
+  hint?: string;
   label: string;
   value: string;
   options: AgentProfileFormOption[];
@@ -86,6 +88,7 @@ function ChoiceField({
   return (
     <SelectField
       label={label}
+      hint={hint}
       testID={`agent-profile-${label.toLowerCase()}-field`}
       triggerTestID={`agent-profile-${label.toLowerCase()}-trigger`}
       value={value}
@@ -114,7 +117,11 @@ function FeatureField({
   const options = useMemo(
     () =>
       feature.type === "select"
-        ? feature.options.map((option) => ({ ...option, value: option.id }))
+        ? feature.options.map((option) => ({
+            ...option,
+            value: option.id,
+            testID: `agent-profile-feature-option-${feature.id}-${option.id}`,
+          }))
         : [],
     [feature],
   );
@@ -140,6 +147,8 @@ function FeatureField({
         placeholder="Choose"
         emptyText="No options"
         disabled={disabled}
+        testID={`agent-profile-feature-field-${feature.id}`}
+        triggerTestID={`agent-profile-feature-trigger-${feature.id}`}
       />
     );
   return (
@@ -289,6 +298,7 @@ export function AgentProfileForm({
         )}
         <ChoiceField
           label="Model"
+          hint={state.compatibilityWarnings.join(" ")}
           value={state.modelId}
           options={state.modelOptions}
           onChange={model.setModel}

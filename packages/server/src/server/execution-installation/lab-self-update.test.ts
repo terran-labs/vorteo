@@ -10,6 +10,7 @@ import {
   reportedInstallationType,
   UNREADABLE_INSTALLATION_TYPE_REVISION,
 } from "./installation-type.js";
+import { changeLiveDevMode, readLiveDevMode } from "./live-dev/state.js";
 import {
   createLabUpdateJournal,
   LabSelfUpdates,
@@ -46,6 +47,23 @@ test("installation type defaults to Stable and an unreadable record only repairs
   expect((await changeInstallationType(directory, { ...unreadable, type: "stable" })).type).toBe(
     "stable",
   );
+});
+
+test("Lab is live development: delivery mode follows the installation type", async () => {
+  // A record from before the merge no longer turns live mode on by itself.
+  writeFileSync(
+    path.join(directory, "live-dev.json"),
+    JSON.stringify({ version: 1, mode: "live", changedAt: new Date().toISOString() }),
+  );
+  expect((await readLiveDevMode(directory)).mode).toBe("reliable");
+  await changeInstallationType(directory, { expectedRevision: "none", type: "lab" });
+  const live = await readLiveDevMode(directory);
+  expect(live.mode).toBe("live");
+  // Older interfaces still switch through the delivery mode route, which now changes the type.
+  await changeLiveDevMode(directory, { expectedRevision: live.revision, mode: "reliable" });
+  expect((await readInstallationType(directory)).type).toBe("stable");
+  writeFileSync(installationTypeFile(directory), "{not json");
+  await expect(readLiveDevMode(directory)).rejects.toThrow(/unreadable/);
 });
 
 /** Records every effect in order. Defaults describe a healthy Lab installation. */

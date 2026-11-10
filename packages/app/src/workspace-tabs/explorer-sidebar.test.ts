@@ -9,6 +9,7 @@ vi.mock("@react-native-async-storage/async-storage", () => ({
 }));
 
 import { usePanelStore } from "@/stores/panel-store";
+import { registerInlineDetailTiles } from "./supporting-card-requests";
 import {
   collectAllTabs,
   findPaneById,
@@ -27,6 +28,8 @@ const checkout = { serverId: "server-1", cwd: "/repo", isGit: true };
 
 beforeEach(() => {
   useWorkspaceLayoutStore.setState({
+    layoutMode: "split-panes",
+    sheetsByWorkspace: {},
     layoutByWorkspace: {},
     explorerSidebarPaneIdByWorkspace: {},
     sidePaneIdByWorkspace: {},
@@ -50,7 +53,15 @@ describe("Explorer sidebar", () => {
     );
   });
 
-  it("selects the checkout-bound Changes view inside the compact overlay", () => {
+  it("opens workspace Changes in place on phones", () => {
+    const releaseInlineTiles = registerInlineDetailTiles(WORKSPACE_KEY);
+    openExplorerSidebarView({
+      isCompact: false,
+      workspaceKey: WORKSPACE_KEY,
+      checkout,
+      view: "changes",
+    });
+    useWorkspaceLayoutStore.getState().setLayoutMode("compact");
     openExplorerSidebarView({
       isCompact: true,
       workspaceKey: WORKSPACE_KEY,
@@ -58,12 +69,28 @@ describe("Explorer sidebar", () => {
       view: "changes",
     });
 
-    expect(usePanelStore.getState().mobilePanel.target).toBe("file-explorer");
-    expect(usePanelStore.getState().explorerTab).toBe("changes");
-    expect(usePanelStore.getState().explorerTabByCheckout).toEqual({
-      "server-1::/repo": "changes",
-    });
-    expect(useWorkspaceLayoutStore.getState().layoutByWorkspace[WORKSPACE_KEY]).toBeUndefined();
+    expect(usePanelStore.getState().mobilePanel.target).toBe("agent");
+    expect(usePanelStore.getState().inlineCardExpanded.changes).toBe(true);
+    expect(useWorkspaceLayoutStore.getState().sheetsByWorkspace[WORKSPACE_KEY] ?? []).toEqual([]);
+    const input = { isCompact: true, workspaceKey: WORKSPACE_KEY, checkout };
+    toggleExplorerSidebar(input);
+    expect(isExplorerSidebarOpen(input)).toBe(false);
+    toggleExplorerSidebar(input);
+    expect(isExplorerSidebarOpen(input)).toBe(true);
+
+    // Without a visible conversation, such as from a terminal, phones fall back to a sheet.
+    releaseInlineTiles();
+    openExplorerSidebarView({ ...input, view: "files" });
+    expect(
+      useWorkspaceLayoutStore
+        .getState()
+        .sheetsByWorkspace[WORKSPACE_KEY]?.map(({ tab }) => tab.target.kind),
+    ).toEqual(["files"]);
+    expect(isExplorerSidebarOpen(input)).toBe(true);
+    toggleExplorerSidebar(input);
+    expect(useWorkspaceLayoutStore.getState().sheetsByWorkspace[WORKSPACE_KEY] ?? []).toEqual([]);
+    expect(usePanelStore.getState().inlineCardExpanded.files).toBe(true);
+    expect(usePanelStore.getState().mobilePanel.target).toBe("agent");
   });
 
   it("creates a dedicated desktop Explorer containing only its requested tree", () => {
@@ -105,9 +132,10 @@ describe("Explorer sidebar", () => {
     expect(activeExplorerTarget).toBe("files");
   });
 
-  it("toggles the compact Explorer without changing its selected view", () => {
+  it("toggles the wide native Explorer without changing its selected view", () => {
     const input = {
-      isCompact: true,
+      isCompact: false,
+      supportsPaneSplits: false,
       workspaceKey: WORKSPACE_KEY,
       checkout,
     };

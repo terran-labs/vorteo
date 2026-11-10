@@ -528,6 +528,26 @@ function WorkspaceHeaderTitleBar({
   onViewScriptTerminal,
   onOpenUrlInBrowserTab,
 }: WorkspaceHeaderTitleBarProps) {
+  const compactHeaderScripts = useMemo(
+    () => ({
+      serverId: normalizedServerId,
+      workspaceId: normalizedWorkspaceId,
+      scripts: workspaceScripts,
+      liveTerminalIds,
+      onScriptTerminalStarted,
+      onViewTerminal: onViewScriptTerminal,
+      onOpenUrlInBrowserTab,
+    }),
+    [
+      normalizedServerId,
+      normalizedWorkspaceId,
+      workspaceScripts,
+      liveTerminalIds,
+      onScriptTerminalStarted,
+      onViewScriptTerminal,
+      onOpenUrlInBrowserTab,
+    ],
+  );
   return (
     <View style={styles.headerTitleContainer}>
       {isLoading ? (
@@ -555,18 +575,8 @@ function WorkspaceHeaderTitleBar({
             onCreateTerminal={onCreateTerminal}
             onCreateTerminalWithProfile={onCreateTerminalWithProfile}
             onCreateBrowser={onCreateBrowser}
-          >
-            <WorkspaceScriptsButton
-              serverId={normalizedServerId}
-              workspaceId={normalizedWorkspaceId}
-              scripts={workspaceScripts}
-              liveTerminalIds={liveTerminalIds}
-              onScriptTerminalStarted={onScriptTerminalStarted}
-              onViewTerminal={onViewScriptTerminal}
-              onOpenUrlInBrowserTab={onOpenUrlInBrowserTab}
-              presentation="menu"
-            />
-          </WorkspaceHeaderMenuMobile>
+            scripts={compactHeaderScripts}
+          />
         ) : null}
       </View>
     </View>
@@ -1342,8 +1352,9 @@ function WorkspaceScreenContent({
   useEffect(() => {
     // Back dismisses the compact overlay only. On a wide native layout the
     // explorer is a tab, `showMobileAgent` has no rendered consumer, and
-    // returning true would swallow Back with nothing to show for it.
-    if (!isRouteFocused || isWeb || !isMobile || !isExplorerSidebarShowing) {
+    // returning true would swallow Back with nothing to show for it. Phone workspaces show
+    // Files and Changes as inline cards, not an overlay, so Back is not theirs to take.
+    if (!isRouteFocused || isWeb || !isMobile || persistenceKey || !isExplorerSidebarShowing) {
       return;
     }
 
@@ -1353,7 +1364,7 @@ function WorkspaceScreenContent({
     });
 
     return () => handler.remove();
-  }, [isExplorerSidebarShowing, isMobile, isRouteFocused, showMobileAgent]);
+  }, [isExplorerSidebarShowing, isMobile, isRouteFocused, persistenceKey, showMobileAgent]);
 
   const workspaceLayout = useWorkspaceLayoutStore((state) =>
     persistenceKey ? (state.layoutByWorkspace[persistenceKey] ?? null) : null,
@@ -3299,6 +3310,27 @@ function WorkspaceScreenContent({
     workspaceKey: persistenceKey,
   });
 
+  // The compact header menu carries scripts as pages, since the header has no room for a button.
+  const compactHeaderScripts = useMemo(
+    () => ({
+      serverId: normalizedServerId,
+      workspaceId: normalizedWorkspaceId,
+      scripts: workspaceScripts,
+      liveTerminalIds,
+      onScriptTerminalStarted: handleScriptTerminalStarted,
+      onViewTerminal: handleViewScriptTerminal,
+      onOpenUrlInBrowserTab: handleOpenUrlInBrowserTab,
+    }),
+    [
+      normalizedServerId,
+      normalizedWorkspaceId,
+      workspaceScripts,
+      liveTerminalIds,
+      handleScriptTerminalStarted,
+      handleViewScriptTerminal,
+      handleOpenUrlInBrowserTab,
+    ],
+  );
   const singleScriptMenu = useMemo(
     () =>
       workspaceDescriptor?.scripts.length === 1 ? (
@@ -3555,9 +3587,6 @@ function WorkspaceScreenContent({
           subtitle={workspaceHeaderSubtitle}
           isSubtitleDistinct={isWorkspaceHeaderSubtitleDistinct}
           serverId={normalizedServerId}
-          onToggleExplorer={handleToggleExplorerSidebar}
-          explorerToggleLabel={explorerSidebarToggleLabel}
-          explorerToggleAccessibilityState={explorerSidebarToggleAccessibilityState}
         >
           <MobileWorkspaceTabSwitcher
             tabs={tabs}
@@ -3588,14 +3617,14 @@ function WorkspaceScreenContent({
             onCreateDraftTab={handleCreateDraftTab}
             onCreateTerminal={handleCreateTerminal}
             onCreateBrowser={handleCreateBrowserTab}
+            scripts={compactHeaderScripts}
           />
         </CompactWorkspaceHeader>
       ) : null,
     [
       activeTabKey,
+      compactHeaderScripts,
       createTerminalDisabled,
-      explorerSidebarToggleAccessibilityState,
-      explorerSidebarToggleLabel,
       handleCloseOtherTabs,
       handleCloseTabById,
       handleCloseTabsToLeft,
@@ -3611,7 +3640,6 @@ function WorkspaceScreenContent({
       handleReloadAgent,
       handleRenameTab,
       handleSelectSwitcherTab,
-      handleToggleExplorerSidebar,
       isMobile,
       isWorkspaceHeaderLoading,
       isWorkspaceHeaderSubtitleDistinct,

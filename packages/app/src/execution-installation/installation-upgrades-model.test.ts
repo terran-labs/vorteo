@@ -10,6 +10,9 @@ import type {
 import {
   activeUpgrade,
   coordinatorFollowView,
+  DELEGATION_VISIBLE_POLL_MS,
+  installationChangesPollMs,
+  sourceUpgradesPollMs,
   installationUpdateEntry,
   latestFinishedUpgrade,
   pendingUpgradeDecisions,
@@ -300,4 +303,54 @@ describe("coordinatorSettingsView", () => {
       follow: "/releases/new",
     });
   });
+  it("lists each changed field of a reviewed broker setting with its verification", () => {
+    const broker = {
+      ...job,
+      changes: [
+        {
+          key: "previewBroker",
+          displaySafe: true,
+          fields: [
+            {
+              field: "worker",
+              before: "/releases/a/worker.py · sha256 0123456789ab",
+              after: "/releases/b/worker.py · sha256 ba9876543210",
+              verified: true,
+            },
+            { field: "evidenceRoot", before: null, after: "/evidence" },
+          ],
+        },
+      ],
+    };
+    expect(
+      coordinatorSettingsView({ available: true, detail: "", job: broker }, null),
+    ).toMatchObject({
+      rows: [
+        {
+          key: "previewBroker.worker",
+          before: "/releases/a/worker.py · sha256 0123456789ab",
+          after: "/releases/b/worker.py · sha256 ba9876543210",
+          verified: true,
+        },
+        { key: "previewBroker.evidenceRoot", before: "not set", after: "/evidence" },
+      ],
+    });
+  });
+});
+
+it("an open page finds a new delegated request well before its thirty-second window ends", () => {
+  const window = 30_000;
+  // Empty or idle: the next poll still lands inside the window, so Cancel shows before dispatch.
+  for (const interval of [
+    sourceUpgradesPollMs(null),
+    sourceUpgradesPollMs({ upgrades: [] }),
+    sourceUpgradesPollMs({ upgrades: [{ status: "succeeded" }] }),
+    installationChangesPollMs(undefined),
+    installationChangesPollMs([]),
+    installationChangesPollMs([{ finishedAt: "2026-11-08T12:00:00.000Z" }]),
+  ])
+    expect(interval * 2).toBeLessThanOrEqual(window);
+  expect(sourceUpgradesPollMs({ upgrades: [{ status: "pending" }] })).toBeLessThan(
+    DELEGATION_VISIBLE_POLL_MS,
+  );
 });

@@ -1,7 +1,6 @@
 import { type ComponentProps } from "react";
 import { StyleSheet } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
-import { useVortonTouch } from "@/vorton-touch";
 import { CONTROL_HEIGHTS } from "@/components/ui/control-geometry";
 
 export function CompactAccountButton({
@@ -15,7 +14,6 @@ export function CompactAccountButton({
   tone?: "default" | "danger";
   dense?: boolean;
 }) {
-  const touch = useVortonTouch();
   return (
     <Button
       {...props}
@@ -24,7 +22,8 @@ export function CompactAccountButton({
       size="sm"
       style={[
         styles.target,
-        dense && !touch && styles.denseTarget,
+        // Dense badges keep their visual size on touch too; callers extend the hit area.
+        dense && styles.denseTarget,
         tone === "danger" && styles.dangerOutline,
         style,
       ]}

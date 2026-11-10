@@ -114,6 +114,22 @@ test("owner repair persists its capture, preserves contributions and requires a 
   expect(f.restart).not.toHaveBeenCalled();
 });
 
+test("a Host agent's repair under the full grant leaves the repaired restart to the delegated queue", async () => {
+  const f = fixture();
+  const conflict = await f.conflict();
+  f.queue.requestDevRepair(conflict.id, conflict.revision, true);
+  await f.queue.prepareBatches();
+  const result = f.queue.list()[0]!;
+  // Not forced to the owner: the delegated Dev restart queue, with its window and checks, decides.
+  expect(result.requireOwnerApproval).toBeFalsy();
+  expect(result.sourceBatch?.contributions[1]).toMatchObject({
+    requestedBy: "host-agent",
+    update: f.prepared,
+    requireOwnerApproval: false,
+  });
+  expect(f.restart).not.toHaveBeenCalled();
+});
+
 test.each(["cancel", "upload"])(
   "late preparation cannot overwrite a concurrent %s",
   async (action) => {

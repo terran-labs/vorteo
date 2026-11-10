@@ -9,7 +9,7 @@ import { WorkspacePaneContent, type WorkspacePaneContentModel } from "./workspac
 import { WorkspaceTabPresentationResolver } from "./workspace-tab-presentation";
 import { deriveWorkspacePaneState } from "./workspace-pane-state";
 import type { WorkspaceTabDescriptor } from "./workspace-tabs-types";
-import type { SplitPane } from "@/stores/workspace-layout-store";
+import { type SplitPane } from "@/stores/workspace-layout-store";
 import type { WorkspaceTab } from "@/workspace-tabs/model";
 
 export interface SupportingViewCardsProps {
@@ -53,7 +53,8 @@ function SupportingViewCard({
   tab: WorkspaceTabDescriptor;
   selected: boolean;
 }) {
-  const [expanded, setExpanded] = useCardDisclosure(tab.kind === "files" ? "files" : "changes");
+  const [disclosed, setExpanded] = useCardDisclosure(tab.kind === "files" ? "files" : "changes");
+  const expanded = disclosed;
   const icon = useMemo(
     () => <TaskCardIcon kind={tab.kind === "files" ? "files" : "changes"} />,
     [tab.kind],
@@ -61,7 +62,7 @@ function SupportingViewCard({
   const toggle = useCallback(() => {
     setExpanded((current) => !current);
     if (!expanded) onSelectTab(pane.id, tab.tabId);
-  }, [expanded, setExpanded, onSelectTab, pane.id, tab.tabId]);
+  }, [tab, expanded, setExpanded, onSelectTab, pane.id]);
   const content = useMemo(
     () => buildPaneContentModel({ paneId: pane.id, tab }),
     [buildPaneContentModel, pane.id, tab],

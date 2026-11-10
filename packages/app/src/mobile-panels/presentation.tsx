@@ -1,5 +1,5 @@
-import { useId, useMemo, type ComponentProps, type ReactNode } from "react";
-import { Pressable, StyleSheet } from "react-native";
+import { useId, useMemo, type ComponentProps, type ReactNode, type Ref } from "react";
+import { Pressable, StyleSheet, type View } from "react-native";
 import { GestureDetector, type GestureType } from "react-native-gesture-handler";
 import Animated, { useAnimatedStyle } from "react-native-reanimated";
 import { isWeb } from "@/constants/platform";
@@ -12,6 +12,7 @@ type OverlayPanel = Exclude<MobilePanelView, "agent">;
 
 interface MobilePanelOverlayProps {
   children: ReactNode;
+  edgeRef?: Ref<View>;
   closeGesture: GestureType;
   panel: OverlayPanel;
   presentation?: "overlay" | "dock";
@@ -22,6 +23,7 @@ interface MobilePanelOverlayProps {
 
 export function MobilePanelOverlay({
   children,
+  edgeRef,
   closeGesture,
   panel,
   panelStyle,
@@ -91,6 +93,7 @@ export function MobilePanelOverlay({
       {/* Fabric needs an always-mounted native host to attach the close handler while the
           retained panel content is hidden. nativeID keeps that host registered. */}
       <Animated.View
+        ref={edgeRef}
         accessibilityElementsHidden={!isOpen}
         collapsable={false}
         importantForAccessibility={isOpen ? "auto" : "no-hide-descendants"}

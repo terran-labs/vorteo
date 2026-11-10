@@ -8,6 +8,7 @@ import {
   Users,
   Files,
   GitCompareArrows,
+  GitPullRequest,
   ChartPie,
 } from "lucide-react-native";
 import { View } from "react-native";
@@ -20,6 +21,7 @@ const palette = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const icons = {
   files: withUnistyles(Files),
   changes: withUnistyles(GitCompareArrows),
+  pullRequest: withUnistyles(GitPullRequest),
   journal: withUnistyles(BookOpen),
   messages: withUnistyles(MessagesSquare),
   goal: withUnistyles(Target),

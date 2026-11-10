@@ -1245,6 +1245,9 @@
         "idleRuntimeCleanup": {
           "type": "boolean"
         },
+        "blockedWorkReview": {
+          "type": "boolean"
+        },
         "resumeOnStartup": {
           "type": "boolean"
         },

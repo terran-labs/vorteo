@@ -196,6 +196,7 @@ vi.mock("lucide-react-native", () => ({
   Info: () => null,
   Files: () => null,
   GitCompareArrows: () => null,
+  GitPullRequest: () => null,
   BookOpen: () => null,
   ChevronDown: () => null,
   ChevronRight: () => null,
@@ -388,6 +389,18 @@ it("keeps edit and send icons available and toggles the queue with its header co
 it("hides an empty paused queue after Stop while preserving locally pending messages", async () => {
   state.empty = true;
   state.paused = true;
+  await act(async () =>
+    root.render(
+      <SharedQueueView
+        serverId="host"
+        agentId="agent"
+        control={useMessageQueue("host", "agent")}
+      />,
+    ),
+  );
+  expect(container.querySelector('[data-testid="shared-message-queue"]')).toBeNull();
+  // An in-flight command for a message that already left the queue has no row to show.
+  state.pendingEdit = true;
   await act(async () =>
     root.render(
       <SharedQueueView

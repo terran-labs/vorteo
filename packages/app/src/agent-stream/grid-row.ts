@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type { LayoutChangeEvent } from "react-native";
 import type { GridRowTracker } from "./grid-row-tracker";
 
@@ -24,4 +24,30 @@ export function useGridRows(_compact: ReadonlyMap<string, number>): GridRowTrack
   }, []);
   const schedule = useCallback(() => {}, []);
   return useMemo(() => ({ rows, onTileLayout, schedule }), [rows, onTileLayout, schedule]);
+}
+
+/** Native onLayout reports sibling moves, including keyed reorders without a resize. */
+export function useGridOrder() {
+  const positions = useRef(new Map<string, { x: number; y: number }>());
+  const [order, setOrder] = useState<readonly string[]>([]);
+  const onTileLayout = useCallback((id: string, event: LayoutChangeEvent) => {
+    const { x, y, width } = event.nativeEvent.layout;
+    if (width <= 0) return;
+    positions.current.set(id, { x, y });
+    const next = [...positions.current]
+      .sort((a, b) => a[1].y - b[1].y || a[1].x - b[1].x)
+      .map(([key]) => key);
+    setOrder((previous) =>
+      previous.length === next.length && previous.every((key, i) => key === next[i])
+        ? previous
+        : next,
+    );
+  }, []);
+  const forget = useCallback((id: string) => {
+    positions.current.delete(id);
+    setOrder((previous) =>
+      previous.includes(id) ? previous.filter((key) => key !== id) : previous,
+    );
+  }, []);
+  return useMemo(() => ({ order, onTileLayout, forget }), [order, onTileLayout, forget]);
 }

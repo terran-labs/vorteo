@@ -81,6 +81,7 @@ interface SupportedMutableConfigPatch {
   autoArchiveAfterMerge?: boolean;
   enableTerminalAgentHooks?: boolean;
   idleRuntimeCleanup?: boolean;
+  blockedWorkReview?: boolean;
   resumeOnStartup?: boolean;
   resumePrompt?: string;
   appendSystemPrompt?: string;
@@ -332,6 +333,7 @@ const RELOADABLE_PATHS = [
   "daemon.sharedProviderPreferences",
   "app.baseUrl",
   "agents.idleRuntimeCleanup",
+  "agents.blockedWorkReview",
   "agents.resumeOnStartup",
   "agents.resumePrompt",
   "agents.providers",
@@ -366,6 +368,7 @@ const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["daemon.sharedProviderPreferences", "sharedProviderPreferences"],
   ["app.baseUrl", "app.baseUrl"],
   ["agents.idleRuntimeCleanup", "idleRuntimeCleanup"],
+  ["agents.blockedWorkReview", "blockedWorkReview"],
   ["agents.resumeOnStartup", "resumeOnStartup"],
   ["agents.resumePrompt", "resumePrompt"],
   ["agents.providers", "providers"],
@@ -478,6 +481,9 @@ function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMut
     ...(patch.resumePrompt !== undefined ? { resumePrompt: patch.resumePrompt } : {}),
     ...(patch.idleRuntimeCleanup !== undefined
       ? { idleRuntimeCleanup: patch.idleRuntimeCleanup }
+      : {}),
+    ...(patch.blockedWorkReview !== undefined
+      ? { blockedWorkReview: patch.blockedWorkReview }
       : {}),
     ...(patch.appendSystemPrompt !== undefined
       ? { appendSystemPrompt: patch.appendSystemPrompt }
@@ -1484,6 +1490,7 @@ function isUnchangedAgentPatch(
     patch.skills === undefined &&
     !hasRestartRecoveryPatch(patch) &&
     patch.idleRuntimeCleanup === undefined &&
+    patch.blockedWorkReview === undefined &&
     removeProviders.length === 0
   );
 }
@@ -1525,6 +1532,9 @@ function mergeMutableAgentPatch(
   Object.assign(next, restartRecoveryPatch(patch));
   if (patch.idleRuntimeCleanup !== undefined) {
     next["idleRuntimeCleanup"] = patch.idleRuntimeCleanup;
+  }
+  if (patch.blockedWorkReview !== undefined) {
+    next["blockedWorkReview"] = patch.blockedWorkReview;
   }
 
   return Object.keys(next).length > 0 ? (next as PersistedConfig["agents"]) : undefined;

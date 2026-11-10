@@ -2,12 +2,14 @@ import type { Logger } from "pino";
 import type { AgentManager } from "../agent-manager.js";
 import type { AgentStorage } from "../agent-storage.js";
 import { ensureUnarchivedAgentLoaded } from "../agent-loading.js";
-import { blockedReviewDue, BLOCKED_REVIEW_INTERVAL_MS } from "./blocked-review.js";
+import { blockedReviewDue, BLOCKED_REVIEW_DELAYS_MS } from "./blocked-review.js";
 
 interface ReviewServiceOptions {
   agentManager: AgentManager;
   agentStorage: AgentStorage;
   logger: Logger;
+  /** Host setting; reviews are opt-in because each one resumes a whole provider session. */
+  enabled: () => boolean;
   now?: () => number;
 }
 
@@ -40,18 +42,24 @@ export class BlockedTaskReviewService {
   }
 
   async tick(): Promise<void> {
-    if (this.running || this.stopped || this.options.agentManager.isRestartDraining()) return;
+    if (this.running || this.stopped || !this.options.enabled()) return;
+    if (this.options.agentManager.isRestartDraining()) return;
     this.running = true;
     try {
       const records = await this.options.agentStorage.list();
       // Prompting an account that is known to be limited only produces another limit stop.
       const limited = new Map<string, boolean>();
       for (const record of records) {
-        if (this.stopped || this.options.agentManager.isRestartDraining()) return;
+        if (
+          this.stopped ||
+          !this.options.enabled() ||
+          this.options.agentManager.isRestartDraining()
+        )
+          return;
         const now = this.now();
         const attempted = this.attempts.get(record.id);
         const recentlyAttempted =
-          attempted !== undefined && now - attempted < BLOCKED_REVIEW_INTERVAL_MS;
+          attempted !== undefined && now - attempted < BLOCKED_REVIEW_DELAYS_MS[0]!;
         if (recentlyAttempted || !blockedReviewDue(record, now)) continue;
         if (!limited.has(record.provider))
           limited.set(
@@ -79,6 +87,7 @@ export class BlockedTaskReviewService {
         // AgentManager owns timeline delivery, usage accounting and lifecycle updates.
         void event;
       }
+      await this.options.agentStorage.finishBlockedReview(agentId, this.now());
     } catch (error) {
       // Failed preparation or inference must not retry every scheduler tick.
       this.options.logger.warn({ err: error, agentId }, "Blocked-task review could not complete");

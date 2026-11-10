@@ -453,3 +453,58 @@ export function createSidebarFolderPatch(input: {
     },
   };
 }
+
+export interface LimitedTreeRows<T> {
+  visibleRows: SidebarTreeRow<T>[];
+  /** The open workspace when the limit would hide it; rendered first, outside the drag list. */
+  leadingItem: T | null;
+  canToggle: boolean;
+}
+
+/**
+ * Collapses a tree to its first `limit` rows while keeping active workspaces in place, with the
+ * folders that hold them, and leading with the open workspace when it would be hidden. Mirrors
+ * upstream's flat group rule (selectSidebarGroupVisibility) for Vorteo's folder trees.
+ */
+export function selectLimitedTreeRows<T>(input: {
+  rows: readonly SidebarTreeRow<T>[];
+  expanded: boolean;
+  limit: number;
+  isActive?: (item: T) => boolean;
+  isOpen?: (item: T) => boolean;
+}): LimitedTreeRows<T> {
+  const { rows, expanded, limit, isActive, isOpen } = input;
+  const kept = new Set<number>();
+  let leadingItem: T | null = null;
+  let canToggle = false;
+  const keepWithAncestors = (index: number) => {
+    kept.add(index);
+    let depth = rows[index]!.depth;
+    for (let cursor = index - 1; cursor >= 0 && depth > 0; cursor -= 1) {
+      const row = rows[cursor]!;
+      if (row.kind === "folder" && row.depth < depth) {
+        kept.add(cursor);
+        depth = row.depth;
+      }
+    }
+  };
+  rows.forEach((row, index) => {
+    if (index < limit) {
+      kept.add(index);
+    } else if (row.kind === "item" && isActive?.(row.item)) {
+      keepWithAncestors(index);
+    } else if (row.kind === "item" && leadingItem === null && isOpen?.(row.item)) {
+      leadingItem = row.item;
+    } else if (!kept.has(index)) {
+      canToggle = true;
+    }
+  });
+  if (expanded || !canToggle) {
+    return { visibleRows: rows.slice(), leadingItem: null, canToggle };
+  }
+  return {
+    visibleRows: rows.filter((_, index) => kept.has(index)),
+    leadingItem,
+    canToggle,
+  };
+}

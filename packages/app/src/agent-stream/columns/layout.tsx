@@ -1,8 +1,7 @@
 import { useIsCompactFormFactor } from "@/constants/layout";
-import { useCallback, useId, useMemo, useReducer, type ReactNode } from "react";
+import { useCallback, useId, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { StreamColumnWidthContext } from "./column-width";
 import { Text, View, type LayoutChangeEvent } from "react-native";
-import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
@@ -12,6 +11,8 @@ import { persistAppSettings, useSettings } from "@/hooks/use-settings";
 import type { Theme } from "@/styles/theme";
 import { FLOATING_PANEL_INSET, floatingPanelStyles } from "@/styles/floating-panel";
 import { ColumnResizeHandle } from "./resize-handle";
+import { useFullscreenSlotFrame } from "@/composer/dock";
+import { useComposerEditingSession, useComposerFullscreen } from "@/composer/editing-session";
 import {
   COLUMN_BREAKPOINT,
   COLUMN_FADE_HEIGHT,
@@ -20,7 +21,6 @@ import {
   resolveColumnWidths,
   resolveTextOffset,
   resolveStandaloneTextWidth,
-  MIN_TEXT_WIDTH,
   type ColumnWidths,
 } from "./geometry";
 
@@ -71,6 +71,7 @@ export function useStreamColumns(
   cards: { showTaskCards?: boolean; trailingCards?: ReactNode; externalCards?: boolean },
   defaultTextWidth: number,
 ) {
+  const compact = useIsCompactFormFactor();
   const enabled = !!cards.showTaskCards || !!cards.trailingCards;
   const standaloneText = !!cards.externalCards;
   const savedText = useSettings((settings) => settings.threadTextWidth);
@@ -112,7 +113,7 @@ export function useStreamColumns(
   return {
     split,
     standaloneText,
-    sizedText: split || (standaloneText && containerWidth >= MIN_TEXT_WIDTH + COLUMN_MARGIN * 2),
+    sizedText: !compact && (split || (standaloneText && containerWidth >= 320 + COLUMN_MARGIN * 2)),
     saveError,
     contentMaxWidth: split || standaloneText ? widths.text : defaultTextWidth,
     containerWidth,
@@ -135,11 +136,8 @@ export function StreamColumns({
   children: [ReactNode, ReactNode];
 }) {
   const { split, sizedText, widths, onLayout } = layout;
-  const { width: viewportWidth } = useWindowDimensions();
-  const compact = useIsCompactFormFactor();
-  const narrowDesktop = !compact && viewportWidth <= 1200;
   const textOffset = layout.standaloneText
-    ? Math.max(COLUMN_MARGIN, (layout.containerWidth - widths.text) / 2)
+    ? Math.max(0, (layout.containerWidth - widths.text) / 2)
     : resolveTextOffset(layout.containerWidth, widths);
   const textStyle = useMemo(
     () => [
@@ -151,11 +149,9 @@ export function StreamColumns({
   const composerStyle = useMemo(
     () => [
       styles.composer,
-      sizedText &&
-        !narrowDesktop &&
-        inlineUnistylesStyle({ width: widths.text, marginLeft: textOffset }),
+      sizedText && inlineUnistylesStyle({ width: widths.text, marginLeft: textOffset }),
     ],
-    [sizedText, widths.text, textOffset, narrowDesktop],
+    [sizedText, widths.text, textOffset],
   );
   const cardsStyle = useMemo(
     () => [
@@ -166,10 +162,32 @@ export function StreamColumns({
     [widths.cards],
   );
   const columnWidth = sizedText ? widths.text : undefined;
+  // The chat composer lives in this column, not in the dock's composer slot, so fullscreen
+  // editing takes the dock's fixed frame here: the visible part of the thread surface.
+  const fullscreen = useComposerFullscreen(useComposerEditingSession("chat"));
+  const rootRef = useRef<View>(null);
+  const [rootSize, setRootSize] = useState<{ width: number; height: number }>();
+  const handleRootLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      onLayout(event);
+      const { width, height } = event.nativeEvent.layout;
+      if (height > 0) setRootSize({ width, height });
+    },
+    [onLayout],
+  );
+  // Re-measured after layout, so a resize that moves the surface also moves the frame.
+  const fullscreenFrame = useFullscreenSlotFrame(
+    Boolean(composer) && fullscreen,
+    rootRef,
+    rootSize,
+  );
+  const composerSlotStyle =
+    composer && fullscreen ? [styles.fullscreenComposer, fullscreenFrame] : composerStyle;
   return (
     <View
+      ref={rootRef}
       style={[styles.root, split && styles.split]}
-      onLayout={onLayout}
+      onLayout={handleRootLayout}
       testID="thread-content-region"
     >
       {layout.saveError ? (
@@ -185,12 +203,14 @@ export function StreamColumns({
           >
             <View style={textStyle} testID="thread-text-column">
               {children[0]}
-              {sizedText ? <ColumnResizeHandle column="text" {...layout} /> : null}
+              {sizedText ? (
+                <ColumnResizeHandle column="text" {...layout} hasComposer={Boolean(composer)} />
+              ) : null}
             </View>
             {outline}
             {split && isNative ? <ColumnFade /> : null}
           </View>
-          {composer ? <View style={composerStyle}>{composer}</View> : null}
+          {composer ? <View style={composerSlotStyle}>{composer}</View> : null}
         </StreamColumnWidthContext.Provider>
       </View>
       {split ? (
@@ -227,6 +247,9 @@ function ColumnFade() {
   );
 }
 const styles = StyleSheet.create((theme) => ({
+  // Fixed, not absolute, for the reason in the dock: touch pans must reach the visual viewport.
+  // React Native Web renders `fixed`; React Native's style type omits it.
+  fullscreenComposer: { position: "fixed" as "absolute", zIndex: 1 },
   saveError: {
     position: "absolute",
     top: 0,

@@ -1164,6 +1164,7 @@ export const zhCN: TranslationResources = {
     },
   },
   sidebar: {
+    factoryCard: en.sidebar.factoryCard,
     statusGroupAccessibility: "{{label}} 分组",
     statusBucket: {
       needsInput: "需要输入",
@@ -2572,6 +2573,7 @@ export const zhCN: TranslationResources = {
       },
     },
     appearance: {
+      statusLine: en.settings.appearance.statusLine,
       theme: {
         title: "主题",
         accessibilityLabel: "主题：{{value}}",
@@ -2878,6 +2880,11 @@ export const zhCN: TranslationResources = {
           title: "释放空闲 Agent",
           hint: "空闲一小时后释放内存。",
           info: "停止 Agent 进程，但保留对话。发送消息即可继续。\n\n进行中的工作、待处理的通知和 Provider 安全检查会阻止清理。",
+        },
+        blockedWorkReview: {
+          title: "复查受阻工作",
+          hint: "默认关闭。线程停止后最多进行三次短时复查，之后等待新消息。",
+          info: "当线程带着受阻任务或目标停止时，会在大约 5、15 和 30 分钟后最多收到三次提示，重新检查阻碍并继续。之后复查停止，直到有人向该线程发送消息。\n\n每次复查都会恢复线程的对话。较短的间隔会复用服务商的提示缓存，因此比冷启动恢复便宜得多，但受阻线程多时仍会累积。\n\n等待未决问题的阻碍会被跳过；你的回答会唤醒线程。",
         },
       },
       workspaces: {

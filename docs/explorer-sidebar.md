@@ -28,7 +28,7 @@ can remount. Native retained content stays live, while web chat uses its existin
 
 ## Sheets
 
-On compact layouts, files and subagents open in a sheet over the workspace, so the tab switcher
+On compact layouts, the Files, Changes and pull request detail tiles expand in place. Individual files and subagents open in a sheet over the workspace, so the tab switcher
 keeps only agents and terminals. A panel kind opts in with `compactSheet` in its manifest
 (`packages/app/src/panels/panel-manifest.ts`), and the layout store's `openTab` decides between
 sheet and tab, so callers open targets the same way on every layout. Each such sheet holds one
@@ -46,6 +46,12 @@ The store keeps `sheetsByWorkspace` in opening order and never reorders it, beca
 remounts its panel. Revealing a target that already has a sheet uncovers that sheet by closing the
 ones above it, except ones holding unsaved work, which stay where they are. Opening a sheet as a tab
 dismisses the sheets above it, since the tab would sit under them. The stack is not persisted.
+Phone detail tiles and the Explorer keyboard toggle request inline cards before tab resolution,
+so a retained desktop tab cannot redirect them into a hidden dock. Explicit pane destinations
+still preserve their requested placement; their compact fallback remains a sheet. When no
+conversation with detail tiles is visible, as from a terminal, draft or file, phone navigation
+opens the view in a sheet instead. Inline tiles hold their panel's view state, such as folded files
+and the Commits section, for as long as the conversation stays mounted, because they have no layout tab.
 
 Both kinds render the same `SheetPane` (`packages/app/src/screens/workspace/sheet-pane/`): the
 header (icon, title, Back when there is a list to return to, Open as tab, Close), the pane, its
@@ -116,13 +122,13 @@ accept only reordering inside the source pane.
 
 Cmd+E shows or hides Explorer without changing its selected view. Checkout-bound Files/Changes
 retain their selection across visibility toggles; they do not create a compact workspace pane.
-Below 600 points the shell is the swipeable Explorer overlay; at 600 points and above it reserves
-width beside the workspace. Native docking keeps its touch resize handle. Full workspace splits
+Below 600 points, workspace detail tiles open Files, Changes and available pull requests as sheets; the top toolbar omits the Explorer button. The legacy overlay remains for checkout-only navigation without a workspace. At 600 points and above Explorer reserves width beside the workspace. Native docking keeps its touch resize handle. Full workspace splits
 remain a separate web-only capability.
 
-The dock reserves at least 240 points and the workspace 360. App navigation yields when it cannot
-share the remaining width with both. This keeps a portrait tablet from rendering three unusably
-narrow columns; widening restores navigation without changing its saved open state.
+The dock reserves at least 240 points and the workspace 360. Upstream yields app navigation when
+it cannot share the remaining width with both; Vorteo does not. Its supporting cards collapse
+instead when the conversation would get too narrow, and an explicit Explorer toggle reveals them
+until the next resize, so app navigation stays where the owner put it.
 
 Compact panel gestures own overlay visibility. The panel store owns checkout-bound Files/Changes
 selection; the workspace layout owns workspace tabs, including pull requests. Explicit pane destinations bypass compact sheet placement, so choosing
@@ -173,8 +179,7 @@ Explorer Files, diffs, chat files, files opened from diffs, and subagents. They 
 panel. Mobile ignores them.
 
 Pull requests have a three-way open location: Main panel, On the side, or Explorer sidebar. Explorer
-sidebar is the default. Compact layouts always open pull requests in Explorer regardless of this
-desktop preference.
+sidebar is the default. Compact layouts open pull requests as sheets regardless of this desktop preference.
 
 Panels request an implicit open through the narrow `openPreferredTarget(target, source)` pane
 contract. Entry points outside panels use `openPreferredWorkspaceTarget`. Do not branch on a

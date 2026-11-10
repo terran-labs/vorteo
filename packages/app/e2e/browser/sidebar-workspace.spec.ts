@@ -12,7 +12,10 @@ import {
   focusWorkspaceRowWithKeyboard,
   movePointerAwayFromWorkspaceHoverCard,
   openMobileAgentSidebar,
+  outsidePinnedSection,
+  pinnedWorkspaceRow,
   pinWorkspaceFromSidebar,
+  workspaceRowInGroup,
 } from "../support/helpers/sidebar";
 import { seedWorkspace } from "../support/helpers/seed-client";
 import { expectWorkspaceHeader, openWorkspaceActionsMenu } from "../support/helpers/workspace-ui";
@@ -33,7 +36,8 @@ async function openWorkspaceFromSidebar(
   page: import("@playwright/test").Page,
   workspaceId: string,
 ) {
-  const row = page.getByTestId(getWorkspaceRowTestId(workspaceId));
+  // Pinned rows repeat under Pinned since 8c1575df3; act on the row in its project.
+  const row = workspaceRowInGroup(page, workspaceId);
   await expect(row).toBeVisible({ timeout: 30_000 });
   await row.click();
   await expect(page).toHaveURL(/\/workspace\//, { timeout: 30_000 });
@@ -51,7 +55,7 @@ async function waitForSidebarProject(page: import("@playwright/test").Page, proj
 }
 
 async function waitForSidebarWorkspace(page: import("@playwright/test").Page, workspaceId: string) {
-  const row = page.getByTestId(getWorkspaceRowTestId(workspaceId));
+  const row = workspaceRowInGroup(page, workspaceId);
   await expect(row).toBeVisible({ timeout: 30_000 });
   return row;
 }
@@ -448,6 +452,12 @@ test.describe("Sidebar workspace list", () => {
 
       await focusWorkspaceRowWithKeyboard(page, workspace.workspaceId);
       await expectWorkspaceHoverCardOpen(page);
+      // Vorteo keeps the row's actions button mounted (bcd8dda7a), so the first Tab stays in the
+      // row and the card stays open; the next one leaves the row.
+      await page.keyboard.press("Tab");
+      await expect(
+        page.getByTestId(`sidebar-workspace-kebab-${getServerId()}:${workspace.workspaceId}`),
+      ).toBeFocused();
       await page.keyboard.press("Tab");
       await expectWorkspaceHoverCardClosed(page);
     } finally {
@@ -533,7 +543,7 @@ test.describe("Mobile sidebar panelState transition", () => {
       await closeMobileAgentSidebar(page);
       await expectMobileAgentSidebarHidden(page);
 
-      await expect(row).toHaveCount(1);
+      await expect(pinnedWorkspaceRow(page, workspace.workspaceId)).toHaveCount(1);
     } finally {
       await workspace.cleanup();
     }
@@ -638,7 +648,6 @@ test.describe("Half-screen desktop layout", () => {
       await waitForSidebarProject(page, path.basename(workspace.repoPath));
       await openWorkspaceFromSidebar(page, workspace.workspaceId);
 
-      // Explorer shows Files as a card beside the conversation; the sidebar stays beside it.
       await openFilesPanel(page);
       const explorerToggle = page.getByTestId("workspace-explorer-toggle").first();
       const files = page.getByTestId("file-explorer-tree-scroll").filter({ visible: true });
@@ -742,9 +751,10 @@ test("workspace title and sidebar menus share every workspace action", async ({
     await expect(page.getByTestId("workspace-header-pin")).toHaveText("Unpin");
     await page.keyboard.press("Escape");
     await row.hover();
-    await page
-      .getByTestId(`sidebar-workspace-kebab-${getServerId()}:${seeded.workspaceId}`)
-      .click();
+    await outsidePinnedSection(
+      page,
+      `sidebar-workspace-kebab-${getServerId()}:${seeded.workspaceId}`,
+    ).click();
     await expect(
       page.getByTestId(`sidebar-workspace-menu-pin-${getServerId()}:${seeded.workspaceId}`),
     ).toHaveText("Unpin");
