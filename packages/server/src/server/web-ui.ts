@@ -433,8 +433,8 @@ function injectConnectionHint(
   };
   let assignment = `window.__PASEO_INITIAL_DAEMON_CONNECTION__=${serializeInlineScriptJson(hint)}`;
   if (installation) {
-    // COMPAT(recoveryOriginGlobal): added 2026-11-10, move into the descriptor after 2027-05-10
-    // once every served interface validates an optional descriptor recoveryOrigin.
+    // COMPAT(recoveryOriginGlobal): added in 26.11.903; move into the descriptor once the
+    // interface floor validates an optional descriptor recoveryOrigin.
     const { recoveryOrigin, ...descriptor } = installation;
     assignment = `window.__VORTEO_EXECUTION_INSTALLATION__=${serializeInlineScriptJson(descriptor)}`;
     if (recoveryOrigin)
@@ -442,12 +442,14 @@ function injectConnectionHint(
   }
   const script = `<script>${assignment}</script>`;
   // The tab names the installation, so two open side by side are never confused.
-  const titled = installation?.name
-    ? html.replace(/<title>[^<]*<\/title>/i, `<title>${escapeHtml(installation.name)}</title>`)
+  // Function replacers keep `$'`, `$&` and similar in an owner-chosen name literal.
+  const name = installation?.name;
+  const titled = name
+    ? html.replace(/<title>[^<]*<\/title>/i, () => `<title>${escapeHtml(name)}</title>`)
     : html;
   const headClose = /<\/head>/i;
   if (headClose.test(titled)) {
-    return titled.replace(headClose, `${script}</head>`);
+    return titled.replace(headClose, () => `${script}</head>`);
   }
   return script + titled;
 }
