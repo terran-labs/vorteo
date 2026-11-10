@@ -5,8 +5,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:
 import { beforeEach, afterEach, describe, expect, test } from "vitest";
 
 import { createTestLogger } from "../test-utils/test-logger.js";
+import { SYSTEM_PROJECT_KIND } from "./system-project/manifest.js";
 import { writeJsonFileAtomic } from "./atomic-file.js";
-import { FactoryMembershipService } from "./workspace-lifecycle/factory-membership-service.js";
 import { setWorkspaceLifecycle } from "./workspace-lifecycle/policy.js";
 import { setActiveProjectsFolder } from "./projects-folder.js";
 import {
@@ -85,31 +85,52 @@ describe("workspace registries", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  test("preserves legacy controller checkpoints when older projects are rewritten", async () => {
+  test.each([{ stage: "attached" }, "malformed legacy checkpoint", null])(
+    "archives projects and preserves inert legacy checkpoints on rewrite: %j",
+    async (checkpoint) => {
+      await factorySetup();
+      const record = await projectRegistry.get("factory-project");
+      if (!record) throw new Error("Missing fixture project");
+      const file = path.join(tmpDir, "projects", "projects.json");
+      await writeJsonFileAtomic(file, [{ ...record, factoryInstallation: checkpoint }]);
+      const reloaded = new FileBackedProjectRegistry(file, logger);
+      await reloaded.update(record.projectId, (current) => ({
+        ...current,
+        customName: "Renamed project",
+      }));
+      expect((await reloaded.get(record.projectId))?.factoryInstallation).toEqual(checkpoint);
+      const renamed = await reloaded.get(record.projectId);
+      if (!renamed) throw new Error("Missing rewritten project");
+      await reloaded.upsert({ ...renamed, factoryInstallation: checkpoint });
+      await reloaded.archive(record.projectId, "2026-10-09T00:00:00.000Z");
+      const reopened = new FileBackedProjectRegistry(file, logger);
+      expect(await reopened.get(record.projectId)).toMatchObject({
+        archivedAt: "2026-10-09T00:00:00.000Z",
+        factoryInstallation: checkpoint,
+      });
+      await reopened.remove(record.projectId);
+      expect(await reopened.get(record.projectId)).toBeNull();
+    },
+  );
+
+  test("legacy checkpoints allow ordinary mutation and system project adoption", async () => {
     await factorySetup();
     const record = await projectRegistry.get("factory-project");
     if (!record) throw new Error("Missing fixture project");
-    const checkpoint = {
-      serverId: "host",
-      projectId: record.projectId,
-      installationId: "legacy",
-      operationId: "operation",
-      revision: "revision",
-      observedAt: "2026-10-08T00:00:00.000Z",
-      stage: "attached" as const,
-      coordinators: {
-        factory: { workspaceId: "old-factory", agentId: "old-agent" },
-        builds: { workspaceId: "old-builds", agentId: "old-builds-agent" },
-      },
-    };
-    const file = path.join(tmpDir, "projects", "projects.json");
-    await writeJsonFileAtomic(file, [{ ...record, factoryInstallation: checkpoint }]);
-    const reloaded = new FileBackedProjectRegistry(file, logger);
-    await reloaded.update(record.projectId, (current) => ({
+    await projectRegistry.upsert({ ...record, factoryInstallation: "obsolete" });
+    const updated = await projectRegistry.update(record.projectId, (current) => ({
       ...current,
-      customName: "Renamed project",
+      factoryInstallation: { oldFormat: true },
     }));
-    expect((await reloaded.get(record.projectId))?.factoryInstallation).toEqual(checkpoint);
+    if (!updated) throw new Error("Missing rewritten project");
+    await projectRegistry.writeSystemProject({
+      ...updated,
+      systemProject: { kind: SYSTEM_PROJECT_KIND },
+    });
+    expect(await projectRegistry.get(record.projectId)).toMatchObject({
+      systemProject: { kind: SYSTEM_PROJECT_KIND },
+      factoryInstallation: { oldFormat: true },
+    });
   });
 
   async function factorySetup() {
@@ -134,28 +155,6 @@ describe("workspace registries", () => {
     });
     await workspaceRegistry.upsert(workspace);
     return workspace;
-  }
-
-  function membershipService() {
-    return new FactoryMembershipService({
-      serverId: "factory-host",
-      projects: projectRegistry,
-      workspaces: workspaceRegistry,
-      authority: {
-        authorize: async ({ workspace, role, operationId }) => ({
-          workspaceId: workspace.workspaceId,
-          operationId,
-          membership: {
-            installationId: "installation",
-            serverId: "factory-host",
-            projectId: workspace.projectId,
-            role,
-          },
-          revision: "revision",
-          assertCurrent: () => {},
-        }),
-      },
-    });
   }
 
   test("stores paths under a Projects folder alias in their logical form", async () => {
@@ -258,7 +257,16 @@ describe("workspace registries", () => {
       );
       const workspace = await factorySetup();
       bindDuringPreflight = async () => {
-        await membershipService().bind({ ...member, role: "factory" });
+        await workspaceRegistry.setProjectFactoryMember(
+          workspace.workspaceId,
+          {
+            installationId: "project-factory:factory-project",
+            serverId: "factory-host",
+            projectId: "factory-project",
+            role: "factory",
+          },
+          "project-factory:factory-project",
+        );
       };
       const mutate =
         operation === "archive"
@@ -276,16 +284,19 @@ describe("workspace registries", () => {
     },
   );
 
-  const member = {
-    operationId: "native-operation",
-    workspaceId: "factory-member",
-    installationId: "installation",
-    expectedRevision: "revision",
-  };
-
   test("Factory membership survives reload and generic unprotection is refused", async () => {
-    await factorySetup();
-    const bound = await membershipService().bind({ ...member, role: "factory" });
+    const workspace = await factorySetup();
+    const bound = await workspaceRegistry.setProjectFactoryMember(
+      workspace.workspaceId,
+      {
+        installationId: "project-factory:factory-project",
+        serverId: "factory-host",
+        projectId: "factory-project",
+        role: "factory",
+      },
+      "project-factory:factory-project",
+    );
+    if (!bound) throw new Error("Missing fixture workspace");
     await expect(
       workspaceRegistry.update(bound.workspaceId, (record) =>
         setWorkspaceLifecycle(record, { standing: false, protected: false }),
@@ -297,223 +308,13 @@ describe("workspace registries", () => {
       logger,
     );
     expect((await reloaded.get(bound.workspaceId))?.factoryMembership).toEqual({
-      installationId: "installation",
+      installationId: "project-factory:factory-project",
       serverId: "factory-host",
       projectId: "factory-project",
       role: "factory",
     });
     await expect(reloaded.archive(bound.workspaceId, bound.updatedAt)).rejects.toThrow("Factory");
     await expect(reloaded.remove(bound.workspaceId)).rejects.toThrow("Factory");
-  });
-
-  test("Factory lifecycle changes preserve protection until reconciled owner disable", async () => {
-    await factorySetup();
-    const service = membershipService();
-    const bound = await service.bind({ ...member, role: "factory" });
-    const protectedRecord = await workspaceRegistry.update(bound.workspaceId, (record) =>
-      setWorkspaceLifecycle(record, { protected: true, standing: true }),
-    );
-    expect(protectedRecord?.protected).toBe(true);
-    const nonStanding = await workspaceRegistry.update(bound.workspaceId, (record) =>
-      setWorkspaceLifecycle(record, { standing: false }),
-    );
-    expect(nonStanding?.protected).toBe(true);
-    expect(nonStanding?.factoryMembership).toEqual(bound.factoryMembership);
-    await expect(
-      workspaceRegistry.update(bound.workspaceId, (record) =>
-        setWorkspaceLifecycle(record, { protected: false }),
-      ),
-    ).rejects.toThrow("Factory");
-    await service.retire({ ...member, action: "disable" });
-    const unprotected = await workspaceRegistry.update(bound.workspaceId, (record) =>
-      setWorkspaceLifecycle(record, { protected: false }),
-    );
-    expect(unprotected?.protected).toBe(false);
-    expect(unprotected?.factoryMembership).toBeUndefined();
-  });
-
-  test("Factory worker cleanup releases only the reconciled relationship and preserves identity", async () => {
-    await factorySetup();
-    const service = membershipService();
-    const bound = await service.bind({ ...member, role: "worker" });
-    const retired = await service.retire({ ...member, action: "cleanup" });
-    const { factoryMembership: released, updatedAt: boundAt, ...retainedBound } = bound;
-    const { updatedAt: retiredAt, ...retainedRetired } = retired;
-    expect(released?.role).toBe("worker");
-    expect(boundAt).toEqual(expect.any(String));
-    expect(retiredAt).toEqual(expect.any(String));
-    expect(retainedRetired).toEqual(retainedBound);
-    await workspaceRegistry.archive(retired.workspaceId, retired.updatedAt);
-    expect((await workspaceRegistry.get(retired.workspaceId))?.archivedAt).toBe(retired.updatedAt);
-  });
-
-  test("Factory coordinators refuse worker cleanup and accept separately authorized owner disable", async () => {
-    await factorySetup();
-    const service = membershipService();
-    await service.bind({ ...member, role: "builds" });
-    await expect(service.retire({ ...member, action: "cleanup" })).rejects.toThrow("owner disable");
-    expect((await workspaceRegistry.get(member.workspaceId))?.factoryMembership?.role).toBe(
-      "builds",
-    );
-    expect(
-      (await service.retire({ ...member, action: "disable" })).factoryMembership,
-    ).toBeUndefined();
-  });
-
-  test("Factory serial binding refuses duplicate retained coordinator roles", async () => {
-    const record = await factorySetup();
-    await workspaceRegistry.upsert({ ...record, workspaceId: "second-member" });
-    const service = membershipService();
-    const first = service.bind({ ...member, role: "factory" });
-    const second = membershipService().bind({
-      ...member,
-      workspaceId: "second-member",
-      role: "factory",
-    });
-    await expect(first).resolves.toMatchObject({ factoryMembership: { role: "factory" } });
-    await expect(second).rejects.toThrow("role already has a retained workspace");
-    expect((await workspaceRegistry.get("second-member"))?.factoryMembership).toBeUndefined();
-  });
-
-  test("Factory atomic binding refuses two simultaneous installations for one project", async () => {
-    const first = await factorySetup();
-    const second = { ...first, workspaceId: "second-installation-member" };
-    await workspaceRegistry.upsert(second);
-    const bind = (expected: typeof first, installationId: string) =>
-      workspaceRegistry.bindFactoryMember({
-        expected,
-        membership: {
-          installationId,
-          projectId: first.projectId,
-          serverId: "factory-host",
-          role: "worker",
-        },
-        assertCurrent: () => {},
-      });
-    const results = await Promise.allSettled([bind(first, "installation"), bind(second, "other")]);
-    expect(results[0]).toMatchObject({ status: "fulfilled" });
-    expect(results[1]).toMatchObject({
-      status: "rejected",
-      reason: expect.objectContaining({
-        message: "Project already belongs to another Factory installation.",
-      }),
-    });
-    expect((await workspaceRegistry.get(second.workspaceId))?.factoryMembership).toBeUndefined();
-  });
-
-  test.each([
-    { installationId: "other-installation" },
-    { expectedRevision: "other-revision" },
-    { expectedRevision: "" },
-    { operationId: "" },
-  ])("Factory binding refuses mismatched installation preconditions %j", async (change) => {
-    const record = await factorySetup();
-    await expect(
-      membershipService().bind({ ...member, role: "worker", ...change }),
-    ).rejects.toThrow("installation authority changed");
-    expect(await workspaceRegistry.get(record.workspaceId)).toEqual(record);
-  });
-
-  test("Factory binding refuses a record change before its serialized update", async () => {
-    const record = await factorySetup();
-    const service = new FactoryMembershipService({
-      serverId: "factory-host",
-      projects: projectRegistry,
-      workspaces: workspaceRegistry,
-      authority: {
-        authorize: async ({ role, operationId }) => {
-          await workspaceRegistry.update(record.workspaceId, (current) => ({
-            ...current,
-            title: "Changed during authorization",
-          }));
-          return {
-            workspaceId: record.workspaceId,
-            operationId,
-            membership: {
-              installationId: "installation",
-              serverId: "factory-host",
-              projectId: record.projectId,
-              role,
-            },
-            revision: "revision",
-            assertCurrent: () => {},
-          };
-        },
-      },
-    });
-    await expect(service.bind({ ...member, role: "worker" })).rejects.toThrow("Workspace changed");
-    expect(await workspaceRegistry.get(record.workspaceId)).toMatchObject({
-      title: "Changed during authorization",
-    });
-    expect((await workspaceRegistry.get(record.workspaceId))?.factoryMembership).toBeUndefined();
-  });
-
-  test("Factory binding refuses an archived project without restoring it", async () => {
-    await factorySetup();
-    await projectRegistry.archive("factory-project", "2026-10-08T00:01:00.000Z");
-    await expect(membershipService().bind({ ...member, role: "worker" })).rejects.toThrow(
-      "project is unavailable",
-    );
-    expect((await workspaceRegistry.get(member.workspaceId))?.factoryMembership).toBeUndefined();
-    expect((await projectRegistry.get("factory-project"))?.archivedAt).toBe(
-      "2026-10-08T00:01:00.000Z",
-    );
-  });
-
-  test("Factory binding rechecks owner generation inside the registry mutation", async () => {
-    const workspace = await factorySetup();
-    let current = true;
-    const bind = workspaceRegistry.bindFactoryMember.bind(workspaceRegistry);
-    workspaceRegistry.bindFactoryMember = async (input) => {
-      current = false;
-      return bind(input);
-    };
-    const service = new FactoryMembershipService({
-      serverId: "factory-host",
-      projects: projectRegistry,
-      workspaces: workspaceRegistry,
-      authority: {
-        authorize: async ({ role, operationId }) => ({
-          workspaceId: workspace.workspaceId,
-          operationId,
-          membership: {
-            installationId: "installation",
-            projectId: workspace.projectId,
-            serverId: "factory-host",
-            role,
-          },
-          revision: "revision",
-          assertCurrent: () => {
-            if (!current) throw new Error("Factory owner generation changed");
-          },
-        }),
-      },
-    });
-    await expect(service.bind({ ...member, role: "worker" })).rejects.toThrow(
-      "owner generation changed",
-    );
-    expect(await workspaceRegistry.get(workspace.workspaceId)).toEqual(workspace);
-  });
-
-  test("Factory unresolved cleanup authority retains membership and archive refusal", async () => {
-    await factorySetup();
-    await membershipService().bind({ ...member, role: "worker" });
-    const retained = await workspaceRegistry.get(member.workspaceId);
-    const service = new FactoryMembershipService({
-      serverId: "factory-host",
-      projects: projectRegistry,
-      workspaces: workspaceRegistry,
-      authority: {
-        authorize: async () => {
-          throw new Error("Execution custody remains unresolved");
-        },
-      },
-    });
-    await expect(service.retire({ ...member, action: "cleanup" })).rejects.toThrow(
-      "custody remains unresolved",
-    );
-    expect(await workspaceRegistry.get(member.workspaceId)).toEqual(retained);
-    await expect(workspaceRegistry.remove(member.workspaceId)).rejects.toThrow("Factory");
   });
 
   test("protected workspaces survive archive attempts and retain protection after reload", async () => {
