@@ -9,7 +9,7 @@ import {
   CLAUDE_DEFAULT_THINKING_OPTION_ID,
   getClaudeCustomModelThinkingOptions,
   getClaudeManifestModels,
-  isClaudeManifestModelId,
+  isClaudeEffortLevel,
   normalizeClaudeManifestModelId,
   normalizeClaudeRuntimeModelId as normalizeClaudeManifestRuntimeModelId,
 } from "./model-manifest.js";
@@ -61,32 +61,24 @@ export function getClaudeContextWindowMaxTokens(
   return findClaudeModel(modelId)?.contextWindowMaxTokens;
 }
 
-// Fast mode support for models Claude Code advertised but the curated manifest does not
-// describe. Refreshed on every catalog refresh so feature gating follows the installed CLI.
-const discoveredFastModeModelIds = new Set<string>();
-
-export function discoveredClaudeModelSupportsFastMode(modelId: string | null | undefined): boolean {
-  return !!modelId && discoveredFastModeModelIds.has(modelId.trim());
-}
-
 /**
  * Build catalog entries for models Claude Code advertises that the curated manifest lacks, so a
  * new release appears as soon as the installed CLI supports it. Curated entries keep priority
- * because they carry context windows and capabilities the CLI does not report.
+ * because they carry context windows, fast mode and disabled thinking, which the CLI does not
+ * report or the launcher gates on the manifest.
  */
 export function getDiscoveredClaudeModels(
   advertisedModels: readonly ModelInfo[],
 ): AgentModelDefinition[] {
   const definitions: AgentModelDefinition[] = [];
-  discoveredFastModeModelIds.clear();
   for (const advertised of advertisedModels) {
     // "default" is a pointer to another advertised row, labelled for Claude Code's own picker.
     if (advertised.value === "default") continue;
     const id = (advertised.resolvedModel ?? advertised.value).trim();
     if (
       !id ||
-      isClaudeManifestModelId(id) ||
-      normalizeClaudeManifestModelId(id) !== null ||
+      // Runtime normalization also maps gateway and cloud provider spellings of curated models.
+      normalizeClaudeRuntimeModelId(id) !== null ||
       definitions.some((model) => model.id === id)
     ) {
       continue;
@@ -100,21 +92,20 @@ export function getDiscoveredClaudeModels(
     if (id.toLowerCase().endsWith("[1m]")) {
       definition.contextWindowMaxTokens = 1_000_000;
     }
-    const effortLevels = advertised.supportedEffortLevels;
-    if (effortLevels && effortLevels.length > 0) {
+    // A newer CLI may report effort levels this daemon cannot label or launch.
+    const effortLevels = (advertised.supportedEffortLevels ?? []).filter(isClaudeEffortLevel);
+    if (effortLevels.length > 0) {
       const defaultThinkingOptionId = effortLevels.includes(CLAUDE_DEFAULT_THINKING_OPTION_ID)
         ? CLAUDE_DEFAULT_THINKING_OPTION_ID
         : effortLevels[0];
-      // Disabled thinking stays manifest-only; the session launcher rejects it elsewhere.
+      // Disabled thinking and fast mode stay manifest-only: session launch gates them on the
+      // curated manifest, which every client and restart sees the same way.
       definition.thinkingOptions = buildThinkingOptions(
         effortLevels,
         false,
         defaultThinkingOptionId,
       );
       definition.defaultThinkingOptionId = defaultThinkingOptionId;
-    }
-    if (advertised.supportsFastMode === true) {
-      discoveredFastModeModelIds.add(id);
     }
     definitions.push(definition);
   }

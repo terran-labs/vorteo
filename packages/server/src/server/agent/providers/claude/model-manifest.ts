@@ -33,6 +33,10 @@ const CLAUDE_EFFORT_LABELS = {
 
 export const CLAUDE_DEFAULT_THINKING_OPTION_ID = "high";
 
+export function isClaudeEffortLevel(value: string): value is ClaudeEffortLevel {
+  return Object.hasOwn(CLAUDE_EFFORT_LABELS, value);
+}
+
 export const CLAUDE_DISABLED_THINKING_OPTION_ID = "off";
 export const CLAUDE_ULTRACODE_THINKING_OPTION_ID = "ultracode";
 
@@ -66,6 +70,15 @@ export const CLAUDE_MODEL_MANIFEST = [
     description: "Mythos 5.1 · Requires verified access",
     contextWindowMaxTokens: 1_000_000,
     effortLevels: CLAUDE_EFFORT_LEVELS.xhigh,
+  },
+  {
+    id: "claude-fable-5-2",
+    label: "Fable 5.2",
+    description: "Fable 5.2 · Latest release",
+    minimumClaudeCodeVersion: "2.1.321",
+    contextWindowMaxTokens: 1_000_000,
+    effortLevels: CLAUDE_EFFORT_LEVELS.xhigh,
+    supportsFastMode: true,
   },
   {
     id: "claude-fable-5-1",

@@ -63,7 +63,7 @@ async function createClaudeConfigDirWithRawSettings(settings: string): Promise<s
   return configDir;
 }
 
-function createCatalogClient(claudeCodeVersion = "2.1.293"): ClaudeAgentClient {
+function createCatalogClient(claudeCodeVersion = "2.1.321"): ClaudeAgentClient {
   return new ClaudeAgentClient({
     logger: createTestLogger(),
     resolveVersion: async () => claudeCodeVersion,
@@ -94,6 +94,7 @@ describe("Claude CLI update warnings", () => {
       installedVersion: "2.1.267",
       affectedModels: [
         { id: "claude-opus-5-5", label: "Opus 5.5", minimumVersion: "2.1.280" },
+        { id: "claude-fable-5-2", label: "Fable 5.2", minimumVersion: "2.1.321" },
         { id: "claude-sonnet-5-5", label: "Sonnet 5.5", minimumVersion: "2.1.284" },
         { id: "claude-haiku-5-5", label: "Haiku 5.5", minimumVersion: "2.1.293" },
       ],
@@ -104,10 +105,11 @@ describe("Claude CLI update warnings", () => {
     version = "2.1.280";
     const partial = await client.fetchCatalog({ scope: "global", force: true });
     expect(partial.cliUpdate?.affectedModels.map((model) => model.id)).toEqual([
+      "claude-fable-5-2",
       "claude-sonnet-5-5",
       "claude-haiku-5-5",
     ]);
-    version = "2.1.293";
+    version = "2.1.321";
     const after = await client.fetchCatalog({ scope: "global", force: true });
     expect(after.cliUpdate).toBeUndefined();
     expect(after.models.some((model) => model.id === "claude-opus-5-5")).toBe(true);
@@ -121,6 +123,7 @@ describe("getClaudeModels", () => {
       "claude-opus-5-5",
       "claude-opus-5",
       "claude-mythos-5-1",
+      "claude-fable-5-2",
       "claude-fable-5-1",
       "claude-fable-5",
       "claude-fable-5[1m]",
@@ -157,6 +160,7 @@ describe("getClaudeModels", () => {
         ["claude-opus-5-5", 1_000_000],
         ["claude-opus-5", 1_000_000],
         ["claude-mythos-5-1", 1_000_000],
+        ["claude-fable-5-2", 1_000_000],
         ["claude-fable-5-1", 1_000_000],
         ["claude-fable-5", 1_000_000],
         ["claude-fable-5[1m]", 1_000_000],
@@ -269,6 +273,7 @@ describe("getClaudeModels", () => {
     ["claude-sonnet-5[1m]", true, "high"],
     ["claude-sonnet-5-20260101", true, "high"],
     ["claude-fable-5", false, "high"],
+    ["claude-fable-5-2", false, "high"],
     ["claude-fable-5-1", false, "high"],
     ["claude-haiku-5-5", true, "medium"],
     ["claude-haiku-5-5-20261007", true, "medium"],
@@ -345,6 +350,7 @@ describe("ClaudeAgentClient.fetchCatalog", () => {
       label: "claude-mythos-5-1",
       description: "From Claude settings.json model",
     });
+    expect(claudeModelSupportsFastMode("claude-fable-5-2")).toBe(true);
   });
 
   it("omits unconfirmed Mythos after a failed probe and retries on refresh", async () => {
@@ -417,13 +423,15 @@ describe("ClaudeAgentClient.fetchCatalog", () => {
           description: "",
         },
         {
-          value: "fable",
-          resolvedModel: "claude-fable-5-2",
-          displayName: "Fable 5.2",
+          value: "opus",
+          resolvedModel: "claude-opus-6",
+          displayName: "Opus 6",
           description: "For your toughest challenges",
-          supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+          // "ultra" stands in for an effort level a newer CLI might add.
+          supportedEffortLevels: ["medium", "ultra" as never, "max"],
           supportsFastMode: true,
         },
+        { value: "us.anthropic.claude-fable-5-2-v1:0", displayName: "Fable", description: "" },
         { value: "claude-fable-5-1", displayName: "Fable 5.1", description: "" },
       ],
     });
@@ -433,26 +441,21 @@ describe("ClaudeAgentClient.fetchCatalog", () => {
       force: false,
     });
     expect(models.map((model) => model.id)).toEqual([
-      "claude-fable-5-2",
+      "claude-opus-6",
       ...getClaudeModels("2.1.321")
         .filter((model) => model.id !== "claude-mythos-5-1")
         .map((model) => model.id),
     ]);
     expect(models[0]).toMatchObject({
-      label: "Fable 5.2",
+      label: "Opus 6",
       description: "For your toughest challenges",
-      defaultThinkingOptionId: "high",
+      defaultThinkingOptionId: "medium",
     });
-    expect(models[0]?.thinkingOptions?.map((option) => option.id)).toEqual([
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-      "max",
-      CLAUDE_ULTRACODE_THINKING_OPTION_ID,
-    ]);
+    expect(models[0]?.thinkingOptions?.map((option) => option.id)).toEqual(["medium", "max"]);
+    // Fast mode follows the curated manifest, so discovery neither grants nor revokes it.
+    expect(claudeModelSupportsFastMode("claude-opus-6")).toBe(false);
     expect(claudeModelSupportsFastMode("claude-fable-5-2")).toBe(true);
-    expect(resolveObservedClaudeModelId("claude-fable-5-2")).toBe("claude-fable-5-2");
+    expect(resolveObservedClaudeModelId("claude-opus-6-1")).toBe("claude-opus-6-1");
   });
 
   it("appends concrete models from Claude settings.json", async () => {
@@ -745,8 +748,8 @@ describe("normalizeClaudeRuntimeModelId", () => {
     expect(normalizeClaudeRuntimeModelId("us.anthropic.claude-opus-5-20260724-v1:0")).toBe(
       "claude-opus-5",
     );
-    expect(normalizeClaudeRuntimeModelId("claude-fable-5-2")).toBeNull();
-    expect(normalizeClaudeRuntimeModelId("anthropic/claude-fable-5-2[1m]")).toBeNull();
+    expect(normalizeClaudeRuntimeModelId("claude-fable-5-3")).toBeNull();
+    expect(normalizeClaudeRuntimeModelId("anthropic/claude-fable-5-3[1m]")).toBeNull();
   });
 
   it("does not collapse a prefixed Sonnet 5.5 onto Sonnet 5", () => {
@@ -986,6 +989,7 @@ describe("claudeManifestModelSupportsFastMode", () => {
     expect(claudeManifestModelSupportsFastMode("claude-sonnet-5")).toBe(false);
     expect(claudeManifestModelSupportsFastMode("claude-fable-5")).toBe(false);
     expect(claudeManifestModelSupportsFastMode("claude-fable-5-1")).toBe(false);
+    expect(claudeManifestModelSupportsFastMode("claude-fable-5-2")).toBe(true);
   });
 });
 
