@@ -345,3 +345,29 @@ it("waits out a rate limit with the last good reading instead of polling again",
   await fetchUsage();
   expect(fetch).toHaveBeenCalledTimes(3);
 });
+
+it("does not report a native account authenticated by environment as missing credentials", async () => {
+  vi.stubEnv("VORTEO_INSTALLATION_CLIENT_CONFIG", "");
+  for (const name of [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+  ])
+    vi.stubEnv(name, "");
+  const read = async (env?: Record<string, string>) =>
+    new ClaudeQuotaProvider({
+      logger,
+      claudeHome: await home(),
+      strictClaudeHome: true,
+      platform: "linux",
+      fetch: vi.fn(),
+      ...(env ? { env } : {}),
+    }).fetchUsage();
+  expect((await read()).credentialsMissing).toBe(true);
+  const apiKey = await read({ ANTHROPIC_API_KEY: "sk-ant-test" });
+  expect(apiKey.status).toBe("unavailable");
+  expect(apiKey.credentialsMissing).toBeUndefined();
+});

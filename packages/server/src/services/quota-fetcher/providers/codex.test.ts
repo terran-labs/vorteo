@@ -2,13 +2,14 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { CodexQuotaProvider } from "./codex.js";
 import { evaluateQuotaReserve } from "../../../server/agent/quota-reserve/evaluate.js";
 
 const homes: string[] = [];
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
 });
 
@@ -115,4 +116,30 @@ it.each([
       tone: "danger",
     },
   ]);
+});
+
+it("reports missing credentials only when no ChatGPT sign-in or API key can authenticate", async () => {
+  for (const name of ["OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL"]) vi.stubEnv(name, "");
+  const read = async (auth: unknown, env?: Record<string, string>) => {
+    const home = await mkdtemp(join(tmpdir(), "paseo-codex-credentials-"));
+    homes.push(home);
+    if (auth !== undefined) await writeFile(join(home, "auth.json"), JSON.stringify(auth));
+    const fetch = async () => {
+      throw new Error("No usage request without a ChatGPT sign-in");
+    };
+    const provider = new CodexQuotaProvider({
+      logger: pino({ level: "silent" }),
+      codexHome: home,
+      strictCodexHome: true,
+      fetch,
+      ...(env ? { env } : {}),
+    });
+    return provider.fetchUsage();
+  };
+  expect((await read(undefined)).credentialsMissing).toBe(true);
+  // API-key sign-in writes the key with null tokens; it runs agents but has no usage to read.
+  const apiKey = await read({ OPENAI_API_KEY: "sk-test", tokens: null });
+  expect(apiKey.status).toBe("unavailable");
+  expect(apiKey.credentialsMissing).toBeUndefined();
+  expect((await read(undefined, { OPENAI_API_KEY: "sk-test" })).credentialsMissing).toBeUndefined();
 });

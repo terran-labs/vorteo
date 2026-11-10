@@ -14,6 +14,7 @@ import {
   balanceToneFromRemaining,
   toneFromUsedPct,
   fetchProviderApi,
+  hasAuthEnvironment,
   unavailableUsage,
   windowFromUsedPct,
 } from "../usage.js";
@@ -25,7 +26,9 @@ const CodexAuthSchema = z.object({
       refresh_token: z.string().optional(),
       account_id: z.string().optional(),
     })
+    .nullable()
     .optional(),
+  OPENAI_API_KEY: z.string().nullable().optional(),
 });
 
 const CodexWindowSchema = z.object({
@@ -68,7 +71,12 @@ interface CodexQuotaProviderOptions {
   displayName?: string;
   strictCodexHome?: boolean;
   fetch?: ProviderApiFetch;
+  /** The provider's configured environment, which can authenticate with an API key. */
+  env?: Readonly<Record<string, string | undefined>>;
 }
+
+/** Environment that lets Codex authenticate without a ChatGPT sign-in. */
+const CODEX_AUTH_ENV = ["OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL"] as const;
 
 function codexWindow(
   window: CodexWindow | null | undefined,
@@ -98,6 +106,7 @@ export class CodexQuotaProvider implements ProviderUsageFetcher {
   private readonly codexHome: string | null;
   private readonly strictCodexHome: boolean;
   private readonly fetchApi: ProviderApiFetch;
+  private readonly env: Readonly<Record<string, string | undefined>>;
 
   constructor(options: CodexQuotaProviderOptions) {
     this.providerId = options.providerId ?? "codex";
@@ -107,6 +116,7 @@ export class CodexQuotaProvider implements ProviderUsageFetcher {
       ? (options.codexHome ?? null)
       : options.codexHome || process.env["CODEX_HOME"] || join(homedir(), ".codex");
     this.fetchApi = options.fetch ?? fetch;
+    this.env = options.env ?? {};
   }
 
   async fetchUsage(): Promise<ProviderUsage> {
@@ -114,7 +124,11 @@ export class CodexQuotaProvider implements ProviderUsageFetcher {
     const auth = credentials?.auth;
     const accessToken = auth?.tokens?.access_token;
     if (!credentials || !auth || !accessToken) {
-      return { ...unavailableUsage(this), credentialsMissing: true };
+      // An API key in auth.json or the environment still runs agents; only its usage is unread.
+      const apiKey = credentials?.apiKey || hasAuthEnvironment(CODEX_AUTH_ENV, this.env);
+      return apiKey
+        ? unavailableUsage(this)
+        : { ...unavailableUsage(this), credentialsMissing: true };
     }
 
     const { account_id } = auth.tokens ?? {};
@@ -218,7 +232,15 @@ export class CodexQuotaProvider implements ProviderUsageFetcher {
     };
   }
 
-  private async readCodexAuth(): Promise<{ auth: CodexAuth; home: string } | null> {
+  /**
+   * The first auth.json with ChatGPT tokens, else an API-key-only record so the caller knows
+   * credentials exist, else null.
+   */
+  private async readCodexAuth(): Promise<
+    | { auth: CodexAuth; home: string; apiKey?: undefined }
+    | { auth?: undefined; apiKey: true }
+    | null
+  > {
     let candidates: string[];
     if (this.strictCodexHome) {
       candidates = this.codexHome ? [join(this.codexHome, "auth.json")] : [];
@@ -229,16 +251,18 @@ export class CodexQuotaProvider implements ProviderUsageFetcher {
         ...(this.codexHome ? [join(this.codexHome, "auth.json")] : []),
       ];
     }
+    let apiKey = false;
     for (const path of candidates) {
       if (!existsSync(path)) continue;
       try {
         const auth = CodexAuthSchema.parse(JSON.parse(await fs.readFile(path, "utf8")));
         if (auth.tokens?.access_token) return { auth, home: dirname(path) };
+        if (auth.OPENAI_API_KEY) apiKey = true;
       } catch {
         continue;
       }
     }
-    return null;
+    return apiKey ? { apiKey: true } : null;
   }
 
   private async callCodexApi(

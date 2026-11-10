@@ -154,3 +154,15 @@ export function toIsoStringOrNull(timestampMs: number): string | null {
   const date = new Date(timestampMs);
   return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
+
+/**
+ * Whether any of `names` is set in the provider's configured environment or the daemon's. An
+ * API key, token, base URL or cloud-provider switch authenticates without the OAuth store, so
+ * a fetcher that finds no OAuth credentials must not report the account as having none.
+ */
+export function hasAuthEnvironment(
+  names: readonly string[],
+  env: Readonly<Record<string, string | undefined>> = {},
+): boolean {
+  return names.some((name) => Boolean(env[name] ?? process.env[name]));
+}
