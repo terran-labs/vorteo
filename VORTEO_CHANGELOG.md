@@ -2,6 +2,12 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-09
+
+### Improvements
+
+- The working indicator beside a running turn is now a 3x3 dot grid whose dots twinkle independently, flicking on and fading smoothly back down.
+
 ## 26.11.901 - 2026-11-09
 
 This candidate includes the reviewed shutdown registration repair alongside the interface and installer updates prepared in 26.11.900. Release validation and installed acceptance are required before promotion.
