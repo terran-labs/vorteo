@@ -2957,6 +2957,11 @@ export const ptBR: TranslationResources = {
           hint: "Libera memória após uma hora de inatividade.",
           info: "Encerra o processo do agente e mantém a conversa. Envie uma mensagem para retomar.\n\nTrabalho ativo, notificações pendentes e verificações de segurança do provedor impedem a limpeza.",
         },
+        blockedWorkReview: {
+          title: "Revisar trabalho bloqueado a cada hora",
+          hint: "Desativado por padrão. Cada revisão recarrega toda a conversa do tópico e pode consumir muito do seu plano.",
+          info: "A cada hora, tópicos inativos com uma tarefa ou objetivo bloqueado recebem uma mensagem para reavaliar seus bloqueios e continuar. Cada mensagem retoma a conversa completa, então poucos tópicos bloqueados podem consumir boa parte do limite semanal do provedor.\n\nTópicos aguardando a redefinição de um limite de uso são retomados separadamente.",
+        },
       },
       workspaces: {
         unavailable: "Conecte-se a este host para gerenciar workspaces",
