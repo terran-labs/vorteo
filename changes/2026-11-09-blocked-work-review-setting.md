@@ -1,6 +1,6 @@
 ### Changes
 
-- Hourly blocked-work review is now off by default. Each review resumes the thread's whole conversation, so a few blocked threads could use a large share of a weekly provider limit. Turn it back on in Settings, System, **Review blocked work hourly**; the change applies without a restart.
+- Blocked-work review is now off by default. Each review resumes the thread's whole conversation, so a few blocked threads could use a large share of a weekly provider limit. Turn it back on in Settings, System, **Review blocked work**; the change applies without a restart.
 
 ## Maintenance review
 
