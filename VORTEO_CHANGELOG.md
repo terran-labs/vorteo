@@ -4,6 +4,15 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-10
 
+### Fixes
+
+- Claude model selectors now include every model the installed Claude Code reports, with its own name, description and effort levels, instead of hiding models missing from Vorteo's built-in list. New Claude releases appear without a Vorteo update once the CLI supports them; fast mode, context window size and disabled thinking still need a built-in entry.
+- Add Fable 5.2 to the built-in Claude models with fast mode and a 1M context window, so its toggle, context meter and subagent label work on every daemon and survive a failed model probe. Effort levels a newer CLI reports but this daemon cannot launch are left out, and gateway or cloud spellings of built-in models no longer appear twice.
+- Running agents on a newer minor release, such as Fable 5.2, no longer display as the older major model.
+- Pin Claude Code 2.1.321, which adds Fable 5.2. Static analysis found its Keychain naming, credentials file, storage and refresh locks, setup-token handling and MCP discovery probe unchanged from 2.1.318.
+
+## Unreleased - 2026-11-10
+
 ### Maintenance
 
 - Combine 1 source contributions; retain their release notes below

@@ -29,6 +29,7 @@ import {
   type AgentDefinition,
   type CanUseTool,
   type McpServerConfig as ClaudeSdkMcpServerConfig,
+  type ModelInfo,
   type PermissionMode,
   type PermissionResult,
   type PermissionUpdate,
@@ -1841,8 +1842,9 @@ export class ClaudeAgentClient implements AgentClient {
     signal.throwIfAborted();
     const env = this.buildProviderEnv();
     let discoveredModelIds = new Set<string>();
+    let advertisedModels: ModelInfo[] = [];
     try {
-      const advertisedModels = await runProviderRefreshActivity(context, "models", () =>
+      advertisedModels = await runProviderRefreshActivity(context, "models", () =>
         this.discoverModels({
           resolveBinary: this.resolveBinary,
           runtimeSettings: this.runtimeSettings,
@@ -1869,6 +1871,7 @@ export class ClaudeAgentClient implements AgentClient {
         claudeConfigDir(env),
         claudeCodeVersion,
         discoveredModelIds,
+        advertisedModels,
       ),
     );
     signal.throwIfAborted();

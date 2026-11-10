@@ -398,7 +398,7 @@ export async function readClaudeAccountKeychainCredentialsStrict(
 }
 
 /**
- * The Keychain service Claude Code 2.1.284 through 2.1.318 uses for OAuth credentials when CLAUDE_CONFIG_DIR is
+ * The Keychain service Claude Code 2.1.284 through 2.1.321 uses for OAuth credentials when CLAUDE_CONFIG_DIR is
  * set (`wN("-credentials")` in the pinned CLI): the default service name suffixed with the first
  * eight hex digits of SHA-256 over the NFC-normalized config directory. The CLI hashes the raw
  * variable, so pass it exactly as set (no resolve, no trailing-slash trim). The production OAuth
