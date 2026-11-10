@@ -1,4 +1,4 @@
-import { blockedReviewDue } from "./task-checklist/blocked-review.js";
+import { blockedReviewDue, blockedReviewsUsed } from "./task-checklist/blocked-review.js";
 import {
   AgentJournalEntrySchema,
   AppendJournalSchema,
@@ -120,6 +120,8 @@ const STORED_AGENT_SCHEMA = z.object({
   updatedAt: z.string(),
   lastActivityAt: z.string().optional(),
   lastBlockedReviewAt: z.string().datetime().optional(),
+  // Reviews spent in the current blocked stretch; see blockedReviewsUsed.
+  blockedReviewCount: z.number().int().nonnegative().optional(),
   lastUserMessageAt: z.string().nullable().optional(),
   title: z.string().nullable().optional(),
   labels: z.record(z.string(), z.string()).default({}),
@@ -463,11 +465,25 @@ export class AgentStorage {
       (record) => {
         if (!record || !blockedReviewDue(record, now)) return null;
         claimed = true;
-        return { ...record, lastBlockedReviewAt: new Date(now).toISOString() };
+        return {
+          ...record,
+          lastBlockedReviewAt: new Date(now).toISOString(),
+          blockedReviewCount: blockedReviewsUsed(record) + 1,
+        };
       },
       { blockedReviewWrite: true },
     );
     return claimed;
+  }
+
+  /** The next rung waits from the review's end, so a long review cannot shorten the gap. */
+  async finishBlockedReview(agentId: string, now: number): Promise<void> {
+    await this.load();
+    await this.queueRecordMutation(
+      agentId,
+      (record) => (record ? { ...record, lastBlockedReviewAt: new Date(now).toISOString() } : null),
+      { blockedReviewWrite: true },
+    );
   }
 
   async updateBlockedGoalReview(agentId: string, needed: boolean): Promise<void> {
@@ -984,8 +1000,10 @@ function preserveOwnedRecordFields({ record, existing, options }: OwnedRecordFie
   if (!options.journalWrite && existing) record.journal = existing.journal;
   if (!options.questionsWrite && existing) record.questions = existing.questions;
   if (!options.checklistWrite) preserveManagedChecklist(record, existing);
-  if (!options.blockedReviewWrite && existing)
+  if (!options.blockedReviewWrite && existing) {
     record.lastBlockedReviewAt = existing.lastBlockedReviewAt;
+    record.blockedReviewCount = existing.blockedReviewCount;
+  }
 }
 
 /** Tool access is fixed at creation. No later snapshot or update can widen it. */

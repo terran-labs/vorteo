@@ -138,7 +138,13 @@ function QueueViewContent({
             <Text style={[styles.error, taskCardStyles.proseInset]} accessibilityRole="alert">
               {control.error}
             </Text>
-            <Button variant="ghost" size="sm" style={styles.inlineAction} onPress={control.refresh}>
+            <Button
+              variant="ghost"
+              size="sm"
+              style={styles.compactInlineAction}
+              hitSlop={COMPACT_ACTION_HIT_SLOP}
+              onPress={control.refresh}
+            >
               Retry
             </Button>
           </View>
@@ -777,6 +783,9 @@ const mutedIconMapping = (theme: Theme) => ({
   color: theme.colors.foregroundMuted,
 });
 
+/** Extends a compact inline action to a 44px touch target without adding line height. */
+const COMPACT_ACTION_HIT_SLOP = { top: 8, bottom: 8, left: 4, right: 4 };
+
 const styles = StyleSheet.create((theme) => ({
   sendAction: { position: "relative" },
   sendProgress: { position: "absolute", inset: 0, alignItems: "center", justifyContent: "center" },
@@ -800,6 +809,8 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 1,
   },
   inlineAction: { minHeight: 44, alignSelf: "flex-start" },
+  // Sits on the error line without making it 44px tall; the hit slop keeps a touch-sized target.
+  compactInlineAction: { alignSelf: "center" },
   menuTrigger: {
     alignItems: "center",
     justifyContent: "center",

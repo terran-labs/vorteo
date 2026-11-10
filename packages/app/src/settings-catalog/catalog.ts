@@ -1134,6 +1134,15 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
     scope: environment,
   },
   {
+    id: "system.overview.blockedWorkReview",
+    pane: "system.overview",
+    label: "Review blocked work",
+    labelKey: "settings.host.agents.blockedWorkReview.title",
+    hint: "Off by default. Up to three short reviews after a thread stops.",
+    keywords: ["blocked", "stuck", "usage", "weekly limit", "tokens", "review"],
+    scope: environment,
+  },
+  {
     id: "maintenance.installation.access",
     pane: "maintenance.installation",
     label: "Installation owner",

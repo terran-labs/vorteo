@@ -2980,6 +2980,11 @@ export const es: TranslationResources = {
           hint: "Libera memoria tras una hora de inactividad.",
           info: "Detiene el proceso del agente y conserva la conversación. Envía un mensaje para reanudarla.\n\nEl trabajo activo, las notificaciones pendientes y las comprobaciones de seguridad del proveedor impiden la limpieza.",
         },
+        blockedWorkReview: {
+          title: "Revisar trabajo bloqueado",
+          hint: "Desactivado por defecto. Hasta tres revisiones breves cuando un hilo se detiene; luego espera un mensaje.",
+          info: "Cuando un hilo se detiene con una tarea u objetivo bloqueado, recibe hasta tres mensajes, unos 5, 15 y 30 minutos después, para revisar sus bloqueos y continuar. Después las revisiones se detienen hasta que alguien envíe un mensaje al hilo.\n\nCada revisión reanuda la conversación del hilo. Los intervalos cortos reutilizan la caché de prompts del proveedor, así que cuestan mucho menos que una reanudación en frío, pero muchos hilos bloqueados siguen sumando.\n\nSe omiten los bloqueos que esperan una pregunta abierta; tu respuesta despierta el hilo.",
+        },
       },
       workspaces: {
         unavailable: "Connect to this host to manage workspaces",

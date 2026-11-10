@@ -3483,6 +3483,11 @@ export const en = {
           hint: "Free up memory after an hour of inactivity.",
           info: "Stops the agent's process while keeping its conversation. Send a message to resume.\n\nActive work, pending notifications, and provider safety checks prevent cleanup.",
         },
+        blockedWorkReview: {
+          title: "Review blocked work",
+          hint: "Off by default. Up to three short reviews after a thread stops, then it waits for a message.",
+          info: "When a thread stops with a blocked task or goal, it gets up to three prompts, about 5, 15 and 30 minutes apart, to recheck its blockers and continue. Then reviews stop until someone sends the thread a message.\n\nEach review resumes the thread's conversation. The short gaps reuse the provider's prompt cache, so they cost far less than a cold resume, but many blocked threads still add up.\n\nBlockers waiting on an open question are skipped; your answer wakes the thread.",
+        },
       },
       workspaces: {
         unavailable: "Connect to this host to manage workspaces",

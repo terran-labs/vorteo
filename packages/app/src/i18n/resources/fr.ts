@@ -2983,6 +2983,11 @@ export const fr: TranslationResources = {
           hint: "Libère de la mémoire après une heure d’inactivité.",
           info: "Arrête le processus de l’agent tout en conservant sa conversation. Envoyez un message pour la reprendre.\n\nLe travail en cours, les notifications en attente et les vérifications de sécurité du fournisseur empêchent le nettoyage.",
         },
+        blockedWorkReview: {
+          title: "Revoir le travail bloqué",
+          hint: "Désactivé par défaut. Jusqu'à trois courtes revues après l'arrêt d'un fil, puis il attend un message.",
+          info: "Quand un fil s'arrête avec une tâche ou un objectif bloqué, il reçoit jusqu'à trois messages, environ 5, 15 et 30 minutes plus tard, pour revérifier ses blocages et continuer. Ensuite, les revues s'arrêtent jusqu'à ce que quelqu'un envoie un message au fil.\n\nChaque revue reprend la conversation du fil. Les courts intervalles réutilisent le cache de prompts du fournisseur et coûtent donc bien moins qu'une reprise à froid, mais de nombreux fils bloqués finissent par peser.\n\nLes blocages en attente d'une question ouverte sont ignorés ; votre réponse réveille le fil.",
+        },
       },
       workspaces: {
         unavailable: "Connectez-vous à cet hôte pour gérer les espaces de travail",
