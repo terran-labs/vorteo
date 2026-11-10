@@ -1300,7 +1300,10 @@ export class ProjectFactoryService {
       : await this.input.defaultLaunch();
     if (!launch)
       throw new ProjectFactoryError(
-        "The primary connection is not chosen or not ready. Choose one in Settings, Providers, then turn Factory on again.",
+        // Null covers a primary connection that is not chosen, not available in this
+        // environment, signed out or changed during the check, and, before the coordinator
+        // supports the primary connection, no usable provider at all.
+        "No connection in this environment can start Factory's agents yet. In Settings, Providers, check that the primary connection is chosen, signed in and available here, then turn Factory off and on again.",
       );
     let lastError: unknown = null;
     for (const attempt of launchAttempts(launch)) {

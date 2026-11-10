@@ -1408,7 +1408,14 @@ test("an upgrade adopts the only usable connection as primary once and projects 
   );
   if (!claude) throw new Error("Expected the Claude connection");
 
+  // Right after the upgrade restart Codex is still loading or reads a transient usage error, so
+  // Claude being the only usable one so far is not a reason to choose it.
   host.usableProviders = ["claude-account"];
+  host.pendingProviders = ["codex-account"];
+  expect((await service.reconcile()).settings?.primaryConnection).toBeUndefined();
+
+  // Codex settles as signed out, so Claude really is the only usable connection.
+  host.pendingProviders = [];
   const adopted = await service.reconcile();
   expect(adopted.revision).toBe(waiting.revision + 1);
   expect(adopted.settings?.primaryConnection).toEqual({ providerId: claude.id });

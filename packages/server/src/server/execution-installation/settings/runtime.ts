@@ -26,7 +26,7 @@ import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { ExecutionEnvironmentKind } from "@getpaseo/protocol/execution-installation";
 import { connectInstallationDaemon, createInstallationRegistrationAdmission } from "../daemon.js";
 import { nativeHostInstallationInstructions } from "./instructions.js";
-import { usableProviders } from "../../system-project/launch-selection.js";
+import { classifyProviders, usableProviders } from "../../system-project/launch-selection.js";
 import {
   InstallationSettingsService,
   SettingsBackupSchema,
@@ -250,7 +250,7 @@ export function createInstallationSettings(
         await client.close();
       }
     },
-    async readUsableProviders() {
+    async readProviderReadiness() {
       assertReady(environment.kind === "host" ? "host" : "container-daemon");
       const client = await connect(environment.kind);
       try {
@@ -260,7 +260,16 @@ export function createInstallationSettings(
           client.getDaemonConfig(),
         ]);
         const ready = snapshot.entries.filter((entry) => entry.enabled && entry.status === "ready");
-        return usableProviders(ready, usage.providers, daemon.config);
+        const { uncertain } = classifyProviders(ready, usage.providers);
+        const loading = snapshot.entries
+          .filter((entry) => entry.enabled && entry.status === "loading")
+          .map((entry) => entry.provider);
+        return {
+          usable: usableProviders(ready, usage.providers, daemon.config).filter(
+            (provider) => !uncertain.includes(provider),
+          ),
+          pending: [...loading, ...uncertain],
+        };
       } finally {
         await client.close();
       }

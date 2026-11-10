@@ -15,27 +15,48 @@ export interface Launch {
 }
 
 /**
+ * Ready providers grouped by what their usage reading says about the sign in. `uncertain`
+ * holds providers whose reading failed or is unavailable without asking for a new sign in, such
+ * as a transient error; only `signedOut` is known not to work.
+ */
+export function classifyProviders(
+  ready: readonly Pick<ProviderSnapshotEntry, "provider">[],
+  usage: readonly ProviderUsage[],
+): { signedIn: string[]; unmetered: string[]; uncertain: string[]; signedOut: string[] } {
+  const groups = {
+    signedIn: [] as string[],
+    unmetered: [] as string[],
+    uncertain: [] as string[],
+    signedOut: [] as string[],
+  };
+  for (const entry of ready) {
+    const reading = usage.find((item) => item.providerId === entry.provider);
+    if (!reading) groups.unmetered.push(entry.provider);
+    else if (reading.authRecovery) groups.signedOut.push(entry.provider);
+    else if (reading.status === "available") groups.signedIn.push(entry.provider);
+    else groups.uncertain.push(entry.provider);
+  }
+  return groups;
+}
+
+/**
  * Providers that can run a daemon-created agent, best first. A Claude or Codex connection
  * whose usage reading shows a working sign in comes first; a ready provider the daemon reads
- * no usage for comes next; a ready one whose reading shows no sign in is left out. The
- * installation's default provider leads within each group.
+ * no usage for comes next; a ready one whose reading failed without asking for a sign in comes
+ * last, so a transient usage error never blocks the primary connection; a ready one whose
+ * reading shows no sign in is left out. The installation's default provider leads within each
+ * group.
  */
 export function usableProviders(
   ready: readonly Pick<ProviderSnapshotEntry, "provider">[],
   usage: readonly ProviderUsage[],
   settings: MutableDaemonConfig,
 ): string[] {
-  const signedIn: string[] = [];
-  const unmetered: string[] = [];
-  for (const entry of ready) {
-    const reading = usage.find((item) => item.providerId === entry.provider);
-    if (!reading) unmetered.push(entry.provider);
-    else if (reading.status === "available" && !reading.authRecovery) signedIn.push(entry.provider);
-  }
+  const { signedIn, unmetered, uncertain } = classifyProviders(ready, usage);
   const preferred = settings.sharedProviderPreferences?.defaultProvider;
   const byDefault = (left: string, right: string) =>
     Number(right === preferred) - Number(left === preferred);
-  return [...signedIn.sort(byDefault), ...unmetered.sort(byDefault)];
+  return [...signedIn.sort(byDefault), ...unmetered.sort(byDefault), ...uncertain.sort(byDefault)];
 }
 
 /**
@@ -123,21 +144,28 @@ interface LaunchOptions {
   refreshUsage?: (readyKey: string) => boolean;
 }
 
-/** Ready providers that can run a daemon-created agent, best first, optionally only one. */
+/**
+ * Ready providers that can run a daemon-created agent, best first, optionally only one.
+ * `settling` is true while any of them is still loading or reads a usage error that does not
+ * ask for a new sign in, so a one-time choice can wait for a settled answer.
+ */
 async function readUsableProviders(
   input: DefaultLaunchInput,
   options: LaunchOptions,
   only?: string,
-): Promise<string[]> {
+): Promise<{ usable: string[]; settling: boolean }> {
   const entries = await input.providers.listProviders({ wait: options.wait ?? false });
-  const ready = entries.filter(
-    (entry) => entry.enabled && entry.status === "ready" && (!only || entry.provider === only),
-  );
-  if (ready.length === 0) return [];
+  const wanted = entries.filter((entry) => entry.enabled && (!only || entry.provider === only));
+  const loading = wanted.some((entry) => entry.status === "loading");
+  const ready = wanted.filter((entry) => entry.status === "ready");
+  if (ready.length === 0) return { usable: [], settling: loading };
   const usage = await input.readUsage({
     forceRefresh: options.refreshUsage?.(ready.map((entry) => entry.provider).join(",")) ?? false,
   });
-  return usableProviders(ready, usage.providers, input.getSettings());
+  return {
+    usable: usableProviders(ready, usage.providers, input.getSettings()),
+    settling: loading || classifyProviders(ready, usage.providers).uncertain.length > 0,
+  };
 }
 
 /**
@@ -179,16 +207,17 @@ async function selectDefaultLaunch(
   const before = input.getSettings();
   if (!primaryConnectionSupported(before)) {
     // COMPAT(primaryConnection): the launch rule from before the primary connection existed.
-    const [best] = await readUsableProviders(input, options);
+    const [best] = (await readUsableProviders(input, options)).usable;
     return best ? selectLaunch(best, input.getSettings()) : null;
   }
   const chosen = primaryConnection(before);
   if (chosen === null) return null;
-  const usable = await readUsableProviders(input, options, chosen?.provider);
+  const { usable, settling } = await readUsableProviders(input, options, chosen?.provider);
   const settings = input.getSettings();
   if (chosen) return usable.length > 0 ? primaryLaunch(chosen, settings) : null;
-  // Not chosen yet on a standalone daemon: adopt the only usable provider, once.
-  if (!input.adoptPrimary || usable.length === 0) return null;
+  // Not chosen yet on a standalone daemon: adopt the only usable provider, once, and only from a
+  // settled reading, since a provider still loading after a restart may be usable too.
+  if (!input.adoptPrimary || usable.length === 0 || settling) return null;
   if (primaryConnection(settings) !== undefined) return null;
   if (usable.length > 1) {
     await input.adoptPrimary(null);

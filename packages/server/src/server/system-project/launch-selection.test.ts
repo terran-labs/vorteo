@@ -124,9 +124,23 @@ describe("resolveDefaultLaunch", () => {
     const signedOut = launchInput(
       settings({ primaryConnection: { provider: "claude" } }),
       ["claude"],
-      [{ providerId: "claude", status: "unavailable" } as ProviderUsage],
+      [
+        {
+          providerId: "claude",
+          status: "unavailable",
+          authRecovery: { instructions: "Sign in again." },
+        } as ProviderUsage,
+      ],
     );
     expect(await resolveDefaultLaunch(signedOut.input)).toBeNull();
+
+    // A transient usage error is not a sign out: the ready primary still launches.
+    const usageError = launchInput(
+      settings({ primaryConnection: { provider: "claude" } }),
+      ["claude"],
+      [{ providerId: "claude", status: "error" } as ProviderUsage],
+    );
+    expect(await resolveDefaultLaunch(usageError.input)).toEqual({ provider: "claude" });
 
     const ownerChooses = launchInput(settings({ primaryConnection: null }), ["claude"]);
     expect(await resolveDefaultLaunch(ownerChooses.input)).toBeNull();
@@ -138,6 +152,15 @@ describe("resolveDefaultLaunch", () => {
     expect(await resolveDefaultLaunch(only.input)).toEqual({ provider: "claude" });
     expect(only.adoptPrimary).toHaveBeenCalledWith({ provider: "claude" });
     expect(only.current().primaryConnection).toEqual({ provider: "claude" });
+
+    // Codex's usage reading failed, so it may be usable too: wait instead of choosing either way.
+    const unsettled = launchInput(
+      settings(),
+      ["claude", "codex"],
+      [{ providerId: "codex", status: "error" } as ProviderUsage],
+    );
+    expect(await resolveDefaultLaunch(unsettled.input)).toBeNull();
+    expect(unsettled.adoptPrimary).not.toHaveBeenCalled();
 
     const several = launchInput(settings(), ["claude", "codex"]);
     expect(await resolveDefaultLaunch(several.input)).toBeNull();

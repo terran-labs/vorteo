@@ -46,16 +46,18 @@ export function isPrimaryConnection(
 
 /**
  * Whether a connection row offers Make primary: the setting is available, the connection is
- * not already primary, it is on, and it is signed in and ready in at least one environment.
+ * not already primary, it is on, and it is signed in and ready where the Optimizer runs. That is
+ * the Host when the row reports one, because a primary that is missing, excluded or signed out
+ * there would leave the Optimizer waiting; otherwise any environment.
  */
 export function canMakePrimary(input: {
   primary: boolean | null;
   enabled: boolean;
-  states: readonly { kind: string }[];
+  states: readonly { kind: string; environment?: { kind: string } }[];
 }): boolean {
-  return (
-    input.primary === false && input.enabled && input.states.some((state) => state.kind === "ready")
-  );
+  if (input.primary !== false || !input.enabled) return false;
+  const host = input.states.find((state) => state.environment?.kind === "host");
+  return host ? host.kind === "ready" : input.states.some((state) => state.kind === "ready");
 }
 
 /**
@@ -88,38 +90,58 @@ export async function confirmPrimaryConnection(input: {
 }
 
 /**
- * Whether the primary connection can run system threads anywhere: on in the catalog, ready in
- * an environment that binds it, and not waiting for a sign-in. "unknown" while an environment
- * that binds it is still checking, so the Status row never flickers on a slow first read.
+ * Whether the primary connection can run system threads in every environment that runs them:
+ * the Host for the Optimizer, plus each environment with a running Factory. Each environment
+ * launches from its own copy of the choice, so the connection must be bound there, on, not
+ * excluded, ready and not waiting for a sign-in in that environment's own usage reading.
+ * "unknown" while a required environment is still checking or not reporting, so the Status row
+ * never flickers on a slow first read.
  */
 export function primaryConnectionAvailability(input: {
   primary: InstallationPrimaryConnection;
   definitions: readonly InstallationProvider[];
+  /** Server ids of the environments that run system threads. */
+  required: readonly string[];
+  exclusions?: Readonly<Record<string, { providerIds?: readonly string[] }>>;
   sources: readonly {
     serverId: string;
-    entries: readonly { provider: string; status: string; enabled?: boolean }[] | undefined;
+    entries?: readonly { provider: string; status: string; enabled?: boolean }[];
   }[];
-  /** Local provider ids whose usage reading asks for a new sign-in. */
-  signedOut?: ReadonlySet<string>;
+  /** Per server id, local provider ids whose usage reading there asks for a new sign-in. */
+  signedOut?: ReadonlyMap<string, ReadonlySet<string>>;
 }): "available" | "unavailable" | "unknown" {
+  if (input.required.length === 0) return "unknown";
   let checking = false;
-  for (const source of input.sources) {
+  for (const serverId of input.required) {
     const definition = primaryConnectionBinding(
       { primaryConnection: input.primary, providerDefinitions: [...input.definitions] },
-      source.serverId,
+      serverId,
     );
-    if (!definition || definition.policy.enabled === false) continue;
-    const localId = definition.bindings[source.serverId]!;
-    if (!source.entries) {
+    if (
+      !definition ||
+      definition.policy.enabled === false ||
+      input.exclusions?.[serverId]?.providerIds?.includes(definition.id)
+    )
+      return "unavailable";
+    const source = input.sources.find((candidate) => candidate.serverId === serverId);
+    if (!source?.entries) {
       checking = true;
       continue;
     }
+    const localId = definition.bindings[serverId]!;
     const entry = source.entries.find((candidate) => candidate.provider === localId);
-    if (entry?.status === "loading") checking = true;
-    if (entry?.status === "ready" && entry.enabled !== false && !input.signedOut?.has(localId))
-      return "available";
+    if (entry?.status === "loading") {
+      checking = true;
+      continue;
+    }
+    if (
+      entry?.status !== "ready" ||
+      entry.enabled === false ||
+      input.signedOut?.get(serverId)?.has(localId)
+    )
+      return "unavailable";
   }
-  return checking ? "unknown" : "unavailable";
+  return checking ? "unknown" : "available";
 }
 
 /**

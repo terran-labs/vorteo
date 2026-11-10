@@ -37,6 +37,7 @@ vi.mock("@/execution-installation/primary-connection", () => ({
   usePrimaryConnection: () => state.primary,
 }));
 vi.mock("@/execution-installation/panel", () => ({ useRestartsAwaitingApproval: () => 0 }));
+vi.mock("@/screens/factory/overview-sources", () => ({ useFactoryServerIds: () => new Set() }));
 vi.mock("@/execution-installation/policy", () => ({
   installationDefaultServerId: () => state.serverId,
   readExecutionInstallation: () => state.installation,

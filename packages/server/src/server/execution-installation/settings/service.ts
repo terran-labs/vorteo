@@ -59,8 +59,12 @@ export interface SettingsEnvironment {
     excludedIds: readonly string[],
   ): Promise<void>;
   previewSkills(selection: AgentSkillSelection): Promise<AgentSkillsSaveResult>;
-  /** Local provider ids that can run a system thread now, best first. */
-  readUsableProviders(): Promise<string[]>;
+  /**
+   * Local provider ids that can run a system thread now, best first, and those whose readiness
+   * is not settled yet: still loading, or ready with a usage reading that failed without asking
+   * for a new sign in.
+   */
+  readProviderReadiness(): Promise<{ usable: string[]; pending: string[] }>;
   patch(
     patch: MutableDaemonConfigPatch,
     confirmedSkillRemovals?: readonly string[],
@@ -335,28 +339,34 @@ export class InstallationSettingsService {
   /**
    * Upgrades an installation that has never chosen a primary connection, once. The only usable
    * connection becomes primary; with several the owner chooses, so it is set to null. With none
-   * it stays unchosen and a later pass, or the setup guide, decides. A failed read retries.
+   * it stays unchosen and a later pass, or the setup guide, decides. A failed read retries, and
+   * so does a pass where any eligible connection is still loading or has a usage error that
+   * does not ask for a new sign in: right after the upgrade restart, that connection may be
+   * usable too, and adopting the only one ready so far would choose for the owner.
    */
   private async adoptPrimaryConnection(): Promise<void> {
     const previous = this.snapshot();
     if (!previous.settings?.providerDefinitions) return;
     const usable = new Set<string>();
     for (const environment of this.environments) {
-      let localIds: string[];
+      let readiness: { usable: string[]; pending: string[] };
       try {
-        localIds = await environment.readUsableProviders();
+        readiness = await environment.readProviderReadiness();
       } catch {
         return;
       }
       const excluded = previous.settings.resourceExclusions[environment.serverId]?.providerIds;
-      for (const localId of localIds) {
-        const definition = previous.settings.providerDefinitions.find(
+      const eligible = (localId: string) =>
+        previous.settings!.providerDefinitions!.find(
           (entry) =>
             !entry.removed &&
             entry.policy.enabled !== false &&
             entry.bindings[environment.serverId] === localId &&
             !excluded?.includes(entry.id),
         );
+      if (readiness.pending.some((localId) => eligible(localId))) return;
+      for (const localId of readiness.usable) {
+        const definition = eligible(localId);
         if (definition) usable.add(adoptionIdentity(definition, previous.settings));
       }
     }

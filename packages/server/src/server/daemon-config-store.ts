@@ -23,6 +23,7 @@ import {
 import {
   assertPrimaryConnectionProjection,
   changesPrimaryConnectionCopy,
+  localPrimaryConnection,
   reconciledSupportMarker,
 } from "./execution-installation/settings/primary-connection.js";
 import {
@@ -872,7 +873,8 @@ export class DaemonConfigStore {
   /**
    * Re-reads whether the coordinator owns the primary connection, so a daemon that moved back
    * to an older coordinator stops waiting for a choice it can never receive. A failed read keeps
-   * the last known answer.
+   * the last known answer. Turning support on also takes the coordinator's choice from the same
+   * answer, so the marker never pairs with a copy older than it.
    */
   public async refreshPrimaryConnectionSupport(): Promise<void> {
     if (!this.current.sharedProviderPreferences?.installation) return;
@@ -883,8 +885,19 @@ export class DaemonConfigStore {
       return;
     }
     if (!admission) return;
-    if (reconciledSupportMarker(this.current, {}, admission) === undefined) return;
-    this.applyPatch({}, admission);
+    const marker = reconciledSupportMarker(this.current, {}, admission);
+    if (marker === undefined) return;
+    this.applyPatch(
+      marker
+        ? {
+            installationPrimaryConnection: localPrimaryConnection(
+              admission.settings,
+              admission.serverId,
+            ),
+          }
+        : {},
+      admission,
+    );
   }
 
   /**

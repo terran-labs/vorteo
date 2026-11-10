@@ -17,6 +17,7 @@ import {
 } from "@/execution-installation/primary-connection";
 import { useDaemonPrimaryConnection } from "@/hooks/use-daemon-primary-connection";
 import { useProviderUsage } from "@/provider-usage/use-provider-usage";
+import { useFactoryServerIds } from "@/screens/factory/overview-sources";
 import { providersNeedingAttention } from "../shared-providers-model";
 import { useProviderDetection } from "../use-provider-detection";
 
@@ -74,7 +75,7 @@ const PRIMARY_MISSING: AttentionItem = {
 const PRIMARY_UNAVAILABLE: AttentionItem = {
   ...PRIMARY_MISSING,
   label: "Your primary connection is unavailable. Choose another for system threads.",
-  hint: "It is off, signed out or not ready anywhere, so the Optimizer and Factory wait.",
+  hint: "It is off, signed out, not ready or not connected on the Host or where Factory runs, so system threads there wait.",
 };
 
 /** Local provider ids whose usage reading asks for a new sign-in. */
@@ -95,7 +96,10 @@ function primaryAttention(
   return availability() === "unavailable" ? PRIMARY_UNAVAILABLE : null;
 }
 
-/** The installation's primary connection, checked against every environment. */
+/**
+ * The installation's primary connection, checked where system threads run: the Host for the
+ * Optimizer, plus each environment with a running Factory. Each launches from its own copy.
+ */
 function useSharedPrimaryItem(): AttentionItem | null {
   const installation = readExecutionInstallation();
   const environments = installation?.environments ?? NO_ENVIRONMENTS;
@@ -103,13 +107,24 @@ function useSharedPrimaryItem(): AttentionItem | null {
   const settings = useInstallationSettings(shared.supported);
   const detection = useProviderDetection(environments);
   const hostId = environments.find((environment) => environment.kind === "host")?.serverId;
-  const signedOut = useSignedOut(shared.loaded ? (hostId ?? null) : null);
+  const devId = environments.find((environment) => environment.kind === "container")?.serverId;
+  const hostSignedOut = useSignedOut(shared.loaded ? (hostId ?? null) : null);
+  const devSignedOut = useSignedOut(shared.loaded ? (devId ?? null) : null);
+  const factories = useFactoryServerIds(shared.loaded);
+  const required = environments
+    .filter((environment) => environment.kind === "host" || factories.has(environment.serverId))
+    .map((environment) => environment.serverId);
   return primaryAttention(shared, () =>
     primaryConnectionAvailability({
       primary: shared.primary!,
       definitions: settings.data?.settings?.providerDefinitions ?? [],
+      exclusions: settings.data?.settings?.resourceExclusions,
+      required,
       sources: detection,
-      signedOut,
+      signedOut: new Map([
+        [hostId ?? "", hostSignedOut],
+        [devId ?? "", devSignedOut],
+      ]),
     }),
   );
 }
@@ -133,8 +148,9 @@ function useStandalonePrimaryItem(): AttentionItem | null {
           policy: {},
         },
       ],
+      required: serverId ? [serverId] : [],
       sources: [{ serverId: serverId ?? "", entries: local.entries }],
-      signedOut,
+      signedOut: new Map([[serverId ?? "", signedOut]]),
     }),
   );
 }

@@ -114,9 +114,11 @@ export class SettingsEnvironmentFake implements SettingsEnvironment {
 
   /** Local provider ids that read as usable; null makes the read fail. */
   usableProviders: string[] | null = [];
-  async readUsableProviders(): Promise<string[]> {
+  /** Local provider ids still loading or with an unsettled usage reading. */
+  pendingProviders: string[] = [];
+  async readProviderReadiness(): Promise<{ usable: string[]; pending: string[] }> {
     if (this.offline || this.usableProviders === null) throw new Error("environment offline");
-    return [...this.usableProviders];
+    return { usable: [...this.usableProviders], pending: [...this.pendingProviders] };
   }
 
   async previewSkills(selection: AgentSkillSelection): Promise<AgentSkillsSaveResult> {

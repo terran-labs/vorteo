@@ -43,7 +43,7 @@ describe("primary connection", () => {
     expect(isPrimaryConnection(undefined, definitions)).toBe(false);
   });
 
-  it("offers Make primary only on other enabled connections that are ready somewhere", () => {
+  it("offers Make primary only on other enabled connections that are ready on the Host", () => {
     const ready = [{ kind: "attention" }, { kind: "ready" }];
     expect(canMakePrimary({ primary: false, enabled: true, states: ready })).toBe(true);
     expect(canMakePrimary({ primary: true, enabled: true, states: ready })).toBe(false);
@@ -52,6 +52,12 @@ describe("primary connection", () => {
     expect(canMakePrimary({ primary: false, enabled: true, states: [{ kind: "attention" }] })).toBe(
       false,
     );
+    // Ready only in Dev: the Optimizer on the Host could never launch with it.
+    const devOnly = [
+      { kind: "none", environment: { kind: "host" } },
+      { kind: "ready", environment: { kind: "container" } },
+    ];
+    expect(canMakePrimary({ primary: false, enabled: true, states: devOnly })).toBe(false);
   });
 
   it("confirms before saving and reports the result as a toast", async () => {
@@ -115,11 +121,11 @@ describe("primary connection", () => {
     expect(request).toHaveBeenCalledTimes(1);
   });
 
-  it("reads the primary connection as unavailable only when no environment can run it", () => {
+  it("reads the primary connection as available only where every system thread can run it", () => {
     const definition = {
       id: "claude-def",
       providerType: "claude",
-      bindings: { host: "claude-1", dev: "claude-1" },
+      bindings: { host: "claude-1", dev: "claude-1" } as Record<string, string>,
       policy: {},
     };
     const primary = { providerId: "claude-def" };
@@ -127,33 +133,62 @@ describe("primary connection", () => {
     const failing = [{ provider: "claude-1", status: "error" }];
     const read = (
       sources: { serverId: string; entries?: { provider: string; status: string }[] }[],
-      overrides: { policy?: { enabled?: boolean }; signedOut?: Set<string> } = {},
+      overrides: {
+        policy?: { enabled?: boolean };
+        bindings?: Record<string, string>;
+        required?: string[];
+        excludedOn?: string;
+        signedOut?: Map<string, Set<string>>;
+      } = {},
     ) =>
       primaryConnectionAvailability({
         primary,
-        definitions: [{ ...definition, policy: overrides.policy ?? {} }],
-        sources: sources.map((source) => ({ serverId: source.serverId, entries: source.entries })),
+        definitions: [
+          {
+            ...definition,
+            bindings: overrides.bindings ?? definition.bindings,
+            policy: overrides.policy ?? {},
+          },
+        ],
+        required: overrides.required ?? ["host"],
+        exclusions: overrides.excludedOn
+          ? { [overrides.excludedOn]: { providerIds: ["claude-def"] } }
+          : undefined,
+        sources,
         signedOut: overrides.signedOut,
       });
+    const bothReady = [
+      { serverId: "host", entries: ready },
+      { serverId: "dev", entries: ready },
+    ];
+    expect(read(bothReady)).toBe("available");
+    // Ready in Dev does not help the Host's Optimizer.
     expect(
       read([
         { serverId: "host", entries: failing },
         { serverId: "dev", entries: ready },
       ]),
-    ).toBe("available");
-    expect(read([{ serverId: "host", entries: failing }])).toBe("unavailable");
-    expect(read([{ serverId: "host", entries: ready }], { policy: { enabled: false } })).toBe(
+    ).toBe("unavailable");
+    expect(read(bothReady, { bindings: { dev: "claude-1" } })).toBe("unavailable");
+    expect(read(bothReady, { excludedOn: "host" })).toBe("unavailable");
+    expect(read(bothReady, { policy: { enabled: false } })).toBe("unavailable");
+    expect(read(bothReady, { signedOut: new Map([["host", new Set(["claude-1"])]]) })).toBe(
       "unavailable",
     );
-    expect(read([{ serverId: "host", entries: ready }], { signedOut: new Set(["claude-1"]) })).toBe(
+    // Dev matters once a Factory runs there, judged by Dev's own sign-in.
+    const devSignedOut = new Map([["dev", new Set(["claude-1"])]]);
+    expect(read(bothReady, { signedOut: devSignedOut })).toBe("available");
+    expect(read(bothReady, { signedOut: devSignedOut, required: ["host", "dev"] })).toBe(
       "unavailable",
     );
     expect(read([{ serverId: "host", entries: undefined }])).toBe("unknown");
+    expect(read([])).toBe("unknown");
     // Removed: nothing binds it any more.
     expect(
       primaryConnectionAvailability({
         primary,
         definitions: [{ ...definition, removed: true }],
+        required: ["host"],
         sources: [{ serverId: "host", entries: ready }],
       }),
     ).toBe("unavailable");
