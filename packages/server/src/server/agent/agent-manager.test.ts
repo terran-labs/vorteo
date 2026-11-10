@@ -2985,6 +2985,46 @@ test("the blocked-work review skips a thread waiting for its usage limit to rese
   expect(blockedReviewDue({ ...base, config: { usageLimitHold: released } }, now)).toBe(true);
 });
 
+test("blocked-work reviews follow a three-step ladder that only a real prompt restarts", () => {
+  const at = (minutes: number) =>
+    new Date(Date.parse("2026-11-09T12:00:00.000Z") + minutes * 60_000);
+  const base = {
+    id: "ladder",
+    provider: "claude",
+    labels: {},
+    createdAt: at(-60).toISOString(),
+    lastActivityAt: at(0).toISOString(),
+    persistence: { provider: "claude", sessionId: "session" },
+    tasks: [{ id: "t", text: "Blocked", completed: false, status: "blocked" }],
+  } as unknown as StoredAgentRecord;
+  expect(blockedReviewDue(base, at(4).getTime())).toBe(false);
+  expect(blockedReviewDue(base, at(5).getTime())).toBe(true);
+  // Each review's own prompt lands seconds after its claim and must not reset the count.
+  const reviewed = (count: number, minutes: number): StoredAgentRecord => ({
+    ...base,
+    lastActivityAt: at(minutes).toISOString(),
+    lastBlockedReviewAt: at(minutes).toISOString(),
+    lastUserMessageAt: at(minutes - 0.5).toISOString(),
+    blockedReviewCount: count,
+  });
+  expect(blockedReviewDue(reviewed(1, 6), at(20).getTime())).toBe(false);
+  expect(blockedReviewDue(reviewed(1, 6), at(21).getTime())).toBe(true);
+  expect(blockedReviewDue(reviewed(2, 22), at(52).getTime())).toBe(true);
+  expect(isFinalBlockedReview(reviewed(2, 22))).toBe(true);
+  expect(blockedReviewDue(reviewed(3, 53), at(60 * 24).getTime())).toBe(false);
+  const prompted = { ...reviewed(3, 53), lastUserMessageAt: at(90).toISOString() };
+  expect(blockedReviewsUsed(prompted)).toBe(0);
+  expect(
+    blockedReviewDue({ ...prompted, lastActivityAt: at(91).toISOString() }, at(96).getTime()),
+  ).toBe(true);
+  // A blocker the owner is asked about wakes the thread when answered, so it needs no review.
+  const asked = {
+    ...base,
+    questions: [{ id: "q", status: "open", blocks: ["t"] }],
+  } as unknown as StoredAgentRecord;
+  expect(blockedReviewDue(asked, at(60).getTime())).toBe(false);
+});
+
 test("a usage limit holds a standalone thread for its reset without pausing it", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "paseo-usage-limit-hold-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
@@ -15075,7 +15115,11 @@ import { createAgentQueueDelivery } from "../message-queue/agent-delivery.js";
 
 import { BlockedTaskReviewService } from "./task-checklist/review-service.js";
 
-import { blockedReviewDue } from "./task-checklist/blocked-review.js";
+import {
+  blockedReviewDue,
+  blockedReviewsUsed,
+  isFinalBlockedReview,
+} from "./task-checklist/blocked-review.js";
 
 import { MessageQueueService } from "../message-queue/service.js";
 

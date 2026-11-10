@@ -1136,9 +1136,9 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   {
     id: "system.overview.blockedWorkReview",
     pane: "system.overview",
-    label: "Review blocked work hourly",
+    label: "Review blocked work",
     labelKey: "settings.host.agents.blockedWorkReview.title",
-    hint: "Off by default. Each review reloads the thread's whole conversation.",
+    hint: "Off by default. Up to three short reviews after a thread stops.",
     keywords: ["blocked", "stuck", "usage", "weekly limit", "tokens", "review"],
     scope: environment,
   },

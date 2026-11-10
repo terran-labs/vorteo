@@ -2984,9 +2984,9 @@ export const fr: TranslationResources = {
           info: "Arrête le processus de l’agent tout en conservant sa conversation. Envoyez un message pour la reprendre.\n\nLe travail en cours, les notifications en attente et les vérifications de sécurité du fournisseur empêchent le nettoyage.",
         },
         blockedWorkReview: {
-          title: "Revoir le travail bloqué toutes les heures",
-          hint: "Désactivé par défaut. Chaque revue recharge toute la conversation du fil et peut consommer une grande partie de votre forfait.",
-          info: "Toutes les heures, les fils inactifs ayant une tâche ou un objectif bloqué reçoivent un message pour revérifier leurs blocages et continuer. Chaque message reprend toute la conversation : quelques fils bloqués peuvent consommer une grande part de la limite hebdomadaire du fournisseur.\n\nLes fils qui attendent la réinitialisation d'une limite d'utilisation reprennent séparément.",
+          title: "Revoir le travail bloqué",
+          hint: "Désactivé par défaut. Jusqu'à trois courtes revues après l'arrêt d'un fil, puis il attend un message.",
+          info: "Quand un fil s'arrête avec une tâche ou un objectif bloqué, il reçoit jusqu'à trois messages, environ 5, 15 et 30 minutes plus tard, pour revérifier ses blocages et continuer. Ensuite, les revues s'arrêtent jusqu'à ce que quelqu'un envoie un message au fil.\n\nChaque revue reprend la conversation du fil. Les courts intervalles réutilisent le cache de prompts du fournisseur et coûtent donc bien moins qu'une reprise à froid, mais de nombreux fils bloqués finissent par peser.\n\nLes blocages en attente d'une question ouverte sont ignorés ; votre réponse réveille le fil.",
         },
       },
       workspaces: {

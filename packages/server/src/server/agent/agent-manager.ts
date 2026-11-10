@@ -3,7 +3,9 @@ import type { HeldRestart } from "@getpaseo/protocol/messages";
 import {
   blockedReviewDue,
   hasReviewableBlockedWork,
+  isFinalBlockedReview,
   BLOCKED_REVIEW_PROMPT,
+  FINAL_BLOCKED_REVIEW_NOTE,
 } from "./task-checklist/blocked-review.js";
 import { JournalError } from "./journal/model.js";
 import {
@@ -1967,7 +1969,10 @@ export class AgentManager {
           if (!(await registry.claimBlockedReview(agentId, this.now()))) return null;
           if (!eligible() || !queueAllowsStart()) return null;
           // No await between the last admission check and synchronous run reservation.
-          return this.streamAgent(agentId, BLOCKED_REVIEW_PROMPT, {
+          const prompt = isFinalBlockedReview(record)
+            ? BLOCKED_REVIEW_PROMPT + FINAL_BLOCKED_REVIEW_NOTE
+            : BLOCKED_REVIEW_PROMPT;
+          return this.streamAgent(agentId, prompt, {
             origin: "agent",
           });
         });
