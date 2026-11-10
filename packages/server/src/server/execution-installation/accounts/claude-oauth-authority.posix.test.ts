@@ -121,6 +121,14 @@ it("adopts any new sign-in, drops a token it already held and defers near expiry
   const late = NOW + 9 * HOUR - CLAUDE_ADOPTION_MARGIN_MS + 1;
   await expect(adoptClaudeGrant({ ...custody, now: late })).resolves.toBe("deferred");
   expect((await store.read(agentDir))?.claudeAiOauth).toEqual(grant(4, NOW + 9 * HOUR));
+
+  // An unknown token whose access already expired is a leftover older than the remembered
+  // digests, not a sign-in: the live authority's access replaces it instead of deferring forever.
+  await store.write(agentDir, { claudeAiOauth: grant(5, NOW - HOUR) });
+  await expect(adoptClaudeGrant({ ...custody, now: NOW })).resolves.toBe("stripped");
+  expect((await store.read(authorityDir))?.claudeAiOauth).toEqual(grant(3, NOW + 2 * HOUR));
+  expect(agentBytes(agentDir)).toContain("synthetic-access-3");
+  expect(agentBytes(agentDir)).not.toContain("synthetic-refresh");
 });
 
 it("never moves a grant while an agent CLI holds its refresh lock", async () => {

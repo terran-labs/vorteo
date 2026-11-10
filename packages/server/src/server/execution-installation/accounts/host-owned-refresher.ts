@@ -189,6 +189,13 @@ export interface HostRefresherPorts<G extends HostGrant, P> {
 const RECHECK_MS = 5 * 60_000;
 /** First retry delay after a failed refresh; it doubles up to RECHECK_MS. */
 const REFRESH_RETRY_MS = 60_000;
+/**
+ * Retry cadence for a failed Host-use refresh in the token's last minutes. With custody the
+ * coordinator is the only renewer, so it keeps trying on every tick instead of backing off.
+ */
+const LEAD_RETRY_MS = 30_000;
+/** A wall-clock gap this long between reconciles means the computer slept. */
+const WAKE_GAP_MS = 2 * 60_000;
 /** First retry delay for an undelivered rotation; it doubles up to RECHECK_MS. */
 const DELIVERY_RETRY_MS = 30_000;
 
@@ -205,6 +212,9 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
   private recoveries = new Map<string, Promise<void>>();
   private reconciliation: Promise<void> | null = null;
   private persistenceFailed = false;
+  private lastReconcileAt: number | null = null;
+  /** The latest reconcile followed a sleep: retry waits are skipped so renewal runs at once. */
+  private woke = false;
 
   constructor(
     private readonly ports: HostRefresherPorts<G, P>,
@@ -263,7 +273,11 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
       needsSignIn: record.signedIn && record.hostGrant === "missing",
       // The token expired while refresh kept failing. Retries continue and a temporary outage is
       // still not revocation, but the owner must see it instead of a silent stall.
-      refreshStalled: present && !unexpired && record.refreshFailures > 0,
+      // A grant without an expiry cannot be judged fresh, so failures alone mark it stalled.
+      refreshStalled:
+        present &&
+        record.refreshFailures > 0 &&
+        (record.expiresAt === null || record.expiresAt <= this.ports.now()),
       identity: record.identity,
       expiresAt: record.expiresAt,
       refresh: record.refresh,
@@ -311,6 +325,13 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
 
   reconcile(): Promise<void> {
     if (this.reconciliation) return this.reconciliation;
+    // Timers do not run while a laptop sleeps, and the token can expire meanwhile.
+    const now = this.ports.now();
+    this.woke =
+      this.adapter.refreshForHost === true &&
+      this.lastReconcileAt !== null &&
+      now - this.lastReconcileAt > WAKE_GAP_MS;
+    this.lastReconcileAt = now;
     const task = Promise.all(
       this.records.map((record) =>
         this.enqueue(record.definitionId, () => this.reconcileRecord(record.definitionId)).catch(
@@ -690,7 +711,7 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
 
   private isDue(next: HostRefreshRecord, now: number): boolean {
     if (this.adapter.refreshForHost && next.refreshFailures > 0 && next.refresh !== null)
-      return now - next.refresh.at >= backoff(REFRESH_RETRY_MS, next.refreshFailures);
+      return now - next.refresh.at >= this.retryWait(next, now);
     if (
       this.adapter.refreshForHost &&
       next.expiresAt !== null &&
@@ -721,9 +742,19 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
       ? next.targets.some((target) => !target.excluded)
       : reachable;
     if (!hostEligible && !devEligible) return false;
-    const wait = backoff(REFRESH_RETRY_MS, next.refreshFailures);
-    if (next.refresh !== null && now - next.refresh.at < wait) return false;
+    if (next.refresh !== null && now - next.refresh.at < this.retryWait(next, now)) return false;
     return this.adapter.needsRefresh(grant, now);
+  }
+
+  /** How long a failed refresh waits before the next attempt. */
+  private retryWait(next: HostRefreshRecord, now: number): number {
+    if (!this.adapter.refreshForHost) return backoff(REFRESH_RETRY_MS, next.refreshFailures);
+    if (this.woke) return 0;
+    const inLead =
+      next.expiresAt !== null &&
+      next.expiresAt > now &&
+      next.expiresAt - now <= this.adapter.leadMs;
+    return inLead ? LEAD_RETRY_MS : backoff(REFRESH_RETRY_MS, next.refreshFailures);
   }
 
   /** A changed projection, including a withdrawal, takes the next rotation slot. */

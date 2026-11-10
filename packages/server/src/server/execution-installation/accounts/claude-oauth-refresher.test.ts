@@ -294,7 +294,7 @@ it("re-delivers under a new rotation after a policy change", async () => {
   expect(refresher.status("one").environments).toEqual([{ serverId: "dev", status: "ready" }]);
 });
 
-it("records a failed refresh and retries it after a minute", async () => {
+it("records a failed refresh and retries every 30 seconds in the token's last minutes", async () => {
   const h = harness();
   const refresher = h.create();
   await refresher.connected("one", null);
@@ -303,10 +303,11 @@ it("records a failed refresh and retries it after a minute", async () => {
   h.advance(57 * MINUTE);
   await refresher.reconcile();
   expect(refresher.status("one").refresh).toMatchObject({ outcome: "failed" });
-  h.advance(30_000);
+  h.advance(20_000);
   await refresher.reconcile();
   expect(h.refresh).toHaveBeenCalledTimes(1);
-  h.advance(31_000);
+  // The coordinator is the only renewer, so it does not back off before expiry.
+  h.advance(10_000);
   await refresher.reconcile();
   expect(h.refresh).toHaveBeenCalledTimes(2);
   expect(refresher.status("one").refresh).toMatchObject({ outcome: "refreshed" });
@@ -334,7 +335,8 @@ it("keeps an expired grant recoverable through a prolonged outage without asking
   expect(refresher.status("one")).toMatchObject({ needsSignIn: false, refreshStalled: false });
   await tick(refresher, h, 240);
   expect(h.refresh.mock.calls.length).toBeGreaterThan(3);
-  expect(h.refresh.mock.calls.length).toBeLessThanOrEqual(27);
+  // About eight 30-second retries before expiry, then a five-minute backoff.
+  expect(h.refresh.mock.calls.length).toBeLessThanOrEqual(35);
   expect(h.deliveries).toHaveLength(1);
   // Expired: still not revocation, but the owner sees it rather than a silent stall.
   expect(refresher.status("one")).toMatchObject({
@@ -366,6 +368,56 @@ it("keeps an expired grant recoverable through a prolonged outage without asking
     refreshStalled: false,
     environments: [{ serverId: "dev", status: "ready" }],
   });
+});
+
+it("renews at once after the computer sleeps, without waiting out a retry backoff", async () => {
+  const h = harness();
+  const refresher = h.create();
+  await refresher.connected("one", null);
+  await refresher.reconcile();
+  h.refresh.mockRejectedValue(new Error("offline"));
+  h.advance(61 * MINUTE);
+  await refresher.reconcile();
+  h.advance(MINUTE);
+  await refresher.reconcile();
+  h.advance(2 * MINUTE);
+  await refresher.reconcile();
+  h.advance(30_000);
+  await refresher.reconcile();
+  // Three failures after expiry: the next attempt would wait until four minutes after the last.
+  expect(h.refresh).toHaveBeenCalledTimes(3);
+  h.refresh.mockImplementation(async () => {
+    h.setGrant({
+      ...h.grant()!,
+      accessToken: "synthetic-access-woke",
+      expiresAt: h.now() + 60 * MINUTE,
+    });
+  });
+  // The laptop sleeps for two and a half minutes; the first tick after waking renews.
+  h.advance(150_000);
+  await refresher.reconcile();
+  expect(h.refresh).toHaveBeenCalledTimes(4);
+  expect(refresher.status("one")).toMatchObject({ refreshStalled: false, needsSignIn: false });
+});
+
+it("never reports a grant without an expiry as connected once its refresh fails", async () => {
+  const h = harness();
+  const refresher = h.create();
+  h.setGrant({ ...h.grant()!, expiresAt: null });
+  await refresher.connected("one", null);
+  await refresher.reconcile();
+  expect(refresher.status("one").refreshStalled).toBe(false);
+  // A refresh that leaves no expiry cannot count as renewed.
+  h.setGrant({ ...h.grant()!, expiresAt: h.now() + MINUTE });
+  h.refresh.mockImplementationOnce(async () => {
+    h.setGrant({ ...h.grant()!, expiresAt: null });
+  });
+  h.advance(5 * MINUTE);
+  await refresher.reconcile();
+  // Claude cannot project access without an expiry, so this already asks for sign-in; other
+  // providers' grants report refreshStalled. Either way the app shows Reconnect.
+  const status = refresher.status("one");
+  expect(status.needsSignIn || status.refreshStalled).toBe(true);
 });
 
 it("delivers a saved rotation even when the CLI subsequently fails", async () => {
@@ -611,7 +663,9 @@ it("missed expiry preserves an existing failed refresh retry deadline", async ()
     refreshFailures: 3,
   });
   expect(h.diagnostics()[0]?.missedExpiry).toBe(h.grant()!.expiresAt);
-  h.advance(3 * MINUTE - 1);
+  // Regular ticks, so the refresher does not read the wait as a sleep.
+  await tick(refresher, h, 5);
+  h.advance(30_000 - 1);
   await refresher.reconcile();
   expect(h.refresh).toHaveBeenCalledTimes(3);
   h.advance(1);

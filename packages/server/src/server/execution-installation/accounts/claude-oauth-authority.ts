@@ -394,9 +394,14 @@ export async function adoptClaudeGrant(input: ClaudeCustodyInput): Promise<Claud
       if (!hasRefreshToken(found)) return "none";
       const held = oauthOf(await input.store.read(input.authorityDir));
       const retired = await readRetired(input.authorityDir);
-      const adopt =
+      const unknown =
         found.refreshToken !== held?.refreshToken &&
         !retired.includes(tokenDigest(found.refreshToken));
+      // A new sign-in carries fresh access. An unknown token whose access already expired, beside
+      // a live authority grant, is a leftover older than the remembered digests: strip it rather
+      // than wait for it forever.
+      const stale = unknown && hasRefreshToken(held) && expiryOf(found) <= input.now;
+      const adopt = unknown && !stale;
       if (adopt && expiryOf(found) - input.now < CLAUDE_ADOPTION_MARGIN_MS) return "deferred";
       // Without a live authority grant there is no access to project in place of the token.
       if (!adopt && !hasRefreshToken(held)) return "deferred";
