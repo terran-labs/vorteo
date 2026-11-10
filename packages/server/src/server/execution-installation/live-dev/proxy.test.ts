@@ -10,6 +10,8 @@ import type { ExecutionInstallation } from "@getpaseo/protocol/execution-install
 import { INJECTED_BODY_HTML } from "../../web-ui.js";
 import { createLiveDevMiddleware } from "./proxy.js";
 import { changeLiveDevMode, readLiveDevMode, LiveDevStateError } from "./state.js";
+import { resolveTarget } from "./service.js";
+import type { InstallationConfig } from "../config.js";
 
 const servers: http.Server[] = [];
 afterEach(async () => {
@@ -182,4 +184,23 @@ test("a stale mode change is refused and an unreadable record never reads as liv
   } finally {
     await rm(stateDir, { recursive: true, force: true });
   }
+});
+
+test("live dev uses the .ts.net address whether it is canonical or the recovery origin", () => {
+  const base = {
+    stateDir: "/state",
+    deployment: { hostReleaseLink: "/host/current", sourceDirectory: "/host/source" },
+  };
+  const tsnet = "https://machine.tail123.ts.net:44444";
+  const custom = "https://vorteo.example.com";
+  const resolve = (origins: { public: string; recoveryOrigin?: string }) =>
+    resolveTarget({
+      ...base,
+      public: { origin: origins.public },
+      recoveryOrigin: origins.recoveryOrigin,
+    } as unknown as InstallationConfig);
+  expect(resolve({ public: tsnet, recoveryOrigin: custom })).toMatchObject({ origin: tsnet });
+  // A custom-domain canonical address keeps its .ts.net address as the recovery origin.
+  expect(resolve({ public: custom, recoveryOrigin: tsnet })).toMatchObject({ origin: tsnet });
+  expect(typeof resolve({ public: custom })).toBe("string");
 });

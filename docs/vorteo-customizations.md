@@ -358,6 +358,8 @@ Maintenance review (2026-11-05): System offers tracked Dev repair through the Ho
 
 Maintenance review (2026-11-05): live tweak by Calm spinner: Sidebar spinners are quieter: they match the row's muted text and hourglass and spin at a third of the old speed, and hovering a row no longer brightens it.
 
+Maintenance review (2026-11-09): live development now starts on installations whose canonical address is a custom domain. The dev server uses whichever configured origin is .ts.net, and the other address forwards to it. Coordinator change, not yet installed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-09): Lab now includes live development. The installation type is the only switch: Lab serves the live checkout with hot reload and allows lab self-updates, Stable serves the published interface. The Delivery mode toggle became a read-only Live development status; the old route translates to a type change. Coordinator change, not yet installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-05): live tweak by Live version suffix: Live dev mode documentation describes the sidebar's v<version>+N suffix and the live-dev revision command.
