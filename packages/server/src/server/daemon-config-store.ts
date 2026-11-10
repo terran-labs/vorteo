@@ -870,12 +870,6 @@ export class DaemonConfigStore {
   }
 
   /**
-   * Reads the installation's settings authority for the current local settings. Account sync
-   * and provider refreshes write local settings while the read is in flight, which would make
-   * the answer stale; the read then repeats against the new settings instead of failing a
-   * sign-in the owner cannot retry meaningfully. Persistent churn still fails.
-   */
-  /**
    * Re-reads whether the coordinator owns the primary connection, so a daemon that moved back
    * to an older coordinator stops waiting for a choice it can never receive. A failed read keeps
    * the last known answer.
@@ -893,6 +887,12 @@ export class DaemonConfigStore {
     this.applyPatch({}, admission);
   }
 
+  /**
+   * Reads the installation's settings authority for the current local settings. Account sync
+   * and provider refreshes write local settings while the read is in flight, which would make
+   * the answer stale; the read then repeats against the new settings instead of failing a
+   * sign-in the owner cannot retry meaningfully. Persistent churn still fails.
+   */
   public async readInstallationSettingsAuthority(): Promise<InstallationSettingsAdmission | null> {
     for (let attempt = 1; ; attempt += 1) {
       const before = this.current;
