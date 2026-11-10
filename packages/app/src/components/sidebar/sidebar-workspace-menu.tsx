@@ -35,7 +35,7 @@ import {
 import { isWeb } from "@/constants/platform";
 import { router } from "expo-router";
 import { useInstalledPlugins } from "@/plugins/registry";
-import { buildPluginSurfaceRoute } from "@/plugins/routes";
+import { projectFactoryOverviewRoute } from "@/screens/factory/routes";
 import {
   useFactoryMembership,
   selectFactoryMembership,
@@ -491,11 +491,9 @@ function FactoryWorkspaceMenuActions({
       });
   }, [instructionRole, serverId, roleWorkspace]);
   const plugins = useInstalledPlugins();
+  // The Factory overview is a built-in screen; the host's Factory plugin serves its data.
   const hasOverview = plugins.some(
-    (plugin) =>
-      plugin.serverId === serverId &&
-      plugin.id === "factory" &&
-      plugin.surfaces.some((contribution) => contribution.id === "overview"),
+    (plugin) => plugin.serverId === serverId && plugin.id === "factory",
   );
   const openFactory = useCallback(() => {
     if (!serverId || !workspaceId || !membership || !hasOverview) return;
@@ -505,16 +503,7 @@ function FactoryWorkspaceMenuActions({
       current.projectId !== membership.projectId
     )
       return;
-    router.navigate(
-      buildPluginSurfaceRoute(
-        serverId,
-        "factory",
-        { kind: "surface", id: "overview" },
-        {
-          projectId: membership.projectId,
-        },
-      ),
-    );
+    router.navigate(projectFactoryOverviewRoute(serverId, membership.projectId));
   }, [serverId, workspaceId, membership, hasOverview]);
   return (
     <>

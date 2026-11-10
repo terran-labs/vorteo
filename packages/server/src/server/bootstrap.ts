@@ -301,26 +301,7 @@ import {
 } from "./hub/relationship-remote.js";
 import { DaemonExecutions } from "./hub/daemon-executions.js";
 import { PluginService } from "./plugins/index.js";
-import {
-  NativeFactoryObservationService,
-  createNativeFactoryObservationResolver,
-} from "./factory/observation-service.js";
-import { attachFactoryControllerObservation } from "./factory/attach-controller-observation.js";
-import {
-  createNativeFactoryInstallStartup,
-  createNativeFactoryInstallerResolver,
-  type NativeFactoryInstaller,
-} from "./factory/native-install-startup.js";
-import { NativeFactorySetupService } from "./factory/setup-service.js";
-import { createFactoryCoordinatorBinder } from "./factory/create-coordinator-binder.js";
-import { createFactoryStageNativeRuntime } from "./factory/governed-stage-native.js";
-import {
-  captureFactoryWorkerProfile,
-  readFactoryConfiguredProfiles,
-} from "./factory/capture-worker-profile.js";
-import { createFactoryScheduleInspection } from "./factory/native-schedule-inspection.js";
-import { createFactoryPrepaidPolicyApplication } from "./factory/apply-prepaid-policy.js";
-import { createFactoryControllerObservationSource } from "./factory/create-controller-observation-source.js";
+
 import { BuiltinPluginLoader } from "./plugins/builtin/index.js";
 import { ManagedPluginSources } from "./plugins/managed-source.js";
 
@@ -814,15 +795,8 @@ export async function createPaseoDaemon(
     persisted: loadPersistedConfig(config.paseoHome),
     logger,
   });
-  let resolveFactoryObservation: () => NativeFactoryObservationService | null = () => null;
-  let factorySetupService: NativeFactorySetupService | null = null;
   let projectFactoryService: ProjectFactoryService | null = null;
-  let resolveFactoryInstaller: () => NativeFactoryInstaller | null = () => null;
   const pluginRuntime: PluginService = new PluginService(logger, daemonConfigStore, daemonVersion, {
-    factoryObservation: () => resolveFactoryObservation(),
-    factorySetup: () => factorySetupService,
-    factoryInstallation: () => (resolveFactoryInstaller() ? factorySetupService : null),
-    factoryControls: () => factorySetupService,
     factoryProject: () => projectFactoryService,
     usageAgents: {
       hasAgent: (id) => agentManager.getAgent(id) !== null,
@@ -1113,11 +1087,6 @@ export async function createPaseoDaemon(
     path.join(config.paseoHome, "projects", "projects.json"),
     logger,
   );
-  factorySetupService = new NativeFactorySetupService({
-    serverId,
-    projects: projectRegistry,
-    installer: () => resolveFactoryInstaller(),
-  });
   const archiveScheduleStore = new ScheduleStore(path.join(config.paseoHome, "schedules"), logger);
   const assertArchiveAllowed = async (workspaceId: string): Promise<void> => {
     const workspace = await archiveWorkspaceRegistry.get(workspaceId);
@@ -1732,60 +1701,11 @@ export async function createPaseoDaemon(
     config.paseoHome,
   );
   const governorStore = new QuotaGovernorStore(governorDirectory);
-  const loadedBuiltin = pluginRuntime.isBuiltinPluginLoaded;
-  const canDispatchFactory = () =>
-    pluginRuntime.isBuiltinPluginLoaded === loadedBuiltin &&
-    loadedBuiltin.call(pluginRuntime, "factory");
-  const factoryScheduleInspection = createFactoryScheduleInspection();
   const governedRuntime = await dependencies.createGovernedScheduleRuntime?.({
     hostId: serverId,
     paseoHome: config.paseoHome,
     store: governorStore,
     governorDirectory,
-    factoryStage: createFactoryStageNativeRuntime(governorStore),
-    factoryProfiles: {
-      capture: (input) =>
-        captureFactoryWorkerProfile({
-          ...input,
-          readSettings: () => daemonConfigStore.get(),
-        }),
-    },
-    factorySchedules: { inspect: factoryScheduleInspection.inspect },
-    factoryAccountPolicy: {
-      create: ({ providerId, ...input }) =>
-        createFactoryPrepaidPolicyApplication({
-          ...input,
-          store: governorStore,
-          readObservation: () => governorObservations.read(providerId),
-          nowMs: Date.now,
-        }),
-    },
-    factoryInstallation: {
-      create: createNativeFactoryInstallStartup({
-        serverId,
-        projects: projectRegistry,
-        workspaces: workspaceRegistry,
-        agents: agentStorage,
-        readProfiles: (provider, profileId) =>
-          readFactoryConfiguredProfiles(daemonConfigStore.get(), provider, profileId),
-        store: governorStore,
-        canDispatch: canDispatchFactory,
-      }),
-    },
-    factoryCoordinators: {
-      bind: createFactoryCoordinatorBinder({
-        serverId,
-        projects: projectRegistry,
-        workspaces: workspaceRegistry,
-        agents: agentStorage,
-        readProfiles: (provider, profileId) =>
-          readFactoryConfiguredProfiles(daemonConfigStore.get(), provider, profileId),
-      }),
-    },
-    factoryObservation: {
-      createSource: createFactoryControllerObservationSource,
-      attach: attachFactoryControllerObservation,
-    },
     readObservation: (provider) => governorObservations.read(provider),
     captureClient: (provider) =>
       agentManager.captureGovernedExecutionClient(
@@ -1796,17 +1716,6 @@ export async function createPaseoDaemon(
           workspaces: workspaceRegistry,
         }),
       ),
-  });
-  resolveFactoryInstaller = createNativeFactoryInstallerResolver(
-    governedRuntime,
-    serverId,
-    canDispatchFactory,
-  );
-  resolveFactoryObservation = createNativeFactoryObservationResolver(governedRuntime, {
-    serverId,
-    projects: projectRegistry,
-    workspaces: workspaceRegistry,
-    agents: agentStorage,
   });
   const quotaPreflight = new QuotaSchedulePreflight({
     readObservation: (provider) =>
@@ -1877,7 +1786,6 @@ export async function createPaseoDaemon(
     logger: logger.child({ module: "idle-session-release" }),
   });
   await scheduleService.start();
-  factoryScheduleInspection.activate(scheduleService);
 
   agentManager.setAgentArchivedCallback(async (agentId) => {
     try {
@@ -2492,7 +2400,6 @@ export async function createPaseoDaemon(
       blockedTaskReviews.stop();
       usageLimitResumes.stop();
       idleSessionRelease.stop();
-      factoryScheduleInspection.revoke();
       localCredential = null;
       await deleteLocalCredential(config.paseoHome);
       unsubscribePluginProviders();
@@ -2544,7 +2451,6 @@ export async function createPaseoDaemon(
     optimizerAgent = { stop: () => {} };
     blockedTaskReviews.stop();
     usageLimitResumes.stop();
-    factoryScheduleInspection.revoke();
     quotaPreflight.stop();
     // Close ingress before waiting for metadata processes or other teardown.
     wsServer?.prepareForShutdown();

@@ -29,11 +29,7 @@ import {
   type PersistedWorkspaceKind,
 } from "./workspace-registry-model.js";
 import type { UntrustedWorkspaceSource } from "./workspace-automation-gate.js";
-import {
-  FactoryInstallCheckpointSchema,
-  FactoryInstallCheckpointError,
-  type FactoryInstallCheckpoint,
-} from "./factory/install-checkpoint.js";
+import { FactoryInstallCheckpointSchema } from "./workspace-registry-factory-compat.js";
 
 const UntrustedWorkspaceSourceSchema = z.object({
   kind: z.literal("change_request"),
@@ -90,6 +86,7 @@ const PersistedProjectRecordSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   archivedAt: z.string().nullable(),
+  // Compatibility: retain old controller metadata when reading and rewriting older records.
   factoryInstallation: FactoryInstallCheckpointSchema.optional(),
   // Daemon startup seeding owns this marker; ordinary requests cannot set or clear it.
   systemProject: ProjectSystemMarkerSchema.optional(),
@@ -240,7 +237,7 @@ export interface WorkspaceRegistry {
   /**
    * Per-project Factory only: sets or clears a role workspace's membership. The Factory
    * state file owns role identity, so this skips the coordinator role reservation that
-   * `bindFactoryMember` enforces for the retained controller.
+   * `bindFactoryMember` enforces for generic membership authorities.
    */
   setProjectFactoryMember?(
     workspaceId: string,
@@ -670,94 +667,6 @@ export class FileBackedProjectRegistry
     });
     if (project) await this.notifyMutation({ kind: "upsert", projectId, project });
     return project;
-  }
-
-  /** Startup-owned installer only; any retained checkpoint blocks a new attempt. */
-  async beginFactoryInstallation(input: {
-    expected: PersistedProjectRecord;
-    checkpoint: FactoryInstallCheckpoint;
-    assertCurrent(): void;
-  }): Promise<PersistedProjectRecord> {
-    if (input.checkpoint.stage !== "binding" || input.expected.factoryInstallation)
-      throw new Error("Factory installation already requires reconciliation.");
-    return this.persistFactoryInstallation(input);
-  }
-
-  async completeFactoryInstallation(input: {
-    expected: PersistedProjectRecord;
-    checkpoint: FactoryInstallCheckpoint;
-    assertCurrent(): void;
-  }): Promise<PersistedProjectRecord> {
-    const pending = input.expected.factoryInstallation;
-    const sameBinding =
-      pending?.stage === "binding" &&
-      input.checkpoint.stage === "attached" &&
-      isDeepStrictEqual(
-        { ...pending, stage: "attached", revision: input.checkpoint.revision },
-        input.checkpoint,
-      );
-    if (!sameBinding || pending?.revision === input.checkpoint.revision)
-      throw new Error("Factory installation completion does not match its retained attempt.");
-    return this.persistFactoryInstallation(input);
-  }
-
-  private async persistFactoryInstallation(input: {
-    expected: PersistedProjectRecord;
-    checkpoint: FactoryInstallCheckpoint;
-    assertCurrent(): void;
-  }): Promise<PersistedProjectRecord> {
-    const expected = structuredClone(input.expected);
-    const checkpoint = FactoryInstallCheckpointSchema.parse(input.checkpoint);
-    const assertOwner = input.assertCurrent;
-    function assertCurrent(): void {
-      assertOwner();
-      if (
-        input.assertCurrent !== assertOwner ||
-        !isDeepStrictEqual(input.expected, expected) ||
-        !isDeepStrictEqual(input.checkpoint, checkpoint)
-      )
-        throw new Error("Factory installation invocation changed before persistence.");
-    }
-    if (
-      checkpoint.projectId !== expected.projectId ||
-      expected.archivedAt ||
-      expected.kind !== "git"
-    )
-      throw new Error("Factory installation project identity is unavailable.");
-    let writeAttempted = false;
-    try {
-      const next = await this.mutateCache(
-        (records) => {
-          assertCurrent();
-          const current = records.get(expected.projectId);
-          if (!isDeepStrictEqual(current, expected))
-            throw new Error("Factory installation project changed before persistence.");
-          const updated = PersistedProjectRecordSchema.parse({
-            ...expected,
-            factoryInstallation: checkpoint,
-          });
-          records.set(expected.projectId, updated);
-          return updated;
-        },
-        {
-          beforeWrite: async () => {
-            assertCurrent();
-            writeAttempted = true;
-          },
-          afterCommit: assertCurrent,
-        },
-      );
-      await this.notifyMutation({ kind: "upsert", projectId: next.projectId, project: next });
-      return structuredClone(next);
-    } catch (error) {
-      if (!writeAttempted) throw error;
-      this.freezeMutationsUntilRestart();
-      throw new FactoryInstallCheckpointError(
-        checkpoint.operationId,
-        checkpoint.installationId,
-        error,
-      );
-    }
   }
 
   private async notifyMutation(mutation: {

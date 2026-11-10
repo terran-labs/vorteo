@@ -45,17 +45,18 @@ const emptyUsageRuntime = {
 >;
 
 it.each([
-  { builtin: true, loaded: true, method: "factory.snapshot", delegated: true },
-  { builtin: true, loaded: true, method: "activity.receipts", delegated: true },
-  { builtin: false, loaded: true, method: "factory.snapshot", delegated: false },
-  { builtin: true, loaded: false, method: "factory.snapshot", delegated: false },
+  { builtin: true, loaded: true, method: "factory.project.get", delegated: true },
+  { builtin: true, loaded: true, method: "factory.project.instructions.get", delegated: true },
+  { builtin: false, loaded: true, method: "factory.project.get", delegated: false },
+  { builtin: true, loaded: false, method: "factory.project.get", delegated: false },
   { builtin: true, loaded: true, method: "factory.command", delegated: false },
-  { builtin: true, loaded: true, configured: true, method: "factory.snapshot", delegated: false },
-  { builtin: true, loaded: true, method: "factory.install", delegated: true },
-  { builtin: true, loaded: false, method: "factory.install", delegated: false },
-  { builtin: false, loaded: true, method: "factory.install", delegated: false },
-  { builtin: true, loaded: true, configured: true, method: "factory.install", delegated: false },
-  { builtin: true, loaded: true, noInstaller: true, method: "factory.install", delegated: false },
+  {
+    builtin: true,
+    loaded: true,
+    configured: true,
+    method: "factory.project.get",
+    delegated: false,
+  },
 ])(
   "Factory delegation requires exact loaded builtin and supported native method %j",
   async (scenario) => {
@@ -63,15 +64,6 @@ it.each([
     roots.push(home);
     const fallback = vi.fn(async () => "plugin-result");
     const native = vi.fn(async () => "native-result");
-    const nativeInstall = vi.fn(async () => ({
-      schemaVersion: 1 as const,
-      serverId: "server",
-      projectId: "project",
-      operationId: "attempt",
-      outcome: "refused" as const,
-      code: "unavailable" as const,
-      reason: "Test native refusal",
-    }));
     const runtime: TestPluginRuntime = {
       ...emptyUsageRuntime,
       catalog: () => (scenario.loaded ? [{ id: "factory", clientBundle: "bundle" }] : []),
@@ -95,22 +87,18 @@ it.each([
       {
         runtime,
         builtinPlugins: new BuiltinPluginLoader(home, scenario.builtin ? ["factory"] : []),
-        factoryObservation: () => ({ invoke: native }),
-        factoryInstallation: () => ("noInstaller" in scenario ? null : { install: nativeInstall }),
+        factoryProject: () => ({ invoke: native }),
       },
     );
     const input = { projectId: "project" };
     const result = await service.invokePluginRpc("factory", scenario.method, input);
-    if (scenario.delegated && scenario.method === "factory.install")
-      expect(result).toMatchObject({ outcome: "refused", reason: "Test native refusal" });
-    else expect(result).toBe(scenario.delegated ? "native-result" : "plugin-result");
-    const selected = scenario.method === "factory.install" ? nativeInstall : native;
-    expect(scenario.delegated ? selected : fallback).toHaveBeenCalledTimes(1);
-    expect(scenario.delegated ? fallback : selected).not.toHaveBeenCalled();
+    expect(result).toBe(scenario.delegated ? "native-result" : "plugin-result");
+    expect(scenario.delegated ? native : fallback).toHaveBeenCalledTimes(1);
+    expect(scenario.delegated ? fallback : native).not.toHaveBeenCalled();
   },
 );
 
-it("Factory delegation rejects native observation failure without plugin fallback", async () => {
+it("Factory delegation rejects native project failure without plugin fallback", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "factory-failed-delegate-"));
   roots.push(home);
   const fallback = vi.fn(async () => "plugin-result");
@@ -136,7 +124,7 @@ it("Factory delegation rejects native observation failure without plugin fallbac
     {
       runtime,
       builtinPlugins: new BuiltinPluginLoader(home, ["factory"]),
-      factoryObservation: () => ({
+      factoryProject: () => ({
         invoke: async () => {
           throw new Error("Owner changed");
         },
@@ -144,7 +132,7 @@ it("Factory delegation rejects native observation failure without plugin fallbac
     },
   );
   await expect(
-    service.invokePluginRpc("factory", "factory.snapshot", { projectId: "project" }),
+    service.invokePluginRpc("factory", "factory.project.get", { projectId: "project" }),
   ).rejects.toThrow("Owner changed");
   expect(fallback).not.toHaveBeenCalled();
 });
@@ -178,13 +166,13 @@ it("does not delegate after builtin failure when persisted Factory configuration
     {
       runtime,
       builtinPlugins: new BuiltinPluginLoader(home, ["factory"]),
-      factoryObservation: () => ({ invoke: native }),
+      factoryProject: () => ({ invoke: native }),
     },
   );
   await service.start();
   expect(runtime.startBuiltinPlugin).toHaveBeenCalledTimes(1);
   expect(runtime.startPlugin).toHaveBeenCalledTimes(1);
-  expect(await service.invokePluginRpc("factory", "factory.snapshot", {})).toBe(
+  expect(await service.invokePluginRpc("factory", "factory.project.get", {})).toBe(
     "configured-result",
   );
   expect(native).not.toHaveBeenCalled();

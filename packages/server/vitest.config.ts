@@ -17,14 +17,6 @@ export default defineConfig({
     alias: {
       "@server": path.resolve(__dirname, "./src"),
       // Server tests run without building the server, so these self-imports cannot reach dist.
-      "@getpaseo/server/factory-contracts": path.resolve(
-        __dirname,
-        "../../plugins/factory/shared/contracts.ts",
-      ),
-      "@getpaseo/server/factory-operations": path.resolve(
-        __dirname,
-        "../../plugins/factory/shared/operations.ts",
-      ),
       "@getpaseo/server/factory-project": path.resolve(
         __dirname,
         "../../plugins/factory/shared/project.ts",

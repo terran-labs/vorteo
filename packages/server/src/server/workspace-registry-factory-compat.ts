@@ -1,3 +1,4 @@
+// Retained only to read older project records; the retired controller no longer writes checkpoints.
 import { z } from "zod";
 
 const identity = z
@@ -27,18 +28,3 @@ export const FactoryInstallCheckpointSchema = z
         message: "Factory coordinators must have distinct identities",
       });
   });
-
-export type FactoryInstallCheckpoint = z.infer<typeof FactoryInstallCheckpointSchema>;
-
-export class FactoryInstallCheckpointError extends Error {
-  readonly reconciliationRequired = true;
-
-  constructor(
-    readonly operationId: string,
-    readonly installationId: string,
-    cause: unknown,
-  ) {
-    super("Factory installation persistence requires reconciliation before retry.", { cause });
-    this.name = "FactoryInstallCheckpointError";
-  }
-}
