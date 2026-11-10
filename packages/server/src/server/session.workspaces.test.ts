@@ -4376,7 +4376,7 @@ test.each([null, { key: "other", name: "Other project" }])(
         updatedAt: "2026-10-08T00:00:00.000Z",
       }),
       factoryMembership: {
-        installationId: "installation",
+        installationId: "project-factory:factory-project",
         projectId: "factory-project",
         serverId: "factory-host",
         role: "worker",
@@ -4431,7 +4431,7 @@ test.each([null, "2026-10-08T00:00:00.000Z"])(
       protected: false,
       projectMembership: { key: "some-other-project", name: "Assigned" },
       factoryMembership: {
-        installationId: "installation",
+        installationId: `project-factory:${project.projectId}`,
         projectId: project.projectId,
         serverId: "factory-host",
         role: "builds",

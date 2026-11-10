@@ -1,4 +1,5 @@
 import {
+  activeFactoryMembership,
   assertWorkspaceUnprotected,
   pinSystemProjectFields,
   pinSystemWorkspaceFields,
@@ -85,7 +86,8 @@ const PersistedProjectRecordSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   archivedAt: z.string().nullable(),
-  // Compatibility: preserve inert controller metadata without validating its retired format.
+  // COMPAT(retiredFactoryCheckpoint): added 2026-11-10; preserve inert controller metadata
+  // without validating its retired format. Drop after 2027-05-10 with a one-time cleanup.
   factoryInstallation: z.unknown().optional(),
   // Daemon startup seeding owns this marker; ordinary requests cannot set or clear it.
   systemProject: ProjectSystemMarkerSchema.optional(),
@@ -610,8 +612,7 @@ export class FileBackedProjectRegistry
 
   /**
    * Installation project synchronization only: assigns and pins the project's shared key.
-   * This is the one write that may change the System project's key; Factory projects keep
-   * theirs, because their bindings compare it.
+   * This is the one write that may change the System project's key.
    */
   async setSynchronizedKey(
     projectId: string,
@@ -623,8 +624,6 @@ export class FileBackedProjectRegistry
       const current = records.get(projectId);
       if (!current) return null;
       if (current.projectKey === key && current.projectKeyPinned) return structuredClone(current);
-      if (current.factoryInstallation && current.projectKey !== key)
-        throw new Error("Factory projects keep the key their binding compares.");
       const previous = current.projectKey;
       const previousProjectKeys =
         previous && previous !== key
@@ -714,7 +713,7 @@ export class FileBackedWorkspaceRegistry
     const parsed = PersistedWorkspaceRecordSchema.parse(record);
     await this.mutateCache((records) => {
       const existing = records.get(parsed.workspaceId);
-      if (existing?.factoryMembership)
+      if (existing && activeFactoryMembership(existing))
         throw new Error("Factory workspaces cannot join the system project.");
       records.set(parsed.workspaceId, parsed);
     });
@@ -742,10 +741,8 @@ export class FileBackedWorkspaceRegistry
           throw new Error("Factory workspace belongs to another project.");
         if (current.systemMembership)
           throw new Error("System workspaces cannot join a Factory installation.");
-        if (
-          current.factoryMembership &&
-          current.factoryMembership.installationId !== installationId
-        )
+        const active = activeFactoryMembership(current);
+        if (active && active.installationId !== installationId)
           throw new Error("Workspace already belongs to a different Factory relationship.");
         if (isDeepStrictEqual(current.factoryMembership, parsed)) return current;
         const bound = {
