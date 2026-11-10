@@ -2400,25 +2400,55 @@ export function InstallationRestartBanner({
   placement?: "floating" | "sidebar" | "rail";
 }) {
   const model = useInstallationSystemModel();
-  return model && placement !== "floating" ? <SystemAttentionNoticeBody model={model} /> : null;
+  return model && placement !== "floating" ? (
+    <SystemAttentionNoticeBody model={model} rail={placement === "rail"} />
+  ) : null;
 }
 export const SystemAttentionNotice = InstallationRestartBanner;
-function SystemAttentionNoticeBody({ model }: { model: InstallationPanelModel }) {
+/** The collapsed sidebar shows only the warning icon; its message moves to the tooltip. */
+function SystemAttentionNoticeBody({
+  model,
+  rail,
+}: {
+  model: InstallationPanelModel;
+  rail: boolean;
+}) {
   const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
   const router = useRouter();
   const open = useCallback(() => router.push("/settings/system"), [router]);
   const client = useInstallationOwnerClient();
   const upgrades = useInstallationUpgradeStatus(client);
   const count = systemAttentionCount(state, upgrades.data?.upgrades);
-  return count ? (
+  if (!count) return null;
+  const label = `System needs attention (${count})`;
+  if (rail)
+    return (
+      <Tooltip delayDuration={300}>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            onPress={open}
+            leftIcon={TriangleAlert}
+            accessibilityLabel={label}
+            testID="installation-restart-banner"
+          />
+        </TooltipTrigger>
+        <TooltipContent side="right" align="center" offset={8}>
+          <Text style={styles.systemNoticeText}>{label}</Text>
+        </TooltipContent>
+      </Tooltip>
+    );
+  return (
     <Button
       variant="ghost"
       onPress={open}
       leftIcon={TriangleAlert}
       textStyle={styles.systemNoticeText}
       testID="installation-restart-banner"
-    >{`System needs attention (${count})`}</Button>
-  ) : null;
+    >
+      {label}
+    </Button>
+  );
 }
 
 const styles = StyleSheet.create((theme) => ({
