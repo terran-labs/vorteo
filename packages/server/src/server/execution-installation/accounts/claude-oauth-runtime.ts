@@ -28,7 +28,7 @@ import {
   authorityOwner,
   claudeAuthorityDir,
   claudeAuthorityDisabledFile,
-  claudeAuthorityEnabledFile,
+  claudeAuthorityOffFile,
   platformCredentialStore,
   projectClaudeHostAccess,
   rememberAuthorityToken,
@@ -80,9 +80,9 @@ interface RuntimeOverrides {
  * Created only when the installation config sets `claudeHostRefresh: true`. It stores no token in
  * its state: the grant lives in CLI storage for a coordinator-only authority directory, the Host
  * account directory and Dev receive access-only projections, and the coordinator is the only
- * refresher, for accounts opted in with `claude-oauth/authority-enabled/<hash>`. See
- * claude-oauth-authority.ts. Removing the marker, or creating `claude-oauth/authority-disabled`,
- * returns the login to its account directory on the next read (rollback).
+ * refresher. Custody is the default; `claude-oauth/authority-off/<hash>` turns it off for one
+ * account and `claude-oauth/authority-disabled` for all, returning each login to its account
+ * directory on the next read (rollback). See claude-oauth-authority.ts.
  */
 export function createClaudeOAuthRuntime(
   config: InstallationConfig,
@@ -215,14 +215,14 @@ export function createClaudeOAuthRuntime(
       () => true,
       () => false,
     );
-  /** Opt-in per account; the global kill switch wins. See claude-oauth-authority.ts. */
+  /** On by default; the global kill switch or the account's off marker turns it off. */
   async function custodyEnabled(definitionId: string): Promise<boolean> {
     if (await present(claudeAuthorityDisabledFile(config.stateDir))) return false;
-    return present(claudeAuthorityEnabledFile(config.stateDir, definitionId));
+    return !(await present(claudeAuthorityOffFile(config.stateDir, definitionId)));
   }
 
   /**
-   * Without custody this is the 601 path: the account directory's own grant, after returning any
+   * With custody turned off this is the 601 path: the account directory's own grant, after returning any
    * authority grant to it. With custody it adopts any new refresh token from the account
    * directory, reads the authority and projects its access back. Account directory and Host
    * daemon failures are logged and never stop the authority's own renewal.

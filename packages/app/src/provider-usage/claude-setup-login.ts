@@ -33,6 +33,8 @@ const FullReadSchema = z.object({
   connection: z.object({
     signedIn: z.boolean(),
     needsSignIn: z.boolean(),
+    /** The token expired while the coordinator's refresh kept failing. Older coordinators omit it. */
+    refreshStalled: z.boolean().optional(),
     identity: z.object({ email: z.string().nullable() }).nullable(),
     environments: z.array(EnvironmentStatusSchema),
   }),
@@ -79,12 +81,14 @@ export async function claudeSetupRequest(
     return { login: ProviderLoginStateSchema.parse(result), connection: undefined };
   if (!full) return ReadSchema.parse(result);
   const { login, connection } = FullReadSchema.parse(result);
+  // An expired token the coordinator cannot renew needs the owner as much as a lost grant does.
+  const needsSignIn = connection.needsSignIn || connection.refreshStalled === true;
   return {
     login,
     connection: {
-      connected: connection.signedIn && !connection.needsSignIn,
+      connected: connection.signedIn && !needsSignIn,
       environments: connection.environments,
-      needsSignIn: connection.needsSignIn,
+      needsSignIn,
       ...(connection.identity?.email ? { accountLabel: connection.identity.email } : {}),
     },
   };

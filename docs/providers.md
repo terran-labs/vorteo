@@ -66,20 +66,31 @@ Exclusion, removal and sign-out withdraw Dev's token. Sign-out also runs the CLI
 
 Every Host agent of an account runs with the same `CLAUDE_CONFIG_DIR`. If that directory holds the rotating refresh token, a long-running agent CLI can refresh it while the coordinator does too, and a replayed refresh token can revoke the whole sign-in. Coordinator custody removes the second refresher: the coordinator keeps the grant in its own authority directory, `claude-oauth/authority/<hash>` in its state directory, which no agent is launched with. Its refresh request runs there, and nothing else refreshes.
 
-Custody is off by default and opt-in per account. An account is in custody while the coordinator state directory holds an empty `claude-oauth/authority-enabled/<hash>` file, where `<hash>` is the first 32 hex digits of SHA-256 over the definition ID (the same name as its authority directory). Without the file the account behaves exactly as before. The refresh log below applies to every account.
+Custody is on by default for every full sign-in account. Existing accounts move into it on their next Host read, with no new sign-in. Two escape hatches turn it off, both empty files in the coordinator's state directory:
+
+- **One account:** `claude-oauth/authority-off/<hash>`, where `<hash>` is the first 32 hex digits of SHA-256 over the definition ID, the same name as the account's authority directory.
+- **Every account:** `claude-oauth/authority-disabled`. It wins over everything else.
+
+Releases from 26.11.602 to the one before this default used opt-in `claude-oauth/authority-enabled/<hash>` files instead. Those files are no longer read and can be deleted. The refresh log below applies to every account.
 
 On each Host read of an account in custody, the coordinator first adopts any refresh token in the account directory that the authority has never held: the existing grant, a Vorteo sign-in or a `/login` inside an agent. It takes the CLI's refresh locks (`<dir>/.oauth_refresh.lock`, then `<realpath of dir>.lock`) and its `.storage-write.lock`, and waits while a CLI holds them. It writes the grant to the authority (on macOS, the authority directory's own Keychain item), verifies it, writes an access-only copy to the account's `.credentials.json`, and only then deletes the account's Keychain item. Agents always have a credential. The authority records a one-way digest of every refresh token it has held, so a copy of one found later is a leftover and is removed, never replayed. Adoption also waits while the token has less than 10 minutes left, in case an older CLI is refreshing it without those locks. Running it again changes nothing.
 
 After every read and refresh the coordinator copies the authority's current access, everything except the refresh token, into the account's `.credentials.json` under the storage lock, with the same `.vorteo-oauth` marker Dev uses. The macOS CLI reads that file only when the account has no Keychain item, re-stats it before each request and never saves a grant without a refresh token. If another save, such as MCP OAuth, recreates the Keychain item, the next read moves it back to the file. Usage reads the same file, and an expired copy reports a pending Host refresh. Failures in the account directory or the Host daemon are logged and never stop the authority's own refresh. If the authority's grant is gone or unusable, the account asks for sign-in again instead of trusting the access copy. Sign-out runs in the account's refresh queue and deletes the authority as well. Removing an account deletes its authority on the next reconcile.
 
-The coordinator log records each refresh attempt for every full sign-in account with its definition ID, outcome, old and new expiry, duration and failure reason. It warns when a Host read finds the access token inside the four-minute lead window without a successful refresh. Neither contains a token.
+The coordinator log records each refresh attempt for every full sign-in account with its definition ID, outcome, old and new expiry, duration and failure reason. When the token did not advance, it also records what storage held afterwards (`credential`: present, missing, unreadable or no expiry) and, when the CLI request itself failed, how it failed (`command`: its category, exit code, signal or system error code). It warns when a Host read finds the access token inside the four-minute lead window without a successful refresh. None of these contains a token or any CLI output.
 
-To return an account to its own directory, delete its `authority-enabled` file; an empty `claude-oauth/authority-disabled` file does this for every account. On the next read the coordinator takes the same locks, writes the authority's full grant back to the account's own storage (its Keychain item on macOS) unless a newer sign-in is already there, and deletes the authority. Until then the authority keeps refreshing. Before installing a release older than custody:
+In custody the coordinator is the only process that can renew an account. A failed refresh is retried after one, two and four minutes, then every five minutes. If the access token expires while refresh keeps failing, the connection status reports `refreshStalled`, and Settings shows the account as needing sign-in with Reconnect on its row. Retries continue, and the status clears by itself if one succeeds, because a temporary outage is not revocation.
 
-1. Delete every `authority-enabled` file, or create `authority-disabled`.
-2. Wait for the coordinator log line "Claude sign-in returned to its account directory" for each account in custody.
-3. Confirm each account directory holds a refresh token again. Check its presence only; never print it.
-4. Then downgrade. An older release cannot refresh a grant that is still in custody, and its agents would lose their sign-in when their access expires.
+Turning custody off for an account, with either file, returns its grant on the next read. The coordinator takes the same locks, writes the authority's full grant back to the account's own storage (its Keychain item on macOS) unless a newer sign-in is already there, and deletes the authority. Until then the authority keeps refreshing. Removing the file moves the account back into custody on a later read.
+
+Downgrading the coordinator:
+
+- **To 26.11.602 or later, but before custody became the default:** no preparation is needed. That release finds no `authority-enabled` file, treats every account as opted out and returns each grant to its account directory on its first read.
+- **To a release before 26.11.602,** which has no custody code at all:
+  1. Create `claude-oauth/authority-disabled`.
+  2. Wait for the coordinator log line "Claude sign-in returned to its account directory" for each account.
+  3. Confirm each account directory holds a refresh token again. Check its presence only; never print it.
+  4. Then downgrade. Such a release cannot refresh a grant still in custody, and its agents would lose their sign-in when their access expires.
 
 Unverified until the owner's live sign-in check: a real refresh in the authority directory and its access reaching running Host agents before expiry, the granted scopes, the access-token lifetime, and how quickly a running Dev CLI picks up a rewritten file. The refresh request's flags, the lock and file names, and the store order come from static analysis of Claude Code 2.1.284, rechecked against 2.1.318. Recheck them when upgrading Claude.
 

@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { HostRefreshDiagnosticsSchema } from "./host-owned-refresher.js";
+import {
+  classifyRefreshFailure,
+  HostRefreshDiagnosticsSchema,
+  type HostRefreshEvent,
+} from "./host-owned-refresher.js";
 import { expect, it, vi } from "vitest";
 import { ClaudeOAuthRefresher, type ClaudeOAuthPolicy } from "./claude-oauth-refresher.js";
 import {
@@ -76,6 +80,7 @@ function harness(options: { excluded?: boolean } = {}) {
   let readable = true;
   const deliveries: ClaudeOAuthProjectionDelivery[] = [];
   const persisted: string[] = [];
+  const events: HostRefreshEvent[] = [];
   // Option A: the official CLI rotates the token under its own locks.
   const refresh = vi.fn(async () => {
     tokens += 1;
@@ -107,6 +112,7 @@ function harness(options: { excluded?: boolean } = {}) {
         return grant;
       },
       refresh,
+      log: (event) => events.push(structuredClone(event)),
       deliver: async (delivery): Promise<ClaudeOAuthProjectionReceipt> => {
         if (!online) throw new Error("Dev is offline");
         deliveries.push(structuredClone(delivery));
@@ -124,6 +130,9 @@ function harness(options: { excluded?: boolean } = {}) {
     create,
     deliveries,
     persisted,
+    events,
+    /** The last refresh event, whose diagnostics explain a failure without any output text. */
+    lastRefresh: () => events.findLast((event) => event.kind === "refresh"),
     diagnostics: () => HostRefreshDiagnosticsSchema.parse(diagnostics),
     setDiagnostics: (value: unknown) => {
       diagnostics = value;
@@ -315,18 +324,31 @@ it("keeps an expired grant recoverable through a prolonged outage without asking
   const refresher = h.create();
   await refresher.connected("one", null);
   await refresher.reconcile();
+  // The CLI exits nonzero; its output, which can echo account details, is never recorded.
   h.refresh.mockImplementation(async () => {
-    throw new Error("network down");
+    throw Object.assign(new Error("network down for owner@example.com"), { code: 1 });
   });
   h.advance(56 * MINUTE);
+  await refresher.reconcile();
+  // Still before expiry: retries are running, nothing for the owner yet.
+  expect(refresher.status("one")).toMatchObject({ needsSignIn: false, refreshStalled: false });
   await tick(refresher, h, 240);
   expect(h.refresh.mock.calls.length).toBeGreaterThan(3);
   expect(h.refresh.mock.calls.length).toBeLessThanOrEqual(27);
   expect(h.deliveries).toHaveLength(1);
+  // Expired: still not revocation, but the owner sees it rather than a silent stall.
   expect(refresher.status("one")).toMatchObject({
     needsSignIn: false,
+    refreshStalled: true,
     environments: [{ serverId: "dev", status: "pending" }],
   });
+  expect(h.lastRefresh()).toMatchObject({
+    outcome: "failed",
+    reason: "refresh_failed",
+    credential: "present",
+    command: { category: "exit", exitCode: 1 },
+  });
+  expect(JSON.stringify(h.events)).not.toContain("owner@example.com");
   h.refresh.mockImplementation(async () => {
     h.setGrant({
       ...h.grant()!,
@@ -341,6 +363,7 @@ it("keeps an expired grant recoverable through a prolonged outage without asking
   });
   expect(refresher.status("one")).toMatchObject({
     needsSignIn: false,
+    refreshStalled: false,
     environments: [{ serverId: "dev", status: "ready" }],
   });
 });
@@ -373,6 +396,10 @@ it("preserves the last grant on an unreadable refresh result, but withdraws a co
   await refresher.reconcile();
   expect(h.deliveries).toHaveLength(1);
   expect(refresher.status("one").needsSignIn).toBe(false);
+  expect(h.lastRefresh()).toMatchObject({
+    credential: "unreadable",
+    command: { category: "other" },
+  });
   h.setReadable(true);
   h.refresh.mockImplementation(async () => {
     h.setGrant(null);
@@ -382,6 +409,25 @@ it("preserves the last grant on an unreadable refresh result, but withdraws a co
   await refresher.reconcile();
   expect(h.deliveries.at(-1)).toMatchObject({ access: null });
   expect(refresher.status("one").needsSignIn).toBe(true);
+  expect(h.lastRefresh()).toMatchObject({ credential: "missing" });
+});
+
+it("classifies a failed refresh command from its process result only", () => {
+  expect(classifyRefreshFailure({ killed: true, signal: "SIGTERM", code: null })).toEqual({
+    category: "timeout",
+    signal: "SIGTERM",
+  });
+  expect(classifyRefreshFailure({ signal: "SIGKILL" })).toEqual({
+    category: "signal",
+    signal: "SIGKILL",
+  });
+  expect(classifyRefreshFailure({ code: "ENOENT" })).toEqual({
+    category: "spawn",
+    errorCode: "ENOENT",
+  });
+  // Anything that is not a recognizable code is dropped rather than echoed.
+  expect(classifyRefreshFailure({ code: "token=secret" })).toEqual({ category: "other" });
+  expect(classifyRefreshFailure("Error: secret output")).toEqual({ category: "other" });
 });
 
 it("renews before expiry for an unreachable Dev while backing off delivery", async () => {

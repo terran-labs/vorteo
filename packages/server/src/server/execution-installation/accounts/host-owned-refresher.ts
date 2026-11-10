@@ -108,6 +108,41 @@ export interface HostGrantAdapter<G extends HostGrant, P> {
   error(): Error;
 }
 
+/**
+ * How the refresh command failed, from the process result only: never its output or message,
+ * which can echo credentials or account details.
+ */
+export interface HostRefreshCommandFailure {
+  category: "exit" | "timeout" | "signal" | "spawn" | "other";
+  exitCode?: number;
+  signal?: string;
+  /** A system error code such as ENOENT, only when it is a short uppercase identifier. */
+  errorCode?: string;
+}
+
+/** What the Host storage held right after a refresh that did not renew the token. */
+export type HostCredentialState = "present" | "missing" | "unreadable" | "no_expiry";
+
+function credentialState(grant: HostGrant | null): HostCredentialState {
+  if (grant === null) return "missing";
+  return grant.expiresAt === null ? "no_expiry" : "present";
+}
+
+export function classifyRefreshFailure(error: unknown): HostRefreshCommandFailure {
+  if (typeof error !== "object" || error === null) return { category: "other" };
+  const { code, killed, signal } = error as { code?: unknown; killed?: unknown; signal?: unknown };
+  const signalName = typeof signal === "string" && /^SIG[A-Z0-9]+$/.test(signal) ? signal : null;
+  if (typeof code === "number" && Number.isSafeInteger(code))
+    return { category: "exit", exitCode: code };
+  // execFile marks a child it stopped at its timeout as killed.
+  if (killed === true)
+    return { category: "timeout", ...(signalName ? { signal: signalName } : {}) };
+  if (signalName) return { category: "signal", signal: signalName };
+  if (typeof code === "string" && /^[A-Z][A-Z0-9_]{1,40}$/.test(code))
+    return { category: "spawn", errorCode: code };
+  return { category: "other" };
+}
+
 /** Secret-free evidence for the coordinator log: identifiers, outcomes and expiry only. */
 export type HostRefreshEvent =
   | {
@@ -118,6 +153,10 @@ export type HostRefreshEvent =
       expiresAt: number | null;
       durationMs: number;
       reason?: "refresh_failed" | "refresh_unchanged" | "storage_unreadable";
+      /** Set when the token did not advance: what storage held afterwards. */
+      credential?: HostCredentialState;
+      /** Set when the refresh command itself failed. */
+      command?: HostRefreshCommandFailure;
     }
   | {
       /** The access token is inside the lead window and no refresh has renewed it. */
@@ -222,6 +261,9 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     return {
       signedIn: record.signedIn,
       needsSignIn: record.signedIn && record.hostGrant === "missing",
+      // The token expired while refresh kept failing. Retries continue and a temporary outage is
+      // still not revocation, but the owner must see it instead of a silent stall.
+      refreshStalled: present && !unexpired && record.refreshFailures > 0,
       identity: record.identity,
       expiresAt: record.expiresAt,
       refresh: record.refresh,
@@ -421,11 +463,13 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     const before = grant?.expiresAt ?? null;
     const started = Date.now();
     let failed = false;
+    let command: HostRefreshCommandFailure | undefined;
     try {
       await this.ports.refresh(definitionId);
-    } catch {
+    } catch (error) {
       // The CLI can save a rotated token before the model request fails or times out.
       failed = true;
+      command = classifyRefreshFailure(error);
     }
     let after: G | null;
     try {
@@ -441,6 +485,8 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
         expiresAt: null,
         durationMs: Date.now() - started,
         reason,
+        credential: "unreadable",
+        ...(command ? { command } : {}),
       });
       return grant;
     }
@@ -459,7 +505,13 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
       previousExpiresAt: before,
       expiresAt: after?.expiresAt ?? null,
       durationMs: Date.now() - started,
-      ...(advanced ? {} : { reason: next.failureReason }),
+      ...(advanced
+        ? {}
+        : {
+            reason: next.failureReason,
+            credential: credentialState(after),
+            ...(command ? { command } : {}),
+          }),
     });
     return after;
   }

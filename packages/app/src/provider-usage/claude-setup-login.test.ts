@@ -126,7 +126,7 @@ test("full sign-in accounts use the Host refresh routes and report the Host acco
   });
 });
 
-test("a lost Host grant reads as not connected so the owner signs in again", async () => {
+test("a lost Host grant, or an expired one that stopped renewing, reads as needing sign-in", async () => {
   settings([
     {
       ...account,
@@ -140,6 +140,21 @@ test("a lost Host grant reads as not connected so the owner signs in again", asy
   request.mockResolvedValueOnce({
     login: { status: "idle" },
     connection: { signedIn: true, needsSignIn: true, identity: null, environments: [] },
+  });
+  expect((await claudeSetupRequest("host", "claude-one", "read")).connection).toMatchObject({
+    connected: false,
+    needsSignIn: true,
+  });
+  // The grant is still there, but its token expired while every refresh failed.
+  request.mockResolvedValueOnce({
+    login: { status: "idle" },
+    connection: {
+      signedIn: true,
+      needsSignIn: false,
+      refreshStalled: true,
+      identity: null,
+      environments: [],
+    },
   });
   expect((await claudeSetupRequest("host", "claude-one", "read")).connection).toMatchObject({
     connected: false,

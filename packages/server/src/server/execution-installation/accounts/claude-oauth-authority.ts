@@ -68,11 +68,12 @@ export function claudeAuthorityDir(stateDir: string, definitionId: string): stri
 }
 
 /**
- * Custody is opt-in per account: adoption runs only while this marker exists. Removing it returns
- * the account's grant to its own directory on the next read.
+ * Custody is on by default. This per-account marker turns it off for one account: the next read
+ * returns that account's grant to its own directory. The `authority-enabled` markers that opted
+ * accounts in before custody became the default are no longer read.
  */
-export function claudeAuthorityEnabledFile(stateDir: string, definitionId: string): string {
-  return join(stateDir, "claude-oauth", "authority-enabled", authorityName(definitionId));
+export function claudeAuthorityOffFile(stateDir: string, definitionId: string): string {
+  return join(stateDir, "claude-oauth", "authority-off", authorityName(definitionId));
 }
 
 /** Global kill switch: when present, every login returns to its account directory. */
