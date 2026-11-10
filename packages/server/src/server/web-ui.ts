@@ -433,7 +433,7 @@ function injectConnectionHint(
   };
   let assignment = `window.__PASEO_INITIAL_DAEMON_CONNECTION__=${serializeInlineScriptJson(hint)}`;
   if (installation) {
-    // COMPAT(recoveryOriginGlobal): added in 26.11.903; move into the descriptor once the
+    // COMPAT(recoveryOriginGlobal): added after 26.11.902; move into the descriptor once the
     // interface floor validates an optional descriptor recoveryOrigin.
     const { recoveryOrigin, ...descriptor } = installation;
     assignment = `window.__VORTEO_EXECUTION_INSTALLATION__=${serializeInlineScriptJson(descriptor)}`;

@@ -1084,7 +1084,7 @@
       });
       // The coordinator names its private recovery origin only on the canonical origin; older
       // coordinators omit it, and the link stays hidden.
-      // COMPAT(recoveryOriginGlobal): added in 26.11.903; read the descriptor's recoveryOrigin
+      // COMPAT(recoveryOriginGlobal): added after 26.11.902; read the descriptor's recoveryOrigin
       // instead once the interface floor validates it.
       (function () {
         var recovery = window.__VORTEO_RECOVERY_ORIGIN__;
