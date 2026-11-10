@@ -58,6 +58,37 @@ export function useFactoryHosts(): FactoryHost[] {
   );
 }
 
+/**
+ * Server ids whose daemon runs a Factory that is on or paused, from the same cached lists the
+ * overview reads. Reads once per stale period and never polls.
+ */
+export function useFactoryServerIds(enabled: boolean): ReadonlySet<string> {
+  const hosts = useFactoryHosts();
+  const lists = useFetchQueries(
+    hosts.map((host) => ({
+      dataShape: "value" as const,
+      queryKey: factoryListQueryKey(host.serverId),
+      staleTimeMs: POLL_MS,
+      enabled,
+      queryFn: () => boundedFactoryRead(() => loadFactoryList(host.invoke)),
+    })),
+    combineLists,
+  );
+  return useMemo(
+    () =>
+      new Set(
+        hosts
+          .filter((_host, index) =>
+            (lists[index]?.projects ?? []).some(
+              (project) => project.state === "on" || project.state === "paused",
+            ),
+          )
+          .map((host) => host.serverId),
+      ),
+    [hosts, lists],
+  );
+}
+
 function combineLists(results: { data?: ProjectFactoryList }[]) {
   return results.map((result) => result.data ?? null);
 }

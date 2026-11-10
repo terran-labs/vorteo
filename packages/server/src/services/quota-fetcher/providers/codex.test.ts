@@ -116,3 +116,25 @@ it.each([
     },
   ]);
 });
+
+it("never claims a native Codex home has no credentials, and accepts API-key sign-in", async () => {
+  const read = async (auth: unknown) => {
+    const home = await mkdtemp(join(tmpdir(), "paseo-codex-credentials-"));
+    homes.push(home);
+    if (auth !== undefined) await writeFile(join(home, "auth.json"), JSON.stringify(auth));
+    const fetch = async () => {
+      throw new Error("No usage request without a ChatGPT sign-in");
+    };
+    return new CodexQuotaProvider({
+      logger: pino({ level: "silent" }),
+      codexHome: home,
+      strictCodexHome: true,
+      fetch,
+    }).fetchUsage();
+  };
+  // An API key elsewhere may still authenticate, so neither reading proves a missing sign-in.
+  for (const usage of [await read(undefined), await read({ OPENAI_API_KEY: "sk", tokens: null })]) {
+    expect(usage.status).toBe("unavailable");
+    expect(usage.credentialsMissing).toBeUndefined();
+  }
+});

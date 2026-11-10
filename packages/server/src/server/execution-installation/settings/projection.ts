@@ -10,6 +10,7 @@ import {
   type InstallationSettings,
 } from "@getpaseo/protocol/installation-settings";
 import { composeEnvironmentSystemPrompt, readUserSystemPrompt } from "./instructions.js";
+import { localPrimaryConnection } from "./primary-connection.js";
 
 export class InstallationAccountBindingUnavailable extends Error {
   constructor(readonly reference: string) {
@@ -175,6 +176,15 @@ export function projectInstallationSettings(
     // Only daemons that keep a copy report the key; older ones would drop it on every pass.
     ...(localConfig.installationProjectPolicies !== undefined
       ? { installationProjectPolicies: localProjectPolicies(settings, serverId) }
+      : {}),
+    // Same capability rule: daemons that know the setting always report the key.
+    ...(localConfig.installationPrimaryConnection !== undefined
+      ? {
+          installationPrimaryConnection: localPrimaryConnection(settings, serverId),
+          // Tells the daemon this coordinator owns the choice, so it stops using the earlier
+          // first-usable launch rule. Older coordinators never send it.
+          installationPrimaryConnectionSupported: true,
+        }
       : {}),
     expectedInstallationResourceRevision: installationResourceRevision(localConfig),
     installationResourceBindings: {

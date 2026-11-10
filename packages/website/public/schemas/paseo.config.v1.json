@@ -235,6 +235,53 @@
             "additionalProperties": {}
           }
         },
+        "primaryConnection": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "profileId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": ["provider"],
+              "additionalProperties": {}
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "installationPrimaryConnection": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "profileId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": ["provider"],
+              "additionalProperties": {}
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "installationPrimaryConnectionSupported": {
+          "type": "boolean"
+        },
         "agentProfiles": {
           "type": "array",
           "items": {
