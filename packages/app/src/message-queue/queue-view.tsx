@@ -311,15 +311,19 @@ function QueueCountBadge({ control }: { control: MessageQueueControl }) {
   );
 }
 
+// Show the card only when its body renders something. Loading, and in-flight
+// commands such as send now, pause or delete against an emptied queue, have no
+// row of their own and would leave an empty card.
 function showSharedQueue(control: MessageQueueControl, goalErrorHandled: boolean): boolean {
   if (!control.visible || (!control.supported && !control.pending.length)) return false;
   const snapshot = control.snapshot;
   return Boolean(
     snapshot?.items.length ||
     (snapshot?.deliveryError && !(goalErrorHandled && isQueueGoalError(snapshot.deliveryError))) ||
-    control.pending.length ||
-    control.error ||
-    control.loading,
+    control.pending.some(
+      (record) => record.operation.kind === "enqueue" || !!record.error || !!record.dismissed,
+    ) ||
+    control.error,
   );
 }
 
@@ -393,6 +397,9 @@ function PendingRecovery({
   const keepCopy = useCallback(() => {
     void control.keepLocalCopy(record).catch(reportError);
   }, [control, record, reportError]);
+  const dismiss = useCallback(() => {
+    void control.dismissCommand(record).catch(reportError);
+  }, [control, record, reportError]);
   const removeCopy = useCallback(() => {
     void control.removeLocalCopy(record).catch(reportError);
   }, [control, record, reportError]);
@@ -426,9 +433,15 @@ function PendingRecovery({
         </Button>
       ) : null}
       <ReviewRejectedEdit record={record} control={control} />
-      {canKeepRejectedChange(record) ? (
+      {/* Commands such as pause or delete have no content worth keeping a copy of. */}
+      {canKeepRejectedChange(record) && record.operation.kind === "edit" ? (
         <Button variant="ghost" size="sm" style={styles.inlineAction} onPress={keepCopy}>
           Keep local copy and continue queue
+        </Button>
+      ) : null}
+      {canKeepRejectedChange(record) && record.operation.kind !== "edit" ? (
+        <Button variant="ghost" size="sm" style={styles.inlineAction} onPress={dismiss}>
+          Dismiss
         </Button>
       ) : null}
       {record.dismissed ? (

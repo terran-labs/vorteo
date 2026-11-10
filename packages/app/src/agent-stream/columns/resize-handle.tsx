@@ -10,13 +10,15 @@ import {
 } from "@/components/sidebar-resize-handle-layout";
 import { useHasFinePointer } from "@/hooks/use-fine-pointer";
 import { isWeb } from "@/constants/platform";
-import { resizeColumn, type ColumnWidths } from "./geometry";
+import { COLUMN_COMPOSER_INSET, resizeColumn, type ColumnWidths } from "./geometry";
 
 interface ColumnResizeHandleProps {
   column: keyof ColumnWidths;
   widths: ColumnWidths;
   containerWidth: number;
   standaloneText?: boolean;
+  /** Read-only threads have no message field, so the text handle stays on the column edge. */
+  hasComposer?: boolean;
   onPreview: (column: keyof ColumnWidths, width: number) => void;
   onCommit: (column: keyof ColumnWidths, width: number) => void;
 }
@@ -26,20 +28,20 @@ export function ColumnResizeHandle({
   widths,
   containerWidth,
   standaloneText,
+  hasComposer = false,
   onPreview,
   onCommit,
 }: ColumnResizeHandleProps) {
   const finePointer = useHasFinePointer();
-  // The shared web handle straddles its edge. Move only its overlay inward when
-  // the centered conversation exhausts the gutter, keeping the full target reachable.
-  const handleInset =
+  // The text handle follows the message field's right edge, which sits inside the column. On web
+  // the handle straddles its edge, so it also moves inward when the centered conversation
+  // exhausts the gutter, keeping the full target reachable.
+  const reachInset =
     isWeb && standaloneText && column === "text"
-      ? Math.max(
-          0,
-          (resolveSidebarResizeHandleGeometry(finePointer).width - (containerWidth - widths.text)) /
-            2,
-        )
+      ? (resolveSidebarResizeHandleGeometry(finePointer).width - (containerWidth - widths.text)) / 2
       : 0;
+  const handleInset =
+    column === "text" ? Math.max(hasComposer ? COLUMN_COMPOSER_INSET : 0, reachInset) : 0;
   const initial = useRef({ widths, pointerX: 0 });
   const [pressed, setPressed] = useState(false);
   const begin = useCallback(() => {

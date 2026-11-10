@@ -1,4 +1,5 @@
 import { FLOATING_PANEL_INSET } from "@/styles/floating-panel";
+import { COLUMN_COMPOSER_INSET } from "@/agent-stream/columns/geometry";
 import { StreamColumnWidthContext } from "@/agent-stream/columns/layout";
 
 import { ProfilePermissionWarning } from "@/agent-profiles/permission-warning";
@@ -2585,7 +2586,7 @@ const styles = StyleSheet.create((theme: Theme) => ({
     paddingBottom: FLOATING_PANEL_INSET,
   },
   narrowDesktopInputArea: { paddingLeft: 6, paddingRight: 8 },
-  columnInputArea: { paddingHorizontal: theme.spacing[2] },
+  columnInputArea: { paddingHorizontal: COLUMN_COMPOSER_INSET },
   columnInputContent: { maxWidth: "100%" },
   mobileQueueArea: {
     paddingHorizontal: MOBILE_COMPOSER_MARGIN,

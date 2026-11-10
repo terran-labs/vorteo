@@ -37,14 +37,18 @@ interface LiveDevTarget {
 }
 
 /** Why this installation cannot run live dev mode, or its paths when it can. */
-function resolveTarget(config: InstallationConfig): LiveDevTarget | string {
+export function resolveTarget(config: InstallationConfig): LiveDevTarget | string {
   const deployment = config.deployment;
   if (!deployment?.hostReleaseLink)
     return "Live dev mode needs a Host installed by the Vorteo installer.";
-  const origin = new URL(config.public.origin);
-  // The Expo patch admits only a private Tailscale HTTPS origin.
-  if (origin.protocol !== "https:" || !origin.hostname.endsWith(".ts.net"))
-    return "Live dev mode needs the installation's private .ts.net HTTPS address.";
+  // The Expo patch admits only a private Tailscale HTTPS origin. Either the canonical origin or
+  // the recovery origin can be it: an installation whose canonical address is a custom domain
+  // keeps its .ts.net address as the recovery origin, and the other one forwards as an alias.
+  const origin = [config.public.origin, config.recoveryOrigin]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => new URL(value))
+    .find((url) => url.protocol === "https:" && url.hostname.endsWith(".ts.net"));
+  if (!origin) return "Live dev mode needs the installation's private .ts.net HTTPS address.";
   return {
     paths: liveDevPaths(deployment.hostReleaseLink, config.stateDir),
     origin: origin.origin,
@@ -164,8 +168,8 @@ export function createLiveDev(options: LiveDevServiceOptions) {
       recordError = null;
     } catch (error) {
       record = null;
-      recordError = "The live dev mode record is unreadable.";
-      logger.error({ err: error }, "Live dev mode record is unreadable; serving static");
+      recordError = "The installation type record is unreadable.";
+      logger.error({ err: error }, "Installation type unreadable; serving static");
     }
     apply(record?.mode ?? "reliable");
   }
@@ -230,12 +234,15 @@ export function createLiveDev(options: LiveDevServiceOptions) {
   }
 
   /**
-   * `alias` serves the live interface on a second origin the coordinator answers, the custom
-   * domain, while the dev server keeps admitting only the canonical one.
+   * Serves the live interface on `served`, the canonical origin unless named. The dev server
+   * admits only the .ts.net origin, so any other address presents that host upstream.
    */
-  function middleware(installation: () => ExecutionInstallation, alias?: string): RequestHandler {
+  function middleware(installation: () => ExecutionInstallation, served?: string): RequestHandler {
+    const servedOrigin = new URL(served ?? config.public.origin).origin;
     return createLiveDevMiddleware({
-      ...(alias && typeof target !== "string" ? { upstreamHost: new URL(target.origin).host } : {}),
+      ...(typeof target !== "string" && servedOrigin !== target.origin
+        ? { upstreamHost: new URL(target.origin).host }
+        : {}),
       port: servingPort,
       ownerSession: (req) => options.ownerSession(req.headers.cookie),
       label: "Vorteo",
@@ -254,11 +261,14 @@ export function createLiveDev(options: LiveDevServiceOptions) {
     if (!isLiveDevSocketPath(pathname)) return false;
     const port = servingPort();
     const canonical = new URL(target.origin).host;
-    const alias = config.recoveryOrigin;
-    const viaAlias =
-      alias !== undefined &&
-      req.headers.host === new URL(alias).host &&
-      req.headers.origin === alias;
+    // The installation's other configured address: the custom domain, whichever role it has.
+    const aliases = [config.public.origin, config.recoveryOrigin]
+      .filter((value): value is string => Boolean(value))
+      .map((value) => new URL(value).origin)
+      .filter((value) => value !== target.origin);
+    const viaAlias = aliases.some(
+      (alias) => req.headers.host === new URL(alias).host && req.headers.origin === alias,
+    );
     if (
       port === null ||
       (!viaAlias && (req.headers.host !== canonical || req.headers.origin !== target.origin)) ||
@@ -277,7 +287,40 @@ export function createLiveDev(options: LiveDevServiceOptions) {
     return true;
   }
 
+  /**
+   * The installation type, changed through its own owner route, decides the mode, so a change
+   * there reaches the dev server on the next poll.
+   */
+  let reloading = false;
+  async function followInstallationType(): Promise<void> {
+    if (reloading) return;
+    reloading = true;
+    try {
+      const previous = record?.mode ?? null;
+      const before = recordError;
+      try {
+        record = await readLiveDevMode(config.stateDir);
+        recordError = null;
+      } catch (error) {
+        record = null;
+        recordError = "The installation type record is unreadable.";
+        if (before === null)
+          logger.error({ err: error }, "Installation type unreadable; serving static");
+      }
+      const mode = record?.mode ?? "reliable";
+      if (mode !== (previous ?? "reliable")) {
+        if (mode === "live" && preparation.state === "failed") preparation.state = "idle";
+        apply(mode);
+      }
+    } finally {
+      reloading = false;
+    }
+  }
+
   const timer = setInterval(() => {
+    // In the owner change chain, so a poll can never cache a reading older than a change.
+    const poll = changes.then(followInstallationType);
+    changes = poll.catch(() => undefined);
     if (record?.mode === "live") void supervisor?.checkRestartRequest();
   }, RESTART_REQUEST_POLL_MS);
   timer.unref();

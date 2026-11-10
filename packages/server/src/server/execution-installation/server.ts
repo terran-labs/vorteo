@@ -2615,7 +2615,15 @@ export function createInstallationServer(
     grant: delegationGrant,
     definitions: installationChangeDefinitions({
       name: installationName,
-      liveDev,
+      // Delivery mode changes write the installation type, so they share its serialization.
+      liveDev: {
+        ...liveDev,
+        change(input) {
+          const change = installationTypeChanges.then(() => liveDev.change(input));
+          installationTypeChanges = change.catch(() => undefined);
+          return change;
+        },
+      },
       installationType: {
         read: () => readInstallationType(config.stateDir),
         // Serialized with the owner's own changes, as in the owner route.
@@ -2795,7 +2803,10 @@ export function createInstallationServer(
     void liveDev.status().then((status) => res.json(status), next);
   });
   app.post("/api/installation/owner/live-dev/change", (req, res, next) => {
-    void liveDev.change(req.body).then((status) => res.json(status), next);
+    // The legacy delivery mode route writes the installation type, so it shares that queue.
+    const change = installationTypeChanges.then(() => liveDev.change(req.body));
+    installationTypeChanges = change.catch(() => undefined);
+    void change.then((status) => res.json(status), next);
   });
   const installationTypeStatus = async () => {
     const record = await reportedInstallationType(config.stateDir);
