@@ -100,6 +100,7 @@ export function bootEntrySwitchPinProblem(
   plan: BootEntrySwitchConfiguration,
   pins: FactoryCheckPins,
 ): string | null {
+  if (plan.expectBootForm === "launcher") return RETIRED_LAUNCHER;
   const stale = Object.entries(pins)
     .filter(([, sha]) => sha !== undefined && sha !== plan.factoryVerify.sha256)
     .map(([gate]) => gate);
@@ -245,6 +246,13 @@ async function assertSafeDirectories(
   }
 }
 
+/**
+ * The Factory launcher boot form started the retired controller runtime, which this release no
+ * longer ships. A switch back to it would break Dev's worker, so it is refused before any effect.
+ */
+export const RETIRED_LAUNCHER =
+  "the Factory launcher boot form was retired with the Factory controller; Dev boots only in the plain form";
+
 /** Read-only. Refuses before any effect unless the plan matches Dev exactly and Dev is healthy. */
 export async function bootEntrySwitchPreflight(
   plan: BootEntrySwitchConfiguration,
@@ -257,6 +265,7 @@ export async function bootEntrySwitchPreflight(
   };
   if (bootEntrySwitchPlanDigest(plan) !== expectedDigest)
     refuse("the reviewed plan is unavailable or changed");
+  if (plan.expectBootForm === "launcher") refuse(RETIRED_LAUNCHER);
   let state: ContainerState;
   try {
     state = await inspectDev(plan, run);

@@ -10,7 +10,6 @@ import {
   runSupervisorReplacement,
   supervisorPlanDigest,
 } from "./supervisor-maintenance.js";
-import { factoryRuntimePlanDigest, runFactoryRuntimePhase } from "./factory-runtime-adoption.js";
 import {
   hostLauncherPlanDigest,
   runHostLauncherUpdate,
@@ -499,41 +498,14 @@ export function createInstallationRestartExecutor(
   }
   return {
     restartHeld,
-    factoryRuntimePlan: () => factoryRuntimePlanDigest(config.container?.factoryRuntimeAdoption),
-    async adoptFactoryRuntime(job) {
-      assertReady("container-daemon");
-      if (config.container?.persistentRegistration)
-        throw new Error(
-          "Dev Factory adoption requires independently verified transition-phase readiness",
-        );
-      const plan = config.container?.factoryRuntimeAdoption;
-      const environment = config.public.environments.find((entry) => entry.kind === "container");
-      if (!plan || !environment || job.factoryRuntimePlanSha256 !== factoryRuntimePlanDigest(plan))
-        throw new Error("Factory adoption plan is unavailable or changed");
-      const before = await connectInstallationDaemon(config, "container");
-      let previousPid: number;
-      try {
-        previousPid = (await before.getDaemonStatus({ timeout: DAEMON_RESPONSE_TIMEOUT_MS })).pid;
-      } finally {
-        await before.close();
-      }
-      const phase = { plan, job, serverId: environment.serverId, previousPid };
-      assertReady("container-daemon");
-      await runFactoryRuntimePhase({ ...phase, phase: "stage", replacementPid: null });
-      // This is the existing tracked restart executor, after exact adoption approval.
-      // Once staging starts, failure retains this request; it never requeues or rolls state back.
-      await restart("container-daemon", false);
-      const after = await connectInstallationDaemon(config, "container");
-      let replacementPid: number;
-      try {
-        replacementPid = (await after.getDaemonStatus({ timeout: DAEMON_RESPONSE_TIMEOUT_MS })).pid;
-      } finally {
-        await after.close();
-      }
-      if (replacementPid === previousPid)
-        throw new Error("Factory adoption did not replace the worker; inspect retained selection");
-      await runFactoryRuntimePhase({ ...phase, phase: "verify", replacementPid });
-      return `Factory startup adoption verified on replacement Dev worker ${replacementPid}.`;
+    // Factory runtime adoption started the retired controller runtime, which this release no
+    // longer ships. A recorded adoption plan is never advertised, and a request is refused.
+    factoryRuntimePlan: () => undefined,
+    factoryRuntimeAdoptionRetired: true,
+    async adoptFactoryRuntime() {
+      throw new Error(
+        "Factory runtime adoption was retired with the Factory controller; Dev runs the plain supervisor. Nothing was changed.",
+      );
     },
     hostLauncherPlan: () => hostLauncherPlanDigest(hostLauncherTarget(config)),
     async updateHostLauncher(job) {

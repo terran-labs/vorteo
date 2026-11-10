@@ -331,3 +331,7 @@ describe("paseo factory project drain", () => {
     expect(invoke).toHaveBeenCalledWith("factory", "factory.project.resume_all", {});
   });
 });
+
+it("registers only per-project Factory commands", () => {
+  expect(createFactoryCommand().commands.map((command) => command.name())).toEqual(["project"]);
+});
