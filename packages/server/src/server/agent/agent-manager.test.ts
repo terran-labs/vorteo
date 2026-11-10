@@ -15962,10 +15962,20 @@ test("periodic review scan honors the hourly cooldown and stops without creating
       activeTurnId: null,
     });
     expect(blockedReviewDue(storage.getLoadedRecord(agent.id)!, now)).toBe(true);
+    // The host setting defaults to off; a disabled service must not prompt the thread.
+    await new BlockedTaskReviewService({
+      agentManager: manager,
+      agentStorage: storage,
+      logger,
+      enabled: () => false,
+      now: () => now,
+    }).tick();
+    expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBeUndefined();
     const reviews = new BlockedTaskReviewService({
       agentManager: manager,
       agentStorage: storage,
       logger,
+      enabled: () => true,
       now: () => now,
     });
     await reviews.tick();
@@ -16145,6 +16155,7 @@ test.each([
       agentManager: manager,
       agentStorage: storage,
       logger,
+      enabled: () => true,
       now: () => now,
     });
     let agentId: string | undefined;

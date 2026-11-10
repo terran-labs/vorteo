@@ -8,6 +8,8 @@ interface ReviewServiceOptions {
   agentManager: AgentManager;
   agentStorage: AgentStorage;
   logger: Logger;
+  /** Host setting; reviews are opt-in because each one resumes a whole provider session. */
+  enabled: () => boolean;
   now?: () => number;
 }
 
@@ -40,14 +42,20 @@ export class BlockedTaskReviewService {
   }
 
   async tick(): Promise<void> {
-    if (this.running || this.stopped || this.options.agentManager.isRestartDraining()) return;
+    if (this.running || this.stopped || !this.options.enabled()) return;
+    if (this.options.agentManager.isRestartDraining()) return;
     this.running = true;
     try {
       const records = await this.options.agentStorage.list();
       // Prompting an account that is known to be limited only produces another limit stop.
       const limited = new Map<string, boolean>();
       for (const record of records) {
-        if (this.stopped || this.options.agentManager.isRestartDraining()) return;
+        if (
+          this.stopped ||
+          !this.options.enabled() ||
+          this.options.agentManager.isRestartDraining()
+        )
+          return;
         const now = this.now();
         const attempted = this.attempts.get(record.id);
         const recentlyAttempted =

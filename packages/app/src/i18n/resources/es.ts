@@ -2980,6 +2980,11 @@ export const es: TranslationResources = {
           hint: "Libera memoria tras una hora de inactividad.",
           info: "Detiene el proceso del agente y conserva la conversación. Envía un mensaje para reanudarla.\n\nEl trabajo activo, las notificaciones pendientes y las comprobaciones de seguridad del proveedor impiden la limpieza.",
         },
+        blockedWorkReview: {
+          title: "Revisar trabajo bloqueado cada hora",
+          hint: "Desactivado por defecto. Cada revisión recarga toda la conversación del hilo y puede consumir mucho de tu plan.",
+          info: "Cada hora, los hilos inactivos con una tarea u objetivo bloqueado reciben un mensaje para revisar sus bloqueos y continuar. Cada mensaje reanuda la conversación completa, así que unos pocos hilos bloqueados pueden consumir gran parte del límite semanal del proveedor.\n\nLos hilos que esperan a que se restablezca un límite de uso se reanudan por separado.",
+        },
       },
       workspaces: {
         unavailable: "Connect to this host to manage workspaces",

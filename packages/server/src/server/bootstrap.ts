@@ -548,6 +548,7 @@ export interface PaseoDaemonConfig {
   downloadTokenTtlMs?: number;
   agentProviderSettings?: AgentProviderRuntimeSettingsMap;
   idleRuntimeCleanup?: boolean;
+  blockedWorkReview?: boolean;
   resumeOnStartup?: boolean;
   resumePrompt?: string;
   providerCatalogRefreshTimeoutMs?: number;
@@ -682,6 +683,7 @@ function createInitialMutableDaemonConfig(config: ResolvedDaemonSettings): Mutab
     autoArchiveAfterMerge: config.autoArchiveAfterMerge ?? false,
     enableTerminalAgentHooks: config.enableTerminalAgentHooks ?? false,
     idleRuntimeCleanup: config.idleRuntimeCleanup !== false,
+    blockedWorkReview: config.blockedWorkReview === true,
     resumeOnStartup: config.resumeOnStartup === true,
     resumePrompt: config.resumePrompt ?? "Resume working.",
     appendSystemPrompt: config.appendSystemPrompt ?? "",
@@ -1825,7 +1827,13 @@ export async function createPaseoDaemon(
     createPaseoWorktreeWorkspace: createSchedulePaseoWorktreeExternal,
     archiveWorkspace: archiveScheduleWorkspaceExternal,
   });
-  const blockedTaskReviews = new BlockedTaskReviewService({ agentManager, agentStorage, logger });
+  const blockedTaskReviews = new BlockedTaskReviewService({
+    agentManager,
+    agentStorage,
+    logger,
+    // Read on every scan so the host setting applies without a restart.
+    enabled: () => daemonConfigStore.get().blockedWorkReview === true,
+  });
   const usageLimitResumes = new UsageLimitResumeService({
     agentManager,
     agentStorage,
