@@ -3483,6 +3483,11 @@ export const en = {
           hint: "Free up memory after an hour of inactivity.",
           info: "Stops the agent's process while keeping its conversation. Send a message to resume.\n\nActive work, pending notifications, and provider safety checks prevent cleanup.",
         },
+        blockedWorkReview: {
+          title: "Review blocked work hourly",
+          hint: "Off by default. Each review reloads the thread's whole conversation and can use a lot of your plan.",
+          info: "Once an hour, idle threads with a blocked task or goal get a prompt to recheck their blockers and continue. Each prompt resumes the full conversation, so a few blocked threads can use a large share of a provider's weekly limit.\n\nThreads waiting for a usage limit to reset resume separately.",
+        },
       },
       workspaces: {
         unavailable: "Connect to this host to manage workspaces",

@@ -2983,6 +2983,11 @@ export const fr: TranslationResources = {
           hint: "Libère de la mémoire après une heure d’inactivité.",
           info: "Arrête le processus de l’agent tout en conservant sa conversation. Envoyez un message pour la reprendre.\n\nLe travail en cours, les notifications en attente et les vérifications de sécurité du fournisseur empêchent le nettoyage.",
         },
+        blockedWorkReview: {
+          title: "Revoir le travail bloqué toutes les heures",
+          hint: "Désactivé par défaut. Chaque revue recharge toute la conversation du fil et peut consommer une grande partie de votre forfait.",
+          info: "Toutes les heures, les fils inactifs ayant une tâche ou un objectif bloqué reçoivent un message pour revérifier leurs blocages et continuer. Chaque message reprend toute la conversation : quelques fils bloqués peuvent consommer une grande part de la limite hebdomadaire du fournisseur.\n\nLes fils qui attendent la réinitialisation d'une limite d'utilisation reprennent séparément.",
+        },
       },
       workspaces: {
         unavailable: "Connectez-vous à cet hôte pour gérer les espaces de travail",
