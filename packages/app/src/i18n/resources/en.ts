@@ -3484,9 +3484,9 @@ export const en = {
           info: "Stops the agent's process while keeping its conversation. Send a message to resume.\n\nActive work, pending notifications, and provider safety checks prevent cleanup.",
         },
         blockedWorkReview: {
-          title: "Review blocked work hourly",
-          hint: "Off by default. Each review reloads the thread's whole conversation and can use a lot of your plan.",
-          info: "Once an hour, idle threads with a blocked task or goal get a prompt to recheck their blockers and continue. Each prompt resumes the full conversation, so a few blocked threads can use a large share of a provider's weekly limit.\n\nThreads waiting for a usage limit to reset resume separately.",
+          title: "Review blocked work",
+          hint: "Off by default. Up to three short reviews after a thread stops, then it waits for a message.",
+          info: "When a thread stops with a blocked task or goal, it gets up to three prompts, about 5, 15 and 30 minutes apart, to recheck its blockers and continue. Then reviews stop until someone sends the thread a message.\n\nEach review resumes the thread's conversation. The short gaps reuse the provider's prompt cache, so they cost far less than a cold resume, but many blocked threads still add up.\n\nBlockers waiting on an open question are skipped; your answer wakes the thread.",
         },
       },
       workspaces: {
