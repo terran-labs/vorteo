@@ -60,6 +60,7 @@ export interface DevQueueAgents {
 
 interface QueueInput {
   repository: string;
+  issueAgents?: "dev" | "host";
   gh: GhRunner;
   agents: () => Promise<StoredAgentRecord[]>;
   workspaceIds: ReadonlySet<string>;
@@ -74,9 +75,46 @@ interface QueueInput {
 }
 class QueueReadError extends Error {}
 
+export async function queueDeadline<T>(
+  read: Promise<T>,
+  dependency: string,
+  milliseconds: number,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new QueueReadError(`${dependency} timed out.`)), milliseconds);
+  });
+  try {
+    return await Promise.race([read, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function queueAgents(input: QueueInput) {
+  const errors: string[] = [];
+  function partial(error: unknown) {
+    errors.push(error instanceof Error ? error.message : String(error));
+    return [];
+  }
+  const [records, dev] = await Promise.all([
+    queueDeadline(input.agents(), "Host agent list", 2_000).catch(partial),
+    input.devAgents?.(),
+  ]);
+  const reason = dev?.host.unavailable ?? null;
+  const devIncomplete = input.issueAgents !== "host" && reason !== null;
+  const degraded = devIncomplete ? `Dev agent data unavailable: ${reason}` : undefined;
+  return { records, dev, errors, partial: errors.length > 0, degraded };
+}
+
 /** A display snapshot only. The Foreman still verifies every merge gate at the exact head. */
 export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQueue> {
   const fetchedAt = input.now.toISOString();
+  const refreshDeadline = performance.now() + 15_000;
+  function checkDeadline() {
+    if (performance.now() >= refreshDeadline)
+      throw new QueueReadError("Factory queue refresh timed out.");
+  }
   try {
     const [owner, name] = input.repository.split("/");
     const issues: z.infer<typeof issueSchema>[] = [];
@@ -84,8 +122,10 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
     let cursor: string | null = null;
     let viewerLogin = "";
     do {
-      const response = await input.gh.graphql(
-        `query($owner:String!,$name:String!,$cursor:String) {
+      checkDeadline();
+      const response = await queueDeadline(
+        input.gh.graphql(
+          `query($owner:String!,$name:String!,$cursor:String) {
         ${cursor === null ? "viewer { login }" : ""}
         repository(owner:$owner,name:$name) {
           issues(first:100,after:$cursor,states:OPEN,orderBy:{field:CREATED_AT,direction:ASC}) {
@@ -94,7 +134,10 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
           }
         }
       }`,
-        { owner, name, cursor },
+          { owner, name, cursor },
+        ),
+        "GitHub queue read",
+        5_000,
       );
       const page = z
         .object({ nodes: z.array(issueSchema), pageInfo })
@@ -110,8 +153,10 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
     } while (cursor);
     cursor = null;
     do {
-      const response = await input.gh.graphql(
-        `query($owner:String!,$name:String!,$cursor:String) {
+      checkDeadline();
+      const response = await queueDeadline(
+        input.gh.graphql(
+          `query($owner:String!,$name:String!,$cursor:String) {
         repository(owner:$owner,name:$name) {
           pullRequests(first:100,after:$cursor,states:OPEN) {
             nodes { number url headRefName headRefOid body reviewDecision
@@ -123,7 +168,10 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
           }
         }
       }`,
-        { owner, name, cursor },
+          { owner, name, cursor },
+        ),
+        "GitHub queue read",
+        5_000,
       );
       const page = z
         .object({ nodes: z.array(prSchema), pageInfo })
@@ -131,7 +179,7 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
       prs.push(...page.nodes);
       cursor = nextCursor(page.pageInfo, cursor);
     } while (cursor);
-    const [records, dev] = await Promise.all([input.agents(), input.devAgents?.()]);
+    const { records, dev, errors, partial, degraded } = await queueAgents(input);
     const queue: QueueIssue[] = [];
     for (const issue of issues) {
       if (issue.labels.pageInfo.hasNextPage)
@@ -160,7 +208,14 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
       item.stage = deriveStage(item, pull ? approvedHead(pull, viewerLogin) : false);
       queue.push(item);
     }
-    return { fetchedAt, error: null, ...(dev ? { issueAgentHost: dev.host } : {}), issues: queue };
+    return {
+      fetchedAt,
+      error: errors.join(" ") || null,
+      partial,
+      degraded,
+      ...(dev ? { issueAgentHost: dev.host } : {}),
+      issues: queue,
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const stderr =

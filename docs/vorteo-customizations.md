@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Factory queue snapshots persist across daemon restarts and return immediately while one bounded refresh runs. Paused or draining factories serve saved snapshots without GitHub calls, with one bounded first fetch when no snapshot exists. Disabled factories never fetch. Refresh failures preserve complete evidence and its timestamp; Host-agent partial results stay in memory and never replace complete saved evidence. Missing Dev agents carry a visible degraded reason while fresh GitHub issue and PR state keeps updating and persists. Failed cold reads on paused factories may retry after five minutes. Dev timeouts retain host metadata and abort their connected route.
+
 The All Factories sidebar summary renders factory counts and held status from the factory list before queue reads finish. It reuses shared queue snapshots, shows their timestamp, and offers retry after queue failures. Paused factories read once on activation, including after an inactive panel created their cache entry, and do not poll GitHub for this summary. Summary queue reads share the three-read concurrency limit with bounded priority that continues serving ordinary card reads.
 
 Release preparation 26.11.902 carries blocked-work reviews off by default with the 5, 15 and 30 minute ladder, Lab live development, Claude reset visibility and the phone, tablet and queue fixes installed on Host and Dev on 2026-11-10. Setting-on review behavior and physical device acceptance remain unverified.

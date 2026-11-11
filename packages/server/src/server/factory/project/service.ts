@@ -1,4 +1,6 @@
+import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { FactoryQueueSnapshots } from "./queue-cache.js";
 import type { Logger } from "pino";
 import {
   PROJECT_FACTORY_INSTRUCTION_CONFLICTS,
@@ -107,7 +109,7 @@ import {
   readDevAgents,
   type IssueAgentHosts,
 } from "./issue-agent-host.js";
-import { readIssueQueue, type DevQueueAgents } from "./queue.js";
+import { queueDeadline, readIssueQueue, type DevQueueAgents } from "./queue.js";
 import {
   FACTORY_HOME_LABELS,
   type FactoryHomeAnswer,
@@ -133,12 +135,6 @@ const GATED_ROLES: ReadonlySet<string> = new Set([
   "factory-triage",
   "factory-builds",
 ]);
-
-interface QueueCache {
-  repository: string;
-  expiresAt: number;
-  result: Promise<ProjectFactoryQueue>;
-}
 
 export type PromptOutcome = "sent" | "busy";
 
@@ -235,7 +231,7 @@ export class ProjectFactoryService {
   private readonly timerGenerations = new Map<string, number>();
   private queue: Promise<unknown> = Promise.resolve();
   private stopped = false;
-  private readonly issueQueues = new Map<string, QueueCache>();
+  private readonly issueQueues: FactoryQueueSnapshots;
 
   static supports(method: string): boolean {
     return PROJECT_FACTORY_RPCS.some((rpc) => rpc.name === method);
@@ -244,6 +240,10 @@ export class ProjectFactoryService {
   constructor(private readonly input: ProjectFactoryServiceInput) {
     this.store = new ProjectFactoryStateStore(projectFactoryStatePath(input.paseoHome));
     this.logger = input.logger.child({ module: "project-factory" });
+    this.issueQueues = new FactoryQueueSnapshots(
+      path.join(input.paseoHome, "factory", "queues"),
+      this.logger,
+    );
   }
 
   /** Restarts heartbeats and checks for charter drift on every enabled project. */
@@ -336,34 +336,48 @@ export class ProjectFactoryService {
     const project = await this.readProject(projectId);
     const now = this.now();
     if (!project) return { fetchedAt: now.toISOString(), error: null, issues: [] };
-    const cached = this.issueQueues.get(projectId);
-    if (cached && cached.repository === project.repository && cached.expiresAt > now.getTime())
-      return cached.result;
     const workspaceIds = new Set(
       Object.values(project.roles).flatMap((role) => (role?.workspaceId ? [role.workspaceId] : [])),
     );
-    const result = readIssueQueue({
+    const refresh = () =>
+      queueDeadline(
+        readIssueQueue({
+          repository: project.repository,
+          issueAgents: issueAgentsIn(project),
+          ownClaims: new Set(
+            Object.entries(project.claims ?? {}).flatMap(([issue, claim]) =>
+              claim.status === "held" ? [Number(issue)] : [],
+            ),
+          ),
+          gh: this.input.gh ?? defaultGhRunner,
+          agents: () => this.input.agentStorage.list(),
+          workspaceIds,
+          devAgents: async () => {
+            let host: ProjectFactoryIssueAgentHost | null;
+            try {
+              host = await queueDeadline(this.observedDev(project), "Dev host directory", 1_000);
+            } catch (error) {
+              return {
+                host: { serverId: null, unavailable: errorText(error) },
+                installation: this.installation(projectId),
+                agents: [],
+              };
+            }
+            return host ? this.devQueueAgents(projectId, host) : undefined;
+          },
+          now,
+        }),
+        "Factory queue refresh",
+        15_000,
+      );
+    return this.issueQueues.read({
+      projectId,
       repository: project.repository,
-      ownClaims: new Set(
-        Object.entries(project.claims ?? {}).flatMap(([issue, claim]) =>
-          claim.status === "held" ? [Number(issue)] : [],
-        ),
-      ),
-      gh: this.input.gh ?? defaultGhRunner,
-      agents: () => this.input.agentStorage.list(),
-      workspaceIds,
-      devAgents: async () => {
-        const host = await this.observedDev(project);
-        return host ? this.devQueueAgents(projectId, host) : undefined;
-      },
+      enabled: project.enabled,
+      paused: project.paused || Boolean(project.drain),
       now,
+      refresh,
     });
-    this.issueQueues.set(projectId, {
-      repository: project.repository,
-      expiresAt: now.getTime() + 30_000,
-      result,
-    });
-    return result;
   }
 
   async get(projectId: string): Promise<ProjectFactoryState> {
@@ -416,11 +430,16 @@ export class ProjectFactoryService {
     if (host.unavailable || !host.serverId || !this.input.hosts)
       return { host, installation, agents: [] };
     try {
-      const agents = await readDevAgents({
-        hosts: this.input.hosts(),
-        serverId: host.serverId,
-        installation,
-      });
+      const agents = await queueDeadline(
+        readDevAgents({
+          hosts: this.input.hosts(),
+          serverId: host.serverId,
+          installation,
+          signal: AbortSignal.timeout(2_000),
+        }),
+        "Dev agent read",
+        2_000,
+      );
       return { host, installation, agents };
     } catch (error) {
       const unavailable = `Dev's agents could not be read: ${errorText(error)}`;
