@@ -82,7 +82,8 @@ function harness(options: { excluded?: boolean } = {}) {
     tokens += 1;
     grant = { ...grant!, accessToken: `synthetic-access-${tokens}`, expiresAt: now + 60 * MINUTE };
   });
-  const create = (refresherOptions: { cliRefresh?: boolean } = {}) =>
+  /** `"default"` builds the refresher exactly as production does without the setting. */
+  const create = (refresherOptions: { cliRefresh?: boolean } | "default" = {}) =>
     new ClaudeOAuthRefresher(
       {
         installationId: INSTALLATION,
@@ -123,7 +124,7 @@ function harness(options: { excluded?: boolean } = {}) {
         log: (event) => events.push(structuredClone(event)),
         now: () => now,
       },
-      { cliRefresh: true, ...refresherOptions },
+      refresherOptions === "default" ? undefined : { cliRefresh: true, ...refresherOptions },
     );
   return {
     create,
@@ -269,7 +270,7 @@ it("withdraws Dev and asks for sign-in when the Host grant disappears", async ()
 
 it("by default never runs the refresh CLI and delivers what Host agents renew", async () => {
   const h = harness();
-  const refresher = h.create({ cliRefresh: false });
+  const refresher = h.create("default");
   await refresher.connected("one", null);
   await refresher.reconcile();
   // Inside the lead window and past expiry, the coordinator only reads.

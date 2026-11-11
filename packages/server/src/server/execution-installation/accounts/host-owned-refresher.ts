@@ -341,7 +341,8 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
       desired = await this.readDueHost(next, now, recovery);
       if (desired !== undefined) this.warnIfExpiring(next, now);
       // Once per loss, so an erased or deleted sign-in is noticed without anyone watching.
-      if (current.hostGrant !== "missing" && next.hostGrant === "missing")
+      // Only a grant that was present can be lost; a first read that finds none is not news.
+      if (current.hostGrant === "present" && next.hostGrant === "missing")
         this.emit({ kind: "signInLost", definitionId });
     }
 
