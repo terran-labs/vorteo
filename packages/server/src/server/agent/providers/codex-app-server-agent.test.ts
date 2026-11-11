@@ -7032,6 +7032,14 @@ describe("Codex app-server provider", () => {
       const childHistory = deferred<unknown>();
       const childReadStarted = deferred<void>();
       let childMetadataReads = 0;
+      let completionDuringRegistration: Promise<void> | undefined;
+      const notify = asInternals(session).handleNotification.bind(session);
+      const started = { threadId: "child-thread", turn: { id: "live-child-turn" } };
+      const complete = () =>
+        notify("turn/completed", {
+          ...started,
+          turn: { ...started.turn, status: "completed", items: [] },
+        });
       session.client = {
         async request(method, params) {
           expect(method).toBe("thread/read");
@@ -7057,7 +7065,11 @@ describe("Codex app-server provider", () => {
           }
           if (!includeTurns) {
             childMetadataReads += 1;
-            return childMetadataReads === 1 ? configuration.promise : { thread: {} };
+            if (childMetadataReads === 1) {
+              if (attachDuringHistory) completionDuringRegistration = complete();
+              return configuration.promise;
+            }
+            return { thread: {} };
           }
           childReadStarted.resolve();
           return childHistory.promise;
@@ -7071,25 +7083,23 @@ describe("Codex app-server provider", () => {
             ? [event.event.status]
             : [],
         );
-      const notify = asInternals(session).handleNotification.bind(session);
-      const started = {
-        threadId: "child-thread",
-        turn: { id: "live-child-turn" },
-      };
-
       if (attachDuringHistory) {
+        await notify("turn/started", { threadId: "test-thread", turn: { id: "root-turn" } });
+        await notify("thread/started", { thread: { id: "child-thread" } });
         await notify("turn/started", started);
+        await notify("turn/completed", {
+          threadId: "test-thread",
+          turn: { id: "root-turn", status: "completed", items: [] },
+        });
       }
       const replay = Array.fromAsync(session.streamHistory());
       await childReadStarted.promise;
       if (attachDuringHistory) {
         attach();
-        expect(statusEvents(liveEvents)).toEqual(["running"]);
-        await notify("turn/completed", {
-          threadId: "child-thread",
-          turn: { id: "live-child-turn", status: "completed", items: [] },
-        });
-        expect(statusEvents(liveEvents)).toEqual(["running", "completed"]);
+        await completionDuringRegistration;
+        expect(statusEvents(liveEvents)).toEqual(["running", "running", "completed"]);
+        await notify("turn/started", started);
+        await complete();
       }
 
       childHistory.resolve({ thread: { turns: [] } });
@@ -7107,7 +7117,9 @@ describe("Codex app-server provider", () => {
           subtitle: "Native · child-model",
         }),
       });
-      expect(statusEvents(liveEvents)).toEqual(attachDuringHistory ? ["running", "completed"] : []);
+      expect(statusEvents(liveEvents)).toEqual(
+        attachDuringHistory ? ["running", "running", "completed", "running", "completed"] : [],
+      );
     },
   );
 

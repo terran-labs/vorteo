@@ -4009,6 +4009,7 @@ export class CodexAppServerAgentSession implements AgentSession {
 
   private handleUnexpectedTermination(error: Error): void {
     this.connectionState = "disconnected";
+    this.pendingSubAgentNotificationsByThreadId.clear();
     if (this.goalsEnabled)
       this.goalState.invalidate("Codex disconnected. Refresh to confirm goal state.");
     const hasActiveRootTurn = this.activeForegroundTurnId !== null || this.currentTurnId !== null;
@@ -4400,8 +4401,10 @@ export class CodexAppServerAgentSession implements AgentSession {
       threadId: this.currentThreadId,
       cwd: this.config.cwd ?? null,
     });
-    this.subAgentCallsByCallId.clear();
-    this.subAgentCallIdByChildThreadId.clear();
+    await this.enqueueNotificationWork(() => {
+      this.subAgentCallsByCallId.clear();
+      this.subAgentCallIdByChildThreadId.clear();
+    });
     const providerSubagentEvents: AgentStreamEvent[] = [];
     await this.loadPersistedSubAgentHistories(client, subAgentRoutes, providerSubagentEvents);
     this.resetCodexUserMessageTurns();
@@ -4441,16 +4444,18 @@ export class CodexAppServerAgentSession implements AgentSession {
         continue;
       }
       visitedThreadIds.add(next.route.childThreadId);
-      this.registerSubAgentToolCall({
-        timelineItem: next.route.toolCall,
-        rawItem: { agentThreadId: next.route.childThreadId },
-        parentCallId: next.parentCallId,
-        parentSubagentId: next.parentSubagentId,
-        replay,
+      await this.enqueueNotificationWork(async () => {
+        this.registerSubAgentToolCall({
+          timelineItem: next.route.toolCall,
+          rawItem: { agentThreadId: next.route.childThreadId },
+          parentCallId: next.parentCallId,
+          parentSubagentId: next.parentSubagentId,
+          replay,
+        });
+        // Older notifications were buffered before the route existed. Drain them
+        // on the same queue as live arrivals before exposing the route to newer work.
+        await this.replayPendingSubAgentNotifications([next.route.childThreadId]);
       });
-      // Notifications can arrive during attach before the persisted route is known.
-      // Dispatch them as live observations once the route exists.
-      await this.replayPendingSubAgentNotifications([next.route.childThreadId]);
       try {
         const childHistory = await loadCodexThreadHistoryTimeline({
           client,
@@ -5905,6 +5910,7 @@ export class CodexAppServerAgentSession implements AgentSession {
       await client.dispose();
     }
     this.client = null;
+    this.pendingSubAgentNotificationsByThreadId.clear();
   }
 
   async listCommands(): Promise<AgentSlashCommand[]> {
@@ -6332,13 +6338,18 @@ export class CodexAppServerAgentSession implements AgentSession {
   private handleNotification(method: string, params: unknown): Promise<void> {
     // An image must exist before its event, and completion must follow that event.
     // Transport callbacks cannot await: the session owns their ordered drain.
+    void this.enqueueNotificationWork(() => this.processNotification(method, params));
+    return this.pendingNotifications;
+  }
+
+  private enqueueNotificationWork(work: () => void | Promise<void>): Promise<void> {
     const next = this.pendingNotifications.then(() => {
-      return this.closed ? undefined : this.processNotification(method, params);
+      return this.closed ? undefined : work();
     });
     this.pendingNotifications = next.catch((error: unknown) => {
       this.handleUnexpectedTermination(error instanceof Error ? error : new Error(String(error)));
     });
-    return this.pendingNotifications;
+    return next;
   }
 
   private async processNotification(method: string, params: unknown): Promise<void> {
@@ -7173,7 +7184,8 @@ export class CodexAppServerAgentSession implements AgentSession {
     this.currentTurnId = null;
     this.pendingForegroundTurnIdentification?.resolve(null);
     this.pendingForegroundTurnIdentification = null;
-    this.pendingSubAgentNotificationsByThreadId.clear();
+    // Child turns can outlive the root. Unknown routes stay bounded in the buffer
+    // until history identifies them or the current transport ends.
     this.resetTurnTrackingState();
   }
 
