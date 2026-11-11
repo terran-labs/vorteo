@@ -14,6 +14,7 @@ import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import {
   initializePackagedClaudeCli,
+  launchedThroughReleaseLink,
   managedClaudeCli,
   PACKAGED_CLAUDE_VERSION,
   resolvePackagedClaudeCli,
@@ -133,6 +134,31 @@ test("daemon entry point passes captured mode after deleting marker", async () =
   );
   expect(source.indexOf("initializePackagedClaudeCli(managedWorker)")).toBeLessThan(
     source.indexOf("async function main()"),
+  );
+});
+
+test("session host selects the release CLI only when its job launches it through the release link", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "session-host-release-"));
+  dirs.push(root);
+  const entry = "packages/server/dist/scripts/session-host-entrypoint.js";
+  const release = path.join(root, "releases/build-1");
+  await mkdir(path.join(release, path.dirname(entry)), { recursive: true });
+  await writeFile(path.join(release, entry), "");
+  await symlink(release, path.join(root, "current"));
+  expect(await launchedThroughReleaseLink(path.join(root, "current", entry), entry)).toBe(true);
+  // A source checkout, harness or direct release path runs the entry from a real directory.
+  expect(await launchedThroughReleaseLink(path.join(release, entry), entry)).toBe(false);
+  expect(await launchedThroughReleaseLink(path.join(root, "current/other.js"), entry)).toBe(false);
+  expect(await launchedThroughReleaseLink(undefined, entry)).toBe(false);
+  const source = await readFile(
+    new URL("../../../../../scripts/session-host-entrypoint.ts", import.meta.url),
+    "utf8",
+  );
+  expect(source).toMatch(
+    /initializePackagedClaudeCli\(\s*await launchedThroughReleaseLink\(process\.argv\[1\], SESSION_HOST_ENTRYPOINT\)/,
+  );
+  expect(source.indexOf("initializePackagedClaudeCli(")).toBeLessThan(
+    source.indexOf("await startSessionHostService("),
   );
 });
 
