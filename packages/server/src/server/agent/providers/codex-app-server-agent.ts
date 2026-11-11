@@ -3603,8 +3603,6 @@ export class CodexAppServerAgentSession implements AgentSession {
   private appServerRestartNeeded = false;
   // History read by rewind or an archived resume, held until streamHistory consumes it.
   private stagedHistory: CodexThreadHistory | null = null;
-  // Collects provider subagent events emitted while a thread history read rebuilds routes.
-  private historySubagentEvents: AgentStreamEvent[] | null = null;
   // A resumed thread's earlier turns and sub-agents are known only after reading its history.
   private historyIndexed = true;
   private pendingPermissions = new Map<string, AgentPermissionRequest>();
@@ -4404,14 +4402,8 @@ export class CodexAppServerAgentSession implements AgentSession {
     });
     this.subAgentCallsByCallId.clear();
     this.subAgentCallIdByChildThreadId.clear();
-    this.pendingSubAgentNotificationsByThreadId.clear();
     const providerSubagentEvents: AgentStreamEvent[] = [];
-    this.historySubagentEvents = providerSubagentEvents;
-    try {
-      await this.loadPersistedSubAgentHistories(client, subAgentRoutes);
-    } finally {
-      this.historySubagentEvents = null;
-    }
+    await this.loadPersistedSubAgentHistories(client, subAgentRoutes, providerSubagentEvents);
     this.resetCodexUserMessageTurns();
     for (const entry of timeline) {
       if (entry.item.type === "tool_call" && entry.item.name === "request_user_input_async") {
@@ -4435,6 +4427,7 @@ export class CodexAppServerAgentSession implements AgentSession {
   private async loadPersistedSubAgentHistories(
     client: CodexAppServerClientLike,
     rootRoutes: readonly PersistedSubAgentRoute[],
+    replay: AgentStreamEvent[],
   ): Promise<void> {
     const queue = rootRoutes.map((route) => ({
       route,
@@ -4453,7 +4446,11 @@ export class CodexAppServerAgentSession implements AgentSession {
         rawItem: { agentThreadId: next.route.childThreadId },
         parentCallId: next.parentCallId,
         parentSubagentId: next.parentSubagentId,
+        replay,
       });
+      // Notifications can arrive during attach before the persisted route is known.
+      // Dispatch them as live observations once the route exists.
+      await this.replayPendingSubAgentNotifications([next.route.childThreadId]);
       try {
         const childHistory = await loadCodexThreadHistoryTimeline({
           client,
@@ -4461,7 +4458,12 @@ export class CodexAppServerAgentSession implements AgentSession {
           cwd: this.config.cwd ?? null,
         });
         for (const entry of childHistory.timeline) {
-          this.emitProviderSubagentTimeline(next.route.childThreadId, entry.item, entry.timestamp);
+          this.emitProviderSubagentTimeline(
+            next.route.childThreadId,
+            entry.item,
+            entry.timestamp,
+            replay,
+          );
         }
         for (const route of childHistory.subAgentRoutes) {
           queue.push({
@@ -6292,10 +6294,6 @@ export class CodexAppServerAgentSession implements AgentSession {
   }
 
   private emitEvent(event: AgentStreamEvent): void {
-    if (this.historySubagentEvents && event.type === "provider_subagent") {
-      this.historySubagentEvents.push(event);
-      return;
-    }
     this.notifySubscribers(event);
   }
 
@@ -6599,8 +6597,9 @@ export class CodexAppServerAgentSession implements AgentSession {
     rawItem: { [key: string]: unknown };
     parentCallId: string | null;
     parentSubagentId: string | null;
+    replay?: AgentStreamEvent[];
   }): string[] {
-    const { timelineItem, rawItem, parentCallId, parentSubagentId } = params;
+    const { timelineItem, rawItem, parentCallId, parentSubagentId, replay } = params;
     if (timelineItem.detail.type !== "sub_agent") {
       return [];
     }
@@ -6648,7 +6647,7 @@ export class CodexAppServerAgentSession implements AgentSession {
       this.subAgentCallIdByChildThreadId.set(receiverThreadId, timelineItem.callId);
       const isNewChild = !state.childThreadIds.has(receiverThreadId);
       state.childThreadIds.add(receiverThreadId);
-      this.emitProviderSubagentUpsert(receiverThreadId, state, timelineItem.status);
+      this.emitProviderSubagentUpsert(receiverThreadId, state, timelineItem.status, replay);
       if (isNewChild) void this.refreshSubagentConfiguration(receiverThreadId, state);
     }
     return childThreadIds;
@@ -6673,7 +6672,9 @@ export class CodexAppServerAgentSession implements AgentSession {
       const previous = state.childSubtitles.get(threadId) ?? "Native · Model unavailable";
       if (subtitle === previous) return;
       state.childSubtitles.set(threadId, subtitle);
-      this.emitProviderSubagentUpsert(threadId, state, state.toolCall.status);
+      // This read only identifies the model. It can resolve long after the child
+      // status was observed, including after replay has finished.
+      this.emitProviderSubagentUpsert(threadId, state);
     } catch (error) {
       // Older providers or an already-removed thread may not expose configuration.
       this.logger.debug({ err: error, threadId }, "Could not read subagent configuration");
@@ -6844,13 +6845,15 @@ export class CodexAppServerAgentSession implements AgentSession {
   private emitProviderSubagentUpsert(
     childThreadId: string,
     state: CodexSubAgentCallState,
-    status: ToolCallTimelineItem["status"],
+    status?: ToolCallTimelineItem["status"],
+    replay?: AgentStreamEvent[],
   ): void {
     const detail = state.toolCall.detail;
     if (detail.type !== "sub_agent") {
       return;
     }
-    let providerStatus: "running" | "completed" | "failed" | "canceled" = "running";
+    let providerStatus: "running" | "completed" | "failed" | "canceled" | undefined;
+    if (status !== undefined) providerStatus = "running";
     if (status === "completed") {
       providerStatus = "completed";
     } else if (status === "failed") {
@@ -6860,7 +6863,7 @@ export class CodexAppServerAgentSession implements AgentSession {
     }
     // MultiAgentV2's description is the raw task path; its title is already humanized.
     const description = state.activityItemIds.size > 0 ? null : (detail.description ?? null);
-    this.emitEvent({
+    const event: AgentStreamEvent = {
       type: "provider_subagent",
       provider: CODEX_PROVIDER,
       event: {
@@ -6869,19 +6872,22 @@ export class CodexAppServerAgentSession implements AgentSession {
         title: detail.subAgentType ?? "Codex subagent",
         description,
         subtitle: state.childSubtitles.get(childThreadId) ?? "Native · Model unavailable",
-        status: providerStatus,
+        ...(providerStatus ? { status: providerStatus } : {}),
         toolCallId: state.callId,
         parentSubagentId: state.parentSubagentId,
       },
-    });
+    };
+    if (replay) replay.push(event);
+    else this.emitEvent(event);
   }
 
   private emitProviderSubagentTimeline(
     childThreadId: string,
     item: AgentTimelineItem,
     timestamp?: string,
+    replay?: AgentStreamEvent[],
   ): void {
-    this.emitEvent({
+    const event: AgentStreamEvent = {
       type: "provider_subagent",
       provider: CODEX_PROVIDER,
       event: {
@@ -6890,7 +6896,9 @@ export class CodexAppServerAgentSession implements AgentSession {
         item,
         ...(timestamp ? { timestamp } : {}),
       },
-    });
+    };
+    if (replay) replay.push(event);
+    else this.emitEvent(event);
   }
 
   private emitCompletedProviderSubagentItem(

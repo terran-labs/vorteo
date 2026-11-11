@@ -6685,6 +6685,8 @@ test("hydrateTimelineFromProvider restores and broadcasts provider children from
   liveChild("completed");
   expect(manager.getRestartImpact().agents).toEqual([]);
   await manager.flush();
+  await manager.hydrateTimelineFromProvider(snapshot.id, { force: true });
+  expect(manager.getProviderSubagent(snapshot.id, "restored-child")?.status).toBe("completed");
   await storage.flush();
 });
 

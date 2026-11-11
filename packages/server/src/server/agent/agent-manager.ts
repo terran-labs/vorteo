@@ -1555,7 +1555,10 @@ export class AgentManager {
   private readonly providerSubagents = new ProviderSubagentStore();
   // Replay can retain a running descriptor indefinitely. Only the attached runtime
   // can report current child work, and its observations expire with that attachment.
-  private readonly liveProviderChildren = new WeakMap<ActiveManagedAgent, Map<string, string>>();
+  private readonly liveProviderChildren = new WeakMap<
+    ActiveManagedAgent,
+    Map<string, { title: string; status: ProviderSubagentDescriptor["status"] }>
+  >();
   private readonly agentsAwaitingInitialSnapshotPersist = new Set<string>();
   private readonly sessionEventTails = new Map<string, Promise<void>>();
   private readonly steerEventBarriers = new Map<string, SteerEventBarrier>();
@@ -2329,8 +2332,10 @@ export class AgentManager {
         status: String(agent.lifecycle),
       }));
     for (const parent of managed) {
-      for (const [id, title] of this.liveProviderChildren.get(parent) ?? []) {
-        agents.push({ id: `${parent.id}/${id}`, title, status: "running" });
+      for (const [id, child] of this.liveProviderChildren.get(parent) ?? []) {
+        if (child.status === "running") {
+          agents.push({ id: `${parent.id}/${id}`, title: child.title, status: "running" });
+        }
       }
     }
     for (const [id, error] of this.restartDrainErrors) {
@@ -7156,21 +7161,39 @@ export class AgentManager {
     agent: ActiveManagedAgent,
     event: Extract<AgentStreamEvent, { type: "provider_subagent" }>["event"],
   ): void {
-    if (event.type === "timeline" || (event.type === "upsert" && event.status === undefined))
-      return;
+    if (event.type === "timeline") return;
     let children = this.liveProviderChildren.get(agent);
-    if (event.type === "upsert" && event.status === "running") {
-      if (!children) {
-        children = new Map();
-        this.liveProviderChildren.set(agent, children);
-      }
-      children.set(
-        event.id,
-        event.title || event.description || children.get(event.id) || event.id,
-      );
-    } else {
+    if (event.type === "remove") {
       children?.delete(event.id);
+      return;
     }
+    if (event.status === undefined) return;
+    if (!children) {
+      children = new Map();
+      this.liveProviderChildren.set(agent, children);
+    }
+    children.set(event.id, {
+      title: event.title || event.description || children.get(event.id)?.title || event.id,
+      status: event.status,
+    });
+  }
+
+  private applyProviderChildHistory(
+    agent: ActiveManagedAgent,
+    { provider, event }: Extract<AgentStreamEvent, { type: "provider_subagent" }>,
+  ): ProviderSubagentStoreEvent {
+    if (event.type === "upsert") {
+      // Replay can finish after a native notification. Keep its history and metadata
+      // while preserving the latest lifecycle status reported by the attached runtime.
+      const observed = this.liveProviderChildren.get(agent)?.get(event.id);
+      if (observed) {
+        return this.providerSubagents.apply(agent.id, provider, {
+          ...event,
+          status: observed.status,
+        });
+      }
+    }
+    return this.providerSubagents.apply(agent.id, provider, event);
   }
 
   private enqueueSessionEvent(agentId: string, event: AgentStreamEvent): void {
@@ -7523,7 +7546,7 @@ export class AgentManager {
       }
     }
     for (const event of providerSubagentEvents) {
-      const update = this.providerSubagents.apply(agent.id, event.provider, event.event);
+      const update = this.applyProviderChildHistory(agent, event);
       if (broadcast) {
         this.dispatch({ type: "provider_subagent", event: update });
       }
@@ -7595,7 +7618,7 @@ export class AgentManager {
     }> = [];
     const providerSubagentEvents: AgentManagerEvent[] = [];
     for (const event of historySubagentEvents) {
-      const update = this.providerSubagents.apply(agent.id, event.provider, event.event);
+      const update = this.applyProviderChildHistory(agent, event);
       const managerEvent: AgentManagerEvent = { type: "provider_subagent", event: update };
       if (deferredBroadcast) {
         providerSubagentEvents.push(managerEvent);
