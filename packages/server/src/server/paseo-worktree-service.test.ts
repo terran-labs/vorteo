@@ -927,11 +927,10 @@ test.skipIf(isPlatform("win32"))(
   },
 );
 
-// The default archive path (scope "workspace", worktreePath only) resolves
-// repoRoot=null, so deletePaseoWorktree's `git worktree remove`/`prune` is
-// skipped: the directory is rm-ed but the admin registration survives, pinning
-// the branch as "already checked out". Restore must self-heal by pruning the
-// stale registration before recreating, regardless of how it was archived.
+// A worktree folder removed outside Vorteo leaves its admin registration, which
+// pins the branch as "already checked out". Vorteo locks its worktrees, so a
+// prune keeps that registration; restore forgets exactly that one registration
+// before recreating, regardless of how the folder disappeared.
 test.skipIf(isPlatform("win32"))(
   "recreates a worktree whose dir was rm-ed without git worktree remove (stale registration)",
   async () => {
@@ -972,6 +971,10 @@ test.skipIf(isPlatform("win32"))(
     });
     expect(beside.worktreePath).not.toBe(created.worktreePath);
     expect(beside.branchName).not.toBe("restore-me");
+    execFileSync("git", ["worktree", "remove", beside.worktreePath, "--force", "--force"], {
+      cwd: repoDir,
+      stdio: "pipe",
+    });
 
     // A prune keeps the locked registration, which may be another environment's worktree.
     execFileSync("git", ["worktree", "prune"], { cwd: repoDir, stdio: "pipe" });

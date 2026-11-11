@@ -52,6 +52,8 @@ export function classifyWorktrees({
     if (worktree.locked && worktree.lockReason !== VORTEO_WORKTREE_LOCK_REASON)
       return ["keep", "Locked"];
     if (worktree.prunable || !existsSync(worktree.path)) {
+      // Git never prunes a locked worktree, so it stays whatever --prune-missing says.
+      if (worktree.locked) return ["keep", "Locked; its directory is not visible here"];
       return pruneMissing
         ? ["prune", "Directory is missing"]
         : ["keep", "Directory is not visible here; it may belong to another environment"];

@@ -1232,6 +1232,10 @@ export async function deletePaseoWorktree({
     await assertWorktreeBelongsToRepo(cwd, resolvedWorktree);
   }
 
+  // Without a repository root, remember this worktree's own registration from its link before
+  // the folder goes, so it can be dropped instead of pinning the branch forever.
+  const ownAdminDir = cwd ? null : await worktreeAdminDir(resolvedWorktree);
+
   if (await pathExists(resolvedWorktree)) {
     for (const teardownCwd of teardownCwds ?? [resolvedWorktree]) {
       await runWorktreeTeardownCommands({
@@ -1257,6 +1261,8 @@ export async function deletePaseoWorktree({
   }
 
   await removeDirectoryWithRetries(resolvedWorktree);
+
+  if (ownAdminDir) await dropOwnAdminDir(ownAdminDir, resolvedWorktree);
 
   if (cwd) {
     // Only this worktree's entry: a repository-wide prune would also delete the metadata of
@@ -1312,6 +1318,27 @@ async function listWorktreeEntries(cwd: string): Promise<WorktreeEntry[]> {
   return entries;
 }
 
+/** Drops a removed worktree's admin folder when it still names that worktree. */
+async function dropOwnAdminDir(adminDir: string, worktreePath: string): Promise<void> {
+  try {
+    const link = await readFile(join(adminDir, "gitdir"), "utf8");
+    if (samePaths(dirname(link.trim()), worktreePath))
+      await rm(adminDir, { recursive: true, force: true });
+  } catch {
+    // Not critical: a leftover entry for a missing folder only blocks reusing its path.
+  }
+}
+
+/** A linked worktree's admin folder, read from its `.git` link file, or null. */
+async function worktreeAdminDir(worktreePath: string): Promise<string | null> {
+  const content = await readFile(join(worktreePath, ".git"), "utf8").catch(() => null);
+  if (!content?.startsWith("gitdir: ")) return null;
+  const target = content.slice("gitdir: ".length).trim();
+  const adminDir = isAbsolute(target) ? target : resolve(worktreePath, target);
+  // Only an entry inside a repository's worktrees folder, never anything else.
+  return basename(dirname(adminDir)) === "worktrees" ? adminDir : null;
+}
+
 function samePaths(left: string, right: string): boolean {
   return logicalProjectsPath(resolve(left)) === logicalProjectsPath(resolve(right));
 }
@@ -1334,7 +1361,15 @@ async function registeredWorktreePaths(cwd: string): Promise<Set<string>> {
 export async function forgetMissingWorktreeEntry(
   cwd: string,
   worktreePath: string,
-  { includeLocked = false }: { includeLocked?: boolean } = {},
+  {
+    includeLocked = false,
+    lockedBranch,
+  }: {
+    /** The caller proved the entry is its own, for example by removing that worktree. */
+    includeLocked?: boolean;
+    /** A locked entry is forgotten only when its HEAD names this branch. */
+    lockedBranch?: string;
+  } = {},
 ): Promise<boolean> {
   if (await pathExists(worktreePath)) return false;
   const { stdout } = await runGitCommand(["rev-parse", "--git-common-dir"], {
@@ -1347,7 +1382,11 @@ export async function forgetMissingWorktreeEntry(
     const adminDir = join(adminRoot, name);
     const link = await readFile(join(adminDir, "gitdir"), "utf8").catch(() => null);
     if (link === null || !samePaths(dirname(link.trim()), worktreePath)) continue;
-    if (!includeLocked && (await pathExists(join(adminDir, "locked")))) return false;
+    if (!includeLocked && (await pathExists(join(adminDir, "locked")))) {
+      // Another environment may have registered this path for its own live worktree since.
+      const head = await readFile(join(adminDir, "HEAD"), "utf8").catch(() => "");
+      if (!lockedBranch || head.trim() !== `ref: refs/heads/${lockedBranch}`) return false;
+    }
     await rm(adminDir, { recursive: true, force: true });
     return true;
   }
@@ -1527,7 +1566,13 @@ export const createWorktree = async ({
     });
     worktreePath = await normalizePathForOwnership(worktreePath);
     await rewriteWorktreeLinksToLogicalPaths(worktreePath);
-    await lockVorteoWorktree(cwd, worktreePath);
+    try {
+      await lockVorteoWorktree(cwd, worktreePath);
+    } catch (error) {
+      // The worktree works without its lock; only a prune from another environment could then
+      // delete its metadata.
+      process.emitWarning(`Could not lock worktree ${worktreePath}: ${String(error)}`);
+    }
 
     if (sourcePlan.pushRemote) {
       await configureWorktreePushRemote({

@@ -249,13 +249,15 @@ export function createWorkspaceRecoveryService(deps: {
     }
 
     // Forget only this worktree's stale registration. A repository-wide prune would also delete
-    // worktrees whose folders only another environment can see (#295). The workspace record
-    // proves the recorded path is this workspace's own, so its Vorteo lock may be dropped;
-    // without a record only an unlocked registration is forgotten.
+    // worktrees whose folders only another environment can see (#295). A locked registration
+    // is dropped only when it still checks out this workspace's branch: another environment
+    // may have registered the freed path since, and then creation fails instead.
     try {
-      await forgetMissingWorktreeEntry(sourceRepoRoot, previousWorktreePath, {
-        includeLocked: hasRecordedWorktreePath,
-      });
+      await forgetMissingWorktreeEntry(
+        sourceRepoRoot,
+        previousWorktreePath,
+        hasRecordedWorktreePath && workspace.branch ? { lockedBranch: workspace.branch } : {},
+      );
     } catch {
       // A stale registration is not guaranteed; creation reports any real conflict.
     }

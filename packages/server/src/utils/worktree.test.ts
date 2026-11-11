@@ -3,6 +3,7 @@ import {
   createWorktree as createWorktreePrimitive,
   deriveWorktreeProjectHash,
   deletePaseoWorktree,
+  forgetMissingWorktreeEntry,
   isPaseoOwnedWorktreeCwd,
   mapWorkspaceCwdToWorktree,
   rewriteWorktreeLinksToLogicalPaths,
@@ -24,7 +25,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { createServer, type AddressInfo, type Socket } from "net";
 import { tmpdir } from "os";
 import { createRealpathAwarePathMatcher } from "./path";
@@ -687,14 +688,15 @@ describe("worktrees seen from an environment that cannot see their folders", () 
         paseoHome,
         worktreesRoot,
       });
-    const registered = () =>
+    const listing = () =>
       execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: repoDir, encoding: "utf8" });
+    const isRegistered = (path: string) => listing().split("\n").includes(`worktree ${path}`);
     const host = await create("host-task");
     const own = await create("own-task");
     // An unlocked worktree someone added by hand, also visible only on the other side.
     const manual = join(tempDir, "manual");
     execFileSync("git", ["worktree", "add", "-q", manual, "-b", "manual"], { cwd: repoDir });
-    expect(registered()).toContain("locked Vorteo worktree");
+    expect(listing()).toContain("locked Vorteo worktree");
 
     const hide = (path: string) => renameSync(path, `${path}.elsewhere`);
     hide(host.worktreePath);
@@ -702,7 +704,7 @@ describe("worktrees seen from an environment that cannot see their folders", () 
 
     // A repository-wide prune from the blind side keeps the locked Vorteo worktree.
     execFileSync("git", ["worktree", "prune"], { cwd: repoDir });
-    expect(registered()).toContain(host.worktreePath);
+    expect(isRegistered(host.worktreePath)).toBe(true);
 
     // Deleting this side's own worktree touches no other registration.
     execFileSync(
@@ -719,12 +721,33 @@ describe("worktrees seen from an environment that cannot see their folders", () 
       paseoHome,
       worktreesBaseRoot: worktreesRoot,
     });
-    expect(registered()).not.toContain(own.worktreePath);
-    expect(registered()).toContain(manual.replace("manual", "manual2"));
+    expect(isRegistered(own.worktreePath)).toBe(false);
+    expect(isRegistered(manual.replace("manual", "manual2"))).toBe(true);
 
     // The blind side never reuses a name the other side registered.
     const again = await create("host-task");
     expect(again.worktreePath).not.toBe(host.worktreePath);
-    expect(registered()).toContain(host.worktreePath);
+    expect(isRegistered(host.worktreePath)).toBe(true);
+
+    // A locked registration is forgotten only when it still checks out the expected branch.
+    await expect(
+      forgetMissingWorktreeEntry(repoDir, host.worktreePath, { lockedBranch: "other" }),
+    ).resolves.toBe(false);
+    expect(isRegistered(host.worktreePath)).toBe(true);
+    await expect(
+      forgetMissingWorktreeEntry(repoDir, host.worktreePath, { lockedBranch: "host-task" }),
+    ).resolves.toBe(true);
+    expect(isRegistered(host.worktreePath)).toBe(false);
+
+    // Archive without a repository root still drops exactly its own locked registration, so
+    // its branch can be checked out again.
+    await deletePaseoWorktree({
+      worktreePath: again.worktreePath,
+      worktreesRoot: dirname(again.worktreePath),
+      paseoHome,
+      worktreesBaseRoot: worktreesRoot,
+    });
+    expect(isRegistered(again.worktreePath)).toBe(false);
+    expect(isRegistered(manual.replace("manual", "manual2"))).toBe(true);
   });
 });
