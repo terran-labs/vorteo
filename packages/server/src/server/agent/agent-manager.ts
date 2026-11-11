@@ -5944,7 +5944,7 @@ export class AgentManager {
     const agent = this.requireSessionAgent(agentId);
     const expectedTurnId = agent.activeForegroundTurnId ?? agent.activeTurnId;
     if (!expectedTurnId) {
-      if (holding) throw new RestartHoldError();
+      this.assertAcceptingAgentRegistrations();
       return { status: "inactive" };
     }
 
@@ -5971,7 +5971,7 @@ export class AgentManager {
     if (result.status === "accepted") {
       return { status: "steered" };
     }
-    if (holding) throw new RestartHoldError();
+    this.assertAcceptingAgentRegistrations();
 
     // Providers without autonomous steering keep their existing dispatch behavior. The shared
     // admission may recognize the turn, but only an accepted steer can own it without replacement.
@@ -5980,6 +5980,8 @@ export class AgentManager {
     }
 
     await this.beforeSteerUnavailableFallback?.({ agentId, expectedTurnId });
+    // The provider and fallback hook can both yield while a restart hold begins.
+    this.assertAcceptingAgentRegistrations();
     this.assertSteerAdmissionOwnsTurn(agent, expectedTurnId);
     return {
       status: "replaced",
