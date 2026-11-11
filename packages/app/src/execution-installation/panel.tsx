@@ -368,6 +368,9 @@ function restartStatus(job: RestartJob, historical = false) {
       return { label: "Waiting longer than expected", variant: "warning" as const };
     return { label: "Approval needed", variant: "warning" as const };
   }
+  // The hold outlasted its deadline: the owner must restart now or cancel.
+  if (job.status === "approved" && job.holdDeadlineExceeded)
+    return { label: "Your decision needed", variant: "warning" as const };
   let approvedLabel = "Approved";
   if (job.whenIdle) approvedLabel = "Queued until idle";
   if (job.finishCurrentTurns) approvedLabel = "Finishing current turns";

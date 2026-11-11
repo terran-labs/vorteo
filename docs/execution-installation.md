@@ -670,13 +670,16 @@ the turn can finish. A message that would start or replace a turn stays held and
 fails with a typed hold error. Finish notifications keep their durable intent and
 wait for the hold to end instead of retrying every few seconds.
 
-The coordinator records when the hold first waits (`holdStartedAt`) and logs each
-change in the set of agents it waits for, by agent ID only. After
-`restartHoldDeadlineMinutes` (default 15) it logs once, marks the job
-`holdDeadlineExceeded` and asks the owner to choose **Force restart now**, which
-interrupts the remaining turns, or to cancel. It still never interrupts them on its
-own. Restart activity lists the waiting agents by title, and Force restart now is
-offered for source updates and batches as well as plain restarts.
+The coordinator records when the hold first waits in its private `restart-holds.json`,
+which survives a coordinator restart, and logs each change in the set of agents it
+waits for, by agent ID only. After `restartHoldDeadlineMinutes` (default 15),
+whatever it is waiting on, it logs once, changes the job's detail and badges it
+**Your decision needed** for clients that request the reply-only
+`holdDeadlineExceeded`. The owner can choose **Force restart now**, which interrupts
+the remaining turns, or cancel. It still never interrupts them on its own. Restart
+activity lists the waiting agents by title, and Force restart now is offered for a
+source update or batch while it is approved and waiting for idle. See [restart hold
+deadline](protocol-compatibility.md#restart-hold-deadline) for rollback.
 
 The existing idle check includes provider subagents and registrations already in
 flight. Before dispatch, the daemon drains persistence and saves agent snapshots.

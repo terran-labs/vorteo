@@ -39,6 +39,7 @@ import {
   RestartRequestError,
   type RestartJournal,
   type RestartExecutor,
+  type RestartStartupOptions,
 } from "./restarts.js";
 import {
   RESTART_OPERATIONS,
@@ -585,56 +586,64 @@ test("a finish-current-turns hold asks the owner after its deadline and logs hol
   const journal = new MemoryJournal();
   let now = Date.now();
   let busy = true;
+  let saved: unknown = {};
+  const holdState = {
+    read: () => saved,
+    write: (value: unknown) => {
+      saved = structuredClone(value);
+    },
+  };
   const progress: Array<{ message: string; fields: Record<string, unknown> }> = [];
   const restartWhenIdle = vi.fn(async () => "replacement verified");
-  const queue = new InstallationRestarts(
-    journal,
-    {
-      restartContinuationAvailable: async () => false,
-      inspect: async () => idleImpact("host", busy),
-      holdCurrentTurns: async () => {},
-      releaseCurrentTurns: async () => {},
-      restart: async () => "wrong",
-      restartWhenIdle,
-    },
-    () => now,
-    {},
-    {
-      fenced: false,
-      finishTurnsDeadlineMs: 10 * 60_000,
-      progress: (message, fields) => progress.push({ message, fields }),
-    },
-  );
+  const executor: RestartExecutor = {
+    restartContinuationAvailable: async () => false,
+    inspect: async () => idleImpact("host", busy),
+    holdCurrentTurns: async () => {},
+    releaseCurrentTurns: async () => {},
+    restart: async () => "wrong",
+    restartWhenIdle,
+  };
+  const startup = (): RestartStartupOptions => ({
+    fenced: false,
+    finishTurnsDeadlineMs: 10 * 60_000,
+    holdState,
+    progress: (message, fields) => progress.push({ message, fields }),
+  });
+  const queue = new InstallationRestarts(journal, executor, () => now, {}, startup());
   const request = queue.request({ target: "host", reason: "Hold" }, "owner");
   queue.decide(request.id, request.revision, "finish-current-turns");
   await queue.drain();
-  const started = queue.list()[0]!;
-  expect(started.holdStartedAt).toBe(new Date(now).toISOString());
-  expect(started.holdDeadlineExceeded).toBeUndefined();
   now += 9 * 60_000;
   await queue.drain();
-  expect(queue.list()[0]?.holdDeadlineExceeded).toBeUndefined();
-  // Past the deadline it stops waiting silently, but never interrupts the turns itself.
+  expect(queue.holdDeadlineExceeded(request.id)).toBe(false);
+  // The hold start is coordinator-private and survives a coordinator restart.
+  const recovered = new InstallationRestarts(journal, executor, () => now, {}, startup());
   now += 2 * 60_000;
-  await queue.drain();
-  await queue.drain();
-  expect(queue.list()[0]).toMatchObject({
+  await recovered.drain();
+  await recovered.drain();
+  expect(recovered.holdDeadlineExceeded(request.id)).toBe(true);
+  expect(recovered.list()[0]).toMatchObject({
     status: "approved",
-    holdStartedAt: started.holdStartedAt,
-    holdDeadlineExceeded: true,
     detail: expect.stringContaining("Restart now to interrupt them, or cancel."),
   });
+  // Neither the journal nor the shared job carries the private hold fields.
+  expect(JSON.stringify(journal.jobs)).not.toContain("holdStartedAt");
+  expect(JSON.stringify(journal.jobs)).not.toContain("holdDeadlineExceeded");
+  // Past the deadline it stops waiting silently, but never interrupts the turns itself.
   expect(restartWhenIdle).not.toHaveBeenCalled();
   expect(progress.filter((entry) => entry.message.includes("deadline"))).toHaveLength(1);
-  // Holder changes are logged by ID only, once per change.
+  // Holder changes are logged by ID only, once per change, and never for an idle first check.
   const holders = progress.filter((entry) => entry.message === "Restart hold holders changed");
-  expect(holders).toHaveLength(1);
-  expect(holders[0]?.fields).toMatchObject({ agents: ["task"], pendingStarts: 0 });
+  expect(holders.map((entry) => entry.fields.agents)).toEqual([["task"], ["task"]]);
   expect(JSON.stringify(holders)).not.toContain("Build provider settings");
   busy = false;
-  await queue.drain();
-  await queue.drain();
+  await recovered.drain();
+  await recovered.drain();
   expect(restartWhenIdle).toHaveBeenCalledTimes(1);
+  // Finished jobs leave no private hold state behind.
+  recovered.request({ target: "container-daemon", reason: "Next" }, "owner");
+  await recovered.drain();
+  expect(saved).toEqual({});
 });
 
 test("the hold deadline covers any holder, including a start that never completes", async () => {
@@ -661,7 +670,7 @@ test("the hold deadline covers any holder, including a start that never complete
   await queue.drain();
   now += 15 * 60_000;
   await queue.drain();
-  expect(queue.list()[0]).toMatchObject({ status: "approved", holdDeadlineExceeded: true });
+  expect(queue.holdDeadlineExceeded(request.id)).toBe(true);
   // The owner's decision ends it: an immediate restart replaces the hold.
   const job = queue.list()[0]!;
   queue.decide(job.id, job.revision, "approve");
@@ -669,6 +678,60 @@ test("the hold deadline covers any holder, including a start that never complete
   await queue.drain();
   expect(queue.list()[0]?.status).toBe("succeeded");
 });
+
+test.each([false, true])(
+  "Force on a held update installs its prepared candidate (automatic approval: %s)",
+  async (automatic) => {
+    const f = automaticFixture();
+    const prepared: string[] = [];
+    const installed: Array<string | undefined> = [];
+    const executor: RestartExecutor = {
+      ...f.executor,
+      prepareInstallation: async (job) => {
+        prepared.push(job.id);
+      },
+      verifyPreparedInstallation: async () => {},
+      installUpdate: async (job) => {
+        installed.push(job.updatePreparation);
+        return "installed";
+      },
+    };
+    const update = {
+      sourceCommit: "a".repeat(40),
+      baseCommit: "b".repeat(40),
+      sha256: "c".repeat(64),
+      bytes: 12,
+    };
+    const queue = automatic
+      ? new InstallationRestarts(f.journal, executor, () => 2000, f.policy)
+      : new InstallationRestarts(f.journal, executor, () => 2000);
+    if (automatic)
+      queue.contribute(
+        { target: "host", reason: "Routine Host update" },
+        "host-agent",
+        update,
+        "10000000-0000-4000-8000-000000000041",
+      );
+    else {
+      const job = queue.request({ target: "host", reason: "Release upgrade" }, "owner", update);
+      queue.decide(job.id, job.revision, "finish-current-turns", update.sha256);
+    }
+    await queue.drain();
+    await queue.drain();
+    const held = queue.list()[0]!;
+    expect(held).toMatchObject({
+      status: "approved",
+      whenIdle: true,
+      updatePreparation: "prepared",
+    });
+    expect(installed).toEqual([]);
+    queue.decide(held.id, held.revision, "approve", held.update!.sha256);
+    await queue.drain();
+    expect(installed).toEqual(["prepared"]);
+    expect(prepared).toEqual([held.id]);
+    expect(queue.list()[0]?.status).toBe("succeeded");
+  },
+);
 
 test("recorded continuation on a target that lost support settles through legacy dispatch", async () => {
   const journal = new MemoryJournal();

@@ -1264,6 +1264,7 @@ test("Dev Force uses the same delayed approval guard as Host", () => {
   const update: RestartJob = {
     ...job,
     target: "host",
+    whenIdle: true,
     update: {
       sourceCommit: "a".repeat(40),
       baseCommit: "b".repeat(40),
@@ -1272,4 +1273,6 @@ test("Dev Force uses the same delayed approval guard as Host", () => {
     },
   };
   expect(restartForceDeadline(update)).toBe(deadline);
+  // The server acts on it only while the update waits for idle.
+  expect(restartForceDeadline({ ...update, whenIdle: false })).toBeNull();
 });
