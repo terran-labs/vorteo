@@ -92,3 +92,18 @@ export function aggregateFactories(factories: readonly FactorySummaryInput[]): F
     })),
   };
 }
+
+/** Immediate status does not depend on queue reads, which paused Factories intentionally skip. */
+export function factorySummaryState(factories: readonly FactorySummaryInput[]) {
+  const running = factories.filter(
+    (factory) => factory.listed.state === "on" && !factory.listed.drain,
+  ).length;
+  const held = factories.filter((factory) => factory.listed.drain !== null).length;
+  return {
+    count: factories.length,
+    running,
+    paused: factories.length - running,
+    held,
+    hasQueue: factories.some((factory) => factory.issues !== null),
+  };
+}
