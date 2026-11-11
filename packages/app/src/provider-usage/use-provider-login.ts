@@ -5,6 +5,7 @@ import {
 } from "@/execution-installation/policy";
 import {
   claudeFullSignInAvailable,
+  claudeProviderConnectsToInstallation,
   claudeSetupRequest,
   claudeUpgradeAvailable,
   claudeUpgradeRequest,
@@ -143,6 +144,31 @@ function installationRequest(
   return provider === "claude"
     ? claudeSetupRequest(serverId, providerId, operation, attempt)
     : codexInstallationRequest(serverId, providerId, operation, attempt);
+}
+
+/**
+ * Whether the coordinator reports that this named Claude account needs a new sign-in, for
+ * example because a failed CLI refresh erased its stored grant. Reads the owner-only connection
+ * status under the same query key the sign-in panel uses, at a slower cadence, so a row can offer
+ * Reconnect even while its last usage reading still looks fine.
+ */
+export function useClaudeAccountNeedsSignIn(serverId: string | null, providerId: string): boolean {
+  const ownerAllowed = useOwnerAllowed(serverId);
+  const installation = readExecutionInstallation();
+  const shared = useSharedInstallationSignIn(serverId, "claude");
+  const enabled = Boolean(
+    serverId && ownerAllowed && shared && claudeProviderConnectsToInstallation(providerId),
+  );
+  const connection = useFetchQuery({
+    queryKey: ["claude-setup-connection", installation?.installationId, serverId, providerId],
+    queryFn: async () => (await claudeSetupRequest(serverId!, providerId, "read")).connection,
+    enabled,
+    refetchInterval: enabled ? 60_000 : false,
+    staleTimeMs: 30_000,
+    dataShape: "value",
+    retry: false,
+  });
+  return enabled && connection.data?.needsSignIn === true;
 }
 
 interface SignInUsageRefreshInput {
