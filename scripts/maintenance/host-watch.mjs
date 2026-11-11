@@ -6,7 +6,8 @@
 // docs/execution-installation.md#host-watch.
 //
 //   node scripts/maintenance/host-watch.mjs \
-//     [--dev-container <name>] [--docker <path>]   read Dev's cached shared-folder inodes
+//     [--dev-container <name>] [--docker <path>]   read Dev's cached shared-folder inodes and
+//                                                    worktrees only Dev can see
 //     [--projects <folder>]... [--root <folder>]...  repositories whose worktrees to check
 //     [--precious <path>]...                         paths the latest backup must contain
 //     [--stale-hours 24] [--worktree-seconds 120]  staleness window, worktree pass deadline
@@ -172,9 +173,10 @@ function git(cwd, args) {
 }
 
 /** Linked worktrees visible here, once per repository, until the deadline passes. */
-function collectWorktrees(repositories, deadline) {
+function collectWorktrees(repositories, deadline, dev) {
   const seen = new Set();
   const found = [];
+  const elsewhere = [];
   let skipped = 0;
   for (const repository of repositories) {
     let common;
@@ -191,9 +193,10 @@ function collectWorktrees(repositories, deadline) {
       .split("\n")
       .filter((line) => line.startsWith("worktree "))
       .map((line) => line.slice("worktree ".length))
-      .slice(1)
-      .filter((location) => fs.existsSync(location));
-    for (const location of paths) {
+      .slice(1);
+    // Worktrees whose folders only Dev can see, such as those on Dev's worktree volume.
+    elsewhere.push(...paths.filter((location) => !fs.existsSync(location)));
+    for (const location of paths.filter((item) => fs.existsSync(item))) {
       if (Date.now() > deadline) {
         skipped++;
         continue;
@@ -218,7 +221,75 @@ function collectWorktrees(repositories, deadline) {
       }
     }
   }
+  if (dev && elsewhere.length) {
+    const fromDev = devWorktrees(dev, elsewhere, deadline);
+    found.push(...fromDev.worktrees);
+    skipped += fromDev.skipped;
+  }
   return { worktrees: found, skipped };
+}
+
+// Reads each worktree inside Dev in one shell, one line per worktree it can see:
+// <path>\t<dirty 0|1>\t<has remote 0|1>\t<unpushed>\t<index mtime in seconds>.
+const DEV_WORKTREE_SCRIPT = `
+while IFS= read -r p; do
+  [ -d "$p" ] || continue
+  g="git -c core.fsmonitor=false -C $p"
+  d=$($g rev-parse --absolute-git-dir 2>/dev/null) || continue
+  t=$(stat -c %Y "$d/index" 2>/dev/null || stat -c %Y "$d")
+  [ -n "$($g status --porcelain 2>/dev/null)" ] && dirty=1 || dirty=0
+  if [ -n "$($g remote 2>/dev/null)" ]; then
+    printf '%s\t%s\t1\t%s\t%s\n' "$p" "$dirty" "$($g rev-list --count HEAD --not --remotes)" "$t"
+  else
+    printf '%s\t%s\t0\t0\t%s\n' "$p" "$dirty" "$t"
+  fi
+done`;
+
+/** Worktrees read inside Dev; those Dev cannot see either are not counted. */
+export function parseDevWorktrees(output) {
+  return output
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => line.split("\t"))
+    .filter((fields) => fields.length === 5)
+    .map(([location, dirty, hasRemote, unpushed, mtime]) => ({
+      path: location,
+      dirty: dirty === "1",
+      noRemote: hasRemote === "0",
+      unpushed: Number(unpushed),
+      lastActivity: Number(mtime) * 1000,
+    }));
+}
+
+function devWorktrees({ docker, container }, paths, deadline) {
+  const seconds = Math.max(1, Math.floor((deadline - Date.now()) / 1000));
+  try {
+    const output = execFileSync(
+      docker,
+      [
+        "exec",
+        "-i",
+        "-e",
+        "GIT_OPTIONAL_LOCKS=0",
+        "-u",
+        "paseo",
+        container,
+        "sh",
+        "-c",
+        DEV_WORKTREE_SCRIPT,
+      ],
+      {
+        input: `${paths.join("\n")}\n`,
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "ignore"],
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: seconds * 1000,
+      },
+    );
+    return { worktrees: parseDevWorktrees(output), skipped: 0 };
+  } catch {
+    return { worktrees: [], skipped: paths.length };
+  }
 }
 
 function repositoriesIn(folder) {
@@ -315,7 +386,13 @@ function main() {
   if (repositories.length)
     checks.push(
       staleWorktreeCheck(
-        collectWorktrees(repositories, Date.now() + Number(values["worktree-seconds"]) * 1000),
+        collectWorktrees(
+          repositories,
+          Date.now() + Number(values["worktree-seconds"]) * 1000,
+          values["dev-container"]
+            ? { docker: values.docker, container: values["dev-container"] }
+            : null,
+        ),
         { now: Date.now(), staleHours: Number(values["stale-hours"]) },
       ),
     );

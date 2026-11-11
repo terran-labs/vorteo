@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  parseDevWorktrees,
   countDescriptors,
   backupCoverageCheck,
   fileTableCheck,
@@ -93,4 +94,28 @@ test("backup coverage names each precious path the latest completed backup lacks
     "ok",
   );
   assert.equal(backupCoverageCheck({ latest: null, contains }, ["/state"]).status, "warn");
+});
+
+test("worktrees only Dev can see are read inside Dev, one tab-separated line each", () => {
+  const output = [
+    "/p/.vorteo/worktrees/h/a\t1\t1\t0\t1762800000",
+    "/p/.vorteo/worktrees/h/b\t0\t0\t0\t1762800000",
+    "garbled line",
+  ].join("\n");
+  assert.deepEqual(parseDevWorktrees(output), [
+    {
+      path: "/p/.vorteo/worktrees/h/a",
+      dirty: true,
+      noRemote: false,
+      unpushed: 0,
+      lastActivity: 1762800000000,
+    },
+    {
+      path: "/p/.vorteo/worktrees/h/b",
+      dirty: false,
+      noRemote: true,
+      unpushed: 0,
+      lastActivity: 1762800000000,
+    },
+  ]);
 });
