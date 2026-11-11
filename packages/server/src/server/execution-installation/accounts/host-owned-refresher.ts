@@ -118,6 +118,13 @@ export type HostRefreshEvent =
       expiresAt: number | null;
       durationMs: number;
       reason?: "refresh_failed" | "refresh_unchanged" | "storage_unreadable";
+      /** How the refresh command failed, as a fixed category from its own result. */
+      failure?: string;
+    }
+  | {
+      /** A signed-in account's Host grant is gone or erased. Emitted once per loss. */
+      kind: "signInLost";
+      definitionId: string;
     }
   | {
       /** The access token is inside the lead window and no refresh has renewed it. */
@@ -333,6 +340,9 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     if (next.signedIn && !policy.removed) {
       desired = await this.readDueHost(next, now, recovery);
       if (desired !== undefined) this.warnIfExpiring(next, now);
+      // Once per loss, so an erased or deleted sign-in is noticed without anyone watching.
+      if (current.hostGrant !== "missing" && next.hostGrant === "missing")
+        this.emit({ kind: "signInLost", definitionId });
     }
 
     // Policy may change while storage or the official CLI is pending.
@@ -421,11 +431,13 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     const before = grant?.expiresAt ?? null;
     const started = Date.now();
     let failed = false;
+    let failure: string | undefined;
     try {
       await this.ports.refresh(definitionId);
-    } catch {
+    } catch (error) {
       // The CLI can save a rotated token before the model request fails or times out.
       failed = true;
+      failure = failureCategory(error);
     }
     let after: G | null;
     try {
@@ -441,6 +453,7 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
         expiresAt: null,
         durationMs: Date.now() - started,
         reason,
+        ...(failure ? { failure } : {}),
       });
       return grant;
     }
@@ -460,6 +473,7 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
       expiresAt: after?.expiresAt ?? null,
       durationMs: Date.now() - started,
       ...(advanced ? {} : { reason: next.failureReason }),
+      ...(failure ? { failure } : {}),
     });
     return after;
   }
@@ -688,6 +702,12 @@ function applyPolicy(next: HostRefreshRecord, policy: HostRefreshPolicy): void {
   next.policyRevision = policy.revision;
   next.rotation += 1;
   next.targets = policy.targets.map((target) => ({ ...target, appliedRotation: null }));
+}
+
+/** A refresh port may attach a fixed category to its error; anything else is dropped. */
+function failureCategory(error: unknown): string | undefined {
+  const category = (error as { category?: unknown } | null)?.category;
+  return typeof category === "string" && /^[a-z_]{1,40}$/.test(category) ? category : undefined;
 }
 
 function backoff(base: number, failures: number): number {

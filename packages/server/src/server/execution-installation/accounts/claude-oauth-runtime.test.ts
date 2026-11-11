@@ -67,6 +67,8 @@ function harness(
   const installationId = randomUUID();
   const config = {
     stateDir,
+    // These cases cover the opt-in path where the coordinator runs the refresh CLI.
+    claudeCoordinatorRefresh: true,
     public: {
       installationId,
       environments: [
