@@ -111,6 +111,7 @@ if [[ "$network_mode" == gate ]]; then
   mkdir -p "$deployment/gate/logs"
   paseo_gate_config "$instance" "$gate_subnet" "$gate_routes" > "$deployment/gate/config.json"
   printf '%s\n' 1 > "$deployment/.gate-mode"
+  paseo_dev_worktrees_compose "$projects_folder" "$instance" > "$deployment/dev-worktrees.compose.json"
   paseo_compose config --quiet
   paseo_compose up -d --pull never paseo gate
   printf 'Installation created at %s in gate mode. Keep the password in .env private.\n' "$deployment"
@@ -120,6 +121,7 @@ if [[ "$network_mode" == gate ]]; then
 fi
 if [[ -n "$projects_folder" ]]; then
   paseo_projects_folder_compose "$projects_folder" > "$deployment/projects-folder.compose.json"
+  paseo_dev_worktrees_compose "$projects_folder" "$instance" > "$deployment/dev-worktrees.compose.json"
 fi
 if [[ -n "${PASEO_HOST_LOOPBACK_PORT:-}" ]]; then
   paseo_host_loopback_compose "$PASEO_HOST_LOOPBACK_PORT" > "$deployment/host-loopback.compose.json"

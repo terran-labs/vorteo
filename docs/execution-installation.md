@@ -392,6 +392,15 @@ With a Projects folder, the daemon:
 
 Processes inside the container, such as agents, terminals and `pwd`, may still print the physical alias path. Paths they hand back to the daemon are mapped, but text in their output is not.
 
+### Dev worktrees on native storage
+
+Installations the installer creates give Dev its own storage for task worktrees: a Docker named volume, `<instance>-dev-worktrees`, covers `<Projects folder>/.vorteo/worktrees` inside Dev. Dev creates its worktrees at the same paths as before, on the Docker VM's native disk, and never reads the Host's worktrees or their dependencies through the shared folder. Reading a large tree through the shared folder makes the Docker VM hold a Host file handle for each file it caches, which can exhaust the Mac's file table. Owner project folders stay shared.
+
+- `install.sh` writes the overlay as `dev-worktrees.compose.json` in the deployment, and `common.sh` adds it to every Compose command. Before each `up`, it creates the volume if needed, gives it to Dev's daemon user (uid 1000) and creates the mount point folder on the Host.
+- Host and Dev hand work over through Git: branches and commits live in the shared repository, and each environment creates its own worktree for a branch. Each environment locks the worktrees it creates, so a prune from the other side, which cannot see them, keeps their metadata.
+- Roll back by removing `dev-worktrees.compose.json` and recreating the container with `./update.sh` or `docker compose up -d`. Dev then sees the shared folder again; the volume and Dev's worktrees in it are kept.
+- Existing installations keep their current layout. Moving them needs a tracked migration that recreates the Dev container and Dev's worktrees; see issue #349.
+
 ### Projects in every environment
 
 When the Host and the Dev daemon advertise the same `projectsRoot`, a project inside it needs no per-environment setup:

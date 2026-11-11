@@ -29,7 +29,45 @@ paseo_compose() {
   if [[ -f "$deployment/shared-folders.compose.json" ]]; then
     files+=(-f "$deployment/shared-folders.compose.json")
   fi
+  if [[ -f "$deployment/dev-worktrees.compose.json" ]]; then
+    files+=(-f "$deployment/dev-worktrees.compose.json")
+    if [[ "${1:-}" == up ]]; then paseo_prepare_dev_worktrees || return 1; fi
+  fi
   docker compose --project-directory "$deployment" --env-file "$deployment/.env" "${files[@]}" "$@"
+}
+
+# Dev's task worktrees on Docker's native storage: a named volume covers
+# <Projects folder>/.vorteo/worktrees inside Dev, so Dev never reads the Host's worktrees
+# or their dependencies through the shared folder, and builds at native speed. Removing
+# dev-worktrees.compose.json and recreating the container rolls back; the volume is kept.
+# See docs/execution-installation.md#dev-worktrees-on-native-storage.
+paseo_dev_worktrees_compose() {
+  local folder="$1" instance="$2"
+  if [[ ! "$folder" =~ ^/[A-Za-z0-9._/@+-]+$ || "$folder" == */ || "$folder" == *//* ]]; then
+    echo 'Use an absolute Projects folder path with letters, digits and ._@+- only.' >&2
+    return 1
+  fi
+  if [[ ! "$instance" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+    echo 'Use a Compose project name with lowercase letters, digits, _ and - only.' >&2
+    return 1
+  fi
+  printf '{\n  "services": {\n    "paseo": {\n      "volumes": [\n        { "type": "volume", "source": "dev-worktrees", "target": "%s/.vorteo/worktrees" }\n      ]\n    }\n  },\n  "volumes": {\n    "dev-worktrees": { "name": "%s-dev-worktrees", "external": true }\n  }\n}\n' "$folder" "$instance"
+}
+
+# Creates the worktree volume and gives it to Dev's daemon user (uid 1000), whose
+# worktrees it holds. A new named volume is owned by root. Idempotent; never deletes.
+paseo_prepare_dev_worktrees() {
+  local file="$deployment/dev-worktrees.compose.json" name target image
+  name="$(sed -n 's/.*"name": "\([^"]*-dev-worktrees\)".*/\1/p' "$file")"
+  target="$(sed -n 's/.*"target": "\([^"]*\)\/\.vorteo\/worktrees".*/\1/p' "$file")"
+  [[ -n "$name" && -n "$target" ]] || { echo "Unreadable $file." >&2; return 1; }
+  # The mount point inside the shared Projects folder; Docker would otherwise create it.
+  mkdir -p "$target/.vorteo/worktrees"
+  docker volume inspect "$name" >/dev/null 2>&1 || docker volume create "$name" >/dev/null
+  image="$(sed -n 's/^PASEO_IMAGE=//p' "$deployment/.env" | tail -n 1)"
+  [[ -n "$image" ]] || { echo 'Set PASEO_IMAGE in .env first.' >&2; return 1; }
+  docker run --rm --network none --user 0:0 --entrypoint chown \
+    -v "$name:/worktrees" "$image" 1000:1000 /worktrees >/dev/null
 }
 
 # Mounts the Projects folder at its own absolute path, so the Host and the container
