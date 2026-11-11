@@ -66,8 +66,12 @@ async function retentionFile(file: string, limit: number) {
 async function retentionLock(socketPath: string) {
   const file = `${socketPath}.lock`;
   const value = await retentionFile(file, 128);
-  const pid = Number(value.text.trim());
-  if (!Number.isSafeInteger(pid) || pid <= 0)
+  const pid = Number(value.text);
+  if (
+    !Number.isSafeInteger(pid) ||
+    pid <= 0 ||
+    (value.text !== String(pid) && value.text !== `${pid}\n`)
+  )
     throw new SessionHostFileError(file, "Session host retention lock holder is unknown.");
   return { pid, generation: value.generation };
 }
@@ -105,13 +109,37 @@ export async function writeSessionHostRelease(
   }
 }
 
-/** Null only when the existing lock reader proves no host. Live unknown evidence throws. */
+async function retentionEvidenceAbsent(file: string): Promise<boolean> {
+  try {
+    await lstat(file);
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  }
+}
+
+/** A checked snapshot, not a lifetime lease against a later host start. */
 export async function readSessionHostRelease(paseoHome: string): Promise<string | null> {
   const paths = sessionHostPaths(paseoHome);
-  const state = await readSessionHostLock(paths.socketPath);
-  if (state.state === "gone") return null;
-  const lock = await retentionLock(paths.socketPath);
   const file = path.join(paths.directory, SESSION_HOST_RELEASE_FILE_NAME);
+  let lock;
+  try {
+    lock = await retentionLock(paths.socketPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    // A retained receipt without its lock cannot prove which generation exited.
+    if (
+      !(await retentionEvidenceAbsent(file)) ||
+      !(await retentionEvidenceAbsent(`${paths.socketPath}.lock`)) ||
+      !(await retentionEvidenceAbsent(file))
+    )
+      throw new SessionHostFileError(
+        file,
+        "Session host absence evidence changed or is incomplete.",
+      );
+    return null;
+  }
   const receipt = await retentionFile(file, 8192);
   const value = JSON.parse(receipt.text) as {
     version?: unknown;
@@ -122,7 +150,6 @@ export async function readSessionHostRelease(paseoHome: string): Promise<string 
   if (
     value.version !== 1 ||
     value.pid !== lock.pid ||
-    state.pid !== lock.pid ||
     value.lockGeneration !== lock.generation ||
     typeof value.releaseRoot !== "string" ||
     !path.isAbsolute(value.releaseRoot) ||
@@ -132,16 +159,22 @@ export async function readSessionHostRelease(paseoHome: string): Promise<string 
       file,
       "Live session host release is unknown or belongs to another lock generation.",
     );
+  let alive = true;
+  try {
+    process.kill(lock.pid, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    alive = false;
+  }
   const current = await retentionLock(paths.socketPath);
-  const alive = await readSessionHostLock(paths.socketPath);
+  const currentReceipt = await retentionFile(file, 8192);
   if (
     current.pid !== lock.pid ||
     current.generation !== lock.generation ||
-    alive.state !== "alive" ||
-    alive.pid !== lock.pid
+    currentReceipt.generation !== receipt.generation
   )
     throw new SessionHostFileError(file, "Session host lock changed during release inspection.");
-  return value.releaseRoot;
+  return alive ? value.releaseRoot : null;
 }
 
 /** Directory under PASEO_HOME that holds the host socket, token and audit log. */

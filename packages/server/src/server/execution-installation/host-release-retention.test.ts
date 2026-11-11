@@ -260,46 +260,61 @@ test("retention keeps the release a running session host recorded", async () => 
   expect(afterReplacement).toEqual([id(1)]);
   expect(existsSync(f.release(5))).toBe(true);
   await replacement.release();
-  expect(await readSessionHostRelease(home)).toBeNull();
+  // Removing a lock does not prove that its retained owner has exited.
+  await expect(readSessionHostRelease(home)).rejects.toThrow("absence evidence");
 });
 
-test.each(["missing", "invalid", "unknown-root", "write-failure"])(
-  "retention refuses a live host with %s release evidence",
-  async (mode) => {
-    const f = fixture(5);
-    const home = path.join(f.base, "home");
-    const directory = path.join(home, "session-host");
-    mkdirSync(directory, { recursive: true });
-    const lock = await acquireHostLock(path.join(directory, "host.sock"));
-    const receipt = path.join(directory, "release.json");
-    try {
-      if (mode === "write-failure") {
-        mkdirSync(receipt);
-        await expect(writeSessionHostRelease(directory, f.release(1))).rejects.toThrow();
-      } else if (mode !== "missing") {
-        await writeSessionHostRelease(directory, f.release(1));
-        if (mode === "invalid") writeFileSync(receipt, "{malformed receipt", { mode: 0o600 });
-        else {
-          const value = JSON.parse(readFileSync(receipt, "utf8"));
-          value.releaseRoot = path.join(f.base, "unavailable-root");
-          writeFileSync(receipt, JSON.stringify(value), { mode: 0o600 });
-        }
+test.each([
+  "missing",
+  "invalid",
+  "unknown-root",
+  "write-failure",
+  "malformed-lock",
+  "missing-lock",
+])("retention refuses a live host with %s release evidence", async (mode) => {
+  const f = fixture(5);
+  const home = path.join(f.base, "home");
+  const directory = path.join(home, "session-host");
+  mkdirSync(directory, { recursive: true });
+  const lock = await acquireHostLock(path.join(directory, "host.sock"));
+  const receipt = path.join(directory, "release.json");
+  try {
+    if (mode === "write-failure") {
+      mkdirSync(receipt);
+      await expect(writeSessionHostRelease(directory, f.release(1))).rejects.toThrow();
+    } else if (mode !== "missing") {
+      await writeSessionHostRelease(directory, f.release(1));
+      if (mode === "malformed-lock") {
+        const deadPid = 2147483647;
+        expect(() => process.kill(deadPid, 0)).toThrow();
+        writeFileSync(
+          path.join(directory, "host.sock.lock"),
+          `${deadPid} invalid-holder-record\n`,
+          { mode: 0o600 },
+        );
+      } else if (mode === "missing-lock") {
+        rmSync(path.join(directory, "host.sock.lock"));
+      } else if (mode === "invalid") writeFileSync(receipt, "{malformed receipt", { mode: 0o600 });
+      else {
+        const value = JSON.parse(readFileSync(receipt, "utf8"));
+        value.releaseRoot = path.join(f.base, "unavailable-root");
+        writeFileSync(receipt, JSON.stringify(value), { mode: 0o600 });
       }
-      const cleanup = async () => {
-        const release = await readSessionHostRelease(home);
-        return pruneHostReleases({
-          releaseRoot: f.root,
-          referenced: [f.current, ...(release ? [release] : [])],
-          keepNewest: 1,
-        });
-      };
-      await expect(cleanup()).rejects.toThrow();
-      for (let index = 0; index < 5; index++) expect(existsSync(f.release(index))).toBe(true);
-    } finally {
-      await lock.release();
     }
-  },
-);
+    const cleanup = async () => {
+      const release = await readSessionHostRelease(home);
+      return pruneHostReleases({
+        releaseRoot: f.root,
+        referenced: [f.current, ...(release ? [release] : [])],
+        keepNewest: 1,
+      });
+    };
+    await expect(cleanup()).rejects.toThrow();
+    for (let index = 0; index < 5; index++) expect(existsSync(f.release(index))).toBe(true);
+  } finally {
+    await lock.release();
+  }
+});
 
 test("failed Claude executable probes are cached until the executable changes", async () => {
   const f = fixture(1);
