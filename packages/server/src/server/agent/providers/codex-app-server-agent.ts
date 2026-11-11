@@ -6557,7 +6557,25 @@ export class CodexAppServerAgentSession implements AgentSession {
       this.pendingSubAgentNotificationsByThreadId.set(threadId, pending);
     }
     if (pending.length >= MAX_PENDING_SUB_AGENT_NOTIFICATIONS_PER_THREAD) {
-      pending.shift();
+      // Progress may be lossy; the latest start and terminal determine whether
+      // this child still blocks restart after its root finishes.
+      const latestStart = pending.findLastIndex(
+        (notification) =>
+          notification.kind === "thread_started" || notification.kind === "turn_started",
+      );
+      const latestTerminal = pending.findLastIndex(
+        (notification) => notification.kind === "turn_completed",
+      );
+      const progress = pending.findIndex(
+        (notification) =>
+          notification.kind !== "thread_started" &&
+          notification.kind !== "turn_started" &&
+          notification.kind !== "turn_completed",
+      );
+      const superseded = pending.findIndex(
+        (_notification, index) => index !== latestStart && index !== latestTerminal,
+      );
+      pending.splice(progress >= 0 ? progress : superseded, 1);
     }
     pending.push(parsed);
   }

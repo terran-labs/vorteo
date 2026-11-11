@@ -6061,11 +6061,13 @@ describe("Codex app-server provider", () => {
           ? { thread: { id: "late-child" } }
           : { threadId: "late-child", turn: { id: "live-child-turn" } },
       );
-      await notify("item/agentMessage/delta", {
-        threadId: "late-child",
-        itemId: "new-message",
-        delta: "Live progress",
-      });
+      for (let index = 0; index < 128; index++) {
+        await notify("item/agentMessage/delta", {
+          threadId: "late-child",
+          itemId: "new-message",
+          delta: "Live progress",
+        });
+      }
       await notify("turn/completed", {
         threadId: "test-thread",
         turn: { id: "root-turn", status: "completed" },
@@ -6107,6 +6109,68 @@ describe("Codex app-server provider", () => {
       });
       expect(statuses().at(-1)).toBe("completed");
       expect(events.filter((event) => event.type === "turn_completed")).toHaveLength(1);
+
+      // A fresh session reusing the native id has no route yet. Saturate only
+      // lifecycle frames, then retain the newest start and terminal in order.
+      const reused = createSession();
+      const reusedEvents: AgentStreamEvent[] = [];
+      reused.subscribe((event) => reusedEvents.push(event));
+      const notifyReused = asInternals(reused).handleNotification.bind(reused);
+      for (let index = 0; index < 128; index++) {
+        await notifyReused("turn/started", {
+          threadId: "late-child",
+          turn: { id: `old-${index}` },
+        });
+      }
+      await notifyReused("turn/completed", {
+        threadId: "late-child",
+        turn: { id: "old-127", status: "completed" },
+      });
+      await notifyReused("turn/started", { threadId: "late-child", turn: { id: "newest" } });
+      const completedBeforeRoute = startMethod === "thread/started";
+      if (completedBeforeRoute)
+        await notifyReused("turn/completed", {
+          threadId: "late-child",
+          turn: { id: "newest", status: "completed" },
+        });
+      await notifyReused("turn/completed", {
+        threadId: "test-thread",
+        turn: { status: "completed" },
+      });
+      await notifyReused("item/completed", {
+        threadId: "test-thread",
+        item: {
+          type: "subAgentActivity",
+          id: "reused-launch",
+          kind: "started",
+          agentThreadId: "late-child",
+          agentPath: "/root/late-child",
+        },
+      });
+      const lastChild = reusedEvents.findLast(
+        (event) =>
+          event.type === "provider_subagent" &&
+          event.event.type === "upsert" &&
+          event.event.id === "late-child",
+      );
+      expect(lastChild).toMatchObject({
+        event: { status: completedBeforeRoute ? "completed" : "running" },
+      });
+      if (!completedBeforeRoute)
+        await notifyReused("turn/completed", {
+          threadId: "late-child",
+          turn: { id: "newest", status: "completed" },
+        });
+      await notifyReused("turn/started", { threadId: "late-child", turn: { id: "reopened" } });
+      expect(
+        reusedEvents.findLast(
+          (event) =>
+            event.type === "provider_subagent" &&
+            event.event.type === "upsert" &&
+            event.event.id === "late-child",
+        ),
+      ).toMatchObject({ event: { status: "running" } });
+      await reused.close();
     },
   );
 
