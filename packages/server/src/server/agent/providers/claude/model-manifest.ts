@@ -79,6 +79,7 @@ export const CLAUDE_MODEL_MANIFEST = [
     minimumClaudeCodeVersion: "2.1.290",
     contextWindowMaxTokens: 1_000_000,
     effortLevels: CLAUDE_EFFORT_LEVELS.xhigh,
+    defaultThinkingOptionId: "medium",
     supportsFastMode: true,
   },
   {

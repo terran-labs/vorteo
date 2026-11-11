@@ -2,6 +2,9 @@ import { z } from "zod";
 import type { ProjectFactoryState } from "@/components/sidebar/factory-state";
 
 const QueueSchema = z.object({
+  degraded: z.string().optional(),
+  refreshing: z.boolean().optional(),
+  partial: z.boolean().optional(),
   fetchedAt: z.string(),
   error: z.string().nullable(),
   issues: z.array(
@@ -36,6 +39,17 @@ const QueueSchema = z.object({
   ),
 });
 export type FactoryQueue = z.infer<typeof QueueSchema>;
+interface QueueRefreshInput {
+  queue: FactoryQueue | null | undefined;
+  enabled: boolean;
+  polling: boolean;
+  steadyMs?: number;
+}
+export function factoryQueueRefreshInterval(input: QueueRefreshInput): number | false {
+  if (!input.enabled || input.queue === null) return false;
+  if (input.queue?.refreshing) return 2_000;
+  return input.polling ? (input.steadyMs ?? 120_000) : false;
+}
 export type FactoryInvoke = (method: string, input: unknown) => Promise<unknown>;
 
 export async function loadFactoryQueue(

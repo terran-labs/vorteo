@@ -307,7 +307,7 @@ describe("getClaudeModels", () => {
     ["claude-sonnet-5[1m]", true, "high"],
     ["claude-sonnet-5-20260101", true, "high"],
     ["claude-fable-5", false, "high"],
-    ["claude-fable-5-2", false, "high"],
+    ["claude-fable-5-2", false, "medium"],
     ["claude-fable-5-1", false, "high"],
     ["claude-haiku-5-5", true, "medium"],
     ["claude-haiku-5-5-20261007", true, "medium"],
