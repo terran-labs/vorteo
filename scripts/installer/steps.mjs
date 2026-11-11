@@ -17,6 +17,7 @@ import { writeProjectsFolderSettings } from "../lib/projects-folder.mjs";
 import { projectsAccess } from "./projects-access.mjs";
 import { DEPLOYMENT_SCRIPTS } from "./dev-release.mjs";
 import { writeSystemSource } from "../lib/system-source.mjs";
+import { excludeFromTimeMachine } from "../lib/time-machine-exclusions.mjs";
 import {
   buildCoordinatorConfig,
   describeServices,
@@ -358,6 +359,8 @@ async function release(s) {
       }),
   });
   writeJson(marker, { revision: plan.revision, builtAt: context.now().toISOString() });
+  // Every release is rebuilt from source, so the releases folder stays out of Time Machine.
+  excludeFromTimeMachine([path.dirname(plan.paths.release)], { platform: context.platform });
   // A Host installation upgraded in place selects its releases in adopt-links.
   if (plan.kind !== "adopt-host") selectRelease(plan);
   return { message: `Built release ${plan.revision.slice(0, 12)}.` };

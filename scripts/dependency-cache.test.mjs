@@ -9,6 +9,12 @@ import {
   installModes,
   pruneDependencyCache,
 } from "./lib/dependency-cache.mjs";
+import {
+  EXCLUDE_ATTRIBUTE,
+  checkoutRegenerables,
+  checkoutsUnder,
+  excludeFromTimeMachine,
+} from "./lib/time-machine-exclusions.mjs";
 
 function temporary(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "dependency-cache-"));
@@ -276,3 +282,45 @@ test(
     );
   },
 );
+
+test("Time Machine exclusions mark only regenerable folders, never source", (t) => {
+  const parent = temporary(t);
+  const repo = path.join(parent, "worktrees", "hash", "task");
+  const folder = (relative) => fs.mkdirSync(path.join(repo, relative), { recursive: true });
+  for (const relative of ["src", "node_modules", "packages/a/src", "packages/a/dist"])
+    folder(relative);
+  folder("packages/b/build");
+  folder("plugins/node_modules");
+  fs.writeFileSync(
+    path.join(repo, "package.json"),
+    JSON.stringify({ workspaces: ["packages/*", "plugins", "../escape"] }),
+  );
+  // A link named like a build folder must not lead the marker outside the checkout.
+  fs.symlinkSync(path.join(repo, "src"), path.join(repo, "packages/a/node_modules"));
+
+  assert.deepEqual(checkoutsUnder(path.join(parent, "worktrees"), 2), [repo]);
+  const regenerable = checkoutRegenerables(repo).map((file) => path.relative(repo, file));
+  assert.deepEqual(regenerable.sort(), [
+    "node_modules",
+    "packages/a/dist",
+    "packages/b/build",
+    "plugins/node_modules",
+  ]);
+
+  // Only folders still missing the attribute are written; Linux never runs xattr.
+  const writes = [];
+  const run = (command, args) => {
+    if (args[0] === "-p" && args[2].endsWith("plugins/node_modules")) return Buffer.from("");
+    if (args[0] === "-p") throw new Error("missing");
+    writes.push(path.relative(repo, args[3]));
+    assert.equal(args[1], EXCLUDE_ATTRIBUTE);
+  };
+  const folders = checkoutRegenerables(repo);
+  assert.deepEqual(excludeFromTimeMachine(folders, { platform: "darwin", run }), {
+    checked: 4,
+    added: 3,
+    failed: [],
+  });
+  assert.deepEqual(writes.sort(), ["node_modules", "packages/a/dist", "packages/b/build"]);
+  assert.deepEqual(excludeFromTimeMachine(folders, { platform: "linux", run }).checked, 0);
+});
