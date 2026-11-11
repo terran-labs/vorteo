@@ -2943,7 +2943,7 @@ test.each([false, true])(
   },
 );
 
-test("timeline polling backs off a failed native load and retries after the cooldown", async () => {
+test("timeline polling allows one explicit attempt during a failed native load cooldown", async () => {
   const record = makeStoredAgent({
     id: "00000000-0000-4000-8000-000000000116",
     cwd: process.cwd(),
@@ -2953,7 +2953,8 @@ test("timeline polling backs off a failed native load and retries after the cool
   const client = new CreateAgentTestClient();
   const resume = vi
     .spyOn(client, "resumeSession")
-    .mockRejectedValueOnce(new Error("Native history unavailable"));
+    .mockRejectedValueOnce(new Error("Native history unavailable"))
+    .mockRejectedValueOnce(new Error("Native history still unavailable"));
   const manager = new AgentManager({ clients: { codex: client }, logger: createTestLogger() });
   const providers = createProviderSnapshotManagerStub();
   providers.listRegisteredProviderIds.mockReturnValue(["codex"]);
@@ -2964,12 +2965,13 @@ test("timeline polling backs off a failed native load and retries after the cool
     agentStorage: { get: async () => record },
     onMessage: (message) => emitted.push(message),
   });
-  const read = async (requestId: string) => {
+  const read = async (requestId: string, retryHistory = false) => {
     emitted.length = 0;
     await session.handleMessage({
       type: "fetch_agent_timeline_request",
       requestId,
       agentId: record.id,
+      ...(retryHistory ? { retryHistory: true } : {}),
     });
     return findByType(emitted, "fetch_agent_timeline_response")?.payload;
   };
@@ -2979,13 +2981,78 @@ test("timeline polling backs off a failed native load and retries after the cool
     expect((await read("initial-failure"))?.error).toBe("Native history unavailable");
     expect((await read("observer-retry"))?.error).toBe("Native history unavailable");
     expect(resume).toHaveBeenCalledTimes(1);
+    expect((await read("manual-retry", true))?.error).toBe("Native history still unavailable");
+    expect((await read("repeated-manual-retry", true))?.error).toBe(
+      "Native history still unavailable",
+    );
+    expect(resume).toHaveBeenCalledTimes(2);
     vi.advanceTimersByTime(30_000);
     expect((await read("after-cooldown"))?.error).toBeNull();
     expect((await read("after-recovery"))?.error).toBeNull();
-    expect(resume).toHaveBeenCalledTimes(2);
+    expect(resume).toHaveBeenCalledTimes(3);
   } finally {
     vi.useRealTimers();
     await manager.closeAgent(record.id);
+  }
+});
+
+test("a timeline read crossing close keeps the retained cursor without creating a session", async () => {
+  const record = makeStoredAgent({
+    id: "00000000-0000-4000-8000-000000000117",
+    cwd: process.cwd(),
+    updatedAt: "2026-11-10T00:00:00.000Z",
+  });
+  const client = new CreateAgentTestClient();
+  const config = { provider: "codex", cwd: record.cwd } satisfies AgentSessionConfig;
+  const runtime = new CreateAgentTestSession(config);
+  Object.defineProperty(runtime, "describePersistence", { value: () => null });
+  const closeGate = deferred<void>();
+  const close = vi.spyOn(runtime, "close").mockReturnValue(closeGate.promise);
+  const create = vi.spyOn(client, "createSession").mockResolvedValueOnce(runtime);
+  const timelineStore = new InMemoryAgentTimelineStore();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    timelineStore,
+    logger: createTestLogger(),
+  });
+  await manager.createAgent(config, record.id, { workspaceId: undefined });
+  timelineStore.append(record.id, { type: "assistant_message", text: "Retained answer" });
+  const before = manager.fetchTimeline(record.id);
+  const closing = manager.closeAgent(record.id);
+  try {
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    const providers = createProviderSnapshotManagerStub();
+    providers.listRegisteredProviderIds.mockReturnValue(["codex"]);
+    const emitted: SessionOutboundMessage[] = [];
+    const session = createSessionForWorkspaceTests({
+      liveAgentManager: manager,
+      providerSnapshotManager: providers.manager,
+      agentStorage: { get: async () => record },
+      onMessage: (message) => emitted.push(message),
+    });
+    const wait = vi.spyOn(manager, "waitForAgentClose");
+    const fetching = session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      requestId: "crossing-close",
+      agentId: record.id,
+      direction: "after",
+      cursor: { epoch: before.epoch, seq: before.endSeq! },
+    });
+    await vi.waitFor(() => expect(wait).toHaveBeenCalled());
+    closeGate.resolve();
+    await closing;
+    await fetching;
+    expect(create).toHaveBeenCalledOnce();
+    expect(manager.getAgent(record.id)).toBeNull();
+    expect(findByType(emitted, "fetch_agent_timeline_response")?.payload).toMatchObject({
+      error: null,
+      epoch: before.epoch,
+      staleCursor: false,
+      entries: [],
+    });
+  } finally {
+    closeGate.resolve();
+    await closing;
   }
 });
 

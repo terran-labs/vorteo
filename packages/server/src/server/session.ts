@@ -121,6 +121,7 @@ import {
   AgentNotFoundError,
   TimelineHistoryRetryError,
   ensureAgentLoaded,
+  ensureAgentLoadedForTimeline,
   ensureUnarchivedAgentLoaded,
   loadTimelineHistory,
 } from "./agent/agent-loading.js";
@@ -9722,6 +9723,7 @@ export class Session {
   private async fetchControlTimeline(
     agentId: string,
     options: AgentTimelineFetchOptions,
+    retryHistory: boolean,
   ): Promise<{
     agentPayload: AgentSnapshotPayload;
     fetchedControlTimeline: AgentTimelineFetchResult;
@@ -9729,45 +9731,61 @@ export class Session {
     let live = this.agentManager.getAgent(agentId);
     const record = live ? null : await this.agentStorage.get(agentId);
     live ??= this.agentManager.getAgent(agentId);
-    if (!live && record) {
-      const registeredProviders = this.providerSnapshotManager.listRegisteredProviderIds({
-        enabledOnly: true,
-      });
-      const persistence = record.persistence?.sessionId ? record.persistence : null;
-      const withoutNativeHistory = !persistence && !record.profileSwitches?.length;
-      if (!isStoredAgentProviderAvailable(record, registeredProviders) || withoutNativeHistory) {
-        const agentPayload = this.buildStoredAgentPayload(record, new Set(registeredProviders));
-        const fetchedControlTimeline = await this.agentManager.fetchSavedTimeline(
-          agentId,
-          options,
-          () =>
-            loadTimelineHistory(this.agentManager, agentId, "saved", () =>
+    const registeredProviders = this.providerSnapshotManager.listRegisteredProviderIds({
+      enabledOnly: true,
+    });
+    const fetchSaved = async (saved: StoredAgentRecord) => {
+      const persistence = saved.persistence?.sessionId ? saved.persistence : null;
+      const agentPayload = this.buildStoredAgentPayload(saved, new Set(registeredProviders));
+      const fetchedControlTimeline = await this.agentManager.fetchSavedTimeline(
+        agentId,
+        options,
+        () =>
+          loadTimelineHistory(
+            this.agentManager,
+            agentId,
+            "saved",
+            () =>
               this.agentManager.readStoredSwitchHistory(
-                persistence ? record : { ...record, persistence: null },
+                persistence ? saved : { ...saved, persistence: null },
                 persistence
                   ? this.providerSnapshotManager.readSessionHistory(persistence, {
-                      ...buildConfigOverrides(record),
-                      provider: record.provider,
-                      cwd: record.cwd,
+                      ...buildConfigOverrides(saved),
+                      provider: saved.provider,
+                      cwd: saved.cwd,
                     })
                   : (async function* () {})(),
               ),
-            ),
-          { useRetainedTimeline: withoutNativeHistory },
-        );
-        return { agentPayload, fetchedControlTimeline };
-      }
+            retryHistory,
+          ),
+        { useRetainedTimeline: !persistence && !saved.profileSwitches?.length },
+      );
+      return { agentPayload, fetchedControlTimeline };
+    };
+    if (
+      !live &&
+      record &&
+      (!isStoredAgentProviderAvailable(record, registeredProviders) ||
+        (!record.persistence?.sessionId && !record.profileSwitches?.length))
+    ) {
+      return fetchSaved(record);
     }
+
     const load = () =>
-      ensureAgentLoaded(agentId, {
+      ensureAgentLoadedForTimeline(agentId, {
         agentManager: this.agentManager,
         agentStorage: this.agentStorage,
         logger: this.sessionLogger,
       });
     const needsHistory = live ? this.agentManager.needsTimelineHydration(agentId) : Boolean(record);
     const agent = needsHistory
-      ? await loadTimelineHistory(this.agentManager, agentId, "native", load)
+      ? await loadTimelineHistory(this.agentManager, agentId, "native", load, retryHistory)
       : await load();
+    if (!agent) {
+      const latest = await this.agentStorage.get(agentId);
+      if (!latest) throw new AgentNotFoundError(agentId);
+      return fetchSaved(latest);
+    }
     return {
       agentPayload: await this.buildAgentPayload(agent),
       fetchedControlTimeline: this.agentManager.fetchTimeline(agentId, options),
@@ -9796,6 +9814,7 @@ export class Session {
           limit: msg.limit,
           wholeTurns: msg.wholeTurns,
         },
+        msg.retryHistory === true,
       );
       const selectedTimeline = {
         timeline: fetchedControlTimeline,

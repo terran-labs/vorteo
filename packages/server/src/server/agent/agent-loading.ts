@@ -22,8 +22,8 @@ export class AgentNotFoundError extends Error {
 }
 
 interface PendingAgentInitialization {
-  promise: Promise<ManagedAgent>;
-  options: { broadcastTimeline: boolean };
+  promise: Promise<ManagedAgent | null>;
+  options: { broadcastTimeline: boolean; allowCreateWithoutHistory: boolean };
 }
 
 const pendingAgentInitializations = new Map<string, PendingAgentInitialization>();
@@ -44,10 +44,10 @@ const TIMELINE_FAILURE_RETRY_MS = 30_000;
 const MAX_TIMELINE_FAILURES = 1024;
 interface TimelineHistoryResult {
   saved: AgentTimelineRow[];
-  native: ManagedAgent;
+  native: ManagedAgent | null;
 }
 interface TimelineHistoryLoads {
-  failures: Map<string, { retryAt: number; message: string }>;
+  failures: Map<string, { retryAt: number; message: string; manualRetryUsed: boolean }>;
   pending: Map<string, Promise<TimelineHistoryResult[keyof TimelineHistoryResult]>>;
 }
 const timelineHistoryLoads = new WeakMap<AgentLoaderManager, TimelineHistoryLoads>();
@@ -60,6 +60,7 @@ export async function loadTimelineHistory<Source extends keyof TimelineHistoryRe
   agentId: string,
   source: Source,
   load: () => Promise<TimelineHistoryResult[Source]>,
+  retryHistory = false,
 ): Promise<TimelineHistoryResult[Source]> {
   let loads = timelineHistoryLoads.get(manager);
   if (!loads) {
@@ -72,7 +73,8 @@ export async function loadTimelineHistory<Source extends keyof TimelineHistoryRe
   const inflight = pending.get(key) as Promise<TimelineHistoryResult[Source]> | undefined;
   if (inflight) return inflight;
   const failure = failures.get(key);
-  if (failure && performance.now() < failure.retryAt) {
+  const withinCooldown = failure !== undefined && performance.now() < failure.retryAt;
+  if (withinCooldown && (!retryHistory || failure.manualRetryUsed)) {
     throw new TimelineHistoryRetryError(failure.message);
   }
   const attempt = Promise.resolve().then(load);
@@ -85,6 +87,7 @@ export async function loadTimelineHistory<Source extends keyof TimelineHistoryRe
     failures.delete(key);
     failures.set(key, {
       retryAt: performance.now() + TIMELINE_FAILURE_RETRY_MS,
+      manualRetryUsed: withinCooldown,
       message: error instanceof Error ? error.message : String(error),
     });
     if (failures.size > MAX_TIMELINE_FAILURES) {
@@ -134,11 +137,30 @@ export async function ensureAgentLoaded(
   agentId: string,
   deps: EnsureAgentLoadedDeps,
 ): Promise<ManagedAgent> {
+  const loaded = await loadAgent(agentId, deps, true);
+  // An interactive caller may join just after a history-only load chooses saved rows.
+  return loaded ?? ensureAgentLoaded(agentId, deps);
+}
+
+/** Cold native history can resume a session. An empty saved thread stays closed. */
+export function ensureAgentLoadedForTimeline(
+  agentId: string,
+  deps: EnsureAgentLoadedDeps,
+): Promise<ManagedAgent | null> {
+  return loadAgent(agentId, deps, false);
+}
+
+async function loadAgent(
+  agentId: string,
+  deps: EnsureAgentLoadedDeps,
+  allowCreateWithoutHistory: boolean,
+): Promise<ManagedAgent | null> {
   await deps.agentManager.waitForAgentClose?.(agentId);
 
   const inflight = pendingAgentInitializations.get(agentId);
   if (inflight) {
     inflight.options.broadcastTimeline ||= deps.broadcastTimeline === true;
+    inflight.options.allowCreateWithoutHistory ||= allowCreateWithoutHistory;
     return inflight.promise;
   }
 
@@ -148,7 +170,7 @@ export async function ensureAgentLoaded(
       return existing;
     }
     // Registered, but its history read failed. Retry it, or the thread stays empty.
-    return trackInitialization(agentId, deps, async (options) => {
+    return trackInitialization(agentId, deps, allowCreateWithoutHistory, async (options) => {
       await deps.agentManager.retryTimelineHydration(agentId, {
         broadcast: () => options.broadcastTimeline,
       });
@@ -164,10 +186,11 @@ export async function ensureAgentLoaded(
   const laterInflight = pendingAgentInitializations.get(agentId);
   if (laterInflight) {
     laterInflight.options.broadcastTimeline ||= deps.broadcastTimeline === true;
+    laterInflight.options.allowCreateWithoutHistory ||= allowCreateWithoutHistory;
     return laterInflight.promise;
   }
 
-  return trackInitialization(agentId, deps, async (pendingOptions) => {
+  return trackInitialization(agentId, deps, allowCreateWithoutHistory, async (pendingOptions) => {
     const record = await deps.agentStorage.get(agentId);
     if (!record) {
       throw new AgentNotFoundError(agentId);
@@ -179,6 +202,9 @@ export async function ensureAgentLoaded(
     }
 
     const handle = toAgentPersistenceHandle(validProviders, record.persistence);
+    if (!handle && !pendingOptions.allowCreateWithoutHistory && !record.profileSwitches?.length) {
+      return null;
+    }
 
     let snapshot: ManagedAgent;
     if (handle) {
@@ -221,21 +247,20 @@ export async function ensureAgentLoaded(
 }
 
 /** Shares one load per agent, so concurrent requests cannot hydrate twice. */
-async function trackInitialization(
+function trackInitialization(
   agentId: string,
   deps: EnsureAgentLoadedDeps,
-  load: (options: PendingAgentInitialization["options"]) => Promise<ManagedAgent>,
-): Promise<ManagedAgent> {
-  const options = { broadcastTimeline: deps.broadcastTimeline === true };
-  const pending: PendingAgentInitialization = { promise: load(options), options };
-  pendingAgentInitializations.set(agentId, pending);
-
-  try {
-    return await pending.promise;
-  } finally {
-    const current = pendingAgentInitializations.get(agentId);
-    if (current === pending) {
-      pendingAgentInitializations.delete(agentId);
-    }
-  }
+  allowCreateWithoutHistory: boolean,
+  load: (options: PendingAgentInitialization["options"]) => Promise<ManagedAgent | null>,
+): Promise<ManagedAgent | null> {
+  const options = { broadcastTimeline: deps.broadcastTimeline === true, allowCreateWithoutHistory };
+  const promise = Promise.resolve()
+    .then(() => load(options))
+    .finally(() => {
+      if (pendingAgentInitializations.get(agentId)?.promise === promise) {
+        pendingAgentInitializations.delete(agentId);
+      }
+    });
+  pendingAgentInitializations.set(agentId, { promise, options });
+  return promise;
 }

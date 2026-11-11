@@ -780,6 +780,7 @@ export interface FetchAgentOptions {
 }
 type LegacyFetchAgentOptions = Omit<FetchAgentOptions, "agentId">;
 export interface FetchAgentTimelineOptions {
+  retryHistory?: boolean;
   /** Prefer whole-turn pages when supported; older hosts retain item-based paging. */
   wholeTurns?: boolean;
   direction?: FetchAgentTimelineDirection;
@@ -3943,9 +3944,13 @@ export class DaemonClient {
     // COMPAT(wholeTurnTimeline): added after v0.13.2 (#8010); remove after 2027-04-27 once the daemon floor supports whole-turn pages.
     // Reading history predates this capability and must keep working on older hosts.
     const supportsWholeTurns = this.lastServerInfoMessage?.features?.wholeTurnTimeline === true;
+    // COMPAT(agentTimelineHistoryRetry): added November 2026. Revisit after 2027-05-11.
+    const supportsHistoryRetry =
+      this.lastServerInfoMessage?.features?.agentTimelineHistoryRetry === true;
     const resolvedRequestId = this.createRequestId(options.requestId);
     const message = SessionInboundMessageSchema.parse({
       type: "fetch_agent_timeline_request",
+      ...(supportsHistoryRetry && options.retryHistory === true ? { retryHistory: true } : {}),
       ...(supportsWholeTurns && options.wholeTurns !== undefined
         ? { wholeTurns: options.wholeTurns }
         : {}),
