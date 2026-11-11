@@ -121,19 +121,37 @@ current. Imported or waiting generations must settle before replacement.
 Dispatch records child intent before a single spawn. An inherited private channel
 rechecks coordinator configuration, protected artifacts, full queue reservation
 and native child identity before each native boundary. The worker disables the
-exact broker schedulers, verifies old consumers exited, acquires their existing
-locks and writes durable per-file intents and readbacks. It preserves channels,
-configuration, ledgers, plists, displaced files and all partial evidence.
+exact broker schedulers, waits up to fifteen seconds for old consumers to exit,
+acquires their existing locks and writes durable per-file intents and readbacks.
+It preserves channels, configuration, ledgers, plists, displaced files and all
+partial evidence.
 
-The initial restoration policy only permits the unchanged legacy channel pins
-to continue refusing before request consumption. Effective enabled and registered
-behavior is restored after complete file verification. An initially absent
-launchd override may become an explicit enabled override; this is semantic
-restoration, not byte-identical override storage. Loaded but disabled jobs are
-refused before effects. No daemon or application lifecycle is included.
+Each broker is admitted in one of two modes, recorded in `admission.json` before
+any effect and required unchanged until the registrations are restored:
 
-Lost replies retain uncertainty. Recovery reads evidence and native state without
-replaying commands, replacing files or automatically restoring registrations.
+- **Refusing.** The unchanged legacy channel pins still refuse before request
+  consumption. The plan's preservation digest covers the full inventory: config,
+  installed marker, channel files and ledger.
+- **Running.** The legacy pins verify, for example after an operator repinned them
+  when a reboot renumbered the APFS device, so the broker serves requests and
+  rewrites its ledger every cycle. The plan's preservation digest covers only the
+  config and installed marker, and it pins no scheduler process generation. The
+  worker takes the full inventory baseline after suppression and compares it
+  across the commit window as in refusing mode.
+
+A channel with a filesystem identity anchor, or any other verification failure,
+is refused: trust migration stays the separate rebind. Effective enabled and
+registered behavior is restored after complete file verification. An initially
+absent launchd override may become an explicit enabled override; this is
+semantic restoration, not byte-identical override storage. Loaded but disabled
+jobs are refused before effects. No daemon or application lifecycle is included.
+
+If the attempt aborts after every suppression effect was acknowledged and before
+the first consumer file write, the worker re-enables and reloads the original
+brokers and records `abort-restored.json`; the job still ends without a
+commitment. Lost replies retain uncertainty. After a lost reply or any file
+write, recovery reads evidence and native state without replaying commands,
+replacing files or automatically restoring registrations.
 The client commands are `request-broker-consumer-deployment --request-file` and
 `broker-deployment-status ID`. Submission requires the configured capability;
 exact approval remains separate. Source validation is not installed availability.

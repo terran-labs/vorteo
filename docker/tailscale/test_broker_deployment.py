@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import uuid
-from broker_deployment import (FILES, deploy_files, directory_pin, encode, preservation, sha)
+from broker_deployment import (FILES, approved_preservation_sha256, deploy_files, directory_pin, encode, preservation, sha)
 from channel_identity import NAMES, file_identity
 
 
@@ -124,7 +124,8 @@ class NativeDeploymentTests(unittest.TestCase):
     setUp = BrokerDeploymentTests.setUp
     write = BrokerDeploymentTests.write
 
-    def native(self, dispositions=('loaded', 'absent'), enabled=(True, True)):
+    def native(self, dispositions=('loaded', 'absent'), enabled=(True, True), running=False):
+        """running: legacy pins verify and each loaded scheduler has a live generation."""
         import plistlib
         import subprocess
         from broker_deployment_observation import NativeObservation
@@ -146,19 +147,22 @@ class NativeDeploymentTests(unittest.TestCase):
             bindings.append(binding)
             config = json.loads((root / 'host-config.json').read_bytes())
             config['brokerLabel'] = label
-            config['channelIdentities'] = {name: [0, (Path(config['channel']) / name).stat().st_ino] for name in NAMES}
+            config['channelIdentities'] = {name: [(Path(config['channel']) / name).stat().st_dev if running else 0,
+                                                  (Path(config['channel']) / name).stat().st_ino] for name in NAMES}
             self.write(root / 'host-config.json', encode(config))
-            target['preservationSha256'] = sha(encode(preservation(root)))
+            target['preservationSha256'] = approved_preservation_sha256(preservation(root), 'running' if running else 'refusing')
             override = 'absent' if enabled[index] else 'disabled'
             registrations.append({key: binding[key] for key in ('root', 'domain', 'label', 'plist')} |
                                  {'disposition': dispositions[index], 'enabled': enabled[index], 'override': override, 'process': None})
             states.append({'loaded': dispositions[index] == 'loaded', 'override': None if enabled[index] else True})
         self.plan.update({'evidenceDirectoryIdentity': directory_pin(self.evidence.stat()), 'bootUUID': boot, 'registrations': registrations, 'manualParticipants': []})
+        # A running scheduler's generation is pid 40 + index while its job is loaded.
+        live = lambda: {40 + i: b['argv'] for i, (b, s) in enumerate(zip(bindings, states)) if running and s['loaded']}
         class Kernel:
             def boot(self): return boot
-            def pids(self, uid): return []
+            def pids(self, uid): return list(live())
             def info(self, pid): return {'pid': pid, 'parent': 1, 'uids': [os.getuid()] * 3, 'birth': [1, 2]}
-            def argv(self, pid): return ['/bin/zsh']
+            def argv(self, pid): return live().get(pid, ['/bin/zsh'])
         def invoke(argv):
             action = argv[1]
             domain = f'gui/{os.getuid()}'
@@ -171,7 +175,8 @@ class NativeDeploymentTests(unittest.TestCase):
             index = next(i for i,b in enumerate(bindings) if b['label'] == label)
             state = states[index]
             if action == 'print':
-                if state['loaded']: return subprocess.CompletedProcess(argv, 0, domain+'/'+label+' = {\n}\n', '')
+                pid = f'\tpid = {40 + index}\n' if running and state['loaded'] else ''
+                if state['loaded']: return subprocess.CompletedProcess(argv, 0, domain+'/'+label+' = {\n'+pid+'}\n', '')
                 return subprocess.CompletedProcess(argv, 113, '', f'Could not find service "{label}" in domain for user gui: {os.getuid()}\n')
             effects.append((index, action))
             if action == 'disable': state['override'] = True
@@ -184,6 +189,7 @@ class NativeDeploymentTests(unittest.TestCase):
         observer = NativeObservation(self.plan, bindings, guard, kernel=Kernel(), invoke=invoke)
         packet = {'plan': self.plan, 'planSha256': sha(encode(self.plan)), 'bindings': bindings}
         worker = Deployment(packet, guard, observer=observer)
+        worker.settle_seconds = 0.5
         return worker, observer, states, effects
 
     def test_actual_transition_and_readonly_recovery(self):
@@ -196,6 +202,33 @@ class NativeDeploymentTests(unittest.TestCase):
         self.assertEqual(before, effects)
         with self.assertRaisesRegex(ValueError, "Prepared broker state changed"): worker.execute()
         self.assertEqual(before, effects)
+
+    def test_running_brokers_are_admitted_after_suppression(self):
+        # Hand-repaired legacy pins verify, so the brokers serve requests and keep
+        # rewriting their ledgers after the plan was prepared.
+        worker, observer, states, effects = self.native(running=True)
+        ledger = Path(self.targets[0]['root']) / 'https-broker-ledger.json'
+        self.write(ledger, encode({'entries': {}, 'requests': {}, 'reconcileCursor': 1}))
+        self.assertEqual(worker.execute()['kind'], 'committed')
+        self.assertEqual(effects, [(0,'disable'), (0,'bootout'), (1,'disable'), (0,'enable'), (0,'bootstrap'), (1,'enable')])
+        admission = json.loads((self.evidence / 'admission.json').read_bytes())
+        self.assertEqual(admission['admission'], ['running', 'running'])
+        self.assertEqual(worker.observe()['kind'], 'committed')
+
+    def test_pre_replacement_abort_restores_original_brokers(self):
+        worker, observer, states, effects = self.native(running=True)
+        root = Path(self.targets[0]['root'])
+        # A digest over the full inventory cannot hold for a running broker.
+        self.targets[0]['preservationSha256'] = sha(encode(preservation(root)))
+        self.write(root / 'https-broker-ledger.json', encode({'entries': {}, 'requests': {}, 'reconcileCursor': 1}))
+        with self.assertRaisesRegex(ValueError, 'Preservation inventory changed'): worker.execute()
+        self.assertEqual(effects, [(0,'disable'), (0,'bootout'), (1,'disable'), (1,'enable'), (0,'enable'), (0,'bootstrap')])
+        self.assertTrue(states[0]['loaded'])
+        self.assertTrue((self.evidence / 'abort-restored.json').exists())
+        self.assertFalse((self.evidence / 'intent.json').exists())
+        self.assertEqual(worker.observe()['kind'], 'unresolved')
+        self.assertEqual({p.read_bytes() for p in root.iterdir() if p.name == 'https_broker.py'},
+                         {self.originals[str(root / 'https_broker.py')]})
 
     def test_recovery_anchors_baseline_to_approved_digest(self):
         root = self.targets[0]['root']

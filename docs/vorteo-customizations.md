@@ -3096,7 +3096,7 @@ Maintenance review: the Appearance theme row drops the built-in theme dropdown, 
 
 Maintenance review: a systemd Host restarts immediately through `systemctl --user restart <unit>`; coordinator maintenance stays launchd-only and says so on systemd Hosts. Ported from #5 without its unavailable-restart label, since the restart now runs.
 
-Broker maintenance also has a separate eight-file consumer deployment target. Its protected native worker, participant scope, exact owner review and recovery readers are independent of channel trust migration. Deployment restores only brokers whose unchanged legacy channel pins still refuse request consumption; it does not establish a ready preview. See [broker maintenance](preview-broker-maintenance.md).
+Broker maintenance also has a separate eight-file consumer deployment target. Its protected native worker, participant scope, exact owner review and recovery readers are independent of channel trust migration. Deployment admits brokers whose unchanged legacy channel pins still refuse request consumption, and running brokers whose legacy pins verify; the latter bind only config and installed marker in the plan and take their inventory baseline after suppression. An abort before the first file write restores the original brokers. It does not establish a ready preview. See [broker maintenance](preview-broker-maintenance.md).
 
 ### Provider probe working directories
 
