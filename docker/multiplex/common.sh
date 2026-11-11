@@ -69,10 +69,13 @@ paseo_prepare_dev_worktrees() {
   # Compose binds the Projects folder with create_host_path: false, so it must exist already;
   # only the mount point inside it is created here.
   [[ -d "$target" ]] || { echo "The Projects folder $target does not exist." >&2; return 1; }
+  # Only folders created here get a mode; an existing .vorteo keeps its own.
+  # Dev's daemon user must traverse them despite the callers' umask 077.
+  if [[ ! -d "$target/.vorteo" ]]; then
+    mkdir "$target/.vorteo" && chmod 0755 "$target/.vorteo" || return 1
+  fi
   if [[ ! -d "$target/.vorteo/worktrees" ]]; then
-    mkdir -p "$target/.vorteo/worktrees" || return 1
-    # Dev's daemon user must traverse it despite the callers' umask 077.
-    chmod 0755 "$target/.vorteo" "$target/.vorteo/worktrees" || return 1
+    mkdir "$target/.vorteo/worktrees" && chmod 0755 "$target/.vorteo/worktrees" || return 1
   fi
   if ! docker volume inspect "$name" >/dev/null 2>&1; then
     docker volume create "$name" >/dev/null || return 1

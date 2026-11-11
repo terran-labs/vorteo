@@ -306,7 +306,23 @@ async function stopDev(state, { keepData }) {
     ],
     { timeout: 10 * 60_000 },
   );
-  return keepData ? `Stopped Dev; ${deployment} is kept.` : `Stopped Dev.`;
+  const stopped = keepData ? `Stopped Dev; ${deployment} is kept.` : `Stopped Dev.`;
+  const volume = devWorktreeVolume(deployment);
+  return volume
+    ? `${stopped} Dev's worktree volume ${volume} is kept; remove it with \`docker volume rm ${volume}\` once its work is pushed.`
+    : stopped;
+}
+
+/** The Docker volume holding Dev's worktrees, named in dev-worktrees.compose.json, or null. */
+function devWorktreeVolume(deployment) {
+  try {
+    const config = JSON.parse(
+      readFileSync(path.join(deployment, "dev-worktrees.compose.json"), "utf8"),
+    );
+    return config.volumes?.["dev-worktrees"]?.name ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
