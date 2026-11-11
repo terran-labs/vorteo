@@ -12,7 +12,9 @@ import {
   createSessionHostAuditLog,
   preparePrivateDirectory,
   rotateSessionHostToken,
+  SESSION_HOST_ENTRYPOINT,
   sessionHostPaths,
+  writeSessionHostRelease,
   type SessionHostAuditRecord,
 } from "./host-files.js";
 import { startSessionHost, type SessionHost, type SessionHostLimits } from "./host.js";
@@ -100,6 +102,21 @@ function openPrivateLog(logPath: string): Logger {
     onError: (error) => process.stderr.write(`Session host log write failed: ${String(error)}\n`),
   });
   return pino({ base: { pid: process.pid, module: "session-host" } }, { write: append });
+}
+
+/**
+ * Records the release this host runs from, so Host release cleanup keeps it until a tracked
+ * restart replaces the host. A host run from a source checkout has no release to record.
+ */
+async function recordRelease(directory: string, logger: Logger): Promise<void> {
+  try {
+    const entrypoint = process.argv[1] ? await realpath(process.argv[1]) : "";
+    const suffix = `${path.sep}${path.normalize(SESSION_HOST_ENTRYPOINT)}`;
+    if (!entrypoint.endsWith(suffix)) return;
+    await writeSessionHostRelease(directory, entrypoint.slice(0, -suffix.length));
+  } catch (error) {
+    logger.warn({ err: error }, "Could not record the session host release for cleanup");
+  }
 }
 
 /**
@@ -374,7 +391,10 @@ export async function startSessionHostService(
       audit,
       release,
       limits: options.limits,
-      afterLock: reapOrphans,
+      afterLock: async () => {
+        await recordRelease(paths.directory, logger);
+        await reapOrphans();
+      },
     });
     try {
       host = await startingHost;

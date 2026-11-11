@@ -50,6 +50,7 @@ import { prepareSourceBatch } from "./source-batches.js";
 import { prepareDevRepairBundle } from "./dev-source-repair.js";
 import { assertReleaseSelectionAllowed } from "./release-selection-guard.js";
 import { pruneHostReleases, startHostReleaseRetention } from "./host-release-retention.js";
+import { readSessionHostRelease } from "../session-host/host-files.js";
 import { FileBootstrapRequestJournal } from "./coordinator-bootstrap-journal.js";
 import { isCompletedBootstrap, openBootstrapRequests } from "./coordinator-bootstrap.js";
 import { isDeepStrictEqual } from "node:util";
@@ -180,13 +181,15 @@ async function verifyPublishedInterruption(input: PublishedInterruption) {
  * releases, every release a kept coordinator plan names, unfinished jobs, and the
  * update tooling the live configuration runs. Reviewed tooling selection points
  * `sourceUpdates.toolingDirectory` into a release's scripts folder, so removing that
- * release would break every later install at its first step.
+ * release would break every later install at its first step. The running session host's
+ * release stays too: the host outlives installs and still loads code from it.
  */
 export function hostRetentionReferences(input: {
   config: Pick<InstallationConfig, "sourceUpdates" | "containerSourceUpdates" | "deployment">;
   previous: string;
   plans: readonly CoordinatorBootstrapPlan[];
   unfinished: readonly string[];
+  sessionHostRelease?: string | null;
 }): string[] {
   const { config } = input;
   return [
@@ -206,6 +209,7 @@ export function hostRetentionReferences(input: {
         .map((release) => release.directory),
     ),
     ...input.unfinished,
+    ...(input.sessionHostRelease ? [input.sessionHostRelease] : []),
   ];
 }
 
@@ -802,17 +806,27 @@ export class InstallationSourceUpdates {
         .readLifecycle()
         .filter((job) => ["pending", "approved", "running"].includes(job.status))
         .map((job) => path.join(settings.releaseRoot, job.id));
+      const home = this.config.host.startupValidation?.home;
+      if (!home) throw new Error("Session host home is unknown; retaining old Host releases");
+      const sessionHostRelease = await readSessionHostRelease(home);
       const removed = await pruneHostReleases({
         releaseRoot: settings.releaseRoot,
-        referenced: hostRetentionReferences({ config: this.config, previous, plans, unfinished }),
+        referenced: hostRetentionReferences({
+          config: this.config,
+          previous,
+          plans,
+          unfinished,
+          sessionHostRelease,
+        }),
         onError: (folder) => failures.push(path.basename(folder)),
       });
       const note = removed.length ? ` Removed ${removed.length} old Host releases.` : "";
       return failures.length
         ? `${note} Could not remove ${failures.length} old releases; they are kept.`
         : note;
-    } catch {
-      return " Old Host releases were not pruned this time.";
+    } catch (error) {
+      const reason = error instanceof Error ? error.message.split("\n")[0] : String(error);
+      return ` Old Host releases were not pruned this time: ${reason}`;
     }
   }
 

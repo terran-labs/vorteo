@@ -17,6 +17,12 @@ import { afterEach, expect, test } from "vitest";
 import { setReleaseImmutable } from "./coordinator-bootstrap-release-seal.js";
 import type { InstallationConfig } from "./config.js";
 import { hostRetentionReferences } from "./source-updates.js";
+import { claudeExecutableVersion } from "../agent/providers/claude/agent.js";
+import {
+  readSessionHostRelease,
+  writeSessionHostRelease,
+  acquireHostLock,
+} from "../session-host/host-files.js";
 import {
   hostReleaseRetentionIdle,
   pruneHostReleases,
@@ -197,4 +203,116 @@ test("retention keeps the release that holds the live update tooling", async () 
   expect(existsSync(f.release(2))).toBe(true);
   expect(existsSync(tooling)).toBe(true);
   expect(existsSync(f.release(1))).toBe(true);
+});
+
+test("retention keeps the release a running session host recorded", async () => {
+  // The host outlives installs; deleting its release left it running on removed files.
+  const f = fixture(6);
+  const home = path.join(f.base, "home");
+  expect(await readSessionHostRelease(home)).toBeNull();
+  mkdirSync(path.join(home, "session-host"), { recursive: true });
+  const socket = path.join(home, "session-host", "host.sock");
+  const lock = await acquireHostLock(socket);
+  // An older host has the same lock contract but publishes no release receipt.
+  await expect(readSessionHostRelease(home)).rejects.toThrow();
+  await writeSessionHostRelease(path.join(home, "session-host"), f.release(1));
+  const receipt = path.join(home, "session-host", "release.json");
+  const original = readFileSync(receipt, "utf8");
+  await expect(acquireHostLock(socket)).rejects.toThrow("already serving");
+  expect(readFileSync(receipt, "utf8")).toBe(original);
+  const config = {
+    sourceUpdates: { currentReleaseLink: f.current, toolingDirectory: f.current },
+  } as unknown as Pick<
+    InstallationConfig,
+    "sourceUpdates" | "containerSourceUpdates" | "deployment"
+  >;
+  const removed = await pruneHostReleases({
+    releaseRoot: f.root,
+    referenced: hostRetentionReferences({
+      config,
+      previous: f.release(4),
+      plans: [],
+      unfinished: [],
+      sessionHostRelease: await readSessionHostRelease(home),
+    }),
+    keepNewest: 1,
+  });
+  expect(removed.sort()).toEqual([id(0), id(2), id(3)]);
+  expect(existsSync(f.release(1))).toBe(true);
+  // A replacement can reuse this PID. Its newly acquired real inode generation
+  // invalidates the old receipt until it publishes its own canonical root.
+  await lock.release();
+  const replacement = await acquireHostLock(socket);
+  await expect(readSessionHostRelease(home)).rejects.toThrow("another lock generation");
+  expect(existsSync(f.release(1))).toBe(true);
+  await writeSessionHostRelease(path.join(home, "session-host"), f.release(5));
+  const afterReplacement = await pruneHostReleases({
+    releaseRoot: f.root,
+    referenced: hostRetentionReferences({
+      config,
+      previous: f.release(4),
+      plans: [],
+      unfinished: [],
+      sessionHostRelease: await readSessionHostRelease(home),
+    }),
+    keepNewest: 1,
+  });
+  expect(afterReplacement).toEqual([id(1)]);
+  expect(existsSync(f.release(5))).toBe(true);
+  await replacement.release();
+  expect(await readSessionHostRelease(home)).toBeNull();
+});
+
+test.each(["missing", "invalid", "unknown-root", "write-failure"])(
+  "retention refuses a live host with %s release evidence",
+  async (mode) => {
+    const f = fixture(5);
+    const home = path.join(f.base, "home");
+    const directory = path.join(home, "session-host");
+    mkdirSync(directory, { recursive: true });
+    const lock = await acquireHostLock(path.join(directory, "host.sock"));
+    const receipt = path.join(directory, "release.json");
+    try {
+      if (mode === "write-failure") {
+        mkdirSync(receipt);
+        await expect(writeSessionHostRelease(directory, f.release(1))).rejects.toThrow();
+      } else if (mode !== "missing") {
+        await writeSessionHostRelease(directory, f.release(1));
+        if (mode === "invalid") writeFileSync(receipt, "{malformed receipt", { mode: 0o600 });
+        else {
+          const value = JSON.parse(readFileSync(receipt, "utf8"));
+          value.releaseRoot = path.join(f.base, "unavailable-root");
+          writeFileSync(receipt, JSON.stringify(value), { mode: 0o600 });
+        }
+      }
+      const cleanup = async () => {
+        const release = await readSessionHostRelease(home);
+        return pruneHostReleases({
+          releaseRoot: f.root,
+          referenced: [f.current, ...(release ? [release] : [])],
+          keepNewest: 1,
+        });
+      };
+      await expect(cleanup()).rejects.toThrow();
+      for (let index = 0; index < 5; index++) expect(existsSync(f.release(index))).toBe(true);
+    } finally {
+      await lock.release();
+    }
+  },
+);
+
+test("failed Claude executable probes are cached until the executable changes", async () => {
+  const f = fixture(1);
+  const executable = path.join(f.base, "claude-probe");
+  writeFileSync(executable, '#!/bin/sh\nprintf . >> "$0.calls"\nexit 1\n', { mode: 0o700 });
+  expect(await claudeExecutableVersion(executable)).toBeNull();
+  expect(await claudeExecutableVersion(executable)).toBeNull();
+  expect(readFileSync(`${executable}.calls`, "utf8")).toBe(".");
+  writeFileSync(
+    executable,
+    '#!/bin/sh\nprintf . >> "$0.calls"\nprintf "2.1.99 (Claude Code)\\n"\n',
+    { mode: 0o700 },
+  );
+  expect(await claudeExecutableVersion(executable)).toBe("2.1.99");
+  expect(readFileSync(`${executable}.calls`, "utf8")).toBe("..");
 });

@@ -2195,13 +2195,13 @@ export async function claudeExecutableVersion(
   let file: string;
   try {
     const info = await promises.stat(executable);
-    file = `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}`;
+    file = `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
   } catch {
     return null;
   }
   const cached = claudeExecutableVersions.get(executable);
   if (cached?.file === file) return cached.version;
-  let output: string;
+  let output = "";
   try {
     const { stdout, stderr } = await execCommand(executable, ["--version"], {
       ...createProviderEnvSpec({ runtimeSettings }),
@@ -2209,8 +2209,8 @@ export async function claudeExecutableVersion(
     });
     output = `${stdout}\n${stderr}`;
   } catch {
-    // Not cached: a slow or failed probe must not disable the check for this executable.
-    return null;
+    // Cached as unknown like a wrapper's output, so a hanging executable costs one timeout,
+    // not one per launch; replacing or upgrading the file probes again.
   }
   const parsed = /\d+\.\d+\.\d+\s+\(Claude Code\)/i.test(output)
     ? parseClaudeCodeVersion(output)
