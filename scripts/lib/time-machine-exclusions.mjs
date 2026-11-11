@@ -21,7 +21,7 @@ export const REGENERABLE_CHILDREN = ["node_modules", "dist", "build"];
 function defaultRun(command, args, options = {}) {
   return execFileSync(command, args, {
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
+    stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "ignore"],
     maxBuffer: 64 * 1024 * 1024,
     ...options,
   });
@@ -105,13 +105,16 @@ export function checkoutWorkspaces(checkout) {
 
 /**
  * Regenerable folders of one Git checkout. A candidate qualifies only when its real path stays
- * inside the checkout's real path, Git tracks no file inside it and Git ignores it. Without Git
- * or outside a repository nothing qualifies.
+ * inside the checkout's real path, Git ignores it, tracks no file inside it and finds no
+ * untracked file there that it does not ignore. Workspaces that are their own repositories are
+ * skipped. Without Git or outside a repository nothing qualifies.
  */
 export function checkoutRegenerables(checkout, { run = defaultRun } = {}) {
   const candidates = [];
   if (hasFolder(checkout, "node_modules")) candidates.push(path.join(checkout, "node_modules"));
   for (const workspace of checkoutWorkspaces(checkout)) {
+    // A nested repository answers for its own files; this checkout's Git cannot.
+    if (fs.existsSync(path.join(workspace, ".git"))) continue;
     for (const child of REGENERABLE_CHILDREN) {
       if (hasFolder(workspace, child)) candidates.push(path.join(workspace, child));
     }
@@ -132,28 +135,36 @@ export function checkoutRegenerables(checkout, { run = defaultRun } = {}) {
   });
   if (!inside.length) return [];
   const relative = inside.map((candidate) => path.relative(checkout, candidate));
+  const list = (args, input) =>
+    run("git", ["-C", checkout, ...args], input === undefined ? {} : { input })
+      .split("\0")
+      .filter(Boolean);
   let tracked;
+  let unignored;
   let ignored;
   try {
-    // One listing of tracked files under every candidate, one ignore check for all of them.
-    tracked = run("git", ["-C", checkout, "ls-files", "-z", "--", ...relative]).split("\0");
+    // Files Git tracks, and untracked files it does not ignore, under every candidate: a folder
+    // ignored by `dist/*` can re-include files with `!`. Then one ignore check for all of them.
+    tracked = list(["ls-files", "-z", "--", ...relative]);
+    unignored = list(["ls-files", "-z", "--others", "--exclude-standard", "--", ...relative]);
   } catch {
     return [];
   }
   try {
     ignored = new Set(
-      run("git", ["-C", checkout, "check-ignore", "--", ...relative.map((item) => `${item}/`)])
-        .split("\n")
-        .map((item) => item.replace(/\/$/, "")),
+      list(["check-ignore", "-z", "--stdin"], relative.map((item) => `${item}/\0`).join("")).map(
+        (item) => item.replace(/\/$/, ""),
+      ),
     );
   } catch {
     // Exit status 1 means nothing is ignored; anything else means Git could not answer.
     return [];
   }
+  const holds = (files, folder) =>
+    files.some((file) => file === folder || file.startsWith(`${folder}/`));
   return inside.filter((_, index) => {
     const folder = relative[index];
-    if (!ignored.has(folder)) return false;
-    return !tracked.some((file) => file === folder || file.startsWith(`${folder}/`));
+    return ignored.has(folder) && !holds(tracked, folder) && !holds(unignored, folder);
   });
 }
 

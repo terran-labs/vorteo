@@ -294,12 +294,13 @@ test("Time Machine exclusions mark only ignored, untracked regenerable folders",
     fs.mkdirSync(path.dirname(path.join(repo, relative)), { recursive: true });
     fs.writeFileSync(path.join(repo, relative), text);
   };
-  write(".gitignore", "node_modules/\ndist/\nbuild/\nBuild/\n");
+  write(".gitignore", "node_modules/\nbuild/\nBuild/\npackages/a/dist/\npackages/c/dist/\n");
   write(
     "package.json",
     JSON.stringify({ workspaces: [".", "./*", "../escape", "packages/*", "!packages/c"] }),
   );
   for (const name of ["a", "b", "c", "desktop"]) write(`packages/${name}/package.json`, "{}");
+  write("packages/a/dist/caf\u00e9.js");
   write("src/index.js");
   write("node_modules/dep/index.js");
   write("packages/a/dist/out.js");
@@ -307,12 +308,27 @@ test("Time Machine exclusions mark only ignored, untracked regenerable folders",
   write("packages/b/Build/out.js");
   write("packages/c/dist/out.js");
   write("packages/desktop/build/icon.png");
+  // Ignored by contents only, with one user file re-included: not regenerable.
+  write("packages/keep/package.json", "{}");
+  write("packages/keep/.gitignore", "dist/*\n!dist/notes.md\n");
+  write("packages/keep/dist/out.js");
+  write("packages/keep/dist/notes.md");
+  // A nested repository that commits its own build folder.
+  write("packages/nested/package.json", "{}");
+  write("packages/nested/build/out.js");
+  execFileSync("git", ["init", "-q", path.join(repo, "packages/nested")], { env: gitEnvironment });
   // A link named like a build folder must not lead the marker to source.
   fs.symlinkSync(path.join(repo, "src"), path.join(repo, "packages/a/build"));
   const git = (...args) =>
     execFileSync("git", ["-C", repo, ...args], { stdio: "ignore", env: gitEnvironment });
   git("init", "-q");
-  git("add", ".gitignore", "package.json", "src", "packages");
+  git("add", ".gitignore", "package.json", "src", "packages/a", "packages/b", "packages/c");
+  git(
+    "add",
+    "packages/desktop/package.json",
+    "packages/keep/package.json",
+    "packages/keep/.gitignore",
+  );
   // Tracked although ignored, as packages/desktop/build is in this repository.
   git("add", "-f", "packages/desktop/build/icon.png");
 
