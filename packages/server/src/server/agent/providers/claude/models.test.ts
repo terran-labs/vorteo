@@ -1,3 +1,4 @@
+import { getProviderProbeCwd } from "../../../../utils/provider-probe-cwd.js";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -1086,10 +1087,18 @@ describe("Claude model discovery process", () => {
         description: "",
       },
     ];
+    const probeRoot = await fs.mkdtemp(path.join(os.tmpdir(), "claude-discovery-"));
+    createdClaudeConfigDirs.push(probeRoot);
+    vi.stubEnv("TMPDIR", probeRoot);
+    vi.stubEnv("TEMP", probeRoot);
+    vi.stubEnv("TMP", probeRoot);
+    const probeCwd = await getProviderProbeCwd();
+    await fs.writeFile(path.join(probeCwd, "retained-state"), "another helper's state");
     const models = await discoverClaudeModels(
       { resolveBinary: async () => "/claude", env: { CLAUDE_CONFIG_DIR: "/provider-config" } },
       (input) => {
         expect(input.options).toMatchObject({
+          cwd: probeCwd,
           pathToClaudeCodeExecutable: "/claude",
           env: { CLAUDE_CONFIG_DIR: "/provider-config" },
           persistSession: false,
@@ -1109,6 +1118,10 @@ describe("Claude model discovery process", () => {
         };
       },
     );
+    expect(await fs.readFile(path.join(probeCwd, "retained-state"), "utf8")).toBe(
+      "another helper's state",
+    );
+    expect(await getProviderProbeCwd()).not.toBe(os.homedir());
     expect(models).toEqual(advertised);
     expect(closed).toBe(true);
     await expect(promptEnded).resolves.toEqual({ done: true, value: undefined });

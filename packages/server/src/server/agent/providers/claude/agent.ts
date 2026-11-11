@@ -1,3 +1,4 @@
+import { getProviderProbeCwd } from "../../../../utils/provider-probe-cwd.js";
 import { verifySkillSnapshot } from "../../../orchestration-skills/internal/policy.js";
 import { ClaudeSetupTokenLoginSession } from "./setup-token-login.js";
 import { ClaudeLoginSession } from "./login.js";
@@ -2204,6 +2205,7 @@ export async function claudeExecutableVersion(
   let output = "";
   try {
     const { stdout, stderr } = await execCommand(executable, ["--version"], {
+      cwd: await getProviderProbeCwd(),
       ...createProviderEnvSpec({ runtimeSettings }),
       timeout: 5_000,
     });
@@ -2285,6 +2287,7 @@ export async function resolveClaudeCodeVersion(
   }
   const executable = availability.resolvedPath ?? launch.command;
   const { stdout, stderr } = await execCommand(executable, [...launch.args, "--version"], {
+    cwd: await getProviderProbeCwd(),
     ...createProviderEnvSpec({ runtimeSettings }),
     timeout: 5_000,
     signal,
@@ -2314,6 +2317,7 @@ async function resolveClaudeAuth(
   ): Promise<{ stdout: string; stderr: string }> => {
     try {
       return await execCommand(executable, args, {
+        cwd: await getProviderProbeCwd(),
         ...createProviderEnvSpec({ runtimeSettings }),
         timeout: 5_000,
       });

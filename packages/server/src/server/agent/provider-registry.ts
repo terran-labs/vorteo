@@ -1,3 +1,4 @@
+import { getProviderProbeCwd } from "../../utils/provider-probe-cwd.js";
 import type { Logger } from "pino";
 import type { ProviderOptions, ToolPolicy } from "@getpaseo/protocol/agent-types";
 
@@ -740,7 +741,7 @@ function createRegistryEntry(
               await catalogClient.resolveDefaultModeId?.({
                 config: {
                   provider,
-                  cwd: options.scope === "workspace" ? options.cwd : process.cwd(),
+                  cwd: options.scope === "workspace" ? options.cwd : await getProviderProbeCwd(),
                 },
                 signal: context?.signal,
               }),

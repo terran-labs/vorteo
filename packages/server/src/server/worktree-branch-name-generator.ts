@@ -112,7 +112,6 @@ export async function generateBranchNameFromFirstAgentContext(
       : [];
     const result = await generator({
       manager: options.agentManager,
-      cwd: options.cwd,
       prompt: await buildPrompt(seed, {
         cwd: options.cwd,
         workspaceGitService: options.workspaceGitService,
