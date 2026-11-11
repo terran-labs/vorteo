@@ -124,6 +124,11 @@ import {
 } from "./rewind.js";
 import { normalizeProviderReplayTimestamp } from "../../provider-history-timestamps.js";
 import { claudeConfigDir, claudeProjectDirSync, claudeTranscriptPath } from "./project-dir.js";
+import {
+  acquireClaudeStartSlot,
+  claudeDebugLogFile,
+  claudeProviderSettling,
+} from "./account-starts.js";
 import { THINKING_APPLIES_NEXT_TURN_NOTICE } from "../../provider-notices.js";
 import {
   isProviderImageMarkdown,
@@ -2661,6 +2666,8 @@ class ClaudeAgentSession implements AgentSession {
   private harnessEnvironment: Record<string, string>;
   private readonly usageSessionKey = randomUUID();
   private childProcess: ChildProcess | null = null;
+  /** When the current childProcess started; read only while that child is still current. */
+  private childStartedAt: number | null = null;
   private closePromise: Promise<void> | null = null;
   private input: AsyncMessageInput<SDKUserMessage> | null = null;
   /** The exact SDK query/input pair that owns the current foreground turn. */
@@ -3426,8 +3433,18 @@ class ClaudeAgentSession implements AgentSession {
       this.unstartedMessageUuids.size === 0 &&
       this.pendingPermissions.size === 0 &&
       this.processingSdkMessages === 0 &&
+      !this.isProviderSettling() &&
       this.runtimeSafety.canStopRuntime()
     );
+  }
+
+  /**
+   * True while the current CLI is young: it may be refreshing the sign-in, and stopping it then
+   * can lose the rotated token.
+   */
+  isProviderSettling(): boolean {
+    if (this.closed || !this.childProcess) return false;
+    return claudeProviderSettling(this.childStartedAt);
   }
 
   close(): Promise<void> {
@@ -4054,26 +4071,57 @@ class ClaudeAgentSession implements AgentSession {
         throw new Error("Claude subscription connection requires inline runtime settings.");
       options.settings = { ...options.settings, apiKeyHelper: "" };
     }
+    const configDir = claudeConfigDir(this.harnessEnvironment);
+    const debugFile = await claudeDebugLogFile({ configDir });
+    if (debugFile) options.debugFile = debugFile;
     this.logger.debug({ options: summarizeClaudeOptionsForLog(options) }, "claude query");
-    this.assertOpen();
+    // One CLI start at a time per account: a start may refresh the account's sign-in, and two
+    // racing refreshes can revoke it. Other accounts never wait.
+    const startSlot = await acquireClaudeStartSlot(configDir);
+    try {
+      this.assertOpen();
+    } catch (error) {
+      startSlot.release();
+      throw error;
+    }
+    // Another call for this session may have started the CLI while this one waited for the slot.
+    if (this.query) {
+      startSlot.release();
+      return this.query;
+    }
     this.input = input;
     this.queryCredentialDigest = credentialDigest;
     this.runtimeSafety.reset();
     // A fresh Claude process has no turn of its own in flight.
     this.mainTurnInFlight = false;
-    this.query = claudeQuery(
-      { prompt: input.iterable, options },
-      {
-        runtimeSettings: this.runtimeSettings,
-        launchEnv: this.launchEnv,
-        authEnv,
-        queryFactory: this.queryFactory,
-        assertCanSpawn: () => this.assertOpen(),
-        onChildProcess: (child) => {
-          this.childProcess = child;
-          child.once("exit", (code, signal) => this.handleRuntimeExit(child, code, signal));
+    let startedQuery: Query;
+    try {
+      startedQuery = claudeQuery(
+        { prompt: input.iterable, options },
+        {
+          runtimeSettings: this.runtimeSettings,
+          launchEnv: this.launchEnv,
+          authEnv,
+          queryFactory: this.queryFactory,
+          assertCanSpawn: () => this.assertOpen(),
+          onChildProcess: (child) => {
+            this.childProcess = child;
+            this.childStartedAt = Date.now();
+            child.once("exit", (code, signal) => this.handleRuntimeExit(child, code, signal));
+          },
         },
-      },
+      );
+    } catch (error) {
+      startSlot.release();
+      throw error;
+    }
+    this.query = startedQuery;
+    // The CLI answers the SDK's initialize request once its startup, including any sign-in
+    // refresh, is done; it fails if the CLI exits first. The slot bounds a CLI that does neither.
+    startSlot.releaseWhen(
+      typeof startedQuery.initializationResult === "function"
+        ? startedQuery.initializationResult()
+        : Promise.resolve(),
     );
     const fastMode = this.resolveFastModeSetting();
     if (fastMode !== null) {
