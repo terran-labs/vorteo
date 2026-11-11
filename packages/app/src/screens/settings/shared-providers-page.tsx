@@ -26,7 +26,14 @@ import { SettingsExpansion } from "@/components/settings/settings-expansion";
 import { useReportActionError } from "@/hooks/use-action-error";
 import * as Clipboard from "expo-clipboard";
 import { Button } from "@/components/ui/button";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { Switch } from "@/components/ui/switch";
+import {
+  confirmDisablePrimary,
+  isPrimaryConnection,
+  usePrimaryConnection,
+} from "@/execution-installation/primary-connection";
+import { confirmDialog } from "@/utils/confirm-dialog";
 import { isWeb } from "@/constants/platform";
 import { useInstallationSettings } from "@/execution-installation/settings";
 import { settingsStyles } from "@/styles/settings";
@@ -63,7 +70,10 @@ function ProviderFamilyCard({
   drag,
   dragHandleProps,
   showDrag = false,
+  primary = false,
 }: {
+  /** The family holds the installation's primary connection. */
+  primary?: boolean;
   family: ProviderFamily;
   snapshot: InstallationSettingsSnapshot;
   busy: boolean;
@@ -75,7 +85,8 @@ function ProviderFamilyCard({
   showDrag?: boolean;
 }) {
   const toggle = useCallback(
-    (enabled: boolean) =>
+    async (enabled: boolean) => {
+      if (!enabled && primary && !(await confirmDisablePrimary(family.name, confirmDialog))) return;
       save({
         expectedRevision: snapshot.revision,
         settings: {
@@ -85,8 +96,9 @@ function ProviderFamilyCard({
               : entry,
           ),
         },
-      }),
-    [save, snapshot, family.id],
+      });
+    },
+    [save, snapshot, family.id, family.name, primary],
   );
   const toggleExpanded = useCallback(
     () => onToggleExpanded(family.id),
@@ -152,7 +164,14 @@ function ProviderFamilyCard({
             <ThemedChevron size={16} uniProps={gripColor} />
           </View>
           <View style={styles.content}>
-            <Text style={settingsStyles.rowTitle}>{family.name}</Text>
+            <View style={styles.name}>
+              <Text style={settingsStyles.rowTitle}>{family.name}</Text>
+              {primary ? (
+                <View testID={`provider-family-primary-${family.id}`}>
+                  <StatusBadge label="Primary" size="xs" variant="success" />
+                </View>
+              ) : null}
+            </View>
             <Text style={settingsStyles.rowHint} numberOfLines={1}>
               {familySummary(family)}
             </Text>
@@ -279,6 +298,7 @@ function ProviderCatalog({
   const [useDev, setUseDev] = useState(false);
   const reportActionError = useReportActionError();
   const change = useMutation({ mutationFn: save, onError: reportActionError });
+  const { primary } = usePrimaryConnection();
   const [showAvailable, setShowAvailable] = useState(false);
   const toggleAvailable = useCallback(() => setShowAvailable((value) => !value), []);
   // One provider open at a time; a provider address opens with it expanded.
@@ -373,6 +393,7 @@ function ProviderCatalog({
         save={change.mutate}
         expanded={item.id === expanded}
         onToggleExpanded={toggleExpanded}
+        primary={item.accounts.some((account) => isPrimaryConnection(primary, account.definitions))}
         showDrag={
           item.installed === true &&
           families.filter((family) => family.installed === true && family.enabled === item.enabled)
@@ -382,7 +403,7 @@ function ProviderCatalog({
         dragHandleProps={dragHandleProps}
       />
     ),
-    [data, change, expanded, toggleExpanded, families],
+    [data, change, expanded, toggleExpanded, families, primary],
   );
   const availableFamilies = useMemo(
     () => families.filter((family) => family.installed === false),
@@ -509,6 +530,7 @@ const styles = StyleSheet.create((theme) => ({
   titleHovered: { backgroundColor: theme.colors.surface2 },
   titleHover: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   content: { flex: 1, minWidth: 120 },
+  name: { flexDirection: "row", alignItems: "center", gap: theme.spacing[2] },
   dragHandle: {
     minWidth: 44,
     minHeight: 44,

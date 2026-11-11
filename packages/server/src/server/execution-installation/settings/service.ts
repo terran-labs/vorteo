@@ -26,6 +26,7 @@ import type {
 } from "@getpaseo/protocol/messages";
 import type { ExecutionEnvironmentKind } from "@getpaseo/protocol/execution-installation";
 import {
+  isDefaultConnection,
   isProjectPolicyKey,
   InstallationSettingsFieldSchema,
   InstallationSettingsSchema,
@@ -58,6 +59,12 @@ export interface SettingsEnvironment {
     excludedIds: readonly string[],
   ): Promise<void>;
   previewSkills(selection: AgentSkillSelection): Promise<AgentSkillsSaveResult>;
+  /**
+   * Local provider ids that can run a system thread now, best first; those whose readiness is
+   * not settled yet, still loading or ready with a usage reading that failed; and ready ones
+   * whose settled reading neither confirms nor refuses a sign in.
+   */
+  readProviderReadiness(): Promise<{ usable: string[]; pending: string[]; unconfirmed: string[] }>;
   patch(
     patch: MutableDaemonConfigPatch,
     confirmedSkillRemovals?: readonly string[],
@@ -82,6 +89,7 @@ export const SettingsBackupSchema = z.strictObject({
     "skill-catalog-migration",
     "provider-catalog-migration",
     "plugin-provider-enrollment",
+    "primary-connection-adoption",
     "owner-update",
     "environment-projection",
   ]),
@@ -107,6 +115,12 @@ export class InstallationSettingsConflict extends Error {
   }
 }
 
+const INVALID_UPDATE_MESSAGES: Partial<Record<string, string>> = {
+  "project-policy":
+    "A project must stay available in at least one environment, keyed by its absolute root path.",
+  "primary-connection-unavailable": "That connection is no longer available.",
+};
+
 export class InstallationSettingsInvalidUpdate extends Error {
   constructor(
     readonly reason:
@@ -118,12 +132,13 @@ export class InstallationSettingsInvalidUpdate extends Error {
       | "terminal-profile"
       | "metadata-provider"
       | "installation-instructions"
-      | "project-policy",
+      | "project-policy"
+      | "primary-connection"
+      | "primary-connection-unavailable",
   ) {
     super(
-      reason === "project-policy"
-        ? "A project must stay available in at least one environment, keyed by its absolute root path."
-        : "Shared settings reference an unknown environment or resource.",
+      INVALID_UPDATE_MESSAGES[reason] ??
+        "Shared settings reference an unknown environment or resource.",
     );
     this.name = "InstallationSettingsInvalidUpdate";
   }
@@ -235,8 +250,8 @@ export class InstallationSettingsService {
       base = previous.settings;
     }
     const settings = InstallationSettingsSchema.parse({ ...base, ...request.settings });
-    if (request.settings.resourceExclusions === undefined) pruneResourceExclusions(settings);
-    if (request.settings.projectPolicies === undefined) pruneProjectPolicies(settings);
+    pruneUnspecified(settings, request.settings);
+    if (request.settings.primaryConnection) assertPrimaryConnectionChoice(settings);
     this.validateResources(settings);
     if (previous.settings !== null && isDeepStrictEqual(settings, previous.settings)) {
       this.skillRemovalConfirmations = request.confirmedSkillRemovals ?? {};
@@ -276,6 +291,8 @@ export class InstallationSettingsService {
       if (this.needsProviderCatalogMigration()) return this.snapshot();
       if (this.needsBrowserPolicyMigration()) await this.migrateBrowserPolicy();
       if (this.needsBrowserPolicyMigration()) return this.snapshot();
+      if (this.state.settings?.primaryConnection === undefined && this.state.settings !== null)
+        await this.adoptPrimaryConnection();
       if (this.state.settings !== null) {
         const unavailable = await this.enrollPluginProviders();
         for (const environment of this.environments)
@@ -317,6 +334,57 @@ export class InstallationSettingsService {
     }
     for (const serverId of unavailable) this.recordStatus(serverId, "read_failed");
     return unavailable;
+  }
+
+  /**
+   * Upgrades an installation that has never chosen a primary connection, once. The only usable
+   * connection becomes primary; with several the owner chooses, so it is set to null. With none
+   * it stays unchosen and a later pass, or the setup guide, decides. A failed read retries, and
+   * so does a pass where any eligible connection is still loading or its usage reading failed:
+   * right after the upgrade restart, that connection may be usable too, and adopting the only
+   * one ready so far would choose for the owner. An eligible connection whose settled reading
+   * cannot confirm a sign in, such as a setup-token connection, may be usable as well, so the
+   * owner chooses.
+   */
+  private async adoptPrimaryConnection(): Promise<void> {
+    const previous = this.snapshot();
+    if (!previous.settings?.providerDefinitions) return;
+    const usable = new Set<string>();
+    let unconfirmed = false;
+    for (const environment of this.environments) {
+      let readiness: { usable: string[]; pending: string[]; unconfirmed: string[] };
+      try {
+        readiness = await environment.readProviderReadiness();
+      } catch {
+        return;
+      }
+      const excluded = previous.settings.resourceExclusions[environment.serverId]?.providerIds;
+      const eligible = (localId: string) =>
+        previous.settings!.providerDefinitions!.find(
+          (entry) =>
+            !entry.removed &&
+            entry.policy.enabled !== false &&
+            entry.bindings[environment.serverId] === localId &&
+            !excluded?.includes(entry.id),
+        );
+      if (readiness.pending.some((localId) => eligible(localId))) return;
+      if (readiness.unconfirmed.some((localId) => eligible(localId))) unconfirmed = true;
+      for (const localId of readiness.usable) {
+        const definition = eligible(localId);
+        if (definition) usable.add(adoptionIdentity(definition, previous.settings));
+      }
+    }
+    if ((usable.size === 0 && !unconfirmed) || previous.revision !== this.state.revision) return;
+    const [only] = usable;
+    const settings: InstallationSettings = {
+      ...structuredClone(previous.settings),
+      primaryConnection: usable.size === 1 && !unconfirmed ? { providerId: only! } : null,
+    };
+    this.validateResources(settings);
+    const next = { ...previous, revision: previous.revision + 1, settings };
+    for (const source of Object.values(next.sources)) source.pendingRevision = next.revision;
+    this.journal.backup({ reason: "primary-connection-adoption", previous, observations: {} });
+    this.commit(next);
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -411,6 +479,11 @@ export class InstallationSettingsService {
         throw new InstallationSettingsInvalidUpdate("metadata-provider");
     }
     this.validateProjectPolicies(settings, { definitionIds, skillIds });
+    if (
+      settings.primaryConnection &&
+      !definitionIds.includes(settings.primaryConnection.providerId)
+    )
+      throw new InstallationSettingsInvalidUpdate("primary-connection");
   }
 
   private validateProjectPolicies(
@@ -980,7 +1053,14 @@ export class InstallationSettingsService {
         isDeepStrictEqual(
           verifiedConfig.installationResourceBindings,
           patch.installationResourceBindings,
-        )
+        ) &&
+        (patch.installationPrimaryConnection === undefined ||
+          (isDeepStrictEqual(
+            verifiedConfig.installationPrimaryConnection,
+            patch.installationPrimaryConnection,
+          ) &&
+            verifiedConfig.installationPrimaryConnectionSupported ===
+              patch.installationPrimaryConnectionSupported))
         ? null
         : "verification_failed",
     );
@@ -1038,8 +1118,75 @@ function environmentCopiesSettled(
   return (
     isDeepStrictEqual(bindings, patch.installationResourceBindings) &&
     (patch.installationProjectPolicies === undefined ||
-      isDeepStrictEqual(local.installationProjectPolicies, patch.installationProjectPolicies))
+      isDeepStrictEqual(local.installationProjectPolicies, patch.installationProjectPolicies)) &&
+    (patch.installationPrimaryConnection === undefined ||
+      (isDeepStrictEqual(
+        local.installationPrimaryConnection,
+        patch.installationPrimaryConnection,
+      ) &&
+        local.installationPrimaryConnectionSupported ===
+          patch.installationPrimaryConnectionSupported))
   );
+}
+
+/** Drops references the owner's update left dangling in fields it did not send. */
+function pruneUnspecified(
+  settings: InstallationSettings,
+  sent: InstallationSettingsUpdate["settings"],
+) {
+  if (sent.resourceExclusions === undefined) pruneResourceExclusions(settings);
+  if (sent.projectPolicies === undefined) pruneProjectPolicies(settings);
+  if (sent.primaryConnection === undefined) prunePrimaryConnection(settings);
+}
+
+/** A connection that can run system threads: present, not removed and not turned off. */
+function liveDefinition(settings: InstallationSettings, providerId: string) {
+  const definition = settings.providerDefinitions?.find((entry) => entry.id === providerId);
+  return definition && !definition.removed && definition.policy.enabled !== false
+    ? definition
+    : null;
+}
+
+/** A removed or turned off connection stops being primary, and the owner chooses again. */
+function prunePrimaryConnection(settings: InstallationSettings) {
+  const primary = settings.primaryConnection;
+  if (primary && !liveDefinition(settings, primary.providerId)) settings.primaryConnection = null;
+}
+
+/**
+ * An explicit choice must name a live connection, and its profile must be a shared profile of
+ * that connection's provider type: other profile ids name one environment's local profile.
+ * Refused with a typed reason, so a choice read from an older snapshot never saves a primary
+ * that daemons would then reject.
+ */
+function assertPrimaryConnectionChoice(settings: InstallationSettings) {
+  const primary = settings.primaryConnection;
+  if (!primary) return;
+  const definition = liveDefinition(settings, primary.providerId);
+  const profileMatches =
+    primary.profileId === undefined ||
+    (primary.profileId.startsWith("shared-profile/") &&
+      decodeURIComponent(primary.profileId.split("/")[1] ?? "") === definition?.providerType);
+  if (!definition || !profileMatches)
+    throw new InstallationSettingsInvalidUpdate("primary-connection-unavailable");
+}
+
+/**
+ * The definition that stands for a connection when counting usable ones. A provider's shared
+ * default connection can be one definition per environment; the Host's copy names them all.
+ */
+function adoptionIdentity(
+  definition: InstallationProvider,
+  settings: InstallationSettings,
+): string {
+  if (!isDefaultConnection(definition)) return definition.id;
+  const first = (settings.providerDefinitions ?? []).find(
+    (entry) =>
+      !entry.removed &&
+      entry.providerType === definition.providerType &&
+      isDefaultConnection(entry),
+  );
+  return first?.id ?? definition.id;
 }
 
 function pruneProjectPolicies(settings: InstallationSettings) {

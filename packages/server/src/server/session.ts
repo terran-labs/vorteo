@@ -5031,7 +5031,9 @@ export class Session {
         customName: project.customName,
         archived: project.archivedAt !== null,
         system: project.systemProject !== undefined,
-        factory: project.factoryInstallation !== undefined,
+        // COMPAT(retiredFactoryCheckpoint): the field is required on the wire. Only the retired
+        // Factory controller's bindings compared a project's key, so no project is pinned now.
+        factory: false,
         previousKeys: project.previousProjectKeys?.length ? project.previousProjectKeys : undefined,
         createdAt: project.createdAt,
       }));

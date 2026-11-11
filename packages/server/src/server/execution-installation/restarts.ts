@@ -205,6 +205,8 @@ export interface RestartExecutor {
   installMonitor?(job: PreviewMonitorJob): Promise<string>;
   factoryRuntimePlan?(): string | undefined;
   adoptFactoryRuntime?(job: RestartJob): Promise<string>;
+  /** Factory runtime adoption was retired, so no adoption can clear its recovery fence. */
+  factoryRuntimeAdoptionRetired?: boolean;
   /** Computes the exact plan for a session host operation from the coordinator's configuration. */
   sessionHostPlan?(operation: SessionHostOperation): Promise<SessionHostPlan>;
   /** Observes the job; detail only for the Host token and owners. */
@@ -539,11 +541,18 @@ export class InstallationRestarts {
           "The coordinator restarted before this operation finished. Check the session host status before requesting it again.",
       };
     });
-    this.writeState(recovered, helpers, monitors, this.listServices(), undefined, {
-      sessionHosts,
-      brokers,
-      brokerDeployments,
-    });
+    this.writeState(
+      this.retireAdoptionFences(recovered),
+      helpers,
+      monitors,
+      this.listServices(),
+      undefined,
+      {
+        sessionHosts,
+        brokers,
+        brokerDeployments,
+      },
+    );
     this.active = true;
     this.reconcilePending();
   }
@@ -2263,6 +2272,28 @@ export class InstallationRestarts {
     return (
       !job.factoryRuntimePlanSha256 ||
       job.factoryRuntimePlanSha256 === this.executor.factoryRuntimePlan?.()
+    );
+  }
+
+  /**
+   * Only a successful Factory adoption cleared an adoption recovery fence. With adoption retired
+   * no adoption can succeed, so a fence left from before would block Dev restarts and broker
+   * dispatch for good. Clear it at startup and record why on the failed request.
+   */
+  // COMPAT(retiredFactoryAdoption): added after 26.11.902; remove once every installation has
+  // started a release with it, which clears any retained fence on its first activation.
+  private retireAdoptionFences(jobs: RestartJob[]): RestartJob[] {
+    if (!this.executor.factoryRuntimeAdoptionRetired) return jobs;
+    return jobs.map((job) =>
+      // Any job factoryRecoveryRequired() would count, provided it is a failed adoption.
+      job.factoryRuntimeRecoveryRequired && job.status === "failed" && job.factoryRuntimePlanSha256
+        ? {
+            ...job,
+            factoryRuntimeRecoveryRequired: false,
+            detail:
+              `${job.detail} Factory adoption was retired with the Factory controller, so this recovery fence no longer applies.`.trim(),
+          }
+        : job,
     );
   }
 

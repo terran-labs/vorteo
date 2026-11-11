@@ -12,6 +12,7 @@ import {
 import { InstallationProviderProjectionSchema } from "./installation-provider.js";
 import { PluginDirectoryBindingSchema, ResolvedPluginSourceSchema } from "./plugin-installation.js";
 import {
+  DaemonPrimaryConnectionSchema,
   InstallationProjectPolicySchema,
   InstallationResourceBindingsSchema,
 } from "./installation-settings.js";
@@ -383,6 +384,12 @@ const InstallationProjectPoliciesWireSchema = z.record(
   InstallationProjectPolicySchema.loose(),
 );
 
+// Defined beside the installation settings so lightweight config readers avoid the wire schemas.
+export {
+  DaemonPrimaryConnectionSchema,
+  type DaemonPrimaryConnection,
+} from "./installation-settings.js";
+
 export const MutableDaemonConfigSchema = z
   .object({
     // COMPAT(relayConfig): added in v0.2.6, remove after 2027-01-31 when old daemons are unsupported.
@@ -431,6 +438,16 @@ export const MutableDaemonConfigSchema = z
     // COMPAT(projectPolicies): added 2026-10-22. A read-only copy of the installation's project
     // exclusions for client choosers; launches check the coordinator. Absent on older daemons.
     installationProjectPolicies: InstallationProjectPoliciesWireSchema.optional(),
+    // COMPAT(primaryConnection): added 2026-11-05. A standalone daemon's own choice. Absent
+    // means not chosen yet; null means the owner has to choose.
+    primaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
+    // COMPAT(primaryConnection): added 2026-11-05. A read-only copy of the installation's
+    // primary connection with this environment's provider id. Absent on older daemons.
+    installationPrimaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
+    // COMPAT(primaryConnection): added 2026-11-06. Projected only by coordinators that own the
+    // primary connection. Until it arrives, an installation daemon keeps the earlier launch
+    // rule (the first usable provider) instead of waiting for a choice it can never receive.
+    installationPrimaryConnectionSupported: z.boolean().optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
     sharedProviderPreferences: SharedProviderPreferencesSchema.optional(),
     skills: z.object({ selection: AgentSkillSelectionSchema.optional() }).strict().optional(),
@@ -469,6 +486,9 @@ export const MutableDaemonConfigPatchSchema = z
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     installationResourceBindings: InstallationResourceBindingsSchema.optional(),
     installationProjectPolicies: InstallationProjectPoliciesWireSchema.optional(),
+    primaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
+    installationPrimaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
+    installationPrimaryConnectionSupported: z.boolean().optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
@@ -4592,6 +4612,9 @@ export const ServerInfoStatusPayloadSchema = z
         installationResourceBindings: z.boolean().optional(),
         // COMPAT(projectPolicies): added 2026-10-22, remove gate after 2027-04-22.
         installationProjectPolicies: z.boolean().optional(),
+        // COMPAT(primaryConnection): added 2026-11-05, remove gate after 2027-05-05. The daemon
+        // launches system threads with the primary connection and stores it when standalone.
+        primaryConnectionSetting: z.boolean().optional(),
         installationSettingsAuthority: z.boolean().optional(),
         installationProviderRemoval: z.boolean().optional(),
         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.
@@ -7307,6 +7330,9 @@ export const ProviderUsageSchema = z.object({
   authRecovery: z
     .object({ instructions: z.string(), method: z.literal("device_code").optional() })
     .optional(),
+  // No credentials exist for this account, so it cannot start agents until someone signs in.
+  // Omitted when credentials exist or the daemon predates the field.
+  credentialsMissing: z.boolean().optional(),
   planLabel: z.string().nullable(),
   sourceLabel: z.string().nullable().optional(),
   fetchedAt: z.string().nullable().optional(),

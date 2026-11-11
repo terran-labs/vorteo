@@ -1,13 +1,12 @@
 /**
- * First-run setup: a one-time modal that walks a new user through the surfaces Settings
- * already has — appearance, providers, projects, Paseo tools and phone pairing.
- *
- * The app shell mounts the host; Settings reopens it. Whether it opens, which steps it has,
- * and how completion is remembered stay inside; import from `@/onboarding` only.
+ * Vorteo keeps owner sign-in and offers an installation-scoped guide afterwards.
+ * Upstream's walkthrough stays compiled but hidden under the owner's decision.
  */
 export { OnboardingHost } from "./onboarding-host";
 export { useOpenOnboarding } from "./use-open-onboarding";
 
-// Owner decision #8363 is pending: Vorteo keeps its installation welcome and onboarding.
-// Enable this one flag only after the owner chooses to adopt upstream's setup walkthrough.
+// Owner decision #8363: keep upstream setup hidden. Vorteo uses its authenticated
+// installation guide instead; enabling the legacy walkthrough would create two flows.
 export const UPSTREAM_SETUP_ENABLED = false;
+
+export { useOpenVorteoSetupGuide } from "./vorteo-guide/host";

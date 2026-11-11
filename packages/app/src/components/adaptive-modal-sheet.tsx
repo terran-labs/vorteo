@@ -532,6 +532,8 @@ export function SheetFooter({
 }
 
 export interface AdaptiveModalSheetProps {
+  /** Accessible name for the web dialog; omitted callers keep their existing behavior. */
+  accessibilityLabel?: string;
   /**
    * The title row with the close button. Leave it out when the body draws its own chrome, such as
    * a full-height side rail: the desktop card then floats the close button over its top-right
@@ -651,6 +653,7 @@ function CompactSheetBody({
 }
 
 export function AdaptiveModalSheet({
+  accessibilityLabel,
   header,
   visible,
   onClose,
@@ -847,7 +850,14 @@ export function AdaptiveModalSheet({
         style={ABSOLUTE_FILL_STYLE}
         onPress={onClose}
       />
-      <View ref={setOverlayScope} style={desktopCardStyle} role="dialog" aria-modal tabIndex={-1}>
+      <View
+        ref={setOverlayScope}
+        style={desktopCardStyle}
+        role="dialog"
+        accessibilityLabel={accessibilityLabel}
+        aria-modal
+        tabIndex={-1}
+      >
         {cardInner}
       </View>
     </View>

@@ -25,6 +25,8 @@ const CodexAuthSchema = z.object({
       refresh_token: z.string().optional(),
       account_id: z.string().optional(),
     })
+    // API-key sign-in writes null tokens beside OPENAI_API_KEY; that must not fail the parse.
+    .nullable()
     .optional(),
 });
 
@@ -114,6 +116,8 @@ export class CodexQuotaProvider implements ProviderUsageFetcher {
     const auth = credentials?.auth;
     const accessToken = auth?.tokens?.access_token;
     if (!credentials || !auth || !accessToken) {
+      // Not proof of no credentials: an API key in auth.json, the environment or config.toml
+      // still runs agents. Vorteo does not own this store, so the reading stays unconfirmed.
       return unavailableUsage(this);
     }
 

@@ -8,6 +8,15 @@ import {
 import { useFetchQuery } from "@/data/query";
 import { readExecutionInstallation } from "./policy";
 import { OwnerAccessExpired } from "./client";
+import { PrimaryConnectionUnavailableError } from "./primary-connection-error";
+
+/** Another owner saved shared settings first. Read them again before retrying. */
+export class InstallationSettingsConflictError extends Error {
+  constructor() {
+    super("Shared settings changed. Reload and review the current values before saving.");
+    this.name = "InstallationSettingsConflictError";
+  }
+}
 
 export async function requestInstallationSettings(update?: InstallationSettingsUpdate) {
   const response = await fetch(`/api/installation/owner/${update ? "settings" : "settings/read"}`, {
@@ -20,6 +29,7 @@ export async function requestInstallationSettings(update?: InstallationSettingsU
       "Content-Type": "application/json",
       "X-Vorteo-Provider-Removal": "1",
       "X-Vorteo-Project-Policies": "1",
+      "X-Vorteo-Primary-Connection": "1",
     },
     body: JSON.stringify(update ?? {}),
   }).catch((error: unknown) => {
@@ -31,17 +41,21 @@ export async function requestInstallationSettings(update?: InstallationSettingsU
   });
   if (response.status === 401)
     throw new OwnerAccessExpired("Unlock Installation controls in General settings to continue.");
-  if (response.status === 409)
-    throw new Error("Shared settings changed. Reload and review the current values before saving.");
-  if (response.status === 400) throw new Error(await readRefusal(response));
+  if (response.status === 409) throw new InstallationSettingsConflictError();
+  if (response.status === 400) throw await readRefusal(response);
   if (!response.ok) throw new Error("Unable to access shared installation settings.");
   return InstallationSettingsSnapshotSchema.parse(await response.json());
 }
 
-async function readRefusal(response: Response): Promise<string> {
+async function readRefusal(response: Response): Promise<Error> {
   const body: unknown = await response.json().catch(() => null);
-  const error = typeof body === "object" && body !== null ? Reflect.get(body, "error") : null;
-  return typeof error === "string" ? error : "Shared settings refused this change.";
+  const read = (key: string) =>
+    typeof body === "object" && body !== null ? Reflect.get(body, key) : null;
+  const error = read("error");
+  const message = typeof error === "string" ? error : "Shared settings refused this change.";
+  if (read("reason") === "primary-connection-unavailable")
+    return new PrimaryConnectionUnavailableError(message);
+  return new Error(message);
 }
 
 export function useInstallationSettings(enabled = true) {

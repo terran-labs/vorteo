@@ -1,3 +1,5 @@
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { type Animated, Text, View } from "react-native";
@@ -5,6 +7,7 @@ import { StyleSheet } from "react-native-unistyles";
 import { SkeletonPulse, useSkeletonPulse } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { useTimeAgo } from "@/hooks/use-time-ago";
+import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { projectIconRadius } from "@/components/project-icon-view";
 import { settingsStyles } from "@/styles/settings";
 import { ICON_SIZE } from "@/styles/theme";
@@ -14,6 +17,7 @@ import type {
   ProjectSuggestionsController,
   SuggestionRow as SuggestionRowModel,
 } from "./use-project-suggestions";
+import { PROVIDER_LIST_FAILURE } from "./use-provider-suggestions";
 
 const INITIAL_SKELETON_ROWS = [0, 1, 2];
 const TRAILING_SKELETON_ROWS = [0];
@@ -21,7 +25,7 @@ const TRAILING_SKELETON_ROWS = [0];
 /**
  * Folders the user already ran agents in, ready to add as projects. Rows appear as each provider
  * answers, with skeleton rows while any is still reading; a provider that cannot read its history
- * adds nothing. Adding the checked rows is the owner's primary action, through the same
+ * keeps a retry action without blocking the other providers. Adding the checked rows is the owner's primary action, through the same
  * controller. Renders nothing on a host that cannot suggest projects.
  */
 export function ProjectSuggestionList({
@@ -34,7 +38,7 @@ export function ProjectSuggestionList({
   const { t } = useTranslation();
   const { list } = suggestions;
   if (list.status === "unsupported") return null;
-  if (list.rows.length === 0 && !list.isReading) {
+  if (list.rows.length === 0 && !list.isReading && list.failedProviders.length === 0) {
     return (
       <Text style={styles.statusText}>
         {t("onboarding.setup.steps.projects.suggestions.empty")}
@@ -49,6 +53,16 @@ export function ProjectSuggestionList({
         list.isReading ? t("onboarding.setup.steps.projects.suggestions.loading") : undefined
       }
     >
+      {list.failedProviders.map((provider) => (
+        <HistoryFailure
+          key={provider}
+          serverId={serverId}
+          provider={provider}
+          retry={list.retryProvider}
+          loading={list.retryingProviders.includes(provider)}
+          disabled={list.isAdding}
+        />
+      ))}
       {list.rows.map((row, index) => (
         <SuggestionRow
           key={row.suggestion.rootPath}
@@ -60,6 +74,38 @@ export function ProjectSuggestionList({
         />
       ))}
       {list.isReading ? <SkeletonRows afterRows={list.rows.length > 0} /> : null}
+    </View>
+  );
+}
+
+function HistoryFailure({
+  serverId,
+  provider,
+  retry,
+  loading,
+  disabled,
+}: {
+  serverId: string;
+  provider: string;
+  retry: (provider: string) => void;
+  loading: boolean;
+  disabled: boolean;
+}) {
+  const { t } = useTranslation();
+  const retryHistory = useCallback(() => retry(provider), [retry, provider]);
+  // The same shared snapshot query the suggestions read, so this adds no request.
+  const { entries } = useProvidersSnapshot(serverId);
+  const label = entries?.find((entry) => entry.provider === provider)?.label ?? provider;
+  const description =
+    provider === PROVIDER_LIST_FAILURE
+      ? t("vorteoSetup.providerListFailed")
+      : t("vorteoSetup.historyFailed", { provider: label });
+  return (
+    <View style={settingsStyles.row}>
+      <Alert variant="warning" description={description} />
+      <Button variant="outline" onPress={retryHistory} loading={loading} disabled={disabled}>
+        {t("vorteoSetup.historyRetry")}
+      </Button>
     </View>
   );
 }

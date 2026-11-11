@@ -680,6 +680,40 @@ test("broker settings show the release commit and mint a bounded scope only when
 });
 
 test.each([
+  { running: "new", scope: "minted" },
+  { running: "previous", scope: "kept" },
+])(
+  "broker settings with an unreadable outcome while the $running configuration runs keep the $scope scope",
+  async ({ running }) => {
+    const fx = brokerInstallation();
+    const base = sha256(fx.state.disk.config);
+    const job = await fx.request();
+    fx.settings.decide(job.id, job.revision, "approve", { reviewedFields: true });
+    fx.state.clock.now += 60_000;
+    await fx.settings.drain();
+    const minted = readFileSync(fx.recorded.scope.path, "utf8");
+    expect(minted).not.toBe("{}");
+    // The restarted coordinator cannot read the handoff outcome. The new configuration pins
+    // the minted scope; the previous one still runs with the kept scope.
+    fx.settings["ports"].runningSha256 = running === "new" ? sha256(fx.state.disk.config) : base;
+    fx.settings["ports"].outcome = () => {
+      throw new Error("Unexpected token in JSON");
+    };
+    // A restore stages beside the scope file, never in the job's work folder, so it works when
+    // the two sit on different volumes.
+    const work = path.join(fx.root, "state/work", job.id);
+    chmodSync(work, 0o500);
+    try {
+      await fx.settings.drain();
+    } finally {
+      chmodSync(work, 0o700);
+    }
+    expect(fx.settings.status().job).toMatchObject({ status: "failed" });
+    expect(readFileSync(fx.recorded.scope.path, "utf8")).toBe(running === "new" ? minted : "{}");
+  },
+);
+
+test.each([
   {
     name: "a file swapped after approval",
     after: (fx: BrokerFixture) => writeFileSync(fx.host.worker.path, "worker swapped"),
@@ -709,8 +743,9 @@ test.each([
   expect(fx.settings.status().job).toMatchObject({ status: "failed" });
   expect(fx.settings.status().job?.detail).toContain(detail);
   expect(fx.calls).toEqual([]);
-  // Nothing applied, so the recorded scope keeps its exact bytes.
+  // Nothing applied, so the recorded scope keeps its exact bytes, staged beside it and renamed.
   expect(readFileSync(fx.recorded.scope.path, "utf8")).toBe("{}");
+  expect(readdirSync(path.dirname(fx.recorded.scope.path))).toEqual(["participant-scope.json"]);
 });
 
 test.each([false, true])(

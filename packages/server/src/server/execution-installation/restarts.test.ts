@@ -50,7 +50,6 @@ import {
   createSessionHostReleaseGuard,
   setReleaseSelectionGuard,
 } from "./release-selection-guard.js";
-import { factoryRuntimePlanDigest, runFactoryRuntimePhase } from "./factory-runtime-adoption.js";
 
 class MemoryJournal implements RestartJournal {
   jobs: RestartJob[] = [];
@@ -986,6 +985,22 @@ test("Factory adoption failure and coordinator recovery never replay selected so
     interrupted.list().find((item) => item.id === job.id)?.factoryRuntimeRecoveryRequired,
   ).toBe(true);
   expect(plainRestart).not.toHaveBeenCalled();
+  // With adoption retired no recovery can succeed, so startup clears the fence and says why.
+  const retired = new InstallationRestarts(journal, {
+    ...executor,
+    factoryRuntimePlan: () => undefined,
+    factoryRuntimeAdoptionRetired: true,
+  });
+  const cleared = retired.list().find((item) => item.id === job.id);
+  expect(cleared?.factoryRuntimeRecoveryRequired).toBe(false);
+  expect(cleared?.detail).toContain("Factory adoption was retired");
+  const later = retired.list().find((item) => item.id === plain.id)!;
+  retired.decide(later.id, later.revision, "approve");
+  await retired.drain();
+  expect(plainRestart).toHaveBeenCalledOnce();
+  // Clearing the fence never replays the adoption.
+  expect(attempts).toBe(1);
+  expect(retired.list().find((item) => item.id === job.id)?.status).toBe("failed");
 });
 
 test.each([false, true])(
@@ -1127,68 +1142,6 @@ test("Factory recovery requires fresh exact approval and clears only a verified 
     });
   expect(recovered.list().find((item) => item.id === third.id)?.status).toBe("succeeded");
 });
-
-test.skipIf(process.platform === "win32")(
-  "Factory adoption executes pinned physical source and verifies phase receipts",
-  async () => {
-    const root = await realpath(await mkdtemp(path.join(tmpdir(), "factory-adoption-")));
-    try {
-      const script = path.join(root, "plan.mjs");
-      const code = `const e = process.env;
-      process.stdout.write(JSON.stringify({requestId:e.VORTEO_FACTORY_ADOPTION_REQUEST_ID,
-        planSha256:e.VORTEO_FACTORY_ADOPTION_PLAN_SHA256, phase:e.VORTEO_FACTORY_ADOPTION_PHASE,
-        serverId:e.VORTEO_FACTORY_ADOPTION_SERVER_ID, previousPid:Number(e.VORTEO_FACTORY_ADOPTION_PREVIOUS_PID),
-        replacementPid:e.VORTEO_FACTORY_ADOPTION_REPLACEMENT_PID ? Number(e.VORTEO_FACTORY_ADOPTION_REPLACEMENT_PID) : null}));`;
-      await writeFile(script, code, { mode: 0o600 });
-      const plan = {
-        node: process.execPath,
-        script,
-        sha256: createHash("sha256").update(code).digest("hex"),
-      };
-      const queue = new InstallationRestarts(new MemoryJournal(), {
-        factoryRuntimePlan: () => plan.sha256,
-        adoptFactoryRuntime: async () => "unused",
-        restart: async () => "unused",
-      });
-      const job = queue.request(
-        { target: "container-daemon", reason: "Fixture", factoryRuntimePlanSha256: plan.sha256 },
-        "host-agent",
-      );
-      const input = { plan, job, serverId: "expected-dev", previousPid: 12 };
-      expect(factoryRuntimePlanDigest(plan)).toBe(plan.sha256);
-      await runFactoryRuntimePhase({ ...input, phase: "stage", replacementPid: null });
-      await runFactoryRuntimePhase({ ...input, phase: "verify", replacementPid: 13 });
-      await chmod(script, 0o666);
-      expect(factoryRuntimePlanDigest(plan)).toBeUndefined();
-      await expect(
-        runFactoryRuntimePhase({ ...input, phase: "stage", replacementPid: null }),
-      ).rejects.toThrow("physical plan");
-      await chmod(script, 0o600);
-      await writeFile(script, code + "\n// changed");
-      expect(factoryRuntimePlanDigest(plan)).toBeUndefined();
-      await expect(
-        runFactoryRuntimePhase({ ...input, phase: "stage", replacementPid: null }),
-      ).rejects.toThrow("changed");
-      const failing =
-        'console.error("private-stderr-sentinel"); throw new Error("private-source-sentinel");';
-      await writeFile(script, failing);
-      const failurePlan = { ...plan, sha256: createHash("sha256").update(failing).digest("hex") };
-      const failure = await runFactoryRuntimePhase({
-        ...input,
-        plan: failurePlan,
-        job: { ...job, factoryRuntimePlanSha256: failurePlan.sha256 },
-        phase: "stage",
-        replacementPid: null,
-      }).catch((error: Error) => error);
-      expect(failure).toBeInstanceOf(Error);
-      expect(String(failure)).toContain("stage execution failed");
-      expect(String(failure)).not.toContain("sentinel");
-      expect(String(failure)).not.toContain("--eval");
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  },
-);
 
 test("request-only callers cannot cause a restart, and approval is bound to the exact revision", async () => {
   const calls: string[] = [];
@@ -5555,7 +5508,7 @@ test("configured Dev transitions refuse before selection, staging or supervisor 
     }),
   ).rejects.toThrow("transition-phase readiness");
   const executor = createInstallationRestartExecutor(config, () => undefined);
-  await expect(executor.adoptFactoryRuntime!(job)).rejects.toThrow("transition-phase readiness");
+  await expect(executor.adoptFactoryRuntime!(job)).rejects.toThrow("adoption was retired");
   await expect(executor.restartSupervisor!(job)).rejects.toThrow("independently bound operation");
   expect(restarts).toBe(0);
 });

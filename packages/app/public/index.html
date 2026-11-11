@@ -266,6 +266,7 @@
             <button id="boot-static" type="button" hidden>Load static interface</button>
             <button id="boot-copy" type="button">Copy diagnostics</button>
             <button type="button" onclick="window.location.reload()">Reload</button>
+            <a id="boot-recovery" hidden>Open recovery</a>
           </div>
           <p id="boot-data-saver-feedback" role="status" hidden></p>
           <p id="boot-copy-feedback" role="status"></p>
@@ -409,6 +410,17 @@
         color: inherit;
         font: inherit;
         cursor: pointer;
+      }
+      #boot-recovery:not([hidden]) {
+        box-sizing: border-box;
+        display: inline-flex;
+        align-items: center;
+        min-height: 44px;
+        padding: 8px 20px;
+        border: 1px solid currentColor;
+        border-radius: 8px;
+        color: inherit;
+        text-decoration: none;
       }
       #boot-actions {
         display: flex;
@@ -1070,6 +1082,25 @@
       document.getElementById("boot-check").addEventListener("click", function () {
         bootCheckEndpoint("manual");
       });
+      // The coordinator names its private recovery origin only on the canonical origin; older
+      // coordinators omit it, and the link stays hidden.
+      // COMPAT(recoveryOriginGlobal): added after 26.11.902; read the descriptor's recoveryOrigin
+      // instead once the interface floor validates it.
+      (function () {
+        var recovery = window.__VORTEO_RECOVERY_ORIGIN__;
+        if (typeof recovery !== "string") return;
+        var url;
+        try {
+          url = new URL(recovery);
+        } catch (error) {
+          return;
+        }
+        if (url.protocol !== "https:" || url.origin !== recovery) return;
+        if (url.origin === window.location.origin) return;
+        var link = document.getElementById("boot-recovery");
+        link.href = url.origin + "/";
+        link.hidden = false;
+      })();
       document.getElementById("boot-copy").addEventListener("click", async function () {
         var report = bootSummary();
         var feedback = document.getElementById("boot-copy-feedback");

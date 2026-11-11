@@ -1,4 +1,5 @@
 import {
+  DaemonPrimaryConnectionSchema,
   InstallationProjectPolicySchema,
   InstallationResourceBindingsSchema,
 } from "@getpaseo/protocol/installation-settings";
@@ -298,6 +299,9 @@ export const PersistedConfigSchema = z
         installationProjectPolicies: z
           .record(z.string(), InstallationProjectPolicySchema.loose())
           .optional(),
+        primaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
+        installationPrimaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
+        installationPrimaryConnectionSupported: z.boolean().optional(),
         agentProfiles: z.array(AgentProfileSchema).optional(),
         sharedProviderPreferences: SharedProviderPreferencesSchema.optional(),
         cors: z

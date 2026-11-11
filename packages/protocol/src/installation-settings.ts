@@ -1,4 +1,4 @@
-import { InstallationProviderSchema } from "./installation-provider.js";
+import { InstallationProviderSchema, type InstallationProvider } from "./installation-provider.js";
 import { InstallationSkillSchema } from "./skill-library.js";
 import { InstallationPluginSchema } from "./plugin-installation.js";
 import { z } from "zod";
@@ -147,6 +147,58 @@ export function effectiveProjectPolicy(
   return effective;
 }
 
+/** A daemon's primary connection: a provider id in this environment and an optional profile. */
+export const DaemonPrimaryConnectionSchema = z
+  .object({ provider: z.string().min(1), profileId: z.string().min(1).optional() })
+  .passthrough();
+export type DaemonPrimaryConnection = z.infer<typeof DaemonPrimaryConnectionSchema>;
+
+/**
+ * The one connection system threads (the Optimizer, Factory and other daemon-created agents)
+ * launch with. `providerId` is an installation provider definition id, never a label;
+ * `profileId` is an optional shared profile to launch through.
+ */
+export const InstallationPrimaryConnectionSchema = z.strictObject({
+  providerId: z.string().min(1),
+  profileId: z.string().min(1).optional(),
+});
+export type InstallationPrimaryConnection = z.infer<typeof InstallationPrimaryConnectionSchema>;
+
+/**
+ * The definition that names the primary connection in one environment. The shared default
+ * connection of a provider type can be stored as one definition per environment, so another
+ * unbound default definition of the same type stands in for it.
+ */
+export function primaryConnectionBinding(
+  settings: Pick<InstallationSettings, "primaryConnection" | "providerDefinitions">,
+  serverId: string,
+): InstallationProvider | null {
+  const primary = settings.primaryConnection;
+  if (!primary) return null;
+  const definitions = settings.providerDefinitions ?? [];
+  const chosen = definitions.find((entry) => entry.id === primary.providerId);
+  if (!chosen || chosen.removed) return null;
+  if (chosen.bindings[serverId]) return chosen;
+  if (!isDefaultConnection(chosen)) return null;
+  return (
+    definitions.find(
+      (entry) =>
+        !entry.removed &&
+        entry.providerType === chosen.providerType &&
+        isDefaultConnection(entry) &&
+        Boolean(entry.bindings[serverId]),
+    ) ?? null
+  );
+}
+
+/** A provider's shared default connection: no account, bound by its type name everywhere. */
+export function isDefaultConnection(definition: InstallationProvider): boolean {
+  return (
+    !definition.accountId &&
+    Object.values(definition.bindings).every((id) => id === definition.providerType)
+  );
+}
+
 export const InstallationSettingsSchema = z.strictObject({
   browserTools: z.strictObject({ enabled: z.boolean() }).optional(),
   providerDefinitions: z.array(InstallationProviderSchema).optional(),
@@ -174,6 +226,11 @@ export const InstallationSettingsSchema = z.strictObject({
   // COMPAT(projectPolicies): added 2026-10-22. Coordinators send it only to readers that ask
   // with `projectPolicies=1`, because older strict readers reject unknown keys.
   projectPolicies: z.record(z.string().min(1), InstallationProjectPolicySchema).optional(),
+  // COMPAT(primaryConnection): added 2026-11-05. Sent only to readers that ask with
+  // `primaryConnection=1`, because older strict readers reject unknown keys. Absent means not
+  // chosen yet, so the coordinator adopts the only usable connection; null means the owner
+  // has to choose.
+  primaryConnection: InstallationPrimaryConnectionSchema.nullable().optional(),
 });
 export type InstallationSettings = z.infer<typeof InstallationSettingsSchema>;
 export const InstallationSettingsFieldSchema = InstallationSettingsSchema.keyof();

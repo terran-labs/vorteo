@@ -508,6 +508,8 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
     }
     const credentials = await this.readCredentials();
     if (!credentials) {
+      // Not proof of no credentials: API keys, tokens, cloud providers and apiKeyHelper all run
+      // agents without this store, which Vorteo does not own. The reading stays unconfirmed.
       return unavailableUsage(this);
     }
     return this.usageFromCredentials(credentials, CLAUDE_NATIVE_RECOVERY);
@@ -552,6 +554,7 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
     if (!credentials)
       return {
         ...unavailableUsage(this),
+        credentialsMissing: true,
         details: [
           {
             id: "claude-sign-in",

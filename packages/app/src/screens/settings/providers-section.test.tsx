@@ -21,11 +21,13 @@ const {
 } = vi.hoisted(() => {
   const initialCatalogState: {
     capability: boolean | undefined;
+    primarySupported: boolean;
     managed: boolean;
     connected: boolean;
     settings: ReturnType<typeof useInstallationSettings>["data"];
   } = {
     capability: undefined,
+    primarySupported: false,
     managed: false,
     connected: true,
     settings: undefined,
@@ -317,7 +319,9 @@ vi.mock("@/runtime/host-runtime", async (importOriginal) => ({
 
 vi.mock("@/runtime/host-features", () => ({
   useHostFeature: (_serverId: string, feature: string) =>
-    feature === "hopliteProvider" ? catalogState.capability : false,
+    feature === "hopliteProvider"
+      ? catalogState.capability
+      : feature === "primaryConnectionSetting" && catalogState.primarySupported,
 }));
 
 vi.mock("@/execution-installation/settings", () => ({
@@ -373,6 +377,12 @@ const disabledCodexEntry: ProviderSnapshotEntry = {
   modes: [],
 };
 
+const readyCodex: ProviderSnapshotEntry = {
+  ...disabledCodexEntry,
+  status: "ready",
+  enabled: true,
+};
+
 function makeConfig(providers: MutableDaemonConfig["providers"] = {}): MutableDaemonConfig {
   return {
     relay: { enabled: false },
@@ -414,6 +424,7 @@ describe("ProvidersSection", () => {
     root = createRoot(container);
 
     catalogState.capability = undefined;
+    catalogState.primarySupported = false;
     catalogState.managed = false;
     catalogState.connected = true;
     catalogState.settings = undefined;
@@ -702,5 +713,69 @@ describe("ProvidersSection", () => {
     expect(patchConfigMock).toHaveBeenCalledWith({
       providers: { claude: { enabled: false } },
     });
+  });
+
+  it("marks the primary provider and offers Make primary on other ready providers", async () => {
+    catalogState.primarySupported = true;
+    snapshotState.entries = [claudeEntry, readyCodex];
+    configState.config = { ...makeConfig(), primaryConnection: { provider: "claude" } };
+    patchConfigMock.mockResolvedValue(configState.config as never);
+    const shown: string[] = [];
+    const show = toastApi.show;
+    toastApi.show = ((message: string) => shown.push(message)) as never;
+    try {
+      render();
+      expect(container?.querySelector('[data-testid="provider-primary-claude"]')).not.toBeNull();
+      expect(container?.querySelector('[data-testid="provider-primary-codex"]')).toBeNull();
+      expect(container?.querySelector('[data-testid="provider-make-primary-claude"]')).toBeNull();
+      const makePrimary = container?.querySelector<HTMLElement>(
+        '[data-testid="provider-make-primary-codex"]',
+      );
+      expect(makePrimary).not.toBeNull();
+
+      const { confirmDialog } = await import("@/utils/confirm-dialog");
+      await act(async () => {
+        makePrimary?.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+      });
+      expect(confirmDialog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "Make Codex the primary connection?",
+          confirmLabel: "Make primary",
+        }),
+      );
+      expect(patchConfigMock).toHaveBeenCalledWith({ primaryConnection: { provider: "codex" } });
+      expect(shown).toEqual(["Codex is now the primary connection."]);
+    } finally {
+      toastApi.show = show;
+    }
+  });
+
+  it("warns before turning off the primary provider", async () => {
+    catalogState.primarySupported = true;
+    snapshotState.entries = [claudeEntry];
+    configState.config = { ...makeConfig(), primaryConnection: { provider: "claude" } };
+    const { confirmDialog } = await import("@/utils/confirm-dialog");
+    vi.mocked(confirmDialog).mockResolvedValueOnce(false);
+    render();
+    const row = findRow("Claude provider details").parentElement;
+    await act(async () => {
+      row
+        ?.querySelector<HTMLElement>('[role="switch"]')
+        ?.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+    expect(confirmDialog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining("will wait until you choose another primary connection"),
+      }),
+    );
+    expect(patchConfigMock).not.toHaveBeenCalled();
+  });
+
+  it("shows nothing where the daemon does not support the setting", () => {
+    snapshotState.entries = [claudeEntry, readyCodex];
+    configState.config = { ...makeConfig(), primaryConnection: { provider: "claude" } };
+    render();
+    expect(container?.querySelector('[data-testid="provider-primary-claude"]')).toBeNull();
+    expect(container?.querySelector('[data-testid="provider-make-primary-codex"]')).toBeNull();
   });
 });

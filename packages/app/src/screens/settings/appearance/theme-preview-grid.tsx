@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Text, View, type LayoutChangeEvent } from "react-native";
 import { useWindowDimensions } from "@/appearance/interface-geometry";
@@ -200,6 +201,7 @@ export function ThemePreviewGrid({
   compact = false,
   selectTheme,
 }: { compact?: boolean; selectTheme?: (action: () => void) => void } = {}) {
+  const { t } = useTranslation();
   const previewing = useThemePreviewActive();
   const { settings, updateSettings } = useAppSettings();
   const preview = useThemePreview();
@@ -220,7 +222,7 @@ export function ThemePreviewGrid({
     };
   }, [preview, previewing]);
   const commit = useCallback(
-    async (id: AppearanceId) => {
+    async (id: AppearanceId | "auto") => {
       setSaving(true);
       setError(null);
       try {
@@ -236,7 +238,7 @@ export function ThemePreviewGrid({
     [preview, updateSettings],
   );
   const select = useCallback(
-    (id: AppearanceId) => {
+    (id: AppearanceId | "auto") => {
       if (selectTheme)
         selectTheme(() => {
           void commit(id);
@@ -245,8 +247,20 @@ export function ThemePreviewGrid({
     },
     [commit, selectTheme],
   );
+  const followSystem = useCallback(() => select("auto"), [select]);
+  const followsSystem = settings.theme === "auto";
   return (
     <View style={styles.controls}>
+      {/* A toggle like the preset cards: filled while chosen, announced through aria-pressed. */}
+      <Button
+        variant={followsSystem ? "default" : "outline"}
+        onPress={followSystem}
+        disabled={saving}
+        aria-pressed={followsSystem}
+        testID="theme-follow-system"
+      >
+        {t("vorteoSetup.followSystem")}
+      </Button>
       <View style={styles.grid}>
         {APPEARANCE_DEFINITIONS.map((appearance) => (
           <ThemePreviewCard

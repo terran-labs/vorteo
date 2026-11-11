@@ -1541,6 +1541,149 @@ describe("DaemonConfigStore", () => {
     expect(loadPersistedConfig(home).daemon?.installationProjectPolicies).toEqual(policies);
   });
 
+  test("the primary connection copy mirrors the coordinator and the local choice is closed", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "vorteo-primary-connection-"));
+    tempDirs.push(home);
+    const binding = {
+      installationId: "4c07b582-7d41-4be4-9725-36f975708983",
+      serverId: "host",
+      environment: "host" as const,
+      revision: 1,
+    };
+    const initial = reloadableConfig({});
+    const definition = {
+      id: "claude-definition",
+      providerType: "claude",
+      bindings: { host: "claude" },
+      policy: {},
+    };
+    const admission: InstallationSettingsAdmission = {
+      ...binding,
+      installationInstructions: "",
+      settings: { ...readInstallationSettings(initial), providerDefinitions: [definition] },
+    };
+    const store = new DaemonConfigStore(
+      home,
+      {
+        ...initial,
+        installationPrimaryConnection: null,
+        sharedProviderPreferences: {
+          version: 1,
+          revision: 1,
+          providers: {},
+          legacyProfiles: {},
+          installation: binding,
+        },
+      },
+      undefined,
+      { installationSettingsReader: { read: async () => admission } },
+    );
+    const copy = { provider: "claude" };
+    await expect(store.patchFromClient({ installationPrimaryConnection: copy })).rejects.toThrow(
+      "installation coordinator",
+    );
+    await expect(store.patchFromClient({ primaryConnection: copy })).rejects.toThrow(
+      "Providers settings",
+    );
+    // An older coordinator's admission has no primaryConnection key, so it cannot claim support.
+    await expect(
+      store.patchFromClient({ installationPrimaryConnectionSupported: true }),
+    ).rejects.toThrow("installation coordinator");
+    admission.settings.primaryConnection = { providerId: definition.id };
+    await store.patchFromClient({
+      installationPrimaryConnection: copy,
+      installationPrimaryConnectionSupported: true,
+    });
+    expect(store.get().installationPrimaryConnection).toEqual(copy);
+    expect(store.get().installationPrimaryConnectionSupported).toBe(true);
+    expect(loadPersistedConfig(home).daemon?.installationPrimaryConnectionSupported).toBe(true);
+    expect(loadPersistedConfig(home).daemon?.installationPrimaryConnection).toEqual(copy);
+  });
+
+  test("the support marker follows the coordinator on every successful read", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "vorteo-primary-support-"));
+    tempDirs.push(home);
+    const binding = {
+      installationId: "4c07b582-7d41-4be4-9725-36f975708983",
+      serverId: "host",
+      environment: "host" as const,
+      revision: 1,
+    };
+    const initial = reloadableConfig({});
+    const supporting: InstallationSettingsAdmission = {
+      ...binding,
+      installationInstructions: "",
+      settings: { ...readInstallationSettings(initial), primaryConnection: null },
+    };
+    // An older coordinator's admission has no primaryConnection key at all.
+    const older: InstallationSettingsAdmission = {
+      ...binding,
+      installationInstructions: "",
+      settings: readInstallationSettings(initial),
+    };
+    const reader = { answer: supporting as InstallationSettingsAdmission | Error };
+    const store = new DaemonConfigStore(
+      home,
+      {
+        ...initial,
+        installationPrimaryConnection: null,
+        sharedProviderPreferences: {
+          version: 1,
+          revision: 1,
+          providers: {},
+          legacyProfiles: {},
+          installation: binding,
+        },
+      },
+      undefined,
+      {
+        installationSettingsReader: {
+          read: async () => {
+            if (reader.answer instanceof Error) throw reader.answer;
+            return reader.answer;
+          },
+        },
+      },
+    );
+    await store.refreshPrimaryConnectionSupport();
+    expect(store.get().installationPrimaryConnectionSupported).toBe(true);
+
+    // A transport failure keeps the last known answer.
+    reader.answer = new Error("connect ECONNREFUSED");
+    await store.refreshPrimaryConnectionSupport();
+    expect(store.get().installationPrimaryConnectionSupported).toBe(true);
+
+    // Reconnecting to an older coordinator clears it, and the daemon persists that.
+    reader.answer = older;
+    await store.refreshPrimaryConnectionSupport();
+    expect(store.get().installationPrimaryConnectionSupported).toBe(false);
+    expect(loadPersistedConfig(home).daemon?.installationPrimaryConnectionSupported).toBe(false);
+
+    // A projection without the marker comes from an older coordinator and clears it too.
+    reader.answer = supporting;
+    await store.refreshPrimaryConnectionSupport();
+    expect(store.get().installationPrimaryConnectionSupported).toBe(true);
+    store.patch({
+      expectedInstallationResourceRevision: installationResourceRevision(store.get()),
+    });
+    expect(store.get().installationPrimaryConnectionSupported).toBe(false);
+  });
+
+  test("a standalone daemon stores its own primary connection and replaces it whole", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "vorteo-standalone-primary-"));
+    tempDirs.push(home);
+    const store = new DaemonConfigStore(home, reloadableConfig({}));
+    expect(store.get().primaryConnection).toBeUndefined();
+    await store.patchFromClient({
+      primaryConnection: { provider: "claude", profileId: "shared-profile/claude/deep" },
+    });
+    await store.patchFromClient({ primaryConnection: { provider: "codex" } });
+    expect(store.get().primaryConnection).toEqual({ provider: "codex" });
+    expect(loadPersistedConfig(home).daemon?.primaryConnection).toEqual({ provider: "codex" });
+    await store.patchFromClient({ primaryConnection: null });
+    expect(store.get().primaryConnection).toBeNull();
+  });
+
   test("fresh account exclusions reject delayed binding creation and concurrent local writes retry", async () => {
     const home = mkdtempSync(path.join(tmpdir(), "vorteo-excluded-account-"));
     tempDirs.push(home);

@@ -549,14 +549,15 @@
                 "rmSync",
                 "symlinkSync"
               ],
-              // TODO: coordinator settings journal and config custody run beside the synchronous coordinator update in the drain; migrate both jobs to async together.
+              // TODO: coordinator settings journal, config and participant scope custody run beside the synchronous coordinator update in the drain; migrate both jobs to async together.
               "server/execution-installation/coordinator-settings.ts": [
                 "existsSync",
                 "mkdirSync",
                 "readFileSync",
                 "realpathSync",
                 "renameSync",
-                "rmSync"
+                "rmSync",
+                "writeFileSync"
               ],
               // TODO: queued installation change requests journal synchronously beside the other installation queues; migrate with them.
               "server/execution-installation/queued-agent-actions.ts": [

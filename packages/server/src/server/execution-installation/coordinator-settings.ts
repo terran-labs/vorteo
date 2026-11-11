@@ -1,5 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { mkdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -725,11 +733,14 @@ export class CoordinatorSettings {
     try {
       this.trackEffects(job);
     } catch (error) {
-      // An unreadable outcome or configuration must not throw on every drain forever.
+      // An unreadable outcome or configuration must not throw on every drain forever. When this
+      // coordinator already runs the new configuration, it pins the minted scope digest, so the
+      // minted scope stays.
       this.finish(
         job,
         "failed",
         `The coordinator restart could not be followed: ${message(error)}. Check coordinator.json before another change.`,
+        { scopeApplied: this.ports.runningSha256 === job.appliedSha256 },
       );
     }
   }
@@ -831,10 +842,11 @@ export class CoordinatorSettings {
     job: SettingsRecord,
     status: CoordinatorSettingsJob["status"],
     detail: string,
+    options: { scopeApplied?: boolean } = {},
   ): SettingsRecord {
     // Anything that does not apply the change leaves the recorded scope as it was, including
     // a handoff that rolls the coordinator back to the previous configuration.
-    if (status !== "succeeded") this.restoreKeptScope(job);
+    if (status !== "succeeded" && !options.scopeApplied) this.restoreKeptScope(job);
     return this.save(job, { status, detail, finishedAt: this.ports.now().toISOString() });
   }
 
@@ -906,13 +918,12 @@ function nativeBrokerReview(directory: string): BrokerSettingsReviewPorts {
 export function createScopeCustody(work: (jobId: string) => string) {
   const kept = (jobId: string) => path.join(work(jobId), "participant-scope.before");
   const target = (jobId: string) => path.join(work(jobId), "participant-scope.path");
-  // Stage the bytes privately, then rename over the file: a rename replaces a planted link
-  // instead of writing through it. The work folder and the scope share the installation's
-  // volume; a cross-volume rename fails and is reported rather than applied partially.
-  const replace = (jobId: string, file: string, bytes: Buffer) => {
-    const temporary = path.join(work(jobId), `participant-scope.restore-${randomUUID()}`);
-    writePrivateFileAtomicSync(temporary, bytes);
+  // Stage the bytes beside the file, then rename over it, as the scope was written: the
+  // rename stays on the scope's volume and replaces a planted link instead of following it.
+  const replace = (file: string, bytes: Buffer) => {
+    const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${randomUUID()}`);
     try {
+      writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" });
       renameSync(temporary, file);
     } catch (error) {
       rmSync(temporary, { force: true });
@@ -930,7 +941,7 @@ export function createScopeCustody(work: (jobId: string) => string) {
     restoreScope(jobId: string) {
       if (!existsSync(target(jobId))) return;
       const file = readFileSync(target(jobId), "utf8");
-      if (existsSync(kept(jobId))) replace(jobId, file, readFileSync(kept(jobId)));
+      if (existsSync(kept(jobId))) replace(file, readFileSync(kept(jobId)));
       else rmSync(file, { force: true });
     },
   };

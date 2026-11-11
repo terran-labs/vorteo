@@ -1287,14 +1287,13 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
     </View>
   );
 
-  const dockContent = (
-    <View style={styles.contentContainer}>
-      {streamContent}
-
-      {showHistorySyncError ? (
-        <TimelineSyncErrorCallout isRetrying={isRetryingHistorySync} onRetry={retryTimelineSync} />
-      ) : null}
-    </View>
+  const dockContent = <View style={styles.contentContainer}>{streamContent}</View>;
+  const timelineSyncError = useMemo(
+    () =>
+      showHistorySyncError
+        ? { isRetrying: isRetryingHistorySync, onRetry: retryTimelineSync }
+        : null,
+    [showHistorySyncError, isRetryingHistorySync, retryTimelineSync],
   );
 
   const dockOverlay = (
@@ -1305,7 +1304,12 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
         </View>
       ) : null}
 
-      <TimelineSyncStatus sync={timelineSync} toast={toast} onDismiss={dismiss} />
+      <TimelineSyncStatus
+        sync={timelineSync}
+        error={timelineSyncError}
+        toast={toast}
+        onDismiss={dismiss}
+      />
     </>
   );
 
@@ -1384,35 +1388,6 @@ function ChatSurface({
     <FileDropZone style={styles.container} disabled={disabled}>
       <ComposerDock fullscreen={fullscreen}>{children}</ComposerDock>
     </FileDropZone>
-  );
-}
-
-function TimelineSyncErrorCallout({
-  isRetrying,
-  onRetry,
-}: {
-  isRetrying: boolean;
-  onRetry: () => void;
-}) {
-  const { t } = useTranslation();
-  return (
-    <View style={styles.timelineSyncCalloutRail}>
-      <View style={styles.timelineSyncCalloutContent}>
-        <View style={styles.timelineSyncCallout} testID="agent-timeline-sync-error">
-          <Text style={styles.timelineSyncCalloutText}>
-            {t("agentPanel.states.timelineSyncFailed")}
-          </Text>
-          <Button
-            variant="secondary"
-            onPress={onRetry}
-            disabled={isRetrying}
-            testID="agent-timeline-sync-retry"
-          >
-            {isRetrying ? t("agentPanel.states.timelineSyncRetrying") : t("common.actions.retry")}
-          </Button>
-        </View>
-      </View>
-    </View>
   );
 }
 
@@ -1810,32 +1785,6 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     overflow: "hidden",
     ...(isWeb ? { userSelect: "none" as const } : {}),
-  },
-  timelineSyncCalloutRail: {
-    width: "100%",
-    alignItems: "center",
-    paddingHorizontal: theme.spacing[4],
-    paddingTop: theme.spacing[2],
-  },
-  timelineSyncCalloutContent: {
-    width: "100%",
-    maxWidth: theme.contentMaxWidth,
-  },
-  timelineSyncCallout: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: theme.spacing[3],
-    backgroundColor: theme.colors.surface1,
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.statusDanger,
-    borderRadius: theme.borderRadius["2xl"],
-    paddingVertical: theme.spacing[2],
-    paddingHorizontal: theme.spacing[4],
-  },
-  timelineSyncCalloutText: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.base,
   },
   historySyncOverlay: {
     position: "absolute",

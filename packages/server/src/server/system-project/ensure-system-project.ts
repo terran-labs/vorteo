@@ -13,6 +13,10 @@ import {
 import { generateProjectId, generateWorkspaceId } from "../workspace-registry-model.js";
 import { readSystemProjectConfig, type SystemProjectConfig } from "./config.js";
 import {
+  activeFactoryMembership,
+  withoutRetiredFactoryMembership,
+} from "../workspace-lifecycle/policy.js";
+import {
   SYSTEM_PROJECT_KIND,
   SYSTEM_PROJECT_NAME,
   rolesForEnvironment,
@@ -275,7 +279,7 @@ async function absorbConfigured(
   for (const workspace of workspaces) {
     if (workspace.projectId === project.projectId) continue;
     if (!projectIds.has(workspace.projectId) && !workspaceIds.has(workspace.workspaceId)) continue;
-    if (workspace.factoryMembership || workspace.systemMembership) {
+    if (activeFactoryMembership(workspace) || workspace.systemMembership) {
       input.logger.warn(
         { workspaceId: workspace.workspaceId },
         "Vorteo System did not absorb a Factory or system workspace",
@@ -283,7 +287,7 @@ async function absorbConfigured(
       continue;
     }
     await input.workspaceRegistry.writeSystemWorkspace({
-      ...workspace,
+      ...withoutRetiredFactoryMembership(workspace),
       projectId: project.projectId,
       projectMembership: null,
       updatedAt: now(),
@@ -294,7 +298,7 @@ async function absorbConfigured(
   const remaining = await input.workspaceRegistry.list();
   for (const candidate of await input.projectRegistry.list()) {
     if (!projectIds.has(candidate.projectId) || candidate.archivedAt) continue;
-    if (candidate.systemProject || candidate.factoryInstallation) continue;
+    if (candidate.systemProject) continue;
     if (remaining.some((workspace) => workspace.projectId === candidate.projectId)) continue;
     await input.projectRegistry.archive(candidate.projectId, now());
     result.archivedProjects.push(candidate.projectId);
@@ -390,7 +394,7 @@ async function retitleMember(
 function adoptionRefusal(candidate: PersistedWorkspaceRecord | undefined): string | null {
   if (!candidate) return "workspace not found";
   if (candidate.archivedAt) return "workspace is archived";
-  if (candidate.factoryMembership) return "workspace belongs to Factory";
+  if (activeFactoryMembership(candidate)) return "workspace belongs to Factory";
   if (candidate.systemMembership) return "workspace already has a system role";
   return null;
 }
@@ -405,7 +409,7 @@ function adopt(
   // The ID stays, so threads, journal, checklist and schedules stay attached.
   // Existing threads keep their own working folder; new ones start in `cwd`.
   return {
-    ...workspace,
+    ...withoutRetiredFactoryMembership(workspace),
     projectId: project.projectId,
     projectMembership: null,
     kind: "directory",

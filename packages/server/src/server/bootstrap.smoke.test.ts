@@ -245,10 +245,18 @@ describe("paseo daemon bootstrap", () => {
       });
       expect(await beforeProxyReload.text()).toBe("http");
 
+      // The daemon may have stored its one-time primary connection choice meanwhile; keep it,
+      // like any other daemon-written value, so the reload reports only the edited policies.
+      const written = JSON.parse(await readFile(configPath, "utf-8")) as typeof initialPersisted & {
+        daemon: { primaryConnection?: unknown };
+      };
       const reloadedPersisted = {
         ...initialPersisted,
         daemon: {
           ...initialPersisted.daemon,
+          ...(written.daemon.primaryConnection !== undefined
+            ? { primaryConnection: written.daemon.primaryConnection }
+            : {}),
           hostnames: ["127.0.0.1", "after.example.test"],
           cors: { allowedOrigins: ["https://after.example.test"] },
           trustedProxies: true as const,

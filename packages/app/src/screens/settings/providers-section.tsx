@@ -34,7 +34,14 @@ import { ProviderCatalogList } from "@/components/provider-catalog-list";
 import { useProviderIcon } from "@/components/provider-icons";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { SkeletonPulse, useSkeletonPulse } from "@/components/ui/skeleton";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { Switch } from "@/components/ui/switch";
+import {
+  canMakePrimary,
+  confirmDisablePrimary,
+  confirmPrimaryConnection,
+} from "@/execution-installation/primary-connection";
+import { useDaemonPrimaryConnection } from "@/hooks/use-daemon-primary-connection";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { useProviderSettingsStore } from "@/stores/provider-settings-store";
 import { confirmDialog } from "@/utils/confirm-dialog";
@@ -101,6 +108,9 @@ interface ProviderRowProps {
   onToggleEnabled: (providerId: string, enabled: boolean) => void;
   onRemove: (providerId: string, providerLabel: string) => void;
   onRename: (provider: ProviderDefinition) => void;
+  /** Whether this is the primary connection; null where the setting is unavailable. */
+  primary: boolean | null;
+  onMakePrimary?: (providerId: string, providerLabel: string) => void;
 }
 
 const SKELETON_ROW_KEYS = [0, 1, 2, 3].map((index) => `provider-skeleton-row-${index}`);
@@ -148,6 +158,8 @@ function ProviderRow({
   onToggleEnabled,
   onRemove,
   onRename,
+  primary,
+  onMakePrimary,
 }: ProviderRowProps) {
   const { t } = useTranslation();
   const { theme } = useUnistyles();
@@ -167,6 +179,10 @@ function ProviderRow({
   // The controls are siblings of the details button, so presses no longer
   // need to stop propagation.
   const handleRename = useCallback(() => onRename(def), [def, onRename]);
+  const handleMakePrimary = useCallback(
+    () => onMakePrimary?.(def.id, def.label),
+    [def.id, def.label, onMakePrimary],
+  );
   const handleRemove = useCallback(
     () => onRemove(def.id, def.label),
     [def.id, def.label, onRemove],
@@ -229,6 +245,7 @@ function ProviderRow({
                 <Text style={settingsStyles.rowTitle} numberOfLines={1}>
                   {def.label}
                 </Text>
+                <PrimaryBadge primary={primary} providerId={def.id} />
                 {!isCompact ? <Text style={styles.separator}>·</Text> : null}
                 <StatusIndicator status={visibleStatus} compact={isCompact} />
               </View>
@@ -254,6 +271,12 @@ function ProviderRow({
             onRename={handleRename}
             onRemove={handleRemove}
             onToggle={handleToggleValueChange}
+            offersMakePrimary={canMakePrimary({
+              primary,
+              enabled,
+              states: [{ kind: providerReadiness(entry, usage) }],
+            })}
+            onMakePrimary={handleMakePrimary}
           />
         </View>
         {enabled ? (
@@ -264,6 +287,20 @@ function ProviderRow({
           />
         ) : null}
       </View>
+    </View>
+  );
+}
+
+/** The same rule as the shared providers page: ready and not waiting for a sign-in. */
+function providerReadiness(entry: ProviderEntry, usage: ProviderUsage | undefined) {
+  return entry.status === "ready" && !usage?.authRecovery ? "ready" : "attention";
+}
+
+function PrimaryBadge({ primary, providerId }: { primary: boolean | null; providerId: string }) {
+  if (!primary) return null;
+  return (
+    <View testID={`provider-primary-${providerId}`}>
+      <StatusBadge label="Primary" size="xs" variant="success" />
     </View>
   );
 }
@@ -288,7 +325,11 @@ function ProviderRowControls({
   onRename,
   onRemove,
   onToggle,
+  offersMakePrimary,
+  onMakePrimary,
 }: {
+  offersMakePrimary: boolean;
+  onMakePrimary: () => void;
   custom: boolean;
   canRemove: boolean;
   isRemoving: boolean;
@@ -304,6 +345,11 @@ function ProviderRowControls({
   const { t } = useTranslation();
   return (
     <View style={[styles.trailingControls, styles.vortonTrailingControls]}>
+      {offersMakePrimary ? (
+        <CompactAccountButton onPress={onMakePrimary} testID={`provider-make-primary-${def.id}`}>
+          Make primary
+        </CompactAccountButton>
+      ) : null}
       {custom ? (
         <>
           <CompactAccountButton
@@ -508,6 +554,21 @@ export function ProvidersSection({ serverId, runtimeOnly = false }: ProvidersSec
   });
   const { patchConfig } = useDaemonConfig(serverId);
   const { reorder, status: reorderStatus } = useProviderOrder(serverId);
+  const primaryConnection = useDaemonPrimaryConnection(serverId);
+  const primaryId = primaryConnection.loaded ? (primaryConnection.primary?.provider ?? "") : null;
+  const choosePrimary = primaryConnection.choose;
+  const handleMakePrimary = useCallback(
+    (providerId: string, name: string) =>
+      void confirmPrimaryConnection({
+        name,
+        providerId,
+        confirm: confirmDialog,
+        choose: choosePrimary,
+        toast,
+        describeError: toErrorMessage,
+      }),
+    [choosePrimary, toast],
+  );
 
   const openProviderSettings = useProviderSettingsStore((state) => state.open);
   useState<string | null>(null);
@@ -540,6 +601,10 @@ export function ProvidersSection({ serverId, runtimeOnly = false }: ProvidersSec
 
   const handleToggleEnabled = useCallback(
     async (providerId: string, enabled: boolean) => {
+      if (!enabled && providerId === primaryId) {
+        const label = entries?.find((entry) => entry.provider === providerId)?.label ?? providerId;
+        if (!(await confirmDisablePrimary(label, confirmDialog))) return;
+      }
       setPendingProviderId(providerId);
       try {
         await patchConfig({ providers: { [providerId]: { enabled } } });
@@ -550,7 +615,7 @@ export function ProvidersSection({ serverId, runtimeOnly = false }: ProvidersSec
         setPendingProviderId((current) => (current === providerId ? null : current));
       }
     },
-    [patchConfig, reportActionError, t],
+    [patchConfig, reportActionError, t, primaryId, entries],
   );
 
   const handleRemoveProvider = useCallback(
@@ -617,6 +682,8 @@ export function ProvidersSection({ serverId, runtimeOnly = false }: ProvidersSec
               onToggleEnabled={handleToggleEnabled}
               onRemove={handleRemoveProvider}
               onRename={setRenamingProvider}
+              primaryId={primaryId}
+              onMakePrimary={handleMakePrimary}
             />
           ) : null}
         </SettingsSection>
@@ -656,6 +723,9 @@ interface ProviderListProps extends Pick<
   pendingProviderId: string | null;
   removingProviderId: string | null;
   supportsProviderRemoval: boolean;
+  /** The primary provider id, "" when none is chosen, or null where the setting is unavailable. */
+  primaryId?: string | null;
+  onMakePrimary?: (providerId: string, providerLabel: string) => void;
 }
 
 function ProviderList({
@@ -670,6 +740,8 @@ function ProviderList({
   onToggleEnabled,
   onRemove,
   onRename,
+  primaryId = null,
+  onMakePrimary,
 }: ProviderListProps) {
   const supportsProviderOrdering = useHostFeature(serverId, "providerOrdering");
   const canReorder = supportsProviderOrdering;
@@ -704,6 +776,8 @@ function ProviderList({
           onToggleEnabled={onToggleEnabled}
           onRemove={onRemove}
           onRename={onRename}
+          primary={primaryId === null ? null : primaryId === def.id}
+          onMakePrimary={onMakePrimary}
         />
       );
     },
@@ -719,6 +793,8 @@ function ProviderList({
       onToggleEnabled,
       onRemove,
       onRename,
+      primaryId,
+      onMakePrimary,
     ],
   );
 

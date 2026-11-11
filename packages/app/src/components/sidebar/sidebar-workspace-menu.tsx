@@ -1,4 +1,5 @@
 import { openFactoryInstructions, useProjectFactory } from "./factory-instructions";
+import { factoryOverviewRoute } from "./project-factory-model";
 import { selectWorkspace } from "@/stores/session-store-hooks/selectors";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useVortonTouch } from "@/vorton-touch";
@@ -35,7 +36,6 @@ import {
 import { isWeb } from "@/constants/platform";
 import { router } from "expo-router";
 import { useInstalledPlugins } from "@/plugins/registry";
-import { buildPluginSurfaceRoute } from "@/plugins/routes";
 import {
   useFactoryMembership,
   selectFactoryMembership,
@@ -491,31 +491,36 @@ function FactoryWorkspaceMenuActions({
       });
   }, [instructionRole, serverId, roleWorkspace]);
   const plugins = useInstalledPlugins();
-  const hasOverview = plugins.some(
-    (plugin) =>
-      plugin.serverId === serverId &&
-      plugin.id === "factory" &&
-      plugin.surfaces.some((contribution) => contribution.id === "overview"),
+  const factoryPlugin = plugins.find(
+    (plugin) => plugin.serverId === serverId && plugin.id === "factory",
   );
+  // Same destination as the Factory card: the built-in overview for a per-project Factory,
+  // and the plugin surface an older host still serves for a legacy membership.
+  const overviewRoute = useMemo(
+    () =>
+      serverId && membership
+        ? factoryOverviewRoute(
+            {
+              serverId,
+              projectId: membership.projectId,
+              installationId: membership.installationId,
+            },
+            factoryPlugin,
+          )
+        : null,
+    [serverId, membership, factoryPlugin],
+  );
+  const hasOverview = overviewRoute !== null;
   const openFactory = useCallback(() => {
-    if (!serverId || !workspaceId || !membership || !hasOverview) return;
+    if (!serverId || !workspaceId || !membership || !overviewRoute) return;
     const current = selectFactoryMembership(useSessionStore.getState(), serverId, workspaceId);
     if (
       current?.installationId !== membership.installationId ||
       current.projectId !== membership.projectId
     )
       return;
-    router.navigate(
-      buildPluginSurfaceRoute(
-        serverId,
-        "factory",
-        { kind: "surface", id: "overview" },
-        {
-          projectId: membership.projectId,
-        },
-      ),
-    );
-  }, [serverId, workspaceId, membership, hasOverview]);
+    router.navigate(overviewRoute);
+  }, [serverId, workspaceId, membership, overviewRoute]);
   return (
     <>
       {instructionRole && serverId && roleWorkspace ? (

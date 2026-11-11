@@ -314,3 +314,7 @@ Daemons advertise optional `features.claudeSignInUpgrade` when they accept `prov
 ### Live dev mode routes
 
 Coordinators with live dev mode add the owner routes `POST /api/installation/owner/live-dev/query` and `/change`, with schemas in `packages/protocol/src/live-dev.ts`. Interfaces detect support by the query route answering; on an older coordinator the route is unavailable and the Live development card stays hidden. Since live dev joined the installation type, `/change` sets the type (Live dev to Lab, Reliable to Stable) and `revision` is the type record's, so an older interface that still switches delivery mode keeps working. The status schema is non-strict so later fields can be added. The change schema is strict and compare-and-set on `revision`. No WebSocket message changes. The coordinator's new `/hot` upgrade handling applies only in live mode and only to the owner on the public origin; every other upgrade is refused as before.
+
+## Boot page recovery link
+
+On the canonical origin, coordinators with a `recoveryOrigin` write it to the served page as `window.__VORTEO_RECOVERY_ORIGIN__`, next to the installation descriptor. It is a separate global because interfaces validate the descriptor strictly, so a new descriptor field would fail older interfaces at startup. The boot page shows Open recovery only when the global is an HTTPS origin other than the current one. Older coordinators omit it and the link stays hidden; older interfaces ignore it. `COMPAT(recoveryOriginGlobal)` marks the injection.
