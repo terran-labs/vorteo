@@ -19,7 +19,12 @@ import { loadFactoryQueue } from "@/screens/factory/queue";
 import { useSessionStore } from "@/stores/session-store";
 import type { Theme } from "@/styles/theme";
 import type { ProjectFactoryList } from "../../../../../plugins/factory/shared/project";
-import { factoryListQueryKey, loadFactoryList } from "@/screens/factory/factory-reads";
+import {
+  boundedFactoryRead,
+  factoryQueueNeedsInitialRead,
+  factoryListQueryKey,
+  loadFactoryList,
+} from "@/screens/factory/factory-reads";
 import { FACTORY_CARD_QUEUE_REFRESH_MS, factoryCardReadsQueue } from "./factory-section";
 import { factoryStageCounts, factoryOverviewPathTarget } from "./factory-card-model";
 import {
@@ -93,13 +98,17 @@ function useAllFactories(collapsed: boolean) {
       enabled:
         factoryCardReadsQueue({ active, collapsed, state: project }) ||
         (active &&
-          queryClient.getQueryState(["factoryQueue", plugin.serverId, project.projectId]) ===
-            undefined),
+          factoryQueueNeedsInitialRead(
+            queryClient.getQueryState(["factoryQueue", plugin.serverId, project.projectId]),
+          )),
       refetchInterval: (query: { state: { data: unknown } }) =>
         factoryCardReadsQueue({ active, collapsed, state: project }) && query.state.data !== null
           ? FACTORY_CARD_QUEUE_REFRESH_MS
           : false,
-      queryFn: () => loadFactoryQueue(plugin.invoke, project.projectId),
+      queryFn: () =>
+        boundedFactoryRead(() => loadFactoryQueue(plugin.invoke, project.projectId), {
+          priority: "summary",
+        }),
       retry: false,
     })),
   );
@@ -122,17 +131,20 @@ function useAllFactories(collapsed: boolean) {
       };
     });
   }, [listed, queues, sessions, hosts]);
-  const errors = [
-    ...lists.filter((list) => list.isError),
-    ...queues.filter((queue) => queue.isError || queue.data?.error),
-  ];
+  const errors = useMemo(
+    () => [
+      ...lists.filter((list) => list.isError),
+      ...queues.filter((queue) => queue.isError || queue.data?.error),
+    ],
+    [lists, queues],
+  );
   const fetchedAt = queues.flatMap((queue) => (queue.data ? [queue.data.fetchedAt] : [])).sort()[0];
   const retry = useCallback(
     (event: GestureResponderEvent) => {
       event.stopPropagation();
-      void Promise.all([...lists, ...queues].map((queue) => queue.refetch()));
+      void Promise.all(errors.map((queue) => queue.refetch()));
     },
-    [lists, queues],
+    [errors],
   );
   const visible = factoryPlugins.length > 0 && (factories.length > 0 || errors.length > 0);
   return { factories, errors, fetchedAt, retry, visible };
