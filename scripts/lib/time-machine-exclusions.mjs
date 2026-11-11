@@ -192,6 +192,47 @@ export function checkoutsUnder(folder, depth = 1) {
 }
 
 /**
+ * Every directory named exactly `node_modules` under `folder`, found by walking it. The walk
+ * never enters a `node_modules` it found, `.git` or a link, and keeps only folders whose real
+ * path stays inside `folder`'s real path. Used only where the owner chose to exclude dependency
+ * installs by name: task artifacts hold checkouts Git can no longer read (owner decision
+ * 2026-11-11), so the Git rule cannot vouch for them.
+ */
+export function nodeModulesUnder(folder) {
+  let root;
+  try {
+    root = fs.realpathSync(folder);
+  } catch {
+    return [];
+  }
+  const found = [];
+  const walk = (directory) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      // Dirent types come from lstat, so a link is never a directory here.
+      if (!entry.isDirectory() || entry.name === ".git") continue;
+      const child = path.join(directory, entry.name);
+      if (entry.name !== "node_modules") {
+        walk(child);
+        continue;
+      }
+      try {
+        if (isInside(fs.realpathSync(child), root)) found.push(child);
+      } catch {
+        // Vanished while walking.
+      }
+    }
+  };
+  walk(folder);
+  return found;
+}
+
+/**
  * Adds the sticky exclusion to each existing folder, or file such as a disk image, that lacks
  * it. Links are skipped and never followed. Off macOS this does nothing. Returns the counts and
  * the paths that could not be marked.

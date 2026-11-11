@@ -6,12 +6,16 @@
 //     [--checkout <folder>]...   one Git checkout: ignored, untracked node_modules, dist, build
 //     [--projects <folder>]...   every checkout directly inside, such as the Projects folder
 //     [--worktrees <folder>]...  every task worktree at <folder>/<repository>/<name>
+//     [--node-modules-under <folder>]...  every directory named exactly node_modules inside,
+//                                found by walking it; for task artifacts only (owner decision
+//                                2026-11-11), where checkouts may be unreadable by Git
 //
 // Hourly upkeep runs it so folders rebuilt since the last run are marked again. It only adds
 // exclusions; it never removes one and never deletes files. Prints one JSON summary line, even
 // after an error, and exits 1 when a path could not be marked or a checkout could not be read.
 import { parseArgs } from "node:util";
 import {
+  nodeModulesUnder,
   checkoutRegenerables,
   checkoutsUnder,
   excludeFromTimeMachine,
@@ -23,6 +27,7 @@ const { values } = parseArgs({
     checkout: { type: "string", multiple: true, default: [] },
     projects: { type: "string", multiple: true, default: [] },
     worktrees: { type: "string", multiple: true, default: [] },
+    "node-modules-under": { type: "string", multiple: true, default: [] },
   },
 });
 
@@ -33,7 +38,7 @@ try {
     ...values.projects.flatMap((folder) => checkoutsUnder(folder, 1)),
     ...values.worktrees.flatMap((folder) => checkoutsUnder(folder, 2)),
   ];
-  const folders = [...values.root];
+  const folders = [...values.root, ...values["node-modules-under"].flatMap(nodeModulesUnder)];
   for (const checkout of checkouts) {
     // One unreadable checkout never stops the others.
     try {

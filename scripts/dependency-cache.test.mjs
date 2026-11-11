@@ -15,6 +15,7 @@ import {
   checkoutRegenerables,
   checkoutsUnder,
   excludeFromTimeMachine,
+  nodeModulesUnder,
 } from "./lib/time-machine-exclusions.mjs";
 
 function temporary(t) {
@@ -362,4 +363,28 @@ test("Time Machine exclusions mark only ignored, untracked regenerable folders",
   });
   assert.deepEqual(writes.sort(), ["node_modules", "packages/a/dist"]);
   assert.equal(excludeFromTimeMachine(folders, { platform: "linux", run }).checked, 0);
+});
+
+test("named node_modules exclusion takes only exact node_modules folders inside its root", (t) => {
+  const parent = temporary(t);
+  const root = path.join(parent, "artifacts");
+  const folder = (relative) => fs.mkdirSync(path.join(root, relative), { recursive: true });
+  folder("task/source/node_modules/dep/node_modules/inner");
+  folder("task/source/packages/a/node_modules");
+  folder("task/source/dist");
+  folder("task/source/Node_Modules");
+  folder("task/.git/node_modules");
+  folder("evidence/screens");
+  fs.mkdirSync(path.join(parent, "outside", "node_modules"), { recursive: true });
+  fs.symlinkSync(
+    path.join(parent, "outside", "node_modules"),
+    path.join(root, "evidence", "node_modules"),
+  );
+  assert.deepEqual(
+    nodeModulesUnder(root)
+      .map((file) => path.relative(root, file))
+      .sort(),
+    ["task/source/node_modules", "task/source/packages/a/node_modules"],
+  );
+  assert.deepEqual(nodeModulesUnder(path.join(parent, "missing")), []);
 });
