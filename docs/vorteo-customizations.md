@@ -2312,6 +2312,8 @@ Sidebar rows omit the goal badge. Their sub-agent badge counts managed workers w
 
 ## Execution environments and installation
 
+- **Automatic restart deadline preparation, source only.** Automatic mode requires durable continuation, the matching observed hold, an installed native cooperative endpoint and explicit coverage in the retained enrollment manifest. A protected once-only claim precedes interruption, and source selection still requires authenticated idle settlement. Old manifests grant no preparation authority; ask mode keeps owner attention, and completed automatic restarts retain a System notice. Dev remains unavailable pending its separately held startup registration migration. A link-boundary crash fails closed, with availability recovery unverified. Native security review and installed acceptance remain open.
+
 - **System status and restart controls.** System groups Host and Dev status, one primary action per environment, Restart menus and collapsed Details. Updates share one row; upstream tasks and installation controls sit under Advanced. A confirmed standalone Host update keeps its primary button disabled while pending and reports a contextual error before retry.
 
 - **Shared Voice credentials, awaiting delivery.** One installation authority adopts existing OpenAI speech keys once and delivers key and endpoint pairs to every environment. Conflicts require an owner choice; saves use the revisions captured when the editor opens. Credential delivery never persists unrelated process fallbacks, and standalone use retains local saves. See [Voice credential sync](voice-credential-sync.md) for endpoint validation, adoption and marker lifecycle rules.

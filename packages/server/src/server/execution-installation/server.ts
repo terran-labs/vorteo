@@ -329,6 +329,7 @@ function restartReply(
     standingDecision: _standingDecision,
     standingHold: _standingHold,
     standingInterruption: _standingInterruption,
+    cooperativeDrainPreparation: _cooperativeDrainPreparation,
     interruptionChecks: _interruptionChecks,
     standingManualApprovals: _standingManualApprovals,
     updatePreparation: _preparation,
@@ -590,6 +591,10 @@ export function createInstallationServer(
     },
     initialActivationInstance: (job) => standingRuntime.initialActivationInstance(job),
     prepareInterruption: (job) => standingRuntime.prepareInterruption(job),
+    prepareCooperativePreparation: (job) => standingRuntime.prepareCooperativePreparation(job),
+    dispatchCooperativePreparation: (job) => standingRuntime.dispatchCooperativePreparation(job),
+    observeCooperativePreparation: (job) =>
+      standingRuntime.observeCooperativePreparation(job, executor),
     observeInterruption: (job) => standingRuntime.observeInterruption(job),
     verifyDispatch: (job) => standingRuntime.verifySelection(job, executor),
     installUpdate: (job, options) =>
@@ -696,6 +701,7 @@ export function createInstallationServer(
       fenced: startupFence !== undefined,
       progress: (message, fields) => logger.info(fields, message),
       finishTurnsDeadlineMs: restartHoldDeadlineMs(config),
+      afterHoldDeadline: config.restartHoldAfterDeadline,
       holdState: restartHoldState(config.stateDir, restartHolds),
     },
   );
