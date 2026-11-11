@@ -3640,7 +3640,10 @@ export class CodexAppServerAgentSession implements AgentSession {
   private pendingSubAgentNotificationsByThreadId = new Map<string, ParsedCodexNotification[]>();
   // Native turn observations outlive route reconstruction. Launch tool cards and
   // historical snapshots cannot settle a child whose current turn is still running.
-  private childLifecycleStatuses = new Map<string, ToolCallTimelineItem["status"]>();
+  private childLifecycleStatuses = new Map<
+    string,
+    { status: ToolCallTimelineItem["status"]; explicitTurn: boolean }
+  >();
   private warnedUnknownNotificationMethods = new Set<string>();
   private warnedInvalidNotificationPayloads = new Set<string>();
   private warnedIncompleteEditToolCallIds = new Set<string>();
@@ -6420,7 +6423,12 @@ export class CodexAppServerAgentSession implements AgentSession {
   ): Promise<void> {
     switch (parsed.kind) {
       case "thread_started":
-        if (parsed.threadId) this.childLifecycleStatuses.set(parsed.threadId, "running");
+        if (parsed.threadId && !this.childLifecycleStatuses.has(parsed.threadId)) {
+          this.childLifecycleStatuses.set(parsed.threadId, {
+            status: "running",
+            explicitTurn: false,
+          });
+        }
         this.emitSubAgentActivityUpdate(callId, "running", { reopen: true });
         return;
       case "turn_started":
@@ -6665,26 +6673,31 @@ export class CodexAppServerAgentSession implements AgentSession {
       this.subAgentCallIdByChildThreadId.set(receiverThreadId, timelineItem.callId);
       const isNewChild = !state.childThreadIds.has(receiverThreadId);
       state.childThreadIds.add(receiverThreadId);
-      const childState = toObjectRecord(rawItem.agentsStates)?.[receiverThreadId];
-      if (!replay && childState) {
-        // A live collaboration frame can report a child's current state even when
-        // there is no separate turn notification. Decode only that child's state,
-        // independently of the launch operation's own result.
-        const observed = mapCodexToolCallFromThreadItem(
-          {
-            ...rawItem,
-            status: "completed",
-            error: null,
-            agentsStates: { [receiverThreadId]: childState },
-          },
-          { cwd: this.config.cwd ?? null },
-        );
-        if (observed) this.childLifecycleStatuses.set(receiverThreadId, observed.status);
-      }
+      if (!replay) this.observeChildSnapshot(receiverThreadId, rawItem);
       this.emitProviderSubagentUpsert(receiverThreadId, state, timelineItem.status, replay);
       if (isNewChild) void this.refreshSubagentConfiguration(receiverThreadId, state);
     }
     return childThreadIds;
+  }
+
+  private observeChildSnapshot(threadId: string, rawItem: { [key: string]: unknown }): void {
+    if (this.childLifecycleStatuses.get(threadId)?.explicitTurn) return;
+    const childState = toObjectRecord(rawItem.agentsStates)?.[threadId];
+    if (!childState) return;
+    // Collaboration snapshots have no turn revision. They provide lifecycle
+    // information only until the child supplies explicit turn observations.
+    const observed = mapCodexToolCallFromThreadItem(
+      {
+        ...rawItem,
+        status: "completed",
+        error: null,
+        agentsStates: { [threadId]: childState },
+      },
+      { cwd: this.config.cwd ?? null },
+    );
+    if (observed) {
+      this.childLifecycleStatuses.set(threadId, { status: observed.status, explicitTurn: false });
+    }
   }
 
   private async refreshSubagentConfiguration(
@@ -6746,7 +6759,10 @@ export class CodexAppServerAgentSession implements AgentSession {
     let nextStatus: ToolCallTimelineItem["status"] | undefined = "running";
     if (activity.kind === "interrupted") {
       nextStatus = "canceled";
-      this.childLifecycleStatuses.set(activity.agentThreadId, "canceled");
+      this.childLifecycleStatuses.set(activity.agentThreadId, {
+        status: "canceled",
+        explicitTurn: true,
+      });
     } else if (isTerminalSubAgentStatus(state.toolCall.status)) {
       nextStatus = undefined;
     }
@@ -6887,7 +6903,8 @@ export class CodexAppServerAgentSession implements AgentSession {
     if (detail.type !== "sub_agent") {
       return;
     }
-    if (status !== undefined) status = this.childLifecycleStatuses.get(childThreadId) ?? status;
+    if (status !== undefined)
+      status = this.childLifecycleStatuses.get(childThreadId)?.status ?? status;
     let providerStatus: "running" | "completed" | "failed" | "canceled" | undefined;
     if (status !== undefined) providerStatus = "running";
     if (status === "completed") {
@@ -7133,7 +7150,9 @@ export class CodexAppServerAgentSession implements AgentSession {
   ): void {
     const subAgentCallId = this.getSubAgentCallIdForThread(parsed.threadId);
     if (subAgentCallId) {
-      if (parsed.threadId) this.childLifecycleStatuses.set(parsed.threadId, "running");
+      if (parsed.threadId) {
+        this.childLifecycleStatuses.set(parsed.threadId, { status: "running", explicitTurn: true });
+      }
       this.emitSubAgentActivityUpdate(subAgentCallId, "running", { reopen: true });
       return;
     }
@@ -7174,7 +7193,9 @@ export class CodexAppServerAgentSession implements AgentSession {
       } else if (parsed.status === "interrupted") {
         status = "canceled";
       }
-      if (parsed.threadId) this.childLifecycleStatuses.set(parsed.threadId, status);
+      if (parsed.threadId) {
+        this.childLifecycleStatuses.set(parsed.threadId, { status, explicitTurn: true });
+      }
       this.emitSubAgentActivityUpdate(subAgentCallId, status);
       return;
     }

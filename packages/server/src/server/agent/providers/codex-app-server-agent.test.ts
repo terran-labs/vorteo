@@ -7174,6 +7174,16 @@ describe("Codex app-server provider", () => {
       },
     });
     await replay;
+    // The response can have been captured before the newer child turn started.
+    // An unversioned collaboration item has no evidence that it supersedes that turn.
+    await notify("item/completed", {
+      threadId: "test-thread",
+      item: {
+        ...launch,
+        status: "completed",
+        agentsStates: { "active-child": { status: "completed" } },
+      },
+    });
     await notify("item/completed", {
       threadId: "active-child",
       item: { type: "agentMessage", id: "progress", text: "Still working" },
@@ -7190,6 +7200,25 @@ describe("Codex app-server provider", () => {
       item: { type: "agentMessage", id: "late-progress", text: "Final output" },
     });
     expect(statuses().at(-1)).toBe("completed");
+
+    await notify("item/completed", {
+      threadId: "test-thread",
+      item: {
+        ...launch,
+        id: "snapshot-only-launch",
+        receiverThreadIds: ["snapshot-only-child"],
+        status: "completed",
+        agentsStates: { "snapshot-only-child": { status: "shutdown" } },
+      },
+    });
+    expect(
+      events.findLast(
+        (event) =>
+          event.type === "provider_subagent" &&
+          event.event.type === "upsert" &&
+          event.event.id === "snapshot-only-child",
+      ),
+    ).toMatchObject({ event: { status: "canceled" } });
   });
 
   test("coalesces persisted MultiAgentV2 activity for one child into one terminal card", async () => {
