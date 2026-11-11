@@ -5,7 +5,7 @@ import { Text } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useFetchQuery } from "@/data/query";
 import { messageQueueKey, readSharedQueue } from "@/message-queue/runtime";
-import { floatingControlSurface } from "@/styles/floating-control";
+import { floatingControlHover, floatingControlSurface } from "@/styles/floating-control";
 import { Button } from "@/components/ui/button";
 
 export function JumpToLatest({
@@ -83,6 +83,8 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "center",
     gap: theme.spacing[2],
     ...floatingControlSurface(theme),
+    // Merges over the secondary variant's translucent hover, so the pill keeps its resting background.
+    ...floatingControlHover(theme),
   },
   pill: { borderRadius: theme.borderRadius.full, paddingHorizontal: theme.spacing[3] },
   label: { color: theme.colors.foreground, fontSize: theme.fontSize.sm },

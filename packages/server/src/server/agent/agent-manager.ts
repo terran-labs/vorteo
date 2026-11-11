@@ -1,3 +1,4 @@
+import { RestartHoldError } from "./restart-hold.js";
 import { pendingCodexAsyncQuestions } from "./providers/codex/async-questions.js";
 import type { HeldRestart } from "@getpaseo/protocol/messages";
 import {
@@ -243,6 +244,8 @@ export class AgentManagerShuttingDownError extends Error {
     this.name = "AgentManagerShuttingDownError";
   }
 }
+
+export { isRestartHoldError, RestartHoldError } from "./restart-hold.js";
 
 export interface RestartCheckpointDeadline {
   requestId: string;
@@ -2101,7 +2104,7 @@ export class AgentManager {
       // queue it already held stays owned here, so a retry or cancellation settles it.
       this.restartContinuationCaptures.delete(requestId);
       if (previousDrainId === null && this.restartDrainId === requestId) {
-        this.restartDrainId = null;
+        this.clearRestartDrain();
         for (const agent of this.agents.values()) queue?.wake(agent.id);
       }
       throw error;
@@ -2136,7 +2139,7 @@ export class AgentManager {
       this.releasedRestartContinuations.add(requestId);
       if (outcome === "cancelled") this.cancelledRestartDrains.add(requestId);
       if (this.restartDrainId === requestId) {
-        this.restartDrainId = null;
+        this.clearRestartDrain();
         this.restartDrainPrepared.clear();
         this.restartDrainWarnings.clear();
         this.restartSteeredAgents.clear();
@@ -2310,7 +2313,7 @@ export class AgentManager {
       });
       return false;
     }
-    this.restartDrainId = null;
+    this.clearRestartDrain();
     this.restartDrainPrepared.clear();
     this.restartDrainWarnings.clear();
     this.restartSteeredAgents.clear();
@@ -5315,7 +5318,11 @@ export class AgentManager {
         logger: this.logger,
       });
     }
-    this.assertAcceptingAgentRegistrations();
+    // During a restart hold, an ordinary message falls through to steering, which may still join
+    // a running turn; an out-of-band command stays held.
+    const holding = this.restartDrainId !== null;
+    if (!holding) this.assertAcceptingAgentRegistrations();
+    else if (!this.acceptingAgentRegistrations) throw new AgentManagerShuttingDownError();
     this.assertQuotaNotPaused(agentId);
     const agent = this.requireSessionAgent(agentId);
     // Providers parse slash commands from the raw text, so a command another agent sent
@@ -5327,6 +5334,7 @@ export class AgentManager {
     if (!handler) {
       return false;
     }
+    if (holding) throw new RestartHoldError();
     this.touchUpdatedAt(agent);
     if (options?.clientMessageId) {
       this.recordSubmittedPrompt(agent, prompt, options.clientMessageId, "accepted", {
@@ -5931,13 +5939,19 @@ export class AgentManager {
     prompt: AgentPromptInput,
     options?: AgentSteerOptions,
   ): Promise<ActiveTurnSteerDispatchResult> {
-    this.assertAcceptingAgentRegistrations();
+    // During a restart hold a message may still join a turn that is already running: that adds
+    // no new work, and it lets a coordinator waiting on a child's reply finish its turn. Starting
+    // or replacing a turn stays held.
+    const holding = this.restartDrainId !== null;
+    if (!holding) this.assertAcceptingAgentRegistrations();
+    else if (!this.acceptingAgentRegistrations) throw new AgentManagerShuttingDownError();
     // A turn that is still starting has no id to steer yet. Replacing it would drop its
     // prompt, so wait until it is accepted (or fails) and steer the turn it became.
     await this.runs.waitForForegroundStart(agentId);
     const agent = this.requireSessionAgent(agentId);
     const expectedTurnId = agent.activeForegroundTurnId ?? agent.activeTurnId;
     if (!expectedTurnId) {
+      this.assertAcceptingAgentRegistrations();
       return { status: "inactive" };
     }
 
@@ -5964,6 +5978,7 @@ export class AgentManager {
     if (result.status === "accepted") {
       return { status: "steered" };
     }
+    this.assertAcceptingAgentRegistrations();
 
     // Providers without autonomous steering keep their existing dispatch behavior. The shared
     // admission may recognize the turn, but only an accepted steer can own it without replacement.
@@ -5972,6 +5987,8 @@ export class AgentManager {
     }
 
     await this.beforeSteerUnavailableFallback?.({ agentId, expectedTurnId });
+    // The provider and fallback hook can both yield while a restart hold begins.
+    this.assertAcceptingAgentRegistrations();
     this.assertSteerAdmissionOwnsTurn(agent, expectedTurnId);
     return {
       status: "replaced",
@@ -6924,11 +6941,30 @@ export class AgentManager {
     }
   }
 
+  private restartHoldWaiters = new Set<() => void>();
+
+  private clearRestartDrain(): void {
+    this.restartDrainId = null;
+    // Each waiter removes itself; deleting the current entry during iteration is safe for a Set.
+    for (const release of this.restartHoldWaiters) release();
+  }
+
+  /** Resolves once no restart hold is active, or when the signal aborts. */
+  waitForRestartHoldRelease(signal?: AbortSignal): Promise<void> {
+    if (!this.restartDrainId || signal?.aborted) return Promise.resolve();
+    return new Promise((settle) => {
+      const done = () => {
+        this.restartHoldWaiters.delete(done);
+        signal?.removeEventListener("abort", done);
+        settle();
+      };
+      this.restartHoldWaiters.add(done);
+      signal?.addEventListener("abort", done, { once: true });
+    });
+  }
+
   private assertAcceptingAgentRegistrations(): void {
-    if (this.restartDrainId)
-      throw new Error(
-        "A restart is waiting for current turns to finish. New work is held until restart or cancellation.",
-      );
+    if (this.restartDrainId) throw new RestartHoldError();
     if (!this.acceptingAgentRegistrations) {
       throw new AgentManagerShuttingDownError();
     }

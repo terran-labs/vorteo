@@ -2,7 +2,7 @@ import { AddClaudeAccountButton } from "./add-account";
 import { claudeProviderConnectsToInstallation } from "./claude-setup-login";
 import { ProviderLoginPanel, StatusLine, type ConnectionOutcome } from "./login-panel";
 import type { ConnectionStatus } from "./claude-connection-status";
-import { useSharedInstallationSignIn } from "./use-provider-login";
+import { useClaudeAccountNeedsSignIn, useSharedInstallationSignIn } from "./use-provider-login";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Text, View, type GestureResponderEvent } from "react-native";
 import { AlertTriangle } from "lucide-react-native";
@@ -60,17 +60,7 @@ export function ProviderReconnectControl({
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }) {
-  const { config } = useDaemonConfig(serverId);
-  const { entries } = useProvidersSnapshot(serverId);
-  const claude = accountProviderKind(providerId, config?.providers) === "claude";
-  // Installation accounts always offer their connection panel, which shows Dev synchronization.
-  const shared = useSharedInstallationSignIn(serverId, claude ? "claude" : "codex");
-  const action = providerConnectionAction({
-    providerId,
-    providers: config?.providers,
-    usage,
-    snapshot: entries?.find((entry) => entry.provider === providerId),
-  });
+  const { claude, shared, action } = useConnectionAction(serverId, providerId, usage);
   // Opening snapshots the recovery method and title, so a reconnect that succeeds mid-dialog
   // cannot swap the body or rename the open dialog.
   const [opened, setOpened] = useState<{
@@ -288,6 +278,31 @@ function ManualRecovery({
       </ActionFooter>
     </>
   );
+}
+
+/** Which connection action an account row offers, and whether it signs in through the installation. */
+function useConnectionAction(
+  serverId: string | null,
+  providerId: string,
+  usage: ProviderUsage | undefined,
+) {
+  const { config } = useDaemonConfig(serverId);
+  const { entries } = useProvidersSnapshot(serverId);
+  const claude = accountProviderKind(providerId, config?.providers) === "claude";
+  // Installation accounts always offer their connection panel, which shows Dev synchronization.
+  const shared = useSharedInstallationSignIn(serverId, claude ? "claude" : "codex");
+  // The coordinator knows when a named Claude account's Host grant is gone, even while its last
+  // usage reading still looks fine.
+  const coordinatorNeedsSignIn = useClaudeAccountNeedsSignIn(claude ? serverId : null, providerId);
+  const action = coordinatorNeedsSignIn
+    ? "Reconnect"
+    : providerConnectionAction({
+        providerId,
+        providers: config?.providers,
+        usage,
+        snapshot: entries?.find((entry) => entry.provider === providerId),
+      });
+  return { claude, shared, action };
 }
 
 function ConnectionButton({

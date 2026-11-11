@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { type PreviewBrokerDeploymentJob } from "@getpaseo/protocol/preview-broker-deployment";
 import {
   PreviewBrokerDeploymentWorkflow,
@@ -120,7 +121,22 @@ export interface RestartStartupOptions {
   /** Operator-visible progress for each dispatch step; never silent for hours. */
   progress?: (message: string, fields: Record<string, unknown>) => void;
   dispatchDeadlineMs?: number;
+  /** How long a finish-current-turns hold may wait before it asks the owner. */
+  finishTurnsDeadlineMs?: number;
+  /** What a hold does at its deadline. Only "ask" exists; see `holdDeadline`. */
+  afterHoldDeadline?: "ask";
+  /** Coordinator-private hold start times. Absent keeps them in memory only. */
+  holdState?: { read(): unknown; write(value: Record<string, HoldRecord>): void };
 }
+
+const HoldRecordSchema = z.strictObject({
+  startedAt: z.number().int().nonnegative(),
+  exceeded: z.boolean(),
+});
+type HoldRecord = z.infer<typeof HoldRecordSchema>;
+
+/** A hold that has waited this long stops waiting silently and asks the owner to decide. */
+export const FINISH_TURNS_DEADLINE_MS = 15 * 60_000;
 
 type NativeMaintenanceJob = NativeHelperJob | PreviewMonitorJob | SessionHostJob;
 /** Native maintenance is delegable by default; only OWNER_ONLY_OPERATIONS excludes one. */
@@ -344,6 +360,13 @@ export class InstallationRestarts {
   private operationalActivitySink: OperationalActivitySink | null = null;
   private readonly progress: NonNullable<RestartStartupOptions["progress"]>;
   private readonly dispatchDeadlineMs: number;
+  private readonly finishTurnsDeadlineMs: number;
+  private readonly afterHoldDeadline: "ask";
+  private readonly holdState: RestartStartupOptions["holdState"];
+  /** Coordinator-private: when each waiting finish-current-turns hold began. */
+  private readonly holds = new Map<string, HoldRecord>();
+  /** The last holder set logged per job, so only changes are logged. */
+  private readonly loggedHolders = new Map<string, string>();
   private jobs: RestartJob[];
   private helpers: NativeHelperJob[];
   private monitors: PreviewMonitorJob[];
@@ -368,6 +391,16 @@ export class InstallationRestarts {
   ) {
     this.progress = startup.progress ?? (() => {});
     this.dispatchDeadlineMs = startup.dispatchDeadlineMs ?? DISPATCH_READINESS_DEADLINE_MS;
+    this.finishTurnsDeadlineMs = startup.finishTurnsDeadlineMs ?? FINISH_TURNS_DEADLINE_MS;
+    this.afterHoldDeadline = startup.afterHoldDeadline ?? "ask";
+    this.holdState = startup.holdState;
+    try {
+      const saved = z.record(z.string(), HoldRecordSchema).safeParse(startup.holdState?.read());
+      if (saved.success)
+        for (const [id, record] of Object.entries(saved.data)) this.holds.set(id, record);
+    } catch {
+      // An unreadable record only restarts the deadline from now.
+    }
     this.snapshot = journal.read();
     this.jobs = this.snapshot.filter(
       (job): job is RestartJob => job.target === "host" || job.target === "container-daemon",
@@ -2974,6 +3007,7 @@ export class InstallationRestarts {
     if (this.executor.prepareUpdate) await this.prepareBatches();
     if (this.running || this.preparing) return;
     this.reconcilePending();
+    this.pruneHolds();
     this.running = true;
     try {
       await this.releaseFinishedHolds();
@@ -3304,16 +3338,95 @@ export class InstallationRestarts {
       !impact.idleRestartSupported ||
       impact.agents.length > 0 ||
       impact.pendingStarts > 0;
+    this.logHolders(current, impact);
     if (waiting) {
       const detail =
         impact.error ||
         (!impact.idleRestartSupported
           ? "Waiting for a daemon update that supports safe idle restarts"
           : `Waiting for ${impact.agents.length} active agents and ${impact.pendingStarts} starting operations`);
-      if (current.detail !== detail) this.replace({ ...current, detail });
+      const next = this.holdDeadline(current, detail);
+      if (next !== current) this.replace(next);
       return false;
     }
     return true;
+  }
+
+  /**
+   * Records when a finish-current-turns hold starts waiting, in coordinator-private state that
+   * survives a coordinator restart but never enters the journaled or shared job schema. Past the
+   * deadline the hold stops waiting silently: the job says so and the owner is asked to restart
+   * now, which interrupts the remaining turns, or to cancel. `afterHoldDeadline` selects what
+   * happens then; only "ask" exists, because the owner approved finishing current turns first.
+   * An automatic interrupt-plus-continuation choice would branch here.
+   */
+  private holdDeadline(job: RestartJob, waitingDetail: string): RestartJob {
+    if (!job.finishCurrentTurns)
+      return job.detail === waitingDetail ? job : { ...job, detail: waitingDetail };
+    const held = this.holds.get(job.id) ?? { startedAt: this.now(), exceeded: false };
+    const exceeded = this.now() - held.startedAt >= this.finishTurnsDeadlineMs;
+    const minutes = Math.round(this.finishTurnsDeadlineMs / 60_000);
+    if (exceeded && !held.exceeded)
+      this.progress("Restart hold passed its deadline; owner decision needed", {
+        job: job.id,
+        target: job.target,
+        minutes,
+        afterDeadline: this.afterHoldDeadline,
+      });
+    if (!this.holds.has(job.id) || held.exceeded !== exceeded) {
+      this.holds.set(job.id, { startedAt: held.startedAt, exceeded });
+      this.persistHolds();
+    }
+    const detail = exceeded
+      ? `Current turns have not finished after ${minutes} minutes. ${waitingDetail}. Restart now to interrupt them, or cancel.`
+      : waitingDetail;
+    return job.detail === detail ? job : { ...job, detail };
+  }
+
+  /** Whether a waiting hold passed its deadline. Reply-only; see `holdDeadlineExceeded`. */
+  holdDeadlineExceeded(jobId: string): boolean {
+    return this.holds.get(jobId)?.exceeded === true;
+  }
+
+  /** Forgets holds and holder logs of jobs that are no longer approved and waiting. */
+  private pruneHolds(): void {
+    const waiting = new Set(
+      this.jobs.filter((job) => job.status === "approved" && job.whenIdle).map((job) => job.id),
+    );
+    let changed = false;
+    for (const id of this.holds.keys())
+      if (!waiting.has(id)) {
+        this.holds.delete(id);
+        changed = true;
+      }
+    for (const id of this.loggedHolders.keys()) if (!waiting.has(id)) this.loggedHolders.delete(id);
+    if (changed) this.persistHolds();
+  }
+
+  private persistHolds(): void {
+    try {
+      this.holdState?.write(Object.fromEntries(this.holds));
+    } catch {
+      // The deadline restarts from now after a lost record; it never blocks the restart queue.
+    }
+  }
+
+  /** Logs each change in what a waiting restart holds for: agent IDs only, never titles. */
+  private logHolders(job: RestartJob, impact: RestartImpact): void {
+    const agents = impact.agents.map((agent) => agent.id).sort();
+    const signature = JSON.stringify([agents, impact.pendingStarts, Boolean(impact.error)]);
+    const previous = this.loggedHolders.get(job.id);
+    if (previous === signature) return;
+    this.loggedHolders.set(job.id, signature);
+    // An idle first check holds for nothing; there is no change to report.
+    if (previous === undefined && !agents.length && !impact.pendingStarts && !impact.error) return;
+    this.progress("Restart hold holders changed", {
+      job: job.id,
+      target: job.target,
+      agents,
+      pendingStarts: impact.pendingStarts,
+      inspectionFailed: Boolean(impact.error),
+    });
   }
 
   private async standingCandidateReady(job: RestartJob): Promise<boolean> {

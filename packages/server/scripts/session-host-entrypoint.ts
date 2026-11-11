@@ -1,4 +1,9 @@
 import {
+  initializePackagedClaudeCli,
+  launchedThroughReleaseLink,
+} from "../src/server/agent/providers/claude/packaged-cli.js";
+import { SESSION_HOST_ENTRYPOINT } from "../src/server/session-host/host-files.js";
+import {
   loadTestServiceOptions,
   startSessionHostService,
 } from "../src/server/session-host/service.js";
@@ -13,6 +18,11 @@ import {
  * `createClient` export replaces the Claude client. It is ignored in any other environment.
  */
 async function main(): Promise<void> {
+  // Before any client exists: hosted Claude agents must run the release's validated CLI, exactly
+  // as managed workers do.
+  initializePackagedClaudeCli(
+    await launchedThroughReleaseLink(process.argv[1], SESSION_HOST_ENTRYPOINT),
+  );
   await startSessionHostService({
     ...loadTestServiceOptions(process.env),
   });

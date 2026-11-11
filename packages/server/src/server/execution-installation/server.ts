@@ -108,6 +108,7 @@ import { ProviderPreferencesValidationError } from "../agent/provider-preference
 import type { InstallationProfiles } from "./profiles/service.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { writePrivateFileAtomicSync } from "../private-files.js";
 import path from "node:path";
 import express, { type Request, type Response, type NextFunction } from "express";
 import type { Logger } from "pino";
@@ -131,7 +132,12 @@ import {
   supportsAutomaticMaintenance,
   type RestartExecutor,
 } from "./restarts.js";
-import { daemonTargets, requireEnvironmentDaemon, type InstallationConfig } from "./config.js";
+import {
+  daemonTargets,
+  requireEnvironmentDaemon,
+  restartHoldDeadlineMs,
+  type InstallationConfig,
+} from "./config.js";
 import {
   connectInstallationDaemon,
   submitInstallationCoordinator,
@@ -272,6 +278,25 @@ function withDelegation(reply: RestartJob, job: RestartJob, delegation: OwnerDel
   if (handler?.state === "handling") return { ...reply, delegatedTo: handler.requester };
   if (handler?.state === "overdue") return { ...reply, delegationOverdue: handler.requester };
   return reply;
+}
+
+/** Coordinator-private restart hold starts: the copy main.ts read at startup, and the writer. */
+export const RESTART_HOLDS_FILE = "restart-holds.json";
+function restartHoldState(stateDir: string, initial: unknown) {
+  return {
+    read: (): unknown => initial ?? {},
+    write: (value: unknown) =>
+      writePrivateFileAtomicSync(
+        path.join(stateDir, RESTART_HOLDS_FILE),
+        `${JSON.stringify(value)}\n`,
+      ),
+  };
+}
+
+// COMPAT(restartHoldDeadline): added 2026-11-11; only clients that send restartHoldDeadline=1
+// receive holdDeadlineExceeded, which lives in coordinator-private state, not the journal.
+function withHoldDeadline(reply: RestartJob, exceeded: boolean, requested: boolean): RestartJob {
+  return requested && exceeded ? { ...reply, holdDeadlineExceeded: true } : reply;
 }
 
 function requestedDelegation(stateDir: string, requested: boolean): OwnerDelegation | null {
@@ -486,6 +511,8 @@ export function createInstallationServer(
   files?: InstallationFiles,
   codexSignIn?: CodexSignInRuntime,
   overviewDependencies?: OverviewDependencies,
+  /** The private restart hold record, read by main.ts at startup. Omitted in tests. */
+  restartHolds?: unknown,
 ) {
   mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
   const instructionRequests = new InstructionRequests(
@@ -668,6 +695,8 @@ export function createInstallationServer(
     {
       fenced: startupFence !== undefined,
       progress: (message, fields) => logger.info(fields, message),
+      finishTurnsDeadlineMs: restartHoldDeadlineMs(config),
+      holdState: restartHoldState(config.stateDir, restartHolds),
     },
   );
   const releaseRuntime = optionalReleaseRuntime(files, {
@@ -2988,6 +3017,13 @@ export function createInstallationServer(
             ),
             job,
             delegation,
+          ),
+        )
+        .map((reply) =>
+          withHoldDeadline(
+            reply,
+            restarts.holdDeadlineExceeded(reply.id),
+            req.query.restartHoldDeadline === "1",
           ),
         ),
     );

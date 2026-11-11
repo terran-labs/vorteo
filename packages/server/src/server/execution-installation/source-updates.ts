@@ -49,9 +49,7 @@ import {
 import { prepareSourceBatch } from "./source-batches.js";
 import { prepareDevRepairBundle } from "./dev-source-repair.js";
 import { assertReleaseSelectionAllowed } from "./release-selection-guard.js";
-import { pruneHostReleases, startHostReleaseRetention } from "./host-release-retention.js";
-import { FileBootstrapRequestJournal } from "./coordinator-bootstrap-journal.js";
-import { isCompletedBootstrap, openBootstrapRequests } from "./coordinator-bootstrap.js";
+import { startHostReleaseRetention } from "./host-release-retention.js";
 import { isDeepStrictEqual } from "node:util";
 import type { StandingInterruption } from "@getpaseo/protocol/maintenance-interruption";
 
@@ -180,13 +178,15 @@ async function verifyPublishedInterruption(input: PublishedInterruption) {
  * releases, every release a kept coordinator plan names, unfinished jobs, and the
  * update tooling the live configuration runs. Reviewed tooling selection points
  * `sourceUpdates.toolingDirectory` into a release's scripts folder, so removing that
- * release would break every later install at its first step.
+ * release would break every later install at its first step. The running session host's
+ * release stays too: the host outlives installs and still loads code from it.
  */
 export function hostRetentionReferences(input: {
   config: Pick<InstallationConfig, "sourceUpdates" | "containerSourceUpdates" | "deployment">;
   previous: string;
   plans: readonly CoordinatorBootstrapPlan[];
   unfinished: readonly string[];
+  sessionHostRelease?: string | null;
 }): string[] {
   const { config } = input;
   return [
@@ -206,6 +206,7 @@ export function hostRetentionReferences(input: {
         .map((release) => release.directory),
     ),
     ...input.unfinished,
+    ...(input.sessionHostRelease ? [input.sessionHostRelease] : []),
   ];
 }
 
@@ -774,46 +775,14 @@ export class InstallationSourceUpdates {
       update,
       status: "succeeded",
     });
-    // Cleanup runs after this result, outside the readiness deadline: a first prune of a
-    // large backlog once took longer than the whole install window.
-    startHostReleaseRetention(
-      () => this.retainHostReleases(previous),
-      path.join(work, "retention.json"),
-    );
-    return `Installed source ${update.sourceCommit}. Host replacement identity and readiness verified; interface published. Previous release retained at ${previous}. Old Host releases are removed in the background; the result is recorded in retention.json in this job's folder.`;
+    // Record the cleanup decision outside the installation readiness deadline.
+    startHostReleaseRetention(() => this.retainHostReleases(), path.join(work, "retention.json"));
+    return `Installed source ${update.sourceCommit}. Host replacement identity and readiness verified; interface published. Previous release retained at ${previous}. Background Host release cleanup is suspended; old releases remain on disk. The reason is recorded in retention.json in this job's folder.`;
   }
 
-  /**
-   * After a verified install, remove old Host release folders. Keeps the selected and
-   * previous releases, every release an open or the latest completed coordinator plan
-   * names, and folders of unfinished jobs. Never fails the install.
-   */
-  private async retainHostReleases(previous: string): Promise<string> {
-    const settings = this.hostSettings();
-    const failures: string[] = [];
-    try {
-      const journal = new FileBootstrapRequestJournal(this.config.stateDir);
-      const requests = journal.read();
-      const latest = requests.findLast((request) => isCompletedBootstrap(request));
-      const plans = [...openBootstrapRequests(requests), ...(latest ? [latest] : [])].map(
-        (request) => request.plan,
-      );
-      const unfinished = journal
-        .readLifecycle()
-        .filter((job) => ["pending", "approved", "running"].includes(job.status))
-        .map((job) => path.join(settings.releaseRoot, job.id));
-      const removed = await pruneHostReleases({
-        releaseRoot: settings.releaseRoot,
-        referenced: hostRetentionReferences({ config: this.config, previous, plans, unfinished }),
-        onError: (folder) => failures.push(path.basename(folder)),
-      });
-      const note = removed.length ? ` Removed ${removed.length} old Host releases.` : "";
-      return failures.length
-        ? `${note} Could not remove ${failures.length} old releases; they are kept.`
-        : note;
-    } catch {
-      return " Old Host releases were not pruned this time.";
-    }
+  /** Receipt snapshots do not exclude a new host starting during asynchronous deletion. */
+  private async retainHostReleases(): Promise<string> {
+    return " Old Host releases were not pruned this time: Background managed Host release cleanup is suspended because session-host startup and pruning do not share exclusive lifetime protection. Releases remain on disk until separately authorized safe cleanup is available.";
   }
 
   private selectRelease(release: string) {

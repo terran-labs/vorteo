@@ -14,7 +14,7 @@ import {
   resolveClaudeDisabledThinkingForModel,
 } from "./model-manifest.js";
 import { discoverClaudeModels } from "./model-discovery.js";
-import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
+import type { ModelInfo, Query } from "@anthropic-ai/claude-agent-sdk";
 import {
   findClaudeModel,
   getClaudeContextWindowMaxTokens,
@@ -94,7 +94,7 @@ describe("Claude CLI update warnings", () => {
       installedVersion: "2.1.267",
       affectedModels: [
         { id: "claude-opus-5-5", label: "Opus 5.5", minimumVersion: "2.1.280" },
-        { id: "claude-fable-5-2", label: "Fable 5.2", minimumVersion: "2.1.321" },
+        { id: "claude-fable-5-2", label: "Fable 5.2", minimumVersion: "2.1.290" },
         { id: "claude-sonnet-5-5", label: "Sonnet 5.5", minimumVersion: "2.1.284" },
         { id: "claude-haiku-5-5", label: "Haiku 5.5", minimumVersion: "2.1.293" },
       ],
@@ -113,6 +113,40 @@ describe("Claude CLI update warnings", () => {
     const after = await client.fetchCatalog({ scope: "global", force: true });
     expect(after.cliUpdate).toBeUndefined();
     expect(after.models.some((model) => model.id === "claude-opus-5-5")).toBe(true);
+  });
+
+  it("refuses a launch whose own executable is too old for the model, before the CLI starts", async () => {
+    // The catalog saw a new CLI, but this process launches an older one, as a session host did.
+    let executableVersion = "2.1.285";
+    let launches = 0;
+    const query = Object.assign((async function* () {})(), {
+      async setPermissionMode() {},
+      async applyFlagSettings() {},
+      close() {},
+    });
+    const client = new ClaudeAgentClient({
+      logger: createTestLogger(),
+      resolveVersion: async () => "2.1.321",
+      resolveBinary: async () => "/opt/homebrew/bin/claude",
+      resolveBinaryVersion: async () => executableVersion,
+      queryFactory: () => {
+        launches += 1;
+        return query as Query;
+      },
+    });
+    const session = await client.createSession({
+      provider: "claude",
+      cwd: process.cwd(),
+      model: "claude-fable-5-2",
+    });
+    await expect(session.setMode("plan")).rejects.toThrow(
+      /2\.1\.290.*2\.1\.285 from \/opt\/homebrew\/bin\/claude/,
+    );
+    expect(launches).toBe(0);
+    executableVersion = "2.1.290";
+    await session.setMode("plan");
+    expect(launches).toBe(1);
+    await session.close();
   });
 });
 

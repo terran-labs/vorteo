@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   jobs: [] as { id: string; target: string; status: string; createdAt: string }[],
 }));
 vi.mock("../service-access-section", () => ({ ServiceAccessSection: () => null }));
+vi.mock("../blocked-work-review-card", () => ({ BlockedWorkReviewCard: () => null }));
 vi.mock("@/components/ui/scroll-view", () => ({
   ScrollView: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
@@ -33,6 +34,7 @@ vi.mock("./use-system-adapter", () => ({
 // Partial: modules this pane reaches indirectly, such as Platform, keep their real exports.
 vi.mock("react-native", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-native")>()),
+  Platform: { ...(await importOriginal<typeof import("react-native")>()).Platform, OS: "web" },
   useWindowDimensions: () => ({ width: 390 }),
   StyleSheet: { create: (styles: unknown) => styles },
   View: ({ children, testID }: { children: ReactNode; testID?: string }) => (
@@ -65,10 +67,6 @@ vi.mock("@/components/settings/headings/settings-section", () => ({
   SettingsSection: ({ children }: { children: ReactNode }) => <section>{children}</section>,
 }));
 vi.mock("@/components/settings/settings-status-line", () => ({ SettingsStatusLine: () => null }));
-// The blocked-work card has its own queries and tests; this suite covers the pane's layout.
-vi.mock("@/screens/settings/blocked-work-review-card", () => ({
-  BlockedWorkReviewCard: () => null,
-}));
 vi.mock("@/runtime/host-runtime", () => ({
   useHosts: () => [],
   useHostRuntimeSnapshot: () => null,
@@ -91,14 +89,10 @@ vi.mock("@/desktop/components/desktop-updates-section", () => ({
   LocalDaemonSection: () => <span>Local controls</span>,
 }));
 vi.mock("@/execution-installation/panel", () => ({
-  // Owner access reaches this through its imports; no installation means no owner controls.
-  useInstallationOwnerAccess: () => ({
-    status: "none",
-    busy: false,
-    error: null,
-    unlock: async () => {},
-    lock: async () => {},
-  }),
+  // Imported along the way, never called: the pane itself does not read owner access.
+  useInstallationOwnerAccess: () => {
+    throw new Error("Owner access is outside the System pane fixture");
+  },
   InstallationSystemDetails: ({
     requestId,
     target,
