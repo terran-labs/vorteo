@@ -8,7 +8,19 @@ export function settingsPaneDomId(paneId: string): string {
   return `settings-pane-${paneId}`;
 }
 
-export function findSettingRow(_paneId: string, _label: string): HTMLElement | null {
+export function settingsElementById(_id: string, _root?: ParentNode | null): HTMLElement | null {
+  return null;
+}
+
+export function findSettingRow(
+  _paneId: string,
+  _label: string,
+  _root?: ParentNode | null,
+): HTMLElement | null {
+  return null;
+}
+
+export function findSettingRowInDialogs(_label: string): HTMLElement | null {
   return null;
 }
 
@@ -16,6 +28,7 @@ export function flashSettingRow(_row: HTMLElement): void {}
 
 export function markSettingRows(
   _matches: ReadonlyArray<{ pane: string; label: string }>,
+  _root?: ParentNode | null,
 ): () => void {
   return () => {};
 }

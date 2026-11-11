@@ -233,7 +233,7 @@ test.describe("Usage screen with the sidebar summary hidden", () => {
     await expect(page.locator('[data-testid="usage-refresh-all"]:visible')).toBeVisible();
     await openUsageOptions(page);
     await expect(page.getByTestId("usage-display-remaining")).toHaveAttribute(
-      "aria-selected",
+      "aria-checked",
       "true",
     );
     await qaScreenshot(page, "compact-settings-expanded");
@@ -253,7 +253,7 @@ test.describe("Usage screen with the sidebar summary hidden", () => {
     await expectReportPercentages(screen, "remaining");
     await openUsageOptions(page);
     await expect(page.getByTestId("usage-display-remaining")).toHaveAttribute(
-      "aria-selected",
+      "aria-checked",
       "true",
     );
     await closeUsageOptions(page);

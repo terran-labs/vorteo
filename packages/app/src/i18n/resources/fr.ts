@@ -2353,6 +2353,8 @@ export const fr: TranslationResources = {
     title: "Paramètres",
     loading: "Chargement des paramètres…",
     groups: {
+      thisDevice: "Cet appareil",
+      vorteo: "Vorteo",
       app: "Application",
       host: "Hôte",
     },

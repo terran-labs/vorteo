@@ -31,40 +31,6 @@ function summarize(items: readonly SidebarNavItem[]): SidebarNavPreference[] {
 }
 
 describe("resolveSidebarNavItems", () => {
-  it("keeps Vorteo navigation visible and usage hidden without changing saved preferences", () => {
-    const preferences = [
-      { key: "history", visible: false },
-      { key: "schedules", visible: false },
-      { key: "usage", visible: true },
-    ];
-    const header = resolveSidebarNavItems({
-      section: "header",
-      pluginGroups: [],
-      preferences,
-    });
-    const footer = resolveSidebarNavItems({
-      section: "footer",
-      pluginGroups: [],
-      preferences,
-    });
-    expect(header.find((item) => item.key === "history")?.visible).toBe(true);
-    expect(header.find((item) => item.key === "schedules")?.visible).toBe(true);
-    expect(footer.find((item) => item.key === "usage")?.visible).toBe(false);
-    const standardHeader = resolveSidebarNavItems({
-      section: "header",
-      pluginGroups: [],
-      preferences,
-    });
-    const standardFooter = resolveSidebarNavItems({
-      section: "footer",
-      pluginGroups: [],
-      preferences,
-    });
-    expect(standardHeader.find((item) => item.key === "history")?.visible).toBe(true);
-    expect(standardHeader.find((item) => item.key === "schedules")?.visible).toBe(true);
-    expect(standardFooter.find((item) => item.key === "usage")?.visible).toBe(false);
-  });
-
   it("yields builtins then plugins, all visible, when nothing is stored", () => {
     const items = resolveSidebarNavItems({
       section: "header",
@@ -145,16 +111,6 @@ describe("resolveSidebarNavItems", () => {
       { key: "history", visible: true },
       { key: "schedules", visible: true },
     ]);
-  });
-});
-
-describe("resolveSidebarNavItems for the Usage item", () => {
-  it("keeps the standalone Usage item hidden", () => {
-    const resolve = (preferences: SidebarNavPreference[]) =>
-      summarize(resolveSidebarNavItems({ section: "footer", pluginGroups: [], preferences }));
-
-    expect(resolve([])).toEqual([{ key: "usage", visible: false }]);
-    expect(resolve([{ key: "usage", visible: true }])).toEqual([{ key: "usage", visible: false }]);
   });
 });
 

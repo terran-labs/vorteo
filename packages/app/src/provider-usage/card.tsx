@@ -91,7 +91,7 @@ export function ProviderUsageCard({
         name={usage.displayName}
       />
       {usage.error ? (
-        <Text style={styles.error} numberOfLines={3}>
+        <Text style={styles.error} accessibilityRole="alert">
           {toErrorMessage(usage.error)}
         </Text>
       ) : null}

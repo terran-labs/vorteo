@@ -12,6 +12,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -37,10 +38,10 @@ import {
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { daemonConfigQueryKey } from "@/data/daemon-config";
 
-import { ProviderLoginPanel } from "./login-panel";
+import { ProviderLoginPanel, type ConnectionOutcome } from "./login-panel";
+import { LiveAnnouncement } from "@/components/ui/visually-hidden";
 import { claudeFullSignInAvailable } from "./claude-setup-login";
 import { openAccountForm, suggestedAccountName, type CreatedCodexAccount } from "./account-form";
-import { useSharedInstallationSignIn } from "./use-provider-login";
 import { useProviderUsage } from "./use-provider-usage";
 import {
   ACCOUNT_PROVIDER_LABELS,
@@ -58,6 +59,11 @@ type AccountButtonProps = Omit<AddAccountProps, "provider"> & {
   catalog?: boolean;
   /** Replaces the default button text, for example "Connect" on the accounts first screen. */
   label?: string;
+  /**
+   * Called once when the dialog closes: connected when the new account signed in, failed when
+   * its last sign-in attempt failed, otherwise cancelled.
+   */
+  onFinished?: (result: ConnectionOutcome) => void;
   style?: StyleProp<ViewStyle>;
 };
 export function AddCodexAccountButton(props: AccountButtonProps) {
@@ -82,6 +88,7 @@ function UnlockedAddAccountButton({
   catalog = false,
   label,
   style,
+  onFinished,
   ...props
 }: AddAccountProps & Omit<AccountButtonProps, keyof AddAccountProps>) {
   const installation = readExecutionInstallation();
@@ -93,8 +100,22 @@ function UnlockedAddAccountButton({
   )?.serverId;
   const serverId = belongsToInstallation && hostId ? hostId : props.serverId;
   const [open, setOpen] = useState(false);
-  const show = useCallback(() => setOpen(true), []);
-  const close = useCallback(() => setOpen(false), []);
+  const text =
+    label ?? (catalog ? "Add" : `Add ${ACCOUNT_PROVIDER_LABELS[props.provider]} account`);
+  // The sign-in panel's latest result, reported once through onFinished on close.
+  const outcome = useRef<Exclude<ConnectionOutcome, "cancelled"> | null>(null);
+  const reportOutcome = useCallback((next: Exclude<ConnectionOutcome, "cancelled"> | null) => {
+    outcome.current = next;
+  }, []);
+  const show = useCallback(() => {
+    outcome.current = null;
+    setOpen(true);
+  }, []);
+  const close = useCallback(() => {
+    setOpen(false);
+    onFinished?.(outcome.current ?? "cancelled");
+    outcome.current = null;
+  }, [onFinished]);
 
   return (
     <>
@@ -103,17 +124,49 @@ function UnlockedAddAccountButton({
         size={catalog ? "sm" : "md"}
         style={style}
         onPress={show}
+        accessibilityLabel={accessibleAccountLabel(text, ACCOUNT_PROVIDER_LABELS[props.provider])}
         testID={`add-${props.provider}-account`}
       >
-        {label ??
-          (catalog ? "Add" : `Add ${props.provider === "claude" ? "Claude" : "Codex"} account`)}
+        {text}
       </Button>
-      {open ? <AccountSheet key={serverId} {...props} serverId={serverId} onClose={close} /> : null}
+      {open ? (
+        <AccountSheet
+          key={serverId}
+          {...props}
+          serverId={serverId}
+          onClose={close}
+          onOutcome={reportOutcome}
+        />
+      ) : null}
     </>
   );
 }
 
-function AccountSheet({ onClose, ...props }: AddAccountProps & { onClose: () => void }) {
+/**
+ * Short visible labels such as "Add" or "Connect" repeat across provider rows; the spoken name
+ * always says which provider the new account is for.
+ */
+function accessibleAccountLabel(text: string, provider: string): string {
+  if (text.includes(provider)) return text;
+  if (text.endsWith(" account")) return `${text.slice(0, -" account".length)} ${provider} account`;
+  return `${text} ${provider} account`;
+}
+
+interface SheetExtras {
+  /** Spoken once: creation, a creation error, or a lost host connection. */
+  announcement?: string | null;
+  /** The `nativeID` that describes the dialog, such as the sign-in status line. */
+  describedBy?: string;
+}
+
+type RenderSheet = (body: ReactNode, footer: ReactNode, extras?: SheetExtras) => ReactNode;
+
+interface SheetCallbacks {
+  onClose: () => void;
+  onOutcome: (outcome: Exclude<ConnectionOutcome, "cancelled"> | null) => void;
+}
+
+function AccountSheet({ onClose, onOutcome, ...props }: AddAccountProps & SheetCallbacks) {
   const { config } = useDaemonConfig(props.serverId);
   const existing = useExistingConnections(props.serverId, props.provider);
   const another = existing.connections.length > 0;
@@ -132,16 +185,22 @@ function AccountSheet({ onClose, ...props }: AddAccountProps & { onClose: () => 
   );
   const canManage = permissions?.includes("daemon.manage") !== false;
   const renderSheet = useCallback(
-    (body: ReactNode, footer: ReactNode) => (
+    (body: ReactNode, footer: ReactNode, extras: SheetExtras = {}) => (
       <AdaptiveModalSheet
         visible
         header={header}
         onClose={onClose}
         desktopMaxWidth={520}
+        accessibilityLabel={header.title}
+        accessibilityDescribedBy={extras.describedBy}
         testID={`add-${props.provider}-account-dialog`}
         footer={footer}
       >
-        <View style={styles.body}>{body}</View>
+        <View style={styles.body}>
+          {body}
+          {/* Same position in every step, so the region exists before each message. */}
+          <LiveAnnouncement message={extras.announcement ?? null} />
+        </View>
       </AdaptiveModalSheet>
     ),
     [header, onClose, props.provider],
@@ -157,6 +216,7 @@ function AccountSheet({ onClose, ...props }: AddAccountProps & { onClose: () => 
         existing={existing}
         initialName={suggestedAccountName(config.providers, props.provider)}
         onClose={onClose}
+        onOutcome={onOutcome}
         renderSheet={renderSheet}
       />
     );
@@ -224,43 +284,40 @@ function useAccountForm({
 
 function AccountForm({
   onClose,
+  onOutcome,
   renderSheet,
   existing,
   ...props
-}: AddAccountProps & {
-  onClose: () => void;
-  initialName: string;
-  renderSheet: (body: ReactNode, footer: ReactNode) => ReactNode;
-  existing: ExistingConnections;
-}) {
+}: AddAccountProps &
+  SheetCallbacks & {
+    initialName: string;
+    renderSheet: RenderSheet;
+    existing: ExistingConnections;
+  }) {
   const fullAvailable = useClaudeFullSignInAvailable(props.serverId, props.provider);
   const [signInChoice, setSignInChoice] = useState<"full" | "setup-token">("full");
   const signIn = fullAvailable && signInChoice === "full" ? "full" : undefined;
   const { model, state } = useAccountForm({ ...props, signIn });
-  const shared = useSharedInstallationSignIn(props.serverId, props.provider);
   const connected = useHostRuntimeIsConnected(props.serverId);
   const size = useIsCompactFormFactor() ? "md" : "sm";
+  const id = useId();
+  const statusId = `${id}-status`;
+  const typeHintId = `${id}-type-hint`;
   if (state.phase === "created")
     return renderSheet(
-      <>
-        <Text style={styles.text}>{state.account.name} added.</Text>
-        {readExecutionInstallation() ? (
-          <Text style={styles.text}>
-            {shared
-              ? `Sign in once below. This ${props.provider === "claude" ? "Claude" : "Codex"} connection is shared by Host and Dev, unless you exclude an environment.`
-              : createdAccountHint(props.provider)}
-          </Text>
-        ) : null}
-        <ProviderLoginPanel
-          serverId={props.serverId}
-          providerId={state.account.providerId}
-          name={state.account.name}
-          provider={props.provider}
-        />
-      </>,
+      <ProviderLoginPanel
+        serverId={props.serverId}
+        providerId={state.account.providerId}
+        name={state.account.name}
+        provider={props.provider}
+        onOutcome={onOutcome}
+        focusSignIn
+        statusId={statusId}
+      />,
       <Button variant="outline" onPress={onClose} testID={`${props.provider}-account-done`}>
         Done
       </Button>,
+      { announcement: `${state.account.name} added. Sign in to finish.`, describedBy: statusId },
     );
   const creating = state.phase === "creating";
   const another = existing.connections.length > 0;
@@ -273,7 +330,6 @@ function AccountForm({
           onChangeText={model.setName}
           editable={!creating}
           size={size}
-          accessibilityLabel="Account name"
           testID={`${props.provider}-account-name`}
         />
       </Field>
@@ -286,32 +342,36 @@ function AccountForm({
             ]}
             value={signInChoice}
             onValueChange={setSignInChoice}
+            accessibilityLabel="Sign-in type"
+            aria-describedby={typeHintId}
             testID="claude-sign-in-type"
           />
-          <Text style={styles.muted}>
+          <Text nativeID={typeHintId} style={styles.muted}>
             {signInChoice === "full"
               ? `Shows usage, and the Host keeps the sign-in fresh${installationHasDev(readExecutionInstallation()) ? " for Host and Dev" : ""}. The type can't be changed later.`
               : "Uses a long-lived token without usage readings. The type can't be changed later."}
           </Text>
         </Field>
       ) : null}
-      {state.error ? (
-        <Text style={styles.error} accessibilityLiveRegion="polite">
-          {state.error}
-        </Text>
-      ) : null}
+      {state.error ? <Text style={styles.error}>{state.error}</Text> : null}
       {!connected ? (
         <Text style={styles.error}>Reconnect to the host to add this account.</Text>
       ) : null}
     </>,
     <Button
       onPress={model.submit}
-      disabled={creating || !connected}
+      // Loading keeps the focused button focusable while the account is created.
+      disabled={!connected}
+      focusableWhenDisabled
       loading={creating}
       testID={`${props.provider}-account-create`}
     >
       {another ? "Create additional account" : "Create account"}
     </Button>,
+    {
+      announcement:
+        state.error ?? (connected ? null : "Reconnect to the host to add this account."),
+    },
   );
 }
 
@@ -377,7 +437,8 @@ function ExistingConnectionNotice({
 }
 
 const styles = StyleSheet.create((theme) => ({
-  body: { padding: theme.spacing[4], gap: theme.spacing[4] },
+  // The sheet owns the content inset; the body only spaces its parts.
+  body: { gap: theme.spacing[4] },
   text: { color: theme.colors.foreground, fontSize: theme.fontSize.base },
   error: { color: theme.colors.destructive, fontSize: theme.fontSize.base },
   muted: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.base },
@@ -416,12 +477,4 @@ function useClaudeFullSignInAvailable(serverId: string, provider: "codex" | "cla
     retry: false,
   });
   return sharedClaude && daemonsReady && coordinator.data === true;
-}
-
-function createdAccountHint(provider: string): string {
-  if (provider !== "claude")
-    return "Shared across environments. Sign in below for this environment; other environments show their own sign-in status.";
-  return installationHasDev(readExecutionInstallation())
-    ? "Sign in once below. This Claude connection is shared by Host and Dev, unless you exclude an environment."
-    : "Sign in once below. The Host keeps this Claude connection signed in.";
 }

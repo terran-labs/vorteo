@@ -2341,6 +2341,8 @@ export const ru: TranslationResources = {
     title: "Настройки",
     loading: "Загрузка настроек...",
     groups: {
+      thisDevice: "Это устройство",
+      vorteo: "Vorteo",
       app: "Приложение",
       host: "Хост",
     },

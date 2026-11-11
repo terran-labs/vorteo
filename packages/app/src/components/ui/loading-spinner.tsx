@@ -17,6 +17,8 @@ interface LoadingSpinnerProps {
   color: string;
   size?: ActivityIndicatorProps["size"];
   style?: ActivityIndicatorProps["style"];
+  /** What is loading, such as "Loading sign-in status". Defaults to "Loading". */
+  accessibilityLabel?: string;
 }
 
 const brandMarkStyle = {
@@ -25,7 +27,12 @@ const brandMarkStyle = {
   height: LOADING_INDICATOR.large * 0.9,
 };
 
-export function LoadingSpinner({ color, size = "small", style }: LoadingSpinnerProps) {
+export function LoadingSpinner({
+  color,
+  size = "small",
+  style,
+  accessibilityLabel = "Loading",
+}: LoadingSpinnerProps) {
   const baseDiameter = typeof size === "number" ? size : LOADING_INDICATOR[size];
   const diameter = size === "large" ? baseDiameter * 1.25 : baseDiameter;
   const stroke =
@@ -46,7 +53,7 @@ export function LoadingSpinner({ color, size = "small", style }: LoadingSpinnerP
   return (
     <View
       role="progressbar"
-      accessibilityLabel="Loading"
+      accessibilityLabel={accessibilityLabel}
       style={[{ alignItems: "center", justifyContent: "center" }, style]}
     >
       {size === "large" ? (

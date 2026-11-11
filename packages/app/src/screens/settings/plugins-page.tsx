@@ -13,7 +13,9 @@ import { SettingsCard, SettingsRow } from "@/components/settings";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExternalLink } from "@/components/ui/external-link";
-import { Field, FormTextInput } from "@/components/ui/form-field";
+import { Field } from "@/components/ui/form-field";
+import { JoinedField } from "@/components/settings/joined-field";
+import { SettingsListSummary, useCloseSettingsDialog } from "@/components/settings/list-summary";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -66,7 +68,12 @@ function PluginActionsMenu({
   const { t } = useTranslation();
   const reload = useCallback(() => onAction("reload", plugin), [onAction, plugin]);
   const remove = useCallback(() => onAction("remove", plugin), [onAction, plugin]);
-  const openLogs = useCallback(() => onOpenLogs(plugin.id), [onOpenLogs, plugin.id]);
+  // Logs open their own dialog, so a surrounding Manage dialog closes first.
+  const closeDialog = useCloseSettingsDialog();
+  const openLogs = useCallback(() => {
+    closeDialog();
+    onOpenLogs(plugin.id);
+  }, [closeDialog, onOpenLogs, plugin.id]);
   const removeIcon = useMemo(() => <Trash2 size={16} color={styles.dangerIcon.color} />, []);
   const menuLabel = t("settings.plugins.actions.menu", { id: plugin.id });
 
@@ -158,9 +165,8 @@ function PluginRow({
       ) : undefined,
     [plugin.description, plugin.installation],
   );
-  const toggleLabel = `${plugin.id}: ${t(
-    plugin.enabled ? "settings.plugins.actions.disable" : "settings.plugins.actions.enable",
-  )}`;
+  // A stable name: the switch's own state says whether it is on.
+  const toggleLabel = `${t("settings.plugins.actions.enable")} ${plugin.id}`;
   return (
     <SettingsRow
       label={plugin.id}
@@ -169,7 +175,7 @@ function PluginRow({
       error={clientError ?? plugin.error}
       testID={`plugin-row-${plugin.id}`}
     >
-      <View style={styles.pluginControls} accessibilityLabel={`${plugin.id} ${statusLabel}`}>
+      <View style={styles.pluginControls}>
         <Switch
           value={plugin.enabled}
           onValueChange={toggle}
@@ -261,6 +267,14 @@ export function PluginLogsSheet({
       {content}
     </AdaptiveModalSheet>
   );
+}
+
+const PLUGIN_NOUN = { one: "plugin", other: "plugins" };
+
+/** The install field spins while installing and locks while another plugin action runs. */
+function installLockState(mutation: { isPending: boolean; variables?: { action?: string } }) {
+  const busy = mutation.isPending && mutation.variables?.action === "install";
+  return { busy, disabled: mutation.isPending && !busy };
 }
 
 export function HostPluginsPage({ serverId }: { serverId: string }) {
@@ -409,6 +423,7 @@ export function HostPluginsPage({ serverId }: { serverId: string }) {
   const retry = useCallback(() => {
     void refetchPlugins();
   }, [refetchPlugins]);
+  const installLock = installLockState(mutation);
   const closeLogs = useCallback(() => setLogsPluginId(null), []);
 
   if (pageState === "offline") {
@@ -445,31 +460,39 @@ export function HostPluginsPage({ serverId }: { serverId: string }) {
     );
   } else if (pageState !== "loading") {
     catalogContent = (
-      <SettingsCard>
-        {plugins.data?.length ? (
-          plugins.data.map((plugin) => {
-            const clientError = pluginRegistry.getEvaluationError(serverId, plugin.id);
-            const pending = mutation.isPending && mutation.variables?.pluginId === plugin.id;
-            return (
-              <PluginRow
-                key={plugin.id}
-                serverId={serverId}
-                plugin={plugin}
-                clientError={clientError}
-                pending={mutation.isPending}
-                pendingAction={pending ? pluginRowAction(mutation.variables?.action) : undefined}
-                onAction={action}
-                onOpenLogs={setLogsPluginId}
-                supportsLogs={logsSupported}
-              />
-            );
-          })
-        ) : (
-          <View style={styles.empty}>
-            <Text style={settingsStyles.rowHint}>{t("settings.plugins.states.empty")}</Text>
-          </View>
-        )}
-      </SettingsCard>
+      <SettingsListSummary
+        title={t("settings.plugins.title")}
+        count={plugins.data?.length ?? 0}
+        noun={PLUGIN_NOUN}
+        preview={plugins.data?.map((plugin) => plugin.id)}
+        testID="plugin-list"
+      >
+        <SettingsCard>
+          {plugins.data?.length ? (
+            plugins.data.map((plugin) => {
+              const clientError = pluginRegistry.getEvaluationError(serverId, plugin.id);
+              const pending = mutation.isPending && mutation.variables?.pluginId === plugin.id;
+              return (
+                <PluginRow
+                  key={plugin.id}
+                  serverId={serverId}
+                  plugin={plugin}
+                  clientError={clientError}
+                  pending={mutation.isPending}
+                  pendingAction={pending ? pluginRowAction(mutation.variables?.action) : undefined}
+                  onAction={action}
+                  onOpenLogs={setLogsPluginId}
+                  supportsLogs={logsSupported}
+                />
+              );
+            })
+          ) : (
+            <View style={styles.empty}>
+              <Text style={settingsStyles.rowHint}>{t("settings.plugins.states.empty")}</Text>
+            </View>
+          )}
+        </SettingsCard>
+      </SettingsListSummary>
     );
   }
 
@@ -497,22 +520,24 @@ export function HostPluginsPage({ serverId }: { serverId: string }) {
         {sourceInstallSupported ? (
           <View style={[settingsStyles.card, styles.install]}>
             <Field label={t("settings.plugins.sourceLabel")} trailing={sourceDocsLink}>
-              <FormTextInput
+              {/* Installing runs plugin code, so it stays an explicit submit, not a save on blur. */}
+              <JoinedField
+                label={t("settings.plugins.sourceLabel")}
                 initialValue=""
                 resetKey={installState.resetKey}
                 onChangeText={installForm.setSource}
+                onSubmit={install}
+                submitLabel={t("settings.plugins.install")}
+                submitDisabled={!installState.canSubmit}
+                busy={installLock.busy}
+                disabled={installLock.disabled}
                 placeholder={t("settings.plugins.sourcePlaceholder")}
                 autoCapitalize="none"
                 autoCorrect={false}
-                editable={!mutation.isPending}
-                accessibilityLabel={t("settings.plugins.sourceLabel")}
+                testID="plugin-install-source"
+                submitTestID="plugin-install-submit"
               />
             </Field>
-            <Button onPress={install} disabled={!installState.canSubmit || mutation.isPending}>
-              {mutation.isPending && mutation.variables?.action === "install"
-                ? t("settings.plugins.installing")
-                : t("settings.plugins.install")}
-            </Button>
           </View>
         ) : (
           <SettingsStatusLine message={t("settings.plugins.states.sourceUpdateTitle")} />
@@ -544,7 +569,15 @@ const styles = StyleSheet.create((theme) => ({
   },
   install: { padding: theme.spacing[4], gap: theme.spacing[3] },
   pluginControls: { flexDirection: "row", alignItems: "center", gap: theme.spacing[2] },
-  menuButton: { padding: theme.spacing[1], borderRadius: theme.borderRadius.sm },
+  // A full touch target in the compact layout; the desktop pointer keeps the tight icon button.
+  menuButton: {
+    padding: theme.spacing[1],
+    borderRadius: theme.borderRadius.sm,
+    minWidth: { xs: 44, md: 32 },
+    minHeight: { xs: 44, md: 32 },
+    alignItems: "center",
+    justifyContent: "center",
+  },
   menuIcon: { color: theme.colors.foregroundMuted },
   dangerIcon: { color: theme.colors.statusDanger },
   empty: { padding: theme.spacing[4], alignItems: "center" },

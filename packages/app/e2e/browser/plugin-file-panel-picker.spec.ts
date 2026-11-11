@@ -42,7 +42,7 @@ function viewControl(page: Page) {
 async function selectFileView(page: Page, view: "Preview" | "Source") {
   const option = viewControl(page).getByRole("button", { name: view, exact: true });
   await option.click();
-  await expect(option).toHaveAttribute("aria-selected", "true");
+  await expect(option).toHaveAttribute("aria-checked", "true");
 }
 
 async function expectNoOpenWith(page: Page, name: string) {
@@ -84,7 +84,7 @@ test("opens Markdown with the built-in panel and its Preview and Source without 
     await page.setViewportSize({ width: 390, height: 844 });
     await expectBuiltinMarkdown(page, "notes heading");
     await expect(
-      viewControl(page).getByRole("button", { name: "Source", exact: true }),
+      viewControl(page).getByRole("radio", { name: "Source", exact: true }),
     ).toBeInViewport({ ratio: 1 });
     await expect(filePanelPicker(page)).toBeHidden();
     await capture(page, testInfo, "file-panel-builtins-compact");

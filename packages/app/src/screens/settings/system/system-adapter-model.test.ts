@@ -5,11 +5,11 @@ import { InstallationPanelModel } from "@/execution-installation/panel-model";
 import {
   selectSystemEnvironments,
   currentSystemRestarts,
-  systemAttentionCount,
   systemEnvironmentState,
   systemServicesState,
   type InstallationSystemState,
 } from "./system-adapter-model";
+import { systemHealthItems } from "./health-model";
 const empty = new InstallationPanelModel({} as InstallationClient).getState();
 const job = (id: string, status: RestartJob["status"], createdAt = id): RestartJob => ({
   id,
@@ -22,6 +22,11 @@ const job = (id: string, status: RestartJob["status"], createdAt = id): RestartJ
   status,
   detail: "",
 });
+// The installation's share of the "System needs attention" count: one Health row per item.
+const systemAttentionCount = (
+  state: InstallationSystemState,
+  upgrades?: Parameters<typeof systemHealthItems>[1],
+) => systemHealthItems(state, upgrades).length;
 const snapshot = { connectionStatus: "online", lastError: null } as NonNullable<
   Parameters<typeof systemEnvironmentState>[0]["snapshot"]
 >;
@@ -47,7 +52,8 @@ it("uses only public receipts while locked, even if private data remains cached"
     restartSummary: { requested: 2, queued: 0, running: 0 },
   };
   expect(currentSystemRestarts(state)).toEqual([]);
-  expect(systemAttentionCount(state)).toBe(2);
+  // Two requested restarts are one row.
+  expect(systemAttentionCount(state)).toBe(1);
   expect(
     systemEnvironmentState({ target: "host", snapshot, installation: state }).action,
   ).toBeNull();
@@ -109,7 +115,8 @@ it("includes public System services requests and recovery in the locked notice",
         nativeHelper: { requested: 2, queued: 0, recovery: 1 },
       } as InstallationSystemState["restartSummary"],
     }),
-  ).toBe(4);
+    // One row for restarts and one for the native helper.
+  ).toBe(2);
 });
 
 it("respects explicit, installation, selected and first-host precedence", () => {
