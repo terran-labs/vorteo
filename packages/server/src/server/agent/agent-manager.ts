@@ -1553,6 +1553,9 @@ export class AgentManager {
   private readonly agents = new Map<string, LiveManagedAgent>();
   private readonly timelineStore: InMemoryAgentTimelineStore;
   private readonly providerSubagents = new ProviderSubagentStore();
+  // Replay can retain a running descriptor indefinitely. Only the attached runtime
+  // can report current child work, and its observations expire with that attachment.
+  private readonly liveProviderChildren = new WeakMap<ActiveManagedAgent, Map<string, string>>();
   private readonly agentsAwaitingInitialSnapshotPersist = new Set<string>();
   private readonly sessionEventTails = new Map<string, Promise<void>>();
   private readonly steerEventBarriers = new Map<string, SteerEventBarrier>();
@@ -2326,13 +2329,8 @@ export class AgentManager {
         status: String(agent.lifecycle),
       }));
     for (const parent of managed) {
-      for (const child of this.providerSubagents.list(parent.id)) {
-        if (child.status === "running")
-          agents.push({
-            id: `${parent.id}/${child.id}`,
-            title: child.title || child.description || child.id,
-            status: "running",
-          });
+      for (const [id, title] of this.liveProviderChildren.get(parent) ?? []) {
+        agents.push({ id: `${parent.id}/${id}`, title, status: "running" });
       }
     }
     for (const [id, error] of this.restartDrainErrors) {
@@ -7140,9 +7138,35 @@ export class AgentManager {
     }
     const agentId = agent.id;
     const unsubscribe = agent.session.subscribe((event: AgentStreamEvent) => {
+      // Observe lifecycle before queued event delivery so the synchronous restart
+      // admission check sees children reported by this runtime immediately.
+      if (event.type === "provider_subagent") {
+        this.observeLiveProviderChild(agent, event.event);
+      }
       this.enqueueSessionEvent(agentId, event);
     });
     agent.unsubscribeSession = unsubscribe;
+  }
+
+  private observeLiveProviderChild(
+    agent: ActiveManagedAgent,
+    event: Extract<AgentStreamEvent, { type: "provider_subagent" }>["event"],
+  ): void {
+    if (event.type === "timeline" || (event.type === "upsert" && event.status === undefined))
+      return;
+    let children = this.liveProviderChildren.get(agent);
+    if (event.type === "upsert" && event.status === "running") {
+      if (!children) {
+        children = new Map();
+        this.liveProviderChildren.set(agent, children);
+      }
+      children.set(
+        event.id,
+        event.title || event.description || children.get(event.id) || event.id,
+      );
+    } else {
+      children?.delete(event.id);
+    }
   }
 
   private enqueueSessionEvent(agentId: string, event: AgentStreamEvent): void {
