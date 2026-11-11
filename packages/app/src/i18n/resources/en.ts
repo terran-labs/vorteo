@@ -123,6 +123,12 @@ export const en = {
       all: "All Factories",
       allTitle: "All Factories",
       pipelineSummary: "{{queued}} queued · {{active}} active · {{review}} review",
+      snapshotAt: "Queue snapshot: {{time}} ({{minutes}} min ago)",
+      queueRetry: "Queue unavailable. Retry",
+      sidebarSummary_one:
+        "{{count}} Factory · {{running}} on · {{paused}} paused · {{held}} held/draining",
+      sidebarSummary_other:
+        "{{count}} Factories · {{running}} on · {{paused}} paused · {{held}} held/draining",
       factories: "Factories",
       open: "Open",
       zoomIn: "Open the {{project}} Factory",

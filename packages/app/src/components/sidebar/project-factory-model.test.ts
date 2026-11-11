@@ -17,7 +17,7 @@ import {
   type Instructions,
 } from "./factory-instructions-model";
 import { factoryRunnerTrack, factoryStageCounts } from "./factory-card-model";
-import { aggregateFactories } from "./factory-global-model";
+import { aggregateFactories, factorySummaryState } from "./factory-global-model";
 describe("Factory menu and repository dialog", () => {
   it("offers the actions appropriate to each state", () => {
     expect(factoryActions("off")).toEqual(["enable"]);
@@ -262,4 +262,22 @@ it("sums every Factory for the All Factories card", () => {
     ["b", 1],
   ]);
   expect(aggregateFactories([on, factory("b", "paused", [])]).pill.label).toBe("paused");
+});
+
+it("summarizes a held Factory before any queue is read", () => {
+  expect(
+    factorySummaryState([
+      {
+        serverId: "host",
+        projectId: "p",
+        projectName: "Project",
+        hostLabel: null,
+        listed: {
+          state: "paused",
+          drain: { id: "hold", reason: "Update", pausedAt: "2026-11-10" },
+        },
+        issues: null,
+      },
+    ]),
+  ).toEqual({ count: 1, running: 0, paused: 1, held: 1, hasQueue: false });
 });
