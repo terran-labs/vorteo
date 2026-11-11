@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  countDescriptors,
   backupCoverageCheck,
   fileTableCheck,
   parseFuseInodes,
@@ -27,6 +28,13 @@ test("file-table pressure warns at 70% and turns critical at 85% of each limit",
   assert.equal(
     fileTableCheck({ ...limits, maxFiles: 0, vmOpenFiles: null, fuseInodes: null }).status,
     "unknown",
+  );
+});
+
+test("open files count numbered and truncated descriptors, not cwd or txt", () => {
+  assert.equal(
+    countDescriptors(["p78655", "fcwd", "ftxt", "f0", "f17", "f*264", "f*122"].join("\n")),
+    4,
   );
 });
 

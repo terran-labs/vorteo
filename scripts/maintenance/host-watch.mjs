@@ -136,10 +136,10 @@ function dockerVmOpenFiles() {
   let most = NaN;
   for (const pid of pids) {
     try {
-      // One `f<descriptor>` line per open file.
-      const count = run("/usr/sbin/lsof", ["-n", "-P", "-F", "f", "-p", pid], { timeout: 60_000 })
-        .split("\n")
-        .filter((line) => /^f\d/.test(line)).length;
+      // One `f<descriptor>` line per open file; lsof truncates large numbers to `*<digits>`.
+      const count = countDescriptors(
+        run("/usr/sbin/lsof", ["-n", "-P", "-F", "f", "-p", pid], { timeout: 60_000 }),
+      );
       most = Number.isFinite(most) ? Math.max(most, count) : count;
     } catch {
       // The process ended or cannot be read.
@@ -149,6 +149,11 @@ function dockerVmOpenFiles() {
 }
 
 /** Active `fuse_inode` slab objects from /proc/slabinfo, or NaN. */
+/** Open-file lines in `lsof -F f` output: numbered and truncated descriptors, not cwd or txt. */
+export function countDescriptors(output) {
+  return output.split("\n").filter((line) => /^f(\d|\*)/.test(line)).length;
+}
+
 export function parseFuseInodes(slabinfo) {
   const line = slabinfo.split("\n").find((row) => row.startsWith("fuse_inode "));
   return line ? Number(line.split(/\s+/)[1]) : NaN;
