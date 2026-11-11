@@ -1,7 +1,18 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdir, readFile, realpath, rm, stat, utimes } from "node:fs/promises";
-import { join } from "node:path";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  utimes,
+} from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
 import {
   claudeKeychainAccount,
@@ -344,6 +355,109 @@ export async function authorityOwner(authorityDir: string): Promise<string | nul
 }
 
 /** Display metadata the CLI keeps beside storage; the refresh request runs without onboarding. */
+/**
+ * Unrecognized refresh tokens are never deleted. One that cannot be adopted safely waits in a
+ * private fallback file inside the authority, and a refresh that fails tries it. A held grant
+ * replaced by a new sign-in waits there too.
+ */
+const FALLBACK_PREFIX = ".vorteo-fallback-";
+const FALLBACK_LIMIT = 2;
+
+interface Fallback {
+  path: string;
+  oauth: OAuth & { refreshToken: string };
+}
+
+/** Parked grants, newest first. */
+async function readFallbacks(authorityDir: string): Promise<Fallback[]> {
+  const names = await readdir(authorityDir).catch(() => [] as string[]);
+  const found: (Fallback & { at: number })[] = [];
+  for (const name of names) {
+    if (!name.startsWith(FALLBACK_PREFIX) || !name.endsWith(".json")) continue;
+    const path = join(authorityDir, name);
+    try {
+      const oauth = oauthOf(asObject(JSON.parse(await readFile(path, "utf8"))));
+      if (hasRefreshToken(oauth)) found.push({ path, oauth, at: (await stat(path)).mtimeMs });
+    } catch {
+      // An unreadable file is left in place rather than deleted.
+    }
+  }
+  return found.sort((a, b) => b.at - a.at).map(({ path, oauth }) => ({ path, oauth }));
+}
+
+async function parkFallback(authorityDir: string, oauth: OAuth & { refreshToken: string }) {
+  await mkdir(authorityDir, { recursive: true, mode: 0o700 });
+  const name = `${FALLBACK_PREFIX}${tokenDigest(oauth.refreshToken).slice(0, 16)}.json`;
+  replaceAtomically(
+    authorityDir,
+    join(authorityDir, name),
+    JSON.stringify({ claudeAiOauth: oauth }),
+  );
+  // Keep only the newest few; older parked grants are the least likely to still work.
+  for (const stale of (await readFallbacks(authorityDir)).slice(FALLBACK_LIMIT))
+    await rm(stale.path, { force: true });
+}
+
+/**
+ * Before a return deletes the authority, moves its parked grants to
+ * `claude-oauth/returned/<hash>` so no credential is lost with it.
+ */
+async function keepFallbacks(authorityDir: string): Promise<void> {
+  const fallbacks = await readFallbacks(authorityDir);
+  if (!fallbacks.length) return;
+  const kept = join(dirname(dirname(authorityDir)), "returned", basename(authorityDir));
+  await mkdir(kept, { recursive: true, mode: 0o700 });
+  for (const fallback of fallbacks)
+    await rename(fallback.path, join(kept, basename(fallback.path)));
+}
+
+/**
+ * Called when the authority's own refresh did not renew it. Tries each parked grant in a scratch
+ * directory with the official CLI; the first that renews becomes the authority's grant, and the
+ * grant it replaces is parked in turn. Returns whether one did.
+ */
+export async function promoteWorkingFallback(input: {
+  authorityDir: string;
+  store: ClaudeCredentialStore;
+  refresh: (configDir: string) => Promise<void>;
+  now: number;
+  lock?: LockOptions;
+}): Promise<boolean> {
+  for (const fallback of await readFallbacks(input.authorityDir)) {
+    const scratch = await mkdtemp(join(input.authorityDir, ".vorteo-try-"));
+    try {
+      await input.store.write(scratch, { claudeAiOauth: fallback.oauth });
+      const profile = join(input.authorityDir, ".claude.json");
+      if (await exists(profile))
+        replaceAtomically(scratch, join(scratch, ".claude.json"), await readFile(profile, "utf8"));
+      await input.refresh(scratch).catch(() => {});
+      const renewed = oauthOf(await input.store.read(scratch).catch(() => null));
+      if (
+        !hasRefreshToken(renewed) ||
+        expiryOf(renewed) <= Math.max(input.now, expiryOf(fallback.oauth))
+      )
+        continue;
+      await withLock(input.authorityDir, input.lock ?? {}, async () => {
+        const held = oauthOf(await input.store.read(input.authorityDir));
+        if (hasRefreshToken(held)) await parkFallback(input.authorityDir, held);
+        await input.store.write(input.authorityDir, { claudeAiOauth: renewed });
+        if (
+          oauthOf(await input.store.read(input.authorityDir))?.refreshToken !== renewed.refreshToken
+        )
+          throw new ClaudeCredentialReadError();
+        await remember(input.authorityDir, renewed.refreshToken);
+      });
+      // Its token was spent by the refresh; the renewed grant now lives in the authority.
+      await rm(fallback.path, { force: true });
+      return true;
+    } finally {
+      await input.store.remove(scratch).catch(() => {});
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }
+  return false;
+}
+
 async function seedAuthorityProfile(agentDir: string, authorityDir: string): Promise<void> {
   const target = join(authorityDir, ".claude.json");
   if (await exists(target)) return;
@@ -364,7 +478,9 @@ export type ClaudeAdoption =
   /** The login moved into the authority and the account directory now holds access only. */
   | "adopted"
   /** A token the authority already held was removed from the account directory. */
-  | "stripped";
+  | "stripped"
+  /** An unrecognized token was moved to a fallback file; the account directory holds access only. */
+  | "parked";
 
 export interface ClaudeCustodyInput {
   definitionId: string;
@@ -373,6 +489,8 @@ export interface ClaudeCustodyInput {
   store: ClaudeCredentialStore;
   now: number;
   lock?: LockOptions;
+  /** The coordinator's last refresh of the held grant did not renew it. */
+  heldFailing?: boolean;
 }
 
 /**
@@ -383,6 +501,35 @@ export interface ClaudeCustodyInput {
  * directory loses its token, so agents always have a usable credential. The CLI's refresh and
  * storage locks are held throughout.
  */
+/** Whether a refresh token found in the account directory is adopted, parked or waited for. */
+function custodyDecision(
+  found: OAuth & { refreshToken: string },
+  held: OAuth | null,
+  retired: string[],
+  input: ClaudeCustodyInput,
+): { decision: "deferred" | "proceed"; adopt: boolean; park: boolean } {
+  const unknown =
+    found.refreshToken !== held?.refreshToken && !retired.includes(tokenDigest(found.refreshToken));
+  const foundExpiry = typeof found.expiresAt === "number" ? found.expiresAt : null;
+  const heldLive =
+    hasRefreshToken(held) &&
+    typeof held.expiresAt === "number" &&
+    held.expiresAt > input.now &&
+    !input.heldFailing;
+  let park = false;
+  if (unknown && (foundExpiry === null || foundExpiry - input.now < CLAUDE_ADOPTION_MARGIN_MS)) {
+    // Near expiry an older CLI without the refresh lock may be refreshing it, so wait. Its
+    // access says nothing about its refresh token: once the access has expired, or it carries
+    // no expiry, it is parked beside a healthy authority grant, never deleted. Beside an
+    // unhealthy one it stays with the agents, which can still renew it themselves.
+    const settled = foundExpiry === null || foundExpiry <= input.now;
+    if (!settled || !heldLive) return { decision: "deferred", adopt: false, park: false };
+    park = true;
+  }
+  const adopt = unknown && !park;
+  return { decision: "proceed", adopt, park };
+}
+
 export async function adoptClaudeGrant(input: ClaudeCustodyInput): Promise<ClaudeAdoption> {
   const lock = input.lock ?? {};
   const releaseRefresh = await acquireRefreshLocks(input.agentDir, lock);
@@ -394,21 +541,18 @@ export async function adoptClaudeGrant(input: ClaudeCustodyInput): Promise<Claud
       if (!hasRefreshToken(found)) return "none";
       const held = oauthOf(await input.store.read(input.authorityDir));
       const retired = await readRetired(input.authorityDir);
-      const unknown =
-        found.refreshToken !== held?.refreshToken &&
-        !retired.includes(tokenDigest(found.refreshToken));
-      // A new sign-in carries fresh access. An unknown token whose access already expired, beside
-      // a live authority grant, is a leftover older than the remembered digests: strip it rather
-      // than wait for it forever.
-      const stale = unknown && hasRefreshToken(held) && expiryOf(found) <= input.now;
-      const adopt = unknown && !stale;
-      if (adopt && expiryOf(found) - input.now < CLAUDE_ADOPTION_MARGIN_MS) return "deferred";
+      const { decision, adopt, park } = custodyDecision(found, held, retired, input);
+      if (decision === "deferred") return "deferred";
       // Without a live authority grant there is no access to project in place of the token.
       if (!adopt && !hasRefreshToken(held)) return "deferred";
       const source: OAuth = adopt ? found : held!;
+      if (park) await parkFallback(input.authorityDir, found);
       if (adopt) {
         await mkdir(input.authorityDir, { recursive: true, mode: 0o700 });
         await withLock(input.authorityDir, lock, async () => {
+          // The grant a new sign-in replaces is kept as a fallback, not discarded.
+          const replaced = oauthOf(await input.store.read(input.authorityDir));
+          if (hasRefreshToken(replaced)) await parkFallback(input.authorityDir, replaced);
           await input.store.write(input.authorityDir, { claudeAiOauth: found });
           const written = oauthOf(await input.store.read(input.authorityDir));
           if (!written || written.refreshToken !== found.refreshToken)
@@ -426,7 +570,8 @@ export async function adoptClaudeGrant(input: ClaudeCustodyInput): Promise<Claud
       if (hasRefreshToken(oauthOf(await input.store.read(input.agentDir))))
         throw new ClaudeCredentialReadError();
       await mkdir(join(input.agentDir, PROJECTION_MARKER), { recursive: true, mode: 0o700 });
-      return adopt ? "adopted" : "stripped";
+      if (adopt) return "adopted";
+      return park ? "parked" : "stripped";
     });
   } finally {
     await releaseRefresh();
@@ -495,7 +640,8 @@ export async function restoreClaudeGrant(
         await input.store.write(input.agentDir, { ...agent, claudeAiOauth: held });
         if (oauthOf(await input.store.read(input.agentDir))?.refreshToken !== held.refreshToken)
           throw new ClaudeCredentialReadError();
-      }
+      } else await parkFallback(input.authorityDir, held);
+      await keepFallbacks(input.authorityDir);
       await removeAuthority(input.authorityDir, input.store);
       await rm(join(input.agentDir, PROJECTION_MARKER), { recursive: true, force: true });
       return "restored";
