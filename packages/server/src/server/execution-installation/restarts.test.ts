@@ -935,7 +935,7 @@ test.each([false, true])(
   },
 );
 
-test("recorded continuation on a target that lost support settles through legacy dispatch", async () => {
+test("recorded continuation on a target that lost support keeps the restart blocked", async () => {
   const journal = new MemoryJournal();
   let supported = true;
   const release = vi.fn(async () => true);
@@ -955,9 +955,9 @@ test("recorded continuation on a target that lost support settles through legacy
   supported = false;
   await queue.drain();
   await queue.drain();
-  expect(restart).toHaveBeenCalledTimes(1);
-  expect(release).toHaveBeenCalledWith("host", request.id, "ready");
-  expect(queue.list()[0]).toMatchObject({ status: "succeeded", holdReleased: true });
+  expect(restart).not.toHaveBeenCalled();
+  expect(release).not.toHaveBeenCalled();
+  expect(queue.list()[0]).toMatchObject({ status: "approved", continuationCaptureRequested: true });
 });
 
 test("a terminal continuation awaiting release does not fence another target's restart", async () => {
