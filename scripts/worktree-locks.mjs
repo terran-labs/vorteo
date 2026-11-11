@@ -43,9 +43,18 @@ function checkoutsIn(folder) {
 }
 
 const OWNED = /\/\.(vorteo|paseo)\/worktrees\//;
-const roots = values.root.map((root) => path.resolve(root));
+const roots = values.root.map((root) => {
+  try {
+    return fs.realpathSync(root);
+  } catch {
+    return path.resolve(root);
+  }
+});
 
-/** Whether a linked worktree of `primary` is one Vorteo or its task tooling created. */
+/**
+ * Whether a linked worktree of `primary` is in a Vorteo worktree layout. A hand-made sibling
+ * named `<checkout>-<anything>` matches too; its lock only keeps prunes away.
+ */
 function isVorteoWorktree(primary, worktreePath) {
   if (OWNED.test(`${worktreePath}/`)) return true;
   if (roots.some((root) => worktreePath.startsWith(`${root}/`))) return true;

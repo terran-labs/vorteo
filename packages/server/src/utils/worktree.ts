@@ -1322,7 +1322,7 @@ async function listWorktreeEntries(cwd: string): Promise<WorktreeEntry[]> {
 async function dropOwnAdminDir(adminDir: string, worktreePath: string): Promise<void> {
   try {
     const link = await readFile(join(adminDir, "gitdir"), "utf8");
-    if (samePaths(dirname(link.trim()), worktreePath))
+    if (samePaths(linkedWorktree(adminDir, link), worktreePath))
       await rm(adminDir, { recursive: true, force: true });
   } catch {
     // Not critical: a leftover entry for a missing folder only blocks reusing its path.
@@ -1330,13 +1330,18 @@ async function dropOwnAdminDir(adminDir: string, worktreePath: string): Promise<
 }
 
 /** A linked worktree's admin folder, read from its `.git` link file, or null. */
-async function worktreeAdminDir(worktreePath: string): Promise<string | null> {
+export async function worktreeAdminDir(worktreePath: string): Promise<string | null> {
   const content = await readFile(join(worktreePath, ".git"), "utf8").catch(() => null);
   if (!content?.startsWith("gitdir: ")) return null;
-  const target = content.slice("gitdir: ".length).trim();
-  const adminDir = isAbsolute(target) ? target : resolve(worktreePath, target);
+  // Resolved first, so `..` segments cannot walk out of the worktrees folder.
+  const adminDir = resolve(worktreePath, content.slice("gitdir: ".length).trim());
   // Only an entry inside a repository's worktrees folder, never anything else.
   return basename(dirname(adminDir)) === "worktrees" ? adminDir : null;
+}
+
+/** The worktree folder an admin entry's `gitdir` file names; relative links are git's option. */
+function linkedWorktree(adminDir: string, link: string): string {
+  return dirname(resolve(adminDir, link.trim()));
 }
 
 function samePaths(left: string, right: string): boolean {
@@ -1381,7 +1386,7 @@ export async function forgetMissingWorktreeEntry(
   for (const name of names) {
     const adminDir = join(adminRoot, name);
     const link = await readFile(join(adminDir, "gitdir"), "utf8").catch(() => null);
-    if (link === null || !samePaths(dirname(link.trim()), worktreePath)) continue;
+    if (link === null || !samePaths(linkedWorktree(adminDir, link), worktreePath)) continue;
     if (!includeLocked && (await pathExists(join(adminDir, "locked")))) {
       // Another environment may have registered this path for its own live worktree since.
       const head = await readFile(join(adminDir, "HEAD"), "utf8").catch(() => "");

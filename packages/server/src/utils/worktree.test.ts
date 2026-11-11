@@ -5,6 +5,7 @@ import {
   deletePaseoWorktree,
   forgetMissingWorktreeEntry,
   isPaseoOwnedWorktreeCwd,
+  worktreeAdminDir,
   mapWorkspaceCwdToWorktree,
   rewriteWorktreeLinksToLogicalPaths,
   runWorktreeTeardownCommands,
@@ -25,7 +26,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "fs";
-import { dirname, join } from "path";
+import { dirname, join, relative as relativePath } from "path";
 import { createServer, type AddressInfo, type Socket } from "net";
 import { tmpdir } from "os";
 import { createRealpathAwarePathMatcher } from "./path";
@@ -738,6 +739,24 @@ describe("worktrees seen from an environment that cannot see their folders", () 
       forgetMissingWorktreeEntry(repoDir, host.worktreePath, { lockedBranch: "host-task" }),
     ).resolves.toBe(true);
     expect(isRegistered(host.worktreePath)).toBe(false);
+
+    // A link that walks out of the worktrees folder is never taken for an admin entry, and a
+    // relative admin link still names its worktree.
+    const escaping = join(tempDir, "escaping");
+    mkdirSync(escaping);
+    writeFileSync(join(escaping, ".git"), `gitdir: ${join(repoDir, ".git", "worktrees")}/../\n`);
+    await expect(worktreeAdminDir(escaping)).resolves.toBeNull();
+    await expect(worktreeAdminDir(again.worktreePath)).resolves.toMatch(/\/worktrees\/[^/]+$/);
+    const relative = await create("relative-link");
+    const relativeAdmin = (await worktreeAdminDir(relative.worktreePath))!;
+    writeFileSync(
+      join(relativeAdmin, "gitdir"),
+      `${relativePath(relativeAdmin, join(relative.worktreePath, ".git"))}\n`,
+    );
+    hide(relative.worktreePath);
+    await expect(
+      forgetMissingWorktreeEntry(repoDir, relative.worktreePath, { lockedBranch: "relative-link" }),
+    ).resolves.toBe(true);
 
     // Archive without a repository root still drops exactly its own locked registration, so
     // its branch can be checked out again.
