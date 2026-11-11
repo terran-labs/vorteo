@@ -2,8 +2,8 @@ import { CARD_GAP } from "@/agent-stream/columns/geometry";
 import { useMobileComposerLayout } from "@/composer/mobile-layout";
 import { EdgeFade } from "@/components/ui/edge-fade";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { View, Text, Pressable } from "react-native";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { View, Text, Pressable, Keyboard } from "react-native";
 import {
   getInterfaceWindow,
   interfaceRect,
@@ -13,6 +13,7 @@ import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { X, ArrowUp, RefreshCcw, Check, Mic, Pencil, ListPlus } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { VolumeMeter } from "./volume-meter";
+import { isWeb } from "@/constants/platform";
 import { FOOTER_HEIGHT } from "@/constants/layout";
 import type { DictationStatus } from "@/hooks/use-dictation";
 import { useVortonTouch } from "@/vorton-touch";
@@ -195,6 +196,27 @@ function useWindowEdges(enabled: boolean) {
   }, [enabled]);
   // Window size changes move the panel without resizing it, so onLayout alone would miss them.
   useLayoutEffect(measure, [measure, windowWidth, windowHeight]);
+  useEffect(() => {
+    if (!enabled) return;
+    // Ancestor keyboard translations move the panel without triggering its onLayout.
+    let frame = 0;
+    const refresh = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measure);
+    };
+    const viewport = isWeb ? window.visualViewport : null;
+    viewport?.addEventListener("resize", refresh);
+    viewport?.addEventListener("scroll", refresh);
+    const shown = Keyboard.addListener("keyboardDidShow", refresh);
+    const hidden = Keyboard.addListener("keyboardDidHide", refresh);
+    return () => {
+      cancelAnimationFrame(frame);
+      viewport?.removeEventListener("resize", refresh);
+      viewport?.removeEventListener("scroll", refresh);
+      shown.remove();
+      hidden.remove();
+    };
+  }, [enabled, measure]);
   return { ref, edges, onLayout: measure };
 }
 
