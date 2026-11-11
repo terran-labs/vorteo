@@ -3095,3 +3095,7 @@ Maintenance review: the Appearance theme row drops the built-in theme dropdown, 
 Maintenance review: a systemd Host restarts immediately through `systemctl --user restart <unit>`; coordinator maintenance stays launchd-only and says so on systemd Hosts. Ported from #5 without its unavailable-restart label, since the restart now runs.
 
 Broker maintenance also has a separate eight-file consumer deployment target. Its protected native worker, participant scope, exact owner review and recovery readers are independent of channel trust migration. Deployment restores only brokers whose unchanged legacy channel pins still refuse request consumption; it does not establish a ready preview. See [broker maintenance](preview-broker-maintenance.md).
+
+### Provider probe working directories
+
+One-shot Claude, Codex and ACP helpers, provider version/auth diagnostics and structured metadata generation use a private temporary directory per daemon user to avoid startup scans of shared homes and source checkouts. Agent sessions retain their workspace directories. Pi and Oh My Pi catalogs retain project directories because their settings and extensions depend on them. Relative custom executable paths or CLI settings paths in helpers resolve against the temporary directory; configure absolute paths. Global provider account environments remain unchanged.

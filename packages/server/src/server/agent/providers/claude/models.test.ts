@@ -1,3 +1,4 @@
+import { getProviderProbeCwd } from "../../../../utils/provider-probe-cwd.js";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -1086,10 +1087,12 @@ describe("Claude model discovery process", () => {
         description: "",
       },
     ];
+    const probeCwd = await getProviderProbeCwd();
     const models = await discoverClaudeModels(
       { resolveBinary: async () => "/claude", env: { CLAUDE_CONFIG_DIR: "/provider-config" } },
       (input) => {
         expect(input.options).toMatchObject({
+          cwd: probeCwd,
           pathToClaudeCodeExecutable: "/claude",
           env: { CLAUDE_CONFIG_DIR: "/provider-config" },
           persistSession: false,
@@ -1109,6 +1112,8 @@ describe("Claude model discovery process", () => {
         };
       },
     );
+    expect(await fs.readdir(await getProviderProbeCwd())).toEqual([]);
+    expect(await getProviderProbeCwd()).not.toBe(os.homedir());
     expect(models).toEqual(advertised);
     expect(closed).toBe(true);
     await expect(promptEnded).resolves.toEqual({ done: true, value: undefined });

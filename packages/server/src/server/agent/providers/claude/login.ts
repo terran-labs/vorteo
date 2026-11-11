@@ -1,3 +1,4 @@
+import { getProviderProbeCwd } from "../../../../utils/provider-probe-cwd.js";
 import type { ChildProcess } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import stripAnsi from "strip-ansi";
@@ -42,6 +43,7 @@ export class ClaudeLoginSession implements ProviderLoginSession {
       {
         ...createProviderEnvSpec({ runtimeSettings: this.options.runtimeSettings }),
         stdio: ["pipe", "pipe", "pipe"],
+        cwd: await getProviderProbeCwd(),
         windowsHide: true,
       },
     );

@@ -1,3 +1,5 @@
+import { resolveResumeProcessCwd } from "./resume-process-cwd.js";
+import { getProviderProbeCwd } from "../../../utils/provider-probe-cwd.js";
 import {
   verifySkillSnapshot,
   sessionSkillSnapshot,
@@ -8355,6 +8357,7 @@ export class CodexAppServerAgentClient implements AgentClient {
       agentId?: string;
       quotaGoverned?: boolean;
       workerCwd?: string;
+      processCwd?: string;
       processCustody?: QuotaGovernedSessionInput["processCustody"];
     },
   ): Promise<ChildProcessWithoutNullStreams> {
@@ -8405,6 +8408,7 @@ export class CodexAppServerAgentClient implements AgentClient {
     const child = spawnProcess(launchPrefix.command, args, {
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
+      cwd: options?.processCwd ?? (await getProviderProbeCwd()),
       baseEnv: options?.environment ?? buildCodexAppServerEnv(this.runtimeSettings, launchEnv),
     });
     assertChildWithPipes(child);
@@ -8451,6 +8455,7 @@ export class CodexAppServerAgentClient implements AgentClient {
             quotaGoverned: true,
             processCustody: input.processCustody,
             workerCwd: input.config.cwd,
+            processCwd: input.config.cwd,
             agentId,
           }),
         this.sessionDeps(launchEnv),
@@ -8518,9 +8523,10 @@ export class CodexAppServerAgentClient implements AgentClient {
       sessionConfig,
       null,
       this.logger,
-      () =>
+      async () =>
         this.spawnAppServer(launchContext?.env, {
           goalsEnabled,
+          processCwd: config.cwd,
           agentId: launchContext?.agentId,
           environment,
         }),
@@ -8555,9 +8561,14 @@ export class CodexAppServerAgentClient implements AgentClient {
       merged,
       handle,
       this.logger,
-      () =>
+      async () =>
         this.spawnAppServer(launchContext?.env, {
           goalsEnabled,
+          processCwd: await resolveResumeProcessCwd(
+            merged.cwd,
+            options?.purpose,
+            getProviderProbeCwd,
+          ),
           agentId: launchContext?.agentId,
           environment,
         }),
