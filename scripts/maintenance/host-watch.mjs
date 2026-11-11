@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 // Read-only Host checks for hourly upkeep: file-table pressure, stale task worktrees and
 // Time Machine coverage of the precious folders. It changes nothing, prints one JSON report
-// and exits 0; the caller decides how to alert. See
+// and exits 0; the caller decides how to alert. Git runs without optional locks, so it never
+// takes a worktree's index.lock or rewrites its index. See
 // docs/execution-installation.md#host-watch.
 //
 //   node scripts/maintenance/host-watch.mjs \
 //     [--dev-container <name>] [--docker <path>]   read Dev's cached shared-folder inodes
 //     [--projects <folder>]... [--root <folder>]...  repositories whose worktrees to check
 //     [--precious <path>]...                         paths the latest backup must contain
-//     [--stale-hours 24]
+//     [--stale-hours 24] [--worktree-seconds 120]  staleness window, worktree pass deadline
+//     [--lock <file>]                                skip this run while another holds it
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -23,67 +25,64 @@ const worst = (statuses) =>
   statuses.reduce((current, status) => (RANK[status] > RANK[current] ? status : current), "ok");
 
 function level(used, limit) {
-  if (!limit) return "unknown";
+  if (!Number.isFinite(used) || !Number.isFinite(limit) || limit <= 0) return "unknown";
   const share = used / limit;
   if (share >= THRESHOLDS.critical) return "critical";
   return share >= THRESHOLDS.warn ? "warn" : "ok";
 }
 
-const percent = (used, limit) => `${Math.round((used / limit) * 100)}%`;
+function describe(part) {
+  if (part.status === "unknown") return `${part.name} unknown`;
+  return `${part.name} ${part.used} of ${part.limit} (${Math.round((part.used / part.limit) * 100)}%)`;
+}
 
 /**
- * File-table pressure. Each file the Docker VM caches from a shared folder pins one Host file
- * handle in the VM process until the VM evicts it, so the VM can exhaust its per-process limit
- * and then the Mac's file table. Dev's cached shared-folder inodes (`fuse_inode` slab objects)
- * lead that count; they are reported against the system limit.
+ * File-table pressure. Each file the Docker VM caches from a shared folder keeps a Host file
+ * handle in the VM process until the VM evicts it, so the VM can fill its per-process limit and
+ * then the Mac's file table. Dev's cached shared-folder inodes (`fuse_inode` slab objects) lead
+ * the VM's handle count, so they are judged against the same per-process limit. A probe that
+ * was requested but failed reports unknown; `null` means it was not requested.
  */
 export function fileTableCheck({ maxFiles, maxFilesPerProc, openFiles, vmOpenFiles, fuseInodes }) {
-  const parts = [
-    { name: "system", status: level(openFiles, maxFiles), used: openFiles, limit: maxFiles },
-  ];
-  if (vmOpenFiles !== null)
-    parts.push({
-      name: "Docker VM",
-      status: level(vmOpenFiles, maxFilesPerProc),
-      used: vmOpenFiles,
-      limit: maxFilesPerProc,
-    });
+  const part = (name, used, limit) => ({ name, status: level(used, limit), used, limit });
+  const parts = [part("system", openFiles, maxFiles)];
+  if (vmOpenFiles !== null) parts.push(part("Docker VM", vmOpenFiles, maxFilesPerProc));
   if (fuseInodes !== null)
-    parts.push({
-      name: "Dev cached shared-folder inodes",
-      status: level(fuseInodes, maxFiles),
-      used: fuseInodes,
-      limit: maxFiles,
-    });
+    parts.push(part("Dev cached shared-folder inodes", fuseInodes, maxFilesPerProc));
   return {
     id: "file-table",
-    status: worst(parts.map((part) => part.status)),
-    summary: parts
-      .map(
-        (part) => `${part.name} ${part.used} of ${part.limit} (${percent(part.used, part.limit)})`,
-      )
-      .join("; "),
+    status: worst(parts.map((item) => item.status)),
+    summary: parts.map(describe).join("; "),
     detail: parts,
   };
 }
 
 /** Worktrees with uncommitted or unpushed work untouched for longer than the window. */
-export function staleWorktreeCheck(worktrees, { now, staleHours }) {
+export function staleWorktreeCheck({ worktrees, skipped = 0 }, { now, staleHours }) {
   const stale = worktrees.filter(
     (worktree) =>
-      (worktree.dirty || worktree.unpushed > 0) &&
+      (worktree.dirty || worktree.unpushed > 0 || worktree.noRemote) &&
       now - worktree.lastActivity > staleHours * 3_600_000,
   );
+  const parts = [];
+  if (stale.length)
+    parts.push(
+      `${stale.length} worktrees hold uncommitted or unpushed work older than ${staleHours} hours`,
+    );
+  if (skipped) parts.push(`${skipped} worktrees not checked before the deadline`);
+  let status = "ok";
+  if (stale.length) status = "warn";
+  else if (skipped) status = "unknown";
   return {
     id: "stale-worktrees",
-    status: stale.length ? "warn" : "ok",
-    summary: stale.length
-      ? `${stale.length} worktrees hold uncommitted or unpushed work older than ${staleHours} hours`
+    status,
+    summary: parts.length
+      ? parts.join("; ")
       : `No uncommitted or unpushed work older than ${staleHours} hours in ${worktrees.length} worktrees`,
-    detail: stale.map(({ path: location, dirty, unpushed }) => ({
+    detail: stale.map(({ path: location, dirty, unpushed, noRemote }) => ({
       path: location,
       dirty,
-      unpushed,
+      ...(noRemote ? { noRemote } : { unpushed }),
     })),
   };
 }
@@ -108,13 +107,14 @@ export function backupCoverageCheck({ latest, contains }, precious) {
   };
 }
 
-function run(command, args, options = {}) {
+function run(command, args, { timeout = 15_000 } = {}) {
   return execFileSync(command, args, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
     maxBuffer: 256 * 1024 * 1024,
-    timeout: 120_000,
-    ...options,
+    timeout,
+    // Never refresh an index or take index.lock in someone else's worktree.
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
   });
 }
 
@@ -122,20 +122,25 @@ function sysctl(name) {
   return Number(run("/usr/sbin/sysctl", ["-n", name]).trim());
 }
 
-/** Open files of the Docker Desktop VM process with the most, or null without one. */
+/** Open files of the Docker Desktop VM process with the most; NaN when it cannot be read. */
 function dockerVmOpenFiles() {
   let pids;
   try {
-    pids = run("/usr/bin/pgrep", ["-f", "com.apple.Virtualization.VirtualMachine"]).split("\n");
+    pids = run("/usr/bin/pgrep", ["-f", "com.apple.Virtualization.VirtualMachine"])
+      .split("\n")
+      .filter(Boolean);
   } catch {
-    return null;
+    // pgrep exits 1 when no VM runs: then nothing holds files.
+    return 0;
   }
-  let most = null;
-  for (const pid of pids.filter(Boolean)) {
+  let most = NaN;
+  for (const pid of pids) {
     try {
-      // One line per open file after the header.
-      const count = run("/usr/sbin/lsof", ["-n", "-P", "-p", pid]).split("\n").length - 2;
-      most = Math.max(most ?? 0, count);
+      // One `f<descriptor>` line per open file.
+      const count = run("/usr/sbin/lsof", ["-n", "-P", "-F", "f", "-p", pid], { timeout: 60_000 })
+        .split("\n")
+        .filter((line) => /^f\d/.test(line)).length;
+      most = Number.isFinite(most) ? Math.max(most, count) : count;
     } catch {
       // The process ended or cannot be read.
     }
@@ -143,30 +148,29 @@ function dockerVmOpenFiles() {
   return most;
 }
 
-/** Active `fuse_inode` slab objects in Dev's VM, read through the Dev container, or null. */
+/** Active `fuse_inode` slab objects from /proc/slabinfo, or NaN. */
 export function parseFuseInodes(slabinfo) {
   const line = slabinfo.split("\n").find((row) => row.startsWith("fuse_inode "));
-  const active = line ? Number(line.split(/\s+/)[1]) : NaN;
-  return Number.isFinite(active) ? active : null;
+  return line ? Number(line.split(/\s+/)[1]) : NaN;
 }
 
 function devFuseInodes(docker, container) {
-  if (!docker || !container) return null;
   try {
     return parseFuseInodes(run(docker, ["exec", "-u", "0", container, "cat", "/proc/slabinfo"]));
   } catch {
-    return null;
+    return NaN;
   }
 }
 
 function git(cwd, args) {
-  return run("git", ["-C", cwd, ...args]).trim();
+  return run("git", ["-C", cwd, "-c", "core.fsmonitor=false", ...args]).trim();
 }
 
-/** Linked worktrees visible here, once per repository, with their state. */
-function collectWorktrees(repositories) {
+/** Linked worktrees visible here, once per repository, until the deadline passes. */
+function collectWorktrees(repositories, deadline) {
   const seen = new Set();
-  const worktrees = [];
+  const found = [];
+  let skipped = 0;
   for (const repository of repositories) {
     let common;
     let listing;
@@ -182,24 +186,34 @@ function collectWorktrees(repositories) {
       .split("\n")
       .filter((line) => line.startsWith("worktree "))
       .map((line) => line.slice("worktree ".length))
-      .slice(1);
+      .slice(1)
+      .filter((location) => fs.existsSync(location));
     for (const location of paths) {
-      if (!fs.existsSync(location)) continue;
+      if (Date.now() > deadline) {
+        skipped++;
+        continue;
+      }
       try {
         const gitDir = path.resolve(location, git(location, ["rev-parse", "--git-dir"]));
         const index = path.join(gitDir, "index");
-        worktrees.push({
+        // Read before any other git call, so the check never moves the activity clock.
+        const lastActivity = fs.statSync(fs.existsSync(index) ? index : gitDir).mtimeMs;
+        const noRemote = git(location, ["remote"]) === "";
+        found.push({
           path: location,
+          lastActivity,
           dirty: git(location, ["status", "--porcelain"]) !== "",
-          unpushed: Number(git(location, ["rev-list", "--count", "HEAD", "--not", "--remotes"])),
-          lastActivity: fs.statSync(fs.existsSync(index) ? index : gitDir).mtimeMs,
+          noRemote,
+          unpushed: noRemote
+            ? 0
+            : Number(git(location, ["rev-list", "--count", "HEAD", "--not", "--remotes"])),
         });
       } catch {
-        // A broken worktree is left to the cleanup tools.
+        skipped++;
       }
     }
   }
-  return worktrees;
+  return { worktrees: found, skipped };
 }
 
 function repositoriesIn(folder) {
@@ -213,7 +227,6 @@ function repositoriesIn(folder) {
   }
 }
 
-/** The latest completed backup, and whether a Host path exists inside one of its volumes. */
 function latestBackup() {
   try {
     const latest = run("/usr/bin/tmutil", ["latestbackup"]).trim();
@@ -223,6 +236,7 @@ function latestBackup() {
   }
 }
 
+/** Whether a Host path exists inside one of the backup's volume folders. */
 function backupContains(latest, item) {
   let volumes;
   try {
@@ -231,6 +245,27 @@ function backupContains(latest, item) {
     return false;
   }
   return volumes.some((volume) => fs.existsSync(path.join(latest, volume, item)));
+}
+
+/** Holds `file` for this run; false while another live run holds it. */
+function takeLock(file) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      fs.writeFileSync(file, String(process.pid), { flag: "wx" });
+      process.on("exit", () => fs.rmSync(file, { force: true }));
+      return true;
+    } catch {
+      const holder = Number(fs.readFileSync(file, "utf8"));
+      try {
+        process.kill(holder, 0);
+        return false;
+      } catch {
+        // The holder exited without releasing it.
+        fs.rmSync(file, { force: true });
+      }
+    }
+  }
+  return false;
 }
 
 function main() {
@@ -242,8 +277,16 @@ function main() {
       root: { type: "string", multiple: true, default: [] },
       precious: { type: "string", multiple: true, default: [] },
       "stale-hours": { type: "string", default: "24" },
+      "worktree-seconds": { type: "string", default: "120" },
+      lock: { type: "string" },
     },
   });
+  if (values.lock && !takeLock(values.lock)) {
+    console.log(
+      JSON.stringify({ checkedAt: new Date().toISOString(), status: "skipped", checks: [] }),
+    );
+    return;
+  }
   const checks = [];
   try {
     checks.push(
@@ -252,7 +295,9 @@ function main() {
         maxFilesPerProc: sysctl("kern.maxfilesperproc"),
         openFiles: sysctl("kern.num_files"),
         vmOpenFiles: dockerVmOpenFiles(),
-        fuseInodes: devFuseInodes(values.docker, values["dev-container"]),
+        fuseInodes: values["dev-container"]
+          ? devFuseInodes(values.docker, values["dev-container"])
+          : null,
       }),
     );
   } catch (error) {
@@ -262,12 +307,13 @@ function main() {
     ...values.projects.flatMap(repositoriesIn),
     ...values.root.flatMap(repositoriesIn),
   ];
-  checks.push(
-    staleWorktreeCheck(collectWorktrees(repositories), {
-      now: Date.now(),
-      staleHours: Number(values["stale-hours"]),
-    }),
-  );
+  if (repositories.length)
+    checks.push(
+      staleWorktreeCheck(
+        collectWorktrees(repositories, Date.now() + Number(values["worktree-seconds"]) * 1000),
+        { now: Date.now(), staleHours: Number(values["stale-hours"]) },
+      ),
+    );
   if (values.precious.length)
     checks.push(
       backupCoverageCheck({ latest: latestBackup(), contains: backupContains }, values.precious),

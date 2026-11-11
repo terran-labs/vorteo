@@ -2308,6 +2308,7 @@ Sidebar rows omit the goal badge. Their sub-agent badge counts managed workers w
 
 ## Execution environments and installation
 
+- **Host watch.** `scripts/maintenance/host-watch.mjs` reports, read-only, file-table pressure for the system, the Docker VM process and Dev's cached shared-folder inodes, task worktrees whose uncommitted or unpushed work is older than a day, and whether the latest completed Time Machine backup contains the precious folders. Git runs without optional locks. Hourly upkeep can alert on it; daemon push alerts are tracked in #348. See [Host watch](execution-installation.md#host-watch). Not yet installed.
 - **System status and restart controls.** System groups Host and Dev status, one primary action per environment, Restart menus and collapsed Details. Updates share one row; upstream tasks and installation controls sit under Advanced. A confirmed standalone Host update keeps its primary button disabled while pending and reports a contextual error before retry.
 
 - **Shared Voice credentials, awaiting delivery.** One installation authority adopts existing OpenAI speech keys once and delivers key and endpoint pairs to every environment. Conflicts require an owner choice; saves use the revisions captured when the editor opens. Credential delivery never persists unrelated process fallbacks, and standalone use retains local saves. See [Voice credential sync](voice-credential-sync.md) for endpoint validation, adoption and marker lifecycle rules.

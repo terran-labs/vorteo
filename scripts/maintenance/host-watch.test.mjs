@@ -15,11 +15,19 @@ test("file-table pressure warns at 70% and turns critical at 85% of each limit",
     fileTableCheck({ ...limits, vmOpenFiles: 425, fuseInodes: null }).status,
     "critical",
   );
-  // Dev's cached shared-folder inodes lead the VM's handle count and are judged on their own.
-  const leading = fileTableCheck({ ...limits, vmOpenFiles: 10, fuseInodes: 900 });
+  // Dev's cached shared-folder inodes lead the VM's handles: judged on the per-process limit.
+  const leading = fileTableCheck({ ...limits, vmOpenFiles: 10, fuseInodes: 450 });
   assert.equal(leading.status, "critical");
-  assert.match(leading.summary, /Dev cached shared-folder inodes 900 of 1000 \(90%\)/);
+  assert.match(leading.summary, /Dev cached shared-folder inodes 450 of 500 \(90%\)/);
+  // Not requested is left out; requested but unreadable reports unknown.
   assert.equal(fileTableCheck({ ...limits, vmOpenFiles: null, fuseInodes: null }).detail.length, 1);
+  const unread = fileTableCheck({ ...limits, vmOpenFiles: NaN, fuseInodes: NaN });
+  assert.equal(unread.status, "unknown");
+  assert.match(unread.summary, /Docker VM unknown; Dev cached shared-folder inodes unknown/);
+  assert.equal(
+    fileTableCheck({ ...limits, maxFiles: 0, vmOpenFiles: null, fuseInodes: null }).status,
+    "unknown",
+  );
 });
 
 test("Dev's fuse_inode count comes from the active objects column of slabinfo", () => {
@@ -29,26 +37,39 @@ test("Dev's fuse_inode count comes from the active objects column of slabinfo", 
     "dentry            4123080 4123149    192   85    4 : tunables    0    0    0",
   ].join("\n");
   assert.equal(parseFuseInodes(slabinfo), 732732);
-  assert.equal(parseFuseInodes("dentry 1 2 3"), null);
+  assert.ok(Number.isNaN(parseFuseInodes("dentry 1 2 3")));
 });
 
-test("only work older than the window counts as stale", () => {
+test("only work older than the window counts as stale, and an unfinished pass is not ok", () => {
   const now = Date.parse("2026-11-11T12:00:00Z");
   const hours = (count) => now - count * 3_600_000;
   const check = staleWorktreeCheck(
-    [
-      { path: "/w/old-dirty", dirty: true, unpushed: 0, lastActivity: hours(30) },
-      { path: "/w/old-unpushed", dirty: false, unpushed: 2, lastActivity: hours(48) },
-      { path: "/w/fresh-dirty", dirty: true, unpushed: 0, lastActivity: hours(2) },
-      { path: "/w/old-clean", dirty: false, unpushed: 0, lastActivity: hours(100) },
-    ],
+    {
+      worktrees: [
+        { path: "/w/old-dirty", dirty: true, unpushed: 0, lastActivity: hours(30) },
+        { path: "/w/old-unpushed", dirty: false, unpushed: 2, lastActivity: hours(48) },
+        {
+          path: "/w/old-local",
+          dirty: false,
+          unpushed: 0,
+          noRemote: true,
+          lastActivity: hours(48),
+        },
+        { path: "/w/fresh-dirty", dirty: true, unpushed: 0, lastActivity: hours(2) },
+        { path: "/w/old-clean", dirty: false, unpushed: 0, lastActivity: hours(100) },
+      ],
+    },
     { now, staleHours: 24 },
   );
   assert.equal(check.status, "warn");
-  assert.deepEqual(
-    check.detail.map((item) => item.path),
-    ["/w/old-dirty", "/w/old-unpushed"],
-  );
+  assert.deepEqual(check.detail, [
+    { path: "/w/old-dirty", dirty: true, unpushed: 0 },
+    { path: "/w/old-unpushed", dirty: false, unpushed: 2 },
+    { path: "/w/old-local", dirty: false, noRemote: true },
+  ]);
+  const partial = staleWorktreeCheck({ worktrees: [], skipped: 3 }, { now, staleHours: 24 });
+  assert.equal(partial.status, "unknown");
+  assert.match(partial.summary, /3 worktrees not checked before the deadline/);
 });
 
 test("backup coverage names each precious path the latest completed backup lacks", () => {
