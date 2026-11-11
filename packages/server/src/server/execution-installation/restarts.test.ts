@@ -581,6 +581,95 @@ test("finishing current turns on a target without durable continuation uses the 
   expect(journal.jobs[0]?.continuationCaptureRequested).toBeUndefined();
 });
 
+test("a finish-current-turns hold asks the owner after its deadline and logs holder changes", async () => {
+  const journal = new MemoryJournal();
+  let now = Date.now();
+  let busy = true;
+  const progress: Array<{ message: string; fields: Record<string, unknown> }> = [];
+  const restartWhenIdle = vi.fn(async () => "replacement verified");
+  const queue = new InstallationRestarts(
+    journal,
+    {
+      restartContinuationAvailable: async () => false,
+      inspect: async () => idleImpact("host", busy),
+      holdCurrentTurns: async () => {},
+      releaseCurrentTurns: async () => {},
+      restart: async () => "wrong",
+      restartWhenIdle,
+    },
+    () => now,
+    {},
+    {
+      fenced: false,
+      finishTurnsDeadlineMs: 10 * 60_000,
+      progress: (message, fields) => progress.push({ message, fields }),
+    },
+  );
+  const request = queue.request({ target: "host", reason: "Hold" }, "owner");
+  queue.decide(request.id, request.revision, "finish-current-turns");
+  await queue.drain();
+  const started = queue.list()[0]!;
+  expect(started.holdStartedAt).toBe(new Date(now).toISOString());
+  expect(started.holdDeadlineExceeded).toBeUndefined();
+  now += 9 * 60_000;
+  await queue.drain();
+  expect(queue.list()[0]?.holdDeadlineExceeded).toBeUndefined();
+  // Past the deadline it stops waiting silently, but never interrupts the turns itself.
+  now += 2 * 60_000;
+  await queue.drain();
+  await queue.drain();
+  expect(queue.list()[0]).toMatchObject({
+    status: "approved",
+    holdStartedAt: started.holdStartedAt,
+    holdDeadlineExceeded: true,
+    detail: expect.stringContaining("Restart now to interrupt them, or cancel."),
+  });
+  expect(restartWhenIdle).not.toHaveBeenCalled();
+  expect(progress.filter((entry) => entry.message.includes("deadline"))).toHaveLength(1);
+  // Holder changes are logged by ID only, once per change.
+  const holders = progress.filter((entry) => entry.message === "Restart hold holders changed");
+  expect(holders).toHaveLength(1);
+  expect(holders[0]?.fields).toMatchObject({ agents: ["task"], pendingStarts: 0 });
+  expect(JSON.stringify(holders)).not.toContain("Build provider settings");
+  busy = false;
+  await queue.drain();
+  await queue.drain();
+  expect(restartWhenIdle).toHaveBeenCalledTimes(1);
+});
+
+test("the hold deadline covers any holder, including a start that never completes", async () => {
+  const journal = new MemoryJournal();
+  let now = Date.now();
+  const restartWhenIdle = vi.fn(async () => "replacement verified");
+  const queue = new InstallationRestarts(
+    journal,
+    {
+      restartContinuationAvailable: async () => false,
+      // A child whose terminal event was lost, or one that never starts, holds with no agent.
+      inspect: async () => ({ ...idleImpact("host"), pendingStarts: 1 }),
+      holdCurrentTurns: async () => {},
+      releaseCurrentTurns: async () => {},
+      restart: async () => "wrong",
+      restartWhenIdle,
+    },
+    () => now,
+    {},
+    { fenced: false },
+  );
+  const request = queue.request({ target: "host", reason: "Stuck start" }, "owner");
+  queue.decide(request.id, request.revision, "finish-current-turns");
+  await queue.drain();
+  now += 15 * 60_000;
+  await queue.drain();
+  expect(queue.list()[0]).toMatchObject({ status: "approved", holdDeadlineExceeded: true });
+  // The owner's decision ends it: an immediate restart replaces the hold.
+  const job = queue.list()[0]!;
+  queue.decide(job.id, job.revision, "approve");
+  await queue.drain();
+  await queue.drain();
+  expect(queue.list()[0]?.status).toBe("succeeded");
+});
+
 test("recorded continuation on a target that lost support settles through legacy dispatch", async () => {
   const journal = new MemoryJournal();
   let supported = true;

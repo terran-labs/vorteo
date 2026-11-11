@@ -644,6 +644,10 @@ export const RestartJobSchema = RestartRequestSchema.extend({
   // released attempt never fences a later one. Absent means the job id.
   continuationCaptureId: z.string().uuid().optional(),
   approvedAt: z.string().datetime().optional(),
+  /** When a finish-current-turns hold first waited on active work. Older coordinators omit it. */
+  holdStartedAt: z.string().datetime().optional(),
+  /** The hold outlasted its deadline and now waits for the owner to restart now or cancel. */
+  holdDeadlineExceeded: z.boolean().optional(),
   impact: RestartImpactSchema.optional(),
 });
 export type RestartJob = z.infer<typeof RestartJobSchema>;

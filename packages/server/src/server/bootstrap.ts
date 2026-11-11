@@ -1916,6 +1916,7 @@ export async function createPaseoDaemon(
     store: createJsonFinishSubscriptionStore(config.paseoHome),
     serverId,
     logger,
+    waitForRestartHoldRelease: (signal) => agentManager.waitForRestartHoldRelease(signal),
     messages: () => {
       if (!wsServer) throw new Error("Daemon is not accepting agent messages");
       return wsServer.agentMessages;

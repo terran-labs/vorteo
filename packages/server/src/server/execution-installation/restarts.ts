@@ -120,7 +120,12 @@ export interface RestartStartupOptions {
   /** Operator-visible progress for each dispatch step; never silent for hours. */
   progress?: (message: string, fields: Record<string, unknown>) => void;
   dispatchDeadlineMs?: number;
+  /** How long a finish-current-turns hold may wait before it asks the owner. */
+  finishTurnsDeadlineMs?: number;
 }
+
+/** A hold that has waited this long stops waiting silently and asks the owner to decide. */
+export const FINISH_TURNS_DEADLINE_MS = 15 * 60_000;
 
 type NativeMaintenanceJob = NativeHelperJob | PreviewMonitorJob | SessionHostJob;
 /** Native maintenance is delegable by default; only OWNER_ONLY_OPERATIONS excludes one. */
@@ -344,6 +349,9 @@ export class InstallationRestarts {
   private operationalActivitySink: OperationalActivitySink | null = null;
   private readonly progress: NonNullable<RestartStartupOptions["progress"]>;
   private readonly dispatchDeadlineMs: number;
+  private readonly finishTurnsDeadlineMs: number;
+  /** The last holder set logged per job, so only changes are logged. */
+  private readonly loggedHolders = new Map<string, string>();
   private jobs: RestartJob[];
   private helpers: NativeHelperJob[];
   private monitors: PreviewMonitorJob[];
@@ -368,6 +376,7 @@ export class InstallationRestarts {
   ) {
     this.progress = startup.progress ?? (() => {});
     this.dispatchDeadlineMs = startup.dispatchDeadlineMs ?? DISPATCH_READINESS_DEADLINE_MS;
+    this.finishTurnsDeadlineMs = startup.finishTurnsDeadlineMs ?? FINISH_TURNS_DEADLINE_MS;
     this.snapshot = journal.read();
     this.jobs = this.snapshot.filter(
       (job): job is RestartJob => job.target === "host" || job.target === "container-daemon",
@@ -3304,16 +3313,69 @@ export class InstallationRestarts {
       !impact.idleRestartSupported ||
       impact.agents.length > 0 ||
       impact.pendingStarts > 0;
+    this.logHolders(current, impact);
     if (waiting) {
       const detail =
         impact.error ||
         (!impact.idleRestartSupported
           ? "Waiting for a daemon update that supports safe idle restarts"
           : `Waiting for ${impact.agents.length} active agents and ${impact.pendingStarts} starting operations`);
-      if (current.detail !== detail) this.replace({ ...current, detail });
+      const next = this.holdDeadline(current, detail);
+      if (next !== current) this.replace(next);
       return false;
     }
+    this.loggedHolders.delete(current.id);
     return true;
+  }
+
+  /**
+   * Records when a finish-current-turns hold starts waiting. Past the deadline it stops waiting
+   * silently: the job says so and asks the owner to restart now, which interrupts the remaining
+   * turns, or to cancel. It never interrupts them on its own, because the owner approved
+   * finishing them first.
+   */
+  private holdDeadline(job: RestartJob, waitingDetail: string): RestartJob {
+    if (!job.finishCurrentTurns)
+      return job.detail === waitingDetail ? job : { ...job, detail: waitingDetail };
+    const startedAt = job.holdStartedAt ?? new Date(this.now()).toISOString();
+    const exceeded = this.now() - Date.parse(startedAt) >= this.finishTurnsDeadlineMs;
+    const minutes = Math.round(this.finishTurnsDeadlineMs / 60_000);
+    const detail = exceeded
+      ? `Current turns have not finished after ${minutes} minutes. ${waitingDetail}. Restart now to interrupt them, or cancel.`
+      : waitingDetail;
+    if (exceeded && !job.holdDeadlineExceeded)
+      this.progress("Restart hold passed its deadline; owner decision needed", {
+        job: job.id,
+        target: job.target,
+        minutes,
+      });
+    if (
+      job.holdStartedAt === startedAt &&
+      job.detail === detail &&
+      Boolean(job.holdDeadlineExceeded) === exceeded
+    )
+      return job;
+    return {
+      ...job,
+      holdStartedAt: startedAt,
+      detail,
+      ...(exceeded ? { holdDeadlineExceeded: true } : {}),
+    };
+  }
+
+  /** Logs each change in what a waiting restart holds for: agent IDs only, never titles. */
+  private logHolders(job: RestartJob, impact: RestartImpact): void {
+    const agents = impact.agents.map((agent) => agent.id).sort();
+    const signature = JSON.stringify([agents, impact.pendingStarts, Boolean(impact.error)]);
+    if (this.loggedHolders.get(job.id) === signature) return;
+    this.loggedHolders.set(job.id, signature);
+    this.progress("Restart hold holders changed", {
+      job: job.id,
+      target: job.target,
+      agents,
+      pendingStarts: impact.pendingStarts,
+      inspectionFailed: Boolean(impact.error),
+    });
   }
 
   private async standingCandidateReady(job: RestartJob): Promise<boolean> {

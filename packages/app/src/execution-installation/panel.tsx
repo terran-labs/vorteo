@@ -2344,6 +2344,23 @@ function ForceRestartButton({
   );
 }
 
+const HOLDERS_SHOWN = 8;
+
+/** The agents a waiting restart holds for, so the owner can see who to finish or stop. */
+function RestartHolders({ agents }: { agents: NonNullable<RestartJob["impact"]>["agents"] }) {
+  const hidden = agents.length - HOLDERS_SHOWN;
+  return (
+    <View testID="restart-holders">
+      {agents.slice(0, HOLDERS_SHOWN).map((agent) => (
+        <Text key={agent.id} style={styles.text} numberOfLines={1}>
+          {agent.title === agent.id ? agent.id : `${agent.title} (${agent.id.slice(0, 8)})`}
+        </Text>
+      ))}
+      {hidden > 0 ? <Text style={styles.text}>{`and ${hidden} more`}</Text> : null}
+    </View>
+  );
+}
+
 function RestartActivity({ job }: { job: RestartJob }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -2367,6 +2384,9 @@ function RestartActivity({ job }: { job: RestartJob }) {
             {job.impact.error ||
               `${job.impact.agents.length} active tasks · ${job.impact.pendingStarts} starting`}
           </Text>
+          {!job.impact.error && job.impact.agents.length > 0 ? (
+            <RestartHolders agents={job.impact.agents} />
+          ) : null}
           {!job.impact.idleRestartSupported && !job.impact.error ? (
             <Text style={styles.text}>
               This daemon needs an update before queued idle restarts can run.

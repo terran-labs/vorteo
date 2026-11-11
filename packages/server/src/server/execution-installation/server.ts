@@ -131,7 +131,12 @@ import {
   supportsAutomaticMaintenance,
   type RestartExecutor,
 } from "./restarts.js";
-import { daemonTargets, requireEnvironmentDaemon, type InstallationConfig } from "./config.js";
+import {
+  daemonTargets,
+  requireEnvironmentDaemon,
+  restartHoldDeadlineMs,
+  type InstallationConfig,
+} from "./config.js";
 import {
   connectInstallationDaemon,
   submitInstallationCoordinator,
@@ -668,6 +673,7 @@ export function createInstallationServer(
     {
       fenced: startupFence !== undefined,
       progress: (message, fields) => logger.info(fields, message),
+      finishTurnsDeadlineMs: restartHoldDeadlineMs(config),
     },
   );
   const releaseRuntime = optionalReleaseRuntime(files, {
