@@ -4,6 +4,12 @@ import { chmod, lstat, mkdir, readFile, rename, rm, unlink, writeFile } from "no
 import net from "node:net";
 import path from "node:path";
 
+/**
+ * Where a release keeps the session host entrypoint; a release without it has no support. Kept
+ * here, not with the installer's job code, so the host itself can read it without loading that.
+ */
+export const SESSION_HOST_ENTRYPOINT = "packages/server/dist/scripts/session-host-entrypoint.js";
+
 /** Directory under PASEO_HOME that holds the host socket, token and audit log. */
 export const SESSION_HOST_DIRECTORY_NAME = "session-host";
 const DIRECTORY_MODE = 0o700;

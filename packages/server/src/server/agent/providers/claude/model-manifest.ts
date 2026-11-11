@@ -75,7 +75,8 @@ export const CLAUDE_MODEL_MANIFEST = [
     id: "claude-fable-5-2",
     label: "Fable 5.2",
     description: "Fable 5.2 · Latest release",
-    minimumClaudeCodeVersion: "2.1.321",
+    // Claude Code 2.1.285 refuses this model with "version 2.1.290 or newer is required".
+    minimumClaudeCodeVersion: "2.1.290",
     contextWindowMaxTokens: 1_000_000,
     effortLevels: CLAUDE_EFFORT_LEVELS.xhigh,
     supportsFastMode: true,
@@ -326,6 +327,24 @@ export function getClaudeCliUpdate(
     instructions:
       "Update Claude Code in this environment, then select Refresh. Run claude update; for Homebrew installations, run brew upgrade --cask claude-code. For a container environment, update inside the container, not on the Docker host.",
   };
+}
+
+/**
+ * The Claude Code floor for a requested model, from its manifest entry. Null for models without
+ * one and for ids the manifest does not know, which the CLI itself still validates.
+ */
+export function claudeModelCliRequirement(
+  modelId: string | null | undefined,
+): ProviderCliUpdate["affectedModels"][number] | null {
+  const id = normalizeClaudeRuntimeModelId(modelId);
+  const model = CLAUDE_MODEL_MANIFEST.find((entry) => entry.id === id);
+  if (!model || !("minimumClaudeCodeVersion" in model) || !model.minimumClaudeCodeVersion)
+    return null;
+  return { id: model.id, label: model.label, minimumVersion: model.minimumClaudeCodeVersion };
+}
+
+export function claudeCodeVersionAtLeast(version: string, minimumVersion: string): boolean {
+  return compareVersions(version, minimumVersion) >= 0;
 }
 
 function isModelAvailableInClaudeCode(
