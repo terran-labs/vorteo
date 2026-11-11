@@ -3,13 +3,13 @@
 //
 //   node scripts/maintenance/time-machine-exclusions.mjs \
 //     [--root <path>]...         a whole regenerable folder or file, such as releases or a disk image
-//     [--checkout <folder>]...   one checkout: its node_modules and workspace dist and build
+//     [--checkout <folder>]...   one Git checkout: ignored, untracked node_modules, dist, build
 //     [--projects <folder>]...   every checkout directly inside, such as the Projects folder
 //     [--worktrees <folder>]...  every task worktree at <folder>/<repository>/<name>
 //
 // Hourly upkeep runs it so folders rebuilt since the last run are marked again. It only adds
-// exclusions; it never removes one and never deletes files. Prints one JSON summary line and
-// exits 1 when a folder could not be marked.
+// exclusions; it never removes one and never deletes files. Prints one JSON summary line, even
+// after an error, and exits 1 when a path could not be marked or a checkout could not be read.
 import { parseArgs } from "node:util";
 import {
   checkoutRegenerables,
@@ -26,22 +26,28 @@ const { values } = parseArgs({
   },
 });
 
-const checkouts = [
-  ...values.checkout,
-  ...values.projects.flatMap((folder) => checkoutsUnder(folder, 1)),
-  ...values.worktrees.flatMap((folder) => checkoutsUnder(folder, 2)),
-];
-const folders = [
-  ...values.root,
-  ...checkouts.flatMap((checkout) => checkoutRegenerables(checkout)),
-];
-const result = excludeFromTimeMachine(folders);
-console.log(
-  JSON.stringify({
-    checkouts: checkouts.length,
-    checked: result.checked,
-    added: result.added,
-    failed: result.failed,
-  }),
-);
-process.exitCode = result.failed.length ? 1 : 0;
+const result = { checkouts: 0, checked: 0, added: 0, failed: [], errors: [] };
+try {
+  const checkouts = [
+    ...values.checkout,
+    ...values.projects.flatMap((folder) => checkoutsUnder(folder, 1)),
+    ...values.worktrees.flatMap((folder) => checkoutsUnder(folder, 2)),
+  ];
+  const folders = [...values.root];
+  for (const checkout of checkouts) {
+    // One unreadable checkout never stops the others.
+    try {
+      folders.push(...checkoutRegenerables(checkout));
+      result.checkouts++;
+    } catch (error) {
+      result.errors.push(`${checkout}: ${error.message}`);
+    }
+  }
+  const marked = excludeFromTimeMachine(folders);
+  Object.assign(result, { checked: marked.checked, added: marked.added, failed: marked.failed });
+} catch (error) {
+  result.errors.push(error.message);
+} finally {
+  console.log(JSON.stringify(result));
+}
+process.exitCode = result.failed.length || result.errors.length ? 1 : 0;

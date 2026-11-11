@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -283,44 +284,66 @@ test(
   },
 );
 
-test("Time Machine exclusions mark only regenerable folders, never source", (t) => {
+// Real Git without the developer's global configuration or hooks.
+const gitEnvironment = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+
+test("Time Machine exclusions mark only ignored, untracked regenerable folders", (t) => {
   const parent = temporary(t);
   const repo = path.join(parent, "worktrees", "hash", "task");
-  const folder = (relative) => fs.mkdirSync(path.join(repo, relative), { recursive: true });
-  for (const relative of ["src", "node_modules", "packages/a/src", "packages/a/dist"])
-    folder(relative);
-  folder("packages/b/build");
-  folder("plugins/node_modules");
-  fs.writeFileSync(
-    path.join(repo, "package.json"),
-    JSON.stringify({ workspaces: ["packages/*", "plugins", "../escape"] }),
+  const write = (relative, text = "x") => {
+    fs.mkdirSync(path.dirname(path.join(repo, relative)), { recursive: true });
+    fs.writeFileSync(path.join(repo, relative), text);
+  };
+  write(".gitignore", "node_modules/\ndist/\nbuild/\nBuild/\n");
+  write(
+    "package.json",
+    JSON.stringify({ workspaces: [".", "./*", "../escape", "packages/*", "!packages/c"] }),
   );
-  // A link named like a build folder must not lead the marker outside the checkout.
-  fs.symlinkSync(path.join(repo, "src"), path.join(repo, "packages/a/node_modules"));
+  for (const name of ["a", "b", "c", "desktop"]) write(`packages/${name}/package.json`, "{}");
+  write("src/index.js");
+  write("node_modules/dep/index.js");
+  write("packages/a/dist/out.js");
+  write("packages/a/node_modules/dep/index.js");
+  write("packages/b/Build/out.js");
+  write("packages/c/dist/out.js");
+  write("packages/desktop/build/icon.png");
+  // A link named like a build folder must not lead the marker to source.
+  fs.symlinkSync(path.join(repo, "src"), path.join(repo, "packages/a/build"));
+  const git = (...args) =>
+    execFileSync("git", ["-C", repo, ...args], { stdio: "ignore", env: gitEnvironment });
+  git("init", "-q");
+  git("add", ".gitignore", "package.json", "src", "packages");
+  // Tracked although ignored, as packages/desktop/build is in this repository.
+  git("add", "-f", "packages/desktop/build/icon.png");
 
   assert.deepEqual(checkoutsUnder(path.join(parent, "worktrees"), 2), [repo]);
-  const regenerable = checkoutRegenerables(repo).map((file) => path.relative(repo, file));
-  assert.deepEqual(regenerable.sort(), [
-    "node_modules",
-    "packages/a/dist",
-    "packages/b/build",
-    "plugins/node_modules",
-  ]);
+  assert.deepEqual(
+    checkoutRegenerables(repo)
+      .map((file) => path.relative(repo, file))
+      .sort(),
+    ["node_modules", "packages/a/dist", "packages/a/node_modules"],
+  );
+  // Outside a repository, or with a null manifest, nothing qualifies.
+  const plain = path.join(parent, "plain");
+  fs.mkdirSync(path.join(plain, "node_modules"), { recursive: true });
+  fs.writeFileSync(path.join(plain, "package.json"), "null");
+  assert.deepEqual(checkoutRegenerables(plain), []);
 
-  // Only folders still missing the attribute are written; Linux never runs xattr.
+  // Only paths still missing the attribute are written, never through a link; Linux does nothing.
   const writes = [];
   const run = (command, args) => {
-    if (args[0] === "-p" && args[2].endsWith("plugins/node_modules")) return Buffer.from("");
-    if (args[0] === "-p") throw new Error("missing");
-    writes.push(path.relative(repo, args[3]));
-    assert.equal(args[1], EXCLUDE_ATTRIBUTE);
+    assert.equal(args[0], "-s");
+    if (args[1] === "-p" && args.at(-1).endsWith("packages/a/node_modules")) return "";
+    if (args[1] === "-p") throw new Error("missing");
+    assert.equal(args[2], EXCLUDE_ATTRIBUTE);
+    writes.push(path.relative(repo, args.at(-1)));
   };
   const folders = checkoutRegenerables(repo);
   assert.deepEqual(excludeFromTimeMachine(folders, { platform: "darwin", run }), {
-    checked: 4,
-    added: 3,
+    checked: 3,
+    added: 2,
     failed: [],
   });
-  assert.deepEqual(writes.sort(), ["node_modules", "packages/a/dist", "packages/b/build"]);
-  assert.deepEqual(excludeFromTimeMachine(folders, { platform: "linux", run }).checked, 0);
+  assert.deepEqual(writes.sort(), ["node_modules", "packages/a/dist"]);
+  assert.equal(excludeFromTimeMachine(folders, { platform: "linux", run }).checked, 0);
 });

@@ -557,8 +557,8 @@ After each verified Host install has reported its result, the coordinator remove
 
 Releases, dependency installs and build output are rebuilt from source, so Time Machine skips them; source, projects, state, journals and configuration stay backed up. Each excluded item gets Time Machine's sticky per-item exclusion, the one `tmutil addexclusion` writes without `-p`. It covers everything below the item, needs no administrator rights and is never found by crawling the disk.
 
-- The installer excludes the Host releases folder when it builds a release.
-- `scripts/install-dependencies.mjs` excludes the dependency cache and, in the checkout it installed, the root `node_modules` and each workspace's `node_modules`, `dist` and `build`. Every new task worktree therefore excludes its dependencies on creation, while its source stays backed up.
+- The installer excludes each release revision it builds. The releases folder itself stays backed up, because it also holds update records and release seals.
+- `scripts/install-dependencies.mjs` excludes the dependency cache and, in the checkout it installed, the root `node_modules` and each workspace package's `node_modules`, `dist` and `build`. A checkout folder qualifies only when Git ignores it and tracks no file inside it, its real path stays inside the checkout, and the workspace folder has its own `package.json`; outside a Git repository nothing qualifies. Every new task worktree therefore excludes its dependencies on creation, while its source stays backed up.
 - `node scripts/maintenance/time-machine-exclusions.mjs` re-applies the exclusions to named paths for hourly upkeep: `--root` for a whole regenerable folder or file, `--checkout` for one checkout, `--projects` for each checkout directly inside a folder and `--worktrees` for each task worktree at `<folder>/<repository>/<name>`. It reads only those names, never walks the tree, only adds exclusions and prints one JSON summary line.
 
 Only folders that already exist can be marked, and a deleted and rebuilt `dist` loses its mark until the next upkeep run.
