@@ -113,6 +113,17 @@ export async function refreshDeploymentScripts({ run, git, source, commit, deplo
       DEPLOYMENT_SCRIPTS.map((name) => `docker/multiplex/${name}`),
       work,
     );
+    // A deployment with Dev worktrees on a volume needs a common.sh that mounts it; an older one
+    // would silently drop the mount, and Dev would lose sight of its worktrees.
+    const candidate = path.join(work, "docker/multiplex", "common.sh");
+    if (
+      existsSync(path.join(deployment, "dev-worktrees.compose.json")) &&
+      existsSync(candidate) &&
+      !readFileSync(candidate, "utf8").includes("dev-worktrees.compose.json")
+    )
+      throw new Error(
+        "This release's common.sh predates Dev worktrees on a volume, which this deployment uses. Remove dev-worktrees.compose.json first to roll back.",
+      );
     const changed = [];
     for (const name of DEPLOYMENT_SCRIPTS) {
       const from = path.join(work, "docker/multiplex", name);

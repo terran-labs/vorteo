@@ -1,7 +1,9 @@
+import { execFileSync } from "node:child_process";
 import {
   utimesSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readlinkSync,
   realpathSync,
@@ -9,10 +11,11 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 import { detect } from "./detect.mjs";
-import { packHostRelease } from "./dev-release.mjs";
+import { DEPLOYMENT_SCRIPTS, packHostRelease, refreshDeploymentScripts } from "./dev-release.mjs";
 import { fakeContext, fakeRunner } from "./fakes.mjs";
 import { AGENT_SCRIPT, INSTALLATION_SKILL } from "./host-installation.mjs";
 import { pointLink } from "./steps.mjs";
@@ -967,4 +970,32 @@ describe("coordinator follow", () => {
     expect(state.restarts).toEqual([]);
     expect(realpathSync(paths.coordinatorReleaseLink)).toBe(realpathSync(paths.release));
   });
+});
+
+test("refreshing deployment scripts refuses a common.sh that would drop the Dev worktree volume", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "dev-scripts-"));
+  try {
+    const source = path.join(root, "source");
+    const deployment = path.join(root, "deployment");
+    mkdirSync(path.join(source, "docker/multiplex"), { recursive: true });
+    mkdirSync(deployment);
+    for (const name of DEPLOYMENT_SCRIPTS)
+      writeFileSync(path.join(source, "docker/multiplex", name), `# ${name} before the volume\n`);
+    const git = (...args) => execFileSync("git", ["-C", source, ...args], { stdio: "ignore" });
+    git("init", "-q");
+    git("add", ".");
+    git("-c", "user.email=t@t", "-c", "user.name=T", "commit", "-q", "-m", "old");
+    const run = (command, args, options = {}) =>
+      Promise.resolve(execFileSync(command, args, { stdio: "ignore", ...options }));
+    const refresh = () =>
+      refreshDeploymentScripts({ run, git: "git", source, commit: "HEAD", deployment });
+    writeFileSync(path.join(deployment, "dev-worktrees.compose.json"), "{}");
+    await expect(refresh()).rejects.toThrow("Remove dev-worktrees.compose.json first");
+    expect(existsSync(path.join(deployment, "common.sh"))).toBe(false);
+    // Without the override, the older scripts install as before.
+    rmSync(path.join(deployment, "dev-worktrees.compose.json"));
+    await expect(refresh()).resolves.toContain("common.sh");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

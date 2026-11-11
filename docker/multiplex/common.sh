@@ -56,18 +56,32 @@ paseo_dev_worktrees_compose() {
 
 # Creates the worktree volume and gives it to Dev's daemon user (uid 1000), whose
 # worktrees it holds. A new named volume is owned by root. Idempotent; never deletes.
+# The volume's target derives from the Projects folder that install.sh passes, which is
+# also PASEO_PROJECTS_FOLDER in gate mode; both must name the same folder.
 paseo_prepare_dev_worktrees() {
   local file="$deployment/dev-worktrees.compose.json" name target image
-  name="$(sed -n 's/.*"name": "\([^"]*-dev-worktrees\)".*/\1/p' "$file")"
+  name="$(sed -n 's/.*"name": "\([^"]*\)".*/\1/p' "$file")"
   target="$(sed -n 's/.*"target": "\([^"]*\)\/\.vorteo\/worktrees".*/\1/p' "$file")"
-  [[ -n "$name" && -n "$target" ]] || { echo "Unreadable $file." >&2; return 1; }
-  # The mount point inside the shared Projects folder; Docker would otherwise create it.
-  mkdir -p "$target/.vorteo/worktrees"
-  docker volume inspect "$name" >/dev/null 2>&1 || docker volume create "$name" >/dev/null
+  if [[ ! "$name" =~ ^[a-z0-9][a-z0-9_-]*-dev-worktrees$ || -z "$target" ]]; then
+    echo "Unreadable $file." >&2
+    return 1
+  fi
+  # Compose binds the Projects folder with create_host_path: false, so it must exist already;
+  # only the mount point inside it is created here.
+  [[ -d "$target" ]] || { echo "The Projects folder $target does not exist." >&2; return 1; }
+  if [[ ! -d "$target/.vorteo/worktrees" ]]; then
+    mkdir -p "$target/.vorteo/worktrees" || return 1
+    # Dev's daemon user must traverse it despite the callers' umask 077.
+    chmod 0755 "$target/.vorteo" "$target/.vorteo/worktrees" || return 1
+  fi
+  if ! docker volume inspect "$name" >/dev/null 2>&1; then
+    docker volume create "$name" >/dev/null || return 1
+  fi
   image="$(sed -n 's/^PASEO_IMAGE=//p' "$deployment/.env" | tail -n 1)"
   [[ -n "$image" ]] || { echo 'Set PASEO_IMAGE in .env first.' >&2; return 1; }
   docker run --rm --network none --user 0:0 --entrypoint chown \
-    -v "$name:/worktrees" "$image" 1000:1000 /worktrees >/dev/null
+    --mount "type=volume,src=$name,dst=/worktrees" "$image" 1000:1000 /worktrees >/dev/null ||
+    return 1
 }
 
 # Mounts the Projects folder at its own absolute path, so the Host and the container
