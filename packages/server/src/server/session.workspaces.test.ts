@@ -66,6 +66,7 @@ import type { TerminalManager } from "../terminal/terminal-manager.js";
 import { createTerminalManager } from "../terminal/terminal-manager.js";
 
 import { AgentManager, type AgentManagerEvent, type ManagedAgent } from "./agent/agent-manager.js";
+import { InMemoryAgentTimelineStore } from "./agent/agent-timeline-store.js";
 
 import type { ProviderSubagentDescriptor } from "./agent/provider-subagents/store.js";
 
@@ -2899,6 +2900,93 @@ test("timeline requests read saved history without resuming an unavailable provi
       }),
     }),
   );
+});
+
+test.each([false, true])(
+  "timeline polling reads a record without a native handle or a session (retained rows: %s)",
+  async (retained) => {
+    const record = makeStoredAgent({
+      id: "empty-archived-history",
+      cwd: "/tmp/history",
+      updatedAt: "2026-11-10T00:00:00.000Z",
+    });
+    const timelineStore = new InMemoryAgentTimelineStore();
+    if (retained) {
+      timelineStore.initialize(record.id, { epoch: "retained" });
+      timelineStore.append(record.id, { type: "assistant_message", text: "Retained answer" });
+    } else {
+      record.archivedAt = record.updatedAt;
+    }
+    const manager = new AgentManager({ clients: {}, logger: createTestLogger(), timelineStore });
+    const create = vi.spyOn(manager, "createAgent");
+    const providers = createProviderSnapshotManagerStub();
+    providers.listRegisteredProviderIds.mockReturnValue(["codex"]);
+    const emitted: SessionOutboundMessage[] = [];
+    const session = createSessionForWorkspaceTests({
+      liveAgentManager: manager,
+      providerSnapshotManager: providers.manager,
+      agentStorage: { get: async () => record },
+      onMessage: (message) => emitted.push(message),
+    });
+
+    await session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      requestId: "empty-history",
+      agentId: record.id,
+    });
+    expect(create).not.toHaveBeenCalled();
+    expect(findByType(emitted, "fetch_agent_timeline_response")?.payload).toMatchObject({
+      error: null,
+      agent: { id: record.id },
+      entries: retained ? [{ item: { type: "assistant_message", text: "Retained answer" } }] : [],
+    });
+  },
+);
+
+test("timeline polling backs off a failed native load and retries after the cooldown", async () => {
+  const record = makeStoredAgent({
+    id: "00000000-0000-4000-8000-000000000116",
+    cwd: process.cwd(),
+    updatedAt: "2026-11-10T00:00:00.000Z",
+  });
+  record.persistence = { provider: "codex", sessionId: "native-thread" };
+  const client = new CreateAgentTestClient();
+  const resume = vi
+    .spyOn(client, "resumeSession")
+    .mockRejectedValueOnce(new Error("Native history unavailable"));
+  const manager = new AgentManager({ clients: { codex: client }, logger: createTestLogger() });
+  const providers = createProviderSnapshotManagerStub();
+  providers.listRegisteredProviderIds.mockReturnValue(["codex"]);
+  const emitted: SessionOutboundMessage[] = [];
+  const session = createSessionForWorkspaceTests({
+    liveAgentManager: manager,
+    providerSnapshotManager: providers.manager,
+    agentStorage: { get: async () => record },
+    onMessage: (message) => emitted.push(message),
+  });
+  const read = async (requestId: string) => {
+    emitted.length = 0;
+    await session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      requestId,
+      agentId: record.id,
+    });
+    return findByType(emitted, "fetch_agent_timeline_response")?.payload;
+  };
+
+  vi.useFakeTimers({ toFake: ["performance"] });
+  try {
+    expect((await read("initial-failure"))?.error).toBe("Native history unavailable");
+    expect((await read("observer-retry"))?.error).toBe("Native history unavailable");
+    expect(resume).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(30_000);
+    expect((await read("after-cooldown"))?.error).toBeNull();
+    expect((await read("after-recovery"))?.error).toBeNull();
+    expect(resume).toHaveBeenCalledTimes(2);
+  } finally {
+    vi.useRealTimers();
+    await manager.closeAgent(record.id);
+  }
 });
 
 test.each([false, true])(

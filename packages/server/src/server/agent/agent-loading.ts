@@ -3,6 +3,7 @@ import type { Logger } from "pino";
 import type { AgentProvider } from "./agent-sdk-types.js";
 import type { AgentManager, ManagedAgent } from "./agent-manager.js";
 import type { AgentStorage } from "./agent-storage.js";
+import type { AgentTimelineRow } from "./agent-timeline-store-types.js";
 import {
   buildConfigOverrides,
   buildSessionConfig,
@@ -38,6 +39,63 @@ export type AgentLoaderManager = Pick<
   | "retryTimelineHydration"
 > &
   Partial<Pick<AgentManager, "waitForAgentClose">>;
+
+const TIMELINE_FAILURE_RETRY_MS = 30_000;
+const MAX_TIMELINE_FAILURES = 1024;
+interface TimelineHistoryResult {
+  saved: AgentTimelineRow[];
+  native: ManagedAgent;
+}
+interface TimelineHistoryLoads {
+  failures: Map<string, { retryAt: number; message: string }>;
+  pending: Map<string, Promise<TimelineHistoryResult[keyof TimelineHistoryResult]>>;
+}
+const timelineHistoryLoads = new WeakMap<AgentLoaderManager, TimelineHistoryLoads>();
+
+export class TimelineHistoryRetryError extends Error {}
+
+/** Coalesce concurrent polling and limit repeated failures without delaying interactive loads. */
+export async function loadTimelineHistory<Source extends keyof TimelineHistoryResult>(
+  manager: AgentLoaderManager,
+  agentId: string,
+  source: Source,
+  load: () => Promise<TimelineHistoryResult[Source]>,
+): Promise<TimelineHistoryResult[Source]> {
+  let loads = timelineHistoryLoads.get(manager);
+  if (!loads) {
+    loads = { failures: new Map(), pending: new Map() };
+    timelineHistoryLoads.set(manager, loads);
+  }
+  const { failures, pending } = loads;
+  const key = `${source}:${agentId}`;
+  // The source prefix binds every pending value to its corresponding result type.
+  const inflight = pending.get(key) as Promise<TimelineHistoryResult[Source]> | undefined;
+  if (inflight) return inflight;
+  const failure = failures.get(key);
+  if (failure && performance.now() < failure.retryAt) {
+    throw new TimelineHistoryRetryError(failure.message);
+  }
+  const attempt = Promise.resolve().then(load);
+  pending.set(key, attempt);
+  try {
+    const value = await attempt;
+    failures.delete(key);
+    return value;
+  } catch (error) {
+    failures.delete(key);
+    failures.set(key, {
+      retryAt: performance.now() + TIMELINE_FAILURE_RETRY_MS,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    if (failures.size > MAX_TIMELINE_FAILURES) {
+      const oldest = failures.keys().next().value;
+      if (oldest !== undefined) failures.delete(oldest);
+    }
+    throw error;
+  } finally {
+    pending.delete(key);
+  }
+}
 
 export interface EnsureAgentLoadedDeps {
   agentManager: AgentLoaderManager;

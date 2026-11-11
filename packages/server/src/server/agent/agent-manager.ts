@@ -3051,9 +3051,13 @@ export class AgentManager {
     id: string,
     options?: AgentTimelineFetchOptions,
     loadLegacyRows?: () => Promise<AgentTimelineRow[]>,
+    savedSource?: { useRetainedTimeline: boolean },
   ): Promise<AgentTimelineFetchResult> {
     // Reading committed history must not require starting its original provider.
     if (this.durableTimelineStore) return this.durableTimelineStore.fetchCommitted(id, options);
+    // A closed runtime can still have rows recorded before it obtained a native handle.
+    if (savedSource?.useRetainedTimeline && this.timelineStore.has(id))
+      return this.timelineStore.fetch(id, options);
     if (!loadLegacyRows) throw new Error("Saved timeline storage is unavailable");
     const rows = await loadLegacyRows();
     // Native transcripts predate durable timelines. Keep pagination stable across reads,
