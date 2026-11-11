@@ -153,6 +153,13 @@ export const InstallationConfigSchema = z.strictObject({
   previewBroker: PreviewBrokerConfigurationSchema.optional(),
   previewBrokerDeployment: PreviewBrokerDeploymentConfigurationSchema.optional(),
   restartApprovalPolicy: z.strictObject({ hostRequestsAfter: z.string().datetime() }).optional(),
+  /** Minutes a finish-current-turns restart hold waits before asking the owner. Default 15. */
+  restartHoldDeadlineMinutes: z
+    .number()
+    .int()
+    .min(1)
+    .max(24 * 60)
+    .optional(),
   containerSourceUpdates: ContainerSourceUpdatesSchema.optional(),
   /** Off by default. Full sign-in Claude accounts with Host-owned refresh; `true` opts in. */
   claudeHostRefresh: z.boolean().optional(),
@@ -207,6 +214,15 @@ export type InstallationConfig = z.infer<typeof InstallationConfigSchema>;
  */
 export function claudeHostRefreshEnabled(config: Pick<InstallationConfig, "claudeHostRefresh">) {
   return config.claudeHostRefresh === true;
+}
+
+/** The configured restart hold deadline in milliseconds, or undefined for the default. */
+export function restartHoldDeadlineMs(
+  config: Pick<InstallationConfig, "restartHoldDeadlineMinutes">,
+): number | undefined {
+  return config.restartHoldDeadlineMinutes === undefined
+    ? undefined
+    : config.restartHoldDeadlineMinutes * 60_000;
 }
 
 /** Installation config with a Dev container; container-only paths take this. */

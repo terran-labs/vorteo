@@ -644,6 +644,11 @@ export const RestartJobSchema = RestartRequestSchema.extend({
   // released attempt never fences a later one. Absent means the job id.
   continuationCaptureId: z.string().uuid().optional(),
   approvedAt: z.string().datetime().optional(),
+  // COMPAT(restartHoldDeadline): added 2026-11-11; reply-only, sent only to clients that request
+  // it and never journaled, so strict older clients and rollback coordinators never see it.
+  // Remove the request gate once every owner client floor includes it.
+  /** The finish-current-turns hold outlasted its deadline; the owner must restart now or cancel. */
+  holdDeadlineExceeded: z.boolean().optional(),
   impact: RestartImpactSchema.optional(),
 });
 export type RestartJob = z.infer<typeof RestartJobSchema>;
