@@ -96,26 +96,30 @@ test("backup coverage names each precious path the latest completed backup lacks
   assert.equal(backupCoverageCheck({ latest: null, contains }, ["/state"]).status, "warn");
 });
 
-test("worktrees only Dev can see are read inside Dev, one tab-separated line each", () => {
+test("worktrees only Dev can see are read inside Dev; unreadable ones count as skipped", () => {
   const output = [
     "/p/.vorteo/worktrees/h/a\t1\t1\t0\t1762800000",
     "/p/.vorteo/worktrees/h/b\t0\t0\t0\t1762800000",
+    "/p/.vorteo/worktrees/h/c\t0\t1\t?\t1762800000",
     "garbled line",
   ].join("\n");
-  assert.deepEqual(parseDevWorktrees(output), [
-    {
-      path: "/p/.vorteo/worktrees/h/a",
-      dirty: true,
-      noRemote: false,
-      unpushed: 0,
-      lastActivity: 1762800000000,
-    },
-    {
-      path: "/p/.vorteo/worktrees/h/b",
-      dirty: false,
-      noRemote: true,
-      unpushed: 0,
-      lastActivity: 1762800000000,
-    },
-  ]);
+  assert.deepEqual(parseDevWorktrees(output), {
+    worktrees: [
+      {
+        path: "/p/.vorteo/worktrees/h/a",
+        dirty: true,
+        noRemote: false,
+        unpushed: 0,
+        lastActivity: 1762800000000,
+      },
+      {
+        path: "/p/.vorteo/worktrees/h/b",
+        dirty: false,
+        noRemote: true,
+        unpushed: 0,
+        lastActivity: 1762800000000,
+      },
+    ],
+    skipped: 1,
+  });
 });

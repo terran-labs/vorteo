@@ -6,8 +6,7 @@
 // docs/execution-installation.md#host-watch.
 //
 //   node scripts/maintenance/host-watch.mjs \
-//     [--dev-container <name>] [--docker <path>]   read Dev's cached shared-folder inodes and
-//                                                    worktrees only Dev can see
+//     [--dev-container <name>] [--docker <path>]   Dev's cached inodes, and worktrees only Dev sees
 //     [--projects <folder>]... [--root <folder>]...  repositories whose worktrees to check
 //     [--precious <path>]...                         paths the latest backup must contain
 //     [--stale-hours 24] [--worktree-seconds 120]  staleness window, worktree pass deadline
@@ -230,35 +229,41 @@ function collectWorktrees(repositories, deadline, dev) {
 }
 
 // Reads each worktree inside Dev in one shell, one line per worktree it can see:
-// <path>\t<dirty 0|1>\t<has remote 0|1>\t<unpushed>\t<index mtime in seconds>.
+// <path>\t<dirty 0|1>\t<has remote 0|1>\t<unpushed, or ? when unreadable>\t<index mtime, s>.
+// Paths arrive on stdin and are always quoted, so none can split or add Git options.
 const DEV_WORKTREE_SCRIPT = `
+g() { git -c core.fsmonitor=false -C "$p" "$@"; }
 while IFS= read -r p; do
   [ -d "$p" ] || continue
-  g="git -c core.fsmonitor=false -C $p"
-  d=$($g rev-parse --absolute-git-dir 2>/dev/null) || continue
+  d=$(g rev-parse --absolute-git-dir 2>/dev/null) || continue
   t=$(stat -c %Y "$d/index" 2>/dev/null || stat -c %Y "$d")
-  [ -n "$($g status --porcelain 2>/dev/null)" ] && dirty=1 || dirty=0
-  if [ -n "$($g remote 2>/dev/null)" ]; then
-    printf '%s\t%s\t1\t%s\t%s\n' "$p" "$dirty" "$($g rev-list --count HEAD --not --remotes)" "$t"
+  [ -n "$(g status --porcelain 2>/dev/null)" ] && dirty=1 || dirty=0
+  if [ -n "$(g remote 2>/dev/null)" ]; then
+    u=$(g rev-list --count HEAD --not --remotes 2>/dev/null) || u='?'
+    printf '%s\t%s\t1\t%s\t%s\n' "$p" "$dirty" "$u" "$t"
   else
     printf '%s\t%s\t0\t0\t%s\n' "$p" "$dirty" "$t"
   fi
 done`;
 
-/** Worktrees read inside Dev; those Dev cannot see either are not counted. */
+/** Worktrees read inside Dev, and how many Dev saw but could not read. */
 export function parseDevWorktrees(output) {
-  return output
+  const rows = output
     .split("\n")
     .filter(Boolean)
     .map((line) => line.split("\t"))
-    .filter((fields) => fields.length === 5)
-    .map(([location, dirty, hasRemote, unpushed, mtime]) => ({
+    .filter((fields) => fields.length === 5);
+  const readable = rows.filter(([, , , unpushed]) => /^\d+$/.test(unpushed));
+  return {
+    worktrees: readable.map(([location, dirty, hasRemote, unpushed, mtime]) => ({
       path: location,
       dirty: dirty === "1",
       noRemote: hasRemote === "0",
       unpushed: Number(unpushed),
       lastActivity: Number(mtime) * 1000,
-    }));
+    })),
+    skipped: rows.length - readable.length,
+  };
 }
 
 function devWorktrees({ docker, container }, paths, deadline) {
@@ -274,6 +279,9 @@ function devWorktrees({ docker, container }, paths, deadline) {
         "-u",
         "paseo",
         container,
+        // Bounded inside Dev too, so a hung Git call never outlives this run.
+        "timeout",
+        String(seconds),
         "sh",
         "-c",
         DEV_WORKTREE_SCRIPT,
@@ -286,7 +294,7 @@ function devWorktrees({ docker, container }, paths, deadline) {
         timeout: seconds * 1000,
       },
     );
-    return { worktrees: parseDevWorktrees(output), skipped: 0 };
+    return parseDevWorktrees(output);
   } catch {
     return { worktrees: [], skipped: paths.length };
   }
@@ -323,23 +331,56 @@ function backupContains(latest, item) {
   return volumes.some((volume) => fs.existsSync(path.join(latest, volume, item)));
 }
 
-/** Holds `file` for this run; false while another live run holds it. */
+function isAlive(pid) {
+  if (!(Number.isInteger(pid) && pid > 0)) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+/**
+ * Holds `file` for this run; false while another live run holds it. A lock whose holder has
+ * exited, or which is empty, is moved aside under a private name and read again, so two runs
+ * taking over the same stale lock cannot both proceed.
+ */
 function takeLock(file) {
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       fs.writeFileSync(file, String(process.pid), { flag: "wx" });
-      process.on("exit", () => fs.rmSync(file, { force: true }));
+      process.on("exit", () => {
+        if (fs.readFileSync(file, "utf8") === String(process.pid)) fs.rmSync(file, { force: true });
+      });
       return true;
     } catch {
-      const holder = Number(fs.readFileSync(file, "utf8"));
-      try {
-        process.kill(holder, 0);
-        return false;
-      } catch {
-        // The holder exited without releasing it.
-        fs.rmSync(file, { force: true });
-      }
+      // Held, or just released; decide below.
     }
+    let seen;
+    try {
+      seen = fs.readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    if (isAlive(Number(seen))) return false;
+    const aside = `${file}.stale-${process.pid}`;
+    try {
+      fs.renameSync(file, aside);
+    } catch {
+      continue;
+    }
+    if (fs.readFileSync(aside, "utf8") !== seen) {
+      // Another run took the lock in between: put its lock back and leave it running.
+      try {
+        fs.linkSync(aside, file);
+      } catch {
+        // A third run holds it now.
+      }
+      fs.rmSync(aside, { force: true });
+      return false;
+    }
+    fs.rmSync(aside, { force: true });
   }
   return false;
 }
