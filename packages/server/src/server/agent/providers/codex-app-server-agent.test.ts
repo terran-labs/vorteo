@@ -7123,6 +7123,75 @@ describe("Codex app-server provider", () => {
     },
   );
 
+  test("live child lifecycle survives a stale completed route reconstructed from history", async () => {
+    const session = createSession();
+    const rootHistory = deferred<unknown>();
+    const rootReadStarted = deferred<void>();
+    const launch = {
+      type: "collabAgentToolCall",
+      id: "launch-during-read",
+      tool: "spawnAgent",
+      status: "inProgress",
+      receiverThreadIds: ["active-child"],
+    };
+    session.client = {
+      async request(method, params) {
+        expect(method).toBe("thread/read");
+        const { threadId, includeTurns } = params as { threadId: string; includeTurns: boolean };
+        if (threadId === "test-thread" && includeTurns) {
+          rootReadStarted.resolve();
+          return rootHistory.promise;
+        }
+        return { thread: { turns: [] } };
+      },
+    };
+    const events: AgentStreamEvent[] = [];
+    session.subscribe((event) => events.push(event));
+    const notify = asInternals(session).handleNotification.bind(session);
+    const statuses = () =>
+      events.flatMap((event) =>
+        event.type === "provider_subagent" && event.event.type === "upsert" && event.event.status
+          ? [event.event.status]
+          : [],
+      );
+    const replay = Array.fromAsync(session.streamHistory());
+    await rootReadStarted.promise;
+    await notify("item/started", { threadId: "test-thread", item: launch });
+    await notify("turn/started", { threadId: "active-child", turn: { id: "active-turn" } });
+    rootHistory.resolve({
+      thread: {
+        turns: [
+          {
+            items: [
+              {
+                ...launch,
+                status: "completed",
+                agentsStates: { "active-child": { status: "completed" } },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    await replay;
+    await notify("item/completed", {
+      threadId: "active-child",
+      item: { type: "agentMessage", id: "progress", text: "Still working" },
+    });
+    expect(statuses()).not.toContain("completed");
+    expect(statuses().at(-1)).toBe("running");
+    await notify("turn/completed", {
+      threadId: "active-child",
+      turn: { id: "active-turn", status: "completed", items: [] },
+    });
+    expect(statuses().at(-1)).toBe("completed");
+    await notify("item/completed", {
+      threadId: "active-child",
+      item: { type: "agentMessage", id: "late-progress", text: "Final output" },
+    });
+    expect(statuses().at(-1)).toBe("completed");
+  });
+
   test("coalesces persisted MultiAgentV2 activity for one child into one terminal card", async () => {
     const session = createSession();
     session.client = {
