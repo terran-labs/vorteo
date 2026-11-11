@@ -10086,3 +10086,57 @@ test("native Host anchor passes its actual collection signal without effects", a
   expect(readFileSync(path.join(f.directory, "maintenance-enrollment.json"))).toEqual(before);
   expect(f.prepared.launch).toHaveBeenCalledTimes(1);
 });
+
+test.each(["paused", "revoked"] as const)(
+  "cooperative dispatch requires current standing authority after manual finish approval: %s",
+  (change) => {
+    const f = interruptionFixture(true);
+    const original = f.observed;
+    const revision = randomUUID();
+    const job: RestartJob = {
+      ...original,
+      revision,
+      automaticApproval: undefined,
+      automaticAuthority: undefined,
+      continuationCaptureRequested: true,
+      standingManualApprovals: [
+        {
+          previousRevision: original.revision,
+          revision,
+          decision: "finish-current-turns",
+          approvedAt: new Date().toISOString(),
+        },
+      ],
+      cooperativeDrainPreparation: {
+        operation: "maintenance.interrupt-held-turns",
+        phase: "accepted",
+        intent: { ...f.running.standingInterruption!, approvedRevision: revision },
+        manifestSha256: original.standingDecision!.manifestSha256,
+        endpointIdentitySha256: "d".repeat(64),
+        continuationCauseId: original.id,
+        deadlineAt: new Date(Date.parse(original.standingHold!.reservedAt) + 900000).toISOString(),
+      },
+    };
+    const { cooperativeDrainPreparation: phase, ...manual } = job;
+    f.write([manual]);
+    f.write([{ ...job, cooperativeDrainPreparation: { ...phase!, phase: "reserved" } }]);
+    f.write([job]);
+    const admission = {
+      previous: [job],
+      next: [job],
+      state: f.state,
+      evaluate: f.evaluate,
+      assertEvidence() {},
+    };
+    expect(() => assertCooperativeDispatchAdmission(admission, job)).not.toThrow();
+    const state = structuredClone(f.state);
+    if (change === "paused") state.grant.paused = true;
+    else state.grant.revokedAt = new Date().toISOString();
+    expect(() =>
+      assertCooperativeDispatchAdmission(
+        { previous: [job], next: [job], state, evaluate: f.evaluate, assertEvidence() {} },
+        job,
+      ),
+    ).toThrow("Standing maintenance authority changed");
+  },
+);

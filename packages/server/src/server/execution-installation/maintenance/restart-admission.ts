@@ -312,6 +312,17 @@ function assertCooperativeGrant(
       "Cooperative preparation is not covered by the exact held grant",
     );
   assertCooperativeGrantBinding(input.state, job, proposed, coverage.endpointIdentitySha256);
+  // Manual finish approval preserves the wait, not automatic interruption authority.
+  const current = input.evaluate(job, input.state);
+  if (
+    !current ||
+    !job.standingDecision ||
+    !isDeepStrictEqual(
+      { ...current, requestRevision: job.standingDecision.requestRevision },
+      job.standingDecision,
+    )
+  )
+    throw new BootstrapRequestConflict("Standing maintenance authority changed before admission");
 }
 
 function assertCooperativeGrantBinding(
