@@ -13,7 +13,11 @@ import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
 import { checkArchiveReadiness } from "./archive-readiness.mjs";
-import { findGitleaks, unpublishedCommits } from "./lib/delivery-git.mjs";
+import {
+  VORTEO_WORKTREE_LOCK_REASON,
+  findGitleaks,
+  unpublishedCommits,
+} from "./lib/delivery-git.mjs";
 import {
   prepareHostDelivery,
   resolveVersionOnlyConflicts,
@@ -669,11 +673,21 @@ test("cleanup removes only idle worktrees whose work is published", () => {
       .action,
     "keep",
   );
+  // Task worktrees carry Vorteo's lock, which cleanup lifts only for the one it removes.
+  assert.match(run(clone, "worktree", "list", "--porcelain"), /locked Vorteo worktree/);
   applyCleanup({ cwd: clone, target: "origin/main", entries });
   assert.equal(existsSync(published), false);
   assert.equal(existsSync(unpublished), true);
   assert.equal(existsSync(dirty), true);
   assert.equal(run(clone, "branch", "--list", "feat/published").trim(), "");
+});
+
+test("scripts and the daemon write the same Vorteo worktree lock reason", () => {
+  const daemon = readFileSync(
+    new URL("../packages/server/src/utils/worktree.ts", import.meta.url),
+    "utf8",
+  ).replace(/\s+/g, " ");
+  assert.ok(daemon.includes(JSON.stringify(VORTEO_WORKTREE_LOCK_REASON)));
 });
 
 test("cleanup keeps worktrees from other environments unless asked to prune", () => {

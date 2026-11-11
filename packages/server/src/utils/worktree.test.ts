@@ -20,6 +20,7 @@ import {
   existsSync,
   readFileSync,
   realpathSync,
+  renameSync,
   symlinkSync,
   writeFileSync,
 } from "fs";
@@ -649,5 +650,81 @@ describe("slugify", () => {
       const slug = slugify(input);
       expect(slugify(slug)).toBe(slug);
     }
+  });
+});
+
+// #295: Host and Dev share one repository but each sees only some worktree folders. Hiding a
+// folder by renaming it stands in for the environment that cannot see it.
+describe("worktrees seen from an environment that cannot see their folders", () => {
+  let tempDir: string;
+  let repoDir: string;
+
+  beforeEach(() => {
+    tempDir = realpathSync(mkdtempSync(join(tmpdir(), "worktree-visibility-test-")));
+    repoDir = join(tempDir, "repo");
+    mkdirSync(repoDir);
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: repoDir, stdio: "pipe" });
+    git("init", "-b", "main");
+    git("config", "user.email", "test@test.com");
+    git("config", "user.name", "Test");
+    writeFileSync(join(repoDir, "file.txt"), "hello\n");
+    git("add", ".");
+    git("-c", "commit.gpgsign=false", "commit", "-m", "initial");
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  });
+
+  it("keeps another environment's worktrees through prunes, deletes and reused names", async () => {
+    const worktreesRoot = join(tempDir, "worktrees");
+    const paseoHome = join(tempDir, "paseo-home");
+    const create = (slug: string) =>
+      createWorktreePrimitive({
+        cwd: repoDir,
+        worktreeSlug: slug,
+        source: { kind: "branch-off", baseBranch: "main", branchName: slug },
+        paseoHome,
+        worktreesRoot,
+      });
+    const registered = () =>
+      execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: repoDir, encoding: "utf8" });
+    const host = await create("host-task");
+    const own = await create("own-task");
+    // An unlocked worktree someone added by hand, also visible only on the other side.
+    const manual = join(tempDir, "manual");
+    execFileSync("git", ["worktree", "add", "-q", manual, "-b", "manual"], { cwd: repoDir });
+    expect(registered()).toContain("locked Vorteo worktree");
+
+    const hide = (path: string) => renameSync(path, `${path}.elsewhere`);
+    hide(host.worktreePath);
+    hide(manual);
+
+    // A repository-wide prune from the blind side keeps the locked Vorteo worktree.
+    execFileSync("git", ["worktree", "prune"], { cwd: repoDir });
+    expect(registered()).toContain(host.worktreePath);
+
+    // Deleting this side's own worktree touches no other registration.
+    execFileSync(
+      "git",
+      ["worktree", "add", "-q", manual.replace("manual", "manual2"), "-b", "m2"],
+      {
+        cwd: repoDir,
+      },
+    );
+    hide(manual.replace("manual", "manual2"));
+    await deletePaseoWorktree({
+      cwd: repoDir,
+      worktreePath: own.worktreePath,
+      paseoHome,
+      worktreesBaseRoot: worktreesRoot,
+    });
+    expect(registered()).not.toContain(own.worktreePath);
+    expect(registered()).toContain(manual.replace("manual", "manual2"));
+
+    // The blind side never reuses a name the other side registered.
+    const again = await create("host-task");
+    expect(again.worktreePath).not.toBe(host.worktreePath);
+    expect(registered()).toContain(host.worktreePath);
   });
 });

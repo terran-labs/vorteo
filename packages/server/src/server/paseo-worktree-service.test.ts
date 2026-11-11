@@ -14,6 +14,7 @@ import type {
 } from "./workspace-registry.js";
 import { createWorkspaceProvisioningService } from "./session/workspace-provisioning/workspace-provisioning-service.js";
 import { createTestLogger } from "../test-utils/test-logger.js";
+import { forgetMissingWorktreeEntry } from "../utils/worktree.js";
 import {
   attemptFirstAgentBranchAutoName,
   createPaseoWorktree,
@@ -889,7 +890,8 @@ test.skipIf(isPlatform("win32"))(
     });
     expect(existsSync(created.worktreePath)).toBe(true);
 
-    execFileSync("git", ["worktree", "remove", created.worktreePath, "--force"], {
+    // Twice, because Vorteo locks the worktrees it creates.
+    execFileSync("git", ["worktree", "remove", created.worktreePath, "--force", "--force"], {
       cwd: repoDir,
       stdio: "pipe",
     });
@@ -959,20 +961,25 @@ test.skipIf(isPlatform("win32"))(
     }).toString();
     expect(worktreeList).toContain(created.worktreePath);
 
-    // Recreating without pruning fails with the stale registration pinning the
-    // path — this is the case restore must heal.
-    await expect(
-      createWorktree({
-        cwd: repoDir,
-        worktreeSlug: "restore-me",
-        source: { kind: "checkout-branch", branchName: "restore-me" },
+    // Without forgetting it, the stale registration keeps the path and branch: creation takes a
+    // fresh path and branch instead of reusing them.
+    const beside = await createWorktree({
+      cwd: repoDir,
+      worktreeSlug: "restore-me",
+      source: { kind: "checkout-branch", branchName: "restore-me" },
 
-        paseoHome,
-      }),
-    ).rejects.toThrow("missing but already registered worktree");
+      paseoHome,
+    });
+    expect(beside.worktreePath).not.toBe(created.worktreePath);
+    expect(beside.branchName).not.toBe("restore-me");
 
-    // The restore-side prune frees the stale registration; recreate then succeeds.
+    // A prune keeps the locked registration, which may be another environment's worktree.
     execFileSync("git", ["worktree", "prune"], { cwd: repoDir, stdio: "pipe" });
+    expect(
+      execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: repoDir }).toString(),
+    ).toContain(created.worktreePath);
+    // Restore forgets exactly this registration; recreate then succeeds.
+    await forgetMissingWorktreeEntry(repoDir, created.worktreePath, { includeLocked: true });
 
     const recreated = await createWorktree({
       cwd: repoDir,

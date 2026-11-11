@@ -8,6 +8,7 @@ import { createRealpathAwarePathMatcher } from "../../../utils/path.js";
 import { runGitCommand } from "../../../utils/run-git-command.js";
 import {
   createWorktree,
+  forgetMissingWorktreeEntry,
   isPaseoOwnedWorktreeCwd,
   mapWorkspaceCwdToWorktree,
   rollbackCreatedPaseoWorktree,
@@ -232,12 +233,6 @@ export function createWorkspaceRecoveryService(deps: {
           baseRef: await resolveRecoveryBase(sourceRepoRoot, workspace.baseBranch),
         };
 
-    try {
-      await runGitCommand(["worktree", "prune"], { cwd: sourceRepoRoot, timeout: 30_000 });
-    } catch {
-      // A stale worktree registration is not guaranteed; creation reports any real conflict.
-    }
-
     let previousWorktreePath = workspace.worktreeRoot;
     let hasRecordedWorktreePath = Boolean(previousWorktreePath);
     if (!previousWorktreePath) {
@@ -251,6 +246,18 @@ export function createWorkspaceRecoveryService(deps: {
         ? (ownership.worktreePath ?? workspace.cwd)
         : workspace.cwd;
       hasRecordedWorktreePath = ownership.allowed;
+    }
+
+    // Forget only this worktree's stale registration. A repository-wide prune would also delete
+    // worktrees whose folders only another environment can see (#295). The workspace record
+    // proves the recorded path is this workspace's own, so its Vorteo lock may be dropped;
+    // without a record only an unlocked registration is forgotten.
+    try {
+      await forgetMissingWorktreeEntry(sourceRepoRoot, previousWorktreePath, {
+        includeLocked: hasRecordedWorktreePath,
+      });
+    } catch {
+      // A stale registration is not guaranteed; creation reports any real conflict.
     }
 
     let recreatedWorktreePath: string;
