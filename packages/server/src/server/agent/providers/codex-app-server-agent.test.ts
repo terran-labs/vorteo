@@ -7017,6 +7017,210 @@ describe("Codex app-server provider", () => {
     ]);
   });
 
+  test.each([false, true])(
+    "keeps live child lifecycle separate from replay (attached during history: %s)",
+    async (attachDuringHistory) => {
+      const session = new CodexAppServerAgentSession(
+        createConfig(),
+        { sessionId: "test-thread" },
+        createTestLogger(),
+        () => {
+          throw new Error("Test session cannot spawn Codex app-server");
+        },
+      ) as CodexTestSession;
+      const configuration = deferred<unknown>();
+      const childHistory = deferred<unknown>();
+      const childReadStarted = deferred<void>();
+      let childMetadataReads = 0;
+      let completionDuringRegistration: Promise<void> | undefined;
+      const notify = asInternals(session).handleNotification.bind(session);
+      const started = { threadId: "child-thread", turn: { id: "live-child-turn" } };
+      const complete = () =>
+        notify("turn/completed", {
+          ...started,
+          turn: { ...started.turn, status: "completed", items: [] },
+        });
+      session.client = {
+        async request(method, params) {
+          expect(method).toBe("thread/read");
+          const { threadId, includeTurns } = params as { threadId: string; includeTurns: boolean };
+          if (threadId === "test-thread") {
+            return {
+              thread: {
+                turns: [
+                  {
+                    items: [
+                      {
+                        type: "collabAgentToolCall",
+                        id: "historical-launch",
+                        tool: "spawnAgent",
+                        status: "inProgress",
+                        receiverThreadIds: ["child-thread"],
+                      },
+                    ],
+                  },
+                ],
+              },
+            };
+          }
+          if (!includeTurns) {
+            childMetadataReads += 1;
+            if (childMetadataReads === 1) {
+              if (attachDuringHistory) completionDuringRegistration = complete();
+              return configuration.promise;
+            }
+            return { thread: {} };
+          }
+          childReadStarted.resolve();
+          return childHistory.promise;
+        },
+      };
+      const liveEvents: AgentStreamEvent[] = [];
+      const attach = () => session.subscribe((event) => liveEvents.push(event));
+      const statusEvents = (events: AgentStreamEvent[]) =>
+        events.flatMap((event) =>
+          event.type === "provider_subagent" && event.event.type === "upsert" && event.event.status
+            ? [event.event.status]
+            : [],
+        );
+      if (attachDuringHistory) {
+        await notify("turn/started", { threadId: "test-thread", turn: { id: "root-turn" } });
+        await notify("thread/started", { thread: { id: "child-thread" } });
+        await notify("turn/started", started);
+        await notify("turn/completed", {
+          threadId: "test-thread",
+          turn: { id: "root-turn", status: "completed", items: [] },
+        });
+      }
+      const replay = Array.fromAsync(session.streamHistory());
+      await childReadStarted.promise;
+      if (attachDuringHistory) {
+        attach();
+        await completionDuringRegistration;
+        expect(statusEvents(liveEvents)).toEqual(["running", "running", "completed"]);
+        await notify("turn/started", started);
+        await complete();
+      }
+
+      childHistory.resolve({ thread: { turns: [] } });
+      expect(statusEvents(await replay)).toEqual(["running"]);
+      configuration.resolve({ thread: { model: "child-model" } });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      if (!attachDuringHistory) attach();
+      expect(liveEvents).toContainEqual({
+        type: "provider_subagent",
+        provider: "codex",
+        event: expect.objectContaining({
+          type: "upsert",
+          id: "child-thread",
+          subtitle: "Native · child-model",
+        }),
+      });
+      expect(statusEvents(liveEvents)).toEqual(
+        attachDuringHistory ? ["running", "running", "completed", "running", "completed"] : [],
+      );
+    },
+  );
+
+  test("live child lifecycle survives a stale completed route reconstructed from history", async () => {
+    const session = createSession();
+    const rootHistory = deferred<unknown>();
+    const rootReadStarted = deferred<void>();
+    const launch = {
+      type: "collabAgentToolCall",
+      id: "launch-during-read",
+      tool: "spawnAgent",
+      status: "inProgress",
+      receiverThreadIds: ["active-child"],
+    };
+    session.client = {
+      async request(method, params) {
+        expect(method).toBe("thread/read");
+        const { threadId, includeTurns } = params as { threadId: string; includeTurns: boolean };
+        if (threadId === "test-thread" && includeTurns) {
+          rootReadStarted.resolve();
+          return rootHistory.promise;
+        }
+        return { thread: { turns: [] } };
+      },
+    };
+    const events: AgentStreamEvent[] = [];
+    session.subscribe((event) => events.push(event));
+    const notify = asInternals(session).handleNotification.bind(session);
+    const statuses = () =>
+      events.flatMap((event) =>
+        event.type === "provider_subagent" && event.event.type === "upsert" && event.event.status
+          ? [event.event.status]
+          : [],
+      );
+    const replay = Array.fromAsync(session.streamHistory());
+    await rootReadStarted.promise;
+    await notify("item/started", { threadId: "test-thread", item: launch });
+    await notify("turn/started", { threadId: "active-child", turn: { id: "active-turn" } });
+    rootHistory.resolve({
+      thread: {
+        turns: [
+          {
+            items: [
+              {
+                ...launch,
+                status: "completed",
+                agentsStates: { "active-child": { status: "completed" } },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    await replay;
+    // The response can have been captured before the newer child turn started.
+    // An unversioned collaboration item has no evidence that it supersedes that turn.
+    await notify("item/completed", {
+      threadId: "test-thread",
+      item: {
+        ...launch,
+        status: "completed",
+        agentsStates: { "active-child": { status: "completed" } },
+      },
+    });
+    await notify("item/completed", {
+      threadId: "active-child",
+      item: { type: "agentMessage", id: "progress", text: "Still working" },
+    });
+    expect(statuses()).not.toContain("completed");
+    expect(statuses().at(-1)).toBe("running");
+    await notify("turn/completed", {
+      threadId: "active-child",
+      turn: { id: "active-turn", status: "completed", items: [] },
+    });
+    expect(statuses().at(-1)).toBe("completed");
+    await notify("item/completed", {
+      threadId: "active-child",
+      item: { type: "agentMessage", id: "late-progress", text: "Final output" },
+    });
+    expect(statuses().at(-1)).toBe("completed");
+
+    await notify("item/completed", {
+      threadId: "test-thread",
+      item: {
+        ...launch,
+        id: "snapshot-only-launch",
+        receiverThreadIds: ["snapshot-only-child"],
+        status: "completed",
+        agentsStates: { "snapshot-only-child": { status: "shutdown" } },
+      },
+    });
+    expect(
+      events.findLast(
+        (event) =>
+          event.type === "provider_subagent" &&
+          event.event.type === "upsert" &&
+          event.event.id === "snapshot-only-child",
+      ),
+    ).toMatchObject({ event: { status: "canceled" } });
+  });
+
   test("coalesces persisted MultiAgentV2 activity for one child into one terminal card", async () => {
     const session = createSession();
     session.client = {

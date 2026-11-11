@@ -1553,6 +1553,12 @@ export class AgentManager {
   private readonly agents = new Map<string, LiveManagedAgent>();
   private readonly timelineStore: InMemoryAgentTimelineStore;
   private readonly providerSubagents = new ProviderSubagentStore();
+  // Replay can retain a running descriptor indefinitely. Only the attached runtime
+  // can report current child work, and its observations expire with that attachment.
+  private readonly liveProviderChildren = new WeakMap<
+    ActiveManagedAgent,
+    Map<string, { title: string; status: ProviderSubagentDescriptor["status"] }>
+  >();
   private readonly agentsAwaitingInitialSnapshotPersist = new Set<string>();
   private readonly sessionEventTails = new Map<string, Promise<void>>();
   private readonly steerEventBarriers = new Map<string, SteerEventBarrier>();
@@ -2326,13 +2332,10 @@ export class AgentManager {
         status: String(agent.lifecycle),
       }));
     for (const parent of managed) {
-      for (const child of this.providerSubagents.list(parent.id)) {
-        if (child.status === "running")
-          agents.push({
-            id: `${parent.id}/${child.id}`,
-            title: child.title || child.description || child.id,
-            status: "running",
-          });
+      for (const [id, child] of this.liveProviderChildren.get(parent) ?? []) {
+        if (child.status === "running") {
+          agents.push({ id: `${parent.id}/${id}`, title: child.title, status: "running" });
+        }
       }
     }
     for (const [id, error] of this.restartDrainErrors) {
@@ -3053,9 +3056,13 @@ export class AgentManager {
     id: string,
     options?: AgentTimelineFetchOptions,
     loadLegacyRows?: () => Promise<AgentTimelineRow[]>,
+    savedSource?: { useRetainedTimeline: boolean },
   ): Promise<AgentTimelineFetchResult> {
     // Reading committed history must not require starting its original provider.
     if (this.durableTimelineStore) return this.durableTimelineStore.fetchCommitted(id, options);
+    // A closed runtime can still have rows recorded before it obtained a native handle.
+    if (savedSource?.useRetainedTimeline && this.timelineStore.has(id))
+      return this.timelineStore.fetch(id, options);
     if (!loadLegacyRows) throw new Error("Saved timeline storage is unavailable");
     const rows = await loadLegacyRows();
     // Native transcripts predate durable timelines. Keep pagination stable across reads,
@@ -7140,9 +7147,53 @@ export class AgentManager {
     }
     const agentId = agent.id;
     const unsubscribe = agent.session.subscribe((event: AgentStreamEvent) => {
+      // Observe lifecycle before queued event delivery so the synchronous restart
+      // admission check sees children reported by this runtime immediately.
+      if (event.type === "provider_subagent") {
+        this.observeLiveProviderChild(agent, event.event);
+      }
       this.enqueueSessionEvent(agentId, event);
     });
     agent.unsubscribeSession = unsubscribe;
+  }
+
+  private observeLiveProviderChild(
+    agent: ActiveManagedAgent,
+    event: Extract<AgentStreamEvent, { type: "provider_subagent" }>["event"],
+  ): void {
+    if (event.type === "timeline") return;
+    let children = this.liveProviderChildren.get(agent);
+    if (event.type === "remove") {
+      children?.delete(event.id);
+      return;
+    }
+    if (event.status === undefined) return;
+    if (!children) {
+      children = new Map();
+      this.liveProviderChildren.set(agent, children);
+    }
+    children.set(event.id, {
+      title: event.title || event.description || children.get(event.id)?.title || event.id,
+      status: event.status,
+    });
+  }
+
+  private applyProviderChildHistory(
+    agent: ActiveManagedAgent,
+    { provider, event }: Extract<AgentStreamEvent, { type: "provider_subagent" }>,
+  ): ProviderSubagentStoreEvent {
+    if (event.type === "upsert") {
+      // Replay can finish after a native notification. Keep its history and metadata
+      // while preserving the latest lifecycle status reported by the attached runtime.
+      const observed = this.liveProviderChildren.get(agent)?.get(event.id);
+      if (observed) {
+        return this.providerSubagents.apply(agent.id, provider, {
+          ...event,
+          status: observed.status,
+        });
+      }
+    }
+    return this.providerSubagents.apply(agent.id, provider, event);
   }
 
   private enqueueSessionEvent(agentId: string, event: AgentStreamEvent): void {
@@ -7495,7 +7546,7 @@ export class AgentManager {
       }
     }
     for (const event of providerSubagentEvents) {
-      const update = this.providerSubagents.apply(agent.id, event.provider, event.event);
+      const update = this.applyProviderChildHistory(agent, event);
       if (broadcast) {
         this.dispatch({ type: "provider_subagent", event: update });
       }
@@ -7567,7 +7618,7 @@ export class AgentManager {
     }> = [];
     const providerSubagentEvents: AgentManagerEvent[] = [];
     for (const event of historySubagentEvents) {
-      const update = this.providerSubagents.apply(agent.id, event.provider, event.event);
+      const update = this.applyProviderChildHistory(agent, event);
       const managerEvent: AgentManagerEvent = { type: "provider_subagent", event: update };
       if (deferredBroadcast) {
         providerSubagentEvents.push(managerEvent);
