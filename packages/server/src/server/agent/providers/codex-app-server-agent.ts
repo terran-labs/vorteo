@@ -6562,6 +6562,17 @@ export class CodexAppServerAgentSession implements AgentSession {
     pending.push(parsed);
   }
 
+  private retainStartedSubAgentNotifications(): void {
+    for (const [threadId, pending] of this.pendingSubAgentNotificationsByThreadId) {
+      const start = pending.findIndex(
+        (notification) =>
+          notification.kind === "thread_started" || notification.kind === "turn_started",
+      );
+      if (start < 0) this.pendingSubAgentNotificationsByThreadId.delete(threadId);
+      else if (start > 0) pending.splice(0, start);
+    }
+  }
+
   private async replayPendingSubAgentNotifications(threadIds: readonly string[]): Promise<void> {
     for (const threadId of threadIds) {
       const pending = this.pendingSubAgentNotificationsByThreadId.get(threadId);
@@ -7232,8 +7243,9 @@ export class CodexAppServerAgentSession implements AgentSession {
     this.currentTurnId = null;
     this.pendingForegroundTurnIdentification?.resolve(null);
     this.pendingForegroundTurnIdentification = null;
-    // Child turns can outlive the root. Unknown routes stay bounded in the buffer
-    // until history identifies them or the current transport ends.
+    // A child start can outlive its root. A terminal without a start cannot
+    // identify work in a later root turn, even if Codex reuses that child id.
+    this.retainStartedSubAgentNotifications();
     this.resetTurnTrackingState();
   }
 
