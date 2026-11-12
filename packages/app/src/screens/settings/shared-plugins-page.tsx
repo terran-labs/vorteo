@@ -29,44 +29,28 @@ import { confirmDialog } from "@/utils/confirm-dialog";
 import { isConnectionError, toErrorMessage } from "@/utils/error-messages";
 import { useReportActionError } from "@/hooks/use-action-error";
 import { PluginLogsSheet } from "./plugins-page";
-import { openSharedPluginForm, type SharedPluginSourceKind } from "./shared-plugin-form-model";
+import {
+  closeSharedPluginForm,
+  retainedSharedPluginForm,
+  startSharedPluginForm,
+  type OpenSharedPluginForm,
+  type SharedPluginSourceKind,
+} from "./shared-plugin-form-model";
 
 const SOURCE_KINDS: SegmentedControlOption<SharedPluginSourceKind>[] = [
   { value: "managed", label: "Git or npm" },
   { value: "directory", label: "Local directories" },
 ];
 
-function useSharedPluginForm(plugin: InstallationPlugin | null) {
-  const { save } = useInstallationSettings();
-  const reportActionError = useReportActionError();
-  const source = plugin?.source;
-  const [model] = useState(() =>
-    openSharedPluginForm(
-      {
-        resolve: resolveInstallationPluginSource,
-        save,
-        reportConnectionLost: reportActionError,
-      },
-      {
-        source: source && source.kind !== "directory" ? formatPluginIdentity(source.identity) : "",
-        updateId: plugin?.id,
-      },
-    ),
-  );
-  useEffect(() => () => model.close(), [model]);
-  const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
-  return { model, state };
-}
-
 function SharedPluginForm({
-  plugin,
+  form: { plugin, model },
   onClose,
 }: {
-  plugin: InstallationPlugin | null;
+  form: OpenSharedPluginForm;
   onClose(): void;
 }) {
   const { data } = useInstallationSettings();
-  const { model, state } = useSharedPluginForm(plugin);
+  const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
   const compact = useIsCompactFormFactor();
   const size = compact ? "md" : "sm";
   const busy = state.phase === "resolving" || state.phase === "saving";
@@ -390,10 +374,20 @@ function SharedPluginCard({
 
 export function SharedPluginsPage() {
   const { data, installation, save } = useInstallationSettings();
-  const [form, setForm] = useState<{
-    plugin: InstallationPlugin | null;
-  } | null>(null);
   const reportActionError = useReportActionError();
+  const ports = useMemo(
+    () => ({
+      resolve: resolveInstallationPluginSource,
+      save,
+      reportConnectionLost: reportActionError,
+    }),
+    [save, reportActionError],
+  );
+  // Reopen a form retained while owner access was locked.
+  const [form, setForm] = useState(retainedSharedPluginForm);
+  useEffect(() => {
+    form?.updatePorts(ports);
+  }, [form, ports]);
   const mutation = useMutation({
     mutationFn: (update: InstallationSettingsUpdate) => save(update),
     onError: (failure) => {
@@ -401,9 +395,15 @@ export function SharedPluginsPage() {
     },
   });
   const isRejected = mutation.error !== null && !isConnectionError(mutation.error);
-  const add = useCallback(() => setForm({ plugin: null }), []);
-  const edit = useCallback((plugin: InstallationPlugin) => setForm({ plugin }), []);
-  const close = useCallback(() => setForm(null), []);
+  const add = useCallback(() => setForm(startSharedPluginForm(null, ports)), [ports]);
+  const edit = useCallback(
+    (plugin: InstallationPlugin) => setForm(startSharedPluginForm(plugin, ports)),
+    [ports],
+  );
+  const close = useCallback(() => {
+    if (form) closeSharedPluginForm(form);
+    setForm(null);
+  }, [form]);
   const toggle = useCallback(
     (pluginsEnabled: boolean) => {
       if (data)
@@ -477,7 +477,7 @@ export function SharedPluginsPage() {
         ))}
       </SettingsListSummary>
       {form ? (
-        <SharedPluginForm key={form.plugin?.id ?? "new"} plugin={form.plugin} onClose={close} />
+        <SharedPluginForm key={form.plugin?.id ?? "new"} form={form} onClose={close} />
       ) : null}
     </View>
   );
