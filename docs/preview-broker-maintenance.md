@@ -159,7 +159,12 @@ brokers and records `abort-restored.json`; the job still ends without a
 commitment. A broker generation that survives bootout is the exception: starting
 new generations beside a process launchd no longer accounts for would hide it
 from recovery, so the worker keeps suppression and records
-`abort-not-restored.json`. Lost replies retain uncertainty. After a lost reply or any file
+`abort-not-restored.json`. The same applies when a later window recheck finds an
+unlisted broker generation.
+
+Coordinators older than the release that added the `admission` field cannot parse
+a journal containing it. Once a deployment with that field has run, rolling the
+coordinator or Host back below that release is not supported. Lost replies retain uncertainty. After a lost reply or any file
 write, recovery reads evidence and native state without replaying commands,
 replacing files or automatically restoring registrations.
 The client commands are `request-broker-consumer-deployment --request-file` and

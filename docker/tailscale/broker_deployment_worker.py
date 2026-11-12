@@ -245,9 +245,10 @@ class Deployment:
         """
         if self.replacing or self.unacknowledged or not self.suppressed:
             return
-        if self.unsettled:
+        if self.unsettled or str(error) in SETTLING:
             # Starting new generations beside one launchd no longer tracks would hide
             # an unexplained process from recovery, so this abort keeps suppression.
+            # This also covers the same refusal from a later window recheck.
             self.note('abort-not-restored.json', {'reason': 'broker generation survived suppression',
                                                   'error': str(error)[:512]})
             return

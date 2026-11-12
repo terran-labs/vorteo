@@ -259,6 +259,22 @@ class NativeDeploymentTests(unittest.TestCase):
         self.assertTrue((self.evidence / 'abort-not-restored.json').exists())
         self.assertFalse((self.evidence / 'abort-restored.json').exists())
 
+    def test_generation_appearing_during_window_recheck_keeps_suppression(self):
+        worker, observer, states, effects = self.native(running=True)
+        record = worker.record
+        def appear_after_baseline(name, value):
+            record(name, value)
+            if name == 'before.json':
+                # An untracked route generation appears after suppression settled.
+                observer.kernel.pids = lambda uid: [40]
+                observer.kernel.argv = lambda pid: observer.bindings[0]['argv']
+        worker.record = appear_after_baseline
+        with self.assertRaisesRegex(ValueError, 'Unlisted broker caller'): worker.execute()
+        self.assertEqual(effects, [(0,'disable'), (0,'bootout'), (1,'disable')])
+        self.assertTrue((self.evidence / 'abort-not-restored.json').exists())
+        self.assertFalse((self.evidence / 'abort-restored.json').exists())
+        self.assertFalse((self.evidence / 'intent.json').exists())
+
     def test_recovery_anchors_baseline_to_approved_digest(self):
         root = self.targets[0]['root']
         request = Path(root) / 'channel' / 'inbox' / (str(uuid.uuid4()) + '.json')
