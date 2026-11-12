@@ -4,6 +4,10 @@ import { join } from "node:path";
 import pino from "pino";
 import { afterEach, expect, it } from "vitest";
 import { CodexQuotaProvider } from "./codex.js";
+import {
+  isCodexRefreshRejection,
+  recordCodexRefreshRejection,
+} from "../../../server/agent/providers/codex/refresh-rejection.js";
 import { evaluateQuotaReserve } from "../../../server/agent/quota-reserve/evaluate.js";
 
 const homes: string[] = [];
@@ -137,4 +141,36 @@ it("never claims a native Codex home has no credentials, and accepts API-key sig
     expect(usage.status).toBe("unavailable");
     expect(usage.credentialsMissing).toBeUndefined();
   }
+});
+
+it("asks for reconnection once Codex refused to refresh the stored sign-in, until it changes", async () => {
+  const home = await mkdtemp(join(tmpdir(), "paseo-codex-refresh-rejected-"));
+  homes.push(home);
+  // Synthetic token; the access token still answers usage reads after the refresh grant died.
+  await writeFile(join(home, "auth.json"), JSON.stringify({ tokens: { access_token: "test" } }));
+  const provider = new CodexQuotaProvider({
+    logger: pino({ level: "silent" }),
+    codexHome: home,
+    strictCodexHome: true,
+    fetch: async () =>
+      new Response(JSON.stringify({ rate_limit: { primary_window: { used_percent: 1 } } }), {
+        status: 200,
+      }),
+  });
+  expect(
+    isCodexRefreshRejection(
+      "Your access token could not be refreshed because your refresh token has expired.",
+    ),
+  ).toBe(true);
+  await recordCodexRefreshRejection(home);
+  const rejected = await provider.fetchUsage();
+  expect(rejected.authRecovery?.method).toBe("device_code");
+  // A new sign-in rewrites auth.json and clears the record.
+  await writeFile(
+    join(home, "auth.json"),
+    JSON.stringify({ tokens: { access_token: "test-new" } }),
+  );
+  const reconnected = await provider.fetchUsage();
+  expect(reconnected.authRecovery).toBeUndefined();
+  expect(reconnected.status).toBe("available");
 });

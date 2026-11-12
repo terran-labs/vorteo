@@ -56,7 +56,7 @@ function UnlockedProviderLoginPanel({
   );
   const canManage = permissions?.includes("daemon.manage") !== false;
   // Installation accounts sign in through the coordinator, whichever environment opened this.
-  const shared = useSharedInstallationSignIn(serverId, provider);
+  const shared = useSharedInstallationSignIn(serverId, provider, providerId);
   if (!shared && (!supported || (provider === "claude" && !claudeSupported)))
     return <Text style={styles.text}>Update this host to connect accounts here.</Text>;
   if (!shared && !canManage)
@@ -84,7 +84,7 @@ interface LoginPanelContentProps {
 
 function LoginPanelContent(props: LoginPanelContentProps) {
   const { provider = "codex", serverId, providerId } = props;
-  const shared = useSharedInstallationSignIn(serverId, provider);
+  const shared = useSharedInstallationSignIn(serverId, provider, providerId);
   if (provider === "claude" && shared && !claudeProviderConnectsToInstallation(providerId))
     return (
       <View style={styles.body}>

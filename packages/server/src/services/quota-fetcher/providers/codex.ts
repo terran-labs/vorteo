@@ -17,6 +17,7 @@ import {
   unavailableUsage,
   windowFromUsedPct,
 } from "../usage.js";
+import { codexRefreshRejected } from "../../../server/agent/providers/codex/refresh-rejection.js";
 
 const CodexAuthSchema = z.object({
   tokens: z
@@ -121,8 +122,13 @@ export class CodexQuotaProvider implements ProviderUsageFetcher {
       return unavailableUsage(this);
     }
 
+    // Codex refused to refresh this exact sign-in. Its access token can still answer the usage
+    // API for a while, so ask for reconnection now rather than reporting the account connected.
+    const refreshRejected = await codexRefreshRejected(credentials.home);
     const { account_id } = auth.tokens ?? {};
-    const resp = await this.callCodexApi(accessToken, account_id);
+    const resp = refreshRejected
+      ? "AUTH_REJECTED"
+      : await this.callCodexApi(accessToken, account_id);
 
     if (resp === "AUTH_REJECTED") {
       const home = "'" + credentials.home.replaceAll("'", "'\"'\"'") + "'";

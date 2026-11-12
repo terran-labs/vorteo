@@ -14,6 +14,7 @@ import {
   type QuotaGovernedSessionInput,
 } from "../agent-sdk-types.js";
 import type { QuotaObservation } from "@getpaseo/protocol/quota-governor";
+import { isCodexRefreshRejection, recordCodexRefreshRejection } from "./codex/refresh-rejection.js";
 import { CodexLoginSession } from "./codex/login.js";
 import {
   getAgentStreamEventTurnId,
@@ -6310,6 +6311,15 @@ export class CodexAppServerAgentSession implements AgentSession {
   }
 
   private emitEvent(event: AgentStreamEvent): void {
+    if (
+      event.type === "turn_failed" &&
+      (isCodexRefreshRejection(event.error) || isCodexRefreshRejection(event.diagnostic))
+    ) {
+      // Lets Settings ask for reconnection while the access token still answers usage reads.
+      void recordCodexRefreshRejection(this.codexHome).catch((error: unknown) => {
+        this.logger.warn({ err: error }, "Could not record a rejected Codex sign-in");
+      });
+    }
     this.notifySubscribers(event);
   }
 
