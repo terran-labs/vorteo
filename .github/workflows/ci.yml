@@ -504,6 +504,11 @@ jobs:
             packages/server/src/server/execution-installation/coordinator-bootstrap-linux-process.test.ts \
             --bail=1
 
+      # The consumer deployment worker uses Darwin-only renameatx_np and launchd
+      # diagnostics, so it runs here rather than in the Linux container job.
+      - name: Run broker consumer deployment worker tests
+        run: python3 -B docker/tailscale/test_broker_deployment.py
+
   desktop-tests-ubuntu:
     name: desktop-tests (ubuntu-latest)
     needs: [changes, format, lint, typecheck]

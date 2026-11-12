@@ -10,7 +10,7 @@ import subprocess
 import time
 import uuid
 from broker_deployment_kernel import DarwinKernel, ProcessGone
-from broker_deployment import sha, encode
+from broker_deployment import sha, encode, preservation, approved_preservation_sha256
 from channel_identity import read_file, file_identity, physical_directory, verify_channel
 
 def run(argv):
@@ -192,6 +192,10 @@ class NativeObservation:
             for key in ('root', 'domain', 'label', 'plist'):
                 if expected[key] != binding[key]:
                     raise ValueError('Approved registration differs from protected binding')
+            # The owner approves the mode. Plans without it predate running admission
+            # and could only have meant a refusing channel.
+            if mode != expected.get('admission', 'refusing'):
+                raise ValueError('Broker channel admission differs from the approved plan')
             state = self.state(binding)
             for key in ('disposition', 'enabled', 'override', 'process'):
                 # A running broker's scheduler starts a new generation every cycle, so a
@@ -203,6 +207,13 @@ class NativeObservation:
             if state['disposition'] == 'loaded' and not state['enabled']:
                 raise ValueError('Loaded disabled broker restoration is unsupported')
             result.append(state)
+        # Refuse a wrong mode or stale preparation before any native effect. The
+        # worker repeats the comparison under the broker locks after suppression.
+        modes = {binding['root']: mode for binding, mode in zip(self.bindings, admission)}
+        for target in self.plan['targets']:
+            current = preservation(Path(target['root']))
+            if approved_preservation_sha256(current, modes[target['root']]) != target['preservationSha256']:
+                raise ValueError('Preservation inventory changed; refresh preparation')
         self.assert_manual_exited()
         self.assert_no_unlisted([state["process"] for state in result])
         self.admission = admission

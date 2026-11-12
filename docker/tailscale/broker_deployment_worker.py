@@ -64,6 +64,8 @@ class Deployment:
         self.unacknowledged = set()
         self.suppressed = []
         self.replacing = False
+        self.unsettled = False
+        self.baseline = None
 
     def check_evidence(self):
         with physical_directory(self.root) as (info, check):
@@ -120,9 +122,18 @@ class Deployment:
         self.record(f'effect-{index}-{action}-ack.json', {'outerPlanSha256': self.outer, 'state': state})
         self.unacknowledged.discard((index, action))
 
+    def mode(self, root):
+        return self.observer.admission[[binding['root'] for binding in self.packet['bindings']].index(root)]
+
     def preservation_sha256(self, root, state):
-        index = [binding['root'] for binding in self.packet['bindings']].index(root)
-        return approved_preservation_sha256(state, self.observer.admission[index])
+        return approved_preservation_sha256(state, self.mode(root))
+
+    def locked_preservation_sha256(self, root, state):
+        # A running-mode plan approves only config and marker, so under the locks the
+        # full inventory must still equal the post-suppression baseline exactly.
+        if self.mode(root) == 'running' and encode(state) != encode(self.baseline[root]):
+            raise ValueError('Preservation inventory changed after suppression')
+        return self.preservation_sha256(root, state)
 
     def verify_files(self):
         commit, digest = self.read('commit.json')
@@ -186,15 +197,20 @@ class Deployment:
                 if expected['disposition'] == 'loaded':
                     self.command(index, 'bootout', binding)
                     self.suppressed.append((index, 'bootout'))
-            settle(self.observer.assert_suppressed, self.settle_seconds)
+            try:
+                settle(self.observer.assert_suppressed, self.settle_seconds)
+            except ValueError as error:
+                # A generation outlived its scheduler: launchd no longer accounts for it.
+                self.unsettled = str(error) in SETTLING
+                raise
             # The baseline is taken only now: a running broker rewrites its ledger
             # until its scheduler is suppressed and its last generation has exited.
+            self.baseline = {t['root']: preservation(Path(t['root'])) for t in self.plan['targets']}
             self.record('before.json', {'outerPlanSha256': self.outer, 'innerPlanSha256': sha(encode(self.inner)),
-                                      'registrations': before,
-                                      'preservation': {t['root']: preservation(Path(t['root'])) for t in self.plan['targets']}})
+                                      'registrations': before, 'preservation': self.baseline})
             deploy_files(self.inner, [item['root'] for item in self.packet['bindings']],
                          verify_window=self.observer.assert_suppressed, checkpoint=self.checkpoint,
-                         preservation_sha256=self.preservation_sha256)
+                         preservation_sha256=self.locked_preservation_sha256)
         except BaseException as error:
             self.restore_after_abort(error)
             raise
@@ -221,12 +237,19 @@ class Deployment:
     def restore_after_abort(self, error):
         """Return the original brokers to service when no consumer file was replaced.
 
-        Only certain states qualify: every suppression effect acknowledged and no
-        replacement write begun. A lost or unresolved native response, or any abort
-        after the first write, keeps the suppression and its evidence for recovery.
+        Only certain states qualify: every suppression effect acknowledged, no
+        surviving broker generation and no replacement write begun. A lost or
+        unresolved native response, a generation that outlived bootout, or any abort
+        after the first write keeps the suppression and its evidence for recovery.
         The job still ends without a commitment and is never replayed.
         """
         if self.replacing or self.unacknowledged or not self.suppressed:
+            return
+        if self.unsettled:
+            # Starting new generations beside one launchd no longer tracks would hide
+            # an unexplained process from recovery, so this abort keeps suppression.
+            self.note('abort-not-restored.json', {'reason': 'broker generation survived suppression',
+                                                  'error': str(error)[:512]})
             return
         try:
             # Per broker, enable before bootstrap: launchd refuses to load a disabled job.
@@ -234,10 +257,17 @@ class Deployment:
                 for undo, action in (('enable', 'disable'), ('bootstrap', 'bootout')):
                     if (index, action) in self.suppressed:
                         self.command(index, undo, self.packet['bindings'][index])
-            self.record('abort-restored.json', {'outerPlanSha256': self.outer, 'restored': self.suppressed,
-                                                'error': str(error)[:512]})
         except Exception as restore_error:
-            error.add_note(f'Restoring original brokers also failed: {restore_error}')
+            self.note('abort-restore-failed.json', {'error': str(error)[:512], 'restoreError': str(restore_error)[:512]})
+            return
+        self.note('abort-restored.json', {'restored': self.suppressed, 'error': str(error)[:512]})
+
+    def note(self, name, value):
+        """Best-effort abort evidence; the original error is always what propagates."""
+        try:
+            self.record(name, {'outerPlanSha256': self.outer, **value})
+        except Exception:
+            pass
 
     def observe(self):
         unresolved = {'kind': 'unresolved', 'id': self.plan['id'], 'planSha256': self.outer,
@@ -307,7 +337,7 @@ def coordinator_main():
             if (operation.root / name).exists() or (operation.root / name).is_symlink():
                 raise ValueError('Deployment evidence already contains an attempt; reconcile without replay')
         settle(operation.observer.validate, operation.settle_seconds)
-        result = {'prepared': True}
+        result = {'prepared': True, 'admission': operation.observer.admission}
     elif packet['operation'] == 'execute':
         result = operation.execute()
     elif packet['operation'] == 'observe':

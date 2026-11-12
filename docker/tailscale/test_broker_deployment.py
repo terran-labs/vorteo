@@ -153,7 +153,9 @@ class NativeDeploymentTests(unittest.TestCase):
             target['preservationSha256'] = approved_preservation_sha256(preservation(root), 'running' if running else 'refusing')
             override = 'absent' if enabled[index] else 'disabled'
             registrations.append({key: binding[key] for key in ('root', 'domain', 'label', 'plist')} |
-                                 {'disposition': dispositions[index], 'enabled': enabled[index], 'override': override, 'process': None})
+                                 {'disposition': dispositions[index], 'enabled': enabled[index], 'override': override, 'process': None} |
+                                 # Refusing fixtures omit the field, as plans made before running admission did.
+                                 ({'admission': 'running'} if running else {}))
             states.append({'loaded': dispositions[index] == 'loaded', 'override': None if enabled[index] else True})
         self.plan.update({'evidenceDirectoryIdentity': directory_pin(self.evidence.stat()), 'bootUUID': boot, 'registrations': registrations, 'manualParticipants': []})
         # A running scheduler's generation is pid 40 + index while its job is loaded.
@@ -215,20 +217,47 @@ class NativeDeploymentTests(unittest.TestCase):
         self.assertEqual(admission['admission'], ['running', 'running'])
         self.assertEqual(worker.observe()['kind'], 'committed')
 
-    def test_pre_replacement_abort_restores_original_brokers(self):
+    def test_running_mode_refuses_wrong_mode_or_stale_digest_before_effects(self):
         worker, observer, states, effects = self.native(running=True)
         root = Path(self.targets[0]['root'])
-        # A digest over the full inventory cannot hold for a running broker.
-        self.targets[0]['preservationSha256'] = sha(encode(preservation(root)))
+        # The owner approved a refusing channel; the live one now serves requests.
+        self.plan['registrations'][0]['admission'] = 'refusing'
+        with self.assertRaisesRegex(ValueError, 'admission differs from the approved plan'): worker.execute()
+        self.plan['registrations'][0]['admission'] = 'running'
+        # A full-inventory digest cannot hold for a running broker.
+        self.targets[0]['preservationSha256'] = approved_preservation_sha256(preservation(root), 'refusing')
         self.write(root / 'https-broker-ledger.json', encode({'entries': {}, 'requests': {}, 'reconcileCursor': 1}))
-        with self.assertRaisesRegex(ValueError, 'Preservation inventory changed'): worker.execute()
+        with self.assertRaisesRegex(ValueError, 'Preservation inventory changed; refresh'): worker.execute()
+        self.assertEqual(effects, [])
+        self.assertFalse((self.evidence / 'admission.json').exists())
+
+    def test_inventory_change_after_baseline_aborts_and_restores_before_write(self):
+        worker, observer, states, effects = self.native(running=True)
+        root = Path(self.targets[0]['root'])
+        record = worker.record
+        def arrive_after_baseline(name, value):
+            record(name, value)
+            if name == 'before.json':
+                self.write(root / 'channel' / 'inbox' / (str(uuid.uuid4()) + '.json'), b'late request')
+        worker.record = arrive_after_baseline
+        with self.assertRaisesRegex(ValueError, 'changed after suppression'): worker.execute()
         self.assertEqual(effects, [(0,'disable'), (0,'bootout'), (1,'disable'), (1,'enable'), (0,'enable'), (0,'bootstrap')])
         self.assertTrue(states[0]['loaded'])
         self.assertTrue((self.evidence / 'abort-restored.json').exists())
         self.assertFalse((self.evidence / 'intent.json').exists())
         self.assertEqual(worker.observe()['kind'], 'unresolved')
-        self.assertEqual({p.read_bytes() for p in root.iterdir() if p.name == 'https_broker.py'},
-                         {self.originals[str(root / 'https_broker.py')]})
+        self.assertEqual((root / 'https_broker.py').read_bytes(), self.originals[str(root / 'https_broker.py')])
+
+    def test_generation_surviving_bootout_keeps_suppression(self):
+        worker, observer, states, effects = self.native(running=True)
+        # Pid 40 keeps running the protected route after its scheduler is booted out.
+        observer.kernel.pids = lambda uid: [40]
+        observer.kernel.argv = lambda pid: observer.bindings[0]['argv']
+        with self.assertRaisesRegex(ValueError, 'Unlisted broker caller'): worker.execute()
+        self.assertEqual(effects, [(0,'disable'), (0,'bootout'), (1,'disable')])
+        self.assertFalse(states[0]['loaded'])
+        self.assertTrue((self.evidence / 'abort-not-restored.json').exists())
+        self.assertFalse((self.evidence / 'abort-restored.json').exists())
 
     def test_recovery_anchors_baseline_to_approved_digest(self):
         root = self.targets[0]['root']

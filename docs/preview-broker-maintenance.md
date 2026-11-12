@@ -126,18 +126,25 @@ acquires their existing locks and writes durable per-file intents and readbacks.
 It preserves channels, configuration, ledgers, plists, displaced files and all
 partial evidence.
 
-Each broker is admitted in one of two modes, recorded in `admission.json` before
-any effect and required unchanged until the registrations are restored:
+Each registration in the plan names one of two admission modes, and installation
+controls show it to the owner. Preparation, dispatch and every later check require
+the live mode to equal it, and the worker records it in `admission.json` before
+any effect. A plan without the field means refusing.
 
 - **Refusing.** The unchanged legacy channel pins still refuse before request
   consumption. The plan's preservation digest covers the full inventory: config,
   installed marker, channel files and ledger.
 - **Running.** The legacy pins verify, for example after an operator repinned them
   when a reboot renumbered the APFS device, so the broker serves requests and
-  rewrites its ledger every cycle. The plan's preservation digest covers only the
-  config and installed marker, and it pins no scheduler process generation. The
-  worker takes the full inventory baseline after suppression and compares it
-  across the commit window as in refusing mode.
+  rewrites its ledger every cycle. Approving it restarts the broker on the new
+  consumer code, which serves requests immediately. The plan's preservation
+  digest covers only the config and installed marker, and it pins no scheduler
+  process generation. The worker takes the full inventory baseline after
+  suppression; under the broker locks the inventory must still equal it exactly,
+  and it is compared across the commit window as in refusing mode.
+
+Both modes compare the approved preservation digest before any native effect, so
+a wrong mode or stale preparation refuses while the brokers still run.
 
 A channel with a filesystem identity anchor, or any other verification failure,
 is refused: trust migration stays the separate rebind. Effective enabled and
@@ -149,7 +156,10 @@ jobs are refused before effects. No daemon or application lifecycle is included.
 If the attempt aborts after every suppression effect was acknowledged and before
 the first consumer file write, the worker re-enables and reloads the original
 brokers and records `abort-restored.json`; the job still ends without a
-commitment. Lost replies retain uncertainty. After a lost reply or any file
+commitment. A broker generation that survives bootout is the exception: starting
+new generations beside a process launchd no longer accounts for would hide it
+from recovery, so the worker keeps suppression and records
+`abort-not-restored.json`. Lost replies retain uncertainty. After a lost reply or any file
 write, recovery reads evidence and native state without replaying commands,
 replacing files or automatically restoring registrations.
 The client commands are `request-broker-consumer-deployment --request-file` and
