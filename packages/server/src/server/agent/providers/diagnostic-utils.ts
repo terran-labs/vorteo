@@ -1,3 +1,4 @@
+import { getProviderProbeCwd } from "../../../utils/provider-probe-cwd.js";
 import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import path from "node:path";
@@ -141,6 +142,7 @@ export async function resolveBinaryVersion(
 ): Promise<string> {
   try {
     const { stdout } = await execCommand(binaryPath, ["--version"], {
+      cwd: await getProviderProbeCwd(),
       ...createProviderEnvSpec(),
       timeout: 5_000,
       signal,
@@ -290,6 +292,7 @@ function formatCommandProbeError(error: unknown): string {
 async function runCommandProbe(command: string, args: string[]): Promise<string> {
   try {
     const { stdout, stderr } = await execCommand(command, args, {
+      cwd: await getProviderProbeCwd(),
       timeout: COMMAND_PROBE_TIMEOUT_MS,
       killSignal: "SIGKILL",
       maxBuffer: COMMAND_PROBE_MAX_BUFFER,
@@ -391,6 +394,7 @@ export async function buildCommandResolutionDiagnosticRows(
 async function resolveCommandVersion(invocation: BinaryDiagnosticVersionCommand): Promise<string> {
   try {
     const { stdout, stderr } = await execCommand(invocation.command, invocation.args, {
+      cwd: await getProviderProbeCwd(),
       ...createProviderEnvSpec({ runtimeSettings: { env: invocation.env } }),
       timeout: 5_000,
     });

@@ -15,7 +15,11 @@ import { useInstalledPlugins } from "@/plugins/registry";
 import type { InstalledPlugin } from "@/plugins/types";
 import { useHosts } from "@/runtime/host-runtime";
 import { allFactoriesOverviewRoute } from "@/screens/factory/routes";
-import { loadFactoryQueue } from "@/screens/factory/queue";
+import {
+  factoryQueueRefreshInterval,
+  loadFactoryQueue,
+  type FactoryQueue,
+} from "@/screens/factory/queue";
 import { useSessionStore } from "@/stores/session-store";
 import type { Theme } from "@/styles/theme";
 import type { ProjectFactoryList } from "../../../../../plugins/factory/shared/project";
@@ -25,7 +29,7 @@ import {
   factoryListQueryKey,
   loadFactoryList,
 } from "@/screens/factory/factory-reads";
-import { FACTORY_CARD_QUEUE_REFRESH_MS, factoryCardReadsQueue } from "./factory-section";
+import { factoryCardReadsQueue } from "./factory-section";
 import { factoryStageCounts, factoryOverviewPathTarget } from "./factory-card-model";
 import {
   aggregateFactories,
@@ -100,11 +104,19 @@ function useAllFactories(collapsed: boolean) {
         (active &&
           factoryQueueNeedsInitialRead(
             queryClient.getQueryState(["factoryQueue", plugin.serverId, project.projectId]),
-          )),
-      refetchInterval: (query: { state: { data: unknown } }) =>
-        factoryCardReadsQueue({ active, collapsed, state: project }) && query.state.data !== null
-          ? FACTORY_CARD_QUEUE_REFRESH_MS
-          : false,
+          )) ||
+        (active &&
+          queryClient.getQueryData<FactoryQueue | null>([
+            "factoryQueue",
+            plugin.serverId,
+            project.projectId,
+          ])?.refreshing === true),
+      refetchInterval: (query: { state: { data: FactoryQueue | null | undefined } }) =>
+        factoryQueueRefreshInterval({
+          queue: query.state.data,
+          enabled: active,
+          polling: factoryCardReadsQueue({ active, collapsed, state: project }),
+        }),
       queryFn: () =>
         boundedFactoryRead(() => loadFactoryQueue(plugin.invoke, project.projectId), {
           priority: "summary",
@@ -147,7 +159,8 @@ function useAllFactories(collapsed: boolean) {
     [errors],
   );
   const visible = factoryPlugins.length > 0 && (factories.length > 0 || errors.length > 0);
-  return { factories, errors, fetchedAt, retry, visible };
+  const degraded = queues.map((query) => query.data?.degraded).find(Boolean);
+  return { factories, errors, fetchedAt, retry, visible, degraded };
 }
 
 /** A three-line global pipeline summary. The whole block opens the overview. */
@@ -161,7 +174,7 @@ export const AllFactoriesSection = memo(function AllFactoriesSection({
   onBeforeNavigate?: () => void;
 }) {
   const { t } = useTranslation();
-  const { factories, errors, fetchedAt, retry, visible } = useAllFactories(false);
+  const { factories, errors, fetchedAt, retry, visible, degraded } = useAllFactories(false);
   const aggregate = useMemo(() => aggregateFactories(factories), [factories]);
   const counts = useMemo(() => factoryStageCounts(aggregate.issues), [aggregate.issues]);
   const firstServerId = factories[0]?.serverId ?? null;
@@ -211,6 +224,7 @@ export const AllFactoriesSection = memo(function AllFactoriesSection({
             })}
           </Text>
         ) : null}
+        {degraded ? <Text style={styles.counts}>{degraded}</Text> : null}
         {errors.length > 0 ? (
           <PressHighlight onPress={retry} accessibilityRole="button">
             <Text style={styles.counts}>{t("projectFactory.scope.queueRetry")}</Text>

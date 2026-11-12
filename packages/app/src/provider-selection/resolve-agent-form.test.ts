@@ -123,18 +123,20 @@ describe("resolveDefaultModel", () => {
     expect(next.form.profileId).toBe("saved");
     expect(next.form.modeId).toBe("full-access");
   });
-  it("uses provider defaults instead of inherited permissions for an unset profile mode", () => {
+  it("uses provider and model defaults instead of remembered values for unset profile fields", () => {
     const next = resolveAgentForm(makeState({ provider: "codex", modeId: "full-access" }), {
       type: "APPLY_PROFILE_FROM_USER",
       profileId: "saved",
       provider: "codex",
       modelId: CODEX_MODELS[0].id,
-      thinkingOptionId: "low",
+      thinkingOptionId: "",
       modeId: "",
       providerDef: TEST_CODEX_DEFINITION,
       providerModels: CODEX_MODELS,
+      providerPrefs: { thinkingByModel: { [CODEX_MODELS[0].id]: "low" } },
     });
     expect(next.form.modeId).toBe("auto");
+    expect(next.form.thinkingOptionId).toBe("xhigh");
   });
   it("returns null for empty or null input", () => {
     expect(resolveDefaultModel(null)).toBeNull();
