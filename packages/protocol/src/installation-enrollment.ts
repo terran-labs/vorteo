@@ -64,6 +64,16 @@ export const InstallationEnrollmentManifestSchema = z.strictObject({
     })
     .nullable(),
   interruption: z.strictObject({
+    /** Explicit phase coverage. Omission grants no cooperative preparation capability. */
+    cooperativeDrainPreparation: z
+      .strictObject({
+        version: z.literal(1),
+        operation: z.literal("maintenance.interrupt-held-turns"),
+        waitSeconds: z.number().int().min(1).max(3600),
+        settlementSeconds: z.number().int().min(1).max(300),
+        endpointIdentitySha256: DigestSchema,
+      })
+      .optional(),
     finishTurnsSeconds: z.number().int().min(1).max(3600),
     terminateGraceSeconds: z.number().int().min(1).max(300),
   }),

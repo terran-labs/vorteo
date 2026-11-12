@@ -1,14 +1,302 @@
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  realpathSync,
+  statSync,
+  chmodSync,
+} from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, test, vi } from "vitest";
-import { createMaintenanceRestartChannel } from "../src/server/maintenance-restart-channel.js";
+import {
+  createMaintenanceRestartChannel,
+  handleCooperativeDrainMessage,
+  readCooperativeMailbox,
+} from "../src/server/maintenance-restart-channel.js";
 import { createWorkerShutdown } from "../src/server/worker-shutdown.js";
 
 // These cases need POSIX file modes, signals or rename semantics; Windows cannot run them.
 const posixTest = test.skipIf(process.platform === "win32");
+
+posixTest(
+  "cooperative mailbox publishes once under native fd custody and refuses replay",
+  async () => {
+    const uid = process.getuid!();
+    const home = realpathSync(homedir());
+    const root = mkdtempSync(path.join(home, ".vorteo-mailbox-test-"));
+    chmodSync(root, 0o700);
+    const mailbox = path.join(root, "mailbox");
+    mkdirSync(mailbox, { mode: 0o700 });
+    const inspector = realpathSync(
+      fileURLToPath(new URL("../../../scripts/inspect-coordinator-process.py", import.meta.url)),
+    );
+    const worker =
+      process.platform === "darwin"
+        ? spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" })
+        : null;
+    try {
+      const inspect = (pid: number) => {
+        const { stopped: _stopped, ...identity } = JSON.parse(
+          execFileSync("/usr/bin/python3", [inspector, String(pid), "--require-running"], {
+            encoding: "utf8",
+            timeout: 5000,
+            maxBuffer: 16384,
+          }),
+        );
+        return identity;
+      };
+      const scope = {
+        version: 1,
+        operation: "maintenance.interrupt-held-turns",
+        installationId: randomUUID(),
+        target: "host",
+        containerId: null,
+        mailboxPath: mailbox,
+        mailboxIdentity: {
+          device: String(statSync(mailbox, { bigint: true }).dev),
+          inode: String(statSync(mailbox, { bigint: true }).ino),
+        },
+        processInspector:
+          process.platform === "darwin"
+            ? {
+                path: inspector,
+                sha256: createHash("sha256").update(readFileSync(inspector)).digest("hex"),
+              }
+            : null,
+        ownerUid: uid,
+        readerUid: uid,
+      };
+      const canonical = (value: unknown): string => {
+        if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+        if (value !== null && typeof value === "object")
+          return `{${Object.keys(value)
+            .sort()
+            .map(
+              (key) =>
+                `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`,
+            )
+            .join(",")}}`;
+        return JSON.stringify(value);
+      };
+      const digest = (value: unknown) =>
+        createHash("sha256").update(canonical(value)).digest("hex");
+      const endpoint = digest(scope);
+      const scopeFile = path.join(root, "scope.json");
+      writeFileSync(scopeFile, JSON.stringify(scope), { mode: 0o600 });
+      const script = fileURLToPath(new URL("./cooperative-drain-mailbox.py", import.meta.url));
+      const invoke = (operation: string, input?: unknown) =>
+        JSON.parse(
+          execFileSync(
+            "/usr/bin/python3",
+            [
+              script,
+              operation,
+              "--scope",
+              scopeFile,
+              "--endpoint-sha256",
+              endpoint,
+              "--owner-uid",
+              String(uid),
+            ],
+            {
+              input: input ? JSON.stringify(input) : undefined,
+              encoding: "utf8",
+              timeout: 5000,
+              maxBuffer: 65536,
+              stdio: ["pipe", "pipe", "pipe"],
+            },
+          ),
+        );
+      const reservation = {
+        operation: scope.operation,
+        phase: "reserved",
+        endpointIdentitySha256: endpoint,
+        intent: {
+          held: {
+            generation: randomUUID(),
+            requestId: randomUUID(),
+            workerInstanceId: randomUUID(),
+            workerPid: worker?.pid ?? process.pid,
+            terminateAt: Date.now() + 60000,
+          },
+          approvedRevision: randomUUID(),
+          grantRevision: randomUUID(),
+          holdGeneration: randomUUID(),
+          reservedAt: new Date().toISOString(),
+          finishDeadlineAt: new Date(Date.now() + 60000).toISOString(),
+          decisionSha256: "a".repeat(64),
+          planSha256: "b".repeat(64),
+          ...(worker?.pid
+            ? {
+                native: {
+                  identitySha256: "c".repeat(64),
+                  serverId: "isolated-fixture",
+                  sourceCommit: "d".repeat(40),
+                  selectedRelease: root,
+                  observedAt: new Date().toISOString(),
+                  supervisor: inspect(process.pid),
+                  worker: inspect(worker.pid),
+                },
+                candidate: null,
+              }
+            : {}),
+        },
+        manifestSha256: "e".repeat(64),
+        continuationCauseId: randomUUID(),
+        deadlineAt: new Date().toISOString(),
+      };
+      const envelope = {
+        operation: scope.operation,
+        endpointIdentitySha256: endpoint,
+        reservationSha256: digest(reservation),
+        reservation,
+      };
+      expect(invoke("preflight").capability).toBe(scope.operation);
+      expect(invoke("publish", envelope).state).toBe("published");
+      expect(invoke("observe")).toEqual([envelope]);
+      if (worker?.pid) {
+        const options = {
+          readerUid: uid,
+          ownerUid: uid,
+          scopeFile,
+          endpointIdentitySha256: endpoint,
+          helperFile: script,
+          helperSha256: createHash("sha256").update(readFileSync(script)).digest("hex"),
+          pythonFile: "/usr/bin/python3" as const,
+        };
+        await expect(
+          readCooperativeMailbox({
+            ...options,
+            helperFile: path.join(root, "missing-helper.py"),
+          }),
+        ).rejects.toThrow();
+        await expect(
+          readCooperativeMailbox({
+            ...options,
+            helperSha256: "0".repeat(64),
+          }),
+        ).rejects.toThrow();
+        expect(await readCooperativeMailbox(options)).toEqual([reservation]);
+        const stale = structuredClone(reservation);
+        stale.intent.held.generation = randomUUID();
+        stale.intent.native!.supervisor.startIdentity += "-replaced";
+        invoke("publish", { ...envelope, reservation: stale, reservationSha256: digest(stale) });
+        expect(await readCooperativeMailbox(options)).toEqual([reservation]);
+      }
+      expect(() => invoke("publish", envelope)).toThrow();
+      chmodSync(mailbox, 0o777);
+      expect(() => invoke("observe")).toThrow();
+      chmodSync(mailbox, 0o700);
+      expect(invoke("observe")).toContainEqual(envelope);
+    } finally {
+      if (worker) {
+        worker.kill("SIGTERM");
+        await new Promise<void>((resolve) => worker.once("exit", () => resolve()));
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test.each([false, true])(
+  "cooperative worker waits for real settlement and preserves child blockers: %s",
+  async (child) => {
+    const requestId = randomUUID();
+    const workerInstanceId = randomUUID();
+    const process = {
+      pid: 101,
+      parentPid: 100,
+      uid: 501,
+      bootId: "fixture",
+      startIdentity: "birth",
+      executable: "/fixture/node",
+      argumentsSha256: "a".repeat(64),
+    };
+    const reservation = {
+      operation: "maintenance.interrupt-held-turns",
+      phase: "reserved",
+      manifestSha256: "a".repeat(64),
+      endpointIdentitySha256: "b".repeat(64),
+      continuationCauseId: requestId,
+      deadlineAt: new Date().toISOString(),
+      intent: {
+        held: {
+          requestId,
+          generation: randomUUID(),
+          workerPid: 101,
+          workerInstanceId,
+          terminateAt: Date.now() + 30000,
+        },
+        approvedRevision: randomUUID(),
+        grantRevision: randomUUID(),
+        holdGeneration: randomUUID(),
+        decisionSha256: "a".repeat(64),
+        planSha256: "b".repeat(64),
+        reservedAt: new Date().toISOString(),
+        finishDeadlineAt: new Date().toISOString(),
+        native: {
+          identitySha256: "c".repeat(64),
+          serverId: "fixture",
+          sourceCommit: "a".repeat(40),
+          selectedRelease: "/fixture/release",
+          observedAt: new Date().toISOString(),
+          worker: process,
+          supervisor: { ...process, pid: 100, parentPid: 1 },
+        },
+        candidate: null,
+      },
+    };
+    let settle!: () => void;
+    const interruption = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    const send = vi.fn();
+    const ports = {
+      parentPid: 100,
+      currentParentPid: () => 100,
+      connected: () => true,
+      workerPid: 101,
+      manager: {
+        interruptRestartDrain: interruption,
+        getRestartImpact: () => ({
+          agents: child ? [{ id: "real-child", title: "Child", status: "running" }] : [],
+          pendingStarts: 0,
+          restartDrainId: requestId,
+          workerInstanceId,
+          workerPid: 101,
+        }),
+      },
+      send,
+    };
+    await handleCooperativeDrainMessage(
+      { type: "paseo:cooperative-drain-prepare", reservation },
+      { ...ports, currentParentPid: () => 999 },
+    );
+    expect(interruption).not.toHaveBeenCalled();
+    const result = handleCooperativeDrainMessage(
+      { type: "paseo:cooperative-drain-prepare", reservation },
+      ports,
+    );
+    await vi.waitFor(() => expect(interruption).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls.map(([reply]) => reply.state)).toEqual(["accepted"]);
+    settle();
+    await result;
+    expect(send.mock.calls.map(([reply]) => reply.state)).toEqual([
+      "accepted",
+      child ? "unknown" : "settled",
+    ]);
+  },
+);
 
 test("worker shutdown consumes the absolute budget without a second shutdown grace", async () => {
   vi.useFakeTimers();
