@@ -77,7 +77,7 @@ export function ProviderLoginPanel(props: LoginPanelProps) {
 }
 
 function UnlockedProviderLoginPanel(props: LoginPanelProps) {
-  const { serverId, provider = "codex" } = props;
+  const { serverId, provider = "codex", providerId } = props;
   const supported = useSessionStore(
     (state) => state.sessions[serverId ?? ""]?.serverInfo?.features?.providerAccountLogin === true,
   );
