@@ -20,31 +20,56 @@ export function isCodexRefreshRejection(message: string | undefined): boolean {
   return message !== undefined && REFRESH_REJECTED.test(message);
 }
 
+/** Identifies one stored sign-in by `auth.json` metadata. Never holds credential content. */
+export interface CodexAuthGeneration {
+  authMtimeMs: number;
+  authSize: number;
+}
+
+/** The generation of the sign-in now in `<codexHome>/auth.json`, or null when there is none. */
+export async function readCodexAuthGeneration(
+  codexHome: string,
+): Promise<CodexAuthGeneration | null> {
+  try {
+    const auth = await stat(join(codexHome, "auth.json"));
+    return { authMtimeMs: auth.mtimeMs, authSize: auth.size };
+  } catch {
+    return null;
+  }
+}
+
+function sameGeneration(a: CodexAuthGeneration, b: CodexAuthGeneration): boolean {
+  return a.authMtimeMs === b.authMtimeMs && a.authSize === b.authSize;
+}
+
 /**
- * Records that Codex rejected the sign-in now stored in `<codexHome>/auth.json`. The record names
- * that file's modification time and size, so any later sign-in that rewrites it clears the record.
+ * Records that Codex refused to refresh the sign-in `generation`, captured when the failing turn
+ * started. A failure that arrives after a newer sign-in replaced `auth.json` records nothing, so a
+ * completed reconnect is never marked rejected. Returns whether a record was written.
  */
-export async function recordCodexRefreshRejection(codexHome: string): Promise<void> {
-  const auth = await stat(join(codexHome, "auth.json"));
+export async function recordCodexRefreshRejection(
+  codexHome: string,
+  generation: CodexAuthGeneration,
+): Promise<boolean> {
+  const current = await readCodexAuthGeneration(codexHome);
+  if (!current || !sameGeneration(current, generation)) return false;
   const file = join(codexHome, MARKER);
   await mkdir(join(codexHome, ".vorteo-signin"), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${process.pid}.tmp`;
-  await writeFile(
-    temporary,
-    JSON.stringify({ authMtimeMs: auth.mtimeMs, authSize: auth.size, at: Date.now() }),
-    { mode: 0o600 },
-  );
+  await writeFile(temporary, JSON.stringify({ ...generation, at: Date.now() }), { mode: 0o600 });
   await rename(temporary, file);
+  return true;
 }
 
 /** Whether the sign-in in `<codexHome>/auth.json` is the one Codex last refused to refresh. */
 export async function codexRefreshRejected(codexHome: string): Promise<boolean> {
   try {
     const marker = MarkerSchema.parse(JSON.parse(await readFile(join(codexHome, MARKER), "utf8")));
-    const auth = await stat(join(codexHome, "auth.json"));
-    return auth.mtimeMs === marker.authMtimeMs && auth.size === marker.authSize;
+    const current = await readCodexAuthGeneration(codexHome);
+    // No sign-in to compare with: nothing is known to be rejected.
+    return current !== null && sameGeneration(current, marker);
   } catch {
-    // No record, or no sign-in to compare with: nothing is known to be rejected.
+    // No record: nothing is known to be rejected.
     return false;
   }
 }

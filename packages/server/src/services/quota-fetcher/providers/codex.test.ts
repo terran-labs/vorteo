@@ -6,6 +6,7 @@ import { afterEach, expect, it } from "vitest";
 import { CodexQuotaProvider } from "./codex.js";
 import {
   isCodexRefreshRejection,
+  readCodexAuthGeneration,
   recordCodexRefreshRejection,
 } from "../../../server/agent/providers/codex/refresh-rejection.js";
 import { evaluateQuotaReserve } from "../../../server/agent/quota-reserve/evaluate.js";
@@ -162,7 +163,9 @@ it("asks for reconnection once Codex refused to refresh the stored sign-in, unti
       "Your access token could not be refreshed because your refresh token has expired.",
     ),
   ).toBe(true);
-  await recordCodexRefreshRejection(home);
+  const failedTurn = await readCodexAuthGeneration(home);
+  if (!failedTurn) throw new Error("expected a stored sign-in");
+  expect(await recordCodexRefreshRejection(home, failedTurn)).toBe(true);
   const rejected = await provider.fetchUsage();
   expect(rejected.authRecovery?.method).toBe("device_code");
   // A new sign-in rewrites auth.json and clears the record.
@@ -173,4 +176,29 @@ it("asks for reconnection once Codex refused to refresh the stored sign-in, unti
   const reconnected = await provider.fetchUsage();
   expect(reconnected.authRecovery).toBeUndefined();
   expect(reconnected.status).toBe("available");
+});
+
+it("a late failure from a turn on the old sign-in never marks a completed reconnect", async () => {
+  const home = await mkdtemp(join(tmpdir(), "paseo-codex-refresh-race-"));
+  homes.push(home);
+  await writeFile(join(home, "auth.json"), JSON.stringify({ tokens: { access_token: "old" } }));
+  // Captured when the turn started on the old sign-in.
+  const oldTurn = await readCodexAuthGeneration(home);
+  if (!oldTurn) throw new Error("expected a stored sign-in");
+  // The owner reconnects before that turn's refresh failure arrives.
+  await writeFile(
+    join(home, "auth.json"),
+    JSON.stringify({ tokens: { access_token: "reconnected" } }),
+  );
+  expect(await recordCodexRefreshRejection(home, oldTurn)).toBe(false);
+  const usage = await new CodexQuotaProvider({
+    logger: pino({ level: "silent" }),
+    codexHome: home,
+    strictCodexHome: true,
+    fetch: async () =>
+      new Response(JSON.stringify({ rate_limit: { primary_window: { used_percent: 1 } } }), {
+        status: 200,
+      }),
+  }).fetchUsage();
+  expect(usage.authRecovery).toBeUndefined();
 });
