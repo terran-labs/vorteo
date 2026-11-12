@@ -2232,7 +2232,7 @@ test("source builds fail before activation, uncertain dispatch retains selection
     );
     await writeFile(
       path.join(root, "publish-instance-web.mjs"),
-      `import fs from 'node:fs/promises'; import path from 'node:path'; await fs.writeFile(path.join(process.argv[3], 'published'), 'yes');`,
+      `import fs from 'node:fs/promises'; import path from 'node:path'; await fs.writeFile(path.join(process.argv[3], 'published'), 'yes'); console.error('vorteo-command: Installed the vorteo command.');`,
     );
     const validPrepareScript = await readFile(prepareScript, "utf8");
     await writeFile(
@@ -2340,6 +2340,10 @@ test("source builds fail before activation, uncertain dispatch retains selection
     });
     const installed = (await dispatch())!;
     expect(installed.status).toBe("succeeded");
+    // The publisher of the new release reports the vorteo command it installed.
+    expect(installed.detail).toMatch(
+      /retention\.json in this job.s folder\. Installed the vorteo command\.$/,
+    );
     await hostReleaseRetentionIdle();
     expect(prune).not.toHaveBeenCalled();
     expect(installed.detail).toContain("cleanup is suspended");
