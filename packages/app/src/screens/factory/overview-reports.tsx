@@ -775,6 +775,7 @@ export function QueueNotices({ data }: { data: FactoryOverviewData }) {
           </Button>
         </View>
       ) : null}
+      {queue.data?.degraded ? <Text style={styles.warning}>{queue.data.degraded}</Text> : null}
       {queue.loading ? <Text style={styles.muted}>{t("common.loading")}</Text> : null}
       {queue.data && queue.data.issues.length === 0 && !queue.data.error ? (
         <Text style={styles.muted}>{t("projectFactory.idle")}</Text>

@@ -1,3 +1,4 @@
+import { getProviderProbeCwd } from "../../../utils/provider-probe-cwd.js";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import { mkdir, realpath } from "node:fs/promises";
@@ -167,6 +168,7 @@ export function createCodexHostCli(options: HostCliOptions = {}) {
     (async (codexHome: string) => {
       const launch = await resolveLaunch();
       const child = spawnProcess(launch.executable, [...launch.args, "app-server"], {
+        cwd: await getProviderProbeCwd(),
         detached: process.platform !== "win32",
         stdio: ["pipe", "pipe", "pipe"],
         ...accountEnvironment(codexHome),
@@ -213,6 +215,7 @@ export function createCodexHostCli(options: HostCliOptions = {}) {
     async logout(codexHome: string): Promise<void> {
       const launch = await resolveLaunch();
       await run(launch.executable, [...launch.args, "logout"], {
+        cwd: await getProviderProbeCwd(),
         ...accountEnvironment(codexHome),
         timeout: 30_000,
         maxBuffer: 64 * 1024,

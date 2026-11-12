@@ -168,7 +168,6 @@ describe("generateStructuredAgentResponseWithFallback", () => {
 
     const result = await generateStructuredAgentResponseWithFallback({
       manager,
-      cwd: "/tmp/project",
       prompt: "Return JSON",
       schema,
       providers: [
@@ -201,7 +200,6 @@ describe("generateStructuredAgentResponseWithFallback", () => {
 
     const result = await generateStructuredAgentResponseWithFallback({
       manager,
-      cwd: "/tmp/project",
       prompt: "Return JSON",
       schema,
       providers: [
@@ -232,7 +230,6 @@ describe("generateStructuredAgentResponseWithFallback", () => {
 
     const result = await generateStructuredAgentResponseWithFallback({
       manager,
-      cwd: "/tmp/project",
       prompt: "Return JSON",
       schema,
       providers: [
@@ -270,7 +267,6 @@ describe("generateStructuredAgentResponseWithFallback", () => {
     await expect(
       generateStructuredAgentResponseWithFallback({
         manager,
-        cwd: "/tmp/project",
         prompt: "Return JSON",
         schema,
         schemaName: "BranchName",
@@ -320,7 +316,6 @@ describe("generateStructuredAgentResponseWithFallback", () => {
     await expect(
       generateStructuredAgentResponseWithFallback({
         manager,
-        cwd: "/tmp/project",
         prompt: "Return JSON",
         schema,
         providers: [
@@ -416,7 +411,6 @@ describe("installation metadata admission", () => {
       await expect(
         generateStructuredAgentResponseWithFallback({
           manager,
-          cwd: process.cwd(),
           prompt: "Private task content",
           schema: z.object({ title: z.string() }),
           providers: [{ provider: "codex" }, { provider: "claude" }],
