@@ -27,7 +27,8 @@ import { settingsStyles } from "@/styles/settings";
 import { ControlSizeProvider } from "@/components/ui/control-size";
 import { useSettingsRowLayout } from "./row-density";
 export { SettingsGroup } from "./headings/settings-group";
-export { SettingsSection, SettingsPaneScope } from "./headings/settings-section";
+export { SettingsSection, SettingsSectionTrailing } from "./headings/settings-section";
+export { SettingsAdvancedGroup } from "./advanced-group";
 export { SettingsCollapsibleRow } from "./collapsible-row";
 export { SettingsDetailRow } from "./detail-row";
 export { SettingsInfoTip } from "./headings/settings-info-tip";
@@ -189,6 +190,7 @@ export function SettingsInput({
         editable={!disabled}
         secureTextEntry={secureTextEntry}
         accessibilityLabel={row.label}
+        accessibilityHint={row.hint}
         size={compact ? "md" : undefined}
         style={styles.input}
       />
@@ -199,7 +201,13 @@ export function SettingsInput({
 export function SettingsAction({ actionLabel, onPress, disabled, ...row }: SettingsActionProps) {
   return (
     <SettingsRow {...row}>
-      <Button variant="outline" onPress={onPress} disabled={disabled}>
+      {/* Named with its row, so a pane's several "Refresh" buttons stay distinguishable. */}
+      <Button
+        variant="outline"
+        onPress={onPress}
+        disabled={disabled}
+        accessibilityLabel={`${actionLabel} ${row.label}`}
+      >
         {actionLabel}
       </Button>
     </SettingsRow>

@@ -1,86 +1,69 @@
 import { expect, test } from "vitest";
-import { claudeConnectionStatus, installationConnectionStatus } from "./claude-connection-status";
+import { installationConnectionStatus } from "./claude-connection-status";
+
+const claude = (connection: Parameters<typeof installationConnectionStatus>[0]) =>
+  installationConnectionStatus(connection, "Claude");
 
 test("shared readiness requires every included delivery, not just a saved token", () => {
-  expect(claudeConnectionStatus(undefined)).toContain("Checking");
-  expect(claudeConnectionStatus({ connected: false, environments: [] })).toBe("Not connected.");
+  expect(claude(undefined)).toEqual({ tone: "busy", text: "Checking connection..." });
+  expect(claude({ connected: false, environments: [] })).toEqual({
+    tone: "neutral",
+    text: "Not connected",
+  });
   expect(
-    claudeConnectionStatus({
+    claude({
       connected: true,
       environments: [
         { serverId: "host", status: "ready" },
         { serverId: "dev", status: "pending" },
       ],
     }),
-  ).toContain("Synchronization is pending");
+  ).toMatchObject({ tone: "busy", text: expect.stringContaining("Syncing") });
   expect(
-    claudeConnectionStatus({
+    claude({
       connected: true,
       environments: [
         { serverId: "host", status: "ready" },
         { serverId: "dev", status: "excluded" },
       ],
     }),
-  ).toBe("Connected and ready.");
-  expect(claudeConnectionStatus({ connected: true, environments: [] })).toContain(
-    "Synchronization is pending",
-  );
+  ).toEqual({ tone: "success", text: "Connected" });
+  expect(claude({ connected: true, environments: [] }).tone).toBe("busy");
   expect(
-    claudeConnectionStatus({
-      connected: true,
-      environments: [{ serverId: "host", status: "excluded" }],
-    }),
-  ).toContain("exclusions");
+    claude({ connected: true, environments: [{ serverId: "host", status: "excluded" }] }).text,
+  ).toContain("excluded");
 });
 
 test("pending credential removal remains visible after disconnect", () => {
   expect(
-    claudeConnectionStatus({
-      connected: false,
-      environments: [{ serverId: "dev", status: "disconnecting" }],
-    }),
-  ).toContain("Credential removal will finish automatically");
+    claude({ connected: false, environments: [{ serverId: "dev", status: "disconnecting" }] }),
+  ).toMatchObject({ tone: "busy", text: expect.stringContaining("Disconnecting") });
 });
 
 test("full sign-in names the Host account and asks for sign-in again when its grant is lost", () => {
   expect(
-    claudeConnectionStatus({
+    claude({
       connected: true,
       needsSignIn: false,
       accountLabel: "owner@example.com",
       environments: [{ serverId: "dev", status: "ready" }],
     }),
-  ).toBe("Connected and ready. Signed in as owner@example.com.");
-  expect(claudeConnectionStatus({ connected: true, needsSignIn: false, environments: [] })).toBe(
-    "Connected and ready.",
-  );
+  ).toEqual({ tone: "success", text: "Connected as owner@example.com" });
+  expect(claude({ connected: true, needsSignIn: false, environments: [] }).text).toBe("Connected");
   expect(
-    claudeConnectionStatus({
+    claude({
       connected: false,
       needsSignIn: true,
       environments: [{ serverId: "dev", status: "disconnected" }],
     }),
-  ).toContain("Sign in again");
+  ).toMatchObject({ tone: "error", text: expect.stringContaining("Sign in again") });
 });
 
 test("Codex uses the same installation-wide readiness with its own name", () => {
   expect(
-    installationConnectionStatus(
-      { connected: false, needsSignIn: true, environments: [] },
-      "Codex",
-    ),
-  ).toBe("Codex sign-in expired on the Host. Sign in again to keep Host and Dev working.");
-  expect(
-    installationConnectionStatus(
-      {
-        connected: true,
-        needsSignIn: false,
-        accountLabel: "owner@example.com",
-        environments: [{ serverId: "dev", status: "ready" }],
-      },
-      "Codex",
-    ),
-  ).toBe("Connected and ready. Signed in as owner@example.com.");
+    installationConnectionStatus({ connected: false, needsSignIn: true, environments: [] }, "Codex")
+      .text,
+  ).toBe("Codex sign-in expired. Sign in again.");
   expect(
     installationConnectionStatus(
       {
@@ -89,6 +72,6 @@ test("Codex uses the same installation-wide readiness with its own name", () => 
         environments: [{ serverId: "dev", status: "pending" }],
       },
       "Codex",
-    ),
-  ).toContain("You do not need to sign in again.");
+    ).tone,
+  ).toBe("busy");
 });

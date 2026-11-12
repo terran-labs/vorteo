@@ -33,6 +33,8 @@ vi.mock("@/execution-installation/settings", () => ({
   }),
 }));
 vi.mock("@/utils/confirm-dialog", () => ({ confirmDialog: vi.fn(async () => false) }));
+const owner = vi.hoisted(() => ({ status: "unlocked" }));
+vi.mock("@/execution-installation/owner-access", () => ({ useOwnerAccess: () => owner }));
 
 vi.mock("@/runtime/host-features", () => ({
   useHostFeature: (_serverId: string, feature: string) =>
@@ -41,9 +43,6 @@ vi.mock("@/runtime/host-features", () => ({
 vi.mock("@/runtime/host-runtime", () => ({
   useHostRuntimeClient: (serverId: string) => runtime.clients.get(serverId) ?? null,
   useHostRuntimeIsConnected: () => runtime.connected,
-}));
-vi.mock("@/contexts/toast-context", () => ({
-  useToast: () => ({ error: vi.fn() }),
 }));
 
 // One client per test: a client created on every render would drop the cache whenever the
@@ -68,6 +67,7 @@ describe("host agent skills", () => {
     runtime.supported = true;
     runtime.clients.clear();
     shared.enabled = false;
+    owner.status = "unlocked";
     shared.save.mockReset();
     vi.unstubAllGlobals();
   });
@@ -125,6 +125,20 @@ describe("host agent skills", () => {
     });
     // A refetch already in flight may briefly report the previous selection.
     await waitFor(() => expect(result.current.status?.selection).toEqual(selection));
+  });
+
+  it("shows locked shared skills as a state, without reading or reporting an error", async () => {
+    shared.enabled = true;
+    owner.status = "locked";
+    const read = vi.fn();
+    vi.stubGlobal("fetch", read);
+    const { result } = renderHook(() => useAgentSkills("host"), { wrapper });
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.locked).toBe(true);
+    expect(result.current.error).toBeNull();
+    expect(read).not.toHaveBeenCalled();
   });
 
   it("requires owner access and never falls back to local skill writes", async () => {

@@ -295,6 +295,12 @@ test.describe("Tab creation", () => {
       await menu.getByTestId("workspace-new-tab-menu-edit-terminal-profiles").click();
       // Terminal profiles are a pane on the single settings page.
       await expect(page).toHaveURL(/\/settings\/(hosts\/[^/]+\/)?terminals$/);
+      // More than five profiles collapse into a summary whose Manage dialog lists the rows.
+      const manage = page.getByTestId("terminal-profiles-summary-summary-open");
+      await expect(
+        page.getByTestId(`terminal-profile-row-${explicit.id}`).or(manage).first(),
+      ).toBeVisible();
+      if (await manage.isVisible()) await manage.click();
 
       const settingsIconPath = (id: string) =>
         page

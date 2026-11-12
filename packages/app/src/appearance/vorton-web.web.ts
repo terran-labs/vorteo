@@ -19,18 +19,42 @@ html[data-vorton-ios-standalone="true"] #root {
   box-sizing: border-box;
   background-color: var(--colors-surface-sidebar);
 }
-html[data-vorton-touch="true"] :is(button, [role="button"], [role="tab"], [role="menuitem"], [role="menuitemcheckbox"], [role="option"], [role="combobox"], [role="switch"]) {
+html[data-vorton-touch="true"] :is(button, [role="button"], [role="tab"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"], [role="combobox"], [role="switch"], [role="radio"], [role="checkbox"]) {
   min-height: 44px !important;
   min-width: 44px !important;
   touch-action: manipulation;
+}
+/* Workspace label swatches keep their 20px size; a centered ::after supplies the 44px target,
+   as for inline pills, so the swatch row does not reflow on touch. */
+html[data-vorton-touch="true"] [data-testid^="workspace-label-swatch-"] {
+  min-height: 0 !important;
+  min-width: 0 !important;
+  position: relative;
+  overflow: visible;
+}
+html[data-vorton-touch="true"] [data-testid^="workspace-label-swatch-"]::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
 }
 /* Card drag columns own their compact width; keep the shared 44px height. */
 html[data-vorton-touch="true"] [data-vorton-row-handle] { min-width: 0 !important; }
 html[data-vorton-touch="true"] [data-keyboard-reorder="true"] { touch-action: none; }
 html[data-vorton-touch="true"] :is(input, textarea, [contenteditable="true"]) { font-size: max(16px, 1em); }
-html :is(button, [role="button"], [role="tab"], [role="menuitem"], [role="combobox"]):focus-visible {
-  outline: 2px solid currentColor;
+/* The boot stylesheet's fixed green ring falls below 3:1 on dark themes. The ring sits on the
+   surface outside the control, so it uses the theme's foreground, which meets text contrast on
+   every surface; currentColor is the fallback before theme variables exist. */
+html :is(button, a, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"], [role="combobox"], [role="switch"], [role="radio"], [role="checkbox"], [tabindex]):focus-visible {
+  outline: 2px solid var(--colors-foreground, currentColor);
   outline-offset: 2px;
+}
+/* Theme bubbles animate size and shadow; respect a reduced-motion preference. */
+@media (prefers-reduced-motion: reduce) {
+  [data-ptheme] * { transition: none !important; }
 }
 html[data-vorton-touch="true"] [data-vorton-action-slot] { min-width: 44px; min-height: 44px; }
 html[data-vorton-touch="true"] [data-vorton-action-slot] > * { min-width: 44px; min-height: 44px; }

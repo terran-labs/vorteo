@@ -2,7 +2,13 @@ import { toErrorMessage } from "@/utils/error-messages";
 import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { useAgentActionReceipts, useInstallationUpgradeStatus } from "./use-installation-upgrades";
 import type { AgentActionReceipt } from "@getpaseo/protocol/installation-upgrades";
-import { systemAttentionCount } from "@/screens/settings/system/system-adapter-model";
+import { systemHealthItems } from "@/screens/settings/system/health-model";
+import { useHealthExtrasCount } from "@/screens/settings/system/health-extras";
+import {
+  requestSettingsJump,
+  SYSTEM_HEALTH_ROUTE,
+  SYSTEM_HEALTH_TARGET,
+} from "@/screens/settings/settings-jump";
 import { usePanelOwnerAccess } from "./panel-owner-access";
 import { OwnerLockBadge } from "@/components/settings/owner-lock";
 import type { CustomDomainStatus } from "@getpaseo/protocol/custom-domain";
@@ -11,6 +17,8 @@ import { useToast } from "@/contexts/toast-api-context";
 import type { BrokerReviewJob } from "./preview-broker-review";
 import {
   brokerActionDisabledReason,
+  brokerAdmissionDescription,
+  brokerDeploymentResumeDescription,
   brokerReviewSummary,
   type BrokerAction,
 } from "./preview-broker-review";
@@ -80,6 +88,7 @@ import { groupHoverStyle, hoverGroup } from "@/styles/hover";
 import { StatusBadge, type StatusBadgeVariant } from "@/components/ui/status-badge";
 
 import { confirmDialog } from "@/utils/confirm-dialog";
+import { JoinedField } from "@/components/settings/joined-field";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 
@@ -1206,11 +1215,11 @@ function BrokerRequest({
             {job.target === "preview-broker-deployment"
               ? job.plan.registrations.map(
                   (item) =>
-                    `\nRegistration: ${item.domain}/${item.label} (${item.disposition})\nRoot: ${item.root}\nEnabled: ${item.enabled}; override: ${item.override}\nProcess: ${item.process ? `PID ${item.process.pid}; birth ${item.process.birth.join(":")}; UID ${item.process.uid}; argv ${JSON.stringify(item.process.argv)}` : "idle, no registered process"}`,
+                    `\nRegistration: ${item.domain}/${item.label} (${item.disposition})\nRoot: ${item.root}\nEnabled: ${item.enabled}; override: ${item.override}\nProcess: ${item.process ? `PID ${item.process.pid}; birth ${item.process.birth.join(":")}; UID ${item.process.uid}; argv ${JSON.stringify(item.process.argv)}` : "idle, no registered process"}\n${brokerAdmissionDescription(item.admission)}`,
                 )
               : null}
             {job.target === "preview-broker-deployment"
-              ? `\nScope: only the declared managed routes and ${job.plan.manualParticipants.length} manual participants are known. No new manual broker calls until release.\nResume is allowed only while legacy channel identity still refuses request consumption.`
+              ? `\nScope: only the declared managed routes and ${job.plan.manualParticipants.length} manual participants are known. No new manual broker calls until release.\n${brokerDeploymentResumeDescription(job.plan.registrations)}`
               : null}
             {job.target === "preview-broker-deployment"
               ? job.plan.manualParticipants.map(
@@ -1657,6 +1666,9 @@ function DeliveryModeCard({ state }: { state: ReturnType<InstallationPanelModel[
   );
 }
 
+// React Native's types omit `aria-level`; without it React Native Web renders the heading as h1.
+const CUSTOM_DOMAIN_HEADING = { "aria-level": 5 } as object;
+
 const CUSTOM_DOMAIN_CHANGE_TEXT = {
   running: "The coordinator is restarting with this domain. Agents keep running.",
   succeeded: "The coordinator restarted with this domain.",
@@ -1689,16 +1701,31 @@ function CustomDomainCard({
   const status = state.customDomain;
   const [draft, setDraft] = useState<string | null>(null);
   const value = normalizeCustomDomain(draft ?? status?.origin ?? "");
-  const save = useCallback(() => {
-    void model.changeCustomDomain(value === "" ? null : value).then(() => setDraft(null));
-  }, [model, value]);
+  const origin = status?.origin ?? null;
+  const save = useCallback(async () => {
+    // Removing the domain restarts the coordinator and cuts off anyone using that address.
+    if (value === "" && origin) {
+      const confirmed = await confirmDialog({
+        title: "Remove the custom domain?",
+        message: `This installation stops answering at ${origin}. Saving restarts the coordinator; agents keep running.`,
+        confirmLabel: "Remove domain",
+        destructive: true,
+      });
+      if (!confirmed) return;
+    }
+    await model.changeCustomDomain(value === "" ? null : value);
+    setDraft(null);
+  }, [model, origin, value]);
+  const submit = useCallback(() => void save(), [save]);
   if (!status) return null;
   const last = status.lastChange;
   const running = last?.status === "running";
   const unchanged = value === (status.origin ?? "");
   return (
     <View style={[styles.cardBody, settingsStyles.rowBorder]} testID="custom-domain-card">
-      <Text style={settingsStyles.rowTitle}>Custom domain</Text>
+      <Text style={settingsStyles.rowTitle} accessibilityRole="header" {...CUSTOM_DOMAIN_HEADING}>
+        Custom domain
+      </Text>
       <Text style={styles.text}>
         {status.origin
           ? `This installation also answers at ${status.origin}.`
@@ -1708,31 +1735,28 @@ function CustomDomainCard({
       {status.available ? (
         <>
           <Field label="Domain">
-            <FormTextInput
+            {/* Saving restarts the coordinator, so it stays an explicit submit. */}
+            <JoinedField
               size="md"
+              label="Custom domain"
               autoCapitalize="none"
               autoCorrect={false}
               keyboardType="url"
               placeholder="https://vorteo.example.com"
               initialValue={status.origin ?? ""}
               onChangeText={setDraft}
-              editable={!state.busy && !running}
-              accessibilityLabel="Custom domain"
+              onSubmit={submit}
+              submitLabel={value === "" && status.origin ? "Remove domain" : "Save domain"}
+              submitDisabled={unchanged}
+              disabled={state.busy || running}
               testID="custom-domain-input"
+              submitTestID="custom-domain-save"
             />
           </Field>
           <Text style={styles.text}>
             Point the domain&apos;s DNS and HTTPS proxy at this Host first. Saving restarts only the
             coordinator; this page reconnects in a few seconds.
           </Text>
-          <Button
-            size="md"
-            disabled={state.busy || running || unchanged}
-            onPress={save}
-            testID="custom-domain-save"
-          >
-            {value === "" && status.origin ? "Remove domain" : "Save domain"}
-          </Button>
         </>
       ) : null}
       <SettingsStatusLine
@@ -2438,10 +2462,17 @@ function SystemAttentionNoticeBody({
 }) {
   const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
   const router = useRouter();
-  const open = useCallback(() => router.push("/settings/system"), [router]);
+  // An open settings page scrolls to the health list and focuses it. Pushing a route there would
+  // stack a second settings page over the first, and do nothing when System is already named.
+  const open = useCallback(() => {
+    if (!requestSettingsJump(SYSTEM_HEALTH_TARGET)) router.push(SYSTEM_HEALTH_ROUTE);
+  }, [router]);
   const client = useInstallationOwnerClient();
   const upgrades = useInstallationUpgradeStatus(client);
-  const count = systemAttentionCount(state, upgrades.data?.upgrades);
+  // The Health list's rows: the installation rows read here, plus the provider, primary
+  // connection and update rows the list last published. No provider query runs from here.
+  const extras = useHealthExtrasCount();
+  const count = systemHealthItems(state, upgrades.data?.upgrades).length + extras;
   if (!count) return null;
   const label = `System needs attention (${count})`;
   if (rail)
@@ -2467,6 +2498,7 @@ function SystemAttentionNoticeBody({
       onPress={open}
       leftIcon={TriangleAlert}
       textStyle={styles.systemNoticeText}
+      accessibilityHint="Opens the System health list"
       testID="installation-restart-banner"
     >
       {label}

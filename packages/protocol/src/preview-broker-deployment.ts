@@ -53,6 +53,10 @@ const Registration = z.strictObject({
   plist: File,
   disposition: z.enum(["loaded", "absent"]),
   process: Process.nullable(),
+  // How the restored consumer treats its channel. "running": the legacy pins verify, so
+  // the broker restarts on the new consumer code and serves requests at once. Optional
+  // for wire compatibility; plans without it predate running admission and mean "refusing".
+  admission: z.enum(["refusing", "running"]).optional(),
 });
 export const PreviewBrokerDeploymentPlanSchema = z.strictObject({
   version: z.literal(1),

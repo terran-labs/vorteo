@@ -6,7 +6,6 @@ import { useCallback, useEffect, useState } from "react";
 import { SettingsRow } from "@/components/settings";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { DropdownTrigger } from "@/components/ui/dropdown-trigger";
-import { useToast } from "@/contexts/toast-context";
 import { useInstallationOwnerClient } from "@/execution-installation/panel";
 import { readExecutionInstallation } from "@/execution-installation/policy";
 import { toErrorMessage } from "@/utils/error-messages";
@@ -29,7 +28,8 @@ const TYPES: readonly { value: InstallationType; label: string; description: str
 /** Stable or Lab, shared by the installation and shown beside its name. */
 export function InstallationTypeRow() {
   const client = useInstallationOwnerClient();
-  const toast = useToast();
+  // Failures show under the row, beside the choice, rather than in a toast.
+  const [problem, setProblem] = useState<string | null>(null);
   const [status, setStatus] = useState<InstallationTypeStatus | null>(null);
   const [supported, setSupported] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -43,27 +43,28 @@ export function InstallationTypeRow() {
         setStatus(next);
         setSupported(next !== null);
       } catch (error) {
-        if (current) toast.error(toErrorMessage(error));
+        if (current) setProblem(toErrorMessage(error));
       }
     };
     void load();
     return () => {
       current = false;
     };
-  }, [client, toast]);
+  }, [client]);
   const choose = useCallback(
     async (type: InstallationType) => {
       if (!client || !status || type === status.type) return;
       setSaving(true);
+      setProblem(null);
       try {
         setStatus(await client.changeInstallationType(status, type));
       } catch (error) {
-        toast.error(toErrorMessage(error));
+        setProblem(toErrorMessage(error));
       } finally {
         setSaving(false);
       }
     },
-    [client, status, toast],
+    [client, status],
   );
   if (!readExecutionInstallation()) return null;
   const selected = TYPES.find((type) => type.value === status?.type);
@@ -71,7 +72,12 @@ export function InstallationTypeRow() {
   if (!client) hint = "Unlock these settings to change the installation type.";
   else if (!supported) hint = "Available after the next System services update.";
   return (
-    <SettingsRow label="Installation type" hint={hint} testID="settings-installation-type">
+    <SettingsRow
+      label="Installation type"
+      hint={hint}
+      error={problem}
+      testID="settings-installation-type"
+    >
       <DropdownMenu>
         <DropdownTrigger
           accessibilityRole="button"

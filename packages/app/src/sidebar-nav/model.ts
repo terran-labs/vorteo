@@ -135,12 +135,6 @@ export function resolveSidebarNavItems<Section extends SidebarSection>(input: {
     items.push({ kind: "plugin", key, group, visible: true });
   }
 
-  for (const item of items) {
-    if (item.kind !== "builtin") continue;
-    if (item.id === "history" || item.id === "schedules") item.visible = true;
-    if (item.id === "usage") item.visible = false;
-  }
-
   return items.filter((item) => !input.excludedKeys?.includes(item.key));
 }
 

@@ -104,7 +104,7 @@ async function selectFileView(page: Page, view: "Preview" | "Source") {
     .filter({ visible: true })
     .getByRole("button", { name: view, exact: true });
   await option.click();
-  await expect(option).toHaveAttribute("aria-selected", "true");
+  await expect(option).toHaveAttribute("aria-checked", "true");
 }
 
 async function rememberMarkdownViewAcrossReload(page: Page, view: "Preview" | "Source") {

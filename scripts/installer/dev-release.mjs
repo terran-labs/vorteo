@@ -33,6 +33,7 @@ export const DEV_IMAGE_INPUTS = [
   "docker/base",
   "docker/tailscale",
   "docker/multiplex/compose.yaml",
+  "docker/multiplex/dev-seccomp.json",
   "docker/multiplex/compose.gate.yaml",
 ];
 /** Lifecycle files the installer keeps in a Dev deployment, from docker/multiplex. */
@@ -42,6 +43,7 @@ export const DEPLOYMENT_SCRIPTS = [
   "gate.sh",
   "connect.sh",
   "compose.gate.yaml",
+  "dev-seccomp.json",
 ];
 const KEEP_NEWEST = 3;
 

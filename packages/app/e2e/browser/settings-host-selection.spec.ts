@@ -6,6 +6,7 @@ import {
   addDirectHostFromSettings,
   clickSettingsBackToWorkspace,
   openSettingsHostSection,
+  settingsEnvironmentDetails,
 } from "../support/helpers/settings";
 
 import { seedWorkspace } from "../support/helpers/seed-client";
@@ -50,9 +51,7 @@ test.describe("Settings host selection", () => {
       await openSettings(page);
 
       await openSettingsHostSection(page, remoteDaemon.serverId, "connections");
-      await expect(
-        page.getByTestId(`settings-environment-${remoteDaemon.serverId}`).first(),
-      ).toBeVisible();
+      await expect(settingsEnvironmentDetails(page, remoteDaemon.serverId)).toBeVisible();
       await expect(page.getByTestId("settings-host-picker")).toHaveCount(0);
     } finally {
       await remoteWorkspace.cleanup().catch(() => undefined);
