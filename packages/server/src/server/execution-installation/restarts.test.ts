@@ -1959,6 +1959,10 @@ test("source builds fail before activation, uncertain dispatch retains selection
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "source-activation-")));
   const retention = await import("./host-release-retention.js");
   const prune = vi.spyOn(retention, "pruneHostReleases");
+  // The real listing asks the kernel about every process; its own test covers it.
+  const processes = vi
+    .spyOn(await import("./host-release-processes.js"), "releaseProcessPaths")
+    .mockResolvedValue([]);
   try {
     const previous = path.join(root, "previous");
     await mkdir(previous);
@@ -2139,15 +2143,24 @@ test("source builds fail before activation, uncertain dispatch retains selection
     const installed = (await dispatch())!;
     expect(installed.status).toBe("succeeded");
     await hostReleaseRetentionIdle();
-    expect(prune).not.toHaveBeenCalled();
-    expect(installed.detail).toContain("cleanup is suspended");
+    // Cleanup runs again after an install, with the in-use check that makes deletion safe:
+    // the same references and the process listing are read once more after set-aside.
+    expect(prune).toHaveBeenCalledTimes(1);
+    const retained = prune.mock.calls[0]![0];
+    expect(retained.inUse).toBeTypeOf("function");
+    expect(retained.referenced).toEqual(
+      expect.arrayContaining([path.join(root, "current"), previous]),
+    );
+    expect(installed.detail).toContain("removed in the background");
     expect(installed.detail).toContain("retention.json");
     const retentionReceipt = JSON.parse(
       await readFile(path.join(root, installed.id, "retention.json"), "utf8"),
     );
     expect(retentionReceipt).toMatchObject({ status: "finished" });
-    expect(retentionReceipt.note).toContain("not pruned");
-    expect(retentionReceipt.note).toContain("exclusive lifetime");
+    expect(retentionReceipt.note).not.toContain("not pruned");
+    // The release just installed and the one it replaced are both still there.
+    await expect(realpath(path.join(root, "current"))).resolves.toContain(root);
+    await expect(realpath(previous)).resolves.toBe(previous);
     expect(await readFile(path.join(root, "published"), "utf8")).toBe("yes");
     expect(updates.source().baseCommit).toBe(update.sourceCommit);
     expect(restart).toHaveBeenCalledTimes(2);
@@ -2215,7 +2228,9 @@ test("source builds fail before activation, uncertain dispatch retains selection
     expect(restart).toHaveBeenCalledTimes(5);
   } finally {
     await hostReleaseRetentionIdle();
+    expect(processes).toHaveBeenCalledTimes(2);
     prune.mockRestore();
+    processes.mockRestore();
     await rm(root, { recursive: true, force: true });
   }
 });

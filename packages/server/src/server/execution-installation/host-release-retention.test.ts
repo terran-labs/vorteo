@@ -1,8 +1,10 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import {
   existsSync,
   readFileSync,
   mkdirSync,
+  renameSync,
+  unlinkSync,
   mkdtempSync,
   realpathSync,
   rmSync,
@@ -22,7 +24,10 @@ import {
   readSessionHostRelease,
   writeSessionHostRelease,
   acquireHostLock,
+  SessionHostReleaseRemovedError,
 } from "../session-host/host-files.js";
+import { sessionHostReleaseRoot } from "../session-host/service.js";
+import { releasePathsInProcessListing, releaseProcessPaths } from "./host-release-processes.js";
 import {
   hostReleaseRetentionIdle,
   pruneHostReleases,
@@ -31,7 +36,9 @@ import {
 } from "./host-release-retention.js";
 
 const roots: string[] = [];
+const children: ChildProcess[] = [];
 afterEach(() => {
+  for (const child of children.splice(0)) child.kill("SIGKILL");
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -54,6 +61,24 @@ function fixture(count: number) {
   const current = path.join(base, "current");
   symlinkSync(release(count - 1), current);
   return { base, root, release, current };
+}
+
+const setAside = (f: ReturnType<typeof fixture>, index: number) =>
+  path.join(f.root, `.pruning-${id(index)}`);
+
+/** A process whose working directory is `cwd`, running until the test ends. */
+async function processIn(cwd: string, args: string[] = []): Promise<ChildProcess> {
+  const child = spawn(
+    process.execPath,
+    ["-e", "process.stdout.write('ready');setInterval(()=>{},1000)", ...args],
+    { cwd, stdio: ["ignore", "pipe", "ignore"] },
+  );
+  children.push(child);
+  await new Promise((resolve, reject) => {
+    child.stdout!.once("data", resolve);
+    child.once("error", reject);
+  });
+  return child;
 }
 
 test("retention keeps referenced and newest releases and removes the rest", async () => {
@@ -85,7 +110,14 @@ test("one release that cannot be removed is reported and the rest continue", asy
   });
   expect(failed).toEqual([id(1)]);
   expect(removed.sort()).toEqual([id(0), id(2), id(3)]);
-  expect(existsSync(f.release(1))).toBe(true);
+  // A release whose deletion failed may be half gone. It stays set aside, where nothing can
+  // start from it, and the next cleanup finishes the job.
+  expect(existsSync(f.release(1))).toBe(false);
+  expect(existsSync(setAside(f, 1))).toBe(true);
+  expect(await pruneHostReleases({ releaseRoot: f.root, referenced: [f.current] })).toEqual([
+    id(1),
+  ]);
+  expect(existsSync(setAside(f, 1))).toBe(false);
 });
 
 test("off macOS, release trees are removed without immutable-flag tooling", async () => {
@@ -330,4 +362,248 @@ test("failed Claude executable probes are cached until the executable changes", 
   );
   expect(await claudeExecutableVersion(executable)).toBe("2.1.99");
   expect(readFileSync(`${executable}.calls`, "utf8")).toBe("..");
+});
+
+test("retention keeps releases a preview broker plan or configuration names", async () => {
+  // A deployment plan pins candidate files inside the release that prepared it. Removing
+  // that release left the plan undeployable and previews down.
+  const f = fixture(8);
+  const candidate = (index: number) => ({
+    targets: [
+      {
+        root: "/elsewhere/preview",
+        files: {
+          "https_broker.py": {
+            candidate: { path: path.join(f.release(index), "scripts/https_broker.py") },
+          },
+        },
+      },
+    ],
+  });
+  const job = (index: number, status: string) => ({
+    target: "preview-broker-deployment",
+    status,
+    plan: candidate(index),
+  });
+  const config = {
+    sourceUpdates: { currentReleaseLink: f.current, toolingDirectory: f.current },
+    previewBrokerDeployment: {
+      worker: { path: path.join(f.release(4), "scripts/worker.py"), sha256: "0" },
+    },
+    previewBroker: { consumerFiles: [{ path: path.join(f.release(5), "scripts/consumer.py") }] },
+  } as unknown as Parameters<typeof hostRetentionReferences>[0]["config"];
+  const removed = await pruneHostReleases({
+    releaseRoot: f.root,
+    referenced: hostRetentionReferences({
+      config,
+      previous: f.release(7),
+      plans: [],
+      unfinished: [],
+      lifecycle: [
+        job(0, "pending"),
+        job(1, "failed"),
+        job(2, "succeeded"),
+        job(3, "rejected"),
+        // Another target's plan is not a broker plan, whatever paths it holds.
+        { target: "host", status: "pending", plan: candidate(6) },
+      ],
+    }),
+    keepNewest: 1,
+  });
+  expect(removed.sort()).toEqual([id(2), id(3), id(6)]);
+  for (const kept of [0, 1, 4, 5, 7]) expect(existsSync(f.release(kept))).toBe(true);
+});
+
+test("process listings name releases by working directory, executable and command line", () => {
+  const root = "/data/releases";
+  const paths = releasePathsInProcessListing(root, {
+    files: [
+      "p41",
+      "fcwd",
+      `n${root}/${id(1)}/build-a/packages/server`,
+      "ftxt",
+      `n${root}/.pruning-${id(2)}/build-b/node_modules/pty/pty.node`,
+      "n/usr/lib/dyld",
+      `n${root}-other/${id(9)}/build`,
+    ].join("\n"),
+    commands: [
+      `/usr/bin/node ${root}/${id(3)}/build-c/packages/server/dist/daemon-worker.js --flag`,
+      `node --import=${root}/${id(4)}/build-d/loader.js /elsewhere/main.js`,
+      "/usr/bin/node /elsewhere/main.js",
+    ].join("\n"),
+  });
+  expect(paths.sort()).toEqual([
+    `${root}/.pruning-${id(2)}/build-b/node_modules/pty/pty.node`,
+    `${root}/${id(1)}/build-a/packages/server`,
+    `${root}/${id(3)}/build-c/packages/server/dist/daemon-worker.js`,
+    `${root}/${id(4)}/build-d/loader.js`,
+  ]);
+});
+
+test("retention keeps every release a running process executes from", async () => {
+  // A daemon worker, a session host or a provider CLI can run from any old release.
+  const f = fixture(6);
+  await processIn(path.join(f.release(1), "node_modules"));
+  // This one runs elsewhere and only names its release on the command line.
+  await processIn(f.base, [path.join(f.release(2), "entry.js")]);
+  const live = await releaseProcessPaths(f.root);
+  expect(live).toContain(path.join(f.release(1), "node_modules"));
+  expect(live).toContain(path.join(f.release(2), "entry.js"));
+  const removed = await pruneHostReleases({
+    releaseRoot: f.root,
+    referenced: [f.current, ...live],
+    keepNewest: 1,
+  });
+  expect(removed.sort()).toEqual([id(0), id(3), id(4)]);
+  expect(existsSync(f.release(1))).toBe(true);
+  expect(existsSync(f.release(2))).toBe(true);
+}, 60_000);
+
+test("a process that starts after the snapshot gets its release back", async () => {
+  // The race that suspended cleanup: nothing uses release 1 when references are read, and
+  // a process starts from it before deletion. Setting the folder aside first means the
+  // process is either visible to the check that follows or could not have started at all.
+  const f = fixture(5);
+  const snapshot = [f.current, ...(await releaseProcessPaths(f.root))];
+  const late = await processIn(path.join(f.release(1), "node_modules"));
+  const kept: string[] = [];
+  let duringCheck: boolean | null = null;
+  const removed = await pruneHostReleases({
+    releaseRoot: f.root,
+    referenced: snapshot,
+    keepNewest: 1,
+    inUse: async () => {
+      // While the check runs, no candidate can be started from.
+      duringCheck = existsSync(f.release(1)) || existsSync(f.release(0));
+      return releaseProcessPaths(f.root);
+    },
+    onInUse: (folder) => kept.push(path.basename(folder)),
+  });
+  expect(duringCheck).toBe(false);
+  expect(kept).toEqual([id(1)]);
+  expect(removed.sort()).toEqual([id(0), id(2), id(3)]);
+  expect(existsSync(path.join(f.release(1), "node_modules"))).toBe(true);
+  expect(existsSync(setAside(f, 1))).toBe(false);
+  expect(late.exitCode).toBeNull();
+}, 60_000);
+
+test("a release selected after the snapshot is put back, not deleted", async () => {
+  // A rollback moves the release link while cleanup runs. The link dangles while its target
+  // is set aside; it still names the folder it points into.
+  const f = fixture(5);
+  const removed = await pruneHostReleases({
+    releaseRoot: f.root,
+    referenced: [f.current],
+    keepNewest: 1,
+    inUse: async () => {
+      unlinkSync(f.current);
+      symlinkSync(f.release(2), f.current);
+      return [path.join(f.current, "packages/server")];
+    },
+  });
+  expect(removed.sort()).toEqual([id(0), id(1), id(3)]);
+  expect(realpathSync(f.current)).toBe(f.release(2));
+});
+
+test("cleanup that cannot read what is in use puts every release back", async () => {
+  const f = fixture(5);
+  const failed: string[] = [];
+  await expect(
+    pruneHostReleases({
+      releaseRoot: f.root,
+      referenced: [f.current],
+      keepNewest: 1,
+      inUse: async () => {
+        throw new Error("process listing failed");
+      },
+      onError: (folder) => failed.push(folder),
+    }),
+  ).rejects.toThrow("process listing failed");
+  expect(failed).toEqual([]);
+  for (let index = 0; index < 5; index++) {
+    expect(existsSync(f.release(index))).toBe(true);
+    expect(existsSync(setAside(f, index))).toBe(false);
+  }
+});
+
+test("a folder left set aside is put back when something still uses it", async () => {
+  const f = fixture(4);
+  renameSync(path.join(f.root, id(0)), setAside(f, 0));
+  renameSync(path.join(f.root, id(1)), setAside(f, 1));
+  const kept: string[] = [];
+  const removed = await pruneHostReleases({
+    releaseRoot: f.root,
+    referenced: [f.current],
+    // The kernel reports a renamed working directory under its new name.
+    inUse: async () => [path.join(setAside(f, 0), "build-x/packages/server")],
+    onInUse: (folder) => kept.push(path.basename(folder)),
+  });
+  expect(removed).toEqual([id(1)]);
+  expect(kept).toEqual([id(0)]);
+  expect(existsSync(f.release(0))).toBe(true);
+});
+
+test("a session host starting during cleanup is kept or refuses to start", async () => {
+  const f = fixture(5);
+  const home = path.join(f.base, "home");
+  const directory = path.join(home, "session-host");
+  mkdirSync(directory, { recursive: true });
+  const lock = await acquireHostLock(path.join(directory, "host.sock"));
+  const references = async () => {
+    const release = await readSessionHostRelease(home);
+    return [f.current, ...(release ? [release] : [])];
+  };
+  try {
+    // Cleanup wins: the release is set aside before the host publishes. The host finds its
+    // release gone and fails its start instead of serving from removed files.
+    let refused: unknown;
+    const removed = await pruneHostReleases({
+      releaseRoot: f.root,
+      referenced: [f.current],
+      keepNewest: 4,
+      inUse: async () => {
+        refused = await writeSessionHostRelease(directory, f.release(0)).catch((error) => error);
+        return [f.current];
+      },
+    });
+    expect(refused).toBeInstanceOf(SessionHostReleaseRemovedError);
+    expect(removed).toEqual([id(0)]);
+
+    // The host wins: it publishes after the references were read and before its release is
+    // set aside. The second read cannot confirm the receipt's release, so nothing is deleted.
+    const snapshot = [f.current];
+    await writeSessionHostRelease(directory, f.release(1));
+    await expect(
+      pruneHostReleases({
+        releaseRoot: f.root,
+        referenced: snapshot,
+        keepNewest: 3,
+        inUse: references,
+      }),
+    ).rejects.toThrow();
+    expect(existsSync(f.release(1))).toBe(true);
+    expect(await readSessionHostRelease(home)).toBe(f.release(1));
+
+    // Once the receipt is part of the references, the release is simply kept.
+    const afterReceipt = await pruneHostReleases({
+      releaseRoot: f.root,
+      referenced: await references(),
+      keepNewest: 1,
+      inUse: references,
+    });
+    expect(afterReceipt.sort()).toEqual([id(2), id(3)]);
+    expect(existsSync(f.release(1))).toBe(true);
+  } finally {
+    await lock.release();
+  }
+});
+
+test("the session host names the release its own code was loaded from", () => {
+  const release = "/data/releases/reviewed-updates/job/build-x";
+  expect(
+    sessionHostReleaseRoot(`${release}/packages/server/dist/server/server/session-host/service.js`),
+  ).toBe(release);
+  expect(
+    sessionHostReleaseRoot("/src/vorteo/packages/server/src/server/session-host/service.ts"),
+  ).toBeNull();
 });
