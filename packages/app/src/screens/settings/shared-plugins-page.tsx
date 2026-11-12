@@ -11,6 +11,8 @@ import { SettingsCard, SettingsRow, SettingsSection } from "@/components/setting
 import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { Button } from "@/components/ui/button";
 import { Field, FormTextInput } from "@/components/ui/form-field";
+import { SettingsListSummary, useCloseSettingsDialog } from "@/components/settings/list-summary";
+import { installationHostServerId } from "@/execution-installation/policy";
 import { Switch } from "@/components/ui/switch";
 import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
@@ -282,10 +284,16 @@ function SharedPluginCard({
     },
     [snapshot, save, plugin.id],
   );
+  const closeDialog = useCloseSettingsDialog();
   const update = useCallback(() => {
-    if (plugin.source.kind === "directory") router.push("/settings/environments");
-    else edit(plugin);
-  }, [edit, plugin]);
+    // Both leave the Manage dialog: one navigates, the other opens its own editor dialog.
+    closeDialog();
+    // Directory bindings are environment exceptions: open the Host's environment dialog.
+    const hostId = installationHostServerId(installation);
+    if (plugin.source.kind !== "directory") edit(plugin);
+    else if (hostId) router.push(`/settings/hosts/${encodeURIComponent(hostId)}/host`);
+    else router.push("/settings/environments");
+  }, [closeDialog, edit, plugin, installation]);
   const remove = useCallback(async () => {
     const settings = snapshot.settings;
     const plugins = settings?.plugins;
@@ -329,10 +337,19 @@ function SharedPluginCard({
               disabled={pending}
               onValueChange={toggle}
             />
-            <Button variant="outline" size="sm" onPress={update}>
+            <Button
+              variant="outline"
+              onPress={update}
+              accessibilityLabel={`${plugin.source.kind === "directory" ? "Directories for" : "Update"} ${plugin.id}`}
+            >
               {plugin.source.kind === "directory" ? "Directories" : "Update"}
             </Button>
-            <Button variant="outline" size="sm" disabled={pending} onPress={remove}>
+            <Button
+              variant="outline"
+              disabled={pending}
+              onPress={remove}
+              accessibilityLabel={`Remove ${plugin.id}`}
+            >
               Remove
             </Button>
           </View>
@@ -399,7 +416,7 @@ export function SharedPluginsPage() {
   );
   const addButton = useMemo(
     () => (
-      <Button variant="outline" size="sm" onPress={add} testID="shared-plugin-add">
+      <Button variant="outline" onPress={add} testID="shared-plugin-add">
         Add plugin
       </Button>
     ),
@@ -437,17 +454,28 @@ export function SharedPluginsPage() {
           <Text style={settingsStyles.rowHint}>No plugins installed</Text>
         ) : null}
       </SettingsSection>
-      {plugins.map((plugin) => (
-        <SharedPluginCard
-          key={plugin.id}
-          plugin={plugin}
-          snapshot={data}
-          installation={installation}
-          pending={mutation.isPending}
-          save={mutation.mutate}
-          edit={edit}
-        />
-      ))}
+      {/* Each plugin is a card per environment, so a few already make a long page. */}
+      <SettingsListSummary
+        title="Plugins"
+        count={plugins.length}
+        noun={PLUGIN_NOUN}
+        preview={plugins.map((plugin) => plugin.id)}
+        detail={disabledDetail(plugins)}
+        inlineLimit={PLUGINS_INLINE_LIMIT}
+        testID="shared-plugins-list"
+      >
+        {plugins.map((plugin) => (
+          <SharedPluginCard
+            key={plugin.id}
+            plugin={plugin}
+            snapshot={data}
+            installation={installation}
+            pending={mutation.isPending}
+            save={mutation.mutate}
+            edit={edit}
+          />
+        ))}
+      </SettingsListSummary>
       {form ? (
         <SharedPluginForm key={form.plugin?.id ?? "new"} form={form} onClose={close} />
       ) : null}
@@ -466,3 +494,10 @@ const styles = StyleSheet.create((theme) => ({
 }));
 
 const reservedLayout1 = { minHeight: 160 } as const;
+const PLUGIN_NOUN = { one: "plugin", other: "plugins" };
+const PLUGINS_INLINE_LIMIT = 2;
+
+function disabledDetail(plugins: readonly InstallationPlugin[]): string | undefined {
+  const disabled = plugins.filter((plugin) => !plugin.enabled).length;
+  return disabled > 0 ? `${disabled} disabled` : undefined;
+}

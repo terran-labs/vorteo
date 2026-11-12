@@ -20,6 +20,13 @@ const PROJECTS = [
   { id: "field-notes", name: "Field Notes", description: "An offline notebook for researchers." },
 ];
 
+/** Three more projects, so the settings project list grows past its summary limit. */
+const QUIET_PROJECTS = [
+  { id: "harbor", name: "Harbor", workspace: "Dock schedule" },
+  { id: "lexicon", name: "Lexicon", workspace: "Glossary import" },
+  { id: "relay-board", name: "Relay Board", workspace: "Status page" },
+];
+
 /** Fresh, deterministic data for every demo session. No paths identify real files. */
 /** Representative progress: alternate stories show check-based and estimated progress. */
 function demoTaskProgress(status: string, storyIndex: number) {
@@ -237,5 +244,52 @@ export function createDemoScenario() {
       return [agent.id, entries] as const;
     }),
   ]);
-  return { projects, workspaces, agents, timelines };
+  // Quieter projects with one finished workspace each, so the settings project list passes its
+  // summary limit without empty placeholders in the sidebar.
+  const quietProjects = QUIET_PROJECTS.map((project) =>
+    WorkspaceProjectDescriptorPayloadSchema.parse({
+      projectId: `demo-project-${project.id}`,
+      projectKey: `demo-project-${project.id}`,
+      projectDisplayName: project.name,
+      projectRootPath: `/demo/${project.id}`,
+      projectKind: "git",
+    }),
+  );
+  const quietWorkspaces = quietProjects.map((project, index) => {
+    const title = QUIET_PROJECTS[index].workspace;
+    const cwd = `${project.projectRootPath}/main`;
+    return WorkspaceDescriptorPayloadSchema.parse({
+      id: `demo-workspace-quiet-${index}`,
+      projectId: project.projectId,
+      projectDisplayName: project.projectDisplayName,
+      projectRootPath: project.projectRootPath,
+      workspaceDirectory: cwd,
+      projectKind: "git",
+      workspaceKind: "local_checkout",
+      name: title,
+      title,
+      status: "done",
+      activityAt: DEMO_TIMESTAMP,
+      diffStat: { additions: 0, deletions: 0 },
+      project: ProjectPlacementPayloadSchema.parse({
+        projectKey: project.projectKey,
+        projectName: project.projectDisplayName,
+        workspaceName: title,
+        checkout: {
+          cwd,
+          isGit: true,
+          currentBranch: "main",
+          remoteUrl: null,
+          isPaseoOwnedWorktree: false,
+        },
+      }),
+      gitRuntime: { currentBranch: "main", isDirty: false, aheadBehind: { ahead: 0, behind: 0 } },
+    });
+  });
+  return {
+    projects: [...projects, ...quietProjects],
+    workspaces: [...workspaces, ...quietWorkspaces],
+    agents,
+    timelines,
+  };
 }

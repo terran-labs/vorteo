@@ -1,4 +1,4 @@
-import { selectSettingsHost } from "../support/helpers/settings";
+import { selectSettingsHost, settingsEnvironmentDetails } from "../support/helpers/settings";
 import {
   openGlobalNewWorkspaceComposer,
   fillNewWorkspaceDraft,
@@ -114,7 +114,7 @@ test.describe("Settings host page", () => {
     await openSettingsHost(page, outdatedDaemon.serverId);
     await openHostSection(page, outdatedDaemon.serverId, "host");
     // Host details keep removal and appearance, while System owns lifecycle actions.
-    const hostDetails = page.getByTestId(`settings-environment-${outdatedDaemon.serverId}`).first();
+    const hostDetails = settingsEnvironmentDetails(page, outdatedDaemon.serverId);
     await expect(hostDetails.getByTestId("host-page-update-button")).toHaveCount(0);
     await expect(hostDetails.getByTestId("host-page-update-error")).toHaveCount(0);
     await expect(hostDetails.getByTestId("host-page-restart-card")).toHaveCount(0);

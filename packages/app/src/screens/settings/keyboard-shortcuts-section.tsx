@@ -15,6 +15,7 @@ import type { Theme } from "@/styles/theme";
 import { settingsStyles } from "@/styles/settings";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { Button } from "@/components/ui/button";
+import { confirmDialog } from "@/utils/confirm-dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -305,7 +306,7 @@ function ShortcutRow({
         {isCapturing ? (
           <>
             {showDone && (
-              <Button variant="ghost" disabled={!captureComplete} onPress={onDone}>
+              <Button variant="outline" disabled={!captureComplete} onPress={onDone}>
                 {t("settings.shortcuts.actions.done")}
               </Button>
             )}
@@ -427,7 +428,17 @@ export function KeyboardShortcutsSection() {
     };
   }, [capturing]);
 
-  const handleResetAll = useCallback(() => void resetAll(), [resetAll]);
+  // Resetting discards every custom shortcut, so it asks first.
+  const handleResetAll = useCallback(async () => {
+    const confirmed = await confirmDialog({
+      title: "Reset all shortcuts?",
+      message: "Every custom shortcut returns to its default.",
+      confirmLabel: t("settings.shortcuts.actions.resetAll"),
+      cancelLabel: t("common.actions.cancel"),
+      destructive: true,
+    });
+    if (confirmed) await resetAll();
+  }, [resetAll, t]);
   const handleClearOverride = useCallback(
     (bindingId: string) => void clearOverride(bindingId),
     [clearOverride],
@@ -440,7 +451,7 @@ export function KeyboardShortcutsSection() {
   if (!hardwareKeyboardPresent) return null;
 
   const resetAllButton = hasOverrides ? (
-    <Button variant="ghost" onPress={handleResetAll}>
+    <Button variant="outline" onPress={handleResetAll}>
       {t("settings.shortcuts.actions.resetAll")}
     </Button>
   ) : undefined;

@@ -98,7 +98,17 @@ vi.mock(".", () => ({
     </div>
   ),
 }));
-vi.mock("lucide-react-native", () => ({ Lock: () => <span /> }));
+// Every icon renders as an empty span, so components that gain icons do not break this mock.
+vi.mock("lucide-react-native", () => {
+  const Icon = () => <span />;
+  return new Proxy(
+    {},
+    {
+      get: (_target, key) => (key === "then" || key === "__esModule" ? undefined : Icon),
+      has: () => true,
+    },
+  );
+});
 afterEach(() => {
   cleanup();
   windowDimensions.fontScale = 1;
@@ -131,7 +141,7 @@ describe("owner access controls", () => {
       );
       expect(children).not.toHaveBeenCalled();
       if (status === "locked") {
-        fireEvent.click(screen.getByRole("button", { name: "Peek at Providers" }));
+        fireEvent.click(screen.getByRole("button", { name: "Peek at settings for Providers" }));
         expect(children).toHaveBeenCalledWith({ disabled: true });
       }
     },
@@ -141,19 +151,28 @@ describe("owner access controls", () => {
     render(wrap(access(status), <OwnerLockedGroup title="Providers">{children}</OwnerLockedGroup>));
     expect(children).toHaveBeenCalledWith({ disabled: false });
   });
-  it("keeps badge dimensions across access states", () => {
-    const result = render(wrap(access("locked"), <OwnerLockBadge />));
-    const dimensions = () => {
-      const badge = screen.getByTestId("owner-lock-badge");
-      return [badge.style.width, badge.style.height];
-    };
-    const initial = dimensions();
-    expect(initial).toEqual(["224px", "44px"]);
-    for (const status of ["checking", "unlocked"] as const) {
-      result.rerender(wrap(access(status), <OwnerLockBadge />));
-      expect(screen.getByText(status === "checking" ? "Checking" : "Unlocked")).toBeTruthy();
-      expect(dimensions()).toEqual(initial);
-    }
+  it("shows the lock state as a radio group and acts through it", () => {
+    const value = access("locked");
+    const result = render(wrap(value, <OwnerLockBadge />));
+    const radio = (name: string) => screen.getByRole("radio", { name });
+    expect(screen.getByRole("radiogroup", { name: "Settings lock" })).toBeTruthy();
+    expect(radio("Locked").getAttribute("aria-checked")).toBe("true");
+    expect(radio("Unlocked").getAttribute("aria-checked")).toBe("false");
+    // One Tab stop, on the chosen option.
+    expect(radio("Locked").tabIndex).toBe(0);
+    expect(radio("Unlocked").tabIndex).toBe(-1);
+    // Arrows move focus only; arriving on Unlocked must not open the password dialog.
+    radio("Locked").focus();
+    fireEvent.keyDown(radio("Locked"), { key: "ArrowRight" });
+    expect(document.activeElement).toBe(radio("Unlocked"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // Space chooses; Unlocked asks for the password instead of claiming to be unlocked.
+    fireEvent.keyDown(radio("Unlocked"), { key: " " });
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    result.rerender(wrap(access("checking"), <OwnerLockBadge />));
+    expect(radio("Locked").getAttribute("aria-checked")).toBe("false");
+    expect(radio("Unlocked").getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByTestId("owner-lock-badge").textContent).toContain("Checking");
   });
   it("shows a rejected password in the reserved dialog error line", async () => {
     const value = access("locked");
@@ -171,17 +190,18 @@ describe("owner access controls", () => {
     expect(screen.getByTestId("owner-unlock-error").textContent).toBe("Incorrect owner password");
     expect(screen.getByTestId("owner-unlock-error-slot").style.minHeight).toBe(height);
   });
-  it("makes peeked inputs inert and hidden from web accessibility", () => {
+  it("keeps a peeked preview readable but out of the Tab order and disabled", () => {
     const children = () => <input aria-label="Protected setting" />;
     render(
       wrap(access("locked"), <OwnerLockedGroup title="Providers">{children}</OwnerLockedGroup>),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Peek at Providers" }));
-    const peek = screen.getByTestId("owner-locked-peek");
-    expect(peek.hasAttribute("inert")).toBe(true);
-    expect(peek.getAttribute("aria-hidden")).toBe("true");
-    expect(peek.querySelector("input")).not.toBeNull();
-    expect(screen.queryByRole("textbox", { name: "Protected setting" })).toBeNull();
+    const toggle = screen.getByRole("button", { name: "Peek at settings for Providers" });
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    // Expanded means shown to everyone: readable, but not operable.
+    const input = screen.getByRole("textbox", { name: "Protected setting" });
+    expect(input.tabIndex).toBe(-1);
+    expect(input.getAttribute("aria-disabled")).toBe("true");
   });
   it("reserves badge error space without announcing an empty alert", async () => {
     const value = access("unlocked");
@@ -194,7 +214,7 @@ describe("owner access controls", () => {
     const slot = screen.getByTestId("owner-lock-error");
     const height = screen.getByTestId("owner-lock-error-slot").style.minHeight;
     expect(screen.queryByRole("alert")).toBeNull();
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Lock" })));
+    await act(async () => fireEvent.click(screen.getByRole("radio", { name: "Locked" })));
     expect(slot.getAttribute("aria-live")).toBe("polite");
     // The text node carries the message; no duplicate label.
     expect(slot.getAttribute("aria-label")).toBeNull();
@@ -232,7 +252,8 @@ describe("owner access controls", () => {
     expect(error.textContent).toBe(message);
     expect(error.getAttribute("aria-live")).toBe("polite");
     expect(renderedLineCounts.get("owner-unlock-error")).toBe(2);
-    expect(screen.getByTestId("owner-lock-error").hasAttribute("aria-live")).toBe(false);
+    // Always live, so the first error after mount is announced.
+    expect(screen.getByTestId("owner-lock-error").getAttribute("aria-live")).toBe("polite");
   });
   it("does not mount fetching children when locked, even when peeked, and mounts after unlock", () => {
     const fetch = vi.fn();
@@ -246,7 +267,7 @@ describe("owner access controls", () => {
       </OwnerSettingsGate>
     );
     const result = render(wrap(access("locked"), pane));
-    fireEvent.click(screen.getByRole("button", { name: "Peek at Providers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Peek at settings for Providers" }));
     expect(fetch).not.toHaveBeenCalled();
     result.rerender(wrap(access("unlocked"), pane));
     expect(fetch).toHaveBeenCalledTimes(1);
@@ -262,11 +283,15 @@ describe("owner access controls", () => {
     installationMode.active = true;
     const result = render(wrap(access("locked"), <InstallationNameSection />));
     expect(screen.getByText("Installation name: Lab · Locked")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    // The name saves on Enter or blur, so the unlocked state is the editable field itself.
+    expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByText("Installation type")).toBeNull();
     expect(installationTypeRow).not.toHaveBeenCalled();
     result.rerender(wrap(access("unlocked"), <InstallationNameSection />));
-    expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+    expect(screen.getByRole("textbox")).toBeTruthy();
+    // Stable or Lab is chosen once, so it waits behind the section's Advanced group.
+    expect(screen.queryByText("Installation type")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
     expect(screen.getByText("Installation type")).toBeTruthy();
     expect(installationTypeRow).toHaveBeenCalledTimes(1);
   });
@@ -289,7 +314,7 @@ describe("owner access controls", () => {
       </OwnerSettingsGate>
     );
     const result = render(wrap(access("locked"), pane));
-    fireEvent.click(screen.getByRole("button", { name: "Peek at Providers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Peek at settings for Providers" }));
     fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
     expect(screen.getByRole("dialog")).toBeTruthy();
     result.rerender(wrap(access("unlocked"), pane));
@@ -298,7 +323,9 @@ describe("owner access controls", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByText("Unlock to load these settings.")).toBeNull();
     expect(
-      screen.getByRole("button", { name: "Peek at Providers" }).getAttribute("aria-expanded"),
+      screen
+        .getByRole("button", { name: "Peek at settings for Providers" })
+        .getAttribute("aria-expanded"),
     ).toBe("false");
   });
   it("subscribes through an injectable hook source", () => {

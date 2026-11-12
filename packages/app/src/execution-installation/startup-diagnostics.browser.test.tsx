@@ -6,6 +6,7 @@ const frames: HTMLIFrameElement[] = [];
 afterEach(async () => {
   for (const frame of frames.splice(0)) frame.remove();
   localStorage.removeItem("vorteo-data-saver-v1");
+  localStorage.removeItem("vorteo-data-saver-override-v2");
   const origin = new URL(inject("passwordlessRelayUrl").replace("ws:", "http:")).origin;
   await fetch(`${origin}/startup-test-mode`, { method: "POST", body: "normal" });
 });
@@ -325,11 +326,16 @@ test("a foreground clock gap starts overdue checks without retrying a slow but p
   });
 });
 
-test("saved data saver skips optional fonts before app code and toggles without duplicating the pending entry", async () => {
+test("a startup-screen data saver choice persists, skips optional fonts before app code and toggles without duplicating the pending entry", async () => {
+  // The retired settings switch's key is dropped; only the startup screen's override counts.
   const { doc, origin } = await openLoader(
     "/startup-held-fixture",
-    controlledClock + 'localStorage.setItem("vorteo-data-saver-v1","on");',
+    controlledClock +
+      'localStorage.setItem("vorteo-data-saver-v1","off");' +
+      'localStorage.setItem("vorteo-data-saver-override-v2","on");',
   );
+  const storage = doc.defaultView!.localStorage;
+  expect(storage.getItem("vorteo-data-saver-v1")).toBeNull();
   expect(doc.documentElement.dataset.vorteoDataSaver).toBe("true");
   expect(doc.querySelector("#vorteo-optional-fonts")?.hasAttribute("href")).toBe(false);
   expect(await fetch(`${origin}/startup-font-stats`).then((r) => r.json())).toEqual({
@@ -341,6 +347,7 @@ test("saved data saver skips optional fonts before app code and toggles without 
   expect(doc.getElementById("boot-tinted-mark")).not.toBeNull();
   button.click();
   expect(button.getAttribute("aria-pressed")).toBe("false");
+  expect(storage.getItem("vorteo-data-saver-override-v2")).toBe("off");
   await expect
     .poll(async () => fetch(`${origin}/startup-font-stats`).then((r) => r.json()))
     .toEqual({ requests: 1 });

@@ -145,3 +145,4 @@ export const Box = StubIcon;
 export const Gauge = StubIcon;
 export const KeyRound = StubIcon;
 export const Lock = StubIcon;
+export const LockOpen = StubIcon;

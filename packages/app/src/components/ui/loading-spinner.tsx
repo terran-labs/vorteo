@@ -22,6 +22,8 @@ interface LoadingSpinnerProps {
    * upstream Paseo's faster turn and a heavier ring. Leave it off for passive status.
    */
   prominent?: boolean;
+  /** What is loading, such as "Loading sign-in status". Defaults to "Loading". */
+  accessibilityLabel?: string;
 }
 
 // Upstream's ActivityIndicator ring is 4/32 of its diameter.
@@ -38,6 +40,7 @@ export function LoadingSpinner({
   size = "small",
   style,
   prominent = false,
+  accessibilityLabel = "Loading",
 }: LoadingSpinnerProps) {
   const baseDiameter = typeof size === "number" ? size : LOADING_INDICATOR[size];
   const diameter = size === "large" ? baseDiameter * 1.25 : baseDiameter;
@@ -59,7 +62,7 @@ export function LoadingSpinner({
   return (
     <View
       role="progressbar"
-      accessibilityLabel="Loading"
+      accessibilityLabel={accessibilityLabel}
       style={[{ alignItems: "center", justifyContent: "center" }, style]}
     >
       {size === "large" ? (

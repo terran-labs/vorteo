@@ -1,5 +1,5 @@
 import { RotateCw } from "lucide-react-native";
-import { useCallback, useMemo } from "react";
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Text, View, type StyleProp, type TextStyle } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -16,11 +16,11 @@ import { isNative } from "@/constants/platform";
 import type { TFunction } from "i18next";
 import { UsageBalanceBar } from "./balance-bar";
 import type { UsageDisplay } from "./display";
-import { formatAgo, formatProviderUsageLabel } from "./format";
+import { formatAgo } from "./format";
 import { resolveUsageReport, type UsageRefresh } from "./model";
 import { useReportRefresh } from "./queries";
 import { UsageSourceIcon } from "./source-icon";
-import type { UsageReport, UsageReportEntry, UsageWindow } from "./types";
+import type { UsageReport, UsageReportEntry } from "./types";
 import { UsageWindowBar } from "./window-bar";
 import { useRelativeTimeTick } from "./use-relative-time-tick";
 
@@ -39,7 +39,6 @@ export function UsageCard({
   agentId,
   entry,
   display,
-  pinnable,
   refreshable,
   compact = false,
 }: {
@@ -47,8 +46,6 @@ export function UsageCard({
   agentId?: string;
   entry: UsageReportEntry;
   display: UsageDisplay;
-  /** Whether each window row pins the window to the sidebar. */
-  pinnable: boolean;
   /** Whether the header has a Refresh button. Without one the freshness shows on the card. */
   refreshable: boolean;
   compact?: boolean;
@@ -115,13 +112,11 @@ export function UsageCard({
       {windows.length > 0 || balances.length > 0 ? (
         <View style={styles.bars}>
           {windows.map((window) => (
-            <CardWindowBar
+            <UsageWindowBar
               key={window.id}
-              entry={entry}
               window={window}
               retained={retained}
-              display={display}
-              pinnable={pinnable}
+              displayAs={display.displayAs}
             />
           ))}
           {balances.map((balance) => (
@@ -167,40 +162,6 @@ export function UsageCard({
         </Text>
       ) : null}
     </View>
-  );
-}
-
-function CardWindowBar({
-  entry,
-  window,
-  display,
-  pinnable,
-  retained,
-}: {
-  retained: boolean;
-  entry: UsageReportEntry;
-  window: UsageWindow;
-  display: UsageDisplay;
-  pinnable: boolean;
-}) {
-  const { t } = useTranslation();
-  const pin = useMemo(
-    () => ({ sourceId: entry.sourceId, windowId: window.id }),
-    [entry.sourceId, window.id],
-  );
-  const { togglePin } = display;
-  const toggle = useCallback(() => togglePin(pin), [pin, togglePin]);
-  return (
-    <UsageWindowBar
-      window={window}
-      retained={retained}
-      displayAs={display.displayAs}
-      pinnable={pinnable}
-      pinned={display.isPinned(pin)}
-      onTogglePin={toggle}
-      pinLabel={`${t("providerUsage.pin")} ${entry.sourceLabel} ${formatProviderUsageLabel(window.id, window.label, t)}`}
-      pinTestID={`usage-pin-${entry.sourceId}-${window.id}`}
-    />
   );
 }
 

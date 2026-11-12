@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type {
@@ -6,11 +6,11 @@ import type {
   AgentSkillsSaveResult,
   AgentSkillsStatus,
 } from "@getpaseo/protocol/messages";
-import { useToast } from "@/contexts/toast-context";
 import { useFetchQuery } from "@/data/query";
 import { useHostFeature } from "@/runtime/host-features";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useInstallationSettings } from "@/execution-installation/settings";
+import { useOwnerAccess } from "@/execution-installation/owner-access";
 import {
   previewInstallationSkills,
   installationSkillStatus,
@@ -22,7 +22,6 @@ export type AgentSkillsController = ReturnType<typeof useAgentSkills>;
 
 export function useAgentSkills(serverId: string) {
   const { t } = useTranslation();
-  const toast = useToast();
   const queryClient = useQueryClient();
   const client = useHostRuntimeClient(serverId);
   const localConnected = useHostRuntimeIsConnected(serverId);
@@ -32,6 +31,9 @@ export function useAgentSkills(serverId: string) {
     installation?.environments.some((environment) => environment.serverId === serverId),
   );
   const sharedSelection = shared?.settings?.skills?.selection;
+  // Shared skill settings need owner access. Locked is a state to show, not an error.
+  const owner = useOwnerAccess();
+  const locked = managed && owner.status !== "unlocked";
   const connected = managed || localConnected;
   const supported = managed || localSupported;
   const installationId = installation?.installationId;
@@ -43,12 +45,14 @@ export function useAgentSkills(serverId: string) {
     [managed, installationId, serverId],
   );
   const reportedQueryError = useRef<Error | null>(null);
+  // Failures show in the section's status line, next to the controls, rather than a toast.
+  const [problem, setProblem] = useState<string | null>(null);
   const report = useCallback(
     (message: string, error: Error) => {
       console.error(`[Agent skills: ${serverId}]`, error);
-      toast.error(message);
+      setProblem(message);
     },
-    [serverId, toast],
+    [serverId],
   );
   const query = useFetchQuery<AgentSkillsStatus, Error>({
     queryKey,
@@ -66,7 +70,7 @@ export function useAgentSkills(serverId: string) {
       if (!client) throw new Error(t("settings.host.skills.unavailable"));
       return client.getAgentSkillsStatus();
     },
-    enabled: managed ? Boolean(sharedSelection) : supported && client !== null,
+    enabled: managed ? !locked && Boolean(sharedSelection) : supported && client !== null,
     refetchInterval: managed ? 5000 : false,
     retry: false,
     dataShape: "value",
@@ -78,7 +82,10 @@ export function useAgentSkills(serverId: string) {
     report(t("settings.host.skills.statusFailed"), query.error);
   }, [query.error, report, t]);
   const setStatus = useCallback(
-    (status: AgentSkillsStatus) => queryClient.setQueryData(queryKey, status),
+    (status: AgentSkillsStatus) => {
+      setProblem(null);
+      queryClient.setQueryData(queryKey, status);
+    },
     [queryClient, queryKey],
   );
   const reconcile = useMutation({
@@ -156,9 +163,11 @@ export function useAgentSkills(serverId: string) {
     },
     [saveAsync, t],
   );
+  // `refetch` runs even a disabled query, so a refresh waits for readable shared settings.
   const refresh = useCallback(async () => {
+    if (locked || (managed && !sharedSelection)) return;
     await refetch();
-  }, [refetch]);
+  }, [locked, managed, sharedSelection, refetch]);
   const runReconcile = useCallback(async () => {
     if (managed) {
       if (!sharedSelection) return false;
@@ -198,6 +207,9 @@ export function useAgentSkills(serverId: string) {
   );
   return {
     managed,
+    locked,
+    /** The latest failed check or action, shown in the section status. */
+    problem,
     connected,
     supported,
     status: query.data ?? null,

@@ -3,31 +3,41 @@ import { StyleSheet } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
 import { CONTROL_HEIGHTS } from "@/components/ui/control-geometry";
 
+/**
+ * A row action on an account or connection. It uses the shared control sizes, so it matches
+ * the switch and menu beside it: 32px where a pointer drives it and 44px in the compact layout.
+ * Pass `variant="default"` for the one primary action in a row, such as Connect; everything
+ * else stays outline so it reads as a button without competing with it.
+ */
 export function CompactAccountButton({
   style,
   textStyle,
   testID,
   tone = "default",
   dense = false,
+  variant = "outline",
   ...props
 }: ComponentProps<typeof Button> & {
   tone?: "default" | "danger";
   dense?: boolean;
 }) {
+  // Dense usage badges have always been outlined pills, whatever their caller passes.
+  const resolvedVariant = dense ? "outline" : variant;
+  // A filled primary button carries its own contrast, so the danger tone only tints outlines.
+  const danger = tone === "danger" && resolvedVariant === "outline";
   return (
     <Button
       {...props}
       testID={testID}
-      variant="outline"
-      size="sm"
+      variant={resolvedVariant}
+      size={dense ? "sm" : props.size}
       style={[
-        styles.target,
         // Dense badges keep their visual size on touch too; callers extend the hit area.
         dense && styles.denseTarget,
-        tone === "danger" && styles.dangerOutline,
+        danger && styles.dangerOutline,
         style,
       ]}
-      textStyle={[tone === "danger" && styles.dangerText, textStyle]}
+      textStyle={[danger && styles.dangerText, textStyle]}
     />
   );
 }
@@ -35,16 +45,6 @@ export function CompactAccountButton({
 const styles = StyleSheet.create((theme) => ({
   dangerText: { color: theme.colors.destructive },
   dangerOutline: { borderColor: theme.colors.destructive },
-  // Paint the border on the control itself so touch sizing cannot separate it from its label.
-  target: {
-    height: CONTROL_HEIGHTS.md.xs,
-    minHeight: CONTROL_HEIGHTS.md.xs,
-    minWidth: CONTROL_HEIGHTS.md.xs,
-    borderWidth: 1,
-    paddingHorizontal: theme.spacing[2],
-    paddingVertical: 0,
-    gap: theme.spacing[2],
-  },
   denseTarget: {
     height: CONTROL_HEIGHTS.sm,
     minHeight: CONTROL_HEIGHTS.sm,

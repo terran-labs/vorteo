@@ -5,6 +5,7 @@ import type { TFunction } from "i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { Check, ChevronDown } from "lucide-react-native";
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
+import { isWeb } from "@/constants/platform";
 import {
   createControlGeometry,
   resolveControlInteractionStyles,
@@ -65,7 +66,12 @@ function IconCell({
   onSelect: (iconKey: AgentProfileIconKey | null) => void;
 }) {
   const handlePress = useCallback(() => onSelect(iconKey), [iconKey, onSelect]);
-  const accessibilityState = useMemo(() => ({ selected }), [selected]);
+  const accessibilityState = useMemo(() => ({ checked: selected }), [selected]);
+  // React Native Web drops `accessibilityState`, so the web radio carries aria-checked.
+  const webChecked = useMemo(
+    () => (isWeb ? ({ "aria-checked": selected } as const) : null),
+    [selected],
+  );
   const cellStyle = useCallback(
     ({ pressed }: PressableStateCallbackType) => [
       styles.cell,
@@ -76,11 +82,12 @@ function IconCell({
   );
   return (
     <Pressable
+      {...webChecked}
       onPress={handlePress}
       style={cellStyle}
-      accessibilityRole="button"
+      accessibilityRole="radio"
       accessibilityState={accessibilityState}
-      accessibilityLabel={iconKey ?? "default"}
+      accessibilityLabel={iconName(iconKey)}
       testID={`agent-profile-icon-cell-${iconKey ?? "default"}`}
     >
       <AgentProfileGlyph
@@ -103,7 +110,11 @@ function ColorCell({
 }) {
   const { t } = useTranslation();
   const handlePress = useCallback(() => onSelect(color), [color, onSelect]);
-  const accessibilityState = useMemo(() => ({ selected }), [selected]);
+  const accessibilityState = useMemo(() => ({ checked: selected }), [selected]);
+  const webChecked = useMemo(
+    () => (isWeb ? ({ "aria-checked": selected } as const) : null),
+    [selected],
+  );
   const swatchStyle = useMemo(
     () => [styles.swatch, color === "none" ? styles.swatchNone : identitySwatch(color)],
     [color],
@@ -114,9 +125,10 @@ function ColorCell({
   );
   return (
     <Pressable
+      {...webChecked}
       onPress={handlePress}
       style={cellStyle}
-      accessibilityRole="button"
+      accessibilityRole="radio"
       accessibilityState={accessibilityState}
       accessibilityLabel={colorLabel(t, color)}
       testID={`agent-profile-color-cell-${color}`}
@@ -207,16 +219,20 @@ export function AgentProfileAppearanceField({
   );
 
   const header = useMemo(() => ({ title: label }), [label]);
+  const triggerState = useMemo(() => ({ expanded: open }), [open]);
+  const webExpanded = useMemo(() => (isWeb ? ({ "aria-expanded": open } as const) : null), [open]);
 
   return (
     <Field label={label} testID={testID}>
       <View ref={anchorRef} collapsable={false}>
         <Pressable
+          {...webExpanded}
           onPress={handleTriggerPress}
           disabled={disabled}
           style={triggerStyle}
           accessibilityRole="button"
-          accessibilityLabel={`${label} (${colorLabel(t, selectedColor)})`}
+          accessibilityState={triggerState}
+          accessibilityLabel={`${label}: ${iconName(selectedIcon)}, ${colorLabel(t, selectedColor)}`}
           testID={triggerTestID}
         >
           <AgentProfileGlyph
@@ -227,6 +243,8 @@ export function AgentProfileAppearanceField({
           <ThemedChevronDown size={ICON_SIZE.sm} uniProps={foregroundMutedMapping} />
         </Pressable>
       </View>
+      {/* The combobox only supplies the anchored popover and sheet; the cells below commit
+          their own choices, so it has no options and nothing for onSelect to do. */}
       <Combobox
         options={EMPTY_COMBOBOX_OPTIONS}
         value=""
@@ -239,7 +257,7 @@ export function AgentProfileAppearanceField({
         desktopLockWidth
       >
         <View style={styles.body} testID="agent-profile-appearance-picker">
-          <View style={styles.colorRow}>
+          <View style={styles.colorRow} accessibilityRole="radiogroup" accessibilityLabel="Color">
             {AGENT_PROFILE_COLORS.map((option) => (
               <ColorCell
                 key={option}
@@ -249,7 +267,7 @@ export function AgentProfileAppearanceField({
               />
             ))}
           </View>
-          <View style={styles.grid}>
+          <View style={styles.grid} accessibilityRole="radiogroup" accessibilityLabel="Icon">
             <IconCell
               iconKey={null}
               selected={selectedIcon === null}
@@ -273,6 +291,13 @@ export function AgentProfileAppearanceField({
 }
 
 function noop() {}
+
+/** "folder-git" and "TestTube" read as "Folder git" and "Test Tube"; no icon is "Default icon". */
+function iconName(iconKey: AgentProfileIconKey | null): string {
+  if (!iconKey) return "Default icon";
+  const words = iconKey.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_]+/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
 
 /**
  * One named rule per hue. Unistyles cannot resolve a colour computed at render,

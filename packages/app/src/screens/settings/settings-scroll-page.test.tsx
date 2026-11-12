@@ -39,7 +39,9 @@ vi.mock("@/components/ui/highlighted-text", () => ({ HighlightedText: "text" }))
 vi.mock("@/components/ui/search-field", () => ({ SearchField: "input" }));
 vi.mock("@/settings-catalog/row-highlight", () => ({
   settingsPaneDomId: (id: string) => id,
+  settingsElementById: (id: string) => document.getElementById(id),
   findSettingRow: () => hooks.row,
+  findSettingRowInDialogs: () => null,
   flashSettingRow: vi.fn(),
   rowOffsetWithin: (element: { y: number }) => element.y,
   markSettingRows: () => () => {},
@@ -81,7 +83,7 @@ function render(input: ReturnType<typeof props>) {
   hooks.effects = [];
   const page = SettingsScrollPage(input);
   hooks.effects.forEach((effect) => effect());
-  return { page, section: page.props.children[2][0] };
+  return { page, section: page.props.children[3][0] };
 }
 beforeEach(() => {
   vi.useFakeTimers();
@@ -102,7 +104,8 @@ it("jumps once and leaves later layout changes to native anchoring", () => {
   hooks.refs[0].current = { scrollTo };
   section.props.onSectionLayout("general", { y: 200, height: 300 });
   section.props.onSectionLayout("general", { y: 400, height: 500 });
-  expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ y: 184, animated: false });
+  // A section jump lands on the section's top; its own padding is the inset.
+  expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ y: 200, animated: false });
   expect(page.props.maintainVisibleContentPosition).toEqual({ minIndexForVisible: 0 });
   expect(page.props.contentContainerStyle.paddingBottom).toBe(600);
 });

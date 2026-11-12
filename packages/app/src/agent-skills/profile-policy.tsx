@@ -97,14 +97,29 @@ export function ProfileSkillPolicy({
     );
   return (
     <Field label="Skills">
-      <View style={styles.actions}>
-        <Button variant={policy.mode === "inherit" ? "secondary" : "outline"} onPress={inherit}>
+      <View style={styles.actions} accessibilityRole="radiogroup" accessibilityLabel="Skills">
+        <Button
+          variant={policy.mode === "inherit" ? "secondary" : "outline"}
+          onPress={inherit}
+          accessibilityRole="radio"
+          aria-checked={policy.mode === "inherit"}
+        >
           Inherit defaults
         </Button>
-        <Button variant={policy.mode === "selected" ? "secondary" : "outline"} onPress={select}>
+        <Button
+          variant={policy.mode === "selected" ? "secondary" : "outline"}
+          onPress={select}
+          accessibilityRole="radio"
+          aria-checked={policy.mode === "selected"}
+        >
           Selected only
         </Button>
-        <Button variant={policy.mode === "none" ? "secondary" : "outline"} onPress={none}>
+        <Button
+          variant={policy.mode === "none" ? "secondary" : "outline"}
+          onPress={none}
+          accessibilityRole="radio"
+          aria-checked={policy.mode === "none"}
+        >
           No optional skills
         </Button>
       </View>
@@ -114,7 +129,7 @@ export function ProfileSkillPolicy({
       </Text>
       {query.error ? <Text style={styles.hint}>{toErrorMessage(query.error)}</Text> : null}
       {policy.mode === "inherit" ? (
-        <Button variant="outline" onPress={toggleExpanded}>
+        <Button variant="outline" onPress={toggleExpanded} aria-expanded={expanded}>
           {expanded ? "Hide skill choices" : "Customize skill choices"}
         </Button>
       ) : null}
@@ -189,7 +204,7 @@ function UnavailableSkill({
   return (
     <View style={styles.row}>
       <Text style={styles.label}>Saved skill unavailable here: {identity}</Text>
-      <Button variant="outline" onPress={remove}>
+      <Button variant="outline" onPress={remove} accessibilityLabel={`Remove ${identity}`}>
         Remove
       </Button>
     </View>
