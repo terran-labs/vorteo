@@ -1,5 +1,5 @@
-import { useEffect, useSyncExternalStore } from "react";
-import { useQueryClient, type Query, type QueryClient } from "@tanstack/react-query";
+import { useContext, useEffect, useSyncExternalStore } from "react";
+import { QueryClientContext, type Query, type QueryClient } from "@tanstack/react-query";
 
 /**
  * Health rows that do not come from the installation state: provider accounts, the primary
@@ -84,10 +84,12 @@ export function healthExtrasCount(): number {
 
 /** The extra row count, dropped when its source data changes while the list is away. */
 export function useHealthExtrasCount(): number {
-  const client = useQueryClient();
+  // The notice also mounts where no query client exists (lock screens, isolated mounts). With no
+  // cache there is nothing to invalidate the rows, so read the context instead of requiring it.
+  const client = useContext(QueryClientContext);
   useEffect(
     () =>
-      client.getQueryCache().subscribe((event) => {
+      client?.getQueryCache().subscribe((event) => {
         if (mountedLists > 0 || extras.length === 0) return;
         if (event.type !== "updated" || event.action.type !== "success") return;
         if (!isSource(event.query)) return;
