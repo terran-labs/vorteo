@@ -63,17 +63,5 @@ export function claudeProviderSettling(
   return startedAt !== null && now - startedAt < settleMs;
 }
 
-/** Legacy opt-in filename. Debug output remains unavailable even when this file requests it. */
+/** Opt-in file for sign-in debug capture; see debug-capture.ts. */
 export const CLAUDE_DEBUG_LOGS_SETTINGS_FILE = "claude-debug-logs.json";
-
-/**
- * Returning a pathname cannot establish private custody when the SDK opens it later. Debug
- * output stays unavailable until that boundary and credential exclusion are established.
- */
-export async function claudeDebugLogFile(_input: {
-  configDir: string;
-  env?: NodeJS.ProcessEnv;
-  now?: Date;
-}): Promise<string | null> {
-  return null;
-}

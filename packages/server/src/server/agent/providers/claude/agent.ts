@@ -124,11 +124,8 @@ import {
 } from "./rewind.js";
 import { normalizeProviderReplayTimestamp } from "../../provider-history-timestamps.js";
 import { claudeConfigDir, claudeProjectDirSync, claudeTranscriptPath } from "./project-dir.js";
-import {
-  acquireClaudeStartSlot,
-  claudeDebugLogFile,
-  claudeProviderSettling,
-} from "./account-starts.js";
+import { acquireClaudeStartSlot, claudeProviderSettling } from "./account-starts.js";
+import { CLAUDE_DEBUG_STDERR_ARGS, openClaudeDebugCapture } from "./debug-capture.js";
 import { THINKING_APPLIES_NEXT_TURN_NOTICE } from "../../provider-notices.js";
 import {
   isProviderImageMarkdown,
@@ -4072,8 +4069,26 @@ class ClaudeAgentSession implements AgentSession {
       options.settings = { ...options.settings, apiKeyHelper: "" };
     }
     const configDir = claudeConfigDir(this.harnessEnvironment);
-    const debugFile = await claudeDebugLogFile({ configDir });
-    if (debugFile) options.debugFile = debugFile;
+    // Opt-in sign-in debug capture for one account. The CLI writes debug lines to stderr and
+    // the capture filters them into a private file; they never reach the daemon log.
+    const debugCapture = await openClaudeDebugCapture({
+      configDir,
+      onError: (error) =>
+        this.logger.warn({ err: error }, "Claude debug capture refused; starting without it"),
+    });
+    if (debugCapture) {
+      const ordinaryStderr = options.stderr;
+      options.extraArgs = { ...options.extraArgs, ...CLAUDE_DEBUG_STDERR_ARGS };
+      options.stderr = (data: string) => {
+        const rest = debugCapture.accept(data);
+        if (rest) ordinaryStderr?.(rest);
+      };
+      this.logger.info({ file: debugCapture.filePath }, "Claude sign-in debug capture enabled");
+    }
+    const closeDebugCapture = () => {
+      const rest = debugCapture?.close();
+      if (rest) options.stderr?.(rest);
+    };
     this.logger.debug({ options: summarizeClaudeOptionsForLog(options) }, "claude query");
     // One CLI start at a time per account: a start may refresh the account's sign-in, and two
     // racing refreshes can revoke it. Other accounts never wait.
@@ -4082,11 +4097,13 @@ class ClaudeAgentSession implements AgentSession {
       this.assertOpen();
     } catch (error) {
       startSlot.release();
+      closeDebugCapture();
       throw error;
     }
     // Another call for this session may have started the CLI while this one waited for the slot.
     if (this.query) {
       startSlot.release();
+      closeDebugCapture();
       return this.query;
     }
     this.input = input;
@@ -4108,11 +4125,14 @@ class ClaudeAgentSession implements AgentSession {
             this.childProcess = child;
             this.childStartedAt = Date.now();
             child.once("exit", (code, signal) => this.handleRuntimeExit(child, code, signal));
+            // Close once stderr has drained, so the last debug lines are kept.
+            if (debugCapture) child.stderr?.once("close", closeDebugCapture);
           },
         },
       );
     } catch (error) {
       startSlot.release();
+      closeDebugCapture();
       throw error;
     }
     this.query = startedQuery;
