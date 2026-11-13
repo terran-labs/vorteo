@@ -60,7 +60,7 @@ Publish the running preview with `kind: "url"` so comments on it route to your t
 
 ## Limits
 
-- Thumbnails need the optional `playwright-core` package and a Chromium build that can run sandboxed (`npm run browser:setup`). Without them the gallery shows a placeholder. Live links and PDFs always show a placeholder, and a snapshot that loads assets by absolute path renders without them.
+- Thumbnails need the optional `playwright-core` package and a Chromium build that can run sandboxed (`npm run browser:setup`). Without them the gallery shows a placeholder. Chromium usually cannot run sandboxed inside a container, so an installation's Dev environment normally shows placeholders; the sandbox is not turned off to work around that, because the renderer loads agent-authored pages. Live links and PDFs always show a placeholder, and a snapshot that loads assets by absolute path renders without them.
 - A PDF has no element or region picker; comment on the whole document.
 - Each daemon keeps its own gallery. Host and Dev agents publish to their own daemon.
 - A relay connection has no HTTP route to the daemon, so thumbnails, zoom and Open in browser need a direct connection.
