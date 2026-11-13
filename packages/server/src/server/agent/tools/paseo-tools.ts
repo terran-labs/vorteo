@@ -123,6 +123,7 @@ import { createPauseGoalTool } from "./pause-goal.js";
 import { createJournalTools } from "../journal/tools.js";
 import { createChecklistTools } from "../task-checklist/tools.js";
 import { createQuestionTools } from "../questions/tools.js";
+import { createPreviewTools } from "../../previews/tools.js";
 
 export interface PaseoToolHostDependencies {
   agentMessages?: () => AgentMessageDelivery;
@@ -1491,6 +1492,7 @@ function createToolCatalog(
       ...createJournalTools(agentManager, callerAgentId),
       ...createChecklistTools(agentManager, callerAgentId),
       ...createQuestionTools(agentManager, callerAgentId),
+      ...(agentManager.previews ? createPreviewTools(agentManager.previews, callerAgentId) : []),
     ]) {
       registerTool(tool.name, tool, tool.handler);
     }
