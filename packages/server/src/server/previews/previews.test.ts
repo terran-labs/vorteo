@@ -167,6 +167,14 @@ test("a snapshot leaves out links, hard links and common credential files", asyn
     store.publish({ title: "Site", kind: "web", lineage: "site", path: source }, { agentId: "a" }),
   ).rejects.toThrow(/not a plain file/);
   await rm(path.join(source, "hard.txt"));
+  // A published root that is itself a link is refused, not followed to its target.
+  await symlink(source, path.join(root, "site-link"));
+  await expect(
+    store.publish(
+      { title: "Site", kind: "web", lineage: "site", path: path.join(root, "site-link") },
+      { agentId: "a" },
+    ),
+  ).rejects.toThrow(/link or not/);
   // A directory that is really a link elsewhere is skipped, never walked.
   await symlink(root, path.join(source, "up"));
   for (const name of [".npmrc", "id_ed25519", "server.pem"])

@@ -20,6 +20,8 @@ import { z } from "zod";
 /** A snapshot larger than this is refused rather than silently truncated. */
 export const MAX_SNAPSHOT_BYTES = 300 * 1024 * 1024;
 export const MAX_SNAPSHOT_FILES = 10_000;
+/** How long one snapshot copy may run before it is stopped. */
+const COPY_DEADLINE_MS = 60_000;
 /** Unprotected versions kept per artifact before the oldest are pruned. */
 export const KEEP_UNRATED_PER_LINEAGE = 8;
 const MAX_REVIEW_KEYS = 20;
@@ -483,8 +485,27 @@ function copySnapshot(
     child.stderr.on("data", (chunk: Buffer) => {
       if (stderr.length < 2000) stderr += chunk.toString("utf8");
     });
-    child.once("error", reject);
-    child.once("exit", (code) => {
+    // A publish must end. Ask the worker to stop at the deadline, then force it.
+    let timedOut = false;
+    const deadline = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+    }, COPY_DEADLINE_MS);
+    child.once("error", (error) => {
+      clearTimeout(deadline);
+      reject(error);
+    });
+    // "close" fires after the process has gone and its output is drained, so the caller
+    // can safely remove the partial snapshot.
+    child.once("close", (code) => {
+      clearTimeout(deadline);
+      if (timedOut) {
+        reject(
+          new PreviewError("too_large", "Copying took too long. Publish a smaller built output."),
+        );
+        return;
+      }
       const result = code === 0 ? parseCopyResult(stdout) : null;
       if (result) {
         resolve(result);
