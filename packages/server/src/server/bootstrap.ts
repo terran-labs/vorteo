@@ -2077,6 +2077,8 @@ export async function createPaseoDaemon(
       enabled ? createPaseoAgentToolManifest(createAgentToolHostDependencies({})) : null,
     );
   };
+  // Agent tools and client sessions reach the Previews gallery through the manager.
+  agentManager.previews = previews;
   agentManager.setPaseoToolCatalogFactory(createAgentToolCatalog);
   agentManager.setPaseoToolsEnabled(config.mcpInjectIntoAgents !== false);
   setAgentProviderToolsEnabled(config.mcpEnabled !== false && config.mcpInjectIntoAgents !== false);
