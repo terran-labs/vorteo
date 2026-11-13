@@ -1,3 +1,4 @@
+import { LRUCache } from "lru-cache";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -223,8 +224,72 @@ export async function inspectSkill(directory: string, root: SkillRoot): Promise<
   }
   return result;
 }
+/** Metadata only: directory mtimes alone miss edits in nested files. */
+async function packageFingerprint(directory: string): Promise<string> {
+  const resolved = await fs.realpath(directory);
+  const entries: string[] = [directory, resolved];
+  let files = 0;
+  async function walk(file: string, relative: string): Promise<void> {
+    const info = await fs.lstat(file, { bigint: true });
+    entries.push(
+      JSON.stringify([
+        relative,
+        info.mode.toString(),
+        info.size.toString(),
+        info.mtimeNs.toString(),
+        info.ctimeNs.toString(),
+        info.ino.toString(),
+        info.dev.toString(),
+        info.nlink.toString(),
+      ]),
+    );
+    if (info.isDirectory()) {
+      const names = (await fs.readdir(file)).sort();
+      for (const name of names) await walk(path.join(file, name), path.join(relative, name));
+    } else {
+      files += 1;
+      // Oversized or unsupported packages still use the ordinary inspection/error path.
+      if (files > MAX_FILES + 2)
+        throw new SkillLibraryError("package_limit", "Skill exceeds inspection limits");
+    }
+  }
+  const link = await fs.lstat(directory, { bigint: true });
+  entries.push([link.ino, link.dev, link.mtimeNs, link.ctimeNs].map(String).join(":"));
+  await walk(resolved, ".");
+  return digest(JSON.stringify(entries));
+}
+
+/** Inventory summaries only. Export, mutation and launch validation never use this cache. */
+export class SkillInventoryCache {
+  private readonly entries = new LRUCache<
+    string,
+    { fingerprint: string; skill: SkillInstallation }
+  >({ max: 512 });
+
+  async inspect(directory: string, root: SkillRoot): Promise<SkillInstallation> {
+    const key = JSON.stringify([directory, root]);
+    const fingerprint = await packageFingerprint(directory).catch(() => null);
+    const cached = this.entries.get(key);
+    if (fingerprint !== null && cached?.fingerprint === fingerprint)
+      return structuredClone(cached.skill);
+    const skill = await inspectSkill(directory, root);
+    // Do not publish a cache entry if the tree changed while its contents were read.
+    const after = await packageFingerprint(directory).catch(() => null);
+    if (fingerprint !== null && after === fingerprint && skill.issues.length === 0)
+      this.entries.set(key, { fingerprint, skill: structuredClone(skill) });
+    else this.entries.delete(key);
+    return skill;
+  }
+}
+
 export async function inventorySkills(
-  options: { home?: string; cwd?: string; claudeConfigDir?: string; codexHome?: string } = {},
+  options: {
+    home?: string;
+    cwd?: string;
+    claudeConfigDir?: string;
+    codexHome?: string;
+    cache?: SkillInventoryCache;
+  } = {},
 ): Promise<SkillInventory> {
   const home = options.home ?? os.homedir();
   const roots = await skillRoots(home, options.cwd, options.codexHome);
@@ -259,7 +324,10 @@ export async function inventorySkills(
     seen.add(directory);
     const entries = await fs.readdir(directory, { withFileTypes: true });
     if (entries.some((entry) => entry.name === "SKILL.md")) {
-      inventory.skills.push(await inspectSkill(directory, root));
+      const skill = options.cache
+        ? await options.cache.inspect(directory, root)
+        : await inspectSkill(directory, root);
+      inventory.skills.push(skill);
       return;
     }
     if (depth <= 0) return;
