@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/relay",
-  "version": "26.11.902",
+  "version": "26.11.1200",
   "description": "Vorteo relay for bridging daemon and client connections",
   "license": "Apache-2.0",
   "files": [
