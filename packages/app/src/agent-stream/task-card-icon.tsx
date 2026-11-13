@@ -10,6 +10,7 @@ import {
   GitCompareArrows,
   GitPullRequest,
   ChartPie,
+  Images,
 } from "lucide-react-native";
 import { View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -30,6 +31,7 @@ const icons = {
   question: withUnistyles(MessageCircleQuestion),
   permission: withUnistyles(ShieldCheck),
   context: withUnistyles(ChartPie),
+  previews: withUnistyles(Images),
 };
 
 /** Decorative heading marks share the task progress chart's footprint. */

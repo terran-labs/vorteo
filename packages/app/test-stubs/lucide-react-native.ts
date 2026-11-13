@@ -146,3 +146,6 @@ export const Gauge = StubIcon;
 export const KeyRound = StubIcon;
 export const Lock = StubIcon;
 export const LockOpen = StubIcon;
+export const Columns2 = StubIcon;
+export const Images = StubIcon;
+export const Presentation = StubIcon;
