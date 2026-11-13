@@ -15,8 +15,11 @@ export interface PreviewsServiceOptions {
   deliver?: (agentId: string, messageId: string, text: string) => Promise<void>;
   describeAgent: (agentId: string) => { title?: string; workspaceId?: string } | null;
   onChanged: (revision: number) => void;
-  /** Render a page to a PNG file. Absent or failing leaves the version without a thumbnail. */
-  renderThumbnail?: (url: string, outputPath: string) => Promise<void>;
+  /**
+   * Render a snapshot to a PNG file, loading nothing outside `allowedPrefix`. Absent or
+   * failing leaves the version without a thumbnail.
+   */
+  renderThumbnail?: (url: string, outputPath: string, allowedPrefix: string) => Promise<void>;
   /** The daemon's own loopback address, used to render snapshot thumbnails. */
   loopbackBaseUrl: () => string | null;
   warn: (context: Record<string, unknown>, message: string) => void;
@@ -115,24 +118,25 @@ export class PreviewsService {
   /** Rendering is best effort and never blocks or fails a publish. */
   private async thumbnail(version: PreviewVersion): Promise<void> {
     try {
-      let url: string | null = null;
       if (version.kind === "image") {
         // The image is its own thumbnail; the route serves the frozen file.
         await this.options.store.markThumbnail(version.id);
         await this.changed();
         return;
       }
-      if (version.liveUrl) url = version.liveUrl;
-      else if (version.entry && version.kind !== "pdf") {
-        const base = this.options.loopbackBaseUrl();
-        if (base)
-          url = `${base}/api/previews/snap/${version.id}/${version.entry
-            .split("/")
-            .map(encodeURIComponent)
-            .join("/")}?bare=1`;
-      }
-      if (!url || !this.options.renderThumbnail) return;
-      await this.options.renderThumbnail(url, this.options.store.thumbnailPath(version.id));
+      // A live link is never rendered: it is an address the agent chose, and loading it
+      // here could read an internal service into an image served without daemon auth.
+      // PDFs have no renderer. Both show a placeholder in the gallery.
+      const base = this.options.loopbackBaseUrl();
+      if (version.liveUrl || !version.entry || version.kind === "pdf" || !base) return;
+      if (!this.options.renderThumbnail) return;
+      const allowedPrefix = `${base}/api/previews/snap/${version.id}/`;
+      const url = `${allowedPrefix}${version.entry.split("/").map(encodeURIComponent).join("/")}?bare=1`;
+      await this.options.renderThumbnail(
+        url,
+        this.options.store.thumbnailPath(version.id),
+        allowedPrefix,
+      );
       await this.options.store.markThumbnail(version.id);
       await this.changed();
     } catch (error) {

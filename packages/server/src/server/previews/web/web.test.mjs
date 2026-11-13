@@ -227,3 +227,36 @@ test("frame and viewer never post the review key", () => {
   const everything = JSON.stringify([parent.posted, snapshotWindow.posted, commentWindow.posted]);
   assert.ok(!everything.includes(SENTINEL), "a posted message contained the review key");
 });
+
+test("frame: embedded in another origin, feedback goes to the confirmation page, never a post", () => {
+  const { source } = load("frame.js");
+  const submit = source.slice(source.indexOf("function submit("));
+  const handOff = submit.indexOf('if (embedding === "page")');
+  const post = submit.indexOf('api("POST"');
+  // The hand-off must sit before the only post in the submit path, and return.
+  assert.ok(handOff > 0 && post > handOff);
+  assert.match(submit.slice(handOff, post), /openConfirmation\(payload\);\s*return;/);
+  assert.equal(source.split('api("POST"').length - 1, 1);
+});
+
+test("confirm: only a fresh, well-formed draft for a live preview is offered", () => {
+  const { describeDraft } = load("confirm.js").exports;
+  const now = 1_000_000;
+  const draft = (overrides = {}) =>
+    JSON.stringify({
+      payload: { target: { origin: "https://host:32777" }, comment: "Tighter spacing", rating: 4 },
+      title: "Site",
+      createdAt: now - 1000,
+      ...overrides,
+    });
+  const shown = describeDraft(draft(), now);
+  assert.equal(shown.comment, "Tighter spacing");
+  assert.equal(shown.rating, 4);
+  assert.equal(describeDraft("not json", now), null);
+  assert.equal(describeDraft(draft({ createdAt: now - 11 * 60 * 1000 }), now), null);
+  assert.equal(describeDraft(draft({ payload: { target: {}, comment: "x" } }), now), null);
+  assert.equal(
+    describeDraft(draft({ payload: { target: { origin: "https://h" }, comment: " " } }), now),
+    null,
+  );
+});

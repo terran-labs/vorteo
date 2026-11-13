@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { PreviewVersion } from "@getpaseo/protocol/previews";
 import { createPreviewsRouter, SNAPSHOT_CSP } from "./routes.js";
 import { PreviewsService } from "./service.js";
+import { isAllowedThumbnailRequest } from "./thumbnail-worker.js";
 import {
   KEEP_UNRATED_PER_LINEAGE,
   PreviewStore,
@@ -97,6 +98,15 @@ describe("owner feedback cannot be forged by a previewed page", () => {
       (await annotate({ origin: baseUrl, "x-vorteo-review-key": "wrong" }, version.id)).status,
     ).toBe(401);
     expect((await annotate({ "x-vorteo-review-key": key }, version.id)).status).toBe(403);
+    // Same host and port but another scheme is a different origin.
+    expect(
+      (
+        await annotate(
+          { origin: baseUrl.replace("http:", "ftp:"), "x-vorteo-review-key": key },
+          version.id,
+        )
+      ).status,
+    ).toBe(403);
     expect(delivered).toHaveLength(0);
     expect((await store.getVersion(version.id))?.annotations).toHaveLength(0);
 
@@ -144,6 +154,71 @@ describe("snapshots", () => {
     for (const escape of ["../x", "a/../../x", "%2e%2e/x", "a\\..\\x", "a%00b", "%zz"])
       expect(resolveSnapshotPath(filesRoot, escape), escape).toBeNull();
   });
+});
+
+test("a snapshot leaves out links, hard links and common credential files", async () => {
+  const source = path.join(root, "site");
+  await mkdir(path.join(source, "linked-dir-target"), { recursive: true });
+  await writeFile(path.join(source, "index.html"), "<html><head></head><body>ok</body></html>");
+  await writeFile(path.join(root, "secret.txt"), "private");
+  // A hard link to a file outside the tree is a regular file by type; the link count gives it away.
+  await link(path.join(root, "secret.txt"), path.join(source, "hard.txt"));
+  await expect(
+    store.publish({ title: "Site", kind: "web", lineage: "site", path: source }, { agentId: "a" }),
+  ).rejects.toThrow(/not a plain file/);
+  await rm(path.join(source, "hard.txt"));
+  // A directory that is really a link elsewhere is skipped, never walked.
+  await symlink(root, path.join(source, "up"));
+  for (const name of [".npmrc", "id_ed25519", "server.pem"])
+    await writeFile(path.join(source, name), "credential");
+  const version = await store.publish(
+    { title: "Site", kind: "web", lineage: "site", path: source },
+    { agentId: "a" },
+  );
+  for (const name of ["up/secret.txt", ".npmrc", "id_ed25519", "server.pem"]) {
+    const response = await fetch(`${baseUrl}/api/previews/snap/${version.id}/${name}`);
+    expect(response.status, name).toBe(404);
+  }
+});
+
+test("thumbnails may load only their own snapshot", () => {
+  const prefix = "http://127.0.0.1:6771/api/previews/snap/abcDEF0123456789abcd/";
+  expect(isAllowedThumbnailRequest(`${prefix}index.html?bare=1`, prefix)).toBe(true);
+  expect(isAllowedThumbnailRequest("data:image/png;base64,AA==", prefix)).toBe(true);
+  for (const blocked of [
+    "http://127.0.0.1:6771/api/status",
+    "http://127.0.0.1:6771/api/previews/snap/otherVersion0123456789/index.html",
+    `${prefix}../otherVersion0123456789/index.html`,
+    `${prefix}%2e%2e/%2e%2e/review-origin`,
+    "http://127.0.0.1:9999/api/previews/snap/abcDEF0123456789abcd/",
+    "http://user@127.0.0.1:6771/api/previews/snap/abcDEF0123456789abcd/",
+    "http://169.254.169.254/latest/meta-data/",
+    "http://192.168.1.1/",
+    "https://example.com/",
+    "file:///etc/passwd",
+    "ws://127.0.0.1:6771/ws",
+  ])
+    expect(isAllowedThumbnailRequest(blocked, prefix), blocked).toBe(false);
+});
+
+test("a live link is never rendered to a thumbnail", async () => {
+  let rendered = 0;
+  const service = new PreviewsService({
+    store,
+    describeAgent: () => null,
+    onChanged: () => undefined,
+    renderThumbnail: async () => {
+      rendered += 1;
+    },
+    loopbackBaseUrl: () => "http://127.0.0.1:1",
+    warn: () => undefined,
+  });
+  await service.publish(
+    { title: "Live", kind: "url", lineage: "live", url: "http://127.0.0.1:8080/private" },
+    "agent-1",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(rendered).toBe(0);
 });
 
 test("retention removes only old versions the owner never touched", () => {

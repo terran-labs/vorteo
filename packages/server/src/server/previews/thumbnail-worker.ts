@@ -3,11 +3,22 @@
  * optional browser dependency stays out of the daemon's module graph, and a renderer
  * crash or hang cannot affect the daemon.
  *
- * Usage: node thumbnail-worker.js <url> <output.png>
+ * The renderer may load only the daemon's own loopback snapshot route for one version.
+ * Every other request, including subresources, subframes, redirects and WebSockets, is
+ * aborted, so a snapshot cannot make the browser read an internal service into an image
+ * that is then served without daemon auth. Chromium runs with its sandbox on, and a launch
+ * that cannot sandbox fails, which leaves the version without a thumbnail.
+ *
+ * Usage: node thumbnail-worker.js <url> <output.png> <allowed-prefix>
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+interface RouteLike {
+  request(): { url(): string };
+  continue(): Promise<void>;
+  abort(): Promise<void>;
+}
 interface PageLike {
   goto(url: string, options: { waitUntil: "load"; timeout: number }): Promise<unknown>;
   waitForTimeout(ms: number): Promise<void>;
@@ -15,17 +26,47 @@ interface PageLike {
   screenshot(options: { path: string; type: "png" }): Promise<unknown>;
 }
 interface BrowserLike {
-  newContext(options: Record<string, unknown>): Promise<{ newPage(): Promise<PageLike> }>;
+  newContext(options: Record<string, unknown>): Promise<{
+    newPage(): Promise<PageLike>;
+    route(pattern: string, handler: (route: RouteLike) => Promise<void>): Promise<void>;
+    routeWebSocket(
+      pattern: string,
+      handler: (socket: { close(): Promise<void> }) => void,
+    ): Promise<void>;
+  }>;
   close(): Promise<void>;
 }
 
-async function render(url: string, outputPath: string): Promise<void> {
+/** True only for the one snapshot's own files, or inline data the document carries itself. */
+export function isAllowedThumbnailRequest(requestUrl: string, allowedPrefix: string): boolean {
+  if (requestUrl.startsWith("data:") || requestUrl.startsWith("blob:")) return true;
+  let parsed: URL;
+  let allowed: URL;
+  try {
+    parsed = new URL(requestUrl);
+    allowed = new URL(allowedPrefix);
+  } catch {
+    return false;
+  }
+  // Compare parsed parts, not strings, so userinfo, dot segments and encodings cannot slip by.
+  return (
+    parsed.origin === allowed.origin &&
+    parsed.username === "" &&
+    parsed.password === "" &&
+    allowed.pathname.endsWith("/") &&
+    parsed.pathname.startsWith(allowed.pathname)
+  );
+}
+
+async function render(url: string, outputPath: string, allowedPrefix: string): Promise<void> {
   // A variable specifier keeps bundlers and module tracers from following the optional package.
   const specifier = "playwright-core";
   const playwright = (await import(specifier)) as {
-    chromium: { launch(options: { headless: boolean }): Promise<BrowserLike> };
+    chromium: {
+      launch(options: { headless: boolean; chromiumSandbox: boolean }): Promise<BrowserLike>;
+    };
   };
-  const browser = await playwright.chromium.launch({ headless: true });
+  const browser = await playwright.chromium.launch({ headless: true, chromiumSandbox: true });
   try {
     // A fresh browser with an in-memory profile per render: previews share no state.
     const context = await browser.newContext({
@@ -33,6 +74,13 @@ async function render(url: string, outputPath: string): Promise<void> {
       deviceScaleFactor: 0.5,
       acceptDownloads: false,
       serviceWorkers: "block",
+    });
+    await context.route("**/*", async (route) => {
+      if (isAllowedThumbnailRequest(route.request().url(), allowedPrefix)) await route.continue();
+      else await route.abort();
+    });
+    await context.routeWebSocket("**/*", (socket) => {
+      void socket.close();
     });
     const page = await context.newPage();
     await page.goto(url, { waitUntil: "load", timeout: 20_000 });
@@ -48,15 +96,18 @@ async function render(url: string, outputPath: string): Promise<void> {
   }
 }
 
-const [url, outputPath] = process.argv.slice(2);
-if (!url || !outputPath || !/^https?:\/\//.test(url)) {
-  process.stderr.write("Usage: thumbnail-worker <http(s) url> <output.png>\n");
-  process.exit(2);
-}
-try {
-  await render(url, outputPath);
-  process.exit(0);
-} catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exit(1);
+const [url, outputPath, allowedPrefix] = process.argv.slice(2);
+// Only run when started as the worker; importing the module for its helper does nothing.
+if (process.argv[1] && /thumbnail-worker\.[cm]?[jt]s$/.test(process.argv[1])) {
+  if (!url || !outputPath || !allowedPrefix || !isAllowedThumbnailRequest(url, allowedPrefix)) {
+    process.stderr.write("Usage: thumbnail-worker <snapshot url> <output.png> <allowed-prefix>\n");
+    process.exit(2);
+  }
+  try {
+    await render(url, outputPath, allowedPrefix);
+    process.exit(0);
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  }
 }

@@ -108,11 +108,18 @@ export function isSameOriginRequest(req: Pick<Request, "headers">): boolean {
   const origin = req.headers.origin;
   const host = req.headers.host;
   if (typeof origin !== "string" || typeof host !== "string") return false;
+  let parsed: URL;
   try {
-    return new URL(origin).host === host;
+    parsed = new URL(origin);
   } catch {
     return false;
   }
+  // The daemon sits behind a TLS-terminating proxy and cannot see its own scheme. The
+  // owner's browser always reaches it over https; plain http is accepted for loopback only.
+  const loopback = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost";
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback)) return false;
+  // URL.host carries the port unless it is the scheme default, exactly as a Host header does.
+  return parsed.origin === origin && parsed.host === host;
 }
 
 function sendError(res: Response, error: unknown): void {
@@ -167,10 +174,12 @@ export function createPreviewsRouter(previews: PreviewsService): Router {
   router.get("/page.js", (_req, res) => {
     void sendWebFile(res, "page.js", { "Cross-Origin-Resource-Policy": "cross-origin" });
   });
-  for (const name of ["frame.js", "viewer.js", "pair.js", "shared.css"])
+  for (const name of ["frame.js", "viewer.js", "pair.js", "confirm.js", "shared.css"])
     router.get(`/web/${name}`, (_req, res) => void sendWebFile(res, name, {}));
 
-  // The comment frame is embedded by previews on this hostname, whatever their port.
+  // The comment frame is embedded by previews on this hostname, whatever their port. A
+  // page that embeds it can cover or hide it, so the embedded frame never posts feedback;
+  // it hands a draft to the unframeable /confirm page instead.
   router.get("/frame", (req, res) => {
     const hostname = (req.headers.host ?? "").replace(/:\d+$/, "");
     const ancestors = /^[A-Za-z0-9.-]+$/.test(hostname)
@@ -182,6 +191,12 @@ export function createPreviewsRouter(previews: PreviewsService): Router {
   router.get(
     "/pair",
     (_req, res) => void sendWebFile(res, "pair.html", trustedPagePolicy("'none'")),
+  );
+  // Feedback written in an embedded frame is confirmed here, where no page can cover the
+  // button. See web/confirm.js.
+  router.get(
+    "/confirm",
+    (_req, res) => void sendWebFile(res, "confirm.html", trustedPagePolicy("'none'")),
   );
   router.get(
     "/view/:versionId",

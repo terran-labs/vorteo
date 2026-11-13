@@ -14,6 +14,18 @@
 "use strict";
 
 var REVIEW_KEY_STORAGE = "vorteo.previews.reviewKey";
+var DRAFT_PREFIX = "vorteo.previews.draft.";
+var SENT_KEY = "vorteo.previews.sent";
+
+function newDraftId() {
+  var bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  return Array.prototype.map
+    .call(bytes, function (b) {
+      return ("0" + b.toString(16)).slice(-2);
+    })
+    .join("");
+}
 var PAGE_TYPES = { hello: true, selection: true, "pick-cancelled": true };
 var SELECTION_KINDS = { element: true, region: true, page: true };
 var VERSION_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
@@ -449,6 +461,47 @@ function startFrame() {
       });
   }
 
+  function openConfirmation(payload) {
+    var id = newDraftId();
+    try {
+      storage.setItem(
+        DRAFT_PREFIX + id,
+        JSON.stringify({
+          payload: payload,
+          title: ui.artifact && typeof ui.artifact.title === "string" ? ui.artifact.title : "",
+          createdAt: Date.now(),
+        }),
+      );
+    } catch {
+      setStatus("This browser blocked storage for Vorteo, so the comment cannot be sent.", "error");
+      return;
+    }
+    var opened = window.open("/api/previews/confirm#" + id, "_blank");
+    if (!opened) {
+      try {
+        storage.removeItem(DRAFT_PREFIX + id);
+      } catch {
+        /* ignore */
+      }
+      setStatus(
+        "Your browser blocked the confirmation tab. Allow pop-ups for Vorteo, then press Send again.",
+        "error",
+      );
+      return;
+    }
+    setStatus("Check the new tab and confirm there to send it.", "muted");
+  }
+
+  // The confirmation page reports a completed send through this origin's storage.
+  window.addEventListener("storage", function (event) {
+    if (event.key !== SENT_KEY || !event.newValue) return;
+    comment.value = "";
+    ui.selection = null;
+    setStatus("Sent. The agent gets it now, or when its current turn ends.", "success");
+    render();
+    loadContext();
+  });
+
   function submit(ratingOnly) {
     var t = target();
     if (!t || ui.sending || !reviewKey) return;
@@ -458,6 +511,13 @@ function startFrame() {
     var payload = { target: t, comment: text };
     if (rating !== null) payload.rating = rating;
     if (!ratingOnly && ui.selection) payload.selection = ui.selection;
+    // Embedded in another origin, this frame can be covered, moved or made invisible by the
+    // page around it, so a click or keystroke here is not proof of intent. It never posts.
+    // The owner confirms on a top-level page that cannot be framed.
+    if (embedding === "page") {
+      openConfirmation(payload);
+      return;
+    }
     ui.sending = true;
     setStatus("Sending…");
     render();

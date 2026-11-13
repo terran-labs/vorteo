@@ -9,7 +9,7 @@ Every agent has two tools when the daemon advertises `features.previews`:
 - `publish_preview` takes a `title`, a `kind` (`web`, `deck`, `image`, `pdf` or `url`), a `lineage` key and a `path` or `url`. Publishing again with the same lineage adds a version to the same gallery entry. `variantSet` groups several options so you can pick a winner with a reason.
 - `get_preview_feedback` returns ratings, approvals, variant picks and comments, filtered by lineage or version.
 
-Publish built output, not a project directory. A directory is copied without `node_modules`, `.git`, environment files or symlinks, up to 300 MB or 10,000 files.
+Publish built output, not a project directory. A directory is copied up to 300 MB or 10,000 files. Symlinks, hard-linked files, `node_modules` and `.git` are left out, along with the most common credential files (`.env*`, `.npmrc`, `.netrc`, `.ssh`, key and certificate files). That list is a convenience, not a secret scanner: anyone with a snapshot's link can read it, so publish only output meant to be seen.
 
 ## Versions are frozen
 
@@ -22,7 +22,7 @@ Retention keeps the newest version of every artifact and the eight most recent u
 The gallery card opens a version in your normal browser through a pairing link. The link carries a single-use ticket that expires after two minutes. The pairing page exchanges it for a review key and stores the key in that browser for the daemon's address.
 
 - A frozen version opens in the viewer at `/api/previews/view/<id>` on the daemon. The snapshot runs in a sandboxed frame beside the comment panel.
-- A live preview shows a floating comment frame when the preview service runs behind the injecting proxy described below.
+- A live preview shows a floating comment frame when the preview service runs behind the injecting proxy described below. Pressing Send there opens a confirmation tab on the daemon's address that shows exactly what will be sent; the comment goes out only when you confirm in that tab.
 
 In both, you pick an element, select a region or comment on the whole page. Each comment records the page address, the version, the element selector and text, the viewport size and the scroll position. It arrives in the authoring thread headed "Preview feedback from the owner" through the same durable queue as Open question answers: once, now or when the agent's turn ends.
 
@@ -36,7 +36,8 @@ Previewed pages are agent-authored and untrusted. These rules hold the boundary:
 - **Posts must come from the daemon's own origin.** The annotation and pairing routes check the `Origin` header before the key.
 - **Location data is fenced.** The message to the agent marks the selector and element text as untrusted data reported by the page.
 
-One limit remains: a page can cover or move the comment frame, so it could trick you into sending a comment you typed. It cannot type one for you.
+- **An embedded frame never sends.** A live page can cover, move or hide the comment frame it embeds, so a click or keystroke there proves nothing. The frame hands a draft to a confirmation page that cannot be framed, and only that page posts. The viewer for frozen versions is itself unframeable, so it sends directly.
+- **Thumbnails load only their own snapshot.** The renderer runs in a separate sandboxed Chromium process whose every request is checked against that one version's snapshot route. A live link is never rendered, because it is an address the agent chose.
 
 ## Run a live preview behind the injecting proxy
 
@@ -59,7 +60,7 @@ Publish the running preview with `kind: "url"` so comments on it route to your t
 
 ## Limits
 
-- Thumbnails need the optional `playwright-core` package and a Chromium build (`npm run browser:setup`). Without them the gallery shows a placeholder.
+- Thumbnails need the optional `playwright-core` package and a Chromium build that can run sandboxed (`npm run browser:setup`). Without them the gallery shows a placeholder. Live links and PDFs always show a placeholder, and a snapshot that loads assets by absolute path renders without them.
 - A PDF has no element or region picker; comment on the whole document.
 - Each daemon keeps its own gallery. Host and Dev agents publish to their own daemon.
 - A relay connection has no HTTP route to the daemon, so thumbnails, zoom and Open in browser need a direct connection.
