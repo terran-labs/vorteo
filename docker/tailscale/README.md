@@ -106,6 +106,33 @@ Only `ready` receipts contain usable URLs after certificate-validating HTTPS and
 
 `https-preview.py WORKSPACE_ID SERVICE HTTPS_PORT` remains an administrator compatibility entry point using the same policy, ledger and lock. Never use `serve reset`, enable Funnel or replace another mapping to claim a port.
 
+## Dedicated previews hostname
+
+By default the native broker publishes previews from the Mac's own Tailscale node, so a preview link shares the interface's hostname and differs only by port. To give previews their own hostname, run a second Tailscale node for them and point the broker at it.
+
+1. Get standalone `tailscaled` and `tailscale` binaries at the same version as the installed Tailscale. The macOS app bundle does not include them.
+2. Start the node as a login agent. It runs in userspace networking mode with its own state and socket, needs no administrator rights and leaves the system Tailscale alone:
+
+   ```sh
+   python3 -B install-previews-node.py --deployment "$HOME/.local/share/vorteo-previews-node" \
+     --tailscaled /path/to/tailscaled --tailscale /path/to/tailscale --hostname previews
+   ```
+
+   It prints the socket path and, the first time, the `tailscale up` command that produces a sign-in link. Authorize the device in your tailnet. Decide whether its key should expire; an expired key takes every preview offline until you sign in again.
+
+3. Stop every preview, then reinstall the native broker with the socket and the one-time move flag:
+
+   ```sh
+   python3 -B install-native-https-broker.py ... --tailscale /path/to/tailscale \
+     --tailscale-socket "$HOME/.local/share/vorteo-previews-node/tailscaled.sock" --move-previews-node
+   ```
+
+   The installer pins the new node's identity and access scope. It makes the switch while holding the broker's own lock, so a queued start cannot be published on the old node in between. It refuses the move while a preview is running, while the old node no longer matches what the broker was pinned to, or while that node still publishes a port the broker owns. Reservations that name the old hostname are removed and written again as previews start.
+
+4. Start previews again. Ports are kept; the hostname in each link changes, so links shared before the move stop working.
+
+The tailnet policy must let your devices reach the new node on the preview port range. The Previews comment frame and pairing page allow only the exact origins the broker reserved, so the review toolbar keeps working on the new hostname and no other port on either hostname is treated as a preview. The node's directory and state must be owned by you with mode 0700, and its socket must be yours; both installers refuse otherwise. Remove the node with `install-previews-node.py --deployment … --tailscaled … --uninstall` after moving the broker back.
+
 ## Broker rollback
 
 Stop each broker-managed preview with the helper when its process may stop. This removes and verifies only its owned mapping, and keeps the frontend reservation. For a capability-only rollback that preserves processes, run `python3 uninstall-https-broker.py` from the trusted deployment directory. It unloads this instance's owned login job, verifies each exact route before removal and disables request handling without resetting Tailscale or touching unrelated mappings. Keep the helper's environment loader and origin files for already-wrapped commands. Restore backed-up recovery code/configuration only after checking that its container identities still match. Do not restore stale whole-home or whole-Tailscale state.

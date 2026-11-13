@@ -33,6 +33,125 @@ class NativeWorkspacePolicyTests(unittest.TestCase):
             with self.assertRaises(subprocess.SubprocessError):
                 runtime.free(32768, retained=True)
 
+    def test_dedicated_previews_node_is_addressed_by_socket(self):
+        calls = []
+        for config, expected in (
+            ({'tailscale': '/bin/ts'}, ['/bin/ts', 'status']),
+            ({'tailscale': '/bin/ts', 'tailscaleSocket': '/run/previews.sock'},
+             ['/bin/ts', '--socket=/run/previews.sock', 'status']),
+        ):
+            runtime = NativeRuntime(config)
+            runtime.command = lambda args: calls.append(args) or ''
+            runtime.ts(['status'])
+            self.assertEqual(calls[-1], expected)
+
+    def test_previews_node_runs_in_userspace_with_its_own_state(self):
+        spec = importlib.util.spec_from_file_location('previews_node', Path(__file__).with_name('install-previews-node.py'))
+        node = importlib.util.module_from_spec(spec); spec.loader.exec_module(node)
+        planned = node.plan('/srv/previews-node', '/opt/bin/tailscaled', 'vorton-previews')
+        self.assertEqual(planned['content']['ProgramArguments'],
+                         ['/opt/bin/tailscaled', '--tun=userspace-networking', '--statedir=/srv/previews-node/state',
+                          '--socket=/srv/previews-node/tailscaled.sock', '--port=0'])
+        for name in ('Bad_Name', '-lead', 'a.b', ''):
+            with self.assertRaises(ValueError):
+                node.plan('/srv/previews-node', '/opt/bin/tailscaled', name)
+        with self.assertRaises(ValueError):
+            node.plan('relative/dir', '/opt/bin/tailscaled', 'previews')
+        with tempfile.TemporaryDirectory() as directory:
+            node.private_directory(directory)
+            os.chmod(directory, 0o755)
+            with self.assertRaises(ValueError):
+                node.private_directory(directory)
+            link = Path(directory) / 'link'; link.symlink_to(directory)
+            with self.assertRaises(ValueError):
+                node.private_directory(link)
+            # A shim that links to the binary names the same login agent as its target,
+            # at install and at removal, including after the binary is gone.
+            target = Path(os.path.realpath(directory)) / 'tailscaled'; target.write_text('')
+            shim = Path(directory) / 'shim'; shim.symlink_to(target)
+            self.assertEqual(node.canonical(shim), target)
+            installed = node.plan('/srv/previews-node', node.canonical(shim), 'previews')
+            removing = node.plan('/srv/previews-node', node.canonical(shim), 'previews')
+            self.assertEqual(installed['content']['ProgramArguments'][0], str(target))
+            self.assertEqual(installed['label'], removing['label'])
+            target.unlink()
+            self.assertEqual(node.canonical(target), target)
+
+    def test_broker_moves_node_only_when_nothing_is_published(self):
+        spec = importlib.util.spec_from_file_location('native_installer', Path(__file__).with_name('install-native-https-broker.py'))
+        installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
+        base = {'runtime': 'native', 'daemonHome': '/home', 'cliCommand': ['/node', '/cli'], 'channel': '/channel',
+                'workspacePolicy': 'registered', 'allowedRoots': []}
+        old = {**base, 'tailscale': '/app/ts', 'nodeId': 'old', 'hostname': 'mac.ts.net', 'packetFilterHash': 'a'}
+        new = {**base, 'tailscale': '/bin/ts', 'tailscaleSocket': '/run/previews.sock', 'nodeId': 'new',
+               'hostname': 'previews.ts.net', 'packetFilterHash': 'b'}
+        stopped = {'entries': {'w.s': {'frontend': 32770, 'desired': 'stopped'}}}
+        running = {'entries': {'w.s': {'frontend': 32770, 'desired': 'running'}}}
+        nothing = lambda: {}
+        # Unchanged identity and a first install need no flag.
+        installer.check_identity(old, dict(old), running, False, nothing)
+        installer.check_identity({}, new, {}, False, nothing)
+        # A different node is refused without the explicit move, while a preview runs, and
+        # while the old node still publishes a port the ledger owns.
+        for ledger, move, publication in ((stopped, False, nothing), (running, True, nothing),
+                                          (stopped, True, lambda: {'TCP': {'32770': {'HTTPS': True}}})):
+            with self.assertRaises(ValueError):
+                installer.check_identity(old, new, ledger, move, publication)
+        installer.check_identity(old, new, stopped, True, lambda: {'TCP': {'443': {'HTTPS': True}}})
+        # The switch happens under the broker's lock, on what is on disk at that moment.
+        # A start the old broker consumed after any earlier look is seen and refused,
+        # and nothing is replaced or re-pinned.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(os.path.realpath(directory)) / 'broker'; channel = root / 'channel'
+            (channel / 'origins').mkdir(parents=True); root.chmod(0o700)
+            origin = channel / 'origins' / 'w.s.json'; origin.write_text('{}')
+            atomic(root / 'host-config.json', old)
+            atomic(root / 'https-broker-ledger.json', running)
+            replaced = []
+            class OldNode:
+                def __init__(self, config): self.config = config
+                def preflight(self): replaced.append('preflight')
+                def publication(self): return {}
+            with self.assertRaises(ValueError):
+                installer.switch_pins(root, channel, new, True, lambda: replaced.append('files'), OldNode)
+            self.assertEqual(safe_read(root / 'host-config.json'), old)
+            self.assertNotIn('files', replaced)
+            self.assertTrue(origin.exists())
+            # While a broker run holds the lock the installer waits, then gives up cleanly.
+            with installer.broker_lock(root):
+                with self.assertRaises(ValueError):
+                    installer.switch_pins(root, channel, new, True, lambda: None, OldNode, wait=0.2)
+            # With everything stopped the old node is verified, files and pins switch, and
+            # reservations that name the old hostname are dropped.
+            atomic(root / 'https-broker-ledger.json', stopped)
+            installer.switch_pins(root, channel, new, True, lambda: replaced.append('files'), OldNode)
+            self.assertEqual(safe_read(root / 'host-config.json'), new)
+            self.assertEqual(replaced[-2:], ['preflight', 'files'])
+            self.assertFalse(origin.exists())
+            # A socket is accepted only when this user owns it inside a private directory.
+            import socket as sockets
+            private = root / 'node'; private.mkdir(mode=0o700)
+            listener = sockets.socket(sockets.AF_UNIX); listener.bind(str(private / 'd.sock'))
+            try:
+                installer.private_socket(private / 'd.sock')
+                private.chmod(0o755)
+                with self.assertRaises(ValueError):
+                    installer.private_socket(private / 'd.sock')
+                with self.assertRaises(ValueError):
+                    installer.private_socket(root / 'host-config.json')
+            finally:
+                listener.close()
+        # An existing broker directory that others can write is refused, never adopted.
+        with tempfile.TemporaryDirectory() as directory:
+            fresh = installer.prepare_deployment(Path(os.path.realpath(directory)) / 'new')
+            self.assertEqual(os.lstat(fresh).st_mode & 0o777, 0o700)
+            open_root = Path(os.path.realpath(directory)) / 'open'; open_root.mkdir(); open_root.chmod(0o777)
+            with self.assertRaises(ValueError):
+                installer.prepare_deployment(open_root)
+        # The move never excuses a change to anything else the broker is pinned to.
+        with self.assertRaises(ValueError):
+            installer.check_identity(old, {**new, 'daemonHome': '/elsewhere'}, stopped, True, nothing)
+
     def test_native_listener_rejects_wildcard_and_other_terminal(self):
         runtime = NativeRuntime({})
         runtime.command = lambda args: 'p123\nn*:40001\n'
