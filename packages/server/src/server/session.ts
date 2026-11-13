@@ -4041,6 +4041,9 @@ export class Session {
         return this.handleChecklistRequest(msg);
       case "agent.questions.answer.request":
         return this.handleQuestionAnswerRequest(msg);
+      case "previews.list.request":
+      case "previews.action.request":
+        return this.handlePreviewsRequest(msg);
       case "agent.goal.get.request":
       case "agent.goal.set.request":
       case "agent.goal.clear.request":
@@ -6674,6 +6677,47 @@ export class Session {
           error: error instanceof Error ? error.message : "Checklist operation failed",
         },
       });
+    }
+  }
+
+  private async handlePreviewsRequest(
+    msg: Extract<
+      SessionInboundMessage,
+      { type: "previews.list.request" | "previews.action.request" }
+    >,
+  ): Promise<void> {
+    const previews = this.agentManager.previews;
+    try {
+      if (!previews) throw new Error("Previews are not available on this daemon.");
+      if (msg.type === "previews.list.request") {
+        this.emit({
+          type: "previews.list.response",
+          payload: { requestId: msg.requestId, gallery: await previews.gallery(), error: null },
+        });
+        return;
+      }
+      // Ratings, picks and pairing tickets are the owner's. Agent bridges, tools and hubs
+      // share the daemon credential but never speak for the owner.
+      if (this.clientType !== "mobile" && this.clientType !== "browser")
+        throw new Error("Rate and review previews from the Vorteo app.");
+      const { gallery, ticket } = await previews.act(msg.action);
+      this.emit({
+        type: "previews.action.response",
+        payload: { requestId: msg.requestId, gallery, ...(ticket ? { ticket } : {}), error: null },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The preview request failed.";
+      this.emit(
+        msg.type === "previews.list.request"
+          ? {
+              type: "previews.list.response",
+              payload: { requestId: msg.requestId, gallery: null, error: message },
+            }
+          : {
+              type: "previews.action.response",
+              payload: { requestId: msg.requestId, gallery: null, error: message },
+            },
+      );
     }
   }
 

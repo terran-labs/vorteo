@@ -179,7 +179,11 @@ import { createAppliedSeqStore } from "./session-host/applied-store.js";
 import { loadAdoptedAgents, planHostedStartup } from "./session-host/boot-attach.js";
 import { startHostedIdleRelease } from "./session-host/idle-release.js";
 import { startIdleSessionRelease } from "./agent/idle-release.js";
-import { ensureAgentLoaded } from "./agent/agent-loading.js";
+import { ensureAgentLoaded, ensureUnarchivedAgentLoaded } from "./agent/agent-loading.js";
+import { createPreviewsRouter } from "./previews/routes.js";
+import { PreviewsService } from "./previews/service.js";
+import { PreviewStore } from "./previews/store.js";
+import { renderThumbnail } from "./previews/thumbnail.js";
 import { formatSystemNotificationPrompt } from "./agent/agent-messages/index.js";
 import { startAgentRun } from "./agent/agent-prompt.js";
 import { switchAgentProfileCommand } from "./agent/profile-switch/command.js";
@@ -968,6 +972,34 @@ export async function createPaseoDaemon(
     express.json(),
     createTerminalActivityRouteHandler(terminalManager),
   );
+
+  // Previews gallery: review pages, frozen snapshots and owner annotations. Mounted ahead
+  // of daemon auth because every route authenticates itself; see previews/routes.ts.
+  const previews = new PreviewsService({
+    store: new PreviewStore(path.join(config.paseoHome, "previews")),
+    deliver: async (agentId, messageId, text) => {
+      await ensureUnarchivedAgentLoaded(agentId, { agentManager, agentStorage, logger });
+      await agentManager.queueOwnerMessage(agentId, messageId, text);
+    },
+    describeAgent: (agentId) => {
+      const agent = agentManager.getAgent(agentId);
+      if (!agent) return null;
+      return {
+        ...(agent.config.title ? { title: agent.config.title } : {}),
+        ...(agent.workspaceId ? { workspaceId: agent.workspaceId } : {}),
+      };
+    },
+    onChanged: (revision) =>
+      wsServer?.broadcast({
+        type: "session",
+        message: { type: "previews.changed", payload: { revision } },
+      }),
+    renderThumbnail,
+    loopbackBaseUrl: () =>
+      boundListenTarget?.type === "tcp" ? `http://127.0.0.1:${boundListenTarget.port}` : null,
+    warn: (context, message) => logger.warn(context, message),
+  });
+  app.use("/api/previews", createPreviewsRouter(previews));
 
   // Serve the bundled browser web UI when enabled. Mounted after service-proxy
   // classification and host/CORS handling, but before daemon bearer auth, so
@@ -2045,6 +2077,8 @@ export async function createPaseoDaemon(
       enabled ? createPaseoAgentToolManifest(createAgentToolHostDependencies({})) : null,
     );
   };
+  // Agent tools and client sessions reach the Previews gallery through the manager.
+  agentManager.previews = previews;
   agentManager.setPaseoToolCatalogFactory(createAgentToolCatalog);
   agentManager.setPaseoToolsEnabled(config.mcpInjectIntoAgents !== false);
   setAgentProviderToolsEnabled(config.mcpEnabled !== false && config.mcpInjectIntoAgents !== false);

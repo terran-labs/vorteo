@@ -291,7 +291,7 @@ interface DownloadTarget {
  * the connection in use is anything else (relay, SSH, socket, pipe, or none yet), so the caller
  * reads the file over the session socket instead.
  */
-function resolveDaemonDownloadTarget(
+export function resolveDaemonDownloadTarget(
   daemon: HostProfile | undefined,
   activeConnectionId: string | null,
 ): DownloadTarget | null {
