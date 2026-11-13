@@ -5,12 +5,40 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import shlex
 import sys
 import time
 
 from https_broker import NativeRuntime, atomic, digest, safe_dir, safe_read
 from launch_agent import install, label_for, owned_plist
+
+
+NODE_FIELDS = ('tailscale', 'tailscaleSocket', 'nodeId', 'hostname', 'packetFilterHash')
+
+
+def check_identity(previous, config, ledger, move, previous_publication):
+    """Refuse an install that would change what an existing broker is pinned to.
+
+    The node a broker publishes through may change only on an explicit move, and only when
+    nothing is published: every preview stopped, and no mapping the ledger owns left on the
+    old node. Otherwise a running preview's link would change hostname underneath it.
+    """
+    for field in ('runtime', 'daemonHome', 'cliCommand', 'channel', 'workspacePolicy', 'allowedRoots'):
+        if field in previous and previous[field] != config[field]:
+            raise ValueError('Existing native broker identity or policy differs: ' + field)
+    changed = [field for field in NODE_FIELDS if previous and previous.get(field) != config.get(field)]
+    if not changed:
+        return
+    if not move:
+        raise ValueError('Existing native broker identity or policy differs: ' + changed[0])
+    entries = list(ledger.get('entries', {}).values())
+    if any(entry.get('desired') == 'running' for entry in entries):
+        raise ValueError('Stop every preview before moving the broker to another node')
+    published = previous_publication()
+    owned = {str(entry['frontend']) for entry in entries if 'frontend' in entry}
+    if owned & set(published.get('TCP', {})):
+        raise ValueError('The old node still publishes a preview port; remove it before moving')
 
 
 def main():
@@ -20,6 +48,12 @@ def main():
     parser.add_argument('--node', required=True)
     parser.add_argument('--cli-entry', required=True)
     parser.add_argument('--tailscale', required=True)
+    # A dedicated previews node: the socket of a second Tailscale daemon that owns the
+    # preview hostname. --tailscale must then be a CLI that can address that daemon.
+    parser.add_argument('--tailscale-socket')
+    # Required once to move an existing broker to another node. Refused while any
+    # preview is running, because its link would silently change hostname.
+    parser.add_argument('--move-previews-node', action='store_true')
     parser.add_argument('--workspace-policy', choices=['registered', 'approved-roots'], default='registered')
     parser.add_argument('--allowed-root', action='append', default=[])
     parser.add_argument('--restore-after-restart', action=argparse.BooleanOptionalAction, default=False)
@@ -34,6 +68,12 @@ def main():
     node = str(Path(args.node).resolve(strict=True))
     cli = str(Path(args.cli_entry).resolve(strict=True))
     tailscale = str(Path(args.tailscale).resolve(strict=True))
+    socket = None
+    if args.tailscale_socket:
+        socket = Path(args.tailscale_socket).absolute()
+        if not stat.S_ISSOCK(os.lstat(socket).st_mode):
+            raise ValueError('The previews node socket is not a socket')
+        socket = str(socket)
     bin_dir = Path.home() / '.local/bin'
     launcher = bin_dir / 'paseo-preview'
     ownership = '# Native preview broker: ' + str(root)
@@ -52,6 +92,8 @@ def main():
         'portStart': 32768, 'portEnd': 60999,
         'restoreAfterRestart': args.restore_after_restart,
     }
+    if socket:
+        config['tailscaleSocket'] = socket
     if args.workspace_policy == 'approved-roots' and not args.allowed_root:
         raise ValueError('Approved-roots policy requires at least one allowed root')
     runtime = NativeRuntime(config)
@@ -72,9 +114,9 @@ def main():
                for rule in netmap.get('PacketFilter', []) for destination in rule.get('Dsts', [])):
         raise ValueError('Existing tailnet policy does not cover preview ports; no grants changed')
     runtime.publication()
-    for field in ('runtime', 'daemonHome', 'cliCommand', 'tailscale', 'channel', 'nodeId', 'hostname', 'packetFilterHash', 'workspacePolicy', 'allowedRoots'):
-        if field in previous and previous[field] != config[field]:
-            raise ValueError('Existing native broker identity or policy differs: ' + field)
+    ledger = safe_read(root / 'https-broker-ledger.json', 2 * 1024 * 1024) if (root / 'https-broker-ledger.json').exists() else {}
+    check_identity(previous, config, ledger, args.move_previews_node,
+                   lambda: NativeRuntime(previous).publication() if previous.get('tailscale') else {})
     if (channel / 'installed.json').exists():
         marker = safe_read(channel / 'installed.json')
         if marker.get('deployment') != str(root):

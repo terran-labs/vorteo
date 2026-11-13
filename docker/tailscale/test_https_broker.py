@@ -33,6 +33,56 @@ class NativeWorkspacePolicyTests(unittest.TestCase):
             with self.assertRaises(subprocess.SubprocessError):
                 runtime.free(32768, retained=True)
 
+    def test_dedicated_previews_node_is_addressed_by_socket(self):
+        calls = []
+        for config, expected in (
+            ({'tailscale': '/bin/ts'}, ['/bin/ts', 'status']),
+            ({'tailscale': '/bin/ts', 'tailscaleSocket': '/run/previews.sock'},
+             ['/bin/ts', '--socket=/run/previews.sock', 'status']),
+        ):
+            runtime = NativeRuntime(config)
+            runtime.command = lambda args: calls.append(args) or ''
+            runtime.ts(['status'])
+            self.assertEqual(calls[-1], expected)
+
+    def test_previews_node_runs_in_userspace_with_its_own_state(self):
+        spec = importlib.util.spec_from_file_location('previews_node', Path(__file__).with_name('install-previews-node.py'))
+        node = importlib.util.module_from_spec(spec); spec.loader.exec_module(node)
+        planned = node.plan('/srv/previews-node', '/opt/bin/tailscaled', 'vorton-previews')
+        self.assertEqual(planned['content']['ProgramArguments'],
+                         ['/opt/bin/tailscaled', '--tun=userspace-networking', '--statedir=/srv/previews-node/state',
+                          '--socket=/srv/previews-node/tailscaled.sock', '--port=0'])
+        for name in ('Bad_Name', '-lead', 'a.b', ''):
+            with self.assertRaises(ValueError):
+                node.plan('/srv/previews-node', '/opt/bin/tailscaled', name)
+        with self.assertRaises(ValueError):
+            node.plan('relative/dir', '/opt/bin/tailscaled', 'previews')
+
+    def test_broker_moves_node_only_when_nothing_is_published(self):
+        spec = importlib.util.spec_from_file_location('native_installer', Path(__file__).with_name('install-native-https-broker.py'))
+        installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
+        base = {'runtime': 'native', 'daemonHome': '/home', 'cliCommand': ['/node', '/cli'], 'channel': '/channel',
+                'workspacePolicy': 'registered', 'allowedRoots': []}
+        old = {**base, 'tailscale': '/app/ts', 'nodeId': 'old', 'hostname': 'mac.ts.net', 'packetFilterHash': 'a'}
+        new = {**base, 'tailscale': '/bin/ts', 'tailscaleSocket': '/run/previews.sock', 'nodeId': 'new',
+               'hostname': 'previews.ts.net', 'packetFilterHash': 'b'}
+        stopped = {'entries': {'w.s': {'frontend': 32770, 'desired': 'stopped'}}}
+        running = {'entries': {'w.s': {'frontend': 32770, 'desired': 'running'}}}
+        nothing = lambda: {}
+        # Unchanged identity and a first install need no flag.
+        installer.check_identity(old, dict(old), running, False, nothing)
+        installer.check_identity({}, new, {}, False, nothing)
+        # A different node is refused without the explicit move, while a preview runs, and
+        # while the old node still publishes a port the ledger owns.
+        for ledger, move, publication in ((stopped, False, nothing), (running, True, nothing),
+                                          (stopped, True, lambda: {'TCP': {'32770': {'HTTPS': True}}})):
+            with self.assertRaises(ValueError):
+                installer.check_identity(old, new, ledger, move, publication)
+        installer.check_identity(old, new, stopped, True, lambda: {'TCP': {'443': {'HTTPS': True}}})
+        # The move never excuses a change to anything else the broker is pinned to.
+        with self.assertRaises(ValueError):
+            installer.check_identity(old, {**new, 'daemonHome': '/elsewhere'}, stopped, True, nothing)
+
     def test_native_listener_rejects_wildcard_and_other_terminal(self):
         runtime = NativeRuntime({})
         runtime.command = lambda args: 'p123\nn*:40001\n'

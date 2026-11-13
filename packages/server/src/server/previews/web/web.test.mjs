@@ -68,6 +68,24 @@ test("pair: next accepts only viewer paths and same-hostname https URLs", () => 
   }
 });
 
+test("pair: a preview on another hostname is followed only when the broker reserved it", () => {
+  const { validateNext } = load("pair.js").exports;
+  const loc = { origin: "https://vorteo.example.ts.net", hostname: "vorteo.example.ts.net" };
+  const reserved = ["https://previews.example.ts.net:32780"];
+  assert.equal(
+    validateNext("https://previews.example.ts.net:32780/deck/", loc, reserved),
+    "https://previews.example.ts.net:32780/deck/",
+  );
+  for (const refused of [
+    "https://previews.example.ts.net:32781/", // same host, port not reserved
+    "https://other.example.ts.net:32780/",
+    "http://previews.example.ts.net:32780/",
+    "https://previews.example.ts.net:32780@evil.example/",
+  ])
+    assert.equal(validateNext(refused, loc, reserved), null, refused);
+  assert.equal(validateNext("https://previews.example.ts.net:32780/", loc, []), null);
+});
+
 test("frame: the target origin binds once from the first hello's event origin", () => {
   const { acceptPageMessage, createGateState } = load("frame.js").exports;
   const parent = fakeWindow();

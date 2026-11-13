@@ -5,10 +5,10 @@ import express, { type Request, type Response, type Router } from "express";
 import {
   PreviewSelectionSchema,
   PreviewVersionIdSchema,
-  type PreviewKind,
   type PreviewVersion,
 } from "@getpaseo/protocol/previews";
 import { z } from "zod";
+import { listReservedPreviewOrigins } from "../workspace-preview-origin.js";
 import type { PreviewsService } from "./service.js";
 import { PreviewError, resolveSnapshotPath } from "./store.js";
 
@@ -143,7 +143,22 @@ function route(
   };
 }
 
-export function createPreviewsRouter(previews: PreviewsService): Router {
+export interface PreviewsRouterOptions {
+  /** Origins the preview broker has reserved. Previews may live on another hostname. */
+  previewOrigins?: () => Promise<string[]>;
+}
+
+/** An origin safe to place in a header or attribute: scheme, host and optional port only. */
+function isPlainOrigin(value: string): boolean {
+  return /^https:\/\/[A-Za-z0-9.-]+(:\d{1,5})?$/.test(value);
+}
+
+export function createPreviewsRouter(
+  previews: PreviewsService,
+  options: PreviewsRouterOptions = {},
+): Router {
+  const previewOrigins = async (): Promise<string[]> =>
+    (await (options.previewOrigins ?? listReservedPreviewOrigins)()).filter(isPlainOrigin);
   const router = express.Router();
   const json = express.json({ limit: "64kb" });
 
@@ -151,11 +166,12 @@ export function createPreviewsRouter(previews: PreviewsService): Router {
     res: Response,
     name: string,
     headers: Record<string, string>,
-    kind?: PreviewKind,
+    attributes: Record<string, string> = {},
   ): Promise<void> => {
     try {
       let body = await fs.readFile(path.join(WEB_ROOT, name), "utf8");
-      if (kind) body = body.replace(/<html/i, `<html data-preview-kind="${kind}"`);
+      for (const [attribute, value] of Object.entries(attributes))
+        body = body.replace(/<html/i, `<html data-${attribute}="${value}"`);
       res.setHeader("Content-Type", MIME[path.extname(name)] ?? "application/octet-stream");
       res.setHeader("X-Content-Type-Options", "nosniff");
       res.setHeader("Cache-Control", "no-cache");
@@ -181,17 +197,27 @@ export function createPreviewsRouter(previews: PreviewsService): Router {
   // The comment frame is embedded by previews on this hostname, whatever their port. A
   // page that embeds it can cover or hide it, so the embedded frame never posts feedback;
   // it hands a draft to the unframeable /confirm page instead.
-  router.get("/frame", (req, res) => {
-    const hostname = (req.headers.host ?? "").replace(/:\d+$/, "");
-    const ancestors = /^[A-Za-z0-9.-]+$/.test(hostname)
-      ? `'self' https://${hostname}:* http://${hostname}:*`
-      : "'self'";
-    void sendWebFile(res, "frame.html", trustedPagePolicy(ancestors));
-  });
+  router.get(
+    "/frame",
+    route(async (req, res) => {
+      const hostname = (req.headers.host ?? "").replace(/:\d+$/, "");
+      const sameHost = /^[A-Za-z0-9.-]+$/.test(hostname)
+        ? [`https://${hostname}:*`, `http://${hostname}:*`]
+        : [];
+      // Previews published under their own hostname are allowed by exact reserved origin.
+      const ancestors = ["'self'", ...sameHost, ...(await previewOrigins())].join(" ");
+      await sendWebFile(res, "frame.html", trustedPagePolicy(ancestors));
+    }),
+  );
   // Top-level pages that hold the review key must never be framed.
   router.get(
     "/pair",
-    (_req, res) => void sendWebFile(res, "pair.html", trustedPagePolicy("'none'")),
+    route(async (_req, res) => {
+      // The page may continue only to a reserved preview origin or this daemon's viewer.
+      await sendWebFile(res, "pair.html", trustedPagePolicy("'none'"), {
+        "preview-origins": (await previewOrigins()).join(" "),
+      });
+    }),
   );
   // Feedback written in an embedded frame is confirmed here, where no page can cover the
   // button. See web/confirm.js.
@@ -207,7 +233,9 @@ export function createPreviewsRouter(previews: PreviewsService): Router {
         res.status(404).type("text/plain").send("This preview no longer exists.");
         return;
       }
-      void sendWebFile(res, "viewer.html", trustedPagePolicy("'none'"), version.kind);
+      void sendWebFile(res, "viewer.html", trustedPagePolicy("'none'"), {
+        "preview-kind": version.kind,
+      });
     }),
   );
 

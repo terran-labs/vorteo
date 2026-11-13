@@ -386,7 +386,11 @@ class NativeRuntime(Runtime):
         return value
 
     def ts(self, args):
-        return self.command([self.c['tailscale'], *args])
+        # Previews may be published by a dedicated Tailscale node with its own daemon, so
+        # preview links never share a hostname with the interface. That daemon is
+        # addressed by socket; without one, the default system daemon is used.
+        socket = self.c.get('tailscaleSocket')
+        return self.command([self.c['tailscale'], *(['--socket=' + socket] if socket else []), *args])
 
     def canonical_workspace_cwd(self, cwd):
         return cwd
