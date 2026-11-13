@@ -5,10 +5,9 @@ import { buildSeededHost } from "./daemon-registry";
 import { openSidebarDisplayPreferences } from "./sidebar";
 import {
   clickSettingsBackToWorkspace,
-  closeSettingsDialog,
   openHostSection,
   openSettingsHost,
-  settingsEnvironmentDetails,
+  settingsHostConnections,
 } from "./settings";
 
 const REGISTRY_KEY = "@paseo:daemon-registry";
@@ -130,11 +129,10 @@ export async function waitForConnectedHost(
 ): Promise<void> {
   await openSettings(page);
   await openSettingsHost(page, input.serverId);
-  const host = settingsEnvironmentDetails(page, input.serverId);
+  const host = settingsHostConnections(page, input.serverId);
   await expect(host.getByTestId("host-page-connections-card")).toContainText(input.endpoint, {
     timeout: 30_000,
   });
-  await closeSettingsDialog(page);
   await clickSettingsBackToWorkspace(page);
   await expect(page.getByTestId("settings-sidebar")).toHaveCount(0);
 }

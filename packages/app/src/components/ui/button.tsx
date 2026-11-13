@@ -5,7 +5,9 @@ import { useContainedControlSize } from "@/components/ui/control-size";
 import {
   default as React,
   useCallback,
+  useLayoutEffect,
   useMemo,
+  useRef,
   type ComponentType,
   type PropsWithChildren,
   type ReactElement,
@@ -223,6 +225,7 @@ export function Button({
   onPressIn,
   onPressOut,
   onLongPress,
+  ref: forwardedRef,
   ...props
 }: PropsWithChildren<
   Omit<PressableProps, "style"> & {
@@ -316,6 +319,28 @@ export function Button({
     return foregroundIconMapping;
   }
 
+  const nativeDisabled = Boolean(disabled) && !focusableWhenDisabled;
+  // react-native-web's Pressable writes `aria-disabled` from its own `disabled` prop after
+  // spreading ours, so a loading or focusable-disabled button would read as enabled. Its
+  // `disabled` prop cannot carry the state either: that sets the native attribute and drops
+  // focus. Set the attribute on the element instead.
+  const nodeRef = useRef<View | null>(null);
+  const setRef = useCallback(
+    (node: View | null) => {
+      nodeRef.current = node;
+      if (typeof forwardedRef === "function") forwardedRef(node);
+      else if (forwardedRef) forwardedRef.current = node;
+    },
+    [forwardedRef],
+  );
+  useLayoutEffect(() => {
+    if (!isWeb) return;
+    const element = nodeRef.current as unknown as HTMLElement | null;
+    if (!element?.setAttribute) return;
+    if (isDisabled) element.setAttribute("aria-disabled", "true");
+    else element.removeAttribute("aria-disabled");
+  }, [isDisabled, nativeDisabled]);
+
   const presses = pressHandlers(Boolean(disabled) || loading, {
     onPress,
     onPressIn,
@@ -329,8 +354,8 @@ export function Button({
       {...props}
       accessibilityRole={role}
       accessibilityState={accessibilityState}
-      aria-disabled={isDisabled || undefined}
-      disabled={Boolean(disabled) && !focusableWhenDisabled}
+      ref={setRef}
+      disabled={nativeDisabled}
       {...presses}
       style={pressableStyle}
     >

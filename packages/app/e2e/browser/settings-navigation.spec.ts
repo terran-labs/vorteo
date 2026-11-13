@@ -88,8 +88,12 @@ async function openWorkspace(
   await expect(page.getByTestId("menu-button")).toBeVisible();
 }
 
+// Short enough that the sidebar overflows by more than 60px, now that Notifications & privacy
+// and Environments are no longer sidebar sections.
+const SHORT_SETTINGS_VIEWPORT = { width: 1000, height: 300 };
+
 test.describe("Settings sidebar scroll position", () => {
-  test.use({ viewport: { width: 1000, height: 400 } });
+  test.use({ viewport: SHORT_SETTINGS_VIEWPORT });
 
   test("clamps after resizing and starts a fresh visit at the top", async ({ page }) => {
     await gotoAppShell(page);
@@ -97,7 +101,7 @@ test.describe("Settings sidebar scroll position", () => {
     await scrollSettingsSidebarToEnd(page);
     await page.setViewportSize({ width: 1000, height: 1100 });
     await expectSettingsSidebarScrollOffset(page, 0);
-    await page.setViewportSize({ width: 1000, height: 400 });
+    await page.setViewportSize(SHORT_SETTINGS_VIEWPORT);
     await openSettingsSection(page, "appearance");
     await expectSettingsSidebarScrollOffset(page, 0);
     await scrollSettingsSidebarToEnd(page);
@@ -291,7 +295,10 @@ test.describe("Settings sidebar navigation", () => {
     await expectAboutContent(page);
 
     await openSettingsSection(page, "appearance");
-    await expectSettingsHeader(page, "Appearance");
+    // The Appearance pane opens on its Theme group and carries no "Appearance" heading of its own.
+    await expect(
+      page.getByTestId("settings-pane-appearance.appearance").filter({ visible: true }).first(),
+    ).toBeInViewport();
     await expectAppearanceContent(page);
 
     const back = page.getByTestId("settings-back-to-workspace");

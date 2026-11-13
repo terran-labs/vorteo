@@ -244,8 +244,16 @@ export async function expectSettingsDetailScrollOffset(page: Page, offset: numbe
 export async function openSettingsHost(page: Page, serverId: string): Promise<void> {
   await openSettingsHostSection(page, serverId, "connections");
   await expect(
-    settingsEnvironmentDetails(page, serverId).getByTestId("host-page-connections-card"),
+    settingsHostConnections(page, serverId).getByTestId("host-page-connections-card"),
   ).toBeVisible();
+}
+
+/** One host's connections, in the Connections group under System (not in its Edit dialog). */
+export function settingsHostConnections(page: Page, serverId: string) {
+  return page
+    .getByTestId(`settings-environment-${serverId}`)
+    .filter({ has: page.getByTestId("host-page-connections-card") })
+    .first();
 }
 
 export async function openSettingsHostSection(
@@ -255,9 +263,8 @@ export async function openSettingsHostSection(
 ): Promise<void> {
   await revealSettingsLocation(page, section === "host" ? "environments" : section);
   await expect(page.getByTestId("settings-host-picker")).toHaveCount(0);
-  if (section === "host" || section === "connections") {
-    await openSettingsEnvironment(page, serverId);
-  }
+  // Connections sit on the page itself; only the host overview lives in the Edit dialog.
+  if (section === "host") await openSettingsEnvironment(page, serverId);
 }
 
 /**
@@ -431,7 +438,25 @@ export async function closeCompactSettings(page: Page): Promise<void> {
   await expect(page).not.toHaveURL(/\/settings(\/|$)/);
 }
 
-export async function removeCurrentHostFromSettings(page: Page): Promise<void> {
+/**
+ * Opens the collapsed Advanced group in a host's Edit dialog, where Remove host waits under its
+ * Danger zone heading. The dialog must already be open.
+ */
+export async function openHostAdvanced(page: Page, serverId: string): Promise<void> {
+  const toggle = page
+    .getByTestId(`host-page-advanced-${serverId}-toggle`)
+    .filter({ visible: true })
+    .first();
+  await toggle.scrollIntoViewIfNeeded();
+  if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+}
+
+export async function removeCurrentHostFromSettings(
+  page: Page,
+  serverId = getServerId(),
+): Promise<void> {
+  await openHostAdvanced(page, serverId);
   await page.getByTestId("host-page-remove-host-button").click();
   await expect(page.getByTestId("remove-host-confirm-modal")).toBeVisible();
   await page.getByTestId("remove-host-confirm").click();
@@ -443,6 +468,8 @@ export async function expectSettingsBackButton(page: Page): Promise<void> {
 }
 
 export async function clickSettingsBackToWorkspace(page: Page): Promise<void> {
+  // Adding a host opens its Edit dialog, whose backdrop covers the sidebar's Back button.
+  await closeSettingsDialog(page);
   const desktopBack = page.getByTestId("settings-back-to-workspace");
   if (await desktopBack.isVisible()) {
     await desktopBack.click();
@@ -728,6 +755,7 @@ export async function expectNoHostPasswordControls(page: Page): Promise<void> {
 }
 
 export async function removeHostFromHostPage(page: Page, serverId: string): Promise<void> {
+  await openHostAdvanced(page, serverId);
   await page.getByTestId("host-page-remove-host-button").click();
   await page.getByTestId("remove-host-confirm").click();
   await expect(page).not.toHaveURL(new RegExp(`/settings/hosts/${serverId}`));

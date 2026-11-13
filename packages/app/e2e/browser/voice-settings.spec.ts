@@ -32,7 +32,7 @@ test("configures an env-pinned OpenAI site and keeps the saved key on later save
       const opened = await openSpeechSite(page, "Listening");
       await expect(opened.getByText("Set by PASEO_VOICE_STT_PROVIDER")).toBeVisible();
       await expect(providerOption(opened, "Local")).toBeDisabled();
-      await expect(providerOption(opened, "OpenAI")).toHaveAttribute("aria-selected", "true");
+      await expect(providerOption(opened, "OpenAI")).toHaveAttribute("aria-checked", "true");
       await expect(opened.getByText("Set by OPENAI_API_KEY")).toBeVisible();
       return opened;
     });

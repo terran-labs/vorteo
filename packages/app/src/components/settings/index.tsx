@@ -198,15 +198,27 @@ export function SettingsInput({
   );
 }
 
+/**
+ * A row action's spoken name: its visible text, then the row, so a pane's several "Refresh"
+ * buttons stay distinguishable. A row that already starts with the action ("Discard" on
+ * "Discard title changes") is the whole name, so nothing is read twice.
+ */
+export function settingsActionName(actionLabel: string, rowLabel: string): string {
+  const action = actionLabel.trim();
+  const row = rowLabel.trim();
+  if (!row) return action;
+  if (row.toLowerCase().startsWith(action.toLowerCase())) return row;
+  return `${action}: ${row}`;
+}
+
 export function SettingsAction({ actionLabel, onPress, disabled, ...row }: SettingsActionProps) {
   return (
     <SettingsRow {...row}>
-      {/* Named with its row, so a pane's several "Refresh" buttons stay distinguishable. */}
       <Button
         variant="outline"
         onPress={onPress}
         disabled={disabled}
-        accessibilityLabel={`${actionLabel} ${row.label}`}
+        accessibilityLabel={settingsActionName(actionLabel, row.label)}
       >
         {actionLabel}
       </Button>

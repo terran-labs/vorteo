@@ -73,7 +73,7 @@ test("inspects skills and preserves an edit made after removal preview", async (
     .getByTestId("settings-pane-agents.skills")
     .filter({ visible: true })
     .first()
-    .getByRole("button", { name: "Details", exact: true })
+    .getByRole("button", { name: "Details for browser-example", exact: true })
     .click();
   await expect(page.getByText("Reviewed fixture instructions", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Preview removal", exact: true }).click();
@@ -111,7 +111,7 @@ test("groups provider links and keeps removal scoped to the selected path", asyn
     .getByTestId("settings-pane-agents.skills")
     .filter({ visible: true })
     .first()
-    .getByRole("button", { name: "Details", exact: true })
+    .getByRole("button", { name: "Details for linked-example", exact: true })
     .click();
   await page.getByRole("button", { name: "Inspect claude path", exact: true }).click();
   await page.getByRole("button", { name: "Preview removal", exact: true }).click();

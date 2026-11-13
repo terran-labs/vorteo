@@ -107,6 +107,7 @@ import {
   PreclaimRecoveryReview,
 } from "./bootstrap-panel";
 import { installationHasDev, readExecutionInstallation } from "./policy";
+import { isDemoSession } from "@/demo/mode";
 import { InstallationClient, requestInstallationOwner, hasInstallationConnections } from "./client";
 import { SafetySnapshotsCard } from "./safety-snapshots";
 import { CoordinatorFollowCard } from "./installation-upgrade-card";
@@ -151,7 +152,10 @@ function getInstallationPanel(registryLoaded: boolean): InstallationPanelModel |
       register: runtime,
     });
     panelModel = new InstallationPanelModel(panelClient, {
-      connectionsRegistered: hasInstallationConnections(installation, runtime.getHosts()),
+      // Demo hosts connect in process, so the simulated installation never needs its
+      // connections registered; otherwise every cold load would be sent to /welcome.
+      connectionsRegistered:
+        isDemoSession() || hasInstallationConnections(installation, runtime.getHosts()),
       openRequested:
         typeof window !== "undefined" &&
         new URL(window.location.href).searchParams.get("installation") === "1",

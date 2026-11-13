@@ -5,6 +5,7 @@ import { wsRoutePatternForPort } from "./daemon-port";
 import {
   closeSettingsDialog,
   goBackInSettings,
+  openSettingsEnvironment,
   openSettingsHost,
   settingsEnvironmentDetails,
 } from "./settings";
@@ -180,7 +181,8 @@ class StartupAssertions {
     await this.page.getByTestId("sidebar-settings").click();
     await expect(this.page.getByTestId("settings-sidebar")).toBeVisible();
     await openSettingsHost(this.page, input.serverId);
-    // The environment's Edit dialog shows its label.
+    // Connections sit on the System page; the environment's Edit dialog shows its label.
+    await openSettingsEnvironment(this.page, input.serverId);
     await expect(settingsEnvironmentDetails(this.page, input.serverId)).toContainText(input.label);
     await closeSettingsDialog(this.page);
     await goBackInSettings(this.page);
