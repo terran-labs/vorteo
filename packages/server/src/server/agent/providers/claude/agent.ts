@@ -1833,13 +1833,13 @@ export class ClaudeAgentClient implements AgentClient {
   }
 
   async fetchCatalog(
-    _options: FetchCatalogOptions,
+    options: FetchCatalogOptions,
     context?: ProviderRefreshContext,
   ): Promise<ProviderCatalog> {
     const lifetime = this.shutdownController.signal;
     const signal = context ? AbortSignal.any([context.signal, lifetime]) : lifetime;
     signal.throwIfAborted();
-    const refresh = this.refreshCatalog(signal, context);
+    const refresh = this.refreshCatalog(signal, context, options.force);
     this.catalogRefreshes.add(refresh);
     try {
       return await refresh;
@@ -1851,8 +1851,10 @@ export class ClaudeAgentClient implements AgentClient {
   private async refreshCatalog(
     signal: AbortSignal,
     context?: ProviderRefreshContext,
+    force = false,
   ): Promise<ProviderCatalog> {
-    // Claude exposes a global catalog here; cwd/force are intentionally irrelevant.
+    // Claude exposes a global catalog here; cwd is irrelevant, and force only skips the reuse of
+    // a recent discovery answer.
     let claudeCodeVersion: string | undefined;
     try {
       claudeCodeVersion = await runProviderRefreshActivity(context, "version", () =>
@@ -1873,6 +1875,7 @@ export class ClaudeAgentClient implements AgentClient {
           runtimeSettings: this.runtimeSettings,
           env,
           signal,
+          force,
         }),
       );
       discoveredModelIds = new Set(
