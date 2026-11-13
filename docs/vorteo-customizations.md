@@ -3208,4 +3208,8 @@ Release updates accept installation-local merge histories when a clean merge yie
 
 Release upgrades check the fetched tag against the approved commit and verify installed source containment before taking a safety snapshot. Refusals preserve existing rollback points. Checks repeat after backup and during tracked bundle staging; installer and tracked Host prechecks share the tree-containment rule for local merge histories.
 
+Workspace Git fallback polling distinguishes sidebar observation from foreground checkout views, focused clients and running agents. Idle observations refresh at most every five minutes; watcher events and explicit refreshes bypass that idle limit. Routine fallback commands use minimal stat checks and ignore ctime to avoid inode and timestamp churn on shared filesystems, with a strict check on the first eligible poll after five minutes. Optional index writes remain disabled, and untracked caching is not enabled without reliable directory modification times.
+
+Git polling maintenance review: session observation tests now require background registration for workspace-list observations while retaining workspace update and checkout status delivery checks. Runtime polling behavior is unchanged by this test correction.
+
 Shared-settings skill inventory reuses bounded per-package inspection summaries when recursive filesystem metadata and topology are unchanged. Nested edits, receipt changes, executable mode changes and package replacement invalidate the summaries; inventory discovery continues to detect additions and removals. Skill detail, export, mutation and launch validation read fresh contents. The coordinator still checks each environment because unchanged desired settings do not prove unchanged local files.

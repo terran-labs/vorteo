@@ -88,6 +88,17 @@ const DEGRADED_GIT_POLL_INTERVAL_MS = 5_000;
 // does not. Explicit reads still force a refresh, so this only bounds background discovery of
 // changes made outside Paseo.
 const DEGRADED_GIT_POLL_MAX_INTERVAL_MS = 60_000;
+export const IDLE_WORKSPACE_GIT_POLL_INTERVAL_MS = 300_000;
+
+function isWorkspaceGitPoll(reason: string): boolean {
+  return reason === "working-tree-watch-fallback" || reason === "git-metadata-watch-fallback";
+}
+
+/** Keep virtiofs inode/ctime differences out of routine polls, without changing repo config. */
+export function withWorkspacePollStatOptions(run: RunGitCommand): RunGitCommand {
+  return (args, options) =>
+    run(["-c", "core.checkStat=minimal", "-c", "core.trustctime=false", ...args], options);
+}
 // A dependency install creates directories for minutes. Collapse the burst into
 // a couple of `git ls-files` runs rather than one per event.
 const WORKING_TREE_IGNORE_REFRESH_QUIET_MS = 300;
@@ -201,7 +212,7 @@ export interface WorkspaceGitRuntimeSnapshot {
 
 export interface WorkspaceGitService {
   registerWorkspace(
-    params: { cwd: string },
+    params: { cwd: string; background?: boolean },
     listener: WorkspaceGitListener,
   ): WorkspaceGitSubscription;
 
@@ -396,6 +407,7 @@ interface WorkspaceGitServiceOptions {
   paseoHome: string;
   worktreesRoot?: string;
   fileObserver?: FileObserver;
+  isWorkspaceActive?: (cwd: string) => boolean;
   deps?: Partial<WorkspaceGitServiceDependencies>;
 }
 
@@ -419,6 +431,8 @@ interface WorkspaceGitTarget {
   gitDirPaths: GitObservationPaths | null;
   cwd: string;
   listeners: Set<WorkspaceGitListener>;
+  foregroundListeners: Set<WorkspaceGitListener>;
+  lastStrictStatAtMs: number | null;
   workingTreeWatchTarget: WorkingTreeWatchTarget | null;
   debounceTimer: NodeJS.Timeout | null;
   pendingDebounceRequest: WorkspaceGitRefreshRequest | null;
@@ -605,6 +619,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
   private readonly worktreesRoot: string | undefined;
   private readonly fileObserver: FileObserver;
   private readonly deps: WorkspaceGitServiceDependencies;
+  private readonly isWorkspaceActive: (cwd: string) => boolean;
   private readonly forgeResolver: ForgeResolver;
   private readonly workspaceRefreshLimit = pLimit({
     concurrency: WORKSPACE_GIT_REFRESH_CONCURRENCY,
@@ -654,6 +669,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
   constructor(options: WorkspaceGitServiceOptions) {
     this.logger = options.logger.child({ module: "workspace-git-service" });
     this.paseoHome = options.paseoHome;
+    this.isWorkspaceActive = options.isWorkspaceActive ?? (() => false);
     this.worktreesRoot = options.worktreesRoot;
     this.fileObserver = options.fileObserver ?? createFileObserver();
     this.deps = resolveWorkspaceGitServiceDeps(
@@ -671,13 +687,14 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
   }
 
   registerWorkspace(
-    params: { cwd: string },
+    params: { cwd: string; background?: boolean },
     listener: WorkspaceGitListener,
   ): WorkspaceGitSubscription {
     this.assertNotDisposed();
     const cwd = resolve(params.cwd);
     const target = this.ensureWorkspaceTarget(cwd);
     target.listeners.add(listener);
+    if (!params.background) target.foregroundListeners.add(listener);
     if (target.folderMissing) {
       void this.resumeWorkspaceIfFolderRestored(target);
     }
@@ -1248,6 +1265,8 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       gitDirPaths: null,
       cwd,
       listeners: new Set(),
+      foregroundListeners: new Set(),
+      lastStrictStatAtMs: null,
       workingTreeWatchTarget: null,
       debounceTimer: null,
       pendingDebounceRequest: null,
@@ -1656,6 +1675,15 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     workspaceTarget: WorkspaceGitTarget,
     request: WorkspaceGitRefreshRequest,
   ): Promise<boolean> {
+    const active =
+      workspaceTarget.foregroundListeners.size > 0 || this.isWorkspaceActive(workspaceTarget.cwd);
+    const last = workspaceTarget.lastShellOutAtMs;
+    if (
+      !active &&
+      last !== null &&
+      this.deps.now().getTime() - last < IDLE_WORKSPACE_GIT_POLL_INTERVAL_MS
+    )
+      return false;
     if (await this.suspendWorkspaceIfFolderMissing(workspaceTarget)) {
       return false;
     }
@@ -1787,7 +1815,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
             refreshWorktree: true,
             includeForge: false,
             reason: "working-tree-watch-fallback",
-            queueIfBusy: true,
+            queueIfBusy: false,
             movedRemoteRefs: new Set(),
           });
           if (target.repoRoot === null && workspaceTarget.latestGit?.isGit === true) {
@@ -2854,7 +2882,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
             includeForge: false,
             emitUnchanged: true,
             reason: "git-metadata-watch-fallback",
-            queueIfBusy: true,
+            queueIfBusy: false,
             movedRemoteRefs: new Set(),
           });
         }),
@@ -3202,6 +3230,9 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       return Promise.resolve(target.latestSnapshot ?? buildNotGitSnapshot(target.cwd));
     }
     if (target.refreshState.status === "in-flight") {
+      // Timer ticks discover state; unlike watcher events they need not queue a replay.
+      // The metadata and worktree fallback timers can fire together for one workspace.
+      if (isWorkspaceGitPoll(request.reason)) return target.refreshState.promise;
       const active = target.refreshState.request;
       const addsWork =
         (request.force && !active.force) ||
@@ -3324,6 +3355,22 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     };
   }
 
+  private createRefreshGitCommand(
+    target: WorkspaceGitTarget,
+    request: WorkspaceGitRefreshRequest,
+  ): RunGitCommand {
+    const run = createRunGitCommand(`workspace-refresh:${request.reason}`);
+    const now = this.deps.now().getTime();
+    // Watcher events and explicit reads stay strict. Verify again on the first poll
+    // after five minutes to catch equal-size edits with unchanged second-level mtime.
+    const relaxed =
+      isWorkspaceGitPoll(request.reason) &&
+      target.lastStrictStatAtMs !== null &&
+      now - target.lastStrictStatAtMs < IDLE_WORKSPACE_GIT_POLL_INTERVAL_MS;
+    if (!relaxed) target.lastStrictStatAtMs = now;
+    return relaxed ? withWorkspacePollStatOptions(run) : run;
+  }
+
   private async runWorkspaceRefreshLoop(
     target: WorkspaceGitTarget,
     initialRequest: WorkspaceGitRefreshRequest,
@@ -3343,7 +3390,6 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
         });
       }
       try {
-        const runRefreshGitCommand = createRunGitCommand(`workspace-refresh:${request.reason}`);
         const admittedSnapshot = await this.workspaceRefreshLimit(() => {
           if (
             target.closed ||
@@ -3352,7 +3398,11 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
           ) {
             return null;
           }
-          return this.refreshSnapshot(target, request, runRefreshGitCommand);
+          return this.refreshSnapshot(
+            target,
+            request,
+            this.createRefreshGitCommand(target, request),
+          );
         });
         if (target.folderMissing) {
           failure = null;
@@ -3819,6 +3869,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     }
 
     target.listeners.delete(listener);
+    target.foregroundListeners.delete(listener);
     if (target.listeners.size > 0) {
       return;
     }
