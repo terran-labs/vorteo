@@ -148,9 +148,15 @@ export interface PreviewsRouterOptions {
   previewOrigins?: () => Promise<string[]>;
 }
 
-/** An origin safe to place in a header or attribute: scheme, host and optional port only. */
+/**
+ * An origin safe to place in a header or attribute: scheme, host and optional port only.
+ * Plain http is accepted for loopback alone, which development and tests use.
+ */
 function isPlainOrigin(value: string): boolean {
-  return /^https:\/\/[A-Za-z0-9.-]+(:\d{1,5})?$/.test(value);
+  return (
+    /^https:\/\/[A-Za-z0-9.-]+(:\d{1,5})?$/.test(value) ||
+    /^http:\/\/(127\.0\.0\.1|localhost)(:\d{1,5})?$/.test(value)
+  );
 }
 
 export function createPreviewsRouter(
@@ -194,18 +200,16 @@ export function createPreviewsRouter(
   for (const name of ["frame.js", "viewer.js", "pair.js", "confirm.js", "shared.css"])
     router.get(`/web/${name}`, (_req, res) => void sendWebFile(res, name, {}));
 
-  // The comment frame is embedded by previews on this hostname, whatever their port. A
-  // page that embeds it can cover or hide it, so the embedded frame never posts feedback;
-  // it hands a draft to the unframeable /confirm page instead.
+  // The comment frame is embedded by live previews. A page that embeds it can cover or
+  // hide it, so the embedded frame never posts feedback; it hands a draft to the
+  // unframeable /confirm page instead.
   router.get(
     "/frame",
-    route(async (req, res) => {
-      const hostname = (req.headers.host ?? "").replace(/:\d+$/, "");
-      const sameHost = /^[A-Za-z0-9.-]+$/.test(hostname)
-        ? [`https://${hostname}:*`, `http://${hostname}:*`]
-        : [];
-      // Previews published under their own hostname are allowed by exact reserved origin.
-      const ancestors = ["'self'", ...sameHost, ...(await previewOrigins())].join(" ");
+    route(async (_req, res) => {
+      // Only this origin and the exact origins the preview broker reserved may embed the
+      // frame. There is no hostname-wide allowance: a port on this daemon's own hostname
+      // that the broker did not reserve is not a preview.
+      const ancestors = ["'self'", ...(await previewOrigins())].join(" ");
       await sendWebFile(res, "frame.html", trustedPagePolicy(ancestors));
     }),
   );

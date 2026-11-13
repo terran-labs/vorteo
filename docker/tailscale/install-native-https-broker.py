@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Install a native preview consumer without changing either agent daemon."""
 import argparse
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -10,8 +11,20 @@ import shlex
 import sys
 import time
 
+from channel_identity import broker_lock
 from https_broker import NativeRuntime, atomic, digest, safe_dir, safe_read
 from launch_agent import install, label_for, owned_plist
+
+
+def private_socket(path):
+    """A daemon socket this user owns, inside a directory only this user can enter."""
+    path = Path(path)
+    info = os.lstat(path)
+    parent = os.lstat(path.parent)
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+        raise ValueError('The previews node socket is not a socket owned by this user')
+    if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.getuid() or parent.st_mode & 0o077:
+        raise ValueError('The previews node socket must sit in a private directory')
 
 
 NODE_FIELDS = ('tailscale', 'tailscaleSocket', 'nodeId', 'hostname', 'packetFilterHash')
@@ -39,6 +52,52 @@ def check_identity(previous, config, ledger, move, previous_publication):
     owned = {str(entry['frontend']) for entry in entries if 'frontend' in entry}
     if owned & set(published.get('TCP', {})):
         raise ValueError('The old node still publishes a preview port; remove it before moving')
+
+
+@contextmanager
+def waiting_broker_lock(root, seconds=120):
+    """The broker's own lock, waited for. A broker run holds it for under a minute."""
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            with broker_lock(root) as check:
+                yield check
+                return
+        except BlockingIOError:
+            if time.monotonic() > deadline:
+                raise ValueError('The preview broker is busy; try the install again') from None
+            time.sleep(0.5)
+
+
+def switch_pins(root, channel, config, move, replace_files, runtime_for=NativeRuntime, wait=120):
+    """Check what the broker is pinned to and commit the new pins, as one step.
+
+    The broker publishes under this same lock. Holding it from reading the prior config and
+    ledger until the new config is written means a queued start cannot be published on the
+    old node after the check and then be orphaned by the switch. The old node is verified
+    with its own pinned identity before its publication is trusted.
+    """
+    with waiting_broker_lock(root, wait):
+        config_path = root / 'host-config.json'
+        previous = safe_read(config_path) if config_path.exists() else {}
+        ledger_path = root / 'https-broker-ledger.json'
+        ledger = safe_read(ledger_path, 2 * 1024 * 1024) if ledger_path.exists() else {}
+
+        def previous_publication():
+            runtime = runtime_for(previous)
+            runtime.preflight()
+            return runtime.publication()
+
+        check_identity(previous, config, ledger, move, previous_publication)
+        moving = bool(previous) and any(previous.get(field) != config.get(field) for field in NODE_FIELDS)
+        replace_files()
+        if moving:
+            # Reserved origins name the old hostname. Remove them so nothing treats an
+            # old-host origin as a current preview; each start writes its origin again.
+            for origin in (Path(channel) / 'origins').glob('*.json'):
+                origin.unlink()
+        atomic(config_path, config)
+    return previous
 
 
 def main():
@@ -71,8 +130,7 @@ def main():
     socket = None
     if args.tailscale_socket:
         socket = Path(args.tailscale_socket).absolute()
-        if not stat.S_ISSOCK(os.lstat(socket).st_mode):
-            raise ValueError('The previews node socket is not a socket')
+        private_socket(socket)
         socket = str(socket)
     bin_dir = Path.home() / '.local/bin'
     launcher = bin_dir / 'paseo-preview'
@@ -82,7 +140,6 @@ def main():
     channel = Path.home() / '.local/share/paseo-preview/https'
     label = label_for('https-preview-broker', root)
     owned_plist(label, root / 'https_broker.py', Path.home() / 'Library/LaunchAgents')
-    previous = safe_read(root / 'host-config.json') if (root / 'host-config.json').exists() else {}
     config = {
         'runtime': 'native', 'deployment': str(root), 'daemonHome': str(home),
         'cliCommand': [node, cli], 'tailscale': tailscale, 'channel': str(channel),
@@ -114,9 +171,6 @@ def main():
                for rule in netmap.get('PacketFilter', []) for destination in rule.get('Dsts', [])):
         raise ValueError('Existing tailnet policy does not cover preview ports; no grants changed')
     runtime.publication()
-    ledger = safe_read(root / 'https-broker-ledger.json', 2 * 1024 * 1024) if (root / 'https-broker-ledger.json').exists() else {}
-    check_identity(previous, config, ledger, args.move_previews_node,
-                   lambda: NativeRuntime(previous).publication() if previous.get('tailscale') else {})
     if (channel / 'installed.json').exists():
         marker = safe_read(channel / 'installed.json')
         if marker.get('deployment') != str(root):
@@ -131,16 +185,19 @@ def main():
     names = ['https_broker.py', 'channel_identity.py', 'host_config.py', 'launch_agent.py', 'https-preview.py',
              'uninstall-https-broker.py', 'paseo-preview.mjs', 'preview-broker-client.mjs']
     backup = root / 'backups' / str(time.time_ns())
-    backup.mkdir(parents=True, mode=0o700)
-    for name in [*names, 'host-config.json']:
-        if (root / name).exists():
-            shutil.copy2(root / name, backup / name)
-    for name in names:
-        temporary = root / (name + '.install')
-        shutil.copyfile(source / name, temporary)
-        temporary.chmod(0o700)
-        os.replace(temporary, root / name)
-    atomic(root / 'host-config.json', config)
+
+    def replace_files():
+        backup.mkdir(parents=True, mode=0o700)
+        for name in [*names, 'host-config.json']:
+            if (root / name).exists():
+                shutil.copy2(root / name, backup / name)
+        for name in names:
+            temporary = root / (name + '.install')
+            shutil.copyfile(source / name, temporary)
+            temporary.chmod(0o700)
+            os.replace(temporary, root / name)
+
+    switch_pins(root, channel, config, args.move_previews_node, replace_files)
     helper = [node, str(root / 'paseo-preview.mjs')]
     bin_dir.mkdir(parents=True, exist_ok=True)
     if launcher.exists():

@@ -57,6 +57,14 @@ class NativeWorkspacePolicyTests(unittest.TestCase):
                 node.plan('/srv/previews-node', '/opt/bin/tailscaled', name)
         with self.assertRaises(ValueError):
             node.plan('relative/dir', '/opt/bin/tailscaled', 'previews')
+        with tempfile.TemporaryDirectory() as directory:
+            node.private_directory(directory)
+            os.chmod(directory, 0o755)
+            with self.assertRaises(ValueError):
+                node.private_directory(directory)
+            link = Path(directory) / 'link'; link.symlink_to(directory)
+            with self.assertRaises(ValueError):
+                node.private_directory(link)
 
     def test_broker_moves_node_only_when_nothing_is_published(self):
         spec = importlib.util.spec_from_file_location('native_installer', Path(__file__).with_name('install-native-https-broker.py'))
@@ -79,6 +87,49 @@ class NativeWorkspacePolicyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 installer.check_identity(old, new, ledger, move, publication)
         installer.check_identity(old, new, stopped, True, lambda: {'TCP': {'443': {'HTTPS': True}}})
+        # The switch happens under the broker's lock, on what is on disk at that moment.
+        # A start the old broker consumed after any earlier look is seen and refused,
+        # and nothing is replaced or re-pinned.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(os.path.realpath(directory)) / 'broker'; channel = root / 'channel'
+            (channel / 'origins').mkdir(parents=True); root.chmod(0o700)
+            origin = channel / 'origins' / 'w.s.json'; origin.write_text('{}')
+            atomic(root / 'host-config.json', old)
+            atomic(root / 'https-broker-ledger.json', running)
+            replaced = []
+            class OldNode:
+                def __init__(self, config): self.config = config
+                def preflight(self): replaced.append('preflight')
+                def publication(self): return {}
+            with self.assertRaises(ValueError):
+                installer.switch_pins(root, channel, new, True, lambda: replaced.append('files'), OldNode)
+            self.assertEqual(safe_read(root / 'host-config.json'), old)
+            self.assertNotIn('files', replaced)
+            self.assertTrue(origin.exists())
+            # While a broker run holds the lock the installer waits, then gives up cleanly.
+            with installer.broker_lock(root):
+                with self.assertRaises(ValueError):
+                    installer.switch_pins(root, channel, new, True, lambda: None, OldNode, wait=0.2)
+            # With everything stopped the old node is verified, files and pins switch, and
+            # reservations that name the old hostname are dropped.
+            atomic(root / 'https-broker-ledger.json', stopped)
+            installer.switch_pins(root, channel, new, True, lambda: replaced.append('files'), OldNode)
+            self.assertEqual(safe_read(root / 'host-config.json'), new)
+            self.assertEqual(replaced[-2:], ['preflight', 'files'])
+            self.assertFalse(origin.exists())
+            # A socket is accepted only when this user owns it inside a private directory.
+            import socket as sockets
+            private = root / 'node'; private.mkdir(mode=0o700)
+            listener = sockets.socket(sockets.AF_UNIX); listener.bind(str(private / 'd.sock'))
+            try:
+                installer.private_socket(private / 'd.sock')
+                private.chmod(0o755)
+                with self.assertRaises(ValueError):
+                    installer.private_socket(private / 'd.sock')
+                with self.assertRaises(ValueError):
+                    installer.private_socket(root / 'host-config.json')
+            finally:
+                listener.close()
         # The move never excuses a change to anything else the broker is pinned to.
         with self.assertRaises(ValueError):
             installer.check_identity(old, {**new, 'daemonHome': '/elsewhere'}, stopped, True, nothing)

@@ -26,6 +26,17 @@ from launch_agent import install, label_for, owned_plist, remove
 HOSTNAME = re.compile(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
 
 
+def private_directory(path):
+    """Fail closed unless this is a real directory, owned by this user, closed to others.
+
+    The node's state holds its tailnet identity, and its socket controls what it publishes.
+    An existing directory is never adopted on trust or silently tightened.
+    """
+    info = os.lstat(path)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError(f'{path} must be a directory owned by this user with mode 0700')
+
+
 def plan(deployment, tailscaled, hostname):
     """The login-agent definition and paths for one previews node. Pure, for tests."""
     if not HOSTNAME.fullmatch(hostname):
@@ -56,14 +67,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--deployment', required=True, help='Directory that will hold the node state and socket')
     parser.add_argument('--tailscaled', required=True)
-    parser.add_argument('--tailscale', required=True)
+    parser.add_argument('--tailscale', help='Required to install; not needed with --uninstall')
     parser.add_argument('--hostname', default='previews')
     parser.add_argument('--uninstall', action='store_true')
     args = parser.parse_args()
     if sys.platform != 'darwin':
         raise ValueError('The dedicated previews node currently requires macOS')
-    tailscaled = Path(args.tailscaled).resolve(strict=True)
-    tailscale = Path(args.tailscale).resolve(strict=True)
+    # Removal must work after the binaries are gone, so paths are not resolved strictly
+    # here. The login agent is recognized by the tailscaled path it was installed with.
+    tailscaled = Path(args.tailscaled).absolute()
     root = Path(args.deployment).absolute()
     node = plan(root, tailscaled, args.hostname)
     agents = Path.home() / 'Library/LaunchAgents'
@@ -71,14 +83,24 @@ def main():
         remove(node['label'], tailscaled, agents)
         print(json.dumps({'removed': node['label'], 'stateKept': str(node['state'])}))
         return
+    if not args.tailscale:
+        raise ValueError('--tailscale is required to install the previews node')
+    tailscaled = Path(args.tailscaled).resolve(strict=True)
+    tailscale = Path(args.tailscale).resolve(strict=True)
+    node = plan(root, tailscaled, args.hostname)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.close(safe_dir(root))
+    private_directory(root)
     node['state'].mkdir(exist_ok=True, mode=0o700)
+    private_directory(node['state'])
     owned_plist(node['label'], tailscaled, agents)
     install(node['content'], tailscaled, [])
     cli = [str(tailscale), '--socket=' + str(node['socket'])]
     for _ in range(40):
-        if node['socket'].exists() and stat.S_ISSOCK(os.lstat(node['socket']).st_mode):
+        if node['socket'].exists():
+            info = os.lstat(node['socket'])
+            if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+                raise ValueError('The previews node socket is not a socket owned by this user')
             break
         time.sleep(0.5)
     else:

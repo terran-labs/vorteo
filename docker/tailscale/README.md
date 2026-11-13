@@ -127,11 +127,11 @@ By default the native broker publishes previews from the Mac's own Tailscale nod
      --tailscale-socket "$HOME/.local/share/vorteo-previews-node/tailscaled.sock" --move-previews-node
    ```
 
-   The installer pins the new node's identity and access scope. It refuses the move while a preview is running or while the old node still publishes a port the broker owns.
+   The installer pins the new node's identity and access scope. It makes the switch while holding the broker's own lock, so a queued start cannot be published on the old node in between. It refuses the move while a preview is running, while the old node no longer matches what the broker was pinned to, or while that node still publishes a port the broker owns. Reservations that name the old hostname are removed and written again as previews start.
 
 4. Start previews again. Ports are kept; the hostname in each link changes, so links shared before the move stop working.
 
-The tailnet policy must let your devices reach the new node on the preview port range. The Previews comment frame and pairing page allow each reserved preview origin by name, so the review toolbar keeps working on the new hostname. Remove the node with `install-previews-node.py --uninstall` after moving the broker back.
+The tailnet policy must let your devices reach the new node on the preview port range. The Previews comment frame and pairing page allow only the exact origins the broker reserved, so the review toolbar keeps working on the new hostname and no other port on either hostname is treated as a preview. The node's directory and state must be owned by you with mode 0700, and its socket must be yours; both installers refuse otherwise. Remove the node with `install-previews-node.py --deployment … --tailscaled … --uninstall` after moving the broker back.
 
 ## Broker rollback
 

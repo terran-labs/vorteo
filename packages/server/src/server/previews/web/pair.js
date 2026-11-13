@@ -18,16 +18,15 @@ function hasUnsafeCharacter(value) {
   return false;
 }
 
-// Pure: a preview is either on this hostname at another port, or at an origin the broker
-// reserved, which may be a dedicated previews hostname.
-function isPreviewHost(url, loc, previewOrigins) {
-  if (url.hostname === loc.hostname) return true;
+// Pure: a live preview is an exact origin the preview broker reserved. Sharing this
+// page's hostname is not enough: another port on it may serve anything.
+function isPreviewOrigin(url, previewOrigins) {
   return Array.isArray(previewOrigins) && previewOrigins.indexOf(url.origin) !== -1;
 }
 
 // Pure: returns the URL to navigate to, or null. `loc` needs origin and hostname.
 // Allowed: a same-origin path under /api/previews/view/, or an absolute https
-// URL on the same hostname (live previews differ only by port).
+// URL at an origin the preview broker reserved.
 function validateNext(next, loc, previewOrigins) {
   if (typeof next !== "string" || !next || next.length > 2048) return null;
   if (!loc || typeof loc.origin !== "string" || typeof loc.hostname !== "string") return null;
@@ -55,7 +54,7 @@ function validateNext(next, loc, previewOrigins) {
   }
   if (url.protocol !== "https:") return null;
   if (url.username || url.password) return null;
-  if (!isPreviewHost(url, loc, previewOrigins)) return null;
+  if (!isPreviewOrigin(url, previewOrigins)) return null;
   return url.href;
 }
 

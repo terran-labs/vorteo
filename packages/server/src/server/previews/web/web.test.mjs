@@ -33,7 +33,7 @@ function fakeWindow() {
   return { posted, postMessage: (message, targetOrigin) => posted.push({ message, targetOrigin }) };
 }
 
-test("pair: next accepts only viewer paths and same-hostname https URLs", () => {
+test("pair: next accepts only viewer paths and reserved preview origins", () => {
   const { validateNext } = load("pair.js").exports;
   const loc = { origin: "https://vorteo.example.ts.net", hostname: "vorteo.example.ts.net" };
   const accepted = [
@@ -43,9 +43,13 @@ test("pair: next accepts only viewer paths and same-hostname https URLs", () => 
     ],
     ["https://vorteo.example.ts.net:8443/deck/", "https://vorteo.example.ts.net:8443/deck/"],
   ];
+  const sameHostReserved = ["https://vorteo.example.ts.net:8443"];
   for (const [input, expected] of accepted) {
-    assert.equal(validateNext(input, loc), expected, input);
+    assert.equal(validateNext(input, loc, sameHostReserved), expected, input);
   }
+  // Sharing the daemon's hostname is not enough: the port must be a reserved preview.
+  assert.equal(validateNext("https://vorteo.example.ts.net:8443/deck/", loc, []), null);
+  assert.equal(validateNext("https://vorteo.example.ts.net:9000/", loc, sameHostReserved), null);
   const rejected = [
     "https://evil.example/api/previews/view/abcdefghijklmnop1234",
     "http://vorteo.example.ts.net:8443/",
@@ -64,7 +68,7 @@ test("pair: next accepts only viewer paths and same-hostname https URLs", () => 
     undefined,
   ];
   for (const input of rejected) {
-    assert.equal(validateNext(input, loc), null, String(input));
+    assert.equal(validateNext(input, loc, sameHostReserved), null, String(input));
   }
 });
 

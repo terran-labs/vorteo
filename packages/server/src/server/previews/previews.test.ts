@@ -225,6 +225,8 @@ test("the comment frame may be embedded by a reserved preview origin on another 
   expect(ancestors).toContain("https://previews.example.ts.net:32780");
   // Anything that is not a plain https origin never reaches the header.
   expect(ancestors).not.toContain("javascript");
+  // No hostname-wide allowance: an unreserved port on the daemon's own host cannot embed it.
+  expect(ancestors).not.toContain(":*");
   const pairing = await fetch(`${baseUrl}/api/previews/pair`);
   expect(pairing.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
   expect(await pairing.text()).toContain(
