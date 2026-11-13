@@ -12,7 +12,7 @@ import {
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { RestartJob } from "@getpaseo/protocol/execution-installation";
 import { createHash } from "node:crypto";
 import { hashDaemonPassword } from "../auth.js";
@@ -337,7 +337,7 @@ test("source upgrade routes accept only the owner of a Stable installation", asy
   }
 });
 
-test("a release upgrade that would drop a source-upgraded Host commit fails at its fetch step", async () => {
+test("a refused release takes no snapshot and preserves existing rollback points", async () => {
   const installation = installerInstallation();
   const release = "release-26.11.3002";
   const releaseCommit = "4".repeat(40);
@@ -378,10 +378,15 @@ test("a release upgrade that would drop a source-upgraded Host commit fails at i
     commands.push(line);
     if (line.includes("ls-remote")) return `${releaseCommit}\trefs/tags/${release}\n`;
     if (line.includes("rev-parse")) return releaseCommit;
-    if (line.includes("merge-base")) throw new Error("not an ancestor");
+    if (line.includes("merge-base") || line.includes("merge-tree"))
+      throw new Error("installed changes missing");
     return "";
   };
-  const upgrades = runtime([], installation, run).upgrades;
+  const rt = runtime([], installation, run);
+  if (!rt.snapshots) throw new Error("Snapshots are unavailable");
+  const take = vi.spyOn(rt.snapshots, "take");
+  const prune = vi.spyOn(rt.snapshots, "prune");
+  const upgrades = rt.upgrades;
   if (!upgrades) throw new Error("Release upgrades are unavailable");
   const pending = await upgrades.request(release);
   upgrades.decide(pending.id, pending.revision, "approve");
@@ -389,13 +394,15 @@ test("a release upgrade that would drop a source-upgraded Host commit fails at i
   const [upgrade] = upgrades.list();
   expect(upgrade.status).toBe("failed");
   expect(upgrade.steps.map((step) => step.status)).toEqual([
-    "succeeded",
     "failed",
     "skipped",
     "skipped",
     "skipped",
+    "skipped",
   ]);
-  expect(upgrade.detail).toContain("which a source upgrade installed");
+  expect(upgrade.detail).toContain(`lacks installed changes from ${INSTALLED}`);
+  expect(take).not.toHaveBeenCalled();
+  expect(prune).not.toHaveBeenCalled();
   expect(commands).toContainEqual(
     expect.stringContaining(`merge-base --is-ancestor ${INSTALLED} ${releaseCommit}`),
   );
