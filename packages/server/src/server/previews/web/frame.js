@@ -399,7 +399,12 @@ function startFrame() {
 
   function target() {
     if (embedding === "viewer") return versionId ? { versionId: versionId } : null;
-    return gate.targetOrigin ? { origin: gate.targetOrigin } : null;
+    // Live feedback is bound to the version this frame loaded and showed, not to whatever
+    // is newest at that address when it is finally sent.
+    if (!gate.targetOrigin) return null;
+    var shown =
+      ui.artifact && typeof ui.artifact.versionId === "string" ? ui.artifact.versionId : null;
+    return shown ? { origin: gate.targetOrigin, versionId: shown } : { origin: gate.targetOrigin };
   }
 
   function becomeUnpaired() {
@@ -469,6 +474,10 @@ function startFrame() {
         JSON.stringify({
           payload: payload,
           title: ui.artifact && typeof ui.artifact.title === "string" ? ui.artifact.title : "",
+          versionNumber:
+            ui.artifact && typeof ui.artifact.versionNumber === "number"
+              ? ui.artifact.versionNumber
+              : null,
           createdAt: Date.now(),
         }),
       );
@@ -508,6 +517,8 @@ function startFrame() {
     var text = ratingOnly ? "" : comment.value.trim();
     var rating = pendingRatingToSend();
     if (!text && rating === null) return;
+    // No version to bind to means this preview is not in the gallery; nothing can be sent.
+    if (embedding === "page" && !t.versionId) return;
     var payload = { target: t, comment: text };
     if (rating !== null) payload.rating = rating;
     if (!ratingOnly && ui.selection) payload.selection = ui.selection;

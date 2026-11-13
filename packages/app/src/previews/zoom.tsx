@@ -321,7 +321,7 @@ function VersionRow({
       onPress={select}
       accessibilityRole="button"
       accessibilityState={accessibilityState}
-      style={selected ? SELECTED_ROW : styles.versionRow}
+      style={selected ? styles.versionRowSelected : styles.versionRow}
       testID={`preview-version-${version.id}`}
     >
       <View style={styles.versionHeading}>
@@ -385,7 +385,17 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[1],
     justifyContent: "center",
   },
-  versionSelected: { backgroundColor: theme.colors.surface2 },
+  // A complete style of its own: combining two styles at module scope would read the
+  // stylesheet before the persisted theme loads.
+  versionRowSelected: {
+    minHeight: 44,
+    paddingVertical: theme.spacing[2],
+    paddingHorizontal: theme.spacing[2],
+    borderRadius: theme.borderRadius.md,
+    gap: theme.spacing[1],
+    justifyContent: "center",
+    backgroundColor: theme.colors.surface2,
+  },
   versionHeading: {
     flexDirection: "row",
     alignItems: "center",
@@ -402,5 +412,3 @@ const styles = StyleSheet.create((theme) => ({
     borderTopColor: theme.colors.divider,
   },
 }));
-
-const SELECTED_ROW = [styles.versionRow, styles.versionSelected];

@@ -244,7 +244,12 @@ test("confirm: only a fresh, well-formed draft for a live preview is offered", (
   const now = 1_000_000;
   const draft = (overrides = {}) =>
     JSON.stringify({
-      payload: { target: { origin: "https://host:32777" }, comment: "Tighter spacing", rating: 4 },
+      payload: {
+        target: { origin: "https://host:32777", versionId: "abcDEF0123456789abcd" },
+        comment: "Tighter spacing",
+        rating: 4,
+      },
+      versionNumber: 3,
       title: "Site",
       createdAt: now - 1000,
       ...overrides,
@@ -252,6 +257,15 @@ test("confirm: only a fresh, well-formed draft for a live preview is offered", (
   const shown = describeDraft(draft(), now);
   assert.equal(shown.comment, "Tighter spacing");
   assert.equal(shown.rating, 4);
+  assert.match(shown.artifact, /version 3/);
+  // A draft that does not name the reviewed version is never offered.
+  assert.equal(
+    describeDraft(
+      draft({ payload: { target: { origin: "https://host:32777" }, comment: "x" } }),
+      now,
+    ),
+    null,
+  );
   assert.equal(describeDraft("not json", now), null);
   assert.equal(describeDraft(draft({ createdAt: now - 11 * 60 * 1000 }), now), null);
   assert.equal(describeDraft(draft({ payload: { target: {}, comment: "x" } }), now), null);

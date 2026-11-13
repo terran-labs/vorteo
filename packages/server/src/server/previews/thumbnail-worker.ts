@@ -4,10 +4,13 @@
  * crash or hang cannot affect the daemon.
  *
  * The renderer may load only the daemon's own loopback snapshot route for one version.
- * Every other request, including subresources, subframes, redirects and WebSockets, is
- * aborted, so a snapshot cannot make the browser read an internal service into an image
- * that is then served without daemon auth. Chromium runs with its sandbox on, and a launch
- * that cannot sandbox fails, which leaves the version without a thumbnail.
+ * Every other request the page starts, including subresources and subframes, is aborted
+ * and every WebSocket is closed, so a snapshot cannot make the browser read an internal
+ * service into an image that is then served without daemon auth. A server redirect is
+ * followed by the browser without a second check; that is safe only because the one
+ * server inside the allowlist is the daemon's snapshot route, which never redirects
+ * outside it. Keep it that way. Chromium runs with its sandbox on, and a launch that
+ * cannot sandbox fails, which leaves the version without a thumbnail.
  *
  * Usage: node thumbnail-worker.js <url> <output.png> <allowed-prefix>
  */

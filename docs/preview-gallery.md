@@ -9,7 +9,7 @@ Every agent has two tools when the daemon advertises `features.previews`:
 - `publish_preview` takes a `title`, a `kind` (`web`, `deck`, `image`, `pdf` or `url`), a `lineage` key and a `path` or `url`. Publishing again with the same lineage adds a version to the same gallery entry. `variantSet` groups several options so you can pick a winner with a reason.
 - `get_preview_feedback` returns ratings, approvals, variant picks and comments, filtered by lineage or version.
 
-Publish built output, not a project directory. A directory is copied up to 300 MB or 10,000 files. Symlinks, hard-linked files, `node_modules` and `.git` are left out, along with the most common credential files (`.env*`, `.npmrc`, `.netrc`, `.ssh`, key and certificate files). That list is a convenience, not a secret scanner: anyone with a snapshot's link can read it, so publish only output meant to be seen.
+Publish built output, not a project directory. A directory is copied up to 300 MB or 10,000 files by a separate short-lived process that walks the tree one directory at a time and never follows a link, so a tree that changes during the copy cannot redirect it elsewhere on disk. Symlinks, hard-linked files, `node_modules` and `.git` are left out, along with the most common credential files (`.env*`, `.npmrc`, `.netrc`, `.ssh`, key and certificate files). That list is a convenience, not a secret scanner: anyone with a snapshot's link can read it, so publish only output meant to be seen.
 
 ## Versions are frozen
 
@@ -22,7 +22,7 @@ Retention keeps the newest version of every artifact and the eight most recent u
 The gallery card opens a version in your normal browser through a pairing link. The link carries a single-use ticket that expires after two minutes. The pairing page exchanges it for a review key and stores the key in that browser for the daemon's address.
 
 - A frozen version opens in the viewer at `/api/previews/view/<id>` on the daemon. The snapshot runs in a sandboxed frame beside the comment panel.
-- A live preview shows a floating comment frame when the preview service runs behind the injecting proxy described below. Pressing Send there opens a confirmation tab on the daemon's address that shows exactly what will be sent; the comment goes out only when you confirm in that tab.
+- A live preview shows a floating comment frame when the preview service runs behind the injecting proxy described below. Pressing Send there opens a confirmation tab on the daemon's address that shows exactly what will be sent; the comment goes out only when you confirm in that tab. The comment is tied to the version you were looking at. If the agent publishes that address again before you confirm, the send is refused and you are asked to reload.
 
 In both, you pick an element, select a region or comment on the whole page. Each comment records the page address, the version, the element selector and text, the viewport size and the scroll position. It arrives in the authoring thread headed "Preview feedback from the owner" through the same durable queue as Open question answers: once, now or when the agent's turn ends.
 

@@ -66,7 +66,8 @@ const AnnotationBodySchema = z
   .object({
     target: z.union([
       z.object({ versionId: PreviewVersionIdSchema }).strict(),
-      z.object({ origin: z.string().max(300) }).strict(),
+      // Live previews: the version the owner was shown, and the origin it was shown on.
+      z.object({ origin: z.string().max(300), versionId: PreviewVersionIdSchema }).strict(),
     ]),
     comment: z.string().max(4000).default(""),
     rating: z.number().int().min(1).max(5).optional(),

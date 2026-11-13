@@ -181,6 +181,30 @@ test("a snapshot leaves out links, hard links and common credential files", asyn
   }
 });
 
+test("live feedback reaches only the version the owner reviewed", async () => {
+  const publish = (agentId: string) =>
+    store.publish(
+      { title: "Site", kind: "url", lineage: `live-${agentId}`, url: "https://host:32777/" },
+      { agentId },
+    );
+  const reviewed = await publish("agent-first");
+  // Another agent publishes the same address before the owner confirms.
+  await publish("agent-second");
+  const key = await pair();
+  const send = (target: Record<string, string>) =>
+    fetch(`${baseUrl}/api/previews/review/annotations`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl, "x-vorteo-review-key": key },
+      body: JSON.stringify({ target, comment: "For the first version" }),
+    });
+  // An origin alone no longer selects a version, and a version must match its origin.
+  expect((await send({ origin: "https://host:32777" })).status).toBe(400);
+  expect((await send({ origin: "https://other:1", versionId: reviewed.id })).status).toBe(400);
+  expect(delivered).toHaveLength(0);
+  expect((await send({ origin: "https://host:32777", versionId: reviewed.id })).status).toBe(200);
+  expect(delivered.map((message) => message.agentId)).toEqual(["agent-first"]);
+});
+
 test("thumbnails may load only their own snapshot", () => {
   const prefix = "http://127.0.0.1:6771/api/previews/snap/abcDEF0123456789abcd/";
   expect(isAllowedThumbnailRequest(`${prefix}index.html?bare=1`, prefix)).toBe(true);

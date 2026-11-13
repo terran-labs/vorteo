@@ -86,6 +86,16 @@ export function previewFeedbackMessage(
   return lines.join("\n");
 }
 
+/** True when the version is a live link served from exactly this origin. */
+function isLiveAt(version: PreviewVersion, origin: string): boolean {
+  if (!version.liveUrl) return false;
+  try {
+    return new URL(version.liveUrl).origin === origin;
+  } catch {
+    return false;
+  }
+}
+
 export class PreviewsService {
   constructor(private readonly options: PreviewsServiceOptions) {}
 
@@ -204,16 +214,21 @@ export class PreviewsService {
    * already have proven a review key; this method trusts comment and rating as the owner's.
    */
   async annotate(input: {
-    target: { versionId: string } | { origin: string };
+    target: { versionId: string } | { versionId: string; origin: string };
     comment: string;
     rating?: number;
     selection?: PreviewSelection;
   }): Promise<{ id: string; delivery: "queued" | "stored" }> {
     const store = this.options.store;
-    const target =
-      "versionId" in input.target
-        ? await store.getVersion(input.target.versionId)
-        : await store.findLiveVersionByOrigin(input.target.origin);
+    // Feedback always names the exact version the owner reviewed. For a live preview the
+    // frame also reports the origin it was embedded in; both must describe the same
+    // version, so a newer publish of the same address cannot receive this feedback.
+    const target = await store.getVersion(input.target.versionId);
+    if (target && "origin" in input.target && !isLiveAt(target, input.target.origin))
+      throw new PreviewError(
+        "invalid",
+        "This preview has changed since you opened it. Reload it and send your comment again.",
+      );
     if (!target)
       throw new PreviewError("not_found", "This preview is not in the Previews gallery.");
     if (!input.comment.trim() && !input.rating)

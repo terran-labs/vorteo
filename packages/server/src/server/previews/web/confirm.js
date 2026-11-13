@@ -43,6 +43,9 @@ function parseDraft(raw, now) {
   if (typeof draft.createdAt !== "number" || now - draft.createdAt > DRAFT_MAX_AGE_MS) return null;
   var target = draft.payload.target;
   if (!target || typeof target !== "object" || typeof target.origin !== "string") return null;
+  // The draft must name the exact version the owner was shown.
+  if (typeof target.versionId !== "string" || !/^[A-Za-z0-9_-]{16,64}$/.test(target.versionId))
+    return null;
   return draft;
 }
 
@@ -56,7 +59,11 @@ function describeDraft(raw, now) {
     typeof draft.title === "string" && draft.title ? draft.title.slice(0, 200) + ", " : "";
   return {
     payload: draft.payload,
-    artifact: title + "live preview at " + draft.payload.target.origin.slice(0, 200),
+    artifact:
+      title +
+      (typeof draft.versionNumber === "number" ? "version " + draft.versionNumber + ", " : "") +
+      "live preview at " +
+      draft.payload.target.origin.slice(0, 200),
     comment: content.comment,
     rating: content.rating,
     location: describeLocation(draft.payload.selection),

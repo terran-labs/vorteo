@@ -1,6 +1,8 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { promises as fs, constants as fsConstants } from "node:fs";
+import { spawn } from "node:child_process";
+import { promises as fs } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   PreviewGallerySchema,
   PreviewVariantSetSchema,
@@ -21,30 +23,6 @@ export const MAX_SNAPSHOT_FILES = 10_000;
 /** Unprotected versions kept per artifact before the oldest are pruned. */
 export const KEEP_UNRATED_PER_LINEAGE = 8;
 const MAX_REVIEW_KEYS = 20;
-const SKIPPED_NAMES = new Set([
-  "node_modules",
-  ".git",
-  ".DS_Store",
-  ".ssh",
-  ".aws",
-  ".gnupg",
-  ".npmrc",
-  ".netrc",
-  ".pypirc",
-  ".docker",
-  ".kube",
-]);
-const SKIPPED_PATTERN = /^\.env|\.(pem|key|p12|pfx)$|^id_(rsa|dsa|ecdsa|ed25519)/i;
-
-/**
- * Names left out of a snapshot. This keeps build clutter and the most common credential
- * files out by default. It is a convenience, not a secret scanner: a snapshot is readable
- * by anyone who has its link, so publish only output meant to be seen.
- */
-export function isSkippedName(name: string): boolean {
-  return SKIPPED_NAMES.has(name) || SKIPPED_PATTERN.test(name);
-}
-
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg"]);
 
 const IndexSchema = z.object({
@@ -294,24 +272,14 @@ export class PreviewStore {
     if (!input.path || !path.isAbsolute(input.path))
       throw new PreviewError("invalid", "path must be an absolute file or directory path.");
     const source = path.resolve(input.path);
-    const stat = await fs.lstat(source).catch(() => null);
-    if (!stat || (!stat.isFile() && !stat.isDirectory()))
-      throw new PreviewError("invalid", `Nothing to publish at ${source}.`);
     const destination = this.filesDir(id);
     await fs.mkdir(destination, { recursive: true, mode: 0o700 });
     try {
-      let entry: string;
-      let sizeBytes: number;
-      if (stat.isFile()) {
-        entry = path.basename(source);
-        sizeBytes = await copyFileSafely(
-          source,
-          path.join(destination, entry),
-          await fs.realpath(path.dirname(source)),
-          MAX_SNAPSHOT_BYTES,
-        );
-      } else {
-        sizeBytes = await copyTree(source, destination);
+      // The copy runs in its own process; see snapshot-copy-worker for why.
+      const copied = await copySnapshot(source, destination);
+      const sizeBytes = copied.bytes;
+      let entry = copied.entry;
+      if (!entry) {
         entry = (input.entry ?? "index.html").replace(/^\/+/, "");
         const resolved = resolveSnapshotPath(destination, entry);
         const entryStat = resolved ? await fs.lstat(resolved).catch(() => null) : null;
@@ -479,98 +447,66 @@ function assertKindMatches(kind: PreviewKind, entry: string): void {
     throw new PreviewError("invalid", "kind web and deck need an .html entry file.");
 }
 
-const TOO_LARGE =
-  "The snapshot is larger than the limit of 300 MB or 10,000 files. Publish the built output, not the project.";
-
-/**
- * Copy one regular file through a descriptor opened without following links.
- *
- * The published tree is agent-controlled and may change while it is copied, so nothing is
- * trusted by path alone. The descriptor must be a regular file with a single link, and the
- * path it was opened by must still resolve, inside `realRoot`, to that same file. A file or
- * parent directory swapped for a link to something outside the tree fails that check, and
- * a hard link to a file elsewhere fails the link count. The byte cap is enforced on what
- * is actually read, so a file that grows during the copy cannot exceed it.
- */
-async function copyFileSafely(
-  from: string,
-  to: string,
-  realRoot: string,
-  remainingBytes: number,
-): Promise<number> {
-  const refuse = () =>
-    new PreviewError("invalid", `Refused to copy ${from}: it is not a plain file.`);
-  const source = await fs
-    .open(from, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK)
-    .catch(() => {
-      throw refuse();
-    });
+function parseCopyResult(stdout: string): { bytes: number; entry: string } | null {
   try {
-    const opened = await source.stat();
-    if (!opened.isFile() || opened.nlink !== 1) throw refuse();
-    const resolved = await fs.realpath(from).catch(() => null);
-    if (!resolved || (resolved !== realRoot && !resolved.startsWith(realRoot + path.sep)))
-      throw refuse();
-    const current = await fs.stat(resolved).catch(() => null);
-    if (!current || current.ino !== opened.ino || current.dev !== opened.dev) throw refuse();
-    const target = await fs.open(
-      to,
-      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
-      0o600,
-    );
-    try {
-      const buffer = Buffer.allocUnsafe(1024 * 1024);
-      let copied = 0;
-      for (;;) {
-        const { bytesRead } = await source.read(buffer, 0, buffer.length, null);
-        if (bytesRead === 0) break;
-        copied += bytesRead;
-        if (copied > remainingBytes) throw new PreviewError("too_large", TOO_LARGE);
-        await target.write(buffer, 0, bytesRead);
-      }
-      return copied;
-    } finally {
-      await target.close();
-    }
-  } finally {
-    await source.close();
+    const result = JSON.parse(stdout) as { bytes?: unknown; entry?: unknown };
+    return { bytes: Number(result.bytes) || 0, entry: String(result.entry ?? "") };
+  } catch {
+    return null;
   }
 }
 
 /**
- * Copy a directory tree without following links. Each directory must resolve to itself
- * inside the real source root before it is read, and every file goes through
- * copyFileSafely, so a link planted in agent output, or swapped in during the copy, cannot
- * pull files from elsewhere on disk into a snapshot the browser can read.
+ * Copy a published file or directory into `destination` with the snapshot copy worker,
+ * which never follows a link and cannot be redirected by a tree that changes under it.
+ * Resolves with the bytes copied and, for a single file, its name.
  */
-async function copyTree(source: string, destination: string): Promise<number> {
-  const realRoot = await fs.realpath(source);
-  let bytes = 0;
-  let files = 0;
-  const walk = async (from: string, to: string): Promise<void> => {
-    const real = await fs.realpath(from).catch(() => null);
-    if (!real || (real !== realRoot && !real.startsWith(realRoot + path.sep)))
-      throw new PreviewError(
-        "invalid",
-        `Refused to copy ${from}: it leaves the published directory.`,
-      );
-    for (const entry of await fs.readdir(from, { withFileTypes: true })) {
-      if (isSkippedName(entry.name)) continue;
-      const fromPath = path.join(from, entry.name);
-      const toPath = path.join(to, entry.name);
-      if (entry.isDirectory()) {
-        await fs.mkdir(toPath, { mode: 0o700 });
-        await walk(fromPath, toPath);
-      } else if (entry.isFile()) {
-        files += 1;
-        if (files > MAX_SNAPSHOT_FILES) throw new PreviewError("too_large", TOO_LARGE);
-        bytes += await copyFileSafely(fromPath, toPath, realRoot, MAX_SNAPSHOT_BYTES - bytes);
+function copySnapshot(
+  source: string,
+  destination: string,
+): Promise<{ bytes: number; entry: string }> {
+  const worker = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "snapshot-copy-worker.mjs",
+  );
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [worker, source, destination, String(MAX_SNAPSHOT_BYTES), String(MAX_SNAPSHOT_FILES)],
+      { stdio: ["ignore", "pipe", "pipe"], env: {} },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (stdout.length < 4096) stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (stderr.length < 2000) stderr += chunk.toString("utf8");
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      const result = code === 0 ? parseCopyResult(stdout) : null;
+      if (result) {
+        resolve(result);
+      } else if (code === 0) {
+        reject(new PreviewError("invalid", "The snapshot copy did not finish."));
+      } else if (code === 3) {
+        reject(
+          new PreviewError(
+            "too_large",
+            "The snapshot is larger than the limit of 300 MB or 10,000 files. Publish the built output, not the project.",
+          ),
+        );
+      } else {
+        reject(
+          new PreviewError(
+            "invalid",
+            stderr.trim().slice(0, 500) || `Nothing to publish at ${source}.`,
+          ),
+        );
       }
-      // Links, sockets and devices are left out.
-    }
-  };
-  await walk(realRoot, destination);
-  return bytes;
+    });
+  });
 }
 
 /** Compare ids without leaking how many leading characters matched. */
