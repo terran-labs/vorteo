@@ -8,6 +8,7 @@ import { memo, useCallback, useMemo, type ReactElement } from "react";
 import { ChecklistCard } from "@/task-checklist/card";
 import { JournalCard } from "@/journal/card";
 import { OpenQuestionsCard } from "@/open-questions/card";
+import { PreviewsCard } from "@/previews/card";
 import { ContextCard } from "@/components/context-breakdown/card";
 
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -120,6 +121,7 @@ export const AgentTracks = memo(function AgentTracks({
         tasks={tasks}
       />
       <JournalCard key={agentId} serverId={serverId} agentId={agentId} />
+      <PreviewsCard key={`previews:${agentId}`} serverId={serverId} agentId={agentId} />
       <ContextCard key={`context:${agentId}`} serverId={serverId} agentId={agentId} />
       <SubagentsTrack
         inline

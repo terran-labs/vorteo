@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Send feedback to the agent</title>
+    <link rel="stylesheet" href="/api/previews/web/shared.css" />
+  </head>
+  <body class="pair">
+    <main id="confirm" hidden>
+      <h1 id="heading">Send this feedback to the agent?</h1>
+      <p id="artifact" class="muted"></p>
+      <p id="rating" hidden></p>
+      <p id="comment"></p>
+      <p id="location" class="muted" hidden></p>
+      <p>
+        <button id="send" type="button">Send to agent</button>
+        <button id="cancel" type="button">Cancel</button>
+      </p>
+    </main>
+    <p id="message" role="status" aria-live="polite"></p>
+    <script src="/api/previews/web/confirm.js"></script>
+  </body>
+</html>

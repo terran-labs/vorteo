@@ -4413,6 +4413,31 @@ export class DaemonClient {
     return result.tasks;
   }
 
+  /** The Previews gallery: published artifacts with the owner's ratings, picks and comments. */
+  async listPreviews(): Promise<import("@getpaseo/protocol/previews").PreviewGallery> {
+    if (this.lastServerInfoMessage?.features?.previews !== true)
+      throw new Error("Update the daemon to use Previews.");
+    const result = await this.sendNamespacedCorrelatedSessionRequest<"previews.list.response">({
+      message: { type: "previews.list.request" },
+    });
+    if (result.error || !result.gallery) throw new Error(result.error ?? "Previews unavailable");
+    return result.gallery;
+  }
+
+  /** Rate, approve, pick, remove, or mint a one-time browser pairing ticket. */
+  async previewsAction(
+    action: import("@getpaseo/protocol/previews").PreviewsAction,
+  ): Promise<{ gallery: import("@getpaseo/protocol/previews").PreviewGallery; ticket?: string }> {
+    if (this.lastServerInfoMessage?.features?.previews !== true)
+      throw new Error("Update the daemon to use Previews.");
+    const result = await this.sendNamespacedCorrelatedSessionRequest<"previews.action.response">({
+      message: { type: "previews.action.request", action },
+    });
+    if (result.error || !result.gallery)
+      throw new Error(result.error ?? "Preview change unconfirmed");
+    return { gallery: result.gallery, ...(result.ticket ? { ticket: result.ticket } : {}) };
+  }
+
   async answerAgentQuestion(
     agentId: string,
     questionId: string,

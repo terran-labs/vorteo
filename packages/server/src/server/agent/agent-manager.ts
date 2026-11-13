@@ -1614,6 +1614,7 @@ export class AgentManager {
             MessageQueueService,
             | "withIdleQueue"
             | "queueQuestionAnswer"
+            | "queueOwnerMessage"
             | "steerQueuedMessage"
             | "onMessageAccepted"
             | "captureRestartContinuation"
@@ -1629,6 +1630,11 @@ export class AgentManager {
         >)
     | null = null;
   private messageQueueAcceptedSubscription: (() => void) | null = null;
+  /**
+   * The Previews gallery service. It lives here only so agent tools and client sessions,
+   * which already hold the manager, reach it without another constructor parameter.
+   */
+  previews: import("../previews/service.js").PreviewsService | null = null;
   private readonly queueGoalMutationTails = new Map<string, Promise<void>>();
   private logger: Logger;
   private readonly rescueTimeouts: Required<AgentManagerRescueTimeouts>;
@@ -1887,6 +1893,7 @@ export class AgentManager {
           MessageQueueService,
           | "withIdleQueue"
           | "queueQuestionAnswer"
+          | "queueOwnerMessage"
           | "steerQueuedMessage"
           | "onMessageAccepted"
           | "captureRestartContinuation"
@@ -5397,6 +5404,15 @@ export class AgentManager {
     await this.persistSnapshot(agent);
     if (item.type === "todo") this.emitState(agent, { persist: false });
     return { seq: row.seq, epoch: this.timelineStore.getEpoch(agentId) };
+  }
+
+  /** Queue an owner message for a thread; it is delivered now or when the active turn ends. */
+  async queueOwnerMessage(agentId: string, messageId: string, text: string): Promise<void> {
+    this.requireAgent(agentId);
+    const queue = this.messageQueueControl;
+    if (!queue?.queueOwnerMessage)
+      throw new Error("This daemon cannot deliver messages to the thread.");
+    await queue.queueOwnerMessage(agentId, messageId, text);
   }
 
   async readJournal(
