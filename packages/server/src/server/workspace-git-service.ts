@@ -799,22 +799,24 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
   async getCheckout(cwd: string): Promise<ProjectCheckoutLitePayload> {
     this.assertNotDisposed();
     const normalizedCwd = resolve(cwd);
-    const status = await this.deps.getCheckoutStatus(normalizedCwd, {
-      paseoHome: this.paseoHome,
-      worktreesRoot: this.worktreesRoot,
-      logger: this.logger,
-    });
-    const cached = this.getCachedSnapshot(normalizedCwd);
-    if (cached && cached.git.isGit !== status.isGit) {
-      // A fresh checkout read discovered a repository transition. Keep the
-      // shared snapshot current before exposing the new project capability.
-      await this.getSnapshot(normalizedCwd, {
-        force: true,
-        includeForge: false,
-        reason: "checkout-classification-changed",
-      });
+    const facts = await this.deps.getCheckoutSnapshotFacts(
+      normalizedCwd,
+      {
+        paseoHome: this.paseoHome,
+        worktreesRoot: this.worktreesRoot,
+        logger: this.logger,
+        runGitCommand: createRunGitCommand("checkout-metadata"),
+      },
+      { metadataOnly: true },
+    );
+    const target = this.workspaceTargets.get(normalizedCwd);
+    if (target?.latestSnapshot && target.latestSnapshot.git.isGit !== facts.isGit) {
+      // Snapshot and observation reads must refresh a changed classification. Do not scan
+      // working files here: checkout identity callers never consume dirty state.
+      target.latestSnapshot = null;
+      target.latestFacts = null;
     }
-    if (!status.isGit) {
+    if (!facts.isGit) {
       return checkoutLiteFromGitSnapshot(normalizedCwd, {
         isGit: false,
         currentBranch: null,
@@ -826,17 +828,12 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     }
     return checkoutLiteFromGitSnapshot(normalizedCwd, {
       isGit: true,
-      currentBranch: status.currentBranch,
-      remoteUrl: status.remoteUrl,
-      repoRoot: status.repoRoot,
-      isPaseoOwnedWorktree: status.isPaseoOwnedWorktree,
-      mainRepoRoot: status.mainRepoRoot,
+      currentBranch: facts.currentBranch,
+      remoteUrl: facts.remoteUrl,
+      repoRoot: facts.worktreeRoot,
+      isPaseoOwnedWorktree: facts.paseoWorktree.isPaseoOwnedWorktree,
+      mainRepoRoot: facts.mainRepoRoot,
     });
-  }
-
-  private getCachedSnapshot(cwd: string): WorkspaceGitRuntimeSnapshot | null {
-    cwd = resolve(cwd);
-    return this.workspaceTargets.get(cwd)?.latestSnapshot ?? null;
   }
 
   async getCheckoutDiff(
