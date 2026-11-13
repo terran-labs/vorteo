@@ -2,6 +2,12 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-13
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
 ## 26.11.1200 - 2026-11-12
 
 ### Highlights
@@ -115,6 +121,18 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ### Improvements
 
 - The startup error page offers Open recovery beside Reload and Copy diagnostics when the installation has a private recovery address, so the owner can reach the native interface while the main address cannot start.
+
+## Unreleased - 2026-11-11
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-11
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
 
 ## Unreleased - 2026-11-11
 
