@@ -215,10 +215,14 @@ process.stdout.write(found[0].value);
 """
         return self.docker(['exec', '--user', 'paseo', self.c['container'], '/usr/local/bin/node', '-e', code]).strip()
 
-    def preflight(self):
+    def verify_node(self):
+        """The node is still the one this broker was pinned to."""
         status = json.loads(self.ts(['status', '--json']))
         if status['Self']['ID'] != self.c['nodeId'] or status['Self']['DNSName'].rstrip('.') != self.c['hostname']:
             raise ValueError('Tailscale identity changed; administrator review required')
+
+    def preflight(self):
+        self.verify_node()
         netmap = json.loads(self.ts(['debug', 'netmap']))
         if digest(netmap.get('PacketFilter')) != self.c['packetFilterHash']:
             raise ValueError('Tailnet access scope changed; administrator review required')

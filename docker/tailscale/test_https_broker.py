@@ -110,7 +110,7 @@ class NativeWorkspacePolicyTests(unittest.TestCase):
             replaced = []
             class OldNode:
                 def __init__(self, config): self.config = config
-                def preflight(self): replaced.append('preflight')
+                def verify_node(self): replaced.append('preflight')
                 def publication(self): return {}
             with self.assertRaises(ValueError):
                 installer.switch_pins(root, channel, new, True, lambda: replaced.append('files'), OldNode)
@@ -148,6 +148,39 @@ class NativeWorkspacePolicyTests(unittest.TestCase):
             open_root = Path(os.path.realpath(directory)) / 'open'; open_root.mkdir(); open_root.chmod(0o777)
             with self.assertRaises(ValueError):
                 installer.prepare_deployment(open_root)
+        # Leaving a node needs its identity and publication, not its access scope: adding the
+        # new node to the tailnet has usually changed the old node's filter already.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(os.path.realpath(directory)) / 'broker'; channel = root / 'channel'
+            (channel / 'origins').mkdir(parents=True); root.chmod(0o700)
+            atomic(root / 'host-config.json', old)
+            atomic(root / 'https-broker-ledger.json', stopped)
+            class ScopeChangedNode:
+                def __init__(self, config): pass
+                def verify_node(self): pass
+                def preflight(self): raise ValueError('Tailnet access scope changed; administrator review required')
+                def publication(self): return {}
+            installer.switch_pins(root, channel, new, True, lambda: None, ScopeChangedNode)
+            self.assertEqual(safe_read(root / 'host-config.json'), new)
+        # The same node with a changed access scope is re-pinned only on request, and the
+        # request never covers a different node.
+        rescoped = {**old, 'packetFilterHash': 'changed'}
+        with self.assertRaises(ValueError):
+            installer.check_identity(old, rescoped, running, False, nothing)
+        installer.check_identity(old, rescoped, running, False, nothing, accept_scope=True)
+        with self.assertRaises(ValueError):
+            installer.check_identity(old, {**rescoped, 'nodeId': 'other'}, stopped, False, nothing, accept_scope=True)
+        # What is accepted is shown by device name, so it can be judged.
+        scope = lambda *sources: {'sources': sorted(sources), 'destinations': ['100.64.0.1/32 ports 0-65535']}
+        names = installer.device_names({'Self': {'DNSName': 'mac.ts.net.', 'TailscaleIPs': ['100.64.0.1']},
+                                        'Peer': {'k': {'DNSName': 'previews.ts.net.', 'TailscaleIPs': ['100.64.0.9']}}})
+        change = installer.scope_change({'accessScope': scope('100.64.0.2/32', '100.64.0.3/32')},
+                                        {'accessScope': scope('100.64.0.2/32', '100.64.0.9/32')}, names)
+        self.assertEqual(change['addedSources'], [{'address': '100.64.0.9/32', 'device': 'previews'}])
+        self.assertEqual(change['removedSources'], [{'address': '100.64.0.3/32', 'device': 'unknown device'}])
+        self.assertFalse(change['destinationsChanged'])
+        self.assertEqual(installer.access_scope([{'Srcs': ['b', 'a'], 'Dsts': [{'Net': 'n', 'Ports': {'First': 0, 'Last': 9}}]}]),
+                         {'sources': ['a', 'b'], 'destinations': ['n ports 0-9']})
         # The move never excuses a change to anything else the broker is pinned to.
         with self.assertRaises(ValueError):
             installer.check_identity(old, {**new, 'daemonHome': '/elsewhere'}, stopped, True, nothing)

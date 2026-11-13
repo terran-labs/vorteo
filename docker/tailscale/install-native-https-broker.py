@@ -42,7 +42,56 @@ def private_socket(path):
 NODE_FIELDS = ('tailscale', 'tailscaleSocket', 'nodeId', 'hostname', 'packetFilterHash')
 
 
-def check_identity(previous, config, ledger, move, previous_publication):
+def access_scope(packet_filter):
+    """What the pinned hash covers, in a form an administrator can read.
+
+    The filter lists every device address allowed to reach this node, so the hash changes
+    whenever a device joins or leaves the tailnet, not only when the policy is edited.
+    """
+    rules = packet_filter or []
+    return {
+        'sources': sorted({str(source) for rule in rules for source in rule.get('Srcs') or []}),
+        'destinations': sorted({f"{d.get('Net')} ports {d['Ports']['First']}-{d['Ports']['Last']}"
+                                for rule in rules for d in rule.get('Dsts') or []}),
+    }
+
+
+def device_names(status):
+    """Device name for each tailnet address in `tailscale status --json`, without the mask."""
+    names = {}
+    for device in [status.get('Self') or {}, *(status.get('Peer') or {}).values()]:
+        name = (device.get('DNSName') or '').split('.')[0] or device.get('HostName') or ''
+        for address in device.get('TailscaleIPs') or []:
+            names[address] = name
+    return names
+
+
+def scope_change(previous, config, names=None):
+    """Summary of an access scope about to be accepted in place of the pinned one.
+
+    Each source is shown with its device name where the tailnet knows one, because an
+    administrator can judge "the previews node" and cannot judge a bare address.
+    """
+    names = names or {}
+
+    def described(sources):
+        return [{'address': source, 'device': names.get(source.split('/')[0]) or 'unknown device'}
+                for source in sources]
+
+    before = previous.get('accessScope')
+    after = config['accessScope']
+    change = {'sources': len(after['sources']), 'destinations': after['destinations']}
+    if before:
+        change['addedSources'] = described(sorted(set(after['sources']) - set(before['sources'])))
+        change['removedSources'] = described(sorted(set(before['sources']) - set(after['sources'])))
+        change['destinationsChanged'] = before['destinations'] != after['destinations']
+    else:
+        # Older installs recorded only the hash, so there is nothing to compare against.
+        change['allSources'] = described(after['sources'])
+    return change
+
+
+def check_identity(previous, config, ledger, move, previous_publication, accept_scope=False):
     """Refuse an install that would change what an existing broker is pinned to.
 
     The node a broker publishes through may change only on an explicit move, and only when
@@ -54,6 +103,10 @@ def check_identity(previous, config, ledger, move, previous_publication):
             raise ValueError('Existing native broker identity or policy differs: ' + field)
     changed = [field for field in NODE_FIELDS if previous and previous.get(field) != config.get(field)]
     if not changed:
+        return
+    # The same node with a different access scope: accepted only when the administrator
+    # asks for it, after reading the summary the installer prints.
+    if changed == ['packetFilterHash'] and accept_scope:
         return
     if not move:
         raise ValueError('Existing native broker identity or policy differs: ' + changed[0])
@@ -81,7 +134,8 @@ def waiting_broker_lock(root, seconds=120):
             time.sleep(0.5)
 
 
-def switch_pins(root, channel, config, move, replace_files, runtime_for=NativeRuntime, wait=120):
+def switch_pins(root, channel, config, move, replace_files, runtime_for=NativeRuntime, wait=120,
+                accept_scope=False):
     """Check what the broker is pinned to and commit the new pins, as one step.
 
     The broker publishes under this same lock. Holding it from reading the prior config and
@@ -97,10 +151,13 @@ def switch_pins(root, channel, config, move, replace_files, runtime_for=NativeRu
 
         def previous_publication():
             runtime = runtime_for(previous)
-            runtime.preflight()
+            # Leaving a node safely needs proof that it is the same node and what it
+            # still publishes. Its access scope no longer matters once it is not used, and
+            # adding the new node to the tailnet has usually changed it already.
+            runtime.verify_node()
             return runtime.publication()
 
-        check_identity(previous, config, ledger, move, previous_publication)
+        check_identity(previous, config, ledger, move, previous_publication, accept_scope)
         moving = bool(previous) and any(previous.get(field) != config.get(field) for field in NODE_FIELDS)
         replace_files()
         if moving:
@@ -125,6 +182,9 @@ def main():
     # Required once to move an existing broker to another node. Refused while any
     # preview is running, because its link would silently change hostname.
     parser.add_argument('--move-previews-node', action='store_true')
+    # Re-pin the access scope of the SAME node after a reviewed tailnet change, such as a
+    # device joining or leaving. The installer prints what it accepted.
+    parser.add_argument('--accept-access-scope', action='store_true')
     parser.add_argument('--workspace-policy', choices=['registered', 'approved-roots'], default='registered')
     parser.add_argument('--allowed-root', action='append', default=[])
     parser.add_argument('--restore-after-restart', action=argparse.BooleanOptionalAction, default=False)
@@ -177,6 +237,7 @@ def main():
     config.update(hostname=status['Self']['DNSName'].rstrip('.'), nodeId=status['Self']['ID'])
     netmap = json.loads(runtime.ts(['debug', 'netmap']))
     config['packetFilterHash'] = digest(netmap.get('PacketFilter'))
+    config['accessScope'] = access_scope(netmap.get('PacketFilter'))
     if not any(destination['Ports']['First'] <= config['portStart'] and destination['Ports']['Last'] >= config['portEnd']
                for rule in netmap.get('PacketFilter', []) for destination in rule.get('Dsts', [])):
         raise ValueError('Existing tailnet policy does not cover preview ports; no grants changed')
@@ -207,7 +268,10 @@ def main():
             temporary.chmod(0o700)
             os.replace(temporary, root / name)
 
-    switch_pins(root, channel, config, args.move_previews_node, replace_files)
+    previous = switch_pins(root, channel, config, args.move_previews_node, replace_files,
+                           accept_scope=args.accept_access_scope)
+    accepted = (scope_change(previous, config, device_names(status))
+                if previous and previous.get('packetFilterHash') != config['packetFilterHash'] else None)
     helper = [node, str(root / 'paseo-preview.mjs')]
     bin_dir.mkdir(parents=True, exist_ok=True)
     if launcher.exists():
@@ -233,7 +297,8 @@ def main():
     }
     install(content, root / 'https_broker.py', [])
     print(json.dumps({'installed': str(root), 'helperCommand': helper, 'backup': str(backup),
-                      'label': label, 'daemonRestarted': False}))
+                      'label': label, 'daemonRestarted': False,
+                      **({'acceptedAccessScope': accepted} if accepted else {})}))
 
 
 if __name__ == '__main__':
