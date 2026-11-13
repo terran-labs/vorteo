@@ -611,9 +611,10 @@ export function createReleaseUpgradeRuntime(input: {
     mkdirSync(work, { recursive: true, mode: 0o700 });
     await git(["init", "--bare", "--quiet", scratch]);
     // Fetch by ref, not by object ID: a local upload-pack may refuse unadvertised objects.
-    // The release contains the installed commit, so its history brings the bundle's base.
+    // Tracked updates can leave an installed merge absent from the release history.
     const temporary = `refs/vorteo-upgrade/${upgrade.id}`;
     await git(["-C", source, "update-ref", temporary, upgrade.sourceCommit]);
+    await git(["-C", source, "update-ref", `${temporary}-base`, base]);
     try {
       await git([
         "-C",
@@ -623,17 +624,14 @@ export function createReleaseUpgradeRuntime(input: {
         "--no-tags",
         source,
         `${temporary}:${settings.integrationRef}`,
+        `${temporary}-base:refs/vorteo-installed`,
       ]);
     } finally {
       await git(["-C", source, "update-ref", "-d", temporary]);
+      await git(["-C", source, "update-ref", "-d", `${temporary}-base`]);
     }
-    await git(["-C", scratch, "merge-base", "--is-ancestor", base, upgrade.sourceCommit]).catch(
-      () => {
-        throw new Error(
-          `${upgradeTarget(upgrade)} does not contain the installed Host source ${base}.`,
-        );
-      },
-    );
+    const sourceCommit = await releaseIntegrationCommit(scratch, base, upgrade.sourceCommit, git);
+    await git(["-C", scratch, "update-ref", settings.integrationRef, sourceCommit]);
     const bundle = path.join(work, "release.bundle");
     rmSync(bundle, { force: true });
     await git([
@@ -648,7 +646,7 @@ export function createReleaseUpgradeRuntime(input: {
     ]);
     const bytes = readFileSync(bundle);
     const update: SourceUpdate = {
-      sourceCommit: upgrade.sourceCommit,
+      sourceCommit,
       baseCommit: base,
       sha256: createHash("sha256").update(bytes).digest("hex"),
       bytes: bytes.length,
@@ -1224,7 +1222,11 @@ export function createReleaseUpgradeRuntime(input: {
   function installedRelease(commit: string): { release: string | null; aheadOf: string | null } {
     const release = upgrades
       ?.list()
-      .find((item) => item.status === "succeeded" && item.sourceCommit === commit)?.release;
+      .find(
+        (item) =>
+          item.status === "succeeded" &&
+          (item.sourceCommit === commit || upgradeJob(item.id)?.update?.sourceCommit === commit),
+      )?.release;
     if (release) return { release, aheadOf: null };
     const source = sourceUpgrades
       ?.list()
@@ -1364,4 +1366,49 @@ export function createReleaseUpgradeRuntime(input: {
       };
     },
   };
+}
+
+/** Preserve the installed prerequisite without dropping changes absent from the release. */
+export async function releaseIntegrationCommit(
+  repository: string,
+  base: string,
+  release: string,
+  git: (args: string[]) => Promise<string>,
+): Promise<string> {
+  const args = ["-C", repository];
+  try {
+    await git([...args, "merge-base", "--is-ancestor", base, release]);
+    return release;
+  } catch {
+    // Local integration commits need not occur upstream. Only a clean merge whose tree
+    // equals the release proves that installing it preserves all installed changes.
+  }
+  const tree = await git([...args, "rev-parse", `${release}^{tree}`]);
+  let merged: string;
+  try {
+    merged = await git([...args, "merge-tree", "--write-tree", base, release]);
+  } catch {
+    throw new Error(
+      `Release ${release} lacks installed changes from ${base}: the histories conflict.`,
+    );
+  }
+  if (merged !== tree)
+    throw new Error(
+      `Release ${release} lacks installed changes from ${base}: merging changes the release tree.`,
+    );
+  return git([
+    ...args,
+    "-c",
+    "user.name=Vorteo",
+    "-c",
+    "user.email=updates@vorteo.local",
+    "commit-tree",
+    tree,
+    "-p",
+    base,
+    "-p",
+    release,
+    "-m",
+    `Integrate release ${release} with installed Host ${base}`,
+  ]);
 }

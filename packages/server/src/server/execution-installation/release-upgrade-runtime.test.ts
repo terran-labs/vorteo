@@ -9,6 +9,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -19,6 +20,7 @@ import { createTestLogger } from "../../test-utils/test-logger.js";
 import { createInstallationServer } from "./server.js";
 import type { InstallationConfig } from "./config.js";
 import {
+  releaseIntegrationCommit,
   adoptionRequired,
   createReleaseUpgradeRuntime,
   legacyHostCommit,
@@ -416,3 +418,70 @@ test("an agent's snapshot never prunes an existing rollback point", async () => 
   await takeSafetySnapshot(store, true);
   expect(pruned).toEqual([["new"]]);
 });
+
+for (const extra of [false, true]) {
+  test(`release integration ${extra ? "refuses missing installed changes" : "preserves a local merge and produces an applicable bundle"}`, async () => {
+    const source = path.join(root, "git");
+    mkdirSync(source);
+    function git(args: string[]) {
+      return execFileSync("git", args, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+    }
+    const at = ["-C", source];
+    git([...at, "init", "-q"]);
+    git([...at, "config", "user.name", "Test"]);
+    git([...at, "config", "user.email", "test@example.com"]);
+    touch(path.join(source, "initial"), "initial");
+    git([...at, "add", "."]);
+    git([...at, "commit", "-qm", "initial"]);
+    const initial = git([...at, "rev-parse", "HEAD"]);
+    touch(path.join(source, "feature"), "installed feature");
+    git([...at, "add", "."]);
+    git([...at, "commit", "-qm", "feature"]);
+    const feature = git([...at, "rev-parse", "HEAD"]);
+    const tree = git([...at, "rev-parse", "HEAD^{tree}"]);
+    const base = git([
+      ...at,
+      "commit-tree",
+      tree,
+      "-p",
+      initial,
+      "-p",
+      feature,
+      "-m",
+      "local integration",
+    ]);
+    git([...at, "checkout", "--detach", base]);
+    if (extra) {
+      touch(path.join(source, "local"), "unreleased work");
+      git([...at, "add", "."]);
+      git([...at, "commit", "-qm", "local work"]);
+    }
+    const installed = git([...at, "rev-parse", "HEAD"]);
+    const release = git([...at, "commit-tree", tree, "-p", feature, "-m", "release"]);
+    const integrate = () =>
+      releaseIntegrationCommit(source, installed, release, async (args) => git(args));
+    if (extra) {
+      await expect(integrate()).rejects.toThrow(
+        `Release ${release} lacks installed changes from ${installed}`,
+      );
+      return;
+    }
+    const staged = await integrate();
+    expect(git([...at, "rev-parse", `${staged}^{tree}`])).toBe(tree);
+    const receiver = path.join(root, "receiver");
+    git(["clone", "-q", source, receiver]);
+    git([...at, "update-ref", "refs/integration", staged]);
+    const bundle = path.join(root, "release.bundle");
+    git([...at, "bundle", "create", bundle, "refs/integration", `^${installed}`]);
+    git(["-C", receiver, "bundle", "verify", bundle]);
+    git(["-C", receiver, "fetch", bundle, "refs/integration"]);
+    git(["-C", receiver, "merge", "--ff-only", "FETCH_HEAD"]);
+    expect(git(["-C", receiver, "rev-parse", "HEAD"])).toBe(staged);
+    expect(
+      await releaseIntegrationCommit(source, staged, release, async (args) => git(args)),
+    ).toMatch(/^[a-f0-9]{40}$/);
+  });
+}
