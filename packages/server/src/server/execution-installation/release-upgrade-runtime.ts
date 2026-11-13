@@ -688,19 +688,6 @@ export function createReleaseUpgradeRuntime(input: {
     logger.info({ id, next }, "Coordinator handoff started");
   }
 
-  /** True when the Host commit was installed by a source upgrade. */
-  function sourceInstalled(commit: string): boolean {
-    return Boolean(
-      sourceUpgrades
-        ?.list()
-        .some(
-          (item) =>
-            item.sourceCommit === commit &&
-            item.steps.some((step) => step.name === "host" && step.status === "succeeded"),
-        ),
-    );
-  }
-
   /** Fetches `main` of the release repository into the source checkout's source-upgrade ref. */
   async function fetchMain(source: string): Promise<void> {
     await git([
@@ -848,6 +835,9 @@ export function createReleaseUpgradeRuntime(input: {
       return commit;
     },
     async snapshot(upgrade) {
+      // Refusals must not consume backup space or evict a valid rollback point. The
+      // fetch step repeats validation after backup in case the tag or Host changed.
+      await ports.fetchRelease(upgrade);
       if (!snapshots) throw new Error("Snapshots are unavailable");
       const snapshot = await snapshots.take({
         reason: "upgrade",
@@ -876,14 +866,10 @@ export function createReleaseUpgradeRuntime(input: {
         throw new Error(
           `Release ${upgrade.release} now names ${commit}, not the reviewed ${upgrade.sourceCommit}. Request the upgrade again.`,
         );
-      // A Host the installer builds takes any revision, so a release cut without a commit a
-      // source upgrade installed would silently drop it. Restart-queue Hosts refuse that when
-      // staging the bundle.
+      // Validate before the safety snapshot, including tracked local merge commits
+      // that cannot appear in the release history. This neither stages nor installs.
       const installed = currentCommit();
-      if (installed && sourceInstalled(installed) && !(await contains(source, commit, installed)))
-        throw new Error(
-          `Release ${upgrade.release} does not contain commit ${installed.slice(0, 12)}, which a source upgrade installed. Nothing was restarted. Wait for a release that includes it.`,
-        );
+      if (installed) await releaseContainedTree(source, installed, commit, git);
     },
     async requestHostUpdate(upgrade) {
       if (directHostUpgrades(config)) return launchDirectHostRelease(upgrade);
@@ -1368,17 +1354,17 @@ export function createReleaseUpgradeRuntime(input: {
   };
 }
 
-/** Preserve the installed prerequisite without dropping changes absent from the release. */
-export async function releaseIntegrationCommit(
+/** Return the release tree only when a synthetic integration commit is needed. */
+async function releaseContainedTree(
   repository: string,
   base: string,
   release: string,
   git: (args: string[]) => Promise<string>,
-): Promise<string> {
+): Promise<string | null> {
   const args = ["-C", repository];
   try {
     await git([...args, "merge-base", "--is-ancestor", base, release]);
-    return release;
+    return null;
   } catch {
     // Local integration commits need not occur upstream. Only a clean merge whose tree
     // equals the release proves that installing it preserves all installed changes.
@@ -1396,6 +1382,19 @@ export async function releaseIntegrationCommit(
     throw new Error(
       `Release ${release} lacks installed changes from ${base}: merging changes the release tree.`,
     );
+  return tree;
+}
+
+/** Preserve the installed prerequisite without dropping changes absent from the release. */
+export async function releaseIntegrationCommit(
+  repository: string,
+  base: string,
+  release: string,
+  git: (args: string[]) => Promise<string>,
+): Promise<string> {
+  const tree = await releaseContainedTree(repository, base, release, git);
+  if (tree === null) return release;
+  const args = ["-C", repository];
   return git([
     ...args,
     "-c",
