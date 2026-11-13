@@ -62,12 +62,20 @@ export async function discoverClaudeModels(
   openQuery: OpenDiscoveryQuery = claudeQuery,
 ): Promise<ModelInfo[]> {
   const now = options.now ?? Date.now;
-  const account = claudeConfigDir(options.env);
+  // Providers can share a configuration directory yet reach another endpoint or run another
+  // command, and each advertises its own models.
+  const account = JSON.stringify([
+    claudeConfigDir(options.env),
+    claudeSignInMode(options.env),
+    options.env.ANTHROPIC_BASE_URL ?? "",
+    options.runtimeSettings?.command ?? null,
+  ]);
   const recent = recentDiscoveries.get(account);
   if (!options.force && recent && now() - recent.at < CLAUDE_DISCOVERY_REUSE_MS) {
     return recent.models;
   }
-  // The last answer, however old, stands in until the grant has renewed.
+  // The last answer, however old, stands in until the grant has renewed. With none, as after a
+  // daemon restart this close to expiry, the catalog omits discovery-gated models until then.
   if (await renewalDue(options, now())) return recent?.models ?? [];
   const controller = new AbortController();
   const signal = options.signal

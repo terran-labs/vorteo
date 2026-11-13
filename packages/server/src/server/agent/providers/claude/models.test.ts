@@ -1188,6 +1188,11 @@ describe("Claude model discovery process", () => {
         scopes: [],
       }),
     };
+    // With no earlier answer the guard still starts nothing and reports no models.
+    now = 55 * 60_000;
+    expect(await discoverClaudeModels(options, open)).toEqual([]);
+    expect(probes).toBe(0);
+    now = 0;
     expect(await discoverClaudeModels(options, open)).toEqual(advertised);
     expect(probes).toBe(1);
     now = 55 * 60_000;

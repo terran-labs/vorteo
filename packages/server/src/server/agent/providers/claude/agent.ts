@@ -1853,7 +1853,8 @@ export class ClaudeAgentClient implements AgentClient {
     context?: ProviderRefreshContext,
     force = false,
   ): Promise<ProviderCatalog> {
-    // Claude exposes a global catalog here; cwd/force are intentionally irrelevant.
+    // Claude exposes a global catalog here; cwd is irrelevant, and force only skips the reuse of
+    // a recent discovery answer.
     let claudeCodeVersion: string | undefined;
     try {
       claudeCodeVersion = await runProviderRefreshActivity(context, "version", () =>
