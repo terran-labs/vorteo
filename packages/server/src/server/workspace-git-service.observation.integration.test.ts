@@ -1,4 +1,5 @@
 import { flushGitCommandTrace } from "../utils/git-command-trace.js";
+import { startGitCommandMetrics, stopGitCommandMetrics } from "../utils/run-git-command.js";
 import { createWorkspaceRuntimeStore } from "./workspace-runtime-store/index.js";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -107,7 +108,7 @@ test.each([false, true])(
   },
 );
 
-test("a fresh checkout read makes a newly initialized repository available to cached readers", async () => {
+test("reconciliation checkout discovery observes repository transitions without running status", async () => {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "paseo-checkout-init-")));
   const repo = path.join(root, "repo");
   mkdirSync(repo);
@@ -123,7 +124,18 @@ test("a fresh checkout read makes a newly initialized repository available to ca
   expect((await service.getSnapshot(repo, { includeForge: false })).git.isGit).toBe(false);
   execFileSync("git", ["init", "-b", "main"], { cwd: repo, stdio: "pipe" });
 
-  expect((await service.getCheckout(repo)).isGit).toBe(true);
+  startGitCommandMetrics();
+  try {
+    expect((await service.getCheckout(repo)).isGit).toBe(true);
+  } finally {
+    const metrics = stopGitCommandMetrics();
+    expect(metrics.commands.length).toBeGreaterThan(0);
+    expect(metrics.commands.some(({ args }) => args.includes("status"))).toBe(false);
+    expect(metrics.commands.some(({ args }) => args.includes("rev-list"))).toBe(false);
+    expect(
+      metrics.commands.some(({ args }) => args.some((arg) => arg.includes("upstream:track"))),
+    ).toBe(false);
+  }
   const repoRoot = await service.resolveRepoRoot(repo);
   expect(realpathSync.native(repoRoot)).toBe(realpathSync.native(repo));
 }, 30_000);
