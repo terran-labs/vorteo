@@ -12,8 +12,20 @@ import sys
 import time
 
 from channel_identity import broker_lock
-from https_broker import NativeRuntime, atomic, digest, safe_dir, safe_read
+from https_broker import NativeRuntime, atomic, digest, private_directory, safe_dir, safe_read
 from launch_agent import install, label_for, owned_plist
+
+
+def prepare_deployment(path):
+    """Create the broker's directory, or accept an existing one only if it is private.
+
+    The broker's scripts, pins and lock live here and run with this user's authority.
+    """
+    root = Path(path).absolute()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.close(safe_dir(root))
+    private_directory(root)
+    return root
 
 
 def private_socket(path):
@@ -119,9 +131,7 @@ def main():
     args = parser.parse_args()
     if sys.platform != 'darwin':
         raise ValueError('Native previews currently require macOS')
-    root = Path(args.deployment).absolute()
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.close(safe_dir(root))
+    root = prepare_deployment(args.deployment)
     home = Path(args.daemon_home).absolute()
     os.close(safe_dir(home))
     node = str(Path(args.node).resolve(strict=True))

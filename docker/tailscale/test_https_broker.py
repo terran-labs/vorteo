@@ -65,6 +65,17 @@ class NativeWorkspacePolicyTests(unittest.TestCase):
             link = Path(directory) / 'link'; link.symlink_to(directory)
             with self.assertRaises(ValueError):
                 node.private_directory(link)
+            # A shim that links to the binary names the same login agent as its target,
+            # at install and at removal, including after the binary is gone.
+            target = Path(os.path.realpath(directory)) / 'tailscaled'; target.write_text('')
+            shim = Path(directory) / 'shim'; shim.symlink_to(target)
+            self.assertEqual(node.canonical(shim), target)
+            installed = node.plan('/srv/previews-node', node.canonical(shim), 'previews')
+            removing = node.plan('/srv/previews-node', node.canonical(shim), 'previews')
+            self.assertEqual(installed['content']['ProgramArguments'][0], str(target))
+            self.assertEqual(installed['label'], removing['label'])
+            target.unlink()
+            self.assertEqual(node.canonical(target), target)
 
     def test_broker_moves_node_only_when_nothing_is_published(self):
         spec = importlib.util.spec_from_file_location('native_installer', Path(__file__).with_name('install-native-https-broker.py'))
@@ -130,6 +141,13 @@ class NativeWorkspacePolicyTests(unittest.TestCase):
                     installer.private_socket(root / 'host-config.json')
             finally:
                 listener.close()
+        # An existing broker directory that others can write is refused, never adopted.
+        with tempfile.TemporaryDirectory() as directory:
+            fresh = installer.prepare_deployment(Path(os.path.realpath(directory)) / 'new')
+            self.assertEqual(os.lstat(fresh).st_mode & 0o777, 0o700)
+            open_root = Path(os.path.realpath(directory)) / 'open'; open_root.mkdir(); open_root.chmod(0o777)
+            with self.assertRaises(ValueError):
+                installer.prepare_deployment(open_root)
         # The move never excuses a change to anything else the broker is pinned to.
         with self.assertRaises(ValueError):
             installer.check_identity(old, {**new, 'daemonHome': '/elsewhere'}, stopped, True, nothing)

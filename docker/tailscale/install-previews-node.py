@@ -20,21 +20,19 @@ import subprocess
 import sys
 import time
 
-from https_broker import safe_dir
+from https_broker import private_directory, safe_dir
 from launch_agent import install, label_for, owned_plist, remove
 
 HOSTNAME = re.compile(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
 
 
-def private_directory(path):
-    """Fail closed unless this is a real directory, owned by this user, closed to others.
+def canonical(path):
+    """One identity for a binary path at install and at removal.
 
-    The node's state holds its tailnet identity, and its socket controls what it publishes.
-    An existing directory is never adopted on trust or silently tightened.
+    Links are resolved without requiring the file to exist, so a package-manager shim and
+    its target name the same login agent, and removal still works after the binary is gone.
     """
-    info = os.lstat(path)
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-        raise ValueError(f'{path} must be a directory owned by this user with mode 0700')
+    return Path(path).resolve()
 
 
 def plan(deployment, tailscaled, hostname):
@@ -73,9 +71,8 @@ def main():
     args = parser.parse_args()
     if sys.platform != 'darwin':
         raise ValueError('The dedicated previews node currently requires macOS')
-    # Removal must work after the binaries are gone, so paths are not resolved strictly
-    # here. The login agent is recognized by the tailscaled path it was installed with.
-    tailscaled = Path(args.tailscaled).absolute()
+    # The login agent is recognized by the canonical tailscaled path it was installed with.
+    tailscaled = canonical(args.tailscaled)
     root = Path(args.deployment).absolute()
     node = plan(root, tailscaled, args.hostname)
     agents = Path.home() / 'Library/LaunchAgents'
@@ -85,9 +82,10 @@ def main():
         return
     if not args.tailscale:
         raise ValueError('--tailscale is required to install the previews node')
-    tailscaled = Path(args.tailscaled).resolve(strict=True)
-    tailscale = Path(args.tailscale).resolve(strict=True)
-    node = plan(root, tailscaled, args.hostname)
+    tailscale = canonical(args.tailscale)
+    for binary in (tailscaled, tailscale):
+        if not binary.is_file():
+            raise ValueError(f'{binary} is not a file')
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.close(safe_dir(root))
     private_directory(root)
