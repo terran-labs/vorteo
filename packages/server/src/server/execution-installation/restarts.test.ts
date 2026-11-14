@@ -606,6 +606,7 @@ test("a finish-current-turns hold asks the owner after its deadline and logs hol
   const startup = (): RestartStartupOptions => ({
     fenced: false,
     finishTurnsDeadlineMs: 10 * 60_000,
+    afterHoldDeadline: "ask",
     holdState,
     progress: (message, fields) => progress.push({ message, fields }),
   });
@@ -646,6 +647,265 @@ test("a finish-current-turns hold asks the owner after its deadline and logs hol
   expect(saved).toEqual({});
 });
 
+test.each([
+  { policy: "omitted", options: {} },
+  { policy: "ask", options: { afterHoldDeadline: "ask" as const } },
+])(
+  "$policy deadline policy keeps owner attention without cooperative preparation",
+  async ({ options }) => {
+    const journal = new MemoryJournal();
+    let now = Date.now();
+    const prepare = vi.fn(async () => {
+      throw new Error("Unexpected automatic preparation");
+    });
+    const dispatch = vi.fn(async () => {});
+    const observe = vi.fn(async () => {
+      throw new Error("Unexpected automatic observation");
+    });
+    const restart = vi.fn(async () => "Unexpected restart");
+    const queue = new InstallationRestarts(
+      journal,
+      {
+        restartContinuationAvailable: async () => true,
+        captureRestartContinuation: async () => {},
+        releaseRestartContinuation: async () => true,
+        holdCurrentTurns: async () => {},
+        releaseCurrentTurns: async () => {},
+        prepareCooperativePreparation: prepare,
+        dispatchCooperativePreparation: dispatch,
+        observeCooperativePreparation: observe,
+        restart,
+        restartWhenIdle: restart,
+        inspect: async () => ({
+          ...idleImpact("host", true),
+          restartDrainObservationSupported: true,
+          restartDrainId: request.id,
+        }),
+      },
+      () => now,
+      {},
+      { fenced: false, finishTurnsDeadlineMs: 1000, ...options },
+    );
+    const request = queue.request({ target: "host", reason: "Owner deadline decision" }, "owner");
+    queue.decide(request.id, request.revision, "finish-current-turns");
+    await queue.drain();
+    now += 1001;
+    await queue.drain();
+    await queue.drain();
+    expect(queue.holdDeadlineExceeded(request.id)).toBe(true);
+    expect(queue.list()[0]).toMatchObject({
+      status: "approved",
+      detail: expect.stringContaining("Restart now to interrupt them, or cancel."),
+    });
+    expect(journal.jobs[0]?.cooperativeDrainPreparation).toBeUndefined();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(observe).not.toHaveBeenCalled();
+    expect(restart).not.toHaveBeenCalled();
+  },
+);
+
+test.each([
+  "success",
+  "reconstruct",
+  "inspection",
+  "capture",
+  "cancel",
+  "revision",
+  "hold write",
+  "starting",
+  "other hold",
+] as const)(
+  "automatic hold deadline uses tracked continuation and fails closed: %s",
+  async (scenario) => {
+    let interruptedWrite = false;
+    let expired = false;
+    let busy = true;
+    const journal = new (class extends MemoryJournal {
+      override write(jobs: RestartJob[]) {
+        if (
+          scenario === "reconstruct" &&
+          !interruptedWrite &&
+          jobs.some((job) => job.status === "running")
+        ) {
+          interruptedWrite = true;
+          throw new Error("coordinator stopped before dispatch reservation");
+        }
+        if (
+          scenario === "hold write" &&
+          expired &&
+          jobs.some((job) => job.cooperativeDrainPreparation?.phase === "reserved")
+        )
+          throw new Error("reservation disk unavailable");
+        super.write(jobs);
+      }
+    })();
+    let now = Date.now();
+    let saved: unknown = {};
+    let queued = 0;
+    const holdState = {
+      read: () => saved,
+      write: (value: unknown) => {
+        if (expired && scenario === "hold write") throw new Error("disk unavailable");
+        saved = structuredClone(value);
+      },
+    };
+    let queue: InstallationRestarts;
+    let request: ReturnType<InstallationRestarts["request"]>;
+    const capture = vi.fn(async () => {
+      if (expired && scenario === "capture") throw new Error("capture acknowledgement lost");
+    });
+    const interrupt = vi.fn();
+    const restart = vi.fn(async () => {
+      // The existing executor interrupts non-hosted turns only after durable capture.
+      expect(capture).toHaveBeenCalled();
+      return "replacement verified";
+    });
+    const executor: RestartExecutor = {
+      restartContinuationAvailable: async () => true,
+      captureRestartContinuation: capture,
+      releaseRestartContinuation: async (_target, _id, outcome) => {
+        if (outcome === "ready") queued++;
+        return true;
+      },
+      holdCurrentTurns: async () => {},
+      releaseCurrentTurns: async () => {},
+      restartWhenIdle: restart,
+      prepareCooperativePreparation: async (job) => {
+        const nativeProcess = {
+          pid: 101,
+          parentPid: 100,
+          uid: 501,
+          bootId: "fixture",
+          startIdentity: "birth",
+          executable: "/fixture/node",
+          argumentsSha256: "a".repeat(64),
+        };
+        return {
+          operation: "maintenance.interrupt-held-turns",
+          phase: "reserved",
+          manifestSha256: "a".repeat(64),
+          endpointIdentitySha256: "b".repeat(64),
+          continuationCauseId: job.id,
+          deadlineAt: new Date(now).toISOString(),
+          intent: {
+            held: {
+              requestId: job.id,
+              generation: randomUUID(),
+              workerPid: 101,
+              workerInstanceId: randomUUID(),
+              terminateAt: now + 30000,
+            },
+            approvedRevision: job.revision,
+            grantRevision: randomUUID(),
+            holdGeneration: randomUUID(),
+            decisionSha256: "a".repeat(64),
+            planSha256: "b".repeat(64),
+            reservedAt: new Date(now).toISOString(),
+            finishDeadlineAt: new Date(now).toISOString(),
+            native: {
+              identitySha256: "c".repeat(64),
+              serverId: "fixture",
+              sourceCommit: "a".repeat(40),
+              selectedRelease: "/fixture/release",
+              observedAt: new Date(now).toISOString(),
+              worker: nativeProcess,
+              supervisor: { ...nativeProcess, pid: 100, parentPid: 1 },
+            },
+            candidate: null,
+          },
+        };
+      },
+      dispatchCooperativePreparation: async (job) => {
+        expect(capture).toHaveBeenCalled();
+        journal.write(
+          journal.jobs.map((item) =>
+            item.id === job.id
+              ? {
+                  ...item,
+                  cooperativeDrainPreparation: {
+                    ...job.cooperativeDrainPreparation!,
+                    phase: "accepted",
+                  },
+                }
+              : item,
+          ),
+        );
+        interrupt();
+        busy = false;
+      },
+      observeCooperativePreparation: async (job) => ({
+        ...job.cooperativeDrainPreparation!,
+        phase: busy ? "unknown" : "settled",
+        ...(!busy
+          ? {
+              observation: {
+                checkedAt: new Date(now).toISOString(),
+                workerInstanceId: job.cooperativeDrainPreparation!.intent.held.workerInstanceId,
+                restartDrainId: job.id,
+                activeAgents: 0,
+                pendingStarts: 0,
+              },
+            }
+          : {}),
+      }),
+      inspect: async () => {
+        if (expired && scenario === "cancel") {
+          const job = queue.list()[0]!;
+          queue.decide(job.id, job.revision, "cancel");
+        }
+        if (expired && scenario === "revision") {
+          const job = queue.list()[0]!;
+          queue.decide(job.id, job.revision, "finish-current-turns");
+        }
+        return {
+          ...idleImpact("host", busy),
+          restartDrainObservationSupported: true,
+          restartDrainId: scenario === "other hold" ? "another-request" : request.id,
+          pendingStarts: scenario === "starting" ? 1 : 0,
+          error: expired && scenario === "inspection" ? "Cannot verify activity" : null,
+        };
+      },
+      restart: async () => {
+        throw new Error("Unconditional restart is forbidden");
+      },
+    };
+    const startup = { fenced: false, holdState, afterHoldDeadline: "auto" as const };
+    queue = new InstallationRestarts(journal, executor, () => now, {}, startup);
+    request = queue.request({ target: "host", reason: "Automatic hold deadline" }, "owner");
+    queue.decide(request.id, request.revision, "finish-current-turns");
+    await queue.drain();
+    // Reload while waiting: the original deadline and capture cause survive.
+    queue = new InstallationRestarts(journal, executor, () => now, {}, startup);
+    now += 16 * 60_000;
+    expired = true;
+    await queue.drain();
+    if (scenario === "reconstruct") {
+      await expect(queue.drain()).rejects.toThrow("coordinator stopped");
+      queue = new InstallationRestarts(journal, executor, () => now, {}, startup);
+    } else await queue.drain();
+    await queue.drain();
+    queue = new InstallationRestarts(journal, executor, () => now, {}, startup);
+    await queue.drain();
+    expect(queue.holdDeadlineExceeded(request.id)).toBe(false);
+    expect(interrupt).toHaveBeenCalledTimes(
+      scenario === "success" || scenario === "reconstruct" ? 1 : 0,
+    );
+    expect(restart).toHaveBeenCalledTimes(
+      scenario === "success" || scenario === "reconstruct" ? 1 : 0,
+    );
+    expect(queued).toBe(scenario === "success" || scenario === "reconstruct" ? 1 : 0);
+    if (scenario === "success" || scenario === "reconstruct") {
+      expect(queue.list()[0]).toMatchObject({
+        status: "succeeded",
+        holdReleased: true,
+        detail: expect.stringContaining("Restarted automatically after"),
+      });
+      expect(queue.list()[0]?.standingManualApprovals).toBeUndefined();
+    }
+  },
+);
+
 test("the hold deadline covers any holder, including a start that never completes", async () => {
   const journal = new MemoryJournal();
   let now = Date.now();
@@ -663,7 +923,7 @@ test("the hold deadline covers any holder, including a start that never complete
     },
     () => now,
     {},
-    { fenced: false },
+    { fenced: false, afterHoldDeadline: "ask" },
   );
   const request = queue.request({ target: "host", reason: "Stuck start" }, "owner");
   queue.decide(request.id, request.revision, "finish-current-turns");
@@ -733,7 +993,7 @@ test.each([false, true])(
   },
 );
 
-test("recorded continuation on a target that lost support settles through legacy dispatch", async () => {
+test("recorded continuation on a target that lost support keeps the restart blocked", async () => {
   const journal = new MemoryJournal();
   let supported = true;
   const release = vi.fn(async () => true);
@@ -753,9 +1013,9 @@ test("recorded continuation on a target that lost support settles through legacy
   supported = false;
   await queue.drain();
   await queue.drain();
-  expect(restart).toHaveBeenCalledTimes(1);
-  expect(release).toHaveBeenCalledWith("host", request.id, "ready");
-  expect(queue.list()[0]).toMatchObject({ status: "succeeded", holdReleased: true });
+  expect(restart).not.toHaveBeenCalled();
+  expect(release).not.toHaveBeenCalled();
+  expect(queue.list()[0]).toMatchObject({ status: "approved", continuationCaptureRequested: true });
 });
 
 test("a terminal continuation awaiting release does not fence another target's restart", async () => {
@@ -2030,7 +2290,7 @@ test("source builds fail before activation, uncertain dispatch retains selection
     );
     await writeFile(
       path.join(root, "publish-instance-web.mjs"),
-      `import fs from 'node:fs/promises'; import path from 'node:path'; await fs.writeFile(path.join(process.argv[3], 'published'), 'yes');`,
+      `import fs from 'node:fs/promises'; import path from 'node:path'; await fs.writeFile(path.join(process.argv[3], 'published'), 'yes'); console.error('vorteo-command: Installed the vorteo command.');`,
     );
     const validPrepareScript = await readFile(prepareScript, "utf8");
     await writeFile(
@@ -2138,6 +2398,10 @@ test("source builds fail before activation, uncertain dispatch retains selection
     });
     const installed = (await dispatch())!;
     expect(installed.status).toBe("succeeded");
+    // The publisher of the new release reports the vorteo command it installed.
+    expect(installed.detail).toMatch(
+      /retention\.json in this job.s folder\. Installed the vorteo command\.$/,
+    );
     await hostReleaseRetentionIdle();
     expect(prune).not.toHaveBeenCalled();
     expect(installed.detail).toContain("cleanup is suspended");

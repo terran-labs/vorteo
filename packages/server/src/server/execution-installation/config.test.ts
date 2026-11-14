@@ -31,6 +31,19 @@ test("private operational telemetry is off by default and accepts only an explic
     ).toBe(false);
 });
 
+test("restart hold deadline policy defaults to auto and retains explicit ask", () => {
+  const source = config({ launchdService: "gui/501/local.vorteo.fixture.host" });
+  expect(InstallationConfigSchema.parse(source).restartHoldAfterDeadline ?? "auto").toBe("auto");
+  for (const policy of ["auto", "ask"])
+    expect(
+      InstallationConfigSchema.parse({ ...source, restartHoldAfterDeadline: policy })
+        .restartHoldAfterDeadline,
+    ).toBe(policy);
+  expect(
+    InstallationConfigSchema.safeParse({ ...source, restartHoldAfterDeadline: "force" }).success,
+  ).toBe(false);
+});
+
 function config(host: Record<string, unknown>) {
   return {
     public: {

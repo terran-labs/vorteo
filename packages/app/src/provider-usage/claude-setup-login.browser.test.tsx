@@ -148,6 +148,7 @@ test("a shared Codex account connects once and shows Dev synchronization", async
   await page.getByRole("button", { name: "Reconnect Codex" }).click();
   expect(start).toHaveBeenCalledOnce();
   expect(vi.mocked(useProviderLogin)).toHaveBeenCalledWith("dev", "codex-one", "codex");
+  expect(vi.mocked(useSharedInstallationSignIn)).toHaveBeenCalledWith("dev", "codex", "codex-one");
 });
 
 type Login = ReturnType<typeof useProviderLogin>;

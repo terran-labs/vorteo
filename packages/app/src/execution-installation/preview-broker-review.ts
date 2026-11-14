@@ -40,3 +40,20 @@ export function brokerReviewSummary(
     return "Preparation failed. Inspect the artifacts and prepare a new request.";
   return "Bind both preview channels to the reviewed APFS volume and directory identities. Configs change sequentially; partial failure requires inspection. Hostname and service state stay unchanged.";
 }
+
+type BrokerAdmission = PreviewBrokerDeploymentJob["plan"]["registrations"][number]["admission"];
+
+/** What approving a registration does to request handling, by its channel admission. */
+export function brokerAdmissionDescription(admission: BrokerAdmission): string {
+  return admission === "running"
+    ? "Admission: running. Its legacy channel identity verifies, so this broker restarts on the new consumer code and serves preview requests immediately."
+    : "Admission: refusing. Its legacy channel identity still refuses, so this broker keeps refusing requests until channel trust is approved separately.";
+}
+
+export function brokerDeploymentResumeDescription(
+  registrations: readonly { admission?: BrokerAdmission }[],
+): string {
+  return registrations.some((item) => item.admission === "running")
+    ? "Brokers marked running restart on the new consumer code and serve requests as soon as the maintenance window closes. Brokers marked refusing keep refusing until channel trust is approved."
+    : "Resume is allowed only while legacy channel identity still refuses request consumption.";
+}

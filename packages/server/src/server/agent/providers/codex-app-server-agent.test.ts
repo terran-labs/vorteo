@@ -10130,3 +10130,89 @@ describe("legacy empty additions", () => {
     expect(item.detail.unifiedDiff).toContain("diff --git a/second.txt b/second.txt");
   });
 });
+
+describe("Codex refresh refusal during session start", () => {
+  const refusal =
+    "Your access token could not be refreshed because your refresh token has expired.";
+
+  async function fixture(method: string, beforeRejection: (home: string) => void) {
+    const home = await mkdtemp(path.join(tmpdir(), "codex-rpc-refresh-refusal-"));
+    writeFileSync(
+      path.join(home, "auth.json"),
+      JSON.stringify({ tokens: { access_token: "synthetic-old" } }),
+    );
+    const appServer = createFakeCodexAppServer({
+      [method]: () => {
+        beforeRejection(home);
+        throw new Error(refusal);
+      },
+    });
+    const logger = createTestLogger();
+    const session = new CodexAppServerAgentSession(
+      createConfig(),
+      null,
+      logger,
+      async () => appServer.child,
+      { codexHome: home },
+    );
+    const { CodexQuotaProvider } =
+      await import("../../../services/quota-fetcher/providers/codex.js");
+    const usage = new CodexQuotaProvider({
+      logger,
+      codexHome: home,
+      strictCodexHome: true,
+      fetch: async () => Response.json({ rate_limit: { primary_window: { used_percent: 1 } } }),
+    });
+    return { home, session, usage, appServer };
+  }
+
+  const attempts = [
+    { method: "initialize", start: (session: CodexAppServerAgentSession) => session.connect() },
+    {
+      method: "thread/start",
+      start: (session: CodexAppServerAgentSession) => session.startTurn("synthetic prompt"),
+    },
+    {
+      method: "turn/start",
+      start: (session: CodexAppServerAgentSession) => session.startTurn("synthetic prompt"),
+    },
+  ];
+
+  test.each(attempts)(
+    "$method refresh refusal asks Settings to reconnect",
+    async ({ method, start }) => {
+      const { home, session, usage, appServer } = await fixture(method, () => {});
+      try {
+        await expect(start(session)).rejects.toThrow(refusal);
+        expect((await usage.fetchUsage()).authRecovery).toMatchObject({ method: "device_code" });
+        appServer.assertNoErrors();
+      } finally {
+        await session.close();
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.each(attempts)(
+    "$method refusal cannot reject a sign-in replaced during the RPC",
+    async ({ method, start }) => {
+      const { home, session, usage, appServer } = await fixture(method, (directory) => {
+        // A different size guarantees a new generation even on coarse timestamp filesystems.
+        writeFileSync(
+          path.join(directory, "auth.json"),
+          JSON.stringify({ tokens: { access_token: "synthetic-new-sign-in-after-reconnect" } }),
+        );
+      });
+      try {
+        await expect(start(session)).rejects.toThrow(refusal);
+        const report = await usage.fetchUsage();
+        expect(report.authRecovery).toBeUndefined();
+        expect(report.status).toBe("available");
+        appServer.assertNoErrors();
+      } finally {
+        await session.close();
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
+});
