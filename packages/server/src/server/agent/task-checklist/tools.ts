@@ -1,3 +1,4 @@
+import type { AgentTaskItem } from "@getpaseo/protocol/agent-types";
 import { z } from "zod";
 import type { AgentManager } from "../agent-manager.js";
 import type { PaseoToolDefinition, PaseoToolResult } from "../tools/types.js";
@@ -12,6 +13,23 @@ function result(value: unknown): PaseoToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value };
 }
 
+// Keep routine tool results bounded even when legacy tasks contain large metadata.
+function compactTask(task: AgentTaskItem) {
+  const { id, text, owner, blockedBy, progress, source } = task;
+  const status = task.status ?? (task.completed ? "completed" : "pending");
+  const description = task.description?.slice(0, 200);
+  const checks = task.checks
+    ? { total: task.checks.length, done: task.checks.filter((check) => check.done).length }
+    : undefined;
+  return { id, text, status, source, owner, blockedBy, progress, checks, description };
+}
+
+function summarize(tasks: AgentTaskItem[]) {
+  const counts = { pending: 0, in_progress: 0, review: 0, blocked: 0, completed: 0 };
+  for (const task of tasks) counts[task.status ?? (task.completed ? "completed" : "pending")]++;
+  return counts;
+}
+
 export function createChecklistTools(
   manager: Pick<AgentManager, "readChecklist" | "mutateChecklist">,
   callerAgentId?: string,
@@ -21,7 +39,7 @@ export function createChecklistTools(
       name: "get_checklist",
       title: "Read your thread checklist",
       description:
-        "Read this thread's persistent checklist, including native provider tasks. Omit id to list all tasks; supply id for full task details. A matching Vorteo ID takes precedence; supply source=provider to inspect a native task with the same ID. Completed tasks remain visible. blockedBy lists prerequisite IDs; owner is an assignment label, not permission to launch or message another agent.",
+        "Read this thread's persistent checklist, including native provider tasks. Omit id for compact tasks with descriptions limited to 200 characters, check counts and no metadata; supply id for full task details. A matching Vorteo ID takes precedence; supply source=provider to inspect a native task with the same ID. Completed tasks remain visible. blockedBy lists prerequisite IDs; owner is an assignment label, not permission to launch or message another agent.",
       inputSchema: ReadChecklistSchema,
       handler: async (input) => {
         if (!callerAgentId?.trim()) {
@@ -31,7 +49,7 @@ export function createChecklistTools(
         const tasks = manager
           .readChecklist(callerAgentId)
           .filter((item) => source === undefined || (item.source ?? "provider") === source);
-        if (id === undefined) return result({ tasks });
+        if (id === undefined) return result({ tasks: tasks.map(compactTask) });
         const task =
           tasks.find((item) => item.id === id && item.source === "vorteo") ??
           tasks.find((item) => item.id === id);
@@ -50,7 +68,7 @@ export function createChecklistTools(
       name: "update_checklist",
       title: "Update your thread checklist",
       description:
-        "Create, update, delete, or reorder persistent Vorteo tasks in this thread. These updates populate the bottom checklist card and workspace completion donut. Create pending tasks with text and description containing completion criteria. Write task titles, descriptions, activeForm and blocker explanations for the owner in concise, plain language. Explain what cannot proceed, why and what needs to happen next using recognizable names. Keep IDs, hashes, raw paths, tool names and logs in metadata, not visible prose. Use descriptive link labels for necessary actions or evidence. Set status=in_progress before starting authorized work and completed only after its acceptance checks pass. Keep future work pending. Agents may set or clear status=blocked at their discretion, with or without blockedBy dependencies. Record the concrete blocker and the condition that would clear it in description; the blocked badge displays that explanation. Reassess blocked tasks on continuation and when dependencies change; return to pending or in_progress when ready. Never override an explicit owner pause or a restart hold. Review means waiting for review or approval and remains incomplete. Keep its description short, for example: Waiting for your approval. Blocked is incomplete. If switching away from actionable work, set pending. Reconcile stale states when resuming; normally keep one active item per agent. Use update to set pending/in_progress/review/blocked/completed, reopen a task, or change its blockedBy, owner, metadata, or text. blockedBy replaces prerequisites; addBlockedBy and addBlocks add dependency edges. Metadata merges by key; a null value deletes a key. Complete prerequisites before starting dependent tasks. Empty owner clears assignment. Delete removes the task and dependency references; reorder requires every Vorteo task ID exactly once. Initially list tasks in planned execution order. Keep completed items first in completion order, then in_progress items, then review, pending and blocked items in intended execution order. Reorder at status changes. Provider-owned tasks must be edited through their native tool. Read before retries after an error. Use checks (up to 20 {text, done}) for verifiable acceptance criteria; checks replaces the whole list, so send every check each time. Passed checks set progress. Without checks, progress is a 0 to 100 estimate, rounded to 5 and capped at 90 until completed. Completion is refused while any check is undone; send progress null to stop tracking it. Checklist updates do not authorize implementation, delegation, deployment, or restarts.",
+        "Create, update, delete, or reorder persistent Vorteo tasks in this thread. Returns only affected compact tasks (no metadata), the deleted id, or reordered ids, plus summary counts by status. Metadata is limited to 8 KiB serialized per task; put larger records in the journal machineContext. These updates populate the bottom checklist card and workspace completion donut. Create pending tasks with text and description containing completion criteria. Write task titles, descriptions, activeForm and blocker explanations for the owner in concise, plain language. Explain what cannot proceed, why and what needs to happen next using recognizable names. Keep IDs, hashes, raw paths, tool names and logs in metadata, not visible prose. Use descriptive link labels for necessary actions or evidence. Set status=in_progress before starting authorized work and completed only after its acceptance checks pass. Keep future work pending. Agents may set or clear status=blocked at their discretion, with or without blockedBy dependencies. Record the concrete blocker and the condition that would clear it in description; the blocked badge displays that explanation. Reassess blocked tasks on continuation and when dependencies change; return to pending or in_progress when ready. Never override an explicit owner pause or a restart hold. Review means waiting for review or approval and remains incomplete. Keep its description short, for example: Waiting for your approval. Blocked is incomplete. If switching away from actionable work, set pending. Reconcile stale states when resuming; normally keep one active item per agent. Use update to set pending/in_progress/review/blocked/completed, reopen a task, or change its blockedBy, owner, metadata, or text. blockedBy replaces prerequisites; addBlockedBy and addBlocks add dependency edges. Metadata merges by key; a null value deletes a key. Complete prerequisites before starting dependent tasks. Empty owner clears assignment. Delete removes the task and dependency references; reorder requires every Vorteo task ID exactly once. Initially list tasks in planned execution order. Keep completed items first in completion order, then in_progress items, then review, pending and blocked items in intended execution order. Reorder at status changes. Provider-owned tasks must be edited through their native tool. Read before retries after an error. Use checks (up to 20 {text, done}) for verifiable acceptance criteria; checks replaces the whole list, so send every check each time. Passed checks set progress. Without checks, progress is a 0 to 100 estimate, rounded to 5 and capped at 90 until completed. Completion is refused while any check is undone; send progress null to stop tracking it. Checklist updates do not authorize implementation, delegation, deployment, or restarts.",
       inputSchema: UpdateChecklistSchema,
       handler: async (input) => {
         if (!callerAgentId?.trim()) {
@@ -58,7 +76,19 @@ export function createChecklistTools(
         }
         const { mutation } = UpdateChecklistSchema.parse(input);
         const tasks = await manager.mutateChecklist(callerAgentId, mutation);
-        return result({ tasks });
+        const summary = summarize(tasks);
+        if (mutation.operation === "delete") return result({ id: mutation.id, summary });
+        if (mutation.operation === "reorder") return result({ ids: mutation.ids, summary });
+        // The model appends new tasks and preserves existing IDs during updates.
+        if (mutation.operation === "create") {
+          return result({ task: compactTask(tasks[tasks.length - 1]), summary });
+        }
+        const affected = tasks.filter(
+          (task) =>
+            task.source === "vorteo" &&
+            (task.id === mutation.id || mutation.addBlocks?.includes(task.id ?? "")),
+        );
+        return result({ tasks: affected.map(compactTask), summary });
       },
     },
   ];
