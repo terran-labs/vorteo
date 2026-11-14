@@ -82,7 +82,10 @@ export function stepInterfaceZoom(value: number, direction: -1 | 1): number {
 
 /**
  * Maps the browser zoom keys to interface zoom. Returns the new zoom, or null
- * when the event is not a zoom key and should continue to other handlers.
+ * when the event is not a zoom key and should continue to other handlers. At
+ * either end of the range the key also falls through, so keyboard users can
+ * still reach browser zoom beyond 200% for reflow (WCAG 1.4.10); reset does the
+ * same at 100%.
  */
 export function interfaceZoomForKey(
   event: Pick<KeyboardEvent, "key" | "code" | "metaKey" | "ctrlKey" | "altKey">,
@@ -91,12 +94,17 @@ export function interfaceZoomForKey(
 ): number | null {
   if (event.altKey || !(isMac ? event.metaKey : event.ctrlKey)) return null;
   if (event.key === "=" || event.key === "+" || event.code === "NumpadAdd") {
-    return stepInterfaceZoom(zoom, 1);
+    const next = stepInterfaceZoom(zoom, 1);
+    return next === normalizeInterfaceZoom(zoom) ? null : next;
   }
   if (event.key === "-" || event.key === "_" || event.code === "NumpadSubtract") {
-    return stepInterfaceZoom(zoom, -1);
+    const next = stepInterfaceZoom(zoom, -1);
+    return next === normalizeInterfaceZoom(zoom) ? null : next;
   }
-  if (event.key === "0" || event.code === "Numpad0") return 100;
+  // At 100% there is nothing to reset here, so Cmd/Ctrl+0 resets the browser's own zoom.
+  if (event.key === "0" || event.code === "Numpad0") {
+    return normalizeInterfaceZoom(zoom) === 100 ? null : 100;
+  }
   return null;
 }
 

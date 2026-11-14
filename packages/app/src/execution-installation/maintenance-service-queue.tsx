@@ -76,13 +76,16 @@ function MaintenanceRequestRow({
   onCancel(job: MaintenanceServiceView): void;
 }) {
   const cancel = useCallback(() => onCancel(job), [onCancel, job]);
+  const target =
+    job.target === "maintenance-controller" ? "Maintenance controller" : "Recovery launcher";
   return (
     <View style={styles.request} testID={`maintenance-request-${job.id}`}>
       <View style={styles.heading}>
-        <Text style={settingsStyles.rowTitle}>
-          {job.target === "maintenance-controller" ? "Maintenance controller" : "Recovery launcher"}
-        </Text>
-        <StatusBadge label={labels[job.status]} variant={variants[job.status]} />
+        <Text style={settingsStyles.rowTitle}>{target}</Text>
+        {/* A polite live region, so a status change while the page is open is announced. */}
+        <View accessibilityLiveRegion="polite" aria-live="polite">
+          <StatusBadge label={labels[job.status]} variant={variants[job.status]} />
+        </View>
       </View>
       <Text style={styles.hint}>{job.reason}</Text>
       <Text style={styles.hint}>{job.detail}</Text>
@@ -97,7 +100,12 @@ function MaintenanceRequestRow({
       ) : null}
       {job.cancelable ? (
         <View style={styles.actions}>
-          <Button variant="outline" size="sm" disabled={disabled} onPress={cancel}>
+          <Button
+            variant="outline"
+            disabled={disabled}
+            onPress={cancel}
+            accessibilityLabel={`Cancel ${target} maintenance`}
+          >
             Cancel maintenance
           </Button>
         </View>

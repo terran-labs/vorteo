@@ -1,7 +1,7 @@
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import type { InstallationTypeStatus } from "@getpaseo/protocol/installation-type";
 import { OwnerAccessSourceContext, type OwnerAccess } from "@/execution-installation/owner-access";
 import { saveInstallationName } from "@/execution-installation/installation-name";
@@ -93,10 +93,14 @@ afterEach(async () => {
 test.each([390, 1280])("installation name and type save together at width %s", async (width) => {
   await page.viewport(width, 900);
   const container = await mountIdentity();
+  await page.getByTestId("settings-installation-advanced-toggle").click();
   await expect.poll(() => container.textContent).toContain("Stable");
   await page.getByRole("textbox", { name: "Installation name", exact: true }).fill("Workshop");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await userEvent.keyboard("{Enter}");
   await expect.poll(() => fixture.names).toEqual(["Workshop"]);
+  await expect
+    .poll(() => container.querySelector('[data-testid="settings-installation-name-input-saved"]'))
+    .not.toBeNull();
   await expect.poll(() => container.querySelector("input")?.value).toBe("Workshop");
   await page.getByTestId("settings-installation-type-trigger").click();
   await page.getByTestId("settings-installation-type-lab").click();
@@ -120,26 +124,36 @@ test("locked installation identity does not mount protected type reads or save c
 
 test("failed identity saves keep the draft and the last confirmed type", async () => {
   const container = await mountIdentity();
+  await page.getByTestId("settings-installation-advanced-toggle").click();
   await expect.poll(() => container.textContent).toContain("Stable");
   fixture.failName = true;
   await page
     .getByRole("textbox", { name: "Installation name", exact: true })
     .fill("Keep this draft");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await userEvent.keyboard("{Enter}");
   await expect
-    .poll(() => fixture.toast.error.mock.calls)
-    .toEqual([["Unable to save the installation name."]]);
+    .poll(() => container.querySelector('[data-testid="settings-installation-name-input-error"]'))
+    .not.toBeNull();
   expect(container.querySelector("input")?.value).toBe("Keep this draft");
   fixture.changeType.mockRejectedValueOnce(new Error("Type changed elsewhere"));
   await page.getByTestId("settings-installation-type-trigger").click();
   await page.getByTestId("settings-installation-type-lab").click();
   await expect
-    .poll(() => fixture.toast.error.mock.calls.at(-1))
-    .toEqual(["Type changed elsewhere"]);
+    .poll(() =>
+      container.querySelector('[data-testid="settings-installation-type"] [role="alert"]'),
+    )
+    .not.toBeNull();
   expect(
     container.querySelector('[data-testid="settings-installation-type-trigger"]')?.textContent,
   ).toBe("Stable");
   fixture.failName = false;
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect.poll(() => fixture.toast.show.mock.calls.at(-1)).toEqual(["Saved."]);
+  await page.getByRole("textbox", { name: "Installation name", exact: true }).click();
+  await userEvent.keyboard("{Enter}");
+  await expect.poll(() => fixture.names.at(-1)).toBe("Keep this draft");
+  await expect
+    .poll(() => container.querySelector('[data-testid="settings-installation-name-input-saved"]'))
+    .not.toBeNull();
+  expect(
+    container.querySelector('[data-testid="settings-installation-name-input-error"]'),
+  ).toBeNull();
 });

@@ -21,6 +21,9 @@ import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
+import { SettingsCard, SettingsRow } from "@/components/settings";
+import { SettingsListSummary, useCloseSettingsDialog } from "@/components/settings/list-summary";
+import { SettingsAdvancedGroup } from "@/components/settings/advanced-group";
 import { useHosts, useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useHostFeature } from "@/runtime/host-features";
 import { settingsStyles } from "@/styles/settings";
@@ -59,18 +62,16 @@ export function SkillLibraryContent() {
   const hosts = useHosts();
   // Bundled selection uses the same authority as the other host-backed Settings panes.
   const serverId = installationHostServerId(installation) ?? hosts[0]?.serverId;
-  const [inspect, setInspect] = useState(false);
-  const toggle = useCallback(() => setInspect((value) => !value), []);
   return (
     <View style={styles.content}>
       {serverId ? <AgentSkillsSection serverId={serverId} /> : null}
       {installation ? (
         <>
           <SharedSkillCatalog />
-          <Button variant="outline" onPress={toggle}>
-            {inspect ? "Hide environment inventory" : "Inspect environment inventory"}
-          </Button>
-          {inspect ? <EnvironmentInventory /> : null}
+          {/* Inspecting each environment's skills, with Copy audit and History, is rare. */}
+          <SettingsAdvancedGroup title="Environment inventory" testID="skill-inventory-advanced">
+            <EnvironmentInventory />
+          </SettingsAdvancedGroup>
         </>
       ) : (
         <EnvironmentInventory />
@@ -90,6 +91,7 @@ function EnvironmentInventory() {
           initialValue=""
           onChangeText={setSearch}
           placeholder="Name, provider, ownership, or environment"
+          accessibilityLabel="Filter skills"
         />
       </Field>
       <Field label="Project directory (optional)">
@@ -97,6 +99,7 @@ function EnvironmentInventory() {
           initialValue=""
           onChangeText={setCwd}
           placeholder="Absolute directory on the selected environments"
+          accessibilityLabel="Project directory"
         />
       </Field>
       {hosts.length === 0 ? (
@@ -205,14 +208,24 @@ function EnvironmentLibrary({
         copied={exportAudit.isSuccess}
         inventory={inventory}
       />
-      <View style={settingsStyles.card}>
-        {skills.map((skill) => (
-          <SkillRow key={skill.id} group={skill} onSelect={setDetail} />
-        ))}
-        {inventory && skills.length === 0 ? (
-          <Text style={styles.muted}>No matching skills in the inspected locations.</Text>
-        ) : null}
-      </View>
+      {/* A filter narrows the list in place; the whole inventory collapses into a summary. */}
+      <SettingsListSummary
+        title={`${label} skills`}
+        count={skills.length}
+        noun={INVENTORY_NOUN}
+        preview={skills.map((skill) => skill.primary.name)}
+        inlineLimit={inventoryInlineLimit(search)}
+        testID={`skill-inventory-${serverId}`}
+      >
+        <SettingsCard>
+          {skills.map((skill) => (
+            <SkillRow key={skill.id} group={skill} onSelect={setDetail} />
+          ))}
+          {inventory && skills.length === 0 ? (
+            <SettingsRow label="No matching skills in the inspected locations." />
+          ) : null}
+        </SettingsCard>
+      </SettingsListSummary>
       {inventory?.roots
         .filter((root) => root.status === "error")
         .map((root) => (
@@ -291,11 +304,14 @@ function ChangeResult({
   const isRejected = error !== null && !isConnectionError(error);
   return (
     <View style={styles.content}>
-      {pending ? <Text style={styles.muted}>Working...</Text> : null}
-      {isRejected ? <Text style={styles.error}>{toErrorMessage(error)}</Text> : null}
-      {result?.kind === "applied" ? (
-        <Text style={styles.muted}>Change applied. Recovery is available in History.</Text>
-      ) : null}
+      {/* One mounted live region, so progress, results and errors are announced. */}
+      <View {...LIVE_REGION}>
+        {pending ? <Text style={styles.muted}>Working...</Text> : null}
+        {isRejected ? <Text style={styles.error}>{toErrorMessage(error)}</Text> : null}
+        {result?.kind === "applied" ? (
+          <Text style={styles.muted}>Change applied. Recovery is available in History.</Text>
+        ) : null}
+      </View>
       {result?.kind === "preview" ? (
         <>
           <Text style={styles.text}>
@@ -563,6 +579,7 @@ function InstallSkill({
           <FormTextInput
             initialValue=""
             placeholder="owner/repository"
+            accessibilityLabel="GitHub repository"
             onChangeText={repositoryChanged}
           />
         </Field>
@@ -570,6 +587,7 @@ function InstallSkill({
           <FormTextInput
             initialValue=""
             placeholder="Full 40 character commit SHA"
+            accessibilityLabel="Commit"
             onChangeText={revisionChanged}
           />
         </Field>
@@ -577,6 +595,7 @@ function InstallSkill({
           <FormTextInput
             initialValue=""
             placeholder="skills/example"
+            accessibilityLabel="Skill directory"
             onChangeText={directoryChanged}
           />
         </Field>
@@ -654,6 +673,7 @@ function SkillHistory({
 
 const styles = StyleSheet.create((theme) => ({
   fixedActions: { width: "100%", gap: theme.spacing[2] },
+  startAligned: { alignSelf: "flex-start" },
   content: { gap: theme.spacing[4], padding: theme.spacing[4] },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: theme.spacing[2] },
   text: { color: theme.colors.foreground, fontSize: theme.fontSize.base },
@@ -662,7 +682,13 @@ const styles = StyleSheet.create((theme) => ({
 }));
 
 const libraryHeader = { title: "Skill library" };
+const LIVE_REGION = { accessibilityLiveRegion: "polite", "aria-live": "polite" } as const;
 const installHeader = { title: "Install a skill" };
+const INVENTORY_NOUN = { one: "skill", other: "skills" };
+/** A filter shows its matches in place; otherwise the inventory follows the usual list limit. */
+function inventoryInlineLimit(search: string): number | undefined {
+  return search.trim() ? Number.POSITIVE_INFINITY : undefined;
+}
 const historyHeader = { title: "Skill history" };
 const emptySkills: SkillInstallation[] = [];
 function SkillRow({
@@ -673,7 +699,12 @@ function SkillRow({
   onSelect: (skill: SkillInstallation) => void;
 }) {
   const skill = group.primary;
-  const select = useCallback(() => onSelect(skill), [onSelect, skill]);
+  // Details opens its own dialog, so a surrounding Manage dialog closes first.
+  const closeDialog = useCloseSettingsDialog();
+  const select = useCallback(() => {
+    closeDialog();
+    onSelect(skill);
+  }, [closeDialog, onSelect, skill]);
   return (
     <View style={settingsStyles.row}>
       <View style={settingsStyles.rowContent}>
@@ -683,7 +714,7 @@ function SkillRow({
           {skill.issues.length ? "Needs review" : "Inspected"}
         </Text>
       </View>
-      <Button variant="outline" onPress={select}>
+      <Button variant="outline" onPress={select} accessibilityLabel={`Details for ${skill.name}`}>
         Details
       </Button>
     </View>
@@ -713,7 +744,8 @@ function SkillLocationRow({
         variant="outline"
         disabled={selected || pending}
         onPress={select}
-        accessibilityLabel={`Inspect ${skill.providers.join(", ")} path`}
+        accessibilityLabel={`${selected ? "Selected" : "Inspect"} ${skill.providers.join(", ")} path`}
+        aria-selected={selected}
       >
         {selected ? "Selected" : "Inspect"}
       </Button>
@@ -774,7 +806,8 @@ function InventoryStatus({
   inventory: SkillInventory | null;
 }) {
   return (
-    <View>
+    // Mounted for the inventory's lifetime, so loading, copy results and errors are announced.
+    <View {...LIVE_REGION}>
       {!online ? (
         <Text style={styles.muted}>Offline. Any displayed inventory is the last observation.</Text>
       ) : null}

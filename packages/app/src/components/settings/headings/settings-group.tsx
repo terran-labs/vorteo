@@ -1,6 +1,7 @@
 import { useMemo, type ReactNode } from "react";
 import { Text, View, type StyleProp, type ViewStyle } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { SettingsHeadingLevel, useSettingsHeadingLevel, webHeadingLevel } from "./heading-level";
 import { SettingsInfoTip } from "./settings-info-tip";
 
 interface SettingsGroupProps {
@@ -26,12 +27,21 @@ export function SettingsGroup({
   style,
   children,
 }: SettingsGroupProps) {
+  // The group title takes the current level; its sections take the next.
+  const level = useSettingsHeadingLevel();
   const groupStyle = useMemo(() => [styles.group, style], [style]);
   return (
     <View style={groupStyle} testID={testID}>
       <View style={styles.header}>
         <View style={styles.titleRow}>
-          <Text style={styles.title}>{title}</Text>
+          <Text
+            {...webHeadingLevel(level)}
+            accessibilityRole="header"
+            style={styles.title}
+            numberOfLines={1}
+          >
+            {title}
+          </Text>
           {info ? (
             <SettingsInfoTip
               title={title}
@@ -42,28 +52,31 @@ export function SettingsGroup({
         </View>
         {trailing}
       </View>
-      {children}
+      <SettingsHeadingLevel.Provider value={level + 1}>{children}</SettingsHeadingLevel.Provider>
     </View>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
   group: {
-    marginBottom: theme.spacing[8],
+    marginBottom: theme.spacing[6],
   },
   header: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: theme.spacing[2],
-    marginBottom: theme.spacing[4],
+    marginBottom: theme.spacing[3],
   },
   titleRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
+    flexShrink: 1,
+    minWidth: 0,
   },
   title: {
+    flexShrink: 1,
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.normal,

@@ -171,11 +171,12 @@ const darkDiffColors = {
 // Hues are fixed per family across both themes: success 150, danger 27, warning 70.5,
 // merged 300.
 const lightStatusColors = {
-  // L=0.50, chroma 60% of gamut max
-  statusSuccess: "#3e704a",
-  statusDanger: "#9d433b",
-  statusWarning: "#7b5d39",
-  statusMerged: "#7347af",
+  // The L=0.50, 60%-chroma set (#3e704a, #9d433b, #7b5d39, #7347af) darkened by the same
+  // factor, so badge text on its own 12% tint clears 4.5:1 on every light surface (was 3.83).
+  statusSuccess: "#346340",
+  statusDanger: "#8f3a33",
+  statusWarning: "#6c5131",
+  statusMerged: "#6640a0",
 };
 
 const darkStatusColors = {
@@ -683,7 +684,9 @@ const APPEARANCE_PALETTES: Record<AppearanceId, AppearancePalette> = {
     muted: "#5f5f9c",
     border: "rgba(0,0,40,0.1)",
     strong: "rgba(0,0,40,0.22)",
-    accent: "#2997ff",
+    // Darker than the dark theme's #2997ff so accent text reaches 4.5:1 on every light surface
+    // (4.83:1 on root); white text on it is 6.20:1. Was #2997ff at 2.35:1.
+    accent: "#0a5fbd",
     bright: "#1672c8",
   },
   "starship-dark": {
@@ -706,7 +709,8 @@ const APPEARANCE_PALETTES: Record<AppearanceId, AppearancePalette> = {
     raised: "#faf2e4",
     text: "#2a1f17",
     secondary: "#5d4634",
-    muted: "#85684b",
+    // Extra-muted text clears 4.5:1 on every surface (was #85684b, 3.94:1 on deep).
+    muted: "#795e44",
     border: "rgba(136,106,74,0.18)",
     strong: "rgba(132,100,68,0.28)",
     accent: "#86684a",
@@ -719,7 +723,8 @@ const APPEARANCE_PALETTES: Record<AppearanceId, AppearancePalette> = {
     raised: "#493c30",
     text: "#f3e9da",
     secondary: "#d0b89c",
-    muted: "#a8967f",
+    // Extra-muted text clears 4.5:1 on every surface (was #a8967f, 3.72:1 on raised).
+    muted: "#b8a68f",
     border: "rgba(188,157,108,0.28)",
     strong: "rgba(176,138,72,0.34)",
     accent: "#b08a48",
@@ -732,7 +737,8 @@ const APPEARANCE_PALETTES: Record<AppearanceId, AppearancePalette> = {
     raised: "#38221c",
     text: "#f7ede9",
     secondary: "#d5b4a6",
-    muted: "#ab8474",
+    // Extra-muted text clears 4.5:1 on every surface (was #ab8474, 4.45:1 on raised).
+    muted: "#b08979",
     border: "rgba(193,90,46,0.24)",
     strong: "rgba(193,90,46,0.32)",
     accent: "#c15a2e",
@@ -776,7 +782,8 @@ function buildAppearanceTheme(id: AppearanceId) {
     borderAccent: p.strong,
     accent: p.accent,
     accentBright: p.bright,
-    accentForeground: id === "scriptorium" ? "#ffffff" : "#000000",
+    // Starship light's darker accent carries white text, like Scriptorium's.
+    accentForeground: id === "scriptorium" || id === "starship-light" ? "#ffffff" : "#000000",
     primary: p.text,
     primaryForeground: p.root,
     destructive: light ? "#b3261e" : "#ff7168",
@@ -814,10 +821,13 @@ export function appearanceStatusColors(light: boolean) {
   const status = light
     ? lightStatusColors
     : {
-        statusSuccess: "#84bd90",
-        statusDanger: "#de9890",
-        statusWarning: "#caa77d",
-        statusMerged: "#b6a2dc",
+        // A further 20% white blend over the lifted family (#84bd90, #de9890, #caa77d,
+        // #b6a2dc), so badge text on its 16% tint clears 4.5:1 on every card surface
+        // (Midas danger was 3.99, now 4.61).
+        statusSuccess: "#9dcaa6",
+        statusDanger: "#e5ada6",
+        statusWarning: "#d5b997",
+        statusMerged: "#c5b5e3",
       };
   return {
     ...status,

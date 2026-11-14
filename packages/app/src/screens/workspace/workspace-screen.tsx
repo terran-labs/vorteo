@@ -1878,12 +1878,11 @@ function WorkspaceScreenContent({
     });
   });
 
-  const handleCreateTerminalWithProfile = useCallback(
-    (profile: TerminalProfile) => {
-      createTerminal({ profile, destination: { kind: "open" } });
-    },
-    [createTerminal],
-  );
+  // Stable like handleCreateTerminal: createTerminal is rebuilt on every render, and a new
+  // identity here rebuilds the workspace header and rerenders the main pane mid-drag.
+  const handleCreateTerminalWithProfile = useStableEvent((profile: TerminalProfile) => {
+    createTerminal({ profile, destination: { kind: "open" } });
+  });
 
   const handleCreateBrowserTab = useCallback(
     (input?: { paneId?: string }) => {

@@ -20,6 +20,7 @@ interface SavedSettingsHostInput {
 const OLD_SETTINGS_PAGES = [
   "general",
   "interface",
+  // Retired section addresses: Privacy now opens in Interface.
   "privacy",
   "system",
   "chat",
@@ -62,9 +63,37 @@ export async function openSettingsSection(page: Page, section: SettingsSection):
   await revealSettingsLocation(page, section);
 }
 
+/**
+ * Panes whose controls sit in a collapsed Advanced group, keyed to that group's test ID. Some
+ * groups render in a sibling pane, so the helper opens the group itself rather than the pane.
+ */
+const ADVANCED_GROUPS: Record<string, string> = {
+  "general.hosts": "settings-system-advanced",
+  "maintenance.installation": "settings-system-advanced",
+  "agents.metadata": "settings-agents-advanced",
+  "agents.permissions": "settings-interface-advanced",
+  "agents.browserData": "settings-interface-advanced",
+};
+
+/** An open environment Edit dialog, desktop card or compact sheet alike. */
+function environmentDialogs(page: Page) {
+  return page
+    .getByRole("dialog")
+    .filter({ has: page.locator('[data-testid^="settings-environment-"]') });
+}
+
+/** Closes an environment's settings dialog, which covers the page and its sidebar. */
+export async function closeSettingsDialog(page: Page): Promise<void> {
+  const dialog = environmentDialogs(page).filter({ visible: true });
+  if (!(await dialog.count())) return;
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+}
+
 /** Scrolls the settings page to the pane that an old settings page name now opens. */
 export async function revealSettingsLocation(page: Page, slug: string): Promise<void> {
   const target = resolveSettingsTarget(slug);
+  await closeSettingsDialog(page);
   if (
     (page.viewportSize()?.width ?? 1280) < 768 &&
     !(await page.getByTestId("settings-sidebar").isVisible())
@@ -80,6 +109,14 @@ export async function revealSettingsLocation(page: Page, slug: string): Promise<
     .filter({ visible: true })
     .first()
     .click();
+  const advancedGroup = target.pane ? ADVANCED_GROUPS[target.pane] : undefined;
+  if (advancedGroup) {
+    // A sidebar jump lands on the section; open the right Advanced group as a reader would.
+    const toggle = page.getByTestId(`${advancedGroup}-toggle`).filter({ visible: true }).first();
+    await toggle.scrollIntoViewIfNeeded();
+    if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+    return;
+  }
   const anchor = page
     .getByTestId(
       target.pane ? `settings-pane-${target.pane}` : `settings-page-section-${target.section}`,
@@ -207,8 +244,16 @@ export async function expectSettingsDetailScrollOffset(page: Page, offset: numbe
 export async function openSettingsHost(page: Page, serverId: string): Promise<void> {
   await openSettingsHostSection(page, serverId, "connections");
   await expect(
-    page.getByTestId(`settings-environment-${serverId}`).getByTestId("host-page-connections-card"),
+    settingsHostConnections(page, serverId).getByTestId("host-page-connections-card"),
   ).toBeVisible();
+}
+
+/** One host's connections, in the Connections group under System (not in its Edit dialog). */
+export function settingsHostConnections(page: Page, serverId: string) {
+  return page
+    .getByTestId(`settings-environment-${serverId}`)
+    .filter({ has: page.getByTestId("host-page-connections-card") })
+    .first();
 }
 
 export async function openSettingsHostSection(
@@ -218,22 +263,38 @@ export async function openSettingsHostSection(
 ): Promise<void> {
   await revealSettingsLocation(page, section === "host" ? "environments" : section);
   await expect(page.getByTestId("settings-host-picker")).toHaveCount(0);
-  if (section === "host" || section === "connections") {
-    await selectSettingsEnvironment(page, serverId);
-  }
+  // Connections sit on the page itself; only the host overview lives in the Edit dialog.
+  if (section === "host") await openSettingsEnvironment(page, serverId);
 }
 
 /**
- * Environments shows one host at a time. With more than one host, tabs under the heading
- * choose which; a single host has no tabs.
+ * Environments in System lists one row per host. Edit opens that host's settings in a dialog,
+ * which stays open for the caller; navigation helpers close it first.
  */
-async function selectSettingsEnvironment(page: Page, serverId: string): Promise<void> {
-  const tab = page.getByTestId(`settings-environment-tab-${serverId}`);
-  if ((await page.getByTestId("settings-environment-tabs").count()) > 0) {
-    await tab.click();
-  }
-  // The section's test ID also marks its heading parts, so match the outermost element.
-  await expect(page.getByTestId(`settings-environment-${serverId}`).first()).toBeVisible();
+export async function openSettingsEnvironment(page: Page, serverId: string): Promise<void> {
+  // Connections also marks its per-host cards with this id, so look inside the dialog only.
+  const details = settingsEnvironmentDetails(page, serverId);
+  if (await details.isVisible()) return;
+  await closeSettingsDialog(page);
+  await page.getByTestId(`settings-environment-row-${serverId}-open`).click();
+  await expect(details).toBeVisible();
+}
+
+/**
+ * Opens an environment's dialog and its collapsed exceptions group, where per-environment
+ * availability switches for shared resources live.
+ */
+export async function openSettingsEnvironmentExceptions(page: Page, serverId: string) {
+  await openSettingsEnvironment(page, serverId);
+  const toggle = page.getByTestId(`settings-environment-exceptions-${serverId}-toggle`);
+  if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+  return settingsEnvironmentDetails(page, serverId);
+}
+
+/** One environment's full settings, inside its Edit dialog. */
+export function settingsEnvironmentDetails(page: Page, serverId: string) {
+  // The compact sheet puts the row's test ID on its header, so scope by the dialog role.
+  return page.getByRole("dialog").getByTestId(`settings-environment-${serverId}`).first();
 }
 
 /** A section or pane title is visible in the settings page, or a drill-in page's title. */
@@ -248,7 +309,9 @@ export async function expectSettingsHeader(page: Page, title: string): Promise<v
 
 export async function openAddHostFlow(page: Page): Promise<void> {
   if (!(await page.getByTestId("settings-add-host").isVisible())) {
-    const section = page.getByTestId("settings-section-environments");
+    await closeSettingsDialog(page);
+    // Connections lives in System now.
+    const section = page.getByTestId("settings-section-system");
     if (!(await section.isVisible())) await goBackInSettings(page);
     await revealSettingsLocation(page, "connections");
   }
@@ -375,7 +438,25 @@ export async function closeCompactSettings(page: Page): Promise<void> {
   await expect(page).not.toHaveURL(/\/settings(\/|$)/);
 }
 
-export async function removeCurrentHostFromSettings(page: Page): Promise<void> {
+/**
+ * Opens the collapsed Advanced group in a host's Edit dialog, where Remove host waits under its
+ * Danger zone heading. The dialog must already be open.
+ */
+export async function openHostAdvanced(page: Page, serverId: string): Promise<void> {
+  const toggle = page
+    .getByTestId(`host-page-advanced-${serverId}-toggle`)
+    .filter({ visible: true })
+    .first();
+  await toggle.scrollIntoViewIfNeeded();
+  if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+}
+
+export async function removeCurrentHostFromSettings(
+  page: Page,
+  serverId = getServerId(),
+): Promise<void> {
+  await openHostAdvanced(page, serverId);
   await page.getByTestId("host-page-remove-host-button").click();
   await expect(page.getByTestId("remove-host-confirm-modal")).toBeVisible();
   await page.getByTestId("remove-host-confirm").click();
@@ -387,6 +468,8 @@ export async function expectSettingsBackButton(page: Page): Promise<void> {
 }
 
 export async function clickSettingsBackToWorkspace(page: Page): Promise<void> {
+  // Adding a host opens its Edit dialog, whose backdrop covers the sidebar's Back button.
+  await closeSettingsDialog(page);
   const desktopBack = page.getByTestId("settings-back-to-workspace");
   if (await desktopBack.isVisible()) {
     await desktopBack.click();
@@ -397,11 +480,11 @@ export async function clickSettingsBackToWorkspace(page: Page): Promise<void> {
 }
 
 /**
- * Connections lives in the Environments section. Its own address is kept when
- * opened directly; compact navigation opens the section's address.
+ * Connections lives in System. Its own address is kept when opened directly; compact
+ * navigation and the scroll position can show the section's address.
  */
 export async function expectHostSettingsUrl(page: Page, _serverId: string): Promise<void> {
-  await expect(page).toHaveURL(/\/settings\/(connections|environments)$/);
+  await expect(page).toHaveURL(/\/settings\/(connections|environments|system)$/);
 }
 
 export async function verifyLegacyHostSettingsRedirect(page: Page): Promise<void> {
@@ -473,7 +556,8 @@ export async function expectAboutContent(page: Page): Promise<void> {
 }
 
 export async function expectGeneralContent(page: Page): Promise<void> {
-  await expect(page.getByTestId("settings-pane-general.attention")).toHaveCount(1);
+  // What needs attention moved from General to the top of System.
+  await expect(page.getByTestId("settings-pane-system.health")).toHaveCount(1);
   await expect(page.getByTestId("settings-pane-chat.sending")).toHaveCount(1);
   await expect(page.getByTestId("settings-pane-general.sending")).toHaveCount(0);
 }
@@ -520,11 +604,7 @@ export async function expectHostInjectMcpCard(page: Page): Promise<void> {
  * the resume-after-restart and idle-release switches for the selected host.
  */
 export async function openHostRestartBehavior(page: Page, serverId: string): Promise<void> {
-  const selected = page
-    .getByTestId(`settings-environment-${serverId}`)
-    .filter({ visible: true })
-    .first();
-  if (!(await selected.isVisible())) await selectSettingsHost(page, serverId);
+  await selectSettingsHost(page, serverId);
   await revealSettingsLocation(page, "system.overview");
   await expect(page.getByTestId("system-restart-behavior")).toBeVisible();
 }
@@ -559,7 +639,7 @@ export async function openHostSection(
       await openSettings(page);
     }
     await openSettingsHostSection(page, serverId, "host");
-    // Environments renders only the selected host, so its identity badges are unique.
+    // The environment dialog renders only that host, so its identity badges are unique.
     await expect(page.getByTestId("host-page-identity")).toBeVisible();
     return;
   }
@@ -624,20 +704,14 @@ export async function expectRetiredSidebarSectionsAbsent(page: Page): Promise<vo
   await expect(sidebar).toBeVisible();
 
   // One entry per section; old pages are panes inside them.
-  for (const id of [
-    "interface",
-    "privacy",
-    "general",
-    "providers",
-    "agents",
-    "environments",
-    "projects",
-    "system",
-  ]) {
+  for (const id of ["interface", "general", "providers", "agents", "projects", "system"]) {
     await expect(sidebar.getByTestId(`settings-section-${id}`)).toBeVisible();
   }
   await expect(sidebar.getByRole("button", { name: "Daemon", exact: true })).toHaveCount(0);
   for (const retired of [
+    // Privacy folded into Interface and Environments into System.
+    "privacy",
+    "environments",
     "connections",
     "accounts",
     "maintenance",
@@ -659,7 +733,7 @@ export async function expectHostPageVisible(page: Page, _serverId: string): Prom
 export async function expectLocalHostEntryFirst(page: Page, _serverId: string): Promise<void> {
   await expect(page.getByTestId("settings-sidebar")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("settings-host-picker")).toHaveCount(0);
-  await expect(page.getByTestId("settings-section-environments")).toBeVisible();
+  await expect(page.getByTestId("settings-section-system")).toBeVisible();
 }
 
 export async function expectHostRejectedWithReAddGuidance(
@@ -681,6 +755,7 @@ export async function expectNoHostPasswordControls(page: Page): Promise<void> {
 }
 
 export async function removeHostFromHostPage(page: Page, serverId: string): Promise<void> {
+  await openHostAdvanced(page, serverId);
   await page.getByTestId("host-page-remove-host-button").click();
   await page.getByTestId("remove-host-confirm").click();
   await expect(page).not.toHaveURL(new RegExp(`/settings/hosts/${serverId}`));
@@ -729,17 +804,12 @@ export async function expectRestartRecoveryPrompt(page: Page, prompt: string) {
   await expect(sheet).toHaveCount(0);
 }
 
-/** Select the environment tab without reintroducing the retired global host picker. */
+/**
+ * Chooses the host System shows, without reintroducing the retired global host picker: opening
+ * an environment's dialog selects it, and the choice outlives the dialog.
+ */
 export async function selectSettingsHost(page: Page, serverId: string): Promise<void> {
   await revealSettingsLocation(page, "environments");
-  await selectSettingsEnvironment(page, serverId);
-}
-/** Read the selected environment tab, whose choice survives section navigation. */
-export async function expectSettingsHostPickerLabel(page: Page, label: string): Promise<void> {
-  await revealSettingsLocation(page, "environments");
-  await expect(page.getByRole("tab", { name: label, exact: true })).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
-  await expect(page.getByTestId("settings-host-picker")).toHaveCount(0);
+  await openSettingsEnvironment(page, serverId);
+  await closeSettingsDialog(page);
 }

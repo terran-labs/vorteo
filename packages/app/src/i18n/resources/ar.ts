@@ -2336,6 +2336,8 @@ export const ar: TranslationResources = {
     title: "إعدادات",
     loading: "جارٍ تحميل الإعدادات...",
     groups: {
+      thisDevice: "هذا الجهاز",
+      vorteo: "Vorteo",
       app: "برنامج",
       host: "Host",
     },

@@ -8,6 +8,7 @@ import type {
   InstallationPlugin,
   ResolvedPluginSource,
 } from "@getpaseo/protocol/plugin-installation";
+import { formatPluginIdentity } from "@getpaseo/protocol/plugin-source-reference";
 import { isConnectionError, toErrorMessage } from "@/utils/error-messages";
 
 interface SharedPluginFormPorts {
@@ -174,4 +175,56 @@ function reviewDirectory(id: string): PluginSourceReview {
       "Enter a plugin ID starting with a lowercase letter, followed by lowercase letters, numbers or hyphens.",
     );
   return { kind: "directory", id: parsed.data };
+}
+
+export type SharedPluginFormModel = ReturnType<typeof openSharedPluginForm>;
+export interface OpenSharedPluginForm {
+  plugin: InstallationPlugin | null;
+  model: SharedPluginFormModel;
+  /** Points a retained form at the currently mounted page's hooks. */
+  updatePorts(ports: Partial<SharedPluginFormPorts>): void;
+}
+
+/**
+ * The open form lives outside the owner gate. When owner access expires, the gate unmounts the
+ * Plugins page; the draft and its review must survive until access returns and the owner saves or
+ * closes it. Saving still sends the ordinary settings request, which the server authorizes.
+ */
+let openForm: OpenSharedPluginForm | null = null;
+
+export function retainedSharedPluginForm(): OpenSharedPluginForm | null {
+  return openForm;
+}
+
+export function startSharedPluginForm(
+  plugin: InstallationPlugin | null,
+  ports: SharedPluginFormPorts,
+): OpenSharedPluginForm {
+  openForm?.model.close();
+  const live = { ...ports };
+  const source = plugin?.source;
+  const model = openSharedPluginForm(
+    {
+      resolve: (input) => live.resolve(input),
+      save: (update) => live.save(update),
+      reportConnectionLost: (error) => live.reportConnectionLost(error),
+    },
+    {
+      source: source && source.kind !== "directory" ? formatPluginIdentity(source.identity) : "",
+      updateId: plugin?.id,
+    },
+  );
+  openForm = {
+    plugin,
+    model,
+    updatePorts: (next) => {
+      Object.assign(live, next);
+    },
+  };
+  return openForm;
+}
+
+export function closeSharedPluginForm(form: OpenSharedPluginForm): void {
+  form.model.close();
+  if (openForm === form) openForm = null;
 }

@@ -7,6 +7,7 @@ import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import type { AgentProfile } from "@getpaseo/protocol/messages";
 import { Button } from "@/components/ui/button";
 import { settingsStyles } from "@/styles/settings";
+import { isWeb } from "@/constants/platform";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { AgentProfileGlyph } from "../internal/agent-profile-glyph";
 import { buildAgentProfileTags } from "../internal/profile-summary";
@@ -68,10 +69,10 @@ export function AgentProfileRow({
   const handleRemove = useCallback(() => onRemove(profile.id), [onRemove, profile.id]);
   const handleMoveUp = useCallback(() => onMoveUp(profile.id), [onMoveUp, profile.id]);
   const handleMoveDown = useCallback(() => onMoveDown(profile.id), [onMoveDown, profile.id]);
-  const handleMakeDefault = useCallback(
-    () => onMakeDefault?.(profile.id),
-    [onMakeDefault, profile.id],
-  );
+  // The default stays focusable, so keyboard users can find it; pressing it again does nothing.
+  const handleMakeDefault = useCallback(() => {
+    if (!isDefault) onMakeDefault?.(profile.id);
+  }, [isDefault, onMakeDefault, profile.id]);
 
   const formatFeatureCount = useCallback(
     (count: number) =>
@@ -86,6 +87,12 @@ export function AgentProfileRow({
   );
   const summary = useMemo(() => tags.map((tag) => tag.label).join(" · "), [tags]);
 
+  const defaultState = useMemo(() => ({ selected: isDefault }), [isDefault]);
+  // React Native Web drops `accessibilityState.selected`; the star is a toggle, so say pressed.
+  const defaultWebProps = useMemo(
+    () => (isWeb ? ({ "aria-pressed": isDefault } as const) : null),
+    [isDefault],
+  );
   const rowStyle = useMemo(
     () => [settingsStyles.row, isFirst ? null : settingsStyles.rowBorder, styles.row],
     [isFirst],
@@ -124,12 +131,17 @@ export function AgentProfileRow({
       <View style={styles.rowActions}>
         {onMakeDefault ? (
           <Button
+            {...defaultWebProps}
             variant="ghost"
-            size="sm"
             leftIcon={isDefault ? defaultIcon : makeDefaultIcon}
             onPress={handleMakeDefault}
-            disabled={disabled || isDefault}
-            accessibilityLabel={isDefault ? "Default profile" : "Make default profile"}
+            disabled={disabled}
+            accessibilityLabel={
+              isDefault
+                ? `${profile.name} is the default profile`
+                : `Make ${profile.name} the default`
+            }
+            accessibilityState={defaultState}
             testID={`agent-profile-default-${profile.id}`}
           />
         ) : null}
@@ -138,7 +150,7 @@ export function AgentProfileRow({
           leftIcon={moveUpIcon}
           onPress={handleMoveUp}
           disabled={disabled || isFirst}
-          accessibilityLabel={t("settings.host.agentProfiles.moveUp")}
+          accessibilityLabel={`${t("settings.host.agentProfiles.moveUp")}: ${profile.name}`}
           testID={`agent-profile-move-up-${profile.id}`}
         />
         <Button
@@ -146,7 +158,7 @@ export function AgentProfileRow({
           leftIcon={moveDownIcon}
           onPress={handleMoveDown}
           disabled={disabled || isLast}
-          accessibilityLabel={t("settings.host.agentProfiles.moveDown")}
+          accessibilityLabel={`${t("settings.host.agentProfiles.moveDown")}: ${profile.name}`}
           testID={`agent-profile-move-down-${profile.id}`}
         />
         <Button
@@ -154,7 +166,7 @@ export function AgentProfileRow({
           leftIcon={editIcon}
           onPress={handleEdit}
           disabled={disabled}
-          accessibilityLabel={t("settings.host.agentProfiles.editProfile")}
+          accessibilityLabel={`${t("settings.host.agentProfiles.editProfile")}: ${profile.name}`}
           testID={`agent-profile-edit-${profile.id}`}
         />
         <Button
@@ -162,7 +174,7 @@ export function AgentProfileRow({
           leftIcon={removeIcon}
           onPress={handleRemove}
           disabled={disabled}
-          accessibilityLabel={t("settings.host.agentProfiles.remove")}
+          accessibilityLabel={`${t("settings.host.agentProfiles.remove")}: ${profile.name}`}
           testID={`agent-profile-remove-${profile.id}`}
         />
       </View>
@@ -173,9 +185,7 @@ export function AgentProfileRow({
 const styles = StyleSheet.create((theme) => ({
   row: {
     gap: theme.spacing[2],
-    minHeight: 56,
     alignItems: "center",
-    paddingVertical: theme.spacing[3],
   },
   rowMain: {
     flex: 1,

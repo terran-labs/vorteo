@@ -2314,6 +2314,8 @@ export const ko: TranslationResources = {
     title: "설정",
     loading: "설정 불러오는 중...",
     groups: {
+      thisDevice: "이 기기",
+      vorteo: "Vorteo",
       app: "앱",
       host: "호스트",
     },

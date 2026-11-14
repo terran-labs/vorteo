@@ -243,10 +243,7 @@ export async function closeUsageOptions(page: Page): Promise<void> {
 export async function showUsageAs(page: Page, displayAs: "used" | "remaining") {
   await openUsageOptions(page);
   await visible(page, `usage-display-${displayAs}`).click();
-  await expect(visible(page, `usage-display-${displayAs}`)).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
+  await expect(visible(page, `usage-display-${displayAs}`)).toHaveAttribute("aria-checked", "true");
   await closeUsageOptions(page);
 }
 

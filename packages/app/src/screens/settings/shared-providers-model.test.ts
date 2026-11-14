@@ -1,8 +1,11 @@
 import { expect, test } from "vitest";
 import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
 import {
+  awaitingFirstConnection,
+  connectionsNeedingSignIn,
   groupInstallationProviders,
   providersNeedingAttention,
+  type SignInSource,
   type ProviderDetectionSource,
 } from "./shared-providers-model";
 
@@ -182,4 +185,69 @@ test("plugin family names do not depend on account order", () => {
   ]) {
     expect(groupInstallationProviders(definitions)[0].name).toBe("Custom CLI");
   }
+});
+
+test("reconnect walks expired connections on Host and leaves first connections to their row", () => {
+  const families = groupInstallationProviders(
+    [
+      {
+        id: "account/work",
+        providerType: "codex",
+        accountId: "work",
+        bindings: { host: "codex-work", dev: "codex-work" },
+        policy: { label: "Work", enabled: true },
+      },
+      {
+        id: "account/home",
+        providerType: "codex",
+        accountId: "home",
+        bindings: { host: "codex-home" },
+        policy: { label: "Home", enabled: true },
+      },
+      {
+        id: "claude/default",
+        providerType: "claude",
+        bindings: { host: "claude" },
+        policy: { enabled: true },
+      },
+    ],
+    "active",
+    [{ serverId: "host", kind: "host", entries: [{ provider: "codex-work", status: "ready" }] }],
+  );
+  const sources: SignInSource[] = [
+    {
+      serverId: "dev",
+      kind: "container",
+      providers: { "codex-work": { extends: "codex" } } as SignInSource["providers"],
+      entries: [],
+      usage: [],
+    },
+    {
+      serverId: "host",
+      kind: "host",
+      providers: {
+        "codex-work": { extends: "codex" },
+        "codex-home": { extends: "codex" },
+        claude: {},
+      } as SignInSource["providers"],
+      entries: [{ provider: "claude", status: "error", enabled: true }],
+      usage: [
+        {
+          providerId: "codex-work",
+          authRecovery: { method: "device_code", instructions: "" },
+        },
+        { providerId: "codex-home", status: "available" },
+      ] as unknown as SignInSource["usage"],
+    },
+  ];
+  // Sign-in runs on Host even when Dev is listed first.
+  expect(connectionsNeedingSignIn(families, sources)).toMatchObject([
+    { accountId: "account/work", serverId: "host", action: "Reconnect", name: "Work" },
+    { accountId: "default/claude", action: "Connect" },
+  ]);
+  const claude = families.find((family) => family.id === "claude")!;
+  claude.installed = true;
+  expect(awaitingFirstConnection(claude, sources)).toMatchObject({ action: "Connect" });
+  // Without a snapshot yet, a Claude connection is not called signed out.
+  expect(awaitingFirstConnection(claude, [{ ...sources[1]!, entries: undefined }])).toBeNull();
 });

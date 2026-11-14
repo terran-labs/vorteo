@@ -25,17 +25,26 @@ import { HighlightedText } from "@/components/ui/highlighted-text";
 import { FLOATING_PANEL_RADIUS, FLOATING_PANEL_CONTROL_HEIGHT } from "@/styles/floating-panel";
 import { SearchField } from "@/components/ui/search-field";
 import { isWeb } from "@/constants/platform";
-import type {
-  SettingScope,
-  SettingsPaneDefinition,
-  SettingsSectionId,
+import {
+  SettingsRevealContext,
+  type SettingsRevealState,
+} from "@/components/settings/reveal-context";
+import { SettingsRuleHeading } from "@/components/settings/headings/settings-rule-heading";
+import {
+  getSection,
+  type SettingsGroupName,
+  type SettingScope,
+  type SettingsPaneDefinition,
+  type SettingsSectionId,
 } from "@/settings-catalog/catalog";
 import type { SettingsSearchResult } from "@/settings-catalog/search";
 import {
   findSettingRow,
+  findSettingRowInDialogs,
   flashSettingRow,
   markSettingRows,
   rowOffsetWithin,
+  settingsElementById,
   settingsPaneDomId,
 } from "@/settings-catalog/row-highlight";
 
@@ -66,7 +75,11 @@ export interface SettingsScrollRequest {
   animated: boolean;
   /** A row's DOM id inside the pane, for items a deep link opens in place. Web only. */
   anchorId?: string | null;
+  /** Moves keyboard focus to the target once it is in view, such as the System health list. */
+  focus?: boolean;
   nonce: number;
+  /** When the request was made; disclosures that mount much later ignore it. */
+  issuedAt?: number;
 }
 
 interface SettingsScrollPageProps {
@@ -83,6 +96,13 @@ interface SettingsScrollPageProps {
   /** Shows the search field above the sections, for compact layouts. */
   search?: SettingsSearchControls;
   bottomInset?: number;
+  /** Translated name for a top-level group heading. Defaults to the catalog's English name. */
+  groupLabel?: (group: SettingsGroupName) => string;
+  /**
+   * Panes that render another pane's rows, such as a section's shared Advanced group, and so
+   * must stay visible when those rows match a search. Given the matching panes and entry ids.
+   */
+  searchHostPanes?: (panes: ReadonlySet<string>, entryIds: ReadonlySet<string>) => Set<string>;
 }
 
 const SCOPE_LABELS: Record<SettingScope, string> = {
@@ -98,6 +118,8 @@ const JUMP_INSET = 16;
 /** A programmatic scroll is over once no scroll event arrives for this long. */
 const SCROLL_SETTLE_MS = 150;
 const MAX_RESULTS_SHOWN = 8;
+/** Height of the desktop sidebar's Back button and search field, pointer layouts only. */
+export const SIDEBAR_CONTROL_HEIGHT = 32;
 const ROW_WAIT_MS = 3000;
 
 export interface SettingsSearchControls {
@@ -105,14 +127,29 @@ export interface SettingsSearchControls {
   onChangeQuery: (query: string) => void;
   onKeyPress: (event: NativeSyntheticEvent<TextInputKeyPressEventData>) => void;
   onSubmit: () => void;
+  /** Whether the result list shows, for the field's combobox state. */
+  resultsShown?: boolean;
+  /** The highlighted result's catalog id; arrow keys move it while focus stays in the field. */
+  activeResultId?: string | null;
+}
+
+/** The result list the search field controls. */
+export const SETTINGS_RESULTS_LIST_ID = "settings-search-results-list";
+
+/** A result option's DOM id, for the field's `aria-activedescendant`. */
+export function settingsResultOptionId(entryId: string): string {
+  return `settings-search-result-option-${entryId}`;
 }
 
 export function SettingsSearchBox({
   search,
   fitPlaceholder = false,
+  compact = false,
 }: {
   search: SettingsSearchControls;
   fitPlaceholder?: boolean;
+  /** The desktop sidebar's shorter field, matching its Back button. */
+  compact?: boolean;
 }) {
   return (
     <SearchField
@@ -125,7 +162,17 @@ export function SettingsSearchBox({
       testID="settings-search-input"
       clearTestID="settings-search-clear"
       fitPlaceholder={fitPlaceholder}
-      style={styles.searchField}
+      style={compact ? styles.compactSearchField : styles.searchField}
+      // A combobox over the result list: arrows move the highlighted result while typing.
+      role="combobox"
+      aria-autocomplete="list"
+      aria-expanded={Boolean(search.resultsShown)}
+      aria-controls={SETTINGS_RESULTS_LIST_ID}
+      aria-activedescendant={
+        search.resultsShown && search.activeResultId
+          ? settingsResultOptionId(search.activeResultId)
+          : undefined
+      }
     />
   );
 }
@@ -141,9 +188,98 @@ function sectionDomId(section: SettingsSectionId): string {
 }
 
 /** The row a request lands on inside its pane, on web, once it has rendered. */
-function requestRow(target: SettingsScrollRequest): HTMLElement | null {
-  if (target.anchorId) return document.getElementById(target.anchorId);
-  return target.entry ? findSettingRow(target.entry.pane, target.entry.label) : null;
+function requestRow(target: SettingsScrollRequest, root: HTMLElement): HTMLElement | null {
+  if (target.anchorId) return settingsElementById(target.anchorId, root);
+  if (!target.entry) return null;
+  // A pane can reveal a row in a dialog it opens, such as an environment's Edit dialog.
+  return (
+    findSettingRow(target.entry.pane, target.entry.label, root) ??
+    findSettingRowInDialogs(target.entry.label)
+  );
+}
+
+/**
+ * A pane whose controls render inside a sibling's shared Advanced group is empty; land on the
+ * next pane that shows something, which holds the group.
+ */
+function renderedPane(element: HTMLElement | null): HTMLElement | null {
+  let candidate = element;
+  while (candidate && candidate.offsetHeight === 0 && candidate.id?.startsWith("settings-pane-")) {
+    const next = candidate.nextElementSibling as HTMLElement | null;
+    if (!next) break;
+    candidate = next;
+  }
+  return candidate;
+}
+
+function sectionTitleDomId(section: SettingsSectionId): string {
+  return `settings-section-title-${section}`;
+}
+
+// A row's own setting first, so focus does not land on an info tip or link beside the label.
+const PRIMARY_CONTROL =
+  'input, select, textarea, [role="switch"], [role="radio"], [role="combobox"], [role="checkbox"]';
+const FOCUSABLE =
+  'button, input, select, textarea, a[href], [role="switch"], [role="button"], [role="radio"], [tabindex="0"]';
+
+/**
+ * Where keyboard focus lands after a jump: a row's first control, a pane's first heading, or a
+ * section's title, so screen reader and keyboard users arrive where the page scrolled.
+ */
+function focusElementFor(
+  target: SettingsScrollRequest,
+  offset: { row: HTMLElement | null; element: HTMLElement | null },
+  node: HTMLElement,
+): HTMLElement | null {
+  if (offset.row) {
+    // An anchor names a whole region, such as the health list; land on the region itself.
+    if (target.anchorId) return offset.row;
+    return (
+      offset.row.querySelector<HTMLElement>(PRIMARY_CONTROL) ??
+      offset.row.querySelector<HTMLElement>(FOCUSABLE) ??
+      offset.row
+    );
+  }
+  if (!target.pane) return settingsElementById(sectionTitleDomId(target.section), node);
+  return offset.element?.querySelector<HTMLElement>('[role="heading"]') ?? offset.element;
+}
+
+/**
+ * After the page scrolls: bring a row that sits in a dialog into view there, flash the row, and
+ * move focus when the jump asks for it and is final.
+ */
+function markLanding(
+  target: SettingsScrollRequest,
+  offset: { row: HTMLElement | null; element: HTMLElement | null },
+  node: HTMLElement | undefined,
+  final: boolean,
+) {
+  if (offset.row && node && !inPage(node, offset.row))
+    offset.row.scrollIntoView?.({ block: "center" });
+  if (offset.row) flashSettingRow(offset.row);
+  const focusable = target.focus && node ? focusElementFor(target, offset, node) : null;
+  if (focusable && final) focusTarget(focusable);
+}
+
+/** Whether an element sits in this page's scroll content rather than in a dialog. */
+function inPage(node: HTMLElement, element: HTMLElement): boolean {
+  return typeof node.contains !== "function" || node.contains(element);
+}
+
+/** Hands keyboard focus to a jump's target without scrolling it again. */
+function focusTarget(element: HTMLElement) {
+  if (!element.hasAttribute?.("tabindex")) {
+    // A heading or region made focusable only to receive the jump: it is not a control, so it
+    // draws no focus ring (the row flash marks where the reader landed).
+    element.setAttribute?.("tabindex", "-1");
+    if (element.style) element.style.outline = "none";
+  }
+  element.focus?.({ preventScroll: true });
+}
+
+/** The scrolling element on web, where every DOM lookup for this page starts. */
+function scrollNodeOf(view: NativeScrollView | null): HTMLElement | undefined {
+  return isWeb ? (view?.getScrollableNode() as HTMLElement | undefined) : undefined;
 }
 
 interface Box {
@@ -170,6 +306,8 @@ export function SettingsScrollPage({
   onSelectResult,
   search,
   bottomInset = 0,
+  groupLabel = englishGroupLabel,
+  searchHostPanes,
 }: SettingsScrollPageProps) {
   const scrollRef = useRef<NativeScrollView>(null);
   const scrollY = useRef(0);
@@ -183,6 +321,8 @@ export function SettingsScrollPage({
   const paneArrival = useRef<SettingsScrollRequest | null>(null);
   const activeSection = useRef<SettingsSectionId | null>(null);
   const [viewport, setViewport] = useState(0);
+  // Null until the last section reports its height; until then a full viewport of space stays.
+  const [lastSectionHeight, setLastSectionHeight] = useState<number | null>(null);
   const searching = query.trim().length > 0;
   const previousSearch = useRef(searching);
   const waitingForLayout = useRef(false);
@@ -257,8 +397,9 @@ export function SettingsScrollPage({
       // The jump inset can leave the preceding section visible. Do not let the browser
       // anchor one of its loading rows and push the section the reader actually opened.
       if (isWeb) {
+        const node = scrollNodeOf(scrollRef.current);
         for (const candidate of sections) {
-          const element = document.getElementById(sectionDomId(candidate.id));
+          const element = settingsElementById(sectionDomId(candidate.id), node);
           if (element) element.style.overflowAnchor = candidate.id === section ? "auto" : "none";
         }
       }
@@ -273,25 +414,35 @@ export function SettingsScrollPage({
    * and restores sections; native uses the recorded layout boxes.
    */
   const targetOffset = useCallback(
-    (target: SettingsScrollRequest): { y: number; row: HTMLElement | null } | null => {
+    (
+      target: SettingsScrollRequest,
+    ): { y: number; row: HTMLElement | null; element: HTMLElement | null } | null => {
       if (isWeb) {
-        const node = scrollRef.current?.getScrollableNode() as HTMLElement | undefined;
-        const element = document.getElementById(
-          target.pane ? settingsPaneDomId(target.pane) : sectionDomId(target.section),
+        const node = scrollNodeOf(scrollRef.current);
+        if (!node) return null;
+        const element = renderedPane(
+          settingsElementById(
+            target.pane ? settingsPaneDomId(target.pane) : sectionDomId(target.section),
+            node,
+          ),
         );
-        if (!node || !element || element.offsetHeight === 0) return null;
-        const row = requestRow(target);
+        if (!element || element.offsetHeight === 0) return null;
+        const row = requestRow(target, node);
         // Loading-only panes are not useful destinations yet.
         if (!row && target.pane && element.querySelector('[data-settings-loading="true"]'))
           return null;
-        const inset = row ? JUMP_INSET * 4 : JUMP_INSET;
-        return { y: rowOffsetWithin(row ?? element, node) - inset, row };
+        // A section's own top padding is its inset; panes and rows get room above them.
+        let inset = target.pane ? JUMP_INSET : 0;
+        // A row in a dialog scrolls within the dialog; the page stays on its pane.
+        const pageRow = row && inPage(node, row) ? row : null;
+        if (pageRow) inset = JUMP_INSET * 4;
+        return { y: rowOffsetWithin(pageRow ?? element, node) - inset, row, element };
       }
       const sectionBox = sectionBoxes.current.get(target.section);
       if (!sectionBox) return null;
       const paneBox = target.pane ? paneBoxes.current.get(target.pane) : undefined;
       if (target.pane && !paneBox) return null;
-      return { y: sectionBox.y + (paneBox?.y ?? 0) - JUMP_INSET, row: null };
+      return { y: sectionBox.y + (paneBox ? paneBox.y - JUMP_INSET : 0), row: null, element: null };
     },
     [],
   );
@@ -312,7 +463,8 @@ export function SettingsScrollPage({
     paneArrival.current = next;
     reportActive(next.section);
     scrollTo(offset.y, next.animated);
-    if (offset.row) flashSettingRow(offset.row);
+    // Focus once the jump is final, not on the pane before its row arrives.
+    markLanding(next, offset, scrollNodeOf(scrollRef.current), pending.current === null);
   }, [reportActive, scrollTo, targetOffset, searching]);
 
   useEffect(() => {
@@ -345,14 +497,12 @@ export function SettingsScrollPage({
     if (programmatic.current || searching) return;
     const top = scrollY.current + SPY_OFFSET;
     const atEnd = scrollY.current + viewportHeight.current >= contentHeight.current - 2;
-    const node = isWeb
-      ? (scrollRef.current?.getScrollableNode() as HTMLElement | undefined)
-      : undefined;
+    const node = scrollNodeOf(scrollRef.current);
     let current: SettingsSectionId | null = null;
     for (const section of sections) {
       let y = sectionBoxes.current.get(section.id)?.y;
       // Web layout events miss position-only moves, so read the DOM.
-      const element = node ? document.getElementById(sectionDomId(section.id)) : null;
+      const element = node ? settingsElementById(sectionDomId(section.id), node) : null;
       if (node && element) y = rowOffsetWithin(element, node);
       if (y === undefined) continue;
       if (atEnd || y <= top) current = section.id;
@@ -396,10 +546,11 @@ export function SettingsScrollPage({
         }
       }
       sectionBoxes.current.set(id, box);
+      if (id === sections[sections.length - 1]?.id) setLastSectionHeight(box.height);
       waitingForLayout.current = false;
       resolvePending();
     },
-    [resolvePending, scrollTo, searching],
+    [resolvePending, scrollTo, searching, sections],
   );
 
   const handlePaneLayout = useCallback(
@@ -418,7 +569,7 @@ export function SettingsScrollPage({
     const matches = results.map((result) => result.entry);
     let cleanup = () => {};
     const handle = setTimeout(() => {
-      cleanup = markSettingRows(matches);
+      cleanup = markSettingRows(matches, scrollNodeOf(scrollRef.current));
     }, 0);
     return () => {
       clearTimeout(handle);
@@ -429,16 +580,50 @@ export function SettingsScrollPage({
   }, [matchKey, searching]);
 
   const resultPanes = useMemo(() => new Set(results.map((result) => result.entry.pane)), [results]);
+  const hostPanes = useMemo(
+    () =>
+      searching && searchHostPanes
+        ? searchHostPanes(resultPanes, new Set(results.map((result) => result.entry.id)))
+        : NO_PANES,
+    // matchKey stands in for results, which is a new array on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [matchKey, resultPanes, searchHostPanes, searching],
+  );
   const paneVisible = useCallback(
     (pane: SettingsPaneDefinition) =>
-      !searching || resultPanes.has(pane.id) || matchedPanes.has(pane.id),
-    [matchedPanes, resultPanes, searching],
+      !searching || resultPanes.has(pane.id) || matchedPanes.has(pane.id) || hostPanes.has(pane.id),
+    [hostPanes, matchedPanes, resultPanes, searching],
   );
 
-  const trailingSpace = searching ? JUMP_INSET * 4 : viewport;
+  // Room for the last section's heading to reach the top of the view, and no more: only what
+  // the section itself falls short of a full viewport. A tall last section needs none.
+  const trailingSpace = searching
+    ? JUMP_INSET * 4
+    : Math.max(0, viewport - (lastSectionHeight ?? 0));
   const contentStyle = useMemo(
     () => ({ paddingBottom: trailingSpace + bottomInset }),
     [bottomInset, trailingSpace],
+  );
+
+  // Each pane learns where jumps and searches point, so an Advanced group there can open.
+  const searchPanes = useMemo(() => (searching ? resultPanes : NO_PANES), [resultPanes, searching]);
+  const searchSettingIds = useMemo(
+    () => (searching ? new Set(results.map((result) => result.entry.id)) : NO_PANES),
+    // matchKey stands in for results, which is a new array on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [matchKey, searching],
+  );
+  const revealFor = useCallback(
+    (paneId: string): SettingsRevealState => ({
+      pane: paneId,
+      targetPane: request.pane,
+      nonce: request.nonce,
+      searchPanes,
+      searchSettingIds,
+      targetSettingId: request.entry?.id ?? null,
+      issuedAt: request.issuedAt ?? 0,
+    }),
+    [request.entry, request.issuedAt, request.nonce, request.pane, searchPanes, searchSettingIds],
   );
 
   const shownResults = results.slice(0, MAX_RESULTS_SHOWN);
@@ -464,13 +649,17 @@ export function SettingsScrollPage({
           <SettingsSearchBox search={search} />
         </View>
       ) : null}
+      {/* Mounted before the first search so its first message is announced. */}
+      <Text accessibilityLiveRegion="polite" style={styles.visuallyHidden}>
+        {searching ? resultsSummary(results.length, anyVisible, query) : ""}
+      </Text>
       {searching ? (
         <View style={styles.column} testID="settings-search-results">
           <Text style={styles.resultsTitle}>
             {resultsSummary(results.length, anyVisible, query)}
           </Text>
           {shownResults.length ? (
-            <View style={styles.resultsCard}>
+            <View {...resultsListProps} style={styles.resultsCard}>
               {shownResults.map((result, index) => (
                 <SearchResultRow
                   key={result.entry.id}
@@ -484,17 +673,21 @@ export function SettingsScrollPage({
           ) : null}
         </View>
       ) : null}
-      {sections.slice(0, visibleMounted).map((section) => {
+      {sections.slice(0, visibleMounted).map((section, index) => {
         const panes = section.panes.filter(paneVisible);
         const hidden = searching && panes.length === 0;
+        const group = getSection(section.id).group;
+        const startsGroup = index === 0 || getSection(sections[index - 1].id).group !== group;
         return (
           <SectionBlock
             key={section.id}
             layoutEpoch={searching}
             section={section}
+            groupHeading={startsGroup ? groupLabel(group) : null}
             hidden={hidden}
             panes={section.panes}
             paneVisible={paneVisible}
+            revealFor={revealFor}
             renderPane={renderPane}
             onSectionLayout={handleSectionLayout}
             onPaneLayout={handlePaneLayout}
@@ -508,18 +701,23 @@ export function SettingsScrollPage({
 function SectionBlock({
   layoutEpoch,
   section,
+  groupHeading,
   hidden,
   panes,
   paneVisible,
+  revealFor,
   renderPane,
   onSectionLayout,
   onPaneLayout,
 }: {
   layoutEpoch: boolean;
   section: SettingsPageSection;
+  /** This device or Vorteo, above the first section of each group. */
+  groupHeading: string | null;
   hidden: boolean;
   panes: readonly SettingsPaneDefinition[];
   paneVisible: (pane: SettingsPaneDefinition) => boolean;
+  revealFor: (paneId: string) => SettingsRevealState;
   renderPane: (paneId: string) => ReactNode;
   onSectionLayout: (id: SettingsSectionId, box: Box) => void;
   onPaneLayout: (id: string, box: Box) => void;
@@ -547,9 +745,15 @@ function SectionBlock({
       testID={`settings-page-section-${section.id}`}
       nativeID={sectionDomId(section.id)}
     >
+      {groupHeading ? (
+        <SettingsRuleHeading label={groupHeading} testID={`settings-group-heading-${section.id}`} />
+      ) : null}
       <Text
+        {...sectionHeadingLevel}
         style={styles.sectionTitle}
         accessibilityRole="header"
+        numberOfLines={1}
+        nativeID={sectionTitleDomId(section.id)}
         testID={`settings-section-title-${section.id}`}
       >
         {section.label}
@@ -560,6 +764,7 @@ function SectionBlock({
           layoutEpoch={layoutEpoch}
           pane={pane}
           hidden={!paneVisible(pane)}
+          reveal={revealFor(pane.id)}
           renderPane={renderPane}
           onPaneLayout={onPaneLayout}
         />
@@ -572,12 +777,14 @@ function PaneBlock({
   layoutEpoch,
   pane,
   hidden,
+  reveal,
   renderPane,
   onPaneLayout,
 }: {
   layoutEpoch: boolean;
   pane: SettingsPaneDefinition;
   hidden: boolean;
+  reveal: SettingsRevealState;
   renderPane: (paneId: string) => ReactNode;
   onPaneLayout: (id: string, box: Box) => void;
 }) {
@@ -592,6 +799,27 @@ function PaneBlock({
   useLayoutEffect(() => {
     layoutRef.current?.measure((_x, y, _width, height) => onPaneLayout(pane.id, { y, height }));
   }, [layoutEpoch, onPaneLayout, pane.id]);
+  // A fresh object per render would re-render every pane's context consumers on each scroll.
+  const revealValue = useMemo(
+    () => ({
+      pane: reveal.pane,
+      targetPane: reveal.targetPane,
+      nonce: reveal.nonce,
+      searchPanes: reveal.searchPanes,
+      searchSettingIds: reveal.searchSettingIds,
+      targetSettingId: reveal.targetSettingId,
+      issuedAt: reveal.issuedAt,
+    }),
+    [
+      reveal.pane,
+      reveal.targetPane,
+      reveal.targetSettingId,
+      reveal.issuedAt,
+      reveal.nonce,
+      reveal.searchPanes,
+      reveal.searchSettingIds,
+    ],
+  );
   return (
     <View
       ref={layoutRef}
@@ -600,7 +828,9 @@ function PaneBlock({
       style={hidden ? styles.hidden : undefined}
       testID={`settings-pane-${pane.id}`}
     >
-      {renderPane(pane.id)}
+      <SettingsRevealContext.Provider value={revealValue}>
+        {renderPane(pane.id)}
+      </SettingsRevealContext.Provider>
     </View>
   );
 }
@@ -618,6 +848,22 @@ function SearchResultRow({
 }) {
   const handlePress = useCallback(() => onSelect(result.entry), [onSelect, result.entry]);
   const accessibilityState = useMemo(() => ({ selected }), [selected]);
+  // The arrow keys in the search field move the selection; `aria-selected` exposes it on web,
+  // where `accessibilityState` is dropped.
+  // An option of the field's listbox: highlighted by `aria-activedescendant` while focus stays
+  // in the field, so the options themselves are not Tab stops.
+  const webOption = useMemo(
+    () =>
+      isWeb
+        ? ({
+            role: "option",
+            "aria-selected": selected,
+            id: settingsResultOptionId(result.entry.id),
+            tabIndex: -1,
+          } as const)
+        : null,
+    [result.entry.id, selected],
+  );
   const rowStyle = useCallback(
     ({ pressed }: PressableStateCallbackType) => [
       styles.resultRow,
@@ -630,6 +876,7 @@ function SearchResultRow({
   return (
     <Pressable
       accessibilityRole="button"
+      {...webOption}
       accessibilityState={accessibilityState}
       accessibilityHint={`Opens ${result.entry.breadcrumb}`}
       onPress={handlePress}
@@ -654,6 +901,12 @@ function SearchResultRow({
 
 const styles = StyleSheet.create((theme) => ({
   searchField: { height: FLOATING_PANEL_CONTROL_HEIGHT, borderRadius: FLOATING_PANEL_RADIUS },
+  compactSearchField: {
+    flex: 1,
+    height: SIDEBAR_CONTROL_HEIGHT,
+    minHeight: SIDEBAR_CONTROL_HEIGHT,
+    borderRadius: SIDEBAR_CONTROL_HEIGHT / 2,
+  },
   scroll: {
     flex: 1,
   },
@@ -676,10 +929,18 @@ const styles = StyleSheet.create((theme) => ({
   sectionTitle: {
     // Line up with the pane titles, which sit inset from their cards.
     marginLeft: theme.spacing[1],
-    marginBottom: theme.spacing[4],
+    marginBottom: theme.spacing[3],
     fontSize: theme.fontSize["2xl"],
     fontWeight: theme.fontWeight.medium,
     color: theme.colors.foreground,
+  },
+  // Read by screen readers, invisible on screen.
+  visuallyHidden: {
+    position: "absolute",
+    width: 1,
+    height: 1,
+    overflow: "hidden",
+    opacity: 0,
   },
   resultsTitle: {
     marginTop: theme.spacing[6],
@@ -730,3 +991,11 @@ const styles = StyleSheet.create((theme) => ({
 }));
 
 const nativeVisiblePosition = { minIndexForVisible: 0 };
+const NO_PANES: ReadonlySet<string> = new Set();
+const englishGroupLabel = (group: SettingsGroupName) => group;
+// React Native's Role type lacks "listbox"; react-native-web passes it through.
+const resultsListProps: object = isWeb
+  ? { role: "listbox", "aria-label": "Matching settings", id: SETTINGS_RESULTS_LIST_ID }
+  : {};
+// Group headings are level 2, so section titles sit one level under them.
+const sectionHeadingLevel = isWeb ? ({ "aria-level": 3 } as const) : null;

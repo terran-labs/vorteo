@@ -15,7 +15,6 @@ import { DropdownTrigger } from "@/components/ui/dropdown-trigger";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { SettingsCard, SettingsRow } from "@/components/settings";
 import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
-import { Button } from "@/components/ui/button";
 import {
   EditingTextInput as TextInput,
   type EditingTextInputHandle,
@@ -23,8 +22,10 @@ import {
 import {
   MAX_CODE_FONT_SIZE,
   MAX_CONTENT_FONT_SIZE,
+  MAX_CONTENT_MAX_WIDTH,
   MAX_UI_BASE_FONT_SIZE,
   MIN_CODE_FONT_SIZE,
+  MIN_CONTENT_MAX_WIDTH,
   MIN_CONTENT_FONT_SIZE,
   MIN_UI_BASE_FONT_SIZE,
   parseClampedFontSize,
@@ -43,8 +44,11 @@ import {
 } from "@/styles/theme";
 import { isNative } from "@/constants/platform";
 import { settingsStyles } from "@/styles/settings";
+import { Button } from "@/components/ui/button";
+import { clearDataSaverOverride, useDataSaver, useDataSaverOverride } from "@/network-preferences";
 import { ThemePreviewGrid } from "./theme-preview-grid";
 import { AppearancePreview } from "./appearance-preview";
+import { ResetGroupButton } from "./reset-group-button";
 
 // ---------------------------------------------------------------------------
 // Theme-reactive leaf icons (withUnistyles + uniProps color mapping — no
@@ -226,38 +230,67 @@ interface FontSizeRowProps {
   title: string;
   hint: string;
   accessibilityLabel: string;
+  /** The committed size; the field shows it again whenever it changes outside the field. */
+  value: number;
+  min: number;
+  max: number;
   draft: string;
   withBorder?: boolean;
   onChangeDraft: (value: string) => void;
-  onCommit: () => void;
+  /** Saves the draft and returns the size now in effect, clamped or unchanged. */
+  onCommit: () => number;
 }
 
 function FontSizeRow({
   title,
   hint,
   accessibilityLabel,
+  value,
+  min,
+  max,
   draft,
   withBorder = true,
   onChangeDraft,
   onCommit,
 }: FontSizeRowProps) {
+  // The field is uncontrolled, so a clamped, reset or synced size is written into it directly.
+  const input = useRef<EditingTextInputHandle>(null);
+  useEffect(() => {
+    input.current?.replaceText(String(value));
+  }, [value]);
+  // State the accepted range up front: an out-of-range entry is clamped on blur.
+  const range = `${min} to ${max} px`;
+  // Says so when a typed size was out of range, so the change on blur is never silent.
+  const [adjusted, setAdjusted] = useState("");
+  const commit = useCallback(() => {
+    const typed = Number.parseInt(draft, 10);
+    const next = onCommit();
+    input.current?.replaceText(String(next));
+    setAdjusted(
+      Number.isFinite(typed) && typed !== next ? `Set to ${next} px, the closest allowed size` : "",
+    );
+  }, [draft, onCommit]);
   return (
     <View style={withBorder ? styles.rowWithBorder : settingsStyles.row}>
       <View style={settingsStyles.rowContent}>
         <Text style={settingsStyles.rowTitle}>{title}</Text>
-        <Text style={settingsStyles.rowHint}>{hint}</Text>
+        <Text style={settingsStyles.rowHint}>{`${hint}. ${range}`}</Text>
+        <Text style={settingsStyles.rowHint} accessibilityLiveRegion="polite">
+          {adjusted}
+        </Text>
       </View>
       <View style={styles.sizeField}>
         <TextInput
+          ref={input}
           initialValue={draft}
           onChangeText={onChangeDraft}
-          onBlur={onCommit}
-          onSubmitEditing={onCommit}
+          onBlur={commit}
+          onSubmitEditing={commit}
           keyboardType="number-pad"
           inputMode="numeric"
           selectTextOnFocus
           style={styles.sizeInput}
-          accessibilityLabel={accessibilityLabel}
+          accessibilityLabel={`${accessibilityLabel}, ${range}`}
         />
         <Text style={styles.unit}>px</Text>
       </View>
@@ -276,55 +309,54 @@ interface ContentWidthRowProps {
 
 function ContentWidthRow({ value, onChange }: ContentWidthRowProps) {
   const { t } = useTranslation();
-  const width = resolveContentMaxWidth({ contentMaxWidth: value });
-  // The field is uncontrolled, so a saved or reset width is written into it directly.
+  const defaultWidth = resolveContentMaxWidth({ contentMaxWidth: null });
+  const range = `${MIN_CONTENT_MAX_WIDTH} to ${MAX_CONTENT_MAX_WIDTH} px`;
+  // The field is uncontrolled, so a saved or reset width is written into it directly. Empty
+  // means the default, shown as the placeholder; that replaces a Reset button that unmounted
+  // under keyboard focus.
   const input = useRef<EditingTextInputHandle>(null);
 
   useEffect(() => {
-    input.current?.replaceText(String(width));
-  }, [width]);
+    input.current?.replaceText(value === null ? "" : String(value));
+  }, [value]);
 
   const commit = useCallback(() => {
-    const next = parseContentMaxWidth(input.current?.getText()) ?? width;
-    input.current?.replaceText(String(next));
-    // Typing the width already in effect keeps following the default.
-    if (next !== width) {
-      onChange(next);
+    const text = input.current?.getText().trim() ?? "";
+    if (text === "") {
+      if (value !== null) onChange(null);
+      return;
     }
-  }, [onChange, width]);
-
-  const reset = useCallback(() => {
-    onChange(null);
-  }, [onChange]);
+    const parsed = parseContentMaxWidth(text);
+    if (parsed === null) {
+      input.current?.replaceText(value === null ? "" : String(value));
+      return;
+    }
+    // Typing the default keeps following the default rather than pinning today's value.
+    const next = parsed === defaultWidth ? null : parsed;
+    input.current?.replaceText(next === null ? "" : String(next));
+    if (next !== value) onChange(next);
+  }, [defaultWidth, onChange, value]);
 
   return (
     <View style={settingsStyles.row}>
       <View style={settingsStyles.rowContent}>
         <Text style={settingsStyles.rowTitle}>{t("settings.appearance.layout.contentWidth")}</Text>
         <Text style={settingsStyles.rowHint}>
-          {t("settings.appearance.layout.contentWidthHint")}
+          {`${t("settings.appearance.layout.contentWidthHint")}. Empty uses ${defaultWidth} px. ${range}`}
         </Text>
       </View>
       <View style={styles.sizeField}>
-        {value === null ? null : (
-          <Button
-            variant="ghost"
-            onPress={reset}
-            accessibilityLabel={t("settings.appearance.layout.resetAccessibility")}
-          >
-            {t("settings.appearance.layout.reset")}
-          </Button>
-        )}
         <TextInput
           ref={input}
-          initialValue={String(width)}
+          initialValue={value === null ? "" : String(value)}
+          placeholder={String(defaultWidth)}
           onBlur={commit}
           onSubmitEditing={commit}
           keyboardType="number-pad"
           inputMode="numeric"
           selectTextOnFocus
           style={styles.widthInput}
-          accessibilityLabel={t("settings.appearance.layout.contentWidthAccessibility")}
+          accessibilityLabel={`${t("settings.appearance.layout.contentWidthAccessibility")}, ${range}`}
         />
         <Text style={styles.unit}>px</Text>
       </View>
@@ -412,6 +444,9 @@ export function AppearanceSection() {
     select: selectPluginTheme,
   } = useContributedThemes();
   const showInterfaceFontFamilyRow = !isNative;
+  // While the browser asks to save data, the app keeps system fonts whatever these fields say.
+  const dataSaver = useDataSaver();
+  const dataSaverFontHint = "System fonts are in use while your browser is saving data";
   const monoFontPlaceholder = resolveDefaultStackPlaceholder(t, DEFAULT_MONO_FONT_STACK);
 
   const [uiFontDraft, setUiFontDraft] = useState(settings.uiFontFamily);
@@ -506,6 +541,7 @@ export function AppearanceSection() {
     if (next !== settings.uiBaseFontSize) {
       void updateSettings({ uiBaseFontSize: next });
     }
+    return next;
   }, [settings.uiBaseFontSize, uiBaseSizeDraft, updateSettings]);
 
   const commitCodeSize = useCallback(() => {
@@ -518,6 +554,7 @@ export function AppearanceSection() {
     if (next !== settings.codeFontSize) {
       void updateSettings({ codeFontSize: next });
     }
+    return next;
   }, [codeSizeDraft, settings.codeFontSize, updateSettings]);
 
   const commitContentSize = useCallback(() => {
@@ -530,6 +567,7 @@ export function AppearanceSection() {
     if (next !== settings.contentFontSize) {
       void updateSettings({ contentFontSize: next });
     }
+    return next;
   }, [contentSizeDraft, settings.contentFontSize, updateSettings]);
 
   const handleWorkspaceStatusLineChange = useCallback(
@@ -538,6 +576,13 @@ export function AppearanceSection() {
     },
     [updateSettings],
   );
+
+  // Each section's Reset restores only the device settings that section's controls write.
+  const themeReset = useMemo(() => <ResetGroupButton group="theme" />, []);
+  const fontsReset = useMemo(() => <ResetGroupButton group="fonts" />, []);
+  const layoutReset = useMemo(() => <ResetGroupButton group="layout" />, []);
+  const statusLineReset = useMemo(() => <ResetGroupButton group="statusLine" />, []);
+  const syntaxReset = useMemo(() => <ResetGroupButton group="syntax" />, []);
 
   // Live-while-typing: the in-progress drafts drive the preview without
   // committing to the global theme. Empty/invalid fields fall back to the
@@ -553,7 +598,7 @@ export function AppearanceSection() {
 
   return (
     <View>
-      <SettingsSection title={t("settings.appearance.theme.title")}>
+      <SettingsSection title={t("settings.appearance.theme.title")} trailing={themeReset}>
         <View style={settingsStyles.card}>
           <ThemeRow
             pluginThemes={pluginThemes}
@@ -562,13 +607,15 @@ export function AppearanceSection() {
           />
         </View>
       </SettingsSection>
-      <SettingsSection title={t("settings.appearance.fonts.title")}>
+      <SettingsSection title={t("settings.appearance.fonts.title")} trailing={fontsReset}>
         <View style={settingsStyles.card}>
           {showInterfaceFontFamilyRow ? (
             <ThemedInterfaceFontRow
               uniProps={interfaceFontDefaults}
               title={t("settings.appearance.fonts.interfaceFont")}
-              hint={t("settings.appearance.fonts.interfaceFontHint")}
+              hint={
+                dataSaver ? dataSaverFontHint : t("settings.appearance.fonts.interfaceFontHint")
+              }
               accessibilityLabel={t("settings.appearance.fonts.interfaceFontAccessibility")}
               value={settings.uiFontFamily}
               draft={uiFontDraft}
@@ -581,6 +628,9 @@ export function AppearanceSection() {
             title={t("settings.appearance.fonts.interfaceSize")}
             hint={t("settings.appearance.fonts.interfaceSizeHint")}
             accessibilityLabel={t("settings.appearance.fonts.interfaceSizeAccessibility")}
+            value={settings.uiBaseFontSize}
+            min={MIN_UI_BASE_FONT_SIZE}
+            max={MAX_UI_BASE_FONT_SIZE}
             draft={uiBaseSizeDraft}
             withBorder={showInterfaceFontFamilyRow}
             onChangeDraft={handleUiBaseSizeChange}
@@ -590,13 +640,16 @@ export function AppearanceSection() {
             title={t("settings.appearance.fonts.contentSize")}
             hint={t("settings.appearance.fonts.contentSizeHint")}
             accessibilityLabel={t("settings.appearance.fonts.contentSizeAccessibility")}
+            value={settings.contentFontSize}
+            min={MIN_CONTENT_FONT_SIZE}
+            max={MAX_CONTENT_FONT_SIZE}
             draft={contentSizeDraft}
             onChangeDraft={handleContentSizeChange}
             onCommit={commitContentSize}
           />
           <FontFamilyRow
             title={t("settings.appearance.fonts.codeFont")}
-            hint={t("settings.appearance.fonts.codeFontHint")}
+            hint={dataSaver ? dataSaverFontHint : t("settings.appearance.fonts.codeFontHint")}
             accessibilityLabel={t("settings.appearance.fonts.codeFontAccessibility")}
             placeholder={monoFontPlaceholder}
             value={settings.monoFontFamily}
@@ -609,13 +662,17 @@ export function AppearanceSection() {
             title={t("settings.appearance.fonts.codeSize")}
             hint={t("settings.appearance.fonts.codeSizeHint")}
             accessibilityLabel={t("settings.appearance.fonts.codeSizeAccessibility")}
+            value={settings.codeFontSize}
+            min={MIN_CODE_FONT_SIZE}
+            max={MAX_CODE_FONT_SIZE}
             draft={codeSizeDraft}
             onChangeDraft={handleCodeSizeChange}
             onCommit={commitCodeSize}
           />
+          <DataSaverOverrideRow />
         </View>
       </SettingsSection>
-      <SettingsSection title={t("settings.appearance.layout.title")}>
+      <SettingsSection title={t("settings.appearance.layout.title")} trailing={layoutReset}>
         <View style={settingsStyles.card}>
           <ContentWidthRow
             value={settings.contentMaxWidth}
@@ -623,7 +680,7 @@ export function AppearanceSection() {
           />
         </View>
       </SettingsSection>
-      <SettingsSection title={t("settings.appearance.statusLine.title")}>
+      <SettingsSection title={t("settings.appearance.statusLine.title")} trailing={statusLineReset}>
         <SettingsCard>
           <WorkspaceStatusLineRow
             value={settings.workspaceStatusLine}
@@ -631,7 +688,7 @@ export function AppearanceSection() {
           />
         </SettingsCard>
       </SettingsSection>
-      <SettingsSection title={t("settings.appearance.syntax.title")}>
+      <SettingsSection title={t("settings.appearance.syntax.title")} trailing={syntaxReset}>
         <View style={settingsStyles.card}>
           <SyntaxRow value={settings.syntaxTheme} onChange={handleSyntaxThemeChange} />
         </View>
@@ -639,6 +696,37 @@ export function AppearanceSection() {
           <AppearancePreview overrides={previewOverrides} />
         </View>
       </SettingsSection>
+    </View>
+  );
+}
+
+const DATA_SAVING_TITLE = "Data saving";
+
+/**
+ * Shown only while a choice made on the startup screen overrides the browser's own data saving
+ * signals, so that choice can always be undone here. Without an override there is nothing to set.
+ */
+function DataSaverOverrideRow() {
+  const override = useDataSaverOverride();
+  if (override === null || isNative) return null;
+  return (
+    <View style={styles.rowWithBorder} testID="data-saver-override">
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>{DATA_SAVING_TITLE}</Text>
+        <Text style={settingsStyles.rowHint}>
+          {override
+            ? "Turned on from the startup screen, so system fonts are used and diagrams load when asked"
+            : "Turned off from the startup screen, even when your browser asks to save data"}
+        </Text>
+      </View>
+      <Button
+        variant="outline"
+        size="sm"
+        onPress={clearDataSaverOverride}
+        testID="data-saver-use-automatic"
+      >
+        Follow browser
+      </Button>
     </View>
   );
 }
@@ -669,7 +757,12 @@ function WorkspaceStatusLineRow({
       hint={t("settings.appearance.statusLine.hint")}
       testID="workspace-status-line-setting"
     >
-      <SegmentedControl options={options} value={value} onValueChange={onChange} />
+      <SegmentedControl
+        options={options}
+        value={value}
+        onValueChange={onChange}
+        accessibilityLabel={t("settings.appearance.statusLine.label")}
+      />
     </SettingsRow>
   );
 }
