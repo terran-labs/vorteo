@@ -114,6 +114,8 @@ export const AgentTracks = memo(function AgentTracks({
         </CardColumnAccessory>
       ) : null}
       <OpenQuestionsCard key={`questions:${agentId}`} serverId={serverId} agentId={agentId} />
+      {/* Previews come right after open questions and before tasks: both wait on the owner. */}
+      <PreviewsCard key={`previews:${agentId}`} serverId={serverId} agentId={agentId} />
       <ChecklistCard
         key={`checklist:${agentId}`}
         serverId={serverId}
@@ -121,7 +123,6 @@ export const AgentTracks = memo(function AgentTracks({
         tasks={tasks}
       />
       <JournalCard key={agentId} serverId={serverId} agentId={agentId} />
-      <PreviewsCard key={`previews:${agentId}`} serverId={serverId} agentId={agentId} />
       <ContextCard key={`context:${agentId}`} serverId={serverId} agentId={agentId} />
       <SubagentsTrack
         inline
