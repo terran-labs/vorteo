@@ -4,7 +4,9 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { SystemView } from "./system-view";
 import { deriveSystemEnvironment } from "./system-status-model";
-vi.mock("react-native", () => ({
+// Partial: platform checks reached through imports keep their real exports.
+vi.mock("react-native", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react-native")>()),
   useWindowDimensions: () => ({ width: 1280 }),
   ScrollView: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   StyleSheet: { create: (styles: unknown) => styles },

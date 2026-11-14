@@ -77,9 +77,6 @@ function publicServices(summary: NonNullable<InstallationSystemState["restartSum
   ];
 }
 
-function requiresReview(job: { status: string; stage?: string }): boolean {
-  return ["pending", "failed"].includes(job.status) || job.stage === "recovery_required";
-}
 function publicAttentionCount(summary: InstallationSystemState["restartSummary"]): number {
   if (!summary) return 0;
   const services = publicServices(summary);
@@ -94,34 +91,6 @@ function publicAttentionCount(summary: InstallationSystemState["restartSummary"]
     }, 0)
   );
 }
-/** Only protected receipts while unlocked, only public summary counts while locked. */
-export function systemAttentionCount(
-  state: InstallationSystemState,
-  upgrades: readonly InstallationUpgrade[] = [],
-): number {
-  if (!state.unlocked) return publicAttentionCount(state.restartSummary);
-  const queues = [
-    currentSystemRestarts(state),
-    state.helperJobs,
-    state.brokerJobs,
-    state.monitorJobs,
-    state.serviceQueue?.jobs ?? [],
-    state.sessionHost?.jobs ?? [],
-    state.instructionRequests?.requests ?? [],
-    upgrades.filter((upgrade) => !upgrade.acknowledgedAt),
-  ];
-  const requests = queues.reduce((total, queue) => total + queue.filter(requiresReview).length, 0);
-  const blockedServices =
-    state.enrollmentStatus?.services.filter((service) => service.readiness === "blocked").length ??
-    0;
-  return (
-    requests +
-    blockedServices +
-    Number(state.enrollmentStatus?.activation === "recovery-required") +
-    Number(state.liveDev?.mode === "live" && state.liveDev.server.state === "failed")
-  );
-}
-
 export function selectSystemEnvironments(
   installation: ExecutionInstallation | null,
   hosts: readonly Pick<HostProfile, "serverId">[],

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +10,13 @@ import {
   installModes,
   pruneDependencyCache,
 } from "./lib/dependency-cache.mjs";
+import {
+  EXCLUDE_ATTRIBUTE,
+  checkoutRegenerables,
+  checkoutsUnder,
+  excludeFromTimeMachine,
+  nodeModulesUnder,
+} from "./lib/time-machine-exclusions.mjs";
 
 function temporary(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "dependency-cache-"));
@@ -276,3 +284,107 @@ test(
     );
   },
 );
+
+// Real Git without the developer's global configuration or hooks.
+const gitEnvironment = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+
+test("Time Machine exclusions mark only ignored, untracked regenerable folders", (t) => {
+  const parent = temporary(t);
+  const repo = path.join(parent, "worktrees", "hash", "task");
+  const write = (relative, text = "x") => {
+    fs.mkdirSync(path.dirname(path.join(repo, relative)), { recursive: true });
+    fs.writeFileSync(path.join(repo, relative), text);
+  };
+  write(".gitignore", "node_modules/\nbuild/\nBuild/\npackages/a/dist/\npackages/c/dist/\n");
+  write(
+    "package.json",
+    JSON.stringify({ workspaces: [".", "./*", "../escape", "packages/*", "!packages/c"] }),
+  );
+  for (const name of ["a", "b", "c", "desktop"]) write(`packages/${name}/package.json`, "{}");
+  write("packages/a/dist/caf\u00e9.js");
+  write("src/index.js");
+  write("node_modules/dep/index.js");
+  write("packages/a/dist/out.js");
+  write("packages/a/node_modules/dep/index.js");
+  write("packages/b/Build/out.js");
+  write("packages/c/dist/out.js");
+  write("packages/desktop/build/icon.png");
+  // Ignored by contents only, with one user file re-included: not regenerable.
+  write("packages/keep/package.json", "{}");
+  write("packages/keep/.gitignore", "dist/*\n!dist/notes.md\n");
+  write("packages/keep/dist/out.js");
+  write("packages/keep/dist/notes.md");
+  // A nested repository that commits its own build folder.
+  write("packages/nested/package.json", "{}");
+  write("packages/nested/build/out.js");
+  execFileSync("git", ["init", "-q", path.join(repo, "packages/nested")], { env: gitEnvironment });
+  // A link named like a build folder must not lead the marker to source.
+  fs.symlinkSync(path.join(repo, "src"), path.join(repo, "packages/a/build"));
+  const git = (...args) =>
+    execFileSync("git", ["-C", repo, ...args], { stdio: "ignore", env: gitEnvironment });
+  git("init", "-q");
+  git("add", ".gitignore", "package.json", "src", "packages/a", "packages/b", "packages/c");
+  git(
+    "add",
+    "packages/desktop/package.json",
+    "packages/keep/package.json",
+    "packages/keep/.gitignore",
+  );
+  // Tracked although ignored, as packages/desktop/build is in this repository.
+  git("add", "-f", "packages/desktop/build/icon.png");
+
+  assert.deepEqual(checkoutsUnder(path.join(parent, "worktrees"), 2), [repo]);
+  assert.deepEqual(
+    checkoutRegenerables(repo)
+      .map((file) => path.relative(repo, file))
+      .sort(),
+    ["node_modules", "packages/a/dist", "packages/a/node_modules"],
+  );
+  // Outside a repository, or with a null manifest, nothing qualifies.
+  const plain = path.join(parent, "plain");
+  fs.mkdirSync(path.join(plain, "node_modules"), { recursive: true });
+  fs.writeFileSync(path.join(plain, "package.json"), "null");
+  assert.deepEqual(checkoutRegenerables(plain), []);
+
+  // Only paths still missing the attribute are written, never through a link; Linux does nothing.
+  const writes = [];
+  const run = (command, args) => {
+    assert.equal(args[0], "-s");
+    if (args[1] === "-p" && args.at(-1).endsWith("packages/a/node_modules")) return "";
+    if (args[1] === "-p") throw new Error("missing");
+    assert.equal(args[2], EXCLUDE_ATTRIBUTE);
+    writes.push(path.relative(repo, args.at(-1)));
+  };
+  const folders = checkoutRegenerables(repo);
+  assert.deepEqual(excludeFromTimeMachine(folders, { platform: "darwin", run }), {
+    checked: 3,
+    added: 2,
+    failed: [],
+  });
+  assert.deepEqual(writes.sort(), ["node_modules", "packages/a/dist"]);
+  assert.equal(excludeFromTimeMachine(folders, { platform: "linux", run }).checked, 0);
+});
+
+test("named node_modules exclusion takes only exact node_modules folders inside its root", (t) => {
+  const parent = temporary(t);
+  const root = path.join(parent, "artifacts");
+  const folder = (relative) => fs.mkdirSync(path.join(root, relative), { recursive: true });
+  folder("task/source/node_modules/dep/node_modules/inner");
+  folder("task/source/packages/a/node_modules");
+  folder("task/source/dist");
+  folder("task/source/Node_Modules");
+  folder("task/.git/node_modules");
+  folder("evidence/screens");
+  fs.mkdirSync(path.join(parent, "outside", "node_modules"), { recursive: true });
+  fs.symlinkSync(
+    path.join(parent, "outside", "node_modules"),
+    path.join(root, "evidence", "node_modules"),
+  );
+  assert.deepEqual(
+    nodeModulesUnder(root)
+      .map((file) => path.relative(root, file))
+      .sort(),
+    ["task/source/node_modules", "task/source/packages/a/node_modules"],
+  );
+  assert.deepEqual(nodeModulesUnder(path.join(parent, "missing")), []);
+});

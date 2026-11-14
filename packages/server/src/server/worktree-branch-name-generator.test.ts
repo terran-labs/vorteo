@@ -6,8 +6,11 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AgentManager } from "./agent/agent-manager.js";
 import {
   StructuredAgentFallbackError,
+  generateStructuredAgentResponseWithFallback,
+  type StructuredAgentGenerationOptions,
   type StructuredAgentGenerationWithFallbackOptions,
 } from "./agent/agent-response-loop.js";
+import { getProviderProbeCwd } from "../utils/provider-probe-cwd.js";
 import {
   attemptFirstAgentBranchAutoName,
   type AttemptFirstAgentBranchAutoNameResult,
@@ -112,7 +115,6 @@ describe("generateBranchNameFromFirstAgentContext", () => {
       throw new Error("expected structured generation call");
     }
     expect(firstCall).toMatchObject({
-      cwd: "/tmp/repo",
       schemaName: "BranchName",
       maxRetries: 2,
       agentConfigOverrides: {
@@ -123,6 +125,20 @@ describe("generateBranchNameFromFirstAgentContext", () => {
     expect(firstCall.prompt).toContain("Fix the login flow");
     expect(firstCall.prompt).toContain("<user-prompt>\nFix the login flow\n</user-prompt>");
     expect(firstCall.prompt).not.toContain("User context:");
+    expect(firstCall).not.toHaveProperty("cwd");
+    // Workspace data is already in the prompt; metadata execution stays isolated.
+    await generateStructuredAgentResponseWithFallback({
+      ...firstCall,
+      manager: {
+        getProviderAvailability: async () => ({ available: true, error: null }),
+      } as AgentManager,
+      providers: [{ provider: "codex" }],
+      runner: async <TResult>(input: StructuredAgentGenerationOptions<TResult>) => {
+        expect(input.agentConfig.cwd).toBe(await getProviderProbeCwd());
+        expect(input.agentConfig.cwd).not.toBe("/tmp/repo");
+        return structured.generateStructured<TResult>({ ...firstCall, schema: input.schema });
+      },
+    });
   });
 
   test("wraps a slash-only first-agent prompt as naming input", async () => {

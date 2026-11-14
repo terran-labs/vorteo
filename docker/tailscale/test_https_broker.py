@@ -33,6 +33,200 @@ class NativeWorkspacePolicyTests(unittest.TestCase):
             with self.assertRaises(subprocess.SubprocessError):
                 runtime.free(32768, retained=True)
 
+    def test_dedicated_previews_node_is_addressed_by_socket(self):
+        calls = []
+        for config, expected in (
+            ({'tailscale': '/bin/ts'}, ['/bin/ts', 'status']),
+            ({'tailscale': '/bin/ts', 'tailscaleSocket': '/run/previews.sock'},
+             ['/bin/ts', '--socket=/run/previews.sock', 'status']),
+        ):
+            runtime = NativeRuntime(config)
+            runtime.command = lambda args: calls.append(args) or ''
+            runtime.ts(['status'])
+            self.assertEqual(calls[-1], expected)
+
+    def test_previews_node_runs_in_userspace_with_its_own_state(self):
+        spec = importlib.util.spec_from_file_location('previews_node', Path(__file__).with_name('install-previews-node.py'))
+        node = importlib.util.module_from_spec(spec); spec.loader.exec_module(node)
+        planned = node.plan('/srv/previews-node', '/opt/bin/tailscaled', 'vorton-previews')
+        self.assertEqual(planned['content']['ProgramArguments'],
+                         ['/opt/bin/tailscaled', '--tun=userspace-networking', '--statedir=/srv/previews-node/state',
+                          '--socket=/srv/previews-node/tailscaled.sock', '--port=0'])
+        for name in ('Bad_Name', '-lead', 'a.b', ''):
+            with self.assertRaises(ValueError):
+                node.plan('/srv/previews-node', '/opt/bin/tailscaled', name)
+        with self.assertRaises(ValueError):
+            node.plan('relative/dir', '/opt/bin/tailscaled', 'previews')
+        with tempfile.TemporaryDirectory() as directory:
+            node.private_directory(directory)
+            os.chmod(directory, 0o755)
+            with self.assertRaises(ValueError):
+                node.private_directory(directory)
+            link = Path(directory) / 'link'; link.symlink_to(directory)
+            with self.assertRaises(ValueError):
+                node.private_directory(link)
+            # A shim that links to the binary names the same login agent as its target,
+            # at install and at removal, including after the binary is gone.
+            target = Path(os.path.realpath(directory)) / 'tailscaled'; target.write_text('')
+            shim = Path(directory) / 'shim'; shim.symlink_to(target)
+            self.assertEqual(node.canonical(shim), target)
+            installed = node.plan('/srv/previews-node', node.canonical(shim), 'previews')
+            removing = node.plan('/srv/previews-node', node.canonical(shim), 'previews')
+            self.assertEqual(installed['content']['ProgramArguments'][0], str(target))
+            self.assertEqual(installed['label'], removing['label'])
+            target.unlink()
+            self.assertEqual(node.canonical(target), target)
+
+    def test_broker_moves_node_only_when_nothing_is_published(self):
+        spec = importlib.util.spec_from_file_location('native_installer', Path(__file__).with_name('install-native-https-broker.py'))
+        installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
+        base = {'runtime': 'native', 'daemonHome': '/home', 'cliCommand': ['/node', '/cli'], 'channel': '/channel',
+                'workspacePolicy': 'registered', 'allowedRoots': []}
+        old = {**base, 'tailscale': '/app/ts', 'nodeId': 'old', 'hostname': 'mac.ts.net', 'packetFilterHash': 'a'}
+        new = {**base, 'tailscale': '/bin/ts', 'tailscaleSocket': '/run/previews.sock', 'nodeId': 'new',
+               'hostname': 'previews.ts.net', 'packetFilterHash': 'b'}
+        stopped = {'entries': {'w.s': {'frontend': 32770, 'desired': 'stopped'}}}
+        running = {'entries': {'w.s': {'frontend': 32770, 'desired': 'running'}}}
+        nothing = lambda: {}
+        # Unchanged identity and a first install need no flag.
+        installer.check_identity(old, dict(old), running, False, nothing)
+        installer.check_identity({}, new, {}, False, nothing)
+        # A different node is refused without the explicit move, while a preview runs, and
+        # while the old node still publishes a port the ledger owns.
+        for ledger, move, publication in ((stopped, False, nothing), (running, True, nothing),
+                                          (stopped, True, lambda: {'TCP': {'32770': {'HTTPS': True}}})):
+            with self.assertRaises(ValueError):
+                installer.check_identity(old, new, ledger, move, publication)
+        installer.check_identity(old, new, stopped, True, lambda: {'TCP': {'443': {'HTTPS': True}}})
+        # The switch happens under the broker's lock, on what is on disk at that moment.
+        # A start the old broker consumed after any earlier look is seen and refused,
+        # and nothing is replaced or re-pinned.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(os.path.realpath(directory)) / 'broker'; channel = root / 'channel'
+            (channel / 'origins').mkdir(parents=True); root.chmod(0o700)
+            origin = channel / 'origins' / 'w.s.json'; origin.write_text('{}')
+            atomic(root / 'host-config.json', old)
+            atomic(root / 'https-broker-ledger.json', running)
+            replaced = []
+            class OldNode:
+                def __init__(self, config): self.config = config
+                def verify_node(self): replaced.append('preflight')
+                def publication(self): return {}
+            with self.assertRaises(ValueError):
+                installer.switch_pins(root, channel, new, True, lambda: replaced.append('files'), OldNode)
+            self.assertEqual(safe_read(root / 'host-config.json'), old)
+            self.assertNotIn('files', replaced)
+            self.assertTrue(origin.exists())
+            # While a broker run holds the lock the installer waits, then gives up cleanly.
+            with installer.broker_lock(root):
+                with self.assertRaises(ValueError):
+                    installer.switch_pins(root, channel, new, True, lambda: None, OldNode, wait=0.2)
+            # With everything stopped the old node is verified, files and pins switch, and
+            # reservations that name the old hostname are dropped.
+            atomic(root / 'https-broker-ledger.json', stopped)
+            installer.switch_pins(root, channel, new, True, lambda: replaced.append('files'), OldNode)
+            self.assertEqual(safe_read(root / 'host-config.json'), new)
+            self.assertEqual(replaced[-2:], ['preflight', 'files'])
+            self.assertFalse(origin.exists())
+            # A socket is accepted only when this user owns it inside a private directory.
+            import socket as sockets
+            private = root / 'node'; private.mkdir(mode=0o700)
+            listener = sockets.socket(sockets.AF_UNIX); listener.bind(str(private / 'd.sock'))
+            try:
+                installer.private_socket(private / 'd.sock')
+                private.chmod(0o755)
+                with self.assertRaises(ValueError):
+                    installer.private_socket(private / 'd.sock')
+                with self.assertRaises(ValueError):
+                    installer.private_socket(root / 'host-config.json')
+            finally:
+                listener.close()
+        # The CLI is pinned through its stable link, not the release an update will replace,
+        # so a reinstall after an update still matches the existing pin.
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(os.path.realpath(directory))
+            for release in ('release-1', 'release-2'):
+                (base / release / 'bin').mkdir(parents=True); (base / release / 'bin' / 'paseo').write_text('')
+            current = base / 'current'; current.symlink_to(base / 'release-1')
+            pinned = installer.stable_path(current / 'bin' / 'paseo')
+            self.assertEqual(pinned, str(current / 'bin' / 'paseo'))
+            current.unlink(); current.symlink_to(base / 'release-2')
+            self.assertEqual(installer.stable_path(current / 'bin' / 'paseo'), pinned)
+            installer.check_identity({**old, 'cliCommand': ['/node', pinned]},
+                                     {**old, 'cliCommand': ['/node', installer.stable_path(current / 'bin' / 'paseo')]},
+                                     running, False, nothing)
+            for bad in ('relative/paseo', str(base / 'current' / '..' / 'release-1' / 'bin' / 'paseo'), str(base / 'missing')):
+                with self.assertRaises(ValueError):
+                    installer.stable_path(bad)
+        # An existing broker directory that others can write is refused, never adopted.
+        with tempfile.TemporaryDirectory() as directory:
+            fresh = installer.prepare_deployment(Path(os.path.realpath(directory)) / 'new')
+            self.assertEqual(os.lstat(fresh).st_mode & 0o777, 0o700)
+            open_root = Path(os.path.realpath(directory)) / 'open'; open_root.mkdir(); open_root.chmod(0o777)
+            with self.assertRaises(ValueError):
+                installer.prepare_deployment(open_root)
+        # Leaving a node needs its identity and publication, not its access scope: adding the
+        # new node to the tailnet has usually changed the old node's filter already.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(os.path.realpath(directory)) / 'broker'; channel = root / 'channel'
+            (channel / 'origins').mkdir(parents=True); root.chmod(0o700)
+            atomic(root / 'host-config.json', old)
+            atomic(root / 'https-broker-ledger.json', stopped)
+            class ScopeChangedNode:
+                def __init__(self, config): pass
+                def verify_node(self): pass
+                def preflight(self): raise ValueError('Tailnet access scope changed; administrator review required')
+                def publication(self): return {}
+            installer.switch_pins(root, channel, new, True, lambda: None, ScopeChangedNode)
+            self.assertEqual(safe_read(root / 'host-config.json'), new)
+        # The same node with a changed access scope is re-pinned only on request, and the
+        # request never covers a different node.
+        rescoped = {**old, 'packetFilterHash': 'changed'}
+        with self.assertRaises(ValueError):
+            installer.check_identity(old, rescoped, running, False, nothing)
+        installer.check_identity(old, rescoped, running, False, nothing, accept_scope=True)
+        with self.assertRaises(ValueError):
+            installer.check_identity(old, {**rescoped, 'nodeId': 'other'}, stopped, False, nothing, accept_scope=True)
+        # Accepting a scope on the same node keeps the reservations running previews rely on.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(os.path.realpath(directory)) / 'broker'; channel = root / 'channel'
+            (channel / 'origins').mkdir(parents=True); root.chmod(0o700)
+            origin = channel / 'origins' / 'w.s.json'; origin.write_text('{}')
+            atomic(root / 'host-config.json', old)
+            atomic(root / 'https-broker-ledger.json', running)
+            installer.switch_pins(root, channel, rescoped, False, lambda: None, accept_scope=True)
+            self.assertEqual(safe_read(root / 'host-config.json'), rescoped)
+            self.assertTrue(origin.exists())
+        # What is accepted is shown grant by grant, with device names, so it can be judged.
+        rule = lambda source, first, last: {'Srcs': [source], 'IPProto': [6],
+                                            'Dsts': [{'Net': '100.64.0.1/32', 'Ports': {'First': first, 'Last': last}}]}
+        names = installer.device_names({'Self': {'DNSName': 'mac.ts.net.', 'TailscaleIPs': ['100.64.0.1']},
+                                        'Peer': {'k': {'DNSName': 'previews.ts.net.', 'TailscaleIPs': ['100.64.0.9']}}})
+        scope = lambda *rules: {'accessScope': installer.access_scope(list(rules))}
+        # Two sources swap what they may reach. Sets of sources and destinations are equal,
+        # yet one source gains every port, and the summary must say so.
+        before = scope(rule('100.64.0.9/32', 443, 443), rule('100.64.0.3/32', 0, 65535))
+        after = scope(rule('100.64.0.9/32', 0, 65535), rule('100.64.0.3/32', 443, 443))
+        change = installer.scope_change(before, after, names)
+        gained = [grant for grant in change['addedGrants'] if grant['source'] == '100.64.0.9/32']
+        self.assertEqual([(grant['ports'], grant['sourceDevice'], grant['destinationDevice']) for grant in gained],
+                         [('0-65535', 'previews', 'mac')])
+        self.assertEqual(len(change['addedGrants']), 2); self.assertEqual(len(change['removedGrants']), 2)
+        self.assertEqual({grant['sourceDevice'] for grant in change['removedGrants']}, {'previews', 'unknown device'})
+        # A protocol or other rule field is part of a grant too.
+        widened = scope({**rule('100.64.0.9/32', 443, 443), 'IPProto': [6, 17]})
+        self.assertEqual(len(installer.scope_change(scope(rule('100.64.0.9/32', 443, 443)), widened, names)['addedGrants']), 1)
+        # A changed hash with no grant difference, and an install with no earlier record,
+        # are stated as such with the full picture, never as "nothing changed".
+        raw = [rule('100.64.0.9/32', 443, 443)]
+        same = installer.scope_change(before, before, names, raw)
+        self.assertIn('not represented', same['comparison']); self.assertEqual(same['rawRules'], raw)
+        first = installer.scope_change({}, before, names)
+        self.assertIn('no earlier record', first['comparison']); self.assertEqual(len(first['allGrants']), 2)
+        # The move never excuses a change to anything else the broker is pinned to.
+        with self.assertRaises(ValueError):
+            installer.check_identity(old, {**new, 'daemonHome': '/elsewhere'}, stopped, True, nothing)
+
     def test_native_listener_rejects_wildcard_and_other_terminal(self):
         runtime = NativeRuntime({})
         runtime.command = lambda args: 'p123\nn*:40001\n'

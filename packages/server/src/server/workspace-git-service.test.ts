@@ -13,6 +13,7 @@ import type {
 } from "../utils/checkout-git.js";
 import {
   BACKGROUND_GIT_FETCH_INTERVAL_MS,
+  withWorkspacePollStatOptions,
   WORKSPACE_GIT_OBSERVATION_REENSURE_INTERVAL_MS,
   WORKSPACE_GIT_OBSERVATION_SETUP_CONCURRENCY,
   WORKSPACE_GIT_REFRESH_CONCURRENCY,
@@ -2155,5 +2156,49 @@ describe("WorkspaceGitServiceImpl with workspace folders that no longer exist", 
     expect(await workspaceFolderExists(folder)).toBe(true);
     expect(await workspaceFolderExists(join(folder, "missing"))).toBe(false);
     expect(await workspaceFolderExists(join(file, "nested"))).toBe(false);
+  });
+});
+
+describe("workspace polling pressure", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  test("sidebar-only workspaces skip active fallback polls but explicit reads remain fresh", async () => {
+    const getCheckoutStatus = vi.fn(async (cwd: string) => createCheckoutStatus(cwd));
+    const service = createService({
+      subscribe: vi.fn(async () => {
+        throw new Error("watcher unavailable");
+      }),
+      getCheckoutStatus,
+      now: () => new Date(Date.now()),
+    });
+    const subscription = service.registerWorkspace({ cwd: REPO_CWD, background: true }, vi.fn());
+    await waitForObservationToSettle(service, 1);
+    const before = getCheckoutStatus.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(20_000);
+    await waitForRefreshesToSettle(service);
+    expect(getCheckoutStatus).toHaveBeenCalledTimes(before);
+    await service.getSnapshot(REPO_CWD, { force: true, reason: "owner-refresh" });
+    expect(getCheckoutStatus.mock.calls.length).toBeGreaterThan(before);
+    subscription.unsubscribe();
+    await service.dispose();
+  });
+
+  test("routine poll commands use share-compatible stat checks without optional index writes", async () => {
+    const run = vi.fn(async () => ({
+      stdout: "",
+      stderr: "",
+      truncated: false,
+      exitCode: 0,
+      signal: null,
+    }));
+    await withWorkspacePollStatOptions(run)(["status", "--porcelain"], {
+      cwd: REPO_CWD,
+      envOverlay: { GIT_OPTIONAL_LOCKS: "0" },
+    });
+    expect(run).toHaveBeenCalledWith(
+      ["-c", "core.checkStat=minimal", "-c", "core.trustctime=false", "status", "--porcelain"],
+      expect.objectContaining({ envOverlay: { GIT_OPTIONAL_LOCKS: "0" } }),
+    );
   });
 });

@@ -1,4 +1,5 @@
 import { validateProviderAccountSetup } from "./providers.js";
+import { assertTimeZoneUpdate, pickTimeZone } from "./time-zone.js";
 import {
   enrollInstallationPluginProviders,
   readInstallationProviders,
@@ -119,6 +120,7 @@ const INVALID_UPDATE_MESSAGES: Partial<Record<string, string>> = {
   "project-policy":
     "A project must stay available in at least one environment, keyed by its absolute root path.",
   "primary-connection-unavailable": "That connection is no longer available.",
+  "time-zone": "Choose a time zone from the list.",
 };
 
 export class InstallationSettingsInvalidUpdate extends Error {
@@ -134,7 +136,8 @@ export class InstallationSettingsInvalidUpdate extends Error {
       | "installation-instructions"
       | "project-policy"
       | "primary-connection"
-      | "primary-connection-unavailable",
+      | "primary-connection-unavailable"
+      | "time-zone",
   ) {
     super(
       INVALID_UPDATE_MESSAGES[reason] ??
@@ -154,6 +157,7 @@ export class InstallationSettingsNotInitialized extends Error {
 /** The poll runs every 5 seconds, so the first retry waits for the second tick after a failure. */
 const ACCOUNT_RETRY_BASE_MS = 10_000;
 const ACCOUNT_RETRY_MAX_MS = 5 * 60_000;
+const SKILL_CATALOG_SETTLEMENT_TTL_MS = 60_000;
 
 /** Capped exponential delay: 10 s, 20 s, 40 s, 80 s, 160 s, then 5 minutes. */
 function accountRetryDelay(failures: number): number {
@@ -171,6 +175,10 @@ export class InstallationSettingsService {
   private readonly accountRetries = new Map<
     string,
     { failures: number; retryAt: number; revision: number }
+  >();
+  private readonly skillCatalogSettlements = new Map<
+    string,
+    { environment: SettingsEnvironment; key: string; checkedAt: number }
   >();
 
   constructor(
@@ -252,6 +260,10 @@ export class InstallationSettingsService {
     const settings = InstallationSettingsSchema.parse({ ...base, ...request.settings });
     pruneUnspecified(settings, request.settings);
     if (request.settings.primaryConnection) assertPrimaryConnectionChoice(settings);
+    assertTimeZoneUpdate(
+      request.settings.timeZone,
+      () => new InstallationSettingsInvalidUpdate("time-zone"),
+    );
     this.validateResources(settings);
     if (previous.settings !== null && isDeepStrictEqual(settings, previous.settings)) {
       this.skillRemovalConfirmations = request.confirmedSkillRemovals ?? {};
@@ -276,11 +288,12 @@ export class InstallationSettingsService {
   }
 
   /**
-   * `background` marks the periodic poll, which backs off failed account preparation.
-   * Explicit calls, such as after a sign-in, always retry.
+   * Background polls back off failed account preparation and reuse recent skill settlement.
+   * Explicit calls, such as after a sign-in, always inspect again.
    */
   reconcile(options: { background?: boolean } = {}): Promise<InstallationSettingsSnapshot> {
     return this.enqueue(async () => {
+      if (!options.background) this.skillCatalogSettlements.clear();
       this.projectionRevision = null;
       if (this.state.settings === null && this.state.conflicts === undefined) await this.migrate();
       if (this.needsPluginCatalogMigration()) await this.migratePluginCatalog();
@@ -810,7 +823,12 @@ export class InstallationSettingsService {
     return (settings.skillLibrary ?? []).filter((skill) => !excluded.includes(skill.identity));
   }
 
-  private async inspectResources(environment: SettingsEnvironment, settings: InstallationSettings) {
+  private async inspectResources(
+    environment: SettingsEnvironment,
+    settings: InstallationSettings,
+    background: boolean,
+  ) {
+    const revision = this.state.revision;
     const localConfig = await environment.read();
     const observed = readInstallationSettings(localConfig, this.installationInstructions);
     const excludedPluginIds = settings.resourceExclusions[environment.serverId]?.pluginIds ?? [];
@@ -822,10 +840,35 @@ export class InstallationSettingsService {
         excludedPluginIds,
       );
     let skillCatalogSettled = true;
-    if (settings.skillLibrary)
-      skillCatalogSettled = await environment.skillCatalogSettled(
-        this.availableSkills(settings, environment.serverId),
-      );
+    if (settings.skillLibrary) {
+      const definitions = this.availableSkills(settings, environment.serverId);
+      const key = JSON.stringify([
+        environment.kind,
+        revision,
+        definitions,
+        settings.resourceExclusions[environment.serverId],
+      ]);
+      const cached = this.skillCatalogSettlements.get(environment.serverId);
+      const now = this.now();
+      const fresh =
+        cached !== undefined &&
+        cached.environment === environment &&
+        cached.key === key &&
+        now >= cached.checkedAt &&
+        now - cached.checkedAt < SKILL_CATALOG_SETTLEMENT_TTL_MS;
+      // This background check is advisory. Explicit reads and projection verification
+      // stay fresh, while external skill drift is discovered within one minute.
+      if (!background || !fresh) {
+        this.skillCatalogSettlements.delete(environment.serverId);
+        skillCatalogSettled = await environment.skillCatalogSettled(definitions);
+        if (background && skillCatalogSettled && this.state.revision === revision)
+          this.skillCatalogSettlements.set(environment.serverId, {
+            environment,
+            key,
+            checkedAt: this.now(),
+          });
+      }
+    }
     let skillPlan: AgentSkillsSaveResult | null = null;
     if (settings.skills) skillPlan = await environment.previewSkills(settings.skills.selection);
     return {
@@ -873,7 +916,7 @@ export class InstallationSettingsService {
       }
     }
     try {
-      const inspected = await this.inspectResources(environment, settings);
+      const inspected = await this.inspectResources(environment, settings, background);
       return this.projectionRevision === this.state.revision ? inspected : null;
     } catch {
       this.recordStatus(environment.serverId, "read_failed");
@@ -975,6 +1018,7 @@ export class InstallationSettingsService {
   ): Promise<void> {
     const { environment, patch, plugins, excludedPluginIds } = verification;
     if (this.projectionRevision !== this.state.revision) return;
+    this.skillCatalogSettlements.delete(environment.serverId);
     try {
       await environment.patch(patch, confirmedRemovals);
     } catch {
@@ -1060,7 +1104,8 @@ export class InstallationSettingsService {
             patch.installationPrimaryConnection,
           ) &&
             verifiedConfig.installationPrimaryConnectionSupported ===
-              patch.installationPrimaryConnectionSupported))
+              patch.installationPrimaryConnectionSupported)) &&
+        timeZoneSettled(verifiedConfig, patch)
         ? null
         : "verification_failed",
     );
@@ -1082,6 +1127,7 @@ export class InstallationSettingsService {
       if (!complete) error = "account_binding_unavailable";
     }
     const status = next.sources[serverId];
+    if (error !== null) this.skillCatalogSettlements.delete(serverId);
     status.error = error;
     status.pendingRevision = error === null ? null : next.revision;
     if (error === null) status.appliedRevision = next.revision;
@@ -1125,7 +1171,20 @@ function environmentCopiesSettled(
         patch.installationPrimaryConnection,
       ) &&
         local.installationPrimaryConnectionSupported ===
-          patch.installationPrimaryConnectionSupported))
+          patch.installationPrimaryConnectionSupported)) &&
+    timeZoneSettled(local, patch)
+  );
+}
+
+/** The daemon's copy of the time zone matches, or this daemon predates the setting. */
+function timeZoneSettled(
+  local: MutableDaemonConfig,
+  patch: ReturnType<typeof projectInstallationSettings>,
+): boolean {
+  return (
+    patch.timeZone === undefined ||
+    (local.timeZone !== undefined &&
+      isDeepStrictEqual(pickTimeZone(local.timeZone), patch.timeZone))
   );
 }
 

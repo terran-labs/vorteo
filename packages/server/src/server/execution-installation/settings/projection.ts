@@ -11,6 +11,7 @@ import {
 } from "@getpaseo/protocol/installation-settings";
 import { composeEnvironmentSystemPrompt, readUserSystemPrompt } from "./instructions.js";
 import { localPrimaryConnection } from "./primary-connection.js";
+import { projectTimeZone } from "./time-zone.js";
 
 export class InstallationAccountBindingUnavailable extends Error {
   constructor(readonly reference: string) {
@@ -186,6 +187,8 @@ export function projectInstallationSettings(
           installationPrimaryConnectionSupported: true,
         }
       : {}),
+    // Same capability rule: daemons that store the owner's time zone always report the key.
+    ...projectTimeZone(settings, localConfig),
     expectedInstallationResourceRevision: installationResourceRevision(localConfig),
     installationResourceBindings: {
       terminalProfiles: retainedTerminals,

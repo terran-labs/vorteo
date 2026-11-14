@@ -98,7 +98,7 @@ export async function expectSidebarNavSettingsRow(
   await expect(row).toBeVisible();
   await expect(row.getByText(expected.label, { exact: true })).toBeVisible();
   const toggle = row.getByTestId(`sidebar-nav-toggle-${expected.key}`);
-  await expect(toggle).toHaveAccessibleName(expected.label);
+  await expect(toggle).toHaveAccessibleName(`Show ${expected.label}`);
   await expect(toggle).toHaveAttribute("aria-checked", String(expected.visible));
 }
 

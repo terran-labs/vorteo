@@ -246,7 +246,7 @@ describe("HostPluginsPage", () => {
           }),
       );
       renderPage(client);
-      fireEvent.click(await screen.findByRole("switch", { name: "example: Disable" }));
+      fireEvent.click(await screen.findByRole("switch", { name: "Enable example" }));
       await waitFor(() => expect(client.disablePlugin).toHaveBeenCalledTimes(1));
       expect(screen.queryByTestId("plugin-management-feedback")).toBeNull();
       finish();
@@ -269,7 +269,8 @@ describe("HostPluginsPage", () => {
       await selectPluginAction("Reload");
       await waitFor(() => expect(client.reloadPlugin).toHaveBeenCalledTimes(1));
       expect(screen.queryByTestId("plugin-management-feedback")).toBeNull();
-      expect(feedback.getAttribute("aria-live")).toBeNull();
+      // The live region stays mounted so its next message is announced.
+      expect(feedback.getAttribute("aria-live")).toBe("polite");
       completeReload(plugin());
       await screen.findByTestId("plugin-management-feedback");
     },
@@ -282,7 +283,7 @@ describe("HostPluginsPage", () => {
     client.disablePlugin.mockRejectedValueOnce(lost);
     renderPage(client);
 
-    fireEvent.click(await screen.findByRole("switch", { name: "example: Disable" }));
+    fireEvent.click(await screen.findByRole("switch", { name: "Enable example" }));
 
     await waitFor(() => expect(reportActionError).toHaveBeenCalledWith(lost));
     expect(screen.queryByTestId("plugin-management-feedback")).toBeNull();

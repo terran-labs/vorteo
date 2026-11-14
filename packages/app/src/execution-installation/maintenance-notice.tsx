@@ -71,24 +71,28 @@ export function MaintenanceNotice({
     );
   }
   return (
-    <Pressable
-      style={styles.row}
-      testID={testID}
-      accessibilityRole="button"
-      accessibilityLabel={`${title}. ${reviewLabel}`}
-      accessibilityHint={description}
-      onPress={onReview}
-    >
+    // Review and Cancel are siblings: a button nested inside another button is invalid markup and
+    // hard to reach with a keyboard or screen reader.
+    <View style={styles.row}>
       <SidebarSeparator edge="top" testID={testID ? `${testID}-divider` : undefined} />
-      <Spinner uniProps={spinnerColor} size={16} />
-      <View style={styles.copy}>
-        <Text style={styles.title} numberOfLines={1}>
-          {title}
-        </Text>
-        <Text style={styles.description} numberOfLines={1}>
-          {description}
-        </Text>
-      </View>
+      <Pressable
+        style={styles.review}
+        accessibilityRole="button"
+        accessibilityLabel={`${title}. ${reviewLabel}`}
+        accessibilityHint={description}
+        onPress={onReview}
+        testID={testID}
+      >
+        <Spinner uniProps={spinnerColor} size={16} />
+        <View style={styles.copy}>
+          <Text style={styles.title} numberOfLines={1}>
+            {title}
+          </Text>
+          <Text style={styles.description} numberOfLines={1}>
+            {description}
+          </Text>
+        </View>
+      </Pressable>
       {onCancel ? (
         <Button
           variant="ghost"
@@ -100,7 +104,7 @@ export function MaintenanceNotice({
           Cancel
         </Button>
       ) : null}
-    </Pressable>
+    </View>
   );
 }
 
@@ -121,6 +125,7 @@ const styles = StyleSheet.create((theme) => ({
     borderTopWidth: 1,
     borderTopColor: "transparent",
   },
+  review: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 10 },
   copy: { flex: 1, minWidth: 0 },
   title: { fontSize: theme.fontSize.sm, lineHeight: 16, color: theme.colors.foreground },
   description: { fontSize: theme.fontSize.sm, lineHeight: 16, color: theme.colors.foregroundMuted },

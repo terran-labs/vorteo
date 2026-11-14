@@ -152,10 +152,10 @@ export function createInstallationSettingsReader(
         );
       // Node's fetch keeps no HTTP cache, so no cache mode is needed; the entrypoint builds, which
       // type against Node alone, reject the DOM-only option.
-      // COMPAT(projectPolicies, primaryConnection): older coordinators ignore the query and omit
-      // the newer fields.
+      // COMPAT(projectPolicies, primaryConnection, timeZoneSetting): older coordinators ignore
+      // the query and omit the newer fields.
       const url = new URL(
-        "/api/installation/settings/admission?projectPolicies=1&primaryConnection=1",
+        "/api/installation/settings/admission?projectPolicies=1&primaryConnection=1&timeZone=1",
         config.origin,
       );
       let response: Response;

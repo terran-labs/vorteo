@@ -3,7 +3,7 @@ import type { StyleProp, TextStyle, ViewStyle } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { CONTROL_HEIGHTS, type ControlSize } from "@/components/ui/control-geometry";
 
-import { settingsStyles } from "@/styles/settings";
+import { settingsStyles, TOUCH_ROW_MIN_HEIGHT } from "@/styles/settings";
 
 // Rows revealed under a collapsible row belong to it, so they sit one step smaller than the rows
 // of the card: tighter padding, smaller text, smaller controls. The container decides; a row
@@ -46,10 +46,10 @@ export function useSettingsRowLayout(): SettingsRowLayout {
 
 const styles = StyleSheet.create((theme) => ({
   // Every nested row is as tall as one holding an `sm` control, so rows with and without a
-  // trailing button line up.
+  // trailing button line up. Touch layouts keep the 44 point target.
   nestedRow: {
-    paddingVertical: theme.spacing[2],
-    minHeight: CONTROL_HEIGHTS.sm + theme.spacing[2] * 2,
+    paddingVertical: theme.spacing[1],
+    minHeight: { xs: TOUCH_ROW_MIN_HEIGHT, md: CONTROL_HEIGHTS.sm + theme.spacing[1] * 2 },
   },
   nestedText: {
     fontSize: theme.fontSize.sm,

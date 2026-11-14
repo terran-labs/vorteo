@@ -42,6 +42,16 @@ export interface SearchFieldProps {
   style?: StyleProp<ViewStyle>;
   /** Size the field to its placeholder and icon instead of filling the row. */
   fitPlaceholder?: boolean;
+  /**
+   * Combobox semantics for a field that drives a result list: `role="combobox"`, whether the
+   * list shows, the list's id, and the id of the highlighted result. Omitted, the field stays a
+   * plain search input.
+   */
+  role?: "combobox";
+  "aria-expanded"?: boolean;
+  "aria-controls"?: string;
+  "aria-activedescendant"?: string;
+  "aria-autocomplete"?: "list" | "none";
 }
 
 /**
@@ -64,6 +74,7 @@ export function SearchField({
   autoFocus,
   style,
   fitPlaceholder = false,
+  ...combobox
 }: SearchFieldProps): ReactElement {
   const [isFocused, setIsFocused] = useState(false);
   const [placeholderWidth, setPlaceholderWidth] = useState(0);
@@ -115,6 +126,7 @@ export function SearchField({
         onBlur={handleBlur}
         placeholder={placeholder}
         accessibilityLabel={accessibilityLabel ?? placeholder}
+        {...combobox}
         autoCapitalize="none"
         autoCorrect={false}
         returnKeyType="search"

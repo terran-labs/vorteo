@@ -3,6 +3,7 @@ import { chmod } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import type { JsonValue } from "@getpaseo/protocol/agent-types";
+import { withTimeout } from "../../utils/promise-timeout.js";
 import { readFrames } from "./frame-reader.js";
 import {
   acquireHostLock,
@@ -48,6 +49,12 @@ export interface HostedSessionPort {
    * be refreshing its sign-in. An idle close is refused and shutdown waits, within its bound.
    */
   settling?(): boolean;
+  /**
+   * Optional: the provider's answer to whether stopping it now loses no background work, such as
+   * a background shell, monitor or subagent that will wake the agent. False or a rejection refuses
+   * an idle close; missing keeps the baseline checks. Explicit close and shutdown ignore it.
+   */
+  canStopRuntime?(): Promise<boolean>;
   close(): Promise<void>;
 }
 
@@ -99,6 +106,32 @@ const DEFAULT_LIMITS: SessionHostLimits = {
 
 /** History pages stay well under one frame. */
 const HISTORY_PAGE_BYTES = 4 * 1024 * 1024;
+
+/** Bound on a provider's background work check; a timeout keeps the session. */
+const STOP_CHECK_TIMEOUT_MS = 10_000;
+
+/**
+ * Whether an idle release may stop a provider without losing background work, from its optional
+ * canStopRuntime check. Like the daemon's idle runtime cleanup, a missing check allows it and a
+ * check that rejects or times out keeps the session. The host and the worker's upgrade release
+ * both use it.
+ */
+export async function providerAllowsStop(
+  canStopRuntime: (() => Promise<boolean>) | undefined,
+): Promise<boolean> {
+  if (!canStopRuntime) return true;
+  try {
+    return (
+      (await withTimeout(
+        canStopRuntime(),
+        STOP_CHECK_TIMEOUT_MS,
+        "The provider's background work check timed out.",
+      )) === true
+    );
+  } catch {
+    return false;
+  }
+}
 
 /** Room for the event frame envelope around a serialized provider event. */
 const EVENT_FRAME_OVERHEAD_BYTES = 1_024;
@@ -453,6 +486,32 @@ export async function startSessionHost(options: SessionHostOptions): Promise<Ses
     }
   }
 
+  /**
+   * Refuses an idle close while the session does anything that closing would lose. The provider's
+   * background work check is async, so it runs first and the synchronous checks run after it, and
+   * the caller admits the close with no await after this returns. Background work starts only
+   * inside a turn or a call, which the synchronous checks see, so work begun after the provider
+   * answered still refuses the close.
+   */
+  async function admitIdleClose(
+    connection: Connection,
+    sessionId: string,
+    state: HostedSessionState,
+  ): Promise<void> {
+    if (!(await providerAllowsStop(state.port.canStopRuntime?.bind(state.port))))
+      throw new HostError("failed", "Hosted session has live background work; idle close refused.");
+    if (sessions.get(sessionId) !== state || state.closing || state.attached !== connection)
+      throw new HostError("failed", "Hosted session changed; idle close refused.");
+    const snapshot = HostedSessionSnapshotSchema.safeParse(state.port.snapshot());
+    if (!snapshot.success) throw new HostError("failed", "Cannot verify hosted session is idle.");
+    const busy =
+      state.activeCalls > 0 ||
+      snapshot.data.activeTurnId !== null ||
+      snapshot.data.pendingPermissions.length > 0 ||
+      state.port.settling?.() === true;
+    if (busy) throw new HostError("failed", "Hosted session is busy; idle close refused.");
+  }
+
   async function call(
     connection: Connection,
     sessionId: string,
@@ -493,17 +552,8 @@ export async function startSessionHost(options: SessionHostOptions): Promise<Ses
         state.activeCalls--;
       }
     }
-    if (request.method === "closeIfIdle") {
-      const snapshot = HostedSessionSnapshotSchema.safeParse(state.port.snapshot());
-      if (!snapshot.success) throw new HostError("failed", "Cannot verify hosted session is idle.");
-      const busy =
-        state.activeCalls > 0 ||
-        snapshot.data.activeTurnId !== null ||
-        snapshot.data.pendingPermissions.length > 0 ||
-        state.port.settling?.() === true;
-      if (busy) throw new HostError("failed", "Hosted session is busy; idle close refused.");
-      // No await between the authoritative check and closing admission below.
-    }
+    // No await between admitIdleClose's authoritative check and closing admission below.
+    if (request.method === "closeIfIdle") await admitIdleClose(connection, sessionId, state);
     switch (request.method) {
       case "close":
       case "closeIfIdle":

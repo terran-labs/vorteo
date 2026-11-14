@@ -32,6 +32,7 @@ const FIELD_LABELS: Record<InstallationSettingsField, string> = {
   resourceExclusions: "Per-environment exclusions",
   projectPolicies: "Project policies",
   primaryConnection: "Primary connection",
+  timeZone: "Time zone",
 };
 
 export function conflictFieldLabel(field: InstallationSettingsField): string {

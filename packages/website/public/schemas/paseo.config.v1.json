@@ -282,6 +282,37 @@
         "installationPrimaryConnectionSupported": {
           "type": "boolean"
         },
+        "timeZone": {
+          "type": "object",
+          "properties": {
+            "override": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "reported": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": ["override", "reported"],
+          "additionalProperties": {}
+        },
         "agentProfiles": {
           "type": "array",
           "items": {

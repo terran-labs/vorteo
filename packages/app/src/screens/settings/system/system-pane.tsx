@@ -1,7 +1,6 @@
 import { ServiceAccessSection } from "../service-access-section";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Text, View } from "react-native";
-import { ScrollView } from "@/components/ui/scroll-view";
 import { StyleSheet } from "react-native-unistyles";
 import { useHosts, useHostRuntimeSnapshot } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
@@ -18,13 +17,8 @@ import { SettingsSection } from "@/components/settings/headings/settings-section
 import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { settingsStyles } from "@/styles/settings";
 import { LocalDaemonSection } from "@/desktop/components/desktop-updates-section";
-import {
-  InstallationSystemAdvanced,
-  InstallationSystemDetails,
-  RestartRequest,
-} from "@/execution-installation/panel";
+import { InstallationSystemDetails, RestartRequest } from "@/execution-installation/panel";
 import { InstallationConnectionCheck } from "@/execution-installation/connection-check-wrapper";
-import { UpstreamUpdatesSection } from "@/vorton-updates/upstream-section";
 import { VORTON_BUILD_COMMIT } from "@/vorton-updates/use-update";
 import { SystemView } from "./system-view";
 import { RestartBehaviorSection } from "./restart-behavior-section";
@@ -199,14 +193,10 @@ export function SystemPane({
   serverId,
   restartRecovery,
   restartRequestId,
-  focusedSettingId,
-  focusRequestNonce,
 }: {
   serverId?: string;
   restartRecovery?: ReactNode;
   restartRequestId?: string | null;
-  focusedSettingId?: string | null;
-  focusRequestNonce?: number;
 } = {}) {
   const adapter = useSystemAdapter(serverId);
   const linkedJob = adapter.state?.unlocked
@@ -230,18 +220,6 @@ export function SystemPane({
     },
     [adapter],
   );
-  const [advanced, setAdvanced] = useState(false);
-  useEffect(() => {
-    // Search must reveal the indexed row, while polls must respect manual collapse.
-    if (
-      focusedSettingId === "system.overview.customDomain" ||
-      focusedSettingId === "system.overview.domain" ||
-      focusedSettingId === "maintenance.installation.deliveryMode"
-    )
-      setAdvanced(true);
-  }, [focusedSettingId, focusRequestNonce]);
-  const toggleAdvanced = useCallback(() => setAdvanced((value) => !value), []);
-  const advancedState = useMemo(() => ({ expanded: advanced }), [advanced]);
   const environments = useMemo(
     () => [
       ...(adapter.hostId
@@ -339,29 +317,10 @@ export function SystemPane({
           (adapter.hostId ? <RestartBehaviorSection serverId={adapter.hostId} /> : null)}
       </View>
       {adapter.hostId ? <BlockedWorkReviewCard serverId={adapter.hostId} /> : null}
-      <Button
-        variant="ghost"
-        onPress={toggleAdvanced}
-        accessibilityState={advancedState}
-        testID="system-advanced-toggle"
-      >
-        Advanced
-      </Button>
-      {advanced ? (
-        <ScrollView style={styles.advanced} contentContainerStyle={styles.detailsBody}>
-          <InstallationSystemAdvanced />
-          <Text style={settingsStyles.rowTitle}>Installation overview</Text>
-          <Text selectable style={settingsStyles.rowHint}>
-            Read-only projects, workspaces and agents across Host and Dev are available at
-            /api/installation/overview. Scripts need a dedicated observer credential issued by Host.
-          </Text>
-          <UpstreamUpdatesSection />
-        </ScrollView>
-      ) : null}
+      {/* Domain, live development and upstream merges live in System's single Advanced group. */}
     </SettingsSection>
   );
 }
 const styles = StyleSheet.create((theme) => ({
   detailsBody: { padding: theme.spacing[4], gap: theme.spacing[3] },
-  advanced: { height: 600 },
 }));

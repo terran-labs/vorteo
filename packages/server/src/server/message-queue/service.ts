@@ -132,6 +132,20 @@ export class MessageQueueService {
   }
 
   /**
+   * Queue a message from the owner that did not come through the composer, such as
+   * preview feedback. The caller's stable ID makes a retry enqueue at most once.
+   */
+  async queueOwnerMessage(agentId: string, messageId: string, text: string): Promise<void> {
+    await this.mutate(agentId, {
+      kind: "enqueue",
+      operationId: messageId,
+      messageId,
+      attachments: [],
+      text,
+    });
+  }
+
+  /**
    * Steers one queued message into the active turn under a persisted claim, so a restart
    * mid-steer reconciles it from provider history like any other dispatch. `steer` returns
    * null only when the provider certainly did not take the message, which returns it to the

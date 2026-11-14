@@ -77,7 +77,7 @@ function AgentUsageCards({
   reports: readonly UsageReportEntry[];
   refreshable: boolean;
 }) {
-  const { display } = useUsageDisplay(reports);
+  const { display } = useUsageDisplay();
   return reports.map((entry) => (
     <UsageCard
       key={entry.id}
@@ -86,7 +86,6 @@ function AgentUsageCards({
       entry={entry}
       display={display}
       compact
-      pinnable={false}
       refreshable={refreshable}
     />
   ));

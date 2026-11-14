@@ -6,11 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, onTestFinished } from "vitest";
 import { createTestLogger } from "../../../../test-utils/test-logger.js";
-import { discoverClaudeModels } from "./model-discovery.js";
+import { discoverClaudeModels, forgetClaudeModelDiscoveries } from "./model-discovery.js";
 import { ClaudeAgentClient } from "./agent.js";
 
 const directories: string[] = [];
 afterEach(async () => {
+  forgetClaudeModelDiscoveries();
   await Promise.all(
     directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
   );
@@ -268,5 +269,58 @@ it.each(["shutdown", "caller"])(
     expect(launches).toBe(0);
     expect(activities).toEqual(["version", "models"]);
     await client.shutdown();
+  },
+);
+
+it.each([
+  ["expired", 1, false],
+  ["far from expiry", Date.now() + 6 * 60 * 60_000, true],
+])(
+  "the diagnostic runs `auth status` for a full sign-in only away from its renewal: %s",
+  async (_name, expiresAt, runsAuthStatus) => {
+    const directory = await mkdtemp(join(tmpdir(), "claude-diagnostic-"));
+    directories.push(directory);
+    const script = join(directory, "cli.cjs");
+    const calls = join(directory, "calls");
+    await writeFile(calls, "");
+    await writeFile(
+      script,
+      `
+      const fs = require('node:fs');
+      const args = process.argv.slice(2).join(' ');
+      fs.appendFileSync(${JSON.stringify(calls)}, args + ${JSON.stringify("\n")});
+      if (args === '--version') process.stdout.write('2.1.321 (Claude Code)');
+      if (args === 'auth status') process.stdout.write(JSON.stringify({ loggedIn: true }));
+      `,
+    );
+    // Synthetic stored sign-in: the CLI's own file format, never a real credential.
+    await writeFile(
+      join(directory, ".credentials.json"),
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "synthetic-access",
+          refreshToken: "synthetic-refresh",
+          expiresAt,
+          scopes: [],
+        },
+      }),
+      { mode: 0o600 },
+    );
+    const client = new ClaudeAgentClient({
+      logger: createTestLogger(),
+      runtimeSettings: {
+        command: { mode: "replace", argv: [process.execPath, script] },
+        env: { HOME: directory, CLAUDE_CONFIG_DIR: directory, VORTEO_CLAUDE_SIGN_IN: "full" },
+      },
+      resolveBinary: async () => script,
+    });
+    try {
+      const { diagnostic } = await client.getDiagnostic();
+      const ran = (await readFile(calls, "utf8")).split("\n").includes("auth status");
+      expect(ran).toBe(runsAuthStatus);
+      expect(diagnostic.includes("Not checked")).toBe(!runsAuthStatus);
+    } finally {
+      await client.shutdown();
+    }
   },
 );

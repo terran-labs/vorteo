@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { WorkspaceRecoveryGuard } from "@getpaseo/protocol/messages";
 
@@ -8,6 +8,7 @@ import { createRealpathAwarePathMatcher } from "../../../utils/path.js";
 import { runGitCommand } from "../../../utils/run-git-command.js";
 import {
   createWorktree,
+  forgetMissingWorktreeEntry,
   isPaseoOwnedWorktreeCwd,
   mapWorkspaceCwdToWorktree,
   rollbackCreatedPaseoWorktree,
@@ -131,7 +132,16 @@ export function createWorkspaceRecoveryService(deps: {
       return createRecoveryPlan({ action: "unarchive", workspace });
     }
 
-    if (workspace.kind !== "worktree") {
+    // The regressed metadata projection saved local checkouts as unowned
+    // worktrees pointing back to their own root. With the target missing, that
+    // shape has no separate restore source. Normalize only the unavailable
+    // classification, preserving the retained record and its recovery guards.
+    const sourceIsCheckout =
+      !workspace.isPaseoOwnedWorktree &&
+      workspace.mainRepoRoot != null &&
+      workspace.worktreeRoot != null &&
+      resolve(workspace.mainRepoRoot) === resolve(workspace.worktreeRoot);
+    if (workspace.kind !== "worktree" || sourceIsCheckout) {
       return {
         kind: "unavailable",
         workspaceId,
@@ -232,12 +242,6 @@ export function createWorkspaceRecoveryService(deps: {
           baseRef: await resolveRecoveryBase(sourceRepoRoot, workspace.baseBranch),
         };
 
-    try {
-      await runGitCommand(["worktree", "prune"], { cwd: sourceRepoRoot, timeout: 30_000 });
-    } catch {
-      // A stale worktree registration is not guaranteed; creation reports any real conflict.
-    }
-
     let previousWorktreePath = workspace.worktreeRoot;
     let hasRecordedWorktreePath = Boolean(previousWorktreePath);
     if (!previousWorktreePath) {
@@ -251,6 +255,20 @@ export function createWorkspaceRecoveryService(deps: {
         ? (ownership.worktreePath ?? workspace.cwd)
         : workspace.cwd;
       hasRecordedWorktreePath = ownership.allowed;
+    }
+
+    // Forget only this worktree's stale registration. A repository-wide prune would also delete
+    // worktrees whose folders only another environment can see (#295). A locked registration
+    // is dropped only when it still checks out this workspace's branch: another environment
+    // may have registered the freed path since, and then creation fails instead.
+    try {
+      await forgetMissingWorktreeEntry(
+        sourceRepoRoot,
+        previousWorktreePath,
+        hasRecordedWorktreePath && workspace.branch ? { lockedBranch: workspace.branch } : {},
+      );
+    } catch {
+      // A stale registration is not guaranteed; creation reports any real conflict.
     }
 
     let recreatedWorktreePath: string;

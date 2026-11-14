@@ -985,6 +985,37 @@ test("conditional idle close waits for a settling provider process", async () =>
   expect(session.counts.closed).toBe(1);
 });
 
+// A background shell or monitor that would wake the agent died silently when a host upgrade
+// released its quiet session (11-13 incident: the Builds coordinator lost its watchers for hours).
+test("conditional idle close keeps a provider with live background work", async () => {
+  const session = controllableSession();
+  let backgroundWork: "running" | "unknown" | "done" = "running";
+  const port: HostedSessionPort = {
+    ...session.port,
+    snapshot: () => ({
+      id: "watching",
+      persistence: null,
+      features: [],
+      activeTurnId: null,
+      pendingPermissions: [],
+    }),
+    canStopRuntime: async () => {
+      if (backgroundWork === "unknown") throw new Error("probe failed");
+      return backgroundWork === "done";
+    },
+  };
+  const { socketPath } = await hostWith(session, { openSession: async () => port });
+  const client = await worker(socketPath);
+  const channel = await client.open({ sessionId: "watching", provider: "claude", config: {} });
+  await expect(channel.call({ method: "closeIfIdle" })).rejects.toThrow("background work");
+  backgroundWork = "unknown";
+  await expect(channel.call({ method: "closeIfIdle" })).rejects.toThrow("background work");
+  expect(session.counts.closed).toBe(0);
+  backgroundWork = "done";
+  await channel.call({ method: "closeIfIdle" });
+  expect(session.counts.closed).toBe(1);
+});
+
 test("conditional idle close marks closing before another turn can enter", async () => {
   const session = controllableSession();
   let entered: () => void = () => {};

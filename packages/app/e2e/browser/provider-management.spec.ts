@@ -54,7 +54,8 @@ for (const width of [1280, 402]) {
         const name = `Search account ${width} ${suffix}`;
         await page
           .getByTestId("catalog-provider-codex")
-          .getByRole("button", { name: "Add", exact: true })
+          // The visible "Add" names its provider for assistive technology.
+          .getByRole("button", { name: "Add Codex account", exact: true })
           .click();
         await expect(page.getByTestId("codex-account-name")).toHaveValue("Codex 3");
         await page.getByTestId("codex-account-name").fill(name);

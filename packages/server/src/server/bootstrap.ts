@@ -24,6 +24,8 @@ import {
 } from "./agent/finish-subscriptions/index.js";
 import { createWorkspaceRuntimeStore } from "./workspace-runtime-store/index.js";
 import type { PluginRegistries } from "@getpaseo/protocol/plugin-registry";
+import { effectiveTimeZoneName } from "@getpaseo/protocol/installation-settings";
+import { daemonTimeZone } from "./execution-installation/settings/time-zone.js";
 import { describeHookWorkspace } from "./plugins/lifecycle/index.js";
 import express from "express";
 import { createServer as createHTTPServer, type IncomingMessage, type ServerResponse } from "http";
@@ -179,7 +181,11 @@ import { createAppliedSeqStore } from "./session-host/applied-store.js";
 import { loadAdoptedAgents, planHostedStartup } from "./session-host/boot-attach.js";
 import { startHostedIdleRelease } from "./session-host/idle-release.js";
 import { startIdleSessionRelease } from "./agent/idle-release.js";
-import { ensureAgentLoaded } from "./agent/agent-loading.js";
+import { ensureAgentLoaded, ensureUnarchivedAgentLoaded } from "./agent/agent-loading.js";
+import { createPreviewsRouter } from "./previews/routes.js";
+import { PreviewsService } from "./previews/service.js";
+import { PreviewStore } from "./previews/store.js";
+import { renderThumbnail } from "./previews/thumbnail.js";
 import { formatSystemNotificationPrompt } from "./agent/agent-messages/index.js";
 import { startAgentRun } from "./agent/agent-prompt.js";
 import { switchAgentProfileCommand } from "./agent/profile-switch/command.js";
@@ -493,6 +499,7 @@ export interface PaseoDaemonConfig {
   primaryConnection?: MutableDaemonConfig["primaryConnection"];
   installationPrimaryConnection?: MutableDaemonConfig["installationPrimaryConnection"];
   installationPrimaryConnectionSupported?: boolean;
+  timeZone?: MutableDaemonConfig["timeZone"];
   skillSelection?: AgentSkillSelection;
   pluginsEnabled?: boolean;
   /** Seeds the Vorteo System project at startup. Defaults on; test daemons turn it off. */
@@ -680,6 +687,7 @@ function createInitialMutableDaemonConfig(config: ResolvedDaemonSettings): Mutab
     primaryConnection: config.primaryConnection,
     installationPrimaryConnection: config.installationPrimaryConnection,
     installationPrimaryConnectionSupported: config.installationPrimaryConnectionSupported,
+    timeZone: daemonTimeZone(config.timeZone),
   };
 
   if (config.terminalProfiles !== undefined) {
@@ -969,6 +977,34 @@ export async function createPaseoDaemon(
     createTerminalActivityRouteHandler(terminalManager),
   );
 
+  // Previews gallery: review pages, frozen snapshots and owner annotations. Mounted ahead
+  // of daemon auth because every route authenticates itself; see previews/routes.ts.
+  const previews = new PreviewsService({
+    store: new PreviewStore(path.join(config.paseoHome, "previews")),
+    deliver: async (agentId, messageId, text) => {
+      await ensureUnarchivedAgentLoaded(agentId, { agentManager, agentStorage, logger });
+      await agentManager.queueOwnerMessage(agentId, messageId, text);
+    },
+    describeAgent: (agentId) => {
+      const agent = agentManager.getAgent(agentId);
+      if (!agent) return null;
+      return {
+        ...(agent.config.title ? { title: agent.config.title } : {}),
+        ...(agent.workspaceId ? { workspaceId: agent.workspaceId } : {}),
+      };
+    },
+    onChanged: (revision) =>
+      wsServer?.broadcast({
+        type: "session",
+        message: { type: "previews.changed", payload: { revision } },
+      }),
+    renderThumbnail,
+    loopbackBaseUrl: () =>
+      boundListenTarget?.type === "tcp" ? `http://127.0.0.1:${boundListenTarget.port}` : null,
+    warn: (context, message) => logger.warn(context, message),
+  });
+  app.use("/api/previews", createPreviewsRouter(previews));
+
   // Serve the bundled browser web UI when enabled. Mounted after service-proxy
   // classification and host/CORS handling, but before daemon bearer auth, so
   // static app files load without the daemon password while API/WebSocket calls
@@ -1123,6 +1159,15 @@ export async function createPaseoDaemon(
     logger,
     paseoHome: config.paseoHome,
     worktreesRoot: config.worktreesRoot,
+    isWorkspaceActive: (cwd) =>
+      agentManager
+        .listAgents()
+        .some(
+          (agent) =>
+            (agent.lifecycle === "running" || agent.lifecycle === "initializing") &&
+            path.resolve(agent.cwd) === cwd,
+        ) ||
+      (wsServer?.listSessions().some((session) => session.isWorkspaceGitActive(cwd)) ?? false),
     deps: {
       forgeOverrides: { github },
     },
@@ -1202,6 +1247,7 @@ export async function createPaseoDaemon(
     providerDefinitions: initialAgentManagerState.providerDefinitions,
     registry: agentStorage,
     appendSystemPrompt: config.appendSystemPrompt,
+    ownerTimeZone: effectiveTimeZoneName(config.timeZone),
     onWorkspaceStateMayHaveChanged: ({ cwd }) => {
       workspaceGitService.onWorkspaceStateMayHaveChanged(cwd);
     },
@@ -1748,6 +1794,14 @@ export async function createPaseoDaemon(
     logger,
     // Read on every scan so the host setting applies without a restart.
     enabled: () => daemonConfigStore.get().blockedWorkReview === true,
+    pausedFactoryProjects: async () => {
+      const list = await projectFactoryService?.list();
+      return new Set(
+        (list?.projects ?? [])
+          .filter((project) => project.paused || project.drain)
+          .map((project) => project.projectId),
+      );
+    },
   });
   const usageLimitResumes = new UsageLimitResumeService({
     agentManager,
@@ -2045,6 +2099,8 @@ export async function createPaseoDaemon(
       enabled ? createPaseoAgentToolManifest(createAgentToolHostDependencies({})) : null,
     );
   };
+  // Agent tools and client sessions reach the Previews gallery through the manager.
+  agentManager.previews = previews;
   agentManager.setPaseoToolCatalogFactory(createAgentToolCatalog);
   agentManager.setPaseoToolsEnabled(config.mcpInjectIntoAgents !== false);
   setAgentProviderToolsEnabled(config.mcpEnabled !== false && config.mcpInjectIntoAgents !== false);
@@ -2209,6 +2265,11 @@ export async function createPaseoDaemon(
             });
             daemonConfigStore.onFieldChange("appendSystemPrompt", (value) => {
               agentManager.setAppendSystemPrompt(typeof value === "string" ? value : "");
+            });
+            daemonConfigStore.onFieldChange("timeZone", () => {
+              agentManager.setOwnerTimeZone(
+                effectiveTimeZoneName(daemonConfigStore.get().timeZone),
+              );
             });
             const relayEnabled = config.relayEnabled ?? false;
             const relayEndpoint = config.relayEndpoint ?? "relay.paseo.sh:443";

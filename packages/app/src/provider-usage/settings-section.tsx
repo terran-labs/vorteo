@@ -42,6 +42,8 @@ export function ProviderUsageSettingsSection({
       title={providerUsageCopy.title}
       testID="provider-usage-card"
       trailing={refreshButton}
+      // A mounted status slot announces loading and refreshing, which the button alone does not.
+      status={busy ? providerUsageCopy.refreshing : null}
     >
       <ProviderUsageBody view={view} onRefresh={onRefresh} serverId={serverId} />
     </SettingsSection>

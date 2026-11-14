@@ -1,23 +1,11 @@
-import { useUsageHostId } from "./hosts";
-import { useUsageHostReports } from "./queries";
 import { useCallback, useMemo } from "react";
 import { useAppSettings } from "@/hooks/use-settings";
-import {
-  isUsagePinned,
-  setUsageDisplayAs,
-  toggleUsagePin,
-  type UsageDisplayAs,
-  type UsagePin,
-  type UsagePreferences,
-} from "./preferences";
-import type { UsageReportEntry } from "./types";
+import { setUsageDisplayAs, type UsageDisplayAs, type UsagePreferences } from "./preferences";
 
-/** What usage views need from the preferences: how to read percents, and the pins. */
+/** What usage views need from the preferences: how to read percents. */
 export interface UsageDisplay {
   displayAs: UsageDisplayAs;
   setDisplayAs: (displayAs: UsageDisplayAs) => void;
-  isPinned: (pin: UsagePin) => boolean;
-  togglePin: (pin: UsagePin) => void;
 }
 
 interface UsagePreferencesState {
@@ -25,8 +13,8 @@ interface UsagePreferencesState {
   display: UsageDisplay;
 }
 
-/** The device's usage preferences, with pins resolved against the given reports. */
-export function useUsageDisplay(reports: readonly UsageReportEntry[]): UsagePreferencesState {
+/** The device's usage preferences. */
+export function useUsageDisplay(): UsagePreferencesState {
   const { settings, updateSettings } = useAppSettings();
   const preferences = settings.usage;
   const setDisplayAs = useCallback(
@@ -35,27 +23,9 @@ export function useUsageDisplay(reports: readonly UsageReportEntry[]): UsagePref
     },
     [updateSettings],
   );
-  const togglePin = useCallback(
-    (pin: UsagePin) => {
-      void updateSettings((current) => ({
-        usage: toggleUsagePin({ preferences: current.usage, pin, reports }),
-      }));
-    },
-    [updateSettings, reports],
-  );
   const display = useMemo<UsageDisplay>(
-    () => ({
-      displayAs: preferences.displayAs,
-      setDisplayAs,
-      isPinned: (pin) => isUsagePinned(preferences, pin, reports),
-      togglePin,
-    }),
-    [preferences, reports, setDisplayAs, togglePin],
+    () => ({ displayAs: preferences.displayAs, setDisplayAs }),
+    [preferences.displayAs, setDisplayAs],
   );
   return { preferences, display };
-}
-
-export function useUsagePreferences(serverId?: string): UsagePreferencesState {
-  const defaultServerId = useUsageHostId();
-  return useUsageDisplay(useUsageHostReports(serverId ?? defaultServerId));
 }

@@ -99,7 +99,7 @@ async function openBuiltinMarkdownSource(page: Page, name: string) {
   await page
     .getByTestId("file-preview-mode")
     .filter({ visible: true })
-    .getByRole("button", { name: "Source", exact: true })
+    .getByRole("radio", { name: "Source", exact: true })
     .click();
 }
 

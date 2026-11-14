@@ -4413,6 +4413,34 @@ export class DaemonClient {
     return result.tasks;
   }
 
+  /** Previews published in the workspace of this thread, with ratings, picks and comments. */
+  async listPreviews(
+    agentId: string,
+  ): Promise<import("@getpaseo/protocol/previews").PreviewGallery> {
+    if (this.lastServerInfoMessage?.features?.previews !== true)
+      throw new Error("Update the daemon to use Previews.");
+    const result = await this.sendNamespacedCorrelatedSessionRequest<"previews.list.response">({
+      message: { type: "previews.list.request", agentId },
+    });
+    if (result.error || !result.gallery) throw new Error(result.error ?? "Previews unavailable");
+    return result.gallery;
+  }
+
+  /** Rate, approve, pick, remove, or mint a one-time browser pairing ticket. */
+  async previewsAction(
+    action: import("@getpaseo/protocol/previews").PreviewsAction,
+    agentId: string,
+  ): Promise<{ gallery: import("@getpaseo/protocol/previews").PreviewGallery; ticket?: string }> {
+    if (this.lastServerInfoMessage?.features?.previews !== true)
+      throw new Error("Update the daemon to use Previews.");
+    const result = await this.sendNamespacedCorrelatedSessionRequest<"previews.action.response">({
+      message: { type: "previews.action.request", action, agentId },
+    });
+    if (result.error || !result.gallery)
+      throw new Error(result.error ?? "Preview change unconfirmed");
+    return { gallery: result.gallery, ...(result.ticket ? { ticket: result.ticket } : {}) };
+  }
+
   async answerAgentQuestion(
     agentId: string,
     questionId: string,

@@ -202,13 +202,15 @@ function LegacyAgentProfilesSection({
   const addButton = useMemo(
     () => (
       <Button
-        variant="ghost"
+        variant="outline"
         leftIcon={addIcon}
         onPress={handleAddOpen}
         disabled={!profiles}
         accessibilityLabel={t("settings.host.agentProfiles.addProfileTitle")}
         testID="agent-profiles-add-button"
-      />
+      >
+        {t("settings.host.agentProfiles.addProfileTitle")}
+      </Button>
     ),
     [handleAddOpen, profiles, t],
   );
@@ -239,22 +241,17 @@ function LegacyAgentProfilesSection({
         trailing={addButton}
         testID="agent-profiles-section"
       >
-        <>
-          <SelectField
-            label="Default profile"
-            value={defaultId}
-            selectedDisplay={defaultOptions.find((option) => option.value === defaultId) ?? null}
-            options={defaultOptions}
-            onChange={selectDefault}
-            disabled={!profiles?.length || savingDefault}
-            placeholder="No profiles"
-            emptyText="No profiles"
-          />
-          <Text style={styles.emptyText}>
-            Used for new Vorteo chats on this host. Existing chats and their accounts stay
-            unchanged. The first available profile is selected when no default is set.
-          </Text>
-        </>
+        <SelectField
+          label="Default profile"
+          value={defaultId}
+          selectedDisplay={defaultOptions.find((option) => option.value === defaultId) ?? null}
+          options={defaultOptions}
+          onChange={selectDefault}
+          disabled={!profiles?.length || savingDefault}
+          placeholder="No profiles"
+          emptyText="No profiles"
+          hint="Used for new Vorteo chats on this host. Existing chats and their accounts stay unchanged. The first available profile is selected when no default is set."
+        />
         <View style={settingsStyles.card} testID="agent-profiles-card">
           {visibleProfiles.length > 0 ? (
             visibleProfiles.map((profile, index) => (

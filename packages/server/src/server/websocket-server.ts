@@ -2497,6 +2497,8 @@ export class VoiceAssistantWebSocketServer {
         agentQuestions: true,
         // COMPAT(agentQuestionInputs): added November 2026; retain until the client floor includes it.
         agentQuestionInputs: true,
+        // COMPAT(previews): added November 2026; retain until the client floor includes it.
+        previews: this.agentManager.previews !== null,
         // COMPAT(projectedSubagentTimeline): added after v0.8.0, remove gates after 2027-03-14; retain advertisement.
         projectedSubagentTimeline: true,
         wholeTurnTimeline: true,
@@ -2569,6 +2571,8 @@ export class VoiceAssistantWebSocketServer {
         installationProjectPolicies: true,
         // COMPAT(primaryConnection): added 2026-11-05, remove gate after 2027-05-05.
         primaryConnectionSetting: true,
+        // COMPAT(timeZoneSetting): added 2026-11-13, remove gate after 2027-05-13.
+        timeZoneSetting: true,
         installationSettingsAuthority: true,
         installationProviderRemoval: true,
         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.

@@ -157,7 +157,8 @@ test.describe("Sidebar contribution visibility and order", () => {
     ]);
     await gotoAppShell(page);
     await openSidebarNavSettings(page);
-    await expectFooterSettingsKeys(page, ["usage", syncKey, brokenKey]);
+    // Settings lists only plugin footer rows; the built-in Usage meter is fixed and not listed.
+    await expectFooterSettingsKeys(page, [syncKey, brokenKey]);
     await leaveSettings(page);
     // A saved visible preference cannot show the Usage row; plugin rows still render.
     await expectFooterItemHidden(page, "usage");
@@ -166,15 +167,15 @@ test.describe("Sidebar contribution visibility and order", () => {
     // No separator assertion here: since 469492c4e the footer's top rule shows only where the
     // project list reaches the footer, which this short list does not.
     await openSidebarNavSettings(page);
-    await moveFooterItemUp(page, syncKey);
-    await expectFooterSettingsKeys(page, [syncKey, "usage", brokenKey]);
+    await moveFooterItemUp(page, brokenKey);
+    await expectFooterSettingsKeys(page, [brokenKey, syncKey]);
     await leaveSettings(page);
     await page.reload();
     await expectFooterOrder(page, [syncKey]);
     await expectFooterItemHidden(page, "usage");
     await expectSidebarToolbar(page);
     await openSidebarNavSettings(page);
-    await expectFooterSettingsKeys(page, [syncKey, "usage", brokenKey]);
+    await expectFooterSettingsKeys(page, [brokenKey, syncKey]);
     await setFooterItemVisible(page, syncKey, false);
     await leaveSettings(page);
     await expectFooterItemHidden(page, syncKey);

@@ -14,9 +14,15 @@ import { SettingsStatusLine } from "@/components/settings/settings-status-line";
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
+import { useIsCompactFormFactor } from "@/constants/layout";
+import { CONTROL_HEIGHTS } from "@/components/ui/control-geometry";
+import { SettingsExpansionHeader } from "@/components/settings/settings-expansion";
+import { SettingsAdvancedGroup } from "@/components/settings/advanced-group";
+import { formatPct } from "@/provider-usage/format";
+import type { ProviderUsageWindow } from "@/provider-usage/types";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useMutation } from "@tanstack/react-query";
-import { MoreHorizontal } from "lucide-react-native";
+import { ChevronRight, MoreHorizontal } from "lucide-react-native";
 import { AGENT_PROVIDER_DEFINITIONS } from "@getpaseo/protocol/provider-manifest";
 import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
 import type { InstallationEnvironment } from "@getpaseo/protocol/execution-installation";
@@ -28,7 +34,6 @@ import type {
 import { SharedProviderSection } from "@/agent-profiles/settings/shared-provider-section";
 import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { AdaptiveRenameModal } from "@/components/rename-modal";
-import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -77,6 +82,7 @@ import {
   classifyEnvironment,
   describeConnectionStatus,
   environmentLabel,
+  needsAttention,
   type EnvironmentState,
 } from "./provider-connection-status";
 import {
@@ -87,6 +93,7 @@ import {
 import { useProviderDetection } from "./use-provider-detection";
 
 const ThemedMore = withUnistyles(MoreHorizontal);
+const ThemedChevron = withUnistyles(ChevronRight);
 const mutedColor = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const foregroundColor = (theme: Theme) => ({ color: theme.colors.foreground });
 // On web the icon inherits the menu button's CSS color, so browser-owned :hover brightens it.
@@ -233,8 +240,9 @@ export function ProviderDetail({ providerType }: { providerType: string }) {
   const snapshot = data as InstallationSettingsSnapshot & {
     settings: InstallationSettings;
   };
+  // Each group below is a run of divided rows inside the provider's own card: no inner cards.
   return (
-    <View style={styles.page}>
+    <View>
       <ConnectionsSection
         family={family}
         snapshot={snapshot}
@@ -327,45 +335,91 @@ function ConnectionsSection({
   );
   const addButton = useMemo(
     () => (
-      <Button variant="ghost" size="sm" onPress={openAdd} testID="provider-detail-add-connection">
+      <Button variant="outline" onPress={openAdd} testID="provider-detail-add-connection">
         Add connection
       </Button>
     ),
     [openAdd],
   );
+  const [showingAll, setShowingAll] = useState(false);
+  // A dialog opened from the full list replaces it, so two sheets never stack (iOS shows only one).
+  const renameFromList = useCallback((account: ProviderAccount) => {
+    setShowingAll(false);
+    setRenaming(account);
+  }, []);
+  const detailsFromList = useCallback((account: ProviderAccount) => {
+    setShowingAll(false);
+    setDetails(account);
+  }, []);
+  const keysFromList = useCallback((account: ProviderAccount) => {
+    setShowingAll(false);
+    setKeys(account);
+  }, []);
+  const showAll = useCallback(() => setShowingAll(true), []);
+  const closeAll = useCallback(() => setShowingAll(false), []);
+  const allHeader = useMemo(() => ({ title: `${family.name} connections` }), [family.name]);
   // Details always reads the latest definitions, not the copy captured when opened.
   const currentDetails = details
     ? family.accounts.find((account) => account.id === details.id)
     : undefined;
+  // A handful of connections stay inline. A long list keeps the card short and opens in full.
+  const overflow = family.accounts.length > CONNECTION_PREVIEW_LIMIT;
+  const inline = overflow
+    ? family.accounts.slice(0, CONNECTION_PREVIEW_LIMIT - 1)
+    : family.accounts;
+  const renderRow = (account: ProviderAccount, first: boolean) => (
+    <ConnectionRow
+      key={account.id}
+      account={account}
+      snapshot={snapshot}
+      environments={environments}
+      first={first}
+      busy={busy}
+      save={save}
+      onRename={renameFromList}
+      onDetails={detailsFromList}
+      onKeys={keysFromList}
+      secrets={secrets.byDefinition.get(primaryDefinition(account, environments).id)}
+      primary={primary.loaded ? isPrimaryConnection(primary.primary, account.definitions) : null}
+      onMakePrimary={makePrimary}
+    />
+  );
   return (
-    <SettingsSection
-      title="Connections"
-      trailing={addButton}
-      status={saving ? "Saving..." : null}
-      info="A connection works in every environment. Use Environment access only to keep it out of a specific environment."
-      testID="provider-detail-connections"
-    >
-      <View style={settingsStyles.card}>
-        {family.accounts.map((account, index) => (
-          <ConnectionRow
-            key={account.id}
-            account={account}
-            snapshot={snapshot}
-            environments={environments}
-            first={index === 0}
-            busy={busy}
-            save={save}
-            onRename={setRenaming}
-            onDetails={setDetails}
-            onKeys={setKeys}
-            secrets={secrets.byDefinition.get(primaryDefinition(account, environments).id)}
-            primary={
-              primary.loaded ? isPrimaryConnection(primary.primary, account.definitions) : null
-            }
-            onMakePrimary={makePrimary}
-          />
-        ))}
-      </View>
+    <View testID="provider-detail-connections">
+      <SettingsExpansionHeader
+        title="Connections"
+        trailing={addButton}
+        status={saving ? "Saving..." : null}
+        info="A connection works in every environment. Use Environment access only to keep it out of a specific environment."
+        testID="provider-detail-connections-header"
+      />
+      {inline.map((account) => renderRow(account, false))}
+      {overflow ? (
+        <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+          <Text style={[settingsStyles.rowHint, styles.overflowHint]}>
+            {`${family.accounts.length - inline.length} more`}
+          </Text>
+          <Button
+            {...OPENS_DIALOG}
+            variant="outline"
+            onPress={showAll}
+            accessibilityLabel={`Show all ${family.accounts.length} ${family.name} connections`}
+            testID="provider-detail-all-connections"
+          >{`Show all ${family.accounts.length}`}</Button>
+        </View>
+      ) : null}
+      {showingAll ? (
+        <AdaptiveModalSheet
+          testID="provider-all-connections-sheet"
+          visible
+          onClose={closeAll}
+          header={allHeader}
+        >
+          <View style={settingsStyles.card}>
+            {family.accounts.map((account, index) => renderRow(account, index === 0))}
+          </View>
+        </AdaptiveModalSheet>
+      ) : null}
       <AddConnectionSheet visible={adding} environments={environments} onClose={closeAdd} />
       {currentDetails ? (
         <EnvironmentAccessSheet
@@ -399,9 +453,15 @@ function ConnectionsSection({
           testID="shared-provider-rename-dialog"
         />
       ) : null}
-    </SettingsSection>
+    </View>
   );
 }
+
+/** Tells screen readers on web that the button opens a dialog. */
+const OPENS_DIALOG = isWeb ? ({ "aria-haspopup": "dialog" } as object) : {};
+
+/** Up to this many connections show inline; more open the full list in a sheet. */
+const CONNECTION_PREVIEW_LIMIT = 5;
 
 function primaryDefinition(account: ProviderAccount, environments: InstallationEnvironment[]) {
   const host = environments.find((environment) => environment.kind === "host");
@@ -415,6 +475,60 @@ function isUsageValid(state: EnvironmentState | undefined): boolean {
   return Boolean(state && state.kind !== "attention" && !state.usageFailed);
 }
 
+/** "5-hour 42% · Weekly 10%": every usage window on one short line. */
+function usageSummary(windows: readonly ProviderUsageWindow[]): string | null {
+  const parts = windows.flatMap((window) => {
+    const used = window.usedPct ?? (window.remainingPct != null ? 100 - window.remainingPct : null);
+    return used == null ? [] : [`${window.label} ${formatPct(used)}`];
+  });
+  return parts.length ? parts.join(" · ") : null;
+}
+
+/** Everything one connection row reads about its environments, usage and sign-in. */
+function useConnectionState(
+  account: ProviderAccount,
+  environments: InstallationEnvironment[],
+  settings: InstallationSettings,
+) {
+  const provider = primaryDefinition(account, environments);
+  const host = environments.find((environment) => environment.kind === "host");
+  const dev = environments.find((environment) => environment.kind === "container");
+  const hostState = useEnvironmentState(provider, host, settings);
+  const devState = useEnvironmentState(provider, dev, settings);
+  const states = [hostState, devState].filter((state): state is EnvironmentState => !!state);
+  const usageState = states.find((state) => state.kind !== "none" && state.kind !== "excluded");
+  const usageServerId = usageState?.environment.serverId;
+  const { usage } = useRetainedUsage({
+    identity: JSON.stringify([
+      account.id,
+      provider.id,
+      usageServerId,
+      provider.bindings[usageServerId ?? ""],
+    ]),
+    supported: Boolean(usageState?.usageSupported),
+    valid: isUsageValid(usageState),
+    latest: usageState?.usage,
+  });
+  // Sign-ins run on Host; the Dev container receives access from there.
+  const signInEnvironment =
+    host && provider.bindings[host.serverId] ? host : states[0]?.environment;
+  return {
+    states,
+    status: describeConnectionStatus(states),
+    attention: needsAttention(states),
+    error: states.find((state) => state.error)?.error ?? null,
+    windows: usage?.windows ?? [],
+    name: account.name === "Default connection" ? providerName(provider) : account.name,
+    signInEnvironment,
+    signInId: signInEnvironment ? provider.bindings[signInEnvironment.serverId] : undefined,
+    signInUsage: states.find((state) => state.environment === signInEnvironment)?.usage,
+  };
+}
+
+/**
+ * One connection on one line: name, status, usage and its actions. Sign-in hints, errors and
+ * the usage bars are secondary, so they open under the row from its name.
+ */
 function ConnectionRow({
   account,
   snapshot,
@@ -443,39 +557,16 @@ function ConnectionRow({
   primary: boolean | null;
   onMakePrimary(account: ProviderAccount, name: string): void;
 }) {
-  const provider = primaryDefinition(account, environments);
-  const host = environments.find((environment) => environment.kind === "host");
-  const dev = environments.find((environment) => environment.kind === "container");
-  const hostState = useEnvironmentState(provider, host, snapshot.settings);
-  const devState = useEnvironmentState(provider, dev, snapshot.settings);
-  const states = [hostState, devState].filter((state): state is EnvironmentState => !!state);
-  const status = describeConnectionStatus(states);
-  const usageState = states.find((state) => state.kind !== "none" && state.kind !== "excluded");
-  const usageServerId = usageState?.environment.serverId;
-  const { usage, reservedWindows } = useRetainedUsage({
-    identity: JSON.stringify([
-      account.id,
-      provider.id,
-      usageServerId,
-      provider.bindings[usageServerId ?? ""],
-    ]),
-    supported: Boolean(usageState?.usageSupported),
-    valid: isUsageValid(usageState),
-    latest: usageState?.usage,
-  });
-  const usageSpace = useMemo(() => ({ minHeight: reservedWindows * 32 }), [reservedWindows]);
-  const error = states.find((state) => state.error)?.error ?? null;
-  const name = account.name === "Default connection" ? providerName(provider) : account.name;
-  // Sign-ins run on Host; the Dev container receives access from there.
-  const signInEnvironment =
-    host && provider.bindings[host.serverId] ? host : states[0]?.environment;
-  const signInId = signInEnvironment ? provider.bindings[signInEnvironment.serverId] : undefined;
-  const signInUsage = states.find((state) => state.environment === signInEnvironment)?.usage;
-  const open = useProviderSettingsStore((state) => state.open);
+  const isCompact = useIsCompactFormFactor();
+  const [open, setOpen] = useState(false);
+  const toggleOpen = useCallback(() => setOpen((value) => !value), []);
+  const connection = useConnectionState(account, environments, snapshot.settings);
+  const { states, name, signInEnvironment, signInId } = connection;
+  const openModels = useProviderSettingsStore((state) => state.open);
   const showModels = useCallback(() => {
     if (signInEnvironment && signInId)
-      open({ serverId: signInEnvironment.serverId, provider: signInId });
-  }, [open, signInEnvironment, signInId]);
+      openModels({ serverId: signInEnvironment.serverId, provider: signInId });
+  }, [openModels, signInEnvironment, signInId]);
   const rename = useCallback(() => onRename(account), [onRename, account]);
   const details = useCallback(() => onDetails(account), [onDetails, account]);
   const keys = useCallback(() => onKeys(account), [onKeys, account]);
@@ -484,7 +575,6 @@ function ConnectionRow({
     () => onMakePrimary(account, name),
     [onMakePrimary, account, name],
   );
-
   const toggle = useCallback(
     async (enabled: boolean) => {
       if (!enabled && primary === true && !(await confirmDisablePrimary(name, confirmDialog)))
@@ -501,31 +591,53 @@ function ConnectionRow({
     },
     [account, snapshot, save, primary, name],
   );
-  const attention = states.some((state) => state.kind === "attention" || state.kind === "offline");
+  const summary = usageSummary(connection.windows);
+  // Errors, undelivered keys and pending sign-ins ask something of the owner, so they always show.
+  const notices = {
+    error: connection.error,
+    delivery: describeSecretDelivery(secrets),
+    signIns: pendingSignIns(secrets, states),
+  };
+  // Only passive detail waits behind the disclosure.
+  const detail = {
+    cliLogin: account.id === "default/claude",
+    // The usage bars, which also carry the summary the compact layout leaves off the line.
+    windows: connection.windows,
+  };
+  const hasDetails = connectionHasDetails(detail);
   return (
     <View
       style={[settingsStyles.row, !first && settingsStyles.rowBorder, styles.connection]}
       testID={`provider-account-${account.id}`}
     >
       <View style={styles.connectionHeading}>
-        <ConnectionStatusLines
+        <ConnectionDisclosure
           accountId={account.id}
           name={name}
-          status={status}
-          attention={attention}
-          error={error}
-          secrets={secrets}
-          states={states}
-          cliLogin={account.id === "default/claude"}
+          status={connection.status}
+          attention={connection.attention}
+          summary={summary}
           primary={primary === true}
+          stacked={isCompact}
+          open={open}
+          onToggle={hasDetails ? toggleOpen : undefined}
         />
+        {summary && !isCompact ? (
+          <Text
+            style={styles.usageSummary}
+            numberOfLines={1}
+            testID={`provider-connection-usage-summary-${account.id}`}
+          >
+            {summary}
+          </Text>
+        ) : null}
         <View style={styles.controls}>
           {signInEnvironment && signInId ? (
             <ProviderReconnectControl
               serverId={signInEnvironment.serverId}
               providerId={signInId}
               name={name}
-              usage={signInUsage}
+              usage={connection.signInUsage}
             />
           ) : null}
           <Switch
@@ -545,15 +657,140 @@ function ConnectionRow({
           />
         </View>
       </View>
-      <View style={usageSpace}>
-        {usage?.windows.length ? (
-          <View style={styles.usage} testID={`provider-connection-usage-${account.id}`}>
-            {usage.windows.map((window) => (
-              <ProviderUsageWindowBar key={window.id} window={window} />
-            ))}
-          </View>
-        ) : null}
+      <ConnectionNotices accountId={account.id} {...notices} />
+      {open && hasDetails ? <ConnectionDetails accountId={account.id} {...detail} /> : null}
+    </View>
+  );
+}
+
+interface ConnectionDetailContent {
+  cliLogin: boolean;
+  windows: readonly ProviderUsageWindow[];
+}
+
+/** Only offer the disclosure when there is something under it. */
+function connectionHasDetails(detail: ConnectionDetailContent): boolean {
+  return Boolean(detail.cliLogin || detail.windows.length);
+}
+
+/** The name and status, which open the row's details when it has any. */
+function ConnectionDisclosure({
+  accountId,
+  name,
+  status,
+  attention,
+  summary,
+  primary,
+  stacked,
+  open,
+  onToggle,
+}: {
+  accountId: string;
+  name: string;
+  status: string;
+  attention: boolean;
+  summary: string | null;
+  primary: boolean;
+  stacked: boolean;
+  open: boolean;
+  onToggle?: () => void;
+}) {
+  const accessibilityState = useMemo(() => ({ expanded: open }), [open]);
+  // React Native Web does not map `accessibilityState.expanded` to `aria-expanded`.
+  const webExpandedProps = useMemo(
+    () => (isWeb ? ({ "aria-expanded": open } as const) : null),
+    [open],
+  );
+  // The name starts on the same inset as the group labels above it; the disclosure chevron
+  // follows the status rather than indenting the row.
+  const identity = (
+    <>
+      <View style={[styles.identity, stacked && styles.identityStacked]}>
+        <View style={styles.connectionTitle}>
+          <Text style={settingsStyles.rowTitle} numberOfLines={1}>
+            {name}
+          </Text>
+          {primary ? (
+            <View testID={`provider-connection-primary-${accountId}`}>
+              <StatusBadge label="Primary" size="xs" variant="success" />
+            </View>
+          ) : null}
+        </View>
+        <Text
+          style={attention ? styles.statusAttention : styles.status}
+          numberOfLines={1}
+          testID={`provider-connection-status-${accountId}`}
+        >
+          {status}
+        </Text>
       </View>
+      {onToggle ? (
+        <View style={open ? styles.chevronExpanded : undefined}>
+          <ThemedChevron size={14} uniProps={inheritedIconColor} />
+        </View>
+      ) : null}
+    </>
+  );
+  if (!onToggle) return <View style={styles.disclosure}>{identity}</View>;
+  return (
+    <Pressable
+      {...webExpandedProps}
+      onPress={onToggle}
+      style={styles.disclosure}
+      accessibilityRole="button"
+      accessibilityLabel={`${name}, ${status}${summary ? `, ${summary}` : ""}`}
+      accessibilityHint={open ? "Hide details" : "Show details"}
+      accessibilityState={accessibilityState}
+      testID={`provider-connection-toggle-${accountId}`}
+    >
+      {identity}
+    </Pressable>
+  );
+}
+
+/** What the owner must act on, always under the row's line rather than behind its disclosure. */
+function ConnectionNotices({
+  accountId,
+  error,
+  delivery,
+  signIns,
+}: {
+  accountId: string;
+  error: string | null;
+  delivery: string | null;
+  signIns: string[];
+}) {
+  if (!error && !delivery && !signIns.length) return null;
+  return (
+    <View style={styles.connectionDetails} testID={`provider-connection-notices-${accountId}`}>
+      {error ? <Text style={settingsStyles.rowError}>{error}</Text> : null}
+      {delivery ? <Text style={settingsStyles.rowHint}>{delivery}</Text> : null}
+      {signIns.length ? (
+        <Text style={settingsStyles.rowHint}>
+          {`${signIns.join(" · ")}. Sign in separately in each environment.`}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function ConnectionDetails({
+  accountId,
+  cliLogin,
+  windows,
+}: ConnectionDetailContent & { accountId: string }) {
+  return (
+    <View style={styles.connectionDetails} testID={`provider-connection-details-${accountId}`}>
+      {cliLogin ? (
+        <Text style={settingsStyles.rowHint}>Uses the existing Claude CLI login.</Text>
+      ) : null}
+      {windows.length ? (
+        <View style={styles.usage} testID={`provider-connection-usage-${accountId}`}>
+          {windows.map((window) => (
+            <ProviderUsageWindowBar key={window.id} window={window} />
+          ))}
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -572,59 +809,6 @@ function pendingSignIns(
       ),
     )
     .map((environment) => `Sign in on ${environment.label}`);
-}
-
-function ConnectionStatusLines({
-  accountId,
-  name,
-  status,
-  attention,
-  error,
-  secrets,
-  states,
-  cliLogin,
-  primary,
-}: {
-  cliLogin: boolean;
-  primary: boolean;
-  accountId: string;
-  name: string;
-  status: string;
-  attention: boolean;
-  error: string | null;
-  secrets: ProviderSecretsStatus | undefined;
-  states: readonly EnvironmentState[];
-}) {
-  const delivery = describeSecretDelivery(secrets);
-  const signIns = pendingSignIns(secrets, states);
-  return (
-    <View style={settingsStyles.rowContent}>
-      <View style={styles.connectionTitle}>
-        <Text style={settingsStyles.rowTitle}>{name}</Text>
-        {primary ? (
-          <View testID={`provider-connection-primary-${accountId}`}>
-            <StatusBadge label="Primary" size="xs" variant="success" />
-          </View>
-        ) : null}
-      </View>
-      {cliLogin ? (
-        <Text style={settingsStyles.rowHint}>Uses the existing Claude CLI login.</Text>
-      ) : null}
-      <Text
-        style={attention ? settingsStyles.rowError : settingsStyles.rowHint}
-        testID={`provider-connection-status-${accountId}`}
-      >
-        {status}
-      </Text>
-      <SettingsStatusLine message={error} />
-      <SettingsStatusLine message={delivery} />
-      <SettingsStatusLine
-        message={
-          signIns.length ? `${signIns.join(" · ")}. Sign in separately in each environment.` : null
-        }
-      />
-    </View>
-  );
 }
 
 function ConnectionMenu({
@@ -767,10 +951,13 @@ function ApiKeysSheet({
     onError: reportConnectionLost,
   });
   const save = useCallback(() => saving.mutate(), [saving]);
-  const labelFor = (serverId: string) => {
-    const environment = environments.find((entry) => entry.serverId === serverId);
-    return environment ? environmentLabel(environment) : serverId;
-  };
+  const labelFor = useCallback(
+    (serverId: string) => {
+      const environment = environments.find((entry) => entry.serverId === serverId);
+      return environment ? environmentLabel(environment) : serverId;
+    },
+    [environments],
+  );
   return (
     <AdaptiveModalSheet testID="provider-keys-sheet" visible onClose={onClose} header={header}>
       <Text style={settingsStyles.rowHint}>
@@ -820,35 +1007,61 @@ function ApiKeysSheet({
       </View>
       <Button
         onPress={save}
+        variant="default"
+        loading={saving.isPending}
         disabled={saving.isPending || !keyName.trim() || !value}
         testID="provider-keys-save"
       >
-        {saving.isPending ? "Saving" : "Save key"}
+        {saving.isPending ? "Saving..." : "Save key"}
       </Button>
       {status?.environments.length ? (
-        <View style={settingsStyles.card}>
-          {status.environments.map((environment, index) => (
-            <View
-              key={environment.serverId}
-              style={[settingsStyles.row, index > 0 && settingsStyles.rowBorder]}
-            >
-              <View style={settingsStyles.rowContent}>
-                <Text style={settingsStyles.rowTitle}>{labelFor(environment.serverId)}</Text>
-                <Text
-                  style={
-                    environment.status === "failed"
-                      ? settingsStyles.rowError
-                      : settingsStyles.rowHint
-                  }
-                >
-                  {environment.message ?? SECRET_STATUS_LABEL[environment.status]}
-                </Text>
-              </View>
-            </View>
-          ))}
-        </View>
+        <KeyDelivery environments={status.environments} labelFor={labelFor} />
       ) : null}
     </AdaptiveModalSheet>
+  );
+}
+
+/**
+ * Where saved keys have reached. While any environment is still waiting or failed, the list shows
+ * in the sheet, since it asks the owner to act; once every environment has the keys it folds
+ * under Advanced.
+ */
+function KeyDelivery({
+  environments,
+  labelFor,
+}: {
+  environments: ProviderSecretsStatus["environments"];
+  labelFor(serverId: string): string;
+}) {
+  const card = (
+    <View style={settingsStyles.card}>
+      {environments.map((environment, index) => (
+        <View
+          key={environment.serverId}
+          style={[settingsStyles.row, index > 0 && settingsStyles.rowBorder]}
+        >
+          <View style={settingsStyles.rowContent}>
+            <Text style={settingsStyles.rowTitle}>{labelFor(environment.serverId)}</Text>
+            <Text
+              style={
+                environment.status === "failed" ? settingsStyles.rowError : settingsStyles.rowHint
+              }
+            >
+              {environment.message ?? SECRET_STATUS_LABEL[environment.status]}
+            </Text>
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+  const waiting = environments.some(
+    (environment) => environment.status === "failed" || environment.status === "pending",
+  );
+  if (waiting) return card;
+  return (
+    <SettingsAdvancedGroup title="Delivery details" testID="provider-keys-delivery">
+      {card}
+    </SettingsAdvancedGroup>
   );
 }
 
@@ -883,7 +1096,12 @@ function SecretRow({
         <Text style={settingsStyles.rowTitle}>{name}</Text>
         <Text style={settingsStyles.rowHint}>{detail}</Text>
       </View>
-      <Button variant="ghost" size="sm" onPress={onPress} disabled={busy}>
+      <Button
+        variant="outline"
+        onPress={onPress}
+        disabled={busy}
+        accessibilityLabel={`Remove ${name}`}
+      >
         Remove
       </Button>
     </View>
@@ -930,7 +1148,54 @@ function EnvironmentAccessSheet({
           />
         ))}
       </View>
+      {/* Removing a connection from one environment, or restoring it there, is rare repair work. */}
+      <SettingsAdvancedGroup testID="provider-manage-advanced">
+        <View style={settingsStyles.card}>
+          {environments.map((environment, index) => (
+            <EnvironmentRepairRow
+              key={environment.serverId}
+              provider={provider}
+              environment={environment}
+              first={index === 0}
+            />
+          ))}
+        </View>
+      </SettingsAdvancedGroup>
     </AdaptiveModalSheet>
+  );
+}
+
+/** One environment's removal and restore actions, under Advanced in Environment access. */
+function EnvironmentRepairRow({
+  provider,
+  environment,
+  first,
+}: {
+  provider: InstallationProvider;
+  environment: InstallationEnvironment;
+  first: boolean;
+}) {
+  const localId = provider.bindings[environment.serverId];
+  const catalog = useProvidersSnapshot(localId ? environment.serverId : null);
+  const entry = catalog.entries?.find((item) => item.provider === localId);
+  return (
+    <View
+      style={[settingsStyles.row, !first && settingsStyles.rowBorder, styles.connection]}
+      testID={`shared-provider-repair-${provider.id}-${environment.serverId}`}
+    >
+      <Text style={settingsStyles.rowTitle}>{environmentLabel(environment)}</Text>
+      {localId ? (
+        <ProviderConnectionActions
+          provider={provider}
+          environment={environment}
+          name={providerName(provider)}
+          canRemove={entry?.source === "custom"}
+          fallback="Nothing to remove or restore here"
+        />
+      ) : (
+        <Text style={settingsStyles.rowHint}>Not set up here</Text>
+      )}
+    </View>
   );
 }
 
@@ -952,8 +1217,6 @@ function EnvironmentAccessRow({
   const state = useEnvironmentState(provider, environment, snapshot.settings);
   const localId = provider.bindings[environment.serverId];
   const excluded = isExcluded(snapshot.settings, environment.serverId, provider.id);
-  const catalog = useProvidersSnapshot(localId ? environment.serverId : null);
-  const entry = catalog.entries?.find((item) => item.provider === localId);
   const location = environmentLabel(environment);
   const toggle = useCallback(
     (included: boolean) => {
@@ -999,14 +1262,6 @@ function EnvironmentAccessRow({
           />
         </View>
       </View>
-      {localId ? (
-        <ProviderConnectionActions
-          provider={provider}
-          environment={environment}
-          name={providerName(provider)}
-          canRemove={entry?.source === "custom"}
-        />
-      ) : null}
     </View>
   );
 }
@@ -1016,11 +1271,14 @@ function ProviderConnectionActions({
   environment,
   name,
   canRemove,
+  fallback,
 }: {
   provider: InstallationProvider;
   environment: InstallationEnvironment;
   name: string;
   canRemove: boolean;
+  /** Shown when this environment has nothing to remove or restore. */
+  fallback?: string;
 }) {
   const client = useHostRuntimeClient(environment.serverId);
   const connected = useHostRuntimeIsConnected(environment.serverId);
@@ -1093,7 +1351,8 @@ function ProviderConnectionActions({
   const { mutate } = removal;
   const remove = useCallback(() => mutate(), [mutate]);
   const error = hostRejection(removal.error ?? restoration.error);
-  if (!canRemove && !removed) return null;
+  if (!canRemove && !removed)
+    return fallback ? <Text style={settingsStyles.rowHint}>{fallback}</Text> : null;
   return (
     <View>
       <SettingsStatusLine
@@ -1103,24 +1362,22 @@ function ProviderConnectionActions({
       <View style={styles.removal}>
         {removed && supported ? (
           <Button
-            variant="ghost"
-            size="sm"
+            variant="outline"
             disabled={!connected || restoration.isPending}
             onPress={restore}
             testID={`shared-provider-restore-${provider.id}-${environment.serverId}`}
           >
-            {restoration.isPending ? "Restoring" : `Restore in ${location}`}
+            {restoration.isPending ? "Restoring..." : `Restore in ${location}`}
           </Button>
         ) : null}
         {canRemove && supported ? (
           <Button
-            variant="ghost"
-            size="sm"
+            variant="outline"
             disabled={!connected || removal.isPending}
             onPress={remove}
             testID={`shared-provider-remove-${provider.id}-${environment.serverId}`}
           >
-            {removal.isPending ? "Removing" : `Remove from ${location}`}
+            {removal.isPending ? "Removing..." : `Remove from ${location}`}
           </Button>
         ) : null}
       </View>
@@ -1161,7 +1418,7 @@ function ProviderProfiles({
       },
     ]).get(providerType) ?? (hostId ? { serverId: hostId, provider: providerType } : null);
   if (!target) return null;
-  return <SharedProviderSection serverId={target.serverId} provider={target.provider} />;
+  return <SharedProviderSection serverId={target.serverId} provider={target.provider} embedded />;
 }
 
 function RemoveProviderRow({
@@ -1202,21 +1459,29 @@ function RemoveProviderRow({
     // The page's save mutation already reports a failed removal.
     remove().catch(() => undefined);
   }, [remove]);
+  // A quiet last row: removal is rare, so it is an outline button and red only in the confirmation.
   return (
-    <Pressable
-      onPress={onPress}
-      disabled={busy}
-      accessibilityRole="button"
-      style={styles.removeRow}
-      testID={`provider-detail-remove-${family.id}`}
-    >
-      <Text style={styles.removeText}>{`Remove ${family.name} from Vorteo`}</Text>
-    </Pressable>
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>{`Remove ${family.name}`}</Text>
+        <Text style={settingsStyles.rowHint}>
+          Hides it for new chats everywhere. Restore it from Add provider.
+        </Text>
+      </View>
+      <Button
+        variant="outline"
+        onPress={onPress}
+        disabled={busy}
+        accessibilityLabel={`Remove ${family.name} from Vorteo`}
+        testID={`provider-detail-remove-${family.id}`}
+      >
+        Remove
+      </Button>
+    </View>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
-  page: { gap: theme.spacing[2] },
   connection: {
     flexDirection: "column",
     alignItems: "stretch",
@@ -1227,44 +1492,70 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[2],
   },
+  // The name and status pressable; it grows outward from the text without moving its rail.
+  disclosure: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    minHeight: CONTROL_HEIGHTS.md,
+    borderRadius: theme.borderRadius.md,
+    ...hoverStyle({ color: theme.colors.foreground }, { color: theme.colors.foregroundMuted }),
+  },
+  chevronExpanded: { transform: [{ rotate: "90deg" }] },
+  // Shrinks rather than fills, so the chevron sits right after the status text.
+  identity: {
+    flexShrink: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+  },
+  identityStacked: { flexDirection: "column", alignItems: "flex-start", gap: 0 },
   connectionTitle: {
     flexDirection: "row",
     alignItems: "center",
-    flexWrap: "wrap",
+    flexShrink: 1,
     gap: theme.spacing[2],
   },
+  status: { flexShrink: 1, color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
+  statusAttention: { flexShrink: 1, color: theme.colors.statusDanger, fontSize: theme.fontSize.sm },
+  usageSummary: {
+    flexShrink: 1,
+    maxWidth: "35%",
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+    fontVariant: ["tabular-nums"],
+  },
+  connectionDetails: { gap: theme.spacing[1] },
   controls: {
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
   },
-  usage: { gap: theme.spacing[2] },
+  usage: { gap: theme.spacing[2], marginTop: theme.spacing[1] },
+  overflowHint: { flex: 1, marginTop: 0 },
   removal: {
     flexDirection: "row",
     flexWrap: "wrap",
     alignItems: "center",
     gap: theme.spacing[2],
   },
+  // An icon-only control the same height as the buttons and switch beside it: 32px where a
+  // pointer drives it and a full 44px touch target in the compact layout.
   menuButton: {
-    width: 28,
-    height: 28,
-    borderRadius: theme.borderRadius.md,
+    width: CONTROL_HEIGHTS.md,
+    height: CONTROL_HEIGHTS.md,
+    borderRadius: theme.borderRadius.full,
     alignItems: "center",
     justifyContent: "center",
     ...hoverStyle(
-      { backgroundColor: theme.colors.surface2, color: theme.colors.foreground },
+      { backgroundColor: theme.colors.interactionHighlight, color: theme.colors.foreground },
       { color: theme.colors.foregroundMuted },
     ),
   },
-  menuButtonHovered: { backgroundColor: theme.colors.surface2 },
-  removeRow: {
-    marginTop: theme.spacing[6],
-    paddingVertical: theme.spacing[3],
-    alignSelf: "flex-start",
-    borderRadius: theme.borderRadius.md,
-    ...hoverStyle({ opacity: 0.8 }),
-  },
-  removeText: { color: theme.colors.destructive, fontSize: theme.fontSize.sm },
+  menuButtonHovered: { backgroundColor: theme.colors.interactionHighlight },
 }));
 
 const reservedLayout1 = { minHeight: 240 } as const;

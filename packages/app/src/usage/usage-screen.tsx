@@ -5,7 +5,7 @@ import { View } from "react-native";
 import { PageLayout } from "@/components/page-layout";
 import { useHostUsageWithControls } from "./controls";
 import { usageCopy } from "./copy";
-import { useUsagePreferences } from "./display";
+import { useUsageDisplay } from "./display";
 import { useUsageHostSelection } from "./hosts";
 import type { UsageHost } from "./model";
 import { UsageOptions } from "./options";
@@ -57,7 +57,7 @@ function HostUsage({
   hosts: UsageHost[];
   onSelectHost: (serverId: string) => void;
 }) {
-  const { display } = useUsagePreferences();
+  const { display } = useUsageDisplay();
   const hostSelection = useMemo(
     () => ({ hosts, serverId, onSelect: onSelectHost }),
     [hosts, onSelectHost, serverId],

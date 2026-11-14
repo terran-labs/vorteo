@@ -31,6 +31,7 @@ vi.mock("./use-system-adapter", () => ({
     services: mocks.services,
   }),
 }));
+// Partial: modules this pane reaches indirectly, such as Platform, keep their real exports.
 vi.mock("react-native", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-native")>()),
   Platform: { ...(await importOriginal<typeof import("react-native")>()).Platform, OS: "web" },
@@ -88,10 +89,10 @@ vi.mock("@/desktop/components/desktop-updates-section", () => ({
   LocalDaemonSection: () => <span>Local controls</span>,
 }));
 vi.mock("@/execution-installation/panel", () => ({
+  // Imported along the way, never called: the pane itself does not read owner access.
   useInstallationOwnerAccess: () => {
     throw new Error("Owner access is outside the System pane fixture");
   },
-  InstallationSystemAdvanced: () => <span>Automatic updates and restarts</span>,
   InstallationSystemDetails: ({
     requestId,
     target,
@@ -145,9 +146,8 @@ it("only mounts details on disclosure and keeps them open through status polls",
   expect(screen.getByText("Connection check")).toBeTruthy();
   expect(screen.getByText("System services")).toBeTruthy();
   expect(screen.getByText("Recovery slot")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
-  expect(screen.getByText("Automatic updates and restarts")).toBeTruthy();
-  expect(screen.getByText("Upstream updates")).toBeTruthy();
+  // Advanced controls render once, in System's single Advanced group, not in this pane.
+  expect(screen.queryByRole("button", { name: "Advanced" })).toBeNull();
 });
 
 it.each(["rejected", "missing"])(
@@ -177,22 +177,4 @@ it("opens the linked Dev restart review and moves its completed receipt to Dev D
   rerender(<SystemPane restartRequestId="linked-dev" />);
   expect(screen.queryByText("Review linked-dev")).toBeNull();
   expect(screen.getByText("Service queue and requests: container-daemon linked-dev")).toBeTruthy();
-});
-
-it.each([
-  "system.overview.customDomain",
-  "system.overview.domain",
-  "maintenance.installation.deliveryMode",
-])("reveals Advanced for %s search without reopening it on a poll", (focusedSettingId) => {
-  const { rerender } = render(
-    <SystemPane focusedSettingId={focusedSettingId} focusRequestNonce={1} />,
-  );
-  expect(screen.getByText("Automatic updates and restarts")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
-  expect(screen.queryByText("Automatic updates and restarts")).toBeNull();
-  mocks.status = "updating";
-  rerender(<SystemPane focusedSettingId={focusedSettingId} focusRequestNonce={1} />);
-  expect(screen.queryByText("Automatic updates and restarts")).toBeNull();
-  rerender(<SystemPane focusedSettingId={focusedSettingId} focusRequestNonce={2} />);
-  expect(screen.getByText("Automatic updates and restarts")).toBeTruthy();
 });

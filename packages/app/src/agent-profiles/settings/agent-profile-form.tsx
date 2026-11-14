@@ -1,6 +1,8 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { SettingsAdvancedGroup } from "@/components/settings/advanced-group";
 import { Text, View, StyleSheet } from "react-native";
 import { ScrollView } from "@/components/ui/scroll-view";
+import { isWeb } from "@/constants/platform";
 import type { AgentFeature } from "@getpaseo/protocol/agent-types";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { SelectField } from "@/components/ui/select-field";
@@ -27,16 +29,32 @@ export interface ProfileSharedScope {
   providerType: string;
   kind: "defaults" | "workflow";
 }
+// React Native Web renders a header role without a level as h1. Form sections sit under the
+// profile's own title, so they are level 3.
+const SECTION_HEADING_LEVEL = isWeb ? ({ "aria-level": 3 } as object) : {};
+
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <View style={styles.section}>
-      <Text accessibilityRole="header" style={settingsStyles.sectionHeaderTitle}>
+      <Text
+        accessibilityRole="header"
+        {...SECTION_HEADING_LEVEL}
+        style={settingsStyles.sectionHeaderTitle}
+      >
         {title}
       </Text>
       {children}
     </View>
   );
 }
+const MAX_WORKER_OPTIONS = [
+  ...Array.from({ length: 8 }, (_, index) => {
+    const count = String(index + 1);
+    return { id: count, value: count, label: count };
+  }),
+  { id: "uncapped", value: "uncapped", label: "No limit" },
+];
+
 function TextField({
   label,
   value,
@@ -45,9 +63,12 @@ function TextField({
   disabled,
   testID,
   hint,
+  error,
 }: {
   testID?: string;
   hint?: string;
+  /** Why the field blocks Save; shown under it and tied to the input. */
+  error?: string | null;
   label: string;
   value: string;
   onChange: (value: string) => void;
@@ -55,7 +76,7 @@ function TextField({
   disabled: boolean;
 }) {
   return (
-    <Field label={label} testID={testID} hint={hint}>
+    <Field label={label} testID={testID} hint={hint} error={error}>
       <FormTextInput
         initialValue={value}
         onChangeText={onChange}
@@ -153,7 +174,12 @@ function FeatureField({
     );
   return (
     <Field label={feature.label}>
-      <Switch value={feature.value === true} onValueChange={onChange} disabled={disabled} />
+      <Switch
+        value={feature.value === true}
+        onValueChange={onChange}
+        disabled={disabled}
+        accessibilityLabel={feature.label}
+      />
     </Field>
   );
 }
@@ -259,6 +285,12 @@ export function AgentProfileForm({
     },
     [model],
   );
+  // A saved limit above the usual choices stays selectable rather than showing as empty.
+  const maxWorkerOptions = useMemo(() => {
+    const current = String(state.maxWorkers);
+    if (MAX_WORKER_OPTIONS.some((option) => option.value === current)) return MAX_WORKER_OPTIONS;
+    return [{ id: current, value: current, label: current }, ...MAX_WORKER_OPTIONS];
+  }, [state.maxWorkers]);
   const defaults = sharedScope?.kind === "defaults";
   const disabled = state.isSubmitting;
   const providerType = resolveProviderType(state.provider, config?.providers ?? {});
@@ -266,7 +298,14 @@ export function AgentProfileForm({
     <View>
       {!defaults ? (
         <Section title="Identity">
-          <TextField label="Name" value={state.name} onChange={model.setName} disabled={disabled} />
+          {/* Save stays disabled until these hold, so each field says what is missing. */}
+          <TextField
+            label="Name"
+            value={state.name}
+            onChange={model.setName}
+            disabled={disabled}
+            error={state.name.trim() ? null : "Enter a name to save this profile"}
+          />
           <AgentProfileAppearanceField
             label="Icon"
             icon={state.icon}
@@ -384,22 +423,39 @@ export function AgentProfileForm({
                 placeholder="Choose profile"
                 emptyText="No eligible profiles"
                 disabled={disabled}
+                error={
+                  workers.accountId && !state.workerProfileId
+                    ? "Choose a worker profile to save"
+                    : null
+                }
               />
-              <TextField
+              {/* A fixed choice, so an invalid number can never be typed and silently ignored. */}
+              <SelectField
                 label="Maximum workers"
+                testID="agent-profile-max-workers-field"
                 value={String(state.maxWorkers)}
+                selectedDisplay={
+                  maxWorkerOptions.find((option) => option.value === String(state.maxWorkers)) ??
+                  null
+                }
+                options={maxWorkerOptions}
                 onChange={changeLimit}
+                placeholder="Choose a limit"
+                emptyText="No options"
                 disabled={disabled}
               />
             </>
           ) : null}
         </Section>
       ) : null}
+      {/* Profiles work in every environment; excluding one is rare, so it waits under Advanced. */}
       {!defaults ? (
-        <Section title="Availability">
-          <AvailabilityField kind="host" state={state} model={model} />
-          <AvailabilityField kind="container" state={state} model={model} />
-        </Section>
+        <SettingsAdvancedGroup testID="agent-profile-advanced">
+          <Section title="Availability">
+            <AvailabilityField kind="host" state={state} model={model} />
+            <AvailabilityField kind="container" state={state} model={model} />
+          </Section>
+        </SettingsAdvancedGroup>
       ) : null}
     </View>
   );

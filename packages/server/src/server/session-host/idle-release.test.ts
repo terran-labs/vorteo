@@ -42,9 +42,14 @@ test("only idle, quiet, hosted agents without a turn or a pending permission are
 test("nothing is released unless the host reports a pending upgrade", async () => {
   const closed: string[] = [];
   let pending = false;
+  // A provider holding a background shell or monitor keeps its session through the upgrade.
+  const watching = agent({
+    id: "watching",
+    session: { isDurablyHosted: () => true, canStopRuntime: async () => false },
+  });
   const release = startHostedIdleRelease({
     manager: {
-      listAgents: () => [agent({ id: "a" }), agent({ id: "b" })],
+      listAgents: () => [agent({ id: "a" }), watching, agent({ id: "b" })],
       closeAgent: async (id, options) => {
         expect(options).toEqual({ onlyIfIdle: true });
         closed.push(id);

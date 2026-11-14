@@ -152,6 +152,7 @@ import {
 } from "./delegation.js";
 import {
   InstallationSettingsUpdateSchema,
+  UNSET_TIME_ZONE,
   type InstallationSettingsSnapshot,
 } from "@getpaseo/protocol/installation-settings";
 import { AgentSkillSelectionSchema } from "@getpaseo/protocol/messages";
@@ -205,7 +206,12 @@ const SESSION_HOST_STATUS_CACHE_MS = 30_000;
 // COMPAT(providerRemovalOwner): added in v155, remove after legacy strict catalog clients are unsupported.
 function ownerSettingsSnapshot(
   snapshot: InstallationSettingsSnapshot,
-  client: { removalAware: boolean; projectPoliciesAware: boolean; primaryConnectionAware: boolean },
+  client: {
+    removalAware: boolean;
+    projectPoliciesAware: boolean;
+    primaryConnectionAware: boolean;
+    timeZoneAware: boolean;
+  },
 ) {
   const catalogs = [snapshot.settings, ...Object.values(snapshot.conflicts?.candidates ?? {})];
   for (const catalog of catalogs) {
@@ -220,6 +226,10 @@ function ownerSettingsSnapshot(
     // reject the key. Newer ones read its presence, even as null, as the coordinator's support.
     if (client.primaryConnectionAware) catalog.primaryConnection ??= null;
     else delete catalog.primaryConnection;
+    // COMPAT(timeZoneSetting): added 2026-11-13, remove after 2027-05-13. Same strict clients;
+    // newer ones read the key's presence as the coordinator's support.
+    if (client.timeZoneAware) catalog.timeZone ??= { ...UNSET_TIME_ZONE };
+    else delete catalog.timeZone;
   }
   return snapshot;
 }
@@ -229,6 +239,7 @@ function ownerSettingsClient(req: Request) {
     removalAware: req.get("X-Vorteo-Provider-Removal") === "1",
     projectPoliciesAware: req.get("X-Vorteo-Project-Policies") === "1",
     primaryConnectionAware: req.get("X-Vorteo-Primary-Connection") === "1",
+    timeZoneAware: req.get("X-Vorteo-Time-Zone") === "1",
   };
 }
 
@@ -1780,6 +1791,9 @@ export function createInstallationServer(
     if (req.query.primaryConnection !== "1") delete snapshot.settings.primaryConnection;
     // Present, even as null, so the daemon can tell this coordinator supports the setting.
     else snapshot.settings.primaryConnection ??= null;
+    // COMPAT(timeZoneSetting): added 2026-11-13, remove after 2027-05-13. Same strict readers.
+    if (req.query.timeZone !== "1") delete snapshot.settings.timeZone;
+    else snapshot.settings.timeZone ??= { ...UNSET_TIME_ZONE };
     res.json({
       installationId: config.public.installationId,
       serverId: environment.serverId,

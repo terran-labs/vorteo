@@ -59,6 +59,14 @@ import {
 } from "./storage";
 
 export {
+  SETTINGS_RESET_GROUPS,
+  isSettingsGroupDefault,
+  settingsGroupDefaults,
+  useResetSettingsGroup,
+  type SettingsResetGroup,
+} from "./reset-groups";
+
+export {
   APP_SETTINGS_KEY,
   DEFAULT_APP_SETTINGS,
   DEFAULT_CLIENT_SETTINGS,

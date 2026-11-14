@@ -85,6 +85,8 @@ export function MaintenanceDashboard({
             size={touch ? "md" : "sm"}
             onPress={toggleDetails}
             accessibilityState={detailsOpen ? EXPANDED : COLLAPSED}
+            // React Native Web reads only aria-* for expanded state.
+            aria-expanded={detailsOpen}
             testID="installation-health-details-toggle"
           >
             {detailsOpen ? "Hide health details" : "Health details"}

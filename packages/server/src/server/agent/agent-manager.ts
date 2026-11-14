@@ -4,9 +4,8 @@ import type { HeldRestart } from "@getpaseo/protocol/messages";
 import {
   blockedReviewDue,
   hasReviewableBlockedWork,
-  isFinalBlockedReview,
+  reviewableTasks,
   BLOCKED_REVIEW_PROMPT,
-  FINAL_BLOCKED_REVIEW_NOTE,
 } from "./task-checklist/blocked-review.js";
 import { JournalError } from "./journal/model.js";
 import {
@@ -18,7 +17,11 @@ import {
   QuestionError,
 } from "./questions/model.js";
 import { editThreadGoal, type ThreadGoalEdit } from "./agent-goal.js";
-import { AGENT_LAUNCH_GUIDANCE, composeSystemPromptParts } from "./system-prompt.js";
+import {
+  AGENT_LAUNCH_GUIDANCE,
+  composeSystemPromptParts,
+  ownerTimeZoneGuidance,
+} from "./system-prompt.js";
 import {
   mergeProviderChecklistEvent,
   mergeProviderChecklist,
@@ -548,6 +551,8 @@ export interface AgentManagerOptions {
   paseoToolCatalogFactory?: PaseoToolCatalogFactory;
   resolvePaseoToolPolicy?: (provider: AgentProvider) => ProviderPaseoToolsPolicy | undefined;
   appendSystemPrompt?: string;
+  /** The owner's effective IANA time zone; launches name it in the prompt. */
+  ownerTimeZone?: string | null;
   agentStreamCoalesceWindowMs?: number;
   rescueTimeouts?: AgentManagerRescueTimeouts;
   beforeSteerUnavailableFallback?: (input: {
@@ -1595,6 +1600,7 @@ export class AgentManager {
     provider: AgentProvider,
   ) => ProviderPaseoToolsPolicy | undefined;
   private appendSystemPrompt: string;
+  private ownerTimeZone: string | null;
   private onAgentAttention?: AgentAttentionCallback;
   private onAgentArchived?: AgentArchivedCallback;
   private onWorkspaceStateMayHaveChanged?: (params: { cwd: string }) => void;
@@ -1614,6 +1620,7 @@ export class AgentManager {
             MessageQueueService,
             | "withIdleQueue"
             | "queueQuestionAnswer"
+            | "queueOwnerMessage"
             | "steerQueuedMessage"
             | "onMessageAccepted"
             | "captureRestartContinuation"
@@ -1629,6 +1636,11 @@ export class AgentManager {
         >)
     | null = null;
   private messageQueueAcceptedSubscription: (() => void) | null = null;
+  /**
+   * The Previews gallery service. It lives here only so agent tools and client sessions,
+   * which already hold the manager, reach it without another constructor parameter.
+   */
+  previews: import("../previews/service.js").PreviewsService | null = null;
   private readonly queueGoalMutationTails = new Map<string, Promise<void>>();
   private logger: Logger;
   private readonly rescueTimeouts: Required<AgentManagerRescueTimeouts>;
@@ -1678,6 +1690,7 @@ export class AgentManager {
     this.configurePaseoTools(options);
     this.resolvePaseoToolPolicy = options.resolvePaseoToolPolicy ?? (() => undefined);
     this.appendSystemPrompt = options.appendSystemPrompt ?? "";
+    this.ownerTimeZone = options.ownerTimeZone ?? null;
     this.logger = options.logger.child({ module: "agent", component: "agent-manager" });
     this.rescueTimeouts = this.resolveRescueTimeouts(options);
     this.beforeSteerUnavailableFallback = options.beforeSteerUnavailableFallback;
@@ -1887,6 +1900,7 @@ export class AgentManager {
           MessageQueueService,
           | "withIdleQueue"
           | "queueQuestionAnswer"
+          | "queueOwnerMessage"
           | "steerQueuedMessage"
           | "onMessageAccepted"
           | "captureRestartContinuation"
@@ -1912,6 +1926,28 @@ export class AgentManager {
           );
         });
       }) ?? null;
+  }
+
+  /**
+   * Advisory, for the stall review: whether a loaded runtime reports work that will wake the
+   * thread by itself, such as a background watcher or subagent. Asked outside every lock, with a
+   * bound, so a slow provider cannot hold the thread or the scan. The provider's stop check also
+   * says no while a process is starting, so that case, a provider without the check and a failed
+   * check are all "unknown" rather than live work.
+   */
+  async backgroundWork(agentId: string): Promise<"live" | "none" | "unknown"> {
+    const session = this.agents.get(agentId)?.session;
+    if (!session?.canStopRuntime || session.isProviderSettling?.()) return "unknown";
+    try {
+      const idle = await withTimeout(
+        session.canStopRuntime(),
+        10_000,
+        `Runtime safety probe timed out for ${agentId}`,
+      );
+      return idle === true ? "none" : "live";
+    } catch {
+      return "unknown";
+    }
   }
 
   /** Review one existing idle thread; never steer, replace, or resume a goal implicitly. */
@@ -1949,9 +1985,7 @@ export class AgentManager {
           const state = agent.session.goals?.state;
           if (!state) {
             const record = registry.getLoadedRecord(agentId);
-            return (record?.tasks ?? []).some(
-              (task) => !task.completed && task.status === "blocked",
-            );
+            return record !== null && record !== undefined && reviewableTasks(record).length > 0;
           }
           if (
             state.status !== "ready" ||
@@ -1962,9 +1996,7 @@ export class AgentManager {
           const goal = state.goal;
           if (!goal) {
             const record = registry.getLoadedRecord(agentId);
-            return (record?.tasks ?? []).some(
-              (task) => !task.completed && task.status === "blocked",
-            );
+            return record !== null && record !== undefined && reviewableTasks(record).length > 0;
           }
           if (goal.status !== "blocked") return false;
           return goal.tokenBudget === null || goal.tokensUsed < goal.tokenBudget;
@@ -1978,10 +2010,7 @@ export class AgentManager {
           if (!(await registry.claimBlockedReview(agentId, this.now()))) return null;
           if (!eligible() || !queueAllowsStart()) return null;
           // No await between the last admission check and synchronous run reservation.
-          const prompt = isFinalBlockedReview(record)
-            ? BLOCKED_REVIEW_PROMPT + FINAL_BLOCKED_REVIEW_NOTE
-            : BLOCKED_REVIEW_PROMPT;
-          return this.streamAgent(agentId, prompt, {
+          return this.streamAgent(agentId, BLOCKED_REVIEW_PROMPT, {
             origin: "agent",
           });
         });
@@ -2574,6 +2603,11 @@ export class AgentManager {
 
   setAppendSystemPrompt(prompt: string | null | undefined): void {
     this.appendSystemPrompt = prompt ?? "";
+  }
+
+  /** The owner's effective IANA time zone, named in each later launch's prompt. */
+  setOwnerTimeZone(zone: string | null | undefined): void {
+    this.ownerTimeZone = zone ?? null;
   }
 
   public getMetricsSnapshot(): AgentMetricsSnapshot {
@@ -5397,6 +5431,15 @@ export class AgentManager {
     await this.persistSnapshot(agent);
     if (item.type === "todo") this.emitState(agent, { persist: false });
     return { seq: row.seq, epoch: this.timelineStore.getEpoch(agentId) };
+  }
+
+  /** Queue an owner message for a thread; it is delivered now or when the active turn ends. */
+  async queueOwnerMessage(agentId: string, messageId: string, text: string): Promise<void> {
+    this.requireAgent(agentId);
+    const queue = this.messageQueueControl;
+    if (!queue?.queueOwnerMessage)
+      throw new Error("This daemon cannot deliver messages to the thread.");
+    await queue.queueOwnerMessage(agentId, messageId, text);
   }
 
   async readJournal(
@@ -8937,6 +8980,7 @@ export class AgentManager {
   private applyDaemonAppendSystemPrompt(config: AgentSessionConfig): AgentSessionConfig {
     const daemonAppendSystemPrompt = composeSystemPromptParts(
       config.internal ? undefined : AGENT_LAUNCH_GUIDANCE,
+      config.internal ? undefined : ownerTimeZoneGuidance(this.ownerTimeZone),
       this.appendSystemPrompt,
     );
     const next = { ...config };

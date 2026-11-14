@@ -15,11 +15,29 @@
     />
     <script>
       // A display/network preference only: never cache authentication or message data here.
+      // Data saving follows the browser (its data saver, a 2G-class connection or
+      // prefers-reduced-data) unless the person chose otherwise with this page's button, which
+      // persists as an override. src/network-preferences.ts applies the same rule after load.
+      var DATA_SAVER_OVERRIDE_KEY = "vorteo-data-saver-override-v2";
+      window.__vorteoAutomaticDataSaver = function () {
+        var connection = navigator.connection;
+        if (connection && connection.saveData === true) return true;
+        if (
+          connection &&
+          (connection.effectiveType === "slow-2g" || connection.effectiveType === "2g")
+        )
+          return true;
+        try {
+          return window.matchMedia("(prefers-reduced-data: reduce)").matches;
+        } catch (_) {
+          return false;
+        }
+      };
       window.__vorteoSetDataSaver = function (enabled, persist) {
         var saved = true;
         if (persist !== false) {
           try {
-            localStorage.setItem("vorteo-data-saver-v1", enabled ? "on" : "off");
+            localStorage.setItem(DATA_SAVER_OVERRIDE_KEY, enabled ? "on" : "off");
           } catch (_) {
             saved = false;
           }
@@ -32,11 +50,18 @@
         window.dispatchEvent(new Event("vorteo-data-saver-change"));
         return saved;
       };
-      var bootSavedDataSaver = false;
+      var bootDataSaver = null;
       try {
-        bootSavedDataSaver = localStorage.getItem("vorteo-data-saver-v1") === "on";
+        // The retired settings switch stored its choice here; it no longer decides anything.
+        localStorage.removeItem("vorteo-data-saver-v1");
+        var bootOverride = localStorage.getItem(DATA_SAVER_OVERRIDE_KEY);
+        if (bootOverride === "on") bootDataSaver = true;
+        if (bootOverride === "off") bootDataSaver = false;
       } catch (_) {}
-      window.__vorteoSetDataSaver(bootSavedDataSaver, false);
+      window.__vorteoSetDataSaver(
+        bootDataSaver === null ? window.__vorteoAutomaticDataSaver() : bootDataSaver,
+        false,
+      );
     </script>
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Vorteo" />

@@ -9,9 +9,10 @@ import {
   rename,
   symlink,
 } from "node:fs/promises";
+import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, expect, it, test } from "vitest";
+import { afterEach, expect, it, test, vi } from "vitest";
 import { SkillLibrary } from "./library";
 import { inventorySkills } from "./inventory";
 import type { SkillLibraryResult } from "@getpaseo/protocol/skill-library";
@@ -21,6 +22,7 @@ const posixTest = test.skipIf(process.platform === "win32");
 
 const roots: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 const source = {
@@ -392,4 +394,34 @@ it("rechecks skill authority at apply and preserves a retryable preview when aut
     "changed since preview",
   );
   expect(await readFile(path.join(target, "notes.txt"), "utf8")).toBe("Keep local work");
+});
+
+it("repeated reconciliation inventory reads no unchanged package contents and notices nested edits", async () => {
+  const { library, target } = await harness();
+  await mkdir(path.join(target, "references"), { recursive: true });
+  await writeFile(path.join(target, "SKILL.md"), files().get("SKILL.md")!);
+  const realTarget = await realpath(target);
+  const reference = path.join(realTarget, "references", "guide.md");
+  await writeFile(reference, "first");
+  const contents = vi.spyOn(fs, "readFile");
+  const first = await library.read({ kind: "inventory" });
+  expect(contents.mock.calls.some(([file]) => String(file) === reference)).toBe(true);
+  contents.mockClear();
+  const second = await library.read({ kind: "inventory" });
+  expect(
+    contents.mock.calls.filter(([file]) => String(file).startsWith(realTarget + path.sep)),
+  ).toEqual([]);
+  if (first.kind !== "inventory" || second.kind !== "inventory")
+    throw new Error("Expected inventories");
+  expect(second.inventory.skills).toEqual(first.inventory.skills);
+  // Detail/export and mutation inspection remain fresh even after an inventory cache hit.
+  contents.mockClear();
+  await library.read({ kind: "detail", id: first.inventory.skills[0].id });
+  expect(contents.mock.calls.some(([file]) => String(file) === reference)).toBe(true);
+  await writeFile(reference, "other");
+  contents.mockClear();
+  const changed = await library.read({ kind: "inventory" });
+  if (changed.kind !== "inventory") throw new Error("Expected inventory");
+  expect(contents.mock.calls.some(([file]) => String(file) === reference)).toBe(true);
+  expect(changed.inventory.skills[0].sha256).not.toBe(first.inventory.skills[0].sha256);
 });

@@ -49,7 +49,6 @@ import type { IconProps } from "@getpaseo/plugin/client/ui";
 import { SvgIcon } from "@/components/provider-icons";
 import { iconNameGroups } from "./icon-names.generated";
 import { loadedCustomIcon, loadCustomIcons, useCustomIconState } from "./icon-catalog";
-import { useDataSaver } from "@/network-preferences";
 
 const common: Record<string, LucideIcon> = {
   Settings,
@@ -92,6 +91,8 @@ for (const group of iconNameGroups) {
   }
 }
 const components = new Map<string, LucideIcon>();
+/** Matches `createIconCatalog`, which refuses a fourth attempt until reload. */
+const ICON_RETRY_LIMIT = 3;
 function findPluginIcon(name: string): LucideIcon | null {
   const canonical = canonicalNames.get(name);
   if (!canonical) return null;
@@ -99,19 +100,31 @@ function findPluginIcon(name: string): LucideIcon | null {
   if (immediate) return immediate;
   const cached = components.get(canonical);
   if (cached) return cached;
+  // The full catalog is a separate chunk (about 156 KB brotli, cached for a year) that only
+  // loads when a plugin asks for an icon outside `common`. It is not gated on data saving: the
+  // one-time cost is small and a placeholder would hide what the plugin's action is.
   const OptionalIcon: LucideIcon = memo((props: ComponentProps<LucideIcon>) => {
-    const dataSaver = useDataSaver();
     const status = useCustomIconState();
     useEffect(() => {
-      if (!dataSaver && status.phase === "idle") void loadCustomIcons().catch(() => undefined);
-    }, [dataSaver, status.phase]);
+      if (status.phase === "idle") {
+        void loadCustomIcons().catch(() => undefined);
+        return undefined;
+      }
+      // A failed download retries after 2s, then 4s, and as soon as the browser is back online,
+      // within the catalog's three attempts. The catalog shares one request across icons.
+      if (status.phase !== "failed" || status.attempts >= ICON_RETRY_LIMIT) return undefined;
+      const retry = () => void loadCustomIcons().catch(() => undefined);
+      const timer = setTimeout(retry, 2000 * 2 ** (status.attempts - 1));
+      window.addEventListener("online", retry);
+      return () => {
+        clearTimeout(timer);
+        window.removeEventListener("online", retry);
+      };
+    }, [status.phase, status.attempts]);
     const icon = loadedCustomIcon(canonical);
     let fallbackLabel: string | undefined;
     if (!icon) {
-      fallbackLabel =
-        status.phase === "failed"
-          ? "Optional icon unavailable"
-          : "Optional icon deferred; action label remains available";
+      fallbackLabel = status.phase === "failed" ? "Icon unavailable" : "Icon loading";
     }
     return createElement(icon ?? Puzzle, {
       ...props,

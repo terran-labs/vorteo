@@ -2,10 +2,29 @@ import { expect, test, type Page } from "../support/fixtures";
 import { gotoAppShell, openSettings } from "../support/helpers/app";
 import { getServerId } from "../support/helpers/server-id";
 import { connectNewWorkspaceDaemonClient } from "../support/helpers/new-workspace";
-import { openHostSection, openSettingsHost } from "../support/helpers/settings";
+import {
+  openHostSection,
+  openSettingsHost,
+  revealSettingsLocation,
+} from "../support/helpers/settings";
 
 function metadataSection(page: Page) {
   return page.getByTestId("metadata-generation-settings").filter({ visible: true }).first();
+}
+
+/** Automatic and Manual are a segmented control, which is a radio group. */
+function modeChoice(page: Page, name: "Automatic" | "Manual") {
+  return metadataSection(page).getByRole("radio", { name, exact: true });
+}
+
+/**
+ * Metadata generation sits in Agents' collapsed Advanced group, which a reload closes again, so
+ * reopen it the way a reader would.
+ */
+async function reloadMetadataGenerationSettings(page: Page) {
+  await page.reload();
+  await revealSettingsLocation(page, "metadata");
+  await expect(metadataSection(page)).toBeVisible();
 }
 
 async function openMetadataGenerationSettings(page: Page) {
@@ -20,7 +39,7 @@ async function openMetadataGenerationSettings(page: Page) {
 }
 
 async function openManualMetadataModelPicker(page: Page) {
-  await page.getByRole("button", { name: "Manual", exact: true }).click();
+  await modeChoice(page, "Manual").click();
   await page.getByRole("button", { name: /Select model/ }).click();
   const picker = page.getByTestId("combobox-desktop-container");
   await expect(picker).toBeVisible();
@@ -43,10 +62,7 @@ test("chooses a metadata model and can return to automatic selection", async ({
   await expect(page.getByTestId("metadata-generation-settings-info")).toHaveAccessibleName(
     "About Metadata generation",
   );
-  await expect(page.getByRole("button", { name: "Automatic", exact: true })).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
+  await expect(modeChoice(page, "Automatic")).toHaveAttribute("aria-checked", "true");
   await page.screenshot({
     path: testInfo.outputPath("metadata-automatic.png"),
     fullPage: true,
@@ -62,24 +78,18 @@ test("chooses a metadata model and can return to automatic selection", async ({
   await page.getByText("Ten second stream", { exact: true }).click();
 
   await expect(page.getByRole("button", { name: /Ten second stream/ })).toBeVisible();
-  await page.reload();
-  await expect(page.getByRole("button", { name: "Manual", exact: true })).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
+  await reloadMetadataGenerationSettings(page);
+  await expect(modeChoice(page, "Manual")).toHaveAttribute("aria-checked", "true");
   await expect(page.getByRole("button", { name: /Ten second stream/ })).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("metadata-manual-persisted.png"),
     fullPage: true,
   });
 
-  await page.getByRole("button", { name: "Automatic", exact: true }).click();
-  await page.reload();
+  await modeChoice(page, "Automatic").click();
+  await reloadMetadataGenerationSettings(page);
 
-  await expect(page.getByRole("button", { name: "Automatic", exact: true })).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
+  await expect(modeChoice(page, "Automatic")).toHaveAttribute("aria-checked", "true");
   await expect(page.getByRole("button", { name: /Ten second stream/ })).toHaveCount(0);
 });
 
@@ -98,10 +108,7 @@ test("replaces only the first configured metadata model", async ({ page }) => {
     });
     await openMetadataGenerationSettings(page);
 
-    await expect(page.getByRole("button", { name: "Manual", exact: true })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
+    await expect(modeChoice(page, "Manual")).toHaveAttribute("aria-checked", "true");
     await openManualMetadataModelPicker(page);
     await page.getByText("Ten second stream", { exact: true }).click();
 
@@ -133,7 +140,7 @@ for (const viewport of [
   }, testInfo) => {
     await page.setViewportSize(viewport);
     await openMetadataGenerationSettings(page);
-    await page.getByRole("button", { name: "Manual", exact: true }).click();
+    await modeChoice(page, "Manual").click();
     const trigger = page.getByRole("button", { name: /Select model/ });
     // Exercise the same lower-edge anchor as Settings after scrolling to this field.
     await trigger.evaluate((element) => element.scrollIntoView({ block: "end" }));
@@ -175,6 +182,6 @@ for (const viewport of [
     await page.getByTestId("model-provider-mock").click();
     await page.getByText("Ten second stream", { exact: true }).click();
     await expect(page.getByRole("button", { name: /Ten second stream/ })).toBeVisible();
-    await page.getByRole("button", { name: "Automatic", exact: true }).click();
+    await modeChoice(page, "Automatic").click();
   });
 }

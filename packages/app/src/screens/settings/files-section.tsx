@@ -18,6 +18,8 @@ import {
 import { PluginIconView } from "@/plugins/icons";
 import { settingsStyles } from "@/styles/settings";
 import type { Theme } from "@/styles/theme";
+import { SettingsListSummary } from "@/components/settings/list-summary";
+import { ResetGroupButton } from "@/screens/settings/appearance/reset-group-button";
 
 const MENU_ICON_SIZE = 16;
 
@@ -29,7 +31,11 @@ export function FilesSection() {
   const { t } = useTranslation();
   const { rows, choose, askAgain } = useFilePanelSettings();
   return (
-    <SettingsSection title={t("settings.files.title")} testID="file-panel-settings">
+    <SettingsSection
+      title={t("settings.files.title")}
+      trailing={RESET_FILES}
+      testID="file-panel-settings"
+    >
       {rows.length === 0 ? (
         <View style={settingsStyles.card} testID="file-panel-settings-empty">
           <View style={styles.emptyCard}>
@@ -37,20 +43,31 @@ export function FilesSection() {
           </View>
         </View>
       ) : (
-        <SettingsCard testID="file-panel-settings-card">
-          {rows.map((row) => (
-            <FilePanelSettingsRowView
-              key={row.selectorKey}
-              row={row}
-              onChoose={choose}
-              onAskAgain={askAgain}
-            />
-          ))}
-        </SettingsCard>
+        <SettingsListSummary
+          title={t("settings.files.title")}
+          count={rows.length}
+          noun={FILE_TYPE_NOUN}
+          preview={rows.map((row) => filePanelSelectorLabel(row.selectorKey))}
+          testID="file-panel-settings-summary"
+        >
+          <SettingsCard testID="file-panel-settings-card">
+            {rows.map((row) => (
+              <FilePanelSettingsRowView
+                key={row.selectorKey}
+                row={row}
+                onChoose={choose}
+                onAskAgain={askAgain}
+              />
+            ))}
+          </SettingsCard>
+        </SettingsListSummary>
       )}
     </SettingsSection>
   );
 }
+
+const RESET_FILES = <ResetGroupButton group="files" />;
+const FILE_TYPE_NOUN = { one: "file type", other: "file types" };
 
 function FilePanelSettingsRowView({
   row,
