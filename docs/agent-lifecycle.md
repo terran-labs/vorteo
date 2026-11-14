@@ -164,8 +164,8 @@ left in progress.
   review always rereads a warm one-hour prompt cache. Turning the setting on, a daemon
   restart or a lifted hold therefore never reviews threads that stopped hours or days ago.
 - **Stops when nothing changes.** A review that leaves the checklist as it found it (same
-  unfinished items, statuses and passed checks) and starts no background work spends the
-  rest of the ladder, unless a real prompt arrived meanwhile. The prompt tells the agent to
+  unfinished items, statuses and passed checks) and starts no new background work spends
+  the rest of the ladder, unless a real prompt arrived meanwhile. The prompt tells the agent to
   act on ready items, start a background watcher for anything a command can detect, and
   move items that wait on the owner to review.
 - **Skipped.** Items listed in an open question's `blocks` (the answer arrives as a
@@ -173,6 +173,9 @@ left in progress.
   progress is skipped while a subagent of it runs, or while its already loaded runtime
   reports live background work through the provider's `canStopRuntime`. Providers without
   that check are reviewed.
+- **Paused Factory projects.** Role threads of a Factory project the owner has paused or
+  drained are not reviewed. Issue leads, workers and reviewers are subagents and are never
+  reviewed.
 - **Burst handling.** Due threads are reviewed three at a time.
 - **Caps.** At most 6 reviews per thread per day and 12 per hour for the installation,
   counted in memory since the daemon started.

@@ -16168,6 +16168,21 @@ test("periodic review scan honors the hourly cooldown and stops without creating
       activeTurnId: null,
     });
     expect(blockedReviewDue(storage.getLoadedRecord(agent.id)!, now)).toBe(true);
+    // A role thread of a Factory project the owner paused is skipped; other projects are not.
+    await manager.setLabels(agent.id, { "vorteo.factory-role": "project-1:foreman" });
+    await manager.flush();
+    const labeled = storage.getLoadedRecord(agent.id)!;
+    now = Date.parse(labeled.lastActivityAt ?? labeled.createdAt) + 300_001;
+    expect(blockedReviewDue(labeled, now)).toBe(true);
+    await new BlockedTaskReviewService({
+      agentManager: manager,
+      agentStorage: storage,
+      logger,
+      enabled: () => true,
+      pausedFactoryProjects: async () => new Set(["project-1"]),
+      now: () => now,
+    }).tick();
+    expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBeUndefined();
     // The host setting defaults to off; a disabled service must not prompt the thread.
     await new BlockedTaskReviewService({
       agentManager: manager,
@@ -16182,6 +16197,7 @@ test("periodic review scan honors the hourly cooldown and stops without creating
       agentStorage: storage,
       logger,
       enabled: () => true,
+      pausedFactoryProjects: async () => new Set(["project-2"]),
       now: () => now,
     });
     await reviews.tick();

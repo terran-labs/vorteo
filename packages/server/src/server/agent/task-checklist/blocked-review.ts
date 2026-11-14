@@ -1,5 +1,6 @@
 import type { StoredAgentRecord } from "../agent-storage.js";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
+import { PROJECT_FACTORY_ROLE_LABEL } from "../../factory/project/roles.js";
 
 /**
  * Each review waits this long after the thread's last activity or review, then the ladder stops.
@@ -20,6 +21,17 @@ export const BLOCKED_REVIEW_DAILY_THREAD_CAP = 6;
 export const BLOCKED_REVIEW_HOURLY_INSTALLATION_CAP = 12;
 // A review's own prompt arrives seconds after its claim; a prompt later than this is real activity.
 const REVIEW_PROMPT_SLACK_MS = 2 * 60_000;
+
+/**
+ * The Factory project a role thread (Foreman, Builds, Triage and the rest) belongs to. While the
+ * owner has that project paused, a review can only answer "still paused", so the scan skips the
+ * thread. Issue leads, workers and reviewers are subagents and are never reviewed anyway.
+ */
+export function factoryProjectOf(record: StoredAgentRecord): string | null {
+  const role = record.labels[PROJECT_FACTORY_ROLE_LABEL];
+  const separator = role?.lastIndexOf(":") ?? -1;
+  return role && separator > 0 ? role.slice(0, separator) : null;
+}
 
 /**
  * Unfinished items a review could move: blocked ones, and in-progress ones left behind when the

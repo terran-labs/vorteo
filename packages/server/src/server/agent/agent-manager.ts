@@ -1921,23 +1921,24 @@ export class AgentManager {
   }
 
   /**
-   * Advisory, for the stall review: true when a loaded runtime reports work that will wake the
+   * Advisory, for the stall review: whether a loaded runtime reports work that will wake the
    * thread by itself, such as a background watcher or subagent. Asked outside every lock, with a
-   * bound, so a slow provider cannot hold the thread or the scan. A starting process, a provider
-   * without the check and a failed check all read as no background work.
+   * bound, so a slow provider cannot hold the thread or the scan. The provider's stop check also
+   * says no while a process is starting, so that case, a provider without the check and a failed
+   * check are all "unknown" rather than live work.
    */
-  async hasLiveBackgroundWork(agentId: string): Promise<boolean> {
+  async backgroundWork(agentId: string): Promise<"live" | "none" | "unknown"> {
     const session = this.agents.get(agentId)?.session;
-    if (!session?.canStopRuntime || session.isProviderSettling?.()) return false;
+    if (!session?.canStopRuntime || session.isProviderSettling?.()) return "unknown";
     try {
       const idle = await withTimeout(
         session.canStopRuntime(),
         10_000,
         `Runtime safety probe timed out for ${agentId}`,
       );
-      return idle !== true;
+      return idle === true ? "none" : "live";
     } catch {
-      return false;
+      return "unknown";
     }
   }
 
