@@ -648,6 +648,64 @@ test("a finish-current-turns hold asks the owner after its deadline and logs hol
 });
 
 test.each([
+  { policy: "omitted", options: {} },
+  { policy: "ask", options: { afterHoldDeadline: "ask" as const } },
+])(
+  "$policy deadline policy keeps owner attention without cooperative preparation",
+  async ({ options }) => {
+    const journal = new MemoryJournal();
+    let now = Date.now();
+    const prepare = vi.fn(async () => {
+      throw new Error("Unexpected automatic preparation");
+    });
+    const dispatch = vi.fn(async () => {});
+    const observe = vi.fn(async () => {
+      throw new Error("Unexpected automatic observation");
+    });
+    const restart = vi.fn(async () => "Unexpected restart");
+    const queue = new InstallationRestarts(
+      journal,
+      {
+        restartContinuationAvailable: async () => true,
+        captureRestartContinuation: async () => {},
+        releaseRestartContinuation: async () => true,
+        holdCurrentTurns: async () => {},
+        releaseCurrentTurns: async () => {},
+        prepareCooperativePreparation: prepare,
+        dispatchCooperativePreparation: dispatch,
+        observeCooperativePreparation: observe,
+        restart,
+        restartWhenIdle: restart,
+        inspect: async () => ({
+          ...idleImpact("host", true),
+          restartDrainObservationSupported: true,
+          restartDrainId: request.id,
+        }),
+      },
+      () => now,
+      {},
+      { fenced: false, finishTurnsDeadlineMs: 1000, ...options },
+    );
+    const request = queue.request({ target: "host", reason: "Owner deadline decision" }, "owner");
+    queue.decide(request.id, request.revision, "finish-current-turns");
+    await queue.drain();
+    now += 1001;
+    await queue.drain();
+    await queue.drain();
+    expect(queue.holdDeadlineExceeded(request.id)).toBe(true);
+    expect(queue.list()[0]).toMatchObject({
+      status: "approved",
+      detail: expect.stringContaining("Restart now to interrupt them, or cancel."),
+    });
+    expect(journal.jobs[0]?.cooperativeDrainPreparation).toBeUndefined();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(observe).not.toHaveBeenCalled();
+    expect(restart).not.toHaveBeenCalled();
+  },
+);
+
+test.each([
   "success",
   "reconstruct",
   "inspection",
@@ -812,7 +870,7 @@ test.each([
         throw new Error("Unconditional restart is forbidden");
       },
     };
-    const startup = { fenced: false, holdState };
+    const startup = { fenced: false, holdState, afterHoldDeadline: "auto" as const };
     queue = new InstallationRestarts(journal, executor, () => now, {}, startup);
     request = queue.request({ target: "host", reason: "Automatic hold deadline" }, "owner");
     queue.decide(request.id, request.revision, "finish-current-turns");

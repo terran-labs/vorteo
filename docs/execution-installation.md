@@ -698,7 +698,8 @@ wait for the hold to end instead of retrying every few seconds.
 The coordinator records when the hold first waits in its private `restart-holds.json`,
 which survives a coordinator restart, and logs each change in the set of agents it
 waits for, by agent ID only. After `restartHoldDeadlineMinutes` (default 15),
-`restartHoldAfterDeadline` selects `auto` (the default) or `ask`. Automatic mode
+`restartHoldAfterDeadline` selects `ask` (the default) or explicit `auto`. Omitting
+the setting keeps owner attention after the deadline. Automatic mode
 requires acknowledged durable continuation capture, a verified matching hold,
 an installed native cooperative endpoint and explicit coverage in the retained
 enrollment manifest. An older manifest grants no preparation authority. The

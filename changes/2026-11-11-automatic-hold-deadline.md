@@ -1,6 +1,6 @@
 ### Fixes
 
-- Approved updates can restart automatically after the current-turn deadline when their retained enrollment explicitly covers the installed native cooperative phase. Durable continuation, matching hold and actual idle settlement remain required. Installations can select ask mode instead; System records completion after saved work is released to continue.
+- Approved updates can restart automatically after the current-turn deadline when their retained enrollment explicitly covers the installed native cooperative phase. Durable continuation, matching hold and actual idle settlement remain required. Automatic restart must be explicitly enabled; omission keeps the owner prompt. System records completion after saved work is released to continue.
 
 ## Maintenance review
 

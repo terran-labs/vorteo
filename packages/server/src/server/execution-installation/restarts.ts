@@ -399,7 +399,7 @@ export class InstallationRestarts {
     this.progress = startup.progress ?? (() => {});
     this.dispatchDeadlineMs = startup.dispatchDeadlineMs ?? DISPATCH_READINESS_DEADLINE_MS;
     this.finishTurnsDeadlineMs = startup.finishTurnsDeadlineMs ?? FINISH_TURNS_DEADLINE_MS;
-    this.afterHoldDeadline = startup.afterHoldDeadline ?? "auto";
+    this.afterHoldDeadline = startup.afterHoldDeadline ?? "ask";
     this.holdState = startup.holdState;
     try {
       const saved = z.record(z.string(), HoldRecordSchema).safeParse(startup.holdState?.read());
