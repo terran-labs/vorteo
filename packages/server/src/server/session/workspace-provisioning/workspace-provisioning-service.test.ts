@@ -1,6 +1,7 @@
 import os from "node:os";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, realpathSync } from "node:fs";
 
 import { afterEach, beforeEach, expect, test } from "vitest";
 
@@ -17,6 +18,9 @@ import {
   createPersistedWorkspaceRecord,
   type WorkspaceRegistry,
 } from "../../workspace-registry.js";
+import { WorkspaceGitServiceImpl } from "../../workspace-git-service.js";
+import { WorkspaceReconciliationService } from "../../workspace-reconciliation-service.js";
+import { createWorkspaceRecoveryService } from "../workspace-recovery/workspace-recovery-service.js";
 import { checkoutLiteFromGitSnapshot } from "../../workspace-registry-model.js";
 import type { CreatePaseoWorktreeWorkflowResult } from "../../worktree-session.js";
 import {
@@ -1017,3 +1021,74 @@ test.each(["directory", "worktree"] as const)(
     );
   },
 );
+
+test("metadata discovery keeps shared local workspaces stable and missing checkout recovery unavailable", async () => {
+  const repo = realpathSync(mkdtempSync(path.join(tmpDir, "real-repo-")));
+  execFileSync("git", ["init", "-b", "main"], { cwd: repo, stdio: "pipe" });
+  const actualGit = new WorkspaceGitServiceImpl({ logger, paseoHome: path.join(tmpDir, "home") });
+  const realProvisioning = createWorkspaceProvisioningService({
+    workspaceRegistry,
+    projectRegistry,
+    workspaceGitService: actualGit,
+    isDirectory,
+    logger,
+  });
+  const reconciliation = new WorkspaceReconciliationService({
+    workspaceRegistry,
+    projectRegistry,
+    workspaceGitService: actualGit,
+    logger,
+  });
+  try {
+    const first = await realProvisioning.createWorkspaceForDirectory(repo, "First");
+    const second = await realProvisioning.createWorkspaceForDirectory(repo, "Second");
+    expect(first.kind).toBe("local_checkout");
+    expect(second.kind).toBe("local_checkout");
+    // Repair records written by the regressed metadata projection on the next live read.
+    await workspaceRegistry.update(first.workspaceId, (current) => ({
+      ...current,
+      kind: "worktree",
+      mainRepoRoot: repo,
+    }));
+    await reconciliation.reconcileGitMetadata();
+    await reconciliation.reconcileGitMetadata();
+    expect(
+      (await workspaceRegistry.list()).map(({ workspaceId, kind, mainRepoRoot }) => ({
+        workspaceId,
+        kind,
+        mainRepoRoot,
+      })),
+    ).toEqual([
+      { workspaceId: first.workspaceId, kind: "local_checkout", mainRepoRoot: null },
+      { workspaceId: second.workspaceId, kind: "local_checkout", mainRepoRoot: null },
+    ]);
+    expect(await projectRegistry.list()).toHaveLength(1);
+    // A record archived by the regressed version is excluded from reconciliation.
+    await workspaceRegistry.update(first.workspaceId, (current) => ({
+      ...current,
+      kind: "worktree",
+      mainRepoRoot: repo,
+      archivedAt: ARCHIVED_AT,
+    }));
+    await reconciliation.reconcileGitMetadata();
+    expect((await workspaceRegistry.get(first.workspaceId))?.kind).toBe("worktree");
+    rmSync(repo, { recursive: true });
+    const recovery = createWorkspaceRecoveryService({
+      paseoHome: path.join(tmpDir, "home"),
+      getWorkspace: (id) => workspaceRegistry.get(id),
+      getProject: (id) => projectRegistry.get(id),
+      isDirectory,
+      unarchiveWorkspace: async () => {
+        throw new Error("Missing checkout cannot be recovered");
+      },
+    });
+    expect(await recovery.inspect(first.workspaceId)).toMatchObject({
+      kind: "unavailable",
+      reason: "workspace_directory_missing",
+    });
+    await expect(recovery.restore(first.workspaceId)).rejects.toThrow("cannot be recreated");
+  } finally {
+    reconciliation.dispose();
+    await actualGit.dispose();
+  }
+}, 30_000);
