@@ -9,6 +9,7 @@ import { taskCardStyles } from "@/agent-stream/task-card-styles";
 import { useCardDisclosure } from "@/agent-stream/use-card-disclosure";
 import { CountBadge } from "@/components/ui/count-badge";
 import { PressHighlight } from "@/components/ui/press-highlight";
+import { hoverGroup } from "@/styles/hover";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { formatTimeAgo } from "@/utils/time";
 import {
@@ -20,7 +21,8 @@ import {
   type PreviewScope,
   type PreviewSort,
 } from "./model";
-import { ApprovedMark, PreviewThumb, StarRating } from "./parts";
+import { ApprovedMark, PreviewThumb } from "./parts";
+import { PREVIEW_TILE_HOVER_GROUP, TileRating } from "./tile-rating";
 import {
   usePreviewsActions,
   usePreviewsGallery,
@@ -189,13 +191,29 @@ function PreviewTile({
     .join(" · ");
   return (
     <View style={styles.tile} testID={`preview-tile-${lineage.lineage}`}>
+      <View style={styles.thumbArea}>
+        <PressHighlight
+          onPress={open}
+          accessibilityRole="button"
+          accessibilityLabel={`Open ${version.title}`}
+          style={styles.thumbButton}
+        >
+          <PreviewThumb version={version} httpBase={httpBase} />
+        </PressHighlight>
+        {/* A sibling of the thumbnail button, not a child, so rating never opens the preview. */}
+        <TileRating
+          rating={version.rating}
+          disabled={!actions.canAct}
+          onRate={rate}
+          testID={`preview-rating-${lineage.lineage}`}
+        />
+      </View>
       <PressHighlight
         onPress={open}
         accessibilityRole="button"
         accessibilityLabel={`Open ${version.title}`}
         style={styles.tileButton}
       >
-        <PreviewThumb version={version} httpBase={httpBase} />
         <Text style={styles.title} numberOfLines={2}>
           {version.title}
         </Text>
@@ -208,15 +226,7 @@ function PreviewTile({
           </Text>
         ) : null}
       </PressHighlight>
-      <View style={styles.tileFooter}>
-        <StarRating
-          rating={version.rating}
-          disabled={!actions.canAct}
-          onRate={rate}
-          testID={`preview-rating-${lineage.lineage}`}
-        />
-        {version.approved ? <ApprovedMark /> : null}
-      </View>
+      {version.approved ? <ApprovedMark /> : null}
     </View>
   );
 }
@@ -225,15 +235,18 @@ const styles = StyleSheet.create((theme) => ({
   body: { gap: theme.spacing[3], paddingBottom: theme.spacing[2] },
   controls: { flexDirection: "row", flexWrap: "wrap", gap: theme.spacing[2] },
   grid: { flexDirection: "row", flexWrap: "wrap", gap: theme.spacing[3] },
-  // Wide enough for five 44px stars; tiles wrap to one per row on phones.
-  tile: { flexGrow: 1, flexBasis: 228, minWidth: 228, maxWidth: 320 },
-  tileButton: { gap: theme.spacing[1], minHeight: 44, borderRadius: theme.borderRadius.md },
-  tileFooter: {
-    flexDirection: "row",
-    alignItems: "center",
-    flexWrap: "wrap",
+  // Wide enough for five 44px stars over the thumbnail; tiles wrap to one per row on phones.
+  tile: {
+    flexGrow: 1,
+    flexBasis: 228,
+    minWidth: 228,
+    maxWidth: 320,
     gap: theme.spacing[1],
+    ...hoverGroup(PREVIEW_TILE_HOVER_GROUP),
   },
+  thumbArea: { position: "relative" },
+  thumbButton: { borderRadius: theme.borderRadius.md },
+  tileButton: { gap: theme.spacing[1], minHeight: 44, borderRadius: theme.borderRadius.md },
   title: {
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
