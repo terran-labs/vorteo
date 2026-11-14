@@ -4,9 +4,8 @@ import type { HeldRestart } from "@getpaseo/protocol/messages";
 import {
   blockedReviewDue,
   hasReviewableBlockedWork,
-  isFinalBlockedReview,
+  reviewableTasks,
   BLOCKED_REVIEW_PROMPT,
-  FINAL_BLOCKED_REVIEW_NOTE,
 } from "./task-checklist/blocked-review.js";
 import { JournalError } from "./journal/model.js";
 import {
@@ -1921,6 +1920,28 @@ export class AgentManager {
       }) ?? null;
   }
 
+  /**
+   * Advisory, for the stall review: whether a loaded runtime reports work that will wake the
+   * thread by itself, such as a background watcher or subagent. Asked outside every lock, with a
+   * bound, so a slow provider cannot hold the thread or the scan. The provider's stop check also
+   * says no while a process is starting, so that case, a provider without the check and a failed
+   * check are all "unknown" rather than live work.
+   */
+  async backgroundWork(agentId: string): Promise<"live" | "none" | "unknown"> {
+    const session = this.agents.get(agentId)?.session;
+    if (!session?.canStopRuntime || session.isProviderSettling?.()) return "unknown";
+    try {
+      const idle = await withTimeout(
+        session.canStopRuntime(),
+        10_000,
+        `Runtime safety probe timed out for ${agentId}`,
+      );
+      return idle === true ? "none" : "live";
+    } catch {
+      return "unknown";
+    }
+  }
+
   /** Review one existing idle thread; never steer, replace, or resume a goal implicitly. */
   async startBlockedTaskReview(
     agentId: string,
@@ -1956,9 +1977,7 @@ export class AgentManager {
           const state = agent.session.goals?.state;
           if (!state) {
             const record = registry.getLoadedRecord(agentId);
-            return (record?.tasks ?? []).some(
-              (task) => !task.completed && task.status === "blocked",
-            );
+            return record !== null && record !== undefined && reviewableTasks(record).length > 0;
           }
           if (
             state.status !== "ready" ||
@@ -1969,9 +1988,7 @@ export class AgentManager {
           const goal = state.goal;
           if (!goal) {
             const record = registry.getLoadedRecord(agentId);
-            return (record?.tasks ?? []).some(
-              (task) => !task.completed && task.status === "blocked",
-            );
+            return record !== null && record !== undefined && reviewableTasks(record).length > 0;
           }
           if (goal.status !== "blocked") return false;
           return goal.tokenBudget === null || goal.tokensUsed < goal.tokenBudget;
@@ -1985,10 +2002,7 @@ export class AgentManager {
           if (!(await registry.claimBlockedReview(agentId, this.now()))) return null;
           if (!eligible() || !queueAllowsStart()) return null;
           // No await between the last admission check and synchronous run reservation.
-          const prompt = isFinalBlockedReview(record)
-            ? BLOCKED_REVIEW_PROMPT + FINAL_BLOCKED_REVIEW_NOTE
-            : BLOCKED_REVIEW_PROMPT;
-          return this.streamAgent(agentId, prompt, {
+          return this.streamAgent(agentId, BLOCKED_REVIEW_PROMPT, {
             origin: "agent",
           });
         });

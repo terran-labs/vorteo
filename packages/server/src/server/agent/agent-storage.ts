@@ -1,4 +1,8 @@
-import { blockedReviewDue, blockedReviewsUsed } from "./task-checklist/blocked-review.js";
+import {
+  blockedReviewDue,
+  blockedReviewsUsed,
+  BLOCKED_REVIEW_DELAYS_MS,
+} from "./task-checklist/blocked-review.js";
 import {
   AgentJournalEntrySchema,
   AppendJournalSchema,
@@ -476,12 +480,20 @@ export class AgentStorage {
     return claimed;
   }
 
-  /** The next rung waits from the review's end, so a long review cannot shorten the gap. */
-  async finishBlockedReview(agentId: string, now: number): Promise<void> {
+  /**
+   * A review that left the checklist unchanged spends the rest of the ladder: rechecking the same
+   * state minutes later only rereads the conversation. A real prompt that arrived while the review
+   * ran has already started a new stretch, which this must not spend. The claim time stays as
+   * written: activity from the review's own turn spaces the next rung.
+   */
+  async spendBlockedReviewLadder(agentId: string): Promise<void> {
     await this.load();
     await this.queueRecordMutation(
       agentId,
-      (record) => (record ? { ...record, lastBlockedReviewAt: new Date(now).toISOString() } : null),
+      (record) =>
+        record && blockedReviewsUsed(record) > 0
+          ? { ...record, blockedReviewCount: BLOCKED_REVIEW_DELAYS_MS.length }
+          : null,
       { blockedReviewWrite: true },
     );
   }

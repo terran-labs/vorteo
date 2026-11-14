@@ -3085,16 +3085,16 @@ test("the blocked-work review skips a thread waiting for its usage limit to rese
     id: "held",
     provider: "claude",
     labels: {},
-    createdAt: "2026-10-22T09:00:00.000Z",
+    createdAt: "2026-10-22T11:50:00.000Z",
     persistence: { provider: "claude", sessionId: "session" },
     tasks: [{ id: "t", text: "Blocked", completed: false, status: "blocked" }],
   } as unknown as StoredAgentRecord;
   expect(blockedReviewDue(base, now)).toBe(true);
-  const stoppedAt = "2026-10-22T10:00:00.000Z";
+  const stoppedAt = "2026-10-22T11:52:00.000Z";
   expect(
     blockedReviewDue({ ...base, config: { usageLimitHold: { stoppedAt, attempts: 0 } } }, now),
   ).toBe(false);
-  const released = { stoppedAt, attempts: 1, releasedAt: "2026-10-22T11:00:00.000Z" };
+  const released = { stoppedAt, attempts: 1, releasedAt: "2026-10-22T11:55:00.000Z" };
   expect(blockedReviewDue({ ...base, config: { usageLimitHold: released } }, now)).toBe(true);
 });
 
@@ -3123,13 +3123,37 @@ test("blocked-work reviews follow a three-step ladder that only a real prompt re
   expect(blockedReviewDue(reviewed(1, 6), at(20).getTime())).toBe(false);
   expect(blockedReviewDue(reviewed(1, 6), at(21).getTime())).toBe(true);
   expect(blockedReviewDue(reviewed(2, 22), at(52).getTime())).toBe(true);
-  expect(isFinalBlockedReview(reviewed(2, 22))).toBe(true);
   expect(blockedReviewDue(reviewed(3, 53), at(60 * 24).getTime())).toBe(false);
+  // A slot missed by more than the grace is forfeited: a late review would rebuild a cold cache.
+  expect(blockedReviewDue(base, at(20).getTime())).toBe(true);
+  expect(blockedReviewDue(base, at(21).getTime())).toBe(false);
+  expect(blockedReviewDue(base, at(60 * 24 * 4).getTime())).toBe(false);
   const prompted = { ...reviewed(3, 53), lastUserMessageAt: at(90).toISOString() };
   expect(blockedReviewsUsed(prompted)).toBe(0);
   expect(
     blockedReviewDue({ ...prompted, lastActivityAt: at(91).toISOString() }, at(96).getTime()),
   ).toBe(true);
+  // Work left in progress when the thread stopped is reviewed too; work in review waits on the owner.
+  const withStatus = (status: string) =>
+    ({
+      ...base,
+      tasks: [{ id: "t", text: "Item", completed: false, status }],
+    }) as StoredAgentRecord;
+  expect(blockedReviewDue(withStatus("in_progress"), at(5).getTime())).toBe(true);
+  expect(onlyInProgressWork(withStatus("in_progress"))).toBe(true);
+  expect(onlyInProgressWork(base)).toBe(false);
+  expect(blockedReviewDue(withStatus("review"), at(5).getTime())).toBe(false);
+  expect(blockedReviewDue(withStatus("pending"), at(5).getTime())).toBe(false);
+  // A review that leaves the checklist as it found it ends the ladder; a rewritten description
+  // is not a change, a new status or a passed check is.
+  const described = { ...base, tasks: [{ ...base.tasks![0]!, description: "Still waiting" }] };
+  const checked = {
+    ...base,
+    tasks: [{ ...base.tasks![0]!, checks: [{ text: "Ready", done: true }] }],
+  } as StoredAgentRecord;
+  expect(reviewFingerprint(described)).toBe(reviewFingerprint(base));
+  expect(reviewFingerprint(checked)).not.toBe(reviewFingerprint(base));
+  expect(reviewFingerprint(withStatus("review"))).not.toBe(reviewFingerprint(base));
   // A blocker the owner is asked about wakes the thread when answered, so it needs no review.
   const asked = {
     ...base,
@@ -15255,7 +15279,8 @@ import { BlockedTaskReviewService } from "./task-checklist/review-service.js";
 import {
   blockedReviewDue,
   blockedReviewsUsed,
-  isFinalBlockedReview,
+  onlyInProgressWork,
+  reviewFingerprint,
 } from "./task-checklist/blocked-review.js";
 
 import { MessageQueueService } from "../message-queue/service.js";
@@ -15962,7 +15987,7 @@ test.each([true, false])(
         Math.max(
           Date.parse(reviewRecord.createdAt),
           Date.parse(reviewRecord.lastActivityAt ?? reviewRecord.createdAt),
-        ) + 3_600_001;
+        ) + 300_001;
       expect(storage.getLoadedRecord(agent.id)).toMatchObject({
         persistence: { sessionId: client.sessions[0]!.id },
       });
@@ -16053,7 +16078,7 @@ test.each(["active", "usageLimited", "spent", "restart", "queue", "stopped"] as 
         Math.max(
           Date.parse(reviewRecord.createdAt),
           Date.parse(reviewRecord.lastActivityAt ?? reviewRecord.createdAt),
-        ) + 3_600_001;
+        ) + 300_001;
       expect(storage.getLoadedRecord(agent.id)).toMatchObject({
         persistence: { sessionId: client.sessions[0]!.id },
       });
@@ -16133,7 +16158,7 @@ test("periodic review scan honors the hourly cooldown and stops without creating
       Math.max(
         Date.parse(reviewRecord.createdAt),
         Date.parse(reviewRecord.lastActivityAt ?? reviewRecord.createdAt),
-      ) + 3_600_001;
+      ) + 300_001;
     expect(storage.getLoadedRecord(agent.id)).toMatchObject({
       tasks: [{ status: "blocked" }],
       persistence: { sessionId: client.sessions[0]!.id },
@@ -16143,6 +16168,21 @@ test("periodic review scan honors the hourly cooldown and stops without creating
       activeTurnId: null,
     });
     expect(blockedReviewDue(storage.getLoadedRecord(agent.id)!, now)).toBe(true);
+    // A role thread of a Factory project the owner paused is skipped; other projects are not.
+    await manager.setLabels(agent.id, { "vorteo.factory-role": "project-1:foreman" });
+    await manager.flush();
+    const labeled = storage.getLoadedRecord(agent.id)!;
+    now = Date.parse(labeled.lastActivityAt ?? labeled.createdAt) + 300_001;
+    expect(blockedReviewDue(labeled, now)).toBe(true);
+    await new BlockedTaskReviewService({
+      agentManager: manager,
+      agentStorage: storage,
+      logger,
+      enabled: () => true,
+      pausedFactoryProjects: async () => new Set(["project-1"]),
+      now: () => now,
+    }).tick();
+    expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBeUndefined();
     // The host setting defaults to off; a disabled service must not prompt the thread.
     await new BlockedTaskReviewService({
       agentManager: manager,
@@ -16157,11 +16197,15 @@ test("periodic review scan honors the hourly cooldown and stops without creating
       agentStorage: storage,
       logger,
       enabled: () => true,
+      pausedFactoryProjects: async () => new Set(["project-2"]),
       now: () => now,
     });
     await reviews.tick();
     const claimedAt = new Date(now).toISOString();
     expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBe(claimedAt);
+    // The review changed nothing, so the rest of this stretch's ladder is spent.
+    expect(blockedReviewDue((await storage.get(agent.id))!, now + 16 * 60_000)).toBe(false);
+    expect((await storage.get(agent.id))?.blockedReviewCount).toBe(3);
     await reviews.tick();
     expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBe(claimedAt);
     expect(client.sessions).toHaveLength(1);
@@ -16244,7 +16288,7 @@ test("periodic review yields to a goal pause received during durable preparation
       Math.max(
         Date.parse(reviewRecord.createdAt),
         Date.parse(reviewRecord.lastActivityAt ?? reviewRecord.createdAt),
-      ) + 3_600_001;
+      ) + 300_001;
     expect(storage.getLoadedRecord(agent.id)).toMatchObject({
       tasks: [{ status: "blocked" }],
       persistence: { sessionId: client.sessions[0]!.id },
@@ -16366,7 +16410,7 @@ test.each([
         Math.max(
           Date.parse(reviewRecord.createdAt),
           Date.parse(reviewRecord.lastActivityAt ?? reviewRecord.createdAt),
-        ) + 3_600_001;
+        ) + 300_001;
       const review = reviews.tick();
       await entered.promise;
       const archived = archive

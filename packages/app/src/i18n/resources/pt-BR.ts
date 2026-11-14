@@ -2962,8 +2962,8 @@ export const ptBR: TranslationResources = {
         },
         blockedWorkReview: {
           title: "Revisar trabalho bloqueado",
-          hint: "Desativado por padrão. Até três revisões curtas depois que um tópico para; então ele espera uma mensagem.",
-          info: "Quando um tópico para com uma tarefa ou objetivo bloqueado, ele recebe até três mensagens, cerca de 5, 15 e 30 minutos depois, para reavaliar seus bloqueios e continuar. Depois as revisões param até alguém enviar uma mensagem ao tópico.\n\nCada revisão retoma a conversa do tópico. Os intervalos curtos reaproveitam o cache de prompts do provedor e custam bem menos que uma retomada a frio, mas muitos tópicos bloqueados ainda somam.\n\nBloqueios que aguardam uma pergunta aberta são ignorados; sua resposta reativa o tópico.",
+          hint: "Desativado por padrão. Uma revisão curta depois que um tópico para com trabalho inacabado, repetida só enquanto ajudar.",
+          info: "Quando um tópico para com uma tarefa bloqueada ou em andamento e nada programado para despertá-lo, ele recebe uma mensagem curta cerca de 5 minutos depois para verificar o trabalho inacabado e continuar. Até mais duas podem vir, com cerca de 15 e 30 minutos de intervalo, mas só enquanto uma revisão mudar algo. Depois as revisões param até alguém enviar uma mensagem ao tópico.\n\nCada revisão retoma a conversa do tópico, então nenhuma é executada depois que o cache de prompts do provedor esfria. Um tópico recebe no máximo 6 revisões por dia e a instalação, no máximo 12 por hora.\n\nItens que aguardam uma pergunta aberta ou a sua revisão são ignorados; sua resposta reativa o tópico.",
         },
       },
       workspaces: {
