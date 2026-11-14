@@ -19,7 +19,8 @@ import {
   symlink,
   utimes,
 } from "node:fs/promises";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -69,6 +70,35 @@ export const SnapshotSourceSchema = z.discriminatedUnion("type", [
   }),
 ]);
 export type SnapshotSource = z.infer<typeof SnapshotSourceSchema>;
+
+const TIME_MACHINE_EXCLUDE = "com.apple.metadata:com_apple_backup_excludeItem";
+// Binary plist holding "com.apple.backupd", byte for byte what `tmutil addexclusion` writes.
+const TIME_MACHINE_EXCLUDE_VALUE =
+  "62706c69737430305f1011636f6d2e6170706c652e6261636b75706408000000000000010100000000000000010000000000000000000000000000001c";
+
+/**
+ * Snapshots are copies of state Time Machine already backs up, so their folder carries Time
+ * Machine's sticky exclusion (owner decision 2026-11-11). Only that folder is marked, never
+ * through a link. A failure only costs backup space, so it is ignored.
+ */
+export async function keepOutOfTimeMachine(
+  folder: string,
+  platform = process.platform,
+): Promise<void> {
+  if (platform !== "darwin") return;
+  const run = (args: string[]) => promisify(execFile)("/usr/bin/xattr", args);
+  try {
+    await run(["-s", "-p", TIME_MACHINE_EXCLUDE, folder]);
+    return;
+  } catch {
+    // Not marked yet.
+  }
+  try {
+    await run(["-s", "-wx", TIME_MACHINE_EXCLUDE, TIME_MACHINE_EXCLUDE_VALUE, folder]);
+  } catch {
+    // Backed up as before.
+  }
+}
 
 /** Where snapshots live: `<installRoot>/state/snapshots`, or null before the one-command installer. */
 export function snapshotRoot(config: Pick<InstallationConfig, "deployment">): string | null {
@@ -404,6 +434,7 @@ export function createInstallationSnapshots(input: {
     },
     async __takeOnce({ reason, upgradeId, release }) {
       ensurePrivateDirectory(root);
+      await keepOutOfTimeMachine(root);
       for (const name of readdirSync(root))
         if (name.startsWith(".") && name.endsWith(".partial"))
           rmSync(path.join(root, name), { recursive: true, force: true });
