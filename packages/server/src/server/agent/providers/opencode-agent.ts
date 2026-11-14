@@ -1,3 +1,4 @@
+import { getProviderProbeCwd } from "../../../utils/provider-probe-cwd.js";
 import { validateProviderOptions } from "../provider-options.js";
 import {
   createOpencodeClient,
@@ -1819,6 +1820,7 @@ export class OpenCodeAgentClient implements AgentClient {
             [...launch.args, "auth", "list"],
             {
               ...createProviderEnvSpec(),
+              cwd: await getProviderProbeCwd(),
               timeout: 5_000,
             },
           );

@@ -2,7 +2,11 @@ import { chmodSync, existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { CLAUDE_REFRESH_REQUEST_ARGS, createClaudeHostCli } from "./claude-oauth-host.js";
+import {
+  CLAUDE_REFRESH_REQUEST_ARGS,
+  classifyClaudeRefreshFailure,
+  createClaudeHostCli,
+} from "./claude-oauth-host.js";
 import {
   CLAUDE_REFRESH_LEAD_MS,
   claudeAccessProjection,
@@ -40,7 +44,7 @@ it("runs Option A as one tool-less print request in the account's environment", 
     calls.push({ executable, args, options: record });
     return { stdout: "{}", stderr: "" };
   });
-  const cli = createClaudeHostCli({ run: run as never, resolveLaunch: launch });
+  const cli = createClaudeHostCli({ runRefresh: run as never, resolveLaunch: launch });
   await cli.refresh(configDir);
   expect(calls[0]!.executable).toBe("/fake/claude");
   expect(calls[0]!.args).toEqual(["--launch-arg", ...CLAUDE_REFRESH_REQUEST_ARGS]);
@@ -57,6 +61,34 @@ it("runs Option A as one tool-less print request in the account's environment", 
   expect(calls[0]!.options.timeout).toBe(60_000);
   // The scratch working directory is removed afterwards.
   expect(existsSync(cwdDuringRun)).toBe(false);
+
+  // A failure carries only a fixed category from the CLI's own result, never its text.
+  const result = (text: string) => ({
+    code: 1,
+    stdout: JSON.stringify({ is_error: true, result: text, session_id: "synthetic" }),
+  });
+  run.mockRejectedValueOnce(
+    Object.assign(
+      new Error("exit 1"),
+      result("Failed to authenticate: OAuth session expired and could not be refreshed"),
+    ),
+  );
+  await expect(cli.refresh(configDir)).rejects.toMatchObject({ category: "refresh_rejected" });
+  expect(
+    classifyClaudeRefreshFailure(
+      result(
+        "OAuth access token could not be refreshed: another Claude Code process is holding the refresh lock",
+      ),
+    ),
+  ).toBe("refresh_lock_busy");
+  expect(
+    classifyClaudeRefreshFailure(
+      result("OAuth refresh token is no longer valid; run /login to re-authenticate"),
+    ),
+  ).toBe("refresh_token_invalid");
+  expect(classifyClaudeRefreshFailure(result("Overloaded"))).toBe("api_error");
+  expect(classifyClaudeRefreshFailure({ killed: true })).toBe("timeout");
+  expect(classifyClaudeRefreshFailure({ stdout: "not json" })).toBe("unparsed");
 });
 
 it("reads the grant from the account's own storage without exposing the refresh token", async () => {
@@ -88,6 +120,13 @@ it("reads the grant from the account's own storage without exposing the refresh 
     subscriptionType: "max",
   });
   expect(claudeAccessProjection({ ...grant!, expiresAt: null })).toBeNull();
+
+  // A failed CLI refresh leaves the item erased: empty tokens and expiry 0. That is no grant.
+  writeFileSync(
+    join(configDir, ".credentials.json"),
+    storage({ accessToken: "", refreshToken: "", expiresAt: 0, scopes: ["user:inference"] }),
+  );
+  expect(await readClaudeOAuthGrant(configDir, { platform: "linux" })).toBeNull();
 });
 
 it("uses only the account's own Keychain item on macOS, with the file as its fallback", async () => {

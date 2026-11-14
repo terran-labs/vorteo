@@ -311,15 +311,13 @@ export function AgentProfileForm({
           onChange={model.setMode}
           disabled={disabled}
         />
-        {sharedScope?.kind !== "workflow" ? (
-          <ChoiceField
-            label="Thinking"
-            value={state.thinkingOptionId}
-            options={state.thinkingOptions}
-            onChange={model.setThinking}
-            disabled={disabled}
-          />
-        ) : null}
+        <ChoiceField
+          label="Thinking"
+          value={state.thinkingOptionId}
+          options={state.thinkingOptions}
+          onChange={model.setThinking}
+          disabled={disabled}
+        />
         <ScrollView style={styles.features} contentContainerStyle={styles.featureContent}>
           {state.features.map((feature) => (
             <FeatureField key={feature.id} feature={feature} model={model} disabled={disabled} />

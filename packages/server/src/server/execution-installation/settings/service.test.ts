@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { InstallationSettingsSnapshotSchema } from "@getpaseo/protocol/installation-settings";
 import { DEFAULT_TERMINAL_PROFILES } from "@getpaseo/protocol/terminal-profiles";
 import { SettingsEnvironmentFake, SettingsJournalFake } from "./fakes.js";
@@ -1064,6 +1064,93 @@ test("durable account setup resumes after coordinator recovery and lost replies 
     }),
   ).rejects.toThrow("deterministic binding IDs");
   expect(restored.snapshot().revision).toBe(saved.revision);
+});
+
+test("background skill settlement reuses only recent success and invalidates on owner or projection work", async () => {
+  const host = new SettingsEnvironmentFake("host");
+  const container = new SettingsEnvironmentFake("container");
+  const first = {
+    name: "alpha",
+    source: null,
+    sha256: "a".repeat(64),
+    identity: `content:${"a".repeat(64)}`,
+  };
+  host.skillCatalog = [first];
+  container.skillCatalog = [first];
+  let now = 0;
+  const service = new InstallationSettingsService(
+    new SettingsJournalFake(),
+    [host, container],
+    () => now,
+  );
+  await service.reconcile();
+  const hostRead = vi.spyOn(host, "skillCatalogSettled");
+  const containerRead = vi.spyOn(container, "skillCatalogSettled");
+  for (now = 0; now < 60_000; now += 5000) await service.reconcile({ background: true });
+  expect(hostRead).toHaveBeenCalledTimes(1);
+  expect(containerRead).toHaveBeenCalledTimes(1);
+  await service.reconcile({ background: true });
+  expect(hostRead).toHaveBeenCalledTimes(2);
+  await service.reconcile();
+  expect(hostRead).toHaveBeenCalledTimes(3);
+  await service.reconcile({ background: true });
+  expect(hostRead).toHaveBeenCalledTimes(4);
+
+  // Drift in another resource still projects and verifies the skill catalog freshly.
+  hostRead.mockClear();
+  host.config.pluginsEnabled = !host.config.pluginsEnabled;
+  await service.reconcile({ background: true });
+  expect(hostRead).toHaveBeenCalledTimes(1);
+  await service.reconcile({ background: true });
+  expect(hostRead).toHaveBeenCalledTimes(2);
+
+  await service.update({
+    expectedRevision: service.snapshot().revision,
+    settings: { appendSystemPrompt: "Changed while the catalog cache is warm" },
+  });
+  hostRead.mockClear();
+  await service.reconcile({ background: true });
+  expect(hostRead).toHaveBeenCalled();
+  await service.reconcile({ background: true });
+
+  const second = { ...first, sha256: "b".repeat(64), identity: `content:${"b".repeat(64)}` };
+  await service.update({
+    expectedRevision: service.snapshot().revision,
+    settings: { skillLibrary: [second] },
+  });
+  hostRead.mockClear();
+  await service.reconcile({ background: true });
+  expect(hostRead).toHaveBeenCalledWith([second]);
+  await service.reconcile({ background: true });
+  await service.update({
+    expectedRevision: service.snapshot().revision,
+    settings: {
+      resourceExclusions: {
+        host: {
+          terminalProfileIds: [],
+          metadataProviderIds: [],
+          skillIdentities: [second.identity],
+        },
+      },
+    },
+  });
+  hostRead.mockClear();
+  containerRead.mockClear();
+  await service.reconcile({ background: true });
+  expect(hostRead).toHaveBeenCalledWith([]);
+  expect(containerRead).toHaveBeenCalledWith([second]);
+
+  hostRead.mockResolvedValue(false);
+  await service.reconcile();
+  const unsettledReads = hostRead.mock.calls.length;
+  await service.reconcile({ background: true });
+  expect(hostRead.mock.calls.length).toBeGreaterThan(unsettledReads);
+  hostRead.mockRejectedValue(new Error("Catalog unavailable"));
+  hostRead.mockClear();
+  await service.reconcile({ background: true });
+  await service.reconcile({ background: true });
+  expect(hostRead).toHaveBeenCalledTimes(2);
+  expect(service.snapshot().sources.host.error).toBe("read_failed");
 });
 
 test("background polls back off failed account setup per environment and resume after recovery", async () => {

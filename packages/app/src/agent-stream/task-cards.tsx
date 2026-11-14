@@ -2,6 +2,7 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { InlineFilesCard } from "./inline-files-card";
 import { JournalCard } from "@/journal/card";
 import { OpenQuestionsCard } from "@/open-questions/card";
+import { PreviewsCard } from "@/previews/card";
 import { ContextCard } from "@/components/context-breakdown/card";
 import { AgentHistoryTracks } from "@/panels/agent-tracks";
 import { useCallback, useState } from "react";
@@ -56,6 +57,7 @@ export function AgentTaskCards({
         <>
           <OpenQuestionsCard serverId={serverId} agentId={agentId} />
           <JournalCard serverId={serverId} agentId={agentId} />
+          <PreviewsCard serverId={serverId} agentId={agentId} />
           <ContextCard serverId={serverId} agentId={agentId} />
         </>
       )}

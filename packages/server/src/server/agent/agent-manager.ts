@@ -1,3 +1,4 @@
+import { RestartHoldError } from "./restart-hold.js";
 import { pendingCodexAsyncQuestions } from "./providers/codex/async-questions.js";
 import type { HeldRestart } from "@getpaseo/protocol/messages";
 import {
@@ -243,6 +244,8 @@ export class AgentManagerShuttingDownError extends Error {
     this.name = "AgentManagerShuttingDownError";
   }
 }
+
+export { isRestartHoldError, RestartHoldError } from "./restart-hold.js";
 
 export interface RestartCheckpointDeadline {
   requestId: string;
@@ -1553,6 +1556,12 @@ export class AgentManager {
   private readonly agents = new Map<string, LiveManagedAgent>();
   private readonly timelineStore: InMemoryAgentTimelineStore;
   private readonly providerSubagents = new ProviderSubagentStore();
+  // Replay can retain a running descriptor indefinitely. Only the attached runtime
+  // can report current child work, and its observations expire with that attachment.
+  private readonly liveProviderChildren = new WeakMap<
+    ActiveManagedAgent,
+    Map<string, { title: string; status: ProviderSubagentDescriptor["status"] }>
+  >();
   private readonly agentsAwaitingInitialSnapshotPersist = new Set<string>();
   private readonly sessionEventTails = new Map<string, Promise<void>>();
   private readonly steerEventBarriers = new Map<string, SteerEventBarrier>();
@@ -1605,6 +1614,7 @@ export class AgentManager {
             MessageQueueService,
             | "withIdleQueue"
             | "queueQuestionAnswer"
+            | "queueOwnerMessage"
             | "steerQueuedMessage"
             | "onMessageAccepted"
             | "captureRestartContinuation"
@@ -1620,6 +1630,11 @@ export class AgentManager {
         >)
     | null = null;
   private messageQueueAcceptedSubscription: (() => void) | null = null;
+  /**
+   * The Previews gallery service. It lives here only so agent tools and client sessions,
+   * which already hold the manager, reach it without another constructor parameter.
+   */
+  previews: import("../previews/service.js").PreviewsService | null = null;
   private readonly queueGoalMutationTails = new Map<string, Promise<void>>();
   private logger: Logger;
   private readonly rescueTimeouts: Required<AgentManagerRescueTimeouts>;
@@ -1878,6 +1893,7 @@ export class AgentManager {
           MessageQueueService,
           | "withIdleQueue"
           | "queueQuestionAnswer"
+          | "queueOwnerMessage"
           | "steerQueuedMessage"
           | "onMessageAccepted"
           | "captureRestartContinuation"
@@ -2095,7 +2111,7 @@ export class AgentManager {
       // queue it already held stays owned here, so a retry or cancellation settles it.
       this.restartContinuationCaptures.delete(requestId);
       if (previousDrainId === null && this.restartDrainId === requestId) {
-        this.restartDrainId = null;
+        this.clearRestartDrain();
         for (const agent of this.agents.values()) queue?.wake(agent.id);
       }
       throw error;
@@ -2130,7 +2146,7 @@ export class AgentManager {
       this.releasedRestartContinuations.add(requestId);
       if (outcome === "cancelled") this.cancelledRestartDrains.add(requestId);
       if (this.restartDrainId === requestId) {
-        this.restartDrainId = null;
+        this.clearRestartDrain();
         this.restartDrainPrepared.clear();
         this.restartDrainWarnings.clear();
         this.restartSteeredAgents.clear();
@@ -2304,7 +2320,7 @@ export class AgentManager {
       });
       return false;
     }
-    this.restartDrainId = null;
+    this.clearRestartDrain();
     this.restartDrainPrepared.clear();
     this.restartDrainWarnings.clear();
     this.restartSteeredAgents.clear();
@@ -2326,13 +2342,10 @@ export class AgentManager {
         status: String(agent.lifecycle),
       }));
     for (const parent of managed) {
-      for (const child of this.providerSubagents.list(parent.id)) {
-        if (child.status === "running")
-          agents.push({
-            id: `${parent.id}/${child.id}`,
-            title: child.title || child.description || child.id,
-            status: "running",
-          });
+      for (const [id, child] of this.liveProviderChildren.get(parent) ?? []) {
+        if (child.status === "running") {
+          agents.push({ id: `${parent.id}/${id}`, title: child.title, status: "running" });
+        }
       }
     }
     for (const [id, error] of this.restartDrainErrors) {
@@ -3053,9 +3066,13 @@ export class AgentManager {
     id: string,
     options?: AgentTimelineFetchOptions,
     loadLegacyRows?: () => Promise<AgentTimelineRow[]>,
+    savedSource?: { useRetainedTimeline: boolean },
   ): Promise<AgentTimelineFetchResult> {
     // Reading committed history must not require starting its original provider.
     if (this.durableTimelineStore) return this.durableTimelineStore.fetchCommitted(id, options);
+    // A closed runtime can still have rows recorded before it obtained a native handle.
+    if (savedSource?.useRetainedTimeline && this.timelineStore.has(id))
+      return this.timelineStore.fetch(id, options);
     if (!loadLegacyRows) throw new Error("Saved timeline storage is unavailable");
     const rows = await loadLegacyRows();
     // Native transcripts predate durable timelines. Keep pagination stable across reads,
@@ -5308,7 +5325,11 @@ export class AgentManager {
         logger: this.logger,
       });
     }
-    this.assertAcceptingAgentRegistrations();
+    // During a restart hold, an ordinary message falls through to steering, which may still join
+    // a running turn; an out-of-band command stays held.
+    const holding = this.restartDrainId !== null;
+    if (!holding) this.assertAcceptingAgentRegistrations();
+    else if (!this.acceptingAgentRegistrations) throw new AgentManagerShuttingDownError();
     this.assertQuotaNotPaused(agentId);
     const agent = this.requireSessionAgent(agentId);
     // Providers parse slash commands from the raw text, so a command another agent sent
@@ -5320,6 +5341,7 @@ export class AgentManager {
     if (!handler) {
       return false;
     }
+    if (holding) throw new RestartHoldError();
     this.touchUpdatedAt(agent);
     if (options?.clientMessageId) {
       this.recordSubmittedPrompt(agent, prompt, options.clientMessageId, "accepted", {
@@ -5382,6 +5404,15 @@ export class AgentManager {
     await this.persistSnapshot(agent);
     if (item.type === "todo") this.emitState(agent, { persist: false });
     return { seq: row.seq, epoch: this.timelineStore.getEpoch(agentId) };
+  }
+
+  /** Queue an owner message for a thread; it is delivered now or when the active turn ends. */
+  async queueOwnerMessage(agentId: string, messageId: string, text: string): Promise<void> {
+    this.requireAgent(agentId);
+    const queue = this.messageQueueControl;
+    if (!queue?.queueOwnerMessage)
+      throw new Error("This daemon cannot deliver messages to the thread.");
+    await queue.queueOwnerMessage(agentId, messageId, text);
   }
 
   async readJournal(
@@ -5924,13 +5955,19 @@ export class AgentManager {
     prompt: AgentPromptInput,
     options?: AgentSteerOptions,
   ): Promise<ActiveTurnSteerDispatchResult> {
-    this.assertAcceptingAgentRegistrations();
+    // During a restart hold a message may still join a turn that is already running: that adds
+    // no new work, and it lets a coordinator waiting on a child's reply finish its turn. Starting
+    // or replacing a turn stays held.
+    const holding = this.restartDrainId !== null;
+    if (!holding) this.assertAcceptingAgentRegistrations();
+    else if (!this.acceptingAgentRegistrations) throw new AgentManagerShuttingDownError();
     // A turn that is still starting has no id to steer yet. Replacing it would drop its
     // prompt, so wait until it is accepted (or fails) and steer the turn it became.
     await this.runs.waitForForegroundStart(agentId);
     const agent = this.requireSessionAgent(agentId);
     const expectedTurnId = agent.activeForegroundTurnId ?? agent.activeTurnId;
     if (!expectedTurnId) {
+      this.assertAcceptingAgentRegistrations();
       return { status: "inactive" };
     }
 
@@ -5957,6 +5994,7 @@ export class AgentManager {
     if (result.status === "accepted") {
       return { status: "steered" };
     }
+    this.assertAcceptingAgentRegistrations();
 
     // Providers without autonomous steering keep their existing dispatch behavior. The shared
     // admission may recognize the turn, but only an accepted steer can own it without replacement.
@@ -5965,6 +6003,8 @@ export class AgentManager {
     }
 
     await this.beforeSteerUnavailableFallback?.({ agentId, expectedTurnId });
+    // The provider and fallback hook can both yield while a restart hold begins.
+    this.assertAcceptingAgentRegistrations();
     this.assertSteerAdmissionOwnsTurn(agent, expectedTurnId);
     return {
       status: "replaced",
@@ -6917,11 +6957,30 @@ export class AgentManager {
     }
   }
 
+  private restartHoldWaiters = new Set<() => void>();
+
+  private clearRestartDrain(): void {
+    this.restartDrainId = null;
+    // Each waiter removes itself; deleting the current entry during iteration is safe for a Set.
+    for (const release of this.restartHoldWaiters) release();
+  }
+
+  /** Resolves once no restart hold is active, or when the signal aborts. */
+  waitForRestartHoldRelease(signal?: AbortSignal): Promise<void> {
+    if (!this.restartDrainId || signal?.aborted) return Promise.resolve();
+    return new Promise((settle) => {
+      const done = () => {
+        this.restartHoldWaiters.delete(done);
+        signal?.removeEventListener("abort", done);
+        settle();
+      };
+      this.restartHoldWaiters.add(done);
+      signal?.addEventListener("abort", done, { once: true });
+    });
+  }
+
   private assertAcceptingAgentRegistrations(): void {
-    if (this.restartDrainId)
-      throw new Error(
-        "A restart is waiting for current turns to finish. New work is held until restart or cancellation.",
-      );
+    if (this.restartDrainId) throw new RestartHoldError();
     if (!this.acceptingAgentRegistrations) {
       throw new AgentManagerShuttingDownError();
     }
@@ -7140,9 +7199,53 @@ export class AgentManager {
     }
     const agentId = agent.id;
     const unsubscribe = agent.session.subscribe((event: AgentStreamEvent) => {
+      // Observe lifecycle before queued event delivery so the synchronous restart
+      // admission check sees children reported by this runtime immediately.
+      if (event.type === "provider_subagent") {
+        this.observeLiveProviderChild(agent, event.event);
+      }
       this.enqueueSessionEvent(agentId, event);
     });
     agent.unsubscribeSession = unsubscribe;
+  }
+
+  private observeLiveProviderChild(
+    agent: ActiveManagedAgent,
+    event: Extract<AgentStreamEvent, { type: "provider_subagent" }>["event"],
+  ): void {
+    if (event.type === "timeline") return;
+    let children = this.liveProviderChildren.get(agent);
+    if (event.type === "remove") {
+      children?.delete(event.id);
+      return;
+    }
+    if (event.status === undefined) return;
+    if (!children) {
+      children = new Map();
+      this.liveProviderChildren.set(agent, children);
+    }
+    children.set(event.id, {
+      title: event.title || event.description || children.get(event.id)?.title || event.id,
+      status: event.status,
+    });
+  }
+
+  private applyProviderChildHistory(
+    agent: ActiveManagedAgent,
+    { provider, event }: Extract<AgentStreamEvent, { type: "provider_subagent" }>,
+  ): ProviderSubagentStoreEvent {
+    if (event.type === "upsert") {
+      // Replay can finish after a native notification. Keep its history and metadata
+      // while preserving the latest lifecycle status reported by the attached runtime.
+      const observed = this.liveProviderChildren.get(agent)?.get(event.id);
+      if (observed) {
+        return this.providerSubagents.apply(agent.id, provider, {
+          ...event,
+          status: observed.status,
+        });
+      }
+    }
+    return this.providerSubagents.apply(agent.id, provider, event);
   }
 
   private enqueueSessionEvent(agentId: string, event: AgentStreamEvent): void {
@@ -7495,7 +7598,7 @@ export class AgentManager {
       }
     }
     for (const event of providerSubagentEvents) {
-      const update = this.providerSubagents.apply(agent.id, event.provider, event.event);
+      const update = this.applyProviderChildHistory(agent, event);
       if (broadcast) {
         this.dispatch({ type: "provider_subagent", event: update });
       }
@@ -7567,7 +7670,7 @@ export class AgentManager {
     }> = [];
     const providerSubagentEvents: AgentManagerEvent[] = [];
     for (const event of historySubagentEvents) {
-      const update = this.providerSubagents.apply(agent.id, event.provider, event.event);
+      const update = this.applyProviderChildHistory(agent, event);
       const managerEvent: AgentManagerEvent = { type: "provider_subagent", event: update };
       if (deferredBroadcast) {
         providerSubagentEvents.push(managerEvent);

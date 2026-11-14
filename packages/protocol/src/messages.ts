@@ -149,6 +149,13 @@ import {
   QuestionAnswerResponseSchema,
 } from "./agent-questions.js";
 import {
+  PreviewsActionRequestSchema,
+  PreviewsActionResponseSchema,
+  PreviewsChangedSchema,
+  PreviewsListRequestSchema,
+  PreviewsListResponseSchema,
+} from "./previews.js";
+import {
   AgentGoalSetInputSchema,
   AgentGoalStateSchema,
   AgentGoalGetRequestSchema,
@@ -2452,6 +2459,7 @@ export const AgentTimelineCursorSchema = z.object({
 export const FetchAgentTimelineRequestMessageSchema = z.object({
   // Keep available turns whole for tail/before pages; after catch-up stays incremental.
   wholeTurns: z.boolean().optional(),
+  retryHistory: z.boolean().optional(),
   type: z.literal("fetch_agent_timeline_request"),
   agentId: z.string(),
   requestId: z.string(),
@@ -3969,6 +3977,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ChecklistGetRequestSchema,
   ChecklistMutateRequestSchema,
   QuestionAnswerRequestSchema,
+  PreviewsListRequestSchema,
+  PreviewsActionRequestSchema,
   AgentGoalGetRequestSchema,
   AgentGoalSetRequestSchema,
   AgentGoalClearRequestSchema,
@@ -4522,9 +4532,12 @@ export const ServerInfoStatusPayloadSchema = z
         agentQuestions: z.boolean().optional(),
         // COMPAT(agentQuestionInputs): added November 2026; send typed answer fields only when advertised.
         agentQuestionInputs: z.boolean().optional(),
+        // COMPAT(previews): added November 2026; gate the Previews gallery until the daemon floor includes it.
+        previews: z.boolean().optional(),
         // COMPAT(projectedSubagentTimeline): added after v0.8.0, remove gates after 2027-03-14; retain wire field.
         projectedSubagentTimeline: z.boolean().optional(),
         wholeTurnTimeline: z.boolean().optional(),
+        agentTimelineHistoryRetry: z.boolean().optional(),
         // COMPAT(providerSubagentNesting): added in v0.7, remove gate after 2027-03-04.
         providerSubagentNesting: z.boolean().optional(),
         // COMPAT(workspacePinning): added in v0.1.107, remove gate after 2027-01-12.
@@ -8098,6 +8111,9 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ChecklistGetResponseSchema,
   ChecklistMutateResponseSchema,
   QuestionAnswerResponseSchema,
+  PreviewsListResponseSchema,
+  PreviewsActionResponseSchema,
+  PreviewsChangedSchema,
   AgentGoalGetResponseSchema,
   AgentGoalSetResponseSchema,
   AgentGoalClearResponseSchema,

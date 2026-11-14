@@ -12,7 +12,9 @@ import {
   createSessionHostAuditLog,
   preparePrivateDirectory,
   rotateSessionHostToken,
+  SESSION_HOST_ENTRYPOINT,
   sessionHostPaths,
+  writeSessionHostRelease,
   type SessionHostAuditRecord,
 } from "./host-files.js";
 import { startSessionHost, type SessionHost, type SessionHostLimits } from "./host.js";
@@ -100,6 +102,46 @@ function openPrivateLog(logPath: string): Logger {
     onError: (error) => process.stderr.write(`Session host log write failed: ${String(error)}\n`),
   });
   return pino({ base: { pid: process.pid, module: "session-host" } }, { write: append });
+}
+
+/**
+ * Records the release this host runs from, so Host release cleanup keeps it until a tracked
+ * restart replaces the host. A host run from a source checkout has no release to record.
+ */
+async function recordRelease(directory: string, logger: Logger): Promise<void> {
+  try {
+    const entrypoint = process.argv[1] ? await realpath(process.argv[1]) : "";
+    const suffix = `${path.sep}${path.normalize(SESSION_HOST_ENTRYPOINT)}`;
+    if (!entrypoint.endsWith(suffix)) return;
+    await writeSessionHostRelease(directory, entrypoint.slice(0, -suffix.length));
+  } catch (error) {
+    logger.warn({ err: error }, "Could not record the session host release for cleanup");
+  }
+}
+
+/**
+ * Records which Claude Code hosted agents launch. The host outlives worker restarts, so a host
+ * that runs PATH `claude` instead of the release's CLI must say so where an operator will look.
+ */
+async function reportClaudeCliSelection(logger: Logger): Promise<void> {
+  try {
+    const { describeDefaultClaudeCli } = await import("../agent/providers/claude/agent.js");
+    const selection = await describeDefaultClaudeCli();
+    if (selection.source === "release")
+      logger.info(selection, "Hosted Claude agents use the release's Claude Code");
+    else if (selection.source === "release-unavailable")
+      logger.error(
+        selection,
+        "The release's Claude Code failed validation; hosted Claude agents cannot start until it is repaired",
+      );
+    else
+      logger.warn(
+        selection,
+        "Hosted Claude agents use Claude Code from PATH because this host does not run from an installed release",
+      );
+  } catch (error) {
+    logger.warn({ err: error }, "Could not determine which Claude Code hosted agents use");
+  }
 }
 
 /** The word a Codex app-server command line carries; a recorded pid is stopped only while it does. */
@@ -285,6 +327,7 @@ export async function startSessionHostService(
     const createClient = injectedClient ?? (await loadProviderClientFactory(children));
     if (shuttingDown) return;
     logger = openPrivateLog(logPath);
+    if (!injectedClient) void reportClaudeCliSelection(logger);
     /**
      * Detached provider processes from a host that died keep running; stop them before serving, so
      * no continued agent ever shares a thread with an orphan. This runs only once this host holds
@@ -348,7 +391,10 @@ export async function startSessionHostService(
       audit,
       release,
       limits: options.limits,
-      afterLock: reapOrphans,
+      afterLock: async () => {
+        await recordRelease(paths.directory, logger);
+        await reapOrphans();
+      },
     });
     try {
       host = await startingHost;
