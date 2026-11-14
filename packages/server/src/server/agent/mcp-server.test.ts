@@ -2993,6 +2993,128 @@ describe("create_agent MCP tool", () => {
     },
   );
 
+  it.each([
+    { name: "a folder inside the caller project's root", folder: "caller/sub", expected: "caller" },
+    { name: "a caller workspace outside its root", folder: "worktrees/task", expected: "caller" },
+    {
+      name: "the deepest project containing the folder",
+      folder: "other/inner/x",
+      expected: "inner",
+    },
+    { name: "a folder outside every project", folder: "outside", expected: "registered" },
+    {
+      name: "an explicit new project",
+      folder: "caller/sub",
+      newProject: true,
+      expected: "registered",
+    },
+  ])("files a local workspace under $name", async ({ folder, newProject, expected }) => {
+    const root = realpathSync(await mkdtemp(join(tmpdir(), "mcp-workspace-owner-")));
+    try {
+      for (const dir of ["caller/sub", "worktrees/task", "other/inner/x", "outside"]) {
+        await mkdir(join(root, dir), { recursive: true });
+      }
+      const { agentManager, agentStorage, spies } = createTestDeps();
+      const project = (projectId: string, dir: string) =>
+        createPersistedProjectRecord({
+          projectId,
+          rootPath: join(root, dir),
+          kind: "git",
+          displayName: projectId,
+          createdAt: "2026-11-14T00:00:00.000Z",
+          updatedAt: "2026-11-14T00:00:00.000Z",
+        });
+      const projects = [project("caller", "caller"), project("other", "other")];
+      projects.push(project("inner", "other/inner"));
+      const parent = createPersistedWorkspaceRecord({
+        workspaceId: "parent-workspace",
+        projectId: "caller",
+        cwd: join(root, "worktrees/task"),
+        kind: "worktree",
+        displayName: "Parent task",
+        createdAt: "2026-11-14T00:00:00.000Z",
+        updatedAt: "2026-11-14T00:00:00.000Z",
+      });
+      parent.projectMembership = { key: "caller-key", name: "Caller" };
+      spies.agentManager.getAgent.mockReturnValue(
+        createManagedAgent({
+          id: "parent-agent",
+          cwd: parent.cwd,
+          workspaceId: parent.workspaceId,
+        }),
+      );
+      const registered: string[] = [];
+      const received: Array<{ projectId?: string; membership?: unknown }> = [];
+      const server = await createAgentMcpServer({
+        agentManager,
+        agentStorage,
+        providerSnapshotManager: createOpenCodeManager().manager,
+        callerAgentId: "parent-agent",
+        projectRegistry: {
+          get: async (projectId) => projects.find((entry) => entry.projectId === projectId) ?? null,
+          list: async () => projects,
+        },
+        workspaceRegistry: {
+          get: async () => parent,
+          list: async () => [parent],
+          upsert: async () => {},
+        },
+        registerProjectForDirectory: async (cwd) => {
+          registered.push(cwd);
+          return project("registered", folder);
+        },
+        createDirectoryWorkspace: async (cwd, _title, projectId, context) => {
+          received.push({ projectId, membership: context?.projectMembership });
+          return { ...parent, workspaceId: "child", kind: "directory", projectId: projectId!, cwd };
+        },
+        logger,
+      });
+
+      await invokeToolWithParsedInput(registeredTool(server, "create_workspace"), {
+        isolation: "local",
+        path: join(root, folder),
+        ...(newProject ? { newProject } : {}),
+      });
+
+      // Only the caller's own folders keep its sidebar membership.
+      expect(received).toEqual([
+        {
+          projectId: expected,
+          membership: expected === "caller" ? parent.projectMembership : undefined,
+        },
+      ]);
+      expect(registered).toEqual(expected === "registered" ? [join(root, folder)] : []);
+    } finally {
+      await removeTempDir(root);
+    }
+  });
+
+  it("rejects newProject combined with projectId or worktree isolation", async () => {
+    const { agentManager, agentStorage } = createTestDeps();
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      logger,
+    });
+    const tool = registeredTool(server, "create_workspace");
+    await expect(
+      invokeToolWithParsedInput(tool, {
+        isolation: "local",
+        path: existingCwd,
+        newProject: true,
+        projectId: "explicit",
+      }),
+    ).rejects.toThrow("newProject cannot be combined with projectId");
+    await expect(
+      invokeToolWithParsedInput(tool, {
+        isolation: "worktree",
+        path: existingCwd,
+        newProject: true,
+      }),
+    ).rejects.toThrow("newProject requires isolation local");
+  });
+
   it("creates a worktree workspace from a project root without a path", async () => {
     const { agentManager, agentStorage } = createTestDeps();
     const project = createPersistedProjectRecord({

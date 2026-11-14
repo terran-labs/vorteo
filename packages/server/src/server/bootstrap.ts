@@ -211,7 +211,11 @@ import {
   FileBackedWorkspaceRegistry,
   type WorkspaceArchiveContext,
 } from "./workspace-registry.js";
-import { setActiveProjectsFolder } from "./projects-folder.js";
+import {
+  findNewProjectRejection,
+  projectsFolderPolicyFor,
+  setActiveProjectsFolder,
+} from "./projects-folder.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { ScheduleService } from "./schedule/service.js";
 import { QuotaSchedulePreflight } from "./schedule/quota-preflight.js";
@@ -1171,6 +1175,8 @@ export async function createPaseoDaemon(
   const agentStorage = new AgentStorage(config.agentStoragePath, logger);
   // Before any registry parses a path, so alias paths load and store in logical form.
   setActiveProjectsFolder(config.projectsFolder);
+  // The same Projects folder rule the add project request applies to agent-registered projects.
+  const newProjectPolicy = projectsFolderPolicyFor(config.projectsFolder);
   const projectRegistry = new FileBackedProjectRegistry(
     path.join(config.paseoHome, "projects", "projects.json"),
     logger,
@@ -2219,6 +2225,14 @@ export async function createPaseoDaemon(
       );
       await emitWorkspaceUpdatesExternal([workspace.workspaceId]);
       return workspace;
+    },
+    registerProjectForDirectory: async (cwd) => {
+      const rejection = await findNewProjectRejection(newProjectPolicy, cwd, {
+        projectRegistry,
+        workspaceRegistry,
+      });
+      if (rejection) throw rejection;
+      return workspaceProvisioning.findOrCreateProjectForDirectory(cwd);
     },
     workspaceScripts: createWorkspaceScriptsService({
       serviceProxy,

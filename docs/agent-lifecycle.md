@@ -267,6 +267,8 @@ Cross-host authority lookup is tracked separately in
 
 Agents can launch other agents via the agent-scoped `create_agent` MCP tool. Agent-scoped creation is always asynchronous and always stamps `paseo.parent-agent-id`, pointing back at the caller. Omit `workspaceId` to use the caller's workspace, or pass an existing workspace ID returned by `create_workspace`. Placement never changes parentage.
 
+`create_workspace` files a workspace under `projectId` when you pass one. Without it, a worktree belongs to its source repository's project, and a local workspace stays in the caller's project only when its folder is inside that project's root, inside one of its workspaces, or a checkout of its repository. Any other local folder joins the deepest registered project that contains it or, when none does, becomes a new project under the same Projects folder rule as adding a project from the interface. `newProject: true` registers the folder as its own project explicitly, which suits a repository nested inside another project. Only workspaces that stay in the caller's project keep its sidebar membership. Ownership logic lives in [workspace-ownership.ts](../packages/server/src/server/agent/tools/workspace-ownership.ts).
+
 - **Subagents** — exist as part of the creating agent's work, appear in that agent's subagent track, and are archived with it.
 - **Detached agents** — stand on their own after an explicit detach transition, do not appear in the former parent's subagent track, and are not archived with it.
 
