@@ -556,6 +556,18 @@ export class HostedAgentSession implements AgentSession {
     await this.invoke({ method: "revertBoth", messageId: input.messageId });
   }
 
+  /**
+   * Asks the provider in the host whether stopping it loses background work, so idle cleanup and
+   * upgrade release keep a session whose watcher will wake the agent. Absent for a host that
+   * predates the call, which leaves both on their baseline checks.
+   */
+  get canStopRuntime(): (() => Promise<boolean>) | undefined {
+    // COMPAT(hostedRuntimeStopCheck): added after v26.11.1200; remove once the host floor supports it.
+    // Never send an unknown method to an old host.
+    if (this.snapshot.capabilities?.runtimeStopCheck !== true) return undefined;
+    return async () => (await this.invoke({ method: "canStopRuntime" })) === true;
+  }
+
   async closeIfIdle(): Promise<void> {
     // COMPAT(conditionalIdleClose): added in v0.11.0-beta.3.vorteo.882; remove once the host floor supports it.
     // Never send an unknown method to an old host or fall back to unconditional close.
