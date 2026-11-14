@@ -290,7 +290,7 @@ function useConnectionAction(
   const { entries } = useProvidersSnapshot(serverId);
   const claude = accountProviderKind(providerId, config?.providers) === "claude";
   // Installation accounts always offer their connection panel, which shows Dev synchronization.
-  const shared = useSharedInstallationSignIn(serverId, claude ? "claude" : "codex");
+  const shared = useSharedInstallationSignIn(serverId, claude ? "claude" : "codex", providerId);
   // The coordinator knows when a named Claude account's Host grant is gone, even while its last
   // usage reading still looks fine.
   const coordinatorNeedsSignIn = useClaudeAccountNeedsSignIn(claude ? serverId : null, providerId);

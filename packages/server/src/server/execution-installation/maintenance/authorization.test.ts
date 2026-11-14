@@ -3,7 +3,12 @@ import {
   initialHostNativeLaunchBinding,
   inspectInitialHostNativeLaunchBinding,
 } from "./host-supervisor-contract.js";
-import { attemptHostContinuationCommand } from "./host-supervisor-command-admission.js";
+import {
+  attemptHostContinuationCommand,
+  attemptCooperativeMailboxCommand,
+  cooperativeCommandDigest,
+  prepareCooperativeMailboxCommand,
+} from "./host-supervisor-command-admission.js";
 import {
   assertMaintenanceEnrollmentClaim,
   unresolvedMaintenanceActivations,
@@ -90,6 +95,7 @@ import {
 } from "./native-registration.js";
 import {
   assertStandingRestartAdmission,
+  assertCooperativeDispatchAdmission,
   evaluateStandingRestart,
   standingRestartPlanDigest,
 } from "./restart-admission.js";
@@ -112,11 +118,12 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import {
   InstallationEnrollmentApprovalSchema,
+  InstallationEnrollmentManifestSchema,
   type InstallationEnrollmentManifest,
   type InstallationEnrollmentState,
   type StandingMaintenanceProposal,
@@ -2054,8 +2061,48 @@ test("the existing service controls change the enrolled grant without reviving l
   expect(existsSync(originalLegacy)).toBe(false);
 });
 
-function restartAdmissionFixture() {
+test("cooperative preparation coverage is absent in old grants and binds the manifest digest", () => {
   const f = fixture();
+  const prior = InstallationEnrollmentManifestSchema.parse(f.manifest);
+  expect(prior.interruption.cooperativeDrainPreparation).toBeUndefined();
+  expect(enrollmentManifestDigest(prior)).toBe(enrollmentManifestDigest(f.manifest));
+  const extended = InstallationEnrollmentManifestSchema.parse({
+    ...f.manifest,
+    interruption: {
+      ...f.manifest.interruption,
+      cooperativeDrainPreparation: {
+        version: 1,
+        operation: "maintenance.interrupt-held-turns",
+        waitSeconds: 900,
+        settlementSeconds: 30,
+        endpointIdentitySha256: "a".repeat(64),
+      },
+    },
+  });
+  expect(enrollmentManifestDigest(extended)).not.toBe(f.approval.manifestSha256);
+  expect(() =>
+    enrollInstallation(f.journal, { manifest: extended, approval: f.approval }),
+  ).toThrow();
+});
+
+function restartAdmissionFixture(
+  cooperative = false,
+  endpoint = "d".repeat(64),
+  target: RestartJob["target"] = "container-daemon",
+) {
+  const f = fixture();
+  f.manifest.targets.find((item) => item.target === "container-daemon")!.target = target;
+  if (cooperative) {
+    f.manifest.interruption.finishTurnsSeconds = 1200;
+    f.manifest.interruption.cooperativeDrainPreparation = {
+      version: 1,
+      operation: "maintenance.interrupt-held-turns",
+      waitSeconds: 900,
+      settlementSeconds: 30,
+      endpointIdentitySha256: endpoint,
+    };
+    f.approval.manifestSha256 = enrollmentManifestDigest(f.manifest);
+  }
   let state = enrolled(f.enroll());
   for (const stepId of [f.first, f.second]) {
     state = enrolled(
@@ -2075,7 +2122,7 @@ function restartAdmissionFixture() {
   const pending: RestartJob = {
     id: randomUUID(),
     revision: randomUUID(),
-    target: "container-daemon",
+    target,
     reason: "Verified maintenance",
     requestedBy: "container-agent",
     createdAt: "2026-10-15T02:00:00.000Z",
@@ -2138,10 +2185,273 @@ function restartAdmissionFixture() {
   return { ...f, state, pending, approved, evaluate, admit, reserveHold, phases };
 }
 
-function interruptionFixture() {
-  const f = restartAdmissionFixture();
+test.each([false, true])(
+  "cooperative reservation requires explicit exact phase coverage: %s",
+  (covered) => {
+    const f = interruptionFixture(covered);
+    const intent = f.running.standingInterruption!;
+    const proposed: RestartJob = {
+      ...f.observed,
+      continuationCaptureRequested: true,
+      cooperativeDrainPreparation: {
+        operation: "maintenance.interrupt-held-turns",
+        phase: "reserved",
+        intent,
+        manifestSha256: f.observed.standingDecision!.manifestSha256,
+        endpointIdentitySha256: "d".repeat(64),
+        continuationCauseId: f.observed.id,
+        deadlineAt: new Date(
+          Date.parse(f.observed.standingHold!.reservedAt) + 900000,
+        ).toISOString(),
+      },
+    };
+    if (!covered) {
+      expect(() => f.write([proposed])).toThrow("not covered");
+      return;
+    }
+    f.write([proposed]);
+    expect(f.lifecycle.readLifecycle()[0]).toMatchObject({
+      status: "approved",
+      whenIdle: true,
+      finishCurrentTurns: true,
+      cooperativeDrainPreparation: { phase: "reserved" },
+    });
+    expect(() =>
+      f.write([
+        {
+          ...proposed,
+          cooperativeDrainPreparation: {
+            ...proposed.cooperativeDrainPreparation!,
+            intent: { ...intent, held: { ...intent.held, generation: randomUUID() } },
+          },
+        },
+      ]),
+    ).toThrow("observation-only");
+  },
+);
+
+function cooperativeCommandFixture() {
+  const uid = process.getuid!();
+  const root = realpathSync(mkdtempSync(path.join(homedir(), ".cooperative-command-test-")));
+  directories.push(root);
+  chmodSync(root, 0o700);
+  const mailbox = path.join(root, "mailbox");
+  mkdirSync(mailbox, { mode: 0o700 });
+  const stat = lstatSync(mailbox, { bigint: true });
+  const scope = {
+    version: 1,
+    operation: "maintenance.interrupt-held-turns",
+    installationId: randomUUID(),
+    target: "host",
+    containerId: null,
+    ownerUid: uid,
+    readerUid: uid,
+    mailboxPath: mailbox,
+    mailboxIdentity: { device: String(stat.dev), inode: String(stat.ino) },
+    processInspector: null,
+  };
+  const endpoint = cooperativeCommandDigest(scope);
+  const scopeFile = path.join(root, "scope.json");
+  writeFileSync(scopeFile, JSON.stringify(scope), { mode: 0o600 });
+  const f = interruptionFixture(true, endpoint, "host");
+  const job: RestartJob = {
+    ...f.observed,
+    continuationCaptureRequested: true,
+    cooperativeDrainPreparation: {
+      operation: "maintenance.interrupt-held-turns",
+      phase: "reserved",
+      intent: f.running.standingInterruption!,
+      manifestSha256: f.observed.standingDecision!.manifestSha256,
+      endpointIdentitySha256: endpoint,
+      continuationCauseId: f.observed.id,
+      deadlineAt: new Date(Date.parse(f.observed.standingHold!.reservedAt) + 900000).toISOString(),
+    },
+  };
+  f.write([job]);
+  const helper = new URL("../../../../scripts/cooperative-drain-mailbox.py", import.meta.url);
+  const phase = job.cooperativeDrainPreparation!;
+  type Native = Parameters<typeof prepareCooperativeMailboxCommand>[0]["native"];
+  // Inert native inspection fixture, paired with an actual fixed helper process
+  // and private filesystem. It confers no installed endpoint or live authority.
+  const native = {
+    descriptor: {
+      environment: "host",
+      cooperativeMailbox: {
+        scopeFile,
+        endpointIdentitySha256: endpoint,
+        ownerUid: uid,
+        readerUid: uid,
+        pythonFile: "/usr/bin/python3",
+        helperSha256: createHash("sha256").update(readFileSync(helper)).digest("hex"),
+      },
+    },
+    assertCurrent() {},
+  } as unknown as Native;
+  const claim = path.join(mailbox, `${phase.intent.held.generation}.claim`);
+  return { ...f, job, native, claim };
+}
+
+test.each(["dispatch", "revoked", "cancelled", "revision", "recovered", "coordinator"])(
+  "cooperative native enqueue is fenced and never replayed: %s",
+  async (mode) => {
+    const f = cooperativeCommandFixture();
+    const owner = await prepareCooperativeMailboxCommand({
+      config: {} as Parameters<typeof prepareCooperativeMailboxCommand>[0]["config"],
+      native: f.native,
+      reservation: f.job.cooperativeDrainPreparation!,
+    });
+    if (mode === "coordinator") {
+      const planFixture = initialHostPlanFixture().plan;
+      const plan = CoordinatorBootstrapPlanSchema.parse({
+        version: 1,
+        operation: "coordinator-bootstrap",
+        installationId: planFixture.installationId,
+        service: `gui/${process.getuid!()}/local.vorteo.fixture.installation`,
+        expectedProcess: {
+          pid: planFixture.precondition.supervisor.pid,
+          bootId: planFixture.precondition.supervisor.bootId,
+          startIdentity: planFixture.precondition.supervisor.startIdentity,
+          argumentsSha256: planFixture.precondition.supervisor.argumentsSha256,
+        },
+        previous: planFixture.fallback,
+        candidate: planFixture.candidate,
+        state: {
+          directory: f.directory,
+          restartJournal: path.join(f.directory, "restart-jobs.json"),
+          ownerSessions: path.join(f.directory, "owner-sessions.json"),
+        },
+        hostRequestsAfter: null,
+      });
+      const now = new Date().toISOString();
+      const request = CoordinatorBootstrapRequestSchema.parse({
+        id: randomUUID(),
+        revision: randomUUID(),
+        requestedBy: "host-agent",
+        reason: "Cooperative fixture coordinator recovery",
+        createdAt: now,
+        decisionAt: now,
+        plan,
+        planSha256: createHash("sha256").update(JSON.stringify(plan)).digest("hex"),
+        status: "approved",
+        execution: { generation: randomUUID(), stage: "claimed", updatedAt: now },
+      });
+      // A callback-bearing native check must not make the previous pure
+      // decision stale. Inject competing recovery after durable acceptance.
+      f.native.assertCurrent = () => {
+        const retained = f.lifecycle.readLifecycle()[0] as RestartJob;
+        if (retained.cooperativeDrainPreparation?.phase === "accepted")
+          writeFileSync(
+            path.join(f.directory, "coordinator-bootstrap.json"),
+            JSON.stringify({ version: 1, requests: [request] }),
+            { mode: 0o600 },
+          );
+      };
+    }
+    let validations = 0;
+    const validate = (job: RestartJob) => {
+      validations++;
+      const state = structuredClone(f.state);
+      if (mode === "revoked" && validations === 2) state.grant.paused = true;
+      assertCooperativeDispatchAdmission(
+        {
+          previous: [job],
+          next: [job],
+          state,
+          evaluate: f.evaluate,
+          assertEvidence() {},
+        },
+        job,
+      );
+      if (mode === "revision" && validations === 1) f.job.revision = randomUUID();
+    };
+    if (mode === "cancelled") f.write([{ ...f.job, status: "rejected" }]);
+    if (mode === "recovered")
+      f.write([
+        {
+          ...f.job,
+          cooperativeDrainPreparation: { ...f.job.cooperativeDrainPreparation!, phase: "accepted" },
+        },
+      ]);
+    try {
+      const attempt = () =>
+        attemptCooperativeMailboxCommand({
+          directory: f.directory,
+          job: f.job,
+          owner,
+          validate,
+        });
+      if (mode === "dispatch") {
+        expect("enqueue" in owner).toBe(false);
+        expect(() =>
+          attemptCooperativeMailboxCommand({
+            directory: f.directory,
+            job: f.job,
+            owner: { ...owner },
+            validate,
+          }),
+        ).toThrow("actual retained native command owner");
+        attempt();
+        expect(await owner.observed).toBe("published");
+        expect(existsSync(f.claim)).toBe(true);
+        // An older journal reader may drop the new private field. Its loss must
+        // not authorize another generation for the same approved request.
+        const { cooperativeDrainPreparation: prior, ...legacy } = f.job;
+        writeFileSync(path.join(f.directory, "restart-jobs.json"), JSON.stringify([legacy]), {
+          mode: 0o600,
+        });
+        const replacement: RestartJob = {
+          ...f.job,
+          cooperativeDrainPreparation: {
+            ...prior!,
+            intent: { ...prior!.intent, held: { ...prior!.intent.held, generation: randomUUID() } },
+          },
+        };
+        f.write([replacement]);
+        const reopenedOwner = await prepareCooperativeMailboxCommand({
+          config: {} as Parameters<typeof prepareCooperativeMailboxCommand>[0]["config"],
+          native: f.native,
+          reservation: replacement.cooperativeDrainPreparation!,
+        });
+        try {
+          expect(() =>
+            attemptCooperativeMailboxCommand({
+              directory: f.directory,
+              job: replacement,
+              owner: reopenedOwner,
+              validate,
+            }),
+          ).toThrow();
+        } finally {
+          reopenedOwner.close();
+          await reopenedOwner.observed;
+        }
+        const nextClaim = f.claim.replace(
+          prior!.intent.held.generation,
+          replacement.cooperativeDrainPreparation!.intent.held.generation,
+        );
+        expect(existsSync(nextClaim)).toBe(false);
+      } else {
+        expect(attempt).toThrow();
+        owner.close();
+        await owner.observed;
+        expect(existsSync(f.claim)).toBe(false);
+      }
+      expect(attempt).toThrow();
+    } finally {
+      owner.close();
+    }
+  },
+);
+
+function interruptionFixture(
+  cooperative = false,
+  endpoint = "d".repeat(64),
+  target: RestartJob["target"] = "container-daemon",
+) {
+  const f = restartAdmissionFixture(cooperative, endpoint, target);
   const now = Date.now();
   const held = f.reserveHold(f.approved);
+  if (cooperative) held.standingHold!.reservedAt = new Date(now - 900000).toISOString();
   const observed: RestartJob = {
     ...held,
     standingHold: { ...held.standingHold!, observedAt: new Date(now).toISOString() },
@@ -9776,3 +10086,57 @@ test("native Host anchor passes its actual collection signal without effects", a
   expect(readFileSync(path.join(f.directory, "maintenance-enrollment.json"))).toEqual(before);
   expect(f.prepared.launch).toHaveBeenCalledTimes(1);
 });
+
+test.each(["paused", "revoked"] as const)(
+  "cooperative dispatch requires current standing authority after manual finish approval: %s",
+  (change) => {
+    const f = interruptionFixture(true);
+    const original = f.observed;
+    const revision = randomUUID();
+    const job: RestartJob = {
+      ...original,
+      revision,
+      automaticApproval: undefined,
+      automaticAuthority: undefined,
+      continuationCaptureRequested: true,
+      standingManualApprovals: [
+        {
+          previousRevision: original.revision,
+          revision,
+          decision: "finish-current-turns",
+          approvedAt: new Date().toISOString(),
+        },
+      ],
+      cooperativeDrainPreparation: {
+        operation: "maintenance.interrupt-held-turns",
+        phase: "accepted",
+        intent: { ...f.running.standingInterruption!, approvedRevision: revision },
+        manifestSha256: original.standingDecision!.manifestSha256,
+        endpointIdentitySha256: "d".repeat(64),
+        continuationCauseId: original.id,
+        deadlineAt: new Date(Date.parse(original.standingHold!.reservedAt) + 900000).toISOString(),
+      },
+    };
+    const { cooperativeDrainPreparation: phase, ...manual } = job;
+    f.write([manual]);
+    f.write([{ ...job, cooperativeDrainPreparation: { ...phase!, phase: "reserved" } }]);
+    f.write([job]);
+    const admission = {
+      previous: [job],
+      next: [job],
+      state: f.state,
+      evaluate: f.evaluate,
+      assertEvidence() {},
+    };
+    expect(() => assertCooperativeDispatchAdmission(admission, job)).not.toThrow();
+    const state = structuredClone(f.state);
+    if (change === "paused") state.grant.paused = true;
+    else state.grant.revokedAt = new Date().toISOString();
+    expect(() =>
+      assertCooperativeDispatchAdmission(
+        { previous: [job], next: [job], state, evaluate: f.evaluate, assertEvidence() {} },
+        job,
+      ),
+    ).toThrow("Standing maintenance authority changed");
+  },
+);

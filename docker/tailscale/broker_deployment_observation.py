@@ -10,7 +10,7 @@ import subprocess
 import time
 import uuid
 from broker_deployment_kernel import DarwinKernel, ProcessGone
-from broker_deployment import sha, encode
+from broker_deployment import sha, encode, preservation, approved_preservation_sha256
 from channel_identity import read_file, file_identity, physical_directory, verify_channel
 
 def run(argv):
@@ -99,6 +99,9 @@ class NativeObservation:
         self.guard = guard
         self.kernel = kernel or DarwinKernel()
         self.invoke = invoke
+        # Channel admission per binding, fixed by the first validation of an attempt
+        # (or read back from its evidence) and required unchanged afterwards.
+        self.admission = None
 
     def process(self, pid):
         try:
@@ -181,21 +184,39 @@ class NativeObservation:
             raise ValueError('Exact broker pair required')
         if {item['root'] for item in self.bindings} != {item['root'] for item in self.plan['targets']}:
             raise ValueError('Protected broker roots differ')
+        admission = [self.channel_admission(binding) for binding in self.bindings]
+        if self.admission is not None and admission != self.admission:
+            raise ValueError('Broker channel admission changed')
         result = []
-        for expected, binding in zip(self.plan['registrations'], self.bindings):
+        for expected, binding, mode in zip(self.plan['registrations'], self.bindings, admission):
             for key in ('root', 'domain', 'label', 'plist'):
                 if expected[key] != binding[key]:
                     raise ValueError('Approved registration differs from protected binding')
+            # The owner approves the mode. Plans without it predate running admission
+            # and could only have meant a refusing channel.
+            if mode != expected.get('admission', 'refusing'):
+                raise ValueError('Broker channel admission differs from the approved plan')
             state = self.state(binding)
             for key in ('disposition', 'enabled', 'override', 'process'):
+                # A running broker's scheduler starts a new generation every cycle, so a
+                # plan for it cannot pin one. state() still requires the protected argv.
+                if key == 'process' and mode == 'running' and expected['process'] is None:
+                    continue
                 if state[key] != expected[key]:
                     raise ValueError('Prepared broker state changed')
             if state['disposition'] == 'loaded' and not state['enabled']:
                 raise ValueError('Loaded disabled broker restoration is unsupported')
-            self.assert_refusing_channel(binding)
             result.append(state)
+        # Refuse a wrong mode or stale preparation before any native effect. The
+        # worker repeats the comparison under the broker locks after suppression.
+        modes = {binding['root']: mode for binding, mode in zip(self.bindings, admission)}
+        for target in self.plan['targets']:
+            current = preservation(Path(target['root']))
+            if approved_preservation_sha256(current, modes[target['root']]) != target['preservationSha256']:
+                raise ValueError('Preservation inventory changed; refresh preparation')
         self.assert_manual_exited()
         self.assert_no_unlisted([state["process"] for state in result])
+        self.admission = admission
         return result
 
     def assert_no_unlisted(self, allowed):
@@ -227,9 +248,14 @@ class NativeObservation:
             if not self.old_process_exited(participant):
                 raise ValueError('Declared manual or waiting consumer is still active')
 
-    def assert_refusing_channel(self, binding):
-        # This first deployment restores only consumers whose unchanged legacy
-        # channel pins still refuse before inbox consumption. Trust is separate.
+    def channel_admission(self, binding):
+        """How a consumer would treat its channel once its scheduler is restored.
+
+        'refusing': the unchanged legacy pins still refuse before inbox consumption.
+        'running': the legacy pins verify, so restored consumers process requests,
+        as they did before suppression. Any other verification failure refuses, and
+        trust migration (a filesystem identity anchor) stays a separate review.
+        """
         raw, _ = read_file(Path(binding['root']) / 'host-config.json', protected=True)
         config = json.loads(raw)
         if config.get('channelFilesystemIdentity') is not None:
@@ -238,9 +264,16 @@ class NativeObservation:
             verify_channel(config)
         except ValueError as error:
             if str(error) == 'Request channel replaced; administrator review required':
-                return
+                return 'refusing'
             raise
-        raise ValueError('Consumer could process requests on resume; separate release admission required')
+        return 'running'
+
+    def assert_admission(self, binding):
+        if self.admission is None:
+            raise ValueError('Broker channel admission is unrecorded')
+        index = self.bindings.index(binding)
+        if self.channel_admission(binding) != self.admission[index]:
+            raise ValueError('Broker channel admission changed')
 
     def assert_suppressed(self):
         self.assert_manual_exited()
@@ -251,6 +284,6 @@ class NativeObservation:
                 raise ValueError('Broker scheduler suppression is unverified')
             if not self.old_process_exited(expected['process']):
                 raise ValueError('Old registered consumer remains active')
-            self.assert_refusing_channel(binding)
+            self.assert_admission(binding)
         return {'bootUUID': self.plan['bootUUID'], 'request': self.plan['id'],
-                'bindingsSha256': sha(encode(self.bindings))}
+                'bindingsSha256': sha(encode(self.bindings)), 'admission': self.admission}
