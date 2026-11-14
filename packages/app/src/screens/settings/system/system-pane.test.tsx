@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   jobs: [] as { id: string; target: string; status: string; createdAt: string }[],
 }));
 vi.mock("../service-access-section", () => ({ ServiceAccessSection: () => null }));
+vi.mock("../blocked-work-review-card", () => ({ BlockedWorkReviewCard: () => null }));
 vi.mock("@/components/ui/scroll-view", () => ({
   ScrollView: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
@@ -30,7 +31,9 @@ vi.mock("./use-system-adapter", () => ({
     services: mocks.services,
   }),
 }));
-vi.mock("react-native", () => ({
+vi.mock("react-native", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react-native")>()),
+  Platform: { ...(await importOriginal<typeof import("react-native")>()).Platform, OS: "web" },
   useWindowDimensions: () => ({ width: 390 }),
   StyleSheet: { create: (styles: unknown) => styles },
   View: ({ children, testID }: { children: ReactNode; testID?: string }) => (
@@ -85,6 +88,9 @@ vi.mock("@/desktop/components/desktop-updates-section", () => ({
   LocalDaemonSection: () => <span>Local controls</span>,
 }));
 vi.mock("@/execution-installation/panel", () => ({
+  useInstallationOwnerAccess: () => {
+    throw new Error("Owner access is outside the System pane fixture");
+  },
   InstallationSystemAdvanced: () => <span>Automatic updates and restarts</span>,
   InstallationSystemDetails: ({
     requestId,

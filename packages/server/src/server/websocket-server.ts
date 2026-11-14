@@ -38,6 +38,7 @@ import { getHostName } from "./host-name.js";
 import { randomUUID } from "node:crypto";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import type { AgentManager, AgentMetricsSnapshot } from "./agent/agent-manager.js";
+import { isRestartHoldError } from "./agent/restart-hold.js";
 import type { AgentStorage } from "./agent/agent-storage.js";
 import type { DownloadTokenStore } from "./file-download/token-store.js";
 import type { TerminalManager } from "../terminal/terminal-manager.js";
@@ -818,10 +819,15 @@ export class VoiceAssistantWebSocketServer {
         return disposition;
       },
       onError: (err, batch) =>
-        this.logger.error(
-          { err, agentId: batch.recipientId, messageIds: batch.messageIds },
-          "Agent message batch dispatch failed",
-        ),
+        isRestartHoldError(err)
+          ? this.logger.info(
+              { agentId: batch.recipientId, messageIds: batch.messageIds },
+              "Agent message waits for the restart hold to end",
+            )
+          : this.logger.error(
+              { err, agentId: batch.recipientId, messageIds: batch.messageIds },
+              "Agent message batch dispatch failed",
+            ),
     });
     this.messageReceipts = new MessageReceipts(join(paseoHome, "agent-requests"));
     this.creationService = new CreationService(
@@ -2491,9 +2497,12 @@ export class VoiceAssistantWebSocketServer {
         agentQuestions: true,
         // COMPAT(agentQuestionInputs): added November 2026; retain until the client floor includes it.
         agentQuestionInputs: true,
+        // COMPAT(previews): added November 2026; retain until the client floor includes it.
+        previews: this.agentManager.previews !== null,
         // COMPAT(projectedSubagentTimeline): added after v0.8.0, remove gates after 2027-03-14; retain advertisement.
         projectedSubagentTimeline: true,
         wholeTurnTimeline: true,
+        agentTimelineHistoryRetry: true,
         // COMPAT(providerSubagentNesting): added in v0.7, remove gate after 2027-03-04.
         providerSubagentNesting: true,
         // COMPAT(workspacePinning): added in v0.1.107, remove gate after 2027-01-12.

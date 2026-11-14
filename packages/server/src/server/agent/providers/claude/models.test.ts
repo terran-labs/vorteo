@@ -1,3 +1,4 @@
+import { getProviderProbeCwd } from "../../../../utils/provider-probe-cwd.js";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -14,7 +15,7 @@ import {
   resolveClaudeDisabledThinkingForModel,
 } from "./model-manifest.js";
 import { discoverClaudeModels } from "./model-discovery.js";
-import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
+import type { ModelInfo, Query } from "@anthropic-ai/claude-agent-sdk";
 import {
   findClaudeModel,
   getClaudeContextWindowMaxTokens,
@@ -94,7 +95,7 @@ describe("Claude CLI update warnings", () => {
       installedVersion: "2.1.267",
       affectedModels: [
         { id: "claude-opus-5-5", label: "Opus 5.5", minimumVersion: "2.1.280" },
-        { id: "claude-fable-5-2", label: "Fable 5.2", minimumVersion: "2.1.321" },
+        { id: "claude-fable-5-2", label: "Fable 5.2", minimumVersion: "2.1.290" },
         { id: "claude-sonnet-5-5", label: "Sonnet 5.5", minimumVersion: "2.1.284" },
         { id: "claude-haiku-5-5", label: "Haiku 5.5", minimumVersion: "2.1.293" },
       ],
@@ -113,6 +114,40 @@ describe("Claude CLI update warnings", () => {
     const after = await client.fetchCatalog({ scope: "global", force: true });
     expect(after.cliUpdate).toBeUndefined();
     expect(after.models.some((model) => model.id === "claude-opus-5-5")).toBe(true);
+  });
+
+  it("refuses a launch whose own executable is too old for the model, before the CLI starts", async () => {
+    // The catalog saw a new CLI, but this process launches an older one, as a session host did.
+    let executableVersion = "2.1.285";
+    let launches = 0;
+    const query = Object.assign((async function* () {})(), {
+      async setPermissionMode() {},
+      async applyFlagSettings() {},
+      close() {},
+    });
+    const client = new ClaudeAgentClient({
+      logger: createTestLogger(),
+      resolveVersion: async () => "2.1.321",
+      resolveBinary: async () => "/opt/homebrew/bin/claude",
+      resolveBinaryVersion: async () => executableVersion,
+      queryFactory: () => {
+        launches += 1;
+        return query as Query;
+      },
+    });
+    const session = await client.createSession({
+      provider: "claude",
+      cwd: process.cwd(),
+      model: "claude-fable-5-2",
+    });
+    await expect(session.setMode("plan")).rejects.toThrow(
+      /2\.1\.290.*2\.1\.285 from \/opt\/homebrew\/bin\/claude/,
+    );
+    expect(launches).toBe(0);
+    executableVersion = "2.1.290";
+    await session.setMode("plan");
+    expect(launches).toBe(1);
+    await session.close();
   });
 });
 
@@ -273,7 +308,7 @@ describe("getClaudeModels", () => {
     ["claude-sonnet-5[1m]", true, "high"],
     ["claude-sonnet-5-20260101", true, "high"],
     ["claude-fable-5", false, "high"],
-    ["claude-fable-5-2", false, "high"],
+    ["claude-fable-5-2", false, "medium"],
     ["claude-fable-5-1", false, "high"],
     ["claude-haiku-5-5", true, "medium"],
     ["claude-haiku-5-5-20261007", true, "medium"],
@@ -1052,10 +1087,18 @@ describe("Claude model discovery process", () => {
         description: "",
       },
     ];
+    const probeRoot = await fs.mkdtemp(path.join(os.tmpdir(), "claude-discovery-"));
+    createdClaudeConfigDirs.push(probeRoot);
+    vi.stubEnv("TMPDIR", probeRoot);
+    vi.stubEnv("TEMP", probeRoot);
+    vi.stubEnv("TMP", probeRoot);
+    const probeCwd = await getProviderProbeCwd();
+    await fs.writeFile(path.join(probeCwd, "retained-state"), "another helper's state");
     const models = await discoverClaudeModels(
       { resolveBinary: async () => "/claude", env: { CLAUDE_CONFIG_DIR: "/provider-config" } },
       (input) => {
         expect(input.options).toMatchObject({
+          cwd: probeCwd,
           pathToClaudeCodeExecutable: "/claude",
           env: { CLAUDE_CONFIG_DIR: "/provider-config" },
           persistSession: false,
@@ -1075,6 +1118,10 @@ describe("Claude model discovery process", () => {
         };
       },
     );
+    expect(await fs.readFile(path.join(probeCwd, "retained-state"), "utf8")).toBe(
+      "another helper's state",
+    );
+    expect(await getProviderProbeCwd()).not.toBe(os.homedir());
     expect(models).toEqual(advertised);
     expect(closed).toBe(true);
     await expect(promptEnded).resolves.toEqual({ done: true, value: undefined });
@@ -1117,5 +1164,40 @@ describe("Claude model discovery process", () => {
     expect(closed).toBe(true);
     expect(assertCanSpawn).toBeTypeOf("function");
     expect(() => assertCanSpawn?.()).toThrow(failure);
+  });
+
+  it("starts no probe while a full sign-in is about to renew, and reuses the last answer", async () => {
+    const advertised = [
+      { value: "fable", resolvedModel: "claude-fable-5-2", displayName: "Fable", description: "" },
+    ];
+    let now = 0;
+    let probes = 0;
+    const open = () => {
+      probes += 1;
+      return { supportedModels: async () => advertised, close: () => {} };
+    };
+    const options = {
+      resolveBinary: async () => "/claude",
+      env: { CLAUDE_CONFIG_DIR: "/renewing-account", VORTEO_CLAUDE_SIGN_IN: "full" },
+      now: () => now,
+      // The grant expires at minute 60. A killed probe inside the renewal window loses it.
+      readGrant: async () => ({
+        accessToken: "synthetic",
+        hasRefreshToken: true,
+        expiresAt: 60 * 60_000,
+        scopes: [],
+      }),
+    };
+    // With no earlier answer the guard still starts nothing and reports no models.
+    now = 55 * 60_000;
+    expect(await discoverClaudeModels(options, open)).toEqual([]);
+    expect(probes).toBe(0);
+    now = 0;
+    expect(await discoverClaudeModels(options, open)).toEqual(advertised);
+    expect(probes).toBe(1);
+    now = 55 * 60_000;
+    // Even an explicit refresh must not start a CLI that could begin the renewal.
+    expect(await discoverClaudeModels({ ...options, force: true }, open)).toEqual(advertised);
+    expect(probes).toBe(1);
   });
 });

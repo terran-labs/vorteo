@@ -20,7 +20,12 @@ import { useFetchQuery } from "@/data/query";
 import type { SidebarWorkspaceEntry } from "@/hooks/use-sidebar-workspaces-list";
 import type { ToggleSidebarWorkspacePin } from "@/hooks/use-sidebar-workspace-pin";
 import { useInstalledPlugins } from "@/plugins/registry";
-import { loadFactoryQueue, type FactoryInvoke } from "@/screens/factory/queue";
+import {
+  factoryQueueRefreshInterval,
+  loadFactoryQueue,
+  type FactoryInvoke,
+  type FactoryQueue,
+} from "@/screens/factory/queue";
 import type { ActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { useProjectFactory } from "./factory-instructions";
@@ -265,7 +270,6 @@ function useFactoryOverview(card: FactoryCardModel, onBeforeNavigate?: () => voi
  * Each queue read is a GitHub read on the Foreman's token, so sidebar cards read it only while
  * expanded on a running Factory, and slowly. Collapsed or paused cards show the last cached queue.
  */
-export const FACTORY_CARD_QUEUE_REFRESH_MS = 120_000;
 
 /** Whether a sidebar card may read a Factory's queue now. */
 export function factoryCardReadsQueue(input: {
@@ -291,18 +295,20 @@ function useFactoryQueueIssues(input: {
   const queryKey = ["factoryQueue", card.serverId, card.projectId];
   // A card with nothing read yet reads once, so a collapsed or paused card still has a stage bar.
   // A failed or empty one-off read counts as read: it is not retried until the card polls.
-  const read = useQueryClient().getQueryState(queryKey) !== undefined;
+  const queryClient = useQueryClient();
+  const read = queryClient.getQueryState(queryKey) !== undefined;
+  const refreshing = queryClient.getQueryData<FactoryQueue | null>(queryKey)?.refreshing === true;
   const readable = active && !!plugin && !!state && state.state !== "off";
   const polling = !!plugin && factoryCardReadsQueue({ active, collapsed, state });
   const queue = useFetchQuery({
     dataShape: "value",
     queryKey,
     staleTimeMs: 30_000,
-    enabled: polling || (readable && !read),
+    enabled: polling || (readable && !read) || (active && refreshing),
     retry: polling ? undefined : false,
     // A daemon without the queue answers null; never poll it again.
     refetchInterval: (query) =>
-      polling && query.state.data !== null ? FACTORY_CARD_QUEUE_REFRESH_MS : false,
+      factoryQueueRefreshInterval({ queue: query.state.data, enabled: active, polling }),
     queryFn: () => loadFactoryQueue(plugin!.invoke, card.projectId),
   });
   return queue.data?.issues ?? null;

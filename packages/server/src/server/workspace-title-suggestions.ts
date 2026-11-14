@@ -82,7 +82,6 @@ export class WorkspaceTitleSuggestions {
     }
     const result = await generateStructuredAgentResponseWithFallback({
       manager: agentManager,
-      cwd: input.cwd,
       providers,
       schema: TitlesSchema,
       schemaName: "WorkspaceTitleSuggestions",

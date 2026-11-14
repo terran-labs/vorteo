@@ -358,7 +358,7 @@ describe("workspace git watch targets", () => {
     syncGitObserver(session, REPO_CWD, "ws-10");
 
     expect(workspaceGitService.registerWorkspace).toHaveBeenCalledWith(
-      { cwd: REPO_CWD },
+      { cwd: REPO_CWD, background: true },
       expect.any(Function),
     );
 
@@ -444,7 +444,7 @@ describe("workspace git watch targets", () => {
       requestId: REPO_SUBSCRIPTION_REQUEST_ID,
     });
     expect(workspaceGitService.registerWorkspace).toHaveBeenCalledWith(
-      { cwd: REPO_CWD },
+      { cwd: REPO_CWD, background: true },
       expect.any(Function),
     );
 

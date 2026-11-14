@@ -66,6 +66,7 @@ import type { TerminalManager } from "../terminal/terminal-manager.js";
 import { createTerminalManager } from "../terminal/terminal-manager.js";
 
 import { AgentManager, type AgentManagerEvent, type ManagedAgent } from "./agent/agent-manager.js";
+import { InMemoryAgentTimelineStore } from "./agent/agent-timeline-store.js";
 
 import type { ProviderSubagentDescriptor } from "./agent/provider-subagents/store.js";
 
@@ -2899,6 +2900,160 @@ test("timeline requests read saved history without resuming an unavailable provi
       }),
     }),
   );
+});
+
+test.each([false, true])(
+  "timeline polling reads a record without a native handle or a session (retained rows: %s)",
+  async (retained) => {
+    const record = makeStoredAgent({
+      id: "empty-archived-history",
+      cwd: "/tmp/history",
+      updatedAt: "2026-11-10T00:00:00.000Z",
+    });
+    const timelineStore = new InMemoryAgentTimelineStore();
+    if (retained) {
+      timelineStore.initialize(record.id, { epoch: "retained" });
+      timelineStore.append(record.id, { type: "assistant_message", text: "Retained answer" });
+    } else {
+      record.archivedAt = record.updatedAt;
+    }
+    const manager = new AgentManager({ clients: {}, logger: createTestLogger(), timelineStore });
+    const create = vi.spyOn(manager, "createAgent");
+    const providers = createProviderSnapshotManagerStub();
+    providers.listRegisteredProviderIds.mockReturnValue(["codex"]);
+    const emitted: SessionOutboundMessage[] = [];
+    const session = createSessionForWorkspaceTests({
+      liveAgentManager: manager,
+      providerSnapshotManager: providers.manager,
+      agentStorage: { get: async () => record },
+      onMessage: (message) => emitted.push(message),
+    });
+
+    await session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      requestId: "empty-history",
+      agentId: record.id,
+    });
+    expect(create).not.toHaveBeenCalled();
+    expect(findByType(emitted, "fetch_agent_timeline_response")?.payload).toMatchObject({
+      error: null,
+      agent: { id: record.id },
+      entries: retained ? [{ item: { type: "assistant_message", text: "Retained answer" } }] : [],
+    });
+  },
+);
+
+test("timeline polling allows one explicit attempt during a failed native load cooldown", async () => {
+  const record = makeStoredAgent({
+    id: "00000000-0000-4000-8000-000000000116",
+    cwd: process.cwd(),
+    updatedAt: "2026-11-10T00:00:00.000Z",
+  });
+  record.persistence = { provider: "codex", sessionId: "native-thread" };
+  const client = new CreateAgentTestClient();
+  const resume = vi
+    .spyOn(client, "resumeSession")
+    .mockRejectedValueOnce(new Error("Native history unavailable"))
+    .mockRejectedValueOnce(new Error("Native history still unavailable"));
+  const manager = new AgentManager({ clients: { codex: client }, logger: createTestLogger() });
+  const providers = createProviderSnapshotManagerStub();
+  providers.listRegisteredProviderIds.mockReturnValue(["codex"]);
+  const emitted: SessionOutboundMessage[] = [];
+  const session = createSessionForWorkspaceTests({
+    liveAgentManager: manager,
+    providerSnapshotManager: providers.manager,
+    agentStorage: { get: async () => record },
+    onMessage: (message) => emitted.push(message),
+  });
+  const read = async (requestId: string, retryHistory = false) => {
+    emitted.length = 0;
+    await session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      requestId,
+      agentId: record.id,
+      ...(retryHistory ? { retryHistory: true } : {}),
+    });
+    return findByType(emitted, "fetch_agent_timeline_response")?.payload;
+  };
+
+  vi.useFakeTimers({ toFake: ["performance"] });
+  try {
+    expect((await read("initial-failure"))?.error).toBe("Native history unavailable");
+    expect((await read("observer-retry"))?.error).toBe("Native history unavailable");
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect((await read("manual-retry", true))?.error).toBe("Native history still unavailable");
+    expect((await read("repeated-manual-retry", true))?.error).toBe(
+      "Native history still unavailable",
+    );
+    expect(resume).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(30_000);
+    expect((await read("after-cooldown"))?.error).toBeNull();
+    expect((await read("after-recovery"))?.error).toBeNull();
+    expect(resume).toHaveBeenCalledTimes(3);
+  } finally {
+    vi.useRealTimers();
+    await manager.closeAgent(record.id);
+  }
+});
+
+test("a timeline read crossing close keeps the retained cursor without creating a session", async () => {
+  const record = makeStoredAgent({
+    id: "00000000-0000-4000-8000-000000000117",
+    cwd: process.cwd(),
+    updatedAt: "2026-11-10T00:00:00.000Z",
+  });
+  const client = new CreateAgentTestClient();
+  const config = { provider: "codex", cwd: record.cwd } satisfies AgentSessionConfig;
+  const runtime = new CreateAgentTestSession(config);
+  Object.defineProperty(runtime, "describePersistence", { value: () => null });
+  const closeGate = deferred<void>();
+  const close = vi.spyOn(runtime, "close").mockReturnValue(closeGate.promise);
+  const create = vi.spyOn(client, "createSession").mockResolvedValueOnce(runtime);
+  const timelineStore = new InMemoryAgentTimelineStore();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    timelineStore,
+    logger: createTestLogger(),
+  });
+  await manager.createAgent(config, record.id, { workspaceId: undefined });
+  timelineStore.append(record.id, { type: "assistant_message", text: "Retained answer" });
+  const before = manager.fetchTimeline(record.id);
+  const closing = manager.closeAgent(record.id);
+  try {
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    const providers = createProviderSnapshotManagerStub();
+    providers.listRegisteredProviderIds.mockReturnValue(["codex"]);
+    const emitted: SessionOutboundMessage[] = [];
+    const session = createSessionForWorkspaceTests({
+      liveAgentManager: manager,
+      providerSnapshotManager: providers.manager,
+      agentStorage: { get: async () => record },
+      onMessage: (message) => emitted.push(message),
+    });
+    const wait = vi.spyOn(manager, "waitForAgentClose");
+    const fetching = session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      requestId: "crossing-close",
+      agentId: record.id,
+      direction: "after",
+      cursor: { epoch: before.epoch, seq: before.endSeq! },
+    });
+    await vi.waitFor(() => expect(wait).toHaveBeenCalled());
+    closeGate.resolve();
+    await closing;
+    await fetching;
+    expect(create).toHaveBeenCalledOnce();
+    expect(manager.getAgent(record.id)).toBeNull();
+    expect(findByType(emitted, "fetch_agent_timeline_response")?.payload).toMatchObject({
+      error: null,
+      epoch: before.epoch,
+      staleCursor: false,
+      entries: [],
+    });
+  } finally {
+    closeGate.resolve();
+    await closing;
+  }
 });
 
 test.each([false, true])(
