@@ -1,5 +1,15 @@
 import { writeFileSync } from "node:fs";
-import { lstat, readdir, readlink, realpath, rename, rm, stat } from "node:fs/promises";
+import {
+  lstat,
+  readdir,
+  readFile,
+  readlink,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { removeBootstrapRelease } from "./coordinator-bootstrap-release-seal.js";
 
@@ -21,8 +31,8 @@ const setAsideName = (name: string) => `.pruning-${name}`;
 const DELETING = /^\.deleting-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 const deletingName = (name: string) => `.deleting-${name}`;
 
-/** Newest job folders kept beyond everything that is referenced. */
-const KEEP_NEWEST = 3;
+/** Newest job folders kept beyond everything that is referenced, unless configured. */
+export const KEEP_NEWEST = 3;
 
 export interface HostReleaseRetention {
   /** The configured `sourceUpdates.releaseRoot`; only its direct job folders are pruned. */
@@ -31,6 +41,12 @@ export interface HostReleaseRetention {
    * release a coordinator plan or unfinished job names. Paths outside the root are ignored. */
   referenced: readonly string[];
   keepNewest?: number;
+  /**
+   * When each job started, by job folder name, from the job's own record. A folder's
+   * modification time changes whenever an entry inside it is added or removed, so it is only
+   * the fallback for jobs the record no longer lists.
+   */
+  startedAt?: ReadonlyMap<string, number>;
   /** Removal of one release tree; defaults to removeReleaseTree. */
   removeRelease?: (directory: string) => Promise<void>;
   onError?: (directory: string, error: unknown) => void;
@@ -48,6 +64,98 @@ export interface HostReleaseRetention {
    * itself is left alone for this cleanup.
    */
   onLeftover?: (directory: string) => void;
+  /** A folder an earlier cleanup left set aside was put back under its own name. */
+  onRestored?: (directory: string) => void;
+}
+
+/**
+ * Put back every job folder an earlier cleanup set aside and did not finish, when its own name
+ * is free. A coordinator that died between setting folders aside and its in-use check left
+ * them hidden, and a release that came into use meanwhile cannot start until it is back. Runs
+ * at coordinator start and before anything else in every cleanup. A folder that cannot be put
+ * back is reported and left set aside, where nothing can start from it.
+ */
+export async function restoreSetAsideReleases(
+  releaseRoot: string,
+  callbacks: Pick<HostReleaseRetention, "onError" | "onRestored"> = {},
+): Promise<string[]> {
+  const root = await realpath(releaseRoot);
+  const restored: string[] = [];
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const name = entry.isDirectory() ? SET_ASIDE.exec(entry.name)?.[1] : undefined;
+    if (!name) continue;
+    const original = path.join(root, name);
+    try {
+      // Renaming a folder onto an existing empty folder replaces it, so the name must be free.
+      if (await exists(original)) continue;
+      await rename(path.join(root, entry.name), original);
+      restored.push(name);
+      callbacks.onRestored?.(original);
+    } catch (error) {
+      callbacks.onError?.(original, error);
+    }
+  }
+  return restored;
+}
+
+async function exists(file: string): Promise<boolean> {
+  try {
+    await lstat(file);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+/**
+ * How many distinct job folders the release links pointed into are remembered across
+ * cleanups. A long-lived process started through `current` or `coordinator-current` before
+ * the link moved, whose working directory is elsewhere and which maps nothing from the
+ * release, is invisible to the process listing; it most likely runs one of the last few
+ * link targets. Five covers several installs a day at 6 GiB each.
+ */
+export const LINK_HISTORY_LENGTH = 5;
+
+/**
+ * Record the job folders the release links point into now, newest first, ahead of the ones
+ * earlier cleanups recorded, and return the most recent LINK_HISTORY_LENGTH of them (more
+ * when more links point into distinct folders now). A history that cannot be read or parsed
+ * throws, so cleanup is skipped rather than forgetting what it protects.
+ */
+export async function recordLinkTargets(input: {
+  releaseRoot: string;
+  links: readonly string[];
+  historyFile: string;
+}): Promise<string[]> {
+  const root = await realpath(input.releaseRoot);
+  let previous: string[] = [];
+  try {
+    const parsed = JSON.parse(await readFile(input.historyFile, "utf8")) as unknown;
+    const targets = (parsed as { version?: unknown; targets?: unknown })?.targets;
+    if (
+      (parsed as { version?: unknown })?.version !== 1 ||
+      !Array.isArray(targets) ||
+      !targets.every((target) => typeof target === "string" && JOB_FOLDER.test(target))
+    )
+      throw new Error("The release link history is malformed");
+    previous = targets as string[];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const now: string[] = [];
+  for (const link of input.links) {
+    const entry = await rootEntry(root, link);
+    if (entry && JOB_FOLDER.test(entry)) now.push(entry);
+  }
+  const targets = [...new Set([...now, ...previous])].slice(
+    0,
+    Math.max(LINK_HISTORY_LENGTH, new Set(now).size),
+  );
+  const temporary = `${input.historyFile}.${process.pid}.tmp`;
+  await writeFile(temporary, JSON.stringify({ version: 1, targets }) + "\n", { mode: 0o600 });
+  await rename(temporary, input.historyFile);
+  return targets;
 }
 
 function isPermissionError(error: unknown): boolean {
@@ -136,8 +244,10 @@ const names = (entries: ReadonlySet<string>, name: string) =>
  */
 export async function pruneHostReleases(input: HostReleaseRetention): Promise<string[]> {
   const root = await realpath(input.releaseRoot);
+  // Before anything else: a cleanup that died mid-run may have left releases hidden.
+  await restoreSetAsideReleases(root, input);
   const referenced = await rootEntries(root, input.referenced);
-  const { folders, leftovers, deleting } = await listJobFolders(root);
+  const { folders, leftovers, deleting } = await listJobFolders(root, input.startedAt);
   const newest = new Set(folders.slice(0, input.keepNewest ?? KEEP_NEWEST).map((f) => f.name));
   const present = new Set(folders.map((folder) => folder.name));
   const run: Cleanup = {
@@ -160,7 +270,8 @@ export async function pruneHostReleases(input: HostReleaseRetention): Promise<st
     try {
       live = await rootEntries(root, await input.inUse());
     } catch (error) {
-      for (const name of setAside) await restore(run, name);
+      // Unknown is never absence: put back this run's folders and any an earlier run left.
+      await restoreSetAsideReleases(root, input);
       throw error;
     }
   }
@@ -268,8 +379,8 @@ async function deleteDoomed(
  * Job folders newest first, the job IDs an earlier cleanup set aside and did not finish, and
  * the job IDs whose deletion it started.
  */
-async function listJobFolders(root: string) {
-  const folders: Array<{ name: string; mtimeMs: number }> = [];
+async function listJobFolders(root: string, startedAt?: ReadonlyMap<string, number>) {
+  const folders: Array<{ name: string; time: number }> = [];
   const leftovers = new Set<string>();
   const deleting = new Set<string>();
   for (const entry of await readdir(root, { withFileTypes: true })) {
@@ -280,19 +391,42 @@ async function listJobFolders(root: string) {
     if (started) deleting.add(started);
     // Only job folders are candidates; anything else sharing the root is never touched.
     if (!JOB_FOLDER.test(entry.name)) continue;
-    folders.push({ name: entry.name, mtimeMs: (await stat(path.join(root, entry.name))).mtimeMs });
+    const recorded = startedAt?.get(entry.name);
+    const time = Number.isFinite(recorded)
+      ? recorded!
+      : (await stat(path.join(root, entry.name))).mtimeMs;
+    folders.push({ name: entry.name, time });
   }
-  folders.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  folders.sort((a, b) => b.time - a.time);
   return { folders, leftovers, deleting };
+}
+
+/**
+ * Removal follows the path again after the listing, so a folder swapped for a link meanwhile
+ * would hand its target's contents to removal. Require a real directory whose canonical path
+ * is still exactly this one; the release root is canonical, so a link anywhere fails.
+ */
+async function assertConfined(folder: string): Promise<void> {
+  const info = await lstat(folder);
+  if (!info.isDirectory()) throw new Error(`${folder} is no longer a directory`);
+  if ((await realpath(folder)) !== folder)
+    throw new Error(`${folder} no longer resolves to itself`);
 }
 
 async function removeJobFolder(
   folder: string,
   removeRelease: (directory: string) => Promise<void>,
 ): Promise<void> {
+  await assertConfined(folder);
   // Release trees may carry immutable flags; removeReleaseTree falls back for those.
-  for (const child of await readdir(folder, { withFileTypes: true }))
-    if (child.isDirectory()) await removeRelease(path.join(folder, child.name));
+  for (const child of await readdir(folder, { withFileTypes: true })) {
+    if (!child.isDirectory()) continue;
+    const target = path.join(folder, child.name);
+    await assertConfined(folder);
+    if (!(await lstat(target)).isDirectory()) continue;
+    await removeRelease(target);
+  }
+  await assertConfined(folder);
   await rm(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
 

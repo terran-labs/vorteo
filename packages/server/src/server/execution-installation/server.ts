@@ -173,6 +173,7 @@ import { InstructionRequestError, InstructionRequests } from "./settings/instruc
 
 import { inspectContainerSource } from "./container-updates.js";
 import { RestartTargetSchema } from "@getpaseo/protocol/execution-installation";
+import { restoreSetAsideReleases } from "./host-release-retention.js";
 import { InstallationSourceUpdates } from "./source-updates.js";
 import {
   InstallationOverviewReader,
@@ -505,6 +506,21 @@ function serverCoordinatorSettings(
   });
 }
 
+/**
+ * A coordinator that died during Host release cleanup may have left releases set aside, where
+ * nothing can start from them. Put them back before any later cleanup or start.
+ */
+function restoreHostReleasesAtStart(config: InstallationConfig, logger: Logger): void {
+  if (!config.sourceUpdates) return;
+  void restoreSetAsideReleases(config.sourceUpdates.releaseRoot, {
+    onRestored: (folder) => logger.warn({ folder }, "Put back a Host release left set aside"),
+    onError: (folder, error) =>
+      logger.warn({ folder, err: error }, "Could not put back a Host release left set aside"),
+  }).catch((error: unknown) => {
+    logger.warn({ err: error }, "Could not check for Host releases left set aside");
+  });
+}
+
 export function createInstallationServer(
   config: InstallationConfig,
   executor: RestartExecutor,
@@ -540,6 +556,7 @@ export function createInstallationServer(
         )
       : null,
   };
+  restoreHostReleasesAtStart(config, logger);
   const forTarget = (target: RestartJob["target"]) => {
     const updater = updates[target];
     if (!updater)

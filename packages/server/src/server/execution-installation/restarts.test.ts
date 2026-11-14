@@ -2158,7 +2158,10 @@ test("source builds fail before activation, uncertain dispatch retains selection
       await readFile(path.join(root, installed.id, "retention.json"), "utf8"),
     );
     expect(retentionReceipt).toMatchObject({ status: "finished" });
-    expect(retentionReceipt.note).toBe("Removed 3 old Host releases.");
+    // The release just selected is recorded as a recent link target and kept.
+    expect(retentionReceipt.note).toBe(
+      `Removed 3 old Host releases. Kept recent release link targets: ${installed.id}.`,
+    );
     // One listing for the references read first, one after the folders were set aside.
     expect(processes).toHaveBeenCalledTimes(2);
     // The release just installed and the one it replaced are both still there.

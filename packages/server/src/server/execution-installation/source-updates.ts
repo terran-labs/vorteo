@@ -20,6 +20,7 @@ import {
   renameSync,
   lstatSync,
 } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -49,8 +50,16 @@ import {
 import { prepareSourceBatch } from "./source-batches.js";
 import { prepareDevRepairBundle } from "./dev-source-repair.js";
 import { assertReleaseSelectionAllowed } from "./release-selection-guard.js";
-import { pruneHostReleases, startHostReleaseRetention } from "./host-release-retention.js";
-import { releaseProcessPaths } from "./host-release-processes.js";
+import {
+  pruneHostReleases,
+  recordLinkTargets,
+  startHostReleaseRetention,
+} from "./host-release-retention.js";
+import {
+  jobFoldersNamedInFiles,
+  persistentReferenceFiles,
+  releaseProcessPaths,
+} from "./host-release-processes.js";
 import { readSessionHostRelease } from "../session-host/host-files.js";
 import { FileBootstrapRequestJournal } from "./coordinator-bootstrap-journal.js";
 import { isCompletedBootstrap, openBootstrapRequests } from "./coordinator-bootstrap.js";
@@ -188,10 +197,13 @@ async function verifyPublishedInterruption(input: PublishedInterruption) {
  * path the preview broker configuration names and every path in a preview broker deployment
  * plan that has not succeeded or been rejected: those plans pin candidate files inside the
  * release that prepared them, and removing it left previews down with nothing to deploy.
+ * The served interface stays as well: `sourceUpdates.webDirectory` and `webDistDir` point
+ * outside the release root today, but publication pointing either into a job folder must
+ * never let cleanup delete the live interface.
  */
 export function hostRetentionReferences(input: {
   config: Pick<InstallationConfig, "sourceUpdates" | "containerSourceUpdates" | "deployment"> &
-    Partial<Pick<InstallationConfig, "previewBroker" | "previewBrokerDeployment">>;
+    Partial<Pick<InstallationConfig, "previewBroker" | "previewBrokerDeployment" | "webDistDir">>;
   previous: string;
   plans: readonly CoordinatorBootstrapPlan[];
   unfinished: readonly string[];
@@ -202,8 +214,13 @@ export function hostRetentionReferences(input: {
   const { config } = input;
   return [
     ...(config.sourceUpdates
-      ? [config.sourceUpdates.currentReleaseLink, config.sourceUpdates.toolingDirectory]
+      ? [
+          config.sourceUpdates.currentReleaseLink,
+          config.sourceUpdates.toolingDirectory,
+          config.sourceUpdates.webDirectory,
+        ].filter((reference) => reference !== undefined)
       : []),
+    ...(config.webDistDir ? [path.resolve(config.webDistDir)] : []),
     ...(config.containerSourceUpdates ? [config.containerSourceUpdates.toolingDirectory] : []),
     // In the installer layout the coordinator runs a release inside this root through its own
     // link; pruning it would leave the next coordinator start nothing to run or roll back to.
@@ -827,10 +844,29 @@ export class InstallationSourceUpdates {
     const failures: string[] = [];
     const inUse: string[] = [];
     const leftovers: string[] = [];
+    const restored: string[] = [];
+    let linkTargets: string[] = [];
     try {
       const home = this.config.host.startupValidation?.home;
       if (!home) throw new Error("Session host home is unknown; retaining old Host releases");
       const releaseRoot = await realpath(this.hostSettings().releaseRoot);
+      const aliases = [this.hostSettings().releaseRoot];
+      const deployment = this.config.deployment;
+      // Recent link targets stay too: see LINK_HISTORY_LENGTH.
+      linkTargets = await recordLinkTargets({
+        releaseRoot,
+        links: [
+          this.hostSettings().currentReleaseLink,
+          ...(deployment?.hostReleaseLink ? [deployment.hostReleaseLink] : []),
+          ...(deployment?.coordinator?.releaseLink ? [deployment.coordinator.releaseLink] : []),
+        ],
+        historyFile: path.join(this.directory, "release-link-history.json"),
+      });
+      const persistentFiles = await persistentReferenceFiles({
+        hostHome: home,
+        launchAgents:
+          process.platform === "darwin" ? path.join(os.homedir(), "Library", "LaunchAgents") : null,
+      });
       const references = async () => {
         const journal = new FileBootstrapRequestJournal(this.config.stateDir);
         const requests = journal.read();
@@ -851,19 +887,33 @@ export class InstallationSourceUpdates {
             sessionHostRelease: await readSessionHostRelease(home),
             lifecycle,
           }),
+          ...linkTargets.map((target) => path.join(releaseRoot, target)),
+          ...(await jobFoldersNamedInFiles(releaseRoot, aliases, persistentFiles)),
           ...(await releaseProcessPaths(releaseRoot)),
         ];
       };
+      const startedAt = new Map<string, number>();
+      for (const job of new FileBootstrapRequestJournal(this.config.stateDir).readLifecycle()) {
+        const time = Date.parse(String((job as { createdAt?: unknown }).createdAt));
+        if (Number.isFinite(time)) startedAt.set(job.id, time);
+      }
       const removed = await pruneHostReleases({
         releaseRoot,
         referenced: await references(),
         inUse: references,
+        keepNewest: this.config.hostReleaseKeepNewest,
+        startedAt,
+        onRestored: (folder) => restored.push(path.basename(folder)),
         onError: (folder) => failures.push(path.basename(folder)),
         onInUse: (folder) => inUse.push(path.basename(folder)),
         onLeftover: (folder) => leftovers.push(path.basename(folder)),
       });
       return [
         removed.length ? ` Removed ${removed.length} old Host releases.` : "",
+        restored.length
+          ? ` Put back ${restored.length} releases an earlier cleanup left set aside: ${restored.join(", ")}.`
+          : "",
+        linkTargets.length ? ` Kept recent release link targets: ${linkTargets.join(", ")}.` : "",
         inUse.length
           ? ` Kept ${inUse.length} old releases that came into use during cleanup: ${inUse.join(", ")}.`
           : "",

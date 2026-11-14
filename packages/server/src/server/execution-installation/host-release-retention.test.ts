@@ -32,7 +32,9 @@ import { releaseProcessPaths } from "./host-release-processes.js";
 import {
   hostReleaseRetentionIdle,
   pruneHostReleases,
+  recordLinkTargets,
   removeReleaseTree,
+  restoreSetAsideReleases,
   startHostReleaseRetention,
 } from "./host-release-retention.js";
 
@@ -504,21 +506,128 @@ test("cleanup that cannot read what is in use puts every release back", async ()
   }
 });
 
-test("a folder left set aside is put back when something still uses it", async () => {
+test("folders an earlier cleanup left set aside are put back first, even when the in-use read fails", async () => {
+  // A coordinator died between setting folders aside and its in-use check.
   const f = fixture(4);
   renameSync(path.join(f.root, id(0)), setAside(f, 0));
+  const restored: string[] = [];
+  await expect(
+    pruneHostReleases({
+      releaseRoot: f.root,
+      referenced: [f.current],
+      keepNewest: 1,
+      inUse: async () => {
+        throw new Error("process listing failed");
+      },
+      onRestored: (folder) => restored.push(path.basename(folder)),
+    }),
+  ).rejects.toThrow("process listing failed");
+  expect(restored[0]).toBe(id(0));
+  for (let index = 0; index < 4; index++) {
+    expect(existsSync(f.release(index))).toBe(true);
+    expect(existsSync(setAside(f, index))).toBe(false);
+  }
+  // Coordinator start runs the same pass on its own.
   renameSync(path.join(f.root, id(1)), setAside(f, 1));
-  const kept: string[] = [];
+  expect(await restoreSetAsideReleases(f.root)).toEqual([id(1)]);
+  expect(existsSync(f.release(1))).toBe(true);
+});
+
+test("deletion never follows a folder swapped for a link while it is being removed", async () => {
+  const f = fixture(2);
+  renameSync(path.join(f.root, id(0)), deleting(f, 0));
+  for (const child of ["a", "b"]) mkdirSync(path.join(deleting(f, 0), child));
+  // Whatever the link points at has the same child names, each holding something precious.
+  const outside = path.join(f.base, "outside");
+  for (const child of ["a", "b", "build-x"]) {
+    mkdirSync(path.join(outside, child), { recursive: true });
+    writeFileSync(path.join(outside, child, "precious"), "keep");
+  }
+  let swapped = false;
+  const failed: string[] = [];
+  await pruneHostReleases({
+    releaseRoot: f.root,
+    referenced: [f.current],
+    removeRelease: async (directory) => {
+      await removeReleaseTree(directory);
+      if (swapped) return;
+      swapped = true;
+      renameSync(deleting(f, 0), path.join(f.base, "moved"));
+      symlinkSync(outside, deleting(f, 0));
+    },
+    onError: (folder) => failed.push(path.basename(folder)),
+  });
+  expect(swapped).toBe(true);
+  expect(failed).toEqual([id(0)]);
+  for (const child of ["a", "b", "build-x"])
+    expect(readFileSync(path.join(outside, child, "precious"), "utf8")).toBe("keep");
+});
+
+test("the newest releases are chosen by when their jobs started, not folder times", async () => {
+  // Removing a child touches a folder's time; job 0 started last despite its old folder time.
+  const f = fixture(4);
   const removed = await pruneHostReleases({
     releaseRoot: f.root,
     referenced: [f.current],
-    // The kernel reports a renamed working directory under its new name.
-    inUse: async () => [path.join(setAside(f, 0), "build-x/packages/server")],
-    onInUse: (folder) => kept.push(path.basename(folder)),
+    keepNewest: 1,
+    startedAt: new Map([
+      [id(0), Date.UTC(2026, 10, 1)],
+      [id(1), Date.UTC(2026, 9, 1)],
+    ]),
   });
-  expect(removed).toEqual([id(1)]);
-  expect(kept).toEqual([id(0)]);
+  expect(removed.sort()).toEqual([id(1), id(2)]);
   expect(existsSync(f.release(0))).toBe(true);
+});
+
+test("recent release link targets are remembered across cleanups", async () => {
+  const f = fixture(8);
+  const historyFile = path.join(f.base, "release-link-history.json");
+  const coordinator = path.join(f.base, "coordinator-current");
+  symlinkSync(f.release(0), coordinator);
+  for (const index of [1, 2, 3, 4, 5, 6]) {
+    rmSync(f.current);
+    symlinkSync(f.release(index), f.current);
+    await recordLinkTargets({ releaseRoot: f.root, links: [f.current, coordinator], historyFile });
+  }
+  // The newest five distinct targets, the ones the links name now first.
+  expect(JSON.parse(readFileSync(historyFile, "utf8")).targets).toEqual([
+    id(6),
+    id(0),
+    id(5),
+    id(4),
+    id(3),
+  ]);
+  writeFileSync(historyFile, '{"version":1,"targets":["../escape"]}');
+  await expect(
+    recordLinkTargets({ releaseRoot: f.root, links: [f.current], historyFile }),
+  ).rejects.toThrow("malformed");
+});
+
+test("retention keeps the releases the served interface comes from", async () => {
+  // Publication pointing webDirectory or webDistDir into a job folder must keep it.
+  const f = fixture(4);
+  const config = {
+    sourceUpdates: {
+      currentReleaseLink: f.current,
+      toolingDirectory: f.current,
+      webDirectory: path.join(f.release(0), "web-ui"),
+    },
+    webDistDir: path.join(f.release(1), "packages/server/dist/server/web-ui"),
+  } as unknown as Pick<
+    InstallationConfig,
+    "sourceUpdates" | "containerSourceUpdates" | "deployment" | "webDistDir"
+  >;
+  const removed = await pruneHostReleases({
+    releaseRoot: f.root,
+    referenced: hostRetentionReferences({
+      config,
+      previous: f.release(3),
+      plans: [],
+      unfinished: [],
+    }),
+    keepNewest: 1,
+  });
+  expect(removed).toEqual([id(2)]);
 });
 
 test("a session host starting during cleanup is kept or refuses to start", async () => {

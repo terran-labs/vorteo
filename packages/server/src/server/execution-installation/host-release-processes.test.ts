@@ -1,9 +1,11 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, test } from "vitest";
 import {
+  jobFoldersNamedInFiles,
   linkedReleasePathsInCommands,
+  persistentReferenceFiles,
   releasePathsInProcessListing,
 } from "./host-release-processes.js";
 
@@ -97,4 +99,51 @@ test("a command line that reaches a release through a link outside the root name
     path.join(release, entry),
     path.join(releases, "00000000-0000-4000-8000-000000000002", "build-y", "loader.js"),
   ]);
+});
+
+test("Chrome native host wrappers and LaunchAgents name the releases they launch", async () => {
+  const base = realpathSync(mkdtempSync(path.join(tmpdir(), "host-persistent-")));
+  roots.push(base);
+  const releases = path.join(base, "releases");
+  const alias = path.join(base, "releases-alias");
+  mkdirSync(releases);
+  symlinkSync(releases, alias);
+  const job = (n: number) => `00000000-0000-4000-8000-00000000000${n}`;
+  const home = path.join(base, "state", "host");
+  // The wrapper Claude Code writes: it execs the release's claude.exe by absolute path.
+  const chrome = path.join(home, "claude-accounts", "claude-account-a", "chrome");
+  mkdirSync(chrome, { recursive: true });
+  writeFileSync(
+    path.join(chrome, "chrome-native-host"),
+    `#!/bin/sh\nexec "${releases}/${job(1)}/build-x/node_modules/@anthropic-ai/claude-code/bin/claude.exe" --chrome-native-host "$@"\n`,
+  );
+  // An account without a wrapper names nothing.
+  mkdirSync(path.join(home, "claude-accounts", "claude-account-b"), { recursive: true });
+  const agents = path.join(base, "LaunchAgents");
+  mkdirSync(agents);
+  writeFileSync(
+    path.join(agents, "local.example.job.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>ProgramArguments</key>
+  <array><string>/usr/local/bin/node</string><string>${alias}/${job(2)}/build-y/main.js</string></array>
+</dict></plist>
+`,
+  );
+  // Neither a lookalike root nor a longer name is a job folder of this root.
+  writeFileSync(
+    path.join(agents, "local.example.other.plist"),
+    `<string>${releases}-archive/${job(3)}/x</string><string>${releases}/${job(4)}0/x</string>`,
+  );
+  writeFileSync(path.join(agents, "notes.txt"), `${releases}/${job(5)}/x`);
+
+  const persistent = await persistentReferenceFiles({ hostHome: home, launchAgents: agents });
+  expect((await jobFoldersNamedInFiles(releases, [alias], persistent)).sort()).toEqual([
+    path.join(releases, job(1)),
+    path.join(releases, job(2)),
+  ]);
+  // No account directory and no LaunchAgents: nothing to read, not a failure.
+  expect(
+    await persistentReferenceFiles({ hostHome: path.join(base, "none"), launchAgents: null }),
+  ).toEqual([]);
 });
