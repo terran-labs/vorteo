@@ -166,6 +166,49 @@ test("supervisor effect remains private in legacy restart replies", async () => 
   binding.decisionSha256 = createHash("sha256")
     .update(JSON.stringify(job.standingDecision))
     .digest("hex");
+  const process = {
+    pid: 123,
+    parentPid: 1,
+    uid: 501,
+    bootId: "fixture-boot",
+    startIdentity: "fixture-birth",
+    executable: "/fixture/node",
+    argumentsSha256: sha,
+  };
+  job.cooperativeDrainPreparation = {
+    operation: "maintenance.interrupt-held-turns",
+    phase: "reserved",
+    manifestSha256: sha,
+    endpointIdentitySha256: sha,
+    continuationCauseId: id,
+    deadlineAt: now,
+    intent: {
+      held: {
+        requestId: id,
+        generation: randomUUID(),
+        workerPid: 123,
+        workerInstanceId: randomUUID(),
+        terminateAt: Date.now() + 10000,
+      },
+      approvedRevision: revision,
+      grantRevision: binding.grantRevision,
+      holdGeneration: randomUUID(),
+      decisionSha256: sha,
+      planSha256: requestPlanSha256,
+      reservedAt: now,
+      finishDeadlineAt: now,
+      native: {
+        identitySha256: sha,
+        serverId: "fixture",
+        sourceCommit: "b".repeat(40),
+        selectedRelease: "/fixture/release",
+        observedAt: now,
+        worker: process,
+        supervisor: { ...process, pid: 122 },
+      },
+      candidate: null,
+    },
+  };
   const f = await fixture(
     undefined,
     undefined,
@@ -185,6 +228,7 @@ test("supervisor effect remains private in legacy restart replies", async () => 
     await f.request("/api/installation/restart-requests/" + id, "host-agent-test-token")
   ).json();
   expect(legacy).not.toHaveProperty("supervisorEffect");
+  expect(legacy).not.toHaveProperty("cooperativeDrainPreparation");
   expect(RestartJobSchema.omit({ supervisorEffect: true }).parse(legacy).id).toBe(id);
   const owner = await (
     await f.request(
@@ -194,6 +238,15 @@ test("supervisor effect remains private in legacy restart replies", async () => 
     )
   ).json();
   expect(owner[0]).not.toHaveProperty("supervisorEffect");
+  expect(owner[0]).not.toHaveProperty("cooperativeDrainPreparation");
+  const oldOwner = await (
+    await f.request("/api/installation/owner/restarts/query", "owner-test-password", {})
+  ).json();
+  expect(oldOwner[0]).not.toHaveProperty("cooperativeDrainPreparation");
+  expect(
+    JSON.parse(readFileSync(path.join(f.root, "restart-jobs.json"), "utf8"))[0]
+      .cooperativeDrainPreparation,
+  ).toEqual(job.cooperativeDrainPreparation);
   expect(
     JSON.parse(readFileSync(path.join(f.root, "restart-jobs.json"), "utf8"))[0].supervisorEffect,
   ).toEqual(job.supervisorEffect);
@@ -736,7 +789,11 @@ test("shared settings require owner access and persist revisioned writes before 
   );
   expect(
     await createInstallationSettingsReader(clientFile).read({ ...hostAdmission, revision: 1 }),
-  ).toEqual(hostAdmission);
+  ).toEqual({
+    ...hostAdmission,
+    // The client normalizes an older admission's absent primary choice to null.
+    settings: { ...hostAdmission.settings, primaryConnection: null },
+  });
   guest.offline = true;
   const update = {
     expectedRevision: snapshot.revision,

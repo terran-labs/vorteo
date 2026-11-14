@@ -14,6 +14,12 @@ import {
   type QuotaGovernedSessionInput,
 } from "../agent-sdk-types.js";
 import type { QuotaObservation } from "@getpaseo/protocol/quota-governor";
+import {
+  isCodexRefreshRejection,
+  readCodexAuthGeneration,
+  recordCodexRefreshRejection,
+  type CodexAuthGeneration,
+} from "./codex/refresh-rejection.js";
 import { CodexLoginSession } from "./codex/login.js";
 import {
   getAgentStreamEventTurnId,
@@ -3566,6 +3572,8 @@ export class CodexAppServerAgentSession implements AgentSession {
   private readonly config: AgentSessionConfig;
   private readonly asyncQuestions: CodexAsyncQuestions;
   private readonly codexHome: string;
+  /** `auth.json` generation when the latest turn started; see recordCodexRefreshRejection. */
+  private turnAuthGeneration: CodexAuthGeneration | null = null;
   private currentMode: string;
   private hasWorkflowModeOverride: boolean;
   private readonly providerOptions: CodexProviderOptions;
@@ -4968,6 +4976,8 @@ export class CodexAppServerAgentSession implements AgentSession {
       }
       quotaPermit?.assertValidForDispatch();
       options?.automaticRecoveryPermit?.assertValidForDispatch();
+      // The sign-in this turn runs with, so a late refresh failure cannot mark a newer one.
+      this.turnAuthGeneration = await readCodexAuthGeneration(this.codexHome);
       await this.client.request("turn/start", turnStart.params, TURN_START_TIMEOUT_MS);
       return { turnId };
     } catch (error) {
@@ -6310,6 +6320,17 @@ export class CodexAppServerAgentSession implements AgentSession {
   }
 
   private emitEvent(event: AgentStreamEvent): void {
+    if (
+      event.type === "turn_failed" &&
+      (isCodexRefreshRejection(event.error) || isCodexRefreshRejection(event.diagnostic))
+    ) {
+      // Lets Settings ask for reconnection while the access token still answers usage reads.
+      const generation = this.turnAuthGeneration;
+      if (generation)
+        void recordCodexRefreshRejection(this.codexHome, generation).catch((error: unknown) => {
+          this.logger.warn({ err: error }, "Could not record a rejected Codex sign-in");
+        });
+    }
     this.notifySubscribers(event);
   }
 

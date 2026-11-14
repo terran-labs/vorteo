@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Script } from "node:vm";
+import { cooperativeCommandDigest } from "./host-supervisor-command-admission.js";
 import type { InstallationConfig } from "../config.js";
 import {
   enrollmentNativeIdentityDigest,
@@ -18,6 +19,19 @@ import {
   retainNativeHostServiceCustody,
   type EnrollmentDaemonInspectionPorts,
 } from "./native-daemon-inspection.js";
+
+// Host fixtures model Darwin, where the fixed system Python is a canonical file.
+// Linux runners commonly expose that path as a symlink to a versioned binary.
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...fs,
+    realpath: (file: string, options?: Parameters<typeof fs.realpath>[1]) =>
+      file === "/usr/bin/python3" ? Promise.resolve(file) : fs.realpath(file, options),
+    lstat: (file: string, options?: Parameters<typeof fs.lstat>[1]) =>
+      file === "/usr/bin/python3" ? fs.stat(file, options) : fs.lstat(file, options),
+  };
+});
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -259,6 +273,72 @@ async function fixture() {
     release,
   };
 }
+
+test.each(["accepted", "installation", "helper", "inspector", "substitution", "symlink"])(
+  "Host cooperative inspection binds selected artifact paths and protected digests: %s",
+  async (mode) => {
+    const f = await fixture();
+    const inspector = path.join(f.release, "scripts/inspect-coordinator-process.py");
+    const helper = path.join(
+      f.release,
+      "packages/server/dist/scripts/cooperative-drain-mailbox.py",
+    );
+    await mkdir(path.dirname(inspector), { recursive: true, mode: 0o700 });
+    await mkdir(path.dirname(helper), { recursive: true, mode: 0o700 });
+    const inspectorBytes = Buffer.from("inert native inspector fixture");
+    const helperBytes = Buffer.from("inert native helper fixture");
+    await writeFile(inspector, inspectorBytes, { mode: 0o600 });
+    await writeFile(helper, helperBytes, { mode: 0o600 });
+    const scopeFile = path.join(f.root, "cooperative-scope.json");
+    const scope = {
+      installationId: mode === "installation" ? randomUUID() : f.config.public.installationId,
+      target: "host",
+      processInspector: {
+        path: mode === "inspector" ? path.join(f.root, "substitute-inspector.py") : inspector,
+        sha256: createHash("sha256").update(inspectorBytes).digest("hex"),
+      },
+    };
+    await f.file(scopeFile, scope);
+    const endpoint = {
+      scopeFile,
+      endpointIdentitySha256: cooperativeCommandDigest(scope),
+      ownerUid: process.getuid!(),
+      readerUid: process.getuid!(),
+      helperFile: mode === "helper" ? path.join(f.root, "substitute-helper.py") : helper,
+      helperSha256: createHash("sha256").update(helperBytes).digest("hex"),
+      pythonFile: "/usr/bin/python3" as const,
+    };
+    f.expected.cooperativeMailbox = endpoint;
+    f.plist.EnvironmentVariables.VORTEO_COOPERATIVE_DRAIN_DESCRIPTOR = JSON.stringify(endpoint);
+    if (mode === "substitution") await writeFile(inspector, "changed protected inspector");
+    if (mode === "symlink") {
+      const target = path.join(f.root, "linked-inspector.py");
+      await writeFile(target, inspectorBytes, { mode: 0o600 });
+      await rm(inspector);
+      await symlink(target, inspector);
+    }
+    const command = f.ports.command;
+    f.ports.command = async (file, args, limits) => {
+      // Inert native command port: real helper execution and filesystem custody
+      // are checked separately. This fixture owns installed artifact binding.
+      if (file === "/usr/bin/python3") {
+        expect(args.slice(0, 3)).toEqual(["-I", "-B", "-c"]);
+        expect(args[3]).toBe(helperBytes.toString());
+        return JSON.stringify({
+          capability: "maintenance.interrupt-held-turns",
+          endpointIdentitySha256: endpoint.endpointIdentitySha256,
+        });
+      }
+      return command(file, args, limits);
+    };
+    const observation = inspectEnrollmentDaemonIdentity(f.config, f.expected, f.ports);
+    if (mode === "accepted")
+      expect((await observation).descriptor.cooperativeMailbox).toEqual(endpoint);
+    else if (mode === "symlink")
+      await expect(observation).rejects.toThrow("Native custody requires canonical paths");
+    else await expect(observation).rejects.toThrow();
+  },
+);
 
 test("Host observation binds registered service, native birth, selected source and authenticated daemon", async () => {
   const f = await fixture();
