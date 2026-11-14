@@ -209,7 +209,7 @@ it("keeps a completion ID stable when unrelated snapshot fields change", async (
 it("reports history failures per thread, retries them, and continues observing other threads", async () => {
   const test = fixture();
   test.source.agents = [
-    thread("broken"),
+    thread("broken", { updatedAt: later }),
     thread("healthy", { updatedAt: later, attentionReason: "finished", attentionTimestamp: later }),
   ];
   test.source.brokenThread = "broken";

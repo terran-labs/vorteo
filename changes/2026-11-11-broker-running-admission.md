@@ -1,0 +1,7 @@
+### Fixes
+
+- Preview broker consumer deployment now accepts brokers that are already serving requests, such as after an operator repinned their channel when a reboot renumbered the disk. It stops them first, takes its preservation baseline once they have stopped, and restarts the original brokers if it aborts before replacing any file. Each broker's admission mode is part of the approved plan, and the approval explains that running brokers restart on the new code and serve requests immediately.
+
+## Maintenance review
+
+Reviewed the broker consumer deployment entry in the customizations inventory and the deployment policy in broker maintenance; both now describe refusing and running admission. The plan gains an optional per-registration `admission` field (absent means refusing), which inspect reports and the executor cross-checks. Exact plan binding, recovery_required evidence and no-replay behavior are unchanged; evidence without `admission.json` keeps refusing-mode semantics. Lost native replies, a generation that survives bootout and aborts after a file write never restore registrations. The broker deployment worker tests now run in the macOS server CI job. Rollback below this release is not supported once a deployment with `admission` has run, because older coordinators cannot parse a journal containing the field. README overview and onboarding are unchanged. Source only; not installed.

@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import uuid
-from broker_deployment import (FILES, deploy_files, directory_pin, encode, preservation, sha)
+from broker_deployment import (FILES, approved_preservation_sha256, deploy_files, directory_pin, encode, preservation, sha)
 from channel_identity import NAMES, file_identity
 
 
@@ -124,7 +124,8 @@ class NativeDeploymentTests(unittest.TestCase):
     setUp = BrokerDeploymentTests.setUp
     write = BrokerDeploymentTests.write
 
-    def native(self, dispositions=('loaded', 'absent'), enabled=(True, True)):
+    def native(self, dispositions=('loaded', 'absent'), enabled=(True, True), running=False):
+        """running: legacy pins verify and each loaded scheduler has a live generation."""
         import plistlib
         import subprocess
         from broker_deployment_observation import NativeObservation
@@ -146,19 +147,24 @@ class NativeDeploymentTests(unittest.TestCase):
             bindings.append(binding)
             config = json.loads((root / 'host-config.json').read_bytes())
             config['brokerLabel'] = label
-            config['channelIdentities'] = {name: [0, (Path(config['channel']) / name).stat().st_ino] for name in NAMES}
+            config['channelIdentities'] = {name: [(Path(config['channel']) / name).stat().st_dev if running else 0,
+                                                  (Path(config['channel']) / name).stat().st_ino] for name in NAMES}
             self.write(root / 'host-config.json', encode(config))
-            target['preservationSha256'] = sha(encode(preservation(root)))
+            target['preservationSha256'] = approved_preservation_sha256(preservation(root), 'running' if running else 'refusing')
             override = 'absent' if enabled[index] else 'disabled'
             registrations.append({key: binding[key] for key in ('root', 'domain', 'label', 'plist')} |
-                                 {'disposition': dispositions[index], 'enabled': enabled[index], 'override': override, 'process': None})
+                                 {'disposition': dispositions[index], 'enabled': enabled[index], 'override': override, 'process': None} |
+                                 # Refusing fixtures omit the field, as plans made before running admission did.
+                                 ({'admission': 'running'} if running else {}))
             states.append({'loaded': dispositions[index] == 'loaded', 'override': None if enabled[index] else True})
         self.plan.update({'evidenceDirectoryIdentity': directory_pin(self.evidence.stat()), 'bootUUID': boot, 'registrations': registrations, 'manualParticipants': []})
+        # A running scheduler's generation is pid 40 + index while its job is loaded.
+        live = lambda: {40 + i: b['argv'] for i, (b, s) in enumerate(zip(bindings, states)) if running and s['loaded']}
         class Kernel:
             def boot(self): return boot
-            def pids(self, uid): return []
+            def pids(self, uid): return list(live())
             def info(self, pid): return {'pid': pid, 'parent': 1, 'uids': [os.getuid()] * 3, 'birth': [1, 2]}
-            def argv(self, pid): return ['/bin/zsh']
+            def argv(self, pid): return live().get(pid, ['/bin/zsh'])
         def invoke(argv):
             action = argv[1]
             domain = f'gui/{os.getuid()}'
@@ -171,7 +177,8 @@ class NativeDeploymentTests(unittest.TestCase):
             index = next(i for i,b in enumerate(bindings) if b['label'] == label)
             state = states[index]
             if action == 'print':
-                if state['loaded']: return subprocess.CompletedProcess(argv, 0, domain+'/'+label+' = {\n}\n', '')
+                pid = f'\tpid = {40 + index}\n' if running and state['loaded'] else ''
+                if state['loaded']: return subprocess.CompletedProcess(argv, 0, domain+'/'+label+' = {\n'+pid+'}\n', '')
                 return subprocess.CompletedProcess(argv, 113, '', f'Could not find service "{label}" in domain for user gui: {os.getuid()}\n')
             effects.append((index, action))
             if action == 'disable': state['override'] = True
@@ -184,6 +191,7 @@ class NativeDeploymentTests(unittest.TestCase):
         observer = NativeObservation(self.plan, bindings, guard, kernel=Kernel(), invoke=invoke)
         packet = {'plan': self.plan, 'planSha256': sha(encode(self.plan)), 'bindings': bindings}
         worker = Deployment(packet, guard, observer=observer)
+        worker.settle_seconds = 0.5
         return worker, observer, states, effects
 
     def test_actual_transition_and_readonly_recovery(self):
@@ -196,6 +204,76 @@ class NativeDeploymentTests(unittest.TestCase):
         self.assertEqual(before, effects)
         with self.assertRaisesRegex(ValueError, "Prepared broker state changed"): worker.execute()
         self.assertEqual(before, effects)
+
+    def test_running_brokers_are_admitted_after_suppression(self):
+        # Hand-repaired legacy pins verify, so the brokers serve requests and keep
+        # rewriting their ledgers after the plan was prepared.
+        worker, observer, states, effects = self.native(running=True)
+        ledger = Path(self.targets[0]['root']) / 'https-broker-ledger.json'
+        self.write(ledger, encode({'entries': {}, 'requests': {}, 'reconcileCursor': 1}))
+        self.assertEqual(worker.execute()['kind'], 'committed')
+        self.assertEqual(effects, [(0,'disable'), (0,'bootout'), (1,'disable'), (0,'enable'), (0,'bootstrap'), (1,'enable')])
+        admission = json.loads((self.evidence / 'admission.json').read_bytes())
+        self.assertEqual(admission['admission'], ['running', 'running'])
+        self.assertEqual(worker.observe()['kind'], 'committed')
+
+    def test_running_mode_refuses_wrong_mode_or_stale_digest_before_effects(self):
+        worker, observer, states, effects = self.native(running=True)
+        root = Path(self.targets[0]['root'])
+        # The owner approved a refusing channel; the live one now serves requests.
+        self.plan['registrations'][0]['admission'] = 'refusing'
+        with self.assertRaisesRegex(ValueError, 'admission differs from the approved plan'): worker.execute()
+        self.plan['registrations'][0]['admission'] = 'running'
+        # A full-inventory digest cannot hold for a running broker.
+        self.targets[0]['preservationSha256'] = approved_preservation_sha256(preservation(root), 'refusing')
+        self.write(root / 'https-broker-ledger.json', encode({'entries': {}, 'requests': {}, 'reconcileCursor': 1}))
+        with self.assertRaisesRegex(ValueError, 'Preservation inventory changed; refresh'): worker.execute()
+        self.assertEqual(effects, [])
+        self.assertFalse((self.evidence / 'admission.json').exists())
+
+    def test_inventory_change_after_baseline_aborts_and_restores_before_write(self):
+        worker, observer, states, effects = self.native(running=True)
+        root = Path(self.targets[0]['root'])
+        record = worker.record
+        def arrive_after_baseline(name, value):
+            record(name, value)
+            if name == 'before.json':
+                self.write(root / 'channel' / 'inbox' / (str(uuid.uuid4()) + '.json'), b'late request')
+        worker.record = arrive_after_baseline
+        with self.assertRaisesRegex(ValueError, 'changed after suppression'): worker.execute()
+        self.assertEqual(effects, [(0,'disable'), (0,'bootout'), (1,'disable'), (1,'enable'), (0,'enable'), (0,'bootstrap')])
+        self.assertTrue(states[0]['loaded'])
+        self.assertTrue((self.evidence / 'abort-restored.json').exists())
+        self.assertFalse((self.evidence / 'intent.json').exists())
+        self.assertEqual(worker.observe()['kind'], 'unresolved')
+        self.assertEqual((root / 'https_broker.py').read_bytes(), self.originals[str(root / 'https_broker.py')])
+
+    def test_generation_surviving_bootout_keeps_suppression(self):
+        worker, observer, states, effects = self.native(running=True)
+        # Pid 40 keeps running the protected route after its scheduler is booted out.
+        observer.kernel.pids = lambda uid: [40]
+        observer.kernel.argv = lambda pid: observer.bindings[0]['argv']
+        with self.assertRaisesRegex(ValueError, 'Unlisted broker caller'): worker.execute()
+        self.assertEqual(effects, [(0,'disable'), (0,'bootout'), (1,'disable')])
+        self.assertFalse(states[0]['loaded'])
+        self.assertTrue((self.evidence / 'abort-not-restored.json').exists())
+        self.assertFalse((self.evidence / 'abort-restored.json').exists())
+
+    def test_generation_appearing_during_window_recheck_keeps_suppression(self):
+        worker, observer, states, effects = self.native(running=True)
+        record = worker.record
+        def appear_after_baseline(name, value):
+            record(name, value)
+            if name == 'before.json':
+                # An untracked route generation appears after suppression settled.
+                observer.kernel.pids = lambda uid: [40]
+                observer.kernel.argv = lambda pid: observer.bindings[0]['argv']
+        worker.record = appear_after_baseline
+        with self.assertRaisesRegex(ValueError, 'Unlisted broker caller'): worker.execute()
+        self.assertEqual(effects, [(0,'disable'), (0,'bootout'), (1,'disable')])
+        self.assertTrue((self.evidence / 'abort-not-restored.json').exists())
+        self.assertFalse((self.evidence / 'abort-restored.json').exists())
+        self.assertFalse((self.evidence / 'intent.json').exists())
 
     def test_recovery_anchors_baseline_to_approved_digest(self):
         root = self.targets[0]['root']

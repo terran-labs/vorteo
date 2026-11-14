@@ -17,6 +17,8 @@ import { useToast } from "@/contexts/toast-api-context";
 import type { BrokerReviewJob } from "./preview-broker-review";
 import {
   brokerActionDisabledReason,
+  brokerAdmissionDescription,
+  brokerDeploymentResumeDescription,
   brokerReviewSummary,
   type BrokerAction,
 } from "./preview-broker-review";
@@ -1217,11 +1219,11 @@ function BrokerRequest({
             {job.target === "preview-broker-deployment"
               ? job.plan.registrations.map(
                   (item) =>
-                    `\nRegistration: ${item.domain}/${item.label} (${item.disposition})\nRoot: ${item.root}\nEnabled: ${item.enabled}; override: ${item.override}\nProcess: ${item.process ? `PID ${item.process.pid}; birth ${item.process.birth.join(":")}; UID ${item.process.uid}; argv ${JSON.stringify(item.process.argv)}` : "idle, no registered process"}`,
+                    `\nRegistration: ${item.domain}/${item.label} (${item.disposition})\nRoot: ${item.root}\nEnabled: ${item.enabled}; override: ${item.override}\nProcess: ${item.process ? `PID ${item.process.pid}; birth ${item.process.birth.join(":")}; UID ${item.process.uid}; argv ${JSON.stringify(item.process.argv)}` : "idle, no registered process"}\n${brokerAdmissionDescription(item.admission)}`,
                 )
               : null}
             {job.target === "preview-broker-deployment"
-              ? `\nScope: only the declared managed routes and ${job.plan.manualParticipants.length} manual participants are known. No new manual broker calls until release.\nResume is allowed only while legacy channel identity still refuses request consumption.`
+              ? `\nScope: only the declared managed routes and ${job.plan.manualParticipants.length} manual participants are known. No new manual broker calls until release.\n${brokerDeploymentResumeDescription(job.plan.registrations)}`
               : null}
             {job.target === "preview-broker-deployment"
               ? job.plan.manualParticipants.map(

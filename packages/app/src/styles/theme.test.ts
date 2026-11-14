@@ -263,7 +263,7 @@ describe("Vorton theme reference", () => {
     ["success", "statusSuccess"],
     ["warning", "statusWarning"],
     ["danger", "statusDanger"],
-    ["danger", "destructive"],
+    ["destructive", "destructive"],
   ];
 
   // One row per exception: theme, Vorteo field, Vorteo value, reference value, reason.
@@ -282,49 +282,6 @@ describe("Vorton theme reference", () => {
   const DECIDED: DriftException[] = [
     ["scriptorium", "accent", "#86684a", "#b08a61", KEPT_SCRIPTORIUM],
     ["neon", "accent", "#3b82f6", "#8b5cf6", KEPT_NEON],
-  ];
-
-  // Undecided, awaiting owner. Each entry is a real difference no owner decision covers yet;
-  // it is listed so the check passes without changing a color. Move it to DECIDED with the
-  // owner's reason, or delete it once Vorteo or Vorton changes to match.
-  const RAISED =
-    "Undecided: Vorteo's raised working surface is a lighter opaque step than Vorton's surfaceRaised.";
-  const ACCENT_FOREGROUND = "Undecided: Vorteo puts black text on this accent; Vorton puts white.";
-  const STATUS =
-    "Undecided: Vorteo shares one status family across themes, tuned for 4.5:1 badge text; Vorton sets status colors per theme.";
-  const DESTRUCTIVE =
-    "Undecided: Vorteo's destructive fill is shared per light or dark surface; Vorton uses the theme's danger color.";
-  const UNDECIDED: DriftException[] = [
-    ["starship-light", "statusSuccess", "#346340", "#08733b", STATUS],
-    ["starship-light", "statusWarning", "#6c5131", "#765000", STATUS],
-    ["starship-light", "statusDanger", "#8f3a33", "#b3261e", STATUS],
-    ["starship-dark", "surface3", "#38383a", "rgb(34 34 34)", RAISED],
-    ["starship-dark", "statusSuccess", "#9dcaa6", "#30d158", STATUS],
-    ["starship-dark", "statusWarning", "#d5b997", "#ffd60a", STATUS],
-    ["starship-dark", "statusDanger", "#e5ada6", "#ff453a", STATUS],
-    ["starship-dark", "destructive", "#ff7168", "#ff453a", DESTRUCTIVE],
-    ["scriptorium", "statusSuccess", "#346340", "rgb(47 122 87)", STATUS],
-    ["scriptorium", "statusWarning", "#6c5131", "rgb(176 138 97)", STATUS],
-    ["scriptorium", "statusDanger", "#8f3a33", "rgb(183 79 67)", STATUS],
-    ["scriptorium", "destructive", "#b3261e", "rgb(183 79 67)", DESTRUCTIVE],
-    ["midas", "surface3", "#493c30", "rgb(55 45 36)", RAISED],
-    ["midas", "accentForeground", "#000000", "#ffffff", ACCENT_FOREGROUND],
-    ["midas", "statusSuccess", "#9dcaa6", "rgb(122 156 104)", STATUS],
-    ["midas", "statusWarning", "#d5b997", "rgb(196 154 93)", STATUS],
-    ["midas", "statusDanger", "#e5ada6", "rgb(171 86 74)", STATUS],
-    ["midas", "destructive", "#ff7168", "rgb(171 86 74)", DESTRUCTIVE],
-    ["ember", "surface3", "#38221c", "rgb(39 24 20)", RAISED],
-    ["ember", "accentForeground", "#000000", "#ffffff", ACCENT_FOREGROUND],
-    ["ember", "statusSuccess", "#9dcaa6", "rgb(112 155 91)", STATUS],
-    ["ember", "statusWarning", "#d5b997", "rgb(215 142 78)", STATUS],
-    ["ember", "statusDanger", "#e5ada6", "rgb(197 92 82)", STATUS],
-    ["ember", "destructive", "#ff7168", "rgb(197 92 82)", DESTRUCTIVE],
-    ["neon", "surface3", "#20202d", "#15151e", RAISED],
-    ["neon", "accentForeground", "#000000", "#ffffff", ACCENT_FOREGROUND],
-    ["neon", "statusSuccess", "#9dcaa6", "rgb(34 197 94)", STATUS],
-    ["neon", "statusWarning", "#d5b997", "rgb(245 158 11)", STATUS],
-    ["neon", "statusDanger", "#e5ada6", "rgb(239 68 68)", STATUS],
-    ["neon", "destructive", "#ff7168", "rgb(239 68 68)", DESTRUCTIVE],
   ];
 
   function canonicalColor(value: string): string {
@@ -354,7 +311,7 @@ describe("Vorton theme reference", () => {
 
   it("matches Vorteo's palettes except declared exceptions", () => {
     const exceptions = new Map<string, { vorteo: string; reference: string }>();
-    for (const [theme, field, vorteo, expected] of [...DECIDED, ...UNDECIDED]) {
+    for (const [theme, field, vorteo, expected] of DECIDED) {
       exceptions.set(`${theme}.${field}`, { vorteo, reference: expected });
     }
     const problems: string[] = [];

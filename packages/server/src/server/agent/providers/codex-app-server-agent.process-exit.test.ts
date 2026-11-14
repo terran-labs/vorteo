@@ -614,12 +614,18 @@ test("concurrent session APIs share one reconnect after an idle provider exit", 
 
     const runtimeInfo = session.getRuntimeInfo();
     const turnStart = session.startTurn("continue after reconnect");
+    // Connecting reads the sign-in generation before it spawns, so the reconnect
+    // spawn is asynchronous. Wait for it, then give the second caller time to
+    // start a duplicate reconnect before releasing the gate.
+    await expect.poll(() => spawnCount).toBe(2);
+    await new Promise((resolve) => setTimeout(resolve, 50));
     const reconnectSpawnCount = spawnCount - 1;
     releaseReconnect?.();
 
     await expect(runtimeInfo).resolves.toMatchObject({ provider: "codex" });
     await expect(turnStart).resolves.toMatchObject({ turnId: expect.any(String) });
     expect(reconnectSpawnCount).toBe(1);
+    expect(spawnCount).toBe(2);
   } finally {
     releaseReconnect?.();
     await session.close();

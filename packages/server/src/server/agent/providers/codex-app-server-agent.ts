@@ -14,6 +14,12 @@ import {
   type QuotaGovernedSessionInput,
 } from "../agent-sdk-types.js";
 import type { QuotaObservation } from "@getpaseo/protocol/quota-governor";
+import {
+  isCodexRefreshRejection,
+  readCodexAuthGeneration,
+  recordCodexRefreshRejection,
+  type CodexAuthGeneration,
+} from "./codex/refresh-rejection.js";
 import { CodexLoginSession } from "./codex/login.js";
 import {
   getAgentStreamEventTurnId,
@@ -3566,6 +3572,8 @@ export class CodexAppServerAgentSession implements AgentSession {
   private readonly config: AgentSessionConfig;
   private readonly asyncQuestions: CodexAsyncQuestions;
   private readonly codexHome: string;
+  /** `auth.json` generation when the latest turn started; see recordCodexRefreshRejection. */
+  private turnAuthGeneration: CodexAuthGeneration | null = null;
   private currentMode: string;
   private hasWorkflowModeOverride: boolean;
   private readonly providerOptions: CodexProviderOptions;
@@ -3798,10 +3806,18 @@ export class CodexAppServerAgentSession implements AgentSession {
       return;
     }
 
-    const connectionPromise = this.establishConnection();
+    let authGeneration: CodexAuthGeneration | null = null;
+    const connectionPromise = readCodexAuthGeneration(this.codexHome).then((generation) => {
+      authGeneration = generation;
+      if (this.closed) throw this.createClosedError();
+      return this.establishConnection();
+    });
     this.connectionPromise = connectionPromise;
     try {
       await connectionPromise;
+    } catch (error) {
+      await this.recordRefreshRejection(error, authGeneration);
+      throw error;
     } finally {
       if (this.connectionPromise === connectionPromise) {
         this.connectionPromise = null;
@@ -4915,8 +4931,12 @@ export class CodexAppServerAgentSession implements AgentSession {
     if (!options?.automaticRecoveryPermit)
       this.dismissPendingPlanApprovals("Dismissed by a new prompt");
 
+    let authGeneration: CodexAuthGeneration | null = null;
     try {
+      // Setup RPCs can refresh credentials too. Keep the generation that began this attempt.
+      authGeneration = await readCodexAuthGeneration(this.codexHome);
       await this.pendingNotifications;
+      this.turnAuthGeneration = authGeneration;
       if (options?.automaticRecoveryPermit) {
         options.automaticRecoveryPermit.assertValidForDispatch();
         if (!this.supportsAutomaticRecoveryDispatch)
@@ -4971,6 +4991,7 @@ export class CodexAppServerAgentSession implements AgentSession {
       await this.client.request("turn/start", turnStart.params, TURN_START_TIMEOUT_MS);
       return { turnId };
     } catch (error) {
+      await this.recordRefreshRejection(error, authGeneration);
       return this.failTurnStart(error);
     } finally {
       if (this.pendingForegroundStart === pendingStart) {
@@ -6309,7 +6330,29 @@ export class CodexAppServerAgentSession implements AgentSession {
     return await codexAppServerTurnInputFromPrompt(prompt, this.logger);
   }
 
+  private async recordRefreshRejection(
+    failure: unknown,
+    generation: CodexAuthGeneration | null,
+  ): Promise<void> {
+    if (!generation) return;
+    const message = failure instanceof Error ? failure.message : String(failure);
+    if (!isCodexRefreshRejection(message)) return;
+    try {
+      await recordCodexRefreshRejection(this.codexHome, generation);
+    } catch (error) {
+      this.logger.warn({ err: error }, "Could not record a rejected Codex sign-in");
+    }
+  }
+
   private emitEvent(event: AgentStreamEvent): void {
+    if (
+      event.type === "turn_failed" &&
+      (isCodexRefreshRejection(event.error) || isCodexRefreshRejection(event.diagnostic))
+    ) {
+      // Capture the generation before this asynchronous write or any later turn starts.
+      const message = isCodexRefreshRejection(event.error) ? event.error : event.diagnostic;
+      void this.recordRefreshRejection(message, this.turnAuthGeneration);
+    }
     this.notifySubscribers(event);
   }
 

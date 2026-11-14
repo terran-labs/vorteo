@@ -1,5 +1,6 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import {
+  codexAccountUsesInstallationSignIn,
   codexInstallationRequest,
   codexInstallationSignInAvailable,
 } from "./codex-installation-login";
@@ -67,6 +68,17 @@ test("unlinked, duplicate and removed bindings cannot start a sign-in", async ()
     );
   }
   expect(request).not.toHaveBeenCalled();
+});
+
+test("only installation-created Codex accounts sign in through the coordinator", async () => {
+  // An older account with no setup record would be refused there, so it uses its own daemon.
+  settings([{ ...account, accountSetup: undefined }]);
+  expect(await codexAccountUsesInstallationSignIn("host", "codex-one")).toBe(false);
+  settings([account]);
+  expect(await codexAccountUsesInstallationSignIn("host", "codex-one")).toBe(true);
+  // Not yet in the snapshot: a just-created installation account.
+  settings([]);
+  expect(await codexAccountUsesInstallationSignIn("host", "codex-new")).toBe(true);
 });
 
 test("read reports Dev synchronization and the Host account", async () => {

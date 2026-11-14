@@ -698,13 +698,30 @@ wait for the hold to end instead of retrying every few seconds.
 The coordinator records when the hold first waits in its private `restart-holds.json`,
 which survives a coordinator restart, and logs each change in the set of agents it
 waits for, by agent ID only. After `restartHoldDeadlineMinutes` (default 15),
-whatever it is waiting on, it logs once, changes the job's detail and badges it
-**Your decision needed** for clients that request the reply-only
-`holdDeadlineExceeded`. The owner can choose **Force restart now**, which interrupts
-the remaining turns, or cancel. It still never interrupts them on its own. Restart
-activity lists the waiting agents by title, and Force restart now is offered for a
-source update or batch while it is approved and waiting for idle. See [restart hold
-deadline](protocol-compatibility.md#restart-hold-deadline) for rollback.
+`restartHoldAfterDeadline` selects `ask` (the default) or explicit `auto`. Omitting
+the setting keeps owner attention after the deadline. Automatic mode
+requires acknowledged durable continuation capture, a verified matching hold,
+an installed native cooperative endpoint and explicit coverage in the retained
+enrollment manifest. An older manifest grants no preparation authority. The
+preparation budget must fit the retained interruption limits. It then uses the
+tracked native path to interrupt remaining non-hosted turns;
+durable hosted sessions retain their existing carry behavior. Unknown starting
+work, failed inspection and unrelated holds still block dispatch. After verified
+completion and continuation release, the System job detail reports that the
+restart happened automatically and saved work is queued to continue.
+
+The Dev preparation phase remains unavailable until its separate protected startup
+registration migration supplies accepted native launcher and parent evidence.
+Supervisor maintenance receipts alone do not satisfy that requirement. A missing
+endpoint, grant or native observation keeps the request waiting; the timer cannot
+authorize an interruption by itself.
+
+Ask mode logs the deadline and shows **Your decision needed** to clients that
+request the reply-only `holdDeadlineExceeded`. The owner can choose **Force restart
+now** or cancel. Automatic mode does not set that attention signal. Both modes
+preserve approval revisions, cancellation, Factory holds and restart recovery;
+neither invents a manual approval. See [restart hold deadline](protocol-compatibility.md#restart-hold-deadline)
+for rollback.
 
 The existing idle check includes provider subagents and registrations already in
 flight. Before dispatch, the daemon drains persistence and saves agent snapshots.
@@ -1035,7 +1052,7 @@ Use `request-coordinator --request-file <preparation.json>` with the exact valid
 
 The existing maintenance tick reconciles eligible coordinator requests through the native Host service. It allows one call in flight and records each attempt before connecting. Approval and dispatch validation each have a three-attempt budget. Unconfirmed calls retain their count and backoff; after a coordinator crash, a sixteen-minute observation window covers the connection and native RPC deadlines before another attempt becomes eligible. A successful approval starts a separate thirty-second cancellation interval. A launch reservation or execution receipt prevents further launches, including after a lost response. Exhausted checks require review; restarting the coordinator does not reset them. Compatible rollback releases must understand the protected attempt records before this scheduler is installed.
 
-Capable clients request the public automatic status view. It identifies Host-policy authorization or an explicit owner decision without exposing credential bindings, signed proofs or protected retry records. Installation controls distinguish queued checks, an unconfirmed check, retry waiting, exhausted checks, the cancellation window and an unconfirmed launch. A check reservation does not prove its process is still running. Execution receipts override inferred automatic status. A reserved launch without an execution receipt calls for inspection, never another automatic launch. Older clients receive the existing request shape and retain cancellation. The displayed countdown is informative; native admission enforces the exact deadline and current authority.
+Capable clients request the public automatic status view. It identifies Host-policy authorization or an explicit owner decision without exposing credential bindings, signed proofs or protected retry records. Installation controls distinguish queued checks, an unconfirmed check, retry waiting, exhausted checks, the cancellation window and an unconfirmed launch. A check reservation does not prove its process is still running. Execution receipts override inferred automatic status. A reserved launch without an execution receipt calls for inspection, never another automatic launch. Older clients receive the existing request shape and retain cancellation. The displayed countdown is informative; native admission enforces the exact deadline and current authority. Manual finish approval preserves the wait but does not grant automatic cooperative interruption. Its reservation and dispatch independently require the current exact standing decision; a paused or revoked grant denies that phase without changing ordinary manual restart approval.
 
 Preclaim and claimed recovery reviews separately negotiate retained startup-plan support. Older clients receive original-request projections without the unknown startup field and can still cancel recovery. They cannot approve recovery while that evidence is hidden. Current clients refuse preparation against an older Host and show the original recovery service and pinned launcher in exact recovery details. Reviewing this retained evidence does not authorize another launch of the original update.
 

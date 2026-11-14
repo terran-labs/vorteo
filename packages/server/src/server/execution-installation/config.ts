@@ -153,7 +153,9 @@ export const InstallationConfigSchema = z.strictObject({
   previewBroker: PreviewBrokerConfigurationSchema.optional(),
   previewBrokerDeployment: PreviewBrokerDeploymentConfigurationSchema.optional(),
   restartApprovalPolicy: z.strictObject({ hostRequestsAfter: z.string().datetime() }).optional(),
-  /** Minutes a finish-current-turns restart hold waits before asking the owner. Default 15. */
+  /** Omission keeps owner attention; automatic restart requires explicit "auto". */
+  restartHoldAfterDeadline: z.enum(["auto", "ask"]).optional(),
+  /** Minutes a finish-current-turns restart hold waits before its deadline policy. Default 15. */
   restartHoldDeadlineMinutes: z
     .number()
     .int()

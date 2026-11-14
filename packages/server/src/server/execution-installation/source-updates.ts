@@ -257,6 +257,12 @@ function absolutePaths(value: unknown): string[] {
   return [];
 }
 
+/** The publisher's sentence about the `vorteo` command, led by a space, or "" without one. */
+function publishedCommandSentence(stderr: string): string {
+  const sentence = /^vorteo-command: (.+)$/m.exec(stderr)?.[1];
+  return sentence ? ` ${sentence}` : "";
+}
+
 export class InstallationSourceUpdates {
   private readonly directory: string;
   private readonly candidateEvidence = new Map<
@@ -787,13 +793,14 @@ export class InstallationSourceUpdates {
         { cause: error },
       );
     }
+    let commandMessage = "";
     try {
       // Restart is an asynchronous boundary. Recheck the exact admitted source and
       // artifact before executing its publisher, including all supporting imports.
       // Only the Host account can write this release; it already controls the running
       // daemon. The child reopening these files does not isolate that same account.
       await this.verifiedHostPublication({ job, receiptSha256 });
-      await execute(
+      const published = await execute(
         validation.node,
         [
           path.join(prepared.release, "scripts", "publish-instance-web.mjs"),
@@ -802,6 +809,8 @@ export class InstallationSourceUpdates {
         ],
         { timeout: 5 * 60_000, maxBuffer: 8192 },
       );
+      // The release's publisher also installs the `vorteo` command and reports it on stderr.
+      commandMessage = publishedCommandSentence(published.stderr);
     } catch (error) {
       try {
         writeLifecycleReceipt(activationFile, { ...ready, status: "interface-failed" });
@@ -828,7 +837,7 @@ export class InstallationSourceUpdates {
       () => this.retainHostReleases(previous),
       path.join(work, "retention.json"),
     );
-    return `Installed source ${update.sourceCommit}. Host replacement identity and readiness verified; interface published. Previous release retained at ${previous}. Old Host releases that nothing uses are removed in the background; the result, including every release kept or skipped, is recorded in retention.json in this job's folder.`;
+    return `Installed source ${update.sourceCommit}. Host replacement identity and readiness verified; interface published. Previous release retained at ${previous}. Old Host releases that nothing uses are removed in the background; the result, including every release kept or skipped, is recorded in retention.json in this job's folder.${commandMessage}`;
   }
 
   /**

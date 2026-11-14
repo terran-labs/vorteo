@@ -405,44 +405,53 @@ describe("upgrade plan", () => {
 });
 
 describe("upgrade", () => {
-  test("moves Host and coordinator to the new release, keeping the previous one", async () => {
-    const { context, state, paths } = machine();
-    const { plan } = await upgradePlan(context, {
-      settings: { name: "Studio", updateMode: "automatic", updateChannel: "beta" },
-    });
-    const { ok, events, failure } = await apply(context, plan);
-    expect(failure).toBeUndefined();
-    expect(ok).toBe(true);
-    const next = realpathSync(path.join(paths.host, "releases", NEW));
-    expect(realpathSync(paths.hostReleaseLink)).toBe(next);
-    expect(realpathSync(paths.coordinatorReleaseLink)).toBe(next);
-    expect(existsSync(paths.release)).toBe(true);
-    expect(state.restarts).toEqual([
-      `gui/501/local.vorteo.${ID}.host`,
-      `gui/501/local.vorteo.${ID}.installation`,
-    ]);
-    expect(
-      JSON.parse(readFileSync(path.join(paths.coordinatorState, "update-policy.json"), "utf8")),
-    ).toEqual({
-      version: 1,
-      policy: { mode: "automatic", channel: "beta" },
-    });
-    expect(events.at(-1).result).toMatchObject({
-      name: "Studio",
-      upgraded: { to: { revision: NEW } },
-    });
-    expect(describeInstalled(context.root)).toMatchObject({
-      version: "26.11.302",
-      revision: NEW,
-      release: "release-26.11.302",
-    });
-    const journal = JSON.parse(readFileSync(path.join(context.root, UPGRADE_JOURNAL), "utf8"));
-    expect(journal.completedAt).toBeTruthy();
-    expect(journal.outputs).toMatchObject({
-      snapshotId: "20261104T000001Z",
-      previousHost: realpathSync(paths.release),
-    });
-  });
+  test.each(["missing", "owned", "unrelated"])(
+    "moves Host and coordinator and repairs the command: %s",
+    async (existing) => {
+      const { context, state, paths } = machine();
+      const shim = path.join(context.home, ".local/bin/vorteo");
+      mkdirSync(path.dirname(shim), { recursive: true });
+      if (existing !== "missing")
+        writeFileSync(shim, existing === "owned" ? "# vorteo-command-shim\nold" : "unrelated");
+      const { plan } = await upgradePlan(context, {
+        settings: { name: "Studio", updateMode: "automatic", updateChannel: "beta" },
+      });
+      const { ok, events, failure } = await apply(context, plan);
+      expect(failure).toBeUndefined();
+      expect(ok).toBe(true);
+      if (existing === "unrelated") expect(readFileSync(shim, "utf8")).toBe("unrelated");
+      else expect(readFileSync(shim, "utf8")).toContain("exec bash");
+      const next = realpathSync(path.join(paths.host, "releases", NEW));
+      expect(realpathSync(paths.hostReleaseLink)).toBe(next);
+      expect(realpathSync(paths.coordinatorReleaseLink)).toBe(next);
+      expect(existsSync(paths.release)).toBe(true);
+      expect(state.restarts).toEqual([
+        `gui/501/local.vorteo.${ID}.host`,
+        `gui/501/local.vorteo.${ID}.installation`,
+      ]);
+      expect(
+        JSON.parse(readFileSync(path.join(paths.coordinatorState, "update-policy.json"), "utf8")),
+      ).toEqual({
+        version: 1,
+        policy: { mode: "automatic", channel: "beta" },
+      });
+      expect(events.at(-1).result).toMatchObject({
+        name: "Studio",
+        upgraded: { to: { revision: NEW } },
+      });
+      expect(describeInstalled(context.root)).toMatchObject({
+        version: "26.11.302",
+        revision: NEW,
+        release: "release-26.11.302",
+      });
+      const journal = JSON.parse(readFileSync(path.join(context.root, UPGRADE_JOURNAL), "utf8"));
+      expect(journal.completedAt).toBeTruthy();
+      expect(journal.outputs).toMatchObject({
+        snapshotId: "20261104T000001Z",
+        previousHost: realpathSync(paths.release),
+      });
+    },
+  );
 
   test("a coordinator that does not start returns to the previous release, and a rerun resumes", async () => {
     const box = machine({ coordinatorStarts: false });

@@ -822,8 +822,9 @@ export function appearanceStatusColors(light: boolean) {
     ? lightStatusColors
     : {
         // A further 20% white blend over the lifted family (#84bd90, #de9890, #caa77d,
-        // #b6a2dc), so badge text on its 16% tint clears 4.5:1 on every card surface
-        // (Midas danger was 3.99, now 4.61).
+        // #b6a2dc), so badge text on its 16% tint clears 4.5:1 over surface0 to surface2
+        // (Midas danger was 3.99, now 4.60 over surface2). Over surface3 it does not: Midas
+        // danger measures 4.03, so keep tinted badges off raised surface3 containers.
         statusSuccess: "#9dcaa6",
         statusDanger: "#e5ada6",
         statusWarning: "#d5b997",
