@@ -33,10 +33,14 @@ export function createPreviewTools(
       name: "get_preview_feedback",
       title: "Read the owner's preview feedback",
       description:
-        "Read the owner's star ratings, variant picks with reasons, approvals and comments on published previews. Filter by lineage or versionId, or omit both for everything. Use it before the next build so feedback steers the work without the owner retyping it. An approved version is acceptance of exactly that version, not of later changes.",
+        "Read the owner's star ratings, variant picks with reasons, approvals and comments on published previews. It covers previews published in your workspace. Filter by lineage or versionId, or omit both for all of them. Use it before the next build so feedback steers the work without the owner retyping it. An approved version is acceptance of exactly that version, not of later changes.",
       inputSchema: GetPreviewFeedbackSchema,
-      handler: async (input) =>
-        result(await previews.feedback(GetPreviewFeedbackSchema.parse(input))),
+      handler: async (input) => {
+        if (!callerAgentId?.trim()) throw new Error("An agent-scoped caller identity is required");
+        return result(
+          await previews.feedback(GetPreviewFeedbackSchema.parse(input), callerAgentId),
+        );
+      },
     },
   ];
 }

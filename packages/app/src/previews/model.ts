@@ -31,17 +31,16 @@ function newestFirst(left: PreviewVersion, right: PreviewVersion): number {
   return right.number - left.number || createdMs(right) - createdMs(left);
 }
 
+/**
+ * The gallery the daemon sends already holds only this workspace's previews, so "all" is
+ * the whole workspace and "thread" narrows it to what this thread published.
+ */
 export function scopeVersions(
   versions: readonly PreviewVersion[],
   scope: PreviewScope,
   agentId: string,
 ): PreviewVersion[] {
   return scope === "all" ? [...versions] : versions.filter((v) => v.agentId === agentId);
-}
-
-/** "This thread" when the thread published anything, otherwise everything. */
-export function defaultScope(versions: readonly PreviewVersion[], agentId: string): PreviewScope {
-  return versions.some((version) => version.agentId === agentId) ? "thread" : "all";
 }
 
 export function groupByLineage(versions: readonly PreviewVersion[]): PreviewLineage[] {
@@ -110,6 +109,17 @@ export function annotationLocation(annotation: PreviewAnnotation): string {
 
 function route(base: string, path: string): string {
   return new URL(path, base).toString();
+}
+
+/**
+ * Why a tile shows an icon instead of a picture. Live links and PDFs are never rendered;
+ * a frozen page has no thumbnail when the daemon cannot run its sandboxed renderer, which
+ * is usual inside a container.
+ */
+export function placeholderReason(version: Pick<PreviewVersion, "kind">): string {
+  if (version.kind === "url") return "Live page";
+  if (version.kind === "pdf") return "PDF";
+  return "No thumbnail here";
 }
 
 export function thumbnailUrl(base: string, versionId: string): string {

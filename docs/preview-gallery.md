@@ -11,6 +11,10 @@ Every agent has two tools when the daemon advertises `features.previews`:
 
 Publish built output, not a project directory. A directory is copied up to 300 MB or 10,000 files by a separate short-lived process that walks the tree one directory at a time and never follows a link, so a tree that changes during the copy cannot redirect it elsewhere on disk. Symlinks, hard-linked files, `node_modules` and `.git` are left out, along with the most common credential files (`.env*`, `.npmrc`, `.netrc`, `.ssh`, key and certificate files). That list is a convenience, not a secret scanner: anyone with a snapshot's link can read it, so publish only output meant to be seen.
 
+## Previews belong to a workspace
+
+A preview is visible only in the workspace it was published in. The Previews card opens on **This thread**, the previews this thread published; **This workspace** shows every thread's previews in the same workspace. The daemon applies this, not only the card: it sends a card nothing from another workspace, the owner's actions from one workspace cannot reach another's preview, and `get_preview_feedback` returns only the calling agent's workspace. A thread with no workspace sees only its own previews. The same lineage key in two workspaces is two separate entries with their own version numbers.
+
 ## Versions are frozen
 
 Each published version is copied into `$PASEO_HOME/previews/versions/<id>/` and never changes, so a rating always refers to what you saw. A `url` version is the exception: it points at a live page, such as a running preview, and is labeled live.
@@ -60,8 +64,8 @@ Publish the running preview with `kind: "url"` so comments on it route to your t
 
 ## Limits
 
-- Thumbnails need the optional `playwright-core` package and a Chromium build that can run sandboxed (`npm run browser:setup`). Without them the gallery shows a placeholder. Live links and PDFs always show a placeholder, and a snapshot that loads assets by absolute path renders without them.
+- Thumbnails need the optional `playwright-core` package and a Chromium build that can run sandboxed (`npm run browser:setup`). Without them the gallery shows a placeholder. Chromium usually cannot run sandboxed inside a container, so an installation's Dev environment normally shows placeholders; the sandbox is not turned off to work around that, because the renderer loads agent-authored pages. Live links and PDFs always show a placeholder, and a snapshot that loads assets by absolute path renders without them.
 - A PDF has no element or region picker; comment on the whole document.
-- Each daemon keeps its own gallery. Host and Dev agents publish to their own daemon.
+- Each daemon keeps its own previews. Host and Dev agents publish to their own daemon.
 - A relay connection has no HTTP route to the daemon, so thumbnails, zoom and Open in browser need a direct connection.
 - Guest access outside the tailnet is not supported.
