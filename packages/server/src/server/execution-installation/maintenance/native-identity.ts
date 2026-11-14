@@ -1,3 +1,4 @@
+import { CooperativeMailboxDescriptorSchema } from "@getpaseo/protocol/maintenance-interruption";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
@@ -10,6 +11,7 @@ const common = {
   custodyOwnerUid: z.number().int().nonnegative(),
   installationRoot: absolutePath,
   stateDirectory: absolutePath,
+  cooperativeMailbox: CooperativeMailboxDescriptorSchema.optional(),
 };
 
 export const EnrollmentNativeIdentitySchema = z.discriminatedUnion("environment", [
@@ -51,6 +53,15 @@ export function enrollmentNativeIdentityDigest(input: unknown): string {
     if (identity.serviceDomain !== `gui/${identity.custodyOwnerUid}`)
       throw new BootstrapRequestConflict("Enrolled service domain differs from its owner");
   } else paths.push(identity.containerHome, identity.containerStateDirectory);
+  if (identity.cooperativeMailbox) {
+    const endpoint = identity.cooperativeMailbox;
+    const owner = identity.environment === "container" ? 0 : identity.custodyOwnerUid;
+    const reader =
+      identity.environment === "container" ? identity.containerUid : identity.custodyOwnerUid;
+    if (endpoint.ownerUid !== owner || endpoint.readerUid !== reader)
+      throw new BootstrapRequestConflict("Cooperative endpoint native owner or reader differs");
+    paths.push(endpoint.scopeFile, endpoint.helperFile);
+  }
   for (const value of paths) {
     if (
       value !== null &&

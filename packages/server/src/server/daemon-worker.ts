@@ -14,7 +14,10 @@ import { getProcessDiagnostics } from "./process-diagnostics.js";
 import { loadGovernedScheduleRuntimeFactory } from "./schedule/governed-runtime.js";
 import { createWorkerShutdown } from "./worker-shutdown.js";
 import { startWorkerWatchdog, type WorkerWatchdog } from "./worker-watchdog.js";
-import { createMaintenanceRestartChannel } from "./maintenance-restart-channel.js";
+import {
+  createMaintenanceRestartChannel,
+  handleCooperativeDrainMessage,
+} from "./maintenance-restart-channel.js";
 
 /** Graceful shutdown budget, then this much more before the watchdog kills the worker. */
 const DEFAULT_SHUTDOWN_BUDGET_MS = 10_000;
@@ -377,6 +380,19 @@ async function main() {
         return;
       }
       const type = (message as { type?: unknown }).type;
+      if (type === "paseo:cooperative-drain-prepare") {
+        if (daemon)
+          void handleCooperativeDrainMessage(message, {
+            parentPid: supervisorPid,
+            currentParentPid: () => process.ppid,
+            connected: () => process.connected === true,
+            workerPid: process.pid,
+            manager: daemon.agentManager,
+            send: (reply) => process.send?.(reply),
+          }).catch((error) => logger.error({ err: error }, "Cooperative preparation refused"));
+        return;
+      }
+
       if (type === "paseo:supervisor-heartbeat") {
         lastSupervisorHeartbeatAt = Date.now();
         return;

@@ -2517,7 +2517,9 @@ describe("account choice for new Factory agents", () => {
       readUsage: async () => {
         throw new Error("usage service down");
       },
-      getSettings: () => ({}) as never,
+      // No stage profile is set, so the provider type comes from the default launch, which a
+      // standalone daemon only has once its primary connection is chosen.
+      getSettings: () => ({ primaryConnection: { provider: "codex" } }) as never,
       hosts: () => ({
         use: async () => {
           throw new Error("no connected hosts");

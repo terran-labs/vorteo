@@ -375,8 +375,16 @@ export function createPreviewBrokerDeploymentExecutor(context: Context): BrokerD
     brokerDeploymentCompatible,
     async validateBrokerDeploymentPlan(plan) {
       const parsed = PreviewBrokerDeploymentPlanSchema.parse(plan);
-      const result = z.strictObject({ prepared: z.literal(true) });
-      result.parse(await invoke("inspect", parsed, context.assertActive));
+      const result = z
+        .strictObject({
+          prepared: z.literal(true),
+          // Live channel admission per binding; older workers do not report it.
+          admission: z.array(z.enum(["refusing", "running"])).optional(),
+        })
+        .parse(await invoke("inspect", parsed, context.assertActive));
+      const approved = parsed.registrations.map((item) => item.admission ?? "refusing");
+      if (result.admission && JSON.stringify(result.admission) !== JSON.stringify(approved))
+        throw Error("Live broker channel admission differs from the approved plan");
     },
     async executeBrokerDeployment(job, assertReservation) {
       return PreviewBrokerDeploymentObservationSchema.parse(
