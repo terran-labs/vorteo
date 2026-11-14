@@ -39,7 +39,11 @@ function SkillRow({
   return (
     <View style={styles.row}>
       <Text style={settingsStyles.rowTitle}>{identity}</Text>
-      <Switch value={value.skills.includes(identity)} onValueChange={toggle} />
+      <Switch
+        value={value.skills.includes(identity)}
+        onValueChange={toggle}
+        accessibilityLabel={identity}
+      />
     </View>
   );
 }

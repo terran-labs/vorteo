@@ -1,4 +1,8 @@
-import { SettingsSection } from "@/components/settings/headings/settings-section";
+import { useMemo } from "react";
+import {
+  SettingsSection,
+  SettingsSectionTrailing,
+} from "@/components/settings/headings/settings-section";
 import { SharedProvidersPage } from "./shared-providers-page";
 import { Text, View } from "react-native";
 import type { SettingsSectionSlug } from "@/utils/host-routes";
@@ -91,11 +95,7 @@ export function InstallationSettingsContent({
     return (
       <View>
         <Text style={settingsStyles.rowHint}>Connect an environment to manage settings.</Text>
-        {section === "connections" ? (
-          <Button onPress={onAddHost} testID="settings-add-host">
-            Add connection
-          </Button>
-        ) : null}
+        {section === "connections" ? <AddConnectionButton onAddHost={onAddHost} /> : null}
       </View>
     );
 
@@ -135,20 +135,16 @@ export function InstallationSettingsContent({
       return <AgentProfilesSection serverId={serverId} />;
   }
 
+  if (section === "connections") return <ConnectionsGroup onAddHost={onAddHost} />;
+
   return (
     <View>
-      {section === "connections" ? (
-        <Button onPress={onAddHost} testID="settings-add-host">
-          Add connection
-        </Button>
-      ) : null}
       {hosts.map((host) => (
         <SettingsSection
           key={host.serverId}
           title={host.label}
           testID={`settings-environment-${host.serverId}`}
         >
-          {section === "connections" ? <HostConnectionsPage serverId={host.serverId} /> : null}
           {section === "pair-device" ? <HostPairDevicePage serverId={host.serverId} /> : null}
           {section === "providers" ? <HostProvidersPage serverId={host.serverId} /> : null}
           {section === "usage" ? <HostUsagePage serverId={host.serverId} /> : null}
@@ -156,5 +152,49 @@ export function InstallationSettingsContent({
         </SettingsSection>
       ))}
     </View>
+  );
+}
+
+/** Adds an environment; the Connections header action. */
+function AddConnectionButton({ onAddHost }: { onAddHost: () => void }) {
+  return (
+    <Button variant="outline" size="sm" onPress={onAddHost} testID="settings-add-host">
+      Add connection
+    </Button>
+  );
+}
+
+/**
+ * Connections, under the Environments group in System. Add connection is the header's action, as
+ * in every other group. One host shows its connections directly; several hosts each get a titled
+ * subsection, since the address list alone would not say which host it belongs to.
+ */
+function ConnectionsGroup({ onAddHost }: { onAddHost: () => void }) {
+  const hosts = useHosts();
+  const add = useMemo(() => <AddConnectionButton onAddHost={onAddHost} />, [onAddHost]);
+  if (hosts.length === 1) {
+    const host = hosts[0]!;
+    return (
+      // The host's own Connections section takes the button as its header action.
+      <SettingsSectionTrailing.Provider value={add}>
+        <View testID={`settings-environment-${host.serverId}`}>
+          <HostConnectionsPage serverId={host.serverId} />
+        </View>
+      </SettingsSectionTrailing.Provider>
+    );
+  }
+  return (
+    <SettingsSection title="Connections" trailing={add}>
+      {hosts.map((host) => (
+        <SettingsSection
+          key={host.serverId}
+          title={host.label}
+          testID={`settings-environment-${host.serverId}`}
+        >
+          {/* The group already says Connections; each host's title is enough here. */}
+          <HostConnectionsPage serverId={host.serverId} showTitle={false} />
+        </SettingsSection>
+      ))}
+    </SettingsSection>
   );
 }

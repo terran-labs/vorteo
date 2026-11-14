@@ -9,7 +9,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Alert, Platform, Text, View, StyleSheet } from "react-native";
+import { Platform, Text, View, StyleSheet } from "react-native";
 import { settingsStyles } from "@/styles/settings";
 import { ScrollView } from "@/components/ui/scroll-view";
 // The app runs on expo-router's bundled React Navigation; the standalone package is a separate
@@ -17,6 +17,7 @@ import { ScrollView } from "@/components/ui/scroll-view";
 import { NavigationContext } from "expo-router/react-navigation";
 import type { AgentProfile } from "@getpaseo/protocol/messages";
 import { Button } from "@/components/ui/button";
+import { confirmDialog } from "@/utils/confirm-dialog";
 import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { useToast } from "@/contexts/toast-context";
 import {
@@ -40,14 +41,19 @@ export interface AgentProfilePageProps {
   modelDetails?: (disabled: boolean) => ReactNode;
   additionalDirty?: boolean;
 }
+/** The same accessible confirmation as deletion, on web and native alike. */
 function confirmDiscard(leave: () => void) {
-  if (Platform.OS === "web") {
-    if (window.confirm("Discard unsaved profile changes?")) leave();
-  } else
-    Alert.alert("Discard changes?", "Your unsaved profile changes will be lost.", [
-      { text: "Keep editing", style: "cancel" },
-      { text: "Discard", style: "destructive", onPress: leave },
-    ]);
+  const ask = async () => {
+    const confirmed = await confirmDialog({
+      title: "Discard changes?",
+      message: "Your unsaved profile changes will be lost.",
+      confirmLabel: "Discard",
+      cancelLabel: "Keep editing",
+      destructive: true,
+    });
+    if (confirmed) leave();
+  };
+  void ask();
 }
 /** Key this component by profile id so each editing session owns one draft. */
 export function AgentProfilePage({
@@ -103,6 +109,7 @@ export function AgentProfilePage({
   // Null when the editor opens as a centered window outside a navigator (from the composer).
   const navigation = useContext(NavigationContext);
   const toast = useToast();
+  const [actionError, setActionError] = useState<string | null>(null);
   useEffect(() => {
     if (!navigation) return;
     return navigation.addListener("beforeRemove", (event) => {
@@ -135,6 +142,7 @@ export function AgentProfilePage({
   const save = useCallback(async () => {
     if (!state.submitValue) return;
     const value = state.submitValue;
+    setActionError(null);
     model.setSubmitting(true);
     try {
       await onSave(value);
@@ -143,7 +151,7 @@ export function AgentProfilePage({
       allowLeave.current = true;
       onBack();
     } catch (error) {
-      toast.show(error instanceof Error ? error.message : "Could not save profile");
+      setActionError(error instanceof Error ? error.message : "Could not save profile");
     } finally {
       model.setSubmitting(false);
     }
@@ -157,27 +165,37 @@ export function AgentProfilePage({
         allowLeave.current = true;
         onBack();
       } catch (error) {
-        toast.show(error instanceof Error ? error.message : "Could not delete profile");
+        setActionError(error instanceof Error ? error.message : "Could not delete profile");
       } finally {
         model.setSubmitting(false);
       }
     };
-    if (Platform.OS === "web") {
-      if (window.confirm(`Delete profile ${profile.name}?`)) perform();
-    } else
-      Alert.alert("Delete profile?", profile.name, [
-        { text: "Cancel", style: "cancel" },
-        { text: "Delete", style: "destructive", onPress: perform },
-      ]);
-  }, [onDelete, onBack, toast, profile.name, model]);
+    setActionError(null);
+    const confirmAndPerform = async () => {
+      const confirmed = await confirmDialog({
+        title: `Delete ${profile.name || "this profile"}?`,
+        message: "Chats that already use it keep running. New chats can no longer choose it.",
+        confirmLabel: "Delete profile",
+        destructive: true,
+      });
+      if (confirmed) await perform();
+    };
+    void confirmAndPerform();
+  }, [onDelete, onBack, profile.name, model]);
   const header = useMemo(() => ({ title: profile.name || "New profile" }), [profile.name]);
   const actions = useMemo(
     () => (
       <View style={styles.actions}>
-        <Button testID="agent-profile-cancel-button" onPress={close} disabled={state.isSubmitting}>
+        <Button
+          variant="outline"
+          testID="agent-profile-cancel-button"
+          onPress={close}
+          disabled={state.isSubmitting}
+        >
           Cancel
         </Button>
         <Button
+          variant="default"
           testID="agent-profile-save-button"
           onPress={save}
           disabled={ownerLocked || !dirty || !state.canSubmit}
@@ -190,10 +208,21 @@ export function AgentProfilePage({
   );
   const deleteControl =
     onDelete && sharedScope?.kind !== "defaults" ? (
-      <Button variant="ghost" onPress={remove} disabled={ownerLocked || state.isSubmitting}>
+      <Button variant="destructive" onPress={remove} disabled={ownerLocked || state.isSubmitting}>
         Delete profile
       </Button>
     ) : null;
+  // Save and delete failures stay on the page beside the actions, not in a toast that vanishes.
+  // The region is mounted while empty so its first message is announced.
+  const errorLine = (
+    <Text
+      accessibilityLiveRegion="assertive"
+      style={settingsStyles.rowError}
+      testID="agent-profile-action-error"
+    >
+      {actionError ?? ""}
+    </Text>
+  );
   const form = (
     <>
       {ownerLocked ? <OwnerLockBadge /> : null}
@@ -218,6 +247,7 @@ export function AgentProfilePage({
       >
         <View style={styles.modalContent}>
           {form}
+          {errorLine}
           {deleteControl}
         </View>
       </AdaptiveModalSheet>
@@ -228,10 +258,11 @@ export function AgentProfilePage({
         <Button testID="agent-profile-back-button" onPress={close}>
           Back to provider
         </Button>
-        <Text accessibilityRole="header" style={settingsStyles.rowTitle}>
+        <Text accessibilityRole="header" {...PAGE_HEADING_LEVEL} style={settingsStyles.rowTitle}>
           {state.name || profile.name}
         </Text>
         {form}
+        {errorLine}
         {deleteControl}
       </ScrollView>
       {dirty ? (
@@ -245,6 +276,9 @@ export function AgentProfilePage({
 export function AgentProfileCenteredModal(props: Omit<AgentProfilePageProps, "centered">) {
   return <AgentProfilePage {...props} centered />;
 }
+
+// React Native Web renders a header role without a level as h1; the profile page title is h2.
+const PAGE_HEADING_LEVEL = Platform.OS === "web" ? ({ "aria-level": 2 } as object) : {};
 
 const styles = StyleSheet.create({
   actions: { flexDirection: "row", justifyContent: "flex-end", gap: 12 },

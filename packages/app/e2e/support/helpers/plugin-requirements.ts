@@ -91,8 +91,13 @@ export async function openRequirementHost(page: Page, host: { serverId: string; 
   await openHostSection(page, host.serverId, "plugins");
 }
 
+/** The plugin row's status badge. */
+function requirementsStatus(page: Page, status: "running" | "failed") {
+  return page.getByTestId("plugin-row-requirements-example").getByText(status, { exact: true });
+}
+
 export async function expectAppMismatch(page: Page) {
-  await expect(page.getByLabel("requirements-example failed", { exact: true })).toBeVisible();
+  await expect(requirementsStatus(page, "failed")).toBeVisible();
   await expect(
     page.getByText(/Plugin "requirements-example" requires Vorteo \^99.0.0. Your app is/),
   ).toBeVisible();
@@ -101,14 +106,14 @@ export async function expectAppMismatch(page: Page) {
 export async function correctRequirementAndReload(page: Page, directory: string) {
   await writeRequirements(directory, pluginRequirements.paseo);
   await reloadRequirementsPlugin(page);
-  await expect(page.getByLabel("requirements-example running", { exact: true })).toBeVisible();
+  await expect(requirementsStatus(page, "running")).toBeVisible();
   await expect(page.getByText(/Your app is/)).toHaveCount(0);
 }
 
 export async function rejectDaemonMismatch(page: Page, directory: string) {
   await writeRequirements(directory, ">=100.0.0");
   await reloadRequirementsPlugin(page);
-  await expect(page.getByLabel("requirements-example failed", { exact: true })).toBeVisible();
+  await expect(requirementsStatus(page, "failed")).toBeVisible();
   await expect(page.getByText(/Your daemon is 99.0.0/).first()).toBeVisible();
 }
 

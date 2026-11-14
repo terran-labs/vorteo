@@ -15,6 +15,21 @@ import { createDemoScenario, DEMO_SERVER_ID, DEMO_TIMESTAMP } from "./scenario";
 import { demoFilePath } from "./files";
 import { DemoFileState, type DemoFilePersistence } from "./file-state";
 import { demoProviderUsage } from "./usage";
+import { createDemoDaemonConfig, demoProvidersSnapshot } from "./daemon-config";
+import { onDemoConnectionChange } from "./installation";
+
+/** Which simulated daemon a session plays. Only the primary one holds the sample work. */
+export interface DemoSessionIdentity {
+  serverId: string;
+  hostname: string;
+  primary: boolean;
+}
+
+const PRIMARY_IDENTITY: DemoSessionIdentity = {
+  serverId: DEMO_SERVER_ID,
+  hostname: "Demo",
+  primary: true,
+};
 
 type DemoWorkspace = ReturnType<typeof createDemoScenario>["workspaces"][number];
 type DemoAgent = ReturnType<typeof createDemoScenario>["agents"][number];
@@ -27,18 +42,25 @@ const PAGE = { nextCursor: null, prevCursor: null, hasMore: false };
 
 /** An in-process protocol peer. Unsupported actions fail here, never reach a host. */
 export class DemoSession {
-  private scenario = createDemoScenario();
+  private scenario: ReturnType<typeof createDemoScenario>;
+  private daemonConfig = createDemoDaemonConfig();
   private subscriptionOrdinal = 0;
   private files: DemoFileState;
 
   private checklists: DemoChecklistState;
   private conversations: DemoConversationState;
   private timelineSubscriptions = new Map<string, { agentIds: string[]; owner: symbol }>();
+  /** Session event subscriptions; pushes such as provider snapshots carry their ID. */
+  private eventSubscriptions = new Map<string, { owner: symbol; events: readonly string[] }>();
   constructor(
     persistence?: DemoFilePersistence,
     checklistPersistence?: DemoChecklistPersistence,
     conversationPersistence?: DemoConversationPersistence,
+    private readonly identity: DemoSessionIdentity = PRIMARY_IDENTITY,
   ) {
+    this.scenario = this.createScenario();
+    // A simulated sign-in changes provider status: push it as a real daemon does after a re-check.
+    onDemoConnectionChange(() => this.pushProvidersSnapshot());
     this.files = new DemoFileState(persistence);
     this.conversations = new DemoConversationState(
       new Set(this.scenario.agents.map((agent) => agent.id)),
@@ -76,6 +98,7 @@ export class DemoSession {
           this.workspaceSubscriptions,
           this.agentSubscriptions,
           this.timelineSubscriptions,
+          this.eventSubscriptions,
         ]) {
           for (const [id, subscription] of subscriptions) {
             if (subscription.owner === owner) subscriptions.delete(id);
@@ -85,11 +108,25 @@ export class DemoSession {
     };
   }
 
+  /** A secondary daemon (Dev) holds no sample work, so each project and thread appears once. */
+  private createScenario(): ReturnType<typeof createDemoScenario> {
+    const scenario = createDemoScenario();
+    if (this.identity.primary) return scenario;
+    return {
+      ...scenario,
+      projects: [],
+      workspaces: [],
+      agents: [],
+      timelines: new Map(),
+    };
+  }
+
   reset(): void {
     this.files.reset();
     this.checklists.reset();
     this.conversations.reset();
-    this.scenario = createDemoScenario();
+    this.scenario = this.createScenario();
+    this.daemonConfig = createDemoDaemonConfig();
     this.fileSubscriptions.clear();
     this.diffSubscriptions.clear();
     this.workspaceSubscriptions.clear();
@@ -106,8 +143,8 @@ export class DemoSession {
           type: "status",
           payload: {
             status: "server_info",
-            serverId: DEMO_SERVER_ID,
-            hostname: "Demo",
+            serverId: this.identity.serverId,
+            hostname: this.identity.hostname,
             version: null,
             features: {
               ownedSubscriptions: true,
@@ -119,6 +156,10 @@ export class DemoSession {
               workspaceFileEditing: true,
               agentQuestions: true,
               providerUsageList: true,
+              providersSnapshot: true,
+              // Agent profiles read and save through the demo daemon config.
+              agentProfiles: true,
+              agentConfigApply: true,
               // The demo diff already covers every change, so the Changes card's All mode works.
               checkoutDiffAll: true,
             },
@@ -143,6 +184,7 @@ export class DemoSession {
     if (message.type === "provider.usage.list.request")
       return [{ type: "provider.usage.list.response", payload: demoProviderUsage(requestId) }];
     return (
+      this.handleSettings(message, requestId) ??
       this.handleWorkspace(message, requestId, subscriptionId, owner) ??
       this.handleThread(message, requestId, subscriptionId, owner) ??
       this.handleFiles(message, requestId, subscriptionId, owner) ?? [
@@ -159,6 +201,47 @@ export class DemoSession {
     );
   }
 
+  /** Provider status and the daemon config that holds agent profiles, kept in memory. */
+  private handleSettings(
+    message: SessionInboundMessage,
+    requestId: string,
+  ): SessionOutboundMessage[] | null {
+    switch (message.type) {
+      case "get_providers_snapshot_request":
+        return [
+          { type: "get_providers_snapshot_response", payload: demoProvidersSnapshot(requestId) },
+        ];
+      case "get_daemon_config_request":
+        return [
+          { type: "get_daemon_config_response", payload: { requestId, config: this.daemonConfig } },
+        ];
+      case "set_daemon_config_request":
+        // Only agent profiles are saved here; shared settings belong to the demo coordinator.
+        if (message.config.agentProfiles)
+          this.daemonConfig = { ...this.daemonConfig, agentProfiles: message.config.agentProfiles };
+        return [
+          { type: "set_daemon_config_response", payload: { requestId, config: this.daemonConfig } },
+        ];
+      default:
+        return null;
+    }
+  }
+
+  private pushProvidersSnapshot() {
+    queueMicrotask(() => {
+      const { entries, generatedAt } = demoProvidersSnapshot("");
+      for (const [subscriptionId, subscription] of this.eventSubscriptions) {
+        if (!subscription.events.includes("providers_snapshot_update")) continue;
+        this.listeners.get(subscription.owner)?.(
+          this.wrap({
+            type: "providers_snapshot_update",
+            payload: { subscriptionId, entries, generatedAt },
+          }),
+        );
+      }
+    });
+  }
+
   private handleWorkspace(
     message: SessionInboundMessage,
     requestId: string,
@@ -168,6 +251,7 @@ export class DemoSession {
     const { projects, workspaces, agents } = this.scenario;
     switch (message.type) {
       case "session.events.set_subscription.request":
+        this.eventSubscriptions.set(subscriptionId, { owner, events: message.events });
         return [
           {
             type: "session.events.set_subscription.response",
@@ -222,7 +306,12 @@ export class DemoSession {
       case "unsubscribe_terminals_request":
         return [];
       case "project.list.request":
-        return [{ type: "project.list.response", payload: { requestId, projects } }];
+        return [
+          {
+            type: "project.list.response",
+            payload: { requestId, projects },
+          },
+        ];
       case "fetch_agents_request":
       case "fetch_agent_history_request": {
         if (message.type === "fetch_agents_request" && message.subscribe)
@@ -362,13 +451,6 @@ export class DemoSession {
               labels: [],
               sync: { mode: "snapshot", generation: "demo-v1", headSeq: 0, removals: [] },
             },
-          },
-        ];
-      case "get_providers_snapshot_request":
-        return [
-          {
-            type: "get_providers_snapshot_response",
-            payload: { requestId, entries: [], generatedAt: DEMO_TIMESTAMP },
           },
         ];
       case "list_available_providers_request":
@@ -540,6 +622,7 @@ export class DemoSession {
       this.workspaceSubscriptions,
       this.agentSubscriptions,
       this.timelineSubscriptions,
+      this.eventSubscriptions,
     ]) {
       if (subscriptions.get(id)?.owner === owner) subscriptions.delete(id);
     }

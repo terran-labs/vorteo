@@ -621,7 +621,17 @@ function StatusIcon({ status }: { status: IconStatus }) {
       <ThemedIcon Icon={Circle} size={8} uniProps={iconColors.foregroundMuted} />
     );
   }
-  return <View style={styles.icon}>{icon}</View>;
+  // The glyph and color alone do not say succeeded, failed or rolled back; name the status.
+  return (
+    <View
+      style={styles.icon}
+      accessible
+      accessibilityRole="image"
+      accessibilityLabel={status.replace(/[-_]/g, " ")}
+    >
+      {icon}
+    </View>
+  );
 }
 
 const styles = StyleSheet.create((theme) => ({

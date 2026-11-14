@@ -70,6 +70,8 @@ export function SettingsRowHeader({
       {...webAccessibilityProps}
       accessibilityRole={external ? "link" : "button"}
       accessibilityLabel={summary ? `${label}, ${summary}` : label}
+      // The label replaces the row's text, so the hint is read as its description.
+      accessibilityHint={hint}
       accessibilityState={accessibilityState}
       disabled={disabled}
       onPress={onPress}

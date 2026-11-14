@@ -60,22 +60,26 @@ for (const width of [1280, 402]) {
       await page.getByTestId("claude-account-done").click();
       await page.getByTestId(`provider-connect-${account[0]}`).click();
       const panel = page.getByTestId("provider-login-panel");
-      await panel.getByRole("button", { name: "Start sign-in", exact: true }).click();
+      // The status line reports each step through its tone; the words are copy.
+      const status = panel.getByTestId("provider-login-status");
+      await panel.getByRole("button", { name: "Sign in", exact: true }).click();
       await expect(page.getByTestId("claude-browser-login")).toBeVisible();
       await page.getByTestId("claude-login-code").fill("incorrect-code");
-      await panel.getByRole("button", { name: "Complete sign-in", exact: true }).click();
+      await panel.getByRole("button", { name: "Submit code", exact: true }).click();
+      await expect(status).toHaveAttribute("data-tone", "error");
       await expect(panel).toContainText("Sign-in did not complete");
-      await panel.getByRole("button", { name: "Try sign-in again", exact: true }).click();
+      await panel.getByRole("button", { name: "Try again", exact: true }).click();
       await expect(page.getByTestId("claude-login-code")).toHaveValue("");
       await panel.getByRole("button", { name: "Cancel sign-in", exact: true }).click();
       await expect(panel).toContainText("Sign-in cancelled");
-      await panel.getByRole("button", { name: "Try sign-in again", exact: true }).click();
+      await panel.getByRole("button", { name: "Try again", exact: true }).click();
       await page.getByTestId("claude-login-code").fill("browser-test-code");
-      await panel.getByRole("button", { name: "Complete sign-in", exact: true }).click();
-      await expect(panel).toContainText("Sign-in completed");
+      await panel.getByRole("button", { name: "Submit code", exact: true }).click();
+      await expect(status).toHaveAttribute("data-tone", "success");
       await expect(panel).not.toContainText("Usage is refreshing");
       await expect(panel).not.toContainText("A code lasts up to 15 minutes");
-      await expect(panel).toContainText("You can close this panel and use this account.");
+      // A finished sign-in leaves nothing to do in the panel but close it.
+      await expect(page.getByTestId("claude-login-code")).toHaveCount(0);
       expect(account[1].extends).toBe("claude");
       const environment = z.record(z.string(), z.string()).parse(account[1].env);
       expect(environment.CLAUDE_CONFIG_DIR).toContain(account[0]);

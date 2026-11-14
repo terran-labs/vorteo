@@ -3,7 +3,12 @@ import { identityForeground, type IdentityColorName } from "@/styles/identity-co
 import { openSettings } from "./app";
 import { buildSeededHost } from "./daemon-registry";
 import { openSidebarDisplayPreferences } from "./sidebar";
-import { clickSettingsBackToWorkspace, openHostSection, openSettingsHost } from "./settings";
+import {
+  clickSettingsBackToWorkspace,
+  openHostSection,
+  openSettingsHost,
+  settingsHostConnections,
+} from "./settings";
 
 const REGISTRY_KEY = "@paseo:daemon-registry";
 const SEED_NONCE_KEY = "@paseo:e2e-seed-nonce";
@@ -124,7 +129,7 @@ export async function waitForConnectedHost(
 ): Promise<void> {
   await openSettings(page);
   await openSettingsHost(page, input.serverId);
-  const host = page.getByTestId(`settings-environment-${input.serverId}`);
+  const host = settingsHostConnections(page, input.serverId);
   await expect(host.getByTestId("host-page-connections-card")).toContainText(input.endpoint, {
     timeout: 30_000,
   });

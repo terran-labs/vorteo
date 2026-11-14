@@ -118,7 +118,7 @@ function run(command, args, { timeout = 15_000 } = {}) {
     stdio: ["ignore", "pipe", "ignore"],
     maxBuffer: 256 * 1024 * 1024,
     timeout,
-    // Never refresh an index or take index.lock in someone else's worktree.
+    // Disable optional index writes and locking; this does not prevent file traversal.
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
   });
 }

@@ -40,7 +40,7 @@ import {
   PanelLeftOpen,
 } from "lucide-react-native";
 import { useSidebarNavItems } from "@/sidebar-nav/use-sidebar-nav-items";
-import { builtinSidebarNavLabelKey } from "@/sidebar-nav/model";
+import { builtinSidebarNavLabelKey, type PluginSidebarNavItem } from "@/sidebar-nav/model";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -128,7 +128,6 @@ import { useCloseAgentListGesture } from "@/mobile-panels/gestures";
 import { MobilePanelOverlay } from "@/mobile-panels/presentation";
 import { buildSchedulesRoute, buildSessionsRoute, buildSettingsRoute } from "@/utils/host-routes";
 import { openHostOverview } from "@/navigation/settings-navigation";
-import { UsageSidebarItem, useUsageSummary } from "@/usage";
 import { SidebarGlobalCards } from "@/components/sidebar/global-cards";
 import { IconButtonChromeProvider } from "@/components/ui/icon-button-chrome";
 import { SidebarFooterBlock, useFooterLeadingRule } from "@/components/sidebar/footer-rules";
@@ -848,19 +847,15 @@ function SidebarToolbar({
 }
 
 /**
- * The footer rows in the user's `sidebarFooterItems` order: the Usage item and plugin rows. The
- * Usage item is left out while it has no summary to show.
+ * Plugin footer rows in the user's `sidebarFooterItems` order. Usage is not a row here: the
+ * meter beside the installation name always shows it, so the old Usage summary row and its
+ * stored visibility are ignored.
  */
-
 function SidebarFooterRows({ onBeforeNavigate }: { onBeforeNavigate?: () => void }) {
   const { items } = useSidebarNavItems("footer");
-  const usageVisible = items.some(
-    (item) => item.kind === "builtin" && item.id === "usage" && item.visible,
-  );
-  const usageSummary = useUsageSummary(usageVisible);
   const rowsRef = useRef<View | null>(null);
   const visibleItems = items.filter(
-    (item) => item.visible && (item.kind === "plugin" || usageSummary.length > 0),
+    (item): item is PluginSidebarNavItem => item.kind === "plugin" && item.visible,
   );
   const rule = useFooterLeadingRule("rows", visibleItems.length > 0);
   if (visibleItems.length === 0) return null;
@@ -868,19 +863,15 @@ function SidebarFooterRows({ onBeforeNavigate }: { onBeforeNavigate?: () => void
     <>
       {rule ? <SidebarSectionRule testID="sidebar-footer-separator" /> : null}
       <View ref={rowsRef} collapsable={false} style={styles.footerRows}>
-        {visibleItems.map((item) =>
-          item.kind === "plugin" ? (
-            <PluginSidebarItem
-              key={item.key}
-              group={item.group}
-              section="footer"
-              fallbackAnchorRef={rowsRef}
-              onBeforeNavigate={onBeforeNavigate}
-            />
-          ) : (
-            <UsageSidebarItem key={item.key} />
-          ),
-        )}
+        {visibleItems.map((item) => (
+          <PluginSidebarItem
+            key={item.key}
+            group={item.group}
+            section="footer"
+            fallbackAnchorRef={rowsRef}
+            onBeforeNavigate={onBeforeNavigate}
+          />
+        ))}
       </View>
     </>
   );

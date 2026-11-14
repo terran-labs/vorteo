@@ -128,7 +128,7 @@ test("offers six reference themes with Dark Star selected by default", async ({
   await openSettingsSection(page, "appearance");
 
   await expect(page.getByTestId("theme-preview-starship-dark")).toHaveAttribute(
-    "aria-pressed",
+    "aria-checked",
     "true",
   );
   for (const id of ["starship-light", "starship-dark", "scriptorium", "midas", "ember", "neon"]) {
@@ -288,17 +288,17 @@ test("previews compact theme swatches without saving and commits only on activat
   );
   await expect(root).toHaveAttribute("data-vorteo-appearance", "midas");
   await expect(page.getByTestId("theme-preview-starship-dark")).toHaveAttribute(
-    "aria-pressed",
+    "aria-checked",
     "true",
   );
   await page.mouse.move(0, 0);
   await expect(root).toHaveAttribute("data-vorteo-appearance", "starship-dark");
+  // Focus lifts the bubble without repainting the app; arrowing through radios must not preview.
   await card.focus();
-  await expect(root).toHaveAttribute("data-vorteo-appearance", "midas");
-  await page.keyboard.press("Escape");
+  await expect(card).toBeFocused();
   await expect(root).toHaveAttribute("data-vorteo-appearance", "starship-dark");
   await card.click();
-  await expect(card).toHaveAttribute("aria-pressed", "true");
+  await expect(card).toHaveAttribute("aria-checked", "true");
   await page.mouse.move(0, 0);
   await expect(root).toHaveAttribute("data-vorteo-appearance", "midas");
   await page.reload();
