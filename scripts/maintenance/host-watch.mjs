@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Read-only Host checks for hourly upkeep: file-table pressure, stale task worktrees and
-// Time Machine coverage of the precious folders. It changes nothing, prints one JSON report
-// and exits 0; the caller decides how to alert. Git runs without optional locks, so it never
-// takes a worktree's index.lock or rewrites its index. See
+// Host checks on request: file-table pressure, stale task worktrees and Time Machine coverage.
+// Prints one JSON report; the caller decides how to alert. Probes read state, but --lock
+// creates, renames and removes lock files. Exact worktree and --precious paths are printed;
+// never pass credential paths. Git disables optional index writes. See
 // docs/execution-installation.md#host-watch.
 //
 //   node scripts/maintenance/host-watch.mjs \
@@ -10,6 +10,7 @@
 //     [--projects <folder>]... [--root <folder>]...  repositories whose worktrees to check
 //     [--precious <path>]...                         paths the latest backup must contain
 //     [--stale-hours 24] [--worktree-seconds 120]  staleness window, worktree pass deadline
+//     [--inspect-worktree-files]                    expensive status scan, investigation only
 //     [--lock <file>]                                skip this run while another holds it
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -58,7 +59,11 @@ export function fileTableCheck({ maxFiles, maxFilesPerProc, openFiles, vmOpenFil
 }
 
 /** Worktrees with uncommitted or unpushed work untouched for longer than the window. */
-export function staleWorktreeCheck({ worktrees, skipped = 0 }, { now, staleHours }) {
+export function staleWorktreeCheck(
+  { worktrees, skipped = 0, unreadable = [], inspectFiles = true },
+  { now, staleHours },
+) {
+  const scope = inspectFiles ? "uncommitted or unpushed work" : "unpushed commits or no remote";
   const stale = worktrees.filter(
     (worktree) =>
       (worktree.dirty || worktree.unpushed > 0 || worktree.noRemote) &&
@@ -66,10 +71,8 @@ export function staleWorktreeCheck({ worktrees, skipped = 0 }, { now, staleHours
   );
   const parts = [];
   if (stale.length)
-    parts.push(
-      `${stale.length} worktrees hold uncommitted or unpushed work older than ${staleHours} hours`,
-    );
-  if (skipped) parts.push(`${skipped} worktrees not checked before the deadline`);
+    parts.push(`${stale.length} worktrees with ${scope} untouched for over ${staleHours} hours`);
+  if (skipped) parts.push(`${skipped} worktree or repository probes unreadable or skipped`);
   let status = "ok";
   if (stale.length) status = "warn";
   else if (skipped) status = "unknown";
@@ -78,12 +81,14 @@ export function staleWorktreeCheck({ worktrees, skipped = 0 }, { now, staleHours
     status,
     summary: parts.length
       ? parts.join("; ")
-      : `No uncommitted or unpushed work older than ${staleHours} hours in ${worktrees.length} worktrees`,
-    detail: stale.map(({ path: location, dirty, unpushed, noRemote }) => ({
-      path: location,
-      dirty,
-      ...(noRemote ? { noRemote } : { unpushed }),
-    })),
+      : `No worktrees with ${scope} untouched for over ${staleHours} hours among ${worktrees.length} checked`,
+    fileChangesChecked: inspectFiles,
+    detail: [
+      ...stale.map(({ path: location, dirty, unpushed, noRemote }) =>
+        noRemote ? { path: location, dirty, noRemote } : { path: location, dirty, unpushed },
+      ),
+      ...unreadable.map((location) => ({ path: location, status: "unknown" })),
+    ],
   };
 }
 
@@ -167,109 +172,124 @@ function devFuseInodes(docker, container) {
   }
 }
 
-function git(cwd, args) {
-  return run("git", ["-C", cwd, "-c", "core.fsmonitor=false", ...args]).trim();
+/** Finite, capped budget, validated before any probes or lock maintenance. */
+export function worktreeSeconds(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds < 1 || seconds > 300)
+    throw new Error("--worktree-seconds must be between 1 and 300 seconds");
+  return seconds;
 }
 
-/** Linked worktrees visible here, once per repository, until the deadline passes. */
-function collectWorktrees(repositories, deadline, dev) {
-  const seen = new Set();
-  const found = [];
-  const elsewhere = [];
-  let skipped = 0;
-  for (const repository of repositories) {
-    let common;
-    let listing;
-    try {
-      common = path.resolve(repository, git(repository, ["rev-parse", "--git-common-dir"]));
-      listing = git(repository, ["worktree", "list", "--porcelain"]);
-    } catch {
-      continue;
-    }
-    if (seen.has(common)) continue;
-    seen.add(common);
-    const paths = listing
-      .split("\n")
-      .filter((line) => line.startsWith("worktree "))
-      .map((line) => line.slice("worktree ".length))
-      .slice(1);
-    // Worktrees whose folders only Dev can see, such as those on Dev's worktree volume.
-    elsewhere.push(...paths.filter((location) => !fs.existsSync(location)));
-    for (const location of paths.filter((item) => fs.existsSync(item))) {
-      if (Date.now() > deadline) {
-        skipped++;
-        continue;
-      }
-      try {
-        const gitDir = path.resolve(location, git(location, ["rev-parse", "--git-dir"]));
-        const index = path.join(gitDir, "index");
-        // Read before any other git call, so the check never moves the activity clock.
-        const lastActivity = fs.statSync(fs.existsSync(index) ? index : gitDir).mtimeMs;
-        const noRemote = git(location, ["remote"]) === "";
-        found.push({
-          path: location,
-          lastActivity,
-          dirty: git(location, ["status", "--porcelain"]) !== "",
-          noRemote,
-          unpushed: noRemote
-            ? 0
-            : Number(git(location, ["rev-list", "--count", "HEAD", "--not", "--remotes"])),
-        });
-      } catch {
-        skipped++;
-      }
-    }
-  }
-  if (dev && elsewhere.length) {
-    const fromDev = devWorktrees(dev, elsewhere, deadline);
-    found.push(...fromDev.worktrees);
-    skipped += fromDev.skipped;
-  }
-  return { worktrees: found, skipped };
+function remaining(deadline, now) {
+  const milliseconds = Math.floor(deadline - now());
+  if (!Number.isFinite(milliseconds) || milliseconds < 1)
+    throw new Error("Worktree deadline reached");
+  return milliseconds;
 }
 
-// Reads each worktree inside Dev in one shell, one line per worktree it can see:
-// <path>\t<dirty 0|1>\t<has remote 0|1>\t<unpushed, or ? when unreadable>\t<index mtime, s>.
-// Paths arrive on stdin and are always quoted, so none can split or add Git options.
-const DEV_WORKTREE_SCRIPT = `
-g() { git -c core.fsmonitor=false -C "$p" "$@"; }
-while IFS= read -r p; do
-  [ -d "$p" ] || continue
-  d=$(g rev-parse --absolute-git-dir 2>/dev/null) || continue
-  t=$(stat -c %Y "$d/index" 2>/dev/null || stat -c %Y "$d")
-  [ -n "$(g status --porcelain 2>/dev/null)" ] && dirty=1 || dirty=0
-  if [ -n "$(g remote 2>/dev/null)" ]; then
-    u=$(g rev-list --count HEAD --not --remotes 2>/dev/null) || u='?'
-    printf '%s\t%s\t1\t%s\t%s\n' "$p" "$dirty" "$u" "$t"
-  else
-    printf '%s\t%s\t0\t0\t%s\n' "$p" "$dirty" "$t"
-  fi
-done`;
-
-/** Worktrees read inside Dev, and how many Dev saw but could not read. */
-export function parseDevWorktrees(output) {
-  const rows = output
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => line.split("\t"))
-    .filter((fields) => fields.length === 5);
-  const readable = rows.filter(([, , , unpushed]) => /^\d+$/.test(unpushed));
-  return {
-    worktrees: readable.map(([location, dirty, hasRemote, unpushed, mtime]) => ({
-      path: location,
-      dirty: dirty === "1",
-      noRemote: hasRemote === "0",
-      unpushed: Number(unpushed),
-      lastActivity: Number(mtime) * 1000,
-    })),
-    skipped: rows.length - readable.length,
+/** Shared by Host and Dev. Keep dependencies explicit so Dev executes the same probes. */
+export function inspectWorktree(location, { deadline, inspectFiles, filesystem, execute, now }) {
+  const budget = () => {
+    const milliseconds = Math.floor(deadline - now());
+    if (!Number.isFinite(milliseconds) || milliseconds < 1)
+      throw new Error("Worktree deadline reached");
+    return Math.min(15_000, milliseconds);
   };
+  const stat = (name) => {
+    budget();
+    return filesystem.statSync(name);
+  };
+  const git = (args) => {
+    const output = execute("git", ["-C", location, "-c", "core.fsmonitor=false", ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      maxBuffer: 256 * 1024 * 1024,
+      timeout: budget(),
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    });
+    budget();
+    return output.trim();
+  };
+  try {
+    if (!stat(location).isDirectory()) throw new Error("Not a directory");
+    const gitDir = git(["rev-parse", "--absolute-git-dir"]);
+    if (!gitDir.startsWith("/")) throw new Error("Invalid Git directory");
+    let activity;
+    try {
+      activity = stat(`${gitDir}/index`);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      activity = stat(gitDir);
+    }
+    const lastActivity = activity.mtimeMs;
+    const noRemote = git(["remote"]) === "";
+    const count = noRemote ? "0" : git(["rev-list", "--count", "HEAD", "--not", "--remotes"]);
+    if (!/^\d+$/.test(count)) throw new Error("Invalid commit count");
+    const unpushed = Number(count);
+    if (!Number.isFinite(lastActivity) || !Number.isSafeInteger(unpushed) || unpushed < 0)
+      throw new Error("Invalid worktree metadata");
+    // Status traverses tracked and untracked files even with optional locks disabled.
+    const dirty = inspectFiles ? git(["status", "--porcelain"]) !== "" : null;
+    budget();
+    return { path: location, status: "ok", dirty, noRemote, unpushed, lastActivity };
+  } catch {
+    return { path: location, status: "unknown" };
+  }
 }
 
-function devWorktrees({ docker, container }, paths, deadline) {
-  const seconds = Math.max(1, Math.floor((deadline - Date.now()) / 1000));
+// JSON preserves unusual paths. Every requested path gets a row, including failed probes.
+const DEV_WORKTREE_SCRIPT = `
+const fs = require("node:fs");
+const { execFileSync } = require("node:child_process");
+const inspectWorktree = ${inspectWorktree.toString()};
+const { paths, deadline, inspectFiles } = JSON.parse(fs.readFileSync(0, "utf8"));
+for (const location of paths) {
+  const row = inspectWorktree(location, { deadline, inspectFiles, filesystem: fs,
+    execute: execFileSync, now: Date.now });
+  process.stdout.write(JSON.stringify(row) + "\\n");
+}`;
+
+/** Missing, duplicate or malformed executor rows cannot turn a failed probe healthy. */
+export function parseDevWorktrees(output, paths) {
+  const rows = new Map();
+  for (const line of output.split("\n").filter(Boolean)) {
+    try {
+      const row = JSON.parse(line);
+      rows.set(row.path, rows.has(row.path) ? null : row);
+    } catch {
+      /* Missing rows below remain unknown. */
+    }
+  }
+  const worktrees = [];
+  const unreadable = [];
+  for (const location of paths) {
+    const row = rows.get(location);
+    if (
+      row?.status !== "ok" ||
+      !Number.isFinite(row.lastActivity) ||
+      !Number.isSafeInteger(row.unpushed) ||
+      row.unpushed < 0 ||
+      typeof row.noRemote !== "boolean" ||
+      !(row.dirty === null || typeof row.dirty === "boolean")
+    ) {
+      unreadable.push(location);
+    } else {
+      const { status: _status, ...worktree } = row;
+      worktrees.push(worktree);
+    }
+  }
+  return { worktrees, skipped: unreadable.length, unreadable };
+}
+
+export function devWorktrees(
+  { docker, container },
+  paths,
+  deadline,
+  { inspectFiles = false, execute = execFileSync, now = Date.now } = {},
+) {
   try {
-    const output = execFileSync(
+    const milliseconds = remaining(deadline, now);
+    const output = execute(
       docker,
       [
         "exec",
@@ -279,36 +299,101 @@ function devWorktrees({ docker, container }, paths, deadline) {
         "-u",
         "paseo",
         container,
-        // Bounded inside Dev too, so a hung Git call never outlives this run.
         "timeout",
-        String(seconds),
-        "sh",
-        "-c",
+        String(milliseconds / 1000),
+        "node",
+        "-e",
         DEV_WORKTREE_SCRIPT,
       ],
       {
-        input: `${paths.join("\n")}\n`,
+        input: JSON.stringify({ paths, deadline, inspectFiles }),
         encoding: "utf8",
         stdio: ["pipe", "pipe", "ignore"],
         maxBuffer: 64 * 1024 * 1024,
-        timeout: seconds * 1000,
+        timeout: milliseconds,
       },
     );
-    return parseDevWorktrees(output);
+    return parseDevWorktrees(output, paths);
   } catch {
-    return { worktrees: [], skipped: paths.length };
+    return { worktrees: [], skipped: paths.length, unreadable: paths };
   }
 }
 
-function repositoriesIn(folder) {
-  try {
-    return fs
-      .readdirSync(folder)
-      .map((name) => path.join(folder, name))
-      .filter((child) => fs.existsSync(path.join(child, ".git")));
-  } catch {
-    return [];
+/** Discovery and every probe share one budget, including probes inside Dev. */
+export function collectWorktrees(
+  folders,
+  deadline,
+  dev,
+  { inspectFiles = false, filesystem = fs, execute = execFileSync, now = Date.now } = {},
+) {
+  const seen = new Set();
+  const found = [];
+  const unreadable = [];
+  const elsewhere = [];
+  const probe = (fn) => {
+    remaining(deadline, now);
+    return fn();
+  };
+  const git = (cwd, args) => {
+    const output = execute("git", ["-C", cwd, "-c", "core.fsmonitor=false", ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      maxBuffer: 256 * 1024 * 1024,
+      timeout: Math.min(15_000, remaining(deadline, now)),
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    });
+    remaining(deadline, now);
+    return output.trim();
+  };
+  const inspect = (location) => {
+    try {
+      if (!probe(() => filesystem.existsSync(location)) && dev) {
+        elsewhere.push(location);
+        return;
+      }
+      const row = inspectWorktree(location, { deadline, inspectFiles, filesystem, execute, now });
+      if (row.status !== "ok") unreadable.push(location);
+      else {
+        const { status: _status, ...worktree } = row;
+        found.push(worktree);
+      }
+    } catch {
+      unreadable.push(location);
+    }
+  };
+  for (const folder of folders) {
+    let children;
+    try {
+      children = probe(() => filesystem.readdirSync(folder));
+    } catch {
+      unreadable.push(folder);
+      continue;
+    }
+    for (const name of children) {
+      const repository = path.join(folder, name);
+      try {
+        if (!probe(() => filesystem.existsSync(path.join(repository, ".git")))) continue;
+        const common = path.resolve(repository, git(repository, ["rev-parse", "--git-common-dir"]));
+        if (seen.has(common)) continue;
+        seen.add(common);
+        const listing = git(repository, ["worktree", "list", "--porcelain", "-z"]);
+        const paths = listing
+          .split("\0")
+          .filter((line) => line.startsWith("worktree "))
+          .map((line) => line.slice("worktree ".length))
+          .slice(1);
+        for (const location of paths) inspect(location);
+      } catch {
+        unreadable.push(repository);
+      }
+    }
   }
+  if (elsewhere.length) {
+    const fromDev = devWorktrees(dev, elsewhere, deadline, { inspectFiles, execute, now });
+    found.push(...fromDev.worktrees);
+    unreadable.push(...fromDev.unreadable);
+  }
+  return { worktrees: found, skipped: unreadable.length, unreadable, inspectFiles };
 }
 
 function latestBackup() {
@@ -395,9 +480,14 @@ function main() {
       precious: { type: "string", multiple: true, default: [] },
       "stale-hours": { type: "string", default: "24" },
       "worktree-seconds": { type: "string", default: "120" },
+      "inspect-worktree-files": { type: "boolean", default: false },
       lock: { type: "string" },
     },
   });
+  const seconds = worktreeSeconds(values["worktree-seconds"]);
+  const staleHours = Number(values["stale-hours"]);
+  if (!Number.isFinite(staleHours) || staleHours <= 0)
+    throw new Error("--stale-hours must be finite and positive");
   if (values.lock && !takeLock(values.lock)) {
     console.log(
       JSON.stringify({ checkedAt: new Date().toISOString(), status: "skipped", checks: [] }),
@@ -420,21 +510,19 @@ function main() {
   } catch (error) {
     checks.push({ id: "file-table", status: "unknown", summary: error.message, detail: [] });
   }
-  const repositories = [
-    ...values.projects.flatMap(repositoriesIn),
-    ...values.root.flatMap(repositoriesIn),
-  ];
-  if (repositories.length)
+  const folders = [...values.projects, ...values.root];
+  if (folders.length)
     checks.push(
       staleWorktreeCheck(
         collectWorktrees(
-          repositories,
-          Date.now() + Number(values["worktree-seconds"]) * 1000,
+          folders,
+          Date.now() + seconds * 1000,
           values["dev-container"]
             ? { docker: values.docker, container: values["dev-container"] }
             : null,
+          { inspectFiles: values["inspect-worktree-files"] },
         ),
-        { now: Date.now(), staleHours: Number(values["stale-hours"]) },
+        { now: Date.now(), staleHours },
       ),
     );
   if (values.precious.length)
