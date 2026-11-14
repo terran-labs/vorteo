@@ -2326,6 +2326,8 @@ export const ja: TranslationResources = {
     title: "設定",
     loading: "設定を読み込み中...",
     groups: {
+      thisDevice: "このデバイス",
+      vorteo: "Vorteo",
       app: "アプリ",
       host: "ホスト",
     },

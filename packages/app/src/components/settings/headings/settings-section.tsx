@@ -4,14 +4,18 @@ import { Text, View, type StyleProp, type ViewStyle } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { ExternalLink, type ExternalLinkProps } from "@/components/ui/external-link";
 import { SettingsInfoTip } from "./settings-info-tip";
+import { SettingsHeadingLevel, useSettingsHeadingLevel, webHeadingLevel } from "./heading-level";
 import { settingsStyles } from "@/styles/settings";
 
-/** The catalog supplies scope once for all existing headers within a pane. */
-export const SettingsPaneScope = createContext<string | null>(null);
+/**
+ * A header action the settings page supplies for a pane whose component it does not own, such as
+ * the pane's Reset. A section with its own `trailing` keeps it; sections nested inside a section's
+ * content never inherit it.
+ */
+export const SettingsSectionTrailing = createContext<ReactNode>(null);
 
 interface SettingsSectionProps {
   title: string;
-  scope?: string;
   /**
    * What this section is for. Renders as an info tooltip on the header; a
    * paragraph between the header and the card is wrong (docs/design.md §7).
@@ -42,7 +46,6 @@ interface SettingsSectionProps {
  */
 export function SettingsSection({
   title,
-  scope,
   info,
   link,
   trailing,
@@ -52,8 +55,9 @@ export function SettingsSection({
   flush,
   children,
 }: SettingsSectionProps) {
-  const inheritedScope = useContext(SettingsPaneScope);
-  const scopeLabel = scope ?? inheritedScope;
+  const inheritedTrailing = useContext(SettingsSectionTrailing);
+  // This title takes the current level; sections nested in its content take the next.
+  const level = useSettingsHeadingLevel();
   const sectionStyle = useMemo(
     () => [settingsStyles.section, flush ? styles.flush : null, style],
     [flush, style],
@@ -62,9 +66,12 @@ export function SettingsSection({
     <View style={sectionStyle} testID={testID}>
       <View style={styles.header}>
         <View style={[styles.titleRow, status !== undefined && styles.statusTitle]}>
+          {/* One line always: a long title truncates rather than wrapping the header. */}
           <Text
+            {...webHeadingLevel(level)}
+            accessibilityRole="header"
             style={[settingsStyles.sectionHeaderTitle, styles.title]}
-            numberOfLines={status !== undefined ? 1 : undefined}
+            numberOfLines={1}
           >
             {title}
           </Text>
@@ -89,12 +96,13 @@ export function SettingsSection({
             <ExternalLink {...link} />
           </View>
         ) : null}
-        {scopeLabel ? (
-          <Text style={[settingsStyles.rowHint, styles.scope]}>{scopeLabel}</Text>
-        ) : null}
-        {trailing}
+        {trailing ?? inheritedTrailing}
       </View>
-      <View style={styles.content}>{children}</View>
+      <SettingsSectionTrailing.Provider value={null}>
+        <SettingsHeadingLevel.Provider value={level + 1}>
+          <View style={styles.content}>{children}</View>
+        </SettingsHeadingLevel.Provider>
+      </SettingsSectionTrailing.Provider>
     </View>
   );
 }
@@ -105,23 +113,25 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "space-between",
     gap: theme.spacing[2],
-    marginBottom: theme.spacing[3],
+    marginBottom: theme.spacing[2],
     marginLeft: theme.spacing[1],
   },
   // Mirrors the header's marginLeft, so the link's glyph and the title's sit on matching rails.
   link: {
     marginRight: theme.spacing[1],
   },
+  // Shrinks before the header's trailing controls do, so the header stays on one line.
   titleRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
+    flexShrink: 1,
+    minWidth: 0,
   },
-  scope: { flexShrink: 1, maxWidth: "45%", textAlign: "right", marginTop: 0 },
   statusTitle: { maxWidth: "65%", flexShrink: 1 },
   title: { flexShrink: 1 },
   content: {
-    gap: theme.spacing[3],
+    gap: theme.spacing[2],
   },
   flush: {
     marginBottom: 0,

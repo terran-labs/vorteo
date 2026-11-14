@@ -14,12 +14,12 @@ test("persists demo edits across reload, updates Changes live and resets only de
   await files.getByText("README.md", { exact: true }).click();
   await page.keyboard.press(mac ? "Meta+Shift+G" : "Control+Shift+G");
   const pane = page.getByTestId("workspace-file-pane").filter({ visible: true });
-  await pane.getByRole("button", { name: "Source", exact: true }).click();
+  await pane.getByRole("radio", { name: "Source", exact: true }).click();
   const editor = pane.locator(".cm-content");
   await expect(editor).toBeVisible();
   await editor.fill("# Atlas\n\nSimulated editor verification.\n");
   await page.keyboard.press(mac ? "Meta+s" : "Control+s");
-  await pane.getByRole("button", { name: "Preview", exact: true }).click();
+  await pane.getByRole("radio", { name: "Preview", exact: true }).click();
   await expect(pane.getByText("Simulated editor verification.", { exact: true })).toBeVisible();
   await expect(
     page.getByTestId("supporting-card-changes_tree").getByText("README.md", { exact: true }),

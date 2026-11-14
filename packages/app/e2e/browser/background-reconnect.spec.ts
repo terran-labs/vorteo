@@ -32,9 +32,17 @@ async function captureHost({
   await page.screenshot({ path: testInfo.outputPath(`${name}.png`) });
 }
 
+/**
+ * The host overview's own status. The System page behind its Edit dialog also lists the
+ * environment as Online, so scope to the dialog's identity badges.
+ */
+function hostOnline(page: Page) {
+  return page.getByTestId("host-page-identity").getByText("Online", { exact: true });
+}
+
 async function refocusConnectedTab(page: Page): Promise<void> {
   await setTabVisibility(page, "visible");
-  await expect(page.getByText("Online", { exact: true })).toBeVisible();
+  await expect(hostOnline(page)).toBeVisible();
 }
 
 async function setTabVisibility(page: Page, visibility: DocumentVisibilityState): Promise<void> {
@@ -58,7 +66,7 @@ async function openHostOverview(page: Page, daemon: IsolatedHostDaemon): Promise
     },
   ]);
   await page.goto(`/settings/hosts/${daemon.serverId}/host`);
-  await expect(page.getByText("Online", { exact: true })).toBeVisible();
+  await expect(hostOnline(page)).toBeVisible();
 }
 
 async function restartHostWhileHidden(page: Page, daemon: IsolatedHostDaemon): Promise<void> {
@@ -68,7 +76,7 @@ async function restartHostWhileHidden(page: Page, daemon: IsolatedHostDaemon): P
   });
   await daemon.restart();
   await reconnectedSocket;
-  await expect(page.getByText("Online", { exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(hostOnline(page)).toBeVisible({ timeout: 30_000 });
   expect(await page.evaluate(() => document.visibilityState)).toBe("hidden");
 }
 

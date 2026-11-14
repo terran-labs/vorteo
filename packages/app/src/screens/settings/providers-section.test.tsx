@@ -94,14 +94,19 @@ vi.mock("react-native", async (importOriginal) => ({
   ActivityIndicator: () => React.createElement("span", { "data-testid": "activity-indicator" }),
 }));
 
-vi.mock("lucide-react-native", async (importOriginal) => {
+// Every icon renders as a tagged span, so the screens under test can import any icon,
+// including ones added later by components they reach, without listing them here.
+vi.mock("lucide-react-native", () => {
   const icon = (name: string) => () => React.createElement("span", { "data-icon": name });
-  return {
-    ...(await importOriginal<typeof import("lucide-react-native")>()),
-    ChevronRight: icon("ChevronRight"),
-    MoreHorizontal: icon("MoreHorizontal"),
-    Trash2: icon("Trash2"),
-  };
+  return new Proxy({} as Record<string, unknown>, {
+    get: (cache, name) => {
+      if (typeof name !== "string" || name === "then") return undefined;
+      if (name === "__esModule") return true;
+      cache[name] ??= icon(name);
+      return cache[name];
+    },
+    has: (_, name) => typeof name === "string" && name !== "then",
+  });
 });
 
 vi.mock("react-i18next", async (importOriginal) => ({
@@ -339,7 +344,7 @@ vi.mock("@/utils/confirm-dialog", () => ({
 import { ACP_PROVIDER_CATALOG } from "@/data/acp-provider-catalog";
 import { InstallationSettingsSchema } from "@getpaseo/protocol/installation-settings";
 import type { useInstallationSettings } from "@/execution-installation/settings";
-import { ProvidersSection } from "./providers-section";
+import { ProvidersSection, providerListState } from "./providers-section";
 
 function unexpectedToast(): never {
   throw new Error("Provider row interactions should not display a toast");
@@ -777,5 +782,31 @@ describe("ProvidersSection", () => {
     render();
     expect(container?.querySelector('[data-testid="provider-primary-claude"]')).toBeNull();
     expect(container?.querySelector('[data-testid="provider-make-primary-codex"]')).toBeNull();
+  });
+});
+
+// A host that never sends a snapshot used to leave the skeleton up forever.
+describe("providerListState", () => {
+  const base = {
+    hasServer: true,
+    isConnected: true,
+    supportsSnapshot: true,
+    isLoading: false,
+    error: null,
+    entryCount: null,
+  };
+  it.each([
+    ["loading while a snapshot is on its way", { isLoading: true }, "loading"],
+    ["empty when the query settles without one", {}, "empty"],
+    [
+      "unsupported when the host never reports snapshots",
+      { supportsSnapshot: false },
+      "unsupported",
+    ],
+    ["error when the request failed", { error: "boom" }, "error"],
+    ["unavailable while offline", { isConnected: false, isLoading: true }, "unavailable"],
+    ["ready once providers arrive", { entryCount: 2 }, "ready"],
+  ] as const)("is %s", (_, overrides, expected) => {
+    expect(providerListState({ ...base, ...overrides })).toBe(expected);
   });
 });

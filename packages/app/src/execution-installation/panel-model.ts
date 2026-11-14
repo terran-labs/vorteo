@@ -304,12 +304,38 @@ export class InstallationPanelModel {
     return [...deployments, ...rebinds];
   }
 
+  /**
+   * Another page of this browser can unlock the shared session cookie after this page locked
+   * on an expired request. Only the server's session check restores access here; every
+   * protected request still carries the cookie and is authorized by the server.
+   */
+  private async observeRestoredSession(generation: number): Promise<void> {
+    if (
+      !this.state.initialized ||
+      this.state.unlocked ||
+      this.state.busy ||
+      !this.state.sessionsSupported
+    )
+      return;
+    let authenticated = false;
+    try {
+      authenticated = await this.client.restoreSession();
+    } catch {
+      // Stay locked; the next refresh checks again.
+      return;
+    }
+    // A local lock or expiry during the check wins over a stale authenticated answer.
+    if (!authenticated || generation !== this.accessGeneration || this.state.busy) return;
+    this.publish({ unlocked: true, error: null, password: "" });
+  }
+
   async refresh(): Promise<void> {
     if (this.refreshing) return;
     this.refreshing = true;
     const generation = this.accessGeneration;
     const automationGeneration = this.automationGeneration;
     try {
+      await this.observeRestoredSession(generation);
       const [restartSummary] = await Promise.all([
         this.client.restartSummary(),
         this.refreshEnrollmentStatus(),

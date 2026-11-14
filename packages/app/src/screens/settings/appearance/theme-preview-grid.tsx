@@ -43,6 +43,8 @@ interface ThemePreviewCardProps {
   compact?: boolean;
   appearance: AppearanceDefinition;
   selected: boolean;
+  /** The one radio Tab reaches: the checked one, or the first when none is checked. */
+  tabStop: boolean;
   pending: boolean;
   onCommit: (id: AppearanceId) => void;
 }
@@ -50,6 +52,7 @@ interface ThemePreviewCardProps {
 function ThemePreviewCard({
   appearance,
   selected,
+  tabStop,
   pending,
   onCommit,
   compact: forceCompact,
@@ -91,12 +94,13 @@ function ThemePreviewCard({
     clearTimer();
     timer.current = setTimeout(() => preview(appearance.id), 180);
   }, [appearance.id, clearTimer, pending, preview, touch]);
+  // Focus lifts the bubble but does not preview: tabbing or arrowing through the group must not
+  // repaint the whole app on every stop. Arrow keys select, which applies the theme for real.
   const focus = useCallback(() => {
     focused.current = true;
     if (touch || pending) return;
     setLifted(true);
-    preview(appearance.id);
-  }, [appearance.id, pending, preview, touch]);
+  }, [pending, touch]);
   const leave = useCallback(() => {
     hovered.current = false;
     if (focused.current) return;
@@ -118,7 +122,10 @@ function ThemePreviewCard({
   const palette = option.theme.colors;
   const compact = forceCompact || width < 640;
   const swatchHeight = bubbleHeight(selected, lifted, compact);
-  const accessibilityState = useMemo(() => ({ selected, disabled: pending }), [pending, selected]);
+  const accessibilityState = useMemo(
+    () => ({ checked: selected, disabled: pending }),
+    [pending, selected],
+  );
   const measure = useCallback(
     (event: LayoutChangeEvent) => setSurfaceWidth(Math.round(event.nativeEvent.layout.width)),
     [],
@@ -180,8 +187,10 @@ function ThemePreviewCard({
             onBlur={blur}
             disabled={pending}
             accessibilityLabel={`${appearance.name}. ${appearance.description}`}
+            accessibilityRole="radio"
             accessibilityState={accessibilityState}
-            aria-pressed={selected}
+            aria-checked={selected}
+            tabIndex={tabStop ? 0 : -1}
             testID={`theme-preview-${appearance.id}`}
             trailing={swatch}
           />
@@ -195,6 +204,39 @@ function ThemePreviewCard({
       </Tooltip>
     </View>
   );
+}
+
+const RADIO_KEYS = new Set(["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp", "Home", "End"]);
+
+/**
+ * Radio-group keys on web: arrows, Home and End move focus to a radio and select it, wrapping at
+ * the ends; Space selects the focused one. Modified keys belong to app shortcuts. Native screen
+ * readers move between radios themselves, so this is web only.
+ */
+function moveRadioFocus(group: HTMLElement, event: KeyboardEvent) {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  const target = event.target as HTMLElement | null;
+  if (event.key === " " && target?.getAttribute("role") === "radio") {
+    event.preventDefault();
+    target.click();
+    return;
+  }
+  if (!RADIO_KEYS.has(event.key)) return;
+  // Claim the key even while a theme saves and every radio is disabled, so the page never scrolls.
+  event.preventDefault();
+  const radios = Array.from(group.querySelectorAll<HTMLElement>('[role="radio"]')).filter(
+    (radio) => radio.getAttribute("aria-disabled") !== "true",
+  );
+  if (radios.length === 0) return;
+  const current = radios.findIndex((radio) => radio === document.activeElement);
+  let next = current;
+  if (event.key === "Home") next = 0;
+  else if (event.key === "End") next = radios.length - 1;
+  else if (event.key === "ArrowRight" || event.key === "ArrowDown")
+    next = (current + 1) % radios.length;
+  else next = (current - 1 + radios.length) % radios.length;
+  radios[next].focus();
+  radios[next].click();
 }
 
 export function ThemePreviewGrid({
@@ -248,30 +290,58 @@ export function ThemePreviewGrid({
     [commit, selectTheme],
   );
   const followSystem = useCallback(() => select("auto"), [select]);
+  const groupRef = useRef<View>(null);
+  useEffect(() => {
+    if (!isWeb) return;
+    // On web a View ref is its DOM element.
+    const group = groupRef.current as unknown as HTMLElement | null;
+    if (!group) return;
+    const onKeyDown = (event: KeyboardEvent) => moveRadioFocus(group, event);
+    group.addEventListener("keydown", onKeyDown);
+    return () => group.removeEventListener("keydown", onKeyDown);
+  }, []);
   const followsSystem = settings.theme === "auto";
+  const anyBuiltinChecked =
+    followsSystem || APPEARANCE_DEFINITIONS.some((appearance) => appearance.id === settings.theme);
+  const followSystemState = useMemo(
+    () => ({ checked: followsSystem, disabled: saving }),
+    [followsSystem, saving],
+  );
   return (
     <View style={styles.controls}>
-      {/* A toggle like the preset cards: filled while chosen, announced through aria-pressed. */}
-      <Button
-        variant={followsSystem ? "default" : "outline"}
-        onPress={followSystem}
-        disabled={saving}
-        aria-pressed={followsSystem}
-        testID="theme-follow-system"
+      {/* One choice: Follow system first, then each theme, as radios with arrow-key movement. */}
+      <View
+        ref={groupRef}
+        accessibilityRole="radiogroup"
+        accessibilityLabel={t("settings.appearance.theme.title")}
+        style={styles.choices}
+        testID="theme-radio-group"
       >
-        {t("vorteoSetup.followSystem")}
-      </Button>
-      <View style={styles.grid}>
-        {APPEARANCE_DEFINITIONS.map((appearance) => (
-          <ThemePreviewCard
-            key={appearance.id}
-            compact={compact}
-            appearance={appearance}
-            selected={settings.theme === appearance.id}
-            pending={saving}
-            onCommit={select}
-          />
-        ))}
+        <Button
+          variant={followsSystem ? "default" : "outline"}
+          onPress={followSystem}
+          disabled={saving}
+          accessibilityRole="radio"
+          accessibilityState={followSystemState}
+          aria-checked={followsSystem}
+          tabIndex={followsSystem || !anyBuiltinChecked ? 0 : -1}
+          testID="theme-follow-system"
+        >
+          {t("vorteoSetup.followSystem")}
+        </Button>
+        <View style={styles.grid}>
+          {APPEARANCE_DEFINITIONS.map((appearance) => (
+            <ThemePreviewCard
+              key={appearance.id}
+              compact={compact}
+              appearance={appearance}
+              selected={settings.theme === appearance.id}
+              tabStop={settings.theme === appearance.id}
+              pending={saving}
+              onCommit={select}
+            />
+          ))}
+        </View>
       </View>
       <InterfaceZoomControl />
       {error ? (
@@ -285,16 +355,20 @@ export function ThemePreviewGrid({
 
 const styles = StyleSheet.create((theme) => ({
   controls: { width: "100%", maxWidth: 376, flexShrink: 1, gap: 12 },
-  // One row of equal columns, as in Freed's view menu. Bubbles shrink with the
-  // container instead of wrapping onto a second line.
+  choices: { gap: 12 },
+  // One row of equal columns, as in Freed's view menu. Bubbles shrink with the container and
+  // only wrap when the 44px touch minimum no longer fits, such as at 320px wide.
   grid: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
     gap: 10,
     minHeight: 44,
     paddingHorizontal: 4,
   },
-  hoverTarget: { position: "relative", flex: 1, minWidth: 0 },
+  // Columns share the row but never shrink below a 44px target, so at 320px they wrap instead of
+  // overlapping.
+  hoverTarget: { position: "relative", flexGrow: 1, flexBasis: 44, minWidth: 44 },
   // A column, so the bubble sits on the card's vertical centerline at every height. As a
   // web button the card is otherwise a row, which pins a shorter bubble to the top.
   card: {

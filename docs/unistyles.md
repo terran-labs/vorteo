@@ -425,6 +425,6 @@ have loaded and a hidden React Native View has its computed flex layout, dimensi
 current theme background. The probe exercises both React Native Web and Unistyles. Two
 consecutive animation frames must pass; elapsed time alone is not readiness. Keep the root
 inert while covered so keyboard focus cannot enter the unfinished interface. Optional font
-downloads retain system-font fallback and Data saver behavior. Startup diagnostics report
+downloads keep their system-font fallback and are skipped while data saving is on. Startup diagnostics report
 stylesheet failures and keep Reload available. The browser startup suite withholds each
 runtime stylesheet and exercises delayed and failed stylesheet downloads.

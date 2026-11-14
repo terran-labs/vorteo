@@ -1,5 +1,9 @@
 import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
 import { AGENT_PROVIDER_DEFINITIONS } from "@getpaseo/protocol/provider-manifest";
+import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
+import type { MutableDaemonConfig } from "@getpaseo/protocol/messages";
+import { providerConnectionAction } from "@/provider-usage/connection-action";
+import type { ProviderUsage } from "@/provider-usage/types";
 
 /** One environment's provider snapshot, as each daemon reports it. */
 export interface ProviderDetectionSource {
@@ -175,4 +179,88 @@ export function providerInstallHint(providerType: string): string {
 /** Only documented shell commands are copyable as commands. */
 export function providerInstallCommand(providerType: string): string | undefined {
   return providerInstallHint(providerType).match(/with (.+), then sign in\./)?.[1];
+}
+
+/** One environment's view of its providers, enough to tell which connections need a sign-in. */
+export interface SignInSource {
+  serverId: string;
+  kind: "host" | "container";
+  /** The daemon's provider config, which records each account's base provider. */
+  providers: MutableDaemonConfig["providers"] | undefined;
+  entries: readonly Pick<ProviderSnapshotEntry, "provider" | "status" | "enabled">[] | undefined;
+  usage: readonly ProviderUsage[] | undefined;
+}
+
+/** A connection that needs the owner to sign in, and where that sign-in runs. */
+export interface ConnectionSignIn {
+  accountId: string;
+  serverId: string;
+  /** The connection's provider id in that environment. */
+  providerId: string;
+  action: "Connect" | "Reconnect";
+  usage: ProviderUsage | undefined;
+}
+
+/**
+ * Whether one connection is signed out ("Connect") or expired ("Reconnect"). Sign-ins run on
+ * Host whenever the connection exists there; the Dev container receives access from Host.
+ */
+export function connectionSignIn(
+  account: ProviderAccount,
+  sources: readonly SignInSource[],
+): ConnectionSignIn | null {
+  if (!account.enabled) return null;
+  const ordered = [
+    ...sources.filter((source) => source.kind === "host"),
+    ...sources.filter((source) => source.kind !== "host"),
+  ];
+  for (const source of ordered) {
+    const definition = account.definitions.find((entry) => entry.bindings[source.serverId]);
+    const providerId = definition?.bindings[source.serverId];
+    if (!providerId) continue;
+    const usage = source.usage?.find((entry) => entry.providerId === providerId);
+    const action = providerConnectionAction({
+      providerId,
+      providers: source.providers,
+      usage,
+      snapshot: source.entries?.find((entry) => entry.provider === providerId),
+    });
+    // Wait for the snapshot before calling a Claude connection signed out; it settles readiness.
+    if (action === "Connect" && !source.entries) return null;
+    return action
+      ? { accountId: account.id, serverId: source.serverId, providerId, action, usage }
+      : null;
+  }
+  return null;
+}
+
+/** Every enabled connection that needs a sign-in, in provider and connection order. */
+export function connectionsNeedingSignIn(
+  families: readonly ProviderFamily[],
+  sources: readonly SignInSource[],
+): (ConnectionSignIn & { name: string })[] {
+  return families.flatMap((family) =>
+    family.accounts.flatMap((account) => {
+      const signIn = connectionSignIn(account, sources);
+      return signIn ? [{ ...signIn, name: connectionLabel(family, account) }] : [];
+    }),
+  );
+}
+
+/** The default connection reads as the provider itself, so "Claude" rather than "Default connection". */
+export function connectionLabel(family: Pick<ProviderFamily, "name">, account: ProviderAccount) {
+  return account.name === "Default connection" ? family.name : account.name;
+}
+
+/**
+ * A provider with nothing connected yet: its only connection is signed out. Its row offers one
+ * Connect button instead of an expandable container that would hold nothing usable.
+ */
+export function awaitingFirstConnection(
+  family: ProviderFamily,
+  sources: readonly SignInSource[],
+): ConnectionSignIn | null {
+  if (family.installed !== true || family.accounts.length !== 1) return null;
+  const signIn = connectionSignIn(family.accounts[0]!, sources);
+  return signIn?.action === "Connect" ? signIn : null;
 }

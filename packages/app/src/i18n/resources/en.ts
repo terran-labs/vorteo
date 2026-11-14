@@ -2723,6 +2723,9 @@ export const en = {
     title: "Settings",
     loading: "Loading settings...",
     groups: {
+      /** Top-level settings groups: settings stored on this device, and installation-wide. */
+      thisDevice: "This device",
+      vorteo: "Vorteo",
       app: "App",
       host: "Host",
     },

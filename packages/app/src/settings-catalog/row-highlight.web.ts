@@ -13,6 +13,18 @@ export function settingsPaneDomId(paneId: string): string {
   return `settings-pane-${paneId}`;
 }
 
+/**
+ * The element with `id` inside `root`. A route pushed on top of an open settings page leaves the
+ * page below mounted with the same ids, and `getElementById` returns the first one in the
+ * document, so lookups for one page must stay inside that page's own scroll content.
+ */
+export function settingsElementById(id: string, root?: ParentNode | null): HTMLElement | null {
+  const first = document.getElementById(id);
+  if (!root || !first || typeof (root as Node).contains !== "function") return first;
+  if ((root as Node).contains(first)) return first;
+  return root.querySelector<HTMLElement>(`[id="${id}"]`);
+}
+
 function findLabelElements(pane: HTMLElement, label: string): HTMLElement[] {
   const wanted = label.trim().toLowerCase();
   const found: HTMLElement[] = [];
@@ -45,11 +57,36 @@ function rowFor(element: HTMLElement, pane: HTMLElement): HTMLElement {
  * A pane heading can share a row's label ("Theme" above the Theme row), so
  * prefer a match whose row is control-height over a one-line heading.
  */
-export function findSettingRow(paneId: string, label: string): HTMLElement | null {
-  const pane = document.getElementById(settingsPaneDomId(paneId));
+export function findSettingRow(
+  paneId: string,
+  label: string,
+  root?: ParentNode | null,
+): HTMLElement | null {
+  const pane = settingsElementById(settingsPaneDomId(paneId), root);
   if (!pane) return null;
-  const rows = findLabelElements(pane, label).map((element) => rowFor(element, pane));
-  return rows.find((row) => row.offsetHeight >= ROW_MIN_HEIGHT) ?? rows[0] ?? null;
+  // A section's single Advanced group can hold rows indexed under a sibling pane, so look in
+  // the whole section when the pane itself has no such row.
+  const section = pane.parentElement?.closest<HTMLElement>('[id^="settings-page-section-"]');
+  for (const container of section ? [pane, section] : [pane]) {
+    const rows = findLabelElements(container, label).map((element) => rowFor(element, container));
+    const row = rows.find((candidate) => candidate.offsetHeight >= ROW_MIN_HEIGHT) ?? rows[0];
+    if (row) return row;
+  }
+  return null;
+}
+
+/**
+ * A row inside an open dialog, for settings that render in a dialog their pane opens, such as an
+ * environment's Edit dialog. The newest dialog wins.
+ */
+export function findSettingRowInDialogs(label: string): HTMLElement | null {
+  const dialogs = [...document.querySelectorAll<HTMLElement>('[role="dialog"]')].toReversed();
+  for (const dialog of dialogs) {
+    const rows = findLabelElements(dialog, label).map((element) => rowFor(element, dialog));
+    const row = rows.find((candidate) => candidate.offsetHeight >= ROW_MIN_HEIGHT) ?? rows[0];
+    if (row) return row;
+  }
+  return null;
 }
 
 /**
@@ -77,10 +114,11 @@ export function flashSettingRow(row: HTMLElement): void {
  */
 export function markSettingRows(
   matches: ReadonlyArray<{ pane: string; label: string }>,
+  root?: ParentNode | null,
 ): () => void {
   const marked: Array<{ row: HTMLElement; background: string }> = [];
   for (const match of matches) {
-    const row = findSettingRow(match.pane, match.label);
+    const row = findSettingRow(match.pane, match.label, root);
     if (!row || row.hasAttribute(MARK_ATTRIBUTE)) continue;
     marked.push({ row, background: row.style.backgroundColor });
     row.setAttribute(MARK_ATTRIBUTE, "");

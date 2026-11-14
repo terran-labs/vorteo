@@ -13,7 +13,11 @@ async function openAdvanced(page: Page) {
   // A real scroll gesture releases the section jump before opening a lower disclosure.
   await page.getByTestId("settings-scroll-page").filter({ visible: true }).first().hover();
   await page.mouse.wheel(0, 1);
-  await page.getByTestId("system-advanced-toggle").click();
+  // System's own Advanced toggle merged into the section's shared Advanced group.
+  const toggle = page.getByTestId("settings-system-advanced-toggle").filter({ visible: true });
+  await toggle.scrollIntoViewIfNeeded();
+  if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
 }
 
 for (const width of [1280, 390]) {

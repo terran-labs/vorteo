@@ -497,7 +497,7 @@ for (const theme of ["light", "dark"] as const) {
       await expect(settings).toHaveAttribute("aria-expanded", "true");
       await expect(chevron).toHaveCSS("transform", "matrix(0, 1, -1, 0, 0, 0)");
       await expect(screen.getByTestId("usage-display-used")).toHaveAttribute(
-        "aria-selected",
+        "aria-checked",
         "true",
       );
       await settings.blur();

@@ -61,14 +61,14 @@ export async function reloadSavedDisplaySettings(page: Page) {
   await expect(page.getByRole("switch", { name: "Show metadata" })).not.toBeChecked();
 }
 export async function editTitle(page: Page, title: string) {
-  await page.getByRole("button", { name: "Edit title", exact: true }).click();
+  await page.getByRole("button", { name: "Edit title: Monitor title", exact: true }).click();
   await replaceTitle(page, title);
 }
 export async function replaceTitle(page: Page, title: string) {
   await page.getByRole("textbox", { name: "Monitor title", exact: true }).fill(title);
 }
 export async function saveTitle(page: Page) {
-  await page.getByRole("button", { name: "Save title", exact: true }).click();
+  await page.getByRole("button", { name: "Save title: Title changes", exact: true }).click();
 }
 export async function expectTitleRequired(page: Page) {
   await expect(page.getByText(/Enter a title/).first()).toBeVisible();
@@ -94,7 +94,7 @@ export async function expectConflictPreservesDraft(page: Page, title: string) {
   );
 }
 export async function discardTitle(page: Page) {
-  await page.getByRole("button", { name: "Discard", exact: true }).click();
+  await page.getByRole("button", { name: "Discard title changes", exact: true }).click();
   await expectSavedTitle(page, "Agent monitor");
 }
 export async function returnAndReopenSettings(page: Page) {

@@ -1,4 +1,3 @@
-import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { useMutation } from "@tanstack/react-query";
 import { DraggableList, type DraggableRenderItemInfo } from "@/components/draggable-list";
 import type { DraggableListDragHandleProps } from "@/components/draggable-list.types";
@@ -12,13 +11,14 @@ import type { ProviderUsage } from "@/provider-usage/types";
 import { useCallback, useMemo, useRef, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import { Alert, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View, type AccessibilityActionEvent } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { CAN_HOVER, hoverGroup, hoverStyle } from "@/styles/hover";
 import { isWeb } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useToast } from "@/contexts/toast-api-context";
 import { settingsStyles } from "@/styles/settings";
+import { CONTROL_HEIGHTS } from "@/components/ui/control-geometry";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useHostFeature } from "@/runtime/host-features";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
@@ -48,7 +48,8 @@ import { confirmDialog } from "@/utils/confirm-dialog";
 import { isConnectionError, toErrorMessage } from "@/utils/error-messages";
 import { useReportActionError } from "@/hooks/use-action-error";
 import { filterSelectableModels } from "@/provider-selection/model-catalog";
-import { ChevronRight, GripVertical } from "lucide-react-native";
+import { ArrowDown, ArrowUp, ChevronRight, GripVertical } from "lucide-react-native";
+import { Button } from "@/components/ui/button";
 import { UsageLimitResumeSwitch } from "@/usage-limit/account-switch";
 
 type ProviderDefinition = ReturnType<typeof buildProviderDefinitions>[number];
@@ -100,6 +101,7 @@ interface ProviderRowProps {
   isRemoving: boolean;
   canRemove: boolean;
   isFirst: boolean;
+  isLast?: boolean;
   drag?: () => void;
   dragHandleProps?: DraggableListDragHandleProps;
   canReorder?: boolean;
@@ -111,7 +113,21 @@ interface ProviderRowProps {
   /** Whether this is the primary connection; null where the setting is unavailable. */
   primary: boolean | null;
   onMakePrimary?: (providerId: string, providerLabel: string) => void;
+  /** Why the last on or off change failed, shown on the row until the next attempt. */
+  actionError?: string | null;
+  /** Moves the provider one place up (-1) or down (1) without dragging. */
+  onMove?: (providerId: string, offset: -1 | 1) => void;
 }
+
+/** On web, describe the details button with the row's visible summary. */
+function describedBy(providerId: string) {
+  return isWeb ? ({ "aria-describedby": `provider-summary-${providerId}` } as object) : {};
+}
+
+const REORDER_ACTIONS = [
+  { name: "moveUp", label: "Move up" },
+  { name: "moveDown", label: "Move down" },
+];
 
 const SKELETON_ROW_KEYS = [0, 1, 2, 3].map((index) => `provider-skeleton-row-${index}`);
 
@@ -150,6 +166,7 @@ function ProviderRow({
   isRemoving,
   canRemove,
   isFirst,
+  isLast = false,
   drag,
   dragHandleProps,
   canReorder,
@@ -160,7 +177,16 @@ function ProviderRow({
   onRename,
   primary,
   onMakePrimary,
+  onMove,
+  actionError = null,
 }: ProviderRowProps) {
+  const handleReorderAction = useCallback(
+    (event: AccessibilityActionEvent) => {
+      if (event.nativeEvent.actionName === "moveUp") onMove?.(def.id, -1);
+      else if (event.nativeEvent.actionName === "moveDown") onMove?.(def.id, 1);
+    },
+    [onMove, def.id],
+  );
   const { t } = useTranslation();
   const { theme } = useUnistyles();
   const isCompact = useIsCompactFormFactor();
@@ -214,10 +240,18 @@ function ProviderRow({
           accessibilityLabel={`Reorder ${def.label}`}
           testID={`provider-drag-${def.id}`}
         >
+          {/* On web the wrapper above is the one keyboard stop; native screen readers use the
+              Move up and Move down actions instead of dragging. */}
           <Pressable
             onLongPress={drag}
             disabled={reorderPending}
+            focusable={!isWeb}
+            accessibilityActions={REORDER_ACTIONS}
+            onAccessibilityAction={handleReorderAction}
+            // On web the wrapper is already the button; a second one inside it is invalid HTML.
+            accessibilityRole={isWeb ? undefined : "button"}
             accessibilityLabel={`Reorder ${def.label}`}
+            accessibilityHint="Long press, then drag to change the order"
             style={styles.dragHandle}
           >
             <GripVertical size={16} color={theme.colors.foregroundMuted} />
@@ -233,6 +267,10 @@ function ProviderRow({
             onPress={handlePress}
             accessibilityRole="button"
             accessibilityLabel={t("settings.providers.providerDetails", { name: def.label })}
+            accessibilityHint={visibleStatus.label}
+            // Web drops accessibilityHint, so the status, Primary badge and error text are tied
+            // to the button as its description instead.
+            {...describedBy(def.id)}
           >
             {/* On web the chevron inherits the details button's CSS hover color. */}
             <ChevronRight
@@ -240,7 +278,7 @@ function ProviderRow({
               color={isWeb ? "currentColor" : theme.colors.foregroundMuted}
             />
             <ProviderIcon size={theme.iconSize.md} color={theme.colors.foreground} />
-            <View style={styles.textColumn}>
+            <View style={styles.textColumn} nativeID={`provider-summary-${def.id}`}>
               <View style={styles.titleRow}>
                 <Text style={settingsStyles.rowTitle} numberOfLines={1}>
                   {def.label}
@@ -249,17 +287,15 @@ function ProviderRow({
                 {!isCompact ? <Text style={styles.separator}>·</Text> : null}
                 <StatusIndicator status={visibleStatus} compact={isCompact} />
               </View>
-              {needsCliUpdate && isCompact ? (
-                <Text style={settingsStyles.rowHint}>CLI update needed</Text>
-              ) : null}
-              {providerError && !isCompact ? (
-                <Text style={styles.errorText} numberOfLines={3}>
-                  {providerError}
-                </Text>
-              ) : null}
+              <RowError actionError={actionError} providerError={providerError} />
             </View>
           </Pressable>
           <ProviderRowControls
+            canReorder={canReorder}
+            reorderPending={reorderPending}
+            isFirst={isFirst}
+            isLast={isLast}
+            onMove={onMove}
             custom={entry.source === "custom"}
             canRemove={canRemove}
             isRemoving={isRemoving}
@@ -313,7 +349,69 @@ function providerErrorText(
   return enabled && entry.status === "error" && error ? toErrorMessage(error) : null;
 }
 
+/** Errors show on every layout, without clamping; a failed change is announced. */
+function RowError({
+  actionError,
+  providerError,
+}: {
+  actionError: string | null;
+  providerError: string | null;
+}) {
+  if (actionError)
+    return (
+      <Text accessibilityRole="alert" style={settingsStyles.rowError}>
+        {actionError}
+      </Text>
+    );
+  return providerError ? <Text style={settingsStyles.rowError}>{providerError}</Text> : null;
+}
+
+/** Visible Move up and Move down buttons, so ordering never depends on dragging. */
+function MoveButtons({
+  id,
+  label,
+  pending,
+  isFirst,
+  isLast,
+  onMove,
+}: {
+  id: string;
+  label: string;
+  pending: boolean;
+  isFirst: boolean;
+  isLast: boolean;
+  onMove?: (providerId: string, offset: -1 | 1) => void;
+}) {
+  const up = useCallback(() => onMove?.(id, -1), [onMove, id]);
+  const down = useCallback(() => onMove?.(id, 1), [onMove, id]);
+  return (
+    <>
+      <Button
+        variant="ghost"
+        leftIcon={ArrowUp}
+        onPress={up}
+        disabled={pending || isFirst}
+        accessibilityLabel={`Move ${label} up`}
+        testID={`provider-move-up-${id}`}
+      />
+      <Button
+        variant="ghost"
+        leftIcon={ArrowDown}
+        onPress={down}
+        disabled={pending || isLast}
+        accessibilityLabel={`Move ${label} down`}
+        testID={`provider-move-down-${id}`}
+      />
+    </>
+  );
+}
+
 function ProviderRowControls({
+  canReorder = false,
+  reorderPending = false,
+  isFirst,
+  isLast,
+  onMove,
   custom,
   canRemove,
   isRemoving,
@@ -328,6 +426,12 @@ function ProviderRowControls({
   offersMakePrimary,
   onMakePrimary,
 }: {
+  /** Where the host supports ordering, visible move buttons lead the controls. */
+  canReorder?: boolean;
+  reorderPending?: boolean;
+  isFirst: boolean;
+  isLast: boolean;
+  onMove?: (providerId: string, offset: -1 | 1) => void;
   offersMakePrimary: boolean;
   onMakePrimary: () => void;
   custom: boolean;
@@ -345,8 +449,22 @@ function ProviderRowControls({
   const { t } = useTranslation();
   return (
     <View style={[styles.trailingControls, styles.vortonTrailingControls]}>
+      {canReorder ? (
+        <MoveButtons
+          id={def.id}
+          label={def.label}
+          pending={reorderPending}
+          isFirst={isFirst}
+          isLast={isLast}
+          onMove={onMove}
+        />
+      ) : null}
       {offersMakePrimary ? (
-        <CompactAccountButton onPress={onMakePrimary} testID={`provider-make-primary-${def.id}`}>
+        <CompactAccountButton
+          onPress={onMakePrimary}
+          accessibilityLabel={`Make ${def.label} primary`}
+          testID={`provider-make-primary-${def.id}`}
+        >
           Make primary
         </CompactAccountButton>
       ) : null}
@@ -355,6 +473,7 @@ function ProviderRowControls({
           <CompactAccountButton
             onPress={onRename}
             disabled={isRemoving}
+            accessibilityLabel={`Rename ${def.label}`}
             testID={`provider-rename-${def.id}`}
           >
             Rename
@@ -364,6 +483,8 @@ function ProviderRowControls({
               onPress={onRemove}
               disabled={isRemoving}
               loading={isRemoving}
+              tone="danger"
+              accessibilityLabel={`Delete ${def.label}`}
               testID={`provider-remove-${def.id}`}
             >
               Delete
@@ -415,19 +536,18 @@ function StatusIndicator({ status, compact }: { status: ProviderStatus; compact:
       ) : (
         <View style={dotStyle} />
       )}
-      {!compact ? (
+      {/* The label always accompanies the dot, so status never rests on color alone. */}
+      <Text style={styles.statusLabel} numberOfLines={1}>
+        {status.label}
+      </Text>
+      {!compact && status.modelCount !== null ? (
         <>
-          <Text style={styles.statusLabel}>{status.label}</Text>
-          {status.modelCount !== null ? (
-            <>
-              <Text style={styles.separator}>·</Text>
-              <Text style={styles.statusLabel}>
-                {status.modelCount === 1
-                  ? t("settings.providers.models.one")
-                  : t("settings.providers.models.many", { count: status.modelCount })}
-              </Text>
-            </>
-          ) : null}
+          <Text style={styles.separator}>·</Text>
+          <Text style={styles.statusLabel}>
+            {status.modelCount === 1
+              ? t("settings.providers.models.one")
+              : t("settings.providers.models.many", { count: status.modelCount })}
+          </Text>
         </>
       ) : null}
     </View>
@@ -526,7 +646,13 @@ export function ProvidersSection({ serverId, runtimeOnly = false }: ProvidersSec
   const supportsProviderRemoval = useHostFeature(serverId, "providerRemoval");
   const supportsCredentialRemoval = useHostFeature(serverId, "providerCredentialRemoval");
   const client = useHostRuntimeClient(serverId);
-  const { entries, isLoading, refresh } = useProvidersSnapshot(serverId);
+  const {
+    entries,
+    isLoading,
+    error: snapshotError,
+    supportsSnapshot,
+    refresh,
+  } = useProvidersSnapshot(serverId);
   const panelActive = useRetainedPanelActive();
   const { config: monitorConfig } = useDaemonConfig(serverId);
   const claudeProviders =
@@ -573,6 +699,9 @@ export function ProvidersSection({ serverId, runtimeOnly = false }: ProvidersSec
   const openProviderSettings = useProviderSettingsStore((state) => state.open);
   useState<string | null>(null);
   const [pendingProviderId, setPendingProviderId] = useState<string | null>(null);
+  const [toggleError, setToggleError] = useState<{ providerId: string; message: string } | null>(
+    null,
+  );
   const [removingProviderId, setRemovingProviderId] = useState<string | null>(null);
   const removingProviderIdRef = useRef<string | null>(null);
   const [renamingProvider, setRenamingProvider] = useState<ProviderDefinition | null>(null);
@@ -606,11 +735,17 @@ export function ProvidersSection({ serverId, runtimeOnly = false }: ProvidersSec
         if (!(await confirmDisablePrimary(label, confirmDialog))) return;
       }
       setPendingProviderId(providerId);
+      setToggleError((current) => (current?.providerId === providerId ? null : current));
       try {
         await patchConfig({ providers: { [providerId]: { enabled } } });
       } catch (error) {
+        // Alert.alert does nothing on web, so the reason stays on the provider's row.
         if (isConnectionError(error)) reportActionError(error);
-        else Alert.alert(t("settings.providers.updateErrorTitle"), toErrorMessage(error));
+        else
+          setToggleError({
+            providerId,
+            message: `${t("settings.providers.updateErrorTitle")}: ${toErrorMessage(error)}`,
+          });
       } finally {
         setPendingProviderId((current) => (current === providerId ? null : current));
       }
@@ -655,20 +790,26 @@ export function ProvidersSection({ serverId, runtimeOnly = false }: ProvidersSec
     [t, supportsCredentialRemoval, client, toast],
   );
 
-  let connectionStatus: string | null = null;
-  if (!hasServer || !isConnected) connectionStatus = t("settings.providers.unavailable");
-  else if (isLoading && !entries) connectionStatus = t("settings.providers.loading");
+  // The skeleton shows only while a snapshot is actually on its way. A host that is offline,
+  // failed, or never reports a snapshot gets a sentence instead of a skeleton that never resolves.
+  const listState = providerListState({
+    hasServer,
+    isConnected,
+    supportsSnapshot,
+    isLoading,
+    error: snapshotError,
+    entryCount: entries ? providerDefinitions.length : null,
+  });
+  let listMessage: string | null = null;
+  if (listState === "unavailable") listMessage = t("settings.providers.unavailable");
+  else if (listState !== "ready" && listState !== "loading") listMessage = LIST_MESSAGES[listState];
   return (
     <>
+      {/* The pane header already says Providers, so this list carries no second heading. */}
       {!runtimeOnly ? (
-        <SettingsSection
-          title={t("settings.providers.title")}
-          status={reorderStatus}
-          testID="host-page-providers-card"
-          style={styles.sectionSpacing}
-        >
-          <SettingsStatusLine message={connectionStatus} testID="providers-connection-status" />
-          {!entries ? <ProviderRowsSkeleton /> : null}
+        <View testID="host-page-providers-card" style={styles.sectionSpacing}>
+          <ProviderListStatus message={listMessage} busy={reorderStatus} />
+          {listState === "loading" ? <ProviderRowsSkeleton /> : null}
           {entries && providerDefinitions.length > 0 ? (
             <ProviderList
               reorder={reorder}
@@ -684,9 +825,10 @@ export function ProvidersSection({ serverId, runtimeOnly = false }: ProvidersSec
               onRename={setRenamingProvider}
               primaryId={primaryId}
               onMakePrimary={handleMakePrimary}
+              toggleError={toggleError}
             />
           ) : null}
-        </SettingsSection>
+        </View>
       ) : null}
 
       {hasServer ? (
@@ -713,6 +855,52 @@ export function ProvidersSection({ serverId, runtimeOnly = false }: ProvidersSec
   );
 }
 
+type ProviderListState = "unavailable" | "unsupported" | "error" | "loading" | "empty" | "ready";
+
+// "Unavailable" uses the translated string the section already had.
+const LIST_MESSAGES: Record<
+  Exclude<ProviderListState, "ready" | "loading" | "unavailable">,
+  string
+> = {
+  unsupported: "This host does not report its providers. Update it to manage them here.",
+  error: "Providers could not be loaded. Reconnect to the host and try again.",
+  empty: "No providers on this host yet. Add one below.",
+};
+
+/** Exported for tests: which of the list's states a host is in. */
+export function providerListState(input: {
+  hasServer: boolean;
+  isConnected: boolean;
+  supportsSnapshot: boolean;
+  isLoading: boolean;
+  error: string | null;
+  /** Null until a snapshot has arrived. */
+  entryCount: number | null;
+}): ProviderListState {
+  if (input.entryCount !== null) return input.entryCount > 0 ? "ready" : "empty";
+  if (!input.hasServer || !input.isConnected) return "unavailable";
+  if (!input.supportsSnapshot) return "unsupported";
+  if (input.error) return "error";
+  return input.isLoading ? "loading" : "empty";
+}
+
+/**
+ * One line for the list's state and for a reorder in progress. It is always mounted, so screen
+ * readers announce its first message, and takes no space while there is nothing to say.
+ */
+function ProviderListStatus({ message, busy }: { message: string | null; busy: string | null }) {
+  const text = message ?? busy ?? "";
+  return (
+    <Text
+      accessibilityLiveRegion="polite"
+      style={text ? settingsStyles.rowHint : styles.statusIdle}
+      testID={text ? "providers-connection-status" : undefined}
+    >
+      {text}
+    </Text>
+  );
+}
+
 interface ProviderListProps extends Pick<
   ProviderRowProps,
   "serverId" | "onPress" | "onToggleEnabled" | "onRemove" | "onRename"
@@ -726,6 +914,7 @@ interface ProviderListProps extends Pick<
   /** The primary provider id, "" when none is chosen, or null where the setting is unavailable. */
   primaryId?: string | null;
   onMakePrimary?: (providerId: string, providerLabel: string) => void;
+  toggleError?: { providerId: string; message: string } | null;
 }
 
 function ProviderList({
@@ -741,6 +930,7 @@ function ProviderList({
   onRemove,
   onRename,
   primaryId = null,
+  toggleError = null,
   onMakePrimary,
 }: ProviderListProps) {
   const supportsProviderOrdering = useHostFeature(serverId, "providerOrdering");
@@ -753,6 +943,18 @@ function ProviderList({
     [saveOrder],
   );
 
+  // The drag alternative for screen readers: swap with the neighbouring provider.
+  const move = useCallback(
+    (providerId: string, offset: -1 | 1) => {
+      const from = entries.findIndex((entry) => entry.provider === providerId);
+      const to = from + offset;
+      if (from < 0 || to < 0 || to >= entries.length || reorder.isPending) return;
+      const ordered = [...entries];
+      [ordered[from], ordered[to]] = [ordered[to]!, ordered[from]!];
+      void saveOrder(ordered).catch(() => undefined);
+    },
+    [entries, saveOrder, reorder.isPending],
+  );
   const renderProvider = useCallback(
     ({ item: entry, index, drag, dragHandleProps }: DraggableRenderItemInfo<ProviderEntry>) => {
       const def = buildProviderDefinitions([entry])[0];
@@ -768,6 +970,7 @@ function ProviderList({
           isRemoving={removingProviderId === def.id}
           canRemove={supportsProviderRemoval && entry.source === "custom"}
           isFirst={index === 0}
+          isLast={index === entries.length - 1}
           drag={drag}
           dragHandleProps={dragHandleProps}
           canReorder={canReorder}
@@ -778,6 +981,8 @@ function ProviderList({
           onRename={onRename}
           primary={primaryId === null ? null : primaryId === def.id}
           onMakePrimary={onMakePrimary}
+          actionError={toggleError?.providerId === def.id ? toggleError.message : null}
+          onMove={move}
         />
       );
     },
@@ -795,6 +1000,9 @@ function ProviderList({
       onRename,
       primaryId,
       onMakePrimary,
+      move,
+      toggleError,
+      entries.length,
     ],
   );
 
@@ -832,25 +1040,23 @@ const styles = StyleSheet.create((theme) => ({
   draggableRow: { flexDirection: "row", alignItems: "center" },
   rowStack: { flex: 1, minWidth: 0 },
   stackedRow: { flex: 0 },
-  dragHandle: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
+  // 44px on touch layouts, 32px where a pointer drives it.
+  dragHandle: {
+    width: CONTROL_HEIGHTS.md,
+    minHeight: CONTROL_HEIGHTS.md,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  statusIdle: { height: 0, overflow: "hidden" },
   sectionSpacing: {
     marginBottom: theme.spacing[4],
   },
   addProviderSection: {
     marginTop: theme.spacing[4],
   },
-  emptyCard: {
-    padding: theme.spacing[4],
-    alignItems: "center",
-  },
-  emptyText: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.base,
-  },
   row: {
     flex: 1,
     gap: theme.spacing[3],
-    minHeight: 56,
   },
   // Only the details button lights the row, not the controls beside it, so the row matches a
   // hovered descendant with :has() rather than its own :hover.
@@ -886,9 +1092,6 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.surface2,
   },
-  rowPressed: {
-    backgroundColor: theme.colors.surface3,
-  },
   rowContent: {
     flex: 1,
     flexDirection: "row",
@@ -907,6 +1110,7 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[2],
   },
   statusRow: {
+    flexShrink: 1,
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[1.5],
@@ -917,15 +1121,16 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: 4,
   },
   statusLabel: {
+    flexShrink: 1,
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.base,
+    fontSize: theme.fontSize.sm,
   },
   separator: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.base,
+    fontSize: theme.fontSize.sm,
   },
   errorText: {
-    color: theme.colors.palette.red[300],
+    color: theme.colors.statusDanger,
     fontSize: theme.fontSize.sm,
     marginTop: theme.spacing[1],
   },
@@ -936,18 +1141,5 @@ const styles = StyleSheet.create((theme) => ({
   },
   vortonTrailingControls: {
     gap: theme.spacing[2],
-  },
-  menuButton: {
-    width: 32,
-    height: 32,
-    borderRadius: theme.borderRadius.lg,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  menuButtonHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
-  menuButtonPressed: {
-    backgroundColor: theme.colors.surface3,
   },
 }));

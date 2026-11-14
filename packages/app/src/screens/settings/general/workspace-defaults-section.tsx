@@ -1,6 +1,5 @@
 import { useCallback, useState } from "react";
 import { SettingsCard, SettingsSection, SettingsSelect } from "@/components/settings";
-import { useToast } from "@/contexts/toast-context";
 import { useAppSettings } from "@/hooks/use-settings";
 import type { WorkspaceDefaults } from "@/hooks/use-settings/storage";
 import { useHosts } from "@/runtime/host-runtime";
@@ -42,11 +41,13 @@ export function WorkspaceDefaultsSection() {
       label: entry.label ?? entry.provider,
       provider: entry.provider,
     }));
-  const toast = useToast();
+  // A refused save shows in the section header, next to the choices, rather than a toast.
+  const [problem, setProblem] = useState<string | null>(null);
   const reportActionError = useReportActionError();
   const save = useCallback(
     async (change: Partial<WorkspaceDefaults>) => {
       setPending(true);
+      setProblem(null);
       try {
         await updateSettings((current) => ({
           workspaceDefaults: { ...current.workspaceDefaults, ...change },
@@ -55,11 +56,11 @@ export function WorkspaceDefaultsSection() {
       } catch (error) {
         const connectionLost = isConnectionError(error);
         if (connectionLost) reportActionError(error);
-        else toast.error(toErrorMessage(error));
+        else setProblem(toErrorMessage(error));
         setPending(false);
       }
     },
-    [updateSettings, reportActionError, toast],
+    [updateSettings, reportActionError],
   );
   const changeEnvironment = useCallback(
     (value: string) => void save({ environment: value || null }),
@@ -72,6 +73,7 @@ export function WorkspaceDefaultsSection() {
   return (
     <SettingsSection
       title="New workspace"
+      status={problem}
       info="Choose the environment and account for new workspaces, and a default profile for each account. Explicit workspace selections take precedence."
     >
       <SettingsCard>
