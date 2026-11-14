@@ -4,4 +4,4 @@
 
 ## Maintenance review
 
-Agent instructions only; no code or behavior change. README unchanged.
+Delivery guide only (docs/task-delivery.md); no code or behavior change. README unchanged.
