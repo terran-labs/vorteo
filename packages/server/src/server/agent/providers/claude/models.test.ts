@@ -14,7 +14,11 @@ import {
   parseClaudeCodeVersion,
   resolveClaudeDisabledThinkingForModel,
 } from "./model-manifest.js";
-import { discoverClaudeModels } from "./model-discovery.js";
+import {
+  claudeRenewalDue,
+  discoverClaudeModels,
+  forgetClaudeModelDiscoveries,
+} from "./model-discovery.js";
 import type { ModelInfo, Query } from "@anthropic-ai/claude-agent-sdk";
 import {
   findClaudeModel,
@@ -43,6 +47,7 @@ describe("getClaudeContextWindowMaxTokens", () => {
 const createdClaudeConfigDirs: string[] = [];
 
 afterEach(async () => {
+  forgetClaudeModelDiscoveries();
   vi.unstubAllEnvs();
   await Promise.all(
     createdClaudeConfigDirs.map((dir) => fs.rm(dir, { recursive: true, force: true })),
@@ -1166,6 +1171,50 @@ describe("Claude model discovery process", () => {
     expect(() => assertCanSpawn?.()).toThrow(failure);
   });
 
+  it("holds a failed probe back for a minute, but not a canceled one", async () => {
+    let now = 0;
+    let probes = 0;
+    const failing = () => {
+      probes += 1;
+      return {
+        supportedModels: async () => {
+          throw new Error("probe failed");
+        },
+        close: () => {},
+      };
+    };
+    const options = {
+      resolveBinary: async () => "/claude",
+      env: { CLAUDE_CONFIG_DIR: "/failing-account" },
+      now: () => now,
+    };
+    await expect(discoverClaudeModels(options, failing)).rejects.toThrow("probe failed");
+    now = 30_000;
+    await expect(discoverClaudeModels(options, failing)).rejects.toThrow("probe failed");
+    expect(probes).toBe(1);
+    now = 2 * 60_000;
+    await expect(discoverClaudeModels(options, failing)).rejects.toThrow("probe failed");
+    expect(probes).toBe(2);
+    // A client that disconnects mid-refresh cancels it; that must not block the next refresh.
+    forgetClaudeModelDiscoveries();
+    const controller = new AbortController();
+    const canceled = () => {
+      probes += 1;
+      return {
+        supportedModels: () => {
+          controller.abort(new Error("client left"));
+          return new Promise<never>(() => {});
+        },
+        close: () => {},
+      };
+    };
+    await expect(
+      discoverClaudeModels({ ...options, signal: controller.signal }, canceled),
+    ).rejects.toThrow("client left");
+    await expect(discoverClaudeModels(options, failing)).rejects.toThrow("probe failed");
+    expect(probes).toBe(4);
+  });
+
   it("starts no probe while a full sign-in is about to renew, and reuses the last answer", async () => {
     const advertised = [
       { value: "fable", resolvedModel: "claude-fable-5-2", displayName: "Fable", description: "" },
@@ -1195,9 +1244,19 @@ describe("Claude model discovery process", () => {
     now = 0;
     expect(await discoverClaudeModels(options, open)).toEqual(advertised);
     expect(probes).toBe(1);
-    now = 55 * 60_000;
-    // Even an explicit refresh must not start a CLI that could begin the renewal.
+    // Client reconnects force refreshes every few seconds; they share one CLI start a minute.
+    now = 30_000;
     expect(await discoverClaudeModels({ ...options, force: true }, open)).toEqual(advertised);
     expect(probes).toBe(1);
+    now = 2 * 60_000;
+    expect(await discoverClaudeModels({ ...options, force: true }, open)).toEqual(advertised);
+    expect(probes).toBe(2);
+    // The provider diagnostic uses the same check before it runs `claude auth status`.
+    expect(await claudeRenewalDue(options.env, { readGrant: options.readGrant, now })).toBe(false);
+    now = 55 * 60_000;
+    expect(await claudeRenewalDue(options.env, { readGrant: options.readGrant, now })).toBe(true);
+    // Even an explicit refresh must not start a CLI that could begin the renewal.
+    expect(await discoverClaudeModels({ ...options, force: true }, open)).toEqual(advertised);
+    expect(probes).toBe(2);
   });
 });

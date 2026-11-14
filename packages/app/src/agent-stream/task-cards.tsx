@@ -56,8 +56,8 @@ export function AgentTaskCards({
       ) : (
         <>
           <OpenQuestionsCard serverId={serverId} agentId={agentId} />
-          <JournalCard serverId={serverId} agentId={agentId} />
           <PreviewsCard serverId={serverId} agentId={agentId} />
+          <JournalCard serverId={serverId} agentId={agentId} />
           <ContextCard serverId={serverId} agentId={agentId} />
         </>
       )}

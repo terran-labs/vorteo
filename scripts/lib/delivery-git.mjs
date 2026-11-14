@@ -84,6 +84,14 @@ export function repositoryRoot(cwd) {
   return git(cwd, ["rev-parse", "--show-toplevel"]);
 }
 
+/**
+ * Lock reason on worktrees Vorteo creates; the same text as VORTEO_WORKTREE_LOCK_REASON in
+ * packages/server/src/utils/worktree.ts. The lock keeps `git worktree prune`, run where the
+ * folder is not visible, from deleting the worktree's metadata.
+ */
+export const VORTEO_WORKTREE_LOCK_REASON =
+  "Vorteo worktree: archive it in Vorteo. Other environments may not see this folder.";
+
 /** Worktrees from `git worktree list --porcelain`. */
 export function listWorktrees(cwd) {
   const output = git(cwd, ["worktree", "list", "--porcelain"]);
@@ -98,8 +106,10 @@ export function listWorktrees(cwd) {
     } else if (line.startsWith("HEAD ")) current.head = line.slice(5);
     else if (line.startsWith("branch "))
       current.branch = line.slice(7).replace(/^refs\/heads\//, "");
-    else if (line.startsWith("locked")) current.locked = true;
-    else if (line.startsWith("prunable")) current.prunable = true;
+    else if (line.startsWith("locked")) {
+      current.locked = true;
+      current.lockReason = line.slice("locked".length).trim();
+    } else if (line.startsWith("prunable")) current.prunable = true;
     else if (line === "bare") current.bare = true;
   }
   return worktrees;

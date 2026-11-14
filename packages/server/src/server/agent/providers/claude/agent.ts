@@ -113,7 +113,7 @@ import {
   type ClaudeProviderOptions,
 } from "./options.js";
 import { renderPromptAttachmentAsText } from "../../prompt-attachments.js";
-import { discoverClaudeModels } from "./model-discovery.js";
+import { claudeRenewalDue, discoverClaudeModels } from "./model-discovery.js";
 import { claudeQuery, type ClaudeOptions, type ClaudeQueryFactory } from "./query.js";
 import {
   findSteeredMessageParent,
@@ -2109,13 +2109,17 @@ export class ClaudeAgentClient implements AgentClient {
         defaultBinary: "claude",
       });
       const availability = await checkProviderLaunchAvailable(launch);
-      const setupToken = await readClaudeSetupToken(
-        createProviderEnv({ runtimeSettings: this.runtimeSettings }),
-      );
+      const env = createProviderEnv({ runtimeSettings: this.runtimeSettings });
+      const setupToken = await readClaudeSetupToken(env);
       let auth: string | null = null;
       if (setupToken)
         auth =
           "Installation subscription credential saved. Account email is not exposed by setup-token.";
+      // `claude auth status` is stopped after five seconds. Near expiry it could begin the
+      // sign-in renewal and be stopped midway, which loses the renewed sign-in.
+      else if (await claudeRenewalDue(env))
+        auth =
+          "Not checked: this sign-in is due for renewal, which happens when its next session starts.";
       else if (availability.available)
         auth = await resolveClaudeAuth(launch, availability, this.runtimeSettings);
 
