@@ -36,7 +36,12 @@ beforeEach(async () => {
     warn: () => undefined,
   });
   const app = express();
-  app.use("/api/previews", createPreviewsRouter(service));
+  app.use(
+    "/api/previews",
+    createPreviewsRouter(service, {
+      previewOrigins: async () => ["https://previews.example.ts.net:32780", "javascript:alert(1)"],
+    }),
+  );
   const server = app.listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -211,6 +216,22 @@ test("live feedback reaches only the version the owner reviewed", async () => {
   expect(delivered).toHaveLength(0);
   expect((await send({ origin: "https://host:32777", versionId: reviewed.id })).status).toBe(200);
   expect(delivered.map((message) => message.agentId)).toEqual(["agent-first"]);
+});
+
+test("the comment frame may be embedded by a reserved preview origin on another hostname", async () => {
+  const frame = await fetch(`${baseUrl}/api/previews/frame`);
+  const policy = frame.headers.get("content-security-policy") ?? "";
+  const ancestors = policy.slice(policy.indexOf("frame-ancestors"));
+  expect(ancestors).toContain("https://previews.example.ts.net:32780");
+  // Anything that is not a plain https origin never reaches the header.
+  expect(ancestors).not.toContain("javascript");
+  // No hostname-wide allowance: an unreserved port on the daemon's own host cannot embed it.
+  expect(ancestors).not.toContain(":*");
+  const pairing = await fetch(`${baseUrl}/api/previews/pair`);
+  expect(pairing.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+  expect(await pairing.text()).toContain(
+    'data-preview-origins="https://previews.example.ts.net:32780"',
+  );
 });
 
 test("thumbnails may load only their own snapshot", () => {
