@@ -1959,7 +1959,7 @@ test("source builds fail before activation, uncertain dispatch retains selection
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "source-activation-")));
   const retention = await import("./host-release-retention.js");
   const prune = vi.spyOn(retention, "pruneHostReleases");
-  // The real listing asks the kernel about every process; its own test covers it.
+  // The real listing takes seconds; host-release-processes.test.ts covers it.
   const processes = vi
     .spyOn(await import("./host-release-processes.js"), "releaseProcessPaths")
     .mockResolvedValue([]);
@@ -2143,8 +2143,9 @@ test("source builds fail before activation, uncertain dispatch retains selection
     const installed = (await dispatch())!;
     expect(installed.status).toBe("succeeded");
     await hostReleaseRetentionIdle();
-    // Cleanup runs again after an install, with the in-use check that makes deletion safe:
-    // the same references and the process listing are read once more after set-aside.
+    // Cleanup runs again after this install. The earlier failed attempts in this test left
+    // job folders nothing uses, so it sets them aside, reads what is in use a second time
+    // and removes them.
     expect(prune).toHaveBeenCalledTimes(1);
     const retained = prune.mock.calls[0]![0];
     expect(retained.inUse).toBeTypeOf("function");
@@ -2157,7 +2158,9 @@ test("source builds fail before activation, uncertain dispatch retains selection
       await readFile(path.join(root, installed.id, "retention.json"), "utf8"),
     );
     expect(retentionReceipt).toMatchObject({ status: "finished" });
-    expect(retentionReceipt.note).not.toContain("not pruned");
+    expect(retentionReceipt.note).toBe("Removed 3 old Host releases.");
+    // One listing for the references read first, one after the folders were set aside.
+    expect(processes).toHaveBeenCalledTimes(2);
     // The release just installed and the one it replaced are both still there.
     await expect(realpath(path.join(root, "current"))).resolves.toContain(root);
     await expect(realpath(previous)).resolves.toBe(previous);
@@ -2228,7 +2231,6 @@ test("source builds fail before activation, uncertain dispatch retains selection
     expect(restart).toHaveBeenCalledTimes(5);
   } finally {
     await hostReleaseRetentionIdle();
-    expect(processes).toHaveBeenCalledTimes(2);
     prune.mockRestore();
     processes.mockRestore();
     await rm(root, { recursive: true, force: true });

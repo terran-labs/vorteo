@@ -87,12 +87,16 @@ export class SessionHostReleaseRemovedError extends Error {
   }
 }
 
-async function releasePresent(releaseRoot: string): Promise<boolean> {
+/**
+ * Only a missing path means removed. A path that exists but is not canonical, or cannot be
+ * read, is some other fault and never fails a host start.
+ */
+async function releaseRemoved(releaseRoot: string): Promise<boolean> {
   try {
-    return (await realpath(releaseRoot)) === releaseRoot;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    await realpath(releaseRoot);
     return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
   }
 }
 
@@ -108,7 +112,7 @@ export async function writeSessionHostRelease(
 ): Promise<void> {
   const socketPath = path.join(directory, "host.sock");
   const lock = await retentionLock(socketPath);
-  if (path.isAbsolute(releaseRoot) && !(await releasePresent(releaseRoot)))
+  if (path.isAbsolute(releaseRoot) && (await releaseRemoved(releaseRoot)))
     throw new SessionHostReleaseRemovedError(releaseRoot);
   if (lock.pid !== process.pid || (await realpath(releaseRoot)) !== releaseRoot)
     throw new SessionHostFileError(
@@ -135,7 +139,7 @@ export async function writeSessionHostRelease(
       if (error.code !== "ENOENT") throw error;
     });
   }
-  if (!(await releasePresent(releaseRoot))) throw new SessionHostReleaseRemovedError(releaseRoot);
+  if (await releaseRemoved(releaseRoot)) throw new SessionHostReleaseRemovedError(releaseRoot);
 }
 
 async function retentionEvidenceAbsent(file: string): Promise<boolean> {

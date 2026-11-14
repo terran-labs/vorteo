@@ -7,13 +7,19 @@ import { removeBootstrapRelease } from "./coordinator-bootstrap-release-seal.js"
 const JOB_FOLDER = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
- * A job folder set aside for removal. The rename is atomic, so from that moment nothing can
- * start from the release's path; whatever started earlier is found by the in-use check that
- * follows, and the folder is put back. A set-aside folder that could not be deleted keeps
- * this name, cannot be started from, and is retried by the next cleanup.
+ * A job folder set aside for removal, still whole. The rename is atomic, so from that moment
+ * nothing can start from the release's path; whatever started earlier is found by the in-use
+ * check that follows, and the folder is put back under its own name.
  */
 const SET_ASIDE = /^\.pruning-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 const setAsideName = (name: string) => `.pruning-${name}`;
+
+/**
+ * A folder whose deletion has started. It may be half gone, so it is never put back, whatever
+ * names it: a failed or interrupted deletion leaves this name and the next cleanup finishes it.
+ */
+const DELETING = /^\.deleting-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+const deletingName = (name: string) => `.deleting-${name}`;
 
 /** Newest job folders kept beyond everything that is referenced. */
 const KEEP_NEWEST = 3;
@@ -37,6 +43,11 @@ export interface HostReleaseRetention {
   inUse?: () => Promise<readonly string[]>;
   /** A candidate that turned out to be in use and was put back. */
   onInUse?: (directory: string) => void;
+  /**
+   * A set-aside copy found beside a job folder of the same name was removed. The job folder
+   * itself is left alone for this cleanup.
+   */
+  onLeftover?: (directory: string) => void;
 }
 
 function isPermissionError(error: unknown): boolean {
@@ -91,26 +102,25 @@ export async function resolveReference(target: string): Promise<string> {
   return resolved;
 }
 
-/**
- * The job folder under the root that `target` names, or null when it is elsewhere. A path
- * inside a set-aside folder names the job folder it was set aside from.
- */
-async function jobFolder(root: string, target: string): Promise<string | null> {
+/** The entry directly under the root that `target` names, or null when it is elsewhere. */
+async function rootEntry(root: string, target: string): Promise<string | null> {
   const resolved = await resolveReference(target);
   if (!resolved.startsWith(root + path.sep)) return null;
-  const name = resolved.slice(root.length + 1).split(path.sep)[0];
-  if (!name) return null;
-  return SET_ASIDE.exec(name)?.[1] ?? name;
+  return resolved.slice(root.length + 1).split(path.sep)[0] || null;
 }
 
-async function jobFolders(root: string, targets: readonly string[]): Promise<Set<string>> {
-  const folders = new Set<string>();
+async function rootEntries(root: string, targets: readonly string[]): Promise<Set<string>> {
+  const entries = new Set<string>();
   for (const target of targets) {
-    const folder = await jobFolder(root, target);
-    if (folder) folders.add(folder);
+    const entry = await rootEntry(root, target);
+    if (entry) entries.add(entry);
   }
-  return folders;
+  return entries;
 }
+
+/** Whether something names a job folder, under its own name or its set-aside name. */
+const names = (entries: ReadonlySet<string>, name: string) =>
+  entries.has(name) || entries.has(setAsideName(name));
 
 /**
  * Remove old Host release job folders after a verified install. Keeps every referenced
@@ -119,88 +129,161 @@ async function jobFolders(root: string, targets: readonly string[]): Promise<Set
  *
  * Deletion cannot race a starting process. Candidates are first set aside by an atomic
  * rename, which ends every path a new process could start from. `inUse` is then read: a
- * process that started before the rename shows up there and its folder is put back. Only
- * folders that stayed unused through both steps are deleted.
+ * process that started before the rename shows up there. Every folder that is in use is
+ * put back at once, before anything is deleted, so it is hidden only for the length of
+ * that one check. Only then are the rest renamed once more, to a name that is never put
+ * back, and deleted.
  */
 export async function pruneHostReleases(input: HostReleaseRetention): Promise<string[]> {
   const root = await realpath(input.releaseRoot);
-  const keep = await jobFolders(root, input.referenced);
-  const { folders, leftovers } = await listJobFolders(root);
-  for (const { name } of folders.slice(0, input.keepNewest ?? KEEP_NEWEST)) keep.add(name);
-
-  const original = (name: string) => path.join(root, name);
-  const aside = (name: string) => path.join(root, setAsideName(name));
-  const restore = async (name: string): Promise<boolean> => {
-    try {
-      await rename(aside(name), original(name));
-      return true;
-    } catch (error) {
-      input.onError?.(original(name), error);
-      return false;
-    }
+  const referenced = await rootEntries(root, input.referenced);
+  const { folders, leftovers, deleting } = await listJobFolders(root);
+  const newest = new Set(folders.slice(0, input.keepNewest ?? KEEP_NEWEST).map((f) => f.name));
+  const present = new Set(folders.map((folder) => folder.name));
+  const run: Cleanup = {
+    input,
+    root,
+    referenced,
+    present,
+    kept: (name) => newest.has(name) || names(referenced, name),
+    original: (name) => path.join(root, name),
+    aside: (name) => path.join(root, setAsideName(name)),
   };
+  const setAside = await setAsideCandidates(run, leftovers);
+  // A set-aside copy beside a job folder of the same name cannot be put back. The job
+  // folder is whole and stays out of this cleanup; the copy goes once nothing uses it.
+  const collided = [...leftovers].filter((name) => present.has(name));
+  const restorable = [...setAside, ...[...leftovers].filter((name) => !present.has(name))];
 
-  const setAside: string[] = [];
-  for (const { name } of folders) {
-    if (keep.has(name)) continue;
-    if (leftovers.has(name)) {
-      // Both names exist; which one a process uses is unknown, so neither is touched.
-      leftovers.delete(name);
-      input.onError?.(original(name), new Error("An earlier set-aside copy of it exists"));
-      continue;
-    }
+  let live = new Set<string>();
+  if (input.inUse && restorable.length + collided.length > 0) {
     try {
-      await rename(original(name), aside(name));
+      live = await rootEntries(root, await input.inUse());
+    } catch (error) {
+      for (const name of setAside) await restore(run, name);
+      throw error;
+    }
+  }
+  const doomed = await restoreInUse(run, live, restorable, collided);
+  return deleteDoomed(run, deleting, doomed);
+}
+
+interface Cleanup {
+  input: HostReleaseRetention;
+  root: string;
+  /** Root entries the caller's references name. */
+  referenced: ReadonlySet<string>;
+  /** Job folders that exist under their own name. */
+  present: ReadonlySet<string>;
+  kept(name: string): boolean;
+  original(name: string): string;
+  aside(name: string): string;
+}
+
+async function restore(run: Cleanup, name: string): Promise<boolean> {
+  try {
+    await rename(run.aside(name), run.original(name));
+    return true;
+  } catch (error) {
+    run.input.onError?.(run.original(name), error);
+    return false;
+  }
+}
+
+/** Set aside every job folder that is neither kept nor shadowed by an earlier set-aside copy. */
+async function setAsideCandidates(run: Cleanup, leftovers: ReadonlySet<string>) {
+  const setAside: string[] = [];
+  for (const name of run.present) {
+    if (run.kept(name) || leftovers.has(name)) continue;
+    try {
+      await rename(run.original(name), run.aside(name));
       setAside.push(name);
     } catch (error) {
-      input.onError?.(original(name), error);
+      run.input.onError?.(run.original(name), error);
     }
   }
-  const pending = [...setAside, ...leftovers];
-  if (pending.length === 0) return [];
+  return setAside;
+}
 
-  const live = await liveJobFolders(root, input.inUse).catch(async (error) => {
-    for (const name of setAside) await restore(name);
-    throw error;
-  });
-  const removed: string[] = [];
-  for (const name of pending) {
-    if (live.has(name) || keep.has(name)) {
-      if (await restore(name)) input.onInUse?.(original(name));
-      continue;
-    }
+/**
+ * Put back everything in use before anything is deleted: deleting the others can take
+ * minutes, and a cleanup that dies during it must not leave a used release hidden. Returns
+ * what is left to delete.
+ */
+async function restoreInUse(
+  run: Cleanup,
+  live: ReadonlySet<string>,
+  restorable: readonly string[],
+  collided: readonly string[],
+) {
+  const doomed: Array<{ name: string; leftover: boolean }> = [];
+  for (const name of restorable) {
+    if (!names(live, name) && !run.kept(name)) doomed.push({ name, leftover: false });
+    else if (await restore(run, name)) run.input.onInUse?.(run.original(name));
+  }
+  for (const name of collided) {
+    const copy = setAsideName(name);
+    if (live.has(copy) || run.referenced.has(copy))
+      run.input.onError?.(
+        run.aside(name),
+        new Error("A set-aside copy beside its job folder is in use"),
+      );
+    else doomed.push({ name, leftover: true });
+  }
+  return doomed;
+}
+
+async function deleteDoomed(
+  run: Cleanup,
+  deleting: ReadonlySet<string>,
+  doomed: ReadonlyArray<{ name: string; leftover: boolean }>,
+): Promise<string[]> {
+  const removeRelease = run.input.removeRelease ?? removeReleaseTree;
+  const started = (name: string) => path.join(run.root, deletingName(name));
+  const removed = new Set<string>();
+  // Deletions an earlier cleanup started are finished first; they are never checked or put back.
+  for (const name of deleting) {
     try {
-      await removeJobFolder(aside(name), input.removeRelease ?? removeReleaseTree);
-      removed.push(name);
+      await removeJobFolder(started(name), removeRelease);
+      if (!run.present.has(name)) removed.add(name);
     } catch (error) {
-      // Possibly half deleted: it stays set aside, where nothing can start from it.
-      input.onError?.(original(name), error);
+      run.input.onError?.(run.original(name), error);
     }
   }
-  return removed;
+  for (const { name, leftover } of doomed) {
+    try {
+      // From here the tree may be half gone, so it leaves the name that can be put back.
+      await rename(run.aside(name), started(name));
+      await removeJobFolder(started(name), removeRelease);
+      if (leftover) run.input.onLeftover?.(run.aside(name));
+      else removed.add(name);
+    } catch (error) {
+      run.input.onError?.(run.original(name), error);
+    }
+  }
+  return [...removed];
 }
 
-async function liveJobFolders(
-  root: string,
-  inUse: HostReleaseRetention["inUse"],
-): Promise<Set<string>> {
-  return inUse ? jobFolders(root, await inUse()) : new Set();
-}
-
-/** Job folders newest first, and the job IDs an earlier cleanup set aside and could not finish. */
+/**
+ * Job folders newest first, the job IDs an earlier cleanup set aside and did not finish, and
+ * the job IDs whose deletion it started.
+ */
 async function listJobFolders(root: string) {
   const folders: Array<{ name: string; mtimeMs: number }> = [];
   const leftovers = new Set<string>();
+  const deleting = new Set<string>();
   for (const entry of await readdir(root, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const leftover = SET_ASIDE.exec(entry.name)?.[1];
     if (leftover) leftovers.add(leftover);
+    const started = DELETING.exec(entry.name)?.[1];
+    if (started) deleting.add(started);
     // Only job folders are candidates; anything else sharing the root is never touched.
     if (!JOB_FOLDER.test(entry.name)) continue;
     folders.push({ name: entry.name, mtimeMs: (await stat(path.join(root, entry.name))).mtimeMs });
   }
   folders.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  return { folders, leftovers };
+  return { folders, leftovers, deleting };
 }
 
 async function removeJobFolder(

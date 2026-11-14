@@ -826,6 +826,7 @@ export class InstallationSourceUpdates {
   private async retainHostReleases(previous: string): Promise<string> {
     const failures: string[] = [];
     const inUse: string[] = [];
+    const leftovers: string[] = [];
     try {
       const home = this.config.host.startupValidation?.home;
       if (!home) throw new Error("Session host home is unknown; retaining old Host releases");
@@ -859,11 +860,15 @@ export class InstallationSourceUpdates {
         inUse: references,
         onError: (folder) => failures.push(path.basename(folder)),
         onInUse: (folder) => inUse.push(path.basename(folder)),
+        onLeftover: (folder) => leftovers.push(path.basename(folder)),
       });
       return [
         removed.length ? ` Removed ${removed.length} old Host releases.` : "",
         inUse.length
           ? ` Kept ${inUse.length} old releases that came into use during cleanup: ${inUse.join(", ")}.`
+          : "",
+        leftovers.length
+          ? ` Removed ${leftovers.length} set-aside copies an earlier cleanup left beside their job folders: ${leftovers.join(", ")}.`
           : "",
         failures.length
           ? ` Could not remove ${failures.length} old releases: ${failures.join(", ")}. They are set aside or kept, and the next cleanup tries again.`

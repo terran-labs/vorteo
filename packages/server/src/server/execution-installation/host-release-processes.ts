@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { readdir, readFile, readlink } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { resolveReference } from "./host-release-retention.js";
 
 const run = promisify(execFile);
 
@@ -26,6 +27,37 @@ export function releasePathsInProcessListing(
   return [...found];
 }
 
+/**
+ * Paths under `root` that command lines reach through a link outside it, such as the release
+ * link a job is started through. The link is resolved as it points now. A process started
+ * through a link that has since moved is not found this way; its working directory and
+ * mapped native code are what name its release.
+ */
+export async function linkedReleasePathsInCommands(
+  root: string,
+  commands: string,
+): Promise<string[]> {
+  const outside = new Set<string>();
+  for (const match of commands.matchAll(/(?:^|[\s="'])(\/[^\s"']+)/gm))
+    if (!match[1]!.startsWith(root + path.sep)) outside.add(match[1]!);
+  const found = new Set<string>();
+  for (const candidate of outside) {
+    const resolved = await resolveReference(candidate).catch(() => null);
+    if (resolved?.startsWith(root + path.sep)) found.add(resolved);
+  }
+  return [...found];
+}
+
+async function pathsInListing(
+  root: string,
+  listing: { files: string; commands: string },
+): Promise<string[]> {
+  return [
+    ...releasePathsInProcessListing(root, listing),
+    ...(await linkedReleasePathsInCommands(root, listing.commands)),
+  ];
+}
+
 async function linuxListing(): Promise<{ files: string; commands: string }> {
   const files: string[] = [];
   const commands: string[] = [];
@@ -48,13 +80,14 @@ async function linuxListing(): Promise<{ files: string; commands: string }> {
 
 /**
  * Every path under `root` that a running process of this user executes from: its working
- * directory, its executable and mapped native code, and paths on its command line. `root`
+ * directory, its executable and mapped native code, and paths on its command line, including
+ * ones that reach the root through a link outside it. `root`
  * must be canonical, because the kernel reports canonical paths. A release that was renamed
  * while in use is reported under its new name. Throws when the listing cannot be read, so a
  * caller never mistakes a failed listing for no processes.
  */
 export async function releaseProcessPaths(root: string): Promise<string[]> {
-  if (process.platform === "linux") return releasePathsInProcessListing(root, await linuxListing());
+  if (process.platform === "linux") return pathsInListing(root, await linuxListing());
   if (process.platform !== "darwin")
     throw new Error(`Running processes cannot be listed on ${process.platform}`);
   const uid = process.getuid?.();
@@ -64,5 +97,5 @@ export async function releaseProcessPaths(root: string): Promise<string[]> {
     run("/usr/sbin/lsof", ["-a", "-u", String(uid), "-d", "cwd,txt", "-Fn"], options),
     run("/bin/ps", ["-axww", "-o", "command="], options),
   ]);
-  return releasePathsInProcessListing(root, { files: files.stdout, commands: commands.stdout });
+  return pathsInListing(root, { files: files.stdout, commands: commands.stdout });
 }
