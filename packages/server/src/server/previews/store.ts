@@ -87,6 +87,16 @@ export function resolveSnapshotPath(filesRoot: string, requestPath: string): str
   return resolved;
 }
 
+/**
+ * Where a version belongs. Previews are specific to the workspace they were published in;
+ * a thread without a workspace keeps its previews to itself. Lineage keys, version numbers
+ * and variant sets are all counted inside one scope, so two workspaces that both publish
+ * "deck" never share an entry.
+ */
+export function previewScope(version: Pick<PreviewVersion, "workspaceId" | "agentId">): string {
+  return version.workspaceId ? `workspace:${version.workspaceId}` : `agent:${version.agentId}`;
+}
+
 /** A version the retention sweep must never delete. */
 function isProtected(version: PreviewVersion, index: Index): boolean {
   if (version.rating !== null || version.approved || version.annotations.length > 0) return true;
@@ -101,9 +111,10 @@ export function selectPrunable(index: Pick<Index, "versions" | "variantSets">): 
   const full = { ...emptyIndex(), ...index };
   const byLineage = new Map<string, PreviewVersion[]>();
   for (const version of full.versions) {
-    const list = byLineage.get(version.lineage) ?? [];
+    const key = `${previewScope(version)}\n${version.lineage}`;
+    const list = byLineage.get(key) ?? [];
     list.push(version);
-    byLineage.set(version.lineage, list);
+    byLineage.set(key, list);
   }
   const prunable: string[] = [];
   for (const versions of byLineage.values()) {
@@ -207,12 +218,19 @@ export class PreviewStore {
     const frozen = await this.freeze(id, input);
     try {
       return await this.mutate(async (index) => {
+        const scope = previewScope(author);
         const number =
           index.versions
-            .filter((version) => version.lineage === input.lineage)
+            .filter(
+              (version) => version.lineage === input.lineage && previewScope(version) === scope,
+            )
             .reduce((highest, version) => Math.max(highest, version.number), 0) + 1;
+        // A digest keeps the id short and inside one scope whatever the keys contain.
         const variantSetId = input.variantSet
-          ? `${input.lineage}:${input.variantSet.key}`
+          ? createHash("sha256")
+              .update(`${scope}\n${input.lineage}\n${input.variantSet.key}`)
+              .digest("hex")
+              .slice(0, 32)
           : undefined;
         const version: PreviewVersion = {
           id,

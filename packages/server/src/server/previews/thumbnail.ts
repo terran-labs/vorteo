@@ -44,7 +44,9 @@ function render(url: string, outputPath: string, allowedPrefix: string): Promise
     );
     let stderr = "";
     child.stderr.on("data", (chunk: Buffer) => {
-      if (stderr.length < 2000) stderr += chunk.toString("utf8");
+      // Keep the end of the output: a failed launch prints its long argument list first
+      // and the actual reason last.
+      stderr = (stderr + chunk.toString("utf8")).slice(-4000);
     });
     const timer = setTimeout(() => child.kill("SIGKILL"), RENDER_TIMEOUT_MS);
     child.once("error", (error) => {
@@ -55,7 +57,7 @@ function render(url: string, outputPath: string, allowedPrefix: string): Promise
       clearTimeout(timer);
       if (code === 0) resolve();
       else
-        reject(new Error(stderr.trim().slice(0, 500) || `Thumbnail renderer exited with ${code}`));
+        reject(new Error(stderr.trim().slice(-1500) || `Thumbnail renderer exited with ${code}`));
     });
   });
 }
