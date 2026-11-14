@@ -72,3 +72,5 @@ Factory worker retention and deferred configurable cleanup: [Factory follow-on u
 - [Managed preview monitor replacement](preview-monitor-maintenance.md): exact review, retained bytes and uncertain-outcome handling.
 
 - [Nova integration](nova-integration.md): private bridge source, operation and event contracts, and live acceptance requirements.
+
+[Installation network checks](network-connectivity.md) covers browser-to-Host paths, Tailscale relay fallback and daily maintenance diagnostics.
