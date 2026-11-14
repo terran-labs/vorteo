@@ -165,6 +165,55 @@ export const InstallationPrimaryConnectionSchema = z.strictObject({
 export type InstallationPrimaryConnection = z.infer<typeof InstallationPrimaryConnectionSchema>;
 
 /**
+ * The owner's local time zone as IANA names. `override` is the owner's explicit choice and null
+ * means automatic; `reported` is the zone an unlocked owner client's browser reported last, so
+ * daemons know the automatic zone while no client is connected.
+ */
+export const InstallationTimeZoneSchema = z.strictObject({
+  override: z.string().min(1).max(64).nullable(),
+  reported: z.string().min(1).max(64).nullable(),
+});
+export type InstallationTimeZone = z.infer<typeof InstallationTimeZoneSchema>;
+
+/** The daemon's copy of the time zone setting, with the same meaning. */
+export const DaemonTimeZoneSchema = z
+  .object({
+    override: z.string().min(1).max(64).nullable(),
+    reported: z.string().min(1).max(64).nullable(),
+  })
+  .passthrough();
+export type DaemonTimeZone = z.infer<typeof DaemonTimeZoneSchema>;
+
+/** The value before anyone chose or reported a zone. */
+export const UNSET_TIME_ZONE: InstallationTimeZone = { override: null, reported: null };
+
+/** Whether this runtime knows `zone` as an IANA time zone. */
+export function isKnownTimeZone(zone: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone }).format(new Date(0));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The zone owner-facing times use: the override, otherwise the last reported browser zone. */
+export function effectiveTimeZone(
+  setting: Pick<InstallationTimeZone, "override" | "reported"> | null | undefined,
+): { zone: string; source: "override" | "browser" } | null {
+  if (setting?.override) return { zone: setting.override, source: "override" };
+  if (setting?.reported) return { zone: setting.reported, source: "browser" };
+  return null;
+}
+
+/** The effective zone's name, or null when none is known. */
+export function effectiveTimeZoneName(
+  setting: Pick<InstallationTimeZone, "override" | "reported"> | null | undefined,
+): string | null {
+  return effectiveTimeZone(setting)?.zone ?? null;
+}
+
+/**
  * The definition that names the primary connection in one environment. The shared default
  * connection of a provider type can be stored as one definition per environment, so another
  * unbound default definition of the same type stands in for it.
@@ -231,6 +280,10 @@ export const InstallationSettingsSchema = z.strictObject({
   // chosen yet, so the coordinator adopts the only usable connection; null means the owner
   // has to choose.
   primaryConnection: InstallationPrimaryConnectionSchema.nullable().optional(),
+  // COMPAT(timeZoneSetting): added 2026-11-13. Sent only to readers that ask with `timeZone=1`
+  // or the X-Vorteo-Time-Zone header, because older strict readers reject unknown keys. Absent
+  // means the coordinator predates the setting.
+  timeZone: InstallationTimeZoneSchema.optional(),
 });
 export type InstallationSettings = z.infer<typeof InstallationSettingsSchema>;
 export const InstallationSettingsFieldSchema = InstallationSettingsSchema.keyof();

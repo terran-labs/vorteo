@@ -1,5 +1,8 @@
 import { expect, test, vi } from "vitest";
-import { InstallationSettingsSnapshotSchema } from "@getpaseo/protocol/installation-settings";
+import {
+  InstallationSettingsSnapshotSchema,
+  effectiveTimeZone,
+} from "@getpaseo/protocol/installation-settings";
 import { DEFAULT_TERMINAL_PROFILES } from "@getpaseo/protocol/terminal-profiles";
 import { SettingsEnvironmentFake, SettingsJournalFake } from "./fakes.js";
 import {
@@ -1664,3 +1667,43 @@ function disableDefinition<T extends { id: string; policy: { enabled?: boolean }
   for (const entry of next) if (entry.id === id) entry.policy.enabled = false;
   return next;
 }
+
+test("the owner's time zone persists, reaches daemons that know it and resolves override first", async () => {
+  const { service, host, container, journal } = fixture();
+  // Dev predates the setting and reports no key; it must stay synchronized without one.
+  host.config.timeZone = { override: null, reported: null };
+  const initial = await service.reconcile();
+  expect(effectiveTimeZone(initial.settings?.timeZone)).toBeNull();
+
+  await expect(
+    service.update({
+      expectedRevision: initial.revision,
+      settings: { timeZone: { override: "Mars/Olympus_Mons", reported: null } },
+    }),
+  ).rejects.toThrow(InstallationSettingsInvalidUpdate);
+
+  const reported = await service.update({
+    expectedRevision: initial.revision,
+    settings: { timeZone: { override: null, reported: "America/New_York" } },
+  });
+  expect(effectiveTimeZone(reported.settings?.timeZone)).toEqual({
+    zone: "America/New_York",
+    source: "browser",
+  });
+  const chosen = await service.update({
+    expectedRevision: reported.revision,
+    settings: { timeZone: { override: "Europe/Berlin", reported: "America/New_York" } },
+  });
+  expect(effectiveTimeZone(chosen.settings?.timeZone)).toEqual({
+    zone: "Europe/Berlin",
+    source: "override",
+  });
+
+  const applied = await service.reconcile();
+  expect(host.config.timeZone).toEqual({ override: "Europe/Berlin", reported: "America/New_York" });
+  expect(container.config.timeZone).toBeUndefined();
+  expect(applied.sources.host.error).toBeNull();
+  expect(applied.sources.container.error).toBeNull();
+  const restarted = new InstallationSettingsService(journal, [host, container]);
+  expect((await restarted.reconcile()).settings?.timeZone?.override).toBe("Europe/Berlin");
+});

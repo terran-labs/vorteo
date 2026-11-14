@@ -162,6 +162,8 @@ export class DemoSession {
               agentConfigApply: true,
               // The demo diff already covers every change, so the Changes card's All mode works.
               checkoutDiffAll: true,
+              // The demo installation stores a time zone, so Settings shows its picker.
+              timeZoneSetting: true,
             },
           },
         }),

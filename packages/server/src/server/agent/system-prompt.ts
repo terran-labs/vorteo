@@ -26,5 +26,26 @@ Vorteo shows questions that need the owner in an Open questions card. ${QUESTION
 /** Launch guidance that keeps preview links reachable for the owner on every provider and environment. */
 export const PREVIEW_LINK_GUIDANCE = `Share previews only as verified Tailscale HTTPS links from the managed preview broker; never an IP, localhost or *.localhost address. Before starting or sharing a preview, load the paseo-preview skill or read ~/.agents/skills/paseo-preview/SKILL.md. If the broker fails, report its error instead of offering another link.`;
 
+/**
+ * The owner's time zone for agent prompts, or undefined when none is known. The abbreviation is
+ * computed at launch, so it follows daylight saving.
+ */
+export function ownerTimeZoneGuidance(
+  zone: string | null | undefined,
+  now: Date = new Date(),
+): string | undefined {
+  if (!zone) return undefined;
+  let abbreviation: string | undefined;
+  try {
+    abbreviation = new Intl.DateTimeFormat("en-US", { timeZone: zone, timeZoneName: "short" })
+      .formatToParts(now)
+      .find((part) => part.type === "timeZoneName")?.value;
+  } catch {
+    return undefined;
+  }
+  const label = abbreviation && abbreviation !== zone ? `${zone} (${abbreviation})` : zone;
+  return `Owner's local time zone: ${label}. Give owner-facing times in it.`;
+}
+
 /** Daemon-owned guidance prepended to every non-internal agent launch. */
 export const AGENT_LAUNCH_GUIDANCE = `${TASK_CHECKLIST_GUIDANCE}\n\n${PREVIEW_LINK_GUIDANCE}`;

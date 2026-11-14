@@ -27,6 +27,12 @@ import {
   reconciledSupportMarker,
 } from "./execution-installation/settings/primary-connection.js";
 import {
+  assertTimeZoneProjection,
+  changesTimeZone,
+  pickTimeZonePatch,
+} from "./execution-installation/settings/time-zone.js";
+
+import {
   loadPersistedConfig,
   withPersistedConfigWriter,
   type PersistedConfigWriter,
@@ -92,6 +98,7 @@ interface SupportedMutableConfigPatch {
   primaryConnection?: MutableDaemonConfig["primaryConnection"];
   installationPrimaryConnection?: MutableDaemonConfig["installationPrimaryConnection"];
   installationPrimaryConnectionSupported?: boolean;
+  timeZone?: MutableDaemonConfig["timeZone"];
   agentProfiles?: MutableDaemonConfig["agentProfiles"];
   sharedProviderPreferences?: MutableDaemonConfig["sharedProviderPreferences"];
   skills?: MutableDaemonConfig["skills"];
@@ -330,6 +337,7 @@ const RELOADABLE_PATHS = [
   "daemon.primaryConnection",
   "daemon.installationPrimaryConnection",
   "daemon.installationPrimaryConnectionSupported",
+  "daemon.timeZone",
   "daemon.agentProfiles",
   "daemon.sharedProviderPreferences",
   "app.baseUrl",
@@ -365,6 +373,7 @@ const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["daemon.primaryConnection", "primaryConnection"],
   ["daemon.installationPrimaryConnection", "installationPrimaryConnection"],
   ["daemon.installationPrimaryConnectionSupported", "installationPrimaryConnectionSupported"],
+  ["daemon.timeZone", "timeZone"],
   ["daemon.agentProfiles", "agentProfiles"],
   ["daemon.sharedProviderPreferences", "sharedProviderPreferences"],
   ["app.baseUrl", "app.baseUrl"],
@@ -412,6 +421,18 @@ function compactOwnedPaths(paths: readonly string[], owners: readonly string[]):
     compacted.add(owner ?? path);
   }
   return Array.from(compacted).sort();
+}
+
+/** Whether a patch changes a daemon's read-only copy of a coordinator-owned setting. */
+function changesInstallationCopies(
+  current: MutableDaemonConfig,
+  patch: MutableDaemonConfigPatch,
+): boolean {
+  return (
+    changesProjectPolicies(current, patch) ||
+    changesPrimaryConnectionCopy(current, patch) ||
+    changesTimeZone(current, patch)
+  );
 }
 
 function pickProjectPolicies(patch: MutableDaemonConfigPatch): SupportedMutableConfigPatch {
@@ -495,6 +516,7 @@ function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMut
       : {}),
     ...pickProjectPolicies(patch),
     ...pickPrimaryConnection(patch),
+    ...pickTimeZonePatch(patch),
     ...(patch.agentProfiles !== undefined ? { agentProfiles: patch.agentProfiles } : {}),
     ...(patch.sharedProviderPreferences !== undefined
       ? { sharedProviderPreferences: patch.sharedProviderPreferences }
@@ -858,8 +880,7 @@ export class DaemonConfigStore {
       !binding ||
       (!changesInstallationSettings(before, parsed) &&
         !changesInstallationProviders(before, parsed) &&
-        !changesProjectPolicies(before, parsed) &&
-        !changesPrimaryConnectionCopy(before, parsed))
+        !changesInstallationCopies(before, parsed))
     )
       return this.patch(parsed);
     const admission = await this.readInstallationSettingsAuthority();
@@ -957,6 +978,7 @@ export class DaemonConfigStore {
     assertInstallationSettingsProjection({ current: this.current, patch: parsed, admission });
     assertProjectPoliciesProjection({ current: this.current, patch: parsed, admission });
     assertPrimaryConnectionProjection({ current: this.current, patch: parsed, admission });
+    assertTimeZoneProjection({ current: this.current, patch: parsed, admission });
     const marker = reconciledSupportMarker(this.current, parsed, admission);
     if (marker !== undefined) parsed.installationPrimaryConnectionSupported = marker;
     this.validateInstallationProjection(parsed);
@@ -1137,6 +1159,7 @@ export class DaemonConfigStore {
     }
     if (parsedPatch.plugins !== undefined) merged.plugins = parsedPatch.plugins;
     Object.assign(merged, pickPrimaryConnection(parsedPatch));
+    Object.assign(merged, pickTimeZonePatch(parsedPatch));
     Object.assign(merged, replacementProviderPreferences(parsedPatch));
     const next = MutableDaemonConfigSchema.parse(
       installationOwned
@@ -1585,6 +1608,7 @@ function mergeMutableDaemonPatch(
   if (patch.installationProjectPolicies !== undefined)
     next.installationProjectPolicies = patch.installationProjectPolicies;
   Object.assign(next, pickPrimaryConnection(patch));
+  Object.assign(next, pickTimeZonePatch(patch));
   if (patch.agentProfiles !== undefined) next.agentProfiles = patch.agentProfiles;
   if (patch.sharedProviderPreferences !== undefined)
     next.sharedProviderPreferences = patch.sharedProviderPreferences;
