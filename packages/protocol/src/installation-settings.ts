@@ -189,6 +189,9 @@ export const UNSET_TIME_ZONE: InstallationTimeZone = { override: null, reported:
 
 /** Whether this runtime knows `zone` as an IANA time zone. */
 export function isKnownTimeZone(zone: string): boolean {
+  // Intl also accepts bare offsets such as "+01:00". They are not zones: they ignore daylight
+  // saving, so a stored one would be wrong for half the year.
+  if (/^[+-]\d/.test(zone)) return false;
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: zone }).format(new Date(0));
     return true;
