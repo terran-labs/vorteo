@@ -1675,12 +1675,14 @@ test("the owner's time zone persists, reaches daemons that know it and resolves 
   const initial = await service.reconcile();
   expect(effectiveTimeZone(initial.settings?.timeZone)).toBeNull();
 
-  await expect(
-    service.update({
-      expectedRevision: initial.revision,
-      settings: { timeZone: { override: "Mars/Olympus_Mons", reported: null } },
-    }),
-  ).rejects.toThrow(InstallationSettingsInvalidUpdate);
+  // An unknown name, and a bare offset that Intl accepts but which ignores daylight saving.
+  for (const override of ["Mars/Olympus_Mons", "+01:00"])
+    await expect(
+      service.update({
+        expectedRevision: initial.revision,
+        settings: { timeZone: { override, reported: null } },
+      }),
+    ).rejects.toThrow(InstallationSettingsInvalidUpdate);
 
   const reported = await service.update({
     expectedRevision: initial.revision,

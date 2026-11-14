@@ -1,7 +1,15 @@
 import { flushGitCommandTrace } from "../utils/git-command-trace.js";
 import { startGitCommandMetrics, stopGitCommandMetrics } from "../utils/run-git-command.js";
 import { createWorkspaceRuntimeStore } from "./workspace-runtime-store/index.js";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -15,6 +23,7 @@ import {
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { createFileObserver } from "./file-observer/index.js";
 import { WorkspaceGitServiceImpl } from "./workspace-git-service.js";
+import { deriveWorkspaceKind } from "./workspace-registry-model.js";
 import type { FileChange, FileObserver, SubscribeToFileChanges } from "./file-observer/index.js";
 
 function createLogger(): pino.Logger {
@@ -126,7 +135,9 @@ test("reconciliation checkout discovery observes repository transitions without 
 
   startGitCommandMetrics();
   try {
-    expect((await service.getCheckout(repo)).isGit).toBe(true);
+    const checkout = await service.getCheckout(repo);
+    expect(checkout).toMatchObject({ isGit: true, worktreeRoot: repo, mainRepoRoot: null });
+    expect(deriveWorkspaceKind(checkout)).toBe("local_checkout");
   } finally {
     const metrics = stopGitCommandMetrics();
     expect(metrics.commands.length).toBeGreaterThan(0);
@@ -138,6 +149,65 @@ test("reconciliation checkout discovery observes repository transitions without 
   }
   const repoRoot = await service.resolveRepoRoot(repo);
   expect(realpathSync.native(repoRoot)).toBe(realpathSync.native(repo));
+
+  const alias = path.join(root, "repo-alias");
+  symlinkSync(repo, alias, process.platform === "win32" ? "junction" : "dir");
+  expect(await service.getCheckout(alias)).toMatchObject({
+    isGit: true,
+    worktreeRoot: repo,
+    mainRepoRoot: null,
+  });
+
+  const subdirectory = path.join(repo, "nested");
+  mkdirSync(subdirectory);
+  expect(await service.getCheckout(subdirectory)).toMatchObject({
+    worktreeRoot: repo,
+    mainRepoRoot: null,
+    isPaseoOwnedWorktree: false,
+  });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.test",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "Initial",
+    ],
+    { cwd: repo, stdio: "pipe" },
+  );
+  const linked = path.join(root, "linked");
+  execFileSync("git", ["worktree", "add", "-b", "feature", linked], { cwd: repo, stdio: "pipe" });
+  const linkedCheckout = await service.getCheckout(linked);
+  expect(linkedCheckout).toMatchObject({ isGit: true, worktreeRoot: linked, mainRepoRoot: repo });
+  expect(deriveWorkspaceKind(linkedCheckout)).toBe("worktree");
+  const bare = path.join(root, "bare.git");
+  const bareLinked = path.join(root, "bare-linked");
+  execFileSync("git", ["clone", "--bare", repo, bare], { stdio: "pipe" });
+  execFileSync("git", ["-C", bare, "worktree", "add", "-b", "bare-linked", bareLinked], {
+    stdio: "pipe",
+  });
+  startGitCommandMetrics();
+  try {
+    const bareCheckout = await service.getCheckout(bareLinked);
+    expect(bareCheckout).toMatchObject({
+      isGit: true,
+      worktreeRoot: bareLinked,
+      mainRepoRoot: bareLinked,
+    });
+    expect(deriveWorkspaceKind(bareCheckout)).toBe("worktree");
+  } finally {
+    const metrics = stopGitCommandMetrics();
+    expect(metrics.commands.some(({ args }) => args.includes("status"))).toBe(false);
+    expect(metrics.commands.some(({ args }) => args.includes("rev-list"))).toBe(false);
+  }
+  rmSync(linked, { recursive: true });
+  expect((await service.getCheckout(linked)).isGit).toBe(false);
 }, 30_000);
 
 test("recursive observation updates tracked state and prunes ignored storms", async () => {

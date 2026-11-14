@@ -28,6 +28,9 @@ vi.mock("@/execution-installation/panel", () => ({
   PasswordFileHint: () => null,
 }));
 vi.mock("@/contexts/toast-context", () => ({ useToast: () => fixture.toast }));
+// The Time zone row shares this card but has its own installation settings client and policy
+// reads, which this suite's policy stub does not provide.
+vi.mock("./time-zone-row", () => ({ TimeZoneRow: () => null }));
 
 const originalFetch = globalThis.fetch;
 const stable: InstallationTypeStatus = {
