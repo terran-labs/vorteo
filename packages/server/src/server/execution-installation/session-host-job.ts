@@ -21,14 +21,14 @@ import {
   type CommandRunner,
 } from "../session-host/launchd.js";
 import {
+  SESSION_HOST_ENTRYPOINT,
   SESSION_HOST_RESTART_MARKER_NAME,
   SESSION_HOST_UPGRADE_MARKER_NAME,
 } from "../session-host/host-files.js";
 import { hostLaunchdService, type InstallationConfig } from "./config.js";
 import { BootstrapRequestConflict } from "./coordinator-bootstrap-errors.js";
 
-/** Where a release keeps the session host entrypoint; a release without it has no support. */
-export const SESSION_HOST_ENTRYPOINT = "packages/server/dist/scripts/session-host-entrypoint.js";
+export { SESSION_HOST_ENTRYPOINT };
 /** The client release the coordinator reports when it asks the host for status. */
 export const SESSION_HOST_STATUS_RELEASE = "installation-coordinator-status";
 

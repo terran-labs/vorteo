@@ -1,7 +1,7 @@
 import { AddClaudeAccountButton } from "./add-account";
 import { claudeProviderConnectsToInstallation } from "./claude-setup-login";
 import { ProviderLoginPanel } from "./login-panel";
-import { useSharedInstallationSignIn } from "./use-provider-login";
+import { useClaudeAccountNeedsSignIn, useSharedInstallationSignIn } from "./use-provider-login";
 import { useCallback, useMemo, useState } from "react";
 import { Text, View, type GestureResponderEvent } from "react-native";
 import { AlertTriangle } from "lucide-react-native";
@@ -41,17 +41,7 @@ export function ProviderReconnectControl({
   name: string;
   providerId?: string;
 }) {
-  const { config } = useDaemonConfig(serverId);
-  const { entries } = useProvidersSnapshot(serverId);
-  const claude = accountProviderKind(providerId, config?.providers) === "claude";
-  // Installation accounts always offer their connection panel, which shows Dev synchronization.
-  const shared = useSharedInstallationSignIn(serverId, claude ? "claude" : "codex");
-  const action = providerConnectionAction({
-    providerId,
-    providers: config?.providers,
-    usage,
-    snapshot: entries?.find((entry) => entry.provider === providerId),
-  });
+  const { claude, shared, action } = useConnectionAction(serverId, providerId, usage);
   const client = useHostRuntimeClient(serverId ?? "");
   const connected = useHostRuntimeIsConnected(serverId ?? "");
   const cache = useQueryClient();
@@ -163,6 +153,31 @@ export function ProviderReconnectControl({
     </>
   );
 }
+/** Which connection action an account row offers, and whether it signs in through the installation. */
+function useConnectionAction(
+  serverId: string | null,
+  providerId: string,
+  usage: ProviderUsage | undefined,
+) {
+  const { config } = useDaemonConfig(serverId);
+  const { entries } = useProvidersSnapshot(serverId);
+  const claude = accountProviderKind(providerId, config?.providers) === "claude";
+  // Installation accounts always offer their connection panel, which shows Dev synchronization.
+  const shared = useSharedInstallationSignIn(serverId, claude ? "claude" : "codex");
+  // The coordinator knows when a named Claude account's Host grant is gone, even while its last
+  // usage reading still looks fine.
+  const coordinatorNeedsSignIn = useClaudeAccountNeedsSignIn(claude ? serverId : null, providerId);
+  const action = coordinatorNeedsSignIn
+    ? "Reconnect"
+    : providerConnectionAction({
+        providerId,
+        providers: config?.providers,
+        usage,
+        snapshot: entries?.find((entry) => entry.provider === providerId),
+      });
+  return { claude, shared, action };
+}
+
 function ConnectionButton({
   claude,
   serverId,

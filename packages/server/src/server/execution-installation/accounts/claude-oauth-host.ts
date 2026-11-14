@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +11,7 @@ import {
 import { ClaudeLoginSession } from "../../agent/providers/claude/login.js";
 import { CLAUDE_SIGN_IN_ENV } from "../../agent/providers/claude/sign-in-mode.js";
 import { execCommand } from "../../../utils/spawn.js";
+import { createExternalCommandProcessEnv } from "../../paseo-env.js";
 
 /**
  * Host-side operations the coordinator performs on a full sign-in account's own CLI storage.
@@ -45,6 +47,80 @@ export const CLAUDE_REFRESH_REQUEST_ARGS = [
   "json",
 ];
 
+/** Why a refresh request failed, from the CLI's own result text. Never the text itself. */
+export type ClaudeRefreshFailure =
+  | "refresh_rejected"
+  | "refresh_token_invalid"
+  | "refresh_lock_busy"
+  | "not_signed_in"
+  | "api_error"
+  | "timeout"
+  | "unparsed";
+
+/** The CLI's messages, as of Claude Code 2.1.285, in the order they are checked. */
+const FAILURE_MESSAGES: [RegExp, ClaudeRefreshFailure][] = [
+  [/holding the refresh lock/i, "refresh_lock_busy"],
+  [/refresh token is no longer valid/i, "refresh_token_invalid"],
+  [/could not be refreshed/i, "refresh_rejected"],
+  [/not logged in|please run \/login/i, "not_signed_in"],
+];
+
+/** Classifies a failed `--output-format json` run from its stdout. */
+export function classifyClaudeRefreshFailure(error: unknown): ClaudeRefreshFailure {
+  const failed = error as { killed?: unknown; stdout?: unknown } | null;
+  if (failed?.killed === true) return "timeout";
+  let result: { result?: unknown; is_error?: unknown };
+  try {
+    result = JSON.parse(String(failed?.stdout ?? ""));
+  } catch {
+    return "unparsed";
+  }
+  const text = typeof result.result === "string" ? result.result : "";
+  for (const [pattern, category] of FAILURE_MESSAGES) if (pattern.test(text)) return category;
+  return result.is_error === true ? "api_error" : "unparsed";
+}
+
+export class ClaudeRefreshError extends Error {
+  constructor(readonly category: ClaudeRefreshFailure) {
+    super(`Claude refresh failed: ${category}`);
+  }
+}
+
+/**
+ * execCommand with stdin closed at once. An open stdin pipe makes `claude -p` wait three
+ * seconds for input before it starts. A rejection carries stdout for classification.
+ */
+function execWithoutInput(
+  command: string,
+  args: string[],
+  options: NonNullable<Parameters<typeof execCommand>[2]> = {},
+): Promise<{ stdout: string; stderr: string }> {
+  const env = createExternalCommandProcessEnv(
+    command,
+    options.env ?? options.baseEnv ?? process.env,
+    ...(options.envOverlay ? [options.envOverlay] : []),
+  );
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      command,
+      args,
+      {
+        cwd: options.cwd,
+        env,
+        encoding: "utf8",
+        timeout: options.timeout,
+        maxBuffer: options.maxBuffer,
+        windowsHide: true,
+      },
+      (error, stdout, stderr) => {
+        if (error) reject(Object.assign(error, { stdout }));
+        else resolve({ stdout, stderr });
+      },
+    );
+    child.stdin?.end();
+  });
+}
+
 export interface ClaudeIdentity {
   email: string | null;
   orgId: string | null;
@@ -52,6 +128,8 @@ export interface ClaudeIdentity {
 
 interface HostCliOptions {
   run?: typeof execCommand;
+  /** Runs the refresh request. Injected by tests. */
+  runRefresh?: typeof execWithoutInput;
   resolveLaunch?: () => Promise<{ executable: string; args: string[] }>;
   tempRoot?: string;
 }
@@ -72,6 +150,7 @@ function accountEnvironment(configDir: string) {
 
 export function createClaudeHostCli(options: HostCliOptions = {}) {
   const run = options.run ?? execCommand;
+  const runRefresh = options.runRefresh ?? execWithoutInput;
   const resolveLaunch = options.resolveLaunch ?? packagedLaunch;
   return {
     /** Option A. Success is judged by re-reading the grant, not by this request's result. */
@@ -79,12 +158,14 @@ export function createClaudeHostCli(options: HostCliOptions = {}) {
       const launch = await resolveLaunch();
       const cwd = await mkdtemp(join(options.tempRoot ?? tmpdir(), "vorteo-claude-refresh-"));
       try {
-        await run(launch.executable, [...launch.args, ...CLAUDE_REFRESH_REQUEST_ARGS], {
+        await runRefresh(launch.executable, [...launch.args, ...CLAUDE_REFRESH_REQUEST_ARGS], {
           ...accountEnvironment(configDir),
           cwd,
           // Short enough that a stuck request cannot hold other accounts past their lead.
           timeout: 60_000,
           maxBuffer: 1024 * 1024,
+        }).catch((error: unknown) => {
+          throw new ClaudeRefreshError(classifyClaudeRefreshFailure(error));
         });
       } finally {
         await rm(cwd, { recursive: true, force: true });

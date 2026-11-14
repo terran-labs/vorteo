@@ -17,6 +17,8 @@ interface SelectionInput {
   now: number;
   /** Available limit resets per account, such as free Claude or Codex resets. */
   resetCounts?: ReadonlyMap<string, number>;
+  /** The effective reasoning level for this launch, such as "Medium". */
+  reasoningLabel?: string | null;
 }
 export function selectedPresetPresentation(input: SelectionInput) {
   const emptyLabel = "Choose profile";
@@ -29,7 +31,11 @@ export function selectedPresetPresentation(input: SelectionInput) {
   const providerId = input.currentProvider ?? input.selected?.provider ?? definition?.provider;
   const account = selectedAccountCaption(input, providerId);
   const resetLabel = selectedResetLabel(input, providerId);
-  const triggerLabel = [account ? `${account.caption} ${profileLabel}` : profileLabel, resetLabel]
+  const triggerLabel = [
+    account ? `${account.caption} ${profileLabel}` : profileLabel,
+    selectedReasoningLabel(input),
+    resetLabel,
+  ]
     .filter(Boolean)
     .join(" · ");
   const reading = quotaReading(input.view, providerId, input.now);
@@ -53,6 +59,10 @@ function selectedAccountCaption(input: SelectionInput, providerId: string | unde
   const numberedCodex = name.match(/^Codex\s+(\d+)\b/i);
   const caption = numberedCodex ? `C${numberedCodex[1]}` : name;
   return { name, caption };
+}
+
+function selectedReasoningLabel(input: SelectionInput) {
+  return input.selectedProfileId ? input.reasoningLabel : null;
 }
 
 function selectedResetLabel(input: SelectionInput, providerId: string | undefined) {

@@ -6,9 +6,40 @@ import {
   allocateCardHeights,
   allocateGridCardHeights,
   resolveStandaloneTextWidth,
+  resolveTranscriptContentLeft,
 } from "./geometry";
 
 describe("thread columns", () => {
+  it("finds where transcript content starts so margin chrome never covers it", () => {
+    const insets = { listInset: 8, rowInset: 8 };
+    // A capped row centres in a wide unsplit panel, leaving a margin for the outline rail.
+    expect(
+      resolveTranscriptContentLeft({
+        columnLeft: 0,
+        columnWidth: 1000,
+        rowMaxWidth: 820,
+        ...insets,
+      }),
+    ).toBe(98);
+    // A tablet-width panel narrower than the cap leaves only the insets.
+    expect(
+      resolveTranscriptContentLeft({
+        columnLeft: 0,
+        columnWidth: 744,
+        rowMaxWidth: 820,
+        ...insets,
+      }),
+    ).toBe(16);
+    // A dragged-wide text column fills its row, so content starts just inside its offset.
+    expect(
+      resolveTranscriptContentLeft({
+        columnLeft: 16,
+        columnWidth: 1400,
+        rowMaxWidth: 1400,
+        ...insets,
+      }),
+    ).toBe(32);
+  });
   it("resizes reading width after the workspace has already reserved the shared card group", () => {
     expect(resolveStandaloneTextWidth(900, 820)).toBe(820);
     expect(resolveStandaloneTextWidth(600, 820)).toBe(600);

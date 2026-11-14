@@ -1158,10 +1158,11 @@ export function restartActionDisabledReason(
 
 /** The same delayed Force escape hatch applies to ordinary Host and Dev restarts. */
 export function restartForceDeadline(job: RestartJob): number | null {
+  // Updates and source batches can hold for current turns too, so the owner can end the wait.
+  // The server acts on an immediate approval only while they are approved and waiting for idle.
   if (
     (job.target !== "host" && job.target !== "container-daemon") ||
-    job.update ||
-    job.sourceBatch ||
+    ((job.update || job.sourceBatch) && !(job.status === "approved" && job.whenIdle)) ||
     restartOperationView(job) ||
     !job.approvedAt ||
     !["approved", "running"].includes(job.status)

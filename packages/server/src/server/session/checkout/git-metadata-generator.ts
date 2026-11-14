@@ -213,7 +213,6 @@ export function createAgentStructuredTextGeneration(deps: {
       });
       return generateStructuredAgentResponseWithFallback({
         manager: deps.agentManager,
-        cwd,
         prompt,
         schema,
         schemaName,

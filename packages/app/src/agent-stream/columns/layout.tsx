@@ -1,8 +1,9 @@
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useCallback, useId, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
-import { StreamColumnWidthContext } from "./column-width";
+import { StreamColumnWidthContext, StreamContentLeftContext } from "./column-width";
 import { Text, View, type LayoutChangeEvent } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { SPACING } from "@/styles/theme";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import { isNative } from "@/constants/platform";
@@ -20,6 +21,7 @@ import {
   COLUMN_MARGIN,
   resolveColumnWidths,
   resolveTextOffset,
+  resolveTranscriptContentLeft,
   resolveStandaloneTextWidth,
   type ColumnWidths,
 } from "./geometry";
@@ -162,6 +164,16 @@ export function StreamColumns({
     [widths.cards],
   );
   const columnWidth = sizedText ? widths.text : undefined;
+  // Mirrors the stream list's and rows' horizontal padding in the agent stream stylesheet. The
+  // list pads wider below the md breakpoint; its narrower md inset never overstates the margin.
+  const contentLeft = resolveTranscriptContentLeft({
+    columnLeft: sizedText ? textOffset : 0,
+    // Without split columns the transcript region spans the whole root.
+    columnWidth: sizedText ? widths.text : layout.containerWidth,
+    rowMaxWidth: layout.contentMaxWidth,
+    listInset: SPACING[2],
+    rowInset: SPACING[2],
+  });
   // The chat composer lives in this column, not in the dock's composer slot, so fullscreen
   // editing takes the dock's fixed frame here: the visible part of the thread surface.
   const fullscreen = useComposerFullscreen(useComposerEditingSession("chat"));
@@ -207,7 +219,9 @@ export function StreamColumns({
                 <ColumnResizeHandle column="text" {...layout} hasComposer={Boolean(composer)} />
               ) : null}
             </View>
-            {outline}
+            <StreamContentLeftContext.Provider value={contentLeft}>
+              {outline}
+            </StreamContentLeftContext.Provider>
             {split && isNative ? <ColumnFade /> : null}
           </View>
           {composer ? <View style={composerSlotStyle}>{composer}</View> : null}

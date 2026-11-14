@@ -26,6 +26,8 @@ def load(path=None, protected=False):
         raise ValueError('Missing host configuration: ' + ', '.join(missing) + '. Run the host installer against the existing deployment; no container was created.')
     if native:
         paths = [value['deployment'], value['daemonHome'], value['tailscale']]
+        if value.get('tailscaleSocket'):
+            paths.append(value['tailscaleSocket'])
         command = value['cliCommand']
         if not isinstance(command, list) or not command or any(not isinstance(part, str) or not Path(part).is_absolute() for part in command):
             raise ValueError('Native CLI command must contain pinned absolute paths')

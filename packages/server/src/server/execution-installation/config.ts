@@ -153,9 +153,22 @@ export const InstallationConfigSchema = z.strictObject({
   previewBroker: PreviewBrokerConfigurationSchema.optional(),
   previewBrokerDeployment: PreviewBrokerDeploymentConfigurationSchema.optional(),
   restartApprovalPolicy: z.strictObject({ hostRequestsAfter: z.string().datetime() }).optional(),
+  /** Minutes a finish-current-turns restart hold waits before asking the owner. Default 15. */
+  restartHoldDeadlineMinutes: z
+    .number()
+    .int()
+    .min(1)
+    .max(24 * 60)
+    .optional(),
   containerSourceUpdates: ContainerSourceUpdatesSchema.optional(),
   /** Off by default. Full sign-in Claude accounts with Host-owned refresh; `true` opts in. */
   claudeHostRefresh: z.boolean().optional(),
+  /**
+   * Off by default. With Host-owned Claude refresh, `true` lets the coordinator run the Claude CLI
+   * to renew a shared account directory. A failed CLI refresh erases the stored sign-in, so by
+   * default the coordinator only reads and delivers what agents renew themselves.
+   */
+  claudeCoordinatorRefresh: z.boolean().optional(),
   /** Off by default. Shared Codex accounts sign in once on the Host and reach Dev; `true` opts in. */
   codexHostRefresh: z.boolean().optional(),
   /** Reviewed record that the coordinator launcher sets `VORTEO_RELEASE_SEALS=enabled`.
@@ -207,6 +220,22 @@ export type InstallationConfig = z.infer<typeof InstallationConfigSchema>;
  */
 export function claudeHostRefreshEnabled(config: Pick<InstallationConfig, "claudeHostRefresh">) {
   return config.claudeHostRefresh === true;
+}
+
+/** The configured restart hold deadline in milliseconds, or undefined for the default. */
+export function restartHoldDeadlineMs(
+  config: Pick<InstallationConfig, "restartHoldDeadlineMinutes">,
+): number | undefined {
+  return config.restartHoldDeadlineMinutes === undefined
+    ? undefined
+    : config.restartHoldDeadlineMinutes * 60_000;
+}
+
+/** Whether the coordinator may run the Claude CLI to refresh. See `claudeCoordinatorRefresh`. */
+export function claudeCoordinatorRefreshEnabled(
+  config: Pick<InstallationConfig, "claudeCoordinatorRefresh">,
+) {
+  return config.claudeCoordinatorRefresh === true;
 }
 
 /** Installation config with a Dev container; container-only paths take this. */

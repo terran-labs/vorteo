@@ -8,6 +8,7 @@ import { memo, useCallback, useMemo, type ReactElement } from "react";
 import { ChecklistCard } from "@/task-checklist/card";
 import { JournalCard } from "@/journal/card";
 import { OpenQuestionsCard } from "@/open-questions/card";
+import { PreviewsCard } from "@/previews/card";
 import { ContextCard } from "@/components/context-breakdown/card";
 
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -113,6 +114,8 @@ export const AgentTracks = memo(function AgentTracks({
         </CardColumnAccessory>
       ) : null}
       <OpenQuestionsCard key={`questions:${agentId}`} serverId={serverId} agentId={agentId} />
+      {/* Previews come right after open questions and before tasks: both wait on the owner. */}
+      <PreviewsCard key={`previews:${agentId}`} serverId={serverId} agentId={agentId} />
       <ChecklistCard
         key={`checklist:${agentId}`}
         serverId={serverId}

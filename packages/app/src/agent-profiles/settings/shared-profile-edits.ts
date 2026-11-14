@@ -48,7 +48,7 @@ export function editSharedProfile(
   providers: ProviderOverrides = {},
   installation = false,
 ): AgentProfile {
-  const { thinkingOptionId: _thinkingOptionId, ...workflowValue } = value;
+  const { thinkingOptionId, ...workflowValue } = value;
   const original = group.workflows.find((item) => item.id === id);
   const workflow: AgentProfile = {
     ...original,
@@ -92,5 +92,17 @@ export function editSharedProfile(
   }
   if (workflow.model === group.defaults.model) delete workflow.model;
   if (workflow.modeId === group.defaults.modeId) delete workflow.modeId;
+  applyWorkflowReasoning(workflow, thinkingOptionId, group.defaults.thinkingOptionId);
   return workflow;
+}
+
+/** An empty reasoning choice follows the model default, even over a provider default level. */
+function applyWorkflowReasoning(
+  workflow: AgentProfile,
+  thinkingOptionId: string | undefined,
+  inherited: string | undefined,
+): void {
+  const reasoning = thinkingOptionId ?? "";
+  if (reasoning === (inherited ?? "")) delete workflow.thinkingOptionId;
+  else workflow.thinkingOptionId = reasoning;
 }

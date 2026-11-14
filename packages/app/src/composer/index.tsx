@@ -1047,7 +1047,7 @@ function ComposerCancelButton({
     ? t("composer.cancel.cancelingAgent")
     : t("composer.cancel.stopAgent");
   const icon = isCancellingAgent ? (
-    <LoadingSpinner size="small" color="white" />
+    <LoadingSpinner size="small" color="white" prominent />
   ) : (
     <Square size={buttonIconSize} color="white" fill="white" />
   );
@@ -1126,7 +1126,7 @@ function ComposerVoiceModeButton({
   const shortcutNode = voiceToggleKeys ? <Shortcut chord={voiceToggleKeys} /> : null;
   const renderTriggerContent = useCallback(() => {
     if (isVoiceSwitching) {
-      return <LoadingSpinner size="small" color="white" />;
+      return <LoadingSpinner size="small" color="white" prominent />;
     }
     return <ThemedAudioLines size={buttonIconSize} uniProps={iconInheritedColorMapping} />;
   }, [buttonIconSize, isVoiceSwitching]);
