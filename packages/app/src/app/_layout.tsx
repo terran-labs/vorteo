@@ -11,6 +11,7 @@ import { ScheduledWorkspaceProvider } from "@/workspace/lifecycle/scheduled";
 import { ProjectMoveModalHost } from "@/workspace/project-move/modal";
 import { SidebarFolderDialogHost } from "@/sidebar-folders/dialogs";
 import { InstallationSessionHost } from "@/execution-installation/panel";
+import { BrowserTimeZoneReporter } from "@/execution-installation/time-zone";
 import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
 import { PortalProvider } from "@gorhom/portal";
 import { LucideProvider } from "lucide-react-native";
@@ -523,6 +524,7 @@ function AppContainer({ children, chromeEnabled: chromeEnabledOverride }: AppCon
       <AppDiagnosticHost />
       <ChangelogHost />
       <InstallationSessionHost />
+      <BrowserTimeZoneReporter />
       <QuittingOverlay />
     </View>
   );

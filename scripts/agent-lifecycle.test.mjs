@@ -13,7 +13,11 @@ import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
 import { checkArchiveReadiness } from "./archive-readiness.mjs";
-import { findGitleaks, unpublishedCommits } from "./lib/delivery-git.mjs";
+import {
+  VORTEO_WORKTREE_LOCK_REASON,
+  findGitleaks,
+  unpublishedCommits,
+} from "./lib/delivery-git.mjs";
 import {
   prepareHostDelivery,
   resolveVersionOnlyConflicts,
@@ -669,6 +673,8 @@ test("cleanup removes only idle worktrees whose work is published", () => {
       .action,
     "keep",
   );
+  // Task worktrees carry Vorteo's lock, which cleanup lifts only for the one it removes.
+  assert.match(run(clone, "worktree", "list", "--porcelain"), /locked Vorteo worktree/);
   applyCleanup({ cwd: clone, target: "origin/main", entries });
   assert.equal(existsSync(published), false);
   assert.equal(existsSync(unpublished), true);
@@ -676,18 +682,83 @@ test("cleanup removes only idle worktrees whose work is published", () => {
   assert.equal(run(clone, "branch", "--list", "feat/published").trim(), "");
 });
 
+test("scripts and the daemon write the same Vorteo worktree lock reason", () => {
+  const daemon = readFileSync(
+    new URL("../packages/server/src/utils/worktree.ts", import.meta.url),
+    "utf8",
+  ).replace(/\s+/g, " ");
+  assert.ok(daemon.includes(JSON.stringify(VORTEO_WORKTREE_LOCK_REASON)));
+});
+
 test("cleanup keeps worktrees from other environments unless asked to prune", () => {
   const { clone } = fixture();
+  // An unlocked worktree someone added by hand, and a locked task worktree, both hidden.
+  const manual = `${clone}-manual`;
+  run(clone, "worktree", "add", "--quiet", "-b", "manual", manual);
+  rmSync(manual, { recursive: true, force: true });
   const plan = planTaskWorktree({ cwd: clone, slug: "elsewhere", env: {} });
   createTaskWorktree(plan, { install: false });
   rmSync(plan.location, { recursive: true, force: true });
-  const kept = classifyWorktrees({ cwd: clone, fetch: false });
-  assert.equal(kept[0].action, "keep");
-  assert.match(kept[0].reason, /another environment/);
-  assert.equal(
-    classifyWorktrees({ cwd: clone, fetch: false, pruneMissing: true })[0].action,
-    "prune",
+  const byPath = (options) =>
+    Object.fromEntries(
+      classifyWorktrees({ cwd: clone, fetch: false, ...options }).map((entry) => [
+        entry.path,
+        entry,
+      ]),
+    );
+  const kept = byPath({});
+  assert.equal(kept[manual].action, "keep");
+  assert.match(kept[manual].reason, /another environment/);
+  const pruned = byPath({ pruneMissing: true });
+  assert.equal(pruned[manual].action, "prune");
+  // Git never prunes a locked worktree, so cleanup does not claim it will.
+  assert.equal(pruned[plan.location].action, "keep");
+  assert.match(pruned[plan.location].reason, /Locked/);
+});
+
+test("the lock migration takes only Vorteo worktree layouts and unlocks only Vorteo locks", () => {
+  const { clone } = fixture();
+  const add = (location, branch) =>
+    run(clone, "worktree", "add", "--quiet", "-b", branch, location);
+  const sibling = `${clone}-task`;
+  const rooted = path.join(path.dirname(clone), "installation-worktrees", "job");
+  const unrelated = path.join(path.dirname(clone), "elsewhere", "mine");
+  const otherLock = `${clone}-held`;
+  add(sibling, "sibling");
+  add(rooted, "rooted");
+  add(unrelated, "unrelated");
+  add(otherLock, "held");
+  run(clone, "worktree", "lock", "--reason", "Mechanic hold", otherLock);
+  rmSync(rooted, { recursive: true, force: true });
+  const migrate = (...args) =>
+    JSON.parse(
+      execFileSync(process.execPath, [path.resolve("scripts/worktree-locks.mjs"), ...args], {
+        encoding: "utf8",
+      }),
+    );
+  const root = path.dirname(rooted);
+  assert.deepEqual(
+    migrate("--repo", clone, "--root", root).changed.sort(),
+    [rooted, sibling].sort(),
   );
+  migrate("--repo", clone, "--root", root, "--apply");
+  const reasons = () =>
+    Object.fromEntries(
+      run(clone, "worktree", "list", "--porcelain")
+        .split("\n\n")
+        .map((block) => [
+          /^worktree (.*)$/m.exec(block)?.[1],
+          /^locked ?(.*)$/m.exec(block)?.[1] ?? null,
+        ]),
+    );
+  assert.equal(reasons()[sibling], VORTEO_WORKTREE_LOCK_REASON);
+  assert.equal(reasons()[rooted], VORTEO_WORKTREE_LOCK_REASON);
+  assert.equal(reasons()[unrelated], null);
+  // Unlocking before a downgrade lifts Vorteo's locks and nothing else.
+  migrate("--repo", clone, "--unlock", "--apply");
+  assert.equal(reasons()[sibling], null);
+  assert.equal(reasons()[rooted], null);
+  assert.equal(reasons()[otherLock], "Mechanic hold");
 });
 
 test("release-note conflicts keep both sides", () => {

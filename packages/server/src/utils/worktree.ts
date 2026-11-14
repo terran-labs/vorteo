@@ -1,7 +1,7 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { constants as fsConstants, realpath } from "fs";
-import { copyFile, mkdir, readFile, rm, stat } from "fs/promises";
+import { copyFile, mkdir, readdir, readFile, rm, stat } from "fs/promises";
 import { join, basename, dirname, isAbsolute, resolve, sep } from "path";
 import net from "node:net";
 import { createHash } from "node:crypto";
@@ -1232,6 +1232,10 @@ export async function deletePaseoWorktree({
     await assertWorktreeBelongsToRepo(cwd, resolvedWorktree);
   }
 
+  // Without a repository root, remember this worktree's own registration from its link before
+  // the folder goes, so it can be dropped instead of pinning the branch forever.
+  const ownAdminDir = cwd ? null : await worktreeAdminDir(resolvedWorktree);
+
   if (await pathExists(resolvedWorktree)) {
     for (const teardownCwd of teardownCwds ?? [resolvedWorktree]) {
       await runWorktreeTeardownCommands({
@@ -1243,7 +1247,8 @@ export async function deletePaseoWorktree({
 
   if (cwd) {
     try {
-      await runGitCommand(["worktree", "remove", resolvedWorktree, "--force"], {
+      // Twice, because Vorteo locks its worktrees.
+      await runGitCommand(["worktree", "remove", resolvedWorktree, "--force", "--force"], {
         cwd,
         timeout: 120_000,
       });
@@ -1257,13 +1262,140 @@ export async function deletePaseoWorktree({
 
   await removeDirectoryWithRetries(resolvedWorktree);
 
+  if (ownAdminDir) await dropOwnAdminDir(ownAdminDir, resolvedWorktree);
+
   if (cwd) {
+    // Only this worktree's entry: a repository-wide prune would also delete the metadata of
+    // worktrees whose folders only another environment can see (#295).
     try {
-      await runGitCommand(["worktree", "prune"], { cwd, timeout: 30_000 });
+      await forgetMissingWorktreeEntry(cwd, resolvedWorktree, { includeLocked: true });
     } catch {
-      // not critical; git will prune lazily
+      // Not critical: a leftover entry for a missing folder only blocks reusing its path.
     }
   }
+}
+
+/**
+ * Lock reason on worktrees Vorteo creates. Git never prunes a locked worktree, so a
+ * `git worktree prune` run where the folder is not visible, such as in Dev for a Host
+ * worktree, keeps its metadata (#295). Vorteo removes its own with a double force.
+ */
+export const VORTEO_WORKTREE_LOCK_REASON =
+  "Vorteo worktree: archive it in Vorteo. Other environments may not see this folder.";
+
+/** Locks a worktree Vorteo created; an existing lock is kept. */
+export async function lockVorteoWorktree(cwd: string, worktreePath: string): Promise<void> {
+  const locked = (await listWorktreeEntries(cwd)).some(
+    (entry) => entry.locked && samePaths(entry.path, worktreePath),
+  );
+  if (locked) return;
+  await runGitCommand(["worktree", "lock", "--reason", VORTEO_WORKTREE_LOCK_REASON, worktreePath], {
+    cwd,
+    timeout: 30_000,
+  });
+}
+
+interface WorktreeEntry {
+  path: string;
+  locked: boolean;
+}
+
+async function listWorktreeEntries(cwd: string): Promise<WorktreeEntry[]> {
+  const { stdout } = await runGitCommand(["worktree", "list", "--porcelain"], {
+    cwd,
+    envOverlay: READ_ONLY_GIT_ENV,
+  });
+  const entries: WorktreeEntry[] = [];
+  for (const block of stdout.split("\n\n")) {
+    const lines = block.split("\n");
+    const head = lines.find((line) => line.startsWith("worktree "));
+    if (!head) continue;
+    entries.push({
+      path: head.slice("worktree ".length).trim(),
+      locked: lines.some((line) => line === "locked" || line.startsWith("locked ")),
+    });
+  }
+  return entries;
+}
+
+/** Drops a removed worktree's admin folder when it still names that worktree. */
+async function dropOwnAdminDir(adminDir: string, worktreePath: string): Promise<void> {
+  try {
+    const link = await readFile(join(adminDir, "gitdir"), "utf8");
+    if (samePaths(linkedWorktree(adminDir, link), worktreePath))
+      await rm(adminDir, { recursive: true, force: true });
+  } catch {
+    // Not critical: a leftover entry for a missing folder only blocks reusing its path.
+  }
+}
+
+/** A linked worktree's admin folder, read from its `.git` link file, or null. */
+export async function worktreeAdminDir(worktreePath: string): Promise<string | null> {
+  const content = await readFile(join(worktreePath, ".git"), "utf8").catch(() => null);
+  if (!content?.startsWith("gitdir: ")) return null;
+  // Resolved first, so `..` segments cannot walk out of the worktrees folder.
+  const adminDir = resolve(worktreePath, content.slice("gitdir: ".length).trim());
+  // Only an entry inside a repository's worktrees folder, never anything else.
+  return basename(dirname(adminDir)) === "worktrees" ? adminDir : null;
+}
+
+/** The worktree folder an admin entry's `gitdir` file names; relative links are git's option. */
+function linkedWorktree(adminDir: string, link: string): string {
+  return dirname(resolve(adminDir, link.trim()));
+}
+
+function samePaths(left: string, right: string): boolean {
+  return logicalProjectsPath(resolve(left)) === logicalProjectsPath(resolve(right));
+}
+
+/** Every worktree path the shared repository registers, as written and as a logical path. */
+async function registeredWorktreePaths(cwd: string): Promise<Set<string>> {
+  const paths = new Set<string>();
+  for (const entry of await listWorktreeEntries(cwd)) {
+    paths.add(entry.path);
+    paths.add(logicalProjectsPath(entry.path));
+  }
+  return paths;
+}
+
+/**
+ * Deletes the admin entry of exactly one worktree whose folder is missing here, leaving every
+ * other entry alone. A locked entry is kept unless the caller owns it, because it may be
+ * another environment's live worktree.
+ */
+export async function forgetMissingWorktreeEntry(
+  cwd: string,
+  worktreePath: string,
+  {
+    includeLocked = false,
+    lockedBranch,
+  }: {
+    /** The caller proved the entry is its own, for example by removing that worktree. */
+    includeLocked?: boolean;
+    /** A locked entry is forgotten only when its HEAD names this branch. */
+    lockedBranch?: string;
+  } = {},
+): Promise<boolean> {
+  if (await pathExists(worktreePath)) return false;
+  const { stdout } = await runGitCommand(["rev-parse", "--git-common-dir"], {
+    cwd,
+    envOverlay: READ_ONLY_GIT_ENV,
+  });
+  const adminRoot = join(resolve(cwd, stdout.trim()), "worktrees");
+  const names = await readdir(adminRoot).catch(() => [] as string[]);
+  for (const name of names) {
+    const adminDir = join(adminRoot, name);
+    const link = await readFile(join(adminDir, "gitdir"), "utf8").catch(() => null);
+    if (link === null || !samePaths(linkedWorktree(adminDir, link), worktreePath)) continue;
+    if (!includeLocked && (await pathExists(join(adminDir, "locked")))) {
+      // Another environment may have registered this path for its own live worktree since.
+      const head = await readFile(join(adminDir, "HEAD"), "utf8").catch(() => "");
+      if (!lockedBranch || head.trim() !== `ref: refs/heads/${lockedBranch}`) return false;
+    }
+    await rm(adminDir, { recursive: true, force: true });
+    return true;
+  }
+  return false;
 }
 
 export async function rollbackCreatedPaseoWorktree(
@@ -1420,8 +1552,17 @@ export const createWorktree = async ({
 
     if (!explicitWorktreePath) {
       const initialPath = worktreePath;
+      // Another environment's worktree is registered in the shared repository even where its
+      // folder is not visible here, so a registered path is taken too.
+      const registered = await registeredWorktreePaths(cwd);
+      // Git records real paths, so compare through the parent folder's real path too.
+      const parent = await normalizePathForOwnership(dirname(worktreePath));
+      const isRegistered = (candidate: string) =>
+        registered.has(candidate) ||
+        registered.has(logicalProjectsPath(join(parent, basename(candidate))));
       let suffix = 1;
-      while (await pathExists(worktreePath)) worktreePath = `${initialPath}-${suffix++}`;
+      while ((await pathExists(worktreePath)) || isRegistered(worktreePath))
+        worktreePath = `${initialPath}-${suffix++}`;
     }
     // Primitive owner for `git worktree add`; callers route through createWorktreeCore.
     await runGitCommand(["worktree", "add", worktreePath, ...sourcePlan.addArguments], {
@@ -1430,6 +1571,13 @@ export const createWorktree = async ({
     });
     worktreePath = await normalizePathForOwnership(worktreePath);
     await rewriteWorktreeLinksToLogicalPaths(worktreePath);
+    try {
+      await lockVorteoWorktree(cwd, worktreePath);
+    } catch (error) {
+      // The worktree works without its lock; only a prune from another environment could then
+      // delete its metadata.
+      process.emitWarning(`Could not lock worktree ${worktreePath}: ${String(error)}`);
+    }
 
     if (sourcePlan.pushRemote) {
       await configureWorktreePushRemote({

@@ -1,4 +1,5 @@
 import { validateProviderAccountSetup } from "./providers.js";
+import { assertTimeZoneUpdate, pickTimeZone } from "./time-zone.js";
 import {
   enrollInstallationPluginProviders,
   readInstallationProviders,
@@ -119,6 +120,7 @@ const INVALID_UPDATE_MESSAGES: Partial<Record<string, string>> = {
   "project-policy":
     "A project must stay available in at least one environment, keyed by its absolute root path.",
   "primary-connection-unavailable": "That connection is no longer available.",
+  "time-zone": "Choose a time zone from the list.",
 };
 
 export class InstallationSettingsInvalidUpdate extends Error {
@@ -134,7 +136,8 @@ export class InstallationSettingsInvalidUpdate extends Error {
       | "installation-instructions"
       | "project-policy"
       | "primary-connection"
-      | "primary-connection-unavailable",
+      | "primary-connection-unavailable"
+      | "time-zone",
   ) {
     super(
       INVALID_UPDATE_MESSAGES[reason] ??
@@ -257,6 +260,10 @@ export class InstallationSettingsService {
     const settings = InstallationSettingsSchema.parse({ ...base, ...request.settings });
     pruneUnspecified(settings, request.settings);
     if (request.settings.primaryConnection) assertPrimaryConnectionChoice(settings);
+    assertTimeZoneUpdate(
+      request.settings.timeZone,
+      () => new InstallationSettingsInvalidUpdate("time-zone"),
+    );
     this.validateResources(settings);
     if (previous.settings !== null && isDeepStrictEqual(settings, previous.settings)) {
       this.skillRemovalConfirmations = request.confirmedSkillRemovals ?? {};
@@ -1097,7 +1104,8 @@ export class InstallationSettingsService {
             patch.installationPrimaryConnection,
           ) &&
             verifiedConfig.installationPrimaryConnectionSupported ===
-              patch.installationPrimaryConnectionSupported))
+              patch.installationPrimaryConnectionSupported)) &&
+        timeZoneSettled(verifiedConfig, patch)
         ? null
         : "verification_failed",
     );
@@ -1163,7 +1171,20 @@ function environmentCopiesSettled(
         patch.installationPrimaryConnection,
       ) &&
         local.installationPrimaryConnectionSupported ===
-          patch.installationPrimaryConnectionSupported))
+          patch.installationPrimaryConnectionSupported)) &&
+    timeZoneSettled(local, patch)
+  );
+}
+
+/** The daemon's copy of the time zone matches, or this daemon predates the setting. */
+function timeZoneSettled(
+  local: MutableDaemonConfig,
+  patch: ReturnType<typeof projectInstallationSettings>,
+): boolean {
+  return (
+    patch.timeZone === undefined ||
+    (local.timeZone !== undefined &&
+      isDeepStrictEqual(pickTimeZone(local.timeZone), patch.timeZone))
   );
 }
 

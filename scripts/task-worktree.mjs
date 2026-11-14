@@ -7,7 +7,13 @@
 // PASEO_TASK_WORKTREE_ROOT overrides the parent directory.
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { git, hasCommit, parseArgs, repositoryRoot } from "./lib/delivery-git.mjs";
+import {
+  VORTEO_WORKTREE_LOCK_REASON,
+  git,
+  hasCommit,
+  parseArgs,
+  repositoryRoot,
+} from "./lib/delivery-git.mjs";
 import { isMainModule } from "./is-main-module.mjs";
 import { installDependencies } from "./lib/dependency-cache.mjs";
 
@@ -57,6 +63,14 @@ export function createTaskWorktree(plan, { install = true } = {}) {
     throw new Error(`Branch ${plan.branch} already exists; choose another slug or branch`);
   }
   git(plan.repository, ["worktree", "add", "--quiet", "-b", plan.branch, plan.location, plan.base]);
+  // Locked so a prune from an environment that cannot see this folder keeps its metadata (#295).
+  git(plan.repository, [
+    "worktree",
+    "lock",
+    "--reason",
+    VORTEO_WORKTREE_LOCK_REASON,
+    plan.location,
+  ]);
   if (install && existsSync(path.join(plan.location, "package-lock.json"))) {
     // Each worktree owns its dependencies; a shared install writes through to other checkouts.
     // A copy-on-write clone of a cached install gives the same isolation without the disk cost.

@@ -4154,6 +4154,33 @@ test("createAgent injects daemon append system prompt at runtime only", async ()
   expect(record?.config).not.toHaveProperty("daemonAppendSystemPrompt");
 });
 
+test("launch prompt names the owner's effective time zone and follows later changes", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const client = new TestAgentClient();
+  let next = 0;
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    ownerTimeZone: "America/Los_Angeles",
+    idFactory: () => `00000000-0000-4000-8000-00000000011${next++}`,
+  });
+
+  await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  expect(client.createdConfigs[0]?.daemonAppendSystemPrompt).toMatch(
+    /Owner's local time zone: America\/Los_Angeles \(P[SD]T\)\. Give owner-facing times in it\./,
+  );
+
+  manager.setOwnerTimeZone(null);
+  await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  expect(client.createdConfigs[1]?.daemonAppendSystemPrompt).not.toContain("time zone");
+});
+
 test("daemon append system prompt is injected into Pi configs", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
   const storagePath = join(workdir, "agents");

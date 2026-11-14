@@ -13,6 +13,7 @@ import { InstallationProviderProjectionSchema } from "./installation-provider.js
 import { PluginDirectoryBindingSchema, ResolvedPluginSourceSchema } from "./plugin-installation.js";
 import {
   DaemonPrimaryConnectionSchema,
+  DaemonTimeZoneSchema,
   InstallationProjectPolicySchema,
   InstallationResourceBindingsSchema,
 } from "./installation-settings.js";
@@ -395,6 +396,8 @@ const InstallationProjectPoliciesWireSchema = z.record(
 export {
   DaemonPrimaryConnectionSchema,
   type DaemonPrimaryConnection,
+  DaemonTimeZoneSchema,
+  type DaemonTimeZone,
 } from "./installation-settings.js";
 
 export const MutableDaemonConfigSchema = z
@@ -455,6 +458,9 @@ export const MutableDaemonConfigSchema = z
     // primary connection. Until it arrives, an installation daemon keeps the earlier launch
     // rule (the first usable provider) instead of waiting for a choice it can never receive.
     installationPrimaryConnectionSupported: z.boolean().optional(),
+    // COMPAT(timeZoneSetting): added 2026-11-13. The owner's time zone for agent prompts. Daemons
+    // that know the setting always report the key, so a coordinator projects it only to them.
+    timeZone: DaemonTimeZoneSchema.optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
     sharedProviderPreferences: SharedProviderPreferencesSchema.optional(),
     skills: z.object({ selection: AgentSkillSelectionSchema.optional() }).strict().optional(),
@@ -496,6 +502,7 @@ export const MutableDaemonConfigPatchSchema = z
     primaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
     installationPrimaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
     installationPrimaryConnectionSupported: z.boolean().optional(),
+    timeZone: DaemonTimeZoneSchema.optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
@@ -4628,6 +4635,9 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(primaryConnection): added 2026-11-05, remove gate after 2027-05-05. The daemon
         // launches system threads with the primary connection and stores it when standalone.
         primaryConnectionSetting: z.boolean().optional(),
+        // COMPAT(timeZoneSetting): added 2026-11-13, remove gate after 2027-05-13. The daemon
+        // stores the owner's time zone and names it in agent prompts.
+        timeZoneSetting: z.boolean().optional(),
         installationSettingsAuthority: z.boolean().optional(),
         installationProviderRemoval: z.boolean().optional(),
         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.
