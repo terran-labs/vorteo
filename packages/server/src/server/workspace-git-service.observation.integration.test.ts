@@ -15,6 +15,7 @@ import {
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { createFileObserver } from "./file-observer/index.js";
 import { WorkspaceGitServiceImpl } from "./workspace-git-service.js";
+import { deriveWorkspaceKind } from "./workspace-registry-model.js";
 import type { FileChange, FileObserver, SubscribeToFileChanges } from "./file-observer/index.js";
 
 function createLogger(): pino.Logger {
@@ -126,7 +127,9 @@ test("reconciliation checkout discovery observes repository transitions without 
 
   startGitCommandMetrics();
   try {
-    expect((await service.getCheckout(repo)).isGit).toBe(true);
+    const checkout = await service.getCheckout(repo);
+    expect(checkout).toMatchObject({ isGit: true, worktreeRoot: repo, mainRepoRoot: null });
+    expect(deriveWorkspaceKind(checkout)).toBe("local_checkout");
   } finally {
     const metrics = stopGitCommandMetrics();
     expect(metrics.commands.length).toBeGreaterThan(0);
@@ -138,6 +141,37 @@ test("reconciliation checkout discovery observes repository transitions without 
   }
   const repoRoot = await service.resolveRepoRoot(repo);
   expect(realpathSync.native(repoRoot)).toBe(realpathSync.native(repo));
+
+  const subdirectory = path.join(repo, "nested");
+  mkdirSync(subdirectory);
+  expect(await service.getCheckout(subdirectory)).toMatchObject({
+    worktreeRoot: repo,
+    mainRepoRoot: null,
+    isPaseoOwnedWorktree: false,
+  });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.test",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "Initial",
+    ],
+    { cwd: repo, stdio: "pipe" },
+  );
+  const linked = path.join(root, "linked");
+  execFileSync("git", ["worktree", "add", "-b", "feature", linked], { cwd: repo, stdio: "pipe" });
+  const linkedCheckout = await service.getCheckout(linked);
+  expect(linkedCheckout).toMatchObject({ isGit: true, worktreeRoot: linked, mainRepoRoot: repo });
+  expect(deriveWorkspaceKind(linkedCheckout)).toBe("worktree");
+  rmSync(linked, { recursive: true });
+  expect((await service.getCheckout(linked)).isGit).toBe(false);
 }, 30_000);
 
 test("recursive observation updates tracked state and prunes ignored storms", async () => {

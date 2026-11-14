@@ -826,13 +826,19 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
         mainRepoRoot: null,
       });
     }
+    // Facts carry the main repository root even for its own checkout. Placement
+    // uses null for that case, matching getCheckoutStatus without its file scan.
+    const isMainCheckout =
+      !facts.paseoWorktree.isPaseoOwnedWorktree &&
+      facts.mainRepoRoot !== null &&
+      resolve(facts.mainRepoRoot) === resolve(facts.worktreeRoot);
     return checkoutLiteFromGitSnapshot(normalizedCwd, {
       isGit: true,
       currentBranch: facts.currentBranch,
       remoteUrl: facts.remoteUrl,
       repoRoot: facts.worktreeRoot,
       isPaseoOwnedWorktree: facts.paseoWorktree.isPaseoOwnedWorktree,
-      mainRepoRoot: facts.mainRepoRoot,
+      mainRepoRoot: isMainCheckout ? null : facts.mainRepoRoot,
     });
   }
 
