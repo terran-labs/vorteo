@@ -17,7 +17,11 @@ import {
   QuestionError,
 } from "./questions/model.js";
 import { editThreadGoal, type ThreadGoalEdit } from "./agent-goal.js";
-import { AGENT_LAUNCH_GUIDANCE, composeSystemPromptParts } from "./system-prompt.js";
+import {
+  AGENT_LAUNCH_GUIDANCE,
+  composeSystemPromptParts,
+  ownerTimeZoneGuidance,
+} from "./system-prompt.js";
 import {
   mergeProviderChecklistEvent,
   mergeProviderChecklist,
@@ -547,6 +551,8 @@ export interface AgentManagerOptions {
   paseoToolCatalogFactory?: PaseoToolCatalogFactory;
   resolvePaseoToolPolicy?: (provider: AgentProvider) => ProviderPaseoToolsPolicy | undefined;
   appendSystemPrompt?: string;
+  /** The owner's effective IANA time zone; launches name it in the prompt. */
+  ownerTimeZone?: string | null;
   agentStreamCoalesceWindowMs?: number;
   rescueTimeouts?: AgentManagerRescueTimeouts;
   beforeSteerUnavailableFallback?: (input: {
@@ -1594,6 +1600,7 @@ export class AgentManager {
     provider: AgentProvider,
   ) => ProviderPaseoToolsPolicy | undefined;
   private appendSystemPrompt: string;
+  private ownerTimeZone: string | null;
   private onAgentAttention?: AgentAttentionCallback;
   private onAgentArchived?: AgentArchivedCallback;
   private onWorkspaceStateMayHaveChanged?: (params: { cwd: string }) => void;
@@ -1683,6 +1690,7 @@ export class AgentManager {
     this.configurePaseoTools(options);
     this.resolvePaseoToolPolicy = options.resolvePaseoToolPolicy ?? (() => undefined);
     this.appendSystemPrompt = options.appendSystemPrompt ?? "";
+    this.ownerTimeZone = options.ownerTimeZone ?? null;
     this.logger = options.logger.child({ module: "agent", component: "agent-manager" });
     this.rescueTimeouts = this.resolveRescueTimeouts(options);
     this.beforeSteerUnavailableFallback = options.beforeSteerUnavailableFallback;
@@ -2595,6 +2603,11 @@ export class AgentManager {
 
   setAppendSystemPrompt(prompt: string | null | undefined): void {
     this.appendSystemPrompt = prompt ?? "";
+  }
+
+  /** The owner's effective IANA time zone, named in each later launch's prompt. */
+  setOwnerTimeZone(zone: string | null | undefined): void {
+    this.ownerTimeZone = zone ?? null;
   }
 
   public getMetricsSnapshot(): AgentMetricsSnapshot {
@@ -8967,6 +8980,7 @@ export class AgentManager {
   private applyDaemonAppendSystemPrompt(config: AgentSessionConfig): AgentSessionConfig {
     const daemonAppendSystemPrompt = composeSystemPromptParts(
       config.internal ? undefined : AGENT_LAUNCH_GUIDANCE,
+      config.internal ? undefined : ownerTimeZoneGuidance(this.ownerTimeZone),
       this.appendSystemPrompt,
     );
     const next = { ...config };

@@ -22,6 +22,7 @@ const PANE_SOURCES: Record<string, readonly string[]> = {
   "general.installation": [
     "screens/settings/general/installation-name-section.tsx",
     "screens/settings/general/installation-type-section.tsx",
+    "screens/settings/general/time-zone-row.tsx",
   ],
   "general.about": ["screens/settings/general/help-section.tsx"],
   "workspaces.newWorkspace": ["screens/settings/general/workspace-defaults-section.tsx"],

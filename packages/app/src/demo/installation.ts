@@ -229,6 +229,7 @@ function createSettings(): InstallationSettings {
     browserTools: { enabled: true },
     providerDefinitions: CONNECTIONS.map(providerDefinition),
     primaryConnection: { providerId: "demo-claude-personal" },
+    timeZone: { override: null, reported: "America/Los_Angeles" },
     plugins: [
       "calendar",
       "linear-sync",

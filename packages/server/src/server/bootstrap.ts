@@ -24,6 +24,8 @@ import {
 } from "./agent/finish-subscriptions/index.js";
 import { createWorkspaceRuntimeStore } from "./workspace-runtime-store/index.js";
 import type { PluginRegistries } from "@getpaseo/protocol/plugin-registry";
+import { effectiveTimeZoneName } from "@getpaseo/protocol/installation-settings";
+import { daemonTimeZone } from "./execution-installation/settings/time-zone.js";
 import { describeHookWorkspace } from "./plugins/lifecycle/index.js";
 import express from "express";
 import { createServer as createHTTPServer, type IncomingMessage, type ServerResponse } from "http";
@@ -497,6 +499,7 @@ export interface PaseoDaemonConfig {
   primaryConnection?: MutableDaemonConfig["primaryConnection"];
   installationPrimaryConnection?: MutableDaemonConfig["installationPrimaryConnection"];
   installationPrimaryConnectionSupported?: boolean;
+  timeZone?: MutableDaemonConfig["timeZone"];
   skillSelection?: AgentSkillSelection;
   pluginsEnabled?: boolean;
   /** Seeds the Vorteo System project at startup. Defaults on; test daemons turn it off. */
@@ -684,6 +687,7 @@ function createInitialMutableDaemonConfig(config: ResolvedDaemonSettings): Mutab
     primaryConnection: config.primaryConnection,
     installationPrimaryConnection: config.installationPrimaryConnection,
     installationPrimaryConnectionSupported: config.installationPrimaryConnectionSupported,
+    timeZone: daemonTimeZone(config.timeZone),
   };
 
   if (config.terminalProfiles !== undefined) {
@@ -1243,6 +1247,7 @@ export async function createPaseoDaemon(
     providerDefinitions: initialAgentManagerState.providerDefinitions,
     registry: agentStorage,
     appendSystemPrompt: config.appendSystemPrompt,
+    ownerTimeZone: effectiveTimeZoneName(config.timeZone),
     onWorkspaceStateMayHaveChanged: ({ cwd }) => {
       workspaceGitService.onWorkspaceStateMayHaveChanged(cwd);
     },
@@ -2260,6 +2265,11 @@ export async function createPaseoDaemon(
             });
             daemonConfigStore.onFieldChange("appendSystemPrompt", (value) => {
               agentManager.setAppendSystemPrompt(typeof value === "string" ? value : "");
+            });
+            daemonConfigStore.onFieldChange("timeZone", () => {
+              agentManager.setOwnerTimeZone(
+                effectiveTimeZoneName(daemonConfigStore.get().timeZone),
+              );
             });
             const relayEnabled = config.relayEnabled ?? false;
             const relayEndpoint = config.relayEndpoint ?? "relay.paseo.sh:443";
