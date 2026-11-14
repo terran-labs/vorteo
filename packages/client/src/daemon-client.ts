@@ -4413,12 +4413,14 @@ export class DaemonClient {
     return result.tasks;
   }
 
-  /** The Previews gallery: published artifacts with the owner's ratings, picks and comments. */
-  async listPreviews(): Promise<import("@getpaseo/protocol/previews").PreviewGallery> {
+  /** Previews published in the workspace of this thread, with ratings, picks and comments. */
+  async listPreviews(
+    agentId: string,
+  ): Promise<import("@getpaseo/protocol/previews").PreviewGallery> {
     if (this.lastServerInfoMessage?.features?.previews !== true)
       throw new Error("Update the daemon to use Previews.");
     const result = await this.sendNamespacedCorrelatedSessionRequest<"previews.list.response">({
-      message: { type: "previews.list.request" },
+      message: { type: "previews.list.request", agentId },
     });
     if (result.error || !result.gallery) throw new Error(result.error ?? "Previews unavailable");
     return result.gallery;
@@ -4427,11 +4429,12 @@ export class DaemonClient {
   /** Rate, approve, pick, remove, or mint a one-time browser pairing ticket. */
   async previewsAction(
     action: import("@getpaseo/protocol/previews").PreviewsAction,
+    agentId: string,
   ): Promise<{ gallery: import("@getpaseo/protocol/previews").PreviewGallery; ticket?: string }> {
     if (this.lastServerInfoMessage?.features?.previews !== true)
       throw new Error("Update the daemon to use Previews.");
     const result = await this.sendNamespacedCorrelatedSessionRequest<"previews.action.response">({
-      message: { type: "previews.action.request", action },
+      message: { type: "previews.action.request", action, agentId },
     });
     if (result.error || !result.gallery)
       throw new Error(result.error ?? "Preview change unconfirmed");
