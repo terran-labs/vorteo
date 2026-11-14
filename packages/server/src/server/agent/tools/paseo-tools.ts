@@ -1,4 +1,5 @@
 import { sharedProfileDefinitions } from "@getpaseo/protocol/provider-preferences";
+import { effectiveTimeZone } from "@getpaseo/protocol/installation-settings";
 import { registerPluginTools } from "./plugin-tools.js";
 import type { FinishSubscriptions, FinishRegistration } from "../finish-subscriptions/index.js";
 import type { AgentMessageDelivery } from "../agent-messages/index.js";
@@ -1534,13 +1535,22 @@ function createToolCatalog(
     "list_hosts",
     {
       title: "List hosts",
-      description: "Discover this host and registered destination hosts for fleet tools.",
+      description:
+        "Discover this host and registered destination hosts for fleet tools, and the owner's local time zone for owner-facing times.",
       inputSchema: {},
     },
-    async () => ({
-      content: [],
-      structuredContent: ensureValidJson(await hostResolver.directory()),
-    }),
+    async () => {
+      const directory = await hostResolver.directory();
+      const timeZone = effectiveTimeZone(daemonConfigStore?.get().timeZone);
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          ...directory,
+          // Null when no owner client has reported a zone and none was chosen.
+          ownerTimeZone: timeZone,
+        }),
+      };
+    },
   );
 
   registerTool(

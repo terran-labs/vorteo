@@ -1,6 +1,7 @@
 import { Text } from "react-native";
 import { settingsStyles } from "@/styles/settings";
 import { InstallationTypeRow } from "./installation-type-section";
+import { TimeZoneRow } from "./time-zone-row";
 import { OwnerSettingsGate } from "@/components/settings/owner-lock";
 import { useMemo } from "react";
 import { SettingsCard, SettingsRow, SettingsSection } from "@/components/settings";
@@ -52,6 +53,7 @@ function UnlockedInstallationNameSection() {
             testID="settings-installation-name-input"
           />
         </SettingsRow>
+        <TimeZoneRow />
       </SettingsCard>
       {/* Stable or Lab is chosen once, so it waits behind Advanced. */}
       <SettingsAdvancedGroup testID="settings-installation-advanced">
