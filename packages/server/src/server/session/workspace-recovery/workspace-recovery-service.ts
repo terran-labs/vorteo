@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { WorkspaceRecoveryGuard } from "@getpaseo/protocol/messages";
 
@@ -132,7 +132,16 @@ export function createWorkspaceRecoveryService(deps: {
       return createRecoveryPlan({ action: "unarchive", workspace });
     }
 
-    if (workspace.kind !== "worktree") {
+    // The regressed metadata projection saved local checkouts as unowned
+    // worktrees pointing back to their own root. With the target missing, that
+    // shape has no separate restore source. Normalize only the unavailable
+    // classification, preserving the retained record and its recovery guards.
+    const sourceIsCheckout =
+      !workspace.isPaseoOwnedWorktree &&
+      workspace.mainRepoRoot != null &&
+      workspace.worktreeRoot != null &&
+      resolve(workspace.mainRepoRoot) === resolve(workspace.worktreeRoot);
+    if (workspace.kind !== "worktree" || sourceIsCheckout) {
       return {
         kind: "unavailable",
         workspaceId,
