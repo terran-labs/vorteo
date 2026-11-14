@@ -65,11 +65,19 @@ export async function createAgentSessionPort(session: AgentSession): Promise<Hos
   for await (const event of session.streamHistory()) history.push(toHostedJson(event));
 
   const listeners = new Set<(event: JsonValue) => void>();
+  // Set once this provider process runs a turn or an out-of-band command; a reopened session gets
+  // a new port and starts false.
+  let turnRan = false;
   /**
-   * Read on each use: a plugin provider offers the check only once its bridge negotiated it. A
-   * provider without the check has nothing beyond the baseline idle checks to protect.
+   * Shared by the host's idle close and the worker's canStopRuntime call. A process that never ran
+   * a turn cannot have started background work, and providers answer false before their first
+   * turn (Claude before its CLI reports init, Codex without a thread), so asking them would pin
+   * every session that was only opened for reading. The check is read on each use because a
+   * plugin provider offers it only once its bridge negotiated it. A provider without it has
+   * nothing beyond the baseline idle checks to protect.
    */
   async function canStopRuntime(): Promise<boolean> {
+    if (!turnRan) return true;
     const check = session.canStopRuntime?.bind(session);
     return check ? (await check()) === true : true;
   }
@@ -113,6 +121,8 @@ export async function createAgentSessionPort(session: AgentSession): Promise<Hos
   }
 
   session.subscribe((event) => {
+    // Autonomous turns, such as a background task waking the agent, arrive only as events.
+    if (event.type === "turn_started") turnRan = true;
     activeTurnId = nextActiveTurnId(activeTurnId, event);
     // A provider updates its own state before emitting, so the worker applies the state entry
     // first: a synchronous read while it handles the event sees what an in-process read would.
@@ -148,6 +158,8 @@ export async function createAgentSessionPort(session: AgentSession): Promise<Hos
     ) => Promise<unknown>;
   } = {
     async startTurn(call) {
+      // Before the provider starts work, so a failed start still counts.
+      turnRan = true;
       const result = await session.startTurn(
         call.prompt as AgentPromptInput,
         call.options as AgentRunOptions | undefined,
@@ -238,6 +250,7 @@ export async function createAgentSessionPort(session: AgentSession): Promise<Hos
       // it does for a local session, so nothing is shown twice.
       const handler = session.tryHandleOutOfBand?.(call.prompt);
       if (!handler) return { handled: false, events: [] };
+      turnRan = true;
       const events: JsonValue[] = [];
       await handler.run({ emit: (event) => events.push(toHostedJson(event)) });
       return {

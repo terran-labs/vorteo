@@ -578,11 +578,22 @@ test("the provider's context breakdown crosses the host, and an old host reports
 test("the provider's background work check crosses the host, and an old host offers none", async () => {
   const fixture = await hostedFixture();
   const session = await fixture.client.createSession(config, { agentId: "watcher" });
-  const provider: AgentSession = fixture.hosted[0]!;
+  const provider = fixture.hosted[0]!;
+  // Providers answer false before their first turn (Claude before init, Codex without a thread).
+  // A process that never ran a turn has no background work, so loaded sessions stay releasable.
   provider.canStopRuntime = async () => false;
-  expect(await session.canStopRuntime?.()).toBe(false);
+  expect(await session.canStopRuntime?.()).toBe(true);
+  await session.startTurn("start a watcher");
+  provider.complete();
+  await expect.poll(() => session.canStopRuntime?.()).toBe(false);
   provider.canStopRuntime = async () => true;
   expect(await session.canStopRuntime?.()).toBe(true);
+
+  // The host's idle close shares the gate, so a session only loaded for reading is released.
+  const loaded = await fixture.client.createSession(config, { agentId: "loaded" });
+  fixture.hosted[1]!.canStopRuntime = async () => false;
+  await loaded.closeIfIdle?.();
+  expect(fixture.hosted[1]!.closed).toBe(true);
 
   const connection = await connectSessionHost({
     socketPath: fixture.socketPath,
