@@ -112,6 +112,17 @@ function route(base: string, path: string): string {
   return new URL(path, base).toString();
 }
 
+/**
+ * Why a tile shows an icon instead of a picture. Live links and PDFs are never rendered;
+ * a frozen page has no thumbnail when the daemon cannot run its sandboxed renderer, which
+ * is usual inside a container.
+ */
+export function placeholderReason(version: Pick<PreviewVersion, "kind">): string {
+  if (version.kind === "url") return "Live page";
+  if (version.kind === "pdf") return "PDF";
+  return "No thumbnail here";
+}
+
 export function thumbnailUrl(base: string, versionId: string): string {
   return route(base, `/api/previews/thumb/${encodeURIComponent(versionId)}`);
 }

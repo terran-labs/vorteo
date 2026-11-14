@@ -13,7 +13,7 @@ import { PressHighlight } from "@/components/ui/press-highlight";
 import { Image, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
-import { nextRating, thumbnailUrl } from "./model";
+import { nextRating, placeholderReason, thumbnailUrl } from "./model";
 
 const KIND_ICONS = {
   web: withUnistyles(Globe),
@@ -66,6 +66,9 @@ export function PreviewThumb({
       accessibilityLabel={KIND_LABELS[version.kind]}
     >
       <Icon size={28} uniProps={mutedIcon} />
+      <Text style={styles.placeholderText} numberOfLines={1}>
+        {placeholderReason(version)}
+      </Text>
     </View>
   );
 }
@@ -163,7 +166,8 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface2,
   },
   thumbImage: { width: "100%", height: "100%" },
-  placeholder: { alignItems: "center", justifyContent: "center" },
+  placeholder: { alignItems: "center", justifyContent: "center", gap: theme.spacing[1] },
+  placeholderText: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
   stars: { flexDirection: "row", alignItems: "center" },
   // Each star is a full 44px target; the glyph stays small.
   star: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
