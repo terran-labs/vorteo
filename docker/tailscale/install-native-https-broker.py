@@ -28,6 +28,21 @@ def prepare_deployment(path):
     return root
 
 
+def stable_path(value):
+    """An existing file's absolute path, kept exactly as the administrator wrote it.
+
+    The daemon CLI is reached through a link that an update repoints to the new release.
+    Resolving it would pin one release: the pin would stop matching on the next reinstall
+    and the broker would keep running a CLI that an update has left behind.
+    """
+    path = Path(value)
+    if not path.is_absolute() or path != Path(os.path.normpath(path)):
+        raise ValueError('The CLI entry must be a normalized absolute path')
+    if not path.is_file():
+        raise ValueError(f'{path} is not a file')
+    return str(path)
+
+
 def private_socket(path):
     """A daemon socket this user owns, inside a directory only this user can enter."""
     path = Path(path)
@@ -217,7 +232,7 @@ def main():
     home = Path(args.daemon_home).absolute()
     os.close(safe_dir(home))
     node = str(Path(args.node).resolve(strict=True))
-    cli = str(Path(args.cli_entry).resolve(strict=True))
+    cli = stable_path(args.cli_entry)
     tailscale = str(Path(args.tailscale).resolve(strict=True))
     socket = None
     if args.tailscale_socket:

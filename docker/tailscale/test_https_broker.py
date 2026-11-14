@@ -141,6 +141,23 @@ class NativeWorkspacePolicyTests(unittest.TestCase):
                     installer.private_socket(root / 'host-config.json')
             finally:
                 listener.close()
+        # The CLI is pinned through its stable link, not the release an update will replace,
+        # so a reinstall after an update still matches the existing pin.
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(os.path.realpath(directory))
+            for release in ('release-1', 'release-2'):
+                (base / release / 'bin').mkdir(parents=True); (base / release / 'bin' / 'paseo').write_text('')
+            current = base / 'current'; current.symlink_to(base / 'release-1')
+            pinned = installer.stable_path(current / 'bin' / 'paseo')
+            self.assertEqual(pinned, str(current / 'bin' / 'paseo'))
+            current.unlink(); current.symlink_to(base / 'release-2')
+            self.assertEqual(installer.stable_path(current / 'bin' / 'paseo'), pinned)
+            installer.check_identity({**old, 'cliCommand': ['/node', pinned]},
+                                     {**old, 'cliCommand': ['/node', installer.stable_path(current / 'bin' / 'paseo')]},
+                                     running, False, nothing)
+            for bad in ('relative/paseo', str(base / 'current' / '..' / 'release-1' / 'bin' / 'paseo'), str(base / 'missing')):
+                with self.assertRaises(ValueError):
+                    installer.stable_path(bad)
         # An existing broker directory that others can write is refused, never adopted.
         with tempfile.TemporaryDirectory() as directory:
             fresh = installer.prepare_deployment(Path(os.path.realpath(directory)) / 'new')
