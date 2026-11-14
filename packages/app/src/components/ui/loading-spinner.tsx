@@ -17,6 +17,8 @@ interface LoadingSpinnerProps {
   color: string;
   size?: ActivityIndicatorProps["size"];
   style?: ActivityIndicatorProps["style"];
+  /** What is loading, such as "Loading sign-in status". Defaults to "Loading". */
+  accessibilityLabel?: string;
   /**
    * For a wait the user is watching, such as a submit button or dictation that is transcribing:
    * upstream Paseo's faster turn and a heavier ring. Leave it off for passive status.
@@ -37,6 +39,7 @@ export function LoadingSpinner({
   color,
   size = "small",
   style,
+  accessibilityLabel = "Loading",
   prominent = false,
 }: LoadingSpinnerProps) {
   const baseDiameter = typeof size === "number" ? size : LOADING_INDICATOR[size];
@@ -59,7 +62,7 @@ export function LoadingSpinner({
   return (
     <View
       role="progressbar"
-      accessibilityLabel="Loading"
+      accessibilityLabel={accessibilityLabel}
       style={[{ alignItems: "center", justifyContent: "center" }, style]}
     >
       {size === "large" ? (

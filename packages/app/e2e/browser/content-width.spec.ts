@@ -33,12 +33,12 @@ test("widens chat and Markdown files to the chosen content width and resets to t
       await expectContentColumnWidth(assistantMessage, { max: 820 });
     });
 
-    await test.step("settings show the default without a reset", async () => {
+    await test.step("settings show the default in an empty field", async () => {
       await openAppearanceSettings(page);
       await expectDefaultContentWidthSetting(page, 820);
     });
 
-    await test.step("a custom width is saved and offers a reset", async () => {
+    await test.step("a custom width is saved", async () => {
       await setContentWidth(page, 1600);
       await expectCustomContentWidthSetting(page, 1600);
       await page.screenshot({ path: testInfo.outputPath("settings-custom-width.png") });
@@ -55,7 +55,7 @@ test("widens chat and Markdown files to the chosen content width and resets to t
       await page.screenshot({ path: testInfo.outputPath("markdown-custom-width.png") });
     });
 
-    await test.step("reset returns to the default without storing it", async () => {
+    await test.step("clearing the field returns to the default without storing it", async () => {
       await openAppearanceSettings(page);
       await resetContentWidth(page);
       await expectDefaultContentWidthSetting(page, 820);

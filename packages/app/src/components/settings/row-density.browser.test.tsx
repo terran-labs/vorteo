@@ -75,3 +75,26 @@ describe("settings row density", () => {
     );
   });
 });
+
+describe("loading button", () => {
+  // react-native-web overwrote the button's aria-disabled, so a busy button read as enabled.
+  it("reads as disabled while staying focusable, and recovers afterwards", () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const render = (loading: boolean) =>
+      act(() =>
+        root?.render(
+          <Button loading={loading} testID="busy-button">
+            Check
+          </Button>,
+        ),
+      );
+    render(true);
+    const button = element("busy-button") as HTMLButtonElement;
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    expect(button.disabled).toBe(false);
+    render(false);
+    expect(element("busy-button").getAttribute("aria-disabled")).not.toBe("true");
+  });
+});

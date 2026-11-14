@@ -8,7 +8,6 @@ import { UsageBalanceBar } from "./balance-bar";
 
 const window: UsageWindow = { id: "session", label: "Session", usedPct: 70 };
 const balance: UsageBalance = { id: "credits", label: "Credits", unit: "usd", remaining: 12 };
-const ignorePin = () => {};
 
 let root: Root;
 let container: HTMLDivElement;
@@ -30,15 +29,7 @@ it("translates mounted usage rows when the language changes", async () => {
   act(() =>
     root.render(
       <>
-        <UsageWindowBar
-          window={window}
-          displayAs="used"
-          pinnable={false}
-          pinned={false}
-          onTogglePin={ignorePin}
-          pinLabel=""
-          pinTestID=""
-        />
+        <UsageWindowBar window={window} displayAs="used" />
         <UsageBalanceBar balance={balance} />
       </>,
     ),

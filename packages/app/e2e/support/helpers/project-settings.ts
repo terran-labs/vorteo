@@ -146,7 +146,11 @@ export async function expectProjectEditSaved(page: Page): Promise<void> {
 
 // The sheet keeps the user's input on a failed save so the value stays editable.
 export async function expectProjectEditFailed(page: Page, detail: string): Promise<void> {
-  await expect(page.getByText(detail, { exact: true })).toBeVisible();
+  // The field also repeats its error in a visually hidden live region for screen readers;
+  // check the error the eye sees.
+  await expect(
+    page.getByText(detail, { exact: true }).and(page.locator(":not([aria-live])")),
+  ).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Project name" })).toBeVisible();
 }
 

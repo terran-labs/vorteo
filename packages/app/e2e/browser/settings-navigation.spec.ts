@@ -1,6 +1,6 @@
 import {
-  selectSettingsHost,
-  expectSettingsHostPickerLabel,
+  closeSettingsDialog,
+  settingsEnvironmentDetails,
   revealSettingsLocation,
 } from "../support/helpers/settings";
 import { test, expect } from "../support/fixtures";
@@ -88,8 +88,12 @@ async function openWorkspace(
   await expect(page.getByTestId("menu-button")).toBeVisible();
 }
 
+// Short enough that the sidebar overflows by more than 60px, now that Notifications & privacy
+// and Environments are no longer sidebar sections.
+const SHORT_SETTINGS_VIEWPORT = { width: 1000, height: 300 };
+
 test.describe("Settings sidebar scroll position", () => {
-  test.use({ viewport: { width: 1000, height: 400 } });
+  test.use({ viewport: SHORT_SETTINGS_VIEWPORT });
 
   test("clamps after resizing and starts a fresh visit at the top", async ({ page }) => {
     await gotoAppShell(page);
@@ -97,7 +101,7 @@ test.describe("Settings sidebar scroll position", () => {
     await scrollSettingsSidebarToEnd(page);
     await page.setViewportSize({ width: 1000, height: 1100 });
     await expectSettingsSidebarScrollOffset(page, 0);
-    await page.setViewportSize({ width: 1000, height: 400 });
+    await page.setViewportSize(SHORT_SETTINGS_VIEWPORT);
     await openSettingsSection(page, "appearance");
     await expectSettingsSidebarScrollOffset(page, 0);
     await scrollSettingsSidebarToEnd(page);
@@ -266,12 +270,10 @@ test.describe("Settings sidebar navigation", () => {
     });
     expect(ids).toEqual([
       "settings-section-interface",
-      "settings-section-privacy",
       "settings-section-general",
       "settings-section-providers",
       "settings-section-agents",
       "settings-section-voice",
-      "settings-section-environments",
       "settings-section-projects",
       "settings-section-system",
     ]);
@@ -293,7 +295,10 @@ test.describe("Settings sidebar navigation", () => {
     await expectAboutContent(page);
 
     await openSettingsSection(page, "appearance");
-    await expectSettingsHeader(page, "Appearance");
+    // The Appearance pane opens on its Theme group and carries no "Appearance" heading of its own.
+    await expect(
+      page.getByTestId("settings-pane-appearance.appearance").filter({ visible: true }).first(),
+    ).toBeInViewport();
     await expectAppearanceContent(page);
 
     const back = page.getByTestId("settings-back-to-workspace");
@@ -307,28 +312,6 @@ test.describe("Settings sidebar navigation", () => {
     });
     await clickSettingsBackToWorkspace(page);
     await expect(page).not.toHaveURL(/\/settings(\/|$)/);
-  });
-
-  test("host choice survives app sections and host screen replacements", async ({ page }) => {
-    const primaryServerId = getServerId();
-    const secondaryServerId = "srv_e2e_settings_secondary";
-    const endpoint = `127.0.0.1:${getE2EDaemonPort()}`;
-    await seedSavedSettingsHosts(page, [
-      { serverId: primaryServerId, label: "First horse", endpoint },
-      { serverId: secondaryServerId, label: "Stable horse", endpoint },
-    ]);
-    await gotoAppShell(page);
-    await openSettings(page);
-    await selectSettingsHost(page, secondaryServerId);
-    await openSettingsHostSection(page, secondaryServerId, "connections");
-    await openSettingsSection(page, "appearance");
-    await expectSettingsHostPickerLabel(page, "Stable horse");
-    await openSettingsSection(page, "general");
-    await expectSettingsHostPickerLabel(page, "Stable horse");
-    await openSettingsHostSection(page, secondaryServerId, "connections");
-    await selectSettingsHost(page, primaryServerId);
-    await openSettingsSection(page, "about");
-    await expectSettingsHostPickerLabel(page, "First horse");
   });
 
   test("/h/[serverId]/settings redirects to the host connections section", async ({ page }) => {
@@ -492,13 +475,11 @@ test.describe("Settings — compact master-detail", () => {
     await openWorkspace(page, workspace);
     await openCompactSettings(page, workspaceRoute);
     await openSettingsHostSection(page, getServerId(), "host");
-    await expectAppRoute(page, buildSettingsSectionRoute("environments"));
-    await expect(
-      page
-        .getByTestId("settings-environment-scroll")
-        .getByTestId(`settings-environment-${getServerId()}`),
-    ).toBeVisible();
+    // Environments is a group in System, and each environment edits in its own dialog.
+    await expectAppRoute(page, buildSettingsSectionRoute("system"));
+    await expect(settingsEnvironmentDetails(page, getServerId())).toBeVisible();
 
+    await closeSettingsDialog(page);
     await goBackInSettings(page);
     await expectCompactSettingsList(page);
 
@@ -626,79 +607,6 @@ test("docked navigation keeps its density and Settings preserves reading width",
   await expectAppearanceContent(page);
 });
 
-test("environment tabs stay visible while details scroll", async ({ page }) => {
-  await page.setViewportSize({ width: 1280, height: 500 });
-  const primary = getServerId();
-  const secondary = "srv_e2e_environment_tabs";
-  const endpoint = `127.0.0.1:${getE2EDaemonPort()}`;
-  await seedSavedSettingsHosts(page, [
-    { serverId: primary, label: "Host", endpoint },
-    { serverId: secondary, label: "Dev container", endpoint },
-  ]);
-  await page.goto(buildSettingsSectionRoute("environments"));
-  // Environment cards also appear in other sections' panes; scope to this one.
-  const pane = page.getByTestId("settings-environment-scroll");
-  const tabs = page.getByTestId("settings-environment-tabs");
-  // The deep link pins Environments for 3s (PIN_MS in settings-scroll-page.tsx), but panes
-  // above it can finish loading later and push it about 2,800px down: CI showed Terminal. Bring
-  // the tabs back into view when that happens and wait until they rest before measuring. A cold
-  // local run kept moving for more than the default 10s, hence 30s.
-  let previousTabTop: number | undefined;
-  await expect
-    .poll(
-      async () => {
-        const top = (await tabs.boundingBox())?.y;
-        if (top === undefined || top < 0 || top >= 500) {
-          await tabs.evaluate((node) => node.scrollIntoView({ block: "start" }));
-          previousTabTop = undefined;
-          return false;
-        }
-        const settled = top === previousTabTop;
-        previousTabTop = top;
-        return settled;
-      },
-      { timeout: 30_000 },
-    )
-    .toBe(true);
-  const hostTab = page.getByRole("tab", { name: "Host", exact: true });
-  const devTab = page.getByRole("tab", {
-    name: "Dev container",
-    exact: true,
-  });
-  await expect(hostTab).toHaveAttribute("aria-selected", "true");
-  await expect(pane.getByTestId(`settings-environment-${primary}`)).toBeVisible();
-  await expect(pane.getByTestId(`settings-environment-${secondary}`)).toHaveCount(0);
-  // The settings page scrolls; the tabs stick while this environment's details pass under them.
-  const scroll = page.getByTestId("settings-scroll-page");
-  await scroll.hover();
-  // Scroll past the section heading so the tabs have reached their sticky
-  // position at every width before measuring it.
-  await page.mouse.wheel(0, 400);
-  // Wheel scrolling can animate; measure once the position has settled.
-  let previousTop = -1;
-  await expect
-    .poll(async () => {
-      const top = await scroll.evaluate((element) => element.scrollTop);
-      const settled = top > 0 && top === previousTop;
-      previousTop = top;
-      return settled;
-    })
-    .toBe(true);
-  const stuck = await tabs.boundingBox();
-  await page.mouse.wheel(0, 120);
-  await expect(tabs).toBeVisible();
-  await expect.poll(async () => (await tabs.boundingBox())!.y).toBe(stuck!.y);
-  await devTab.click();
-  await expect(devTab).toHaveAttribute("aria-selected", "true");
-  await expect(pane.getByTestId(`settings-environment-${secondary}`)).toBeAttached();
-  await expect(pane.getByTestId(`settings-environment-${primary}`)).toHaveCount(0);
-  await hostTab.click();
-  await expect(hostTab).toHaveAttribute("aria-selected", "true");
-  await page.screenshot({
-    path: test.info().outputPath("environment-tabs.png"),
-  });
-});
-
 for (const width of [1280, 390]) {
   test(`Settings search stays in the top bar and closes Command Center at ${width}px`, async ({
     page,
@@ -739,11 +647,15 @@ for (const width of [1280, 390]) {
     await page.screenshot({ path: test.info().outputPath(`settings-header-${width}.png`) });
     await page.keyboard.press("/");
     await expect(input).toBeFocused();
-    await input.fill("data saver");
+    await input.fill("vim");
     await expect(page.getByTestId("settings-search-results")).toBeVisible();
     await expect(input).toBeFocused();
     await input.press("Enter");
     await expect(input).toHaveValue("");
-    await expect(page.getByTestId("settings-data-saver")).toBeVisible();
+    // The result lands on its pane, with focus on the row's own control.
+    await expect(
+      page.getByTestId("settings-pane-chat.editor").filter({ visible: true }).first(),
+    ).toBeInViewport();
+    await expect(page.locator('[data-testid="settings-pane-chat.editor"] :focus')).toHaveCount(1);
   });
 }

@@ -2272,6 +2272,8 @@ export const zhCN: TranslationResources = {
     title: "设置",
     loading: "正在加载设置...",
     groups: {
+      thisDevice: "此设备",
+      vorteo: "Vorteo",
       app: "应用",
       host: "主机",
     },

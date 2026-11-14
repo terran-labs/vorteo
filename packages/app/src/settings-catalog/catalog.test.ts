@@ -119,9 +119,7 @@ describe("settings catalog", () => {
 
   it("indexes every pane that renders settings", () => {
     const indexed = new Set(SETTINGS_ENTRIES.map((entry) => entry.pane));
-    const unindexed = SETTINGS_PANES.filter(
-      (pane) => pane.id !== "general.attention" && !indexed.has(pane.id),
-    ).map((pane) => pane.id);
+    const unindexed = SETTINGS_PANES.filter((pane) => !indexed.has(pane.id)).map((pane) => pane.id);
     expect(unindexed).toEqual([]);
   });
 
@@ -183,18 +181,30 @@ it("offers keyboard shortcuts for hardware keyboards independently of Electron",
   expect(isAvailable(pane, { ...context, hardwareKeyboardPresent: true })).toBe(true);
 });
 
-it("groups the nine sections by scope and preserves renamed section links", () => {
+it("groups the sections by scope and preserves renamed section links", () => {
   expect(SETTINGS_SECTIONS.map(({ label, group }) => [group, label])).toEqual([
     ["This device", "Interface"],
-    ["This device", "Notifications & privacy"],
     ["Vorteo", "General"],
     ["Vorteo", "Providers"],
     ["Vorteo", "Agents"],
     ["Vorteo", "Voice"],
-    ["Vorteo", "Environments"],
     ["Vorteo", "Projects & integrations"],
     ["Vorteo", "System"],
   ]);
+  // Retired sections keep their addresses: Privacy in Interface, Environments and the old
+  // General status row in System.
+  expect(resolveSettingsTarget("privacy")).toEqual({
+    section: "interface",
+    pane: "general.notifications",
+  });
+  expect(resolveSettingsTarget("environments")).toEqual({
+    section: "system",
+    pane: "environments.environments",
+  });
+  expect(resolveSettingsTarget("general.attention")).toEqual({
+    section: "system",
+    pane: "system.health",
+  });
   expect(resolveSettingsTarget("accounts")).toEqual({
     section: "providers",
     pane: "accounts.providers",
@@ -211,7 +221,6 @@ it("groups the nine sections by scope and preserves renamed section links", () =
     section: "interface",
     pane: "appearance.appearance",
   });
-  expect(getPane("privacy.dataSaver")?.section).toBe("privacy");
   // Upstream's per-host voice links land on the top-level Voice section.
   expect(resolveSettingsTarget("voice")).toEqual({ section: "voice", pane: null });
   expect(

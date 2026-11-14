@@ -7,7 +7,6 @@ import {
   type InstallationSettingsSnapshot,
 } from "@getpaseo/protocol/installation-settings";
 import { profilePolicyIdentity } from "@getpaseo/protocol/provider-preferences";
-import { useToast } from "@/contexts/toast-context";
 import { Switch } from "@/components/ui/switch";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { settingsStyles } from "@/styles/settings";
@@ -44,7 +43,8 @@ function ProjectExclusions({ rootPath, serverId }: { rootPath: string; serverId:
   const { installation, data, error, save } = useInstallationSettings();
   const { profiles } = useAgentProfiles(serverId);
   const [saving, setSaving] = useState(false);
-  const toast = useToast();
+  // Shown beside the controls rather than in a passing toast, so it stays until the next change.
+  const [problem, setProblem] = useState<string | null>(null);
   const key = projectPolicyKey(rootPath);
   const settings = data?.settings;
   const policy = settings?.projectPolicies?.[key] ?? {};
@@ -53,29 +53,30 @@ function ProjectExclusions({ rootPath, serverId }: { rootPath: string; serverId:
     async (patch: ProjectPolicyPatch) => {
       if (!data?.settings || saving) return;
       setSaving(true);
+      setProblem(null);
       try {
         await save({
           expectedRevision: data.revision,
           settings: { projectPolicies: nextProjectPolicies(data, key, patch) },
         });
       } catch (cause) {
-        toast.error(cause instanceof Error ? cause.message : "Unable to change exclusions.");
+        setProblem(cause instanceof Error ? cause.message : "Unable to change exclusions.");
       } finally {
         setSaving(false);
       }
     },
-    [data, key, save, saving, toast],
+    [data, key, save, saving],
   );
   const changeEnvironments = useCallback(
     (excludedEnvironments: NonNullable<InstallationProjectPolicy["excludedEnvironments"]>) => {
       const kinds = installation?.environments.map((environment) => environment.kind) ?? [];
       if (kinds.every((kind) => excludedEnvironments.includes(kind))) {
-        toast.error("Keep this project available in at least one environment.");
+        setProblem("Keep this project available in at least one environment.");
         return;
       }
       void change({ excludedEnvironments });
     },
-    [change, installation, toast],
+    [change, installation],
   );
 
   if (!installation) return null;
@@ -110,7 +111,11 @@ function ProjectExclusions({ rootPath, serverId }: { rootPath: string; serverId:
     })),
   ];
   return (
-    <SettingsSection title="Exclusions" testID="project-exclusions">
+    <SettingsSection
+      title="Exclusions"
+      status={saving ? "Saving..." : null}
+      testID="project-exclusions"
+    >
       <Text style={settingsStyles.rowHint}>
         Everything is available by default. Turn off what this project should not use. These
         settings belong to this installation, not to files in the project.
@@ -120,6 +125,14 @@ function ProjectExclusions({ rootPath, serverId }: { rootPath: string; serverId:
         onChange={changeEnvironments}
         disabled={saving}
       />
+      {/* Mounted before its first message, so errors are announced. */}
+      <View accessibilityLiveRegion="polite" aria-live="polite">
+        {problem ? (
+          <Text accessibilityRole="alert" style={settingsStyles.rowError}>
+            {problem}
+          </Text>
+        ) : null}
+      </View>
       {choices.length > 0 ? (
         <View style={settingsStyles.card}>
           {choices.map((choice) => (
@@ -170,6 +183,7 @@ function ExclusionRow({
         value={!excluded}
         onValueChange={toggle}
         disabled={disabled}
+        aria-busy={disabled}
       />
     </View>
   );

@@ -231,8 +231,8 @@ test("updates populated code and diff appearance without losing the editor insta
     await expect(diff).toBeVisible();
     await page.keyboard.press("Control+,");
     await openSettingsSection(page, "appearance");
-    await page.getByLabel("Code font size", { exact: true }).fill("19");
-    await page.getByLabel("Code font size", { exact: true }).press("Tab");
+    await page.getByLabel(/^Code font size\b/).fill("19");
+    await page.getByLabel(/^Code font size\b/).press("Tab");
     await clickSettingsBackToWorkspace(page);
     await expect(text).toHaveCSS("font-size", "19px");
     expect(await instance!.evaluate((node) => node.isConnected)).toBe(true);
@@ -284,8 +284,8 @@ test("retains populated workspace chat and terminal attachments through appearan
     const composerNode = await composer.elementHandle();
     await page.keyboard.press("Control+,");
     await openSettingsSection(page, "appearance");
-    await page.getByLabel("Content font size", { exact: true }).fill("20");
-    await page.getByLabel("Content font size", { exact: true }).press("Tab");
+    await page.getByLabel(/^Content font size\b/).fill("20");
+    await page.getByLabel(/^Content font size\b/).press("Tab");
     await clickSettingsBackToWorkspace(page);
     await expect(paragraph).toHaveCSS("font-size", "20px");
     expect(await composerNode!.evaluate((node) => node.isConnected)).toBe(true);

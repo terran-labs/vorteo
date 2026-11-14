@@ -1,6 +1,9 @@
 import {
+  createContext,
   forwardRef,
   useCallback,
+  useContext,
+  useId,
   useMemo,
   useState,
   type ForwardedRef,
@@ -24,6 +27,7 @@ import {
 } from "@/components/ui/control-geometry";
 import { useContainedControlSize } from "@/components/ui/control-size";
 import { hoverStyle } from "@/styles/hover";
+import { LiveAnnouncement } from "@/components/ui/visually-hidden";
 
 const FIELD_CHROME = { sm: "chromeSm", md: "chromeMd" } as const satisfies Record<
   ControlSize,
@@ -40,37 +44,90 @@ interface FieldProps {
   testID?: string;
 }
 
+/**
+ * Ties a field's visible label, hint and error to the input inside it, so assistive technology
+ * reads the same name the eye sees and hears the hint or error as its description.
+ */
+interface FieldAssociation {
+  labelId: string;
+  describedById: string | undefined;
+  invalid: boolean;
+}
+const FieldContext = createContext<FieldAssociation | null>(null);
+
 export function Field({ label, children, trailing, hint, error, testID }: FieldProps) {
+  const id = useId();
+  const labelId = `${id}-label`;
+  const subtextId = `${id}-subtext`;
   const hintTestID = useMemo(() => (testID ? `${testID}-hint` : undefined), [testID]);
   const errorTestID = useMemo(() => (testID ? `${testID}-error` : undefined), [testID]);
   const subtext = useMemo(() => {
     if (error) {
+      // Errors wrap rather than truncate, so the whole message stays readable.
       return (
-        <Text numberOfLines={1} style={styles.errorText} testID={errorTestID}>
+        <Text nativeID={subtextId} style={styles.errorText} testID={errorTestID}>
           {error}
         </Text>
       );
     }
     if (hint) {
       return (
-        <Text style={styles.hintText} testID={hintTestID}>
+        <Text nativeID={subtextId} style={styles.hintText} testID={hintTestID}>
           {hint}
         </Text>
       );
     }
     return null;
-  }, [error, hint, errorTestID, hintTestID]);
+  }, [error, hint, errorTestID, hintTestID, subtextId]);
+  const association = useMemo(
+    () => ({
+      labelId,
+      describedById: error || hint ? subtextId : undefined,
+      invalid: Boolean(error),
+    }),
+    [labelId, subtextId, error, hint],
+  );
 
   return (
     <View style={styles.container} testID={testID}>
       <View style={styles.header}>
-        <Text style={styles.label}>{label}</Text>
+        <Text nativeID={labelId} style={styles.label}>
+          {label}
+        </Text>
         {trailing}
       </View>
-      {children}
+      <FieldContext.Provider value={association}>{children}</FieldContext.Provider>
       {subtext}
+      {/* Mounted with the field, so an error that appears later is announced. */}
+      <LiveAnnouncement message={error ?? null} />
     </View>
   );
+}
+
+/**
+ * ARIA props for an input inside a `Field`. The visible label names the input unless the caller
+ * names it explicitly; the hint or error describes it. Inputs outside a Field get nothing.
+ */
+export function useFieldAssociation(explicit: {
+  accessibilityLabel?: string;
+  "aria-label"?: string;
+  "aria-labelledby"?: string;
+  "aria-describedby"?: string;
+  "aria-invalid"?: boolean;
+}) {
+  const field = useContext(FieldContext);
+  if (!field) return {};
+  const named =
+    explicit.accessibilityLabel !== undefined ||
+    explicit["aria-label"] !== undefined ||
+    explicit["aria-labelledby"] !== undefined;
+  return {
+    ...(named ? {} : { "aria-labelledby": field.labelId }),
+    ...(field.describedById && explicit["aria-describedby"] === undefined
+      ? { "aria-describedby": field.describedById }
+      : {}),
+    ...(field.invalid && explicit["aria-invalid"] === undefined ? { "aria-invalid": true } : {}),
+  };
 }
 
 type FormTextInputProps = AdaptiveTextInputProps & {
@@ -168,6 +225,9 @@ function assignTextInputRef(
 export const FormTextInput = forwardRef<EditingTextInputHandle, FormTextInputProps>(
   function FormTextInput({ size: sizeProp, style, onFocus, onBlur, editable, ...props }, ref) {
     const [focused, setFocused] = useState(false);
+    const association = useFieldAssociation(
+      props as unknown as Parameters<typeof useFieldAssociation>[0],
+    );
     const containedSize = useContainedControlSize();
     const size = sizeProp ?? containedSize ?? "md";
     const isDisabled = editable === false;
@@ -226,6 +286,7 @@ export const FormTextInput = forwardRef<EditingTextInputHandle, FormTextInputPro
         <AdaptiveTextInput
           ref={setInputRef}
           editable={editable}
+          {...association}
           {...props}
           onBlur={handleBlur}
           onFocus={handleFocus}
@@ -278,12 +339,16 @@ const formInputStyles = StyleSheet.create((theme) => {
     chromeMd: {
       ...geometry.fieldControlMd,
     },
+    // The fill alone is 1.04 to 1.24:1 against cards and dialogs, so a resting edge marks the
+    // field at 3.94:1 or better in every theme; hover and focus strengthen it.
     controlRest: {
       ...geometry.controlRest,
+      borderColor: theme.colors.foregroundExtraMuted,
     },
-    controlHoverable: hoverStyle(geometry.controlHover),
+    controlHoverable: hoverStyle({ borderColor: theme.colors.foregroundMuted }),
     controlActive: {
       ...geometry.controlActive,
+      borderColor: theme.colors.foregroundMuted,
     },
     controlDisabled: {
       ...geometry.controlDisabled,

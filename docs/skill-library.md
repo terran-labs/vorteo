@@ -65,7 +65,8 @@ packages; availability changes belong to the shared catalog.
 
 ## Environment exceptions
 
-In **Settings > Environments**, turn off a personal skill to exclude it from that environment.
+In **Settings > System > Environments**, open an environment with Edit and expand Environment
+exceptions, then turn off a personal skill to exclude it from that environment.
 Shared definitions remain available in the other environments by default. Exclusions retain
 installed files and discovery links so existing tasks can keep their recorded selections.
 

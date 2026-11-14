@@ -6,6 +6,8 @@ import {
   addDirectHostFromSettings,
   clickSettingsBackToWorkspace,
   openSettingsHostSection,
+  settingsEnvironmentDetails,
+  settingsHostConnections,
 } from "../support/helpers/settings";
 
 import { seedWorkspace } from "../support/helpers/seed-client";
@@ -36,6 +38,8 @@ test.describe("Settings host selection", () => {
         host: "127.0.0.1",
         port: remoteDaemon.port,
       });
+      // A new host opens its Edit dialog; Back to workspace closes it first.
+      await expect(settingsEnvironmentDetails(page, remoteDaemon.serverId)).toBeVisible();
 
       await clickSettingsBackToWorkspace(page);
       if ((page.viewportSize()?.width ?? 1280) < 600) {
@@ -50,9 +54,8 @@ test.describe("Settings host selection", () => {
       await openSettings(page);
 
       await openSettingsHostSection(page, remoteDaemon.serverId, "connections");
-      await expect(
-        page.getByTestId(`settings-environment-${remoteDaemon.serverId}`).first(),
-      ).toBeVisible();
+      // Connections render on the System page itself, not in the host's Edit dialog.
+      await expect(settingsHostConnections(page, remoteDaemon.serverId)).toBeVisible();
       await expect(page.getByTestId("settings-host-picker")).toHaveCount(0);
     } finally {
       await remoteWorkspace.cleanup().catch(() => undefined);

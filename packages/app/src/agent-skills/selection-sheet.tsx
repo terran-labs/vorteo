@@ -173,6 +173,10 @@ export function SkillSelectionSheet({
       {/* The sheet body already spaces its blocks apart, so the section owns
           only the gap between its label and the list the label names. */}
       <SettingsSection title={t("settings.host.skills.chooseList")} flush>
+        {/* Says once why every switch below is off, instead of disabling them silently. */}
+        {allSkills && available.length > 0 ? (
+          <Text style={settingsStyles.rowHint}>Turn off All skills to choose individually.</Text>
+        ) : null}
         <SettingsCard testID="skill-selection-list-card">
           {available.length === 0 ? (
             <View style={settingsStyles.row}>
@@ -192,7 +196,13 @@ export function SkillSelectionSheet({
         </SettingsCard>
       </SettingsSection>
 
-      {saveError ? <Text style={settingsStyles.rowError}>{saveError}</Text> : null}
+      <View accessibilityLiveRegion="polite" aria-live="polite">
+        {saveError ? (
+          <Text accessibilityRole="alert" style={settingsStyles.rowError}>
+            {saveError}
+          </Text>
+        ) : null}
+      </View>
     </AdaptiveModalSheet>
   );
 }

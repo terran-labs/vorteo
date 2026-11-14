@@ -1,12 +1,17 @@
 import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { SettingsSection, SettingsCard, SettingsSelect } from "@/components/settings";
+import { ResetGroupButton } from "@/screens/settings/appearance/reset-group-button";
+
 import {
   useAppSettings,
   type OpenInSidePanePreferences,
   type PullRequestOpenLocation,
   type ServiceUrlBehavior,
 } from "@/hooks/use-settings";
+
+// The section header resets these choices to their defaults.
+const RESET_OPEN_LOCATION = <ResetGroupButton group="openLocation" />;
 
 const SOURCES = [
   "explorerFiles",
@@ -100,7 +105,10 @@ export function OpenLocationSection() {
     [settings.openInSidePane, updateSettings],
   );
   return (
-    <SettingsSection title={t("settings.layout.openInSidePane.title")}>
+    <SettingsSection
+      title={t("settings.layout.openInSidePane.title")}
+      trailing={RESET_OPEN_LOCATION}
+    >
       <SettingsCard>
         {SOURCES.map((source) => (
           <OpenLocationRow
