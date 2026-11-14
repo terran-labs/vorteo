@@ -978,7 +978,14 @@ type CheckoutMetadataFacts =
   | { isGit: false }
   | Pick<
       Extract<CheckoutSnapshotFacts, { isGit: true }>,
-      "isGit" | "worktreeRoot" | "currentBranch" | "remoteUrl" | "paseoWorktree" | "mainRepoRoot"
+      | "isGit"
+      | "worktreeRoot"
+      | "currentBranch"
+      | "remoteUrl"
+      | "paseoWorktree"
+      | "mainRepoRoot"
+      | "absoluteGitDir"
+      | "gitCommonDir"
     >;
 
 interface CheckoutMetadataRead {
@@ -2157,6 +2164,8 @@ export async function getCheckoutSnapshotFacts(
     remoteUrl: inspected.remoteUrl,
     paseoWorktree: inspected.paseoWorktree,
     mainRepoRoot,
+    absoluteGitDir: inspected.absoluteGitDir,
+    gitCommonDir: inspected.gitCommonDir,
   };
   // Registry reconciliation needs identity, not upstream counts or comparison refs.
   if (options?.metadataOnly) return metadata;
@@ -2217,8 +2226,6 @@ export async function getCheckoutSnapshotFacts(
 
   return {
     ...metadata,
-    absoluteGitDir: inspected.absoluteGitDir,
-    gitCommonDir: inspected.gitCommonDir,
     storedBaseRef,
     resolvedBaseRef,
     comparisonBaseRef,

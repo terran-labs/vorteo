@@ -101,10 +101,10 @@ export async function expectProjectWorkspaceCountForHost(
   input: { projectName: string; hostName: string; count: number },
 ): Promise<void> {
   const group = projectGroup(page, input.projectName);
-  await expect(group.getByRole("button").filter({ hasText: input.hostName })).toHaveCount(
-    input.count,
-    { timeout: PROJECT_VISIBILITY_TIMEOUT },
-  );
+  // Drag wrappers also have button roles and include the row's host text.
+  await expect(
+    group.locator('[data-testid^="sidebar-workspace-row-"]').filter({ hasText: input.hostName }),
+  ).toHaveCount(input.count, { timeout: PROJECT_VISIBILITY_TIMEOUT });
 }
 
 export async function renameProject(page: Page, name: string): Promise<void> {
