@@ -6,7 +6,8 @@ import socket
 import sys
 import time
 from channel_identity import physical_directory, read_file, file_identity
-from broker_deployment import deploy_files, exclusive, encode, sha, preservation, assert_preserved, directory_pin
+from broker_deployment import (deploy_files, exclusive, encode, sha, preservation, assert_preserved, directory_pin,
+                               approved_preservation_sha256)
 from broker_deployment_observation import NativeObservation
 
 
@@ -29,7 +30,26 @@ class ParentGuard:
             raise ValueError('Parent queue or protected custody refused')
 
 
+# Transient states while a scheduler generation finishes; every other refusal is final.
+SETTLING = ('Unlisted broker caller or waiting generation remains', 'Old registered consumer remains active')
+
+
+def settle(check, seconds=15, sleep=time.sleep):
+    """Repeat a read-only check while only a finishing broker generation fails it."""
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            return check()
+        except ValueError as error:
+            if str(error) not in SETTLING or time.monotonic() >= deadline:
+                raise
+        sleep(0.25)
+
+
 class Deployment:
+    # Bound for a finishing scheduler generation to exit; tests shorten it.
+    settle_seconds = 15
+
     def __init__(self, packet, guard, observer=None):
         self.packet = packet
         self.plan = packet['plan']
@@ -39,6 +59,13 @@ class Deployment:
         self.check_evidence()
         self.observer = observer or NativeObservation(self.plan, packet['bindings'], guard)
         self.inner = {key: self.plan[key] for key in ('version', 'operation', 'id', 'evidenceDirectory', 'targets')}
+        # Native effects whose acknowledgement is not yet recorded. Any entry makes an
+        # abort uncertain, so original registrations are then never restored.
+        self.unacknowledged = set()
+        self.suppressed = []
+        self.replacing = False
+        self.unsettled = False
+        self.baseline = None
 
     def check_evidence(self):
         with physical_directory(self.root) as (info, check):
@@ -70,7 +97,10 @@ class Deployment:
         if action in ('disable', 'bootout'):
             state = self.observer.state(binding)
             expected = self.plan['registrations'][index]
-            if state['process'] is not None and state['process'] != expected['process']:
+            # A running broker's scheduler may start a new protected-route generation at
+            # any time; state() already refused any other process for the label.
+            running = self.observer.admission[index] == 'running' and expected['process'] is None
+            if state['process'] is not None and state['process'] != expected['process'] and not running:
                 raise ValueError('Broker process changed before scheduler effect')
         else:
             # Re-read the plist immediately before launchd uses it: its digest, Label and
@@ -78,6 +108,7 @@ class Deployment:
             self.observer.state(binding)
         self.record(f'effect-{index}-{action}-intent.json', {'outerPlanSha256': self.outer, 'argv': args})
         self.guard()
+        self.unacknowledged.add((index, action))
         result = self.observer.invoke(args)
         # A lost/failed response is uncertain. Never repeat it or restore in finally.
         if result.returncode or result.stderr.strip():
@@ -89,6 +120,20 @@ class Deployment:
                 (action == 'bootstrap' and state['disposition'] != 'loaded')):
             raise ValueError('Native broker effect readback differs')
         self.record(f'effect-{index}-{action}-ack.json', {'outerPlanSha256': self.outer, 'state': state})
+        self.unacknowledged.discard((index, action))
+
+    def mode(self, root):
+        return self.observer.admission[[binding['root'] for binding in self.packet['bindings']].index(root)]
+
+    def preservation_sha256(self, root, state):
+        return approved_preservation_sha256(state, self.mode(root))
+
+    def locked_preservation_sha256(self, root, state):
+        # A running-mode plan approves only config and marker, so under the locks the
+        # full inventory must still equal the post-suppression baseline exactly.
+        if self.mode(root) == 'running' and encode(state) != encode(self.baseline[root]):
+            raise ValueError('Preservation inventory changed after suppression')
+        return self.preservation_sha256(root, state)
 
     def verify_files(self):
         commit, digest = self.read('commit.json')
@@ -109,7 +154,7 @@ class Deployment:
                 set(before['preservation']) != {target['root'] for target in self.plan['targets']}):
             raise ValueError('Retained preservation baseline belongs to another plan')
         for target in self.plan['targets']:
-            if sha(encode(before['preservation'][target['root']])) != target['preservationSha256']:
+            if self.preservation_sha256(target['root'], before['preservation'][target['root']]) != target['preservationSha256']:
                 raise ValueError('Retained preservation baseline differs from approved digest')
         additions = {}
         after = {}
@@ -123,7 +168,7 @@ class Deployment:
         states = []
         self.observer.assert_manual_exited()
         for expected, binding in zip(self.plan['registrations'], self.packet['bindings']):
-            self.observer.assert_refusing_channel(binding)
+            self.observer.assert_admission(binding)
             state = self.observer.state(binding)
             if state['enabled'] != expected['enabled'] or state['disposition'] != expected['disposition']:
                 raise ValueError('Prior broker registration behavior not restored')
@@ -134,29 +179,45 @@ class Deployment:
         return states
 
     def execute(self):
-        before = self.observer.validate()
+        before = settle(self.observer.validate, self.settle_seconds)
+        self.record('admission.json', {'outerPlanSha256': self.outer, 'admission': self.observer.admission,
+                                       'registrations': before})
         for index, binding in enumerate(self.packet['bindings']):
             raw, _ = read_file(binding['plist']['path'], protected=True)
             self.guard()
             with physical_directory(self.root) as (_, check):
                 exclusive(check.directory_fd, f'original-plist-{index}', raw)
                 check()
-        self.record('before.json', {'outerPlanSha256': self.outer, 'innerPlanSha256': sha(encode(self.inner)),
-                                  'registrations': before,
-                                  'preservation': {t['root']: preservation(Path(t['root'])) for t in self.plan['targets']}})
-        # Suppress the complete pair before any file replacement.
-        for index, (expected, binding) in enumerate(zip(self.plan['registrations'], self.packet['bindings'])):
-            if expected['enabled']:
-                self.command(index, 'disable', binding)
-            if expected['disposition'] == 'loaded':
-                self.command(index, 'bootout', binding)
-        self.observer.assert_suppressed()
-        deploy_files(self.inner, [item['root'] for item in self.packet['bindings']],
-                     verify_window=self.observer.assert_suppressed)
+        try:
+            # Suppress the complete pair before any file replacement.
+            for index, (expected, binding) in enumerate(zip(self.plan['registrations'], self.packet['bindings'])):
+                if expected['enabled']:
+                    self.command(index, 'disable', binding)
+                    self.suppressed.append((index, 'disable'))
+                if expected['disposition'] == 'loaded':
+                    self.command(index, 'bootout', binding)
+                    self.suppressed.append((index, 'bootout'))
+            try:
+                settle(self.observer.assert_suppressed, self.settle_seconds)
+            except ValueError as error:
+                # A generation outlived its scheduler: launchd no longer accounts for it.
+                self.unsettled = str(error) in SETTLING
+                raise
+            # The baseline is taken only now: a running broker rewrites its ledger
+            # until its scheduler is suppressed and its last generation has exited.
+            self.baseline = {t['root']: preservation(Path(t['root'])) for t in self.plan['targets']}
+            self.record('before.json', {'outerPlanSha256': self.outer, 'innerPlanSha256': sha(encode(self.inner)),
+                                      'registrations': before, 'preservation': self.baseline})
+            deploy_files(self.inner, [item['root'] for item in self.packet['bindings']],
+                         verify_window=self.observer.assert_suppressed, checkpoint=self.checkpoint,
+                         preservation_sha256=self.locked_preservation_sha256)
+        except BaseException as error:
+            self.restore_after_abort(error)
+            raise
         self.verify_files()
         self.observer.assert_suppressed()
         for index, (expected, binding) in enumerate(zip(self.plan['registrations'], self.packet['bindings'])):
-            self.observer.assert_refusing_channel(binding)
+            self.observer.assert_admission(binding)
             if expected['enabled']:
                 self.command(index, 'enable', binding)
             if expected['disposition'] == 'loaded':
@@ -169,12 +230,54 @@ class Deployment:
                     'registrationsSha256': sha(encode(states)), 'states': states})
         return self.observe()
 
+    def checkpoint(self, stage, index):
+        if stage == 'before-write':
+            self.replacing = True
+
+    def restore_after_abort(self, error):
+        """Return the original brokers to service when no consumer file was replaced.
+
+        Only certain states qualify: every suppression effect acknowledged, no
+        surviving broker generation and no replacement write begun. A lost or
+        unresolved native response, a generation that outlived bootout, or any abort
+        after the first write keeps the suppression and its evidence for recovery.
+        The job still ends without a commitment and is never replayed.
+        """
+        if self.replacing or self.unacknowledged or not self.suppressed:
+            return
+        if self.unsettled or str(error) in SETTLING:
+            # Starting new generations beside one launchd no longer tracks would hide
+            # an unexplained process from recovery, so this abort keeps suppression.
+            # This also covers the same refusal from a later window recheck.
+            self.note('abort-not-restored.json', {'reason': 'broker generation survived suppression',
+                                                  'error': str(error)[:512]})
+            return
+        try:
+            # Per broker, enable before bootstrap: launchd refuses to load a disabled job.
+            for index in sorted({index for index, _ in self.suppressed}, reverse=True):
+                for undo, action in (('enable', 'disable'), ('bootstrap', 'bootout')):
+                    if (index, action) in self.suppressed:
+                        self.command(index, undo, self.packet['bindings'][index])
+        except Exception as restore_error:
+            self.note('abort-restore-failed.json', {'error': str(error)[:512], 'restoreError': str(restore_error)[:512]})
+            return
+        self.note('abort-restored.json', {'restored': self.suppressed, 'error': str(error)[:512]})
+
+    def note(self, name, value):
+        """Best-effort abort evidence; the original error is always what propagates."""
+        try:
+            self.record(name, {'outerPlanSha256': self.outer, **value})
+        except Exception:
+            pass
+
     def observe(self):
         unresolved = {'kind': 'unresolved', 'id': self.plan['id'], 'planSha256': self.outer,
                       'reason': 'evidence-unconfirmed'}
         try:
             receipt, _ = self.read('deployment-commit.json')
             before, _ = self.read('before.json')
+            if self.observer.admission is None:
+                self.observer.admission = self.recorded_admission()
             if before['outerPlanSha256'] != self.outer or receipt['outerPlanSha256'] != self.outer:
                 return unresolved
             commit, files, current_preservation = self.verify_files()
@@ -211,6 +314,17 @@ class Deployment:
             return unresolved
 
 
+    def recorded_admission(self):
+        """Admission from evidence. Attempts made before running admission existed
+        recorded none and could only have admitted refusing channels."""
+        if not (self.root / 'admission.json').exists():
+            return ['refusing'] * len(self.packet['bindings'])
+        admission, _ = self.read('admission.json')
+        if admission['outerPlanSha256'] != self.outer:
+            raise ValueError('Recorded admission belongs to another plan')
+        return admission['admission']
+
+
 def coordinator_main():
     raw = sys.stdin.buffer.read(2 * 1024 * 1024 + 1)
     if len(raw) > 2 * 1024 * 1024:
@@ -220,11 +334,11 @@ def coordinator_main():
     guard()
     operation = Deployment(packet, guard)
     if packet['operation'] == 'inspect':
-        for name in ('child-intent.json', 'before.json', 'intent.json', 'deployment-commit.json'):
+        for name in ('child-intent.json', 'admission.json', 'before.json', 'intent.json', 'deployment-commit.json'):
             if (operation.root / name).exists() or (operation.root / name).is_symlink():
                 raise ValueError('Deployment evidence already contains an attempt; reconcile without replay')
-        operation.observer.validate()
-        result = {'prepared': True}
+        settle(operation.observer.validate, operation.settle_seconds)
+        result = {'prepared': True, 'admission': operation.observer.admission}
     elif packet['operation'] == 'execute':
         result = operation.execute()
     elif packet['operation'] == 'observe':

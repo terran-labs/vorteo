@@ -122,7 +122,17 @@ async function main(): Promise<void> {
     throw new Error("Managed releases cannot use source dev mode");
   const workerEntry = config.devMode ? resolveDevWorkerEntry() : resolveWorkerEntry();
   const workerExecArgv = resolveWorkerExecArgv(workerEntry, config.devMode);
+  const cooperativeMailbox = process.env.VORTEO_COOPERATIVE_DRAIN_DESCRIPTOR
+    ? (
+        await import("@getpaseo/protocol/maintenance-interruption")
+      ).CooperativeMailboxDescriptorSchema.parse(
+        JSON.parse(process.env.VORTEO_COOPERATIVE_DRAIN_DESCRIPTOR),
+      )
+    : undefined;
+  if (cooperativeMailbox && cooperativeMailbox.readerUid !== process.getuid?.())
+    throw new Error("Cooperative mailbox is registered to a different supervisor account");
   const workerEnv: NodeJS.ProcessEnv = { ...process.env };
+  delete workerEnv.VORTEO_COOPERATIVE_DRAIN_DESCRIPTOR;
   // Release selection belongs to this supervisor, not agents or isolated daemons they launch.
   delete workerEnv.PASEO_MANAGED_RELEASE_LINK;
   delete workerEnv.PASEO_MANAGED_RELEASE_ROOT;
@@ -184,6 +194,7 @@ async function main(): Promise<void> {
   };
 
   const supervisor = runSupervisor({
+    cooperativeMailbox,
     controllerLifetimeFd,
     name: "DaemonRunner",
     startupMessage: "Starting daemon worker (IPC restart and crash restart enabled)",

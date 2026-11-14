@@ -86,7 +86,10 @@ import {
 } from "./maintenance/service-progress.js";
 import type { MaintenanceServiceNativeObservation } from "./maintenance/service-execution.js";
 import { createHash, randomUUID } from "node:crypto";
-import type { StandingInterruption } from "@getpaseo/protocol/maintenance-interruption";
+import type {
+  CooperativeDrainPreparation,
+  StandingInterruption,
+} from "@getpaseo/protocol/maintenance-interruption";
 import {
   SessionHostDecisionSchema,
   SessionHostRequestSchema,
@@ -121,10 +124,10 @@ export interface RestartStartupOptions {
   /** Operator-visible progress for each dispatch step; never silent for hours. */
   progress?: (message: string, fields: Record<string, unknown>) => void;
   dispatchDeadlineMs?: number;
-  /** How long a finish-current-turns hold may wait before it asks the owner. */
+  /** How long a finish-current-turns hold may wait before applying its deadline policy. */
   finishTurnsDeadlineMs?: number;
-  /** What a hold does at its deadline. Only "ask" exists; see `holdDeadline`. */
-  afterHoldDeadline?: "ask";
+  /** Automatic interruption with durable continuation, or an explicit owner decision. */
+  afterHoldDeadline?: "auto" | "ask";
   /** Coordinator-private hold start times. Absent keeps them in memory only. */
   holdState?: { read(): unknown; write(value: Record<string, HoldRecord>): void };
 }
@@ -132,10 +135,11 @@ export interface RestartStartupOptions {
 const HoldRecordSchema = z.strictObject({
   startedAt: z.number().int().nonnegative(),
   exceeded: z.boolean(),
+  revision: z.string().optional(),
 });
 type HoldRecord = z.infer<typeof HoldRecordSchema>;
 
-/** A hold that has waited this long stops waiting silently and asks the owner to decide. */
+/** Default deadline before a finish-current-turns hold applies its configured policy. */
 export const FINISH_TURNS_DEADLINE_MS = 15 * 60_000;
 
 type NativeMaintenanceJob = NativeHelperJob | PreviewMonitorJob | SessionHostJob;
@@ -276,6 +280,9 @@ export interface RestartExecutor {
     capture: DevRepairCapture,
     contributions: SourceContribution[],
   ): Promise<SourceUpdate>;
+  prepareCooperativePreparation?(job: RestartJob): Promise<CooperativeDrainPreparation>;
+  dispatchCooperativePreparation?(job: RestartJob): Promise<void>;
+  observeCooperativePreparation?(job: RestartJob): Promise<CooperativeDrainPreparation>;
   prepareInstallation?(job: RestartJob): Promise<void>;
   verifyPreparedInstallation?(job: RestartJob, options?: { signal?: AbortSignal }): Promise<void>;
   /** Final independent evidence after the locked running reservation. */
@@ -361,7 +368,7 @@ export class InstallationRestarts {
   private readonly progress: NonNullable<RestartStartupOptions["progress"]>;
   private readonly dispatchDeadlineMs: number;
   private readonly finishTurnsDeadlineMs: number;
-  private readonly afterHoldDeadline: "ask";
+  private readonly afterHoldDeadline: "auto" | "ask";
   private readonly holdState: RestartStartupOptions["holdState"];
   /** Coordinator-private: when each waiting finish-current-turns hold began. */
   private readonly holds = new Map<string, HoldRecord>();
@@ -2521,8 +2528,11 @@ export class InstallationRestarts {
     if (
       this.executor.restartContinuationAvailable &&
       !(await this.executor.restartContinuationAvailable(job.target))
-    )
+    ) {
+      if (current.continuationCaptureRequested)
+        throw new RestartRequestError("Recorded continuation is no longer supported by the target");
       return approved();
+    }
     if (current.continuationCaptureRequested && current.continuationCaptureId) {
       // An earlier idle attempt may have released this cause before its receipt was saved.
       if (!(await this.releaseIdleContinuation(current)))
@@ -3339,6 +3349,11 @@ export class InstallationRestarts {
       impact.agents.length > 0 ||
       impact.pendingStarts > 0;
     this.logHolders(current, impact);
+    if (current.cooperativeDrainPreparation && this.afterHoldDeadline === "auto") {
+      const settled = await this.advanceCooperativePreparation(current, impact);
+      return settled && !waiting;
+    }
+
     if (waiting) {
       const detail =
         impact.error ||
@@ -3347,45 +3362,134 @@ export class InstallationRestarts {
           : `Waiting for ${impact.agents.length} active agents and ${impact.pendingStarts} starting operations`);
       const next = this.holdDeadline(current, detail);
       if (next !== current) this.replace(next);
+      if (this.afterHoldDeadline === "auto" && this.holds.get(current.id)?.exceeded)
+        return this.advanceCooperativePreparation(next, impact);
       return false;
     }
     return true;
   }
 
-  /**
-   * Records when a finish-current-turns hold starts waiting, in coordinator-private state that
-   * survives a coordinator restart but never enters the journaled or shared job schema. Past the
-   * deadline the hold stops waiting silently: the job says so and the owner is asked to restart
-   * now, which interrupts the remaining turns, or to cancel. `afterHoldDeadline` selects what
-   * happens then; only "ask" exists, because the owner approved finishing current turns first.
-   * An automatic interrupt-plus-continuation choice would branch here.
-   */
+  private automaticDeadline(job: RestartJob): boolean {
+    return (
+      job.cooperativeDrainPreparation?.phase === "settled" &&
+      job.cooperativeDrainPreparation.intent.approvedRevision === job.revision
+    );
+  }
+
+  private cooperativeImpactMatches(job: RestartJob, impact: RestartImpact): boolean {
+    return (
+      !impact.error &&
+      impact.idleRestartSupported &&
+      impact.pendingStarts === 0 &&
+      impact.restartDrainObservationSupported === true &&
+      impact.restartDrainId === job.id
+    );
+  }
+
+  private currentCooperativeJob(job: RestartJob): RestartJob | null {
+    const current = this.jobs.find((item) => item.id === job.id);
+    return current?.status === "approved" && current.revision === job.revision ? current : null;
+  }
+
+  private async advanceCooperativePreparation(
+    job: RestartJob,
+    impact: RestartImpact,
+  ): Promise<boolean> {
+    if (!this.cooperativeImpactMatches(job, impact)) return false;
+    if (
+      !this.executor.prepareCooperativePreparation ||
+      !this.executor.dispatchCooperativePreparation ||
+      !this.executor.observeCooperativePreparation
+    ) {
+      this.replace({
+        ...job,
+        detail:
+          "Restart deadline passed. The authenticated cooperative preparation capability is unavailable; work remains held.",
+      });
+      return false;
+    }
+    try {
+      if (!job.cooperativeDrainPreparation) {
+        const phase = await this.executor.prepareCooperativePreparation(job);
+        this.refreshApprovalPolicy();
+        const current = this.currentCooperativeJob(job);
+        if (!current) return false;
+        job = {
+          ...current,
+          cooperativeDrainPreparation: phase,
+          detail:
+            "Restart deadline passed. Preparing a bounded interruption with saved continuation.",
+        };
+        this.replace(job);
+        // Only the call that created the reservation may attempt dispatch. A
+        // reconstructed reservation is observation-only, including after a lost reply.
+        await this.executor.dispatchCooperativePreparation(job);
+        this.loadState();
+        const retained = this.jobs.find((item) => item.id === job.id);
+        if (retained?.status !== "approved" || retained.revision !== job.revision) return false;
+        job = retained;
+      }
+      const observed = await this.executor.observeCooperativePreparation(job);
+      this.refreshApprovalPolicy();
+      const current = this.currentCooperativeJob(job);
+      if (!current) return false;
+      this.replace({
+        ...current,
+        cooperativeDrainPreparation: observed,
+        detail:
+          observed.phase === "settled"
+            ? "Automatic deadline preparation settled. Verifying idle source selection."
+            : "Automatic deadline preparation is unverified. Observing the same generation without repeating interruption.",
+      });
+      return (
+        observed.phase === "settled" && impact.agents.length === 0 && impact.pendingStarts === 0
+      );
+    } catch (error) {
+      this.loadState();
+      const current = this.jobs.find((item) => item.id === job.id);
+      if (current?.status === "approved" && current.revision === job.revision)
+        this.replace({ ...current, detail: restartFailureDetail(current, error) });
+      return false;
+    }
+  }
+
+  /** Deadline state stays coordinator-private; job approval and continuation stay journaled. */
   private holdDeadline(job: RestartJob, waitingDetail: string): RestartJob {
     if (!job.finishCurrentTurns)
       return job.detail === waitingDetail ? job : { ...job, detail: waitingDetail };
-    const held = this.holds.get(job.id) ?? { startedAt: this.now(), exceeded: false };
+    const saved = this.holds.get(job.id);
+    const held =
+      saved && (!saved.revision || saved.revision === job.revision)
+        ? saved
+        : { startedAt: this.now(), exceeded: false, revision: job.revision };
     const exceeded = this.now() - held.startedAt >= this.finishTurnsDeadlineMs;
     const minutes = Math.round(this.finishTurnsDeadlineMs / 60_000);
     if (exceeded && !held.exceeded)
-      this.progress("Restart hold passed its deadline; owner decision needed", {
-        job: job.id,
-        target: job.target,
-        minutes,
-        afterDeadline: this.afterHoldDeadline,
-      });
-    if (!this.holds.has(job.id) || held.exceeded !== exceeded) {
-      this.holds.set(job.id, { startedAt: held.startedAt, exceeded });
+      this.progress(
+        this.afterHoldDeadline === "ask"
+          ? "Restart hold passed its deadline; owner decision needed"
+          : "Restart hold passed its deadline; checking automatic restart admission",
+        {
+          job: job.id,
+          target: job.target,
+          minutes,
+          afterDeadline: this.afterHoldDeadline,
+        },
+      );
+    if (!this.holds.has(job.id) || saved?.revision !== job.revision || held.exceeded !== exceeded) {
+      this.holds.set(job.id, { ...held, exceeded, revision: job.revision });
       this.persistHolds();
     }
-    const detail = exceeded
-      ? `Current turns have not finished after ${minutes} minutes. ${waitingDetail}. Restart now to interrupt them, or cancel.`
-      : waitingDetail;
+    const detail =
+      exceeded && this.afterHoldDeadline === "ask"
+        ? `Current turns have not finished after ${minutes} minutes. ${waitingDetail}. Restart now to interrupt them, or cancel.`
+        : waitingDetail;
     return job.detail === detail ? job : { ...job, detail };
   }
 
   /** Whether a waiting hold passed its deadline. Reply-only; see `holdDeadlineExceeded`. */
   holdDeadlineExceeded(jobId: string): boolean {
-    return this.holds.get(jobId)?.exceeded === true;
+    return this.afterHoldDeadline === "ask" && this.holds.get(jobId)?.exceeded === true;
   }
 
   /** Forgets holds and holder logs of jobs that are no longer approved and waiting. */
@@ -3403,11 +3507,13 @@ export class InstallationRestarts {
     if (changed) this.persistHolds();
   }
 
-  private persistHolds(): void {
+  private persistHolds(): boolean {
     try {
       this.holdState?.write(Object.fromEntries(this.holds));
+      return true;
     } catch {
-      // The deadline restarts from now after a lost record; it never blocks the restart queue.
+      // Waiting can retry its timestamp, but automatic escalation requires a durable cause.
+      return false;
     }
   }
 
@@ -3508,7 +3614,7 @@ export class InstallationRestarts {
     job = prepared;
     if (!this.automaticDispatchReady(job)) return;
     if (!(await this.standingCandidateReady(job))) return;
-    if (job.whenIdle && !(await this.readyAfterInspection(job))) return;
+    if (!(await this.readyAfterInspection(job))) return;
     // Inspection may have durably reserved and observed an enrolled hold.
     job = this.jobs.find((item) => item.id === job.id) ?? job;
     const captured = await this.prepareRestartContinuation(job);
@@ -3804,6 +3910,18 @@ export class InstallationRestarts {
   }
 
   private replace(next: RestartJob): void {
+    if (
+      next.status === "succeeded" &&
+      next.holdReleased &&
+      this.automaticDeadline(next) &&
+      !next.detail?.startsWith("Restarted automatically after")
+    ) {
+      next = {
+        ...next,
+        detail:
+          `Restarted automatically after the current-turn deadline. Saved work is queued to continue. ${next.detail ?? ""}`.trim(),
+      };
+    }
     this.commit(this.jobs.map((job) => (job.id === next.id ? next : job)));
   }
 

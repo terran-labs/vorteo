@@ -14,7 +14,7 @@ services:
     user: 0:0
     cap_drop: [ALL]
     cap_add: [SETUID, SETGID, SETPCAP, CHOWN]
-    security_opt: [no-new-privileges:true]
+    security_opt: [no-new-privileges:true, seccomp=./dev-seccomp.json]
     stop_grace_period: 90s
     pids_limit: 4096
     logging:

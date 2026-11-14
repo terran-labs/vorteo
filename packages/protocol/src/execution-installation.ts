@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { StandingInterruptionSchema } from "./maintenance-interruption.js";
+import {
+  StandingInterruptionSchema,
+  CooperativeDrainPreparationSchema,
+} from "./maintenance-interruption.js";
 import {
   ProviderPreferencesSchema,
   SharedProviderPreferencesSchema,
@@ -592,6 +595,8 @@ export const RestartJobSchema = RestartRequestSchema.extend({
   standingDecision: StandingRestartDecisionSchema.optional(),
   standingHold: StandingRestartHoldSchema.optional(),
   standingInterruption: StandingInterruptionSchema.optional(),
+  /** Coordinator-private native preparation; stripped from every owner/legacy reply. */
+  cooperativeDrainPreparation: CooperativeDrainPreparationSchema.optional(),
   interruptionChecks: z
     .strictObject({
       attempts: z.number().int().min(0).max(3),

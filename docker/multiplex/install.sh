@@ -82,7 +82,7 @@ instance="paseo-${seed:64:12}"
 umask 077
 mkdir "$deployment"
 mkdir -p "$deployment/data/home" "$deployment/workspace"
-cp "$source_dir/compose.yaml" "$source_dir/common.sh" "$source_dir/connect.sh" "$source_dir/update.sh" "$deployment/"
+cp "$source_dir/dev-seccomp.json" "$source_dir/compose.yaml" "$source_dir/common.sh" "$source_dir/connect.sh" "$source_dir/update.sh" "$deployment/"
 cp "$source_dir/share-folder.sh" "$source_dir/shared-folders.mjs" "$deployment/"
 cp "$source_dir/compose.gate.yaml" "$source_dir/gate.sh" "$deployment/"
 chmod 700 "$deployment/"*.sh
