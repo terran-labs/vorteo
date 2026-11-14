@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { LRUCache } from "lru-cache";
 import { CheckoutDiffCache } from "./checkout-diff-cache.js";
@@ -826,10 +826,20 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
         mainRepoRoot: null,
       });
     }
-    // Facts carry the main repository root even for its own checkout. Placement
-    // uses null for that case, matching getCheckoutStatus without its file scan.
+    // A bare repository may select this linked worktree as its main root. Only
+    // a checkout whose Git directory is the common directory is primary; root
+    // equality alone cannot distinguish it. Both paths are already collected.
+    // Canonical paths keep filesystem aliases from looking like linked worktrees.
+    const canonicalGitDirectory = (directory: string | null) =>
+      directory ? realpath(directory).catch(() => resolve(directory)) : null;
+    const [gitDirectory, commonDirectory] = await Promise.all([
+      canonicalGitDirectory(facts.absoluteGitDir),
+      canonicalGitDirectory(facts.gitCommonDir),
+    ]);
+    const hasPrimaryGitDirectory = gitDirectory !== null && gitDirectory === commonDirectory;
     const isMainCheckout =
       !facts.paseoWorktree.isPaseoOwnedWorktree &&
+      hasPrimaryGitDirectory &&
       facts.mainRepoRoot !== null &&
       resolve(facts.mainRepoRoot) === resolve(facts.worktreeRoot);
     return checkoutLiteFromGitSnapshot(normalizedCwd, {

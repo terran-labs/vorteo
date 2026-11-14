@@ -1063,10 +1063,15 @@ test("metadata discovery keeps shared local workspaces stable and missing checko
       { workspaceId: second.workspaceId, kind: "local_checkout", mainRepoRoot: null },
     ]);
     expect(await projectRegistry.list()).toHaveLength(1);
+    // A record archived by the regressed version is excluded from reconciliation.
     await workspaceRegistry.update(first.workspaceId, (current) => ({
       ...current,
+      kind: "worktree",
+      mainRepoRoot: repo,
       archivedAt: ARCHIVED_AT,
     }));
+    await reconciliation.reconcileGitMetadata();
+    expect((await workspaceRegistry.get(first.workspaceId))?.kind).toBe("worktree");
     rmSync(repo, { recursive: true });
     const recovery = createWorkspaceRecoveryService({
       paseoHome: path.join(tmpDir, "home"),
