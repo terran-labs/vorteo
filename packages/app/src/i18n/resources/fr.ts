@@ -2988,8 +2988,8 @@ export const fr: TranslationResources = {
         },
         blockedWorkReview: {
           title: "Revoir le travail bloqué",
-          hint: "Désactivé par défaut. Jusqu'à trois courtes revues après l'arrêt d'un fil, puis il attend un message.",
-          info: "Quand un fil s'arrête avec une tâche ou un objectif bloqué, il reçoit jusqu'à trois messages, environ 5, 15 et 30 minutes plus tard, pour revérifier ses blocages et continuer. Ensuite, les revues s'arrêtent jusqu'à ce que quelqu'un envoie un message au fil.\n\nChaque revue reprend la conversation du fil. Les courts intervalles réutilisent le cache de prompts du fournisseur et coûtent donc bien moins qu'une reprise à froid, mais de nombreux fils bloqués finissent par peser.\n\nLes blocages en attente d'une question ouverte sont ignorés ; votre réponse réveille le fil.",
+          hint: "Désactivé par défaut. Une courte revue après l'arrêt d'un fil avec du travail inachevé, répétée seulement tant qu'elle est utile.",
+          info: "Quand un fil s'arrête avec une tâche bloquée ou en cours et que rien n'est prévu pour le réveiller, il reçoit un court message environ 5 minutes plus tard pour vérifier son travail inachevé et continuer. Jusqu'à deux autres peuvent suivre, à environ 15 et 30 minutes d'intervalle, mais seulement tant qu'une revue change quelque chose. Ensuite, les revues s'arrêtent jusqu'à ce que quelqu'un envoie un message au fil.\n\nChaque revue reprend la conversation du fil ; aucune ne s'exécute donc une fois le cache de prompts du fournisseur refroidi. Un fil reçoit au plus 6 revues par jour et l'installation au plus 12 par heure.\n\nLes éléments en attente d'une question ouverte ou de votre revue sont ignorés ; votre réponse réveille le fil.",
         },
       },
       workspaces: {

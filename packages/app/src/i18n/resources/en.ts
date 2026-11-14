@@ -3494,8 +3494,8 @@ export const en = {
         },
         blockedWorkReview: {
           title: "Review blocked work",
-          hint: "Off by default. Up to three short reviews after a thread stops, then it waits for a message.",
-          info: "When a thread stops with a blocked task or goal, it gets up to three prompts, about 5, 15 and 30 minutes apart, to recheck its blockers and continue. Then reviews stop until someone sends the thread a message.\n\nEach review resumes the thread's conversation. The short gaps reuse the provider's prompt cache, so they cost far less than a cold resume, but many blocked threads still add up.\n\nBlockers waiting on an open question are skipped; your answer wakes the thread.",
+          hint: "Off by default. A short review after a thread stops with unfinished work, repeated only while it helps.",
+          info: "When a thread stops with a blocked or in-progress task and nothing set to wake it, it gets a short prompt about 5 minutes later to check its unfinished work and continue. Up to two more follow, about 15 and 30 minutes apart, but only while a review changes something. Then reviews stop until someone sends the thread a message.\n\nEach review resumes the thread's conversation, so one never runs after the provider's prompt cache has gone cold. A thread gets at most 6 reviews a day and the installation at most 12 an hour.\n\nItems waiting on an open question or on your review are skipped; your answer wakes the thread.",
         },
       },
       workspaces: {
