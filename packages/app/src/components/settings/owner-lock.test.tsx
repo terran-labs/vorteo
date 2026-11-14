@@ -34,6 +34,9 @@ vi.mock("react-native", async (importOriginal) => {
     }),
   };
 });
+// The time zone row pulls in the searchable select and the installation settings client, which
+// this suite does not exercise and the unit environment cannot load.
+vi.mock("@/screens/settings/general/time-zone-row", () => ({ TimeZoneRow: () => null }));
 vi.mock("@/execution-installation/panel", () => ({
   useInstallationOwnerAccess: () => ({
     status: "none",
