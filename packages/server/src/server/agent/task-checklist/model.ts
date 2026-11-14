@@ -7,6 +7,19 @@ import { mutateChecklist as mutateSharedChecklist } from "@getpaseo/protocol/che
 
 export * from "@getpaseo/protocol/checklist-model";
 
+/** Provider tasks may appear anywhere in a combined checklist and may share IDs. */
+export function findCreatedChecklistTask(
+  previous: readonly AgentTaskItem[],
+  next: readonly AgentTaskItem[],
+): AgentTaskItem {
+  const previousIds = new Set(
+    previous.filter((task) => task.source === "vorteo").map((task) => task.id),
+  );
+  const created = next.find((task) => task.source === "vorteo" && !previousIds.has(task.id));
+  if (!created) throw new ChecklistError("not_found", "Created Vorteo task was not returned.");
+  return created;
+}
+
 /** Keep native ID generation and equality semantics for persisted server tasks. */
 export function mutateChecklist(
   items: readonly AgentTaskItem[],
@@ -20,7 +33,7 @@ export function mutateChecklist(
   if ((mutation.operation === "create" || mutation.operation === "update") && mutation.metadata) {
     const task =
       mutation.operation === "create"
-        ? next[next.length - 1]
+        ? findCreatedChecklistTask(items, next)
         : next.find((item) => item.id === mutation.id && item.source === "vorteo");
     if (Buffer.byteLength(JSON.stringify(task?.metadata ?? {}), "utf8") > 8192) {
       throw new ChecklistError(

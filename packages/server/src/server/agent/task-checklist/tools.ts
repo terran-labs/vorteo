@@ -2,7 +2,7 @@ import type { AgentTaskItem } from "@getpaseo/protocol/agent-types";
 import { z } from "zod";
 import type { AgentManager } from "../agent-manager.js";
 import type { PaseoToolDefinition, PaseoToolResult } from "../tools/types.js";
-import { ChecklistMutationSchema, ChecklistError } from "./model.js";
+import { ChecklistMutationSchema, ChecklistError, findCreatedChecklistTask } from "./model.js";
 
 const ReadChecklistSchema = z
   .object({ id: z.string().optional(), source: z.enum(["vorteo", "provider"]).optional() })
@@ -75,13 +75,14 @@ export function createChecklistTools(
           throw new Error("An agent-scoped caller identity is required");
         }
         const { mutation } = UpdateChecklistSchema.parse(input);
+        const previous =
+          mutation.operation === "create" ? manager.readChecklist(callerAgentId) : [];
         const tasks = await manager.mutateChecklist(callerAgentId, mutation);
         const summary = summarize(tasks);
         if (mutation.operation === "delete") return result({ id: mutation.id, summary });
         if (mutation.operation === "reorder") return result({ ids: mutation.ids, summary });
-        // The model appends new tasks and preserves existing IDs during updates.
         if (mutation.operation === "create") {
-          return result({ task: compactTask(tasks[tasks.length - 1]), summary });
+          return result({ task: compactTask(findCreatedChecklistTask(previous, tasks)), summary });
         }
         const affected = tasks.filter(
           (task) =>

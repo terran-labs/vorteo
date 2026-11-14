@@ -462,7 +462,7 @@ describe("thread checklist tool projections", () => {
       { id: "new", text: "New", completed: false, source: "vorteo" as const },
     ];
     const manager = {
-      readChecklist: vi.fn(() => tasks),
+      readChecklist: vi.fn(() => tasks.slice(0, 1)),
       mutateChecklist: vi.fn(async () => tasks),
     };
     const tool = createChecklistTools(manager, "thread")[1];
@@ -480,6 +480,40 @@ describe("thread checklist tool projections", () => {
       {},
     );
     expect(reordered.structuredContent).toMatchObject({ ids: ["new", "other"] });
+  });
+
+  it("returns the created Vorteo task when a provider task follows it", async () => {
+    const existing: AgentTaskItem = {
+      id: "existing",
+      text: "Existing",
+      source: "vorteo",
+      completed: false,
+    };
+    const provider: AgentTaskItem = {
+      id: "new",
+      text: "Native task",
+      source: "provider",
+      completed: false,
+    };
+    const created: AgentTaskItem = {
+      id: "new",
+      text: "Created task",
+      source: "vorteo",
+      completed: false,
+    };
+    const manager = {
+      readChecklist: vi.fn(() => [existing, provider]),
+      mutateChecklist: vi.fn(async () => [existing, created, provider]),
+    };
+    const tool = createChecklistTools(manager, "thread")[1];
+    const response = await tool.handler(
+      { mutation: { operation: "create", text: "Created task" } },
+      {},
+    );
+    expect(response.structuredContent).toEqual({
+      task: { id: "new", text: "Created task", source: "vorteo", status: "pending" },
+      summary: { pending: 3, in_progress: 0, review: 0, blocked: 0, completed: 0 },
+    });
   });
 
   it("lists compact tasks while preserving full detail by id", async () => {
