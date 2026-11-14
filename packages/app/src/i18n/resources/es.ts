@@ -2985,8 +2985,8 @@ export const es: TranslationResources = {
         },
         blockedWorkReview: {
           title: "Revisar trabajo bloqueado",
-          hint: "Desactivado por defecto. Hasta tres revisiones breves cuando un hilo se detiene; luego espera un mensaje.",
-          info: "Cuando un hilo se detiene con una tarea u objetivo bloqueado, recibe hasta tres mensajes, unos 5, 15 y 30 minutos después, para revisar sus bloqueos y continuar. Después las revisiones se detienen hasta que alguien envíe un mensaje al hilo.\n\nCada revisión reanuda la conversación del hilo. Los intervalos cortos reutilizan la caché de prompts del proveedor, así que cuestan mucho menos que una reanudación en frío, pero muchos hilos bloqueados siguen sumando.\n\nSe omiten los bloqueos que esperan una pregunta abierta; tu respuesta despierta el hilo.",
+          hint: "Desactivado por defecto. Una revisión breve cuando un hilo se detiene con trabajo sin terminar; solo se repite mientras ayude.",
+          info: "Cuando un hilo se detiene con una tarea bloqueada o en curso y nada previsto para despertarlo, recibe un mensaje breve unos 5 minutos después para revisar su trabajo pendiente y continuar. Pueden seguir hasta dos más, con unos 15 y 30 minutos de separación, pero solo mientras una revisión cambie algo. Después las revisiones se detienen hasta que alguien envíe un mensaje al hilo.\n\nCada revisión reanuda la conversación del hilo, así que nunca se ejecuta cuando la caché de prompts del proveedor ya se ha enfriado. Un hilo recibe como máximo 6 revisiones al día y la instalación, 12 por hora.\n\nSe omiten los elementos que esperan una pregunta abierta o tu revisión; tu respuesta despierta el hilo.",
         },
       },
       workspaces: {

@@ -1789,6 +1789,14 @@ export async function createPaseoDaemon(
     logger,
     // Read on every scan so the host setting applies without a restart.
     enabled: () => daemonConfigStore.get().blockedWorkReview === true,
+    pausedFactoryProjects: async () => {
+      const list = await projectFactoryService?.list();
+      return new Set(
+        (list?.projects ?? [])
+          .filter((project) => project.paused || project.drain)
+          .map((project) => project.projectId),
+      );
+    },
   });
   const usageLimitResumes = new UsageLimitResumeService({
     agentManager,
