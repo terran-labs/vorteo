@@ -65,6 +65,14 @@ export async function createAgentSessionPort(session: AgentSession): Promise<Hos
   for await (const event of session.streamHistory()) history.push(toHostedJson(event));
 
   const listeners = new Set<(event: JsonValue) => void>();
+  /**
+   * Read on each use: a plugin provider offers the check only once its bridge negotiated it. A
+   * provider without the check has nothing beyond the baseline idle checks to protect.
+   */
+  async function canStopRuntime(): Promise<boolean> {
+    const check = session.canStopRuntime?.bind(session);
+    return check ? (await check()) === true : true;
+  }
   let activeTurnId: string | null = null;
   let lastSnapshot = "";
 
@@ -81,11 +89,12 @@ export async function createAgentSessionPort(session: AgentSession): Promise<Hos
         ? (toHostedJson(session.goals.state) as HostedSessionSnapshot["goals"])
         : null,
       // This adapter ships with the host that implements atomic conditional close and answers
-      // context breakdown calls.
+      // context breakdown and runtime stop check calls.
       capabilities: {
         ...(toHostedJson(session.capabilities) as HostedSessionSnapshot["capabilities"]),
         conditionalIdleClose: true,
         contextBreakdown: true,
+        runtimeStopCheck: true,
       },
     };
   }
@@ -192,6 +201,7 @@ export async function createAgentSessionPort(session: AgentSession): Promise<Hos
     async getContextBreakdown() {
       return (await session.getContextBreakdown?.()) ?? null;
     },
+    canStopRuntime: () => canStopRuntime(),
     async streamHistory(call) {
       return historyPage(call.cursor);
     },
@@ -256,6 +266,7 @@ export async function createAgentSessionPort(session: AgentSession): Promise<Hos
     },
     snapshot: () => toHostedJson(snapshot()),
     settling: () => session.isProviderSettling?.() === true,
+    canStopRuntime,
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

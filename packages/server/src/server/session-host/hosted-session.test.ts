@@ -573,6 +573,36 @@ test("the provider's context breakdown crosses the host, and an old host reports
   expect(await legacy.getContextBreakdown()).toBeNull();
 });
 
+// An old host drops the connection on an unknown method, so the check is offered only when the
+// host advertises it; idle cleanup then keeps its baseline checks.
+test("the provider's background work check crosses the host, and an old host offers none", async () => {
+  const fixture = await hostedFixture();
+  const session = await fixture.client.createSession(config, { agentId: "watcher" });
+  const provider: AgentSession = fixture.hosted[0]!;
+  provider.canStopRuntime = async () => false;
+  expect(await session.canStopRuntime?.()).toBe(false);
+  provider.canStopRuntime = async () => true;
+  expect(await session.canStopRuntime?.()).toBe(true);
+
+  const connection = await connectSessionHost({
+    socketPath: fixture.socketPath,
+    token: fixture.token,
+  });
+  cleanups.push(() => connection.close());
+  const channel = await connection.attach({ sessionId: "watcher", afterSeq: null });
+  const snapshot = HostedSessionSnapshotSchema.parse(channel.attach.snapshot);
+  delete snapshot.capabilities?.runtimeStopCheck;
+  const legacy = new HostedAgentSession({
+    provider: "claude",
+    capabilities: CONTROLLED_SESSION_CAPABILITIES,
+    channel: { ...channel, attach: { ...channel.attach, snapshot } },
+    reconnect: async () => null,
+    usage: { env: {} },
+    logger,
+  });
+  expect(legacy.canStopRuntime).toBeUndefined();
+});
+
 test("a steer result crosses the host, and an accepted steer is never reported as failed", async () => {
   const fixture = await hostedFixture();
   const session = await fixture.client.createSession(config, { agentId: "steer" });
