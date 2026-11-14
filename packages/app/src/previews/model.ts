@@ -31,17 +31,16 @@ function newestFirst(left: PreviewVersion, right: PreviewVersion): number {
   return right.number - left.number || createdMs(right) - createdMs(left);
 }
 
+/**
+ * The gallery the daemon sends already holds only this workspace's previews, so "all" is
+ * the whole workspace and "thread" narrows it to what this thread published.
+ */
 export function scopeVersions(
   versions: readonly PreviewVersion[],
   scope: PreviewScope,
   agentId: string,
 ): PreviewVersion[] {
   return scope === "all" ? [...versions] : versions.filter((v) => v.agentId === agentId);
-}
-
-/** "This thread" when the thread published anything, otherwise everything. */
-export function defaultScope(versions: readonly PreviewVersion[], agentId: string): PreviewScope {
-  return versions.some((version) => version.agentId === agentId) ? "thread" : "all";
 }
 
 export function groupByLineage(versions: readonly PreviewVersion[]): PreviewLineage[] {

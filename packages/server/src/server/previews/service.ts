@@ -7,7 +7,7 @@ import type {
   PreviewsAction,
   PublishPreviewInput,
 } from "@getpaseo/protocol/previews";
-import { PreviewError, type PreviewStore } from "./store.js";
+import { PreviewError, previewScope, type PreviewStore } from "./store.js";
 
 export interface PreviewsServiceOptions {
   store: PreviewStore;
@@ -109,8 +109,33 @@ export class PreviewsService {
     return gallery;
   }
 
-  gallery(): Promise<PreviewGallery> {
-    return this.options.store.gallery();
+  /**
+   * The previews one thread may see: those published in its workspace, or only its own
+   * when it has no workspace. Previews are never shown across workspaces.
+   */
+  private scopeOf(agentId: string): string {
+    const workspaceId = this.options.describeAgent(agentId)?.workspaceId;
+    return previewScope({ agentId, ...(workspaceId ? { workspaceId } : {}) });
+  }
+
+  private scoped(gallery: PreviewGallery, agentId: string): PreviewGallery {
+    const scope = this.scopeOf(agentId);
+    const versions = gallery.versions.filter((version) => previewScope(version) === scope);
+    const visible = new Set(versions.map((version) => version.id));
+    return {
+      revision: gallery.revision,
+      versions,
+      variantSets: gallery.variantSets
+        .filter((set) => set.versionIds.some((id) => visible.has(id)))
+        .map((set) =>
+          Object.assign({}, set, { versionIds: set.versionIds.filter((id) => visible.has(id)) }),
+        ),
+    };
+  }
+
+  /** The gallery as one thread's card sees it. */
+  async galleryFor(agentId: string): Promise<PreviewGallery> {
+    return this.scoped(await this.options.store.gallery(), agentId);
   }
 
   async publish(input: PublishPreviewInput, agentId: string): Promise<PreviewVersion> {
@@ -157,9 +182,9 @@ export class PreviewsService {
     }
   }
 
-  /** What an agent reads to steer its next build. Scoped to nothing: feedback is not secret. */
-  async feedback(input: GetPreviewFeedbackInput): Promise<unknown> {
-    const gallery = await this.options.store.gallery();
+  /** What an agent reads to steer its next build: feedback on previews in its own workspace. */
+  async feedback(input: GetPreviewFeedbackInput, agentId: string): Promise<unknown> {
+    const gallery = await this.galleryFor(agentId);
     const versions = gallery.versions.filter(
       (version) =>
         (!input.lineage || version.lineage === input.lineage) &&
@@ -197,16 +222,25 @@ export class PreviewsService {
     };
   }
 
-  async act(action: PreviewsAction): Promise<{ gallery: PreviewGallery; ticket?: string }> {
+  async act(
+    action: PreviewsAction,
+    agentId: string,
+  ): Promise<{ gallery: PreviewGallery; ticket?: string }> {
     const store = this.options.store;
-    if (action.kind === "ticket")
-      return { gallery: await store.gallery(), ticket: store.mintTicket() };
+    const before = await this.galleryFor(agentId);
+    if (action.kind === "ticket") return { gallery: before, ticket: store.mintTicket() };
+    // An action reaches only what the acting thread's card can show.
+    const inScope =
+      action.kind === "pick"
+        ? before.variantSets.some((set) => set.id === action.variantSetId)
+        : before.versions.some((version) => version.id === action.versionId);
+    if (!inScope) throw new PreviewError("not_found", "That preview is not in this workspace.");
     if (action.kind === "rate") await store.rate(action.versionId, action.rating);
     else if (action.kind === "approve") await store.approve(action.versionId, action.approved);
     else if (action.kind === "pick")
       await store.pick(action.variantSetId, action.winnerVersionId, action.reason);
     else await store.remove(action.versionId);
-    return { gallery: await this.changed() };
+    return { gallery: this.scoped(await this.changed(), agentId) };
   }
 
   /**

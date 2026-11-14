@@ -12,7 +12,6 @@ import { PressHighlight } from "@/components/ui/press-highlight";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { formatTimeAgo } from "@/utils/time";
 import {
-  defaultScope,
   groupByLineage,
   scopeVersions,
   sortLineages,
@@ -35,7 +34,7 @@ import { PreviewZoom } from "./zoom";
 const HEADING_ICON = <TaskCardIcon kind="previews" />;
 const SCOPE_OPTIONS = [
   { value: "thread" as const, label: "This thread", testID: "previews-scope-thread" },
-  { value: "all" as const, label: "All", testID: "previews-scope-all" },
+  { value: "all" as const, label: "This workspace", testID: "previews-scope-all" },
 ];
 const SORT_OPTIONS = [
   { value: "newest" as const, label: "Newest", testID: "previews-sort-newest" },
@@ -45,7 +44,7 @@ const SORT_OPTIONS = [
 /** Artifacts agents published for review. Hidden until the daemon advertises Previews. */
 export function PreviewsCard({ serverId, agentId }: { serverId: string; agentId: string }) {
   const supported = usePreviewsSupported(serverId);
-  const gallery = usePreviewsGallery(serverId, supported).data;
+  const gallery = usePreviewsGallery(serverId, agentId, supported).data;
   if (!supported || !gallery || gallery.versions.length === 0) return null;
   return <PreviewsContent serverId={serverId} agentId={agentId} gallery={gallery} />;
 }
@@ -61,13 +60,13 @@ function PreviewsContent({
 }) {
   const [expanded, setExpanded] = useCardDisclosure("previews");
   const toggle = useCallback(() => setExpanded((value) => !value), [setExpanded]);
-  const [chosenScope, setScope] = useState<PreviewScope | null>(null);
+  // The card opens on this thread's previews; the workspace view is one tap away.
+  const [scope, setScope] = useState<PreviewScope>("thread");
   const [sort, setSort] = useState<PreviewSort>("newest");
   const [zoomLineage, setZoomLineage] = useState<string | null>(null);
   const httpBase = usePreviewsHttpBase(serverId);
-  const actions = usePreviewsActions(serverId, httpBase);
+  const actions = usePreviewsActions(serverId, agentId, httpBase);
 
-  const scope = chosenScope ?? defaultScope(gallery.versions, agentId);
   const inScope = useMemo(
     () => scopeVersions(gallery.versions, scope, agentId),
     [agentId, gallery.versions, scope],

@@ -162,6 +162,12 @@ export type GetPreviewFeedbackInput = z.infer<typeof GetPreviewFeedbackSchema>;
 export const PreviewsListRequestSchema = z.object({
   type: z.literal("previews.list.request"),
   requestId: z.string(),
+  /**
+   * The thread whose card is asking. The daemon returns only previews published in that
+   * thread's workspace. Without it the daemon returns nothing: previews are never shown
+   * across workspaces.
+   */
+  agentId: z.string().optional(),
 });
 
 export const PreviewsListResponseSchema = z.object({
@@ -199,6 +205,8 @@ export type PreviewsAction = z.infer<typeof PreviewsActionSchema>;
 export const PreviewsActionRequestSchema = z.object({
   type: z.literal("previews.action.request"),
   requestId: z.string(),
+  /** The thread whose card is acting. Actions reach only previews in its workspace. */
+  agentId: z.string().optional(),
   action: PreviewsActionSchema,
 });
 
