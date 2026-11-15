@@ -509,7 +509,9 @@ function serverCoordinatorSettings(
 
 /**
  * A coordinator that died during Host release cleanup may have left releases set aside, where
- * nothing can start from them. Put them back before any later cleanup or start.
+ * nothing can start from them. Put them back before any later cleanup or start. This runs
+ * concurrently with the rest of startup; it takes the release root lock, so it never runs
+ * while a cleanup in any process holds folders set aside.
  */
 function restoreHostReleasesAtStart(config: InstallationConfig, logger: Logger): void {
   if (!config.sourceUpdates) return;
@@ -517,9 +519,15 @@ function restoreHostReleasesAtStart(config: InstallationConfig, logger: Logger):
     onRestored: (folder) => logger.warn({ folder }, "Put back a Host release left set aside"),
     onError: (folder, error) =>
       logger.warn({ folder, err: error }, "Could not put back a Host release left set aside"),
-  }).catch((error: unknown) => {
-    logger.warn({ err: error }, "Could not check for Host releases left set aside");
-  });
+  })
+    .then((restored) => {
+      // A cleanup in another coordinator holds the root; it restores first itself.
+      if (restored === null)
+        logger.info("A Host release cleanup is running; startup restore left it alone");
+    })
+    .catch((error: unknown) => {
+      logger.warn({ err: error }, "Could not check for Host releases left set aside");
+    });
 }
 
 export function createInstallationServer(

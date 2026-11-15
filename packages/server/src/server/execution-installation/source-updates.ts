@@ -871,11 +871,6 @@ export class InstallationSourceUpdates {
         ],
         historyFile: path.join(this.directory, "release-link-history.json"),
       });
-      const persistentFiles = await persistentReferenceFiles({
-        hostHome: home,
-        launchAgents:
-          process.platform === "darwin" ? path.join(os.homedir(), "Library", "LaunchAgents") : null,
-      });
       const references = async () => {
         const journal = new FileBootstrapRequestJournal(this.config.stateDir);
         const requests = journal.read();
@@ -897,7 +892,18 @@ export class InstallationSourceUpdates {
             lifecycle,
           }),
           ...linkTargets.map((target) => path.join(releaseRoot, target)),
-          ...(await jobFoldersNamedInFiles(releaseRoot, aliases, persistentFiles)),
+          // Listed again on every read, so a file added after the first read is still seen.
+          ...(await jobFoldersNamedInFiles(
+            releaseRoot,
+            aliases,
+            await persistentReferenceFiles({
+              hostHome: home,
+              launchAgents:
+                process.platform === "darwin"
+                  ? path.join(os.homedir(), "Library", "LaunchAgents")
+                  : null,
+            }),
+          )),
           ...(await releaseProcessPaths(releaseRoot)),
         ];
       };
