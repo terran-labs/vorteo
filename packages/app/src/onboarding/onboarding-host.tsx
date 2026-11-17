@@ -1,3 +1,4 @@
+import { VorteoGuideHost } from "./vorteo-guide/host";
 import { UPSTREAM_SETUP_ENABLED } from "./index";
 import { useEffect, useSyncExternalStore } from "react";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -12,7 +13,8 @@ import { useSetupHostServerId } from "./internal/use-setup-host";
 /** Mounted once by the app shell. Decides whether setup opens, then owns the modal. */
 export function OnboardingHost() {
   // Native phones are set up from a desktop; setup never opens there.
-  if (!UPSTREAM_SETUP_ENABLED || isNative) return null;
+  if (!UPSTREAM_SETUP_ENABLED) return <VorteoGuideHost />;
+  if (isNative) return null;
   return <OnboardingGate />;
 }
 

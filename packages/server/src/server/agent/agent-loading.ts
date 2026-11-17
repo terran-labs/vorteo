@@ -3,6 +3,7 @@ import type { Logger } from "pino";
 import type { AgentProvider } from "./agent-sdk-types.js";
 import type { AgentManager, ManagedAgent } from "./agent-manager.js";
 import type { AgentStorage } from "./agent-storage.js";
+import type { AgentTimelineRow } from "./agent-timeline-store-types.js";
 import {
   buildConfigOverrides,
   buildSessionConfig,
@@ -21,8 +22,8 @@ export class AgentNotFoundError extends Error {
 }
 
 interface PendingAgentInitialization {
-  promise: Promise<ManagedAgent>;
-  options: { broadcastTimeline: boolean };
+  promise: Promise<ManagedAgent | null>;
+  options: { broadcastTimeline: boolean; allowCreateWithoutHistory: boolean };
 }
 
 const pendingAgentInitializations = new Map<string, PendingAgentInitialization>();
@@ -38,6 +39,66 @@ export type AgentLoaderManager = Pick<
   | "retryTimelineHydration"
 > &
   Partial<Pick<AgentManager, "waitForAgentClose">>;
+
+const TIMELINE_FAILURE_RETRY_MS = 30_000;
+const MAX_TIMELINE_FAILURES = 1024;
+interface TimelineHistoryResult {
+  saved: AgentTimelineRow[];
+  native: ManagedAgent | null;
+}
+interface TimelineHistoryLoads {
+  failures: Map<string, { retryAt: number; message: string; manualRetryUsed: boolean }>;
+  pending: Map<string, Promise<TimelineHistoryResult[keyof TimelineHistoryResult]>>;
+}
+const timelineHistoryLoads = new WeakMap<AgentLoaderManager, TimelineHistoryLoads>();
+
+export class TimelineHistoryRetryError extends Error {}
+
+/** Coalesce concurrent polling and limit repeated failures without delaying interactive loads. */
+export async function loadTimelineHistory<Source extends keyof TimelineHistoryResult>(
+  manager: AgentLoaderManager,
+  agentId: string,
+  source: Source,
+  load: () => Promise<TimelineHistoryResult[Source]>,
+  retryHistory = false,
+): Promise<TimelineHistoryResult[Source]> {
+  let loads = timelineHistoryLoads.get(manager);
+  if (!loads) {
+    loads = { failures: new Map(), pending: new Map() };
+    timelineHistoryLoads.set(manager, loads);
+  }
+  const { failures, pending } = loads;
+  const key = `${source}:${agentId}`;
+  // The source prefix binds every pending value to its corresponding result type.
+  const inflight = pending.get(key) as Promise<TimelineHistoryResult[Source]> | undefined;
+  if (inflight) return inflight;
+  const failure = failures.get(key);
+  const withinCooldown = failure !== undefined && performance.now() < failure.retryAt;
+  if (withinCooldown && (!retryHistory || failure.manualRetryUsed)) {
+    throw new TimelineHistoryRetryError(failure.message);
+  }
+  const attempt = Promise.resolve().then(load);
+  pending.set(key, attempt);
+  try {
+    const value = await attempt;
+    failures.delete(key);
+    return value;
+  } catch (error) {
+    failures.delete(key);
+    failures.set(key, {
+      retryAt: performance.now() + TIMELINE_FAILURE_RETRY_MS,
+      manualRetryUsed: withinCooldown,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    if (failures.size > MAX_TIMELINE_FAILURES) {
+      const oldest = failures.keys().next().value;
+      if (oldest !== undefined) failures.delete(oldest);
+    }
+    throw error;
+  } finally {
+    pending.delete(key);
+  }
+}
 
 export interface EnsureAgentLoadedDeps {
   agentManager: AgentLoaderManager;
@@ -76,11 +137,30 @@ export async function ensureAgentLoaded(
   agentId: string,
   deps: EnsureAgentLoadedDeps,
 ): Promise<ManagedAgent> {
+  const loaded = await loadAgent(agentId, deps, true);
+  // An interactive caller may join just after a history-only load chooses saved rows.
+  return loaded ?? ensureAgentLoaded(agentId, deps);
+}
+
+/** Cold native history can resume a session. An empty saved thread stays closed. */
+export function ensureAgentLoadedForTimeline(
+  agentId: string,
+  deps: EnsureAgentLoadedDeps,
+): Promise<ManagedAgent | null> {
+  return loadAgent(agentId, deps, false);
+}
+
+async function loadAgent(
+  agentId: string,
+  deps: EnsureAgentLoadedDeps,
+  allowCreateWithoutHistory: boolean,
+): Promise<ManagedAgent | null> {
   await deps.agentManager.waitForAgentClose?.(agentId);
 
   const inflight = pendingAgentInitializations.get(agentId);
   if (inflight) {
     inflight.options.broadcastTimeline ||= deps.broadcastTimeline === true;
+    inflight.options.allowCreateWithoutHistory ||= allowCreateWithoutHistory;
     return inflight.promise;
   }
 
@@ -90,7 +170,7 @@ export async function ensureAgentLoaded(
       return existing;
     }
     // Registered, but its history read failed. Retry it, or the thread stays empty.
-    return trackInitialization(agentId, deps, async (options) => {
+    return trackInitialization(agentId, deps, allowCreateWithoutHistory, async (options) => {
       await deps.agentManager.retryTimelineHydration(agentId, {
         broadcast: () => options.broadcastTimeline,
       });
@@ -106,10 +186,11 @@ export async function ensureAgentLoaded(
   const laterInflight = pendingAgentInitializations.get(agentId);
   if (laterInflight) {
     laterInflight.options.broadcastTimeline ||= deps.broadcastTimeline === true;
+    laterInflight.options.allowCreateWithoutHistory ||= allowCreateWithoutHistory;
     return laterInflight.promise;
   }
 
-  return trackInitialization(agentId, deps, async (pendingOptions) => {
+  return trackInitialization(agentId, deps, allowCreateWithoutHistory, async (pendingOptions) => {
     const record = await deps.agentStorage.get(agentId);
     if (!record) {
       throw new AgentNotFoundError(agentId);
@@ -121,6 +202,9 @@ export async function ensureAgentLoaded(
     }
 
     const handle = toAgentPersistenceHandle(validProviders, record.persistence);
+    if (!handle && !pendingOptions.allowCreateWithoutHistory && !record.profileSwitches?.length) {
+      return null;
+    }
 
     let snapshot: ManagedAgent;
     if (handle) {
@@ -163,21 +247,20 @@ export async function ensureAgentLoaded(
 }
 
 /** Shares one load per agent, so concurrent requests cannot hydrate twice. */
-async function trackInitialization(
+function trackInitialization(
   agentId: string,
   deps: EnsureAgentLoadedDeps,
-  load: (options: PendingAgentInitialization["options"]) => Promise<ManagedAgent>,
-): Promise<ManagedAgent> {
-  const options = { broadcastTimeline: deps.broadcastTimeline === true };
-  const pending: PendingAgentInitialization = { promise: load(options), options };
-  pendingAgentInitializations.set(agentId, pending);
-
-  try {
-    return await pending.promise;
-  } finally {
-    const current = pendingAgentInitializations.get(agentId);
-    if (current === pending) {
-      pendingAgentInitializations.delete(agentId);
-    }
-  }
+  allowCreateWithoutHistory: boolean,
+  load: (options: PendingAgentInitialization["options"]) => Promise<ManagedAgent | null>,
+): Promise<ManagedAgent | null> {
+  const options = { broadcastTimeline: deps.broadcastTimeline === true, allowCreateWithoutHistory };
+  const promise = Promise.resolve()
+    .then(() => load(options))
+    .finally(() => {
+      if (pendingAgentInitializations.get(agentId)?.promise === promise) {
+        pendingAgentInitializations.delete(agentId);
+      }
+    });
+  pendingAgentInitializations.set(agentId, { promise, options });
+  return promise;
 }

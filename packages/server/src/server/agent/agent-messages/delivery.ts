@@ -38,6 +38,16 @@ interface DispatchRequest {
 interface Dependencies {
   dispatch(request: DispatchRequest): Promise<PromptDispatchDisposition>;
   onError(error: unknown, request: DispatchRequest): void;
+  /**
+   * Throws when the recipient would certainly refuse an agent message now, such as a quota
+   * pause, so the sender gets the refusal instead of a queued receipt.
+   */
+  admit?(recipientId: string): void;
+  /**
+   * Errors that mean the recipient refused the message at admission, such as a quota latch.
+   * Only these are reported back to the sender; other failures keep their existing handling.
+   */
+  isRefusal?(error: unknown): boolean;
   /** Return a cancellation function. Production uses the daemon's event loop. */
   schedule?: (delayMs: number, callback: () => void) => () => void;
 }
@@ -74,6 +84,9 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
       : prompts.flatMap((entry): AgentPromptContentBlock[] =>
           typeof entry === "string" ? [{ type: "text", text: entry }] : entry,
         );
+    // Once the provider has the prompt, a later failure (such as the run-start wait timing out)
+    // must not tell the sender the message was lost.
+    let handedOff = false;
     const request: DispatchRequest = {
       recipientId,
       messageIds: messages.map((message) => message.receipt.messageId),
@@ -83,6 +96,7 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
       clearPendingPermissions: messages.some((message) => message.clearPendingPermissions),
       unarchive: messages.some((message) => message.unarchive !== false),
       onDispatch: (disposition) => {
+        handedOff = true;
         for (const message of messages) {
           try {
             message.onDispatch?.(disposition);
@@ -104,6 +118,7 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
         } catch (error) {
           for (const message of messages) message.reject(error);
           dependencies.onError(error, request);
+          if (!handedOff) reportRefusal(request, messages, error);
           throw error;
         }
       });
@@ -113,6 +128,33 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
         if (dispatching.get(recipientId) === dispatched) dispatching.delete(recipientId);
       })
       .catch(() => undefined);
+  }
+
+  /**
+   * A sender already holds a queued receipt, so a refusal before handoff reaches it as an errored
+   * notification from the recipient. Notifications are never reported back, so this cannot loop.
+   * Only admission refusals are reported; a provider rejection or restart hold keeps its own path.
+   */
+  function reportRefusal(request: DispatchRequest, messages: Admitted[], error: unknown): void {
+    const { recipientId } = request;
+    if (closed || !dependencies.isRefusal?.(error)) return;
+    const reason = error instanceof Error ? error.message : String(error);
+    for (const message of messages) {
+      const { source } = message;
+      // A remote sender's id does not name a thread on this daemon.
+      if (source.kind !== "agent-message" || source.serverId) continue;
+      try {
+        api.enqueue({
+          recipientId: source.agentId,
+          prompt: `Your message ${message.receipt.messageId} was not delivered. ${reason}`,
+          source: { kind: "agent-notification", agentId: recipientId, event: "errored" },
+          activeTurnBehavior: "steer",
+          unarchive: false,
+        });
+      } catch (reportError) {
+        dependencies.onError(reportError, request);
+      }
+    }
   }
 
   function flush(recipientId: string): void {
@@ -139,10 +181,11 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
     if (group.length) dispatch(recipientId, group);
   }
 
-  return {
+  const api: AgentMessageDelivery = {
     hasPending: (recipientId) => pending.has(recipientId) || dispatching.has(recipientId),
     enqueue(message) {
       if (closed) throw new Error("Agent message delivery is closed");
+      if (message.source.kind === "agent-message") dependencies.admit?.(message.recipientId);
       let resolve!: Admitted["resolve"];
       let reject!: Admitted["reject"];
       const dispatched = new Promise<PromptDispatchDisposition>((accepted, failed) => {
@@ -189,4 +232,5 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
       return closing;
     },
   };
+  return api;
 }

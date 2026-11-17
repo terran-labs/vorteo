@@ -1835,7 +1835,7 @@ test("preserves legacy fetchAgent id overload", async () => {
 });
 
 test.each([undefined, false, true])(
-  "loads history with whole-turn support advertised as %s",
+  "loads history with whole-turn and retry support advertised as %s",
   async (wholeTurnTimeline) => {
     const transport = createMockTransport();
     const client = new DaemonClient({
@@ -1847,7 +1847,10 @@ test.each([undefined, false, true])(
     clients.push(client);
     const connected = client.connect();
     transport.triggerOpen({
-      features: wholeTurnTimeline === undefined ? {} : { wholeTurnTimeline },
+      features:
+        wholeTurnTimeline === undefined
+          ? {}
+          : { wholeTurnTimeline, agentTimelineHistoryRetry: wholeTurnTimeline },
     });
     await connected;
 
@@ -1863,6 +1866,7 @@ test.each([undefined, false, true])(
         ...request,
         requestId,
         wholeTurns: true,
+        retryHistory: index === 0,
         limit: 40,
         projection: "projected",
       });
@@ -1876,6 +1880,7 @@ test.each([undefined, false, true])(
         limit: 40,
         projection: "projected",
         ...(wholeTurnTimeline === true ? { wholeTurns: true } : {}),
+        ...(wholeTurnTimeline === true && index === 0 ? { retryHistory: true } : {}),
       });
       transport.triggerMessage(
         wrapSessionMessage({

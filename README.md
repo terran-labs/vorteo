@@ -11,6 +11,8 @@ Connect multiple Codex and Claude accounts and distribute tasks across them. See
 
 To add a device, open your installation's address on it and enter the owner password on the welcome page. Vorteo connects every environment for you.
 
+After sign-in, the setup guide helps you choose an appearance, choose one detected Host provider, add projects from your Projects folder, including folders under it where agents have already worked, and review agent tools and skills. You can skip it and reopen it from **More > Show setup again** in the sidebar. Sign-in uses the existing installation connection controls, with supported Host-owned sharing to Dev. Use records the verified connection as primary on supported hosts; older hosts keep the choice only in the guide. You can skip provider selection and add more providers later in Settings. Finishing the guide does not verify account readiness. Device help includes the installation address and a QR code for opening the Vorteo PWA.
+
 ## Enhanced Security
 
 - **Give agents room to work without handing them your whole machine.** The installer can build and start a local Dev container for your agents. This limits the damage an accidental destructive command can do to your host: agents can modify the container home and mounted projects, while unmounted personal files stay outside their filesystem access. Keep backups of mounted projects; the container does not protect those files from deletion. See the [security boundaries](docs/container-tailscale.md).
@@ -19,15 +21,17 @@ To add a device, open your installation's address on it and enter the owner pass
 
 ## Power Tools to Manage Your Fleet
 
-- **Use less data on slow connections.** Enable Data saver from delayed-start diagnostics or Settings > General. It uses system fonts and keeps diagrams as readable source until requested. Common icons stay available, with optional custom icons downloaded on demand. Remote work still requires a reachable Host.
+- **Use less data on slow connections.** Vorteo saves data automatically when your browser asks it to, using system fonts and keeping diagrams as readable source until requested. To force it on or off, use Enable data saver on the startup screen; Follow browser in Settings > Interface > Fonts returns to automatic. Remote work still requires a reachable Host. See [data saving](docs/vorteo-customizations.md#projects-devices-and-interface).
 
 - **Try a workspace before connecting.** Choose Demo on the browser welcome page to explore simulated projects, tasks, conversations, files and changes. Try Vorton's six themes from the sidebar menu, with Dark Star as the default. The adjacent zoom slider, also driven by Cmd or Ctrl with plus and minus, scales the whole browser interface and remembers your preferred size. Demo edits stay in the current browser tab and Reset restores the samples. See [appearance and demo behavior](docs/vorteo-customizations.md#projects-devices-and-interface).
 
 - **Keep your sidebar across devices.** Project and workspace order, nested folders, expanded sections, grouping and filters follow you between connected devices. Folders group projects, or a project's workspaces, without touching disk, and you can focus the sidebar on one project or folder with a breadcrumb back out. Offline edits sync after reconnection. Requires the updated Host daemon.
 
-- **Find any setting.** Settings is one scrolling page, led by what needs your attention. Search forgives typos, jumps to the exact row and shows whether a value belongs to this device, every environment or one environment. Accounts show their remaining quota, and every provider's profiles share one list. See [settings navigation and search](docs/vorteo-customizations.md#projects-devices-and-interface).
+- **Find any setting.** Settings is one scrolling page in two groups, This device and Vorteo. System opens with a Health list of everything that needs you, each with a Fix button that jumps to the control. Search forgives typos, jumps to the exact row and shows whether a value belongs to this device, every environment or one environment. Accounts show their remaining quota, and every provider's profiles share one list. See [settings navigation and search](docs/vorteo-customizations.md#projects-devices-and-interface).
 
 - **Track a build across threads.** Each thread keeps its checklist beside the conversation when space allows, or below it in narrower layouts. The workspace flower combines task progress across its active threads, and planning instructions carry accepted checklist items into implementation. Updated daemons and clients also support agent tools and manual editing with dependencies and completion criteria. Blocked tasks explain their blocker, and eligible idle threads periodically check whether they can proceed. See [checklists and workspace progress](docs/vorteo-customizations.md#goals-queues-and-supervised-workers).
+
+- **Review what agents build.** Agents publish pages, slide decks, images and PDFs to a Previews card as frozen versions. Rate them, pick between options, then open one in your browser to point at an element and comment; the comment goes back to the agent that made it. Requires an updated daemon. See the [previews gallery guide](docs/preview-gallery.md).
 
 - **Keep a decision journal.** Agents can record critical decisions and verified progress in a timestamped journal card. Entries are append-only and stay in their original order. Requires an updated daemon. See [thread journals](docs/vorteo-customizations.md#goals-queues-and-supervised-workers).
 
@@ -54,7 +58,7 @@ To add a device, open your installation's address on it and enter the owner pass
 
 <img width="400" alt="Server authoritative goal direction for the Codex integration" src="https://github.com/user-attachments/assets/ed51f89f-077f-43c3-90b6-768ad8a4538d" />
 
-- **Factory project status and setup.** Inspect native project observations and setup availability in the Factory screen. Initial installation checks the selected host, project and visible revision, sends one correlated request, and holds uncertain outcomes for reconciliation. It requires a reconciled native owner; lifecycle actions remain unavailable. See [Factory](docs/factory.md).
+- **Run a per-project Factory.** Turn Factory on from a project menu to create or adopt Triage, Foreman, Builds, Releases and Mechanic agents. Their workspaces appear in a Factory folder. Set role instructions and models, follow status, send a thread to Triage, and pause or turn Factory off from the project menu. See [Factory](docs/factory.md).
 
 - **Enclaves for streamlined factory operations.** Workspaces with schedules or archive protection appear in Standing. Paused schedules keep their workspace there and show Paused. Protection and non-ended schedules both block archival until you remove them. Manage workspace schedules and custom labels from Tag As. Sidebar badges share compact padding with room above and below their text, and fade beneath the overlaid workspace menu using the current row background.
 

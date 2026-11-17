@@ -17,6 +17,7 @@ import {
   unavailableUsage,
   windowFromUsedPct,
 } from "../usage.js";
+import { codexRefreshRejected } from "../../../server/agent/providers/codex/refresh-rejection.js";
 
 const CodexAuthSchema = z.object({
   tokens: z
@@ -25,6 +26,8 @@ const CodexAuthSchema = z.object({
       refresh_token: z.string().optional(),
       account_id: z.string().optional(),
     })
+    // API-key sign-in writes null tokens beside OPENAI_API_KEY; that must not fail the parse.
+    .nullable()
     .optional(),
 });
 
@@ -114,11 +117,18 @@ export class CodexQuotaProvider implements ProviderUsageFetcher {
     const auth = credentials?.auth;
     const accessToken = auth?.tokens?.access_token;
     if (!credentials || !auth || !accessToken) {
+      // Not proof of no credentials: an API key in auth.json, the environment or config.toml
+      // still runs agents. Vorteo does not own this store, so the reading stays unconfirmed.
       return unavailableUsage(this);
     }
 
+    // Codex refused to refresh this exact sign-in. Its access token can still answer the usage
+    // API for a while, so ask for reconnection now rather than reporting the account connected.
+    const refreshRejected = await codexRefreshRejected(credentials.home);
     const { account_id } = auth.tokens ?? {};
-    const resp = await this.callCodexApi(accessToken, account_id);
+    const resp = refreshRejected
+      ? "AUTH_REJECTED"
+      : await this.callCodexApi(accessToken, account_id);
 
     if (resp === "AUTH_REJECTED") {
       const home = "'" + credentials.home.replaceAll("'", "'\"'\"'") + "'";

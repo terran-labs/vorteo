@@ -1,4 +1,8 @@
-import { blockedReviewDue } from "./task-checklist/blocked-review.js";
+import {
+  blockedReviewDue,
+  blockedReviewsUsed,
+  BLOCKED_REVIEW_DELAYS_MS,
+} from "./task-checklist/blocked-review.js";
 import {
   AgentJournalEntrySchema,
   AppendJournalSchema,
@@ -35,11 +39,8 @@ import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import type { Logger } from "pino";
 import { QueueGoalHoldSchema, type QueueGoalHold } from "../message-queue/goal-hold.js";
-import {
-  ProfileSwitchRecordSchema,
-  SwitchHistorySchema,
-  type SwitchHistory,
-} from "./profile-switch/history.js";
+import { ProfileSwitchRecordSchema } from "./profile-switch/history.js";
+import { SwitchHistoryStore } from "./profile-switch/history-store.js";
 
 import { writeJsonFileAtomic } from "../atomic-file.js";
 import { AgentFeatureSchema, AgentStatusSchema } from "../messages.js";
@@ -120,6 +121,8 @@ const STORED_AGENT_SCHEMA = z.object({
   updatedAt: z.string(),
   lastActivityAt: z.string().optional(),
   lastBlockedReviewAt: z.string().datetime().optional(),
+  // Reviews spent in the current blocked stretch; see blockedReviewsUsed.
+  blockedReviewCount: z.number().int().nonnegative().optional(),
   lastUserMessageAt: z.string().nullable().optional(),
   title: z.string().nullable().optional(),
   labels: z.record(z.string(), z.string()).default({}),
@@ -206,7 +209,14 @@ export class AgentStorage {
   constructor(baseDir: string, logger: Logger) {
     this.baseDir = baseDir;
     this.logger = logger.child({ module: "agent", component: "agent-storage" });
+    this.switchHistory = new SwitchHistoryStore({
+      directory: (agentId) => this.switchHistoryDir(agentId),
+      logger: this.logger,
+    });
   }
+
+  /** Retained history from before each profile switch, stored as streamed segments. */
+  readonly switchHistory: SwitchHistoryStore;
 
   async initialize(): Promise<void> {
     await this.load();
@@ -253,23 +263,9 @@ export class AgentStorage {
     return agentId ? (this.cache.get(agentId) ?? null) : null;
   }
 
-  /** Written before the switch commits; an orphan from a failed switch is never read. */
-  async writeSwitchHistory(agentId: string, history: SwitchHistory): Promise<void> {
-    await writeJsonFileAtomic(this.switchHistoryPath(agentId, history.switchId), history);
-  }
-
-  async readSwitchHistory(agentId: string, switchId: string): Promise<SwitchHistory> {
-    const content = await fs.readFile(this.switchHistoryPath(agentId, switchId), "utf8");
-    return SwitchHistorySchema.parse(JSON.parse(content));
-  }
-
   // Outside baseDir, whose subdirectories are scanned as agent records.
   private switchHistoryDir(agentId: string): string {
     return path.join(path.dirname(this.baseDir), "agent-switch-history", agentId);
-  }
-
-  private switchHistoryPath(agentId: string, switchId: string): string {
-    return path.join(this.switchHistoryDir(agentId), `${encodeURIComponent(switchId)}.json`);
   }
 
   // The journal lives in a sidecar so frequent snapshot writes do not reserialize
@@ -463,11 +459,33 @@ export class AgentStorage {
       (record) => {
         if (!record || !blockedReviewDue(record, now)) return null;
         claimed = true;
-        return { ...record, lastBlockedReviewAt: new Date(now).toISOString() };
+        return {
+          ...record,
+          lastBlockedReviewAt: new Date(now).toISOString(),
+          blockedReviewCount: blockedReviewsUsed(record) + 1,
+        };
       },
       { blockedReviewWrite: true },
     );
     return claimed;
+  }
+
+  /**
+   * A review that left the checklist unchanged spends the rest of the ladder: rechecking the same
+   * state minutes later only rereads the conversation. A real prompt that arrived while the review
+   * ran has already started a new stretch, which this must not spend. The claim time stays as
+   * written: activity from the review's own turn spaces the next rung.
+   */
+  async spendBlockedReviewLadder(agentId: string): Promise<void> {
+    await this.load();
+    await this.queueRecordMutation(
+      agentId,
+      (record) =>
+        record && blockedReviewsUsed(record) > 0
+          ? { ...record, blockedReviewCount: BLOCKED_REVIEW_DELAYS_MS.length }
+          : null,
+      { blockedReviewWrite: true },
+    );
   }
 
   async updateBlockedGoalReview(agentId: string, needed: boolean): Promise<void> {
@@ -984,8 +1002,10 @@ function preserveOwnedRecordFields({ record, existing, options }: OwnedRecordFie
   if (!options.journalWrite && existing) record.journal = existing.journal;
   if (!options.questionsWrite && existing) record.questions = existing.questions;
   if (!options.checklistWrite) preserveManagedChecklist(record, existing);
-  if (!options.blockedReviewWrite && existing)
+  if (!options.blockedReviewWrite && existing) {
     record.lastBlockedReviewAt = existing.lastBlockedReviewAt;
+    record.blockedReviewCount = existing.blockedReviewCount;
+  }
 }
 
 /** Tool access is fixed at creation. No later snapshot or update can widen it. */

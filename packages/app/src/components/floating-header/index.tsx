@@ -7,6 +7,12 @@ import { EdgeFade } from "@/components/ui/edge-fade";
 
 const OverlayClearanceContext = createContext(0);
 const OverlayHostContext = createContext<string | null>(null);
+const FloatingHeaderContext = createContext(false);
+
+/** True inside a header floating over content, where the fade supplies its surface. */
+export function useIsFloatingHeader(): boolean {
+  return useContext(FloatingHeaderContext);
+}
 
 /** Keep status overlays above the fade without lifting the scrolling content. */
 export function FloatingHeaderOverlay({ children }: { children: ReactNode }) {
@@ -70,7 +76,7 @@ export function FloatingHeaderLayout({ header, floating, children }: FloatingHea
             pointerEvents="box-none"
             onLayout={handleHeaderLayout}
           >
-            {header}
+            <FloatingHeaderContext.Provider value>{header}</FloatingHeaderContext.Provider>
           </View>
         </View>
       ) : null}

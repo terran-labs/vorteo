@@ -18,20 +18,6 @@ export function displayPercent(window: UsageWindow, displayAs: UsageDisplayAs): 
   return used == null ? null : 100 - used;
 }
 
-/**
- * A window row's accessible label: what pinning it pins, then what the row shows. The row is a
- * checkbox, so its checked state says whether it is pinned: "Pin Claude Session, 31% · resets in
- * 2h", checked.
- */
-export function usageWindowRowLabel(input: {
-  pinLabel: string;
-  value: string;
-  trailing: string | null | undefined;
-}): string {
-  const summary = input.trailing ? `${input.value} · ${input.trailing}` : input.value;
-  return `${input.pinLabel}, ${summary}`;
-}
-
 /** A user-requested refresh of one report. The previous report stays on screen throughout. */
 export type UsageRefresh = "idle" | "pending" | "failed";
 

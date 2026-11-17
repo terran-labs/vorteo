@@ -558,11 +558,12 @@ function applyProfile(state: AgentFormReducerState, action: ApplyProfileAction) 
   } else if (availableModeIds.has(defaultModeId)) {
     nextModeId = defaultModeId;
   }
+  // Profiles own reasoning too: an unset level uses the model default, not a remembered one.
   const nextThinkingOptionId =
     action.thinkingOptionId ||
     pickNextThinkingOptionForProvider({
       providerModels: action.providerModels,
-      providerPrefs: action.providerPrefs,
+      providerPrefs: action.profileId ? undefined : action.providerPrefs,
       modelId: nextModelId,
     });
   return {

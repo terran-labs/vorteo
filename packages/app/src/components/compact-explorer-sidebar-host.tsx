@@ -7,7 +7,7 @@ import {
   CompactExplorerSidebar,
   NativeExplorerSidebarDock,
 } from "@/components/compact-explorer-sidebar";
-import { useOpenFileExplorerGesture } from "@/mobile-panels/gestures";
+import { useOpenSettingsGesture } from "@/mobile-panels/gestures";
 import { useIsMobilePanelActive } from "@/mobile-panels/provider";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { usePanelStore, selectIsCompactFileExplorerOpen } from "@/stores/panel-store";
@@ -17,6 +17,9 @@ import type { WorkspaceTabTarget } from "@/workspace-tabs/model";
 import { useWorkspaceCheckoutStatus } from "@/screens/workspace/use-workspace-checkout-status";
 import { revealWorkspaceTab } from "@/workspace-tabs/navigation";
 import { openWorkspaceFileFromExplorer } from "@/screens/workspace/workspace-file-open-command";
+import { useIsCompactFormFactor } from "@/constants/layout";
+import { router, usePathname } from "expo-router";
+import { buildSettingsRoute } from "@/utils/host-routes";
 import { isWeb } from "@/constants/platform";
 import { DiffDocumentWorkspaceCacheProvider } from "@/git/diff-document/workspace-cache";
 import {
@@ -24,27 +27,29 @@ import {
   type CompactExplorerSidebarHostModel,
 } from "@/components/compact-explorer-sidebar-host-state";
 
-interface CompactExplorerOpenGestureSurfaceProps {
+interface CompactSettingsOpenGestureSurfaceProps {
   children: ReactNode;
   enabled: boolean;
-  onOpenExplorer: () => void;
+  onOpenSettings: () => void;
 }
 
-const COMPACT_WEB_GESTURE_TOUCH_ACTION = isWeb ? "auto" : "pan-y";
-
-function CompactExplorerOpenGestureSurface({
+function CompactSettingsOpenGestureSurface({
   children,
   enabled,
-  onOpenExplorer,
-}: CompactExplorerOpenGestureSurfaceProps) {
-  const explorerOpenGesture = useOpenFileExplorerGesture({
+  onOpenSettings,
+}: CompactSettingsOpenGestureSurfaceProps) {
+  const routeKey = usePathname();
+  const { gesture: settingsOpenGesture, edgeRef } = useOpenSettingsGesture({
     enabled,
-    onOpen: onOpenExplorer,
+    routeKey,
+    onOpen: onOpenSettings,
   });
 
   return (
-    <GestureDetector gesture={explorerOpenGesture} touchAction={COMPACT_WEB_GESTURE_TOUCH_ACTION}>
-      <View style={styles.fill}>{children}</View>
+    <GestureDetector gesture={settingsOpenGesture} touchAction={isWeb ? "auto" : "pan-y"}>
+      <View ref={edgeRef} style={styles.fill}>
+        {children}
+      </View>
     </GestureDetector>
   );
 }
@@ -109,6 +114,7 @@ export function CompactExplorerSidebarHost({
   enabled,
   presentation,
 }: CompactExplorerSidebarHostProps) {
+  const compact = useIsCompactFormFactor();
   const model = useActiveCompactExplorerSidebarModel(enabled);
   const cardHostName = `native-workspace-cards-${useId()}`;
   const explorerOpen = usePanelStore(selectIsCompactFileExplorerOpen);
@@ -130,7 +136,6 @@ export function CompactExplorerSidebarHost({
     [activeAgentId, enabled, presentation, explorerOpen, cardHostName],
   );
   const [containerWidth, setContainerWidth] = useState(0);
-  const openCompactFileExplorer = usePanelStore((state) => state.openCompactFileExplorer);
   const showMobileAgent = usePanelStore((state) => state.showMobileAgent);
   const openTab = useWorkspaceLayoutStore((state) => state.openTab);
   const openWorkspaceTabInFocusedPane = useCallback(
@@ -140,16 +145,13 @@ export function CompactExplorerSidebarHost({
   );
   useWorkspaceLayoutStore((state) => state.focusTab);
 
-  const handleOpenExplorer = useCallback(() => {
-    if (!model?.workspaceRoot) {
-      return;
-    }
-    openCompactFileExplorer({
-      serverId: model.serverId,
-      cwd: model.workspaceRoot,
-      isGit: model.isGit,
-    });
-  }, [model, openCompactFileExplorer]);
+  const handleOpenSettings = useCallback(() => {
+    router.push(buildSettingsRoute());
+  }, []);
+  useEffect(() => {
+    // Old callers or retained state must not reveal the removed phone drawer.
+    if (compact && presentation === "overlay" && explorerOpen) showMobileAgent();
+  }, [compact, presentation, explorerOpen, showMobileAgent]);
 
   const handleOpenFile = useCallback(
     (filePath: string) => {
@@ -176,7 +178,7 @@ export function CompactExplorerSidebarHost({
   }, []);
 
   const explorer =
-    enabled && model ? (
+    enabled && model && (!compact || presentation === "dock") ? (
       <DiffDocumentWorkspaceCacheProvider key={model.persistenceKey}>
         {presentation === "dock" ? (
           <NativeExplorerSidebarDock
@@ -214,12 +216,12 @@ export function CompactExplorerSidebarHost({
 
   return (
     <>
-      <CompactExplorerOpenGestureSurface
-        enabled={enabled && Boolean(model?.workspaceRoot)}
-        onOpenExplorer={handleOpenExplorer}
+      <CompactSettingsOpenGestureSurface
+        enabled={enabled && compact}
+        onOpenSettings={handleOpenSettings}
       >
         {children}
-      </CompactExplorerOpenGestureSurface>
+      </CompactSettingsOpenGestureSurface>
       {explorer}
     </>
   );

@@ -95,10 +95,10 @@ jobs:
         run: node --test scripts/agent-lifecycle.test.mjs scripts/agent-instructions.test.mjs scripts/vorteo-release.test.mjs
 
       - name: Test the Dev supervisor recovery plan
-        run: node --test scripts/maintenance/dev-supervisor-recovery.test.mjs
+        run: node --test scripts/maintenance/dev-supervisor-recovery.test.mjs scripts/maintenance/host-watch.test.mjs
 
       - name: Validate CI contracts
-        run: node --test scripts/ci-workflow.test.mjs scripts/daemon-launch-contract.test.mjs scripts/sync-fdroid-changelogs.test.mjs scripts/upload-release-assets.test.mjs scripts/publish-instance-web.test.mjs scripts/dependency-cache.test.mjs scripts/heavy-job.test.mjs scripts/instance-builds.test.mjs scripts/release/latest.test.mjs
+        run: node --test scripts/ci-workflow.test.mjs scripts/daemon-launch-contract.test.mjs scripts/sync-fdroid-changelogs.test.mjs scripts/upload-release-assets.test.mjs scripts/publish-instance-web.test.mjs scripts/dependency-cache.test.mjs scripts/heavy-job.test.mjs scripts/instance-builds.test.mjs scripts/release/latest.test.mjs scripts/sync-vorton-theme-reference.test.mjs
 
   # Heavy jobs wait for required checks so a merge group does not fill its runner
   # slots before those checks start. Keep !cancelled() in each job condition:
@@ -123,7 +123,7 @@ jobs:
       - name: Install dependencies
         run: node scripts/npm-retry.mjs ci
       - name: install.sh, prerequisites, QR and progress
-        run: node --test scripts/installer/install-sh.test.mjs scripts/installer/prerequisites.test.mjs scripts/installer/qr.test.mjs scripts/installer/progress.test.mjs scripts/installer/build-output.test.mjs scripts/installer/service-path.test.mjs
+        run: node --test scripts/installer/install-sh.test.mjs scripts/installer/prerequisites.test.mjs scripts/installer/qr.test.mjs scripts/installer/progress.test.mjs scripts/installer/build-output.test.mjs scripts/installer/service-path.test.mjs scripts/installer/command.test.mjs
       - name: Installer engine
         run: npx vitest run scripts/installer/plan.test.mjs scripts/installer/detect.test.mjs scripts/installer/apply.test.mjs scripts/installer/services.test.mjs scripts/installer/gate.test.mjs scripts/installer/host-adoption.test.mjs scripts/installer/upgrade.test.mjs
 
@@ -503,6 +503,11 @@ jobs:
             packages/server/src/server/execution-installation/coordinator-bootstrap-systemd.test.ts \
             packages/server/src/server/execution-installation/coordinator-bootstrap-linux-process.test.ts \
             --bail=1
+
+      # The consumer deployment worker uses Darwin-only renameatx_np and launchd
+      # diagnostics, so it runs here rather than in the Linux container job.
+      - name: Run broker consumer deployment worker tests
+        run: python3 -B docker/tailscale/test_broker_deployment.py
 
   desktop-tests-ubuntu:
     name: desktop-tests (ubuntu-latest)

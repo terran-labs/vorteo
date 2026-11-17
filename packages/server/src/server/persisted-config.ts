@@ -1,4 +1,6 @@
 import {
+  DaemonPrimaryConnectionSchema,
+  DaemonTimeZoneSchema,
   InstallationProjectPolicySchema,
   InstallationResourceBindingsSchema,
 } from "@getpaseo/protocol/installation-settings";
@@ -298,6 +300,10 @@ export const PersistedConfigSchema = z
         installationProjectPolicies: z
           .record(z.string(), InstallationProjectPolicySchema.loose())
           .optional(),
+        primaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
+        installationPrimaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
+        installationPrimaryConnectionSupported: z.boolean().optional(),
+        timeZone: DaemonTimeZoneSchema.optional(),
         agentProfiles: z.array(AgentProfileSchema).optional(),
         sharedProviderPreferences: SharedProviderPreferencesSchema.optional(),
         cors: z
@@ -372,6 +378,7 @@ export const PersistedConfigSchema = z
       .object({
         providers: z.preprocess(normalizeAgentProviders, ProviderOverridesSchema).optional(),
         idleRuntimeCleanup: z.boolean().optional(),
+        blockedWorkReview: z.boolean().optional(),
         resumeOnStartup: z.boolean().optional(),
         resumePrompt: z.string().optional(),
         catalogRefreshTimeoutMs: z.number().int().positive().max(2_147_483_647).optional(),

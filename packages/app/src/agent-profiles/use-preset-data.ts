@@ -40,8 +40,16 @@ export function usePresetData(serverId: string | null, active: boolean) {
     enabled: active && hasSelectableProviders,
     pollActivity: active && hasSelectableProviders,
   });
+  // Available reset credits per account, for captions that surface them outside the menu.
+  const resetCounts = new Map<string, number>();
+  providers.forEach((providerId, index) => {
+    const snapshot = resets[index]?.data?.snapshot;
+    if (snapshot?.status === "available" && snapshot.availableCount > 0)
+      resetCounts.set(providerId, snapshot.availableCount);
+  });
   return {
     view,
+    resetCounts,
     resetLoadingProviders: new Set(providers.filter((_, index) => resets[index]?.isFetching)),
   };
 }

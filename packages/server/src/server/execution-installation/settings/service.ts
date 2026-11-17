@@ -1,4 +1,5 @@
 import { validateProviderAccountSetup } from "./providers.js";
+import { assertTimeZoneUpdate, pickTimeZone } from "./time-zone.js";
 import {
   enrollInstallationPluginProviders,
   readInstallationProviders,
@@ -26,6 +27,7 @@ import type {
 } from "@getpaseo/protocol/messages";
 import type { ExecutionEnvironmentKind } from "@getpaseo/protocol/execution-installation";
 import {
+  isDefaultConnection,
   isProjectPolicyKey,
   InstallationSettingsFieldSchema,
   InstallationSettingsSchema,
@@ -58,6 +60,12 @@ export interface SettingsEnvironment {
     excludedIds: readonly string[],
   ): Promise<void>;
   previewSkills(selection: AgentSkillSelection): Promise<AgentSkillsSaveResult>;
+  /**
+   * Local provider ids that can run a system thread now, best first; those whose readiness is
+   * not settled yet, still loading or ready with a usage reading that failed; and ready ones
+   * whose settled reading neither confirms nor refuses a sign in.
+   */
+  readProviderReadiness(): Promise<{ usable: string[]; pending: string[]; unconfirmed: string[] }>;
   patch(
     patch: MutableDaemonConfigPatch,
     confirmedSkillRemovals?: readonly string[],
@@ -82,6 +90,7 @@ export const SettingsBackupSchema = z.strictObject({
     "skill-catalog-migration",
     "provider-catalog-migration",
     "plugin-provider-enrollment",
+    "primary-connection-adoption",
     "owner-update",
     "environment-projection",
   ]),
@@ -107,6 +116,13 @@ export class InstallationSettingsConflict extends Error {
   }
 }
 
+const INVALID_UPDATE_MESSAGES: Partial<Record<string, string>> = {
+  "project-policy":
+    "A project must stay available in at least one environment, keyed by its absolute root path.",
+  "primary-connection-unavailable": "That connection is no longer available.",
+  "time-zone": "Choose a time zone from the list.",
+};
+
 export class InstallationSettingsInvalidUpdate extends Error {
   constructor(
     readonly reason:
@@ -118,12 +134,14 @@ export class InstallationSettingsInvalidUpdate extends Error {
       | "terminal-profile"
       | "metadata-provider"
       | "installation-instructions"
-      | "project-policy",
+      | "project-policy"
+      | "primary-connection"
+      | "primary-connection-unavailable"
+      | "time-zone",
   ) {
     super(
-      reason === "project-policy"
-        ? "A project must stay available in at least one environment, keyed by its absolute root path."
-        : "Shared settings reference an unknown environment or resource.",
+      INVALID_UPDATE_MESSAGES[reason] ??
+        "Shared settings reference an unknown environment or resource.",
     );
     this.name = "InstallationSettingsInvalidUpdate";
   }
@@ -139,6 +157,7 @@ export class InstallationSettingsNotInitialized extends Error {
 /** The poll runs every 5 seconds, so the first retry waits for the second tick after a failure. */
 const ACCOUNT_RETRY_BASE_MS = 10_000;
 const ACCOUNT_RETRY_MAX_MS = 5 * 60_000;
+const SKILL_CATALOG_SETTLEMENT_TTL_MS = 60_000;
 
 /** Capped exponential delay: 10 s, 20 s, 40 s, 80 s, 160 s, then 5 minutes. */
 function accountRetryDelay(failures: number): number {
@@ -156,6 +175,10 @@ export class InstallationSettingsService {
   private readonly accountRetries = new Map<
     string,
     { failures: number; retryAt: number; revision: number }
+  >();
+  private readonly skillCatalogSettlements = new Map<
+    string,
+    { environment: SettingsEnvironment; key: string; checkedAt: number }
   >();
 
   constructor(
@@ -235,8 +258,12 @@ export class InstallationSettingsService {
       base = previous.settings;
     }
     const settings = InstallationSettingsSchema.parse({ ...base, ...request.settings });
-    if (request.settings.resourceExclusions === undefined) pruneResourceExclusions(settings);
-    if (request.settings.projectPolicies === undefined) pruneProjectPolicies(settings);
+    pruneUnspecified(settings, request.settings);
+    if (request.settings.primaryConnection) assertPrimaryConnectionChoice(settings);
+    assertTimeZoneUpdate(
+      request.settings.timeZone,
+      () => new InstallationSettingsInvalidUpdate("time-zone"),
+    );
     this.validateResources(settings);
     if (previous.settings !== null && isDeepStrictEqual(settings, previous.settings)) {
       this.skillRemovalConfirmations = request.confirmedSkillRemovals ?? {};
@@ -261,11 +288,12 @@ export class InstallationSettingsService {
   }
 
   /**
-   * `background` marks the periodic poll, which backs off failed account preparation.
-   * Explicit calls, such as after a sign-in, always retry.
+   * Background polls back off failed account preparation and reuse recent skill settlement.
+   * Explicit calls, such as after a sign-in, always inspect again.
    */
   reconcile(options: { background?: boolean } = {}): Promise<InstallationSettingsSnapshot> {
     return this.enqueue(async () => {
+      if (!options.background) this.skillCatalogSettlements.clear();
       this.projectionRevision = null;
       if (this.state.settings === null && this.state.conflicts === undefined) await this.migrate();
       if (this.needsPluginCatalogMigration()) await this.migratePluginCatalog();
@@ -276,6 +304,8 @@ export class InstallationSettingsService {
       if (this.needsProviderCatalogMigration()) return this.snapshot();
       if (this.needsBrowserPolicyMigration()) await this.migrateBrowserPolicy();
       if (this.needsBrowserPolicyMigration()) return this.snapshot();
+      if (this.state.settings?.primaryConnection === undefined && this.state.settings !== null)
+        await this.adoptPrimaryConnection();
       if (this.state.settings !== null) {
         const unavailable = await this.enrollPluginProviders();
         for (const environment of this.environments)
@@ -317,6 +347,57 @@ export class InstallationSettingsService {
     }
     for (const serverId of unavailable) this.recordStatus(serverId, "read_failed");
     return unavailable;
+  }
+
+  /**
+   * Upgrades an installation that has never chosen a primary connection, once. The only usable
+   * connection becomes primary; with several the owner chooses, so it is set to null. With none
+   * it stays unchosen and a later pass, or the setup guide, decides. A failed read retries, and
+   * so does a pass where any eligible connection is still loading or its usage reading failed:
+   * right after the upgrade restart, that connection may be usable too, and adopting the only
+   * one ready so far would choose for the owner. An eligible connection whose settled reading
+   * cannot confirm a sign in, such as a setup-token connection, may be usable as well, so the
+   * owner chooses.
+   */
+  private async adoptPrimaryConnection(): Promise<void> {
+    const previous = this.snapshot();
+    if (!previous.settings?.providerDefinitions) return;
+    const usable = new Set<string>();
+    let unconfirmed = false;
+    for (const environment of this.environments) {
+      let readiness: { usable: string[]; pending: string[]; unconfirmed: string[] };
+      try {
+        readiness = await environment.readProviderReadiness();
+      } catch {
+        return;
+      }
+      const excluded = previous.settings.resourceExclusions[environment.serverId]?.providerIds;
+      const eligible = (localId: string) =>
+        previous.settings!.providerDefinitions!.find(
+          (entry) =>
+            !entry.removed &&
+            entry.policy.enabled !== false &&
+            entry.bindings[environment.serverId] === localId &&
+            !excluded?.includes(entry.id),
+        );
+      if (readiness.pending.some((localId) => eligible(localId))) return;
+      if (readiness.unconfirmed.some((localId) => eligible(localId))) unconfirmed = true;
+      for (const localId of readiness.usable) {
+        const definition = eligible(localId);
+        if (definition) usable.add(adoptionIdentity(definition, previous.settings));
+      }
+    }
+    if ((usable.size === 0 && !unconfirmed) || previous.revision !== this.state.revision) return;
+    const [only] = usable;
+    const settings: InstallationSettings = {
+      ...structuredClone(previous.settings),
+      primaryConnection: usable.size === 1 && !unconfirmed ? { providerId: only! } : null,
+    };
+    this.validateResources(settings);
+    const next = { ...previous, revision: previous.revision + 1, settings };
+    for (const source of Object.values(next.sources)) source.pendingRevision = next.revision;
+    this.journal.backup({ reason: "primary-connection-adoption", previous, observations: {} });
+    this.commit(next);
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -411,6 +492,11 @@ export class InstallationSettingsService {
         throw new InstallationSettingsInvalidUpdate("metadata-provider");
     }
     this.validateProjectPolicies(settings, { definitionIds, skillIds });
+    if (
+      settings.primaryConnection &&
+      !definitionIds.includes(settings.primaryConnection.providerId)
+    )
+      throw new InstallationSettingsInvalidUpdate("primary-connection");
   }
 
   private validateProjectPolicies(
@@ -737,7 +823,12 @@ export class InstallationSettingsService {
     return (settings.skillLibrary ?? []).filter((skill) => !excluded.includes(skill.identity));
   }
 
-  private async inspectResources(environment: SettingsEnvironment, settings: InstallationSettings) {
+  private async inspectResources(
+    environment: SettingsEnvironment,
+    settings: InstallationSettings,
+    background: boolean,
+  ) {
+    const revision = this.state.revision;
     const localConfig = await environment.read();
     const observed = readInstallationSettings(localConfig, this.installationInstructions);
     const excludedPluginIds = settings.resourceExclusions[environment.serverId]?.pluginIds ?? [];
@@ -749,10 +840,35 @@ export class InstallationSettingsService {
         excludedPluginIds,
       );
     let skillCatalogSettled = true;
-    if (settings.skillLibrary)
-      skillCatalogSettled = await environment.skillCatalogSettled(
-        this.availableSkills(settings, environment.serverId),
-      );
+    if (settings.skillLibrary) {
+      const definitions = this.availableSkills(settings, environment.serverId);
+      const key = JSON.stringify([
+        environment.kind,
+        revision,
+        definitions,
+        settings.resourceExclusions[environment.serverId],
+      ]);
+      const cached = this.skillCatalogSettlements.get(environment.serverId);
+      const now = this.now();
+      const fresh =
+        cached !== undefined &&
+        cached.environment === environment &&
+        cached.key === key &&
+        now >= cached.checkedAt &&
+        now - cached.checkedAt < SKILL_CATALOG_SETTLEMENT_TTL_MS;
+      // This background check is advisory. Explicit reads and projection verification
+      // stay fresh, while external skill drift is discovered within one minute.
+      if (!background || !fresh) {
+        this.skillCatalogSettlements.delete(environment.serverId);
+        skillCatalogSettled = await environment.skillCatalogSettled(definitions);
+        if (background && skillCatalogSettled && this.state.revision === revision)
+          this.skillCatalogSettlements.set(environment.serverId, {
+            environment,
+            key,
+            checkedAt: this.now(),
+          });
+      }
+    }
     let skillPlan: AgentSkillsSaveResult | null = null;
     if (settings.skills) skillPlan = await environment.previewSkills(settings.skills.selection);
     return {
@@ -800,7 +916,7 @@ export class InstallationSettingsService {
       }
     }
     try {
-      const inspected = await this.inspectResources(environment, settings);
+      const inspected = await this.inspectResources(environment, settings, background);
       return this.projectionRevision === this.state.revision ? inspected : null;
     } catch {
       this.recordStatus(environment.serverId, "read_failed");
@@ -902,6 +1018,7 @@ export class InstallationSettingsService {
   ): Promise<void> {
     const { environment, patch, plugins, excludedPluginIds } = verification;
     if (this.projectionRevision !== this.state.revision) return;
+    this.skillCatalogSettlements.delete(environment.serverId);
     try {
       await environment.patch(patch, confirmedRemovals);
     } catch {
@@ -980,7 +1097,15 @@ export class InstallationSettingsService {
         isDeepStrictEqual(
           verifiedConfig.installationResourceBindings,
           patch.installationResourceBindings,
-        )
+        ) &&
+        (patch.installationPrimaryConnection === undefined ||
+          (isDeepStrictEqual(
+            verifiedConfig.installationPrimaryConnection,
+            patch.installationPrimaryConnection,
+          ) &&
+            verifiedConfig.installationPrimaryConnectionSupported ===
+              patch.installationPrimaryConnectionSupported)) &&
+        timeZoneSettled(verifiedConfig, patch)
         ? null
         : "verification_failed",
     );
@@ -1002,6 +1127,7 @@ export class InstallationSettingsService {
       if (!complete) error = "account_binding_unavailable";
     }
     const status = next.sources[serverId];
+    if (error !== null) this.skillCatalogSettlements.delete(serverId);
     status.error = error;
     status.pendingRevision = error === null ? null : next.revision;
     if (error === null) status.appliedRevision = next.revision;
@@ -1038,8 +1164,88 @@ function environmentCopiesSettled(
   return (
     isDeepStrictEqual(bindings, patch.installationResourceBindings) &&
     (patch.installationProjectPolicies === undefined ||
-      isDeepStrictEqual(local.installationProjectPolicies, patch.installationProjectPolicies))
+      isDeepStrictEqual(local.installationProjectPolicies, patch.installationProjectPolicies)) &&
+    (patch.installationPrimaryConnection === undefined ||
+      (isDeepStrictEqual(
+        local.installationPrimaryConnection,
+        patch.installationPrimaryConnection,
+      ) &&
+        local.installationPrimaryConnectionSupported ===
+          patch.installationPrimaryConnectionSupported)) &&
+    timeZoneSettled(local, patch)
   );
+}
+
+/** The daemon's copy of the time zone matches, or this daemon predates the setting. */
+function timeZoneSettled(
+  local: MutableDaemonConfig,
+  patch: ReturnType<typeof projectInstallationSettings>,
+): boolean {
+  return (
+    patch.timeZone === undefined ||
+    (local.timeZone !== undefined &&
+      isDeepStrictEqual(pickTimeZone(local.timeZone), patch.timeZone))
+  );
+}
+
+/** Drops references the owner's update left dangling in fields it did not send. */
+function pruneUnspecified(
+  settings: InstallationSettings,
+  sent: InstallationSettingsUpdate["settings"],
+) {
+  if (sent.resourceExclusions === undefined) pruneResourceExclusions(settings);
+  if (sent.projectPolicies === undefined) pruneProjectPolicies(settings);
+  if (sent.primaryConnection === undefined) prunePrimaryConnection(settings);
+}
+
+/** A connection that can run system threads: present, not removed and not turned off. */
+function liveDefinition(settings: InstallationSettings, providerId: string) {
+  const definition = settings.providerDefinitions?.find((entry) => entry.id === providerId);
+  return definition && !definition.removed && definition.policy.enabled !== false
+    ? definition
+    : null;
+}
+
+/** A removed or turned off connection stops being primary, and the owner chooses again. */
+function prunePrimaryConnection(settings: InstallationSettings) {
+  const primary = settings.primaryConnection;
+  if (primary && !liveDefinition(settings, primary.providerId)) settings.primaryConnection = null;
+}
+
+/**
+ * An explicit choice must name a live connection, and its profile must be a shared profile of
+ * that connection's provider type: other profile ids name one environment's local profile.
+ * Refused with a typed reason, so a choice read from an older snapshot never saves a primary
+ * that daemons would then reject.
+ */
+function assertPrimaryConnectionChoice(settings: InstallationSettings) {
+  const primary = settings.primaryConnection;
+  if (!primary) return;
+  const definition = liveDefinition(settings, primary.providerId);
+  const profileMatches =
+    primary.profileId === undefined ||
+    (primary.profileId.startsWith("shared-profile/") &&
+      decodeURIComponent(primary.profileId.split("/")[1] ?? "") === definition?.providerType);
+  if (!definition || !profileMatches)
+    throw new InstallationSettingsInvalidUpdate("primary-connection-unavailable");
+}
+
+/**
+ * The definition that stands for a connection when counting usable ones. A provider's shared
+ * default connection can be one definition per environment; the Host's copy names them all.
+ */
+function adoptionIdentity(
+  definition: InstallationProvider,
+  settings: InstallationSettings,
+): string {
+  if (!isDefaultConnection(definition)) return definition.id;
+  const first = (settings.providerDefinitions ?? []).find(
+    (entry) =>
+      !entry.removed &&
+      entry.providerType === definition.providerType &&
+      isDefaultConnection(entry),
+  );
+  return first?.id ?? definition.id;
 }
 
 function pruneProjectPolicies(settings: InstallationSettings) {

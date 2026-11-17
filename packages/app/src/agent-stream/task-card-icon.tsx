@@ -8,7 +8,9 @@ import {
   Users,
   Files,
   GitCompareArrows,
+  GitPullRequest,
   ChartPie,
+  Images,
 } from "lucide-react-native";
 import { View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -20,6 +22,7 @@ const palette = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const icons = {
   files: withUnistyles(Files),
   changes: withUnistyles(GitCompareArrows),
+  pullRequest: withUnistyles(GitPullRequest),
   journal: withUnistyles(BookOpen),
   messages: withUnistyles(MessagesSquare),
   goal: withUnistyles(Target),
@@ -28,6 +31,7 @@ const icons = {
   question: withUnistyles(MessageCircleQuestion),
   permission: withUnistyles(ShieldCheck),
   context: withUnistyles(ChartPie),
+  previews: withUnistyles(Images),
 };
 
 /** Decorative heading marks share the task progress chart's footprint. */

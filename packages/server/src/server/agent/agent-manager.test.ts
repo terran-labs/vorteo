@@ -989,6 +989,119 @@ test("notification batches share the run they start or join", async () => {
   }
 });
 
+test("during a restart hold a message joins a running turn but never starts or replaces one", async () => {
+  const session = new SteeringTestSession({ provider: "codex", cwd: process.cwd() });
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-hold-steer-"));
+  const client = new (class extends TestAgentClient {
+    override async createSession(): Promise<AgentSession> {
+      return session;
+    }
+  })();
+  const manager = new AgentManager({ clients: { codex: client }, logger });
+  const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  const send = (clientMessageId: string) =>
+    startAgentRun(manager, agent.id, clientMessageId, logger, {
+      replaceRunning: true,
+      activeTurnBehavior: "steer",
+      runOptions: { clientMessageId },
+    });
+  try {
+    const run = manager.streamAgent(agent.id, "initial");
+    void (async () => {
+      for await (const _event of run) {
+      }
+    })();
+    await manager.waitForAgentRunStart(agent.id);
+    const hold = randomUUID();
+    manager.beginRestartDrain(hold);
+    // A coordinator waiting on a child's reply receives it inside its running turn.
+    await expect(send("joined")).resolves.toEqual({ disposition: "steered" });
+    // A refused steer would replace the turn, so it stays held instead.
+    session.steerResult = "unavailable";
+    await expect(send("refused")).rejects.toMatchObject({ code: "restart_hold" });
+    expect(session.interruptCount).toBe(0);
+    // Once the turn ends, a message would start new work: held until the hold ends.
+    session.steerResult = "accepted";
+    session.pushEvent({ type: "turn_completed", provider: "codex", turnId: "active-turn-1" });
+    await expect.poll(() => manager.getAgent(agent.id)?.lifecycle).toBe("idle");
+    await expect(send("idle")).rejects.toMatchObject({ code: "restart_hold" });
+    expect(session.startCount).toBe(1);
+    const released = manager.waitForRestartHoldRelease();
+    expect(manager.cancelRestartDrain(hold)).toBe(true);
+    await released;
+    await expect(send("after")).resolves.toEqual({ disposition: "turn_started" });
+  } finally {
+    await manager.closeAgent(agent.id);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test.each(["provider", "fallback"] as const)(
+  "a restart hold beginning during the %s await prevents replacement",
+  async (stage) => {
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const pause = async () => {
+      entered.resolve();
+      await release.promise;
+    };
+    class PausingSession extends SteeringTestSession {
+      override async steerActiveTurn(
+        prompt: AgentPromptInput,
+        options: import("./agent-sdk-types.js").SteerActiveTurnOptions,
+      ): Promise<import("./agent-sdk-types.js").SteerResult> {
+        if (stage === "provider") await pause();
+        return super.steerActiveTurn(prompt, options);
+      }
+    }
+    const session = new PausingSession({ provider: "codex", cwd: process.cwd() });
+    session.steerResult = "unavailable";
+    const workdir = mkdtempSync(join(tmpdir(), "agent-manager-hold-admission-"));
+    const client = new (class extends TestAgentClient {
+      override async createSession(): Promise<AgentSession> {
+        return session;
+      }
+    })();
+    const manager = new AgentManager({
+      clients: { codex: client },
+      logger,
+      ...(stage === "fallback" ? { beforeSteerUnavailableFallback: pause } : {}),
+    });
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    const hold = randomUUID();
+    try {
+      const run = manager.streamAgent(agent.id, "initial");
+      const consumed = (async () => {
+        for await (const _event of run) {
+        }
+      })();
+      await manager.waitForAgentRunStart(agent.id);
+      const send = startAgentRun(manager, agent.id, "replacement", logger, {
+        replaceRunning: true,
+        activeTurnBehavior: "steer",
+      });
+      const rejected = expect(send).rejects.toMatchObject({ code: "restart_hold" });
+      await entered.promise;
+      manager.beginRestartDrain(hold);
+      release.resolve();
+      await rejected;
+      expect(session.interruptCount).toBe(0);
+      expect(session.startCount).toBe(1);
+      session.pushEvent({ type: "turn_completed", provider: "codex", turnId: "active-turn-1" });
+      await consumed;
+    } finally {
+      release.resolve();
+      manager.cancelRestartDrain(hold);
+      await manager.closeAgent(agent.id);
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  },
+);
+
 test("unavailable steer interrupts once and starts one replacement turn", async () => {
   const session = new SteeringTestSession({ provider: "codex", cwd: process.cwd() });
   session.steerResult = "unavailable";
@@ -2972,17 +3085,81 @@ test("the blocked-work review skips a thread waiting for its usage limit to rese
     id: "held",
     provider: "claude",
     labels: {},
-    createdAt: "2026-10-22T09:00:00.000Z",
+    createdAt: "2026-10-22T11:50:00.000Z",
     persistence: { provider: "claude", sessionId: "session" },
     tasks: [{ id: "t", text: "Blocked", completed: false, status: "blocked" }],
   } as unknown as StoredAgentRecord;
   expect(blockedReviewDue(base, now)).toBe(true);
-  const stoppedAt = "2026-10-22T10:00:00.000Z";
+  const stoppedAt = "2026-10-22T11:52:00.000Z";
   expect(
     blockedReviewDue({ ...base, config: { usageLimitHold: { stoppedAt, attempts: 0 } } }, now),
   ).toBe(false);
-  const released = { stoppedAt, attempts: 1, releasedAt: "2026-10-22T11:00:00.000Z" };
+  const released = { stoppedAt, attempts: 1, releasedAt: "2026-10-22T11:55:00.000Z" };
   expect(blockedReviewDue({ ...base, config: { usageLimitHold: released } }, now)).toBe(true);
+});
+
+test("blocked-work reviews follow a three-step ladder that only a real prompt restarts", () => {
+  const at = (minutes: number) =>
+    new Date(Date.parse("2026-11-09T12:00:00.000Z") + minutes * 60_000);
+  const base = {
+    id: "ladder",
+    provider: "claude",
+    labels: {},
+    createdAt: at(-60).toISOString(),
+    lastActivityAt: at(0).toISOString(),
+    persistence: { provider: "claude", sessionId: "session" },
+    tasks: [{ id: "t", text: "Blocked", completed: false, status: "blocked" }],
+  } as unknown as StoredAgentRecord;
+  expect(blockedReviewDue(base, at(4).getTime())).toBe(false);
+  expect(blockedReviewDue(base, at(5).getTime())).toBe(true);
+  // Each review's own prompt lands seconds after its claim and must not reset the count.
+  const reviewed = (count: number, minutes: number): StoredAgentRecord => ({
+    ...base,
+    lastActivityAt: at(minutes).toISOString(),
+    lastBlockedReviewAt: at(minutes).toISOString(),
+    lastUserMessageAt: at(minutes - 0.5).toISOString(),
+    blockedReviewCount: count,
+  });
+  expect(blockedReviewDue(reviewed(1, 6), at(20).getTime())).toBe(false);
+  expect(blockedReviewDue(reviewed(1, 6), at(21).getTime())).toBe(true);
+  expect(blockedReviewDue(reviewed(2, 22), at(52).getTime())).toBe(true);
+  expect(blockedReviewDue(reviewed(3, 53), at(60 * 24).getTime())).toBe(false);
+  // A slot missed by more than the grace is forfeited: a late review would rebuild a cold cache.
+  expect(blockedReviewDue(base, at(20).getTime())).toBe(true);
+  expect(blockedReviewDue(base, at(21).getTime())).toBe(false);
+  expect(blockedReviewDue(base, at(60 * 24 * 4).getTime())).toBe(false);
+  const prompted = { ...reviewed(3, 53), lastUserMessageAt: at(90).toISOString() };
+  expect(blockedReviewsUsed(prompted)).toBe(0);
+  expect(
+    blockedReviewDue({ ...prompted, lastActivityAt: at(91).toISOString() }, at(96).getTime()),
+  ).toBe(true);
+  // Work left in progress when the thread stopped is reviewed too; work in review waits on the owner.
+  const withStatus = (status: string) =>
+    ({
+      ...base,
+      tasks: [{ id: "t", text: "Item", completed: false, status }],
+    }) as StoredAgentRecord;
+  expect(blockedReviewDue(withStatus("in_progress"), at(5).getTime())).toBe(true);
+  expect(onlyInProgressWork(withStatus("in_progress"))).toBe(true);
+  expect(onlyInProgressWork(base)).toBe(false);
+  expect(blockedReviewDue(withStatus("review"), at(5).getTime())).toBe(false);
+  expect(blockedReviewDue(withStatus("pending"), at(5).getTime())).toBe(false);
+  // A review that leaves the checklist as it found it ends the ladder; a rewritten description
+  // is not a change, a new status or a passed check is.
+  const described = { ...base, tasks: [{ ...base.tasks![0]!, description: "Still waiting" }] };
+  const checked = {
+    ...base,
+    tasks: [{ ...base.tasks![0]!, checks: [{ text: "Ready", done: true }] }],
+  } as StoredAgentRecord;
+  expect(reviewFingerprint(described)).toBe(reviewFingerprint(base));
+  expect(reviewFingerprint(checked)).not.toBe(reviewFingerprint(base));
+  expect(reviewFingerprint(withStatus("review"))).not.toBe(reviewFingerprint(base));
+  // A blocker the owner is asked about wakes the thread when answered, so it needs no review.
+  const asked = {
+    ...base,
+    questions: [{ id: "q", status: "open", blocks: ["t"] }],
+  } as unknown as StoredAgentRecord;
+  expect(blockedReviewDue(asked, at(60).getTime())).toBe(false);
 });
 
 test("a usage limit holds a standalone thread for its reset without pausing it", async () => {
@@ -3208,42 +3385,226 @@ test("quota exhaustion persistently pauses the supervisor and managed workers", 
   expect(() => resumed.streamAgent(root.id, "after restart")).toThrow("paused");
 });
 
+test("a usage stop pauses only teammates on the exhausted account", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "paseo-quota-accounts-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const sessions: SteeringTestSession[] = [];
+  class QuotaClient extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      const session = new SteeringTestSession(config);
+      sessions.push(session);
+      return session;
+    }
+  }
+  // codex stands for the exhausted account A, pi for an account B with quota left.
+  const manager = new AgentManager({
+    clients: { codex: new QuotaClient(), pi: new QuotaClient() },
+    registry: storage,
+    logger,
+  });
+  try {
+    const root = await manager.createAgent(
+      {
+        provider: "pi",
+        cwd: workdir,
+        profileLaunch: {
+          profile: { id: "team", name: "Team", provider: "pi", maxWorkers: 4 },
+          worker: { id: "worker", name: "Worker", provider: "codex", model: "gpt-5.4" },
+        },
+      },
+      undefined,
+      { workspaceId: undefined },
+    );
+    const options = { workspaceId: undefined, labels: { [PARENT_AGENT_ID_LABEL]: root.id } };
+    const failing = await manager.createAgent(
+      { provider: "codex", cwd: workdir },
+      undefined,
+      options,
+    );
+    const sameAccount = await manager.createAgent(
+      { provider: "codex", cwd: workdir },
+      undefined,
+      options,
+    );
+    const otherAccount = await manager.createAgent(
+      { provider: "pi", cwd: workdir },
+      undefined,
+      options,
+    );
+    sessions[1].pushEvent({
+      type: "turn_failed",
+      provider: "codex",
+      code: "quota_exhausted",
+      error: "Quota exhausted",
+    });
+    await vi.waitFor(() =>
+      expect(manager.getAgent(sameAccount.id)?.config.quotaPausedAt).toBeTruthy(),
+    );
+    expect(manager.getAgent(failing.id)?.config.quotaPausedAt).toBeTruthy();
+    expect(manager.getAgent(root.id)?.config.quotaPausedAt).toBeUndefined();
+    expect(manager.getAgent(otherAccount.id)?.config.quotaPausedAt).toBeUndefined();
+    expect(() => manager.assertQuotaNotPaused(otherAccount.id)).not.toThrow();
+    expect(() => manager.assertNoQuotaLatch(sameAccount.id)).toThrow("Quota exhausted");
+    // The supervisor keeps its quota but cannot start a worker on the exhausted account.
+    await expect(
+      manager.createAgent({ provider: "codex", cwd: workdir }, undefined, options),
+    ).rejects.toThrow("Quota exhausted on this account");
+
+    // A latch the old team-wide rule left on account B clears at daemon start. A stays latched
+    // while its hold is unreleased, even with no reset time more than an hour after the stop.
+    const longAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    await manager.updateUsageLimitHold(failing.id, (hold) =>
+      hold ? { ...hold, stoppedAt: longAgo } : undefined,
+    );
+    const stale = await storage.get(otherAccount.id);
+    if (!stale) throw new Error("Missing worker record");
+    await storage.upsert({
+      ...stale,
+      config: { ...stale.config, quotaPausedAt: new Date().toISOString() },
+    });
+    await manager.releaseStaleQuotaPauses();
+    expect((await storage.get(otherAccount.id))?.config?.quotaPausedAt).toBeUndefined();
+    expect((await storage.get(sameAccount.id))?.config?.quotaPausedAt).toBeTruthy();
+    // Don't resume never releases the hold, so its passed reset unlatches its teammates.
+    await manager.updateUsageLimitHold(failing.id, (hold) =>
+      hold ? { ...hold, optOut: true, resetsAt: longAgo } : undefined,
+    );
+    await manager.releaseStaleQuotaPauses();
+    expect((await storage.get(sameAccount.id))?.config?.quotaPausedAt).toBeUndefined();
+  } finally {
+    await manager.flush();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
 test("reserves worker capacity during startup and preserves a quota pause that arrives while starting", async () => {
-  const rootClient = new SessionRecordingAgentClient();
-  const workerClient = new HeldAgentCreationClient();
-  const manager = new AgentManager({ clients: { codex: rootClient, pi: workerClient }, logger });
+  // The latch holds only the exhausted account, so the starting worker shares the root's.
+  class HeldWorkerClient extends SessionRecordingAgentClient {
+    readonly workerStarted = deferred<void>();
+    readonly workerAllowed = deferred<void>();
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      if (this.sessions.length > 0) {
+        this.workerStarted.resolve();
+        await this.workerAllowed.promise;
+      }
+      return super.createSession(config);
+    }
+  }
+  const client = new HeldWorkerClient();
+  const manager = new AgentManager({ clients: { codex: client }, logger });
   const root = await manager.createAgent(
     {
       provider: "codex",
       cwd: process.cwd(),
       profileLaunch: {
         profile: { id: "team", name: "Team", provider: "codex", maxWorkers: 1 },
-        worker: { id: "worker", name: "Worker", provider: "pi", model: "local" },
+        worker: { id: "worker", name: "Worker", provider: "codex", model: "gpt-5.4" },
       },
     },
     undefined,
     { workspaceId: undefined },
   );
   const options = { workspaceId: undefined, labels: { [PARENT_AGENT_ID_LABEL]: root.id } };
-  const starting = manager.createAgent({ provider: "pi", cwd: process.cwd() }, undefined, options);
-  await workerClient.waitForCreationToStart();
+  const starting = manager.createAgent(
+    { provider: "codex", cwd: process.cwd() },
+    undefined,
+    options,
+  );
+  await client.workerStarted.promise;
   await expect(
-    manager.createAgent({ provider: "pi", cwd: process.cwd() }, undefined, options),
+    manager.createAgent({ provider: "codex", cwd: process.cwd() }, undefined, options),
   ).rejects.toThrow("limit");
-  rootClient.sessions[0].pushEvent({
+  client.sessions[0].pushEvent({
     type: "turn_failed",
     provider: "codex",
     code: "quota_exhausted",
     error: "Quota exhausted",
   });
   await vi.waitFor(() => expect(manager.getAgent(root.id)?.config.quotaPausedAt).toBeTruthy());
-  workerClient.finishCreating();
+  client.workerAllowed.resolve();
   const child = await starting;
   expect(child.config.quotaPausedAt).toBeTruthy();
   expect(() => manager.streamAgent(child.id, "continue")).toThrow("paused");
   await manager.closeAgent(child.id);
   await manager.closeAgent(root.id);
 });
+
+test.each(["catalog", "availability", "launch context", "restart drain"] as const)(
+  "does not start a provider session when shutdown interrupts %s setup",
+  async (phase) => {
+    const setupStarted = deferred<void>();
+    const setupAllowed = deferred<void>();
+    const agentId = "00000000-0000-4000-8000-000000000097";
+    async function holdSetup() {
+      setupStarted.resolve();
+      await setupAllowed.promise;
+    }
+    class HeldSetupClient extends TestAgentClient {
+      override async fetchCatalog() {
+        if (phase === "catalog") await holdSetup();
+        return super.fetchCatalog();
+      }
+      override async isAvailable() {
+        if (phase === "availability") await holdSetup();
+        return true;
+      }
+    }
+    const client = new HeldSetupClient();
+    const attachedAgents = new Set<string>();
+    const holdContext = phase === "launch context" || phase === "restart drain";
+    const manager = new AgentManager({
+      clients: { codex: client },
+      logger,
+      idFactory: () => agentId,
+      pluginAgentTools: {
+        isToolPluginAvailable: () => true,
+        detachTools: (id) => {
+          attachedAgents.delete(id);
+        },
+        callTool: async () => ({ content: [] }),
+      },
+      pluginLifecycle: {
+        emit() {},
+        async before(name, request) {
+          if (name === "agent.open.before" && "tools" in request) {
+            attachedAgents.add(request.agentId);
+            request.tools = [
+              {
+                name: "inspect",
+                description: "Inspect the fixture",
+                inputSchema: {},
+                pluginId: "fixture",
+                pluginInstanceId: "fixture-instance",
+              },
+            ];
+            if (holdContext) await holdSetup();
+          }
+          return request;
+        },
+      },
+    });
+    const creation = manager
+      .createAgent({ provider: "codex", cwd: process.cwd() }, undefined, {})
+      .catch((error: unknown) => error);
+    await setupStarted.promise;
+    if (phase === "restart drain") manager.beginRestartDrain(randomUUID());
+    else manager.prepareForShutdown();
+    const flushing = manager.flushForShutdown();
+    setupAllowed.resolve();
+
+    const rejection = await creation;
+    if (phase === "restart drain") {
+      expect(rejection).toBeInstanceOf(Error);
+      expect(rejection).toHaveProperty("message", expect.stringContaining("New work is held"));
+    } else expect(rejection).toBeInstanceOf(AgentManagerShuttingDownError);
+    await flushing;
+    expect(client.createdConfigs).toEqual([]);
+    expect(manager.listAgents()).toEqual([]);
+    expect(manager.getPaseoToolPolicy(agentId)).toBeUndefined();
+    expect(manager.getPluginTools(agentId)).toEqual([]);
+    expect(attachedAgents.has(agentId)).toBe(false);
+  },
+);
 
 test("does not register a session that finishes starting after shutdown begins", async () => {
   const client = new HeldAgentCreationClient();
@@ -3898,6 +4259,33 @@ test("createAgent injects daemon append system prompt at runtime only", async ()
   expect(snapshot.config).not.toHaveProperty("daemonAppendSystemPrompt");
   expect(record?.config?.systemPrompt).toBe("Agent instructions.");
   expect(record?.config).not.toHaveProperty("daemonAppendSystemPrompt");
+});
+
+test("launch prompt names the owner's effective time zone and follows later changes", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const client = new TestAgentClient();
+  let next = 0;
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    ownerTimeZone: "America/Los_Angeles",
+    idFactory: () => `00000000-0000-4000-8000-00000000011${next++}`,
+  });
+
+  await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  expect(client.createdConfigs[0]?.daemonAppendSystemPrompt).toMatch(
+    /Owner's local time zone: America\/Los_Angeles \(P[SD]T\)\. Give owner-facing times in it\./,
+  );
+
+  manager.setOwnerTimeZone(null);
+  await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  expect(client.createdConfigs[1]?.daemonAppendSystemPrompt).not.toContain("time zone");
 });
 
 test("daemon append system prompt is injected into Pi configs", async () => {
@@ -6487,6 +6875,7 @@ test("reloadAgentSession terminalizes running provider children when preserving 
 test("hydrateTimelineFromProvider restores and broadcasts provider children from session history", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-provider-child-history-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
+  let session: TestAgentSession | undefined;
   class ProviderChildHistorySession extends TestAgentSession {
     override async *streamHistory(): AsyncGenerator<AgentStreamEvent> {
       yield {
@@ -6496,14 +6885,15 @@ test("hydrateTimelineFromProvider restores and broadcasts provider children from
           type: "upsert",
           id: "restored-child",
           title: "Restored child",
-          status: "completed",
+          status: "running",
         },
       };
     }
   }
   class ProviderChildHistoryClient extends TestAgentClient {
     override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
-      return new ProviderChildHistorySession(config);
+      session = new ProviderChildHistorySession(config);
+      return session;
     }
   }
   const manager = new AgentManager({
@@ -6521,6 +6911,9 @@ test("hydrateTimelineFromProvider restores and broadcasts provider children from
     replayState: false,
   });
 
+  await storage.applySnapshot(manager.getAgent(snapshot.id)!);
+  const record = (await storage.get(snapshot.id))!;
+  await storage.upsert({ ...record, archivedAt: new Date().toISOString() });
   await manager.hydrateTimelineFromProvider(snapshot.id, { force: true, broadcast: true });
 
   expect(manager.listProviderSubagents(snapshot.id)).toEqual([
@@ -6528,7 +6921,7 @@ test("hydrateTimelineFromProvider restores and broadcasts provider children from
       id: "restored-child",
       parentAgentId: snapshot.id,
       title: "Restored child",
-      status: "completed",
+      status: "running",
     }),
   ]);
   expect(manager.listProviderSubagentActivity()).toEqual([
@@ -6547,6 +6940,25 @@ test("hydrateTimelineFromProvider restores and broadcasts provider children from
       }),
     },
   });
+  expect(manager.getRestartImpact().agents).toEqual([]);
+
+  const liveChild = (status: "running" | "completed") => {
+    session!.pushEvent({
+      type: "provider_subagent",
+      provider: "codex",
+      event: { type: "upsert", id: "restored-child", title: "Restored child", status },
+    });
+  };
+  liveChild("running");
+  expect(manager.getRestartImpact().agents).toEqual([
+    { id: `${snapshot.id}/restored-child`, title: "Restored child", status: "running" },
+  ]);
+  liveChild("completed");
+  expect(manager.getRestartImpact().agents).toEqual([]);
+  await manager.flush();
+  await manager.hydrateTimelineFromProvider(snapshot.id, { force: true });
+  expect(manager.getProviderSubagent(snapshot.id, "restored-child")?.status).toBe("completed");
+  await storage.flush();
 });
 
 test("force provider hydration removes children absent from current history", async () => {
@@ -14998,7 +15410,12 @@ import { createAgentQueueDelivery } from "../message-queue/agent-delivery.js";
 
 import { BlockedTaskReviewService } from "./task-checklist/review-service.js";
 
-import { blockedReviewDue } from "./task-checklist/blocked-review.js";
+import {
+  blockedReviewDue,
+  blockedReviewsUsed,
+  onlyInProgressWork,
+  reviewFingerprint,
+} from "./task-checklist/blocked-review.js";
 
 import { MessageQueueService } from "../message-queue/service.js";
 
@@ -15704,7 +16121,7 @@ test.each([true, false])(
         Math.max(
           Date.parse(reviewRecord.createdAt),
           Date.parse(reviewRecord.lastActivityAt ?? reviewRecord.createdAt),
-        ) + 3_600_001;
+        ) + 300_001;
       expect(storage.getLoadedRecord(agent.id)).toMatchObject({
         persistence: { sessionId: client.sessions[0]!.id },
       });
@@ -15795,7 +16212,7 @@ test.each(["active", "usageLimited", "spent", "restart", "queue", "stopped"] as 
         Math.max(
           Date.parse(reviewRecord.createdAt),
           Date.parse(reviewRecord.lastActivityAt ?? reviewRecord.createdAt),
-        ) + 3_600_001;
+        ) + 300_001;
       expect(storage.getLoadedRecord(agent.id)).toMatchObject({
         persistence: { sessionId: client.sessions[0]!.id },
       });
@@ -15875,7 +16292,7 @@ test("periodic review scan honors the hourly cooldown and stops without creating
       Math.max(
         Date.parse(reviewRecord.createdAt),
         Date.parse(reviewRecord.lastActivityAt ?? reviewRecord.createdAt),
-      ) + 3_600_001;
+      ) + 300_001;
     expect(storage.getLoadedRecord(agent.id)).toMatchObject({
       tasks: [{ status: "blocked" }],
       persistence: { sessionId: client.sessions[0]!.id },
@@ -15885,15 +16302,44 @@ test("periodic review scan honors the hourly cooldown and stops without creating
       activeTurnId: null,
     });
     expect(blockedReviewDue(storage.getLoadedRecord(agent.id)!, now)).toBe(true);
+    // A role thread of a Factory project the owner paused is skipped; other projects are not.
+    await manager.setLabels(agent.id, { "vorteo.factory-role": "project-1:foreman" });
+    await manager.flush();
+    const labeled = storage.getLoadedRecord(agent.id)!;
+    now = Date.parse(labeled.lastActivityAt ?? labeled.createdAt) + 300_001;
+    expect(blockedReviewDue(labeled, now)).toBe(true);
+    await new BlockedTaskReviewService({
+      agentManager: manager,
+      agentStorage: storage,
+      logger,
+      enabled: () => true,
+      pausedFactoryProjects: async () => new Set(["project-1"]),
+      now: () => now,
+    }).tick();
+    expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBeUndefined();
+    // The host setting defaults to off; a disabled service must not prompt the thread.
+    await new BlockedTaskReviewService({
+      agentManager: manager,
+      agentStorage: storage,
+      logger,
+      enabled: () => false,
+      now: () => now,
+    }).tick();
+    expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBeUndefined();
     const reviews = new BlockedTaskReviewService({
       agentManager: manager,
       agentStorage: storage,
       logger,
+      enabled: () => true,
+      pausedFactoryProjects: async () => new Set(["project-2"]),
       now: () => now,
     });
     await reviews.tick();
     const claimedAt = new Date(now).toISOString();
     expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBe(claimedAt);
+    // The review changed nothing, so the rest of this stretch's ladder is spent.
+    expect(blockedReviewDue((await storage.get(agent.id))!, now + 16 * 60_000)).toBe(false);
+    expect((await storage.get(agent.id))?.blockedReviewCount).toBe(3);
     await reviews.tick();
     expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBe(claimedAt);
     expect(client.sessions).toHaveLength(1);
@@ -15976,7 +16422,7 @@ test("periodic review yields to a goal pause received during durable preparation
       Math.max(
         Date.parse(reviewRecord.createdAt),
         Date.parse(reviewRecord.lastActivityAt ?? reviewRecord.createdAt),
-      ) + 3_600_001;
+      ) + 300_001;
     expect(storage.getLoadedRecord(agent.id)).toMatchObject({
       tasks: [{ status: "blocked" }],
       persistence: { sessionId: client.sessions[0]!.id },
@@ -16068,6 +16514,7 @@ test.each([
       agentManager: manager,
       agentStorage: storage,
       logger,
+      enabled: () => true,
       now: () => now,
     });
     let agentId: string | undefined;
@@ -16097,7 +16544,7 @@ test.each([
         Math.max(
           Date.parse(reviewRecord.createdAt),
           Date.parse(reviewRecord.lastActivityAt ?? reviewRecord.createdAt),
-        ) + 3_600_001;
+        ) + 300_001;
       const review = reviews.tick();
       await entered.promise;
       const archived = archive

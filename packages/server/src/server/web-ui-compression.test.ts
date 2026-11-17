@@ -68,6 +68,8 @@ describe("final injected HTML content encoding", () => {
     const installation = ExecutionInstallationSchema.parse({
       version: 1,
       installationId: "00000000-0000-4000-8000-000000000001",
+      // Replacement patterns in an owner-chosen name must stay literal.
+      name: "Lab $' $& $`",
       origin: "https://fixture.invalid",
       environments: [
         { kind: "host", serverId: "fixture-host", endpoint: "fixture.invalid/host", useTls: true },
@@ -81,7 +83,7 @@ describe("final injected HTML content encoding", () => {
     });
     for (const encoding of [undefined, "br", "gzip"]) {
       const result = await prepareWebUiHtml({
-        html: HTML,
+        html: HTML.replace("<head>", "<head><title>Vorteo</title>"),
         label: "fixture",
         installation,
         req: {
@@ -92,9 +94,13 @@ describe("final injected HTML content encoding", () => {
       let decoded = result.body;
       if (encoding === "br") decoded = brotliDecompressSync(decoded);
       if (encoding === "gzip") decoded = gunzipSync(decoded);
-      expect(decoded.toString()).toContain(JSON.stringify(installation));
+      const descriptor = /__VORTEO_EXECUTION_INSTALLATION__=(.*?)<\/script>/.exec(
+        decoded.toString(),
+      )?.[1];
+      expect(JSON.parse(descriptor ?? "null")).toEqual(installation);
       expect(decoded.toString()).not.toContain("__PASEO_INITIAL_DAEMON_CONNECTION__");
       expect(decoded.toString().match(/__VORTEO_EXECUTION_INSTALLATION__/g)).toHaveLength(1);
+      expect(decoded.toString()).toContain("<title>Lab $' $&amp; $`</title>");
     }
   });
 });

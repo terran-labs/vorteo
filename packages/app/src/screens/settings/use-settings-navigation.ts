@@ -5,6 +5,7 @@ import { useRouter, type Href } from "expo-router";
 import { isWeb } from "@/constants/platform";
 import type { SettingsView } from "@/navigation/settings-navigation";
 import { providerRowAnchorId } from "./settings-focus";
+import { SYSTEM_HEALTH_ANCHOR_ID, type SettingsJumpTarget } from "./settings-jump";
 import { buildSettingsSectionRoute } from "@/utils/host-routes";
 import { getPane, resolveSettingsTarget, type SettingsSectionId } from "@/settings-catalog/catalog";
 import { searchSettings } from "@/settings-catalog/search";
@@ -29,15 +30,51 @@ function scrollRequest(
   entry: ResolvedSettingsEntry | null,
   animated: boolean,
   anchorId: string | null = null,
+  focus = false,
 ): SettingsScrollRequest {
   requestNonce += 1;
-  return { section, pane, entry, animated, anchorId, nonce: requestNonce };
+  return {
+    section,
+    pane,
+    entry,
+    animated,
+    anchorId,
+    focus,
+    nonce: requestNonce,
+    issuedAt: Date.now(),
+  };
 }
 
 /** The row a deep link scrolls to inside its pane, when it names one. */
-function focusAnchorId(view: SettingsView): string | null {
+function focusAnchorId(view: SettingsView, pane: string | null): string | null {
+  // The health address comes from "System needs attention", which lands on the list itself.
+  if (pane === "system.health") return SYSTEM_HEALTH_ANCHOR_ID;
   if (view.kind !== "section" || view.focus?.kind !== "provider") return null;
   return providerRowAnchorId(view.focus.providerType);
+}
+
+/** A pane id, or an older address that now opens a pane, such as `maintenance.updates`. */
+function resolvePaneTarget(paneId: string): { section: SettingsSectionId; pane: string } | null {
+  const pane = getPane(paneId);
+  if (pane) return { section: pane.section, pane: pane.id };
+  const target = resolveSettingsTarget(paneId);
+  return target.pane ? { section: target.section, pane: target.pane } : null;
+}
+
+/**
+ * Keeps a target's pane only when this device renders it. A desktop-only pane opened from a
+ * browser would never report layout, leaving the jump armed and the page where it was; its
+ * section is the closest place that exists.
+ */
+function availableTarget<T extends { section: SettingsSectionId; pane: string | null }>(
+  target: T,
+  sections: readonly SettingsPageSection[],
+): T | { section: SettingsSectionId; pane: null } {
+  if (!target.pane) return target;
+  const rendered = sections.some((section) =>
+    section.panes.some((pane) => pane.id === target.pane),
+  );
+  return rendered ? target : { section: target.section, pane: null };
 }
 
 interface SettingsNavigationInput {
@@ -82,13 +119,14 @@ export function useSettingsNavigation({
         pane: restartRequestId ? "system.overview" : "maintenance.installation",
       };
     }
-    return resolveSettingsTarget(routeSection);
-  }, [hasInstallation, installationRequested, restartRequestId, routeSection]);
+    return availableTarget(resolveSettingsTarget(routeSection), sections);
+  }, [hasInstallation, installationRequested, restartRequestId, routeSection, sections]);
   const routeEntry = useMemo(
     () => (settingId ? (entries.find((entry) => entry.id === settingId) ?? null) : null),
     [entries, settingId],
   );
-  const routeAnchorId = focusAnchorId(view);
+  const routeAnchorId = focusAnchorId(view, routeTarget?.pane ?? null);
+  const routeFocus = routeTarget?.pane === "system.health";
   const [request, setRequest] = useState<SettingsScrollRequest>(() =>
     scrollRequest(
       routeTarget?.section ?? "general",
@@ -96,6 +134,7 @@ export function useSettingsNavigation({
       null,
       false,
       routeAnchorId,
+      routeFocus,
     ),
   );
   const [activeSection, setActiveSection] = useState<SettingsSectionId>(
@@ -111,11 +150,13 @@ export function useSettingsNavigation({
         routeEntry,
         false,
         routeAnchorId,
+        routeFocus,
       ),
     );
-    // A new entries array for the same entry must not repeat the jump.
+    // A new entries array for the same entry, or new sections for the same target, must not
+    // repeat the jump. A pane that becomes available, such as once hosts load, does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeTarget, routeEntryId, routeAnchorId]);
+  }, [routeTarget?.section, routeTarget?.pane, routeEntryId, routeAnchorId, routeFocus]);
 
   const handleActiveSectionChange = useCallback(
     (section: SettingsSectionId) => {
@@ -156,7 +197,8 @@ export function useSettingsNavigation({
       setQuery("");
       if (view.kind === "section" && !isCompactLayout) {
         setActiveSection(section);
-        setRequest(scrollRequest(section, null, null, true));
+        // Focus follows the jump, so keyboard and screen reader users land on the section.
+        setRequest(scrollRequest(section, null, null, true, null, true));
         return;
       }
       navigateTo(settingsLink(section));
@@ -169,7 +211,7 @@ export function useSettingsNavigation({
       setQuery("");
       setSelectedResult(0);
       if (view.kind === "section") {
-        setRequest(scrollRequest(entry.section, entry.pane, entry, false));
+        setRequest(scrollRequest(entry.section, entry.pane, entry, false, null, true));
         return;
       }
       navigateTo(settingsLink(entry.section, entry.id));
@@ -177,11 +219,38 @@ export function useSettingsNavigation({
     [navigateTo, view.kind],
   );
 
-  /** Scrolls to a pane from inside the page, such as an attention row's Review. */
-  const openPane = useCallback((paneId: string) => {
-    const pane = getPane(paneId);
-    if (pane) setRequest(scrollRequest(pane.section, pane.id, null, true));
-  }, []);
+  /**
+   * Scrolls to a pane, or to one row in it, from inside the page or from a control outside it,
+   * such as a health row's Fix or the sidebar's "System needs attention". Clears a search first,
+   * which would otherwise hide the target.
+   */
+  const jumpTo = useCallback(
+    (target: SettingsJumpTarget) => {
+      const resolved = resolvePaneTarget(target.pane);
+      if (!resolved) return;
+      const pane = availableTarget(resolved, sections);
+      const entry = target.settingId
+        ? (entries.find((candidate) => candidate.id === target.settingId) ?? null)
+        : null;
+      setQuery("");
+      setActiveSection(entry?.section ?? pane.section);
+      setRequest(
+        scrollRequest(
+          entry?.section ?? pane.section,
+          entry?.pane ?? pane.pane ?? null,
+          entry,
+          true,
+          target.anchorId ?? null,
+          // A jump the reader chose moves focus with it.
+          target.focus ?? true,
+        ),
+      );
+    },
+    [entries, sections],
+  );
+
+  /** Scrolls to a pane from inside the page. */
+  const openPane = useCallback((paneId: string) => jumpTo({ pane: paneId }), [jumpTo]);
 
   const handleSearchKeyPress = useCallback(
     (event: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
@@ -210,8 +279,11 @@ export function useSettingsNavigation({
       onChangeQuery: handleChangeQuery,
       onKeyPress: handleSearchKeyPress,
       onSubmit: handleSearchSubmit,
+      resultsShown: query.trim().length > 0 && results.length > 0,
+      activeResultId:
+        (results[Math.min(selectedResult, KEYBOARD_RESULTS - 1)] ?? results[0])?.entry.id ?? null,
     }),
-    [handleChangeQuery, handleSearchKeyPress, handleSearchSubmit, query],
+    [handleChangeQuery, handleSearchKeyPress, handleSearchSubmit, query, results, selectedResult],
   );
 
   return {
@@ -226,5 +298,6 @@ export function useSettingsNavigation({
     handleSelectSection,
     handleSelectResult,
     openPane,
+    jumpTo,
   };
 }

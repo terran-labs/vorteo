@@ -1,7 +1,8 @@
+import { SidebarDisclosureBody } from "./sidebar/disclosure-body";
 import { ProjectMenuItem, type ProjectMenuSurface } from "./sidebar/project-menu-item";
 import { FactoryProjectActions } from "./sidebar/factory-project-actions";
-import { FactoryCard } from "./sidebar/factory-card";
-import { AllFactoriesCard } from "./sidebar/factory-global-card";
+import { FactorySection } from "./sidebar/factory-section";
+import { AllFactoriesSection } from "./sidebar/factory-all-section";
 import { factoryCardModels } from "./sidebar/factory-card-model";
 import { useFactoryCardStore } from "./sidebar/factory-card-store";
 import { FactoryInstructionsPanel, useProjectFactories } from "./sidebar/factory-instructions";
@@ -94,7 +95,7 @@ import {
 import { useSidebarCollapsedSectionsStore } from "@/stores/sidebar-collapsed-sections-store";
 import { useHostFeatureMap } from "@/runtime/host-features";
 import { useInstalledPlugins } from "@/plugins/registry";
-import { buildPluginSurfaceRoute } from "@/plugins/routes";
+import { projectFactoryOverviewRoute } from "@/screens/factory/routes";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useIsSystemProjectOnAnyHost } from "@/workspace/lifecycle/system-membership";
 import { useProjectIcons } from "@/projects/icons";
@@ -705,18 +706,11 @@ function ProjectMenuItems({
   const factoryPlugin = plugins.find(
     (plugin) => plugin.id === "factory" && plugin.serverId === settingsTarget?.serverId,
   );
-  const factoryScreenAvailable =
-    factoryPlugin?.surfaces.some((screen) => screen.id === "overview") === true;
+  // The Factory overview is a built-in screen; the host's Factory plugin serves its data.
+  const factoryScreenAvailable = factoryPlugin !== undefined;
   const handleOpenFactory = useCallback(() => {
     if (!settingsTarget || !factoryScreenAvailable) return;
-    router.navigate(
-      buildPluginSurfaceRoute(
-        settingsTarget.serverId,
-        "factory",
-        { kind: "surface", id: "overview" },
-        { projectId: settingsTarget.projectId },
-      ),
-    );
+    router.navigate(projectFactoryOverviewRoute(settingsTarget.serverId, settingsTarget.projectId));
   }, [settingsTarget, factoryScreenAvailable]);
   const handleOpenProjectSettings = useCallback(() => {
     if (!settingsTarget) return;
@@ -1987,20 +1981,18 @@ function ProjectSection({
         />
       )}
       {summary}
-      {collapsed ? null : (
-        <>
-          {beforeList}
-          {renderList(group.visibleItems)}
-          {group.canToggle ? (
-            <SidebarGroupToggleRow
-              expanded={group.expanded}
-              onPress={group.toggleExpanded}
-              level={itemLevel}
-              testID={`sidebar-${section}-show-more-${projectKey}`}
-            />
-          ) : null}
-        </>
-      )}
+      <SidebarDisclosureBody expanded={!collapsed}>
+        {beforeList}
+        {renderList(group.visibleItems)}
+        {group.canToggle ? (
+          <SidebarGroupToggleRow
+            expanded={group.expanded}
+            onPress={group.toggleExpanded}
+            level={itemLevel}
+            testID={`sidebar-${section}-show-more-${projectKey}`}
+          />
+        ) : null}
+      </SidebarDisclosureBody>
     </>
   );
 }
@@ -2576,7 +2568,7 @@ function ProjectBlock({
   }, [onToggleCollapsed, project.viewKey]);
 
   let projectChildren = null;
-  if (!collapsed) {
+  {
     if (project.workspaces.length > 0) {
       projectChildren = (
         <>
@@ -2609,7 +2601,7 @@ function ProjectBlock({
           ) : null}
           {isSidebarSectionShown(focus, "factory")
             ? factoryCards.map((card) => (
-                <FactoryCard
+                <FactorySection
                   key={card.key}
                   card={card}
                   entries={workspaceEntriesByKey}
@@ -2684,7 +2676,7 @@ function ProjectBlock({
         </ProjectDropTarget>
       ) : null}
 
-      {projectChildren}
+      <SidebarDisclosureBody expanded={!collapsed}>{projectChildren}</SidebarDisclosureBody>
     </View>
   );
 }
@@ -3702,7 +3694,7 @@ function ProjectModeListContent({
   const pinnedRows = (
     <>
       {pinnedFactoryCards.map(({ card, projectName }) => (
-        <FactoryCard
+        <FactorySection
           key={card.key}
           card={card}
           entries={workspaceEntriesByKey}
@@ -3746,7 +3738,7 @@ function ProjectModeListContent({
     <>
       {listTopComponent}
       {/* The main sidebar only; a single project's rail flyout has no global section. */}
-      <AllFactoriesCard
+      <AllFactoriesSection
         mainSidebar={rootFolders}
         focused={focus !== null}
         onBeforeNavigate={onWorkspacePress}
@@ -3758,7 +3750,7 @@ function ProjectModeListContent({
             collapsed={pinnedCollapsed}
             onToggle={togglePinnedCollapsed}
           />
-          {pinnedCollapsed ? null : pinnedRows}
+          <SidebarDisclosureBody expanded={!pinnedCollapsed}>{pinnedRows}</SidebarDisclosureBody>
         </View>
       ) : null}
       {/* The header carries the display menu, which is the only way back out of a filter, so it
@@ -3774,7 +3766,10 @@ function ProjectModeListContent({
           persistentActions={focusCreateAction}
         />
       ) : null}
-      {pinnedFocused ? pinnedRows : listBody}
+      {/* Folder and Show more changes alter this flat list's measured height. */}
+      <SidebarDisclosureBody expanded>
+        {pinnedFocused ? pinnedRows : listBody}
+      </SidebarDisclosureBody>
       {listFooterComponent}
     </>
   );
@@ -3986,12 +3981,13 @@ const styles = StyleSheet.create((theme) => ({
     // The plus strokes with this color on web.
     _web: { color: theme.colors.foregroundMuted },
   },
+  // Small actions inside sidebar rows hover one step above the row's own hover, like the kebab.
   projectIconActionButtonHoverable: hoverStyle({
-    backgroundColor: theme.colors.interactionHighlight,
+    backgroundColor: theme.colors.surface2,
     color: theme.colors.foreground,
   }),
   projectIconActionButtonPressed: {
-    backgroundColor: theme.colors.interactionHighlight,
+    backgroundColor: theme.colors.surface2,
     _web: { color: theme.colors.foreground },
   },
   // Project actions stay mounted; CSS shows them while the project row is hovered or focused.

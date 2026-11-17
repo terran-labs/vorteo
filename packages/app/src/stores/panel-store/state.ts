@@ -20,6 +20,8 @@ export const SUPPORTING_CARD_DEFAULTS = {
   changes: false,
   // Collapsed by default: expanding it reads the provider's context breakdown.
   context: false,
+  // Collapsed by default: the gallery is reference material, not something waiting on the owner.
+  previews: false,
   /** Left-sidebar cards that span every thread and account. */
   globalQuestions: true,
   globalQuota: true,
@@ -39,6 +41,7 @@ const SupportingCardStateSchema = z
     files: z.boolean(),
     changes: z.boolean(),
     context: z.boolean(),
+    previews: z.boolean(),
     globalQuestions: z.boolean(),
     globalQuota: z.boolean(),
   })

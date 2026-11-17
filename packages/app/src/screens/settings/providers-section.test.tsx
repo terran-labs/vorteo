@@ -21,11 +21,13 @@ const {
 } = vi.hoisted(() => {
   const initialCatalogState: {
     capability: boolean | undefined;
+    primarySupported: boolean;
     managed: boolean;
     connected: boolean;
     settings: ReturnType<typeof useInstallationSettings>["data"];
   } = {
     capability: undefined,
+    primarySupported: false,
     managed: false,
     connected: true,
     settings: undefined,
@@ -92,14 +94,19 @@ vi.mock("react-native", async (importOriginal) => ({
   ActivityIndicator: () => React.createElement("span", { "data-testid": "activity-indicator" }),
 }));
 
-vi.mock("lucide-react-native", async (importOriginal) => {
+// Every icon renders as a tagged span, so the screens under test can import any icon,
+// including ones added later by components they reach, without listing them here.
+vi.mock("lucide-react-native", () => {
   const icon = (name: string) => () => React.createElement("span", { "data-icon": name });
-  return {
-    ...(await importOriginal<typeof import("lucide-react-native")>()),
-    ChevronRight: icon("ChevronRight"),
-    MoreHorizontal: icon("MoreHorizontal"),
-    Trash2: icon("Trash2"),
-  };
+  return new Proxy({} as Record<string, unknown>, {
+    get: (cache, name) => {
+      if (typeof name !== "string" || name === "then") return undefined;
+      if (name === "__esModule") return true;
+      cache[name] ??= icon(name);
+      return cache[name];
+    },
+    has: (_, name) => typeof name === "string" && name !== "then",
+  });
 });
 
 vi.mock("react-i18next", async (importOriginal) => ({
@@ -317,7 +324,9 @@ vi.mock("@/runtime/host-runtime", async (importOriginal) => ({
 
 vi.mock("@/runtime/host-features", () => ({
   useHostFeature: (_serverId: string, feature: string) =>
-    feature === "hopliteProvider" ? catalogState.capability : false,
+    feature === "hopliteProvider"
+      ? catalogState.capability
+      : feature === "primaryConnectionSetting" && catalogState.primarySupported,
 }));
 
 vi.mock("@/execution-installation/settings", () => ({
@@ -335,7 +344,7 @@ vi.mock("@/utils/confirm-dialog", () => ({
 import { ACP_PROVIDER_CATALOG } from "@/data/acp-provider-catalog";
 import { InstallationSettingsSchema } from "@getpaseo/protocol/installation-settings";
 import type { useInstallationSettings } from "@/execution-installation/settings";
-import { ProvidersSection } from "./providers-section";
+import { ProvidersSection, providerListState } from "./providers-section";
 
 function unexpectedToast(): never {
   throw new Error("Provider row interactions should not display a toast");
@@ -371,6 +380,12 @@ const disabledCodexEntry: ProviderSnapshotEntry = {
   description: "OpenAI Codex",
   defaultModeId: null,
   modes: [],
+};
+
+const readyCodex: ProviderSnapshotEntry = {
+  ...disabledCodexEntry,
+  status: "ready",
+  enabled: true,
 };
 
 function makeConfig(providers: MutableDaemonConfig["providers"] = {}): MutableDaemonConfig {
@@ -414,6 +429,7 @@ describe("ProvidersSection", () => {
     root = createRoot(container);
 
     catalogState.capability = undefined;
+    catalogState.primarySupported = false;
     catalogState.managed = false;
     catalogState.connected = true;
     catalogState.settings = undefined;
@@ -702,5 +718,95 @@ describe("ProvidersSection", () => {
     expect(patchConfigMock).toHaveBeenCalledWith({
       providers: { claude: { enabled: false } },
     });
+  });
+
+  it("marks the primary provider and offers Make primary on other ready providers", async () => {
+    catalogState.primarySupported = true;
+    snapshotState.entries = [claudeEntry, readyCodex];
+    configState.config = { ...makeConfig(), primaryConnection: { provider: "claude" } };
+    patchConfigMock.mockResolvedValue(configState.config as never);
+    const shown: string[] = [];
+    const show = toastApi.show;
+    toastApi.show = ((message: string) => shown.push(message)) as never;
+    try {
+      render();
+      expect(container?.querySelector('[data-testid="provider-primary-claude"]')).not.toBeNull();
+      expect(container?.querySelector('[data-testid="provider-primary-codex"]')).toBeNull();
+      expect(container?.querySelector('[data-testid="provider-make-primary-claude"]')).toBeNull();
+      const makePrimary = container?.querySelector<HTMLElement>(
+        '[data-testid="provider-make-primary-codex"]',
+      );
+      expect(makePrimary).not.toBeNull();
+
+      const { confirmDialog } = await import("@/utils/confirm-dialog");
+      await act(async () => {
+        makePrimary?.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+      });
+      expect(confirmDialog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "Make Codex the primary connection?",
+          confirmLabel: "Make primary",
+        }),
+      );
+      expect(patchConfigMock).toHaveBeenCalledWith({ primaryConnection: { provider: "codex" } });
+      expect(shown).toEqual(["Codex is now the primary connection."]);
+    } finally {
+      toastApi.show = show;
+    }
+  });
+
+  it("warns before turning off the primary provider", async () => {
+    catalogState.primarySupported = true;
+    snapshotState.entries = [claudeEntry];
+    configState.config = { ...makeConfig(), primaryConnection: { provider: "claude" } };
+    const { confirmDialog } = await import("@/utils/confirm-dialog");
+    vi.mocked(confirmDialog).mockResolvedValueOnce(false);
+    render();
+    const row = findRow("Claude provider details").parentElement;
+    await act(async () => {
+      row
+        ?.querySelector<HTMLElement>('[role="switch"]')
+        ?.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+    expect(confirmDialog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining("will wait until you choose another primary connection"),
+      }),
+    );
+    expect(patchConfigMock).not.toHaveBeenCalled();
+  });
+
+  it("shows nothing where the daemon does not support the setting", () => {
+    snapshotState.entries = [claudeEntry, readyCodex];
+    configState.config = { ...makeConfig(), primaryConnection: { provider: "claude" } };
+    render();
+    expect(container?.querySelector('[data-testid="provider-primary-claude"]')).toBeNull();
+    expect(container?.querySelector('[data-testid="provider-make-primary-codex"]')).toBeNull();
+  });
+});
+
+// A host that never sends a snapshot used to leave the skeleton up forever.
+describe("providerListState", () => {
+  const base = {
+    hasServer: true,
+    isConnected: true,
+    supportsSnapshot: true,
+    isLoading: false,
+    error: null,
+    entryCount: null,
+  };
+  it.each([
+    ["loading while a snapshot is on its way", { isLoading: true }, "loading"],
+    ["empty when the query settles without one", {}, "empty"],
+    [
+      "unsupported when the host never reports snapshots",
+      { supportsSnapshot: false },
+      "unsupported",
+    ],
+    ["error when the request failed", { error: "boom" }, "error"],
+    ["unavailable while offline", { isConnected: false, isLoading: true }, "unavailable"],
+    ["ready once providers arrive", { entryCount: 2 }, "ready"],
+  ] as const)("is %s", (_, overrides, expected) => {
+    expect(providerListState({ ...base, ...overrides })).toBe(expected);
   });
 });

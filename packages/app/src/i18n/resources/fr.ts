@@ -3,6 +3,7 @@ import { pluginSettings } from "./plugin-settings";
 
 export const fr: TranslationResources = {
   projectFactory: en.projectFactory,
+  vorteoSetup: en.vorteoSetup,
   paneFind: {
     connectionFailure:
       "Impossible de rechercher dans cette conversation. Vérifiez la connexion à l’hôte et réessayez.",
@@ -2352,6 +2353,8 @@ export const fr: TranslationResources = {
     title: "Paramètres",
     loading: "Chargement des paramètres…",
     groups: {
+      thisDevice: "Cet appareil",
+      vorteo: "Vorteo",
       app: "Application",
       host: "Hôte",
     },
@@ -2982,6 +2985,11 @@ export const fr: TranslationResources = {
           title: "Libérer les agents inactifs",
           hint: "Libère de la mémoire après une heure d’inactivité.",
           info: "Arrête le processus de l’agent tout en conservant sa conversation. Envoyez un message pour la reprendre.\n\nLe travail en cours, les notifications en attente et les vérifications de sécurité du fournisseur empêchent le nettoyage.",
+        },
+        blockedWorkReview: {
+          title: "Revoir le travail bloqué",
+          hint: "Désactivé par défaut. Une courte revue après l'arrêt d'un fil avec du travail inachevé, répétée seulement tant qu'elle est utile.",
+          info: "Quand un fil s'arrête avec une tâche bloquée ou en cours et que rien n'est prévu pour le réveiller, il reçoit un court message environ 5 minutes plus tard pour vérifier son travail inachevé et continuer. Jusqu'à deux autres peuvent suivre, à environ 15 et 30 minutes d'intervalle, mais seulement tant qu'une revue change quelque chose. Ensuite, les revues s'arrêtent jusqu'à ce que quelqu'un envoie un message au fil.\n\nChaque revue reprend la conversation du fil ; aucune ne s'exécute donc une fois le cache de prompts du fournisseur refroidi. Un fil reçoit au plus 6 revues par jour et l'installation au plus 12 par heure.\n\nLes éléments en attente d'une question ouverte ou de votre revue sont ignorés ; votre réponse réveille le fil.",
         },
       },
       workspaces: {

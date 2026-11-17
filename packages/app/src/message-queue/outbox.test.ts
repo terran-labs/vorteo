@@ -4,6 +4,7 @@ import { QueueOutbox, type QueueOutboxPort } from "./outbox";
 import {
   canRequestImmediateDelivery,
   encodeOutboxKey,
+  nextOutboxOrder,
   type OutboxRecord,
   type OutboxStorage,
 } from "./outbox-record";
@@ -16,8 +17,19 @@ function memoryStorage(): OutboxStorage {
     read: async (key) => structuredClone(records.get(encodeOutboxKey(key)) ?? null),
     exchange: async (key, revision, value) => {
       const id = encodeOutboxKey(key);
-      if ((records.get(id)?.revision ?? null) !== revision) return false;
-      if (value) records.set(id, structuredClone(value));
+      const current = records.get(id);
+      if ((current?.revision ?? null) !== revision) return false;
+      // Assign order the way both real backends do.
+      if (value)
+        records.set(
+          id,
+          structuredClone({
+            ...value,
+            order: current
+              ? current.order
+              : (value.order ?? nextOutboxOrder([...records.values()])),
+          }),
+        );
       else records.delete(id);
       return true;
     },
@@ -424,6 +436,54 @@ it("keeps rejected content visible and blocks later operations for the same task
     ["op", rejected],
     ["later", null],
   ]);
+});
+
+it("settles stale pause and resume conflicts instead of stranding later messages", async () => {
+  const storage = memoryStorage();
+  const conflict = { code: "revision_conflict", message: "The queue changed." };
+  const sent: QueueOperation[] = [];
+  let host = { ...snapshot, revision: 3, paused: false };
+  const outbox = new QueueOutbox(storage, {
+    ...port,
+    read: async () => host,
+    mutate: async (_host, _agent, request) => {
+      sent.push(request);
+      if (request.kind === "pause" && request.expectedRevision !== host.revision)
+        return { snapshot: null, error: conflict };
+      if (request.kind === "pause") host = { ...host, paused: request.paused };
+      host = { ...host, revision: host.revision + 1 };
+      return { snapshot: host, error: null };
+    },
+  });
+  const pause = { kind: "pause" as const, operationId: "pause", paused: true, expectedRevision: 1 };
+  await outbox.commit({ ...input, operation: pause });
+  await outbox.commit({ ...input, createdAt: 2 });
+  // The rebased pause still goes ahead of the message queued after it.
+  await outbox.flush("host");
+  expect(sent.map((request) => request.operationId)).toEqual(["pause"]);
+  await outbox.flush("host");
+  expect(sent.map((request) => request.operationId)).toEqual(["pause", "pause~r1", "op"]);
+  expect(sent[1]).toMatchObject({ expectedRevision: 3 });
+  expect(await outbox.list()).toEqual([]);
+
+  // A rejected resume stays for the owner, since a Stop may have paused the queue,
+  // but no longer holds later messages on this device.
+  sent.length = 0;
+  const resume = { ...pause, operationId: "resume", paused: false };
+  await outbox.commit({ ...input, createdAt: 3, operation: resume });
+  await outbox.commit({
+    ...input,
+    createdAt: 4,
+    operation: { ...operation, operationId: "later", messageId: "later" },
+  });
+  await outbox.flush("host");
+  expect(sent.map((request) => request.operationId)).toEqual(["resume", "later"]);
+  expect((await outbox.list()).map((record) => record.operation.operationId)).toEqual(["resume"]);
+  // Retrying applies the resume to the current queue instead of repeating the conflict.
+  await outbox.retry({ serverId: "host", agentId: "agent", operationId: "resume" });
+  await outbox.flush("host");
+  expect(host.paused).toBe(false);
+  expect(await outbox.list()).toEqual([]);
 });
 
 it("notifies after durable commit and does not request retries for delivery results", async () => {

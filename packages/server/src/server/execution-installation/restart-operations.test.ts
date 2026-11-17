@@ -98,7 +98,7 @@ function samples(): Partial<Record<ReviewedConfigurationSetting, unknown>> {
       node: pinned(root, "node"),
       supervisorEntry: pinned(root, "supervisor"),
       supervisor: { config: path.join(root, "supervisord.conf"), program: "paseo-server" },
-      expectBootForm: "launcher",
+      expectBootForm: "plain",
       factoryVerify: {
         script,
         sha256: createHash("sha256").update(readFileSync(script)).digest("hex"),
@@ -157,6 +157,11 @@ test.skipIf(process.platform === "win32")(
         const update = value as { candidate: string; sha256: string };
         expect(target?.candidate).toEqual({ path: update.candidate, sha256: update.sha256 });
         expect(hostLauncherTarget(baseConfig() as unknown as InstallationConfig)).toBeUndefined();
+        continue;
+      }
+      if (name === "factoryRuntimeAdoption") {
+        // Retired with the Factory controller: a recorded plan is never advertised.
+        expect(planOf(operation, configured), name).toBeUndefined();
         continue;
       }
       // The executor advertises a plan exactly when the setting is present at its registry path.

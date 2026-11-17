@@ -192,7 +192,7 @@ for (const theme of ["starship-dark"]) {
     const files = page.getByTestId("supporting-card-files");
     await files.getByText("README.md", { exact: true }).click();
     const pane = page.getByTestId("workspace-file-pane").filter({ visible: true });
-    await pane.getByRole("button", { name: "Source", exact: true }).click();
+    await pane.getByRole("radio", { name: "Source", exact: true }).click();
     const editor = pane.locator(".cm-content");
     await expect(editor).toBeVisible();
     await expect(editor).toHaveCSS("font-family", /monospace|Mono/);

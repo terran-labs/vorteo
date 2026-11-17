@@ -367,9 +367,9 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
     alignSelf: "flex-end",
     flexDirection: "row",
     alignItems: "center",
-    height: 24,
+    minHeight: 44,
     gap: theme.spacing[2],
-    marginTop: theme.spacing[2],
+    marginTop: theme.spacing[1],
   },
   trailingRowHidden: {
     opacity: 0,
@@ -833,6 +833,10 @@ export const assistantMessageStylesheet = StyleSheet.create((theme) => ({
 const turnCopyButtonStylesheet = StyleSheet.create((theme) => ({
   container: {
     alignSelf: "flex-start",
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 44,
+    minWidth: 44,
     padding: theme.spacing[2],
     paddingTop: 0,
     marginTop: theme.spacing[2],

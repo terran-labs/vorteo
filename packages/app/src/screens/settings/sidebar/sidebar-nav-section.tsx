@@ -1,37 +1,31 @@
-import { useCallback, useMemo, type ComponentType, type ReactElement } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentType,
+  type ReactElement,
+  type RefObject,
+} from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
-import type { TFunction } from "i18next";
-import {
-  ArrowDown,
-  ArrowUp,
-  Blocks,
-  CalendarClock,
-  Gauge,
-  History,
-  Plus,
-  Search,
-  type LucideIcon,
-} from "lucide-react-native";
+import { ArrowDown, ArrowUp, Blocks } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
-import { Shortcut } from "@/components/ui/shortcut";
 import { Switch } from "@/components/ui/switch";
-import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
+import { isWeb } from "@/constants/platform";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import {
-  builtinSidebarNavLabelKey,
-  builtinSidebarNavShortcutAction,
-  type BuiltinSidebarItemId,
-  type SidebarNavItem,
+  BUILTIN_SIDEBAR_ITEM_IDS,
+  type PluginSidebarNavItem,
   type SidebarSection,
 } from "@/sidebar-nav/model";
 import { pluginIconComponent } from "@/plugins/icons";
+import { ResetGroupButton } from "@/screens/settings/appearance/reset-group-button";
 import { useSidebarNavItems } from "@/sidebar-nav/use-sidebar-nav-items";
 import { settingsStyles } from "@/styles/settings";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
-
-const VORTON_TOOLBAR_ITEMS = ["new-workspace", "search"] as const;
 
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
@@ -40,14 +34,6 @@ const ThemedArrowDown = withUnistyles(ArrowDown);
 
 const moveUpIcon = <ThemedArrowUp size={ICON_SIZE.sm} uniProps={mutedColorMapping} />;
 const moveDownIcon = <ThemedArrowDown size={ICON_SIZE.sm} uniProps={mutedColorMapping} />;
-
-const BUILTIN_ICONS: Record<BuiltinSidebarItemId, LucideIcon> = {
-  "new-workspace": Plus,
-  history: History,
-  search: Search,
-  schedules: CalendarClock,
-  usage: Gauge,
-};
 
 /** Plugin items register no icon, so they share this one; a legacy `addSidebarItem` keeps its own. */
 const PLUGIN_ICON = Blocks;
@@ -60,43 +46,52 @@ function NavIcon({ Icon, color = "" }: { Icon: NavIconComponent; color?: string 
 
 const ThemedNavIcon = withUnistyles(NavIcon);
 
-function navItemIcon(item: SidebarNavItem): NavIconComponent {
-  if (item.kind === "builtin") return BUILTIN_ICONS[item.id];
+function navItemIcon(item: PluginSidebarNavItem): NavIconComponent {
   return item.group.kind === "legacy" ? pluginIconComponent(item.group.icon) : PLUGIN_ICON;
 }
 
-function navItemLabel(t: TFunction, item: SidebarNavItem): string {
-  return item.kind === "builtin" ? t(builtinSidebarNavLabelKey(item.id)) : item.group.title;
-}
-
-/** Own component so the row can stay hook-free about which items have a shortcut. */
-function NavItemShortcut({ item }: { item: SidebarNavItem }): ReactElement | null {
-  const chord = useShortcutKeys(
-    item.kind === "builtin" ? builtinSidebarNavShortcutAction(item.id) : null,
-  );
-  return chord ? <Shortcut chord={chord} /> : null;
-}
-
 interface SidebarNavRowProps {
-  item: SidebarNavItem;
-  isFirst: boolean;
-  isLast: boolean;
+  item: PluginSidebarNavItem;
+  index: number;
+  count: number;
   onMove: (key: string, direction: "up" | "down") => void;
   onSetVisible: (key: string, visible: boolean) => void;
 }
 
+function focusWebElement(ref: RefObject<View | null>) {
+  // On web a View ref is its DOM element.
+  if (isWeb) (ref.current as unknown as HTMLElement | null)?.focus();
+}
+
 function SidebarNavRow({
   item,
-  isFirst,
-  isLast,
+  index,
+  count,
   onMove,
   onSetVisible,
 }: SidebarNavRowProps): ReactElement {
-  const { t } = useTranslation();
-  const label = navItemLabel(t, item);
+  const label = item.group.title;
+  const isFirst = index === 0;
+  const isLast = index === count - 1;
+  const upButton = useRef<View>(null);
+  const downButton = useRef<View>(null);
+  // Which arrow keeps focus after a move. Reaching an end disables the pressed arrow, and
+  // reordering can move this row's DOM node, so focus is placed again once the row lands.
+  const pendingFocus = useRef<"up" | "down" | null>(null);
+  useEffect(() => {
+    const target = pendingFocus.current;
+    pendingFocus.current = null;
+    if (target) focusWebElement(target === "up" ? upButton : downButton);
+  }, [index]);
 
-  const handleMoveUp = useCallback(() => onMove(item.key, "up"), [item.key, onMove]);
-  const handleMoveDown = useCallback(() => onMove(item.key, "down"), [item.key, onMove]);
+  const handleMoveUp = useCallback(() => {
+    pendingFocus.current = index - 1 === 0 ? "down" : "up";
+    onMove(item.key, "up");
+  }, [index, item.key, onMove]);
+  const handleMoveDown = useCallback(() => {
+    pendingFocus.current = index + 1 === count - 1 ? "up" : "down";
+    onMove(item.key, "down");
+  }, [count, index, item.key, onMove]);
   const handleVisibleChange = useCallback(
     (visible: boolean) => onSetVisible(item.key, visible),
     [item.key, onSetVisible],
@@ -114,29 +109,30 @@ function SidebarNavRow({
         <Text style={settingsStyles.rowTitle} numberOfLines={1}>
           {label}
         </Text>
-        <NavItemShortcut item={item} />
       </View>
       <View style={styles.rowActions}>
         <Button
+          ref={upButton}
           variant="ghost"
           leftIcon={moveUpIcon}
           onPress={handleMoveUp}
           disabled={isFirst}
-          accessibilityLabel={t("settings.appearance.sidebar.moveUp")}
+          accessibilityLabel={`Move ${label} up`}
           testID={`sidebar-nav-move-up-${item.key}`}
         />
         <Button
+          ref={downButton}
           variant="ghost"
           leftIcon={moveDownIcon}
           onPress={handleMoveDown}
           disabled={isLast}
-          accessibilityLabel={t("settings.appearance.sidebar.moveDown")}
+          accessibilityLabel={`Move ${label} down`}
           testID={`sidebar-nav-move-down-${item.key}`}
         />
         <Switch
           value={item.visible}
           onValueChange={handleVisibleChange}
-          accessibilityLabel={label}
+          accessibilityLabel={`Show ${label}`}
           testID={`sidebar-nav-toggle-${item.key}`}
         />
       </View>
@@ -144,28 +140,66 @@ function SidebarNavRow({
   );
 }
 
-const SECTION_COPY = {
-  header: {
-    title: "settings.appearance.sidebar.header.title",
-    info: "settings.appearance.sidebar.header.description",
-  },
-  footer: {
-    title: "settings.appearance.sidebar.footer.title",
-    info: "settings.appearance.sidebar.footer.description",
-  },
-} as const satisfies Record<SidebarSection, { title: string; info: string }>;
+const SECTION_INFO = {
+  header:
+    "Plugin items at the top of the sidebar. History, Schedules and Search stay in the toolbar.",
+  footer: "Plugin rows at the bottom of the sidebar. Usage stays beside the installation name.",
+} as const satisfies Record<SidebarSection, string>;
 
-function SidebarItemsCard({ section }: { section: SidebarSection }): ReactElement {
-  const { t } = useTranslation();
+const SECTION_TITLE_KEYS = {
+  header: "settings.appearance.sidebar.header.title",
+  footer: "settings.appearance.sidebar.footer.title",
+} as const satisfies Record<SidebarSection, string>;
+
+/**
+ * Only plugin items: the built-in toolbar, Add project and the usage meter are fixed. Excluding
+ * the built-ins also keeps Move up and Move down from swapping with an entry nobody can see.
+ */
+function usePluginSidebarItems(section: SidebarSection) {
   const { items, setVisible, move } = useSidebarNavItems(
     section,
-    section === "header" ? VORTON_TOOLBAR_ITEMS : undefined,
+    BUILTIN_SIDEBAR_ITEM_IDS[section],
   );
+  const pluginItems = useMemo(
+    () => items.filter((item): item is PluginSidebarNavItem => item.kind === "plugin"),
+    [items],
+  );
+  return { items: pluginItems, setVisible, move };
+}
 
+function SidebarItemsCard({
+  section,
+  items,
+  onMove,
+  onSetVisible,
+  trailing,
+}: {
+  section: SidebarSection;
+  items: readonly PluginSidebarNavItem[];
+  trailing?: ReactElement;
+  onMove: (key: string, direction: "up" | "down") => void;
+  onSetVisible: (key: string, visible: boolean) => void;
+}): ReactElement | null {
+  const { t } = useTranslation();
+  const [status, setStatus] = useState("");
+  // Announces where the item landed; the arrows alone give no sign of the new order.
+  const move = useCallback(
+    (key: string, direction: "up" | "down") => {
+      const from = items.findIndex((item) => item.key === key);
+      const to = direction === "up" ? from - 1 : from + 1;
+      if (from !== -1 && to >= 0 && to < items.length) {
+        setStatus(`${items[from].group.title} moved to position ${to + 1} of ${items.length}`);
+      }
+      onMove(key, direction);
+    },
+    [items, onMove],
+  );
+  if (items.length === 0) return null;
   return (
     <SettingsSection
-      title={t(SECTION_COPY[section].title)}
-      info={t(SECTION_COPY[section].info)}
+      title={t(SECTION_TITLE_KEYS[section])}
+      info={SECTION_INFO[section]}
+      trailing={trailing}
       testID={`sidebar-nav-section-${section}`}
     >
       <View style={settingsStyles.card}>
@@ -173,23 +207,59 @@ function SidebarItemsCard({ section }: { section: SidebarSection }): ReactElemen
           <SidebarNavRow
             key={item.key}
             item={item}
-            isFirst={index === 0}
-            isLast={index === items.length - 1}
+            index={index}
+            count={items.length}
             onMove={move}
-            onSetVisible={setVisible}
+            onSetVisible={onSetVisible}
           />
         ))}
       </View>
+      <Text accessibilityLiveRegion="polite" style={styles.visuallyHidden}>
+        {status}
+      </Text>
     </SettingsSection>
   );
 }
 
-/** Settings > Sidebar: one card per section. The footer's bottom line is fixed and not listed. */
+/**
+ * Settings > Sidebar: show, hide and reorder the items plugins add to the sidebar. Built-in
+ * navigation is not listed because the toolbar always shows it; earlier History, Schedules and
+ * Usage switches stored values the sidebar never read. Old stored entries for them are ignored.
+ */
 export function SidebarNavSection(): ReactElement {
+  const header = usePluginSidebarItems("header");
+  const footer = usePluginSidebarItems("footer");
+  if (header.items.length === 0 && footer.items.length === 0) {
+    return (
+      <SettingsSection title="Plugin items" testID="sidebar-nav-section-empty">
+        <View style={settingsStyles.card}>
+          <View style={settingsStyles.row}>
+            <Text style={settingsStyles.rowHint}>
+              No plugin adds sidebar items. Items that plugins add can be hidden or reordered here.
+            </Text>
+          </View>
+        </View>
+      </SettingsSection>
+    );
+  }
+  // One Reset covers both cards, so it sits on whichever card comes first.
+  const reset = SIDEBAR_RESET;
   return (
     <>
-      <SidebarItemsCard section="header" />
-      <SidebarItemsCard section="footer" />
+      <SidebarItemsCard
+        section="header"
+        items={header.items}
+        onMove={header.move}
+        onSetVisible={header.setVisible}
+        trailing={reset}
+      />
+      <SidebarItemsCard
+        section="footer"
+        items={footer.items}
+        onMove={footer.move}
+        onSetVisible={footer.setVisible}
+        trailing={header.items.length === 0 ? reset : undefined}
+      />
     </>
   );
 }
@@ -204,9 +274,12 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[2],
   },
+  visuallyHidden: { position: "absolute", width: 1, height: 1, overflow: "hidden", opacity: 0 },
   rowActions: {
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
   },
 }));
+
+const SIDEBAR_RESET = <ResetGroupButton group="sidebar" />;

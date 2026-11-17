@@ -1,6 +1,7 @@
 import type { AgentProfile, ProviderPreferences } from "@getpaseo/protocol/messages";
 import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import { filterSelectableModels, findModelByReference } from "@/provider-selection/model-catalog";
+import { formatThinkingOptionLabel } from "@/agent-controls/labels";
 
 export interface LaunchChoices {
   provider?: string;
@@ -61,10 +62,16 @@ function catalogChoices(input: {
       });
     }
   }
+  const defaultLevel = effectiveReasoning({ entry: input.entry, model: input.model });
   return {
     modelOptions: rankedOptions(modelOptions, input.preferences?.preferredModels ?? []),
     thinkingOptions: [
-      { id: "provider-default", value: "", label: "Provider default", available: true },
+      {
+        id: "provider-default",
+        value: "",
+        label: defaultLevel ? `Model default (${defaultLevel.label})` : "Model default",
+        available: true,
+      },
       ...rankedOptions(thinkingOptions, input.preferences?.preferredThinkingOptions ?? []),
     ],
   };
@@ -138,4 +145,48 @@ export function sharedChoiceState(input: {
     ...errors,
     unavailable: Boolean(errors.modelError || errors.thinkingError),
   };
+}
+
+/** An unset model resolves to the catalog's default, as the daemon does at launch. */
+function effectiveModel(
+  entry: Pick<ProviderSnapshotEntry, "models"> | undefined,
+  modelId: string | null | undefined,
+) {
+  const models = filterSelectableModels(entry?.models ?? null) ?? [];
+  const id = modelId?.trim();
+  if (id) return findModelByReference(models, id);
+  return models.find((model) => model.isDefault) ?? models[0] ?? null;
+}
+
+/** The reasoning a launch would use on this account: the explicit level or the model default. */
+export function effectiveReasoning(input: {
+  entry: Pick<ProviderSnapshotEntry, "models"> | undefined;
+  model?: string | null;
+  thinkingOptionId?: string | null;
+}): { id: string; label: string } | null {
+  const model = effectiveModel(input.entry, input.model);
+  const id =
+    input.thinkingOptionId?.trim() ||
+    model?.defaultThinkingOptionId ||
+    model?.thinkingOptions?.find((option) => option.isDefault)?.id;
+  if (!id) return null;
+  const option = model?.thinkingOptions?.find((entry) => entry.id === id);
+  return { id, label: formatThinkingOptionLabel(option ?? { id }) };
+}
+
+/** "Fable 5.2 · Medium": the picker summary for a profile on one account. */
+export function profileLaunchSummary(input: {
+  entry: Pick<ProviderSnapshotEntry, "models"> | undefined;
+  profile: Pick<AgentProfile, "model" | "thinkingOptionId"> | undefined;
+}): string {
+  const modelId = input.profile?.model?.trim();
+  const model = effectiveModel(input.entry, modelId);
+  const reasoning = effectiveReasoning({
+    entry: input.entry,
+    model: input.profile?.model,
+    thinkingOptionId: input.profile?.thinkingOptionId,
+  });
+  return [model?.label ?? (modelId || "Provider default model"), reasoning?.label]
+    .filter(Boolean)
+    .join(" · ");
 }

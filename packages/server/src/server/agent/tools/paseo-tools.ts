@@ -1,4 +1,5 @@
 import { sharedProfileDefinitions } from "@getpaseo/protocol/provider-preferences";
+import { effectiveTimeZone } from "@getpaseo/protocol/installation-settings";
 import { registerPluginTools } from "./plugin-tools.js";
 import type { FinishSubscriptions, FinishRegistration } from "../finish-subscriptions/index.js";
 import type { AgentMessageDelivery } from "../agent-messages/index.js";
@@ -123,6 +124,7 @@ import { createPauseGoalTool } from "./pause-goal.js";
 import { createJournalTools } from "../journal/tools.js";
 import { createChecklistTools } from "../task-checklist/tools.js";
 import { createQuestionTools } from "../questions/tools.js";
+import { createPreviewTools } from "../../previews/tools.js";
 
 export interface PaseoToolHostDependencies {
   agentMessages?: () => AgentMessageDelivery;
@@ -1491,6 +1493,7 @@ function createToolCatalog(
       ...createJournalTools(agentManager, callerAgentId),
       ...createChecklistTools(agentManager, callerAgentId),
       ...createQuestionTools(agentManager, callerAgentId),
+      ...(agentManager.previews ? createPreviewTools(agentManager.previews, callerAgentId) : []),
     ]) {
       registerTool(tool.name, tool, tool.handler);
     }
@@ -1532,13 +1535,22 @@ function createToolCatalog(
     "list_hosts",
     {
       title: "List hosts",
-      description: "Discover this host and registered destination hosts for fleet tools.",
+      description:
+        "Discover this host and registered destination hosts for fleet tools, and the owner's local time zone for owner-facing times.",
       inputSchema: {},
     },
-    async () => ({
-      content: [],
-      structuredContent: ensureValidJson(await hostResolver.directory()),
-    }),
+    async () => {
+      const directory = await hostResolver.directory();
+      const timeZone = effectiveTimeZone(daemonConfigStore?.get().timeZone);
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          ...directory,
+          // Null when no owner client has reported a zone and none was chosen.
+          ownerTimeZone: timeZone,
+        }),
+      };
+    },
   );
 
   registerTool(

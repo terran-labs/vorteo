@@ -42,6 +42,21 @@ is unset or false. Hosted-session recovery and
 native-goal continuation retain their own ownership checks. This setting does not approve a
 restart or bypass installation controls.
 
+Hosted-session recovery runs when the session host ends while the daemon keeps running, as in a
+tracked host restart. It sorts each loaded hosted agent by what the host's end interrupted. A turn
+or permission in flight gets a queued interrupted-turn continuation on a fresh session. An idle
+session with background work, such as a background shell, monitor or subagent meant to wake the
+agent, gets one queued prompt to check those tasks and restart any it still needs. The worker
+caches that answer from the host a few seconds after each turn ends, because a host that ended
+cannot be asked; an agent seen running a turn with no answer cached counts as having background
+work. A turn just started, or a turn call cut off by the host's end, counts as in flight, and a
+turn or a failed check clears the cached answer until the next check succeeds. Every other agent
+is released like an idle one: no provider process starts and no prompt is sent until a prompt,
+queued message or client needs it. After a daemon restart, agents whose host also ended continue
+only when their record says they were running. When the host survives a daemon restart, the new
+worker closes idle hosted sessions, except one whose provider reports background work: it is
+adopted without a prompt, so its watcher can still wake the agent.
+
 Change `agents.resumePrompt` or disable `agents.resumeOnStartup` in host config or Host settings >
 Agents. Disabling prevents startup dispatch. Recovery updates only an unchanged stored record;
 an intervening edit cancels that attempt and preserves the newer record for the next startup.
@@ -150,10 +165,44 @@ hold may resume a goal after its condition clears; an intervening manual pause o
 edit invalidates that ownership. Failed or uncertain state changes require reconciliation.
 
 External prerequisites belong in blocked checklist items with concrete conditions to
-recheck. The existing blocked-task review service scans once a minute and admits a review
-after an hour without activity or another review. It uses the same retained thread and
-does not create a worker. The agent checks current evidence before resuming authorized
-work. Manual goal pauses, usage limits, queue and restart holds prevent these reviews.
+recheck. Stall review is off by default and enabled by the host setting
+`agents.blockedWorkReview: true` (Settings, System, **Review blocked work**). The setting
+applies on the next scan without a restart. When enabled, the review service scans once a
+minute for threads that stopped with unfinished work: a blocked item or goal, or an item
+left in progress.
+
+- **Ladder.** A thread gets up to three reviews per stopped stretch: about 5, 15 and 30
+  minutes after its last activity or previous review. Only a real prompt, such as a message
+  from the owner or another agent, starts a new stretch. A review's own prompt does not, and
+  neither does a background task notification.
+- **Never cold.** A slot missed by more than 15 minutes is forfeited, not run late, so a
+  review always rereads a warm one-hour prompt cache. Turning the setting on, a daemon
+  restart or a lifted hold therefore never reviews threads that stopped hours or days ago.
+- **Stops when nothing changes.** A review that leaves the checklist as it found it (same
+  unfinished items, statuses and passed checks) and starts no new background work spends
+  the rest of the ladder, unless a real prompt arrived meanwhile. The prompt tells the agent to
+  act on ready items, start a background watcher for anything a command can detect, and
+  move items that wait on the owner to review.
+- **Skipped.** Items listed in an open question's `blocks` (the answer arrives as a
+  message), and items in review or pending. A thread whose only reviewable items are in
+  progress is skipped while a subagent of it runs, or while its already loaded runtime
+  reports live background work through the provider's `canStopRuntime`. Providers without
+  that check are reviewed.
+- **Paused Factory projects.** Role threads of a Factory project the owner has paused or
+  drained are not reviewed. Issue leads, workers and reviewers are subagents and are never
+  reviewed.
+- **Burst handling.** Due threads are reviewed three at a time.
+- **Caps.** At most 6 reviews per thread per day and 12 per hour for the installation,
+  counted in memory since the daemon started.
+- **Measured.** Each review logs `Blocked-work review finished` with the thread, account,
+  model, the token counts the provider reported, the change in session cost and whether the
+  review changed anything. Providers do not report cache writes in that line; the cost
+  difference includes them.
+
+Each review uses the same retained thread and does not create a worker. Manual goal pauses,
+usage limits, queue and restart holds prevent these reviews. A review cannot replace a wake
+source: an agent that waits on a build or job should start a watcher, and
+[hosted sessions](#runtime-residency) keep live background work alive.
 Confirmed blocked goals also enter this review path without a checklist item. A durable
 discovery flag survives reloads; it never authorizes continuation. Admission re-reads the
 native goal and rejects paused, completed, limited or uncertain state. The flag changes

@@ -3,6 +3,7 @@ import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
   projectFactory: en.projectFactory,
+  vorteoSetup: en.vorteoSetup,
   paneFind: {
     connectionFailure: "无法搜索此聊天。请检查主机连接后重试。",
     historyChangedFailure: "搜索期间聊天已更改。请重新搜索。",
@@ -2271,6 +2272,8 @@ export const zhCN: TranslationResources = {
     title: "设置",
     loading: "正在加载设置...",
     groups: {
+      thisDevice: "此设备",
+      vorteo: "Vorteo",
       app: "应用",
       host: "主机",
     },
@@ -2880,6 +2883,11 @@ export const zhCN: TranslationResources = {
           title: "释放空闲 Agent",
           hint: "空闲一小时后释放内存。",
           info: "停止 Agent 进程，但保留对话。发送消息即可继续。\n\n进行中的工作、待处理的通知和 Provider 安全检查会阻止清理。",
+        },
+        blockedWorkReview: {
+          title: "复查受阻工作",
+          hint: "默认关闭。线程带着未完成的工作停止后进行一次短时复查，仅在有效时重复。",
+          info: "当线程带着受阻或进行中的任务停止，且没有任何机制会唤醒它时，会在大约 5 分钟后收到一条简短提示，检查未完成的工作并继续。只有在复查带来变化时，才会再进行最多两次，间隔约 15 和 30 分钟。之后复查停止，直到有人向该线程发送消息。\n\n每次复查都会恢复线程的对话，因此在服务商的提示缓存失效后不会运行。每个线程每天最多复查 6 次，整个安装每小时最多 12 次。\n\n等待未决问题或等待你审阅的事项会被跳过；你的回答会唤醒线程。",
         },
       },
       workspaces: {

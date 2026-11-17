@@ -1352,8 +1352,9 @@ function WorkspaceScreenContent({
   useEffect(() => {
     // Back dismisses the compact overlay only. On a wide native layout the
     // explorer is a tab, `showMobileAgent` has no rendered consumer, and
-    // returning true would swallow Back with nothing to show for it.
-    if (!isRouteFocused || isWeb || !isMobile || !isExplorerSidebarShowing) {
+    // returning true would swallow Back with nothing to show for it. Phone workspaces show
+    // Files and Changes as inline cards, not an overlay, so Back is not theirs to take.
+    if (!isRouteFocused || isWeb || !isMobile || persistenceKey || !isExplorerSidebarShowing) {
       return;
     }
 
@@ -1363,7 +1364,7 @@ function WorkspaceScreenContent({
     });
 
     return () => handler.remove();
-  }, [isExplorerSidebarShowing, isMobile, isRouteFocused, showMobileAgent]);
+  }, [isExplorerSidebarShowing, isMobile, isRouteFocused, persistenceKey, showMobileAgent]);
 
   const workspaceLayout = useWorkspaceLayoutStore((state) =>
     persistenceKey ? (state.layoutByWorkspace[persistenceKey] ?? null) : null,
@@ -1877,12 +1878,11 @@ function WorkspaceScreenContent({
     });
   });
 
-  const handleCreateTerminalWithProfile = useCallback(
-    (profile: TerminalProfile) => {
-      createTerminal({ profile, destination: { kind: "open" } });
-    },
-    [createTerminal],
-  );
+  // Stable like handleCreateTerminal: createTerminal is rebuilt on every render, and a new
+  // identity here rebuilds the workspace header and rerenders the main pane mid-drag.
+  const handleCreateTerminalWithProfile = useStableEvent((profile: TerminalProfile) => {
+    createTerminal({ profile, destination: { kind: "open" } });
+  });
 
   const handleCreateBrowserTab = useCallback(
     (input?: { paneId?: string }) => {
@@ -3586,9 +3586,6 @@ function WorkspaceScreenContent({
           subtitle={workspaceHeaderSubtitle}
           isSubtitleDistinct={isWorkspaceHeaderSubtitleDistinct}
           serverId={normalizedServerId}
-          onToggleExplorer={handleToggleExplorerSidebar}
-          explorerToggleLabel={explorerSidebarToggleLabel}
-          explorerToggleAccessibilityState={explorerSidebarToggleAccessibilityState}
         >
           <MobileWorkspaceTabSwitcher
             tabs={tabs}
@@ -3627,8 +3624,6 @@ function WorkspaceScreenContent({
       activeTabKey,
       compactHeaderScripts,
       createTerminalDisabled,
-      explorerSidebarToggleAccessibilityState,
-      explorerSidebarToggleLabel,
       handleCloseOtherTabs,
       handleCloseTabById,
       handleCloseTabsToLeft,
@@ -3644,7 +3639,6 @@ function WorkspaceScreenContent({
       handleReloadAgent,
       handleRenameTab,
       handleSelectSwitcherTab,
-      handleToggleExplorerSidebar,
       isMobile,
       isWorkspaceHeaderLoading,
       isWorkspaceHeaderSubtitleDistinct,

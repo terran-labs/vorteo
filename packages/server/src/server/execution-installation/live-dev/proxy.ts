@@ -1,10 +1,9 @@
-import type { ExecutionInstallation } from "@getpaseo/protocol/execution-installation";
 import type { Request, RequestHandler, Response } from "express";
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { connect } from "node:net";
 import type { Duplex } from "node:stream";
 import type { Logger } from "pino";
-import { INJECTED_BODY_HTML, prepareWebUiHtml } from "../../web-ui.js";
+import { INJECTED_BODY_HTML, prepareWebUiHtml, type ServedInstallation } from "../../web-ui.js";
 import {
   injectBeforeBodyEnd,
   liveDevIndicatorHtml,
@@ -93,7 +92,7 @@ export interface LiveDevProxyOptions {
   port: () => number | null;
   ownerSession: (req: Request) => boolean;
   label: string;
-  installation: () => ExecutionInstallation;
+  installation: () => ServedInstallation;
   logger: Logger;
   /** Matches the owner cookie: Secure on the HTTPS public origin. */
   secureCookies: boolean;

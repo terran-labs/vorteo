@@ -1,3 +1,5 @@
+import { QueryClient } from "@tanstack/react-query";
+import { boundedFactoryRead, factoryQueueNeedsInitialRead } from "@/screens/factory/factory-reads";
 import {
   factoryOverviewRoute,
   freshFactoryStatus,
@@ -17,8 +19,7 @@ import {
   type Instructions,
 } from "./factory-instructions-model";
 import { factoryRunnerTrack, factoryStageCounts } from "./factory-card-model";
-import { aggregateFactories } from "./factory-global-model";
-import type { NeedsYouItem } from "@/screens/factory/all-factories-model";
+import { aggregateFactories, factorySummaryState } from "./factory-global-model";
 describe("Factory menu and repository dialog", () => {
   it("offers the actions appropriate to each state", () => {
     expect(factoryActions("off")).toEqual(["enable"]);
@@ -229,7 +230,7 @@ it("counts queue stages for the card's bar and places each runner on its five-st
   expect(factoryRunnerTrack(issue("queued", 8))).toMatchObject({ step: null });
 });
 
-it("sums every Factory for the All Factories card and counts what needs the owner per Factory", () => {
+it("sums every Factory for the All Factories card", () => {
   const issue = (number: number, stage: "queued" | "building" | "blocked", label = "running") => ({
     number,
     title: `Issue ${number}`,
@@ -252,23 +253,96 @@ it("sums every Factory for the All Factories card and counts what needs the owne
     issues,
   });
   const on = factory("a", "on", [issue(1, "building"), issue(2, "queued", "human-review")]);
-  const needs = (factoryKey: string, kind: "question" | "blocked") =>
-    ({ key: `${factoryKey}:${kind}`, kind, factoryKey }) as unknown as NeedsYouItem;
-  const items = [
-    needs("host:a", "question"),
-    needs("host:a", "blocked"),
-    needs("host:b", "blocked"),
-  ];
-  const aggregate = aggregateFactories([on, factory("b", "on", [issue(1, "blocked")])], items);
+  const aggregate = aggregateFactories([on, factory("b", "on", [issue(1, "blocked")])]);
   expect(aggregate.pill.label).toBe("on");
   expect(aggregate.runners.map((runner) => `${runner.tag}#${runner.number}`)).toEqual([
     "a#1",
     "b#1",
   ]);
-  expect(aggregate.needsYou).toEqual(items);
-  expect(aggregate.chips.map((chip) => [chip.name, chip.inFlight, chip.needsYou])).toEqual([
-    ["a", 1, 2],
-    ["b", 1, 1],
+  expect(aggregate.chips.map((chip) => [chip.name, chip.inFlight])).toEqual([
+    ["a", 1],
+    ["b", 1],
   ]);
   expect(aggregateFactories([on, factory("b", "paused", [])]).pill.label).toBe("paused");
+});
+
+it("summarizes a held Factory before any queue is read", () => {
+  expect(
+    factorySummaryState([
+      {
+        serverId: "host",
+        projectId: "p",
+        projectName: "Project",
+        hostLabel: null,
+        listed: {
+          state: "paused",
+          drain: { id: "hold", reason: "Update", pausedAt: "2026-11-10" },
+        },
+        issues: null,
+      },
+    ]),
+  ).toEqual({ count: 1, running: 0, paused: 1, held: 1, hasQueue: false });
+});
+
+it("reads an inactive paused queue once when activated, including a pre-created cache entry", async () => {
+  const client = new QueryClient();
+  let attempts = 0;
+  const query = client.getQueryCache().build(client, {
+    queryKey: ["factoryQueue", "host", "paused"],
+    queryFn: async () => {
+      attempts += 1;
+      return null;
+    },
+    retry: false,
+  });
+  expect(attempts).toBe(0);
+  expect(factoryQueueNeedsInitialRead(query.state)).toBe(true);
+  await query.fetch();
+  expect(attempts).toBe(1);
+  expect(factoryQueueNeedsInitialRead(query.state)).toBe(false);
+  client.clear();
+});
+
+it("bounds queue reads and serves ordinary waiters while more summaries arrive", async () => {
+  const releases: (() => void)[] = [];
+  const order: string[] = [];
+  const active = Array.from({ length: 3 }, () =>
+    boundedFactoryRead(() => new Promise<void>((resolve) => releases.push(resolve))),
+  );
+  const ordinary = boundedFactoryRead(async () => {
+    order.push("ordinary");
+  });
+  const summaryReads: Promise<void>[] = [];
+  summaryReads.push(
+    boundedFactoryRead(
+      async () => {
+        order.push("summary-1");
+        summaryReads.push(
+          boundedFactoryRead(
+            async () => {
+              order.push("summary-3");
+            },
+            { priority: "summary" },
+          ),
+        );
+      },
+      { priority: "summary" },
+    ),
+  );
+  summaryReads.push(
+    boundedFactoryRead(
+      async () => {
+        order.push("summary-2");
+      },
+      { priority: "summary" },
+    ),
+  );
+  expect(order).toEqual([]);
+  releases[0]!();
+  await ordinary;
+  await Promise.all(summaryReads);
+  expect(order.indexOf("ordinary")).toBeLessThan(order.indexOf("summary-2"));
+  releases[1]!();
+  releases[2]!();
+  await Promise.all(active);
 });

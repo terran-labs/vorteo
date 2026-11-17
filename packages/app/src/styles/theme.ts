@@ -171,11 +171,12 @@ const darkDiffColors = {
 // Hues are fixed per family across both themes: success 150, danger 27, warning 70.5,
 // merged 300.
 const lightStatusColors = {
-  // L=0.50, chroma 60% of gamut max
-  statusSuccess: "#3e704a",
-  statusDanger: "#9d433b",
-  statusWarning: "#7b5d39",
-  statusMerged: "#7347af",
+  // The L=0.50, 60%-chroma set (#3e704a, #9d433b, #7b5d39, #7347af) darkened by the same
+  // factor, so badge text on its own 12% tint clears 4.5:1 on every light surface (was 3.83).
+  statusSuccess: "#346340",
+  statusDanger: "#8f3a33",
+  statusWarning: "#6c5131",
+  statusMerged: "#6640a0",
 };
 
 const darkStatusColors = {
@@ -259,6 +260,8 @@ export interface LightThemeConfig {
   borderAccent: string;
   accent: string;
   accentBright: string;
+  // Accent-coloured text; defaults to the accent in light themes and its brighter variant in dark.
+  accentText?: string;
   accentForeground?: string;
   primary: string;
   primaryForeground: string;
@@ -311,6 +314,7 @@ export function buildLightSemanticColors(tint: LightThemeConfig) {
     accentSubtle: hexColorWithAlpha(tint.accent, 0.13),
     accentSubtleHovered: hexColorWithAlpha(tint.accent, 0.2),
     accentBright: tint.accentBright,
+    accentText: tint.accentText ?? tint.accent,
     accentForeground: tint.accentForeground ?? tint.surface0,
 
     destructive: tint.destructive,
@@ -368,6 +372,8 @@ export interface DarkThemeConfig {
   borderAccent: string;
   accent: string;
   accentBright: string;
+  // Accent-coloured text; defaults to the accent in light themes and its brighter variant in dark.
+  accentText?: string;
   accentForeground?: string;
   destructive: string;
   terminalBlack: string;
@@ -421,6 +427,7 @@ export function buildDarkSemanticColors(tint: DarkThemeConfig) {
     accentSubtle: hexColorWithAlpha(tint.accent, 0.13),
     accentSubtleHovered: hexColorWithAlpha(tint.accent, 0.2),
     accentBright: tint.accentBright,
+    accentText: tint.accentText ?? tint.accentBright,
     accentForeground: tint.accentForeground ?? "#ffffff",
 
     destructive: tint.destructive,
@@ -671,6 +678,9 @@ interface AppearancePalette {
   strong: string;
   accent: string;
   bright: string;
+  // Accent-coloured text when neither the accent (light) nor bright (dark) reaches 4.5:1 on
+  // root through raised.
+  accentText?: string;
 }
 const APPEARANCE_PALETTES: Record<AppearanceId, AppearancePalette> = {
   "starship-light": {
@@ -683,7 +693,9 @@ const APPEARANCE_PALETTES: Record<AppearanceId, AppearancePalette> = {
     muted: "#5f5f9c",
     border: "rgba(0,0,40,0.1)",
     strong: "rgba(0,0,40,0.22)",
-    accent: "#2997ff",
+    // Darker than the dark theme's #2997ff so accent text reaches 4.5:1 on every light surface
+    // (4.83:1 on root); white text on it is 6.20:1. Was #2997ff at 2.35:1.
+    accent: "#0a5fbd",
     bright: "#1672c8",
   },
   "starship-dark": {
@@ -706,11 +718,15 @@ const APPEARANCE_PALETTES: Record<AppearanceId, AppearancePalette> = {
     raised: "#faf2e4",
     text: "#2a1f17",
     secondary: "#5d4634",
-    muted: "#85684b",
+    // Extra-muted text clears 4.5:1 on every surface (was #85684b, 3.94:1 on deep).
+    muted: "#795e44",
     border: "rgba(136,106,74,0.18)",
     strong: "rgba(132,100,68,0.28)",
     accent: "#86684a",
     bright: "#86684a",
+    // The accent is 3.93:1 on deep, so accent text uses Vorton's darker heading-gradient start
+    // (6.01, 5.49, 6.28, 6.45:1 on root, deep, surface, raised).
+    accentText: "#6e5239",
   },
   midas: {
     root: "#2b231d",
@@ -719,7 +735,8 @@ const APPEARANCE_PALETTES: Record<AppearanceId, AppearancePalette> = {
     raised: "#493c30",
     text: "#f3e9da",
     secondary: "#d0b89c",
-    muted: "#a8967f",
+    // Extra-muted text clears 4.5:1 on every surface (was #a8967f, 3.72:1 on raised).
+    muted: "#b8a68f",
     border: "rgba(188,157,108,0.28)",
     strong: "rgba(176,138,72,0.34)",
     accent: "#b08a48",
@@ -732,7 +749,8 @@ const APPEARANCE_PALETTES: Record<AppearanceId, AppearancePalette> = {
     raised: "#38221c",
     text: "#f7ede9",
     secondary: "#d5b4a6",
-    muted: "#ab8474",
+    // Extra-muted text clears 4.5:1 on every surface (was #ab8474, 4.45:1 on raised).
+    muted: "#b08979",
     border: "rgba(193,90,46,0.24)",
     strong: "rgba(193,90,46,0.32)",
     accent: "#c15a2e",
@@ -748,7 +766,10 @@ const APPEARANCE_PALETTES: Record<AppearanceId, AppearancePalette> = {
     muted: "#8b8da8",
     border: "rgba(255,255,255,0.08)",
     strong: "rgba(139,92,246,0.24)",
-    accent: "#3b82f6",
+    // Vorton's violet (owner decision 2026-11-14, was blue #3b82f6). Black text on it is 4.96:1.
+    // As small text it reaches 4.5:1 only on root and deep (4.33 on surface, 3.80 on raised), so
+    // accent text uses the #a78bfa variant, also the focus ring, at 5.9:1 or more on every surface.
+    accent: "#8b5cf6",
     bright: "#a78bfa",
   },
 };
@@ -776,7 +797,9 @@ function buildAppearanceTheme(id: AppearanceId) {
     borderAccent: p.strong,
     accent: p.accent,
     accentBright: p.bright,
-    accentForeground: id === "scriptorium" ? "#ffffff" : "#000000",
+    accentText: p.accentText ?? (light ? p.accent : p.bright),
+    // Starship light's darker accent carries white text, like Scriptorium's.
+    accentForeground: id === "scriptorium" || id === "starship-light" ? "#ffffff" : "#000000",
     primary: p.text,
     primaryForeground: p.root,
     destructive: light ? "#b3261e" : "#ff7168",
@@ -814,10 +837,14 @@ export function appearanceStatusColors(light: boolean) {
   const status = light
     ? lightStatusColors
     : {
-        statusSuccess: "#84bd90",
-        statusDanger: "#de9890",
-        statusWarning: "#caa77d",
-        statusMerged: "#b6a2dc",
+        // A further 20% white blend over the lifted family (#84bd90, #de9890, #caa77d,
+        // #b6a2dc), so badge text on its 16% tint clears 4.5:1 over surface0 to surface2
+        // (Midas danger was 3.99, now 4.60 over surface2). Over surface3 it does not: Midas
+        // danger measures 4.03, so keep tinted badges off raised surface3 containers.
+        statusSuccess: "#9dcaa6",
+        statusDanger: "#e5ada6",
+        statusWarning: "#d5b997",
+        statusMerged: "#c5b5e3",
       };
   return {
     ...status,

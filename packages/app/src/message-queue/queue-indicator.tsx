@@ -20,6 +20,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { taskCardStyles } from "@/agent-stream/task-card-styles";
 import { useVortonTouch } from "@/vorton-touch";
 import type { OutboxRecord } from "./outbox-record";
+import { SPINNER_PERIOD_MS } from "@/styles/spinner";
 
 const rowHandleData = { vortonRowHandle: "true" };
 const rotation = makeMutable(0);
@@ -35,7 +36,10 @@ function subscribeOrbit(local: SharedValue<number>, listenerId: number): void {
   subscribers.value += 1;
   if (subscribers.value === 1) {
     rotation.value = 0;
-    rotation.value = withRepeat(withTiming(360, { duration: 2400, easing: Easing.linear }), -1);
+    rotation.value = withRepeat(
+      withTiming(360, { duration: SPINNER_PERIOD_MS, easing: Easing.linear }),
+      -1,
+    );
   }
 }
 

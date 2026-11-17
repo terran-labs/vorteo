@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
-import { Pressable, View, type TextInputProps } from "react-native";
+import {
+  Pressable,
+  Text,
+  View,
+  type TextInputProps,
+  type StyleProp,
+  type ViewStyle,
+  type LayoutChangeEvent,
+} from "react-native";
 import { Search, X } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
@@ -31,6 +39,19 @@ export interface SearchFieldProps {
   onKeyPress?: TextInputProps["onKeyPress"];
   onSubmitEditing?: TextInputProps["onSubmitEditing"];
   autoFocus?: boolean;
+  style?: StyleProp<ViewStyle>;
+  /** Size the field to its placeholder and icon instead of filling the row. */
+  fitPlaceholder?: boolean;
+  /**
+   * Combobox semantics for a field that drives a result list: `role="combobox"`, whether the
+   * list shows, the list's id, and the id of the highlighted result. Omitted, the field stays a
+   * plain search input.
+   */
+  role?: "combobox";
+  "aria-expanded"?: boolean;
+  "aria-controls"?: string;
+  "aria-activedescendant"?: string;
+  "aria-autocomplete"?: "list" | "none";
 }
 
 /**
@@ -51,9 +72,16 @@ export function SearchField({
   onKeyPress,
   onSubmitEditing,
   autoFocus,
+  style,
+  fitPlaceholder = false,
+  ...combobox
 }: SearchFieldProps): ReactElement {
   const [isFocused, setIsFocused] = useState(false);
+  const [placeholderWidth, setPlaceholderWidth] = useState(0);
   const inputRef = useRef<EditingTextInputHandle>(null);
+  const measurePlaceholder = useCallback((event: LayoutChangeEvent) => {
+    setPlaceholderWidth(event.nativeEvent.layout.width);
+  }, []);
   const handleFocus = useCallback(() => setIsFocused(true), []);
   const handleBlur = useCallback(() => setIsFocused(false), []);
   // The input is uncontrolled; follow a value the caller resets, such as
@@ -68,7 +96,26 @@ export function SearchField({
   }, [onChangeText]);
 
   return (
-    <View style={[styles.field, isFocused && styles.fieldFocused]}>
+    <View
+      style={[
+        styles.field,
+        fitPlaceholder && styles.fitted(placeholderWidth),
+        isFocused && styles.fieldFocused,
+        style,
+      ]}
+    >
+      {fitPlaceholder ? (
+        <Text
+          accessible={false}
+          aria-hidden
+          pointerEvents="none"
+          numberOfLines={1}
+          style={styles.placeholderMeasure}
+          onLayout={measurePlaceholder}
+        >
+          {placeholder}
+        </Text>
+      ) : null}
       <ThemedSearch size={14} uniProps={mutedColorMapping} />
       <ThemedTextInput
         testID={testID}
@@ -79,6 +126,7 @@ export function SearchField({
         onBlur={handleBlur}
         placeholder={placeholder}
         accessibilityLabel={accessibilityLabel ?? placeholder}
+        {...combobox}
         autoCapitalize="none"
         autoCorrect={false}
         returnKeyType="search"
@@ -118,6 +166,24 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface1,
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.border,
+  },
+  fitted: (placeholderWidth: number) => ({
+    flexBasis: "auto",
+    flexGrow: 0,
+    flexShrink: 1,
+    width:
+      placeholderWidth > 0
+        ? Math.ceil(placeholderWidth) +
+          14 +
+          theme.spacing[2] +
+          theme.spacing[3] * 2 +
+          theme.borderWidth[1] * 2
+        : 164,
+  }),
+  placeholderMeasure: {
+    position: "absolute",
+    opacity: 0,
+    fontSize: theme.fontSize.base,
   },
   fieldFocused: {
     borderColor: theme.colors.borderAccent,

@@ -129,6 +129,8 @@ try {
         PASEO_HOME: paseoHome,
         PASEO_LISTEN: `127.0.0.1:${port}`,
         PASEO_RELAY_ENABLED: "false",
+        // This fixture tests supervisor cleanup, not automatic System agent startup.
+        PASEO_SYSTEM_PROJECT: "0",
         CI: "true",
       },
       stdio: ["ignore", "pipe", "pipe"],

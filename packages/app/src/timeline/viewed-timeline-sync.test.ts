@@ -813,6 +813,7 @@ test("manual retries can immediately re-attempt a failed catch-up", async () => 
   membership.succeed();
 
   const failed = await world.nextFetch("agent-a");
+  expect(failed.request).not.toHaveProperty("retryHistory");
   failed.fail("timeline unavailable");
   await world.nextError();
   expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("error");
@@ -821,7 +822,11 @@ test("manual retries can immediately re-attempt a failed catch-up", async () => 
   expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("retrying");
 
   const retry = await world.nextFetch("agent-a");
-  retry.respond({ hasNewer: false });
+  expect(retry.request).toHaveProperty("retryHistory", true);
+  retry.respond({ hasNewer: true, seq: 20 });
+  const continuation = await world.nextFetch("agent-a");
+  expect(continuation.request).not.toHaveProperty("retryHistory");
+  continuation.respond({ hasNewer: false });
   await vi.waitFor(() => expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
 });
 

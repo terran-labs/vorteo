@@ -9,21 +9,29 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 
 interface MenuHeaderProps {
   title?: string;
+  titleContent?: ReactNode;
   rightContent?: ReactNode;
   borderless?: boolean;
 }
 
-export function MenuHeader({ title, rightContent, borderless }: MenuHeaderProps) {
+export function MenuHeader({ title, titleContent, rightContent, borderless }: MenuHeaderProps) {
   const isCompact = useIsCompactFormFactor();
   if (isCompact) {
-    return <CompactHeader navigation="menu" title={title} actions={rightContent} />;
+    return (
+      <CompactHeader
+        navigation="menu"
+        title={title}
+        titleContent={titleContent}
+        actions={rightContent}
+      />
+    );
   }
   return (
     <ScreenHeader
       left={
         <>
           <SidebarMenuToggle />
-          {title && <ScreenTitle>{title}</ScreenTitle>}
+          {titleContent ?? (title && <ScreenTitle>{title}</ScreenTitle>)}
         </>
       }
       right={rightContent}

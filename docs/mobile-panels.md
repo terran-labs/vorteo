@@ -1,12 +1,14 @@
 # Mobile panels
 
-Compact layouts have three mutually exclusive destinations:
+The shared compact panel controller retains three mutually exclusive destinations:
 
 - `agent-list` on the left
 - `agent` in the center
 - `file-explorer` on the right
 
-They are one interaction, not two independent drawers. The implementation lives in
+Phone workspaces expose Files, Changes and pull requests through detail tiles that expand in place. They hide the Explorer toolbar button; the right panel remains a fallback for callers without a workspace. Tablets and wider layouts retain Explorer. See [Explorer sidebar](explorer-sidebar.md).
+
+The panel destinations are one interaction, not two independent drawers. The implementation lives in
 `packages/app/src/mobile-panels/`.
 
 ## Ownership
@@ -79,7 +81,10 @@ definition, no longer eligible to begin.
 ## Integration rules
 
 - Callers request semantic targets through `panel-store`; they never write shared values.
-- Gesture behavior comes from the four explicit hooks in `mobile-panels/gestures.ts`.
+- Panel gesture behavior comes from the explicit hooks in `mobile-panels/gestures.ts`.
+  The phone Settings opener only recognizes an edge swipe and navigates after checking the settled
+  agent view, route and panel revision. It never previews or selects the legacy Explorer target.
+  Settings owns its return gesture and uses the existing return-to-workspace action, not browser history.
 - A focused interactive surface may block panel-opening gestures through
   `useBlockMobilePanelOpenGestures`. Register only while the conflicting interaction is active and
   unregister when the surface is hidden or unfocused. The blocker never disables gestures that close

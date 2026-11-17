@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { HostRefreshDiagnosticsSchema } from "./host-owned-refresher.js";
+import { HostRefreshDiagnosticsSchema, type HostRefreshEvent } from "./host-owned-refresher.js";
 import { expect, it, vi } from "vitest";
 import { ClaudeOAuthRefresher, type ClaudeOAuthPolicy } from "./claude-oauth-refresher.js";
 import {
@@ -76,54 +76,61 @@ function harness(options: { excluded?: boolean } = {}) {
   let readable = true;
   const deliveries: ClaudeOAuthProjectionDelivery[] = [];
   const persisted: string[] = [];
+  const events: HostRefreshEvent[] = [];
   // Option A: the official CLI rotates the token under its own locks.
   const refresh = vi.fn(async () => {
     tokens += 1;
     grant = { ...grant!, accessToken: `synthetic-access-${tokens}`, expiresAt: now + 60 * MINUTE };
   });
-  const create = () =>
-    new ClaudeOAuthRefresher({
-      installationId: INSTALLATION,
-      read: () => state,
-      persist: (next) => {
-        LegacyRefreshStateSchema.parse(next);
-        state = structuredClone(next);
-        persisted.push(JSON.stringify(next));
-      },
-      diagnostics: {
-        read: () => {
-          if (diagnosticFailure) throw new Error("sidecar unreadable");
-          return diagnostics;
-        },
+  /** `"default"` builds the refresher exactly as production does without the setting. */
+  const create = (refresherOptions: { cliRefresh?: boolean } | "default" = {}) =>
+    new ClaudeOAuthRefresher(
+      {
+        installationId: INSTALLATION,
+        read: () => state,
         persist: (next) => {
-          if (diagnosticFailure) throw new Error("sidecar unwritable");
-          diagnostics = structuredClone(next);
+          LegacyRefreshStateSchema.parse(next);
+          state = structuredClone(next);
+          persisted.push(JSON.stringify(next));
         },
+        diagnostics: {
+          read: () => {
+            if (diagnosticFailure) throw new Error("sidecar unreadable");
+            return diagnostics;
+          },
+          persist: (next) => {
+            if (diagnosticFailure) throw new Error("sidecar unwritable");
+            diagnostics = structuredClone(next);
+          },
+        },
+        policy: () => policy,
+        grant: async () => {
+          reads += 1;
+          if (!readable) throw new Error("Credential storage unavailable");
+          return grant;
+        },
+        refresh,
+        deliver: async (delivery): Promise<ClaudeOAuthProjectionReceipt> => {
+          if (!online) throw new Error("Dev is offline");
+          deliveries.push(structuredClone(delivery));
+          const { access, ...slot } = delivery;
+          return {
+            ...slot,
+            digest: accessProjectionDigest(access),
+            phase: "applied",
+            active: access !== null,
+          };
+        },
+        log: (event) => events.push(structuredClone(event)),
+        now: () => now,
       },
-      policy: () => policy,
-      grant: async () => {
-        reads += 1;
-        if (!readable) throw new Error("Credential storage unavailable");
-        return grant;
-      },
-      refresh,
-      deliver: async (delivery): Promise<ClaudeOAuthProjectionReceipt> => {
-        if (!online) throw new Error("Dev is offline");
-        deliveries.push(structuredClone(delivery));
-        const { access, ...slot } = delivery;
-        return {
-          ...slot,
-          digest: accessProjectionDigest(access),
-          phase: "applied",
-          active: access !== null,
-        };
-      },
-      now: () => now,
-    });
+      refresherOptions === "default" ? undefined : { cliRefresh: true, ...refresherOptions },
+    );
   return {
     create,
     deliveries,
     persisted,
+    events,
     diagnostics: () => HostRefreshDiagnosticsSchema.parse(diagnostics),
     setDiagnostics: (value: unknown) => {
       diagnostics = value;
@@ -253,6 +260,35 @@ it("withdraws Dev and asks for sign-in when the Host grant disappears", async ()
     needsSignIn: true,
     environments: [{ serverId: "dev", status: "disconnected" }],
   });
+  // The loss is logged once, not on every read while it lasts.
+  h.advance(6 * MINUTE);
+  await refresher.reconcile();
+  expect(h.events.filter((event) => event.kind === "signInLost")).toEqual([
+    { kind: "signInLost", definitionId: "one" },
+  ]);
+});
+
+it("by default never runs the refresh CLI and delivers what Host agents renew", async () => {
+  const h = harness();
+  const refresher = h.create("default");
+  await refresher.connected("one", null);
+  await refresher.reconcile();
+  // Inside the lead window and past expiry, the coordinator only reads.
+  h.advance(57 * MINUTE);
+  await refresher.reconcile();
+  h.advance(5 * MINUTE);
+  await refresher.reconcile();
+  expect(h.refresh).not.toHaveBeenCalled();
+  // A Host agent's lazy refresh renews the shared grant; Dev receives it.
+  h.setGrant({
+    ...h.grant()!,
+    accessToken: "synthetic-access-agent",
+    expiresAt: h.now() + 60 * MINUTE,
+  });
+  h.advance(5 * MINUTE);
+  await refresher.reconcile();
+  expect(h.refresh).not.toHaveBeenCalled();
+  expect(h.deliveries.at(-1)).toMatchObject({ access: { accessToken: "synthetic-access-agent" } });
 });
 
 it("starts a new generation that withdraws Dev on sign-out, and another on reconnect", async () => {
@@ -422,32 +458,35 @@ it("reconstructs both accounts and renews concurrently before expiry", async () 
     grants.set(definitionId, { ...grants.get(definitionId)!, expiresAt: now + 60 * MINUTE });
   });
   const create = () =>
-    new ClaudeOAuthRefresher({
-      installationId: INSTALLATION,
-      read: () => state,
-      persist: (next) => {
-        state = structuredClone(next);
+    new ClaudeOAuthRefresher(
+      {
+        installationId: INSTALLATION,
+        read: () => state,
+        persist: (next) => {
+          state = structuredClone(next);
+        },
+        policy: (definitionId) => ({
+          revision: 1,
+          removed: false,
+          targets: [
+            { serverId: "dev", providerId: `claude-account-${definitionId}`, excluded: false },
+          ],
+        }),
+        grant: async (definitionId) => grants.get(definitionId) ?? null,
+        refresh,
+        deliver: async (delivery) => {
+          const { access, ...slot } = delivery;
+          return {
+            ...slot,
+            digest: accessProjectionDigest(access),
+            phase: "applied",
+            active: access !== null,
+          };
+        },
+        now: () => now,
       },
-      policy: (definitionId) => ({
-        revision: 1,
-        removed: false,
-        targets: [
-          { serverId: "dev", providerId: `claude-account-${definitionId}`, excluded: false },
-        ],
-      }),
-      grant: async (definitionId) => grants.get(definitionId) ?? null,
-      refresh,
-      deliver: async (delivery) => {
-        const { access, ...slot } = delivery;
-        return {
-          ...slot,
-          digest: accessProjectionDigest(access),
-          phase: "applied",
-          active: access !== null,
-        };
-      },
-      now: () => now,
-    });
+      { cliRefresh: true },
+    );
   let refresher = create();
   await refresher.connected("slow", null);
   await refresher.connected("fast", null);

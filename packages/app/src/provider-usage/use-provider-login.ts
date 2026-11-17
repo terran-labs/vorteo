@@ -5,11 +5,13 @@ import {
 } from "@/execution-installation/policy";
 import {
   claudeFullSignInAvailable,
+  claudeProviderConnectsToInstallation,
   claudeSetupRequest,
   claudeUpgradeAvailable,
   claudeUpgradeRequest,
 } from "./claude-setup-login";
 import {
+  codexAccountUsesInstallationSignIn,
   codexInstallationRequest,
   codexInstallationSignInAvailable,
 } from "./codex-installation-login";
@@ -30,12 +32,15 @@ function useOwnerAllowed(serverId?: string | null) {
 
 /**
  * Whether this account signs in once for the installation through the coordinator. Claude always
- * does inside an installation. Codex does when the coordinator runs Host-owned Codex sign-in;
- * otherwise each environment keeps its own sign-in.
+ * does inside an installation. Codex does when the coordinator runs Host-owned Codex sign-in and,
+ * given a `providerId`, the installation created that account; the coordinator refuses older
+ * Codex accounts, so they keep their environment's own sign-in. Otherwise each environment keeps
+ * its own sign-in.
  */
 export function useSharedInstallationSignIn(
   serverId: string | null,
   provider: "claude" | "codex",
+  providerId?: string,
 ): boolean {
   const ownerAllowed = useOwnerAllowed(serverId);
   const installation = readExecutionInstallation();
@@ -50,7 +55,18 @@ export function useSharedInstallationSignIn(
     dataShape: "value",
     retry: false,
   });
-  return inInstallation && (provider === "claude" || codex.data === true);
+  const codexAccount = useFetchQuery({
+    queryKey: ["codex-installation-account", installation?.installationId, serverId, providerId],
+    queryFn: () => codexAccountUsesInstallationSignIn(serverId!, providerId!),
+    enabled: ownerAllowed && codex.data === true && Boolean(serverId && providerId),
+    staleTimeMs: 60_000,
+    dataShape: "value",
+    retry: false,
+  });
+  if (!inInstallation) return false;
+  if (provider === "claude") return true;
+  // Until the account answers, keep the provider-wide answer.
+  return codex.data === true && codexAccount.data !== false;
 }
 
 /**
@@ -145,6 +161,31 @@ function installationRequest(
     : codexInstallationRequest(serverId, providerId, operation, attempt);
 }
 
+/**
+ * Whether the coordinator reports that this named Claude account needs a new sign-in, for
+ * example because a failed CLI refresh erased its stored grant. Reads the owner-only connection
+ * status under the same query key the sign-in panel uses, at a slower cadence, so a row can offer
+ * Reconnect even while its last usage reading still looks fine.
+ */
+export function useClaudeAccountNeedsSignIn(serverId: string | null, providerId: string): boolean {
+  const ownerAllowed = useOwnerAllowed(serverId);
+  const installation = readExecutionInstallation();
+  const shared = useSharedInstallationSignIn(serverId, "claude");
+  const enabled = Boolean(
+    serverId && ownerAllowed && shared && claudeProviderConnectsToInstallation(providerId),
+  );
+  const connection = useFetchQuery({
+    queryKey: ["claude-setup-connection", installation?.installationId, serverId, providerId],
+    queryFn: async () => (await claudeSetupRequest(serverId!, providerId, "read")).connection,
+    enabled,
+    refetchInterval: enabled ? 60_000 : false,
+    staleTimeMs: 30_000,
+    dataShape: "value",
+    retry: false,
+  });
+  return enabled && connection.data?.needsSignIn === true;
+}
+
 interface SignInUsageRefreshInput {
   login: ProviderLoginState | undefined;
   environments: readonly { serverId: string; status: string }[] | undefined;
@@ -177,7 +218,7 @@ export function useProviderLogin(
   const hostConnected = useHostRuntimeIsConnected(serverId ?? "");
   const ownerAllowed = useOwnerAllowed(serverId);
   const installation = readExecutionInstallation();
-  const shared = useSharedInstallationSignIn(serverId, provider);
+  const shared = useSharedInstallationSignIn(serverId, provider, providerId);
   const sharedClaude = shared && provider === "claude";
   const connected = ownerAllowed && (shared || hostConnected);
   const cache = useQueryClient();

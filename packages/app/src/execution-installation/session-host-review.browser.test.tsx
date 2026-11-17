@@ -19,6 +19,7 @@ import type { SessionHostAction, SessionHostOverview } from "./session-host-revi
 
 vi.mock("./use-installation-upgrades", () => ({
   useInstallationUpgradeStatus: () => ({ data: null }),
+  useAgentActionReceipts: () => ({ data: [] }),
 }));
 vi.mock("@/contexts/toast-api-context", () => ({
   useToast: () => ({ error: vi.fn(), show: vi.fn() }),
@@ -90,6 +91,8 @@ vi.mock("react-native-unistyles", async (original) => {
 
 let overview: SessionHostOverview | null = { jobs: [], status: sessionHostStatusFixture };
 let summary: RestartSummary | null = null;
+// Locking ends the server session, so a later refresh must not restore owner access.
+let sessionValid = true;
 const requests: { operation: SessionHostOperation; reason: string }[] = [];
 const decisions: { job: SessionHostJob; decision: SessionHostAction }[] = [];
 const forbidden = () => {
@@ -98,9 +101,11 @@ const forbidden = () => {
 const client: ConstructorParameters<typeof InstallationPanelModel>[0] = {
   passwordFile: null,
   sessionsSupported: true,
-  restoreSession: vi.fn(async () => true),
+  restoreSession: vi.fn(async () => sessionValid),
   unlock: vi.fn(forbidden),
-  lock: vi.fn(async () => {}),
+  lock: vi.fn(async () => {
+    sessionValid = false;
+  }),
   restartSummary: vi.fn(async () => summary),
   listRestarts: vi.fn(async () => []),
   listHelpers: vi.fn(async () => []),

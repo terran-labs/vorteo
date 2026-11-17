@@ -150,7 +150,7 @@ export function FactoryProjectActions({
       ) : null}
       {factoryState && held ? (
         <ProjectMenuItem surface={surface} disabled>
-          {t("projectFactory.needsYou.kinds.held", { subject: factoryState.drain!.reason })}
+          {t("sidebar.factoryCard.heldReason", { reason: factoryState.drain!.reason })}
         </ProjectMenuItem>
       ) : null}
       {factoryState

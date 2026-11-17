@@ -83,3 +83,67 @@ export function useGridRows(compact: ReadonlyMap<string, number>): GridRowTracke
     [state.rows, onTileLayout, schedule],
   );
 }
+
+function sameOrder(previous: readonly string[], next: readonly string[]) {
+  return previous.length === next.length && previous.every((id, index) => id === next[index]);
+}
+
+/** Mount order is not DOM order: late cards and keyed moves must keep their visual neighbors. */
+export function useGridOrder() {
+  const nodes = useRef(new Map<string, Element>());
+  const observer = useRef<MutationObserver | null>(null);
+  const frame = useRef<number | null>(null);
+  const [order, setOrder] = useState<readonly string[]>([]);
+  const schedule = useCallback(() => {
+    if (frame.current !== null) return;
+    frame.current = requestAnimationFrame(() => {
+      frame.current = null;
+      for (const [id, node] of nodes.current) if (!node.isConnected) nodes.current.delete(id);
+      const next = [...nodes.current]
+        .sort((a, b) =>
+          a[1].compareDocumentPosition(b[1]) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,
+        )
+        .map(([id]) => id);
+      setOrder((previous) => (sameOrder(previous, next) ? previous : next));
+    });
+  }, []);
+  const onTileLayout = useCallback(
+    (id: string, event: LayoutChangeEvent) => {
+      const target = (event.nativeEvent as { target?: unknown }).target;
+      if (!(target instanceof Element)) return;
+      nodes.current.set(id, target);
+      if (!observer.current) {
+        const grid = target.closest("[data-card-grid]");
+        if (grid) {
+          observer.current = new MutationObserver(schedule);
+          observer.current.observe(grid, { childList: true, subtree: true });
+        }
+      }
+      schedule();
+    },
+    [schedule],
+  );
+  const forget = useCallback(
+    (id: string) => {
+      nodes.current.delete(id);
+      schedule();
+    },
+    [schedule],
+  );
+  useEffect(() => {
+    // Re-arm after an effect replay even when the existing nodes did not resize.
+    const grid = [...nodes.current.values()][0]?.closest("[data-card-grid]");
+    if (grid && !observer.current) {
+      observer.current = new MutationObserver(schedule);
+      observer.current.observe(grid, { childList: true, subtree: true });
+    }
+    schedule();
+    return () => {
+      observer.current?.disconnect();
+      observer.current = null;
+      if (frame.current !== null) cancelAnimationFrame(frame.current);
+      frame.current = null;
+    };
+  }, [schedule]);
+  return useMemo(() => ({ order, onTileLayout, forget }), [order, onTileLayout, forget]);
+}

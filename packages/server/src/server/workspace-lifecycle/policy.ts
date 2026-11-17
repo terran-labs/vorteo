@@ -141,10 +141,39 @@ export function assertWorkspaceNotSystemManaged(
   if (workspace.systemMembership) throw new SystemManagedError("This system workspace");
 }
 
+type FactoryMembership = NonNullable<PersistedWorkspaceRecord["factoryMembership"]>;
+const PROJECT_FACTORY_INSTALLATION_PREFIX = "project-factory:";
+
+/**
+ * The membership a per-project Factory holds, or undefined. Memberships the retired Factory
+ * controller wrote are inert: they no longer block archive, moves or System adoption, and
+ * clients never see them.
+ */
+// COMPAT(retiredFactoryMembership): added after 26.11.902; drop retired memberships on load and
+// remove this filter after 2027-05-10, once no retained registry holds one.
+export function activeFactoryMembership(
+  workspace: Pick<PersistedWorkspaceRecord, "factoryMembership">,
+): FactoryMembership | undefined {
+  const membership = workspace.factoryMembership;
+  return membership?.installationId.startsWith(PROJECT_FACTORY_INSTALLATION_PREFIX)
+    ? membership
+    : undefined;
+}
+
+/** The record without a retired controller membership, as written by a new owner. */
+export function withoutRetiredFactoryMembership<T extends PersistedWorkspaceRecord>(
+  workspace: T,
+): T {
+  if (!workspace.factoryMembership || activeFactoryMembership(workspace)) return workspace;
+  const { factoryMembership: _retired, ...retained } = workspace;
+  return retained as T;
+}
+
 export function assertWorkspaceNotFactoryManaged(
   workspace: Pick<PersistedWorkspaceRecord, "workspaceId" | "factoryMembership">,
 ): void {
-  if (workspace.factoryMembership) throw new WorkspaceFactoryManagedError(workspace.workspaceId);
+  if (activeFactoryMembership(workspace))
+    throw new WorkspaceFactoryManagedError(workspace.workspaceId);
 }
 
 export function factoryMembershipForDescriptor({
@@ -154,7 +183,7 @@ export function factoryMembershipForDescriptor({
   workspace: Pick<PersistedWorkspaceRecord, "projectId" | "factoryMembership">;
   serverId: string | undefined;
 }): Pick<PersistedWorkspaceRecord, "factoryMembership"> {
-  const membership = workspace.factoryMembership;
+  const membership = activeFactoryMembership(workspace);
   if (
     !membership ||
     membership.serverId !== serverId ||
@@ -172,7 +201,7 @@ export function assertWorkspaceUnprotected(
   >,
 ): void {
   assertWorkspaceNotSystemManaged(workspace);
-  // Even an invalid retained binding blocks destruction until native reconciliation.
+  // Even an invalid per-project Factory membership blocks destruction until it is cleared.
   assertWorkspaceNotFactoryManaged(workspace);
   if (workspace.protected) throw new WorkspaceProtectedError(workspace.workspaceId);
 }

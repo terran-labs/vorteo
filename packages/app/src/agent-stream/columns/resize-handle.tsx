@@ -6,14 +6,19 @@ import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
 import {
   SIDEBAR_RESIZE_ACTIVATION_OFFSET,
   SIDEBAR_RESIZE_FAIL_OFFSET,
+  resolveSidebarResizeHandleGeometry,
 } from "@/components/sidebar-resize-handle-layout";
-import { resizeColumn, type ColumnWidths } from "./geometry";
+import { useHasFinePointer } from "@/hooks/use-fine-pointer";
+import { isWeb } from "@/constants/platform";
+import { COLUMN_COMPOSER_INSET, resizeColumn, type ColumnWidths } from "./geometry";
 
 interface ColumnResizeHandleProps {
   column: keyof ColumnWidths;
   widths: ColumnWidths;
   containerWidth: number;
   standaloneText?: boolean;
+  /** Read-only threads have no message field, so the text handle stays on the column edge. */
+  hasComposer?: boolean;
   onPreview: (column: keyof ColumnWidths, width: number) => void;
   onCommit: (column: keyof ColumnWidths, width: number) => void;
 }
@@ -23,9 +28,20 @@ export function ColumnResizeHandle({
   widths,
   containerWidth,
   standaloneText,
+  hasComposer = false,
   onPreview,
   onCommit,
 }: ColumnResizeHandleProps) {
+  const finePointer = useHasFinePointer();
+  // The text handle follows the message field's right edge, which sits inside the column. On web
+  // the handle straddles its edge, so it also moves inward when the centered conversation
+  // exhausts the gutter, keeping the full target reachable.
+  const reachInset =
+    isWeb && standaloneText && column === "text"
+      ? (resolveSidebarResizeHandleGeometry(finePointer).width - (containerWidth - widths.text)) / 2
+      : 0;
+  const handleInset =
+    column === "text" ? Math.max(hasComposer ? COLUMN_COMPOSER_INSET : 0, reachInset) : 0;
   const initial = useRef({ widths, pointerX: 0 });
   const [pressed, setPressed] = useState(false);
   const begin = useCallback(() => {
@@ -83,7 +99,7 @@ export function ColumnResizeHandle({
     [column, widths, containerWidth, standaloneText, onPreview, onCommit],
   );
   return (
-    <View pointerEvents="box-none" style={absoluteFill}>
+    <View pointerEvents="box-none" style={[absoluteFill, { right: handleInset }]}>
       <SidebarResizeHandle
         edge={column === "cards" ? "left" : "right"}
         gesture={gesture}

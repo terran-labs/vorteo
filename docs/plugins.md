@@ -156,7 +156,8 @@ preserves the existing rollback behavior. A disabled installation is built and v
 never started. These calls require `daemon.manage`; they do not grant installation authority
 or copy registry credentials. Local directory paths remain environment bindings.
 
-For shared directory plugins, edit each path in Settings > Environments. The directory binding
+For shared directory plugins, edit each path in Settings > System > Environments: Edit opens the
+environment's dialog, where the paths are under Environment exceptions. The directory binding
 call requires the last observed path, or `null` for a new binding, and the effective enabled
 state. A stale path is rejected. Excluded plugins accept disabled bindings but cannot activate.
 The daemon validates the candidate before replacing a running copy and restores the previous

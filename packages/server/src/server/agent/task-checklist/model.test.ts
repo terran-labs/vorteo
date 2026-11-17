@@ -1,8 +1,9 @@
+import { createChecklistTools } from "./tools.js";
 import { z } from "zod";
 import type { AgentTaskItem } from "@getpaseo/protocol/agent-types";
 import { AgentTaskItemSchema, type WSOutboundMessage } from "@getpaseo/protocol/messages";
 import { serializeLegacyChecklistMessage } from "./compatibility.js";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, it, vi } from "vitest";
 import { ChecklistMutationSchema, mutateChecklist } from "./model.js";
 
 describe("thread checklist mutations", () => {
@@ -451,5 +452,127 @@ describe("checklist progress review follow-ups", () => {
       },
     ];
     expect(update(legacy, { text: "Renamed" })[0].text).toBe("Renamed");
+  });
+});
+
+describe("thread checklist tool projections", () => {
+  it("returns only affected compact tasks and status counts", async () => {
+    const tasks = [
+      { id: "other", text: "Other", completed: false, source: "vorteo" as const },
+      { id: "new", text: "New", completed: false, source: "vorteo" as const },
+    ];
+    const manager = {
+      readChecklist: vi.fn(() => tasks.slice(0, 1)),
+      mutateChecklist: vi.fn(async () => tasks),
+    };
+    const tool = createChecklistTools(manager, "thread")[1];
+    const created = await tool.handler({ mutation: { operation: "create", text: "New" } }, {});
+    expect(created.structuredContent).toEqual({
+      task: expect.objectContaining({ id: "new" }),
+      summary: { pending: 2, in_progress: 0, review: 0, blocked: 0, completed: 0 },
+    });
+    const updated = await tool.handler({ mutation: { operation: "update", id: "new" } }, {});
+    expect(updated.structuredContent).toMatchObject({ tasks: [{ id: "new" }] });
+    const deleted = await tool.handler({ mutation: { operation: "delete", id: "new" } }, {});
+    expect(deleted.structuredContent).toMatchObject({ id: "new" });
+    const reordered = await tool.handler(
+      { mutation: { operation: "reorder", ids: ["new", "other"] } },
+      {},
+    );
+    expect(reordered.structuredContent).toMatchObject({ ids: ["new", "other"] });
+  });
+
+  it("returns the created Vorteo task when a provider task follows it", async () => {
+    const existing: AgentTaskItem = {
+      id: "existing",
+      text: "Existing",
+      source: "vorteo",
+      completed: false,
+    };
+    const provider: AgentTaskItem = {
+      id: "new",
+      text: "Native task",
+      source: "provider",
+      completed: false,
+    };
+    const created: AgentTaskItem = {
+      id: "new",
+      text: "Created task",
+      source: "vorteo",
+      completed: false,
+    };
+    const manager = {
+      readChecklist: vi.fn(() => [existing, provider]),
+      mutateChecklist: vi.fn(async () => [existing, created, provider]),
+    };
+    const tool = createChecklistTools(manager, "thread")[1];
+    const response = await tool.handler(
+      { mutation: { operation: "create", text: "Created task" } },
+      {},
+    );
+    expect(response.structuredContent).toEqual({
+      task: { id: "new", text: "Created task", source: "vorteo", status: "pending" },
+      summary: { pending: 3, in_progress: 0, review: 0, blocked: 0, completed: 0 },
+    });
+  });
+
+  it("lists compact tasks while preserving full detail by id", async () => {
+    const task = {
+      id: "large",
+      text: "Large",
+      completed: false,
+      description: "d".repeat(1000),
+      metadata: { record: "x".repeat(86000) },
+      checks: [{ text: "Check", done: true }],
+    };
+    const manager = { readChecklist: vi.fn(() => [task]), mutateChecklist: vi.fn(async () => []) };
+    const tool = createChecklistTools(manager, "thread")[0];
+    const listed = await tool.handler({}, {});
+    expect(listed.structuredContent).toEqual({
+      tasks: [
+        {
+          id: "large",
+          text: "Large",
+          status: "pending",
+          description: "d".repeat(200),
+          checks: { total: 1, done: 1 },
+        },
+      ],
+    });
+    expect(JSON.stringify(listed.structuredContent).length).toBeLessThan(1000);
+    const detail = await tool.handler({ id: "large" }, {});
+    expect(detail.structuredContent).toEqual({ task, blocks: [] });
+  });
+
+  it("caps merged metadata and preserves untouched legacy records", async () => {
+    const base = mutateChecklist([], {
+      operation: "create",
+      id: "task",
+      text: "Task",
+      metadata: { a: "x".repeat(4000) },
+    });
+    expect(() =>
+      mutateChecklist(base, {
+        operation: "update",
+        id: "task",
+        metadata: { b: "界".repeat(2000) },
+      }),
+    ).toThrow("journal's machineContext");
+    expect(() =>
+      mutateChecklist([], {
+        operation: "create",
+        text: "Too big",
+        metadata: { a: "x".repeat(8192) },
+      }),
+    ).toThrow("8 KiB");
+    const legacy = [{ ...base[0], metadata: { a: "x".repeat(86000) } }];
+    expect(
+      mutateChecklist(legacy, { operation: "update", id: "task", status: "in_progress" })[0]
+        .metadata,
+    ).toEqual(legacy[0].metadata);
+    expect(
+      mutateChecklist(legacy, { operation: "update", id: "task", metadata: { a: null } })[0]
+        .metadata,
+    ).toEqual({});
   });
 });

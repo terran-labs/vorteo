@@ -47,6 +47,12 @@ export const en = {
     },
     checks: { pending: "Checks pending", passing: "Checks passing", failing: "Checks failing" },
     agents: { lead: "Lead", worker: "Worker", reviewer: "Reviewer" },
+    home: {
+      label: "Factory home: {{environment}}",
+      environments: { host: "Host", container: "Dev" },
+      here: "Factory runs in this environment.",
+      elsewhere: "Factory for this repository runs in {{environment}}, so roles here stand down.",
+    },
     assignment: {
       title: "Role assignment",
       installation: "This installation: {{installation}}",
@@ -109,14 +115,20 @@ export const en = {
       ledger: "Ledger",
       live: "Live",
       sample: "Sample factory",
-      sampleNotice:
-        "Showing a sample queue so the designs can be compared. Controls still change this project's real Factory.",
+      sampleNotice: "Showing a sample queue. Controls still change this project's real Factory.",
       sampleNoticeAll:
-        "Showing three sample Factories so the designs can be compared. Stop and resume stay off while sample data shows.",
+        "Showing three sample Factories. Stop and resume stay off while sample data shows.",
     },
     scope: {
       all: "All Factories",
       allTitle: "All Factories",
+      pipelineSummary: "{{queued}} queued · {{active}} active · {{review}} review",
+      snapshotAt: "Queue snapshot: {{time}} ({{minutes}} min ago)",
+      queueRetry: "Queue unavailable. Retry",
+      sidebarSummary_one:
+        "{{count}} Factory · {{running}} on · {{paused}} paused · {{held}} held/draining",
+      sidebarSummary_other:
+        "{{count}} Factories · {{running}} on · {{paused}} paused · {{held}} held/draining",
       factories: "Factories",
       open: "Open",
       zoomIn: "Open the {{project}} Factory",
@@ -172,30 +184,6 @@ export const en = {
       heldDetail:
         "{{reason}} · {{age}}. Held by another process, for example Builds before a restart or update, which resumes them when it finishes.",
     },
-    needsYou: {
-      title: "Needs you",
-      none: "Nothing needs you",
-      count: "Needs you · {{count}}",
-      showAll: "Show all {{count}}",
-      showFewer: "Show fewer",
-      kinds: {
-        question: "Question: {{subject}}",
-        proposal: "Instructions proposal for {{subject}}",
-        drain: "Factories stopped: {{subject}}",
-        held: "Held for a restart or update: {{subject}}",
-        humanReview: "Review {{subject}}",
-        failingChecks: "Checks failing on {{subject}}",
-        claim: "Claimed by another installation: {{subject}}",
-        awaitingApproval: "Waiting for approval: {{subject}}",
-        blocked: "Blocked: {{subject}}",
-      },
-      actions: {
-        thread: "Answer",
-        issue: "Open",
-        instructions: "Review",
-        stop: "See above",
-      },
-    },
     controls: {
       modelsAndRoles: "Models & roles",
       stageSummary: "Plan · Build · Review",
@@ -234,8 +222,6 @@ export const en = {
       kpi: {
         inFlight: "In flight",
         inFlightDetail: "{{queued}} queued · {{blocked}} blocked",
-        needsYou: "Needs you",
-        needsYouDetail: "{{count}} in repair",
         merged7d: "Merged, 7 days",
         merged7dDetail: "{{count}} the week before",
         cycleTime: "Median cycle time",
@@ -250,7 +236,7 @@ export const en = {
         queueAge: "Oldest queued",
         queueAgeDetail: "{{count}} waiting",
       },
-      heroDetail: "Needs you · {{needsYou}} · {{blocked}} blocked · {{queued}} queued",
+      heroDetail: "{{blocked}} blocked · {{queued}} queued",
       pipeline: "Pipeline",
       inRepair: "{{count}} in repair",
       velocity: "Merged per day",
@@ -1523,6 +1509,12 @@ export const en = {
   sidebar: {
     factoryCard: {
       title: "Factory",
+      titleWithProject: "Factory · {{project}}",
+      overview: "Overview",
+      crew: "Crew",
+      factories: "Factories",
+      talk: "Talk to the Factory",
+      talkLabel: "Talk to the Factory: open {{role}}",
       openOverview: "Open Factory overview",
       collapse: "Collapse Factory",
       expand: "Expand Factory",
@@ -1537,14 +1529,6 @@ export const en = {
         unavailable: "Unavailable",
       },
       idle: "Idle",
-      stageCounts: {
-        queued: "{{count}} queued",
-        planning: "{{count}} plan",
-        building: "{{count}} build",
-        review: "{{count}} review",
-        repair: "{{count}} repair",
-        merging: "{{count}} merge",
-      },
       stageNames: {
         queued: "Queued",
         planning: "Planning",
@@ -1554,7 +1538,6 @@ export const en = {
         merging: "Merging",
       },
       stageHeader: "{{stage}} · {{count}}",
-      queueHeader: "Queue · {{count}}",
       moreIssues: "+{{count}} more",
       issue: "#{{number}} {{title}}",
       runners: "Runners",
@@ -1565,7 +1548,6 @@ export const en = {
       trackQueued: "Waiting in the queue",
       noStatus: "No status yet",
       statusAge: "{{line}} · {{age}}",
-      noWorkspace: "No workspace yet",
       openRole: "Open {{role}}",
       openRunner: "Open #{{number}} {{title}}",
       agentStatus: "{{role}}: {{status}}",
@@ -1573,11 +1555,10 @@ export const en = {
       pullRequest: "PR #{{number}}",
       noAgents: "No agents yet. Opens the issue.",
       allTitle: "All Factories",
-      stateSummary: "{{project}}: {{state}}",
       openProject: "Open {{project}} Factory overview",
-      chipCounts: "{{state}}. {{inFlight}} in flight. Needs you · {{needsYou}}",
-      chipCountsShort: "{{inFlight}} in flight · Needs you · {{needsYou}}",
-      needsYouHeader: "Needs you · {{count}}",
+      chipCounts: "{{state}}. {{inFlight}} in flight",
+      inFlight: "{{count}} in flight",
+      heldReason: "Held for a restart or update: {{reason}}",
     },
     statusGroupAccessibility: "{{label}} group",
     statusBucket: {
@@ -2742,6 +2723,9 @@ export const en = {
     title: "Settings",
     loading: "Loading settings...",
     groups: {
+      /** Top-level settings groups: settings stored on this device, and installation-wide. */
+      thisDevice: "This device",
+      vorteo: "Vorteo",
       app: "App",
       host: "Host",
     },
@@ -3508,6 +3492,11 @@ export const en = {
           hint: "Free up memory after an hour of inactivity.",
           info: "Stops the agent's process while keeping its conversation. Send a message to resume.\n\nActive work, pending notifications, and provider safety checks prevent cleanup.",
         },
+        blockedWorkReview: {
+          title: "Review blocked work",
+          hint: "Off by default. A short review after a thread stops with unfinished work, repeated only while it helps.",
+          info: "When a thread stops with a blocked or in-progress task and nothing set to wake it, it gets a short prompt about 5 minutes later to check its unfinished work and continue. Up to two more follow, about 15 and 30 minutes apart, but only while a review changes something. Then reviews stop until someone sends the thread a message.\n\nEach review resumes the thread's conversation, so one never runs after the provider's prompt cache has gone cold. A thread gets at most 6 reviews a day and the installation at most 12 an hour.\n\nItems waiting on an open question or on your review are skipped; your answer wakes the thread.",
+        },
       },
       workspaces: {
         unavailable: "Connect to this host to manage workspaces",
@@ -3806,6 +3795,76 @@ export const en = {
         cancel: "Cancel",
       },
     },
+  },
+  vorteoSetup: {
+    title: "Set up Vorteo",
+    reopen: "Show setup again",
+    followSystem: "Follow system",
+    stepCounter: "Step {{current}} of {{total}}",
+    chooseStepCurrent: "Choose setup step, current: {{step}}",
+    appearance: "Appearance",
+    providers: "Choose a provider",
+    projects: "Projects",
+    orchestration: "Agent tools and skills",
+    phone: "Other devices and CLI",
+    accountsHint:
+      "Choose one provider on Host. Sign in once through the installation connection controls; Host shares supported connections with Dev.",
+    manageAccounts: "Settings > Providers",
+    moreProviders: "Add more providers later in Settings",
+    chooseProviderCurrent: "Choose an installed provider, current: {{provider}}",
+    useProvider: "Use {{provider}}, already signed in",
+    connectProvider: "Connect {{provider}}",
+    skipProvider: "Skip for now",
+    primaryLocalOnly:
+      "This host cannot save a primary connection yet. Your choice stays in this guide and is not saved to installation settings.",
+    retryPrimary: "Retry saving primary connection",
+    primaryUnavailable:
+      "This connection is no longer available in installation settings. Refresh and choose again.",
+    snapshotUnsupported: "Provider snapshots are not supported by this host.",
+    signInUnknown:
+      "Sign-in is not verified. Open Providers settings to check this connection or update Host for shared sign-in.",
+    profilesHint:
+      "Ready accounts work without a saved profile. Existing starter profiles and your saved workflows stay available in the workspace chooser.",
+    offline: "Offline, verification pending",
+    unknown: "Readiness unavailable. Update this host to check provider accounts.",
+    noAccounts:
+      "No installed provider is confirmed on Host. Open Providers settings for install instructions, then choose More > Show setup again to continue from this step. Setup checks again while this step is open.",
+    projectHint:
+      "Add an existing project from your Projects folder. Nothing is moved or copied. The host checks access before adding it.",
+    projectsFolder: "Projects folder: {{path}}",
+    projectsUnknown:
+      "This host does not advertise a Projects folder. Manual Add project still follows its access rules.",
+    userProjects: "User projects added: {{count}}",
+    systemExcluded: "Vorteo System is managed separately and does not count as your first project.",
+    suggestionsUnavailable:
+      "History suggestions require an updated host. You can still add a project manually.",
+    historyFailed:
+      "Could not read history for {{provider}}. Other providers' results remain available.",
+    providerListFailed:
+      "Could not read the provider list, so history suggestions are unavailable. You can still add a project manually.",
+    historyRetry: "Retry history",
+    skillsUnchanged: "No skill changes were applied.",
+    preferencesHint:
+      "These are the saved installation settings. Opening setup and pressing Continue do not change them.",
+    sharedSettingsUnavailable:
+      "Shared settings are not ready. Resolve migration or connection problems in Settings before changing agent tools.",
+    deviceHint:
+      "Open this installation address in your phone or another browser and sign in with the owner password. Use the browser's Install app or Add to Home Screen action for the Vorteo PWA.",
+    deviceNetwork:
+      "The device must reach this address, for example through your private Tailscale network. A loopback address only works on this computer.",
+    urlQr: "Installation address QR code",
+    qrFailed: "Could not create the address QR code. Copy the address instead.",
+    copyAddress: "Copy installation address",
+    copied: "Address copied",
+    addHost: "Add host",
+    addHostHint:
+      "For a separate host, use a direct connection or SSH. Your current installation sign-in already connects its reviewed Host and Dev environments.",
+    cliHint:
+      "If the agent CLI is installed in your environment, run paseo --help to see its commands. The vorteo command manages the installation; it is a different tool. Setup does not install or replace either command.",
+    finishHint:
+      "Finish records that you went through this guide. Account readiness and pending delivery remain visible in Providers.",
+    saveFailed:
+      "Could not save setup progress. You can continue working and reopen setup from More.",
   },
 } as const;
 

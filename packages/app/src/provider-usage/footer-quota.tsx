@@ -11,6 +11,7 @@ import {
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { useAppVisible } from "@/hooks/use-app-visible";
 import { useUsageHostId } from "@/usage/hosts";
+import { useUsageSetting } from "@/usage/setting";
 import { useOpenUsageScreen } from "@/usage/sidebar-item";
 import { quotaAccounts, type QuotaAccount } from "./global-quota";
 import { QuotaAccountList } from "./quota-account-list";
@@ -39,11 +40,14 @@ export function SidebarFooterQuota({
   identityWidth: number;
 }) {
   const serverId = useUsageHostId();
+  // "Check usage" off means no usage anywhere for that host: the Usage screen says it is off, so
+  // the meter hides and stops polling too. Hosts without the setting report it as on.
+  const usageSetting = useUsageSetting(serverId);
   // Poll for display only while the meter is on screen: its sidebar open and the app visible.
   // The daemon logs usage history on its own schedule either way.
   const panelActive = useRetainedPanelActive();
   const appVisible = useAppVisible();
-  const shown = panelActive && appVisible;
+  const shown = usageSetting.enabled && panelActive && appVisible;
   const { view } = useProviderUsage(serverId, { enabled: shown, pollUsage: shown });
   // Readings refresh every minute, so minute-precision countdowns only need the render time.
   const now = useMemo(() => (view.kind === "ready" ? Date.now() : 0), [view]);
@@ -58,7 +62,7 @@ export function SidebarFooterQuota({
     [series, rowWidth, room],
   );
   const [open, setOpen] = useState(false);
-  if (accounts.length === 0) return null;
+  if (!usageSetting.enabled || accounts.length === 0) return null;
   return (
     <SidebarPopoverRoot open={open} onOpenChange={setOpen}>
       <FooterQuotaTrigger

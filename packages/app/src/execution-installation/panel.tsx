@@ -2,7 +2,13 @@ import { toErrorMessage } from "@/utils/error-messages";
 import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { useAgentActionReceipts, useInstallationUpgradeStatus } from "./use-installation-upgrades";
 import type { AgentActionReceipt } from "@getpaseo/protocol/installation-upgrades";
-import { systemAttentionCount } from "@/screens/settings/system/system-adapter-model";
+import { systemHealthItems } from "@/screens/settings/system/health-model";
+import { useHealthExtrasCount } from "@/screens/settings/system/health-extras";
+import {
+  requestSettingsJump,
+  SYSTEM_HEALTH_ROUTE,
+  SYSTEM_HEALTH_TARGET,
+} from "@/screens/settings/settings-jump";
 import { usePanelOwnerAccess } from "./panel-owner-access";
 import { OwnerLockBadge } from "@/components/settings/owner-lock";
 import type { CustomDomainStatus } from "@getpaseo/protocol/custom-domain";
@@ -11,6 +17,8 @@ import { useToast } from "@/contexts/toast-api-context";
 import type { BrokerReviewJob } from "./preview-broker-review";
 import {
   brokerActionDisabledReason,
+  brokerAdmissionDescription,
+  brokerDeploymentResumeDescription,
   brokerReviewSummary,
   type BrokerAction,
 } from "./preview-broker-review";
@@ -61,7 +69,15 @@ import {
   type ComponentProps,
 } from "react";
 import { Pressable, Text, View } from "react-native";
-import { CheckSquare, Square, Info, ChevronDown, ChevronUp, Copy } from "lucide-react-native";
+import {
+  CheckSquare,
+  Square,
+  Info,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  TriangleAlert,
+} from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { isWeb } from "@/constants/platform";
 import { Field, FormTextInput } from "@/components/ui/form-field";
@@ -72,6 +88,7 @@ import { groupHoverStyle, hoverGroup } from "@/styles/hover";
 import { StatusBadge, type StatusBadgeVariant } from "@/components/ui/status-badge";
 
 import { confirmDialog } from "@/utils/confirm-dialog";
+import { JoinedField } from "@/components/settings/joined-field";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 
@@ -92,6 +109,7 @@ import {
   PreclaimRecoveryReview,
 } from "./bootstrap-panel";
 import { installationHasDev, readExecutionInstallation } from "./policy";
+import { isDemoSession } from "@/demo/mode";
 import { InstallationClient, requestInstallationOwner, hasInstallationConnections } from "./client";
 import { SafetySnapshotsCard } from "./safety-snapshots";
 import { CoordinatorFollowCard } from "./installation-upgrade-card";
@@ -136,7 +154,10 @@ function getInstallationPanel(registryLoaded: boolean): InstallationPanelModel |
       register: runtime,
     });
     panelModel = new InstallationPanelModel(panelClient, {
-      connectionsRegistered: hasInstallationConnections(installation, runtime.getHosts()),
+      // Demo hosts connect in process, so the simulated installation never needs its
+      // connections registered; otherwise every cold load would be sent to /welcome.
+      connectionsRegistered:
+        isDemoSession() || hasInstallationConnections(installation, runtime.getHosts()),
       openRequested:
         typeof window !== "undefined" &&
         new URL(window.location.href).searchParams.get("installation") === "1",
@@ -360,6 +381,9 @@ function restartStatus(job: RestartJob, historical = false) {
       return { label: "Waiting longer than expected", variant: "warning" as const };
     return { label: "Approval needed", variant: "warning" as const };
   }
+  // The hold outlasted its deadline: the owner must restart now or cancel.
+  if (job.status === "approved" && job.holdDeadlineExceeded)
+    return { label: "Your decision needed", variant: "warning" as const };
   let approvedLabel = "Approved";
   if (job.whenIdle) approvedLabel = "Queued until idle";
   if (job.finishCurrentTurns) approvedLabel = "Finishing current turns";
@@ -512,7 +536,7 @@ function InstallationSystemAdvancedBody({ model }: { model: InstallationPanelMod
     <>
       <DaemonAutomationControl model={model} state={state} />
       <CustomDomainCard model={model} state={state} />
-      <DeliveryModeCard model={model} state={state} />
+      <DeliveryModeCard state={state} />
     </>
   ) : null;
 }
@@ -1195,11 +1219,11 @@ function BrokerRequest({
             {job.target === "preview-broker-deployment"
               ? job.plan.registrations.map(
                   (item) =>
-                    `\nRegistration: ${item.domain}/${item.label} (${item.disposition})\nRoot: ${item.root}\nEnabled: ${item.enabled}; override: ${item.override}\nProcess: ${item.process ? `PID ${item.process.pid}; birth ${item.process.birth.join(":")}; UID ${item.process.uid}; argv ${JSON.stringify(item.process.argv)}` : "idle, no registered process"}`,
+                    `\nRegistration: ${item.domain}/${item.label} (${item.disposition})\nRoot: ${item.root}\nEnabled: ${item.enabled}; override: ${item.override}\nProcess: ${item.process ? `PID ${item.process.pid}; birth ${item.process.birth.join(":")}; UID ${item.process.uid}; argv ${JSON.stringify(item.process.argv)}` : "idle, no registered process"}\n${brokerAdmissionDescription(item.admission)}`,
                 )
               : null}
             {job.target === "preview-broker-deployment"
-              ? `\nScope: only the declared managed routes and ${job.plan.manualParticipants.length} manual participants are known. No new manual broker calls until release.\nResume is allowed only while legacy channel identity still refuses request consumption.`
+              ? `\nScope: only the declared managed routes and ${job.plan.manualParticipants.length} manual participants are known. No new manual broker calls until release.\n${brokerDeploymentResumeDescription(job.plan.registrations)}`
               : null}
             {job.target === "preview-broker-deployment"
               ? job.plan.manualParticipants.map(
@@ -1605,31 +1629,24 @@ function DeliveryModeSettingBody({ model }: { model: InstallationPanelModel }) {
     loaded.current = true;
     void model.refresh();
   }, [model, needsLoad]);
-  return <DeliveryModeCard model={model} state={state} />;
+  return <DeliveryModeCard state={state} />;
 }
 
-/** Reliable serves the published interface; Live dev serves the Host's live checkout. */
-function DeliveryModeCard({
-  model,
-  state,
-}: {
-  model: InstallationPanelModel;
-  state: ReturnType<InstallationPanelModel["getState"]>;
-}) {
+/**
+ * Live development status. Lab serves the Host's live checkout and Stable the published
+ * interface, so the installation type is the only switch; this card reports what is served.
+ */
+function DeliveryModeCard({ state }: { state: ReturnType<InstallationPanelModel["getState"]> }) {
   const status = state.liveDev;
   const live = status?.mode === "live";
-  const toggle = useCallback(
-    () => void model.changeLiveDev(live ? "reliable" : "live"),
-    [model, live],
-  );
   if (!status) return null;
   return (
     <View style={[styles.cardBody, settingsStyles.rowBorder]} testID="delivery-mode-card">
-      <Text style={settingsStyles.rowTitle}>Delivery mode</Text>
+      <Text style={settingsStyles.rowTitle}>Live development</Text>
       <Text style={styles.text}>
         {live
-          ? "Live dev. Your browser runs the interface from the Host's live checkout, and edits there appear within seconds. Other browsers and the recovery address keep the published interface."
-          : "Reliable. Every browser runs the published interface, and changes arrive through tracked updates."}
+          ? "On, because this is a Lab installation. Your browser runs the interface from the Host's live checkout, and edits there appear within seconds. Other browsers keep the published interface."
+          : "Off. Every browser runs the published interface. Choose Lab as the installation type to turn on live development."}
       </Text>
       {live ? (
         <Text style={styles.text} testID="delivery-mode-server">
@@ -1639,18 +1656,10 @@ function DeliveryModeCard({
       {!status.available && status.reason ? <Text style={styles.text}>{status.reason}</Text> : null}
       {!live && status.available ? (
         <Text style={styles.text}>
-          Live dev runs uncommitted edits by Host agents in your signed-in browser without a
+          Live development runs uncommitted edits by Host agents in your signed-in browser without a
           publication step. Dev container agents cannot reach the live checkout.
         </Text>
       ) : null}
-      <Button
-        size="md"
-        disabled={state.busy || (!live && !status.available)}
-        onPress={toggle}
-        testID="delivery-mode-change"
-      >
-        {live ? "Switch to Reliable" : "Switch to Live dev"}
-      </Button>
       {live ? (
         <Text style={styles.text}>
           If a live edit breaks the interface, open the safe interface at /?interface=safe.
@@ -1660,6 +1669,9 @@ function DeliveryModeCard({
     </View>
   );
 }
+
+// React Native's types omit `aria-level`; without it React Native Web renders the heading as h1.
+const CUSTOM_DOMAIN_HEADING = { "aria-level": 5 } as object;
 
 const CUSTOM_DOMAIN_CHANGE_TEXT = {
   running: "The coordinator is restarting with this domain. Agents keep running.",
@@ -1693,16 +1705,31 @@ function CustomDomainCard({
   const status = state.customDomain;
   const [draft, setDraft] = useState<string | null>(null);
   const value = normalizeCustomDomain(draft ?? status?.origin ?? "");
-  const save = useCallback(() => {
-    void model.changeCustomDomain(value === "" ? null : value).then(() => setDraft(null));
-  }, [model, value]);
+  const origin = status?.origin ?? null;
+  const save = useCallback(async () => {
+    // Removing the domain restarts the coordinator and cuts off anyone using that address.
+    if (value === "" && origin) {
+      const confirmed = await confirmDialog({
+        title: "Remove the custom domain?",
+        message: `This installation stops answering at ${origin}. Saving restarts the coordinator; agents keep running.`,
+        confirmLabel: "Remove domain",
+        destructive: true,
+      });
+      if (!confirmed) return;
+    }
+    await model.changeCustomDomain(value === "" ? null : value);
+    setDraft(null);
+  }, [model, origin, value]);
+  const submit = useCallback(() => void save(), [save]);
   if (!status) return null;
   const last = status.lastChange;
   const running = last?.status === "running";
   const unchanged = value === (status.origin ?? "");
   return (
     <View style={[styles.cardBody, settingsStyles.rowBorder]} testID="custom-domain-card">
-      <Text style={settingsStyles.rowTitle}>Custom domain</Text>
+      <Text style={settingsStyles.rowTitle} accessibilityRole="header" {...CUSTOM_DOMAIN_HEADING}>
+        Custom domain
+      </Text>
       <Text style={styles.text}>
         {status.origin
           ? `This installation also answers at ${status.origin}.`
@@ -1712,31 +1739,28 @@ function CustomDomainCard({
       {status.available ? (
         <>
           <Field label="Domain">
-            <FormTextInput
+            {/* Saving restarts the coordinator, so it stays an explicit submit. */}
+            <JoinedField
               size="md"
+              label="Custom domain"
               autoCapitalize="none"
               autoCorrect={false}
               keyboardType="url"
               placeholder="https://vorteo.example.com"
               initialValue={status.origin ?? ""}
               onChangeText={setDraft}
-              editable={!state.busy && !running}
-              accessibilityLabel="Custom domain"
+              onSubmit={submit}
+              submitLabel={value === "" && status.origin ? "Remove domain" : "Save domain"}
+              submitDisabled={unchanged}
+              disabled={state.busy || running}
               testID="custom-domain-input"
+              submitTestID="custom-domain-save"
             />
           </Field>
           <Text style={styles.text}>
             Point the domain&apos;s DNS and HTTPS proxy at this Host first. Saving restarts only the
             coordinator; this page reconnects in a few seconds.
           </Text>
-          <Button
-            size="md"
-            disabled={state.busy || running || unchanged}
-            onPress={save}
-            testID="custom-domain-save"
-          >
-            {value === "" && status.origin ? "Remove domain" : "Save domain"}
-          </Button>
         </>
       ) : null}
       <SettingsStatusLine
@@ -2351,6 +2375,23 @@ function ForceRestartButton({
   );
 }
 
+const HOLDERS_SHOWN = 8;
+
+/** The agents a waiting restart holds for, so the owner can see who to finish or stop. */
+function RestartHolders({ agents }: { agents: NonNullable<RestartJob["impact"]>["agents"] }) {
+  const hidden = agents.length - HOLDERS_SHOWN;
+  return (
+    <View testID="restart-holders">
+      {agents.slice(0, HOLDERS_SHOWN).map((agent) => (
+        <Text key={agent.id} style={styles.text} numberOfLines={1}>
+          {agent.title === agent.id ? agent.id : `${agent.title} (${agent.id.slice(0, 8)})`}
+        </Text>
+      ))}
+      {hidden > 0 ? <Text style={styles.text}>{`and ${hidden} more`}</Text> : null}
+    </View>
+  );
+}
+
 function RestartActivity({ job }: { job: RestartJob }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -2374,6 +2415,9 @@ function RestartActivity({ job }: { job: RestartJob }) {
             {job.impact.error ||
               `${job.impact.agents.length} active tasks · ${job.impact.pendingStarts} starting`}
           </Text>
+          {!job.impact.error && job.impact.agents.length > 0 ? (
+            <RestartHolders agents={job.impact.agents} />
+          ) : null}
           {!job.impact.idleRestartSupported && !job.impact.error ? (
             <Text style={styles.text}>
               This daemon needs an update before queued idle restarts can run.
@@ -2407,26 +2451,67 @@ export function InstallationRestartBanner({
   placement?: "floating" | "sidebar" | "rail";
 }) {
   const model = useInstallationSystemModel();
-  return model && placement !== "floating" ? <SystemAttentionNoticeBody model={model} /> : null;
+  return model && placement !== "floating" ? (
+    <SystemAttentionNoticeBody model={model} rail={placement === "rail"} />
+  ) : null;
 }
 export const SystemAttentionNotice = InstallationRestartBanner;
-function SystemAttentionNoticeBody({ model }: { model: InstallationPanelModel }) {
+/** The collapsed sidebar shows only the warning icon; its message moves to the tooltip. */
+function SystemAttentionNoticeBody({
+  model,
+  rail,
+}: {
+  model: InstallationPanelModel;
+  rail: boolean;
+}) {
   const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
   const router = useRouter();
-  const open = useCallback(() => router.push("/settings/system"), [router]);
+  // An open settings page scrolls to the health list and focuses it. Pushing a route there would
+  // stack a second settings page over the first, and do nothing when System is already named.
+  const open = useCallback(() => {
+    if (!requestSettingsJump(SYSTEM_HEALTH_TARGET)) router.push(SYSTEM_HEALTH_ROUTE);
+  }, [router]);
   const client = useInstallationOwnerClient();
   const upgrades = useInstallationUpgradeStatus(client);
-  const count = systemAttentionCount(state, upgrades.data?.upgrades);
-  return count ? (
+  // The Health list's rows: the installation rows read here, plus the provider, primary
+  // connection and update rows the list last published. No provider query runs from here.
+  const extras = useHealthExtrasCount();
+  const count = systemHealthItems(state, upgrades.data?.upgrades).length + extras;
+  if (!count) return null;
+  const label = `System needs attention (${count})`;
+  if (rail)
+    return (
+      <Tooltip delayDuration={300}>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            onPress={open}
+            leftIcon={TriangleAlert}
+            accessibilityLabel={label}
+            testID="installation-restart-banner"
+          />
+        </TooltipTrigger>
+        <TooltipContent side="right" align="center" offset={8}>
+          <Text style={styles.systemNoticeText}>{label}</Text>
+        </TooltipContent>
+      </Tooltip>
+    );
+  return (
     <Button
       variant="ghost"
       onPress={open}
+      leftIcon={TriangleAlert}
+      textStyle={styles.systemNoticeText}
+      accessibilityHint="Opens the System health list"
       testID="installation-restart-banner"
-    >{`System needs attention (${count})`}</Button>
-  ) : null;
+    >
+      {label}
+    </Button>
+  );
 }
 
 const styles = StyleSheet.create((theme) => ({
+  systemNoticeText: { fontSize: theme.fontSize.sm, color: theme.colors.foreground },
   reviewControl: (touch: boolean) => ({
     minHeight: touch ? CONTROL_HEIGHTS.md.xs : CONTROL_HEIGHTS.md.md,
   }),

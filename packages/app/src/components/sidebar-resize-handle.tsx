@@ -51,7 +51,10 @@ export function SidebarResizeHandle({
     return [
       styles.layer,
       { width: geometry.width },
-      edge === "left" ? { left: offset } : { right: offset },
+      // Clear the opposite edge so inherited inset rules cannot pin a right grip on the left.
+      edge === "left"
+        ? { left: offset, right: "auto" as const }
+        : { right: offset, left: "auto" as const },
     ];
   }, [edge, floating, geometry.edgeOffset, geometry.width]);
   const hitStyle = useMemo(

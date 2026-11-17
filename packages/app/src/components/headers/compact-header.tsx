@@ -5,6 +5,7 @@ import { router } from "expo-router";
 import { ArrowLeft } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { useIsFloatingHeader } from "@/components/floating-header";
 import { HeaderToggleButton } from "@/components/headers/header-toggle-button";
 import { SidebarMenuToggle } from "@/components/headers/sidebar-menu-toggle";
 import {
@@ -25,6 +26,7 @@ interface CompactHeaderProps {
   /** Back button action. Defaults to navigating back. */
   onBack?: () => void;
   title?: string;
+  titleContent?: ReactNode;
   titleTestID?: string;
   /** A line under the title. */
   subtitle?: ReactNode;
@@ -36,31 +38,41 @@ interface CompactHeaderProps {
 
 /**
  * The phone header: the navigation button and the screen's actions sit in islands, with the title
- * left-aligned between them. Neither the header nor its islands draw a background, so it reads the
- * same in flow and floating over content (see `FloatingHeaderLayout`, whose fade gives the icons
- * contrast). Its height matches the old flat header, so anything
- * offset by the header height still lines up.
+ * left-aligned between them. In flow it paints the toolbar surface and divider the open sidebar's
+ * toolbar uses, from the screen's top edge with the safe area included; the shell gives the status
+ * bar region the same surface. Floating over content
+ * it draws no background; `FloatingHeaderLayout`'s fade in the same surface gives the icons
+ * contrast. Its height matches the old flat header, so anything offset by the header height
+ * still lines up.
  */
 export function CompactHeader({
   navigation,
   onBack,
   title,
+  titleContent,
   titleTestID,
   subtitle,
   loading = false,
   actions,
 }: CompactHeaderProps) {
   const insets = useSafeAreaInsets();
+  const floating = useIsFloatingHeader();
   const rootStyle = useMemo(
     () => [
       styles.root,
+      !floating && styles.surface,
       {
         paddingTop: insets.top + HEADER_TOP_PADDING_MOBILE,
         marginLeft: insets.left,
         marginRight: insets.right,
       },
     ],
-    [insets.top, insets.left, insets.right],
+    [floating, insets.top, insets.left, insets.right],
+  );
+  const twoLineTitle = !titleContent && !loading && Boolean(title) && Boolean(subtitle);
+  const titleGroupStyle = useMemo(
+    () => [styles.titleGroup, twoLineTitle && styles.twoLineTitleGroup],
+    [twoLineTitle],
   );
 
   return (
@@ -70,13 +82,15 @@ export function CompactHeader({
           <View style={styles.island}>
             {navigation === "menu" ? <SidebarMenuToggle /> : <BackButton onBack={onBack} />}
           </View>
-          <View style={styles.titleGroup}>
-            <CompactHeaderTitle
-              loading={loading}
-              title={title}
-              titleTestID={titleTestID}
-              subtitle={subtitle}
-            />
+          <View style={titleGroupStyle}>
+            {titleContent ?? (
+              <CompactHeaderTitle
+                loading={loading}
+                title={title}
+                titleTestID={titleTestID}
+                subtitle={subtitle}
+              />
+            )}
           </View>
           {actions ? <View style={styles.island}>{actions}</View> : null}
         </View>
@@ -142,6 +156,12 @@ const styles = StyleSheet.create((theme) => ({
   root: {
     paddingHorizontal: theme.spacing[3],
   },
+  // The same surface and divider as the open sidebar's toolbar.
+  surface: {
+    backgroundColor: theme.colors.surfaceWorkspace,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.divider,
+  },
   row: {
     height: HEADER_INNER_HEIGHT_MOBILE,
     flexDirection: "row",
@@ -153,6 +173,12 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
     // Both title lines receive the remaining width; text alignment does not size the slot.
     alignItems: "stretch",
+  },
+  // Two text lines put their glyphs low in their line boxes: measured on an iPhone, the block's
+  // optical center sat about 2pt under the icon buttons' center. The extra bottom padding lifts
+  // the centered block by half its height, 1.5px.
+  twoLineTitleGroup: {
+    paddingBottom: 3,
   },
   island: {
     flexDirection: "row",

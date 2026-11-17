@@ -221,12 +221,15 @@ test("compact fullscreen editing preserves the live draft and selection and retu
     await resizeComposerViewport(page, "portrait");
     await openAgentRoute(page, agent);
     await expectComposerVisible(page);
-    await test.step("the affordance appears after two rendered lines, including soft wraps", async () => {
+    await test.step("the affordance appears when the full action stack fits, including soft wraps", async () => {
       await attachComposerTestImage(page);
       await expectAttachmentPill(page, "composer-image-attachment-pill");
       await writeCompactDraft(page, "First line\nSecond line");
       await expect(page.getByRole("button", { name: "Fullscreen", exact: true })).toHaveCount(0);
-      await writeCompactDraft(page, "First line\nSecond line\nThird line");
+      await writeCompactDraft(
+        page,
+        "First line\nSecond line\nThird line\nFourth line\nFifth line\nSixth line\nSeventh line\nEighth line",
+      );
       await expect(page.getByRole("button", { name: "Fullscreen", exact: true })).toBeVisible();
       await writeCompactDraft(
         page,
@@ -265,7 +268,10 @@ test("compact fullscreen editing preserves the live draft and selection and retu
       await expect(composerLocator(page)).toHaveValue("");
     });
     await test.step("sending inside fullscreen returns to chat and clears the editor", async () => {
-      await writeCompactDraft(page, "First line\nSecond line\nThird line");
+      await writeCompactDraft(
+        page,
+        "First line\nSecond line\nThird line\nFourth line\nFifth line\nSixth line\nSeventh line\nEighth line",
+      );
       await enterComposerFullscreen(page);
       await writeCompactDraft(page, "Short draft");
       await expectComposerFullscreenControls(page);
@@ -282,7 +288,10 @@ test("compact fullscreen editing preserves the live draft and selection and retu
       await expect(page.getByTestId("composer-fullscreen")).toHaveCount(0);
     });
     await test.step("typing and sending keep working after leaving fullscreen again", async () => {
-      await writeCompactDraft(page, "First line\nSecond line\nThird line");
+      await writeCompactDraft(
+        page,
+        "First line\nSecond line\nThird line\nFourth line\nFifth line\nSixth line\nSeventh line\nEighth line",
+      );
       await enterComposerFullscreen(page);
       await writeCompactDraft(page, "Typed inside fullscreen");
       await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
@@ -337,7 +346,8 @@ test("fullscreen submit rejection retains the editable draft and supports retry"
     title: "Fullscreen retry",
     featureValues: { mockPromptRejections: 1 },
   });
-  const draft = "First line\nSecond line\nThird line";
+  const draft =
+    "First line\nSecond line\nThird line\nFourth line\nFifth line\nSixth line\nSeventh line\nEighth line";
   try {
     await resizeComposerViewport(page, "portrait");
     await openAgentRoute(page, agent);
@@ -430,9 +440,7 @@ test("the reserved band beside the inline editor focuses it", async ({ page }) =
   }
 });
 
-test("fullscreen Send keeps the configured queue behavior while an agent runs", async ({
-  page,
-}) => {
+test("fullscreen exposes an explicit Queue action while an agent runs", async ({ page }) => {
   await configureComposerQueueSend(page);
   await resizeComposerViewport(page, "portrait");
   const agent = await startRunningMockAgent(page, {
@@ -441,7 +449,10 @@ test("fullscreen Send keeps the configured queue behavior while an agent runs", 
     prompt: "Stay running for fullscreen queue test.",
   });
   try {
-    await writeCompactDraft(page, "Queued first line\nSecond line\nThird line");
+    await writeCompactDraft(
+      page,
+      "Queued first line\nSecond line\nThird line\nFourth line\nFifth line\nSixth line\nSeventh line\nEighth line",
+    );
     await enterComposerFullscreen(page);
     await expectComposerFullscreenControls(page);
     await queueComposerWithButton(page);
@@ -464,7 +475,10 @@ test("image paste stays attached to the active editor across fullscreen entry an
     await resizeComposerViewport(page, "portrait");
     await openAgentRoute(page, agent);
     await expectComposerVisible(page);
-    await writeCompactDraft(page, "First line\nSecond line\nThird line");
+    await writeCompactDraft(
+      page,
+      "First line\nSecond line\nThird line\nFourth line\nFifth line\nSixth line\nSeventh line\nEighth line",
+    );
     expect(await pasteComposerTestImage(page)).toBe(true);
     await expect(page.getByTestId("composer-image-attachment-pill")).toHaveCount(1);
     await enterComposerFullscreen(page);
@@ -495,7 +509,8 @@ test("retained agent tabs preserve fullscreen editing and paste when switched aw
     });
     await openWorkspaceWithAgents(page, [first, second]);
     await resizeComposerViewport(page, "portrait");
-    const draft = "Live first line\nLive second line\nLive third line";
+    const draft =
+      "Live first line\nLive second line\nLive third line\nFourth line\nFifth line\nSixth line\nSeventh line\nEighth line";
     await writeCompactDraft(page, draft);
     await enterComposerFullscreen(page);
     await expectWorkspaceHeaderHidden(page);
@@ -540,7 +555,8 @@ test("the compact sidebar over a fullscreen editor leaves the exit action alone"
   try {
     await resizeComposerViewport(page, "portrait");
     await openAgentRoute(page, agent);
-    const draft = "Line one\nLine two\nLine three";
+    const draft =
+      "Line one\nLine two\nLine three\nLine four\nLine five\nLine six\nLine seven\nLine eight";
     await writeCompactDraft(page, draft);
     await enterComposerFullscreen(page);
     await expectWorkspaceHeaderHidden(page);
@@ -625,7 +641,10 @@ test("fullscreen Send follows the visible viewport when it shrinks and pans", as
     await resizeComposerViewport(page, "portrait");
     await openAgentRoute(page, agent);
     await expectComposerVisible(page);
-    await writeCompactDraft(page, "First line\nSecond line\nThird line");
+    await writeCompactDraft(
+      page,
+      "First line\nSecond line\nThird line\nFourth line\nFifth line\nSixth line\nSeventh line\nEighth line",
+    );
     await enterComposerFullscreen(page);
     await expectComposerFullscreenFitsVisibleViewport(page);
     await shrinkVisibleViewport(page);

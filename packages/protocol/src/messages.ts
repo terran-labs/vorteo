@@ -12,6 +12,8 @@ import {
 import { InstallationProviderProjectionSchema } from "./installation-provider.js";
 import { PluginDirectoryBindingSchema, ResolvedPluginSourceSchema } from "./plugin-installation.js";
 import {
+  DaemonPrimaryConnectionSchema,
+  DaemonTimeZoneSchema,
   InstallationProjectPolicySchema,
   InstallationResourceBindingsSchema,
 } from "./installation-settings.js";
@@ -147,6 +149,13 @@ import {
   QuestionAnswerRequestSchema,
   QuestionAnswerResponseSchema,
 } from "./agent-questions.js";
+import {
+  PreviewsActionRequestSchema,
+  PreviewsActionResponseSchema,
+  PreviewsChangedSchema,
+  PreviewsListRequestSchema,
+  PreviewsListResponseSchema,
+} from "./previews.js";
 import {
   AgentGoalSetInputSchema,
   AgentGoalStateSchema,
@@ -383,6 +392,14 @@ const InstallationProjectPoliciesWireSchema = z.record(
   InstallationProjectPolicySchema.loose(),
 );
 
+// Defined beside the installation settings so lightweight config readers avoid the wire schemas.
+export {
+  DaemonPrimaryConnectionSchema,
+  type DaemonPrimaryConnection,
+  DaemonTimeZoneSchema,
+  type DaemonTimeZone,
+} from "./installation-settings.js";
+
 export const MutableDaemonConfigSchema = z
   .object({
     // COMPAT(relayConfig): added in v0.2.6, remove after 2027-01-31 when old daemons are unsupported.
@@ -419,6 +436,9 @@ export const MutableDaemonConfigSchema = z
     // COMPAT(idleRuntimeCleanupSetting): added in v0.13.0, keep optional while old daemons are supported.
     // Persisted host-wide value, applied live by the daemon.
     idleRuntimeCleanup: z.boolean().optional(),
+    // COMPAT(blockedWorkReviewSetting): added 2026-11-09, optional because older daemons omit it.
+    // Hourly blocked-work reviews; absent means the daemon reviews unconditionally.
+    blockedWorkReview: z.boolean().optional(),
     // COMPAT(restartRecovery): added in v0.14.0, keep optional for older hosts.
     resumeOnStartup: z.boolean().optional(),
     resumePrompt: z.string().optional(),
@@ -428,6 +448,19 @@ export const MutableDaemonConfigSchema = z
     // COMPAT(projectPolicies): added 2026-10-22. A read-only copy of the installation's project
     // exclusions for client choosers; launches check the coordinator. Absent on older daemons.
     installationProjectPolicies: InstallationProjectPoliciesWireSchema.optional(),
+    // COMPAT(primaryConnection): added 2026-11-05. A standalone daemon's own choice. Absent
+    // means not chosen yet; null means the owner has to choose.
+    primaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
+    // COMPAT(primaryConnection): added 2026-11-05. A read-only copy of the installation's
+    // primary connection with this environment's provider id. Absent on older daemons.
+    installationPrimaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
+    // COMPAT(primaryConnection): added 2026-11-06. Projected only by coordinators that own the
+    // primary connection. Until it arrives, an installation daemon keeps the earlier launch
+    // rule (the first usable provider) instead of waiting for a choice it can never receive.
+    installationPrimaryConnectionSupported: z.boolean().optional(),
+    // COMPAT(timeZoneSetting): added 2026-11-13. The owner's time zone for agent prompts. Daemons
+    // that know the setting always report the key, so a coordinator projects it only to them.
+    timeZone: DaemonTimeZoneSchema.optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
     sharedProviderPreferences: SharedProviderPreferencesSchema.optional(),
     skills: z.object({ selection: AgentSkillSelectionSchema.optional() }).strict().optional(),
@@ -459,12 +492,17 @@ export const MutableDaemonConfigPatchSchema = z
     autoArchiveAfterMerge: z.boolean().optional(),
     enableTerminalAgentHooks: z.boolean().optional(),
     idleRuntimeCleanup: z.boolean().optional(),
+    blockedWorkReview: z.boolean().optional(),
     resumeOnStartup: z.boolean().optional(),
     resumePrompt: z.string().optional(),
     appendSystemPrompt: z.string().optional(),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     installationResourceBindings: InstallationResourceBindingsSchema.optional(),
     installationProjectPolicies: InstallationProjectPoliciesWireSchema.optional(),
+    primaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
+    installationPrimaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
+    installationPrimaryConnectionSupported: z.boolean().optional(),
+    timeZone: DaemonTimeZoneSchema.optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
@@ -2428,6 +2466,7 @@ export const AgentTimelineCursorSchema = z.object({
 export const FetchAgentTimelineRequestMessageSchema = z.object({
   // Keep available turns whole for tail/before pages; after catch-up stays incremental.
   wholeTurns: z.boolean().optional(),
+  retryHistory: z.boolean().optional(),
   type: z.literal("fetch_agent_timeline_request"),
   agentId: z.string(),
   requestId: z.string(),
@@ -3945,6 +3984,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ChecklistGetRequestSchema,
   ChecklistMutateRequestSchema,
   QuestionAnswerRequestSchema,
+  PreviewsListRequestSchema,
+  PreviewsActionRequestSchema,
   AgentGoalGetRequestSchema,
   AgentGoalSetRequestSchema,
   AgentGoalClearRequestSchema,
@@ -4354,6 +4395,8 @@ export const ServerInfoStatusPayloadSchema = z
         skillPackageTransfer: z.boolean().optional(),
         // COMPAT(idleRuntimeCleanupSetting): added in v0.13.0, remove gate after 2027-04-26.
         idleRuntimeCleanupSetting: z.boolean().optional(),
+        // COMPAT(blockedWorkReviewSetting): added 2026-11-09, remove gate after 2027-05-09.
+        blockedWorkReviewSetting: z.boolean().optional(),
         // COMPAT(restartRecovery): added in v0.14.0, remove gate after 2027-04-28.
         resumeOnStartupSetting: z.boolean().optional(),
         // COMPAT(terminalRestoreModes): added in v0.1.81, remove gate after 2026-11-23.
@@ -4496,9 +4539,12 @@ export const ServerInfoStatusPayloadSchema = z
         agentQuestions: z.boolean().optional(),
         // COMPAT(agentQuestionInputs): added November 2026; send typed answer fields only when advertised.
         agentQuestionInputs: z.boolean().optional(),
+        // COMPAT(previews): added November 2026; gate the Previews gallery until the daemon floor includes it.
+        previews: z.boolean().optional(),
         // COMPAT(projectedSubagentTimeline): added after v0.8.0, remove gates after 2027-03-14; retain wire field.
         projectedSubagentTimeline: z.boolean().optional(),
         wholeTurnTimeline: z.boolean().optional(),
+        agentTimelineHistoryRetry: z.boolean().optional(),
         // COMPAT(providerSubagentNesting): added in v0.7, remove gate after 2027-03-04.
         providerSubagentNesting: z.boolean().optional(),
         // COMPAT(workspacePinning): added in v0.1.107, remove gate after 2027-01-12.
@@ -4586,6 +4632,12 @@ export const ServerInfoStatusPayloadSchema = z
         installationResourceBindings: z.boolean().optional(),
         // COMPAT(projectPolicies): added 2026-10-22, remove gate after 2027-04-22.
         installationProjectPolicies: z.boolean().optional(),
+        // COMPAT(primaryConnection): added 2026-11-05, remove gate after 2027-05-05. The daemon
+        // launches system threads with the primary connection and stores it when standalone.
+        primaryConnectionSetting: z.boolean().optional(),
+        // COMPAT(timeZoneSetting): added 2026-11-13, remove gate after 2027-05-13. The daemon
+        // stores the owner's time zone and names it in agent prompts.
+        timeZoneSetting: z.boolean().optional(),
         installationSettingsAuthority: z.boolean().optional(),
         installationProviderRemoval: z.boolean().optional(),
         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.
@@ -7301,6 +7353,9 @@ export const ProviderUsageSchema = z.object({
   authRecovery: z
     .object({ instructions: z.string(), method: z.literal("device_code").optional() })
     .optional(),
+  // No credentials exist for this account, so it cannot start agents until someone signs in.
+  // Omitted when credentials exist or the daemon predates the field.
+  credentialsMissing: z.boolean().optional(),
   planLabel: z.string().nullable(),
   sourceLabel: z.string().nullable().optional(),
   fetchedAt: z.string().nullable().optional(),
@@ -8066,6 +8121,9 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ChecklistGetResponseSchema,
   ChecklistMutateResponseSchema,
   QuestionAnswerResponseSchema,
+  PreviewsListResponseSchema,
+  PreviewsActionResponseSchema,
+  PreviewsChangedSchema,
   AgentGoalGetResponseSchema,
   AgentGoalSetResponseSchema,
   AgentGoalClearResponseSchema,

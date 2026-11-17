@@ -5,7 +5,7 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { promises as fs, type PathLike } from "node:fs";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
-import { AgentStorage, parseStoredAgentRecord } from "./agent-storage.js";
+import { AgentStorage, parseStoredAgentRecord, type StoredAgentRecord } from "./agent-storage.js";
 import { buildConfigOverrides, buildSessionConfig } from "../persistence-hooks.js";
 import type { ManagedAgent } from "./agent-manager.js";
 import type {
@@ -132,6 +132,14 @@ function createManagedAgent(overrides: ManagedAgentOverrides = {}): ManagedAgent
   };
 }
 
+function lastActivity(record: StoredAgentRecord | null): number {
+  if (!record) throw new Error("Expected a stored record");
+  return Math.max(
+    Date.parse(record.createdAt),
+    Date.parse(record.lastActivityAt ?? record.createdAt),
+  );
+}
+
 describe("AgentStorage", () => {
   let tmpDir: string;
   let storagePath: string;
@@ -147,12 +155,14 @@ describe("AgentStorage", () => {
     await storage.applySnapshot(agent);
     await storage.mutateChecklist(agent.id, { operation: "create", id: "task", text: "Review" });
     await storage.mutateChecklist(agent.id, { operation: "update", id: "task", status: "blocked" });
-    const now = Date.now() + 3_600_001;
+    // Inside the first review slot: a slot missed by more than its grace is forfeited.
+    const now = lastActivity(await storage.get(agent.id)) + 300_001;
+    expect(await storage.claimBlockedReview(agent.id, now + 3_600_000)).toBe(false);
     expect(await storage.claimBlockedReview(agent.id, now)).toBe(true);
     await storage.applySnapshot(agent);
     const reopened = new AgentStorage(storagePath, logger);
     expect(await reopened.claimBlockedReview(agent.id, now + 1)).toBe(false);
-    expect(await reopened.claimBlockedReview(agent.id, now + 3_600_000)).toBe(true);
+    expect(await reopened.claimBlockedReview(agent.id, now + 15 * 60_000)).toBe(true);
     await reopened.mutateChecklist(agent.id, {
       operation: "update",
       id: "task",
@@ -177,7 +187,7 @@ describe("AgentStorage", () => {
       lastActivityAt: original!.lastActivityAt,
       updatedAt: original!.updatedAt,
     });
-    const now = Date.now() + 3_600_001;
+    const now = lastActivity(await reopened.get(agent.id)) + 300_001;
     expect(await reopened.claimBlockedReview(agent.id, now)).toBe(true);
     expect(await reopened.claimBlockedReview(agent.id, now + 1)).toBe(false);
     await reopened.updateBlockedGoalReview(agent.id, false);

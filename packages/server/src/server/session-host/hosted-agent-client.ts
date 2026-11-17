@@ -18,6 +18,7 @@ import {
   HostedReattachPendingError,
   type HostedReattachment,
   type HostedReattachPolicy,
+  type HostedSessionLoss,
 } from "./hosted-agent-session.js";
 import type { HostedOpenRequest } from "./session-contract.js";
 import type { AppliedSeqStore } from "./applied-store.js";
@@ -35,8 +36,11 @@ export interface HostedSessionRouting {
   applied?: AppliedSeqStore;
   /** Sessions attached at startup and waiting for their agent to load. */
   adoptions?: Map<string, HostedAdoption>;
-  /** Called when the host no longer runs an agent's session, so the agent continues elsewhere. */
-  onSessionLost?(agentId: string): void;
+  /**
+   * Called when the host no longer runs an agent's session, with what its end interrupted, so an
+   * agent with work in progress continues elsewhere and an idle one is released.
+   */
+  onSessionLost?(agentId: string, loss: HostedSessionLoss): void;
 }
 
 /**
@@ -160,7 +164,7 @@ export function createHostedAgentClient(input: {
         ? { store: routing.applied, agentId: params.agentId, hostId: params.hostId }
         : undefined,
       rebuild: params.rebuild,
-      onLost: () => routing.onSessionLost?.(params.agentId),
+      onLost: (loss) => routing.onSessionLost?.(params.agentId, loss),
       logger,
     });
   }

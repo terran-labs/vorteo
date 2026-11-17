@@ -38,6 +38,8 @@ import { getHostName } from "./host-name.js";
 import { randomUUID } from "node:crypto";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import type { AgentManager, AgentMetricsSnapshot } from "./agent/agent-manager.js";
+import { isQuotaAdmissionRefusal } from "./agent/agent-manager.js";
+import { isRestartHoldError } from "./agent/restart-hold.js";
 import type { AgentStorage } from "./agent/agent-storage.js";
 import type { DownloadTokenStore } from "./file-download/token-store.js";
 import type { TerminalManager } from "../terminal/terminal-manager.js";
@@ -817,11 +819,18 @@ export class VoiceAssistantWebSocketServer {
           await waitForAgentRunStartWithTimeout(agentManager, batch.recipientId);
         return disposition;
       },
+      admit: (recipientId) => agentManager.assertNoQuotaLatch(recipientId),
+      isRefusal: isQuotaAdmissionRefusal,
       onError: (err, batch) =>
-        this.logger.error(
-          { err, agentId: batch.recipientId, messageIds: batch.messageIds },
-          "Agent message batch dispatch failed",
-        ),
+        isRestartHoldError(err)
+          ? this.logger.info(
+              { agentId: batch.recipientId, messageIds: batch.messageIds },
+              "Agent message waits for the restart hold to end",
+            )
+          : this.logger.error(
+              { err, agentId: batch.recipientId, messageIds: batch.messageIds },
+              "Agent message batch dispatch failed",
+            ),
     });
     this.messageReceipts = new MessageReceipts(join(paseoHome, "agent-requests"));
     this.creationService = new CreationService(
@@ -2385,6 +2394,8 @@ export class VoiceAssistantWebSocketServer {
         skillPackageTransfer: true,
         // COMPAT(idleRuntimeCleanupSetting): added in v0.13.0, remove gate after 2027-04-26.
         idleRuntimeCleanupSetting: true,
+        // COMPAT(blockedWorkReviewSetting): added 2026-11-09, remove gate after 2027-05-09.
+        blockedWorkReviewSetting: true,
         resumeOnStartupSetting: true,
         // COMPAT(terminalRestoreModes): added in v0.1.81, remove gate after 2026-11-23.
         "terminal-restore-modes": true,
@@ -2489,9 +2500,12 @@ export class VoiceAssistantWebSocketServer {
         agentQuestions: true,
         // COMPAT(agentQuestionInputs): added November 2026; retain until the client floor includes it.
         agentQuestionInputs: true,
+        // COMPAT(previews): added November 2026; retain until the client floor includes it.
+        previews: this.agentManager.previews !== null,
         // COMPAT(projectedSubagentTimeline): added after v0.8.0, remove gates after 2027-03-14; retain advertisement.
         projectedSubagentTimeline: true,
         wholeTurnTimeline: true,
+        agentTimelineHistoryRetry: true,
         // COMPAT(providerSubagentNesting): added in v0.7, remove gate after 2027-03-04.
         providerSubagentNesting: true,
         // COMPAT(workspacePinning): added in v0.1.107, remove gate after 2027-01-12.
@@ -2558,6 +2572,10 @@ export class VoiceAssistantWebSocketServer {
         installationResourceBindings: true,
         // COMPAT(projectPolicies): added 2026-10-22, remove gate after 2027-04-22.
         installationProjectPolicies: true,
+        // COMPAT(primaryConnection): added 2026-11-05, remove gate after 2027-05-05.
+        primaryConnectionSetting: true,
+        // COMPAT(timeZoneSetting): added 2026-11-13, remove gate after 2027-05-13.
+        timeZoneSetting: true,
         installationSettingsAuthority: true,
         installationProviderRemoval: true,
         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.

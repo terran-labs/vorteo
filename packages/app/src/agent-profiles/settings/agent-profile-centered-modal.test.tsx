@@ -23,7 +23,10 @@ vi.mock("@/execution-installation/owner-access", () => ({
 }));
 vi.mock("@/components/settings/owner-lock", () => ({ OwnerLockBadge: () => null }));
 vi.mock("react-native", () => ({
-  Platform: { OS: "web" },
+  Platform: {
+    OS: "web",
+    select: (options: Record<string, unknown>) => options.web ?? options.default,
+  },
   Alert: { alert: vi.fn() },
   StyleSheet: { create: (styles: unknown) => styles },
   View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -43,6 +46,8 @@ vi.mock("expo-router/react-navigation", async () => {
   };
 });
 vi.mock("@/contexts/toast-context", () => ({ useToast: () => ({ show: mocks.show }) }));
+// Every confirmation declines unless a test says otherwise.
+vi.mock("@/utils/confirm-dialog", () => ({ confirmDialog: vi.fn(async () => false) }));
 vi.mock("@/execution-installation/policy", () => ({ readExecutionInstallation: () => null }));
 vi.mock("@/components/ui/button", () => ({
   Button: ({
@@ -100,7 +105,6 @@ const remove = vi.fn();
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.listener = undefined;
-  vi.spyOn(window, "confirm").mockReturnValue(false);
 });
 afterEach(() => {
   cleanup();
@@ -118,22 +122,26 @@ function openEditor() {
   );
 }
 it("requires deletion confirmation and closes only after deletion succeeds", async () => {
+  const { confirmDialog } = await import("@/utils/confirm-dialog");
+  vi.mocked(confirmDialog).mockResolvedValueOnce(false);
   openEditor();
   fireEvent.change(screen.getByRole("textbox", { name: "Name" }), {
     target: { value: "Unsaved name" },
   });
   fireEvent.click(screen.getByRole("button", { name: "Delete profile" }));
+  await waitFor(() => expect(confirmDialog).toHaveBeenCalledOnce());
   expect(remove).not.toHaveBeenCalled();
   expect(close).not.toHaveBeenCalled();
-  vi.mocked(window.confirm).mockReturnValue(true);
+  vi.mocked(confirmDialog).mockResolvedValueOnce(true);
   remove.mockResolvedValueOnce(undefined);
   fireEvent.click(screen.getByRole("button", { name: "Delete profile" }));
   await waitFor(() => expect(close).toHaveBeenCalledOnce());
   expect(remove).toHaveBeenCalledOnce();
-  expect(window.confirm).toHaveBeenLastCalledWith("Delete profile Test?");
-  expect(window.confirm).toHaveBeenCalledTimes(2);
+  expect(confirmDialog).toHaveBeenLastCalledWith(expect.objectContaining({ destructive: true }));
 });
-it("protects dirty drafts on Cancel, dismissal, and route navigation", () => {
+it("protects dirty drafts on Cancel, dismissal, and route navigation", async () => {
+  const { confirmDialog } = await import("@/utils/confirm-dialog");
+  vi.mocked(confirmDialog).mockResolvedValue(false);
   openEditor();
   fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Draft" } });
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -144,18 +152,21 @@ it("protects dirty drafts on Cancel, dismissal, and route navigation", () => {
   expect(mocks.dispatch).not.toHaveBeenCalled();
   expect(close).not.toHaveBeenCalled();
   expect((screen.getByRole("textbox", { name: "Name" }) as HTMLInputElement).value).toBe("Draft");
-  expect(window.confirm).toHaveBeenCalledTimes(3);
-  vi.mocked(window.confirm).mockReturnValue(true);
+  await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(3));
+  expect(close).not.toHaveBeenCalled();
+  vi.mocked(confirmDialog).mockResolvedValue(true);
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-  expect(close).toHaveBeenCalledOnce();
+  await waitFor(() => expect(close).toHaveBeenCalledOnce());
 });
-it("keeps a dirty draft open and reports a failed deletion", async () => {
+it("keeps a dirty draft open and reports a failed deletion on the page", async () => {
+  const { confirmDialog } = await import("@/utils/confirm-dialog");
+  vi.mocked(confirmDialog).mockResolvedValueOnce(true);
   openEditor();
-  vi.mocked(window.confirm).mockReturnValue(true);
   remove.mockRejectedValueOnce(new Error("Delete failed"));
   fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Draft" } });
   fireEvent.click(screen.getByRole("button", { name: "Delete profile" }));
-  await waitFor(() => expect(mocks.show).toHaveBeenCalledWith("Delete failed"));
+  expect(await screen.findByText("Delete failed")).toBeTruthy();
+  expect(mocks.show).not.toHaveBeenCalled();
   expect(close).not.toHaveBeenCalled();
   expect((screen.getByRole("textbox", { name: "Name" }) as HTMLInputElement).value).toBe("Draft");
 });

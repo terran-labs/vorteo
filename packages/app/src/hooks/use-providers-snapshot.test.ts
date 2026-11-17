@@ -1,5 +1,30 @@
-import { QueryClient, QueryObserver } from "@tanstack/react-query";
-import { beforeEach, describe, expect, it } from "vitest";
+/** @vitest-environment jsdom */
+import React, { createElement } from "react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { i18n } from "@/i18n/i18next";
+import { EnvironmentAccounts } from "@/onboarding/vorteo-guide/environment-accounts";
+import {
+  createVorteoGuide,
+  guideProviderSignedIn,
+  refreshGuideProviderSnapshot,
+} from "@/onboarding/vorteo-guide/model";
+import * as providerHooks from "./use-providers-snapshot";
+import * as hostRuntime from "@/runtime/host-runtime";
+import * as providerUsage from "@/provider-usage/use-provider-usage";
+import * as providerLogin from "@/provider-usage/use-provider-login";
+import { usePrimaryConnection } from "@/execution-installation/primary-connection";
+import * as hostFeatures from "@/runtime/host-features";
+import * as directoryDemand from "./use-directory-demand";
+import { QueryClientProvider, QueryClient, QueryObserver } from "@tanstack/react-query";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
@@ -660,4 +685,241 @@ describe("selectorOpenRefetchDecision", () => {
       }),
     ).toBe("refetch-stale");
   });
+});
+
+it("keeps unsupported guide refresh unavailable and reports a supported rejection with retry", async () => {
+  await i18n.changeLanguage("en");
+  vi.stubGlobal("React", React);
+  const client = createClient();
+  let shouldFail = true;
+  const snapshot: ReturnType<typeof providerHooks.useProvidersSnapshot> = {
+    entries: [],
+    isLoading: false,
+    isFetching: false,
+    isRefreshing: false,
+    error: null,
+    supportsSnapshot: false,
+    refresh: async () => {
+      await client.refreshProvidersSnapshot();
+    },
+    refetchIfStale: () => {},
+  };
+  client.refreshProvidersSnapshot = async (options) => {
+    client.refreshCalls.push(options ?? {});
+    if (shouldFail) throw new Error("Refresh failed for this environment.");
+    snapshot.error = null;
+    return { acknowledged: true, requestId: "guide-refresh" };
+  };
+  const hook = vi.spyOn(providerHooks, "useProvidersSnapshot").mockReturnValue(snapshot);
+  vi.spyOn(hostRuntime, "useHostRuntimeIsConnected").mockReturnValue(true);
+  vi.spyOn(directoryDemand, "useDirectoryDemand").mockImplementation(() => {});
+  vi.spyOn(providerUsage, "useProviderUsage").mockReturnValue({
+    view: { kind: "loading" },
+    refresh: async () => {},
+    canFetch: false,
+  });
+  vi.spyOn(providerLogin, "useInstallationConnectOnce").mockReturnValue({
+    claude: false,
+    codex: false,
+  });
+  const onUse = vi.fn(async (_providerId: string) => {});
+  const onSkip = vi.fn();
+  const onSettings = vi.fn();
+  const props = { serverId, onUse, onSkip, onSettings };
+  vi.spyOn(hostFeatures, "useHostFeature").mockReturnValue(true);
+  const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+  // The daemon supports primary, but this older coordinator omits the setting.
+  queryClient.setQueryData(["installation-settings", undefined], {
+    version: 1,
+    revision: 1,
+    sources: {},
+    settings: {
+      mcp: { injectIntoAgents: true },
+      appendSystemPrompt: "",
+      autoArchiveAfterMerge: false,
+      enableTerminalAgentHooks: false,
+      metadataGeneration: { providers: [] },
+      pluginsEnabled: false,
+      terminalProfiles: [],
+      resourceExclusions: {},
+    },
+  });
+  const body = createElement(
+    QueryClientProvider,
+    { client: queryClient },
+    createElement(EnvironmentAccounts, props),
+  );
+  const view = render(body);
+  try {
+    expect(
+      screen.getByText("Readiness unavailable. Update this host to check provider accounts.")
+        .textContent,
+    ).toContain("Update this host");
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    await expect(refreshGuideProviderSnapshot(snapshot)).rejects.toThrow("not supported");
+    expect(client.getCalls).toEqual([]);
+    expect(client.refreshCalls).toEqual([]);
+    snapshot.supportsSnapshot = true;
+    snapshot.error = "Snapshot read failed for this environment.";
+    hook.mockReturnValue(snapshot);
+    view.rerender(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(EnvironmentAccounts, props),
+      ),
+    );
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Snapshot read failed for this environment.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => {
+      expect(screen.getAllByRole("alert")).toHaveLength(1);
+      expect(screen.getByRole("alert").textContent).toContain(
+        "Refresh failed for this environment.",
+      );
+    });
+    expect(screen.queryByText("Snapshot read failed for this environment.")).toBeNull();
+    expect(client.refreshCalls).toEqual([{}]);
+    shouldFail = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(client.refreshCalls).toEqual([{}, {}]);
+    // Background detection uses the same guarded path and notices a newly installed CLI.
+    vi.useFakeTimers();
+    view.unmount();
+    const detected = render(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(EnvironmentAccounts, props),
+      ),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(client.refreshCalls).toHaveLength(3);
+    fireEvent.click(screen.getByRole("button", { name: "Skip for now" }));
+    expect(onSkip).toHaveBeenCalledTimes(1);
+    expect(onUse).not.toHaveBeenCalled();
+    snapshot.entries = [
+      {
+        provider: "claude",
+        label: "Claude",
+        status: "error",
+        enabled: true,
+        error: "Claude is not connected.",
+      },
+    ];
+    detected.rerender(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(EnvironmentAccounts, props),
+      ),
+    );
+    expect(screen.queryByRole("button", { name: /Use Claude|Connect Claude/ })).toBeNull();
+    snapshot.entries = [
+      { provider: "codex", label: "Codex", status: "ready", enabled: true },
+      { provider: "claude", label: "Claude", status: "ready", enabled: true },
+    ];
+    detected.rerender(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(EnvironmentAccounts, props),
+      ),
+    );
+    const codex = { provider: "codex", status: "ready", enabled: true } as const;
+    expect(guideProviderSignedIn(codex, [])).toBe(false);
+    expect(
+      guideProviderSignedIn(codex, [
+        {
+          providerId: "codex",
+          displayName: "Codex",
+          status: "available",
+          planLabel: null,
+          windows: [],
+        },
+      ]),
+    ).toBe(true);
+    expect(
+      guideProviderSignedIn(codex, [
+        {
+          providerId: "codex",
+          displayName: "Codex",
+          status: "available",
+          planLabel: null,
+          windows: [],
+          refreshError: "Cached reading",
+        },
+      ]),
+    ).toBe(false);
+    function HookWrapper({ children }: { children: React.ReactNode }) {
+      return createElement(QueryClientProvider, { client: queryClient }, children);
+    }
+    const support = renderHook(() => usePrimaryConnection().supported, { wrapper: HookWrapper });
+    expect(support.result.current).toBe(false);
+    const savePrimaryConnection = vi.fn(async () => {});
+    const guide = createVorteoGuide({
+      installationId: "guide-test",
+      storage: { read: async () => null, write: async () => {} },
+      savePrimaryConnection,
+    });
+    await guide.ready;
+    guide.applyGate({
+      installationId: "guide-test",
+      serverId,
+      ownerAuthenticated: true,
+      isConnected: true,
+      hasHydratedWorkspaces: true,
+      hasUserProjects: false,
+      supportsPrimaryConnection: support.result.current,
+    });
+    guide.goTo("providers");
+    const state = guide.getState();
+    if (state.status !== "open") throw new Error("Expected provider step");
+    onUse.mockImplementationOnce(async (providerId: string) => {
+      await guide.recordPrimaryConnection(providerId, state.visit);
+    });
+    expect(
+      screen.getByText(
+        "This host cannot save a primary connection yet. Your choice stays in this guide and is not saved to installation settings.",
+      ),
+    ).not.toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Use Claude, already signed in" }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(guide.primaryRuntimeProviderId).toBe("claude");
+    expect(savePrimaryConnection).not.toHaveBeenCalled();
+    support.unmount();
+    onUse.mockClear();
+    onUse.mockRejectedValueOnce(new Error("Shared settings changed again."));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Use Claude, already signed in" }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByRole("alert").textContent).toContain("Shared settings changed again.");
+    expect(onUse).toHaveBeenCalledExactlyOnceWith("claude");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Retry saving primary connection" }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(onUse).toHaveBeenCalledTimes(2);
+    detected.unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(client.refreshCalls).toHaveLength(3);
+    vi.useRealTimers();
+  } finally {
+    vi.useRealTimers();
+    cleanup();
+    queryClient.clear();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  }
 });

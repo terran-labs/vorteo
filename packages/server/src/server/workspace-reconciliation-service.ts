@@ -17,6 +17,7 @@ import {
   type MutableWorkspacePlacement,
 } from "./workspace-registry-model.js";
 import { workspaceIdsForProjects } from "./workspace-directory.js";
+import { activeFactoryMembership } from "./workspace-lifecycle/policy.js";
 import { deriveProjectKey, retainedProjectKey } from "./project-key.js";
 
 const DEFAULT_RESCAN_INTERVAL_MS = 5 * 60_000;
@@ -291,7 +292,7 @@ export class WorkspaceReconciliationService {
           reachableProjectIds.has(workspace.projectId) &&
           !workspace.protected &&
           !workspace.systemMembership &&
-          !workspace.factoryMembership,
+          !activeFactoryMembership(workspace),
       )
       .map(({ workspace }) => workspace);
     await mapBounded(missingWorkspaces, async (workspace) => {

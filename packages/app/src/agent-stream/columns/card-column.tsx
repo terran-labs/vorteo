@@ -1,4 +1,9 @@
-import { CardGrid, cardGridExpandedStyle } from "../card-grid";
+import {
+  CardGrid,
+  CardGridContext,
+  CardGridLayoutContext,
+  cardGridExpandedStyle,
+} from "../card-grid";
 import {
   createContext,
   useCallback,
@@ -122,6 +127,11 @@ const columnStyle = { flex: 1, minHeight: 0, gap: CARD_GAP, overflow: "hidden" }
 /** Include non-card content in the same height budget as the surrounding cards. */
 export function CardColumnAccessory({ children }: { children: ReactNode }) {
   const column = useContext(CardColumnContext);
+  const grid = useContext(CardGridLayoutContext);
+  const inGrid = useContext(CardGridContext);
+  const register = inGrid ? grid?.register : undefined;
+  const forget = inGrid ? grid?.forget : undefined;
+  const reportLayout = inGrid ? grid?.onTileLayout : undefined;
   const active = useRetainedPanelActive();
   const id = useId();
   const [height, setHeight] = useState(0);
@@ -130,10 +140,26 @@ export function CardColumnAccessory({ children }: { children: ReactNode }) {
     measure?.(id, active && height > 0 ? height : null);
   }, [measure, id, active, height]);
   useLayoutEffect(() => () => measure?.(id, null), [measure, id]);
-  const onLayout = useCallback((event: LayoutChangeEvent) => {
-    const { width, height: measured } = event.nativeEvent.layout;
-    if (width > 0) setHeight(measured);
-  }, []);
+  // Full-width accessories split collapsed tile runs just like expanded cards.
+  useLayoutEffect(() => {
+    // Even an empty mounted full-width row breaks the surrounding flex lines.
+    register?.(id, active ? false : null);
+  }, [register, id, active]);
+  useLayoutEffect(
+    () => () => {
+      register?.(id, null);
+      forget?.(id);
+    },
+    [register, forget, id],
+  );
+  const onLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      const { width, height: measured } = event.nativeEvent.layout;
+      if (width > 0) setHeight(measured);
+      reportLayout?.(id, event);
+    },
+    [reportLayout, id],
+  );
   return (
     <View style={[accessoryStyle, cardGridExpandedStyle]} onLayout={onLayout}>
       {children}

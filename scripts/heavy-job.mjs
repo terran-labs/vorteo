@@ -319,7 +319,8 @@ export async function sampleMemory(windowMs = POLL_MS) {
 export function launchSpec(command, { platform = process.platform, env = process.env } = {}) {
   const niced = ["nice", "-n", "10", ...command];
   const argv = platform === "darwin" ? ["taskpolicy", "-b", ...niced] : niced;
-  const capped = { ...env };
+  // Marks the job so a nested caller, such as a dependency install, does not queue behind itself.
+  const capped = { ...env, VORTEO_HEAVY_JOB: "1" };
   for (const [key, value] of Object.entries(TEST_WORKER_CAPS)) capped[key] ??= value;
   return { argv, env: capped };
 }

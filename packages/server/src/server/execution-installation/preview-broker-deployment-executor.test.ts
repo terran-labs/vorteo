@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, realpath, stat, readdir, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, stat, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, test as platformTest, vi } from "vitest";
@@ -17,6 +17,11 @@ const state = vi.hoisted(() => ({
   wrongParent: false,
 }));
 const hash = (raw: string | Buffer) => createHash("sha256").update(raw).digest("hex");
+// Like macOS, a framework launcher is observed as the Python.app image it re-executes.
+const reexecuted = (file: string) =>
+  /\/Python\.framework\/Versions\/([0-9]+\.[0-9]+)\/bin\/python\1$/.test(file)
+    ? file.replace(/\/bin\/python[0-9.]+$/, "/Resources/Python.app/Contents/MacOS/Python")
+    : file;
 vi.mock("node:child_process", async (original) => {
   const actual = await original<typeof import("node:child_process")>();
   return {
@@ -52,8 +57,8 @@ vi.mock("./coordinator-bootstrap-service.js", () => ({
         uid: process.getuid!(),
         bootId: boot,
         startIdentity: "1:2",
-        argumentsSha256: hash(JSON.stringify([child.executable, ...child.args])),
-        executable: child.executable,
+        argumentsSha256: hash(JSON.stringify([reexecuted(child.executable), ...child.args])),
+        executable: reexecuted(child.executable),
         stopped: false,
       };
     },
@@ -66,7 +71,7 @@ afterEach(async () => {
     await rm(directory, { recursive: true, force: true });
 });
 
-async function fixture(mode = "normal", scopeBoot = boot) {
+async function fixture(mode = "normal", scopeBoot = boot, python = "/usr/bin/python3") {
   state.inputs.clear();
   state.children = [];
   state.inspect = undefined;
@@ -89,7 +94,6 @@ async function fixture(mode = "normal", scopeBoot = boot) {
   })) as NonNullable<InstallationConfig["previewBrokerDeployment"]>["bindings"];
   // Each request gets its own private evidence directory.
   const actualDirectory = path.join(directory, requestId);
-  const { mkdir } = await import("node:fs/promises");
   await mkdir(actualDirectory, { mode: 0o700 });
   const actual = await stat(actualDirectory);
   const scope = pin(
@@ -118,7 +122,7 @@ async function fixture(mode = "normal", scopeBoot = boot) {
     bindings,
     scope,
     nativeInspector: pin("/fixture/inspector"),
-    python: pin("/usr/bin/python3"),
+    python: pin(python),
     worker,
     modules: [
       "channel_identity",
@@ -209,6 +213,28 @@ async function fixture(mode = "normal", scopeBoot = boot) {
   });
   return { executor, job, directory: actualDirectory, scope, configPin };
 }
+
+test("a framework launcher runs and is held to its re-executed interpreter", async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "framework-python-")));
+  directories.push(root);
+  const version = path.join(root, "Python.framework/Versions/3.9");
+  const image = path.join(version, "Resources/Python.app/Contents/MacOS/Python");
+  await mkdir(path.dirname(image), { recursive: true });
+  // A stand-in interpreter; executable protection is mocked in this suite.
+  await writeFile(image, '#!/bin/sh\nexec /usr/bin/python3 "$@"\n');
+  await chmod(image, 0o700);
+  const f = await fixture("normal", boot, path.join(version, "bin/python3.9"));
+  const result = await f.executor.executeBrokerDeployment(f.job, () => {});
+  expect(result.kind).toBe("committed");
+  expect(state.children.map((child) => child.executable)).toEqual([image]);
+});
+
+test("a framework launcher without its interpreter refuses before spawning", async () => {
+  const f = await fixture("normal", boot, "/missing/Python.framework/Versions/3.9/bin/python3.9");
+  await expect(f.executor.executeBrokerDeployment(f.job, () => {})).rejects.toThrow();
+  expect(state.children).toEqual([]);
+  expect(await readdir(f.directory)).toEqual([]);
+});
 
 test("real private transport preserves once-only dispatch and read-only observation", async () => {
   const f = await fixture();

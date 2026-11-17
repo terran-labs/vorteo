@@ -3,7 +3,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { expect, test, daemonTest as cleanupTest } from "../support/fixtures";
+import { expect, test as base, daemonTest as cleanupTest } from "../support/fixtures";
 import { startIsolatedHostDaemon } from "../support/helpers/isolated-host-daemon";
 import {
   openDaemonOverview,
@@ -20,101 +20,209 @@ import {
   readTerminalProcessIds,
 } from "../support/helpers/daemon-lifecycle";
 
+type LifecycleMode = "normal" | "terminal" | "unclosable" | "slow-provider";
+interface LifecycleReady {
+  daemon: Awaited<ReturnType<typeof startIsolatedHostDaemon>>;
+  supervisor: number | undefined;
+  previousWorker?: number;
+  terminalId?: string;
+  program?: Awaited<ReturnType<typeof plantUnclosableTerminalProgram>>;
+}
+interface LifecycleOwner {
+  prepare: (mode: LifecycleMode) => Promise<LifecycleReady>;
+}
+
+const test = base.extend<{
+  lifecycleMode: LifecycleMode;
+  lifecycleOwner: LifecycleOwner;
+  ready: LifecycleReady;
+}>({
+  lifecycleMode: ["normal", { option: true }],
+  // No explicit timeout here: cleanup uses Playwright's fresh after-hooks slot,
+  // rather than the prerequisite fixture's shared setup/teardown timeout slot.
+  lifecycleOwner: async ({ page }, provide, testInfo) => {
+    let daemon: LifecycleReady["daemon"] | undefined;
+    let program: LifecycleReady["program"];
+    let slowHome: string | undefined;
+    let closing = false;
+    let setupSettled = false;
+    let pendingSetup: Promise<LifecycleReady> | undefined;
+    const assertOpen = () => {
+      if (closing) throw new Error("Lifecycle fixture is closing; setup cannot continue");
+    };
+    const failures: unknown[] = [];
+    try {
+      await provide({
+        prepare: (mode) => {
+          assertOpen();
+          if (pendingSetup) throw new Error("Lifecycle setup may only run once");
+          // Retain the entire acquisition chain before its first await resumes.
+          // A timeout does not cancel JavaScript or the underlying helpers.
+          pendingSetup = (async () => {
+            if (mode === "slow-provider") {
+              await createHomeWithSlowProvider(
+                1_800,
+                (home) => {
+                  slowHome = home;
+                  assertOpen();
+                },
+                assertOpen,
+              );
+              assertOpen();
+            }
+            daemon = await startIsolatedHostDaemon(
+              randomUUID(),
+              slowHome ? { paseoHome: slowHome } : undefined,
+            );
+            assertOpen();
+            const supervisor = daemon.getPid();
+            let previousWorker: number | undefined;
+            let terminalId: string | undefined;
+            if (mode === "unclosable") {
+              program = await plantUnclosableTerminalProgram(daemon);
+              if (closing) program.release();
+              assertOpen();
+            } else {
+              if (mode === "terminal") {
+                terminalId = await openLongLivedTerminal(daemon);
+                assertOpen();
+              }
+              previousWorker = await readWorkerPid(daemon);
+              assertOpen();
+            }
+            await openDaemonOverview(page, daemon);
+            assertOpen();
+            return { daemon, supervisor, previousWorker, terminalId, program };
+          })().finally(() => {
+            setupSettled = true;
+          });
+          return pendingSetup;
+        },
+      });
+    } catch (error) {
+      failures.push(error);
+    } finally {
+      closing = true;
+      // Interrupt pending browser operations before joining timed-out setup.
+      // Normal completion keeps the page alive through daemon shutdown.
+      if (!setupSettled || testInfo.status === "timedOut") {
+        try {
+          await page.close();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      try {
+        await pendingSetup;
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        program?.release();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        if (daemon) await daemon.close();
+        else if (slowHome) await rm(slowHome, { recursive: true, force: true });
+      } catch (error) {
+        failures.push(error);
+      }
+      // A helper that outlives the teardown budget is a failure, never a
+      // successfully abandoned cleanup. Preserve all settled cleanup failures.
+    }
+    if (failures.length) throw new AggregateError(failures, "Lifecycle fixture cleanup failed");
+  },
+  ready: [
+    async ({ lifecycleOwner, lifecycleMode }, provide) => {
+      test.skip(
+        process.platform === "win32" && lifecycleMode === "unclosable",
+        "The unclosable program is a POSIX zombie",
+      );
+      test.skip(
+        process.platform === "win32" && lifecycleMode === "slow-provider",
+        "The slow provider stub is a POSIX script",
+      );
+      await provide(await lifecycleOwner.prepare(lifecycleMode));
+    },
+    { timeout: 120_000 },
+  ],
+});
+const terminalTest = test.extend({ lifecycleMode: "terminal" });
+const unclosableTest = test.extend({ lifecycleMode: "unclosable" });
+const slowProviderTest = test.extend({ lifecycleMode: "slow-provider" });
+
 test("settings restart waits for a replacement worker while retaining the supervisor", async ({
   page,
+  ready: { daemon, supervisor, previousWorker },
 }, testInfo) => {
-  const daemon = await startIsolatedHostDaemon(randomUUID());
-  try {
-    const supervisor = daemon.getPid();
-    const previousWorker = await readWorkerPid(daemon);
-    await openDaemonOverview(page, daemon);
-    await restartDaemonInSettings(page);
-    await expectDaemonRestartComplete(page);
-    expect(await readWorkerPid(daemon)).not.toBe(previousWorker);
-    expect(daemon.getPid()).toBe(supervisor);
-    await page.screenshot({ path: testInfo.outputPath("restart-confirmed.png"), fullPage: true });
-  } finally {
-    await daemon.close();
-  }
+  await restartDaemonInSettings(page);
+  await expectDaemonRestartComplete(page);
+  expect(await readWorkerPid(daemon)).not.toBe(previousWorker);
+  expect(daemon.getPid()).toBe(supervisor);
+  await page.screenshot({ path: testInfo.outputPath("restart-confirmed.png"), fullPage: true });
 });
 
-test("settings restart keeps a terminal", async ({ page }) => {
-  const daemon = await startIsolatedHostDaemon(randomUUID());
-  try {
-    const terminalId = await openLongLivedTerminal(daemon);
-    const previousWorker = await readWorkerPid(daemon);
-    await openDaemonOverview(page, daemon);
+terminalTest(
+  "settings restart keeps a terminal",
+  async ({ page, ready: { daemon, previousWorker, terminalId } }) => {
     await restartDaemonInSettings(page);
     await expectDaemonRestartComplete(page);
     expect(await readWorkerPid(daemon)).not.toBe(previousWorker);
     expect(await listTerminalIds(daemon)).toContain(terminalId);
-  } finally {
-    await daemon.close();
-  }
-});
+  },
+);
 
-test("settings restart and close terminals closes the terminal", async ({ page }) => {
-  const daemon = await startIsolatedHostDaemon(randomUUID());
-  try {
-    await openLongLivedTerminal(daemon);
-    const previousWorker = await readWorkerPid(daemon);
-    await openDaemonOverview(page, daemon);
+terminalTest(
+  "settings restart and close terminals closes the terminal",
+  async ({ page, ready: { daemon, previousWorker } }) => {
     await restartDaemonInSettings(page, { closeTerminals: true });
     await expectDaemonRestartComplete(page);
     expect(await readWorkerPid(daemon)).not.toBe(previousWorker);
     expect(await listTerminalIds(daemon)).toEqual([]);
-  } finally {
-    await daemon.close();
-  }
-});
+  },
+);
 
-test("settings restart and close terminals shows the processes it could not close", async ({
-  page,
-}, testInfo) => {
-  test.skip(process.platform === "win32", "The unclosable program is a POSIX zombie");
-  const daemon = await startIsolatedHostDaemon(randomUUID());
-  let program: Awaited<ReturnType<typeof plantUnclosableTerminalProgram>> | null = null;
-  try {
-    program = await plantUnclosableTerminalProgram(daemon);
-    await openDaemonOverview(page, daemon);
-    await restartDaemonInSettings(page, { closeTerminals: true });
-    await expectDaemonRestartFailed(page, `pid ${program.pid}`);
-    await page.screenshot({
-      path: testInfo.outputPath("restart-cleanup-failed.png"),
-      fullPage: true,
-    });
-  } finally {
-    program?.release();
-    await daemon.close();
-  }
-});
+unclosableTest(
+  "settings restart and close terminals shows the processes it could not close",
+  async ({ page, ready: { program } }, testInfo) => {
+    if (!program) throw new Error("Unclosable fixture did not provide its planted program");
+    try {
+      await restartDaemonInSettings(page, { closeTerminals: true });
+      await expectDaemonRestartFailed(page, `pid ${program.pid}`);
+      await page.screenshot({
+        path: testInfo.outputPath("restart-cleanup-failed.png"),
+        fullPage: true,
+      });
+    } finally {
+      program.release();
+    }
+  },
+);
 
-test("settings restart replaces the worker when a provider CLI answers --version slowly", async ({
-  page,
-}) => {
-  test.skip(process.platform === "win32", "The slow provider stub is a POSIX script");
-  const daemon = await startIsolatedHostDaemon(randomUUID(), {
-    paseoHome: await createHomeWithSlowProvider(1_800),
-  });
-  try {
-    const previousWorker = await readWorkerPid(daemon);
-    await openDaemonOverview(page, daemon);
+slowProviderTest(
+  "settings restart replaces the worker when a provider CLI answers --version slowly",
+  async ({ page, ready: { daemon, previousWorker } }) => {
     await restartDaemonInSettings(page);
     await expectDaemonRestartComplete(page);
     expect(await readWorkerPid(daemon)).not.toBe(previousWorker);
-  } finally {
-    await daemon.close();
-  }
-});
+  },
+);
 
-async function createHomeWithSlowProvider(versionDelayMs: number): Promise<string> {
+async function createHomeWithSlowProvider(
+  versionDelayMs: number,
+  ownHome: (home: string) => void,
+  assertOpen: () => void,
+): Promise<string> {
   const paseoHome = await mkdtemp(path.join(tmpdir(), "paseo-e2e-slow-provider-"));
+  ownHome(paseoHome);
   const provider = path.join(paseoHome, "slow-provider");
   await writeFile(
     provider,
     `#!${process.execPath}\nsetTimeout(() => console.log("provider 1.0.0"), ${versionDelayMs});\n`,
     { mode: 0o700 },
   );
+  assertOpen();
   await writeFile(
     path.join(paseoHome, "config.json"),
     `${JSON.stringify({

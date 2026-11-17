@@ -1,5 +1,9 @@
 import { installContainerSource } from "./container-updates.js";
 import * as lifecycleJournal from "./lifecycle-journal.js";
+import type { LifecycleJob } from "./lifecycle-journal.js";
+import { FileBootstrapRequestJournal } from "./coordinator-bootstrap-journal.js";
+import { PreviewBrokerDeploymentPreparationSchema } from "@getpaseo/protocol/preview-broker-deployment";
+import type { BrokerDeploymentExecutor } from "./preview-broker-deployment-workflow.js";
 import { z } from "zod";
 import {
   mkdtemp,
@@ -35,6 +39,7 @@ import {
   RestartRequestError,
   type RestartJournal,
   type RestartExecutor,
+  type RestartStartupOptions,
 } from "./restarts.js";
 import {
   RESTART_OPERATIONS,
@@ -46,7 +51,6 @@ import {
   createSessionHostReleaseGuard,
   setReleaseSelectionGuard,
 } from "./release-selection-guard.js";
-import { factoryRuntimePlanDigest, runFactoryRuntimePhase } from "./factory-runtime-adoption.js";
 
 class MemoryJournal implements RestartJournal {
   jobs: RestartJob[] = [];
@@ -59,6 +63,231 @@ class MemoryJournal implements RestartJournal {
     this.jobs = structuredClone(jobs);
   }
 }
+
+class CanonicalLifecycleJournal implements RestartJournal {
+  jobs: LifecycleJob[] = [];
+  failWrite = false;
+
+  read(): LifecycleJob[] {
+    return structuredClone(this.jobs);
+  }
+
+  write(jobs: LifecycleJob[]): void {
+    if (this.failWrite) throw new Error("disk unavailable");
+    this.jobs = lifecycleJournal.parseLifecycleJournal(jobs);
+  }
+}
+
+function brokerDeploymentPreparation() {
+  const id = randomUUID();
+  const hash = "a".repeat(64);
+  const file = { path: "/protected/file", sha256: hash };
+  const expected = { kind: "present", sha256: hash, identity: Array(9).fill("1") };
+  const consumer = { expected, candidate: file, mode: 0o600 };
+  const target = (root: string) => ({
+    root,
+    directory: [1, 2, 501, 20, 0o700],
+    preservationSha256: hash,
+    files: {
+      "https_broker.py": consumer,
+      "https-preview.py": consumer,
+      "host_config.py": consumer,
+      "channel_identity.py": { ...consumer, expected: { kind: "absent" } },
+    },
+  });
+  const input = PreviewBrokerDeploymentPreparationSchema.parse({
+    id,
+    reason: "Deploy reviewed broker consumers",
+    plan: {
+      version: 1,
+      operation: "preview-broker-consumer-deployment",
+      id,
+      installationId: randomUUID(),
+      sourceCommit: "a".repeat(40),
+      evidenceDirectory: `/evidence/${id}`,
+      evidenceDirectoryIdentity: [1, 2, 501, 20, 0o700],
+      bootUUID: randomUUID(),
+      targets: [target("/host"), target("/dev")],
+      registrations: [
+        {
+          root: "/host",
+          domain: "gui/501",
+          enabled: true,
+          override: "absent",
+          label: "host",
+          plist: file,
+          disposition: "absent",
+          process: null,
+        },
+        {
+          root: "/dev",
+          domain: "gui/501",
+          enabled: true,
+          override: "absent",
+          label: "dev",
+          plist: file,
+          disposition: "absent",
+          process: null,
+        },
+      ],
+      participantEvidence: [file],
+      manualParticipants: [],
+    },
+  });
+  return input;
+}
+
+function inertBrokerDeploymentExecutor(): BrokerDeploymentExecutor {
+  return {
+    brokerDeploymentCompatible: vi.fn(async () => true),
+    validateBrokerDeploymentPlan: vi.fn(async () => {}),
+    executeBrokerDeployment: vi.fn(async () => {
+      throw new Error("Unexpected broker deployment execution");
+    }),
+    observeBrokerDeployment: vi.fn(async () => {
+      throw new Error("Unexpected broker deployment observation");
+    }),
+  };
+}
+
+async function brokerDeploymentJournal(storage: "memory" | "file") {
+  if (storage === "memory") {
+    const journal = new CanonicalLifecycleJournal();
+    return { journal, reopen: () => journal.read(), cleanup: async () => {} };
+  }
+  const directory = await realpath(await mkdtemp(path.join(tmpdir(), "deployment-journal-")));
+  try {
+    await chmod(directory, 0o700);
+    const file = new FileBootstrapRequestJournal(directory);
+    const journal: RestartJournal = {
+      read: () => file.readLifecycle(),
+      write: (jobs) => file.writeLifecycle(jobs),
+    };
+    return {
+      journal,
+      reopen: () => new FileBootstrapRequestJournal(directory).readLifecycle(),
+      cleanup: () => rm(directory, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+test.each([
+  { storage: "memory", rejected: false, status: "pending", stage: "prepared" },
+  { storage: "memory", rejected: true, status: "failed", stage: "preparing" },
+  { storage: "file", rejected: false, status: "pending", stage: "prepared" },
+  { storage: "file", rejected: true, status: "failed", stage: "preparing" },
+] as const)(
+  "broker deployment snapshot persists $status through the $storage journal",
+  async ({ storage, rejected, status, stage }) => {
+    const f = await brokerDeploymentJournal(storage);
+    try {
+      const input = brokerDeploymentPreparation();
+      const brokerDeployment = inertBrokerDeploymentExecutor();
+      if (rejected)
+        vi.mocked(brokerDeployment.validateBrokerDeploymentPlan).mockRejectedValueOnce(
+          new Error("Candidate validation refused"),
+        );
+      const restart = vi.fn(async () => "unexpected restart");
+      const queue = new InstallationRestarts(f.journal, { restart, brokerDeployment });
+      const result = await queue.prepareBrokerDeployment(input, "host-agent");
+      expect(result).toMatchObject({
+        id: input.id,
+        reason: input.reason,
+        requestedBy: "host-agent",
+        plan: input.plan,
+        planSha256: createHash("sha256").update(JSON.stringify(input.plan)).digest("hex"),
+        status,
+        stage,
+      });
+      expect(result.approvedAt).toBeUndefined();
+      expect(queue.listBrokerDeployments()).toEqual([result]);
+      expect(f.reopen()).toEqual([result]);
+      expect(brokerDeployment.validateBrokerDeploymentPlan).toHaveBeenCalledExactlyOnceWith(
+        input.plan,
+      );
+      expect(brokerDeployment.executeBrokerDeployment).not.toHaveBeenCalled();
+      expect(brokerDeployment.observeBrokerDeployment).not.toHaveBeenCalled();
+      expect(restart).not.toHaveBeenCalled();
+    } finally {
+      await f.cleanup();
+    }
+  },
+);
+
+test("broker deployment snapshot rejects a genuine second file journal writer", async () => {
+  const directory = await realpath(await mkdtemp(path.join(tmpdir(), "deployment-conflict-")));
+  try {
+    await chmod(directory, 0o700);
+    const file = new FileBootstrapRequestJournal(directory);
+    const secondWriter = new FileBootstrapRequestJournal(directory);
+    const journal: RestartJournal = {
+      read: () => file.readLifecycle(),
+      write: (jobs) => file.writeLifecycle(jobs),
+    };
+    let resumeValidation!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      resumeValidation = resolve;
+    });
+    let signalValidationStarted!: () => void;
+    const validationStarted = new Promise<void>((resolve) => {
+      signalValidationStarted = resolve;
+    });
+    const brokerDeployment = inertBrokerDeploymentExecutor();
+    vi.mocked(brokerDeployment.validateBrokerDeploymentPlan).mockImplementation(async () => {
+      signalValidationStarted();
+      await paused;
+    });
+    const queue = new InstallationRestarts(journal, {
+      restart: async () => "unexpected restart",
+      brokerDeployment,
+    });
+    const preparing = queue.prepareBrokerDeployment(brokerDeploymentPreparation(), "host-agent");
+    const refused = expect(preparing).rejects.toThrow(
+      "Full installation journal reservation changed",
+    );
+    try {
+      await validationStarted;
+      secondWriter.mutateLifecycle(
+        (jobs) => jobs.map((job) => ({ ...job, detail: "Changed by a second writer" })),
+        undefined,
+      );
+    } finally {
+      resumeValidation();
+    }
+    const competing = secondWriter.readLifecycle();
+    await refused;
+    expect(new FileBootstrapRequestJournal(directory).readLifecycle()).toEqual(competing);
+    expect(competing).toHaveLength(1);
+    expect(competing[0].detail).toBe("Changed by a second writer");
+    expect(brokerDeployment.executeBrokerDeployment).not.toHaveBeenCalled();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("broker deployment snapshot advances only after a successful journal write", async () => {
+  const journal = new CanonicalLifecycleJournal();
+  const brokerDeployment = inertBrokerDeploymentExecutor();
+  const queue = new InstallationRestarts(journal, {
+    restart: async () => "unexpected restart",
+    brokerDeployment,
+  });
+  const input = brokerDeploymentPreparation();
+  journal.failWrite = true;
+  await expect(queue.prepareBrokerDeployment(input, "host-agent")).rejects.toThrow(
+    "disk unavailable",
+  );
+  expect(journal.read()).toEqual([]);
+  expect(queue.listBrokerDeployments()).toEqual([]);
+  expect(brokerDeployment.validateBrokerDeploymentPlan).not.toHaveBeenCalled();
+  journal.failWrite = false;
+  const result = await queue.prepareBrokerDeployment(input, "host-agent");
+  expect(result).toMatchObject({ id: input.id, status: "pending", stage: "prepared" });
+  expect(journal.read()).toEqual([result]);
+});
 
 test("force restart persists continuation intent before capture and releases only after readiness", async () => {
   const journal = new MemoryJournal();
@@ -93,9 +322,69 @@ test("force restart persists continuation intent before capture and releases onl
   await queue.drain();
   expect(calls).toEqual(["capture", "restart", "ready"]);
   expect(queue.list()[0]?.holdReleased).toBe(true);
+  expect(queue.list()[0]?.detail).toBe("replacement verified");
   await queue.drain();
   expect(calls).toEqual(["capture", "restart", "ready"]);
 });
+
+test.each(["legacy", "continuation"] as const)(
+  "%s hold release retry restores completed detail after journal recovery without restarting",
+  async (adapter) => {
+    const journal = new MemoryJournal();
+    const restart = vi.fn(async () => "replacement verified");
+    const release = vi.fn(async () => true);
+    release.mockRejectedValueOnce(new Error("target offline\nprivate diagnostic continuation"));
+    const progress = vi.fn();
+    const executor: RestartExecutor = {
+      restart,
+      restartWhenIdle: restart,
+      inspect: async () => idleImpact("host"),
+      holdCurrentTurns: async () => {},
+      releaseCurrentTurns: async () => {
+        await release();
+      },
+      ...(adapter === "continuation"
+        ? { captureRestartContinuation: async () => {}, releaseRestartContinuation: release }
+        : {}),
+    };
+    const queue = new InstallationRestarts(
+      journal,
+      executor,
+      Date.now,
+      {},
+      {
+        fenced: false,
+        progress,
+      },
+    );
+    const request = queue.request({ target: "host", reason: "Release completed hold" }, "owner");
+    queue.decide(request.id, request.revision, "finish-current-turns");
+    await queue.drain();
+    expect(journal.jobs[0]).toMatchObject({ status: "succeeded", detail: "replacement verified" });
+    await queue.drain();
+    expect(journal.jobs[0]).toMatchObject({
+      status: "succeeded",
+      detail: "Waiting for the environment to release its restart hold.",
+    });
+    expect(journal.jobs[0].holdReleased).not.toBe(true);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(progress).toHaveBeenLastCalledWith("Restart hold release failed", {
+      jobId: request.id,
+      target: "host",
+      detail: "target offline",
+    });
+    const reopened = new InstallationRestarts(journal, executor);
+    await reopened.drain();
+    expect(journal.jobs[0]).toMatchObject({
+      status: "succeeded",
+      detail: "Restart completed and its hold was released.",
+      holdReleased: true,
+    });
+    await reopened.drain();
+    expect(release).toHaveBeenCalledTimes(2);
+    expect(restart).toHaveBeenCalledTimes(1);
+  },
+);
 
 test("cancellation during durable capture prevents force dispatch", async () => {
   let finishCapture!: () => void;
@@ -293,7 +582,418 @@ test("finishing current turns on a target without durable continuation uses the 
   expect(journal.jobs[0]?.continuationCaptureRequested).toBeUndefined();
 });
 
-test("recorded continuation on a target that lost support settles through legacy dispatch", async () => {
+test("a finish-current-turns hold asks the owner after its deadline and logs holder changes", async () => {
+  const journal = new MemoryJournal();
+  let now = Date.now();
+  let busy = true;
+  let saved: unknown = {};
+  const holdState = {
+    read: () => saved,
+    write: (value: unknown) => {
+      saved = structuredClone(value);
+    },
+  };
+  const progress: Array<{ message: string; fields: Record<string, unknown> }> = [];
+  const restartWhenIdle = vi.fn(async () => "replacement verified");
+  const executor: RestartExecutor = {
+    restartContinuationAvailable: async () => false,
+    inspect: async () => idleImpact("host", busy),
+    holdCurrentTurns: async () => {},
+    releaseCurrentTurns: async () => {},
+    restart: async () => "wrong",
+    restartWhenIdle,
+  };
+  const startup = (): RestartStartupOptions => ({
+    fenced: false,
+    finishTurnsDeadlineMs: 10 * 60_000,
+    afterHoldDeadline: "ask",
+    holdState,
+    progress: (message, fields) => progress.push({ message, fields }),
+  });
+  const queue = new InstallationRestarts(journal, executor, () => now, {}, startup());
+  const request = queue.request({ target: "host", reason: "Hold" }, "owner");
+  queue.decide(request.id, request.revision, "finish-current-turns");
+  await queue.drain();
+  now += 9 * 60_000;
+  await queue.drain();
+  expect(queue.holdDeadlineExceeded(request.id)).toBe(false);
+  // The hold start is coordinator-private and survives a coordinator restart.
+  const recovered = new InstallationRestarts(journal, executor, () => now, {}, startup());
+  now += 2 * 60_000;
+  await recovered.drain();
+  await recovered.drain();
+  expect(recovered.holdDeadlineExceeded(request.id)).toBe(true);
+  expect(recovered.list()[0]).toMatchObject({
+    status: "approved",
+    detail: expect.stringContaining("Restart now to interrupt them, or cancel."),
+  });
+  // Neither the journal nor the shared job carries the private hold fields.
+  expect(JSON.stringify(journal.jobs)).not.toContain("holdStartedAt");
+  expect(JSON.stringify(journal.jobs)).not.toContain("holdDeadlineExceeded");
+  // Past the deadline it stops waiting silently, but never interrupts the turns itself.
+  expect(restartWhenIdle).not.toHaveBeenCalled();
+  expect(progress.filter((entry) => entry.message.includes("deadline"))).toHaveLength(1);
+  // Holder changes are logged by ID only, once per change, and never for an idle first check.
+  const holders = progress.filter((entry) => entry.message === "Restart hold holders changed");
+  expect(holders.map((entry) => entry.fields.agents)).toEqual([["task"], ["task"]]);
+  expect(JSON.stringify(holders)).not.toContain("Build provider settings");
+  busy = false;
+  await recovered.drain();
+  await recovered.drain();
+  expect(restartWhenIdle).toHaveBeenCalledTimes(1);
+  // Finished jobs leave no private hold state behind.
+  recovered.request({ target: "container-daemon", reason: "Next" }, "owner");
+  await recovered.drain();
+  expect(saved).toEqual({});
+});
+
+test.each([
+  { policy: "omitted", options: {} },
+  { policy: "ask", options: { afterHoldDeadline: "ask" as const } },
+])(
+  "$policy deadline policy keeps owner attention without cooperative preparation",
+  async ({ options }) => {
+    const journal = new MemoryJournal();
+    let now = Date.now();
+    const prepare = vi.fn(async () => {
+      throw new Error("Unexpected automatic preparation");
+    });
+    const dispatch = vi.fn(async () => {});
+    const observe = vi.fn(async () => {
+      throw new Error("Unexpected automatic observation");
+    });
+    const restart = vi.fn(async () => "Unexpected restart");
+    const queue = new InstallationRestarts(
+      journal,
+      {
+        restartContinuationAvailable: async () => true,
+        captureRestartContinuation: async () => {},
+        releaseRestartContinuation: async () => true,
+        holdCurrentTurns: async () => {},
+        releaseCurrentTurns: async () => {},
+        prepareCooperativePreparation: prepare,
+        dispatchCooperativePreparation: dispatch,
+        observeCooperativePreparation: observe,
+        restart,
+        restartWhenIdle: restart,
+        inspect: async () => ({
+          ...idleImpact("host", true),
+          restartDrainObservationSupported: true,
+          restartDrainId: request.id,
+        }),
+      },
+      () => now,
+      {},
+      { fenced: false, finishTurnsDeadlineMs: 1000, ...options },
+    );
+    const request = queue.request({ target: "host", reason: "Owner deadline decision" }, "owner");
+    queue.decide(request.id, request.revision, "finish-current-turns");
+    await queue.drain();
+    now += 1001;
+    await queue.drain();
+    await queue.drain();
+    expect(queue.holdDeadlineExceeded(request.id)).toBe(true);
+    expect(queue.list()[0]).toMatchObject({
+      status: "approved",
+      detail: expect.stringContaining("Restart now to interrupt them, or cancel."),
+    });
+    expect(journal.jobs[0]?.cooperativeDrainPreparation).toBeUndefined();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(observe).not.toHaveBeenCalled();
+    expect(restart).not.toHaveBeenCalled();
+  },
+);
+
+test.each([
+  "success",
+  "reconstruct",
+  "inspection",
+  "capture",
+  "cancel",
+  "revision",
+  "hold write",
+  "starting",
+  "other hold",
+] as const)(
+  "automatic hold deadline uses tracked continuation and fails closed: %s",
+  async (scenario) => {
+    let interruptedWrite = false;
+    let expired = false;
+    let busy = true;
+    const journal = new (class extends MemoryJournal {
+      override write(jobs: RestartJob[]) {
+        if (
+          scenario === "reconstruct" &&
+          !interruptedWrite &&
+          jobs.some((job) => job.status === "running")
+        ) {
+          interruptedWrite = true;
+          throw new Error("coordinator stopped before dispatch reservation");
+        }
+        if (
+          scenario === "hold write" &&
+          expired &&
+          jobs.some((job) => job.cooperativeDrainPreparation?.phase === "reserved")
+        )
+          throw new Error("reservation disk unavailable");
+        super.write(jobs);
+      }
+    })();
+    let now = Date.now();
+    let saved: unknown = {};
+    let queued = 0;
+    const holdState = {
+      read: () => saved,
+      write: (value: unknown) => {
+        if (expired && scenario === "hold write") throw new Error("disk unavailable");
+        saved = structuredClone(value);
+      },
+    };
+    let queue: InstallationRestarts;
+    let request: ReturnType<InstallationRestarts["request"]>;
+    const capture = vi.fn(async () => {
+      if (expired && scenario === "capture") throw new Error("capture acknowledgement lost");
+    });
+    const interrupt = vi.fn();
+    const restart = vi.fn(async () => {
+      // The existing executor interrupts non-hosted turns only after durable capture.
+      expect(capture).toHaveBeenCalled();
+      return "replacement verified";
+    });
+    const executor: RestartExecutor = {
+      restartContinuationAvailable: async () => true,
+      captureRestartContinuation: capture,
+      releaseRestartContinuation: async (_target, _id, outcome) => {
+        if (outcome === "ready") queued++;
+        return true;
+      },
+      holdCurrentTurns: async () => {},
+      releaseCurrentTurns: async () => {},
+      restartWhenIdle: restart,
+      prepareCooperativePreparation: async (job) => {
+        const nativeProcess = {
+          pid: 101,
+          parentPid: 100,
+          uid: 501,
+          bootId: "fixture",
+          startIdentity: "birth",
+          executable: "/fixture/node",
+          argumentsSha256: "a".repeat(64),
+        };
+        return {
+          operation: "maintenance.interrupt-held-turns",
+          phase: "reserved",
+          manifestSha256: "a".repeat(64),
+          endpointIdentitySha256: "b".repeat(64),
+          continuationCauseId: job.id,
+          deadlineAt: new Date(now).toISOString(),
+          intent: {
+            held: {
+              requestId: job.id,
+              generation: randomUUID(),
+              workerPid: 101,
+              workerInstanceId: randomUUID(),
+              terminateAt: now + 30000,
+            },
+            approvedRevision: job.revision,
+            grantRevision: randomUUID(),
+            holdGeneration: randomUUID(),
+            decisionSha256: "a".repeat(64),
+            planSha256: "b".repeat(64),
+            reservedAt: new Date(now).toISOString(),
+            finishDeadlineAt: new Date(now).toISOString(),
+            native: {
+              identitySha256: "c".repeat(64),
+              serverId: "fixture",
+              sourceCommit: "a".repeat(40),
+              selectedRelease: "/fixture/release",
+              observedAt: new Date(now).toISOString(),
+              worker: nativeProcess,
+              supervisor: { ...nativeProcess, pid: 100, parentPid: 1 },
+            },
+            candidate: null,
+          },
+        };
+      },
+      dispatchCooperativePreparation: async (job) => {
+        expect(capture).toHaveBeenCalled();
+        journal.write(
+          journal.jobs.map((item) =>
+            item.id === job.id
+              ? {
+                  ...item,
+                  cooperativeDrainPreparation: {
+                    ...job.cooperativeDrainPreparation!,
+                    phase: "accepted",
+                  },
+                }
+              : item,
+          ),
+        );
+        interrupt();
+        busy = false;
+      },
+      observeCooperativePreparation: async (job) => ({
+        ...job.cooperativeDrainPreparation!,
+        phase: busy ? "unknown" : "settled",
+        ...(!busy
+          ? {
+              observation: {
+                checkedAt: new Date(now).toISOString(),
+                workerInstanceId: job.cooperativeDrainPreparation!.intent.held.workerInstanceId,
+                restartDrainId: job.id,
+                activeAgents: 0,
+                pendingStarts: 0,
+              },
+            }
+          : {}),
+      }),
+      inspect: async () => {
+        if (expired && scenario === "cancel") {
+          const job = queue.list()[0]!;
+          queue.decide(job.id, job.revision, "cancel");
+        }
+        if (expired && scenario === "revision") {
+          const job = queue.list()[0]!;
+          queue.decide(job.id, job.revision, "finish-current-turns");
+        }
+        return {
+          ...idleImpact("host", busy),
+          restartDrainObservationSupported: true,
+          restartDrainId: scenario === "other hold" ? "another-request" : request.id,
+          pendingStarts: scenario === "starting" ? 1 : 0,
+          error: expired && scenario === "inspection" ? "Cannot verify activity" : null,
+        };
+      },
+      restart: async () => {
+        throw new Error("Unconditional restart is forbidden");
+      },
+    };
+    const startup = { fenced: false, holdState, afterHoldDeadline: "auto" as const };
+    queue = new InstallationRestarts(journal, executor, () => now, {}, startup);
+    request = queue.request({ target: "host", reason: "Automatic hold deadline" }, "owner");
+    queue.decide(request.id, request.revision, "finish-current-turns");
+    await queue.drain();
+    // Reload while waiting: the original deadline and capture cause survive.
+    queue = new InstallationRestarts(journal, executor, () => now, {}, startup);
+    now += 16 * 60_000;
+    expired = true;
+    await queue.drain();
+    if (scenario === "reconstruct") {
+      await expect(queue.drain()).rejects.toThrow("coordinator stopped");
+      queue = new InstallationRestarts(journal, executor, () => now, {}, startup);
+    } else await queue.drain();
+    await queue.drain();
+    queue = new InstallationRestarts(journal, executor, () => now, {}, startup);
+    await queue.drain();
+    expect(queue.holdDeadlineExceeded(request.id)).toBe(false);
+    expect(interrupt).toHaveBeenCalledTimes(
+      scenario === "success" || scenario === "reconstruct" ? 1 : 0,
+    );
+    expect(restart).toHaveBeenCalledTimes(
+      scenario === "success" || scenario === "reconstruct" ? 1 : 0,
+    );
+    expect(queued).toBe(scenario === "success" || scenario === "reconstruct" ? 1 : 0);
+    if (scenario === "success" || scenario === "reconstruct") {
+      expect(queue.list()[0]).toMatchObject({
+        status: "succeeded",
+        holdReleased: true,
+        detail: expect.stringContaining("Restarted automatically after"),
+      });
+      expect(queue.list()[0]?.standingManualApprovals).toBeUndefined();
+    }
+  },
+);
+
+test("the hold deadline covers any holder, including a start that never completes", async () => {
+  const journal = new MemoryJournal();
+  let now = Date.now();
+  const restartWhenIdle = vi.fn(async () => "replacement verified");
+  const queue = new InstallationRestarts(
+    journal,
+    {
+      restartContinuationAvailable: async () => false,
+      // A child whose terminal event was lost, or one that never starts, holds with no agent.
+      inspect: async () => ({ ...idleImpact("host"), pendingStarts: 1 }),
+      holdCurrentTurns: async () => {},
+      releaseCurrentTurns: async () => {},
+      restart: async () => "wrong",
+      restartWhenIdle,
+    },
+    () => now,
+    {},
+    { fenced: false, afterHoldDeadline: "ask" },
+  );
+  const request = queue.request({ target: "host", reason: "Stuck start" }, "owner");
+  queue.decide(request.id, request.revision, "finish-current-turns");
+  await queue.drain();
+  now += 15 * 60_000;
+  await queue.drain();
+  expect(queue.holdDeadlineExceeded(request.id)).toBe(true);
+  // The owner's decision ends it: an immediate restart replaces the hold.
+  const job = queue.list()[0]!;
+  queue.decide(job.id, job.revision, "approve");
+  await queue.drain();
+  await queue.drain();
+  expect(queue.list()[0]?.status).toBe("succeeded");
+});
+
+test.each([false, true])(
+  "Force on a held update installs its prepared candidate (automatic approval: %s)",
+  async (automatic) => {
+    const f = automaticFixture();
+    const prepared: string[] = [];
+    const installed: Array<string | undefined> = [];
+    const executor: RestartExecutor = {
+      ...f.executor,
+      prepareInstallation: async (job) => {
+        prepared.push(job.id);
+      },
+      verifyPreparedInstallation: async () => {},
+      installUpdate: async (job) => {
+        installed.push(job.updatePreparation);
+        return "installed";
+      },
+    };
+    const update = {
+      sourceCommit: "a".repeat(40),
+      baseCommit: "b".repeat(40),
+      sha256: "c".repeat(64),
+      bytes: 12,
+    };
+    const queue = automatic
+      ? new InstallationRestarts(f.journal, executor, () => 2000, f.policy)
+      : new InstallationRestarts(f.journal, executor, () => 2000);
+    if (automatic)
+      queue.contribute(
+        { target: "host", reason: "Routine Host update" },
+        "host-agent",
+        update,
+        "10000000-0000-4000-8000-000000000041",
+      );
+    else {
+      const job = queue.request({ target: "host", reason: "Release upgrade" }, "owner", update);
+      queue.decide(job.id, job.revision, "finish-current-turns", update.sha256);
+    }
+    await queue.drain();
+    await queue.drain();
+    const held = queue.list()[0]!;
+    expect(held).toMatchObject({
+      status: "approved",
+      whenIdle: true,
+      updatePreparation: "prepared",
+    });
+    expect(installed).toEqual([]);
+    queue.decide(held.id, held.revision, "approve", held.update!.sha256);
+    await queue.drain();
+    expect(installed).toEqual(["prepared"]);
+    expect(prepared).toEqual([held.id]);
+    expect(queue.list()[0]?.status).toBe("succeeded");
+  },
+);
+
+test("recorded continuation on a target that lost support keeps the restart blocked", async () => {
   const journal = new MemoryJournal();
   let supported = true;
   const release = vi.fn(async () => true);
@@ -313,9 +1013,9 @@ test("recorded continuation on a target that lost support settles through legacy
   supported = false;
   await queue.drain();
   await queue.drain();
-  expect(restart).toHaveBeenCalledTimes(1);
-  expect(release).toHaveBeenCalledWith("host", request.id, "ready");
-  expect(queue.list()[0]).toMatchObject({ status: "succeeded", holdReleased: true });
+  expect(restart).not.toHaveBeenCalled();
+  expect(release).not.toHaveBeenCalled();
+  expect(queue.list()[0]).toMatchObject({ status: "approved", continuationCaptureRequested: true });
 });
 
 test("a terminal continuation awaiting release does not fence another target's restart", async () => {
@@ -697,6 +1397,22 @@ test("Factory adoption failure and coordinator recovery never replay selected so
     interrupted.list().find((item) => item.id === job.id)?.factoryRuntimeRecoveryRequired,
   ).toBe(true);
   expect(plainRestart).not.toHaveBeenCalled();
+  // With adoption retired no recovery can succeed, so startup clears the fence and says why.
+  const retired = new InstallationRestarts(journal, {
+    ...executor,
+    factoryRuntimePlan: () => undefined,
+    factoryRuntimeAdoptionRetired: true,
+  });
+  const cleared = retired.list().find((item) => item.id === job.id);
+  expect(cleared?.factoryRuntimeRecoveryRequired).toBe(false);
+  expect(cleared?.detail).toContain("Factory adoption was retired");
+  const later = retired.list().find((item) => item.id === plain.id)!;
+  retired.decide(later.id, later.revision, "approve");
+  await retired.drain();
+  expect(plainRestart).toHaveBeenCalledOnce();
+  // Clearing the fence never replays the adoption.
+  expect(attempts).toBe(1);
+  expect(retired.list().find((item) => item.id === job.id)?.status).toBe("failed");
 });
 
 test.each([false, true])(
@@ -839,68 +1555,6 @@ test("Factory recovery requires fresh exact approval and clears only a verified 
   expect(recovered.list().find((item) => item.id === third.id)?.status).toBe("succeeded");
 });
 
-test.skipIf(process.platform === "win32")(
-  "Factory adoption executes pinned physical source and verifies phase receipts",
-  async () => {
-    const root = await realpath(await mkdtemp(path.join(tmpdir(), "factory-adoption-")));
-    try {
-      const script = path.join(root, "plan.mjs");
-      const code = `const e = process.env;
-      process.stdout.write(JSON.stringify({requestId:e.VORTEO_FACTORY_ADOPTION_REQUEST_ID,
-        planSha256:e.VORTEO_FACTORY_ADOPTION_PLAN_SHA256, phase:e.VORTEO_FACTORY_ADOPTION_PHASE,
-        serverId:e.VORTEO_FACTORY_ADOPTION_SERVER_ID, previousPid:Number(e.VORTEO_FACTORY_ADOPTION_PREVIOUS_PID),
-        replacementPid:e.VORTEO_FACTORY_ADOPTION_REPLACEMENT_PID ? Number(e.VORTEO_FACTORY_ADOPTION_REPLACEMENT_PID) : null}));`;
-      await writeFile(script, code, { mode: 0o600 });
-      const plan = {
-        node: process.execPath,
-        script,
-        sha256: createHash("sha256").update(code).digest("hex"),
-      };
-      const queue = new InstallationRestarts(new MemoryJournal(), {
-        factoryRuntimePlan: () => plan.sha256,
-        adoptFactoryRuntime: async () => "unused",
-        restart: async () => "unused",
-      });
-      const job = queue.request(
-        { target: "container-daemon", reason: "Fixture", factoryRuntimePlanSha256: plan.sha256 },
-        "host-agent",
-      );
-      const input = { plan, job, serverId: "expected-dev", previousPid: 12 };
-      expect(factoryRuntimePlanDigest(plan)).toBe(plan.sha256);
-      await runFactoryRuntimePhase({ ...input, phase: "stage", replacementPid: null });
-      await runFactoryRuntimePhase({ ...input, phase: "verify", replacementPid: 13 });
-      await chmod(script, 0o666);
-      expect(factoryRuntimePlanDigest(plan)).toBeUndefined();
-      await expect(
-        runFactoryRuntimePhase({ ...input, phase: "stage", replacementPid: null }),
-      ).rejects.toThrow("physical plan");
-      await chmod(script, 0o600);
-      await writeFile(script, code + "\n// changed");
-      expect(factoryRuntimePlanDigest(plan)).toBeUndefined();
-      await expect(
-        runFactoryRuntimePhase({ ...input, phase: "stage", replacementPid: null }),
-      ).rejects.toThrow("changed");
-      const failing =
-        'console.error("private-stderr-sentinel"); throw new Error("private-source-sentinel");';
-      await writeFile(script, failing);
-      const failurePlan = { ...plan, sha256: createHash("sha256").update(failing).digest("hex") };
-      const failure = await runFactoryRuntimePhase({
-        ...input,
-        plan: failurePlan,
-        job: { ...job, factoryRuntimePlanSha256: failurePlan.sha256 },
-        phase: "stage",
-        replacementPid: null,
-      }).catch((error: Error) => error);
-      expect(failure).toBeInstanceOf(Error);
-      expect(String(failure)).toContain("stage execution failed");
-      expect(String(failure)).not.toContain("sentinel");
-      expect(String(failure)).not.toContain("--eval");
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  },
-);
-
 test("request-only callers cannot cause a restart, and approval is bound to the exact revision", async () => {
   const calls: string[] = [];
   const queue = new InstallationRestarts(new MemoryJournal(), {
@@ -1037,15 +1691,15 @@ test("old requests remain pending and duplicate legacy requests retain receipts"
   );
   journal.jobs.push({
     ...original,
-    id: "legacy-duplicate",
-    revision: "legacy-revision",
+    id: "10000000-0000-4000-8000-000000000041",
+    revision: "10000000-0000-4000-8000-000000000042",
     requestedBy: "owner",
   });
   const restored = new InstallationRestarts(journal, { restart: async () => "ready" }, () => now);
   expect(restored.list().map((job) => [job.id, job.status])).toEqual([
     [expired.id, "pending"],
     [original.id, "rejected"],
-    ["legacy-duplicate", "pending"],
+    ["10000000-0000-4000-8000-000000000041", "pending"],
   ]);
   expect(() => restored.decide(original.id, original.revision, "approve")).toThrow(
     "already decided",
@@ -1563,6 +2217,8 @@ test("Host publication uses the verified candidate migration rules after replace
 
 test("source builds fail before activation, uncertain dispatch retains selection, and publication follows readiness", async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "source-activation-")));
+  const retention = await import("./host-release-retention.js");
+  const prune = vi.spyOn(retention, "pruneHostReleases");
   try {
     const previous = path.join(root, "previous");
     await mkdir(previous);
@@ -1634,7 +2290,7 @@ test("source builds fail before activation, uncertain dispatch retains selection
     );
     await writeFile(
       path.join(root, "publish-instance-web.mjs"),
-      `import fs from 'node:fs/promises'; import path from 'node:path'; await fs.writeFile(path.join(process.argv[3], 'published'), 'yes');`,
+      `import fs from 'node:fs/promises'; import path from 'node:path'; await fs.writeFile(path.join(process.argv[3], 'published'), 'yes'); console.error('vorteo-command: Installed the vorteo command.');`,
     );
     const validPrepareScript = await readFile(prepareScript, "utf8");
     await writeFile(
@@ -1740,7 +2396,22 @@ test("source builds fail before activation, uncertain dispatch retains selection
       await expect(readFile(path.join(root, "published"))).rejects.toThrow();
       return "ready";
     });
-    expect((await dispatch())?.status).toBe("succeeded");
+    const installed = (await dispatch())!;
+    expect(installed.status).toBe("succeeded");
+    // The publisher of the new release reports the vorteo command it installed.
+    expect(installed.detail).toMatch(
+      /retention\.json in this job.s folder\. Installed the vorteo command\.$/,
+    );
+    await hostReleaseRetentionIdle();
+    expect(prune).not.toHaveBeenCalled();
+    expect(installed.detail).toContain("cleanup is suspended");
+    expect(installed.detail).toContain("retention.json");
+    const retentionReceipt = JSON.parse(
+      await readFile(path.join(root, installed.id, "retention.json"), "utf8"),
+    );
+    expect(retentionReceipt).toMatchObject({ status: "finished" });
+    expect(retentionReceipt.note).toContain("not pruned");
+    expect(retentionReceipt.note).toContain("exclusive lifetime");
     expect(await readFile(path.join(root, "published"), "utf8")).toBe("yes");
     expect(updates.source().baseCommit).toBe(update.sourceCommit);
     expect(restart).toHaveBeenCalledTimes(2);
@@ -1808,6 +2479,7 @@ test("source builds fail before activation, uncertain dispatch retains selection
     expect(restart).toHaveBeenCalledTimes(5);
   } finally {
     await hostReleaseRetentionIdle();
+    prune.mockRestore();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -3404,7 +4076,7 @@ function delegatedServiceRestartFixture(input: {
     cancellationDelayMs: input.cancellationDelayMs,
     hostUpdateServiceRestart: () => enabled,
     // As in production, the setting is part of the automatic grant's authority.
-    authority: () => (enabled ? "authority-with-service-restart" : "authority"),
+    authority: () => (enabled ? "a".repeat(64) : "b".repeat(64)),
   });
   queue.contribute(
     { target: "host", reason: "Routine Host update", requester: "Nova integration" },
@@ -5266,7 +5938,7 @@ test("configured Dev transitions refuse before selection, staging or supervisor 
     }),
   ).rejects.toThrow("transition-phase readiness");
   const executor = createInstallationRestartExecutor(config, () => undefined);
-  await expect(executor.adoptFactoryRuntime!(job)).rejects.toThrow("transition-phase readiness");
+  await expect(executor.adoptFactoryRuntime!(job)).rejects.toThrow("adoption was retired");
   await expect(executor.restartSupervisor!(job)).rejects.toThrow("independently bound operation");
   expect(restarts).toBe(0);
 });

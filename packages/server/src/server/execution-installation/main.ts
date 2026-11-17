@@ -36,7 +36,7 @@ import {
   codexHostRefreshEnabled,
   parseInstallationConfig,
 } from "./config.js";
-import { createInstallationServer } from "./server.js";
+import { createInstallationServer, RESTART_HOLDS_FILE } from "./server.js";
 import {
   connectInstallationDaemon,
   createInstallationRegistrationAdmission,
@@ -319,6 +319,14 @@ const codexSignInTimer = codexSignIn
     }, 30_000)
   : undefined;
 codexSignInTimer?.unref();
+/** The coordinator-private restart hold record; missing or unreadable means none. */
+function readRestartHolds(): unknown {
+  try {
+    return JSON.parse(readFileSync(join(config.stateDir, RESTART_HOLDS_FILE), "utf8"));
+  } catch {
+    return undefined;
+  }
+}
 const app = createInstallationServer(
   config,
   executor,
@@ -336,6 +344,8 @@ const app = createInstallationServer(
     startupSha256: createHash("sha256").update(configText).digest("hex"),
   },
   codexSignIn,
+  undefined,
+  readRestartHolds(),
 );
 const telemetry = createOperationalTelemetry({
   enabled: config.operationalTelemetryEnabled === true,

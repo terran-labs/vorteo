@@ -8,12 +8,15 @@ import type { InstallationSkill, SkillPackage } from "@getpaseo/protocol/skill-l
 import type { InstallationSettingsUpdate } from "@getpaseo/protocol/installation-settings";
 import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { SettingsCard, SettingsRow, SettingsSection } from "@/components/settings";
+import { SettingsListSummary, useCloseSettingsDialog } from "@/components/settings/list-summary";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useFetchQuery } from "@/data/query";
 import { useInstallationSettings } from "@/execution-installation/settings";
+import { useOwnerAccess } from "@/execution-installation/owner-access";
+import { OwnerSettingsGate } from "@/components/settings/owner-lock";
 import {
   prepareInstallationSkill,
   readInstallationSkillPackage,
@@ -75,6 +78,7 @@ function SharedSkillForm({ skill, onClose }: { skill?: InstallationSkill; onClos
         </Button>
         <Button
           size={size}
+          variant="default"
           onPress={submit}
           disabled={state.phase !== "review"}
           testID="shared-skill-save"
@@ -144,6 +148,7 @@ function FileReview({
 }) {
   const [open, setOpen] = useState(false);
   const toggle = useCallback(() => setOpen((value) => !value), []);
+  const expandedState = useMemo(() => ({ expanded: open }), [open]);
   let status = "Unchanged";
   if (!before) status = "Added";
   else if (!after) status = "Removed";
@@ -152,7 +157,13 @@ function FileReview({
   return (
     <SettingsCard testID={`shared-skill-file-${name}`}>
       <SettingsRow label={name} hint={status}>
-        <Button size="sm" variant="outline" onPress={toggle}>
+        <Button
+          variant="outline"
+          onPress={toggle}
+          accessibilityLabel={`${open ? "Hide" : "Inspect"} ${name}`}
+          accessibilityState={expandedState}
+          aria-expanded={open}
+        >
           {open ? "Hide file" : "Inspect file"}
         </Button>
       </SettingsRow>
@@ -248,8 +259,16 @@ function SharedSkillRow({
   onDetails(skill: InstallationSkill): void;
   onRemove(skill: InstallationSkill): void;
 }) {
-  const edit = useCallback(() => onEdit(skill), [onEdit, skill]);
-  const details = useCallback(() => onDetails(skill), [onDetails, skill]);
+  // Each opens its own dialog, so a surrounding Manage dialog closes first.
+  const closeDialog = useCloseSettingsDialog();
+  const edit = useCallback(() => {
+    closeDialog();
+    onEdit(skill);
+  }, [closeDialog, onEdit, skill]);
+  const details = useCallback(() => {
+    closeDialog();
+    onDetails(skill);
+  }, [closeDialog, onDetails, skill]);
   const remove = useCallback(() => onRemove(skill), [onRemove, skill]);
   return (
     <SettingsRow
@@ -262,15 +281,29 @@ function SharedSkillRow({
       testID={`shared-skill-${skill.name}`}
     >
       <View style={styles.actions}>
-        <Button size="sm" variant="outline" onPress={details}>
+        <Button
+          variant="outline"
+          onPress={details}
+          accessibilityLabel={`Details for ${skill.name}`}
+        >
           Details
         </Button>
         {skill.source ? (
-          <Button size="sm" variant="outline" onPress={edit} disabled={pending}>
+          <Button
+            variant="outline"
+            onPress={edit}
+            disabled={pending}
+            accessibilityLabel={`Update ${skill.name}`}
+          >
             Update
           </Button>
         ) : null}
-        <Button size="sm" variant="outline" onPress={remove} disabled={pending}>
+        <Button
+          variant="outline"
+          onPress={remove}
+          disabled={pending}
+          accessibilityLabel={`Remove ${skill.name}`}
+        >
           Remove
         </Button>
       </View>
@@ -279,6 +312,7 @@ function SharedSkillRow({
 }
 export function SharedSkillCatalog() {
   const { data, error, save, installation } = useInstallationSettings();
+  const owner = useOwnerAccess();
   const [form, setForm] = useState<{ skill?: InstallationSkill } | null>(null);
   const [details, setDetails] = useState<InstallationSkill | null>(null);
   const reportActionError = useReportActionError();
@@ -327,7 +361,6 @@ export function SharedSkillCatalog() {
     () => (
       <Button
         variant="outline"
-        size="sm"
         onPress={add}
         disabled={!data?.settings?.skillLibrary}
         testID="shared-skill-add"
@@ -337,6 +370,9 @@ export function SharedSkillCatalog() {
     ),
     [add, data],
   );
+  // Shared skills need owner access; while locked, show the standard locked card.
+  if (installation && owner.status !== "unlocked")
+    return <OwnerSettingsGate title="Personal skills">{null}</OwnerSettingsGate>;
   return (
     <View testID="shared-skill-catalog">
       <SettingsSection title="Personal skills" trailing={addButton}>
@@ -345,21 +381,29 @@ export function SharedSkillCatalog() {
         {!data?.settings?.skillLibrary ? (
           <Text style={settingsStyles.rowHint}>Reading shared skills...</Text>
         ) : (
-          <SettingsCard>
-            {data.settings.skillLibrary.map((skill) => (
-              <SharedSkillRow
-                key={skill.identity}
-                skill={skill}
-                pending={mutation.isPending}
-                onEdit={edit}
-                onDetails={setDetails}
-                onRemove={remove}
-              />
-            ))}
-            {data.settings.skillLibrary.length === 0 ? (
-              <SettingsRow label="No personal skills" />
-            ) : null}
-          </SettingsCard>
+          <SettingsListSummary
+            title="Personal skills"
+            count={data.settings.skillLibrary.length}
+            noun={SKILL_NOUN}
+            preview={data.settings.skillLibrary.map((skill) => skill.name)}
+            testID="shared-skill-list"
+          >
+            <SettingsCard>
+              {data.settings.skillLibrary.map((skill) => (
+                <SharedSkillRow
+                  key={skill.identity}
+                  skill={skill}
+                  pending={mutation.isPending}
+                  onEdit={edit}
+                  onDetails={setDetails}
+                  onRemove={remove}
+                />
+              ))}
+              {data.settings.skillLibrary.length === 0 ? (
+                <SettingsRow label="No personal skills" />
+              ) : null}
+            </SettingsCard>
+          </SettingsListSummary>
         )}
         {installation?.environments.map((environment) => (
           <Text key={environment.serverId} style={settingsStyles.rowHint}>
@@ -386,6 +430,8 @@ const styles = StyleSheet.create((theme) => ({
     fontFamily: theme.fontFamily.mono,
   },
 }));
+
+const SKILL_NOUN = { one: "personal skill", other: "personal skills" };
 
 function environmentStatus(
   source:

@@ -1,9 +1,11 @@
+import { FactoryQueueSnapshots } from "./queue-cache.js";
 import os from "node:os";
 import path from "node:path";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type {
+  ProjectFactoryQueue,
   ProjectFactoryInstructions,
   ProjectFactoryRoleId,
 } from "@getpaseo/server/factory-project";
@@ -11,6 +13,7 @@ import type {
 import { createTestLogger } from "../../../test-utils/test-logger.js";
 import type { StoredAgentRecord } from "../../agent/agent-storage.js";
 import type { CreateAgentCommandInput } from "../../agent/create-agent/create.js";
+import type { ProviderUsage } from "@getpaseo/protocol/messages";
 import type { StoredSchedule } from "@getpaseo/protocol/schedule/types";
 import { SYSTEM_PROJECT_KIND } from "../../system-project/manifest.js";
 import {
@@ -23,10 +26,24 @@ import { charterVersion } from "./instructions.js";
 import { PROJECT_FACTORY_ROLE_LABEL, PROJECT_FACTORY_ROLES } from "./roles.js";
 import { DRAIN_ENDED, drainNotice, ProjectFactoryService, type PromptOutcome } from "./service.js";
 import { factoryProjectQueue } from "@getpaseo/server/factory-project";
-import { daemonFactoryAccounts, type FactoryAccounts } from "./account-choice.js";
+import {
+  daemonFactoryAccounts,
+  readDestinationAccounts,
+  type DestinationHosts,
+  type FactoryAccounts,
+  type InstallationAccountsAuthority,
+} from "./account-choice.js";
+import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
 import type { FactoryGitHub, GitHubResponse } from "./claims.js";
 import type { GhRunner } from "./tick-gate.js";
 import { projectFactoryStatePath } from "./state.js";
+import type { DevAgent, IssueAgentHosts } from "./issue-agent-host.js";
+import { DEV_HOST_SOURCE_KEY } from "../../execution-installation/dev-host-link.js";
+import type { HostSummary } from "@getpaseo/protocol/hosts";
+import {
+  createFactoryHomeAuthority,
+  type FactoryHomePort,
+} from "../../execution-installation/factory-home.js";
 
 const T0 = "2026-11-03T12:00:00.000Z";
 const PROJECT = "prj_app";
@@ -43,6 +60,7 @@ let clock: Date;
 let services: ProjectFactoryService[];
 let github: FakeGitHub;
 let accounts: FactoryAccounts;
+let issueHosts: IssueAgentHosts;
 
 const MAIN = "m".repeat(40);
 
@@ -244,13 +262,15 @@ class FakeSchedules {
 
 function service(
   gh?: GhRunner,
-  installation: { paseoHome?: string; serverId?: string } = {},
+  installation: { paseoHome?: string; serverId?: string; home?: FactoryHomePort } = {},
 ): ProjectFactoryService {
   const instance = new ProjectFactoryService({
     paseoHome: installation.paseoHome ?? home,
     serverId: installation.serverId ?? "srv_test",
+    home: installation.home,
     github,
     accounts,
+    hosts: () => issueHosts,
     projects,
     workspaces,
     agentStorage: agents.storage,
@@ -379,12 +399,19 @@ beforeEach(async () => {
   clock = new Date(T0);
   services = [];
   github = new FakeGitHub();
+  issueHosts = {
+    directory: async () => ({ self: { serverId: "srv_test", label: "Host" }, hosts: [] }),
+    use: async () => {
+      throw new Error("no connected hosts");
+    },
+  };
   accounts = {
     readyProviders: async () => [],
     providerType: () => null,
     profileAccount: () => null,
     readUsage: async () => ({ fetchedAt: T0, providers: [] }),
     defaultProvider: async () => null,
+    destinationAccounts: async () => new Map(),
   };
   await addProject();
 });
@@ -810,6 +837,7 @@ describe("configure, status and send thread", () => {
       planning: true,
       workerProfileId: "worker-profile",
       reviewerProfileId: "reviewer-profile",
+      issueAgents: "dev",
     });
     expect(configured.roles[1]?.launch).toEqual({ provider: "codex", profileId: "fast" });
     expect(agents.switches).toEqual([]);
@@ -1315,6 +1343,195 @@ describe("list, pause_all and resume_all", () => {
 });
 
 describe("issue queue and planning compatibility", () => {
+  test("serves a saved queue while one refresh runs and keeps it through failures and pauses", async () => {
+    const directory = path.join(home, "factory", "queues");
+    mkdirSync(directory, { recursive: true });
+    const saved: ProjectFactoryQueue = {
+      fetchedAt: T0,
+      error: null,
+      issues: [
+        {
+          number: 1,
+          title: "Issue",
+          url: "https://example.test/1",
+          label: "running",
+          stage: "building",
+          pr: null,
+          agents: [],
+        },
+      ],
+    };
+    writeFileSync(
+      path.join(directory, `${PROJECT}.json`),
+      JSON.stringify({ repository: REPO, queue: saved }),
+    );
+    const snapshots = new FactoryQueueSnapshots(directory, logger);
+    let calls = 0;
+    let complete: ((snapshot: ProjectFactoryQueue) => void) | undefined;
+    const pending = new Promise<ProjectFactoryQueue>((resolve) => {
+      complete = resolve;
+    });
+    const input = {
+      projectId: PROJECT,
+      repository: REPO,
+      enabled: true,
+      paused: true,
+      now: clock,
+      refresh: () => {
+        calls += 1;
+        return pending;
+      },
+    };
+    expect(await snapshots.read(input)).toEqual({ ...saved, refreshing: false });
+    expect(calls).toBe(0);
+    input.paused = false;
+    expect(await snapshots.read(input)).toEqual({ ...saved, refreshing: true });
+    expect(await snapshots.read(input)).toEqual({ ...saved, refreshing: true });
+    expect(calls).toBe(1);
+    const updated = { ...saved, fetchedAt: new Date(clock.getTime() + 1_000).toISOString() };
+    if (!complete) throw new Error("Refresh was not prepared");
+    complete(updated);
+    await vi.waitFor(async () => {
+      expect((await snapshots.read(input)).refreshing).toBe(false);
+    });
+    const restarted = new FactoryQueueSnapshots(directory, logger);
+    expect(await restarted.read({ ...input, paused: true })).toEqual({
+      ...updated,
+      refreshing: false,
+    });
+    expect(calls).toBe(1);
+    const failed = {
+      ...input,
+      now: new Date(clock.getTime() + 30_000),
+      refresh: async () => {
+        throw new Error("GitHub timed out");
+      },
+    };
+    expect(await snapshots.read(failed)).toEqual({ ...updated, refreshing: true });
+    await vi.waitFor(async () => {
+      expect((await snapshots.read(failed)).refreshing).toBe(false);
+    });
+    expect(await snapshots.read({ ...failed, paused: true })).toEqual({
+      ...updated,
+      error: "GitHub timed out",
+      issueAgentHost: null,
+      refreshing: false,
+    });
+    const degraded = {
+      ...input,
+      now: new Date(clock.getTime() + 60_000),
+      refresh: async () => ({
+        ...updated,
+        fetchedAt: new Date(clock.getTime() + 60_000).toISOString(),
+        error: "Host agent list timed out.",
+        partial: true,
+        issues: [],
+      }),
+    };
+    expect((await snapshots.read(degraded)).refreshing).toBe(true);
+    await vi.waitFor(async () => {
+      expect((await snapshots.read(degraded)).refreshing).toBe(false);
+    });
+    expect(await snapshots.read(degraded)).toMatchObject({
+      ...updated,
+      error: "Host agent list timed out.",
+      partial: true,
+      refreshing: false,
+    });
+    const afterPartial = new FactoryQueueSnapshots(directory, logger);
+    expect(await afterPartial.read({ ...input, paused: true })).toEqual({
+      ...updated,
+      refreshing: false,
+    });
+    const devUnavailable: ProjectFactoryQueue = {
+      ...updated,
+      fetchedAt: new Date(clock.getTime() + 90_000).toISOString(),
+      issues: [{ ...saved.issues[0]!, title: "Fresh GitHub title" }],
+      partial: false,
+      degraded: "Dev agent data unavailable: offline",
+      issueAgentHost: { serverId: "dev", unavailable: "offline" },
+    };
+    const devInput = {
+      ...input,
+      now: new Date(clock.getTime() + 90_000),
+      refresh: async () => devUnavailable,
+    };
+    await snapshots.read(devInput);
+    await vi.waitFor(async () => {
+      expect((await snapshots.read(devInput)).refreshing).toBe(false);
+    });
+    expect(await snapshots.read(devInput)).toEqual({ ...devUnavailable, refreshing: false });
+    const afterDevLoss = new FactoryQueueSnapshots(directory, logger);
+    expect(await afterDevLoss.read({ ...input, paused: true })).toEqual({
+      ...devUnavailable,
+      refreshing: false,
+    });
+  });
+
+  test("a cold paused queue takes one non-error snapshot read while a disabled Factory takes none", async () => {
+    const snapshots = new FactoryQueueSnapshots(path.join(home, "factory", "cold-queues"), logger);
+    let calls = 0;
+    let complete: ((snapshot: ProjectFactoryQueue) => void) | undefined;
+    const pending = new Promise<ProjectFactoryQueue>((resolve) => {
+      complete = resolve;
+    });
+    const input = {
+      projectId: PROJECT,
+      repository: REPO,
+      paused: true,
+      enabled: false,
+      now: clock,
+      refresh: () => {
+        calls += 1;
+        return pending;
+      },
+    };
+    expect(await snapshots.read(input)).toEqual({
+      fetchedAt: T0,
+      error: null,
+      issues: [],
+      refreshing: false,
+    });
+    expect(calls).toBe(0);
+    input.enabled = true;
+    expect(await snapshots.read(input)).toEqual({
+      fetchedAt: T0,
+      error: null,
+      issues: [],
+      refreshing: true,
+    });
+    expect((await snapshots.read(input)).refreshing).toBe(true);
+    expect(calls).toBe(1);
+    if (!complete) throw new Error("Cold refresh was not prepared");
+    complete({ fetchedAt: T0, error: null, issues: [] });
+    await vi.waitFor(async () => {
+      expect((await snapshots.read(input)).refreshing).toBe(false);
+    });
+    expect(calls).toBe(1);
+    let retries = 0;
+    const failedCold = {
+      ...input,
+      projectId: "failed-cold",
+      refresh: async () => {
+        retries += 1;
+        if (retries === 1) throw new Error("Temporary GitHub failure");
+        return { fetchedAt: T0, error: null, issues: [] };
+      },
+    };
+    await snapshots.read(failedCold);
+    await vi.waitFor(async () => {
+      expect((await snapshots.read(failedCold)).refreshing).toBe(false);
+    });
+    await snapshots.read({ ...failedCold, now: new Date(clock.getTime() + 30_000) });
+    expect(retries).toBe(1);
+    const retry = { ...failedCold, now: new Date(clock.getTime() + 5 * 60_000) };
+    await snapshots.read(retry);
+    await vi.waitFor(async () => {
+      expect((await snapshots.read(retry)).refreshing).toBe(false);
+    });
+    expect(retries).toBe(2);
+  });
+
   test("a project with Factory never enabled has an empty queue without querying GitHub", async () => {
     const graphql = vi.fn();
     const factory = service({ graphql });
@@ -1345,7 +1562,7 @@ describe("issue queue and planning compatibility", () => {
     );
   });
 
-  test("old files load without rewriting and planning settings survive restart", async () => {
+  test("old files load without rewriting and planning and issue-agent settings survive restart", async () => {
     const factory = service();
     await addProject();
     await enable(factory);
@@ -1355,25 +1572,31 @@ describe("issue queue and planning compatibility", () => {
     delete legacy.projects[PROJECT].workers.planning;
     const original = JSON.stringify(legacy);
     writeFileSync(file, original);
+    // A Factory saved before the setting existed runs new issue agents in Dev.
     expect((await factory.get(PROJECT)).workers).toEqual({
       plannerProfileId: null,
       planning: true,
       workerProfileId: null,
       reviewerProfileId: null,
+      issueAgents: "dev",
     });
     expect(readFileSync(file, "utf8")).toBe(original);
     await factory.invoke("factory.project.configure", {
       projectId: PROJECT,
       plannerProfileId: "planner",
       planning: false,
+      issueAgents: "host",
     });
-    expect((await service().get(PROJECT)).workers).toMatchObject({
+    const restarted = await service().get(PROJECT);
+    expect(restarted.workers).toMatchObject({
       plannerProfileId: "planner",
       planning: false,
+      issueAgents: "host",
     });
+    expect(restarted).not.toHaveProperty("issueAgentHost");
   });
 
-  test("derives stages from paged GitHub evidence and project agents, caches errors for 30 seconds", async () => {
+  test("derives stages from paged GitHub evidence and project agents, retains stale snapshots on read errors for 30 seconds", async () => {
     const pageInfo = { hasNextPage: false, endCursor: null };
     const head = "a".repeat(40);
     let labelOverflow = false;
@@ -1529,14 +1752,92 @@ describe("issue queue and planning compatibility", () => {
       labels: { "factory.issue": "2", "factory.role": "worker" },
     });
     archived.archivedAt = T0;
-    await factory.invoke("factory.project.disable", { projectId: PROJECT });
-    const read = () => factory.invoke("factory.project.queue", { projectId: PROJECT });
+    // Issue agents run in Dev by default. Dev's workspace ids differ, so its agents count by
+    // this installation's label; another installation's agent on the same Dev does not.
+    const devAgent = (
+      id: string,
+      installation: string,
+      number: string,
+      role: string,
+    ): DevAgent => ({
+      id,
+      status: "idle",
+      labels: {
+        "factory.installation": installation,
+        "factory.issue": number,
+        "factory.role": role,
+      },
+    });
+    let devReadable = true;
+    let devEnabled = true;
+    const saved = (sourceId: string, serverId: string, enabled: boolean): HostSummary => ({
+      registrationId: `reg_${serverId}`,
+      serverId,
+      label: "Dev container",
+      source: { id: sourceId, key: DEV_HOST_SOURCE_KEY },
+      metadata: {},
+      enabled,
+      status: enabled ? "online" : "disabled",
+      targetDescription: serverId,
+      lastOnlineAt: T0,
+      nextRetryAt: null,
+      error: null,
+    });
+    issueHosts = {
+      // Another producer may save its own server under the Dev key; only the owner's counts.
+      directory: async () => ({
+        self: { serverId: "srv_test", label: "Host" },
+        hosts: [saved("plugin:rogue", "srv_rogue", true), saved("owner", "srv_dev", devEnabled)],
+      }),
+      async use(serverId, action) {
+        if (serverId !== "srv_dev" || !devReadable) throw new Error("Dev route closed");
+        return action({
+          fetchAgents: async () => ({
+            entries: [
+              devAgent("dev-lead", `srv_test/${PROJECT}`, "1", "lead"),
+              devAgent("rival-worker", `srv_rival/${PROJECT}`, "1", "worker"),
+            ].map((agent) => ({ agent })),
+            pageInfo: { nextCursor: null, hasMore: false },
+          }),
+        });
+      },
+    };
+    expect((await factory.get(PROJECT)).issueAgentHost).toEqual({
+      serverId: "srv_dev",
+      unavailable: null,
+    });
+    // The owner's opt-out holds even while the other producer's entry is online.
+    devEnabled = false;
+    expect((await factory.get(PROJECT)).issueAgentHost).toEqual({
+      serverId: "srv_dev",
+      unavailable: "the Dev host is turned off",
+    });
+    devEnabled = true;
+    factory.stop();
+    const read = async () => {
+      let response = factoryProjectQueue.output.parse(
+        await factory.invoke("factory.project.queue", { projectId: PROJECT }),
+      );
+      await vi.waitFor(async () => {
+        response = factoryProjectQueue.output.parse(
+          await factory.invoke("factory.project.queue", { projectId: PROJECT }),
+        );
+        expect(response.refreshing).not.toBe(true);
+      });
+      return response;
+    };
     const result = factoryProjectQueue.output.parse(await read());
     expect(result).toMatchObject({
       error: null,
       fetchedAt: T0,
+      issueAgentHost: { serverId: "srv_dev", unavailable: null },
       issues: [
-        { number: 1, stage: "queued", pr: null },
+        {
+          number: 1,
+          stage: "planning",
+          pr: null,
+          agents: [{ agentId: "dev-lead", role: "lead", serverId: "srv_dev" }],
+        },
         { number: 2, stage: "planning", agents: [{ agentId: "lead", role: "lead" }] },
         { number: 3, stage: "building" },
         { number: 4, stage: "repair" },
@@ -1564,9 +1865,9 @@ describe("issue queue and planning compatibility", () => {
     fail = true;
     const failure = await read();
     expect(failure).toEqual({
-      fetchedAt: clock.toISOString(),
+      ...result,
+      issueAgentHost: null,
       error: "GitHub unavailable",
-      issues: [],
     });
     expect(await read()).toEqual(failure);
     expect(graphql).toHaveBeenCalledTimes(4);
@@ -1574,27 +1875,49 @@ describe("issue queue and planning compatibility", () => {
     fail = false;
     apiFailure = true;
     expect(await read()).toEqual({
-      fetchedAt: clock.toISOString(),
+      ...result,
+      issueAgentHost: null,
       error: "Repository access denied",
-      issues: [],
     });
     expect(graphql).toHaveBeenCalledTimes(5);
     clock = new Date(clock.getTime() + 30_000);
     apiFailure = false;
     execFailure = true;
     expect(await read()).toEqual({
-      fetchedAt: clock.toISOString(),
+      ...result,
+      issueAgentHost: null,
       error: "Authentication required",
-      issues: [],
     });
     clock = new Date(clock.getTime() + 30_000);
     execFailure = false;
     labelOverflow = true;
     expect(await read()).toEqual({
-      fetchedAt: clock.toISOString(),
+      ...result,
+      issueAgentHost: null,
       error: "Issue labels are incomplete.",
-      issues: [],
     });
+    // After a switch to host mode, the Dev lead still running keeps its issue's stage.
+    clock = new Date(clock.getTime() + 30_000);
+    labelOverflow = false;
+    await factory.invoke("factory.project.configure", { projectId: PROJECT, issueAgents: "host" });
+    const switched = factoryProjectQueue.output.parse(await read());
+    expect(switched.issues[0]).toMatchObject({
+      number: 1,
+      stage: "planning",
+      agents: [{ agentId: "dev-lead", serverId: "srv_dev" }],
+    });
+    // An unreadable Dev still renders this host's agents and says why Dev's are missing.
+    clock = new Date(clock.getTime() + 30_000);
+    devReadable = false;
+    const local = factoryProjectQueue.output.parse(await read());
+    expect(local.issueAgentHost).toEqual({
+      serverId: "srv_dev",
+      unavailable: "Dev's agents could not be read: Dev route closed",
+    });
+    expect(local.issues.slice(0, 2)).toMatchObject([
+      { number: 1, stage: "queued", agents: [] },
+      { number: 2, stage: "planning", agents: [{ agentId: "lead", role: "lead" }] },
+    ]);
   });
 });
 
@@ -1787,6 +2110,103 @@ describe("several installations on one repository", () => {
   });
 });
 
+describe("one Factory home per installation", () => {
+  /** A Host and a Dev daemon with their own state, decided by the coordinator's authority. */
+  function installation() {
+    const daemons: Partial<Record<"host" | "container", ProjectFactoryService>> = {};
+    const reachable = { host: true, container: true };
+    const authority = createFactoryHomeAuthority({
+      environments: ["host", "container"],
+      read: async (kind) => {
+        const daemon = daemons[kind];
+        if (!daemon || !reachable[kind]) throw new Error(`${kind} is down`);
+        return daemon.list();
+      },
+    });
+    const port = (environment: "host" | "container"): FactoryHomePort => ({
+      environment,
+      ask: (request) => authority.decide(environment, request),
+    });
+    const devHome = mkdtempSync(path.join(os.tmpdir(), "vorteo-project-factory-dev-"));
+    const start = (environment: "host" | "container", withHome = true) =>
+      (daemons[environment] = service(undefined, {
+        paseoHome: environment === "host" ? home : devHome,
+        serverId: environment === "host" ? "srv_host" : "srv_dev",
+        home: withHome ? port(environment) : undefined,
+      }));
+    return { start, reachable };
+  }
+
+  test("Dev refuses a repository the Host runs, names the Host and keeps nothing", async () => {
+    const { start, reachable } = installation();
+    const host = start("host");
+    const dev = start("container");
+    const enabled = await enable(host);
+    expect(enabled.home).toEqual({ environment: "host", projectId: PROJECT, here: true });
+    const created = agents.created;
+
+    await expect(enable(dev)).rejects.toThrow("runs in the Host environment");
+    expect((await dev.list()).projects).toEqual([]);
+    expect(agents.created).toBe(created);
+
+    // Neither environment claims a home it cannot confirm with the other.
+    await host.invoke("factory.project.disable", { projectId: PROJECT });
+    reachable.host = false;
+    await expect(enable(dev)).rejects.toThrow("unconfirmed");
+    reachable.host = true;
+    await enable(dev);
+    reachable.container = false;
+    await expect(enable(host)).rejects.toThrow("unconfirmed");
+    expect((await host.list()).projects.find((p) => p.projectId === PROJECT)?.state).toBe("off");
+    // Two environments turning Factory on at once never both win.
+    reachable.container = true;
+    await dev.invoke("factory.project.disable", { projectId: PROJECT });
+    const results = await Promise.allSettled([enable(host), enable(dev)]);
+    expect(results.filter((result) => result.status === "fulfilled").length).toBeLessThan(2);
+  });
+
+  test("an existing Host Factory keeps running; a Dev Factory from an earlier release stands down", async () => {
+    const { start, reachable } = installation();
+    // Both were turned on before the home lock existed; Dev's clone is its own project.
+    const foreman = roleAgent(await enable(start("host", false)), "factory-intake");
+    await addProject("prj_dev");
+    const devForeman = roleAgent(
+      (await start("container", false).invoke("factory.project.enable", {
+        projectId: "prj_dev",
+        repository: REPO,
+      })) as Awaited<ReturnType<typeof enable>>,
+      "factory-intake",
+    );
+
+    const host = start("host");
+    const dev = start("container");
+    await host.start();
+    await dev.start();
+    expect(host.hasTimer(PROJECT, "factory-intake")).toBe(true);
+    expect((await host.get(PROJECT)).home).toEqual({
+      environment: "host",
+      projectId: PROJECT,
+      here: true,
+    });
+
+    await host.tick(PROJECT, "factory-intake");
+    await dev.tick("prj_dev", "factory-intake");
+    expect(agents.prompts.filter((prompt) => prompt.agentId === foreman)).toHaveLength(1);
+    expect(agents.prompts.filter((prompt) => prompt.agentId === devForeman)).toHaveLength(0);
+    const state = await dev.get("prj_dev");
+    expect(state.home).toEqual({ environment: "host", projectId: PROJECT, here: false });
+    expect(state.roles.find((role) => role.role === "factory-intake")?.status?.line).toBe(
+      `Off here: Factory home is the Host environment, which runs ${REPO}.`,
+    );
+
+    // An unanswered check keeps the recorded decision, also after a restart.
+    reachable.host = false;
+    await dev.tick("prj_dev", "factory-intake");
+    await start("container").tick("prj_dev", "factory-intake");
+    expect(agents.prompts.filter((prompt) => prompt.agentId === devForeman)).toHaveLength(0);
+  });
+});
+
 describe("account choice for new Factory agents", () => {
   test("picks the fresh account with the most remaining quota and records it", async () => {
     const factory = service();
@@ -1824,6 +2244,7 @@ describe("account choice for new Factory agents", () => {
         ] as never,
       }),
       defaultProvider: async () => "codex-a",
+      destinationAccounts: async () => new Map(),
     };
     const pick = (avoid?: string) =>
       service().invoke("factory.project.pick_account", {
@@ -1891,13 +2312,201 @@ describe("account choice for new Factory agents", () => {
           },
         ] as never,
       }),
-      getSettings: () => ({}) as never,
+      // A standalone daemon launches only with a chosen primary connection, so name codex.
+      getSettings: () => ({ primaryConnection: { provider: "codex" } }) as never,
+      hosts: () => ({
+        use: async () => {
+          throw new Error("no connected hosts");
+        },
+      }),
+      serverId: "srv_test",
+      readInstallationSettings: async () => null,
     });
     const factory = service();
     await enable(factory);
     expect(
       await factory.invoke("factory.project.pick_account", { projectId: PROJECT, stage: "worker" }),
     ).toMatchObject({ provider: "codex", remainingPct: 48 });
+  });
+
+  test("an agent bound for another host starts on that host's id for the same account", async () => {
+    // a2 aliases a only through a local installation account id; lookalike has the same id on
+    // both hosts but no definition, so nothing proves it is one account.
+    const host: Record<string, { shared?: string; remainingPct: number }> = {
+      "codex-host-a": { shared: "acct-a", remainingPct: 40 },
+      "codex-host-a2": { shared: "acct-a", remainingPct: 95 },
+      "codex-host-b": { shared: "acct-b", remainingPct: 90 },
+      "codex-host-c": { shared: "acct-c", remainingPct: 60 },
+      "codex-account-same": { remainingPct: 85 },
+      "codex-lookalike": { remainingPct: 99 },
+    };
+    const usage = (providerId: string, remainingPct: number): ProviderUsage => ({
+      providerId,
+      displayName: providerId,
+      status: "available",
+      planLabel: null,
+      windows: [{ id: "weekly", label: "Weekly", remainingPct }],
+    });
+    const definition = (
+      id: string,
+      bindings: Record<string, string>,
+      extra: Partial<InstallationProvider> = {},
+    ): InstallationProvider => ({ id, providerType: "codex", bindings, policy: {}, ...extra });
+    let authority: InstallationAccountsAuthority | null = {
+      serverId: "srv_test",
+      settings: {
+        providerDefinitions: [
+          definition("account/a", { srv_test: "codex-host-a", srv_dev: "codex-primary" }),
+          // Excluded for Dev, though ready there.
+          definition("account/b", { srv_test: "codex-host-b", srv_dev: "codex-dev-b" }),
+          definition("account/c", { srv_test: "codex-host-c", srv_dev: "codex-dev-c" }),
+          // A managed setup gets the same deterministic id in every environment.
+          definition(
+            "setup/same",
+            { srv_test: "codex-account-same", srv_dev: "codex-account-same" },
+            {
+              accountSetup: {
+                provider: "codex",
+                creationId: "0b6f6f5e-7a8e-4a7e-9c1e-3f1d2c4b5a69",
+              },
+            },
+          ),
+        ],
+        resourceExclusions: {
+          srv_dev: { providerIds: ["account/b"], terminalProfileIds: [], metadataProviderIds: [] },
+        },
+      },
+    };
+    let reachable = true;
+    const dev: DestinationHosts = {
+      async use(serverId, action) {
+        if (serverId !== "srv_dev" || !reachable) throw new Error(`${serverId} is offline`);
+        return action({
+          getDaemonConfig: async () => ({
+            config: {
+              providers: {
+                "codex-primary": { extends: "codex", installationAccountId: "acct-a" },
+                "codex-dev-b": { extends: "codex", installationAccountId: "acct-b" },
+                "codex-dev-c": { extends: "codex", installationAccountId: "acct-c" },
+                "codex-account-same": { extends: "codex" },
+                "codex-lookalike": { extends: "codex" },
+              },
+            },
+          }),
+          getProvidersSnapshot: async () => ({
+            entries: [
+              "codex-primary",
+              "codex-dev-b",
+              "codex-dev-c",
+              "codex-account-same",
+              "codex-lookalike",
+            ].map((provider) => ({ provider, enabled: true, status: "ready" as const })),
+          }),
+        });
+      },
+    };
+    accounts = {
+      readyProviders: async () => Object.keys(host),
+      providerType: () => "codex",
+      profileAccount: (profileId) => (profileId === "local-codex" ? "codex-host-a" : null),
+      readUsage: async () => ({
+        fetchedAt: T0,
+        providers: Object.entries(host).map(([id, item]) => usage(id, item.remainingPct)),
+      }),
+      defaultProvider: async () => "codex-host-a",
+      destinationAccounts: (serverId) =>
+        readDestinationAccounts({
+          hosts: () => dev,
+          serverId,
+          authority,
+          localProviders: Object.fromEntries(
+            Object.entries(host).map(([id, item]) => [
+              id,
+              { extends: "codex", ...(item.shared ? { installationAccountId: item.shared } : {}) },
+            ]),
+          ),
+        }),
+    };
+    const factory = service();
+    await enable(factory);
+    const pick = (input: { serverId?: string; avoid?: string }) =>
+      factory.invoke("factory.project.pick_account", {
+        projectId: PROJECT,
+        stage: "worker",
+        ...input,
+      });
+
+    for (const [input, expected] of [
+      // This daemon, named or not, ranks its own accounts as before.
+      [{}, { provider: "codex-lookalike", remainingPct: 99 }],
+      [{ serverId: "srv_test" }, { provider: "codex-lookalike", remainingPct: 99 }],
+      // Only definitions binding both hosts map: b is excluded for Dev, and neither the alias
+      // a2 nor the same-id lookalike has one. The managed setup's identical id qualifies.
+      [
+        { serverId: "srv_dev" },
+        {
+          serverId: "srv_dev",
+          provider: "codex-account-same",
+          remainingPct: 85,
+          considered: [
+            { provider: "codex-primary", localProvider: "codex-host-a", verdict: "qualifies" },
+            { provider: "codex-dev-c", localProvider: "codex-host-c", verdict: "qualifies" },
+            {
+              provider: "codex-account-same",
+              localProvider: "codex-account-same",
+              verdict: "qualifies",
+            },
+          ],
+        },
+      ],
+      [{ serverId: "srv_dev", avoid: "codex-account-same" }, { provider: "codex-dev-c" }],
+    ] as const)
+      expect(await pick(input)).toMatchObject(expected);
+    expect(await pick({})).not.toHaveProperty("serverId");
+
+    // Installation policy wins while the destination still reports the account ready.
+    authority.settings.providerDefinitions = [
+      definition(
+        "setup/same",
+        { srv_test: "codex-account-same", srv_dev: "codex-account-same" },
+        { policy: { enabled: false } },
+      ),
+    ];
+    expect(await pick({ serverId: "srv_dev" })).toMatchObject({ provider: null });
+
+    // Without installation settings, only a shared installation account id links accounts,
+    // and avoiding one by either id avoids every local alias of it.
+    authority = null;
+    for (const [input, expected] of [
+      [{ serverId: "srv_dev" }, { provider: "codex-primary", remainingPct: 95 }],
+      [{ serverId: "srv_dev", avoid: "codex-primary" }, { provider: "codex-dev-b" }],
+      [{ serverId: "srv_dev", avoid: "codex-host-a" }, { provider: "codex-dev-b" }],
+    ] as const)
+      expect(await pick(input)).toMatchObject(expected);
+
+    // An unreadable or unknown host fails rather than falling back to this daemon's accounts.
+    reachable = false;
+    await expect(pick({ serverId: "srv_dev" })).rejects.toThrow(
+      "Cannot read the accounts of host srv_dev",
+    );
+    await expect(pick({ serverId: "srv_gone" })).rejects.toThrow(
+      "Cannot read the accounts of host srv_gone",
+    );
+    // A profile bound to one account cannot launch on another host.
+    reachable = true;
+    await factory.invoke("factory.project.configure", {
+      projectId: PROJECT,
+      workerProfileId: "local-codex",
+    });
+    await expect(pick({ serverId: "srv_dev" })).rejects.toThrow(
+      "Profile local-codex is bound to one account and cannot launch on host srv_dev",
+    );
+    const state = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    expect(
+      state.projects[PROJECT].accountPicks.map(
+        (item: { serverId?: string }) => item.serverId ?? null,
+      ),
+    ).toEqual([null, null, "srv_dev", "srv_dev", null, "srv_dev", "srv_dev", "srv_dev", "srv_dev"]);
   });
 
   test("the daemon's accounts fall back when usage cannot be read and no profile is set", async () => {
@@ -1908,7 +2517,16 @@ describe("account choice for new Factory agents", () => {
       readUsage: async () => {
         throw new Error("usage service down");
       },
-      getSettings: () => ({}) as never,
+      // No stage profile is set, so the provider type comes from the default launch, which a
+      // standalone daemon only has once its primary connection is chosen.
+      getSettings: () => ({ primaryConnection: { provider: "codex" } }) as never,
+      hosts: () => ({
+        use: async () => {
+          throw new Error("no connected hosts");
+        },
+      }),
+      serverId: "srv_test",
+      readInstallationSettings: async () => null,
     });
     const factory = service();
     await enable(factory);

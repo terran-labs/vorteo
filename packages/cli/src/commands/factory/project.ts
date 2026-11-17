@@ -71,6 +71,11 @@ const stateSchema: OutputSchema<ProjectFactoryState> = {
       `Factory: ${state.state}${state.reason ? ` (${state.reason})` : ""}`,
       `Repository: ${state.repository ?? "none"}`,
       ...(state.installation ? [`Installation: ${state.installation}`] : []),
+      ...(state.home
+        ? [
+            `Factory home: ${state.home.environment === "host" ? "Host" : "Dev"}${state.home.here ? " (this environment)" : `, project ${state.home.projectId ?? "unknown"}; roles here stand down`}`,
+          ]
+        : []),
       ...(state.assignment ? [`Role assignment: ${describeAssignment(state.assignment)}`] : []),
       ...(state.workers.plannerProfileId !== undefined
         ? [`Planner profile: ${state.workers.plannerProfileId ?? "default"}`]
@@ -80,6 +85,9 @@ const stateSchema: OutputSchema<ProjectFactoryState> = {
         : []),
       `Worker profile: ${state.workers.workerProfileId ?? "default"}`,
       `Reviewer profile: ${state.workers.reviewerProfileId ?? "default"}`,
+      ...(state.workers.issueAgents
+        ? [`Issue agents: ${describeIssueAgents(state.workers.issueAgents, state.issueAgentHost)}`]
+        : []),
       `Drain: ${state.drain ? `${state.drain.id} (${state.drain.reason}, ${state.drain.pausedAt})` : "none"}`,
       "",
       ["ROLE", "ID", "AGENT", "WORKSPACE", "HEARTBEAT", "LAUNCH", "INSTRUCTIONS", "STATUS"].join(
@@ -89,6 +97,15 @@ const stateSchema: OutputSchema<ProjectFactoryState> = {
     ].join("\n");
   },
 };
+
+function describeIssueAgents(
+  mode: "dev" | "host",
+  host: ProjectFactoryState["issueAgentHost"],
+): string {
+  if (mode === "host" || !host) return mode;
+  if (host.unavailable) return `dev, unavailable: ${host.unavailable}`;
+  return `dev (${host.serverId})`;
+}
 
 function describeAssignment(assignment: ProjectFactoryAssignment): string {
   if (assignment.source === "none") return "no .github/factory.json";
@@ -206,6 +223,20 @@ async function readText(file: unknown): Promise<string> {
   return readFile(file, "utf8");
 }
 
+/**
+ * Fields added later are sent only when given. An older daemon's strict input refuses one it
+ * does not know, so say to update it instead of showing the validation error.
+ */
+function refusedNewField(error: unknown, field: string, message: string): never {
+  if (
+    error instanceof Error &&
+    error.message.includes("unrecognized_keys") &&
+    error.message.includes(field)
+  )
+    throw { code: "DAEMON_UPDATE_REQUIRED", message };
+  throw error;
+}
+
 function stateCommand(
   name: string,
   description: string,
@@ -222,7 +253,17 @@ function stateCommand(
   return addJsonAndDaemonHostOptions(command).action(
     withOutput(async (projectId: string, options: CommandOptions, _command: Command) =>
       withClient(options, async (client) =>
-        single(await call(client, rpc, input(projectId, options)), stateSchema),
+        single(
+          // Only configure sends issueAgents.
+          await call(client, rpc, input(projectId, options)).catch((error: unknown) =>
+            refusedNewField(
+              error,
+              "issueAgents",
+              "Update the daemon to choose where issue agents run.",
+            ),
+          ),
+          stateSchema,
+        ),
       ),
     ),
   );
@@ -312,6 +353,7 @@ export function createFactoryProjectCommand(): Command {
           if (value !== undefined) input[key] = value;
         }
         if (options.planning !== undefined) input.planning = options.planning === "on";
+        if (options.issueAgents !== undefined) input.issueAgents = options.issueAgents;
         return input;
       },
       (command) =>
@@ -327,7 +369,13 @@ export function createFactoryProjectCommand(): Command {
             ]),
           )
           .option("--worker-profile <profile-id>", "Profile the Foreman gives workers")
-          .option("--reviewer-profile <profile-id>", "Profile the Foreman gives reviewers"),
+          .option("--reviewer-profile <profile-id>", "Profile the Foreman gives reviewers")
+          .addOption(
+            new Option(
+              "--issue-agents <dev|host>",
+              "Where new issue leads, workers and reviewers run",
+            ).choices(["dev", "host"]),
+          ),
     ),
   );
 
@@ -424,10 +472,11 @@ const pickSchema: OutputSchema<ProjectFactoryAccountPick> = {
     return [
       `Stage: ${value.stage}`,
       `Profile: ${value.profileId ?? "default"}`,
+      ...(value.serverId ? [`Host: ${value.serverId}`] : []),
       describePickedAccount(value),
       ...value.considered.map(
         (item) =>
-          `  ${item.provider}: ${item.verdict}${item.remainingPct === null ? "" : ` ${item.remainingPct}%`}`,
+          `  ${item.provider}${item.localProvider ? ` (here ${item.localProvider})` : ""}: ${item.verdict}${item.remainingPct === null ? "" : ` ${item.remainingPct}%`}`,
       ),
     ].join("\n");
   },
@@ -449,6 +498,10 @@ function createPickAccountCommand(): Command {
       .argument("<stage>", "planner, worker or reviewer")
       .option("--issue <n>", "Issue the agent is for, recorded with the choice")
       .option("--avoid <provider>", "Account to leave out, such as the worker's")
+      .option(
+        "--server <server-id>",
+        "Connected host the agent starts on; picks that host's id for the account",
+      )
       .allowExcessArguments(false),
   ).action(
     withOutput(
@@ -456,6 +509,7 @@ function createPickAccountCommand(): Command {
         const parsed = ProjectFactoryStageSchema.safeParse(stage);
         if (!parsed.success)
           throw { code: "INVALID_STAGE", message: "Use planner, worker or reviewer." };
+        const serverId = typeof options.server === "string" ? options.server : undefined;
         return withClient(options, async (client) =>
           single(
             await call(client, factoryProjectPickAccount, {
@@ -463,7 +517,14 @@ function createPickAccountCommand(): Command {
               stage: parsed.data,
               ...(typeof options.issue === "string" ? { issue: parseIssue(options.issue) } : {}),
               ...(typeof options.avoid === "string" ? { avoid: options.avoid } : {}),
-            }),
+              ...(serverId ? { serverId } : {}),
+            }).catch((error: unknown) =>
+              refusedNewField(
+                error,
+                "serverId",
+                "Update the daemon to pick accounts for another host.",
+              ),
+            ),
             pickSchema,
           ),
         );

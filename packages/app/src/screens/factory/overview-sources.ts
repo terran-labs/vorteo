@@ -2,7 +2,6 @@ import { useCallback, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { projectNameForWorkspace } from "@/hooks/sidebar-workspaces-view-model";
-import { selectPendingArchiveAgentIds, usePendingArchiveState } from "@/hooks/use-archive-agent";
 import { useFetchQueries } from "@/data/query";
 import {
   ProjectFactoryStateSchema,
@@ -23,9 +22,7 @@ import {
   OWNER_STOP_REASON,
 } from "./factory-reads";
 import {
-  factoryQuestions,
   factoryScopeKey,
-  type FactoryQuestion,
   canResumeHost,
   canStopHost,
   hostStopState,
@@ -58,6 +55,37 @@ export function useFactoryHosts(): FactoryHost[] {
           invoke: plugin.invoke,
         })),
     [plugins, hosts],
+  );
+}
+
+/**
+ * Server ids whose daemon runs a Factory that is on or paused, from the same cached lists the
+ * overview reads. Reads once per stale period and never polls.
+ */
+export function useFactoryServerIds(enabled: boolean): ReadonlySet<string> {
+  const hosts = useFactoryHosts();
+  const lists = useFetchQueries(
+    hosts.map((host) => ({
+      dataShape: "value" as const,
+      queryKey: factoryListQueryKey(host.serverId),
+      staleTimeMs: POLL_MS,
+      enabled,
+      queryFn: () => boundedFactoryRead(() => loadFactoryList(host.invoke)),
+    })),
+    combineLists,
+  );
+  return useMemo(
+    () =>
+      new Set(
+        hosts
+          .filter((_host, index) =>
+            (lists[index]?.projects ?? []).some(
+              (project) => project.state === "on" || project.state === "paused",
+            ),
+          )
+          .map((host) => host.serverId),
+      ),
+    [hosts, lists],
   );
 }
 
@@ -181,27 +209,6 @@ export function useProjectNames(): (serverId: string, projectId: string) => stri
     },
     [sessions],
   );
-}
-
-/** Open questions from these Factories' threads, read from the session store like the card. */
-export function useFactoryQuestions(entries: readonly FactoryScopeEntry[]): FactoryQuestion[] {
-  const sessions = useSessionStore((store) => store.sessions);
-  const pending = usePendingArchiveState();
-  return useMemo(() => {
-    const serverIds = new Set(entries.map((entry) => entry.serverId));
-    const hosts = [...serverIds].flatMap((serverId) => {
-      const session = sessions[serverId];
-      if (!session) return [];
-      return [
-        {
-          serverId,
-          agents: session.agents.values(),
-          pendingArchive: selectPendingArchiveAgentIds(pending, serverId),
-        },
-      ];
-    });
-    return factoryQuestions(entries, hosts);
-  }, [entries, pending, sessions]);
 }
 
 export interface StopAllControls {

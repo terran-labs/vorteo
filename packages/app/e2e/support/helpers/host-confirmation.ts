@@ -87,7 +87,8 @@ export async function expectHostInConnections(
   serverId: string,
   expected: "listed" | "not listed",
 ): Promise<void> {
-  await page.getByTestId("settings-section-environments").click();
+  // Connections lives in System.
+  await page.getByTestId("settings-section-system").click();
   const connections = page.getByTestId("settings-pane-environments.connections");
   await connections.scrollIntoViewIfNeeded();
   // The single settings page repeats each host's section under several panes, and the section's

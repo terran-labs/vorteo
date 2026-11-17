@@ -974,6 +974,24 @@ export type CheckoutSnapshotFacts =
       pullRequestLookupTarget: PullRequestStatusLookupTarget | null;
     };
 
+type CheckoutMetadataFacts =
+  | { isGit: false }
+  | Pick<
+      Extract<CheckoutSnapshotFacts, { isGit: true }>,
+      | "isGit"
+      | "worktreeRoot"
+      | "currentBranch"
+      | "remoteUrl"
+      | "paseoWorktree"
+      | "mainRepoRoot"
+      | "absoluteGitDir"
+      | "gitCommonDir"
+    >;
+
+interface CheckoutMetadataRead {
+  metadataOnly: true;
+}
+
 function isNotGitRepositoryError(error: unknown): boolean {
   return error instanceof Error && /not a git repository/i.test(error.message);
 }
@@ -2111,10 +2129,20 @@ async function resolveFactsPullRequestLookupTarget(input: {
   return target;
 }
 
+export function getCheckoutSnapshotFacts(
+  cwd: string,
+  context: CheckoutContext | undefined,
+  options: CheckoutMetadataRead,
+): Promise<CheckoutMetadataFacts>;
+export function getCheckoutSnapshotFacts(
+  cwd: string,
+  context?: CheckoutContext,
+): Promise<CheckoutSnapshotFacts>;
 export async function getCheckoutSnapshotFacts(
   cwd: string,
   context?: CheckoutContext,
-): Promise<CheckoutSnapshotFacts> {
+  options?: CheckoutMetadataRead,
+): Promise<CheckoutSnapshotFacts | CheckoutMetadataFacts> {
   if (context?.facts) {
     return context.facts;
   }
@@ -2124,16 +2152,29 @@ export async function getCheckoutSnapshotFacts(
     return { isGit: false };
   }
 
-  const paseoWorktreeMetadata = inspected.paseoWorktree.isPaseoOwnedWorktree
-    ? await readPaseoWorktreeMetadata(inspected.paseoWorktree.worktreeRoot)
-    : null;
-  const storedBaseRef = storedBaseRefFromMetadata(paseoWorktreeMetadata);
-  const resolvedBaseRef = storedBaseRef ?? (await resolveBaseRef(cwd, context));
   const mainRepoRoot = await getMainRepoRootFromCommonDir(
     cwd,
     inspected.gitCommonDir,
     context,
   ).catch(() => null);
+  const metadata: Extract<CheckoutMetadataFacts, { isGit: true }> = {
+    isGit: true,
+    worktreeRoot: inspected.worktreeRoot,
+    currentBranch: inspected.currentBranch,
+    remoteUrl: inspected.remoteUrl,
+    paseoWorktree: inspected.paseoWorktree,
+    mainRepoRoot,
+    absoluteGitDir: inspected.absoluteGitDir,
+    gitCommonDir: inspected.gitCommonDir,
+  };
+  // Registry reconciliation needs identity, not upstream counts or comparison refs.
+  if (options?.metadataOnly) return metadata;
+
+  const paseoWorktreeMetadata = inspected.paseoWorktree.isPaseoOwnedWorktree
+    ? await readPaseoWorktreeMetadata(inspected.paseoWorktree.worktreeRoot)
+    : null;
+  const storedBaseRef = storedBaseRefFromMetadata(paseoWorktreeMetadata);
+  const resolvedBaseRef = storedBaseRef ?? (await resolveBaseRef(cwd, context));
   let comparisonBaseRef: string | null = null;
   if (
     resolvedBaseRef &&
@@ -2184,16 +2225,9 @@ export async function getCheckoutSnapshotFacts(
   const upstreamStatus = await upstreamStatusPromise;
 
   return {
-    isGit: true,
-    worktreeRoot: inspected.worktreeRoot,
-    currentBranch: inspected.currentBranch,
-    remoteUrl: inspected.remoteUrl,
-    absoluteGitDir: inspected.absoluteGitDir,
-    gitCommonDir: inspected.gitCommonDir,
-    paseoWorktree: inspected.paseoWorktree,
+    ...metadata,
     storedBaseRef,
     resolvedBaseRef,
-    mainRepoRoot,
     comparisonBaseRef,
     branchRemoteName,
     branchMergeRef,

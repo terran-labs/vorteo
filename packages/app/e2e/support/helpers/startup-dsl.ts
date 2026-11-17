@@ -2,7 +2,13 @@ import type { Route } from "@playwright/test";
 import { expect, type Page } from "../fixtures";
 import { buildCreateAgentPreferences, buildSeededHost } from "./daemon-registry";
 import { wsRoutePatternForPort } from "./daemon-port";
-import { goBackInSettings, openSettingsHost } from "./settings";
+import {
+  closeSettingsDialog,
+  goBackInSettings,
+  openSettingsEnvironment,
+  openSettingsHost,
+  settingsEnvironmentDetails,
+} from "./settings";
 
 const DISABLE_DEFAULT_SEED_ONCE_KEY = "@paseo:e2e-disable-default-seed-once";
 const SEED_NONCE_KEY = "@paseo:e2e-seed-nonce";
@@ -175,10 +181,10 @@ class StartupAssertions {
     await this.page.getByTestId("sidebar-settings").click();
     await expect(this.page.getByTestId("settings-sidebar")).toBeVisible();
     await openSettingsHost(this.page, input.serverId);
-    // Several settings panes repeat the host's section; the first is its Environments entry.
-    await expect(
-      this.page.getByTestId(`settings-environment-${input.serverId}`).first(),
-    ).toContainText(input.label);
+    // Connections sit on the System page; the environment's Edit dialog shows its label.
+    await openSettingsEnvironment(this.page, input.serverId);
+    await expect(settingsEnvironmentDetails(this.page, input.serverId)).toContainText(input.label);
+    await closeSettingsDialog(this.page);
     await goBackInSettings(this.page);
     await goBackInSettings(this.page);
     await expect(this.page).toHaveURL(startupUrl);

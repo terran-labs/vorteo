@@ -1,5 +1,8 @@
 import { openSettings } from "../support/helpers/app";
-import { revealSettingsLocation } from "../support/helpers/settings";
+import {
+  openSettingsEnvironmentExceptions,
+  revealSettingsLocation,
+} from "../support/helpers/settings";
 import { helperReviewFixture } from "../../src/execution-installation/helper-review.fixture";
 import { NativeHelperJobSchema } from "@getpaseo/protocol/native-helper-maintenance";
 import { MaintenanceServiceJobSchema } from "@getpaseo/protocol/maintenance-service";
@@ -2545,9 +2548,8 @@ test("shared metadata save failure stays visible and retry updates both environm
   });
   expect(lock.ok()).toBe(true);
   await page.getByRole("button", { name: "Automatic", exact: true }).click();
-  await expect(page.getByTestId("metadata-generation-save-error")).toContainText(
-    "Unlock Installation controls",
-  );
+  await expect(page.getByTestId("app-toast")).toBeVisible();
+  await expect(page.getByTestId("app-toast")).toContainText("Unlock Installation controls");
   await expect(page.getByRole("button", { name: "Manual", exact: true })).toHaveAttribute(
     "aria-selected",
     "true",
@@ -2563,6 +2565,7 @@ test("shared metadata save failure stays visible and retry updates both environm
     }
   }
   await page.goto(origin);
+  await page.goto(`${origin}/settings`);
   await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
@@ -2573,7 +2576,7 @@ test("shared metadata save failure stays visible and retry updates both environm
     "aria-selected",
     "true",
   );
-  await expect(page.getByTestId("metadata-generation-save-error")).not.toBeVisible();
+  await expect(page.getByTestId("app-toast")).not.toBeVisible();
   for (const kind of ["host", "container"] as const) {
     const client = await connectReadyInstallationDaemon(kind);
     try {
@@ -2743,9 +2746,11 @@ test("shared plugins preserve source review on failure and project one catalog t
   await page.screenshot({ path: info.outputPath("shared-plugins.png"), fullPage: true });
   await page.goto(`${origin}/settings/environments`);
   const dev = daemons[0]!;
-  const availability = page
-    .getByTestId(`settings-environment-${dev.serverId}`)
-    .getByRole("switch", { name: "Plugin: shared-browser availability", exact: true });
+  // Per-environment availability lives in the environment dialog's exceptions group.
+  const availability = (await openSettingsEnvironmentExceptions(page, dev.serverId)).getByRole(
+    "switch",
+    { name: "Plugin: shared-browser availability", exact: true },
+  );
   await expect(availability).toBeChecked();
   await availability.click();
   await expect(availability).not.toBeChecked();
@@ -2825,8 +2830,9 @@ test("directory bindings stay local and preserve an excluded plugin through vali
     });
     expect(response.ok()).toBe(true);
     expect(await response.text()).not.toContain(directory);
-    await page
-      .getByTestId(`settings-environment-${dev.serverId}`)
+    await (
+      await openSettingsEnvironmentExceptions(page, dev.serverId)
+    )
       .getByRole("switch", { name: "Plugin: host-authority-test availability", exact: true })
       .click();
     await expect
@@ -2862,7 +2868,7 @@ test("a directory plugin is created once with separate environment paths", async
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
   await page.goto(`${origin}/settings/plugins`);
   await page.getByTestId("shared-plugin-add").click();
-  await page.getByRole("button", { name: "Local directories", exact: true }).click();
+  await page.getByRole("radio", { name: "Local directories", exact: true }).click();
   await page.getByTestId("shared-plugin-source").fill("invalid directory");
   await page.getByTestId("shared-plugin-prepare").click();
   await expect(page.getByRole("alert").filter({ hasText: "Enter a plugin ID" })).toBeVisible();
@@ -3447,6 +3453,8 @@ test("shared account setup preserves the catalog through retries and local remov
     await page.goto(`${origin}/settings/providers`);
     await openProviderPage(page, "codex");
     await openConnectionAction(page, `managed/${creationId}`, "access");
+    // Per-environment Remove and Restore sit under the sheet's Advanced group.
+    await page.getByTestId("provider-manage-advanced-toggle").click();
     const remove = page.getByTestId(`shared-provider-remove-managed/${creationId}-${hostServerId}`);
     await expect(remove).toBeEnabled({ timeout: 60_000 });
     let dialog = page.waitForEvent("dialog");
@@ -4075,9 +4083,10 @@ test("browser tools share one default with explicit environment exceptions", asy
   }
   await page.goto(`${origin}/settings/environments`);
   const dev = daemons[0]!;
-  const availability = page
-    .getByTestId(`settings-environment-${dev.serverId}`)
-    .getByRole("switch", { name: "Browser tools availability", exact: true });
+  const availability = (await openSettingsEnvironmentExceptions(page, dev.serverId)).getByRole(
+    "switch",
+    { name: "Browser tools availability", exact: true },
+  );
   await expect(availability).toBeChecked();
   await availability.click();
   await expect(availability).not.toBeChecked();
@@ -4227,10 +4236,12 @@ test("shared policy saves preserve drafts and show retryable errors", async ({ p
     }
   }
   await page.goto(`${origin}/settings/environments`);
-  await expect(page.getByTestId(`installation-maintenance-${daemons[0]!.serverId}`)).toBeVisible();
+  // Environments lists one row per environment; tabs are gone.
+  await expect(page.locator('[data-testid^="settings-environment-row-"]').first()).toBeVisible();
   await expect(page.getByTestId("host-page-restart-button")).toHaveCount(0);
-  await page.getByTestId(`installation-maintenance-${daemons[0]!.serverId}`).click();
-  await expect(page).toHaveURL(/settings\/general\?installation=1/);
+  const details = await openSystemDetails(page, "Dev");
+  await expect(details.getByTestId("installation-card")).toBeVisible();
+  await expect(page.getByTestId("host-page-restart-button")).toHaveCount(0);
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
 });
 

@@ -5,7 +5,10 @@ import {
 export { InitialHostSupervisorPreconditionSchema } from "./host-supervisor-contract.js";
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { DaemonMaintenanceProcessSchema as RuntimeProcessSchema } from "@getpaseo/protocol/maintenance-interruption";
+import {
+  CooperativeMailboxDescriptorSchema,
+  DaemonMaintenanceProcessSchema as RuntimeProcessSchema,
+} from "@getpaseo/protocol/maintenance-interruption";
 import { execFile, execFileSync } from "node:child_process";
 import { lstat, realpath } from "node:fs/promises";
 import { lstatSync, realpathSync } from "node:fs";
@@ -759,6 +762,90 @@ function verifyHostProcesses(input: HostProcessCustody): void {
   );
 }
 
+async function inspectHostCooperativeEndpoint(
+  environment: Record<string, string>,
+  ports: EnrollmentDaemonInspectionPorts,
+  custody: ReturnType<typeof retainCustody>,
+  roots: string[],
+  selectedRelease: string,
+  installationId: string,
+) {
+  const mailboxText = environment.VORTEO_COOPERATIVE_DRAIN_DESCRIPTOR;
+  const cooperativeMailbox = mailboxText
+    ? CooperativeMailboxDescriptorSchema.parse(JSON.parse(mailboxText))
+    : undefined;
+  if (cooperativeMailbox) {
+    const inspectorPath = path.join(selectedRelease, "scripts/inspect-coordinator-process.py");
+    const scope = z
+      .object({
+        installationId: z.uuid(),
+        target: z.literal("host"),
+        processInspector: z.strictObject({
+          path: z.string(),
+          sha256: z.string().regex(/^[a-f0-9]{64}$/),
+        }),
+      })
+      .parse(
+        JSON.parse((await readProtectedDocument(cooperativeMailbox.scopeFile)).toString("utf8")),
+      );
+    requireMatch(
+      cooperativeMailbox.ownerUid === ports.uid &&
+        cooperativeMailbox.readerUid === ports.uid &&
+        scope.installationId === installationId &&
+        scope.processInspector.path === inspectorPath &&
+        cooperativeMailbox.helperFile ===
+          path.join(selectedRelease, "packages/server/dist/scripts/cooperative-drain-mailbox.py"),
+      "Host cooperative endpoint differs from the selected installation artifact",
+    );
+    custody.capture([
+      cooperativeMailbox.scopeFile,
+      cooperativeMailbox.helperFile,
+      inspectorPath,
+      cooperativeMailbox.pythonFile,
+    ]);
+    await protectedPaths(
+      [cooperativeMailbox.scopeFile, cooperativeMailbox.helperFile, inspectorPath],
+      roots,
+      ports.uid,
+    );
+    // The configured interpreter is the fixed system runtime, owned by root.
+    // Endpoint state and packaged scripts remain owned by the native account.
+    await protectedPaths([cooperativeMailbox.pythonFile], roots, 0);
+    const helper = await readBootstrapPreparedFile(
+      { path: cooperativeMailbox.helperFile, sha256: cooperativeMailbox.helperSha256 },
+      roots,
+    );
+    // The consumer can invoke only the existing inspector from this selected
+    // release, with its protected digest. A mailbox cannot choose another tool.
+    await readBootstrapPreparedFile(scope.processInspector, roots);
+    const preflight = JSON.parse(
+      await ports.command(
+        cooperativeMailbox.pythonFile,
+        [
+          "-I",
+          "-B",
+          "-c",
+          helper.toString("utf8"),
+          "preflight",
+          "--scope",
+          cooperativeMailbox.scopeFile,
+          "--endpoint-sha256",
+          cooperativeMailbox.endpointIdentitySha256,
+          "--owner-uid",
+          String(cooperativeMailbox.ownerUid),
+        ],
+        COMMAND_LIMITS,
+      ),
+    );
+    requireMatch(
+      preflight.capability === "maintenance.interrupt-held-turns" &&
+        preflight.endpointIdentitySha256 === cooperativeMailbox.endpointIdentitySha256,
+      "Host cooperative endpoint preflight differs",
+    );
+  }
+  return cooperativeMailbox;
+}
+
 async function inspectHost(
   config: InstallationConfig,
   expected: Extract<EnrollmentNativeIdentity, { environment: "host" }>,
@@ -824,6 +911,15 @@ async function inspectHost(
         ),
       ),
     );
+  const cooperativeMailbox = await inspectHostCooperativeEndpoint(
+    plist.EnvironmentVariables,
+    ports,
+    custody,
+    roots,
+    selectedRelease,
+    config.public.installationId,
+  );
+  const mailboxText = plist.EnvironmentVariables.VORTEO_COOPERATIVE_DRAIN_DESCRIPTOR;
   const argv = [startup.node, startup.entrypoint];
   requireMatch(
     plist.Label === expected.serviceLabel &&
@@ -842,6 +938,18 @@ async function inspectHost(
   const service = await readService();
   const supervisorPid = loadedCoordinatorPid(hostLaunchdService(config), service);
   verifyHostRegistration(service, argv, expected.launcherPath, startup.home);
+  if (cooperativeMailbox) {
+    const sections = [...service.matchAll(/^\tenvironment = \{\n([\s\S]*?)^\t\}$/gm)];
+    const entries = sections
+      .flatMap((section) => section[1].split("\n").map((line) => line.trim()))
+      .filter((line) => line.startsWith("VORTEO_COOPERATIVE_DRAIN_DESCRIPTOR => "));
+    requireMatch(
+      entries.length === 1 &&
+        entries[0] === `VORTEO_COOPERATIVE_DRAIN_DESCRIPTOR => ${mailboxText}`,
+      "Loaded Host cooperative endpoint differs from protected registration",
+    );
+  }
+
   if (purpose.kind === "initial-migration")
     verifyInitialHostRegistration(service, plist, purpose.precondition);
   const reader = await ports.processes(setup, roots);
@@ -889,6 +997,7 @@ async function inspectHost(
       target: "host" as const,
       installationId: config.public.installationId,
       custodyOwnerUid: supervisor.uid,
+      ...(cooperativeMailbox ? { cooperativeMailbox } : {}),
       installationRoot: await realpath(expected.installationRoot),
       stateDirectory: await realpath(startup.home),
       serviceDomain: hostLaunchdService(config).split("/").slice(0, 2).join("/"),

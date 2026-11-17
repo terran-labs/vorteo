@@ -1,6 +1,13 @@
+import {
+  prepareCooperativeMailboxCommand,
+  attemptCooperativeMailboxCommand,
+} from "./host-supervisor-command-admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { StandingInterruptionSchema } from "@getpaseo/protocol/maintenance-interruption";
+import {
+  StandingInterruptionSchema,
+  type CooperativeDrainPreparation,
+} from "@getpaseo/protocol/maintenance-interruption";
 import type { RestartJob, RestartImpact } from "@getpaseo/protocol/execution-installation";
 import type { InstallationConfig } from "../config.js";
 import type { InstallationSourceUpdates } from "../source-updates.js";
@@ -14,7 +21,11 @@ import {
   type EnrollmentDaemonObservation,
 } from "./native-daemon-inspection.js";
 import { createStandingRestartAdapter } from "./restart-adapter.js";
-import { standingRestartPlanDigest } from "./restart-admission.js";
+import {
+  standingRestartPlanDigest,
+  evaluateStandingRestart,
+  assertCooperativeDispatchAdmission,
+} from "./restart-admission.js";
 import type { EnrollmentServiceObservation } from "./status.js";
 
 const FRESHNESS_MS = 30_000;
@@ -51,6 +62,7 @@ export function createDaemonStandingRuntime(
   const native = new Map<RestartJob["target"], EnrollmentDaemonObservation>();
   let registrationObservation: EnrollmentDaemonObservation | null = null;
   const sources = new Map<string, SourceEvidence>();
+  const cooperativeSettlements = new Map<string, CooperativeDrainPreparation["observation"]>();
   const admittedInstances = new Map<string, string>();
   let refreshing: Promise<void> | null = null;
   let refreshedAt = -Infinity;
@@ -188,6 +200,7 @@ export function createDaemonStandingRuntime(
       assertEvidence(job, phase) {
         if (!evidence(job)) throw new Error("Current native maintenance evidence is unavailable");
         if (job.standingInterruption) assertInterruptionEvidence(job);
+        if (job.cooperativeDrainPreparation) assertCooperativeNativeEvidence(job);
         const initial = job.standingHold?.initialDaemonInstanceSha256;
         if (initial && instance(observation(job.target)!) !== initial)
           throw new Error("Initial daemon lifetime changed before dispatch");
@@ -228,6 +241,168 @@ export function createDaemonStandingRuntime(
       if (!updater || !isDeepStrictEqual(updater.standingCandidate(job), intent.candidate))
         throw new Error("Interruption candidate differs from verified preparation");
     }
+  }
+
+  function assertCooperativeNativeEvidence(job: RestartJob, requireSettlement = true): void {
+    const phase = job.cooperativeDrainPreparation;
+    const current = observation(job.target);
+    if (
+      !phase ||
+      !current?.descriptor.cooperativeMailbox ||
+      current.descriptor.cooperativeMailbox.endpointIdentitySha256 !==
+        phase.endpointIdentitySha256 ||
+      current.workerInstanceId !== phase.intent.held.workerInstanceId ||
+      current.restartDrainId !== job.id
+    )
+      throw new Error("Cooperative native endpoint or exact worker hold is unavailable");
+    current.assertCurrent();
+    const expected = StandingInterruptionSchema.shape.native.parse({
+      identitySha256: current.identitySha256,
+      serverId: current.serverId,
+      sourceCommit: current.sourceCommit,
+      selectedRelease: current.selectedRelease,
+      observedAt: phase.intent.native.observedAt,
+      supervisor: current.supervisor,
+      worker: current.worker,
+    });
+    if (!isDeepStrictEqual(expected, phase.intent.native))
+      throw new Error("Cooperative native worker lifetime changed after reservation");
+    if (
+      requireSettlement &&
+      phase.phase === "settled" &&
+      !isDeepStrictEqual(
+        cooperativeSettlements.get(phase.intent.held.generation),
+        phase.observation,
+      )
+    )
+      throw new Error("Cooperative settlement lacks an independently observed idle impact");
+    if (job.update) updates[job.target]?.assertStandingPrepared(job);
+  }
+
+  async function prepareCooperativePreparation(
+    job: RestartJob,
+  ): Promise<CooperativeDrainPreparation> {
+    await refresh([job], true);
+    const state = enrollment.readPolicySnapshot();
+    if (
+      state.status !== "enrolled" ||
+      !job.standingDecision ||
+      !job.whenIdle ||
+      !job.finishCurrentTurns ||
+      !job.continuationCaptureRequested
+    )
+      throw new Error(
+        "Cooperative preparation requires exact retained enrollment and continuation",
+      );
+    const coverage = state.grant.manifest.interruption.cooperativeDrainPreparation;
+    const current = observation(job.target);
+    if (
+      !coverage ||
+      !current?.descriptor.cooperativeMailbox ||
+      coverage.endpointIdentitySha256 !==
+        current.descriptor.cooperativeMailbox.endpointIdentitySha256
+    )
+      throw new Error("Retained grant does not cover an installed cooperative endpoint");
+    const intent = await prepareInterruption(job);
+    const reservedAt = Date.parse(intent.reservedAt);
+    const deadlineAt = Date.parse(job.standingHold!.reservedAt) + coverage.waitSeconds * 1000;
+    if (reservedAt < deadlineAt) throw new Error("Cooperative grant deadline has not passed");
+    return {
+      operation: "maintenance.interrupt-held-turns",
+      phase: "reserved",
+      manifestSha256: job.standingDecision.manifestSha256,
+      endpointIdentitySha256: coverage.endpointIdentitySha256,
+      continuationCauseId: job.continuationCaptureId ?? job.id,
+      deadlineAt: new Date(deadlineAt).toISOString(),
+      intent: {
+        ...intent,
+        held: { ...intent.held, terminateAt: reservedAt + coverage.settlementSeconds * 1000 },
+      },
+    };
+  }
+
+  function validateCooperativeDispatch(job: RestartJob): void {
+    assertCooperativeNativeEvidence(job);
+    const facts = evidence(job);
+    if (!facts) throw new Error("Cooperative target evidence is unavailable");
+    const now = clock.call(ports);
+    // The policy reread follows every callback-bearing native check. The
+    // remaining evaluation is pure and the command owner enqueues under this lock.
+    const state = enrollment.readUnderLifecycleLock();
+    assertCooperativeDispatchAdmission(
+      {
+        previous: [job],
+        next: [job],
+        state,
+        now,
+        evaluate: (request, retained) =>
+          evaluateStandingRestart({
+            state: retained,
+            job: request,
+            installationId: config.public.installationId,
+            nativeIdentitySha256: facts.nativeIdentitySha256,
+            repository: facts.repository,
+            credentialBindingSha256,
+          }),
+        assertEvidence() {},
+      },
+      job,
+    );
+  }
+
+  async function dispatchCooperativePreparation(job: RestartJob): Promise<void> {
+    const reservation = job.cooperativeDrainPreparation;
+    if (reservation?.phase !== "reserved")
+      throw new Error("Cooperative generation is observation-only");
+    await refresh([job], true);
+    assertCooperativeNativeEvidence(job);
+    const owner = await prepareCooperativeMailboxCommand({
+      config,
+      native: observation(job.target)!,
+      reservation,
+    });
+    try {
+      attemptCooperativeMailboxCommand({
+        directory: config.stateDir,
+        job,
+        owner,
+        validate: validateCooperativeDispatch,
+      });
+      await owner.observed;
+    } finally {
+      owner.close();
+    }
+  }
+
+  async function observeCooperativePreparation(
+    job: RestartJob,
+    executor: Pick<RestartExecutor, "inspect">,
+  ): Promise<CooperativeDrainPreparation> {
+    await refresh([job], true);
+    assertCooperativeNativeEvidence(job, false);
+    const phase = job.cooperativeDrainPreparation!;
+    if (!executor.inspect) throw new Error("Cooperative settlement inspection is unavailable");
+    const impact = await executor.inspect(job.target);
+    assertCooperativeNativeEvidence(job, false);
+    const idle =
+      !impact.error &&
+      impact.idleRestartSupported &&
+      impact.restartDrainObservationSupported === true &&
+      impact.restartDrainId === job.id &&
+      impact.workerInstanceId === phase.intent.held.workerInstanceId &&
+      impact.agents.length === 0 &&
+      impact.pendingStarts === 0;
+    if (!idle) return { ...phase, phase: "unknown" };
+    const checkedAt = new Date(clock.call(ports)).toISOString();
+    const observed = {
+      checkedAt,
+      workerInstanceId: phase.intent.held.workerInstanceId,
+      restartDrainId: job.id,
+      activeAgents: 0,
+      pendingStarts: 0,
+    };
+    cooperativeSettlements.set(phase.intent.held.generation, observed);
+    return { ...phase, phase: "settled", observation: observed };
   }
 
   async function collect(jobs: readonly RestartJob[]) {
@@ -472,6 +647,9 @@ export function createDaemonStandingRuntime(
     refresh,
     initialActivationInstance,
     prepareInterruption,
+    prepareCooperativePreparation,
+    dispatchCooperativePreparation,
+    observeCooperativePreparation,
     observeInterruption,
     verifySelection,
     observations,

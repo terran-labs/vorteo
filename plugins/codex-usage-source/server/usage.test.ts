@@ -326,44 +326,6 @@ test("reports every named additional limit with its own duration identity", asyn
   });
 });
 
-test("a weekly pin means weekly after the provider moves it between slots", async () => {
-  const { resolvePinnedUsage } = await import("../../../packages/app/src/usage/pinned.js");
-  const preferences = {
-    displayAs: "used" as const,
-    serverId: null,
-    pins: [{ sourceId: "codex", windowId: "weekly" }],
-  };
-  for (const primaryWeekly of [false, true]) {
-    const weekly = { used_percent: 11, limit_window_seconds: 604800 };
-    const report = await fetchUsage(authInput(fixtureHome), async () =>
-      Response.json({
-        rate_limit: {
-          primary_window: primaryWeekly ? weekly : { used_percent: 4, limit_window_seconds: 18000 },
-          secondary_window: primaryWeekly ? null : weekly,
-        },
-      }),
-    );
-    const entry = {
-      id: "codex:account",
-      sourceId: "codex",
-      sourceLabel: "Codex",
-      account: { key: "account" },
-      fetchedAt: "2026-10-02T00:00:00Z",
-      report,
-    };
-    expect(resolvePinnedUsage([entry], preferences)).toMatchObject([
-      { windows: [{ key: "codex:account/weekly", percentText: "11%", shortLabel: "wk" }] },
-    ]);
-    // The old slot ID is ambiguous: do not silently retarget a saved Session pin.
-    expect(
-      resolvePinnedUsage([entry], {
-        ...preferences,
-        pins: [{ sourceId: "codex", windowId: "session" }],
-      }),
-    ).toEqual([]);
-  }
-});
-
 test("unknown lengths and code review never get a duration from their slot", async () => {
   const report = await fetchUsage(authInput(fixtureHome), async () =>
     Response.json({

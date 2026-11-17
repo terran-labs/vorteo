@@ -10,6 +10,7 @@ import { useProjects, type ProjectHostError } from "@/hooks/use-projects";
 import { useProjectIcons } from "@/projects/icons";
 import { createProjectIconTarget } from "@/projects/icon-target";
 import { settingsStyles } from "@/styles/settings";
+import { SettingsListSummary, useCloseSettingsDialog } from "@/components/settings/list-summary";
 import { openProjectSettings } from "@/navigation/settings-navigation";
 import type { ProjectHostEntry, ProjectSummary } from "@/utils/projects";
 import { readExecutionInstallation } from "@/execution-installation/policy";
@@ -79,22 +80,34 @@ export default function ProjectsScreen({ serverId }: ProjectsScreenProps) {
   }
 
   return (
-    <View testID="projects-list">
+    // The section margin keeps the next pane, such as Plugins, a section gap below the list.
+    <View testID="projects-list" style={settingsStyles.section}>
       {scopedErrors.length > 0 ? <HostErrorsBanner errors={scopedErrors} /> : null}
-      <View style={settingsStyles.card}>
-        {hostProjects.map(({ project, host }, index) => (
-          <ProjectRow
-            key={`${host.serverId}:${host.projectId}`}
-            project={project}
-            host={host}
-            isFirst={index === 0}
-            iconDataUri={iconDataByProjectViewKey.get(project.viewKey) ?? null}
-          />
-        ))}
-      </View>
+      <SettingsListSummary
+        title={t("settings.projects")}
+        count={hostProjects.length}
+        noun={PROJECT_NOUN}
+        preview={hostProjects.map(({ host }) => host.projectName)}
+        actionLabel="Show all"
+        testID="projects-list-summary"
+      >
+        <View style={settingsStyles.card}>
+          {hostProjects.map(({ project, host }, index) => (
+            <ProjectRow
+              key={`${host.serverId}:${host.projectId}`}
+              project={project}
+              host={host}
+              isFirst={index === 0}
+              iconDataUri={iconDataByProjectViewKey.get(project.viewKey) ?? null}
+            />
+          ))}
+        </View>
+      </SettingsListSummary>
     </View>
   );
 }
+
+const PROJECT_NOUN = { one: "project", other: "projects" };
 
 function preferredProjectHost(
   project: ProjectSummary,
@@ -134,9 +147,11 @@ function ProjectRow({ project, host, isFirst, iconDataUri }: ProjectRowProps) {
   const { theme } = useUnistyles();
   const { viewKey } = project;
   const { projectName } = host;
+  const closeDialog = useCloseSettingsDialog();
   const handleNavigate = useCallback(() => {
+    closeDialog();
     openProjectSettings(host.serverId, host.projectId);
-  }, [host.projectId, host.serverId]);
+  }, [closeDialog, host.projectId, host.serverId]);
 
   const rowStyle = useCallback(
     ({ pressed }: PressableStateCallbackType) => [

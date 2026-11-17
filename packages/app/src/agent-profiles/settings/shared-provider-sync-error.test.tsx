@@ -7,6 +7,11 @@ import { SharedProviderSection } from "./shared-provider-section";
 const mocks = vi.hoisted(() => ({ error: null as Error | null, show: vi.fn() }));
 vi.mock("expo-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("react-native", () => ({
+  // The screens read Platform through @/constants/platform.
+  Platform: {
+    OS: "web",
+    select: (options: Record<string, unknown>) => options.web ?? options.default,
+  },
   View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   Text: ({ children }: { children: ReactNode }) => <span>{children}</span>,
   Pressable: ({ children }: { children: ReactNode }) => <button type="button">{children}</button>,
@@ -35,6 +40,10 @@ vi.mock("@/components/ui/button", () => ({
   Button: ({ children }: { children: ReactNode }) => <button type="button">{children}</button>,
 }));
 vi.mock("./agent-profile-row", () => ({ AgentProfileRow: () => null }));
+vi.mock("@/components/adaptive-modal-sheet", () => ({ AdaptiveModalSheet: () => null }));
+vi.mock("@/components/settings/settings-expansion", () => ({
+  SettingsExpansionHeader: () => null,
+}));
 afterEach(() => {
   cleanup();
   reportSyncError("installation-profiles:sync-test", null, mocks.show);

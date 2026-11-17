@@ -1,3 +1,4 @@
+import { CARD_GAP } from "@/agent-stream/columns/geometry";
 import { taskCardStyles } from "@/agent-stream/task-card-styles";
 import { useMobileComposerLayout, COMPOSER_CORNER_INSET } from "../mobile-layout";
 import { useKeyboardFocusSurface } from "@/keyboard";
@@ -408,7 +409,7 @@ function SendButtonContent({
   buttonIconSize: number;
 }) {
   if (isSubmitLoading) {
-    return <ThemedLoadingSpinner size="small" uniProps={iconAccentForegroundMapping} />;
+    return <ThemedLoadingSpinner size="small" uniProps={iconAccentForegroundMapping} prominent />;
   }
   if (submitIcon === "newline") {
     return <ThemedCornerDownLeft size={buttonIconSize} uniProps={iconForegroundMapping} />;
@@ -1122,7 +1123,8 @@ function computeIsDictationStartEnabled(
   return (isReadyForDictation ?? isConnected) && !disabled;
 }
 
-function resolveMaxInputHeight(windowHeight: number, compact: boolean): number {
+function resolveMaxInputHeight(windowHeight: number, compact: boolean, touch: boolean): number {
+  if (touch) return 142;
   if (compact) return DEFAULT_MAX_INPUT_HEIGHT;
   if (!Number.isFinite(windowHeight) || windowHeight <= 0) return DEFAULT_MAX_INPUT_HEIGHT;
   return Math.max(DEFAULT_MAX_INPUT_HEIGHT, Math.floor(windowHeight * MAX_INPUT_VIEWPORT_RATIO));
@@ -1282,46 +1284,42 @@ function extractErrorMessage(error: unknown): string | null {
 }
 
 const TOUCH_DICTATION_SIZE = 44;
-const TOUCH_CORNER_GAP = 4;
-/** The upstream Fullscreen glyph button's size (`presentation.tsx`). */
-const TOUCH_FULLSCREEN_SIZE = 28;
-/** Text clearance for the dictation button in the top-right corner. */
 const TOUCH_DICTATION_BAND = 56;
-
 /**
- * Fullscreen beside the touch dictation button, vertically centered on it. The dictation button
- * stays in the corner (1167acf35); upstream's Fullscreen (750cb82fb) would otherwise sit under it.
+ * Phone controls on the right edge share one rail measured from the surface's padding box: the
+ * toolbar's 12px padding less its 6px bleed puts Send/Stop 6px from the right and bottom edges,
+ * and dictation and Queue use the same inset above it. Positioning them inside the text surface or
+ * the toolbar row instead offsets each by a different padding, which made Queue overlap dictation.
  */
-function touchFullscreenPlacement(dictationTop: number) {
-  return {
-    top: dictationTop + (TOUCH_DICTATION_SIZE - TOUCH_FULLSCREEN_SIZE) / 2,
-    right: COMPOSER_CORNER_INSET + TOUCH_DICTATION_SIZE + TOUCH_CORNER_GAP,
-  };
-}
-const TOUCH_FULLSCREEN_PLACEMENT = touchFullscreenPlacement(COMPOSER_CORNER_INSET);
-const TOUCH_FULLSCREEN_PLACEMENT_MOBILE = touchFullscreenPlacement(COMPOSER_CORNER_INSET - 1);
-
-function touchFullscreenPlacementFor(besideDictation: boolean, mobile: boolean) {
-  if (!besideDictation) return undefined;
-  return mobile ? TOUCH_FULLSCREEN_PLACEMENT_MOBILE : TOUCH_FULLSCREEN_PLACEMENT;
-}
-
+const MOBILE_RAIL_INSET = 6;
+/** The surface's compact top and horizontal padding, which the text surface sits inside. */
+const MOBILE_SURFACE_PADDING_X = 12;
 function placeDictationButton(
   button: React.ReactNode,
   touch: boolean,
   showVoice: boolean,
   mobile: boolean,
+  queue: boolean,
 ) {
+  const slot =
+    touch && showVoice ? (
+      <View
+        style={
+          mobile
+            ? [
+                styles.mobileDictationSlot,
+                { bottom: MOBILE_RAIL_INSET + (TOUCH_DICTATION_SIZE + CARD_GAP) * (queue ? 2 : 1) },
+              ]
+            : styles.touchDictationSlot
+        }
+        testID="composer-dictation-slot"
+      >
+        {button}
+      </View>
+    ) : null;
   return {
-    top:
-      touch && showVoice ? (
-        <View
-          style={[styles.touchDictationSlot, mobile && styles.mobileDictationSlot]}
-          testID="composer-dictation-slot"
-        >
-          {button}
-        </View>
-      ) : null,
+    top: mobile ? null : slot,
+    rail: mobile ? slot : null,
     bottom: touch ? null : button,
   };
 }
@@ -1344,8 +1342,10 @@ function shouldShowFullscreenControl(
   readOnly: boolean,
   overlayVisible: boolean,
   renderedLines: number,
+  measuredHeight: unknown,
 ) {
-  return compact && !readOnly && !overlayVisible && renderedLines > 2;
+  const hasRoom = isWeb ? measuredHeight === 142 : renderedLines >= 7;
+  return compact && !readOnly && !overlayVisible && hasRoom;
 }
 
 export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
@@ -1403,9 +1403,11 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
 
     const touch = useVortonTouch();
     const mobileComposer = useMobileComposerLayout();
+    const editingSession = useComposerEditingSession(inputMode, props.editingSession);
+    const isFullscreen = useComposerFullscreen(editingSession);
     const showMobileQueue = useMemo(
-      () => mobileComposer.enabled && Boolean(onQueue) && !readOnly,
-      [mobileComposer.enabled, onQueue, readOnly],
+      () => (touch || isFullscreen) && Boolean(onQueue) && !readOnly,
+      [touch, isFullscreen, onQueue, readOnly],
     );
     const showSubmitModifiers = supportsSubmitModifiers({
       isWeb,
@@ -1422,10 +1424,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     );
 
     const { height: windowHeight } = useWindowDimensions();
-    const editingSession = useComposerEditingSession(inputMode, props.editingSession);
-    const isFullscreen = useComposerFullscreen(editingSession);
     const [renderedLines, setRenderedLines] = useState(1);
-    const maxInputHeight = resolveMaxInputHeight(windowHeight, isCompact);
+    const maxInputHeight = resolveMaxInputHeight(windowHeight, isCompact, touch);
     const buttonIconSize = touch || !isWeb ? ICON_SIZE.lg : ICON_SIZE.md;
     const toast = useToast();
     const voice = useVoiceOptional();
@@ -2027,7 +2027,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const submitAccessibilityLabel = resolveSubmitAccessibilityLabel({
       submitButtonAccessibilityLabel,
       canPressLoadingButton,
-      defaultActionQueues,
+      defaultActionQueues: !isFullscreen && defaultActionQueues,
       defaultSendBehavior,
       isAgentRunning,
       t,
@@ -2055,7 +2055,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const sendTooltipLabel = resolveSendTooltipLabel({
       disabledReason: props.submitDisabledReason,
       submitButtonAccessibilityLabel,
-      defaultActionQueues,
+      defaultActionQueues: !isFullscreen && defaultActionQueues,
       t,
     });
 
@@ -2067,8 +2067,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       canQueue: Boolean(onQueue),
       defaultActionQueues,
       separateQueueAction: useMemo(
-        () => mobileComposer.enabled && inputMode === "chat" && !readOnly,
-        [mobileComposer.enabled, inputMode, readOnly],
+        () => showMobileQueue && inputMode === "chat" && !isFullscreen,
+        [showMobileQueue, inputMode, isFullscreen],
       ),
     });
     const buttonPresentation = resolveModifiedSendButton({
@@ -2156,17 +2156,26 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       void handleStopRealtimeVoice();
     }, [handleStopRealtimeVoice]);
 
+    const showFullscreenButton = shouldShowFullscreenControl(
+      touch,
+      readOnly,
+      showOverlay,
+      renderedLines,
+      composerHeightStyle.height,
+    );
     const inputWrapperCombinedStyle = useMemo(
       () => [
         styles.inputWrapper,
         taskCardStyles.surface,
         touch && !mobileComposer.enabled && styles.touchInputSurface,
         mobileComposer.enabled && { paddingBottom: mobileComposer.bottomPadding },
-        isCompact && !isFullscreen && styles.inputWrapperCompact,
+        // The mobile surface is transparent, so a shadow would only draw a stray edge line.
+        isCompact && !isFullscreen && !mobileComposer.enabled && styles.inputWrapperCompact,
         readOnly && styles.inputWrapperReadOnly,
         inputWrapperStyle,
         mobileComposer.enabled && styles.mobileInputSurface,
         showMobileQueue && styles.mobileQueueSurface,
+        showFullscreenButton && styles.fourActionSurface,
         { opacity: surfacePresentation.input.opacity },
       ],
       [
@@ -2177,6 +2186,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         mobileComposer.enabled,
         mobileComposer.bottomPadding,
         showMobileQueue,
+        showFullscreenButton,
         isFullscreen,
         isCompact,
       ],
@@ -2186,22 +2196,13 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     // `.css-textinput-*` class and loses on source order — so a themed
     // `fontFamily` here is silently dropped while every other property lands.
     // An inline style outranks both classes. See docs/unistyles.md.
-    const showFullscreenButton = shouldShowFullscreenControl(
-      isCompact,
-      readOnly,
-      showOverlay,
-      renderedLines,
-    );
-    // On touch the dictation button owns the top-right corner, so Fullscreen sits just left of
-    // it and the text keeps clear of both.
-    const fullscreenBesideDictation = touch && mode.showVoice && !isFullscreen;
     const textInputStyle = useMemo(
       () => [
         styles.textInput,
         mode.isMonospace && styles.textInputMonospace,
         isFullscreen ? styles.fullscreenTextInput : composerHeightStyle,
-        touch && mode.showVoice && styles.touchTextInput,
-        fullscreenBesideDictation && showFullscreenButton && styles.touchTextInputWithFullscreen,
+        touch && mode.showVoice && !isFullscreen && styles.touchTextInput,
+        mobileComposer.enabled && !hasLiveText && !isFullscreen && styles.mobileEmptyTextInput,
       ],
       [
         composerHeightStyle,
@@ -2209,8 +2210,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         mode.showVoice,
         touch,
         isFullscreen,
-        fullscreenBesideDictation,
-        showFullscreenButton,
+        mobileComposer.enabled,
+        hasLiveText,
       ],
     );
     // Static content has no textarea to mirror, so it grows with its own text
@@ -2261,19 +2262,33 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       [isDictating, isRealtimeVoiceForCurrentAgent, voice?.isMuted, buttonIconSize],
     );
 
-    const voiceButton = (
-      <VoiceButtonTooltip
-        visible={mode.showVoice}
-        onVoicePress={handleVoicePress}
-        isDictationStartEnabled={isDictationStartEnabled}
-        voiceButtonAccessibilityLabel={voiceButtonAccessibilityLabel}
-        voiceButtonStyle={voiceButtonStyle}
-        renderVoiceButtonIcon={renderVoiceButtonIcon}
-        voiceTooltipText={voiceTooltipText}
-        isRealtimeVoiceForCurrentAgent={isRealtimeVoiceForCurrentAgent}
-        voiceMuteToggleKeys={voiceMuteToggleKeys}
-        dictationToggleKeys={dictationToggleKeys}
-      />
+    const voiceButton = useMemo(
+      () => (
+        <VoiceButtonTooltip
+          visible={mode.showVoice}
+          onVoicePress={handleVoicePress}
+          isDictationStartEnabled={isDictationStartEnabled}
+          voiceButtonAccessibilityLabel={voiceButtonAccessibilityLabel}
+          voiceButtonStyle={voiceButtonStyle}
+          renderVoiceButtonIcon={renderVoiceButtonIcon}
+          voiceTooltipText={voiceTooltipText}
+          isRealtimeVoiceForCurrentAgent={isRealtimeVoiceForCurrentAgent}
+          voiceMuteToggleKeys={voiceMuteToggleKeys}
+          dictationToggleKeys={dictationToggleKeys}
+        />
+      ),
+      [
+        mode.showVoice,
+        handleVoicePress,
+        isDictationStartEnabled,
+        voiceButtonAccessibilityLabel,
+        voiceButtonStyle,
+        renderVoiceButtonIcon,
+        voiceTooltipText,
+        isRealtimeVoiceForCurrentAgent,
+        voiceMuteToggleKeys,
+        dictationToggleKeys,
+      ],
     );
 
     const mobileQueueButton = useMemo(
@@ -2288,7 +2303,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
             style={[
               styles.sendButton,
               styles.touchButton,
-              styles.mobileQueueButton,
+              !isFullscreen && styles.mobileQueueButton,
               !highlightQueue && styles.sendButtonNewline,
               isSendButtonDisabled && styles.buttonDisabled,
             ]}
@@ -2296,19 +2311,25 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
             <ThemedListPlus size={buttonIconSize} uniProps={iconAccentForegroundMapping} />
           </Pressable>
         ) : null,
-      [showMobileQueue, isSendButtonDisabled, handleQueueMessage, buttonIconSize, highlightQueue],
+      [
+        showMobileQueue,
+        isSendButtonDisabled,
+        handleQueueMessage,
+        buttonIconSize,
+        highlightQueue,
+        isFullscreen,
+      ],
     );
     const queueRecordingAction = useMemo(
       () => (onQueue && !readOnly ? handleAcceptAndQueueRecording : undefined),
       [onQueue, readOnly, handleAcceptAndQueueRecording],
     );
-    // Touch fullscreen keeps dictation in its top-right corner below Exit (owner decision,
-    // 2026-11-07); the inline Fullscreen button is the only control fullscreen drops there.
     const dictationPlacement = placeDictationButton(
       voiceButton,
       touch,
       mode.showVoice,
-      mobileComposer.enabled,
+      touch && !isFullscreen,
+      showMobileQueue,
     );
     const sendButton = useMemo(
       () => (
@@ -2318,9 +2339,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           shouldShow
           canPressLoadingButton={canPressLoadingButton}
           onSubmitLoadingPress={onSubmitLoadingPress}
-          // Fullscreen has no separate queue button, so its Send follows the configured
-          // behavior while an agent runs, as upstream's does (merge 51f16b39f made it send).
-          onDefaultSendAction={isFullscreen ? handleDefaultSendAction : handleButtonAction}
+          onDefaultSendAction={isFullscreen ? handleSendMessage : handleButtonAction}
           onLongPressSend={handleLongPressSend}
           isSendButtonDisabled={isFullscreen ? isPresentedSendDisabled : buttonDisabled}
           submitAccessibilityLabel={
@@ -2339,7 +2358,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         />
       ),
       [
-        handleDefaultSendAction,
+        handleSendMessage,
         submitAccessibilityLabel,
         submitIcon,
         sendTooltipLabel,
@@ -2453,7 +2472,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
             {leftContent}
           </View>
 
-          {mobileQueueButton}
           {/* Right: voice button, contextual button (realtime/send/cancel) */}
           <View style={styles.rightButtonGroup}>
             {beforeVoiceContent}
@@ -2476,7 +2494,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         rightContent,
         sendButton,
         dictationPlacement.bottom,
-        mobileQueueButton,
       ],
     );
     const voiceOverlay = useMemo(
@@ -2526,10 +2543,27 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         handleRealtimeVoiceStop,
       ],
     );
+    const rootStyle = useMemo(
+      () => [
+        isFullscreen ? styles.fullscreenContainer : styles.container,
+        touch && showOverlay && styles.recordingContainer,
+        mobileComposer.enabled && showOverlay && styles.mobileRecordingContainer,
+      ],
+      [isFullscreen, touch, showOverlay, mobileComposer.enabled],
+    );
+    const fullscreenControls = useMemo(
+      () => (
+        <>
+          {mode.showVoice ? voiceButton : null}
+          {mobileQueueButton}
+        </>
+      ),
+      [mode.showVoice, voiceButton, mobileQueueButton],
+    );
     return (
       <View
         ref={rootRef}
-        style={isFullscreen ? styles.fullscreenContainer : styles.container}
+        style={rootStyle}
         testID="message-input-root"
         onLayout={handleComposerLayout}
       >
@@ -2540,10 +2574,9 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         />
         <ComposerInputPresentation
           fullscreen={isFullscreen}
-          sendIconSize={buttonIconSize}
           surface={
             <>
-              {dictationPlacement.top}
+              {isFullscreen ? null : dictationPlacement.top}
               {textSurface}
             </>
           }
@@ -2556,11 +2589,14 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           inputPointerEvents={surfacePresentation.input.pointerEvents}
           attachmentSlot={attachmentSlot}
           showFullscreenButton={showFullscreenButton}
-          fullscreenButtonPlacement={touchFullscreenPlacementFor(
-            fullscreenBesideDictation,
-            mobileComposer.enabled,
-          )}
           onEnter={enterFullscreen}
+          rail={
+            <>
+              {dictationPlacement.rail}
+              {mobileQueueButton}
+            </>
+          }
+          fullscreenControls={fullscreenControls}
           overlay={voiceOverlay}
         />
       </View>
@@ -2573,6 +2609,9 @@ const styles = StyleSheet.create((theme: Theme) => ({
     flexShrink: 1,
     position: "relative",
   },
+  recordingContainer: { height: 162, flexShrink: 0, overflow: "hidden" },
+  // Phone recording paints through the composer margins and bottom safe area.
+  mobileRecordingContainer: { overflow: "visible" },
   fullscreenContainer: {
     flex: 1,
     position: "relative",
@@ -2617,7 +2656,9 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   touchInputSurface: {
     paddingTop: COMPOSER_CORNER_INSET,
-    paddingBottom: { xs: theme.spacing[3] - 6, md: theme.spacing[4] - 6 },
+    paddingBottom: MOBILE_RAIL_INSET,
+    paddingHorizontal: MOBILE_SURFACE_PADDING_X,
+    minHeight: 111,
     gap: theme.spacing[2],
   },
   mobileInputSurface: {
@@ -2625,13 +2666,14 @@ const styles = StyleSheet.create((theme: Theme) => ({
     borderColor: "transparent",
     borderRadius: 0,
   },
-  // Three 44px actions, two 8px gaps, and matching 8px top/bottom insets.
-  mobileQueueSurface: { minHeight: 164, justifyContent: "space-between" },
+  // The rail's three 44px actions with 6px edge insets and two shared card gaps, plus the 1px borders.
+  fourActionSurface: { minHeight: 214 },
+  mobileQueueSurface: { minHeight: 162, justifyContent: "space-between" },
   mobileQueueButton: {
     position: "absolute",
     zIndex: 1,
-    bottom: 59,
-    right: 7,
+    bottom: MOBILE_RAIL_INSET + TOUCH_DICTATION_SIZE + CARD_GAP,
+    right: MOBILE_RAIL_INSET,
   },
   // The band the fullscreen glyph sits in is the input's own padding, so a tap
   // anywhere in it (under the glyph, or where the glyph would be) is a tap on the
@@ -2705,11 +2747,18 @@ const styles = StyleSheet.create((theme: Theme) => ({
     right: COMPOSER_CORNER_INSET,
     zIndex: 1,
   },
-  touchTextInput: { paddingRight: TOUCH_DICTATION_BAND, minHeight: 44 },
-  touchTextInputWithFullscreen: {
-    paddingRight: TOUCH_DICTATION_BAND + TOUCH_FULLSCREEN_SIZE + TOUCH_CORNER_GAP,
+  mobileEmptyTextInput: {
+    height: 90,
+    textAlign: "center",
+    paddingTop: (90 - theme.fontSize.content * 1.4) / 2,
+    paddingBottom: 0,
   },
-  mobileDictationSlot: { top: COMPOSER_CORNER_INSET - 1 },
+  touchTextInput: { paddingRight: TOUCH_DICTATION_BAND, minHeight: 44 },
+  mobileDictationSlot: {
+    position: "absolute",
+    right: MOBILE_RAIL_INSET,
+    zIndex: 1,
+  },
   buttonRow: {
     flexShrink: 0,
     flexDirection: "row",

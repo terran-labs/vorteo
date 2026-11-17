@@ -1,3 +1,5 @@
+import { useSessionStore } from "@/stores/session-store";
+import { advertisedProjectsRoot } from "@/projects/projects-root";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useOpenProject } from "@/hooks/use-open-project";
@@ -23,6 +25,9 @@ export type SuggestionList =
   | {
       status: "ready";
       rows: SuggestionRow[];
+      failedProviders: string[];
+      retryingProviders: string[];
+      retryProvider: (provider: string) => void;
       /** True while any provider, or the provider list itself, is still pending. */
       isReading: boolean;
       /** True while checked rows are being added; the selection is frozen until it settles. */
@@ -48,6 +53,9 @@ export interface ProjectSuggestionsController {
 export function useProjectSuggestions(serverId: string): ProjectSuggestionsController {
   const state = useProviderSuggestions(serverId);
   const projectRootPaths = useProjectRootPaths(serverId);
+  const projectsRoot = useSessionStore((sessionState) =>
+    advertisedProjectsRoot(sessionState.sessions[serverId]?.serverInfo),
+  );
   const openProject = useOpenProject(serverId);
   const [now] = useState(() => new Date());
   const [choices, setChoices] = useState<Record<string, boolean>>({});
@@ -55,8 +63,9 @@ export function useProjectSuggestions(serverId: string): ProjectSuggestionsContr
 
   const providers = state.status === "ready" ? state.providers : null;
   const suggestions = useMemo(
-    () => (providers ? mergeProviderSuggestions(providers, new Set(projectRootPaths)) : []),
-    [providers, projectRootPaths],
+    () =>
+      providers ? mergeProviderSuggestions(providers, new Set(projectRootPaths), projectsRoot) : [],
+    [providers, projectRootPaths, projectsRoot],
   );
   const checkedRootPaths = useMemo(
     () =>
@@ -97,6 +106,9 @@ export function useProjectSuggestions(serverId: string): ProjectSuggestionsContr
     if (state.status === "unsupported") return state;
     return {
       status: "ready",
+      failedProviders: state.status === "ready" ? state.failedProviders : [],
+      retryingProviders: state.status === "ready" ? state.retryingProviders : [],
+      retryProvider: state.status === "ready" ? state.retryProvider : () => {},
       rows: suggestions.map((suggestion) => ({
         suggestion,
         checked: checkedRootPaths.includes(suggestion.rootPath),

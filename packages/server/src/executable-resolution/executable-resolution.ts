@@ -1,3 +1,4 @@
+import { getProviderProbeCwd } from "../utils/provider-probe-cwd.js";
 import { existsSync } from "node:fs";
 import { delimiter, resolve } from "node:path";
 import type { ProcessEnvRecord } from "../server/paseo-env.js";
@@ -69,6 +70,7 @@ export async function probeExecutable(
     typeof options === "number" ? { probeTimeoutMs: options } : options;
   try {
     await execCommand(executablePath, ["--version"], {
+      cwd: await getProviderProbeCwd(),
       baseEnv: env,
       timeout: timeoutMs,
       killSignal: "SIGKILL",

@@ -75,6 +75,11 @@ async function requireFullSignIn(input: AuthenticationCheck, configDir: string):
   } catch {
     throw new ClaudeAuthenticationError("CHECK_FAILED");
   }
+  // A grant that still holds its refresh token is renewable by the CLI itself as it starts.
+  // Refusing it left the CLI, the only refresher outside coordinator custody, never started, so
+  // an idle account's sign-in could never renew (2026-11-12). Access-only copies, in custody on
+  // the Host and on Dev, carry no refresh token and still need a live access token.
+  if (grant?.hasRefreshToken && grant.expiresAt !== null) return;
   if (!grant || grant.expiresAt === null || grant.expiresAt <= now()) {
     try {
       // History discovery imports this module but does not need installation recovery dependencies.

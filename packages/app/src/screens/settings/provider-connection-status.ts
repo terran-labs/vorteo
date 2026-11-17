@@ -58,6 +58,20 @@ export function classifyEnvironment(input: {
   );
 }
 
+/**
+ * Whether a connection's status deserves the danger colour: an expired or missing sign-in, or a
+ * real error. Not installed, Checking, Off and Offline are ordinary states and stay muted.
+ */
+export function needsAttention(
+  states: readonly Pick<EnvironmentState, "kind" | "label" | "error">[],
+) {
+  return states.some(
+    (state) =>
+      state.kind === "attention" &&
+      (state.label === "Needs sign-in" || state.label === "Error" || Boolean(state.error)),
+  );
+}
+
 /** "Ready everywhere", or what differs per environment. */
 export function describeConnectionStatus(
   states: readonly Pick<EnvironmentState, "kind" | "label" | "environment">[],

@@ -753,10 +753,6 @@ function useSelectedWorkspaceName(active: boolean) {
   return active ? name : null;
 }
 
-function tabletTabStyle(name: string | null) {
-  return name ? styles.tabletTab : undefined;
-}
-
 function TabChip({
   serverId,
   workspaceId,
@@ -842,7 +838,6 @@ function TabChip({
   const tabChipStyle = useCallback(
     () => [
       styles.tab,
-      tabletTabStyle(workspaceName),
       isActiveFocused && styles.tabActive,
       chipSurfaceStyle(rail, isActiveFocused),
       isWeb && isDragging && ({ cursor: "grabbing" } as object),
@@ -852,7 +847,7 @@ function TabChip({
         maxWidth: resolvedTabWidth,
       },
     ],
-    [isActiveFocused, isDragging, rail, resolvedTabWidth, workspaceName],
+    [isActiveFocused, isDragging, rail, resolvedTabWidth],
   );
 
   const handleNavigateTab = useCallback(() => {
@@ -1102,9 +1097,7 @@ function ResolvedWorkspaceDesktopTabsRow({
   const [trackSnapshot, setTrackSnapshot] = useState<WorkspaceTabTrackSnapshot | null>(null);
 
   const { headerHeight: baseHeaderHeight } = useSidebarSpacing();
-  const workspaceName = useContext(TabletWorkspaceNameContext);
-  const workspaceNameHeight = workspaceName ? 16 : 0;
-  const headerHeight = baseHeaderHeight + workspaceNameHeight;
+  const headerHeight = baseHeaderHeight;
   const handleTabsContainerLayout = useCallback((event: LayoutChangeEvent) => {
     updateMeasuredWidth(setTabsContainerWidth, event);
   }, []);
@@ -1403,7 +1396,6 @@ function ResolvedWorkspaceDesktopTabsRow({
         {
           paddingRight: toolbarInset,
           height: headerHeight,
-          marginBottom: -workspaceNameHeight,
         },
       ]}
       testID="workspace-tabs-row"
@@ -1639,7 +1631,6 @@ const styles = StyleSheet.create((theme) => ({
   tabsContainer: {
     minWidth: 0,
     height: VORTON_HEADER_HEIGHT,
-    // The taller tablet chip overlaps the unchanged conversation fade.
     backgroundColor: "transparent",
     flexDirection: "row",
     alignItems: "center",
@@ -1692,7 +1683,6 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[1],
     userSelect: "none",
   },
-  tabletTab: { height: 44 + 16 },
   tabText: { flex: 1, minWidth: 0 },
   workspaceName: {
     color: theme.colors.foregroundExtraMuted,

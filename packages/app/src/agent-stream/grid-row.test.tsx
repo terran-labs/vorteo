@@ -5,7 +5,11 @@ import type { LayoutChangeEvent } from "react-native";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { gridLineSignature, groupGridLines } from "./columns/geometry";
 import type { GridRowTracker } from "./grid-row-tracker";
-import { measureGridRows, useGridRows } from "./grid-row.web";
+import { measureGridRows, useGridRows, useGridOrder } from "./grid-row.web";
+import { CardGridContext, CardGridLayoutContext } from "./card-grid";
+import { TaskCard } from "./task-card";
+import { CardColumnAccessory } from "./columns/card-column";
+import { RetainedPanelActivity } from "@/components/retained-panel";
 
 vi.stubGlobal("React", React);
 vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -131,4 +135,109 @@ it("keeps the same rows while the line grouping is unchanged", () => {
   act(() => tracker.onTileLayout("journal", layoutOf(journal)));
   flush();
   expect(tracker.rows).toBe(measured);
+});
+
+it("tracks late insertion, removal and keyed moves in rendered card order", async () => {
+  const grid = placed(0, document.body);
+  grid.setAttribute("data-card-grid", "");
+  const a = placed(0, grid);
+  const expanded = placed(50, grid);
+  const c = placed(100, grid);
+  let tracker!: ReturnType<typeof useGridOrder>;
+  function Harness() {
+    tracker = useGridOrder();
+    return null;
+  }
+  act(() => root.render(<Harness />));
+  act(() => {
+    tracker.onTileLayout("a", layoutOf(a));
+    tracker.onTileLayout("expanded", layoutOf(expanded));
+    tracker.onTileLayout("c", layoutOf(c));
+  });
+  flush();
+  const d = placed(0);
+  grid.insertBefore(d, expanded);
+  act(() => tracker.onTileLayout("d", layoutOf(d)));
+  flush();
+  expect(tracker.order).toEqual(["a", "d", "expanded", "c"]);
+  await act(async () => {
+    grid.insertBefore(c, a);
+  });
+  flush();
+  expect(tracker.order).toEqual(["c", "a", "d", "expanded"]);
+  await act(async () => {
+    d.remove();
+  });
+  flush();
+  expect(tracker.order).toEqual(["c", "a", "expanded"]);
+});
+
+it("removes retained cards from grid membership while hidden and restores their current state", () => {
+  const register = vi.fn();
+  const forget = vi.fn();
+  function Harness({ active, expanded }: { active: boolean; expanded: boolean }) {
+    const layout = React.useMemo(
+      () => ({ widths: new Map<string, number>(), register, forget, onTileLayout: () => {} }),
+      [],
+    );
+    return (
+      <CardGridContext value={true}>
+        <CardGridLayoutContext value={layout}>
+          <RetainedPanelActivity active={active}>
+            <TaskCard bodyVisible={expanded}>
+              <span>Retained card</span>
+            </TaskCard>
+          </RetainedPanelActivity>
+        </CardGridLayoutContext>
+      </CardGridContext>
+    );
+  }
+  act(() => root.render(<Harness active={true} expanded={true} />));
+  const id = register.mock.calls.at(-1)![0];
+  expect(register).toHaveBeenLastCalledWith(id, false);
+  act(() => root.render(<Harness active={false} expanded={true} />));
+  expect(register).toHaveBeenLastCalledWith(id, null);
+  act(() => root.render(<Harness active={false} expanded={false} />));
+  expect(register).toHaveBeenLastCalledWith(id, null);
+  act(() => root.render(<Harness active={true} expanded={false} />));
+  expect(register).toHaveBeenLastCalledWith(id, true);
+  act(() => root.render(null));
+  expect(register).toHaveBeenLastCalledWith(id, null);
+  expect(forget).toHaveBeenLastCalledWith(id);
+});
+
+it("treats full-width accessories as visible grid boundaries but excludes nested card bodies", () => {
+  const register = vi.fn();
+  const forget = vi.fn();
+  function Harness({ active, inGrid }: { active: boolean; inGrid: boolean }) {
+    const layout = React.useMemo(
+      () => ({ widths: new Map<string, number>(), register, forget, onTileLayout: () => {} }),
+      [],
+    );
+    return (
+      <CardGridLayoutContext value={layout}>
+        <CardGridContext value={inGrid}>
+          <RetainedPanelActivity active={active}>
+            <CardColumnAccessory>
+              <span>Plugin pill</span>
+            </CardColumnAccessory>
+          </RetainedPanelActivity>
+        </CardGridContext>
+      </CardGridLayoutContext>
+    );
+  }
+  act(() => root.render(<Harness active={true} inGrid={true} />));
+  const id = register.mock.calls.at(-1)![0];
+  expect(register).toHaveBeenLastCalledWith(id, false);
+  act(() => root.render(<Harness active={false} inGrid={true} />));
+  expect(register).toHaveBeenLastCalledWith(id, null);
+  act(() => root.render(<Harness active={true} inGrid={true} />));
+  expect(register).toHaveBeenLastCalledWith(id, false);
+  act(() => root.render(<Harness active={true} inGrid={false} />));
+  expect(register).toHaveBeenLastCalledWith(id, null);
+  expect(forget).toHaveBeenLastCalledWith(id);
+  register.mockClear();
+  act(() => root.render(<Harness active={false} inGrid={false} />));
+  act(() => root.render(null));
+  expect(register).not.toHaveBeenCalled();
 });

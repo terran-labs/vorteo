@@ -198,6 +198,41 @@ test("a switch keeps the thread, carries recorded context and replays every segm
       { type: "user_message", text: "continue" },
       { type: "assistant_message", text: "continued on claude" },
     ]);
+
+    // A second switch stores only what followed the first marker, chained to its segment.
+    await manager.switchAgentProfile(agent.id, {
+      config: { provider: "codex", cwd: workdir },
+      reason: "manual",
+      carriedContextChars: 0,
+    });
+    await manager.flush();
+    const switches = (await storage.get(agent.id))?.profileSwitches ?? [];
+    const second = switches.at(-1)?.marker;
+    const historyDir = join(workdir, "agent-switch-history", agent.id);
+    const segment = readFileSync(join(historyDir, `${second?.switchId}.segment.jsonl`), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(segment[0]).toMatchObject({
+      previousSwitchId: marker?.type === "profile_switch" ? marker.switchId : "",
+    });
+    expect(segment.slice(1).map((event) => event.item)).toEqual([
+      { type: "user_message", text: "continue" },
+      { type: "assistant_message", text: "continued on claude" },
+      second,
+    ]);
+    codex.history = [{ type: "assistant_message", text: "back on codex" }];
+    await manager.reloadAgentSession(agent.id, undefined, { rehydrateFromDisk: true });
+    await manager.hydrateTimelineFromProvider(agent.id);
+    expect((await manager.getTimelineRows(agent.id)).map((row) => row.item)).toEqual([
+      { type: "user_message", text: "fix the parser" },
+      { type: "assistant_message", text: "parser fixed on codex" },
+      marker,
+      { type: "user_message", text: "continue" },
+      { type: "assistant_message", text: "continued on claude" },
+      second,
+      { type: "assistant_message", text: "back on codex" },
+    ]);
   } finally {
     await manager.flush();
     cleanup();
@@ -589,3 +624,88 @@ test.each(["opencode", "opencode-retired"])(
     }
   },
 );
+
+test("legacy switch snapshots migrate to verified segments without deleting any original", async () => {
+  const { workdir, storage, cleanup } = await fixture();
+  try {
+    const marker = (switchId: string) => ({
+      type: "profile_switch" as const,
+      switchId,
+      reason: "manual" as const,
+      from: { provider: "codex" },
+      to: { provider: "claude" },
+      carriedContextChars: 0,
+    });
+    const at = "2026-11-01T00:00:00.000Z";
+    const events = [
+      { timestamp: at, item: { type: "user_message", text: "first ✓ {not a brace}" } },
+      { timestamp: at, item: marker("one") },
+      { timestamp: at, turnId: "t", item: { type: "assistant_message", text: 'quoted "]" text' } },
+      { timestamp: at, item: marker("two") },
+    ];
+    const dir = join(workdir, "agent-switch-history", "legacy-agent");
+    mkdirSync(dir, { recursive: true });
+    const write = (name: string, value: unknown) =>
+      writeFileSync(join(dir, name), JSON.stringify(value, null, 2));
+    // "zero" holds history the newest snapshot lacks, as when a thread loaded marker-only.
+    write("zero.json", {
+      switchId: "zero",
+      events: [
+        { timestamp: at, item: { type: "user_message", text: "lost" } },
+        { timestamp: at, item: marker("zero") },
+      ],
+    });
+    write("one.json", { switchId: "one", events: events.slice(0, 2) });
+    write("two.json", { switchId: "two", events });
+    writeFileSync(join(dir, "stale.segment.jsonl.migrating"), "partial");
+
+    // A truncated newest snapshot leaves every original snapshot and no segments, and is not
+    // retried until the daemon restarts.
+    const intact = readFileSync(join(dir, "two.json"), "utf8");
+    writeFileSync(join(dir, "two.json"), intact.slice(0, intact.length / 2));
+    expect(await storage.switchHistory.read("legacy-agent", "two")).toBeNull();
+    // A stale staging file from an earlier crash is cleared before staging begins.
+    expect(readdirSync(dir).sort()).toEqual(["one.json", "two.json", "zero.json"]);
+    writeFileSync(join(dir, "two.json"), intact);
+    expect(await storage.switchHistory.read("legacy-agent", "two")).toBeNull();
+
+    const restarted = new AgentStorage(join(workdir, "agents"), createTestLogger());
+    const read = async (switchId: string) => {
+      const replayed = [];
+      for await (const event of (await restarted.switchHistory.read("legacy-agent", switchId)) ??
+        [])
+        replayed.push(event);
+      return replayed;
+    };
+    expect(await read("two")).toEqual(events);
+    expect(readdirSync(dir).sort()).toEqual([
+      "one.json",
+      "one.segment.jsonl",
+      "two.json",
+      "two.segment.jsonl",
+      "zero.json",
+    ]);
+    // The record lists "zero", which the chain lacks, so nothing may be pruned.
+    const all = ["zero", "one", "two"];
+    expect(await restarted.switchHistory.inspectChain("legacy-agent", all)).toEqual({
+      switchIds: ["one", "two"],
+      complete: false,
+    });
+    await restarted.switchHistory.pruneUnreferenced("legacy-agent", all);
+    expect(readdirSync(dir)).toContain("zero.json");
+
+    // After a rollback an older daemon wrote "three" with only the "two" marker before it.
+    // Migration chains onto the existing "two" segment instead of overwriting it.
+    const twoSegment = readFileSync(join(dir, "two.segment.jsonl"), "utf8");
+    const later = [
+      { timestamp: at, item: marker("two") },
+      { timestamp: at, item: { type: "assistant_message", text: "after rollback" } },
+      { timestamp: at, item: marker("three") },
+    ];
+    write("three.json", { switchId: "three", events: later });
+    expect(await read("three")).toEqual([...events, ...later.slice(1)]);
+    expect(readFileSync(join(dir, "two.segment.jsonl"), "utf8")).toBe(twoSegment);
+  } finally {
+    cleanup();
+  }
+});

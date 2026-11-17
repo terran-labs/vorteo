@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import uuid
-from broker_deployment import (FILES, deploy_files, directory_pin, encode, preservation, sha)
+from broker_deployment import (FILES, approved_preservation_sha256, deploy_files, directory_pin, encode, preservation, sha)
 from channel_identity import NAMES, file_identity
 
 
@@ -124,7 +124,9 @@ class NativeDeploymentTests(unittest.TestCase):
     setUp = BrokerDeploymentTests.setUp
     write = BrokerDeploymentTests.write
 
-    def native(self, dispositions=('loaded', 'absent'), enabled=(True, True)):
+    def native(self, dispositions=('loaded', 'absent'), enabled=(True, True), running=False,
+               interpreter='/protected/python', image=None):
+        """running: legacy pins verify and each loaded scheduler has a live generation."""
         import plistlib
         import subprocess
         from broker_deployment_observation import NativeObservation
@@ -137,7 +139,7 @@ class NativeDeploymentTests(unittest.TestCase):
         for index, target in enumerate(self.targets):
             root = Path(target['root'])
             label = f'local.test.broker{index}'
-            argv = ['/protected/python', '-I', str(root / 'https_broker.py')]
+            argv = [interpreter, '-I', str(root / 'https_broker.py')]
             plist = self.artifacts / f'{label}.plist'
             raw = plistlib.dumps({'Label': label, 'ProgramArguments': argv, 'RunAtLoad': True, 'StartInterval': 10})
             self.write(plist, raw)
@@ -146,19 +148,26 @@ class NativeDeploymentTests(unittest.TestCase):
             bindings.append(binding)
             config = json.loads((root / 'host-config.json').read_bytes())
             config['brokerLabel'] = label
-            config['channelIdentities'] = {name: [0, (Path(config['channel']) / name).stat().st_ino] for name in NAMES}
+            config['channelIdentities'] = {name: [(Path(config['channel']) / name).stat().st_dev if running else 0,
+                                                  (Path(config['channel']) / name).stat().st_ino] for name in NAMES}
             self.write(root / 'host-config.json', encode(config))
-            target['preservationSha256'] = sha(encode(preservation(root)))
+            target['preservationSha256'] = approved_preservation_sha256(preservation(root), 'running' if running else 'refusing')
             override = 'absent' if enabled[index] else 'disabled'
             registrations.append({key: binding[key] for key in ('root', 'domain', 'label', 'plist')} |
-                                 {'disposition': dispositions[index], 'enabled': enabled[index], 'override': override, 'process': None})
+                                 {'disposition': dispositions[index], 'enabled': enabled[index], 'override': override, 'process': None} |
+                                 # Refusing fixtures omit the field, as plans made before running admission did.
+                                 ({'admission': 'running'} if running else {}))
             states.append({'loaded': dispositions[index] == 'loaded', 'override': None if enabled[index] else True})
         self.plan.update({'evidenceDirectoryIdentity': directory_pin(self.evidence.stat()), 'bootUUID': boot, 'registrations': registrations, 'manualParticipants': []})
+        # A running scheduler's generation is pid 40 + index while its job is loaded.
+        # image: argv[0] a live generation reports, such as a framework launcher's re-exec.
+        live = lambda: {40 + i: [image or b['argv'][0]] + b['argv'][1:]
+                        for i, (b, s) in enumerate(zip(bindings, states)) if running and s['loaded']}
         class Kernel:
             def boot(self): return boot
-            def pids(self, uid): return []
+            def pids(self, uid): return list(live())
             def info(self, pid): return {'pid': pid, 'parent': 1, 'uids': [os.getuid()] * 3, 'birth': [1, 2]}
-            def argv(self, pid): return ['/bin/zsh']
+            def argv(self, pid): return live().get(pid, ['/bin/zsh'])
         def invoke(argv):
             action = argv[1]
             domain = f'gui/{os.getuid()}'
@@ -171,7 +180,8 @@ class NativeDeploymentTests(unittest.TestCase):
             index = next(i for i,b in enumerate(bindings) if b['label'] == label)
             state = states[index]
             if action == 'print':
-                if state['loaded']: return subprocess.CompletedProcess(argv, 0, domain+'/'+label+' = {\n}\n', '')
+                pid = f'\tpid = {40 + index}\n' if running and state['loaded'] else ''
+                if state['loaded']: return subprocess.CompletedProcess(argv, 0, domain+'/'+label+' = {\n'+pid+'}\n', '')
                 return subprocess.CompletedProcess(argv, 113, '', f'Could not find service "{label}" in domain for user gui: {os.getuid()}\n')
             effects.append((index, action))
             if action == 'disable': state['override'] = True
@@ -184,6 +194,7 @@ class NativeDeploymentTests(unittest.TestCase):
         observer = NativeObservation(self.plan, bindings, guard, kernel=Kernel(), invoke=invoke)
         packet = {'plan': self.plan, 'planSha256': sha(encode(self.plan)), 'bindings': bindings}
         worker = Deployment(packet, guard, observer=observer)
+        worker.settle_seconds = 0.5
         return worker, observer, states, effects
 
     def test_actual_transition_and_readonly_recovery(self):
@@ -196,6 +207,176 @@ class NativeDeploymentTests(unittest.TestCase):
         self.assertEqual(before, effects)
         with self.assertRaisesRegex(ValueError, "Prepared broker state changed"): worker.execute()
         self.assertEqual(before, effects)
+
+    def test_running_brokers_are_admitted_after_suppression(self):
+        # Hand-repaired legacy pins verify, so the brokers serve requests and keep
+        # rewriting their ledgers after the plan was prepared.
+        worker, observer, states, effects = self.native(running=True)
+        ledger = Path(self.targets[0]['root']) / 'https-broker-ledger.json'
+        self.write(ledger, encode({'entries': {}, 'requests': {}, 'reconcileCursor': 1}))
+        self.assertEqual(worker.execute()['kind'], 'committed')
+        self.assertEqual(effects, [(0,'disable'), (0,'bootout'), (1,'disable'), (0,'enable'), (0,'bootstrap'), (1,'enable')])
+        admission = json.loads((self.evidence / 'admission.json').read_bytes())
+        self.assertEqual(admission['admission'], ['running', 'running'])
+        self.assertEqual(worker.observe()['kind'], 'committed')
+
+    FRAMEWORK = '/opt/fixture/Python.framework/Versions/3.14'
+
+    def test_framework_launcher_generation_is_admitted(self):
+        # launchd runs bin/python3.14, which re-executes Python.app as argv[0].
+        worker, observer, states, effects = self.native(
+            running=True, interpreter=self.FRAMEWORK + '/bin/python3.14',
+            image=self.FRAMEWORK + '/Resources/Python.app/Contents/MacOS/Python')
+        self.assertEqual(worker.execute()['kind'], 'committed')
+        self.assertEqual(worker.observe()['kind'], 'committed')
+
+    def test_foreign_interpreter_running_the_route_is_refused(self):
+        from broker_deployment_observation import route_argv
+        launcher = self.FRAMEWORK + '/bin/python3.14'
+        binding = {'interpreter': launcher, 'argv': [launcher, '-I', '/root/https_broker.py']}
+        for argv0 in ('/usr/bin/python3', '/opt/fixture/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python',
+                      self.FRAMEWORK + '/Resources/Python.app/Contents/MacOS/Python3'):
+            self.assertFalse(route_argv([argv0, '-I', '/root/https_broker.py'], binding))
+        # A non-framework interpreter has no re-exec image to admit.
+        self.assertFalse(route_argv(['/x', '-I', '/r/https_broker.py'], {'interpreter': '/protected/python', 'argv': ['/protected/python', '-I', '/r/https_broker.py']}))
+        worker, observer, states, effects = self.native(running=True, interpreter=launcher, image='/usr/bin/python3')
+        with self.assertRaisesRegex(ValueError, 'differs from protected route'): worker.execute()
+        self.assertEqual(effects, [])
+
+    def churn(self, root, cursor):
+        """What a restored running broker does every cycle: rewrite its ledger."""
+        self.write(Path(root) / 'https-broker-ledger.json', encode({'entries': {}, 'requests': {}, 'reconcileCursor': cursor}))
+
+    def test_running_broker_rewriting_ledger_after_restore_confirms(self):
+        worker, observer, states, effects = self.native(running=True)
+        root = self.targets[0]['root']
+        record = worker.record
+        def run_after_restore(name, value):
+            record(name, value)
+            if name == 'effect-0-bootstrap-ack.json':
+                self.churn(root, 1)
+        worker.record = run_after_restore
+        self.assertEqual(worker.execute()['kind'], 'committed')
+        # Later cycles keep rewriting the ledger and consuming inbox requests.
+        self.churn(root, 2)
+        self.assertEqual(worker.observe()['kind'], 'committed')
+
+    def test_changed_consumer_config_or_marker_still_refuses_after_restore(self):
+        for name in ('https_broker.py', 'host-config.json', 'channel/installed.json'):
+            with self.subTest(name):
+                self.setUp()  # A fresh committed deployment per case.
+                worker, observer, states, effects = self.native(running=True)
+                self.assertEqual(worker.execute()['kind'], 'committed')
+                path = Path(self.targets[0]['root']) / name
+                original = path.read_bytes()
+                self.write(path, encode({**json.loads(original), 'changed': True}) if name.endswith('.json') else original + b'\n')
+                self.assertEqual(worker.observe()['kind'], 'unresolved')
+
+    def test_missing_final_receipt_confirms_only_complete_evidence(self):
+        # The 9491d417 shape: committed and restored, then the old post-restore check
+        # refused the rewritten ledger before the final receipt was written.
+        worker, observer, states, effects = self.native(running=True)
+        root = self.targets[0]['root']
+        record = worker.record
+        def lose_receipt(name, value):
+            if name == 'deployment-commit.json':
+                raise ValueError('Existing channel or ledger changed')
+            record(name, value)
+            if name == 'effect-0-bootstrap-ack.json':
+                self.churn(root, 1)
+        worker.record = lose_receipt
+        with self.assertRaisesRegex(ValueError, 'ledger changed'): worker.execute()
+        self.assertFalse((self.evidence / 'deployment-commit.json').exists())
+        evidence = {path.name: path.read_bytes() for path in self.evidence.iterdir()}
+        self.churn(root, 2)
+        self.assertEqual(worker.observe()['kind'], 'committed')
+        self.assertEqual({path.name: path.read_bytes() for path in self.evidence.iterdir()}, evidence)
+        # Each incomplete or foreign shape stays unresolved.
+        commit = json.loads(evidence['commit.json'])
+        cases = [('ack-3.json', None), ('intent-5.json', None), ('effect-0-bootstrap-ack.json', None),
+                 ('effect-1-enable-ack.json', None), ('admission.json', None),
+                 ('commit.json', encode({**commit, 'planSha256': '0' * 64})),
+                 ('commit.json', encode({**commit, 'files': commit['files'][:7]})),
+                 ('abort-restored.json', encode({'outerPlanSha256': worker.outer}))]
+        for name, replacement in cases:
+            path = self.evidence / name
+            if replacement is None:
+                path.unlink()
+            else:
+                self.write(path, replacement)
+            self.assertEqual(worker.observe()['kind'], 'unresolved', name)
+            if name in evidence:
+                self.write(path, evidence[name])
+            else:
+                path.unlink()
+        outer, worker.outer = worker.outer, '0' * 64
+        self.assertEqual(worker.observe()['kind'], 'unresolved', 'plan digest')
+        worker.outer = outer
+        consumer = Path(root) / 'host_config.py'
+        original = consumer.read_bytes()
+        self.write(consumer, b'changed consumer')
+        self.assertEqual(worker.observe()['kind'], 'unresolved', 'consumer')
+        # Restoring the bytes does not restore the committed file's identity.
+        self.write(consumer, original)
+        self.assertEqual(worker.observe()['kind'], 'unresolved', 'rewritten consumer')
+
+    def test_running_mode_refuses_wrong_mode_or_stale_digest_before_effects(self):
+        worker, observer, states, effects = self.native(running=True)
+        root = Path(self.targets[0]['root'])
+        # The owner approved a refusing channel; the live one now serves requests.
+        self.plan['registrations'][0]['admission'] = 'refusing'
+        with self.assertRaisesRegex(ValueError, 'admission differs from the approved plan'): worker.execute()
+        self.plan['registrations'][0]['admission'] = 'running'
+        # A full-inventory digest cannot hold for a running broker.
+        self.targets[0]['preservationSha256'] = approved_preservation_sha256(preservation(root), 'refusing')
+        self.write(root / 'https-broker-ledger.json', encode({'entries': {}, 'requests': {}, 'reconcileCursor': 1}))
+        with self.assertRaisesRegex(ValueError, 'Preservation inventory changed; refresh'): worker.execute()
+        self.assertEqual(effects, [])
+        self.assertFalse((self.evidence / 'admission.json').exists())
+
+    def test_inventory_change_after_baseline_aborts_and_restores_before_write(self):
+        worker, observer, states, effects = self.native(running=True)
+        root = Path(self.targets[0]['root'])
+        record = worker.record
+        def arrive_after_baseline(name, value):
+            record(name, value)
+            if name == 'before.json':
+                self.write(root / 'channel' / 'inbox' / (str(uuid.uuid4()) + '.json'), b'late request')
+        worker.record = arrive_after_baseline
+        with self.assertRaisesRegex(ValueError, 'changed after suppression'): worker.execute()
+        self.assertEqual(effects, [(0,'disable'), (0,'bootout'), (1,'disable'), (1,'enable'), (0,'enable'), (0,'bootstrap')])
+        self.assertTrue(states[0]['loaded'])
+        self.assertTrue((self.evidence / 'abort-restored.json').exists())
+        self.assertFalse((self.evidence / 'intent.json').exists())
+        self.assertEqual(worker.observe()['kind'], 'unresolved')
+        self.assertEqual((root / 'https_broker.py').read_bytes(), self.originals[str(root / 'https_broker.py')])
+
+    def test_generation_surviving_bootout_keeps_suppression(self):
+        worker, observer, states, effects = self.native(running=True)
+        # Pid 40 keeps running the protected route after its scheduler is booted out.
+        observer.kernel.pids = lambda uid: [40]
+        observer.kernel.argv = lambda pid: observer.bindings[0]['argv']
+        with self.assertRaisesRegex(ValueError, 'Unlisted broker caller'): worker.execute()
+        self.assertEqual(effects, [(0,'disable'), (0,'bootout'), (1,'disable')])
+        self.assertFalse(states[0]['loaded'])
+        self.assertTrue((self.evidence / 'abort-not-restored.json').exists())
+        self.assertFalse((self.evidence / 'abort-restored.json').exists())
+
+    def test_generation_appearing_during_window_recheck_keeps_suppression(self):
+        worker, observer, states, effects = self.native(running=True)
+        record = worker.record
+        def appear_after_baseline(name, value):
+            record(name, value)
+            if name == 'before.json':
+                # An untracked route generation appears after suppression settled.
+                observer.kernel.pids = lambda uid: [40]
+                observer.kernel.argv = lambda pid: observer.bindings[0]['argv']
+        worker.record = appear_after_baseline
+        with self.assertRaisesRegex(ValueError, 'Unlisted broker caller'): worker.execute()
+        self.assertEqual(effects, [(0,'disable'), (0,'bootout'), (1,'disable')])
+        self.assertTrue((self.evidence / 'abort-not-restored.json').exists())
+        self.assertFalse((self.evidence / 'abort-restored.json').exists())
+        self.assertFalse((self.evidence / 'intent.json').exists())
 
     def test_recovery_anchors_baseline_to_approved_digest(self):
         root = self.targets[0]['root']

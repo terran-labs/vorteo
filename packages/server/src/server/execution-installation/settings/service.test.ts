@@ -1,5 +1,8 @@
-import { expect, test } from "vitest";
-import { InstallationSettingsSnapshotSchema } from "@getpaseo/protocol/installation-settings";
+import { expect, test, vi } from "vitest";
+import {
+  InstallationSettingsSnapshotSchema,
+  effectiveTimeZone,
+} from "@getpaseo/protocol/installation-settings";
 import { DEFAULT_TERMINAL_PROFILES } from "@getpaseo/protocol/terminal-profiles";
 import { SettingsEnvironmentFake, SettingsJournalFake } from "./fakes.js";
 import {
@@ -1066,6 +1069,93 @@ test("durable account setup resumes after coordinator recovery and lost replies 
   expect(restored.snapshot().revision).toBe(saved.revision);
 });
 
+test("background skill settlement reuses only recent success and invalidates on owner or projection work", async () => {
+  const host = new SettingsEnvironmentFake("host");
+  const container = new SettingsEnvironmentFake("container");
+  const first = {
+    name: "alpha",
+    source: null,
+    sha256: "a".repeat(64),
+    identity: `content:${"a".repeat(64)}`,
+  };
+  host.skillCatalog = [first];
+  container.skillCatalog = [first];
+  let now = 0;
+  const service = new InstallationSettingsService(
+    new SettingsJournalFake(),
+    [host, container],
+    () => now,
+  );
+  await service.reconcile();
+  const hostRead = vi.spyOn(host, "skillCatalogSettled");
+  const containerRead = vi.spyOn(container, "skillCatalogSettled");
+  for (now = 0; now < 60_000; now += 5000) await service.reconcile({ background: true });
+  expect(hostRead).toHaveBeenCalledTimes(1);
+  expect(containerRead).toHaveBeenCalledTimes(1);
+  await service.reconcile({ background: true });
+  expect(hostRead).toHaveBeenCalledTimes(2);
+  await service.reconcile();
+  expect(hostRead).toHaveBeenCalledTimes(3);
+  await service.reconcile({ background: true });
+  expect(hostRead).toHaveBeenCalledTimes(4);
+
+  // Drift in another resource still projects and verifies the skill catalog freshly.
+  hostRead.mockClear();
+  host.config.pluginsEnabled = !host.config.pluginsEnabled;
+  await service.reconcile({ background: true });
+  expect(hostRead).toHaveBeenCalledTimes(1);
+  await service.reconcile({ background: true });
+  expect(hostRead).toHaveBeenCalledTimes(2);
+
+  await service.update({
+    expectedRevision: service.snapshot().revision,
+    settings: { appendSystemPrompt: "Changed while the catalog cache is warm" },
+  });
+  hostRead.mockClear();
+  await service.reconcile({ background: true });
+  expect(hostRead).toHaveBeenCalled();
+  await service.reconcile({ background: true });
+
+  const second = { ...first, sha256: "b".repeat(64), identity: `content:${"b".repeat(64)}` };
+  await service.update({
+    expectedRevision: service.snapshot().revision,
+    settings: { skillLibrary: [second] },
+  });
+  hostRead.mockClear();
+  await service.reconcile({ background: true });
+  expect(hostRead).toHaveBeenCalledWith([second]);
+  await service.reconcile({ background: true });
+  await service.update({
+    expectedRevision: service.snapshot().revision,
+    settings: {
+      resourceExclusions: {
+        host: {
+          terminalProfileIds: [],
+          metadataProviderIds: [],
+          skillIdentities: [second.identity],
+        },
+      },
+    },
+  });
+  hostRead.mockClear();
+  containerRead.mockClear();
+  await service.reconcile({ background: true });
+  expect(hostRead).toHaveBeenCalledWith([]);
+  expect(containerRead).toHaveBeenCalledWith([second]);
+
+  hostRead.mockResolvedValue(false);
+  await service.reconcile();
+  const unsettledReads = hostRead.mock.calls.length;
+  await service.reconcile({ background: true });
+  expect(hostRead.mock.calls.length).toBeGreaterThan(unsettledReads);
+  hostRead.mockRejectedValue(new Error("Catalog unavailable"));
+  hostRead.mockClear();
+  await service.reconcile({ background: true });
+  await service.reconcile({ background: true });
+  expect(hostRead).toHaveBeenCalledTimes(2);
+  expect(service.snapshot().sources.host.error).toBe("read_failed");
+});
+
 test("background polls back off failed account setup per environment and resume after recovery", async () => {
   const host = new SettingsEnvironmentFake("host");
   const container = new SettingsEnvironmentFake("container");
@@ -1391,4 +1481,231 @@ test("a Host-only installation imports, edits and projects settings with one env
     () =>
       new InstallationSettingsService(journal, [host, new SettingsEnvironmentFake("container")]),
   ).toThrow(InstallationSettingsInvalidUpdate);
+});
+
+test("an upgrade adopts the only usable connection as primary once and projects it", async () => {
+  const { service, host, container } = fixture();
+  host.config.installationPrimaryConnection = null;
+  host.config.providers = {
+    "claude-account": { extends: "claude", label: "Claude 1", enabled: true },
+    "codex-account": { extends: "codex", label: "Codex 1", enabled: true },
+  };
+  // Nothing usable yet: it stays unchosen for a later pass.
+  const waiting = await service.reconcile();
+  expect(waiting.settings?.primaryConnection).toBeUndefined();
+  const claude = waiting.settings?.providerDefinitions?.find(
+    (entry) => entry.bindings.host === "claude-account",
+  );
+  if (!claude) throw new Error("Expected the Claude connection");
+
+  // Right after the upgrade restart Codex is still loading or reads a transient usage error, so
+  // Claude being the only usable one so far is not a reason to choose it.
+  host.usableProviders = ["claude-account"];
+  host.pendingProviders = ["codex-account"];
+  expect((await service.reconcile()).settings?.primaryConnection).toBeUndefined();
+
+  // Codex settles as signed out, so Claude really is the only usable connection.
+  host.pendingProviders = [];
+  const adopted = await service.reconcile();
+  expect(adopted.revision).toBe(waiting.revision + 1);
+  expect(adopted.settings?.primaryConnection).toEqual({ providerId: claude.id });
+  expect(host.config.installationPrimaryConnection).toEqual({ provider: "claude-account" });
+  // The marker that moves the daemon off the earlier first-usable launch rule.
+  expect(host.config.installationPrimaryConnectionSupported).toBe(true);
+  // Only a daemon that keeps a copy receives one.
+  expect(container.config.installationPrimaryConnection).toBeUndefined();
+  expect(container.config.installationPrimaryConnectionSupported).toBeUndefined();
+
+  // Adoption happens once: a second usable connection never replaces the choice.
+  host.usableProviders = ["codex-account", "claude-account"];
+  const later = await service.reconcile();
+  expect(later.settings?.primaryConnection).toEqual({ providerId: claude.id });
+});
+
+test("an upgrade with several usable connections leaves the choice to the owner", async () => {
+  const { service, host } = fixture();
+  host.config.installationPrimaryConnection = null;
+  host.config.providers = {
+    "claude-account": { extends: "claude", label: "Claude 1", enabled: true },
+    "codex-account": { extends: "codex", label: "Codex 1", enabled: true },
+  };
+  host.usableProviders = ["claude-account", "codex-account"];
+  const undecided = await service.reconcile();
+  expect(undecided.settings?.primaryConnection).toBeNull();
+  expect(host.config.installationPrimaryConnection).toBeNull();
+  // Null is a decision: a later pass with one usable connection does not adopt it.
+  host.usableProviders = ["codex-account"];
+  expect((await service.reconcile()).settings?.primaryConnection).toBeNull();
+
+  const codex = undecided.settings?.providerDefinitions?.find(
+    (entry) => entry.bindings.host === "codex-account",
+  );
+  if (!codex) throw new Error("Expected the Codex connection");
+  const chosen = await service.update({
+    expectedRevision: service.snapshot().revision,
+    settings: {
+      primaryConnection: { providerId: codex.id, profileId: "shared-profile/codex/fast" },
+    },
+  });
+  // A stale revision is refused like any other shared setting.
+  await expect(
+    service.update({
+      expectedRevision: undecided.revision - 1,
+      settings: { primaryConnection: null },
+    }),
+  ).rejects.toBeInstanceOf(InstallationSettingsConflict);
+  await expect(
+    service.update({
+      expectedRevision: chosen.revision,
+      settings: { primaryConnection: { providerId: "unknown" } },
+    }),
+  ).rejects.toBeInstanceOf(InstallationSettingsInvalidUpdate);
+  await service.reconcile();
+  expect(host.config.installationPrimaryConnection).toEqual({
+    provider: "codex-account",
+    profileId: "shared-profile/codex/fast",
+  });
+
+  // Removing the primary connection clears the choice instead of pointing at nothing.
+  const removed = await service.update({
+    expectedRevision: chosen.revision,
+    settings: {
+      providerDefinitions: removeDefinition(chosen.settings?.providerDefinitions, codex.id),
+    },
+  });
+  expect(removed.settings?.primaryConnection).toBeNull();
+
+  // Codex's settled reading cannot confirm a sign in, as with a setup-token connection, so the
+  // owner chooses even though Claude is the only confirmed connection.
+  const unconfirmed = fixture();
+  unconfirmed.host.config.installationPrimaryConnection = null;
+  unconfirmed.host.config.providers = {
+    "claude-account": { extends: "claude", label: "Claude 1", enabled: true },
+    "codex-account": { extends: "codex", label: "Codex 1", enabled: true },
+  };
+  unconfirmed.host.usableProviders = ["claude-account"];
+  unconfirmed.host.unconfirmedProviders = ["codex-account"];
+  expect((await unconfirmed.service.reconcile()).settings?.primaryConnection).toBeNull();
+});
+
+function removeDefinition<T extends { id: string; removed?: boolean }>(
+  definitions: readonly T[] | undefined,
+  id: string,
+): T[] {
+  const next = structuredClone([...(definitions ?? [])]);
+  for (const entry of next) if (entry.id === id) entry.removed = true;
+  return next;
+}
+
+test("an explicit primary connection must be live and keep a profile of its own type", async () => {
+  const { service, host } = fixture();
+  host.config.installationPrimaryConnection = null;
+  host.config.providers = {
+    "claude-account": { extends: "claude", label: "Claude 1", enabled: true },
+    "codex-account": { extends: "codex", label: "Codex 1", enabled: true },
+  };
+  host.usableProviders = ["claude-account", "codex-account"];
+  const initial = await service.reconcile();
+  const definitions = initial.settings?.providerDefinitions ?? [];
+  const claude = definitions.find((entry) => entry.bindings.host === "claude-account");
+  const codex = definitions.find((entry) => entry.bindings.host === "codex-account");
+  if (!claude || !codex) throw new Error("Expected both connections");
+  const refuse = (settings: Parameters<typeof service.update>[0]["settings"]) =>
+    expect(
+      service.update({ expectedRevision: service.snapshot().revision, settings }),
+    ).rejects.toMatchObject({
+      reason: "primary-connection-unavailable",
+      message: "That connection is no longer available.",
+    });
+
+  // A profile of another provider type, or one environment's local profile.
+  await refuse({
+    primaryConnection: { providerId: claude.id, profileId: "shared-profile/codex/a" },
+  });
+  await refuse({ primaryConnection: { providerId: claude.id, profileId: "local-profile" } });
+
+  // Removed, or turned off, by an update that raced the choice.
+  const removed = await service.update({
+    expectedRevision: service.snapshot().revision,
+    settings: { providerDefinitions: removeDefinition(definitions, claude.id) },
+  });
+  await refuse({ primaryConnection: { providerId: claude.id } });
+  await service.update({
+    expectedRevision: removed.revision,
+    settings: {
+      providerDefinitions: disableDefinition(removed.settings?.providerDefinitions, codex.id),
+    },
+  });
+  await refuse({ primaryConnection: { providerId: codex.id } });
+});
+
+test("turning off the primary connection clears it for the owner to choose again", async () => {
+  const { service, host } = fixture();
+  host.config.installationPrimaryConnection = null;
+  host.config.providers = {
+    "claude-account": { extends: "claude", label: "Claude 1", enabled: true },
+  };
+  host.usableProviders = ["claude-account"];
+  const adopted = await service.reconcile();
+  const claude = adopted.settings?.providerDefinitions?.[0];
+  if (!claude || adopted.settings?.primaryConnection?.providerId !== claude.id)
+    throw new Error("Expected the adopted primary connection");
+  const off = await service.update({
+    expectedRevision: adopted.revision,
+    settings: {
+      providerDefinitions: disableDefinition(adopted.settings.providerDefinitions, claude.id),
+    },
+  });
+  expect(off.settings?.primaryConnection).toBeNull();
+});
+
+function disableDefinition<T extends { id: string; policy: { enabled?: boolean } }>(
+  definitions: readonly T[] | undefined,
+  id: string,
+): T[] {
+  const next = structuredClone([...(definitions ?? [])]);
+  for (const entry of next) if (entry.id === id) entry.policy.enabled = false;
+  return next;
+}
+
+test("the owner's time zone persists, reaches daemons that know it and resolves override first", async () => {
+  const { service, host, container, journal } = fixture();
+  // Dev predates the setting and reports no key; it must stay synchronized without one.
+  host.config.timeZone = { override: null, reported: null };
+  const initial = await service.reconcile();
+  expect(effectiveTimeZone(initial.settings?.timeZone)).toBeNull();
+
+  // An unknown name, and a bare offset that Intl accepts but which ignores daylight saving.
+  for (const override of ["Mars/Olympus_Mons", "+01:00"])
+    await expect(
+      service.update({
+        expectedRevision: initial.revision,
+        settings: { timeZone: { override, reported: null } },
+      }),
+    ).rejects.toThrow(InstallationSettingsInvalidUpdate);
+
+  const reported = await service.update({
+    expectedRevision: initial.revision,
+    settings: { timeZone: { override: null, reported: "America/New_York" } },
+  });
+  expect(effectiveTimeZone(reported.settings?.timeZone)).toEqual({
+    zone: "America/New_York",
+    source: "browser",
+  });
+  const chosen = await service.update({
+    expectedRevision: reported.revision,
+    settings: { timeZone: { override: "Europe/Berlin", reported: "America/New_York" } },
+  });
+  expect(effectiveTimeZone(chosen.settings?.timeZone)).toEqual({
+    zone: "Europe/Berlin",
+    source: "override",
+  });
+
+  const applied = await service.reconcile();
+  expect(host.config.timeZone).toEqual({ override: "Europe/Berlin", reported: "America/New_York" });
+  expect(container.config.timeZone).toBeUndefined();
+  expect(applied.sources.host.error).toBeNull();
+  expect(applied.sources.container.error).toBeNull();
+  const restarted = new InstallationSettingsService(journal, [host, container]);
+  expect((await restarted.reconcile()).settings?.timeZone?.override).toBe("Europe/Berlin");
 });

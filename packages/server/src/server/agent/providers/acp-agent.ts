@@ -1,9 +1,9 @@
+import { getProviderProbeCwd } from "../../../utils/provider-probe-cwd.js";
 import { ACPProviderOptionsSchema } from "./acp-options.js";
 import { type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
 import { setImmediate } from "node:timers/promises";
@@ -1118,7 +1118,7 @@ export class ACPAgentClient implements AgentClient {
     options: FetchCatalogOptions,
     context?: ProviderRefreshContext,
   ): Promise<ProviderCatalog> {
-    const cwd = options.scope === "global" ? homedir() : options.cwd;
+    const cwd = options.scope === "global" ? await getProviderProbeCwd() : options.cwd;
     let probe: UninitializedACPProcess | null = null;
     let probeSessionId: string | null = null;
     let probeSessionPromise: Promise<NewSessionResponse> | null = null;
@@ -1437,7 +1437,7 @@ export class ACPAgentClient implements AgentClient {
   ): Promise<ACPProcessTransport> {
     const { command, args } = await this.resolveLaunchCommand();
     const child = spawnProcess(command, args, {
-      cwd: process.cwd(),
+      cwd: await getProviderProbeCwd(),
       ...createProviderEnvSpec({
         runtimeSettings: this.runtimeSettings,
         overlays: [launchEnv],
@@ -1570,7 +1570,7 @@ export class ACPAgentClient implements AgentClient {
   ): Promise<DiagnosticEntry[]> {
     const rows: DiagnosticEntry[] = [];
     const phaseTimeoutMs = options.phaseTimeoutMs ?? ACP_DIAGNOSTIC_PHASE_TIMEOUT_MS;
-    const cwd = options.cwd ?? homedir();
+    const cwd = options.cwd ?? (await getProviderProbeCwd());
     let transport: ACPProcessTransport | null = null;
     let initialize: InitializeResponse | null = null;
     let probeSessionId: string | null = null;
@@ -2930,9 +2930,9 @@ export class ACPAgentSession implements AgentSession, ACPClient {
 
   // Loading an archived agent's history runs nothing in its working directory, which
   // may have been removed with its worktree. session/load still names the original
-  // directory; only the process starts from the home directory.
+  // directory; only the process starts from the isolated probe directory.
   private resolveProcessCwd(): Promise<string> {
-    return resolveResumeProcessCwd(this.config.cwd, this.resumePurpose);
+    return resolveResumeProcessCwd(this.config.cwd, this.resumePurpose, getProviderProbeCwd);
   }
 
   private async spawnProcess(): Promise<SpawnedACPProcess> {

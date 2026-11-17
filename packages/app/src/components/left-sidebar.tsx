@@ -1,3 +1,4 @@
+import { useOpenVorteoSetupGuide } from "@/onboarding";
 import { SidebarIdentityFooter } from "@/components/sidebar-identity-footer";
 import { SidebarSyncNotice } from "@/sidebar-state/status";
 import { useLayoutEffect } from "react";
@@ -39,7 +40,7 @@ import {
   PanelLeftOpen,
 } from "lucide-react-native";
 import { useSidebarNavItems } from "@/sidebar-nav/use-sidebar-nav-items";
-import { builtinSidebarNavLabelKey } from "@/sidebar-nav/model";
+import { builtinSidebarNavLabelKey, type PluginSidebarNavItem } from "@/sidebar-nav/model";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -127,7 +128,6 @@ import { useCloseAgentListGesture } from "@/mobile-panels/gestures";
 import { MobilePanelOverlay } from "@/mobile-panels/presentation";
 import { buildSchedulesRoute, buildSessionsRoute, buildSettingsRoute } from "@/utils/host-routes";
 import { openHostOverview } from "@/navigation/settings-navigation";
-import { UsageSidebarItem, useUsageSummary } from "@/usage";
 import { SidebarGlobalCards } from "@/components/sidebar/global-cards";
 import { IconButtonChromeProvider } from "@/components/ui/icon-button-chrome";
 import { SidebarFooterBlock, useFooterLeadingRule } from "@/components/sidebar/footer-rules";
@@ -571,6 +571,7 @@ function SidebarToolbar({
     onBeforeNavigate?.();
     handleAddHost();
   }, [onBeforeNavigate, handleAddHost]);
+  const openSetupGuide = useOpenVorteoSetupGuide();
   const menuIcons = useMemo(
     () => ({
       settings: <Settings size={16} color={theme.colors.foregroundMuted} />,
@@ -682,6 +683,15 @@ function SidebarToolbar({
             >
               {t("settings.addHost")}
             </DropdownMenuItem>
+            {openSetupGuide ? (
+              <DropdownMenuItem
+                testID="sidebar-setup-guide"
+                onSelect={openSetupGuide}
+                leading={menuIcons.settings}
+              >
+                {t("vorteoSetup.reopen")}
+              </DropdownMenuItem>
+            ) : null}
             <DropdownMenuSeparator />
             <DropdownMenuLabel>Appearance</DropdownMenuLabel>
             <View style={styles.themeMenu}>
@@ -708,6 +718,7 @@ function SidebarToolbar({
       openHistory,
       handleOpenProject,
       openAddHost,
+      openSetupGuide,
       handleNewWorkspace,
       handleNewFolder,
       labels.addProject,
@@ -836,19 +847,15 @@ function SidebarToolbar({
 }
 
 /**
- * The footer rows in the user's `sidebarFooterItems` order: the Usage item and plugin rows. The
- * Usage item is left out while it has no summary to show.
+ * Plugin footer rows in the user's `sidebarFooterItems` order. Usage is not a row here: the
+ * meter beside the installation name always shows it, so the old Usage summary row and its
+ * stored visibility are ignored.
  */
-
 function SidebarFooterRows({ onBeforeNavigate }: { onBeforeNavigate?: () => void }) {
   const { items } = useSidebarNavItems("footer");
-  const usageVisible = items.some(
-    (item) => item.kind === "builtin" && item.id === "usage" && item.visible,
-  );
-  const usageSummary = useUsageSummary(usageVisible);
   const rowsRef = useRef<View | null>(null);
   const visibleItems = items.filter(
-    (item) => item.visible && (item.kind === "plugin" || usageSummary.length > 0),
+    (item): item is PluginSidebarNavItem => item.kind === "plugin" && item.visible,
   );
   const rule = useFooterLeadingRule("rows", visibleItems.length > 0);
   if (visibleItems.length === 0) return null;
@@ -856,19 +863,15 @@ function SidebarFooterRows({ onBeforeNavigate }: { onBeforeNavigate?: () => void
     <>
       {rule ? <SidebarSectionRule testID="sidebar-footer-separator" /> : null}
       <View ref={rowsRef} collapsable={false} style={styles.footerRows}>
-        {visibleItems.map((item) =>
-          item.kind === "plugin" ? (
-            <PluginSidebarItem
-              key={item.key}
-              group={item.group}
-              section="footer"
-              fallbackAnchorRef={rowsRef}
-              onBeforeNavigate={onBeforeNavigate}
-            />
-          ) : (
-            <UsageSidebarItem key={item.key} />
-          ),
-        )}
+        {visibleItems.map((item) => (
+          <PluginSidebarItem
+            key={item.key}
+            group={item.group}
+            section="footer"
+            fallbackAnchorRef={rowsRef}
+            onBeforeNavigate={onBeforeNavigate}
+          />
+        ))}
       </View>
     </>
   );
@@ -904,7 +907,11 @@ function MobileSidebar({
 }: MobileSidebarProps) {
   const touch = useVortonTouch();
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
-  const { gesture: closeGesture, gestureRef: closeGestureRef } = useCloseAgentListGesture();
+  const {
+    gesture: closeGesture,
+    gestureRef: closeGestureRef,
+    edgeRef,
+  } = useCloseAgentListGesture();
 
   const handleWorkspacePress = useCallback(() => {
     closeSidebar();
@@ -920,6 +927,22 @@ function MobileSidebar({
       backgroundColor: theme.colors.surfaceSidebar,
     }),
     [insetsTop, insetsBottom, theme.colors.surfaceSidebar, theme.spacing, touch],
+  );
+
+  // The compact header's toolbar surface runs from the screen edge, safe area included, to the
+  // toolbar's divider, so the open sidebar's top bar matches the header it replaces.
+  const toolbarBandStyle = useMemo(
+    () => [
+      styles.mobileToolbarBand,
+      inlineUnistylesStyle({
+        height:
+          insetsTop +
+          spacingInset +
+          (touch ? 44 : FLOATING_PANEL_CONTROL_HEIGHT) +
+          theme.spacing[1],
+      }),
+    ],
+    [insetsTop, spacingInset, touch, theme.spacing],
   );
 
   const navigation = useMemo(
@@ -941,9 +964,11 @@ function MobileSidebar({
   return (
     <MobilePanelOverlay
       panel="agent-list"
+      edgeRef={edgeRef}
       closeGesture={closeGesture}
       panelStyle={mobileSidebarInsetStyle}
     >
+      <View style={toolbarBandStyle} pointerEvents="none" />
       <View
         style={[styles.sidebarContent, inlineUnistylesStyle({ padding: spacingInset })]}
         onLayout={onPanelLayout}
@@ -984,9 +1009,9 @@ function MobileSidebar({
           )}
 
           <SidebarFooterBlock>
+            <InstallationRestartBanner placement="sidebar" />
             <SidebarGlobalCards onBeforeNavigate={closeSidebar} />
             <SidebarSyncNotice />
-            <InstallationRestartBanner placement="sidebar" />
             <DemoControls />
             <SidebarFooterRows onBeforeNavigate={closeSidebar} />
             <SidebarIdentityFooter />
@@ -1298,9 +1323,9 @@ function DesktopSidebar({
           )}
 
           <SidebarFooterBlock>
+            <InstallationRestartBanner placement={compact ? "rail" : "sidebar"} />
             {!compact ? <SidebarGlobalCards /> : null}
             <SidebarSyncNotice compact={compact} />
-            <InstallationRestartBanner placement={compact ? "rail" : "sidebar"} />
             {!compact ? <DemoControls /> : null}
             {!compact ? <SidebarFooterRows /> : null}
             {!compact ? <SidebarIdentityFooter /> : null}
@@ -1343,6 +1368,15 @@ const styles = StyleSheet.create((theme) => ({
   narrowNavigationRow: { justifyContent: "flex-start", minHeight: 36 },
   // The same margin sits above the first button as on either side of it.
   railToolbar: { alignItems: "center", gap: 0, paddingTop: COMPACT_RAIL_MARGIN },
+  mobileToolbarBand: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: theme.colors.surfaceWorkspace,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.divider,
+  },
   sidebarContent: {
     flex: 1,
     minHeight: 0,

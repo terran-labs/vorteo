@@ -245,7 +245,13 @@ function ConflictResolver({
           disabled={saving}
         />
       ))}
-      <Button onPress={save} disabled={saving || !resolved} testID="settings-conflict-save">
+      <Button
+        variant="default"
+        onPress={save}
+        disabled={!resolved}
+        loading={saving}
+        testID="settings-conflict-save"
+      >
         {saving ? "Saving..." : "Save shared settings"}
       </Button>
     </View>

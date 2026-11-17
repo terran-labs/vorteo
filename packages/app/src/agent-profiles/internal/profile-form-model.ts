@@ -55,6 +55,11 @@ export interface AgentProfileSeed {
 export interface AgentProfileFormSnapshot {
   mode: "create" | "edit";
   sharedCatalog?: boolean;
+  /**
+   * Shared workflows may leave reasoning unset so launches follow the model's
+   * default level. Only these forms offer the "Model default" row.
+   */
+  inheritThinking?: boolean;
   profile?: AgentProfile;
   seed?: AgentProfileSeed;
 }
@@ -271,8 +276,51 @@ function buildThinkingOptions(options: readonly AgentSelectOption[]): AgentProfi
   );
 }
 
+/** Names the level an unset reasoning choice resolves to, such as "Model default (Medium)". */
+function modelDefaultThinkingLabel(model: AgentModelDefinition | null): string {
+  const id = defaultThinkingOptionId(model);
+  const option = model?.thinkingOptions?.find((entry) => entry.id === id);
+  return id ? `Model default (${formatThinkingOptionLabel(option ?? { id })})` : "Model default";
+}
+
+function deriveThinkingFields(input: {
+  state: AgentProfileFormState;
+  thinking: readonly AgentSelectOption[];
+  models: readonly AgentModelDefinition[];
+  inheritThinking: boolean | undefined;
+}): Pick<AgentProfileFormState, "thinkingOptions" | "thinkingDisplay"> {
+  const { state, thinking } = input;
+  const inherited =
+    input.inheritThinking && thinking.length > 0
+      ? modelDefaultThinkingOption(resolveEffectiveModel(input.models, state.modelId))
+      : null;
+  const thinkingOptions = [...(inherited ? [inherited] : []), ...buildThinkingOptions(thinking)];
+  if (inherited && !state.thinkingOptionId) {
+    return { thinkingOptions, thinkingDisplay: { label: inherited.label } };
+  }
+  const option = thinking.find((entry) => entry.id === state.thinkingOptionId);
+  return {
+    thinkingOptions,
+    thinkingDisplay: refineDisplay(
+      state.thinkingDisplay,
+      state.thinkingOptionId,
+      option ? formatThinkingOptionLabel(option) : null,
+    ),
+  };
+}
+
+function modelDefaultThinkingOption(model: AgentModelDefinition | null): AgentProfileFormOption {
+  return {
+    id: "model-default",
+    value: "",
+    label: modelDefaultThinkingLabel(model),
+    testID: "agent-profile-thinking-option-model-default",
+  };
+}
+
 /**
- * Every selection resolves to a concrete id.
+ * Every selection resolves to a concrete id, except reasoning in a shared
+ * workflow, whose "Model default" row names the level it currently resolves to.
  *
  * Each list used to carry a synthetic "Provider default" row. It read as a value
  * you could choose but stored an absent one, so a profile that looked fully
@@ -305,12 +353,16 @@ function seedSelections(
     entry: ProviderSnapshotEntry | null;
     models: readonly AgentModelDefinition[];
     modes: readonly AgentMode[];
+    inheritThinking?: boolean;
   },
 ): AgentProfileFormState {
   const modelId = next.modelId || defaultModelId(input.models);
   const modeId = next.modeId || defaultModeId(input.entry, input.modes);
   const thinkingOptionId =
-    next.thinkingOptionId || defaultThinkingOptionId(resolveEffectiveModel(input.models, modelId));
+    next.thinkingOptionId ||
+    (input.inheritThinking
+      ? ""
+      : defaultThinkingOptionId(resolveEffectiveModel(input.models, modelId)));
   if (
     modelId === next.modelId &&
     modeId === next.modeId &&
@@ -574,8 +626,15 @@ export function openAgentProfileForm(snapshot: AgentProfileFormSnapshot): AgentP
       entry: findEntry(entries, incoming.provider),
       models: selection.models,
       modes,
+      inheritThinking: snapshot.inheritThinking,
     });
     const thinking = resolveThinkingOptions(entries, next.provider, next.modelId);
+    const thinkingFields = deriveThinkingFields({
+      state: next,
+      thinking,
+      models,
+      inheritThinking: snapshot.inheritThinking,
+    });
     const featureRequest = buildFeatureRequest(next);
     const featureRequestKey = buildFeatureRequestKey(featureRequest);
     const featuresAreCurrent =
@@ -591,7 +650,7 @@ export function openAgentProfileForm(snapshot: AgentProfileFormSnapshot): AgentP
       providerOptions: buildProviderOptions(entries),
       modelOptions: buildModelOptions(models),
       modeOptions: buildModeOptions(modes),
-      thinkingOptions: buildThinkingOptions(thinking),
+      ...thinkingFields,
       features,
       providerDisplay: refineDisplay(
         next.providerDisplay,
@@ -609,14 +668,6 @@ export function openAgentProfileForm(snapshot: AgentProfileFormSnapshot): AgentP
         (() => {
           const mode = modes.find((entry) => entry.id === next.modeId);
           return mode ? formatAgentModeLabel(mode) : null;
-        })(),
-      ),
-      thinkingDisplay: refineDisplay(
-        next.thinkingDisplay,
-        next.thinkingOptionId,
-        (() => {
-          const option = thinking.find((entry) => entry.id === next.thinkingOptionId);
-          return option ? formatThinkingOptionLabel(option) : null;
         })(),
       ),
       catalogResolution,

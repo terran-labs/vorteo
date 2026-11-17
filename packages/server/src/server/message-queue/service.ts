@@ -132,6 +132,20 @@ export class MessageQueueService {
   }
 
   /**
+   * Queue a message from the owner that did not come through the composer, such as
+   * preview feedback. The caller's stable ID makes a retry enqueue at most once.
+   */
+  async queueOwnerMessage(agentId: string, messageId: string, text: string): Promise<void> {
+    await this.mutate(agentId, {
+      kind: "enqueue",
+      operationId: messageId,
+      messageId,
+      attachments: [],
+      text,
+    });
+  }
+
+  /**
    * Steers one queued message into the active turn under a persisted claim, so a restart
    * mid-steer reconciles it from provider history like any other dispatch. `steer` returns
    * null only when the provider certainly did not take the message, which returns it to the
@@ -201,9 +215,14 @@ export class MessageQueueService {
 
   /**
    * Continues an agent whose hosted session ended with the session host, the way a restart
-   * continuation would. Existing queued work already supplies continuation.
+   * continuation would: after an interrupted turn, or after background work the agent was
+   * waiting on stopped with the host. Existing queued work already supplies continuation.
    */
-  async queueHostedSessionContinuation(agentId: string, cause: string): Promise<void> {
+  async queueHostedSessionContinuation(
+    agentId: string,
+    cause: string,
+    interrupted: "turn" | "background" = "turn",
+  ): Promise<void> {
     const snapshot = await this.read(agentId);
     if (snapshot.paused || snapshot.items.length) return;
     const id = `session-host-${cause}-${agentId}`;
@@ -212,7 +231,10 @@ export class MessageQueueService {
       operationId: id,
       messageId: id,
       attachments: [],
-      text: "The session host stopped and interrupted this turn. Continue the work in progress, following the owner's latest instructions.",
+      text:
+        interrupted === "background"
+          ? "The session host restarted and stopped this thread's background tasks, such as background shells, monitors and subagents. Check their results and restart any you still need, following the owner's latest instructions."
+          : "The session host stopped and interrupted this turn. Continue the work in progress, following the owner's latest instructions.",
     });
   }
 

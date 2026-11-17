@@ -8,6 +8,10 @@ import { useReportActionError } from "@/hooks/use-action-error";
 import { useInstallationSettings } from "./settings";
 import { PluginDirectoryBinding } from "./plugin-directory-binding";
 
+// React Native's types omit `aria-level`; React Native Web renders a level-less heading as h1.
+// Inside the environment dialog this sits below level 4 section headings.
+const HEADING_LEVEL = { "aria-level": 5 } as object;
+
 type ResourceKind =
   | "browserTools"
   | "terminalProfileIds"
@@ -71,7 +75,10 @@ function ResourceAvailability({
       <View style={settingsStyles.row}>
         <View style={settingsStyles.rowContent}>
           <Text style={settingsStyles.rowTitle}>{name}</Text>
-          <Text style={settingsStyles.rowHint}>Available in this environment</Text>
+          {/* Mounted live region, so the saving state is announced from its first change. */}
+          <Text style={settingsStyles.rowHint} accessibilityLiveRegion="polite" aria-live="polite">
+            {saving ? "Saving..." : "Available in this environment"}
+          </Text>
         </View>
         <Switch
           testID={`resource-availability-${serverId}-${kind}-${id}`}
@@ -79,6 +86,7 @@ function ResourceAvailability({
           value={!excluded}
           onValueChange={change}
           disabled={saving}
+          aria-busy={saving}
         />
       </View>
       {error ? <Alert variant="error" description={error} /> : null}
@@ -94,7 +102,9 @@ export function EnvironmentResourceExclusions({ serverId }: { serverId: string }
   const settings = data.settings;
   return (
     <View>
-      <Text style={settingsStyles.rowTitle}>Environment exceptions</Text>
+      <Text style={settingsStyles.rowTitle} accessibilityRole="header" {...HEADING_LEVEL}>
+        Environment exceptions
+      </Text>
       <Text style={settingsStyles.rowHint}>
         Shared resources are available by default. Turn off only the resources this environment
         should not use. Agent profile availability is configured in each profile.

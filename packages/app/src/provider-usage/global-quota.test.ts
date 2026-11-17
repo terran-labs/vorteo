@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import { quotaCellSeries } from "./quota-timeline";
 import { attentionCount, quotaAccounts, quotaFreshness } from "./global-quota";
 import type { ProviderUsage, ProviderUsageView } from "./types";
 
@@ -198,4 +199,25 @@ it("labels readings live until they pass the stale threshold or a refresh fails"
   } as ProviderUsageView;
   expect(quotaFreshness(failed, now + 60_000)).toEqual({ stale: true, label: "Stale · 1m ago" });
   expect(quotaFreshness({ kind: "loading" }, now)).toBeNull();
+});
+
+it("keeps Codex weekly primary-window history on its actual time axis", () => {
+  const account = provider("codex-account-primary", {
+    windows: [
+      {
+        id: "session",
+        label: "Weekly",
+        usedPct: 64,
+        resetsAt: inHours(48),
+        history: [
+          { at: new Date(now - 48 * 3_600_000).toISOString(), usedPct: 20 },
+          { at: new Date(now - 24 * 3_600_000).toISOString(), usedPct: 40 },
+        ],
+      },
+    ],
+  });
+  const [series] = quotaCellSeries(quotaAccounts(view([account]), now), now);
+  expect(series?.elapsed).toBeCloseTo(5 / 7);
+  expect(series?.history.map(([fraction]) => fraction)).toEqual([3 / 7, 4 / 7]);
+  expect(series?.used).toBe(64);
 });

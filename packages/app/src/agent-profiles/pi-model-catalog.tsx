@@ -68,7 +68,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   muted: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
   identifier: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
-  selectedLabel: { color: theme.colors.accent, fontSize: theme.fontSize.sm },
+  selectedLabel: { color: theme.colors.accentText, fontSize: theme.fontSize.sm },
   card: {
     padding: theme.spacing[3],
     gap: theme.spacing[2],

@@ -24,6 +24,11 @@ vi.mock("expo-router", () => ({
   useRouter: () => ({ replace: mocks.replace }),
 }));
 vi.mock("react-native", () => ({
+  // The screens read Platform through @/constants/platform.
+  Platform: {
+    OS: "web",
+    select: (options: Record<string, unknown>) => options.web ?? options.default,
+  },
   Text: ({ children }: { children: ReactNode }) => <span>{children}</span>,
 }));
 vi.mock("@/components/host-route-bootstrap-boundary", () => ({

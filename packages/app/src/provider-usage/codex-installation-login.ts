@@ -39,6 +39,25 @@ async function codexDefinition(serverId: string, providerId: string) {
 }
 
 /**
+ * Whether this Codex account signs in through the coordinator. The coordinator signs in only
+ * accounts the installation created (with an `accountSetup` record) and refuses the rest, so an
+ * older account bound here without one keeps its environment's own sign-in, which writes the
+ * account's CODEX_HOME. An account not yet in the settings snapshot is assumed to be a new
+ * installation account.
+ */
+export async function codexAccountUsesInstallationSignIn(
+  serverId: string,
+  providerId: string,
+): Promise<boolean> {
+  const snapshot = await requestInstallationSettings();
+  const bound = (snapshot.settings?.providerDefinitions ?? []).filter(
+    (item) =>
+      item.providerType === "codex" && !item.removed && item.bindings[serverId] === providerId,
+  );
+  return bound.length === 0 || bound.some((item) => item.accountSetup?.provider === "codex");
+}
+
+/**
  * One Codex sign-in for the installation. Whichever environment the owner opens it from, the
  * coordinator signs the Host account in and delivers it to Dev; there is no environment choice.
  */

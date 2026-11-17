@@ -118,6 +118,12 @@ export const SessionCallSchema = z.discriminatedUnion("method", [
    * The host runs the provider's handler and returns the events it emitted.
    */
   z.object({ method: z.literal("outOfBand"), prompt: z.string().max(100_000) }).strict(),
+  /**
+   * The provider's own answer to whether stopping its process now loses background work, such as
+   * a background shell or monitor that will wake the agent. Sent only to a host that advertises
+   * the runtimeStopCheck capability.
+   */
+  z.object({ method: z.literal("canStopRuntime") }).strict(),
   z.object({ method: z.literal("close") }).strict(),
   z.object({ method: z.literal("closeIfIdle") }).strict(),
 ]);
@@ -184,6 +190,7 @@ export const SessionCallResultSchemas = {
       events: z.array(JsonSchema).max(1_000),
     })
     .strict(),
+  canStopRuntime: z.boolean(),
   close: z.null(),
   closeIfIdle: z.null(),
 } satisfies Record<SessionHostMethod, z.ZodType>;

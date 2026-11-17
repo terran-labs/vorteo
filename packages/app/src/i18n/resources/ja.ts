@@ -3,6 +3,7 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
   projectFactory: en.projectFactory,
+  vorteoSetup: en.vorteoSetup,
   paneFind: {
     connectionFailure:
       "このチャットを検索できませんでした。ホストへの接続を確認して再試行してください。",
@@ -2325,6 +2326,8 @@ export const ja: TranslationResources = {
     title: "設定",
     loading: "設定を読み込み中...",
     groups: {
+      thisDevice: "このデバイス",
+      vorteo: "Vorteo",
       app: "アプリ",
       host: "ホスト",
     },
@@ -2945,6 +2948,11 @@ export const ja: TranslationResources = {
           title: "アイドル状態のエージェントを解放",
           hint: "1 時間のアイドル状態の後にメモリを解放します。",
           info: "会話を保持したままエージェントのプロセスを停止します。メッセージを送信すると再開します。\n\n実行中の作業、保留中の通知、プロバイダーの安全性チェックがある場合は解放しません。",
+        },
+        blockedWorkReview: {
+          title: "ブロック中の作業をレビュー",
+          hint: "既定ではオフです。未完了の作業を残してスレッドが停止すると短いレビューを行い、効果がある間だけ繰り返します。",
+          info: "ブロック中または進行中のタスクを残してスレッドが停止し、再開のきっかけが何も設定されていない場合、約5分後に未完了の作業を確認して続行するよう促す短いメッセージを送ります。レビューで何かが変わった場合に限り、約15分後と約30分後にあと2回まで続きます。その後は、誰かがスレッドにメッセージを送るまでレビューを停止します。\n\n各レビューはスレッドの会話を再開するため、プロバイダーのプロンプトキャッシュが切れた後には実行されません。レビューは1スレッドあたり1日最大6回、インストール全体で1時間あたり最大12回です。\n\n未回答の質問またはあなたのレビューを待っている項目はスキップされます。回答するとスレッドが再開します。",
         },
       },
       workspaces: {

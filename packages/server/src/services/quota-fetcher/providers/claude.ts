@@ -20,7 +20,9 @@ import type {
 import {
   CLAUDE_API_ORIGIN,
   CLAUDE_USAGE_WITH_RESETS_PATH,
+  claudeCodeUserAgent,
   recordClaudeResetStatus,
+  summarizeClaudeResetBlock,
 } from "../../../server/agent/providers/claude/reset-credits.js";
 import {
   ApiNumberSchema,
@@ -396,7 +398,7 @@ export async function readClaudeAccountKeychainCredentialsStrict(
 }
 
 /**
- * The Keychain service Claude Code 2.1.284 through 2.1.318 uses for OAuth credentials when CLAUDE_CONFIG_DIR is
+ * The Keychain service Claude Code 2.1.284 through 2.1.321 uses for OAuth credentials when CLAUDE_CONFIG_DIR is
  * set (`wN("-credentials")` in the pinned CLI): the default service name suffixed with the first
  * eight hex digits of SHA-256 over the NFC-normalized config directory. The CLI hashes the raw
  * variable, so pass it exactly as set (no resolve, no trailing-slash trim). The production OAuth
@@ -506,6 +508,8 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
     }
     const credentials = await this.readCredentials();
     if (!credentials) {
+      // Not proof of no credentials: API keys, tokens, cloud providers and apiKeyHelper all run
+      // agents without this store, which Vorteo does not own. The reading stays unconfirmed.
       return unavailableUsage(this);
     }
     return this.usageFromCredentials(credentials, CLAUDE_NATIVE_RECOVERY);
@@ -550,6 +554,7 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
     if (!credentials)
       return {
         ...unavailableUsage(this),
+        credentialsMissing: true,
         details: [
           {
             id: "claude-sign-in",
@@ -642,7 +647,15 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
       return unavailableUsage(this);
     }
 
-    if (this.claudeHome) recordClaudeResetStatus(this.claudeHome, resp.cedar_ember, this.now());
+    if (this.claudeHome) {
+      recordClaudeResetStatus(this.claudeHome, resp.cedar_ember, this.now());
+      // Log only changes: polls repeat every few minutes and the answer rarely moves.
+      const summary = summarizeClaudeResetBlock(resp.cedar_ember);
+      if (lastResetSummary.get(this.providerId) !== summary) {
+        lastResetSummary.set(this.providerId, summary);
+        this.logger.info({ providerId: this.providerId, resets: summary }, "Claude reset status");
+      }
+    }
 
     const scoped = reconcileScopedLimits(
       legacyScopedLimits(resp),
@@ -779,6 +792,7 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
           Authorization: `Bearer ${token}`,
           Accept: "application/json",
           "anthropic-beta": CLAUDE_OAUTH_BETA,
+          "User-Agent": claudeCodeUserAgent(),
         },
       },
     );
@@ -790,6 +804,8 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
     return ClaudeUsageResponseSchema.parse(await res.json());
   }
 }
+
+const lastResetSummary = new Map<string, string>();
 
 interface UsageBackoff {
   /** Until when Claude asked this account not to be polled. */

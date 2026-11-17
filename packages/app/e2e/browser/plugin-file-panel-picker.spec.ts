@@ -39,10 +39,15 @@ function viewControl(page: Page) {
   return page.getByTestId("file-preview-mode").filter({ visible: true });
 }
 
+/** The picker's panel choices, apart from the radios of the built-in panel's view control. */
+function pickerOptions(page: Page) {
+  return page.getByRole("dialog", { name: "Open .md files with", exact: true }).getByRole("radio");
+}
+
 async function selectFileView(page: Page, view: "Preview" | "Source") {
-  const option = viewControl(page).getByRole("button", { name: view, exact: true });
+  const option = viewControl(page).getByRole("radio", { name: view, exact: true });
   await option.click();
-  await expect(option).toHaveAttribute("aria-selected", "true");
+  await expect(option).toHaveAttribute("aria-checked", "true");
 }
 
 async function expectNoOpenWith(page: Page, name: string) {
@@ -71,7 +76,7 @@ test("opens Markdown with the built-in panel and its Preview and Source without 
     await openFileExplorer(page);
     await openMarkdown(page, "notes.md");
     await expectBuiltinMarkdown(page, "notes heading");
-    await expect(viewControl(page).getByRole("button")).toHaveText(["Preview", "Source"]);
+    await expect(viewControl(page).getByRole("radio")).toHaveText(["Preview", "Source"]);
     await expect(filePanelPicker(page)).toBeHidden();
     await expectNoOpenWith(page, "notes.md");
     await capture(page, testInfo, "file-panel-builtins-wide");
@@ -84,7 +89,7 @@ test("opens Markdown with the built-in panel and its Preview and Source without 
     await page.setViewportSize({ width: 390, height: 844 });
     await expectBuiltinMarkdown(page, "notes heading");
     await expect(
-      viewControl(page).getByRole("button", { name: "Source", exact: true }),
+      viewControl(page).getByRole("radio", { name: "Source", exact: true }),
     ).toBeInViewport({ ratio: 1 });
     await expect(filePanelPicker(page)).toBeHidden();
     await capture(page, testInfo, "file-panel-builtins-compact");
@@ -117,7 +122,7 @@ test("asks once which panel opens Markdown and remembers it when told to", async
     await expect(filePanelPicker(page)).toBeVisible();
     await expect(page.getByRole("radio", { name: BUILTIN_MARKDOWN_OPTION })).toBeChecked();
     await expect(page.getByRole("radio", { name: PLUGIN_MARKDOWN_OPTION })).not.toBeChecked();
-    await expect(page.getByRole("radio")).toHaveCount(2);
+    await expect(pickerOptions(page)).toHaveCount(2);
     await expectBuiltinMarkdown(page, "first heading");
     await capture(page, testInfo, "file-panel-picker-wide");
 

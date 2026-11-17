@@ -87,6 +87,8 @@ interface Worker {
   manager: AgentManager;
   /** Continuations the fallback queued, by agent. */
   continued: string[];
+  /** What each queued continuation says was interrupted: a turn or background work. */
+  interrupted: Map<string, string>;
   storage: AgentStorage;
   applied: AppliedSeqStore;
   routing: Parameters<typeof planHostedStartup>[0]["routing"];
@@ -143,24 +145,28 @@ function startWorker(
   const manager = new AgentManager({ clients: { claude }, registry: storage, logger });
   // The parts of the message queue the restart and loss paths use.
   const continued: string[] = [];
+  const interrupted = new Map<string, string>();
   manager.setMessageQueueControl({
     pause: async () => {},
     wake: () => {},
+    read: async () => ({ paused: false, items: [] }),
     acceptedHistory: async () => [],
     recordProviderMessageId: async () => {},
     reconcileHistory: async () => {},
     suppressHistoryRestoration: () => {},
     queueRestartContinuation: async () => {},
-    queueHostedSessionContinuation: async (agentId) => {
+    queueHostedSessionContinuation: async (agentId, _cause, kind = "turn") => {
       continued.push(agentId);
+      interrupted.set(agentId, kind);
     },
   } as unknown as Parameters<AgentManager["setMessageQueueControl"]>[0]);
-  routing.onSessionLost = (agentId) => {
-    void manager.continueAfterHostedSessionLoss(agentId);
+  routing.onSessionLost = (agentId, loss) => {
+    void manager.continueAfterHostedSessionLoss(agentId, loss);
   };
   return {
     manager,
     continued,
+    interrupted,
     storage,
     applied,
     routing,
@@ -454,12 +460,37 @@ test("an idle hosted session is closed at startup and its agent resumes on deman
   providers[0]!.complete();
   await expect.poll(() => first.manager.getAgent(agent.id)?.lifecycle).toBe("idle");
   await settled(first, paths, agent.id);
+  // An idle thread whose background watcher survives the daemon restart in the host.
+  const watching = await runningAgent(first, workdir);
+  providers[1]!.canStopRuntime = async () => false;
+  providers[1]!.complete();
+  await expect.poll(() => first.manager.getAgent(watching.id)?.lifecycle).toBe("idle");
+  await settled(first, paths, watching.id);
+  // An idle thread whose check never answers, as with a wedged provider.
+  const wedged = await runningAgent(first, workdir);
+  providers[2]!.canStopRuntime = () => new Promise<boolean>(() => {});
+  providers[2]!.complete();
+  await expect.poll(() => first.manager.getAgent(wedged.id)?.lifecycle).toBe("idle");
+  await settled(first, paths, wedged.id);
   first.crash();
 
   const second = startWorker(home, paths);
-  const plan = await planHostedStartup({ routing: second.routing, agents: second.storage, logger });
-  expect(plan).toMatchObject({ adopted: [], closed: [agent.id], lost: [] });
+  const started = Date.now();
+  const plan = await planHostedStartup({
+    routing: second.routing,
+    agents: second.storage,
+    logger,
+    checks: { deadlineMs: 1_000 },
+  });
+  // The hung check ends at the 1-second deadline, well under the 10-second bound on one check.
+  expect(Date.now() - started).toBeLessThan(5_000);
+  // The watcher's session is kept for its agent to adopt, with no prompt, and so is the one still
+  // unanswered at the deadline, which does not hold startup; the other is closed.
+  expect(plan).toMatchObject({ adopted: [watching.id, wedged.id], closed: [agent.id], lost: [] });
   expect(providers[0]!.closed).toBe(true);
+  expect(providers[1]!.closed).toBe(false);
+  expect(providers[2]!.closed).toBe(false);
+  expect(second.continued).toEqual([]);
   expect(await second.applied.read(agent.id)).toBeNull();
 
   await ensureAgentLoaded(agent.id, {
@@ -467,7 +498,7 @@ test("an idle hosted session is closed at startup and its agent resumes on deman
     agentStorage: second.storage,
     logger,
   });
-  expect(providers).toHaveLength(2);
+  expect(providers).toHaveLength(4);
 });
 
 test("sessions of a host that restarted are reported lost so the fallback can resume them", async () => {
@@ -608,6 +639,86 @@ test("when the host dies mid-turn the agent continues from a queued continuation
   expect(worker.manager.getTimeline(agent.id).some((item) => item.type === "error")).toBe(false);
   // Its record is gone with it, so the next startup does not report the agent lost again.
   expect(await worker.applied.read(agent.id)).toBeNull();
+});
+
+// Nov 14 incident: a host restart reopened every loaded thread and prompted idle ones, so dormant
+// threads ran turns, one hit an exhausted account's usage limit and paused a worker team.
+test("when the host dies, only interrupted turns and background work continue; idle agents wait", async () => {
+  const home = scratch("hosted-restart-");
+  const paths = sessionHostPaths(home);
+  const providers: ControlledSession[] = [];
+  const host = await startHost(paths, providers);
+  const workdir = scratch("hosted-restart-work-");
+  const worker = startWorker(home, paths);
+  worker.routing.reattach = { windowMs: 300, initialDelayMs: 20, maxDelayMs: 50 };
+
+  // A thread ended its turn with a background watcher meant to wake it.
+  const watching = await runningAgent(worker, workdir);
+  let asked = 0;
+  providers[0]!.canStopRuntime = async () => {
+    asked++;
+    return false;
+  };
+  providers[0]!.complete();
+  await expect.poll(() => asked, { timeout: 6_000 }).toBeGreaterThan(0);
+  // A thread mid-turn.
+  const busy = await runningAgent(worker, workdir);
+  // A thread only loaded, whose provider answers it cannot stop, as Claude does before init.
+  const loaded = await worker.manager.createAgent(
+    { provider: "claude", cwd: workdir, model: "claude-haiku" },
+    undefined,
+    { workspaceId: undefined },
+  );
+  providers[2]!.canStopRuntime = async () => false;
+  // A thread whose last check found nothing, then ran another turn that started a watcher; the
+  // host dies before the check after that turn answers.
+  const rewatched = await runningAgent(worker, workdir);
+  let checked = 0;
+  providers[3]!.canStopRuntime = async () => {
+    checked++;
+    return true;
+  };
+  providers[3]!.complete();
+  await expect.poll(() => checked, { timeout: 6_000 }).toBeGreaterThan(0);
+  const second = (async () => {
+    for await (const _event of worker.manager.streamAgent(rewatched.id, "start a watcher")) {
+      // Drained until the turn ends.
+    }
+  })();
+  await expect.poll(() => worker.manager.getAgent(rewatched.id)?.lifecycle).toBe("running");
+  providers[3]!.canStopRuntime = () => new Promise<boolean>(() => {});
+  providers[3]!.complete();
+  await second;
+  for (const agent of [watching, busy, rewatched]) await settled(worker, paths, agent.id);
+  await host.close();
+
+  await expect
+    .poll(() => worker.continued.toSorted(), { timeout: 5_000 })
+    .toEqual([watching.id, busy.id, rewatched.id].toSorted());
+  expect(worker.interrupted.get(watching.id)).toBe("background");
+  expect(worker.interrupted.get(rewatched.id)).toBe("background");
+  expect(worker.interrupted.get(busy.id)).toBe("turn");
+  // The idle thread is closed and resumable: no provider started for it and no prompt queued.
+  await expect.poll(() => worker.manager.getAgent(loaded.id), { timeout: 5_000 }).toBeNull();
+  await expect.poll(() => worker.local.length, { timeout: 5_000 }).toBe(3);
+  expect(await worker.applied.read(loaded.id)).toBeNull();
+
+  // A prompt reopens it and the turn runs.
+  await ensureAgentLoaded(loaded.id, {
+    agentManager: worker.manager,
+    agentStorage: worker.storage,
+    logger,
+  });
+  const turn = (async () => {
+    for await (const _event of worker.manager.streamAgent(loaded.id, "next task")) {
+      // Drained until the turn ends.
+    }
+  })();
+  await expect.poll(() => worker.local.length).toBe(4);
+  worker.local[3]!.complete();
+  await turn;
+  expect(worker.local[3]!.calls).toEqual(["startTurn:next task"]);
+  expect(worker.continued).not.toContain(loaded.id);
 });
 
 test("a host that is gone loses its session at once instead of waiting out the window", async () => {

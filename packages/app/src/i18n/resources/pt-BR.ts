@@ -3,6 +3,7 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ptBR: TranslationResources = {
   projectFactory: en.projectFactory,
+  vorteoSetup: en.vorteoSetup,
   paneFind: {
     connectionFailure:
       "Não foi possível pesquisar nesta conversa. Verifique a conexão com o host e tente novamente.",
@@ -2333,6 +2334,8 @@ export const ptBR: TranslationResources = {
     title: "Configurações",
     loading: "Carregando configurações...",
     groups: {
+      thisDevice: "Este dispositivo",
+      vorteo: "Vorteo",
       app: "App",
       host: "Host",
     },
@@ -2956,6 +2959,11 @@ export const ptBR: TranslationResources = {
           title: "Liberar agentes ociosos",
           hint: "Libera memória após uma hora de inatividade.",
           info: "Encerra o processo do agente e mantém a conversa. Envie uma mensagem para retomar.\n\nTrabalho ativo, notificações pendentes e verificações de segurança do provedor impedem a limpeza.",
+        },
+        blockedWorkReview: {
+          title: "Revisar trabalho bloqueado",
+          hint: "Desativado por padrão. Uma revisão curta depois que um tópico para com trabalho inacabado, repetida só enquanto ajudar.",
+          info: "Quando um tópico para com uma tarefa bloqueada ou em andamento e nada programado para despertá-lo, ele recebe uma mensagem curta cerca de 5 minutos depois para verificar o trabalho inacabado e continuar. Até mais duas podem vir, com cerca de 15 e 30 minutos de intervalo, mas só enquanto uma revisão mudar algo. Depois as revisões param até alguém enviar uma mensagem ao tópico.\n\nCada revisão retoma a conversa do tópico, então nenhuma é executada depois que o cache de prompts do provedor esfria. Um tópico recebe no máximo 6 revisões por dia e a instalação, no máximo 12 por hora.\n\nItens que aguardam uma pergunta aberta ou a sua revisão são ignorados; sua resposta reativa o tópico.",
         },
       },
       workspaces: {

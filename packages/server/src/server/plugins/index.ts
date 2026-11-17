@@ -44,8 +44,6 @@ import {
   UsageSourceRegistry,
 } from "./usage-sources/index.js";
 import type { PluginUsageSourceMetadata } from "./plugin-process-protocol.js";
-import { NativeFactoryObservationService } from "../factory/observation-service.js";
-import type { NativeFactorySetupService } from "../factory/setup-service.js";
 import { ProjectFactoryService } from "../factory/project/service.js";
 
 const BUILTIN_PROVIDER_ID_SET: ReadonlySet<string> = new Set(BUILTIN_PROVIDER_IDS);
@@ -91,10 +89,6 @@ interface PluginRuntimePort {
 
 interface PluginServiceDependencies {
   /** Startup-owned observer; plugin reload cannot create or replace its owner. */
-  factoryObservation?: () => Pick<NativeFactoryObservationService, "invoke"> | null;
-  factorySetup?: () => Pick<NativeFactorySetupService, "read"> | null;
-  factoryInstallation?: () => Pick<NativeFactorySetupService, "install"> | null;
-  factoryControls?: () => Pick<NativeFactorySetupService, "readControls" | "control"> | null;
   factoryProject?: () => Pick<ProjectFactoryService, "invoke"> | null;
   usageAgents?: AgentUsageLookup;
   /** Keeps each account's last good usage reading across daemon restarts. */
@@ -754,24 +748,9 @@ export class PluginService {
 
   async invokePluginRpc(pluginId: string, method: string, input: unknown): Promise<unknown> {
     if (pluginId === "factory" && this.isBuiltinPluginLoaded(pluginId)) {
-      const controls = this.dependencies.factoryControls?.();
-      if (controls && method === "factory.controls") return controls.readControls(input);
-      if (controls && method === "factory.control") return controls.control(input);
-      if (method === "factory.install") {
-        const installer = this.dependencies.factoryInstallation?.();
-        if (installer) return installer.install(input);
-      }
-      if (method === "factory.setup") {
-        const setup = this.dependencies.factorySetup?.();
-        if (setup) return setup.read(input);
-      }
       if (ProjectFactoryService.supports(method)) {
         const projectFactory = this.dependencies.factoryProject?.();
         if (projectFactory) return projectFactory.invoke(method, input);
-      }
-      if (NativeFactoryObservationService.supports(method)) {
-        const observer = this.dependencies.factoryObservation?.();
-        if (observer) return observer.invoke(method, input);
       }
     }
     return this.runtime.invoke(pluginId, method, input);

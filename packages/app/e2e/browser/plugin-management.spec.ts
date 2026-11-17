@@ -178,6 +178,11 @@ async function reloadPlugin(page: Page): Promise<void> {
   await expect(page.getByText("Reloaded e2e-plugin", { exact: true })).toBeVisible();
 }
 
+/** A plugin row's status badge: "running", "disabled" or "failed". */
+function pluginStatus(page: Page, pluginId: string, status: "running" | "disabled" | "failed") {
+  return page.getByTestId(`plugin-row-${pluginId}`).getByText(status, { exact: true });
+}
+
 async function openPluginActions(page: Page, pluginId: string): Promise<void> {
   await page.getByRole("button", { name: `Actions for ${pluginId}`, exact: true }).click();
   await expect(page.getByRole("menuitem").first()).toBeVisible();
@@ -367,7 +372,7 @@ async function installFailedPlugin(
   await client.installPluginSource({ source: directory });
   await writeFile(path.join(directory, "index.client.tsx"), "export default broken !!!");
   await client.reloadPlugin("failed-preview-plugin");
-  await expect(page.getByLabel("failed-preview-plugin failed")).toBeVisible();
+  await expect(pluginStatus(page, "failed-preview-plugin", "failed")).toBeVisible();
 }
 
 test("installs, reloads, recovers, disables, and removes a trusted local plugin", async ({
@@ -478,14 +483,16 @@ async function installLocalPluginWithStatusExamples(
   await page.getByLabel("Plugin source").fill(directory);
   await page.getByRole("button", { name: "Install plugin" }).click();
   await expect(page.getByText("Installed e2e-plugin", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("e2e-plugin running")).toBeVisible();
+  await expect(pluginStatus(page, "e2e-plugin", "running")).toBeVisible();
   await expect(page.getByText("Exercises the complete local plugin lifecycle")).toBeVisible();
   await expect(
     page.getByText("Keeps optional previews off until this plugin is enabled"),
   ).toBeVisible();
   await expect(page.getByText("Demonstrates a plugin that needs attention")).toBeVisible();
-  await expect(page.getByLabel("disabled-preview-plugin-with-a-long-name disabled")).toBeVisible();
-  await expect(page.getByLabel("failed-preview-plugin failed")).toBeVisible();
+  await expect(
+    pluginStatus(page, "disabled-preview-plugin-with-a-long-name", "disabled"),
+  ).toBeVisible();
+  await expect(pluginStatus(page, "failed-preview-plugin", "failed")).toBeVisible();
   await capturePluginInstallForm(page, testInfo, "wide");
   await openPluginActions(page, "e2e-plugin");
   await capturePluginInstallForm(page, testInfo, "wide-menu");
@@ -530,27 +537,30 @@ async function reloadAndRecoverLocalPlugin(
   await openPluginSettings(page);
   await selectPluginAction(page, "e2e-plugin", "Reload");
   await expect(page.getByTestId("plugin-management-feedback")).toContainText("Request failed");
-  await expect(page.getByLabel("e2e-plugin failed")).toBeVisible();
+  await expect(pluginStatus(page, "e2e-plugin", "failed")).toBeVisible();
   await leavePluginSettings(page);
   await expectContributionRemoved(page, "Recovered surface");
 
   await writeFile(path.join(directory, "index.client.tsx"), pluginSource("Plugin v3"));
   await openPluginSettings(page);
   await selectPluginAction(page, "e2e-plugin", "Reload");
-  await expect(page.getByLabel("e2e-plugin running")).toBeVisible();
+  await expect(pluginStatus(page, "e2e-plugin", "running")).toBeVisible();
   await openContributionFromSettings(page, "Plugin v3", "Plugin v3 cleanup 5");
 }
 
 async function toggleRemoveAndReinstallLocalPlugin(page: Page, directory: string) {
   await openPluginSettings(page);
-  await page.getByRole("switch", { name: "e2e-plugin: Disable", exact: true }).click();
-  await expect(page.getByLabel("e2e-plugin disabled")).toBeVisible();
+  const pluginSwitch = page.getByRole("switch", { name: "Enable e2e-plugin", exact: true });
+  await expect(pluginSwitch).toBeChecked();
+  await pluginSwitch.click();
+  await expect(pluginStatus(page, "e2e-plugin", "disabled")).toBeVisible();
   await leavePluginSettings(page);
   await expectContributionRemoved(page, "Plugin v3");
 
   await openPluginSettings(page);
-  await page.getByRole("switch", { name: "e2e-plugin: Enable", exact: true }).click();
-  await expect(page.getByLabel("e2e-plugin running")).toBeVisible();
+  await expect(pluginSwitch).not.toBeChecked();
+  await pluginSwitch.click();
+  await expect(pluginStatus(page, "e2e-plugin", "running")).toBeVisible();
   await openContributionFromSettings(page, "Plugin v3", "Plugin v3 cleanup 6");
 
   await openPluginSettings(page);
@@ -559,7 +569,7 @@ async function toggleRemoveAndReinstallLocalPlugin(page: Page, directory: string
   await expect(page.getByTestId("plugin-row-e2e-plugin")).toHaveCount(0);
 
   await installPlugin(page, directory);
-  await expect(page.getByLabel("e2e-plugin running")).toBeVisible();
+  await expect(pluginStatus(page, "e2e-plugin", "running")).toBeVisible();
   await gotoAppShell(page);
   await openContribution(page, "Plugin v3", "Plugin v3 cleanup 7");
 }
@@ -612,11 +622,11 @@ async function retryGitInstallAndInspectRows(
 
   await installPlugin(page, pathToFileURL(repository).href);
   await expect(page.getByText("Installed git-e2e-plugin", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("git-e2e-plugin running")).toBeVisible();
+  await expect(pluginStatus(page, "git-e2e-plugin", "running")).toBeVisible();
   await expect(
     page.getByText("Shows how a realistically long plugin description wraps on a compact screen"),
   ).toBeVisible();
-  await expect(page.getByLabel("compact-disabled-plugin disabled")).toBeVisible();
+  await expect(pluginStatus(page, "compact-disabled-plugin", "disabled")).toBeVisible();
   await expect(page.getByLabel("Plugin source")).toHaveValue("");
   await capturePluginInstallForm(page, testInfo, "compact-success");
   await openPluginActions(page, "git-e2e-plugin");
@@ -680,7 +690,7 @@ async function retryNpmInstallAndInspectRow(page: Page, width: number, testInfo:
   await expect(page.getByLabel("Plugin source")).toHaveValue("npm:missing-plugin");
   await installPlugin(page, "npm:@paseo-fixture/review@^2.0.0");
   await expect(page.getByText("Installed npm-review", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("npm-review running")).toBeVisible();
+  await expect(pluginStatus(page, "npm-review", "running")).toBeVisible();
   await expectSourceHierarchy(
     page,
     "Installed from the npm fixture registry",
@@ -701,7 +711,7 @@ async function reloadAndRemoveNpmPlugin(page: Page) {
   page.once("dialog", (dialog) => dialog.accept());
   await selectPluginAction(page, "npm-review", "Remove");
   await expect(page.getByText("Removed npm-review", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("npm-review running")).toHaveCount(0);
+  await expect(pluginStatus(page, "npm-review", "running")).toHaveCount(0);
 }
 
 test("renders installed-plugin descriptions as plain text", async ({ page, pluginEnvironment }) => {
@@ -808,7 +818,7 @@ async function expectPluginRowPending(page: Page, pluginId: string): Promise<voi
 
 async function expectPluginRowSettled(page: Page, pluginId: string): Promise<void> {
   await expect(pluginRowActions(page, pluginId)).toBeEnabled();
-  await expect(page.getByLabel(`${pluginId} running`)).toBeVisible();
+  await expect(pluginStatus(page, pluginId, "running")).toBeVisible();
 }
 
 async function capturePluginSurface(page: Page, testInfo: TestInfo, name: string): Promise<void> {
@@ -861,7 +871,7 @@ test("keeps Reload pending past a minute while the plugin queue is busy", async 
     // Past the former deadline the reload is still pending, the row shows its previous state, and
     // no timeout error reached the surface.
     await expectPluginRowPending(page, "e2e-plugin");
-    await expect(page.getByLabel("e2e-plugin running")).toBeVisible();
+    await expect(pluginStatus(page, "e2e-plugin", "running")).toBeVisible();
     await expect(page.getByTestId("plugin-management-feedback")).toHaveCount(0);
     await capturePluginSurface(page, testInfo, "plugin-reload-past-deadline.png");
 

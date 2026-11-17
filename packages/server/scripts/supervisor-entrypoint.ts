@@ -1,6 +1,8 @@
 import { fileURLToPath } from "url";
 import { appendFileSync, existsSync, mkdirSync, realpathSync } from "node:fs";
 import path from "node:path";
+import { totalmem } from "node:os";
+import { getHeapStatistics } from "node:v8";
 import {
   acquirePidLock,
   PidLockError,
@@ -17,6 +19,7 @@ import { supervisorPersistedConfig } from "./supervisor-persisted-config.js";
 import { parseControllerLifetimeFd, runSupervisor } from "./supervisor.js";
 import { reapTerminalWorkers } from "../src/terminal/terminal-worker-reaper.js";
 import { resolveSupervisorLogFile } from "./supervisor-log-config.js";
+import { resolveWorkerHeapLimitMb } from "./worker-heap-limit.js";
 
 // Managed maintenance verifies the launch entry through OS arguments. Changing
 // the title overwrites that evidence, just as it does for a managed worker.
@@ -82,7 +85,16 @@ function resolveDevWorkerEntry(): string {
 function resolveWorkerExecArgv(workerEntry: string, devMode: boolean): string[] {
   const execArgv = workerEntry.endsWith(".ts") ? ["--import", "tsx"] : [];
   if (!devMode) {
-    return execArgv;
+    // Node's default limit (about 4 GB) is far below what large Hosts can give the daemon.
+    const heapLimitMb = resolveWorkerHeapLimitMb({
+      totalMemoryBytes: totalmem(),
+      constrainedMemoryBytes: process.constrainedMemory?.(),
+      defaultHeapLimitBytes: getHeapStatistics().heap_size_limit,
+      nodeOptions: process.env.NODE_OPTIONS,
+      // The supervisor's own flags change its reported default; treat them as an override.
+      execArgv: [...process.execArgv, ...execArgv],
+    });
+    return heapLimitMb === null ? execArgv : [`--max-old-space-size=${heapLimitMb}`, ...execArgv];
   }
   const devArgs = [
     "--heapsnapshot-near-heap-limit=3",
@@ -122,7 +134,17 @@ async function main(): Promise<void> {
     throw new Error("Managed releases cannot use source dev mode");
   const workerEntry = config.devMode ? resolveDevWorkerEntry() : resolveWorkerEntry();
   const workerExecArgv = resolveWorkerExecArgv(workerEntry, config.devMode);
+  const cooperativeMailbox = process.env.VORTEO_COOPERATIVE_DRAIN_DESCRIPTOR
+    ? (
+        await import("@getpaseo/protocol/maintenance-interruption")
+      ).CooperativeMailboxDescriptorSchema.parse(
+        JSON.parse(process.env.VORTEO_COOPERATIVE_DRAIN_DESCRIPTOR),
+      )
+    : undefined;
+  if (cooperativeMailbox && cooperativeMailbox.readerUid !== process.getuid?.())
+    throw new Error("Cooperative mailbox is registered to a different supervisor account");
   const workerEnv: NodeJS.ProcessEnv = { ...process.env };
+  delete workerEnv.VORTEO_COOPERATIVE_DRAIN_DESCRIPTOR;
   // Release selection belongs to this supervisor, not agents or isolated daemons they launch.
   delete workerEnv.PASEO_MANAGED_RELEASE_LINK;
   delete workerEnv.PASEO_MANAGED_RELEASE_ROOT;
@@ -184,6 +206,7 @@ async function main(): Promise<void> {
   };
 
   const supervisor = runSupervisor({
+    cooperativeMailbox,
     controllerLifetimeFd,
     name: "DaemonRunner",
     startupMessage: "Starting daemon worker (IPC restart and crash restart enabled)",

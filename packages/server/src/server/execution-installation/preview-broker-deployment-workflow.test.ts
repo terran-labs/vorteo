@@ -153,6 +153,20 @@ describe("broker consumer deployment queue boundary", () => {
     expect(f.executor.executeBrokerDeployment).toHaveBeenCalledTimes(1);
   });
 
+  it("records the first line of a refused preparation in the job and the log", async () => {
+    const f = fixture();
+    f.executor.validateBrokerDeploymentPlan = vi.fn(async () => {
+      throw new Error("Deployment child custody differs\nsecond line stays out");
+    });
+    const log = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const job = await f.workflow.prepare(f.input, "host-agent");
+    expect(job.status).toBe("failed");
+    expect(job.detail).toBe("Consumer preparation refused: Deployment child custody differs");
+    expect(log).toHaveBeenCalledWith(
+      `Broker consumer deployment ${f.input.id} preparation refused: Deployment child custody differs\n`,
+    );
+  });
+
   it("recovery observes without preparation or effect replay", async () => {
     const f = fixture();
     await f.approve();

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Vorteo comments</title>
+    <link rel="stylesheet" href="/api/previews/web/shared.css" />
+  </head>
+  <body class="frame collapsed">
+    <button id="pill" class="pill" type="button" aria-label="Open comments">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+        <path
+          fill="currentColor"
+          d="M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 4v-4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"
+        />
+      </svg>
+      <span>Comments</span>
+      <span id="pill-rating" class="pill-rating" hidden></span>
+    </button>
+
+    <section id="panel" class="panel" aria-label="Comments">
+      <header class="panel-head">
+        <div class="head-text">
+          <div id="artifact-title" class="artifact-title">Comments</div>
+          <div id="artifact-version" class="muted small"></div>
+        </div>
+        <button id="collapse" type="button" aria-label="Close comments">&#x2715;</button>
+      </header>
+
+      <div class="panel-body">
+        <p id="notice" class="notice muted"></p>
+
+        <div id="controls" hidden>
+          <div class="row stars-row">
+            <div id="stars" class="stars" role="group" aria-label="Rating"></div>
+            <button id="save-rating" type="button" hidden>Save rating</button>
+          </div>
+
+          <div class="row pick-row">
+            <button id="pick-element" type="button">Pick element</button>
+            <button id="pick-region" type="button">Select region</button>
+            <button id="pick-page" type="button">Whole page</button>
+          </div>
+
+          <div id="chip" class="chip" hidden>
+            <span id="chip-text" class="chip-text"></span>
+            <button id="chip-clear" type="button" aria-label="Clear selection">&#x2715;</button>
+          </div>
+
+          <textarea id="comment" rows="4" placeholder="Write a comment"></textarea>
+
+          <div class="row send-row">
+            <p id="status" class="status small" role="status" aria-live="polite"></p>
+            <button id="send" class="primary" type="button">Send</button>
+          </div>
+
+          <h2 id="history-title" class="history-title" hidden>Earlier comments</h2>
+          <ul id="history" class="history"></ul>
+        </div>
+      </div>
+    </section>
+
+    <script src="/api/previews/web/frame.js"></script>
+  </body>
+</html>

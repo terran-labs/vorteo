@@ -8,8 +8,55 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 SOURCE = Path(__file__).resolve().parent
+
+
+class DevSeccompTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location('dev_seccomp', SOURCE / 'seccomp/generate.py')
+        cls.policy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.policy)
+
+    def test_full_profile_matches_pinned_upstream_and_exact_exceptions(self):
+        profile = json.loads((SOURCE / 'dev-seccomp.json').read_text())
+        self.policy.verify_profile(profile)
+        self.assertEqual(
+            [name for name, reason in self.policy.APPROVED_EXCEPTIONS],
+            ['clone', 'unshare', 'mount', 'umount2', 'pivot_root', 'chroot'],
+        )
+        self.assertTrue(all(reason for name, reason in self.policy.APPROVED_EXCEPTIONS))
+
+    def test_modified_upstream_baseline_is_rejected(self):
+        with mock.patch.object(self.policy.Path, 'read_bytes', return_value=b'{}'):
+            with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+                self.policy.generate_profile()
+
+    def test_extra_unconditional_allowance_is_rejected(self):
+        profile = self.policy.generate_profile()
+        profile['syscalls'].append({'names': ['bpf'], 'action': 'SCMP_ACT_ALLOW'})
+        with self.assertRaisesRegex(ValueError, 'differs from pinned upstream'):
+            self.policy.verify_profile(profile)
+
+    def test_upstream_rule_change_is_rejected(self):
+        profile = self.policy.generate_profile()
+        profile['defaultAction'] = 'SCMP_ACT_ALLOW'
+        with self.assertRaisesRegex(ValueError, 'differs from pinned upstream'):
+            self.policy.verify_profile(profile)
+
+    def test_chromium_chroot_without_container_capability(self):
+        profile = json.loads((SOURCE / 'dev-seccomp.json').read_text())
+        self.assertEqual(profile['defaultAction'], 'SCMP_ACT_ERRNO')
+        rules = [r for r in profile['syscalls'] if r['names'] == ['chroot'] and 'includes' not in r]
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0]['action'], 'SCMP_ACT_ALLOW')
+        for name in ['compose.yaml', 'compose.gate.yaml']:
+            compose = (SOURCE / name).read_text()
+            self.assertIn('seccomp=./dev-seccomp.json', compose)
+            self.assertNotIn('SYS_CHROOT', compose)
+            self.assertNotIn('SYS_ADMIN', compose)
 
 
 class InstallTests(unittest.TestCase):

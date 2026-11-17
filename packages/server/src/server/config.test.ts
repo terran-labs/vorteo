@@ -110,6 +110,17 @@ describe("server config", () => {
     expect(loadConfig(paseoHome, { env: {} }).idleRuntimeCleanup).toBe(false);
   });
 
+  test("blocked-work review stays off on upgrade until the host opts in", async () => {
+    const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-config-blocked-review-"));
+    roots.push(paseoHome);
+    expect(loadConfig(paseoHome, { env: {} }).blockedWorkReview).toBe(false);
+    await writeFile(
+      path.join(paseoHome, "config.json"),
+      JSON.stringify({ agents: { blockedWorkReview: true } }),
+    );
+    expect(loadConfig(paseoHome, { env: {} }).blockedWorkReview).toBe(true);
+  });
+
   test("loads the provider catalog refresh timeout", async () => {
     const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-config-provider-timeout-"));
     roots.push(paseoHome);

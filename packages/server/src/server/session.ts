@@ -119,8 +119,11 @@ import {
 } from "./persistence-hooks.js";
 import {
   AgentNotFoundError,
+  TimelineHistoryRetryError,
   ensureAgentLoaded,
+  ensureAgentLoadedForTimeline,
   ensureUnarchivedAgentLoaded,
+  loadTimelineHistory,
 } from "./agent/agent-loading.js";
 import {
   sendPromptToAgent,
@@ -163,13 +166,18 @@ import {
   type WorkspaceLabelService,
 } from "./workspace-labels/index.js";
 
-import { AgentManager, AgentRunCancellationError } from "./agent/agent-manager.js";
+import {
+  AgentManager,
+  AgentRunCancellationError,
+  type ProviderSubagentHistoryEvent,
+} from "./agent/agent-manager.js";
 import { buildTimelinePromptIndex } from "./agent/timeline-prompt-index.js";
 import { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 import type {
   AgentManagerEvent,
   AgentTimelineCursor,
   AgentTimelineFetchDirection,
+  AgentTimelineFetchOptions,
   AgentTimelineFetchResult,
   ManagedAgent,
 } from "./agent/agent-manager.js";
@@ -1780,6 +1788,15 @@ export class Session {
       this.clientSources.set(source, metadata);
     }
     return metadata;
+  }
+
+  /** Sidebar subscriptions do not imply that their workspaces are open or focused. */
+  public isWorkspaceGitActive(cwd: string): boolean {
+    return [...this.clientSources.values()].some(({ activity }) => {
+      if (!activity?.appVisible || !activity.focusedAgentId) return false;
+      const agent = this.agentManager.getAgent(activity.focusedAgentId);
+      return Boolean(agent && resolve(agent.cwd) === resolve(cwd));
+    });
   }
 
   public getClientActivity(source = this.delivery.currentSource): ClientActivity | null {
@@ -4037,6 +4054,9 @@ export class Session {
         return this.handleChecklistRequest(msg);
       case "agent.questions.answer.request":
         return this.handleQuestionAnswerRequest(msg);
+      case "previews.list.request":
+      case "previews.action.request":
+        return this.handlePreviewsRequest(msg);
       case "agent.goal.get.request":
       case "agent.goal.set.request":
       case "agent.goal.clear.request":
@@ -5031,7 +5051,9 @@ export class Session {
         customName: project.customName,
         archived: project.archivedAt !== null,
         system: project.systemProject !== undefined,
-        factory: project.factoryInstallation !== undefined,
+        // COMPAT(retiredFactoryCheckpoint): the field is required on the wire. Only the retired
+        // Factory controller's bindings compared a project's key, so no project is pinned now.
+        factory: false,
         previousKeys: project.previousProjectKeys?.length ? project.previousProjectKeys : undefined,
         createdAt: project.createdAt,
       }));
@@ -6668,6 +6690,55 @@ export class Session {
           error: error instanceof Error ? error.message : "Checklist operation failed",
         },
       });
+    }
+  }
+
+  private async handlePreviewsRequest(
+    msg: Extract<
+      SessionInboundMessage,
+      { type: "previews.list.request" | "previews.action.request" }
+    >,
+  ): Promise<void> {
+    const previews = this.agentManager.previews;
+    try {
+      if (!previews) throw new Error("Previews are not available on this daemon.");
+      if (msg.type === "previews.list.request") {
+        this.emit({
+          type: "previews.list.response",
+          payload: {
+            requestId: msg.requestId,
+            // Previews belong to a workspace. A request that names no thread sees none.
+            gallery: msg.agentId
+              ? await previews.galleryFor(msg.agentId)
+              : { revision: 0, versions: [], variantSets: [] },
+            error: null,
+          },
+        });
+        return;
+      }
+      // Ratings, picks and pairing tickets are the owner's. Agent bridges, tools and hubs
+      // share the daemon credential but never speak for the owner.
+      if (this.clientType !== "mobile" && this.clientType !== "browser")
+        throw new Error("Rate and review previews from the Vorteo app.");
+      if (!msg.agentId) throw new Error("Reload Vorteo to use Previews.");
+      const { gallery, ticket } = await previews.act(msg.action, msg.agentId);
+      this.emit({
+        type: "previews.action.response",
+        payload: { requestId: msg.requestId, gallery, ...(ticket ? { ticket } : {}), error: null },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The preview request failed.";
+      this.emit(
+        msg.type === "previews.list.request"
+          ? {
+              type: "previews.list.response",
+              payload: { requestId: msg.requestId, gallery: null, error: message },
+            }
+          : {
+              type: "previews.action.response",
+              payload: { requestId: msg.requestId, gallery: null, error: message },
+            },
+      );
     }
   }
 
@@ -9714,6 +9785,102 @@ export class Session {
     });
   }
 
+  /**
+   * True for providers in the OpenCode family. Their saved transcripts can only be read by
+   * resuming the native session, which the snapshot manager refuses for passive reads.
+   */
+  private lacksPassiveHistoryReader(provider: string): boolean {
+    const { providerDefinitions } = this.providerSnapshotManager.getAgentManagerProviderState();
+    const seen = new Set<string>();
+    let current = provider;
+    while (!seen.has(current)) {
+      seen.add(current);
+      const base = providerDefinitions[current]?.derivedFromProviderId;
+      if (!base) break;
+      current = base;
+    }
+    return current === "opencode";
+  }
+
+  private async fetchControlTimeline(
+    agentId: string,
+    options: AgentTimelineFetchOptions,
+    retryHistory: boolean,
+  ): Promise<{
+    agentPayload: AgentSnapshotPayload;
+    fetchedControlTimeline: AgentTimelineFetchResult;
+  }> {
+    let live = this.agentManager.getAgent(agentId);
+    const record = live ? null : await this.agentStorage.get(agentId);
+    live ??= this.agentManager.getAgent(agentId);
+    const registeredProviders = this.providerSnapshotManager.listRegisteredProviderIds({
+      enabledOnly: true,
+    });
+    const fetchSaved = async (saved: StoredAgentRecord) => {
+      const persistence = saved.persistence?.sessionId ? saved.persistence : null;
+      const agentPayload = this.buildStoredAgentPayload(saved, new Set(registeredProviders));
+      const fetchedControlTimeline = await this.agentManager.fetchSavedTimeline(
+        agentId,
+        options,
+        () =>
+          loadTimelineHistory(
+            this.agentManager,
+            agentId,
+            "saved",
+            async () => {
+              const children: ProviderSubagentHistoryEvent[] = [];
+              const rows = await this.agentManager.readStoredSwitchHistory(
+                persistence ? saved : { ...saved, persistence: null },
+                persistence
+                  ? this.providerSnapshotManager.readSessionHistory(persistence, {
+                      ...buildConfigOverrides(saved),
+                      provider: saved.provider,
+                      cwd: saved.cwd,
+                    })
+                  : (async function* () {})(),
+                (event) => children.push(event),
+              );
+              this.agentManager.restoreSavedProviderSubagents(agentId, children);
+              return rows;
+            },
+            retryHistory,
+          ),
+        { useRetainedTimeline: !persistence && !saved.profileSwitches?.length },
+      );
+      return { agentPayload, fetchedControlTimeline };
+    };
+    // Reading history never resumes a thread. A resumed thread stays registered with its
+    // whole history resident, so a client paging every saved thread could exhaust the heap.
+    // Sending a message or another interactive request loads it. OpenCode has no passive
+    // history reader, so its threads keep loading through the provider until it gains one.
+    const loadsForHistory =
+      !live &&
+      record?.persistence?.sessionId &&
+      isStoredAgentProviderAvailable(record, registeredProviders) &&
+      this.lacksPassiveHistoryReader(record.persistence.provider);
+    if (!live && record && !loadsForHistory) return fetchSaved(record);
+
+    const load = () =>
+      ensureAgentLoadedForTimeline(agentId, {
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        logger: this.sessionLogger,
+      });
+    const needsHistory = live ? this.agentManager.needsTimelineHydration(agentId) : Boolean(record);
+    const agent = needsHistory
+      ? await loadTimelineHistory(this.agentManager, agentId, "native", load, retryHistory)
+      : await load();
+    if (!agent) {
+      const latest = await this.agentStorage.get(agentId);
+      if (!latest) throw new AgentNotFoundError(agentId);
+      return fetchSaved(latest);
+    }
+    return {
+      agentPayload: await this.buildAgentPayload(agent),
+      fetchedControlTimeline: this.agentManager.fetchTimeline(agentId, options),
+    };
+  }
+
   private async handleFetchAgentTimelineRequest(
     msg: Extract<SessionInboundMessage, { type: "fetch_agent_timeline_request" }>,
     source?: object,
@@ -9728,37 +9895,16 @@ export class Session {
       : undefined;
 
     try {
-      const record = this.agentManager.getAgent(msg.agentId)
-        ? null
-        : await this.agentStorage.get(msg.agentId);
-      const registeredProviders = this.providerSnapshotManager.listRegisteredProviderIds({
-        enabledOnly: true,
-      });
-      const savedOnly = record && !isStoredAgentProviderAvailable(record, registeredProviders);
-      const agentPayload = savedOnly
-        ? this.buildStoredAgentPayload(record, new Set(registeredProviders))
-        : await this.buildAgentPayload(
-            await ensureAgentLoaded(msg.agentId, {
-              agentManager: this.agentManager,
-              agentStorage: this.agentStorage,
-              logger: this.sessionLogger,
-            }),
-          );
-      const fetchOptions = { direction, cursor, limit: msg.limit, wholeTurns: msg.wholeTurns };
-      const fetchedControlTimeline = savedOnly
-        ? await this.agentManager.fetchSavedTimeline(msg.agentId, fetchOptions, () =>
-            this.agentManager.readStoredSwitchHistory(
-              record,
-              record.persistence
-                ? this.providerSnapshotManager.readSessionHistory(record.persistence, {
-                    ...buildConfigOverrides(record),
-                    provider: record.provider,
-                    cwd: record.cwd,
-                  })
-                : (async function* () {})(),
-            ),
-          )
-        : this.agentManager.fetchTimeline(msg.agentId, fetchOptions);
+      const { agentPayload, fetchedControlTimeline } = await this.fetchControlTimeline(
+        msg.agentId,
+        {
+          direction,
+          cursor,
+          limit: msg.limit,
+          wholeTurns: msg.wholeTurns,
+        },
+        msg.retryHistory === true,
+      );
       const selectedTimeline = {
         timeline: fetchedControlTimeline,
         entries: fetchedControlTimeline.rows,
@@ -9824,10 +9970,12 @@ export class Session {
         source,
       );
     } catch (error) {
-      this.sessionLogger.error(
-        { err: error, agentId: msg.agentId },
-        "Failed to handle fetch_agent_timeline_request",
-      );
+      if (!(error instanceof TimelineHistoryRetryError)) {
+        this.sessionLogger.error(
+          { err: error, agentId: msg.agentId },
+          "Failed to handle fetch_agent_timeline_request",
+        );
+      }
       this.emitForSource(
         {
           type: "fetch_agent_timeline_response",

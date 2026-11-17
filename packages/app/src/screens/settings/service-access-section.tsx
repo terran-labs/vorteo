@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isWeb } from "@/constants/platform";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import * as Clipboard from "expo-clipboard";
@@ -7,7 +8,10 @@ import type { DaemonPermission, ServicePrincipal } from "@getpaseo/protocol/mess
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { Button } from "@/components/ui/button";
-import { Field, FormTextInput } from "@/components/ui/form-field";
+import { Field } from "@/components/ui/form-field";
+import { JoinedField } from "@/components/settings/joined-field";
+import { SettingsAdvancedGroup } from "@/components/settings/advanced-group";
+import { SettingsListSummary } from "@/components/settings/list-summary";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useFetchQuery } from "@/data/query";
 import { useHostFeature } from "@/runtime/host-features";
@@ -29,13 +33,78 @@ function useServiceAccessAvailable(serverId: string): boolean {
   return supported && canManage;
 }
 
-export function ServiceAccessSection({ serverId }: { serverId: string }) {
-  const available = useServiceAccessAvailable(serverId);
-  if (!available) return null;
-  return <ServiceAccessContent serverId={serverId} />;
+interface IssuedToken {
+  label: string;
+  token: string;
 }
 
-function ServiceAccessContent({ serverId }: { serverId: string }) {
+export function ServiceAccessSection({ serverId }: { serverId: string }) {
+  const available = useServiceAccessAvailable(serverId);
+  // The one-time token lives here, outside the disclosure, so collapsing the group or clearing a
+  // search that opened it cannot lose a token that is never shown again.
+  const [issued, setIssued] = useState<IssuedToken | null>(null);
+  const dismissIssued = useCallback(() => setIssued(null), []);
+  if (!available) return null;
+  // Credentials for scripts are rarely managed, so they wait behind a closed disclosure.
+  return (
+    <>
+      {issued ? (
+        <IssuedTokenCard key={issued.token} issued={issued} onDone={dismissIssued} />
+      ) : null}
+      <SettingsAdvancedGroup title="Service access" testID="service-access-advanced">
+        <ServiceAccessContent serverId={serverId} onIssued={setIssued} />
+      </SettingsAdvancedGroup>
+    </>
+  );
+}
+
+// Focusable from code only. React Native's Text types omit `tabIndex`; React Native Web renders it.
+const FOCUS_TARGET = { tabIndex: -1 } as object;
+
+/** The new credential's token, shown once. Focus moves to it so screen readers hear it arrive. */
+function IssuedTokenCard({ issued, onDone }: { issued: IssuedToken; onDone: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const heading = useRef<Text>(null);
+  useEffect(() => {
+    if (isWeb) (heading.current as unknown as HTMLElement | null)?.focus?.();
+  }, [issued.token]);
+  const copy = useCallback(() => {
+    void Clipboard.setStringAsync(issued.token).then(() => setCopied(true));
+  }, [issued.token]);
+  return (
+    <SettingsSection title="New credential">
+      <View style={[settingsStyles.card, styles.body]} testID="service-access-issued-token">
+        <Text ref={heading} {...FOCUS_TARGET} style={settingsStyles.rowTitle}>
+          {`Credential for ${issued.label}`}
+        </Text>
+        <Text style={settingsStyles.rowHint}>Copy this token now. It will not be shown again.</Text>
+        <Text selectable style={styles.token}>
+          {issued.token}
+        </Text>
+        <View style={styles.actions}>
+          <Button variant="outline" onPress={copy}>
+            {copied ? "Copied" : "Copy token"}
+          </Button>
+          <Button variant="ghost" onPress={onDone}>
+            Done
+          </Button>
+        </View>
+        {/* Mounted before the first copy, so "Copied" is announced. */}
+        <Text accessibilityLiveRegion="polite" aria-live="polite" style={styles.visuallyHidden}>
+          {copied ? "Token copied" : ""}
+        </Text>
+      </View>
+    </SettingsSection>
+  );
+}
+
+function ServiceAccessContent({
+  serverId,
+  onIssued,
+}: {
+  serverId: string;
+  onIssued: (issued: IssuedToken) => void;
+}) {
   const client = useHostRuntimeClient(serverId);
   const queryClient = useQueryClient();
   const queryKey = useMemo(() => ["host", serverId, "service-principals"] as const, [serverId]);
@@ -55,8 +124,6 @@ function ServiceAccessContent({ serverId }: { serverId: string }) {
 
   const [label, setLabel] = useState("");
   const [resetKey, setResetKey] = useState(0);
-  const [issued, setIssued] = useState<{ label: string; token: string } | null>(null);
-  const [copied, setCopied] = useState(false);
 
   const invalidate = useCallback(
     () => queryClient.invalidateQueries({ queryKey }),
@@ -73,8 +140,7 @@ function ServiceAccessContent({ serverId }: { serverId: string }) {
       return { principal: result.principal, token: result.token };
     },
     onSuccess: ({ principal, token }) => {
-      setIssued({ label: principal.label, token });
-      setCopied(false);
+      onIssued({ label: principal.label, token });
       setLabel("");
       setResetKey((key) => key + 1);
       void invalidate();
@@ -94,9 +160,19 @@ function ServiceAccessContent({ serverId }: { serverId: string }) {
   const trimmedLabel = label.trim();
   const canCreate = trimmedLabel.length > 0 && !create.isPending;
 
+  // Enter then a click can land before `isPending` re-renders; one request at a time.
+  const creating = useRef(false);
   const handleCreate = useCallback(() => {
-    if (!canCreate) return;
-    create.mutate({ label: trimmedLabel, permissions: [...READ_ONLY_PERMISSIONS] });
+    if (!canCreate || creating.current) return;
+    creating.current = true;
+    create.mutate(
+      { label: trimmedLabel, permissions: [...READ_ONLY_PERMISSIONS] },
+      {
+        onSettled: () => {
+          creating.current = false;
+        },
+      },
+    );
   }, [canCreate, create, trimmedLabel]);
 
   const handleRevoke = useCallback(
@@ -114,13 +190,6 @@ function ServiceAccessContent({ serverId }: { serverId: string }) {
     [revoke],
   );
 
-  const handleCopy = useCallback(() => {
-    if (!issued) return;
-    void Clipboard.setStringAsync(issued.token).then(() => setCopied(true));
-  }, [issued]);
-
-  const dismissIssued = useCallback(() => setIssued(null), []);
-
   const principals = query.data ?? [];
 
   return (
@@ -128,73 +197,67 @@ function ServiceAccessContent({ serverId }: { serverId: string }) {
       title="Service access"
       info="Credentials for scripts and services that connect without signing in. Each one holds only the permissions you choose."
     >
-      {issued ? (
-        <View style={[settingsStyles.card, styles.body]} testID="service-access-issued-token">
-          <Text style={settingsStyles.rowTitle}>{`Credential for ${issued.label}`}</Text>
-          <Text style={settingsStyles.rowHint}>
-            Copy this token now. It will not be shown again.
-          </Text>
-          <Text selectable style={styles.token}>
-            {issued.token}
-          </Text>
-          <View style={styles.actions}>
-            <Button variant="outline" size="sm" onPress={handleCopy}>
-              {copied ? "Copied" : "Copy token"}
-            </Button>
-            <Button variant="ghost" size="sm" onPress={dismissIssued}>
-              Done
-            </Button>
-          </View>
-        </View>
-      ) : null}
-
       <View style={[settingsStyles.card, styles.body]} testID="service-access-create">
         <Field label="Name">
-          <FormTextInput
+          {/* Creating issues a token, so it stays an explicit submit. */}
+          <JoinedField
+            label="Credential name"
             initialValue=""
             resetKey={resetKey}
             onChangeText={setLabel}
+            onSubmit={handleCreate}
+            submitLabel="Create"
+            submitAccessibilityLabel="Create credential"
+            submitDisabled={trimmedLabel.length === 0}
+            busy={create.isPending}
+            error={create.error ? toErrorMessage(create.error) : null}
             placeholder="Backup script"
             autoCapitalize="none"
             autoCorrect={false}
             maxLength={120}
-            editable={!create.isPending}
-            accessibilityLabel="Credential name"
+            testID="service-access-create-name"
+            submitTestID="service-access-create-submit"
           />
         </Field>
         <Text style={settingsStyles.rowHint}>
           Read-only: can read projects, workspaces and agents. It cannot read files, run git or
           terminal commands, or change anything.
         </Text>
-        <SettingsStatusLine message={create.error ? toErrorMessage(create.error) : null} />
-        <View style={styles.actions}>
-          <Button
-            onPress={handleCreate}
-            disabled={!canCreate}
-            testID="service-access-create-submit"
-          >
-            {create.isPending ? "Creating..." : "Create credential"}
-          </Button>
-        </View>
       </View>
 
       <SettingsStatusLine message={query.error ? toErrorMessage(query.error) : null} />
       <SettingsStatusLine message={revoke.error ? toErrorMessage(revoke.error) : null} />
       {principals.length > 0 ? (
-        <View style={settingsStyles.card} testID="service-access-list">
-          {principals.map((principal, index) => (
-            <PrincipalRow
-              key={principal.id}
-              principal={principal}
-              showBorder={index > 0}
-              revoking={revoke.isPending && revoke.variables === principal.id}
-              onRevoke={handleRevoke}
-            />
-          ))}
-        </View>
+        <SettingsListSummary
+          title="Service credentials"
+          count={principals.length}
+          noun={CREDENTIAL_NOUN}
+          preview={principals.map((principal) => principal.label)}
+          detail={revokedDetail(principals)}
+          testID="service-access-summary"
+        >
+          <View style={settingsStyles.card} testID="service-access-list">
+            {principals.map((principal, index) => (
+              <PrincipalRow
+                key={principal.id}
+                principal={principal}
+                showBorder={index > 0}
+                revoking={revoke.isPending && revoke.variables === principal.id}
+                onRevoke={handleRevoke}
+              />
+            ))}
+          </View>
+        </SettingsListSummary>
       ) : null}
     </SettingsSection>
   );
+}
+
+const CREDENTIAL_NOUN = { one: "credential", other: "credentials" };
+
+function revokedDetail(principals: readonly ServicePrincipal[]): string | undefined {
+  const revoked = principals.filter((principal) => principal.revokedAt !== null).length;
+  return revoked > 0 ? `${revoked} revoked` : undefined;
 }
 
 function formatCreated(value: string): string {
@@ -240,7 +303,12 @@ function PrincipalRow({
         </Text>
       </View>
       {active ? (
-        <Button variant="outline" size="sm" onPress={handleRevoke} disabled={revoking}>
+        <Button
+          variant="outline"
+          onPress={handleRevoke}
+          disabled={revoking}
+          accessibilityLabel={`Revoke ${principal.label}`}
+        >
           {revoking ? "Revoking..." : "Revoke"}
         </Button>
       ) : null}
@@ -262,6 +330,8 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foreground,
     fontSize: theme.fontSize.sm,
   },
+  // Read by screen readers, not shown.
+  visuallyHidden: { position: "absolute", width: 1, height: 1, overflow: "hidden", opacity: 0 },
   mono: {
     fontFamily: theme.fontFamily.mono,
   },

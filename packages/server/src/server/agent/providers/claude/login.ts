@@ -1,3 +1,4 @@
+import { getProviderProbeCwd } from "../../../../utils/provider-probe-cwd.js";
 import type { ChildProcess } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import stripAnsi from "strip-ansi";
@@ -19,6 +20,12 @@ interface ClaudeLoginOptions {
   runtimeSettings?: ProviderRuntimeSettings;
 }
 
+interface ClaudeLoginDependencies {
+  resolveProbeCwd: () => Promise<string>;
+  spawn: typeof spawnProcess;
+  authenticate: typeof requireClaudeAuthentication;
+}
+
 /** The official CLI owns OAuth state, token exchange, refresh and credential storage. */
 export class ClaudeLoginSession implements ProviderLoginSession {
   readonly scope: string;
@@ -28,20 +35,25 @@ export class ClaudeLoginSession implements ProviderLoginSession {
   private submitted = false;
   private challengeReady = false;
 
-  constructor(private readonly options: ClaudeLoginOptions) {
+  constructor(
+    private readonly options: ClaudeLoginOptions,
+    private readonly dependencies: Partial<ClaudeLoginDependencies> = {},
+  ) {
     this.scope = options.scope;
   }
 
   async start(onComplete: (success: boolean) => void): Promise<ProviderLoginChallenge> {
     if (this.stopping || this.process) throw new Error("Sign-in is no longer available.");
     await mkdir(this.scope, { recursive: true, mode: 0o700 });
+    const cwd = await (this.dependencies.resolveProbeCwd ?? getProviderProbeCwd)();
     if (this.stopping) throw new Error("Sign-in was cancelled.");
-    const child = spawnProcess(
+    const child = (this.dependencies.spawn ?? spawnProcess)(
       this.options.executable,
       [...this.options.args, "auth", "login", "--claudeai"],
       {
         ...createProviderEnvSpec({ runtimeSettings: this.options.runtimeSettings }),
         stdio: ["pipe", "pipe", "pipe"],
+        cwd,
         windowsHide: true,
       },
     );
@@ -98,7 +110,7 @@ export class ClaudeLoginSession implements ProviderLoginSession {
           onComplete(false);
           return;
         }
-        void requireClaudeAuthentication(this.options).then(
+        void (this.dependencies.authenticate ?? requireClaudeAuthentication)(this.options).then(
           () => {
             if (!this.stopping) onComplete(true);
             return undefined;

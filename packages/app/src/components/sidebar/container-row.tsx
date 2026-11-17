@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useVortonTouch } from "@/vorton-touch";
-import { hoverGroup, hoverStyle } from "@/styles/hover";
+import { hoverGroup, hoverStyle, rowSurface } from "@/styles/hover";
 import { sidebarIndentStyle } from "./indent";
 import { SidebarCountBadge } from "./sidebar-count-badge";
 import {
@@ -53,6 +53,11 @@ const SECTION_ROW_HOVER_GROUP = "sidebar-section-row";
 const sectionRowStyles = StyleSheet.create((theme) => ({
   group: hoverGroup([SECTION_ROW_HOVER_GROUP, SIDEBAR_LEADING_HOVER_GROUP]),
   hoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
+  selected: {
+    backgroundColor: theme.colors.surfaceSidebarSelected,
+    ...rowSurface(theme.colors.surfaceSidebarSelected),
+  },
+  selectedTitle: { color: theme.colors.foreground },
 }));
 
 function collapsibleChevron(collapsible: boolean, collapsed: boolean): SidebarDisclosure {
@@ -74,9 +79,12 @@ export function SidebarSectionRow({
   testID,
   trailing,
   icon,
+  accessory,
+  selected = false,
 }: {
   title: string;
-  count: number;
+  /** Shown while folded; omit when the row's accessories already summarize its contents. */
+  count?: number;
   collapsed: boolean;
   /** False for a focused top level, which shows its icon without an arrow. */
   collapsible?: boolean;
@@ -90,12 +98,19 @@ export function SidebarSectionRow({
   trailing?: (isHovered: boolean) => ReactNode;
   /** The leading glyph; defaults to the folder icon. */
   icon?: ReactNode;
+  /** Marks and controls between the title and `trailing`, outside the fold target. */
+  accessory?: ReactNode;
+  /** The row stands for the current page, marked like the selected workspace row. */
+  selected?: boolean;
 }) {
   const density = useSidebarRowDensity();
   const touch = useVortonTouch();
   const [isHovered, setIsHovered] = useState(false);
   const [isPressed, setIsPressed] = useState(false);
-  const accessibilityState = useMemo(() => ({ expanded: !collapsed }), [collapsed]);
+  const accessibilityState = useMemo(
+    () => ({ expanded: !collapsed, selected }),
+    [collapsed, selected],
+  );
   const handlePointerEnter = useCallback(() => {
     if (!touch) setIsHovered(true);
   }, [touch]);
@@ -108,13 +123,14 @@ export function SidebarSectionRow({
       sectionRowStyles.group,
       density,
       sidebarIndentStyle(level),
-      // Touch layouts never showed hover, and the pressed fill wins over it.
-      !touch && !isPressed && sectionRowStyles.hoverable,
+      // Touch layouts never showed hover, and the pressed and selected fills win over it.
+      !touch && !isPressed && !selected && sectionRowStyles.hoverable,
+      selected && sectionRowStyles.selected,
       isPressed && sidebarContainerRowStyles.rowPressed,
     ],
-    [density, level, touch, isPressed],
+    [density, level, touch, isPressed, selected],
   );
-  const countLabel = String(count);
+  const countLabel = String(count ?? "");
 
   return (
     <View
@@ -137,12 +153,15 @@ export function SidebarSectionRow({
           {icon ?? <SidebarFolderIcon calm cssHover />}
         </SidebarLeadingSlot>
         <Text
-          style={[sidebarContainerRowStyles.title, sidebarContainerRowStyles.calmTitle]}
+          style={[
+            sidebarContainerRowStyles.title,
+            selected ? sectionRowStyles.selectedTitle : sidebarContainerRowStyles.calmTitle,
+          ]}
           numberOfLines={1}
         >
           {title}
         </Text>
-        {collapsed ? (
+        {collapsed && count !== undefined ? (
           <SidebarCountBadge
             label={countLabel}
             accessibilityLabel={`${title}: ${countLabel}`}
@@ -150,6 +169,7 @@ export function SidebarSectionRow({
           />
         ) : null}
       </Pressable>
+      {accessory}
       {trailing?.(isHovered)}
     </View>
   );

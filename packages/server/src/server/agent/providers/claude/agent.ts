@@ -1,8 +1,15 @@
+import { getProviderProbeCwd } from "../../../../utils/provider-probe-cwd.js";
 import { verifySkillSnapshot } from "../../../orchestration-skills/internal/policy.js";
 import { ClaudeSetupTokenLoginSession } from "./setup-token-login.js";
 import { ClaudeLoginSession } from "./login.js";
 import { CLAUDE_SIGN_IN_ENV, claudeSignInMode } from "./sign-in-mode.js";
-import { ClaudeResetCreditSession } from "./reset-credits.js";
+import { ClaudeResetCreditSession, noteClaudeCodeVersion } from "./reset-credits.js";
+import {
+  isPackagedClaudeCommand,
+  managedClaudeCli,
+  PACKAGED_CLAUDE_VERSION,
+  packagedClaudeCliManaged,
+} from "./packaged-cli.js";
 import {
   claudeKeychainAccount,
   claudeKeychainServiceForConfigDir,
@@ -29,6 +36,7 @@ import {
   type AgentDefinition,
   type CanUseTool,
   type McpServerConfig as ClaudeSdkMcpServerConfig,
+  type ModelInfo,
   type PermissionMode,
   type PermissionResult,
   type PermissionUpdate,
@@ -64,6 +72,8 @@ import {
   CLAUDE_DISABLED_THINKING_OPTION_ID,
   CLAUDE_ULTRACODE_THINKING_OPTION_ID,
   getClaudeCliUpdate,
+  claudeCodeVersionAtLeast,
+  claudeModelCliRequirement,
   parseClaudeCodeVersion,
   resolveClaudeDisabledThinkingForModel,
 } from "./model-manifest.js";
@@ -103,7 +113,7 @@ import {
   type ClaudeProviderOptions,
 } from "./options.js";
 import { renderPromptAttachmentAsText } from "../../prompt-attachments.js";
-import { discoverClaudeModels } from "./model-discovery.js";
+import { claudeRenewalDue, discoverClaudeModels } from "./model-discovery.js";
 import { claudeQuery, type ClaudeOptions, type ClaudeQueryFactory } from "./query.js";
 import {
   findSteeredMessageParent,
@@ -114,6 +124,11 @@ import {
 } from "./rewind.js";
 import { normalizeProviderReplayTimestamp } from "../../provider-history-timestamps.js";
 import { claudeConfigDir, claudeProjectDirSync, claudeTranscriptPath } from "./project-dir.js";
+import {
+  acquireClaudeStartSlot,
+  claudeDebugLogFile,
+  claudeProviderSettling,
+} from "./account-starts.js";
 import { THINKING_APPLIES_NEXT_TURN_NOTICE } from "../../provider-notices.js";
 import {
   isProviderImageMarkdown,
@@ -583,6 +598,8 @@ interface ClaudeAgentClientOptions {
   queryFactory?: ClaudeQueryFactory;
   resolveBinary?: () => Promise<string>;
   resolveVersion?: (signal?: AbortSignal) => Promise<string>;
+  /** Claude Code's version for the executable one launch uses; null when it cannot be told. */
+  resolveBinaryVersion?: (executable: string) => Promise<string | null>;
   rewindSdk?: ClaudeRewindSdk;
 }
 
@@ -600,6 +617,7 @@ interface ClaudeAgentSessionOptions {
   logger: Logger;
   queryFactory?: ClaudeQueryFactory;
   resolveBinary: () => Promise<string>;
+  resolveBinaryVersion: (executable: string) => Promise<string | null>;
   rewindSdk?: ClaudeRewindSdk;
 }
 
@@ -1725,6 +1743,7 @@ export class ClaudeAgentClient implements AgentClient {
   private readonly queryFactory?: ClaudeQueryFactory;
   private readonly resolveBinary: () => Promise<string>;
   private readonly resolveVersion: (signal?: AbortSignal) => Promise<string>;
+  private readonly resolveBinaryVersion: (executable: string) => Promise<string | null>;
   private readonly rewindSdk: ClaudeRewindSdk;
   private readonly scheduleImportDescriptors = createImportDescriptorScheduler(
     (candidate: ClaudeSessionCandidate, signal) => this.readImportDescriptor(candidate, signal),
@@ -1746,6 +1765,9 @@ export class ClaudeAgentClient implements AgentClient {
     this.resolveVersion =
       options.resolveVersion ??
       ((signal) => resolveClaudeCodeVersion(this.runtimeSettings, signal));
+    this.resolveBinaryVersion =
+      options.resolveBinaryVersion ??
+      ((executable) => claudeExecutableVersion(executable, this.runtimeSettings));
     this.rewindSdk = options.rewindSdk ?? realClaudeRewindSdk;
   }
 
@@ -1768,6 +1790,7 @@ export class ClaudeAgentClient implements AgentClient {
       logger: this.logger,
       queryFactory: this.queryFactory,
       resolveBinary: this.resolveBinary,
+      resolveBinaryVersion: this.resolveBinaryVersion,
       rewindSdk: this.rewindSdk,
     });
   }
@@ -1797,6 +1820,7 @@ export class ClaudeAgentClient implements AgentClient {
       logger: this.logger,
       queryFactory: this.queryFactory,
       resolveBinary: this.resolveBinary,
+      resolveBinaryVersion: this.resolveBinaryVersion,
       rewindSdk: this.rewindSdk,
     });
     await session.ensureHistoryReady();
@@ -1809,13 +1833,13 @@ export class ClaudeAgentClient implements AgentClient {
   }
 
   async fetchCatalog(
-    _options: FetchCatalogOptions,
+    options: FetchCatalogOptions,
     context?: ProviderRefreshContext,
   ): Promise<ProviderCatalog> {
     const lifetime = this.shutdownController.signal;
     const signal = context ? AbortSignal.any([context.signal, lifetime]) : lifetime;
     signal.throwIfAborted();
-    const refresh = this.refreshCatalog(signal, context);
+    const refresh = this.refreshCatalog(signal, context, options.force);
     this.catalogRefreshes.add(refresh);
     try {
       return await refresh;
@@ -1827,8 +1851,10 @@ export class ClaudeAgentClient implements AgentClient {
   private async refreshCatalog(
     signal: AbortSignal,
     context?: ProviderRefreshContext,
+    force = false,
   ): Promise<ProviderCatalog> {
-    // Claude exposes a global catalog here; cwd/force are intentionally irrelevant.
+    // Claude exposes a global catalog here; cwd is irrelevant, and force only skips the reuse of
+    // a recent discovery answer.
     let claudeCodeVersion: string | undefined;
     try {
       claudeCodeVersion = await runProviderRefreshActivity(context, "version", () =>
@@ -1841,13 +1867,15 @@ export class ClaudeAgentClient implements AgentClient {
     signal.throwIfAborted();
     const env = this.buildProviderEnv();
     let discoveredModelIds = new Set<string>();
+    let advertisedModels: ModelInfo[] = [];
     try {
-      const advertisedModels = await runProviderRefreshActivity(context, "models", () =>
+      advertisedModels = await runProviderRefreshActivity(context, "models", () =>
         this.discoverModels({
           resolveBinary: this.resolveBinary,
           runtimeSettings: this.runtimeSettings,
           env,
           signal,
+          force,
         }),
       );
       discoveredModelIds = new Set(
@@ -1869,6 +1897,7 @@ export class ClaudeAgentClient implements AgentClient {
         claudeConfigDir(env),
         claudeCodeVersion,
         discoveredModelIds,
+        advertisedModels,
       ),
     );
     signal.throwIfAborted();
@@ -2080,13 +2109,17 @@ export class ClaudeAgentClient implements AgentClient {
         defaultBinary: "claude",
       });
       const availability = await checkProviderLaunchAvailable(launch);
-      const setupToken = await readClaudeSetupToken(
-        createProviderEnv({ runtimeSettings: this.runtimeSettings }),
-      );
+      const env = createProviderEnv({ runtimeSettings: this.runtimeSettings });
+      const setupToken = await readClaudeSetupToken(env);
       let auth: string | null = null;
       if (setupToken)
         auth =
           "Installation subscription credential saved. Account email is not exposed by setup-token.";
+      // `claude auth status` is stopped after five seconds. Near expiry it could begin the
+      // sign-in renewal and be stopped midway, which loses the renewed sign-in.
+      else if (await claudeRenewalDue(env))
+        auth =
+          "Not checked: this sign-in is due for renewal, which happens when its next session starts.";
       else if (availability.available)
         auth = await resolveClaudeAuth(launch, availability, this.runtimeSettings);
 
@@ -2159,6 +2192,96 @@ async function resolveClaudeBinary(runtimeSettings?: ProviderRuntimeSettings): P
   );
 }
 
+// Keyed by executable path and invalidated when the file changes, so an upgrade is seen at once.
+const claudeExecutableVersions = new Map<string, { file: string; version: string | null }>();
+
+/**
+ * Claude Code's version for one executable, which may differ from the one the catalog probed:
+ * a session host or a provider command can launch another installation. Null when it cannot be
+ * determined, such as a wrapper that prints its own version.
+ */
+export async function claudeExecutableVersion(
+  executable: string,
+  runtimeSettings?: ProviderRuntimeSettings,
+): Promise<string | null> {
+  if (isPackagedClaudeCommand(executable)) return PACKAGED_CLAUDE_VERSION;
+  let file: string;
+  try {
+    const info = await promises.stat(executable);
+    file = `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+  } catch {
+    return null;
+  }
+  const cached = claudeExecutableVersions.get(executable);
+  if (cached?.file === file) return cached.version;
+  let output = "";
+  try {
+    const { stdout, stderr } = await execCommand(executable, ["--version"], {
+      cwd: await getProviderProbeCwd(),
+      ...createProviderEnvSpec({ runtimeSettings }),
+      timeout: 5_000,
+    });
+    output = `${stdout}\n${stderr}`;
+  } catch {
+    // Cached as unknown like a wrapper's output, so a hanging executable costs one timeout,
+    // not one per launch; replacing or upgrading the file probes again.
+  }
+  const parsed = /\d+\.\d+\.\d+\s+\(Claude Code\)/i.test(output)
+    ? parseClaudeCodeVersion(output)
+    : null;
+  const version = parsed ? parsed.join(".") : null;
+  claudeExecutableVersions.set(executable, { file, version });
+  return version;
+}
+
+/**
+ * Refuses a launch before the CLI starts when its executable is too old for the requested model.
+ * The catalog gates on the version its own probe saw, which another process or a shared profile
+ * can bypass; the CLI would otherwise fail the first turn with an unrecognized-model API error.
+ */
+async function assertClaudeModelRunsOn(
+  model: string | undefined,
+  executable: string,
+  resolveVersion: (executable: string) => Promise<string | null>,
+): Promise<void> {
+  const requirement = claudeModelCliRequirement(model);
+  if (!requirement) return;
+  const version = await resolveVersion(executable);
+  if (!version || claudeCodeVersionAtLeast(version, requirement.minimumVersion)) return;
+  throw new Error(
+    `${requirement.label} needs Claude Code ${requirement.minimumVersion} or newer, but this ` +
+      `agent would launch Claude Code ${version} from ${executable}. Update that installation ` +
+      "(claude update, or brew upgrade --cask claude-code for Homebrew) or choose another model.",
+  );
+}
+
+export type ClaudeCliSelection =
+  | { source: "release"; executable: string; version: string }
+  | { source: "path"; executable: string | null; version: string | null }
+  | { source: "release-unavailable"; error: string };
+
+/**
+ * Which Claude Code this process launches by default. A process that should use the release's
+ * validated CLI and cannot reports the failure instead of quietly running whatever is on PATH.
+ */
+export async function describeDefaultClaudeCli(): Promise<ClaudeCliSelection> {
+  if (packagedClaudeCliManaged()) {
+    try {
+      const executable = await managedClaudeCli();
+      if (executable) return { source: "release", executable, version: PACKAGED_CLAUDE_VERSION };
+    } catch (error) {
+      return { source: "release-unavailable", error: String(error) };
+    }
+  }
+  const launch = await resolveProviderLaunch({ defaultBinary: "claude" });
+  const { resolvedPath } = await checkProviderLaunchAvailable(launch);
+  return {
+    source: "path",
+    executable: resolvedPath,
+    version: resolvedPath ? await claudeExecutableVersion(resolvedPath) : null,
+  };
+}
+
 export async function resolveClaudeCodeVersion(
   runtimeSettings?: ProviderRuntimeSettings,
   signal?: AbortSignal,
@@ -2176,6 +2299,7 @@ export async function resolveClaudeCodeVersion(
   }
   const executable = availability.resolvedPath ?? launch.command;
   const { stdout, stderr } = await execCommand(executable, [...launch.args, "--version"], {
+    cwd: await getProviderProbeCwd(),
     ...createProviderEnvSpec({ runtimeSettings }),
     timeout: 5_000,
     signal,
@@ -2190,6 +2314,7 @@ export async function resolveClaudeCodeVersion(
   if (!version) {
     throw new Error("Unable to parse Claude Code version from --version output");
   }
+  noteClaudeCodeVersion(version.join("."));
   return version.join(".");
 }
 
@@ -2204,6 +2329,7 @@ async function resolveClaudeAuth(
   ): Promise<{ stdout: string; stderr: string }> => {
     try {
       return await execCommand(executable, args, {
+        cwd: await getProviderProbeCwd(),
         ...createProviderEnvSpec({ runtimeSettings }),
         timeout: 5_000,
       });
@@ -2540,12 +2666,15 @@ class ClaudeAgentSession implements AgentSession {
   private readonly logger: Logger;
   private readonly queryFactory?: ClaudeQueryFactory;
   private readonly resolveBinary: () => Promise<string>;
+  private readonly resolveBinaryVersion: (executable: string) => Promise<string | null>;
   private query: Query | null = null;
   private readonly runtimeSafety = new ClaudeRuntimeSafety();
   private processingSdkMessages = 0;
   private harnessEnvironment: Record<string, string>;
   private readonly usageSessionKey = randomUUID();
   private childProcess: ChildProcess | null = null;
+  /** When the current childProcess started; read only while that child is still current. */
+  private childStartedAt: number | null = null;
   private closePromise: Promise<void> | null = null;
   private input: AsyncMessageInput<SDKUserMessage> | null = null;
   /** The exact SDK query/input pair that owns the current foreground turn. */
@@ -2672,6 +2801,7 @@ class ClaudeAgentSession implements AgentSession {
     this.logger = options.logger.child({ agentId: this.agentId });
     this.queryFactory = options.queryFactory;
     this.resolveBinary = options.resolveBinary;
+    this.resolveBinaryVersion = options.resolveBinaryVersion;
     this.rewindSdk = options.rewindSdk ?? realClaudeRewindSdk;
     this.contextUsage = new ClaudeContextUsageState(
       getClaudeContextWindowMaxTokens(this.config.model),
@@ -3310,8 +3440,18 @@ class ClaudeAgentSession implements AgentSession {
       this.unstartedMessageUuids.size === 0 &&
       this.pendingPermissions.size === 0 &&
       this.processingSdkMessages === 0 &&
+      !this.isProviderSettling() &&
       this.runtimeSafety.canStopRuntime()
     );
+  }
+
+  /**
+   * True while the current CLI is young: it may be refreshing the sign-in, and stopping it then
+   * can lose the rotated token.
+   */
+  isProviderSettling(): boolean {
+    if (this.closed || !this.childProcess) return false;
+    return claudeProviderSettling(this.childStartedAt);
   }
 
   close(): Promise<void> {
@@ -3938,26 +4078,57 @@ class ClaudeAgentSession implements AgentSession {
         throw new Error("Claude subscription connection requires inline runtime settings.");
       options.settings = { ...options.settings, apiKeyHelper: "" };
     }
+    const configDir = claudeConfigDir(this.harnessEnvironment);
+    const debugFile = await claudeDebugLogFile({ configDir });
+    if (debugFile) options.debugFile = debugFile;
     this.logger.debug({ options: summarizeClaudeOptionsForLog(options) }, "claude query");
-    this.assertOpen();
+    // One CLI start at a time per account: a start may refresh the account's sign-in, and two
+    // racing refreshes can revoke it. Other accounts never wait.
+    const startSlot = await acquireClaudeStartSlot(configDir);
+    try {
+      this.assertOpen();
+    } catch (error) {
+      startSlot.release();
+      throw error;
+    }
+    // Another call for this session may have started the CLI while this one waited for the slot.
+    if (this.query) {
+      startSlot.release();
+      return this.query;
+    }
     this.input = input;
     this.queryCredentialDigest = credentialDigest;
     this.runtimeSafety.reset();
     // A fresh Claude process has no turn of its own in flight.
     this.mainTurnInFlight = false;
-    this.query = claudeQuery(
-      { prompt: input.iterable, options },
-      {
-        runtimeSettings: this.runtimeSettings,
-        launchEnv: this.launchEnv,
-        authEnv,
-        queryFactory: this.queryFactory,
-        assertCanSpawn: () => this.assertOpen(),
-        onChildProcess: (child) => {
-          this.childProcess = child;
-          child.once("exit", (code, signal) => this.handleRuntimeExit(child, code, signal));
+    let startedQuery: Query;
+    try {
+      startedQuery = claudeQuery(
+        { prompt: input.iterable, options },
+        {
+          runtimeSettings: this.runtimeSettings,
+          launchEnv: this.launchEnv,
+          authEnv,
+          queryFactory: this.queryFactory,
+          assertCanSpawn: () => this.assertOpen(),
+          onChildProcess: (child) => {
+            this.childProcess = child;
+            this.childStartedAt = Date.now();
+            child.once("exit", (code, signal) => this.handleRuntimeExit(child, code, signal));
+          },
         },
-      },
+      );
+    } catch (error) {
+      startSlot.release();
+      throw error;
+    }
+    this.query = startedQuery;
+    // The CLI answers the SDK's initialize request once its startup, including any sign-in
+    // refresh, is done; it fails if the CLI exits first. The slot bounds a CLI that does neither.
+    startSlot.releaseWhen(
+      typeof startedQuery.initializationResult === "function"
+        ? startedQuery.initializationResult()
+        : Promise.resolve(),
     );
     const fastMode = this.resolveFastModeSetting();
     if (fastMode !== null) {
@@ -4091,6 +4262,7 @@ class ClaudeAgentSession implements AgentSession {
     assertClaudeModeCanRun(permissionMode, sdkEnv);
 
     const claudeBinary = await this.resolveBinary();
+    await assertClaudeModelRunsOn(this.config.model, claudeBinary, this.resolveBinaryVersion);
     this.logger.debug(
       {
         claudeBinary,

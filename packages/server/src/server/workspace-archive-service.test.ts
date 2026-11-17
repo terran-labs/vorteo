@@ -1074,7 +1074,7 @@ describe("archiveByScope", () => {
             kind: "local_checkout",
             protected: false,
             factoryMembership: {
-              installationId: "installation",
+              installationId: "project-factory:project",
               projectId: "project",
               serverId: "server",
               role: "worker",
@@ -1098,6 +1098,32 @@ describe("archiveByScope", () => {
       expect(existsSync(repoDir)).toBe(true);
     },
   );
+
+  test("a membership left by the retired Factory controller no longer blocks archive", async () => {
+    const { tempDir, repoDir } = createGitRepo();
+    const dependencies = createArchiveDeps({
+      paseoHome: path.join(tempDir, ".paseo"),
+      activeWorkspaces: [
+        {
+          workspaceId: "retired-member",
+          cwd: repoDir,
+          kind: "local_checkout",
+          protected: false,
+          factoryMembership: {
+            installationId: "controller-installation",
+            projectId: "project",
+            serverId: "server",
+            role: "worker",
+          },
+        },
+      ],
+    });
+    const result = await archiveByScope(dependencies, {
+      scope: { kind: "workspace", workspaceId: "retired-member" },
+      requestId: "retired-archive",
+    });
+    expect(result.archivedWorkspaceIds).toEqual(["retired-member"]);
+  });
 
   test.each(["archived-only", "shared-path", "shared-workspace", "registry-only-path"] as const)(
     "Factory retained backing refuses %s before ordinary archive mutation",
@@ -1124,7 +1150,7 @@ describe("archiveByScope", () => {
         isPaseoOwnedWorktree: true,
         protected: false,
         factoryMembership: {
-          installationId: "installation",
+          installationId: "project-factory:project",
           serverId: "server",
           projectId: "project",
           role: "builds",
@@ -1214,7 +1240,7 @@ describe("archiveByScope", () => {
               mainRepoRoot: repoDir,
               isPaseoOwnedWorktree: true,
               factoryMembership: {
-                installationId: "installation",
+                installationId: "project-factory:project",
                 serverId: "server",
                 projectId: "project",
                 role: "factory",

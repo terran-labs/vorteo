@@ -780,6 +780,7 @@ export interface FetchAgentOptions {
 }
 type LegacyFetchAgentOptions = Omit<FetchAgentOptions, "agentId">;
 export interface FetchAgentTimelineOptions {
+  retryHistory?: boolean;
   /** Prefer whole-turn pages when supported; older hosts retain item-based paging. */
   wholeTurns?: boolean;
   direction?: FetchAgentTimelineDirection;
@@ -3943,9 +3944,13 @@ export class DaemonClient {
     // COMPAT(wholeTurnTimeline): added after v0.13.2 (#8010); remove after 2027-04-27 once the daemon floor supports whole-turn pages.
     // Reading history predates this capability and must keep working on older hosts.
     const supportsWholeTurns = this.lastServerInfoMessage?.features?.wholeTurnTimeline === true;
+    // COMPAT(agentTimelineHistoryRetry): added November 2026. Revisit after 2027-05-11.
+    const supportsHistoryRetry =
+      this.lastServerInfoMessage?.features?.agentTimelineHistoryRetry === true;
     const resolvedRequestId = this.createRequestId(options.requestId);
     const message = SessionInboundMessageSchema.parse({
       type: "fetch_agent_timeline_request",
+      ...(supportsHistoryRetry && options.retryHistory === true ? { retryHistory: true } : {}),
       ...(supportsWholeTurns && options.wholeTurns !== undefined
         ? { wholeTurns: options.wholeTurns }
         : {}),
@@ -4406,6 +4411,34 @@ export class DaemonClient {
     if (result.error || !result.tasks)
       throw new Error(result.error ?? "Checklist update unconfirmed");
     return result.tasks;
+  }
+
+  /** Previews published in the workspace of this thread, with ratings, picks and comments. */
+  async listPreviews(
+    agentId: string,
+  ): Promise<import("@getpaseo/protocol/previews").PreviewGallery> {
+    if (this.lastServerInfoMessage?.features?.previews !== true)
+      throw new Error("Update the daemon to use Previews.");
+    const result = await this.sendNamespacedCorrelatedSessionRequest<"previews.list.response">({
+      message: { type: "previews.list.request", agentId },
+    });
+    if (result.error || !result.gallery) throw new Error(result.error ?? "Previews unavailable");
+    return result.gallery;
+  }
+
+  /** Rate, approve, pick, remove, or mint a one-time browser pairing ticket. */
+  async previewsAction(
+    action: import("@getpaseo/protocol/previews").PreviewsAction,
+    agentId: string,
+  ): Promise<{ gallery: import("@getpaseo/protocol/previews").PreviewGallery; ticket?: string }> {
+    if (this.lastServerInfoMessage?.features?.previews !== true)
+      throw new Error("Update the daemon to use Previews.");
+    const result = await this.sendNamespacedCorrelatedSessionRequest<"previews.action.response">({
+      message: { type: "previews.action.request", action, agentId },
+    });
+    if (result.error || !result.gallery)
+      throw new Error(result.error ?? "Preview change unconfirmed");
+    return { gallery: result.gallery, ...(result.ticket ? { ticket: result.ticket } : {}) };
   }
 
   async answerAgentQuestion(

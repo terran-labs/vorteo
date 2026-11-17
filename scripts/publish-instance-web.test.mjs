@@ -788,3 +788,73 @@ test("prepared root options refuse invalid combinations before creating build ar
     );
   }
 });
+
+// Issue 229. A coordinator from before the `vorteo` command existed updates the Host by
+// switching the release link and then running the new release's publisher with exactly
+// these arguments and limits (source-updates.ts install). Nothing else of the new release
+// runs under it, so this call has to leave the command installed.
+test("the publisher call of an older coordinator installs the vorteo command for the selected Host release", async (t) => {
+  const f = await fixture(t);
+  const home = path.join(f.root, "home");
+  const installation = path.join(f.root, "installation with spaces");
+  const link = path.join(installation, "current");
+  const shim = path.join(home, ".local/bin/vorteo");
+  await fs.mkdir(path.join(installation, "state"), { recursive: true });
+  await fs.writeFile(
+    path.join(installation, "state/install.json"),
+    JSON.stringify({
+      plan: { paths: { hostReleaseLink: link }, executables: { node: "/n/node" } },
+    }),
+  );
+  const olderCoordinatorPublishes = async (job) => {
+    const release = path.join(installation, "releases/reviewed-updates", job, "build");
+    await fs.cp(path.resolve("scripts"), path.join(release, "scripts"), {
+      recursive: true,
+      filter: (source) => !/test-fixtures|\.test\.mjs$/.test(source),
+    });
+    await fs.rm(link, { force: true });
+    await fs.symlink(release, link);
+    return run(
+      process.execPath,
+      [
+        path.join(release, "scripts", "publish-instance-web.mjs"),
+        await candidate(f, job),
+        f.destination,
+      ],
+      {
+        timeout: 5 * 60_000,
+        maxBuffer: 8192,
+        env: { HOME: home, PATH: "/usr/bin:/bin", SHELL: "/bin/zsh" },
+      },
+    );
+  };
+
+  const first = await olderCoordinatorPublishes("first");
+  assert.equal(JSON.parse(first.stdout).buildId, "first");
+  assert.match(first.stderr, /^vorteo-command: Installed .*not on your PATH.*~\/\.zshrc/m);
+  const text = await fs.readFile(shim, "utf8");
+  assert.match(text, /# vorteo-command-shim/);
+  assert.ok(text.includes(`VORTEO_ROOT=\${VORTEO_ROOT:-'${installation}'}`));
+  assert.ok(text.includes(`VORTEO_SOURCE=\${VORTEO_SOURCE:-'${link}'}`));
+  assert.ok(text.includes("VORTEO_NODE=${VORTEO_NODE:-'/n/node'}"));
+  assert.equal((await fs.stat(shim)).mode & 0o777, 0o755);
+  assert.deepEqual(await fs.readdir(home), [".local"], "no shell profile was written");
+
+  // Someone else's `vorteo` survives the next update, which still publishes.
+  await fs.writeFile(shim, "unrelated");
+  const second = await olderCoordinatorPublishes("second");
+  assert.match(second.stderr, /^vorteo-command: Left .* alone/m);
+  assert.equal(await fs.readFile(shim, "utf8"), "unrelated");
+  assert.match(await fs.readlink(path.join(f.destination, ".current")), /^\.releases\//);
+
+  // A publisher outside an installation's selected release, as in every other test here
+  // and in interface-only publication, installs nothing.
+  await fs.rm(shim);
+  const elsewhere = await run(
+    process.execPath,
+    [publisher, await candidate(f, "third"), f.destination],
+    { env: { HOME: home, PATH: "/usr/bin:/bin" } },
+  );
+  assert.equal(elsewhere.stderr, "");
+  await assert.rejects(fs.stat(shim), /ENOENT/);
+});

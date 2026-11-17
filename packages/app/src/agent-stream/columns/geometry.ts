@@ -2,6 +2,8 @@ export const COLUMN_BREAKPOINT = 1080;
 export const COLUMN_MARGIN = 16;
 export const CARD_GAP = 8;
 export const COLUMN_GAP = COLUMN_MARGIN * 2;
+/** The composer's field sits this far inside a sized text column; the column handle aligns to it. */
+export const COLUMN_COMPOSER_INSET = 8;
 export const MIN_TEXT_WIDTH = 560;
 export const MIN_CARDS_WIDTH = 220;
 export const MAX_TEXT_WIDTH = 1600;
@@ -14,7 +16,7 @@ export interface ColumnWidths {
 }
 
 export function resolveStandaloneTextWidth(containerWidth: number, preferred: number): number {
-  return Math.max(0, Math.min(preferred, MAX_TEXT_WIDTH, containerWidth - COLUMN_MARGIN * 2));
+  return Math.max(0, Math.min(preferred, MAX_TEXT_WIDTH, containerWidth));
 }
 
 export function resolveColumnWidths(containerWidth: number, preferred: ColumnWidths): ColumnWidths {
@@ -46,7 +48,10 @@ export function resizeColumn(input: {
   if (input.standaloneText)
     return {
       cards: 0,
-      text: resolveStandaloneTextWidth(containerWidth, Math.max(MIN_TEXT_WIDTH, requested.text)),
+      text: resolveStandaloneTextWidth(
+        containerWidth,
+        Math.max(Math.min(MIN_TEXT_WIDTH, Math.max(320, containerWidth * 0.6)), requested.text),
+      ),
     };
   return resolveColumnWidths(containerWidth, requested);
 }
@@ -56,6 +61,28 @@ export function resolveTextOffset(containerWidth: number, widths: ColumnWidths):
   const centered = (containerWidth - widths.text) / 2;
   const besideCards = containerWidth - COLUMN_MARGIN - widths.cards - COLUMN_GAP - widths.text;
   return Math.max(COLUMN_MARGIN, Math.min(centered, besideCards));
+}
+
+export interface TranscriptContentGeometry {
+  /** The text column's left edge, measured from the transcript region's left edge. */
+  columnLeft: number;
+  columnWidth: number;
+  /** Rows cap their width here and centre inside the column. */
+  rowMaxWidth: number;
+  /** The stream list's horizontal padding inside the column. */
+  listInset: number;
+  /** Each row's own horizontal padding, inside its capped width. */
+  rowInset: number;
+}
+
+/**
+ * Where message content starts, measured from the transcript region's left edge. Anything
+ * drawn in the transcript's left margin fits beside the content only when it ends here.
+ */
+export function resolveTranscriptContentLeft(geometry: TranscriptContentGeometry): number {
+  const inner = Math.max(0, geometry.columnWidth - geometry.listInset * 2);
+  const row = Math.min(geometry.rowMaxWidth, inner);
+  return geometry.columnLeft + geometry.listInset + (inner - row) / 2 + geometry.rowInset;
 }
 
 /** Small cards keep their natural height; larger cards share the remaining space equally. */

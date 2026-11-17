@@ -108,6 +108,7 @@ import { ProviderPreferencesValidationError } from "../agent/provider-preference
 import type { InstallationProfiles } from "./profiles/service.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { writePrivateFileAtomicSync } from "../private-files.js";
 import path from "node:path";
 import express, { type Request, type Response, type NextFunction } from "express";
 import type { Logger } from "pino";
@@ -131,7 +132,12 @@ import {
   supportsAutomaticMaintenance,
   type RestartExecutor,
 } from "./restarts.js";
-import { daemonTargets, requireEnvironmentDaemon, type InstallationConfig } from "./config.js";
+import {
+  daemonTargets,
+  requireEnvironmentDaemon,
+  restartHoldDeadlineMs,
+  type InstallationConfig,
+} from "./config.js";
 import {
   connectInstallationDaemon,
   submitInstallationCoordinator,
@@ -146,6 +152,7 @@ import {
 } from "./delegation.js";
 import {
   InstallationSettingsUpdateSchema,
+  UNSET_TIME_ZONE,
   type InstallationSettingsSnapshot,
 } from "@getpaseo/protocol/installation-settings";
 import { AgentSkillSelectionSchema } from "@getpaseo/protocol/messages";
@@ -176,6 +183,12 @@ import {
 import { ServicePrincipalStore } from "../authorization/service-principals.js";
 import { FactoryGate, factoryRestartClass } from "./factory-gate.js";
 import {
+  FACTORY_HOME_ROUTE,
+  FactoryHomeRequestSchema,
+  createFactoryHomeAuthority,
+  readDaemonFactoryList,
+} from "./factory-home.js";
+import {
   delegatedHandler,
   changeMaintenanceDelegation,
   maintenanceDelegationStatus,
@@ -193,7 +206,12 @@ const SESSION_HOST_STATUS_CACHE_MS = 30_000;
 // COMPAT(providerRemovalOwner): added in v155, remove after legacy strict catalog clients are unsupported.
 function ownerSettingsSnapshot(
   snapshot: InstallationSettingsSnapshot,
-  client: { removalAware: boolean; projectPoliciesAware: boolean },
+  client: {
+    removalAware: boolean;
+    projectPoliciesAware: boolean;
+    primaryConnectionAware: boolean;
+    timeZoneAware: boolean;
+  },
 ) {
   const catalogs = [snapshot.settings, ...Object.values(snapshot.conflicts?.candidates ?? {})];
   for (const catalog of catalogs) {
@@ -204,6 +222,14 @@ function ownerSettingsSnapshot(
     // reject the key; newer ones read its presence as the capability.
     if (client.projectPoliciesAware) catalog.projectPolicies ??= {};
     else delete catalog.projectPolicies;
+    // COMPAT(primaryConnection): added 2026-11-05, remove after 2027-05-05. Older strict clients
+    // reject the key. Newer ones read its presence, even as null, as the coordinator's support.
+    if (client.primaryConnectionAware) catalog.primaryConnection ??= null;
+    else delete catalog.primaryConnection;
+    // COMPAT(timeZoneSetting): added 2026-11-13, remove after 2027-05-13. Same strict clients;
+    // newer ones read the key's presence as the coordinator's support.
+    if (client.timeZoneAware) catalog.timeZone ??= { ...UNSET_TIME_ZONE };
+    else delete catalog.timeZone;
   }
   return snapshot;
 }
@@ -212,6 +238,8 @@ function ownerSettingsClient(req: Request) {
   return {
     removalAware: req.get("X-Vorteo-Provider-Removal") === "1",
     projectPoliciesAware: req.get("X-Vorteo-Project-Policies") === "1",
+    primaryConnectionAware: req.get("X-Vorteo-Primary-Connection") === "1",
+    timeZoneAware: req.get("X-Vorteo-Time-Zone") === "1",
   };
 }
 
@@ -263,6 +291,25 @@ function withDelegation(reply: RestartJob, job: RestartJob, delegation: OwnerDel
   return reply;
 }
 
+/** Coordinator-private restart hold starts: the copy main.ts read at startup, and the writer. */
+export const RESTART_HOLDS_FILE = "restart-holds.json";
+function restartHoldState(stateDir: string, initial: unknown) {
+  return {
+    read: (): unknown => initial ?? {},
+    write: (value: unknown) =>
+      writePrivateFileAtomicSync(
+        path.join(stateDir, RESTART_HOLDS_FILE),
+        `${JSON.stringify(value)}\n`,
+      ),
+  };
+}
+
+// COMPAT(restartHoldDeadline): added 2026-11-11; only clients that send restartHoldDeadline=1
+// receive holdDeadlineExceeded, which lives in coordinator-private state, not the journal.
+function withHoldDeadline(reply: RestartJob, exceeded: boolean, requested: boolean): RestartJob {
+  return requested && exceeded ? { ...reply, holdDeadlineExceeded: true } : reply;
+}
+
 function requestedDelegation(stateDir: string, requested: boolean): OwnerDelegation | null {
   return requested ? readOwnerDelegation(stateDir) : null;
 }
@@ -293,6 +340,7 @@ function restartReply(
     standingDecision: _standingDecision,
     standingHold: _standingHold,
     standingInterruption: _standingInterruption,
+    cooperativeDrainPreparation: _cooperativeDrainPreparation,
     interruptionChecks: _interruptionChecks,
     standingManualApprovals: _standingManualApprovals,
     updatePreparation: _preparation,
@@ -475,6 +523,8 @@ export function createInstallationServer(
   files?: InstallationFiles,
   codexSignIn?: CodexSignInRuntime,
   overviewDependencies?: OverviewDependencies,
+  /** The private restart hold record, read by main.ts at startup. Omitted in tests. */
+  restartHolds?: unknown,
 ) {
   mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
   const instructionRequests = new InstructionRequests(
@@ -552,6 +602,10 @@ export function createInstallationServer(
     },
     initialActivationInstance: (job) => standingRuntime.initialActivationInstance(job),
     prepareInterruption: (job) => standingRuntime.prepareInterruption(job),
+    prepareCooperativePreparation: (job) => standingRuntime.prepareCooperativePreparation(job),
+    dispatchCooperativePreparation: (job) => standingRuntime.dispatchCooperativePreparation(job),
+    observeCooperativePreparation: (job) =>
+      standingRuntime.observeCooperativePreparation(job, executor),
     observeInterruption: (job) => standingRuntime.observeInterruption(job),
     verifyDispatch: (job) => standingRuntime.verifySelection(job, executor),
     installUpdate: (job, options) =>
@@ -657,6 +711,9 @@ export function createInstallationServer(
     {
       fenced: startupFence !== undefined,
       progress: (message, fields) => logger.info(fields, message),
+      finishTurnsDeadlineMs: restartHoldDeadlineMs(config),
+      afterHoldDeadline: config.restartHoldAfterDeadline,
+      holdState: restartHoldState(config.stateDir, restartHolds),
     },
   );
   const releaseRuntime = optionalReleaseRuntime(files, {
@@ -1736,6 +1793,13 @@ export function createInstallationServer(
     // COMPAT(projectPolicies): added 2026-10-22, remove after 2027-04-22. Older daemons parse
     // admission strictly, so only readers that ask receive project policies.
     if (req.query.projectPolicies !== "1") delete snapshot.settings.projectPolicies;
+    // COMPAT(primaryConnection): added 2026-11-05, remove after 2027-05-05. Same strict readers.
+    if (req.query.primaryConnection !== "1") delete snapshot.settings.primaryConnection;
+    // Present, even as null, so the daemon can tell this coordinator supports the setting.
+    else snapshot.settings.primaryConnection ??= null;
+    // COMPAT(timeZoneSetting): added 2026-11-13, remove after 2027-05-13. Same strict readers.
+    if (req.query.timeZone !== "1") delete snapshot.settings.timeZone;
+    else snapshot.settings.timeZone ??= { ...UNSET_TIME_ZONE };
     res.json({
       installationId: config.public.installationId,
       serverId: environment.serverId,
@@ -1744,6 +1808,29 @@ export function createInstallationServer(
       settings: snapshot.settings,
       installationInstructions: kind === "host" ? installationHostInstructions(config) : "",
     });
+  });
+
+  // One environment per repository runs Factory; see factory-home.ts.
+  const factoryHome = createFactoryHomeAuthority({
+    environments: config.public.environments.map((environment) => environment.kind),
+    read: async (kind) => readDaemonFactoryList(await connectInstallationDaemon(config, kind)),
+  });
+  app.post(FACTORY_HOME_ROUTE, (req, res, next) => {
+    const token = extractHttpBearerToken(req.header("authorization"));
+    let kind: "host" | "container";
+    if (matchesToken(token, config.hostAgentTokenHash)) kind = "host";
+    else if (matchesContainerAgent(token)) kind = "container";
+    else {
+      res.sendStatus(401);
+      return;
+    }
+    const request = FactoryHomeRequestSchema.safeParse(req.body);
+    if (!request.success) {
+      res.sendStatus(400);
+      return;
+    }
+    res.setHeader("Cache-Control", "no-store");
+    factoryHome.decide(kind, request.data).then((answer) => res.json(answer), next);
   });
 
   // Agents may propose shared agent instructions. Request-only credentials never apply them.
@@ -2586,7 +2673,15 @@ export function createInstallationServer(
     grant: delegationGrant,
     definitions: installationChangeDefinitions({
       name: installationName,
-      liveDev,
+      // Delivery mode changes write the installation type, so they share its serialization.
+      liveDev: {
+        ...liveDev,
+        change(input) {
+          const change = installationTypeChanges.then(() => liveDev.change(input));
+          installationTypeChanges = change.catch(() => undefined);
+          return change;
+        },
+      },
       installationType: {
         read: () => readInstallationType(config.stateDir),
         // Serialized with the owner's own changes, as in the owner route.
@@ -2766,7 +2861,10 @@ export function createInstallationServer(
     void liveDev.status().then((status) => res.json(status), next);
   });
   app.post("/api/installation/owner/live-dev/change", (req, res, next) => {
-    void liveDev.change(req.body).then((status) => res.json(status), next);
+    // The legacy delivery mode route writes the installation type, so it shares that queue.
+    const change = installationTypeChanges.then(() => liveDev.change(req.body));
+    installationTypeChanges = change.catch(() => undefined);
+    void change.then((status) => res.json(status), next);
   });
   const installationTypeStatus = async () => {
     const record = await reportedInstallationType(config.stateDir);
@@ -2939,6 +3037,13 @@ export function createInstallationServer(
             ),
             job,
             delegation,
+          ),
+        )
+        .map((reply) =>
+          withHoldDeadline(
+            reply,
+            restarts.holdDeadlineExceeded(reply.id),
+            req.query.restartHoldDeadline === "1",
           ),
         ),
     );
@@ -3280,6 +3385,12 @@ export function createInstallationServer(
       coordinatorSettings: coordinatorSettings.status(),
     });
   });
+  // Only the canonical origin's boot page links to the private recovery origin; the recovery
+  // and local origins are already the way around the canonical gateway.
+  const recoveryLink = (origin: string) =>
+    config.recoveryOrigin && origin === config.public.origin
+      ? { recoveryOrigin: config.recoveryOrigin }
+      : {};
   const webUi = (origin: string, local = false) =>
     createWebUiMiddleware({
       enabled: true,
@@ -3294,6 +3405,7 @@ export function createInstallationServer(
         profileSharing: true,
         idleRestarts: Boolean(executor.inspect && executor.restartWhenIdle),
         gracefulRestarts: Boolean(executor.holdCurrentTurns && executor.releaseCurrentTurns),
+        ...(local ? {} : recoveryLink(origin)),
       }),
     });
   const canonicalWebUi = webUi(config.public.origin);
@@ -3306,6 +3418,7 @@ export function createInstallationServer(
     profileSharing: true,
     idleRestarts: Boolean(executor.inspect && executor.restartWhenIdle),
     gracefulRestarts: Boolean(executor.holdCurrentTurns && executor.releaseCurrentTurns),
+    ...recoveryLink(origin),
   });
   const liveDevWebUi = liveDev.middleware(liveDevConfigFor(config.public.origin));
   const recoveryWebUi = config.recoveryOrigin ? webUi(config.recoveryOrigin) : canonicalWebUi;
@@ -3369,7 +3482,8 @@ export function createInstallationServer(
       return;
     }
     if (error instanceof InstallationSettingsInvalidUpdate) {
-      res.status(400).json({ error: error.message });
+      // The reason lets clients tell a stale primary connection choice from other refusals.
+      res.status(400).json({ error: error.message, reason: error.reason });
       return;
     }
     if (

@@ -1,3 +1,4 @@
+import { getProviderProbeCwd } from "../../../../utils/provider-probe-cwd.js";
 import type { Logger } from "pino";
 import type {
   AgentClient,
@@ -96,6 +97,7 @@ export class OpenCodeRuntimeClient implements AgentClient {
         });
         const result = await execCommand(launch.command, [...launch.args, "--version"], {
           ...createProviderEnvSpec({ runtimeSettings: this.settings }),
+          cwd: await getProviderProbeCwd(),
           timeout: 5_000,
         });
         output = result.stdout;

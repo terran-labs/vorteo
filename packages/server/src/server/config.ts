@@ -554,6 +554,14 @@ function resolveProfileLists(persisted: ReturnType<typeof loadPersistedConfig>) 
     installationResourceBindings: persisted.daemon?.installationResourceBindings,
     // Present even when empty: the coordinator reads the key as support for project policies.
     installationProjectPolicies: persisted.daemon?.installationProjectPolicies ?? {},
+    // Absent means not chosen yet, which lets a standalone daemon adopt its only connection.
+    primaryConnection: persisted.daemon?.primaryConnection,
+    // Present even when unset: the coordinator reads the key as support for the primary connection.
+    installationPrimaryConnection: persisted.daemon?.installationPrimaryConnection ?? null,
+    installationPrimaryConnectionSupported:
+      persisted.daemon?.installationPrimaryConnectionSupported,
+    // Present even when unset: the coordinator reads the key as support for the time zone.
+    timeZone: persisted.daemon?.timeZone ?? { override: null, reported: null },
   };
 }
 
@@ -606,6 +614,10 @@ export type ResolvedDaemonSettings = Pick<
   | "sharedProviderPreferences"
   | "installationResourceBindings"
   | "installationProjectPolicies"
+  | "primaryConnection"
+  | "installationPrimaryConnection"
+  | "installationPrimaryConnectionSupported"
+  | "timeZone"
   | "skillSelection"
   | "pluginsEnabled"
   | "plugins"
@@ -613,6 +625,7 @@ export type ResolvedDaemonSettings = Pick<
   | "relayRequireProtectedSecurity"
   | "appBaseUrl"
   | "idleRuntimeCleanup"
+  | "blockedWorkReview"
   | "resumeOnStartup"
   | "resumePrompt"
   | "providerCatalogRefreshTimeoutMs"
@@ -712,6 +725,8 @@ export function resolveReloadableConfig(
     relayEnabled: relay.enabled,
     relayRequireProtectedSecurity: relay.requireProtectedSecurity,
     idleRuntimeCleanup: persisted.agents?.idleRuntimeCleanup ?? true,
+    // Off by default: each review resumes a whole provider session and can cost a lot of usage.
+    blockedWorkReview: persisted.agents?.blockedWorkReview ?? false,
     ...resolveRestartRecoveryConfig(persisted.agents),
     providerCatalogRefreshTimeoutMs: persisted.agents?.catalogRefreshTimeoutMs,
     metadataGeneration: persisted.agents?.metadataGeneration,

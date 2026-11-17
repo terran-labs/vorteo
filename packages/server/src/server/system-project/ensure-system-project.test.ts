@@ -517,7 +517,11 @@ describe("protection", () => {
         {
           workspace: {
             ...workspace,
-            factoryMembership: { serverId: "s", projectId: "p" } as never,
+            factoryMembership: {
+              installationId: "project-factory:p",
+              serverId: "s",
+              projectId: "p",
+            } as never,
           },
           agentId,
           running: false,

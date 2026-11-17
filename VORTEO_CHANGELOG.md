@@ -2,6 +2,681 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 26.11.1601 - 2026-11-16
+
+### Fixes
+
+- Opening an unloaded OpenCode thread shows its history again. Since 26.11.1600, timeline reads served saved history without resuming the thread, and OpenCode has no way to read saved history passively, so these threads showed an error instead, which after a daemon restart meant every OpenCode thread. OpenCode-family threads load through their provider to show history, as before; Claude and Codex threads keep reading saved history without resuming.
+
+### Maintenance
+
+- Prepare release 26.11.1601, which replaces 26.11.1600 as the stable candidate.
+
+## Unreleased - 2026-11-17
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## 26.11.1600 - 2026-11-16
+
+### Fixes
+
+- Preserve linked workspace classification when a bare repository selects that checkout as its main worktree.
+- Report missing archived local checkouts correctly even when an older metadata projection persisted them as worktrees.
+- Keep ordinary repository checkouts classified as local workspaces during metadata-only discovery, creation and reconciliation, preserving missing-directory recovery behavior.
+- Count workspace rows rather than their drag wrapper buttons in grouped-project browser checks.
+- Skip stall reviews for role threads of a Factory project the owner has paused or drained.
+- Count a review as progress only when it starts a new background watcher, not when one was already running.
+- A background watcher no longer dies silently when the daemon restarts beside a running session host. Startup used to close every idle hosted session, ending any background shell, monitor or subagent meant to wake the thread; a session whose provider reports such work is now kept, with no prompt.
+- A thread that started a watcher in its last turn, or whose prompt was in flight, is no longer treated as idle when the session host ends before the daemon could check it.
+- No user-visible change.
+- A daemon restart beside a slow or wedged session host no longer stalls startup while it checks idle hosted sessions for background work. Checks run eight at a time with a 20-second limit on the checks together; a session still unanswered at the limit is kept, with no prompt. The limit covers only these checks, not listing, attaching or closing sessions.
+- A session host restart no longer wakes dormant threads. Before, every loaded hosted thread got a new provider process and a "continue the work in progress" prompt, so idle threads ran turns, could hit an exhausted account's usage limit and held gigabytes of provider processes. Now only a thread with a turn or permission in flight continues; an idle thread whose background shells, monitors or subagents stopped with the host gets one prompt to check them; every other thread stays closed until it is needed.
+- Keep owner attention after a restart hold deadline when its policy is omitted. Automatic interruption requires an explicit `auto` setting and the existing authenticated preparation checks.
+- A supervisor paused at a usage limit now receives finish notifications from workers that completed during the pause once the pause clears, instead of losing them.
+- Agents are no longer told a message was not delivered when only the run start was slow after the provider received it.
+- Restarting the daemon no longer releases a quota pause while the same account's usage-limit stop is still waiting, including Codex stops without a reset time.
+- A usage limit on one account no longer pauses worker-team members on other accounts. The supervisor and workers with quota left keep running; the supervisor cannot start a new worker on the limited account.
+- Agents now learn when a message to a paused thread is refused: at send time when the pause is already known, or as an errored notification when a queued message is refused at delivery.
+- Daemon start releases quota pauses left on accounts that are not limited.
+- Keep previews inside the workspace that published them. The Previews card opens on this thread and can widen only to this workspace; the daemon no longer sends a card, an owner action or an agent's feedback request anything from another workspace.
+- Keep the daemon CLI path in the native preview broker's pins exactly as given. Resolving it through the release link pinned one release, so a reinstall after any Host update was refused as a changed identity.
+- Ask for Codex reconnection when authentication setup or turn-start RPCs refuse a refresh, even while the old access token still answers usage requests. A refusal from an older sign-in cannot mark a completed reconnect as rejected.
+- The Claude provider diagnostic no longer risks signing a subscription account out. It runs `claude auth status` with a five second limit, and close to the sign-in's expiry that command could begin renewing the sign-in and be stopped midway. Inside the last ten minutes before expiry, and after it, the diagnostic now reports that the sign-in was not checked instead of running the command.
+- Vorteo starts far fewer Claude Code processes to list models. Every client reconnect forced a fresh model list, which on a busy installation started a process per account every five seconds. A forced refresh now reuses an answer less than a minute old, and a failed check is not retried within a minute.
+- Identify created checklist tasks by their new Vorteo ID so native task ordering cannot cause creation results or metadata checks to select another task.
+- A preview broker consumer deployment for brokers that were already serving requests now completes instead of ending in "Deployment remains unresolved". After restoring the brokers it no longer expects their ledger and request files to stand still, and recovery can confirm such a run from its evidence.
+- Preview broker consumer deployment works when its pinned Python is a Homebrew or python.org framework install. Preparation previously always refused with "Consumer preparation refused", because the framework launcher re-executes a different binary that the coordinator's process custody check would not accept. A refused preparation now shows its real reason in installation controls and the installation log.
+- Avoid scanning tracked files during workspace reconciliation and checkout discovery when only repository roots, branch, remote and worktree ownership are needed.
+- Stop the main workspace pane rerendering while the Explorer is dragged. The header's "new terminal from profile" action was rebuilt on every workspace render, which rebuilt the header and the pane with it.
+- Never run a stall review on a cold prompt cache. A slot missed by more than 15 minutes is forfeited, so turning the setting on no longer reviews threads that stopped days ago.
+- End a thread's review ladder as soon as a review leaves its checklist unchanged.
+- Cap reviews at 6 per thread per day and 12 per hour for the installation, and log each review's account, tokens and outcome.
+- Reuse successful background skill catalog settlement for one minute, reducing repeated directory scans while other shared settings continue reconciling every five seconds.
+- Attach the Previews service to the agent manager at startup, so the publish and feedback tools and the Previews feature flag are present on a running daemon.
+- Restrict Previews thumbnail rendering to one snapshot's own files in a sandboxed browser process, and stop rendering live links, so a published address cannot make the daemon read an internal service into an image.
+- Copy snapshot files through descriptors opened without following links, refuse hard-linked files and directories that leave the published tree, and enforce the size limit on bytes actually read.
+- Send feedback written in a frame embedded in a live preview only after confirmation on a top-level page that cannot be framed.
+- Compare the full origin on Previews posts and compare version ids in constant time.
+- Tie feedback on a live preview to the exact version the owner reviewed. The comment frame, the confirmation page and the daemon carry that version, and a send is refused when the address has been published again since.
+- Copy snapshots in a separate process that walks the published tree by working directory and opens files by bare name without following links, so a tree rewritten during the copy cannot redirect it.
+- Read the Previews version row style inside the stylesheet, not at module load, and add the Previews icon to one test's local icon mock.
+- Switch the preview broker to another Tailscale node while holding the broker's lock, after verifying the old node against its pinned identity, and remove reservations that name the old hostname.
+- Allow the Previews comment frame and pairing page to follow only the exact origins the broker reserved, with no hostname-wide allowance.
+- Refuse a previews node directory, state directory or socket that is not owned by the current user and private.
+- Refuse a preview broker directory that is not owned by the current user with mode 0700, before writing files or taking the lock.
+- Recognize the previews node's login agent by the canonical path of its binary, so removal works when the binary was given through a link.
+- Refuse a published path that is itself a link, verify each directory step of a snapshot copy by device and inode, and stop a copy that exceeds its entry, depth or 60 second budget.
+- Let the preview broker move to a dedicated node after that node has joined the tailnet. The move verifies the old node's identity and that it publishes none of the broker's ports, and no longer requires its access scope to be unchanged.
+- Add a reviewed way to accept a changed tailnet access scope on the same node: `--accept-access-scope` on the native broker installer prints the grants added and removed, each source and destination with its device name, ports and protocols, and keeps the reserved origins of running previews.
+- Keep a hosted agent's background shells, monitors and subagents alive while a session host upgrade is pending. Idle release used to close a quiet hosted session after five minutes even when a watcher was about to wake it, so the thread stopped silently until another message arrived. A thread holding a long watcher now holds the host upgrade until the watcher ends.
+- Hosted sessions that never ran a turn since their provider process started stay releasable. Claude and Codex report that they cannot stop before their first turn, so sessions opened only for reading would otherwise have held every host upgrade and escaped idle cleanup.
+- Keep routine Host watch checks on worktree metadata; require an explicit investigation flag for expensive file scans.
+- Share a finite, capped deadline across discovery and Host and Dev probes, and report missing paths and failed probes as unknown.
+- Main CI's server tests pass again: a Factory account-choice test now names a primary connection. Since the primary connection change, a standalone daemon launches only with a chosen primary connection, and the test still assumed the earlier first-usable-provider rule.
+- Reuse unchanged skill package inventory summaries during repeated shared-settings checks. Invalidation compares recursive path, type, size, timestamp and inode metadata, including receipts and executable modes, so nested edits and package replacement refresh the inventory without reopening unchanged package contents.
+- Keep skill mutation, detail, export and launch validation uncached. Inventory discovery still checks for additions and removals; cached summaries are bounded and do not authorize changes.
+- Keep sidebar-only workspaces off the active Git fallback cadence. Focused workspaces, open checkout views and running agents retain active polling; idle workspaces refresh at most once per five minutes unless a watcher event or explicit request arrives.
+- Share overlapping fallback polls and use minimal stat checks for routine polls on shared filesystems. Watcher events, explicit reads and a five-minute verification stay strict, limiting stale status from same-size edits with unchanged whole-second modification times. Read-only Git commands retain disabled optional index writes; untracked caching remains unchanged.
+- Keep checklist tool responses compact so large stored records do not overwhelm agent context. Limit new or patched task metadata to 8 KiB and retain full detail reads by task ID.
+- The model list check no longer signs Claude subscription accounts out. Vorteo starts a short Claude Code process to list an account's models and stops it as soon as it answers. Close to the sign-in's eight hour expiry that process also began renewing the sign-in, and stopping it midway discarded the renewed sign-in and signed the account out. Vorteo now skips the check in the last ten minutes before expiry and after it, and reuses the last answer. An ordinary catalog refresh also reuses a fresh answer for ten minutes; a forced refresh still starts a process.
+- An account whose access has expired but which can still renew is no longer reported as signed out. Its next agent session starts and renews the sign-in.
+- Check release identity and installed source containment before taking upgrade snapshots, so refused updates do not consume backup space or evict rollback points. Repeat checks after backup and retain source updater validation before installation.
+- Apply the same tree-containment rule to installer and tracked Host release prechecks, allowing local integration histories whose changes are already present in the release.
+- Report a busy button, or one kept focusable while disabled, as disabled to screen readers. The framework overwrote the flag, so "Check for updates" read as enabled during a check.
+- Stop demo mode sending every fresh page load outside Settings to the welcome screen. The simulated installation treated the demo hosts as connections still to register.
+- Name a settings row button by its visible text, then its row, without repeating itself: "Discard" on "Discard title changes" reads as "Discard title changes".
+- Keep the System needs attention button working where no query client is mounted. It read provider and update rows through a hook that required one and failed without it.
+- Allow release updates after tracked Host source merges when a clean merge preserves exactly the release tree. Refuse installed changes missing from the release and retain the installed prerequisite in the staged bundle.
+- Pass the signing-in account to shared sign-in routing in the redesigned provider sign-in panel, so older Codex accounts reconnect through their own daemon after the Settings redesign.
+- Reconnecting an older Codex account now signs it in. With Host-owned Codex sign-in on, every Codex reconnect went to the installation coordinator, which only signs in accounts the installation created, so older accounts never got a new sign-in. Those accounts now sign in through their own daemon, which writes the account's sign-in where its agents read it.
+- Settings shows a Codex account as needing reconnection once Codex reports that it could not refresh the stored sign-in. Previously the access token kept answering usage reads, so the account looked connected while every new agent failed.
+- Jump links keep working after System needs attention or a drill-in page: each page now finds only its own elements.
+- System no longer leaves an empty band at the bottom of the page or under the Host card.
+- Section headers stay on one line.
+- Locked settings no longer leave Health on Checking forever.
+- Removed controls that did nothing: the sidebar History, Schedules and Usage switches, usage window pins, the Usage modal, the unused profile editor and the hidden Show setup again row.
+- On phones, the dictation recording panel now reaches the screen's left, right and bottom edges, including the area under the home indicator, and fades in at its top instead of meeting the cards above with a hard edge.
+- Two-line thread titles in the phone toolbar sit level with the toolbar buttons instead of slightly low.
+- Spinners the user is waiting on, such as Send, stopping an agent and dictation that is transcribing, spin at upstream Paseo's original speed with a heavier ring. Background status spinners keep their calm tempo.
+- Phone recording backgrounds refresh their edge measurements after keyboard visibility and browser visual viewport changes.
+- Clarify that prominent action spinners use the faster 750ms cycle on every platform; passive indicators retain the 2700ms cycle.
+- The Host watch quotes every worktree path inside Dev, bounds Dev's pass with a time limit there too, counts a worktree whose history cannot be read as unchecked, and handles an empty or contended lock file.
+- The Host watch counts every open file of the Docker VM, including the descriptors lsof prints truncated as `*<digits>`, which are most of them under pressure.
+- Install the `vorteo` command on existing Host installations during a normal update, including the first update from a coordinator that predates the command. An unrelated `vorteo` is left alone, and the update explains how to add the command's folder to PATH instead of editing a shell profile.
+- Permit Chromium to chroot inside its user namespace without adding container capabilities. The Dev seccomp profile is generated from pinned upstream plus six documented exceptions and verified in full. Applying it requires container recreation.
+- Settings pages that locked when owner access expired now unlock again within a few seconds after you unlock on another page or tab. The page asks the server to confirm the session; it never trusts another page's word for it.
+- A shared plugin you were adding or updating stays open, with its reviewed source, while Settings is temporarily locked, so you can save it after unlocking.
+- Cooperative interruption now checks the current standing grant after manual finish approval. Paused or revoked authority blocks reservation and dispatch.
+- Preview broker consumer deployment now accepts brokers that are already serving requests, such as after an operator repinned their channel when a reboot renumbered the disk. It stops them first, takes its preservation baseline once they have stopped, and restarts the original brokers if it aborts before replacing any file. Each broker's admission mode is part of the approved plan, and the approval explains that running brokers restart on the new code and serve requests immediately.
+- Approved updates can restart automatically after the current-turn deadline when their retained enrollment explicitly covers the installed native cooperative phase. Durable continuation, matching hold and actual idle settlement remain required. Automatic restart must be explicitly enabled; omission keeps the owner prompt. System records completion after saved work is released to continue.
+- One environment no longer deletes another environment's worktree metadata. Vorteo locks the worktrees it creates, archive and recovery forget only their own worktree's registration instead of pruning the whole repository, and a new worktree never reuses a path another environment registered.
+
+### Fixed
+
+- Markdown links and notes are readable in Starship light and Scriptorium. They now use the accent text color, which reaches 4.5:1 on every working surface; the dark themes look the same as before.
+- Accent-coloured text is readable in every theme. Links, the Talk action on factory cards, the selected Profile model label, the welcome screen link and the update success label now use an accent text color that reaches 4.5:1 on every working surface: the brighter accent in Starship dark, Midas, Ember and Neon, the accent itself in Starship light, and a darker brown in Scriptorium. Accent buttons, borders, focus rings and icons are unchanged.
+
+### Maintenance
+
+- Prepare release 26.11.1600 from the source installed on the owner installation since November 14.
+- Vorteo vendors Vorton 26.11.1500's theme reference, which adopts Scriptorium's accent #86684a. Every mapped color now matches Vorton, and the drift check declares no exceptions while still failing on any undeclared difference.
+- Vendor Vorton's generated theme reference from commit e8e7980 with its source commit and SHA-256, and add a sync script that copies it from a local Vorton checkout.
+- The theme test now fails when a Vorteo palette color drifts from the Vorton reference, when a declared exception no longer differs, or when the vendored file is edited by hand. Neon and Scriptorium accents are declared owner-approved exceptions; 30 other differences (raised surfaces, accent text on Midas, Ember and Neon, and the shared status and destructive colors) are listed as undecided pending the owner.
+- Re-vendor Vorton's theme reference from commit 98955e4, where Vorton adopted Vorteo's status family, a separate destructive role, the raised surfaces and black accent text in Midas, Ember and Neon. The theme test now maps Vorteo's destructive color to Vorton's destructive role, and all 30 undecided differences are gone; only the owner-kept Scriptorium and Neon accents remain declared.
+- Move the stored review claim tests inside the review window now that late slots are forfeited.
+- The Vorton theme drift check no longer declares a Neon accent exception; the Scriptorium accent is the only remaining one.
+- Merge the remaining Nov 12 Host batch onto the installed Settings redesign, retaining account-scoped Codex sign-in, restart safeguards, broker admission and installer command support.
+- Fix the Codex concurrent reconnect test for the asynchronous sign-in read that now precedes connecting. The test waits for the reconnect spawn, gives a second caller time to start a duplicate, then checks that exactly one reconnect ran.
+- Vorteo :: Builds now installs ready work immediately, without asking the owner. Quiet windows exclude only themselves, and leads that schedule their next step for a later day are asked to start now.
+- Merge current main into the remaining Nov 12 Host batch before review, retaining the installed Settings code and the separate Codex start-refusal correction.
+- The theme test checks accent text contrast on all four working surfaces in all six themes. The Vorton drift check is unchanged.
+- Refresh the reviewed worktree environment ownership fix against current main.
+- Refresh the reviewed Time Machine exclusions for regenerable folders against current main.
+- Log the end of the Previews thumbnail renderer's error output instead of the start, so a failed browser launch records its reason and not only its arguments.
+- Add the Previews card's icons to the app's browser-test icon stub, so browser-mode tests that load the task cards import cleanly.
+- Add daily browser-to-Host network path checks to installation maintenance, with bounded Tailscale diagnostics and guidance for nearby devices that remain relayed.
+- Require known-peer filtering before diagnostic output and redacted network maintenance reports. Reuse daily checks and unchanged relay investigations.
+- Refresh Host watch after the Time Machine consolidation reached main.
+- Keep Host watch compatible with the latest System health documentation.
+- Refresh Host watch against current main while preserving its read-only reporting behavior.
+- Update session Git observer assertions to require background registration for workspace-list observation. Both workspace update and checkout status delivery retain coverage.
+- Model Darwin's canonical system Python in Host custody test fixtures so Linux runners do not substitute their symlinked interpreter. Production canonical-path and ownership checks remain unchanged.
+- Worktree registration cleanup resolves link paths before trusting them, so a link that walks out of a repository's worktrees folder is never taken for a registration, and relative registration links still match their worktree.
+- Repair two Factory account choice tests whose daemon settings chose no primary connection, so the pick for a stage without a profile never ranked any account.
+- Correct the restart test to expect blocking when a target loses support for its recorded continuation.
+- `scripts/worktree-locks.mjs` locks existing Vorteo worktrees in every Vorteo layout and, with `--unlock`, removes only Vorteo's locks before a downgrade. Worktree cleanup lifts Vorteo's lock only for the worktree it removes.
+
+### Improvements
+
+- Move the star rating onto each Previews tile, over the bottom left of its thumbnail. With a mouse the five stars appear when the tile is hovered and light up to the star under the pointer; a saved rating stays visible as a small chip. On a touch screen, tapping the chip opens the stars and tapping the tile still opens the preview.
+- Say under a Previews tile without a picture why it has none: a live page, a PDF, or no thumbnail on this environment.
+- Show the Previews card immediately after Open questions and before the task checklist.
+- Time Machine skips dependency installs inside task artifacts, at the owner's request, without excluding the evidence, screenshots or checkout source stored there.
+- Settings is denser on desktop, its sidebar is narrower, and Back and search share one short row.
+- Settings search is a combobox with announced results, and every jump from the sidebar, search or a Fix button moves keyboard focus to its target.
+- Host, Dev and Updates in System are each one compact row.
+- Pane headers no longer repeat "This device" beside every group.
+- Turning off Check usage hides the sidebar footer meter for that host and stops its polling.
+- Shared controls expose selected, expanded, checked and busy state on web; dialogs are named; the segmented control is a radio group; the off switch has a border; text fields link their label, hint and error.
+- Starship's light accent is #0a5fbd, with white text on it.
+- A read-only Host check reports file-table pressure (system, the Docker VM process and Dev's cached shared-folder inodes), task worktrees with uncommitted or unpushed work older than a day, and whether the latest completed Time Machine backup contains the precious folders. Hourly upkeep can alert on it.
+- The Host watch's stale-worktree check also covers worktrees only Dev can see, such as those on Dev's worktree volume, by reading them inside Dev.
+- Time Machine skips dependency installs, build output and Host releases without crawling the disk: new task worktrees exclude their `node_modules`, `dist` and `build` folders when dependencies install, the installer excludes each release revision it builds, and an upkeep command re-applies exclusions to named folders in seconds. Installation safety snapshots are excluded too, at the owner's request, because they copy state Time Machine already backs up. Source and project files stay backed up.
+
+### Changed
+
+- Neon's accent is now violet (#8b5cf6) instead of blue, matching Vorton. Buttons, switches, selected borders, links and accent tints in Neon follow it; black text on the accent measures 4.96:1. The lighter violet focus ring and the theme preview are unchanged.
+
+### Features
+
+- Review threads that stop with work left in progress, not only blocked work, when nothing else will wake them. Threads with live background work or a running subagent are left alone.
+- Settings > General > Installation has a Time zone row. Automatic follows the browser of the owner device that opened Vorteo most recently; a searchable list of zones overrides it. The choice is shared by the installation and reaches the Host and Dev.
+- Agents learn the owner's time zone. Each launch adds one line naming it with the current abbreviation, and the list hosts tool returns it.
+- Serve previews on a dedicated hostname. The native preview broker can publish through a second Tailscale node with its own state and socket, installed as a login agent, and the Previews comment frame and pairing page follow each reserved preview origin by name.
+- Add a Previews gallery. Agents publish web pages, slide decks, images, PDFs and live preview links as frozen versions with thumbnails; you rate them, pick between options with a reason, approve a version and compare versions from a Previews card under the conversation.
+- Add browser review. Open a version in your browser, pick an element or region and comment; the comment reaches the authoring thread with the version and location, and agents read all feedback with `get_preview_feedback`.
+- Add an injecting reverse proxy that puts the review toolbar on live previews without changing the preview broker, with live reload passed through.
+- System opens with a Health list: one row per problem, with its current status and a Fix button that jumps to the control that resolves it, or one quiet All good row. The sidebar's System needs attention button counts the same rows and lands on the list.
+- Settings has two groups under ruled headings. This device holds Interface, which now includes the former Notifications & privacy panes. Vorteo holds General, Providers, Agents, Voice, Projects & integrations and System, and Environments is now a group inside System. Old addresses still open the right place.
+- Each environment is one row whose Edit button opens its full settings in a dialog, with environment exceptions in a collapsed group.
+- The owner lock is a Locked and Unlocked radio group at the top of the Settings sidebar.
+- Providers are flattened into one card with Move up and Move down buttons. A provider whose only connection is signed out shows Connect beside its switch, and Reconnect N expired walks through every expired connection.
+- The connect and reconnect dialog keeps one status line that changes in place, puts links and codes in copy fields, and never shifts between steps.
+- Lists longer than five items collapse into a summary row with a Manage dialog.
+- Device groups such as Theme, Fonts, Layout, Chat, Sending, Editor, Terminal, Files and Open location have their own Reset button.
+- Rarely used controls sit in one collapsed Advanced group per section; searches and jumps open it.
+- The installation name saves on Enter or when the field loses focus.
+- Data saving is automatic from the browser's signals. The startup screen's Enable data saver is the only manual override, and Follow browser in Settings > Interface > Fonts clears it.
+- The browser demo simulates a Demo Lab installation, so installation-wide settings show sample data.
+
+### Known limitations
+
+- A daemon without an installation has no Time zone control, so its agents get no time zone line.
+- Factory role schedules and the Optimizer review still use the daemon's own zone, which is UTC in Dev.
+- The System needs attention button counts provider, primary connection and update rows only after Health has rendered once in a session.
+- The single Connect shortcut covers Claude and Codex account types.
+- The daemon still answers the provider usage list while usage is off.
+- End-to-end specs were updated by reading the code and were not run for this change.
+- Extra-muted text in Midas, Scriptorium and Ember, and the accent as small text in Midas and Ember, remain below the contrast the accessibility audit asks for.
+
+### Factory charter changes
+
+- Mechanic: the system project gains shared daily connectivity checks; other projects are unchanged. Existing project additions retain the normal charter review gate.
+- Mechanic: clarify pre-output privacy filtering and daily evidence reuse in system installation guidance.
+
+## Unreleased - 2026-11-15
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-14
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-14
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-14
+
+### Fixed
+
+- The Nova bridge no longer pages a thread's whole history when it first sees the thread or after a daemon restart. It reads the newest rows, reports a gap when that window cannot cover the change, and skips threads that have not changed. On the M2 these full-history reads drove the daemon out of memory.
+- The Nova bridge reports a gap after re-anchoring only when rows were actually skipped. Its bounded reads cut how many threads it reads, but until the separate daemon fix lands, one newest-page read still makes the daemon load that thread's full history.
+
+## Unreleased - 2026-11-14
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-14
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+- Keep the daemon inside its memory limit for long threads that switch accounts. Each switch now stores only its own new history as a streamed segment instead of a full copy, existing copies migrate on first read without deleting any of them, and a thread replays at most its newest 48 MB of retained history.
+- Opening or paging an unloaded thread reads its saved history without resuming it, so a client that pages every thread no longer keeps them all in memory. Saved reads run two at a time.
+- Give the production daemon worker a heap limit of a quarter of usable memory, capped at 12 GB, when that exceeds Node's default. A 64 GB Host gets 12 GB instead of about 4 GB; smaller machines and the packaged desktop app keep the default, and a heap flag in `NODE_OPTIONS` or the supervisor's arguments still wins.
+
+## Unreleased - 2026-11-14
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-14
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-14
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-14
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-14
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-13
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-13
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-13
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-13
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## 26.11.1200 - 2026-11-12
+
+### Highlights
+
+- Claude Fable 5.2 is available in the model selector, with fast mode and a 1M context window, on Claude Code 2.1.321.
+- Codex app-server processes start outside shared project folders, which cuts Dev file pressure, and provider probes run in isolated working directories.
+
+### Maintenance
+
+- Repair the System pane test fixture so desktop runtime detection and imported settings dependencies load without missing mock exports.
+- The daemon keeps ten rotated log files instead of three, and logs which agents a waiting restart is holding for.
+- Reconcile published incident source ancestry with the reviewed lifecycle and hold corrections for managed delivery.
+- Integrate the reviewed restart-liveness and history-read repairs with the published consolidation release history.
+- Preserve the installed Claude reconnect and coordinator refresh changes when publishing the immediate Factory sidebar card.
+- The "sign-in is gone" warning fires only when a sign-in that was present disappears, not on an account's first check, and recovery is covered by a test proving it never runs the Claude refresh unless the setting allows it.
+- When coordinator renewal is turned back on with `claudeCoordinatorRefresh`, a failed renewal logs a fixed category from the CLI's result, and the request no longer waits three seconds for input.
+- Open Factory in the Factory workspace menu uses the same destination as the Factory card.
+- The retired adoption fence clearing applies only to failed adoption requests, and the docs describe the clearing and the boot-entry switch preflight accurately.
+- Remove the retired Factory controller, observation interface, owner controls and the setup, install and status commands. Per-project Factory, the Factory Overview and managed workspace protections remain.
+- Open Factory in the project and Factory workspace menus opens the built-in Factory overview instead of the removed plugin screen.
+- Correct the version named by the recovery link's compatibility tags.
+- Brought the primary connection branch up to current main and moved a settings reader's description back onto its own method.
+- Remove the unused Factory membership service and binder while keeping per-project workspace protections, and update the Factory documentation.
+- The published daemon configuration schema lists the primary connection fields.
+- Lightweight server entry points stay off the protocol wire schemas: the daemon primary connection schema now lives beside the installation settings.
+- The config reload smoke test keeps a primary connection choice the daemon stored on its own before the test rewrites the file.
+- Shared settings conflict reviews name the primary connection.
+- Shared settings refuse a primary connection that is removed or turned off, or whose profile belongs to another provider, with "That connection is no longer available." The setup guide's save resolves its choice from the exact settings it writes and retries once after a concurrent change.
+- Requires the coordinator and daemons from the same release: with an older coordinator, installation daemons never receive the primary connection and system threads wait.
+- Installation daemons use the primary connection only once their coordinator supports it. Under an older coordinator, the Optimizer and Factory keep launching with the first usable provider instead of waiting, and Settings hides the primary connection controls.
+- The customizations inventory describes the primary connection for system threads.
+- Resolve the chosen account from the same Settings snapshot whose revision guards the primary write. The shared helper retries one concurrent edit; removed, disabled or unavailable choices and failed saves keep an error and Retry without advancing setup.
+- New guide text uses an English fallback in the other eight locales pending translation. Provider snapshots do not expose structured installed-but-signed-out state, so setup directs unverified providers to Settings rather than guessing.
+
+### Fixes
+
+- Hosted Claude agents now run the Claude Code bundled with the installed release instead of whatever `claude` is on the Host's PATH, so models such as Fable 5.2 no longer fail with an unsupported-version error after the session host starts.
+- Starting a Claude agent now refuses, before the CLI launches, a model that the Claude Code it would run is too old for, and names that executable, its version and how to update it.
+- Fable 5.2 requires Claude Code 2.1.290, the version Claude Code itself reports, instead of 2.1.321.
+- Managed Host source-update background release cleanup is suspended until startup and pruning share exclusive lifetime protection. Successful installs retain old releases and record the reason in their background cleanup receipt.
+- A waiting update that passes its deadline is marked "Your decision needed" in installation controls. Force restart appears for an update only while it is waiting for current work, and older open tabs keep working.
+- Updates that wait for current work no longer stall for hours. An agent waiting on another agent's reply now receives it inside its running turn, so it can finish, and held messages wait for the update instead of retrying every few seconds.
+- After 15 minutes of waiting, the update asks you to restart now or cancel, and it lists the agents it is waiting for. Restart now is available for source updates too.
+- Run one-shot provider checks and background title/summary generation from a private temporary directory instead of scanning shared homes or source checkouts.
+- Prevent Claude sign-in from launching after cancellation while its probe directory is being acquired.
+- Isolate model-discovery fixtures from persistent probe storage and preserve retained helper files.
+- Messages no longer cancel a running turn when a restart hold begins while steering or its fallback is waiting.
+- Keep Codex app-server processes in the isolated local directory while passing workspace directories through the thread protocol. This prevents startup scans of shared project trees.
+- Discard orphan Codex child terminal and progress notifications at root completion so a reused child route cannot inherit a false completion. Preserve genuine child starts and their later notifications across the root boundary.
+- Preserve the latest Codex child start and terminal observations when its bounded pre-route buffer fills. Root completion can no longer discard a genuine running child after progress evicts older frames.
+- Claude query starts using the same configuration-directory string share a startup slot within one daemon process. The next start waits for SDK initialization to settle, or for the 15-second limit even if initialization remains unresolved. Other directory keys do not wait.
+- Idle cleanup refuses a Claude CLI younger than 60 seconds. Host shutdown still waits at most 10 seconds before closing providers; this does not guarantee that refresh has finished or prevent interruption during token rotation.
+- Claude debug-file output is unavailable, including when an existing opt-in file requests it. Private path custody at the SDK write and exclusion of credential material from its output are not established.
+- Claude full sign-in accounts no longer lose their sign-in when the coordinator's renewal fails. The coordinator stops running the Claude CLI to renew a shared account by default, because a failed renewal erased the account's saved sign-in. Host agents keep renewing it as they work, and Dev receives their tokens.
+- An account whose sign-in is gone shows Reconnect on its row in Settings, and the coordinator logs one warning naming it.
+- Show the conversation navigation rail on tablets and small windows whenever the margin beside the messages can hold it, and hide it when a widened text column would put it over messages or tool rows. Phone layouts are unchanged.
+- Keep the floating Latest button on its resting background when hovered, so it is no more translucent on hover than at rest and conversation text no longer shows through it in the built-in appearances.
+- Read saved history without starting a provider when a thread has neither a native handle nor retained switch history. After a timeline load fails, polling retries after 30 seconds.
+- Preserve the timeline cursor when a provider closes during a history read. The Retry button can attempt a fresh history load during the polling cooldown.
+- The setup guide reopens at the step you left when you go to Providers settings or Add host, and no longer restarts from the first step on every reload.
+- Follow system shows when it is selected, and screen readers announce it as a toggle.
+- The provider step preselects your saved primary connection, and step and provider menus announce their current choice.
+- History errors name the provider, and the guide's error messages are translatable.
+- Workspaces that still carry a membership from the retired Factory controller can be archived, moved and adopted into Vorteo System again, and no longer block archiving other workspaces in the same folder.
+- A project with an old Factory checkpoint no longer keeps its key fixed during Host and Dev project synchronization, and Vorteo System can archive it when it is emptied.
+- Factory runtime adoption and a Dev boot switch back to the Factory launcher are refused with a clear error, because both started the removed controller runtime.
+- A Factory adoption recovery fence left from before the controller's retirement no longer blocks Dev restarts and broker dispatch; the coordinator clears it at startup and notes why on the failed request.
+- A workspace whose only Factory membership came from the retired controller is archived automatically when its folder disappears, like other ordinary workspaces.
+- Keep worker restarts waiting for provider children reported running by the attached session. Historical child descriptors remain visible in the conversation.
+- The primary connection waits instead of launching when its account has no credentials, and a setup-token connection that has never hit a limit still launches.
+- An upgrade asks the owner to choose a primary connection when another connection's sign-in cannot be confirmed, instead of waiting forever.
+- Installations on an older coordinator keep the earlier launch rule exactly.
+- Settings now warns when the primary connection cannot run on the Host, or where a Factory runs, even if it works in another environment, and offers Make primary only for connections ready on the Host.
+- An upgrade no longer picks a primary connection while another connection is still loading or briefly failing its usage check.
+- A temporary usage check error on the primary connection no longer stops the Optimizer and Factory from starting.
+- Factory's message when no connection can start its agents now names the actual causes.
+- Claude and Codex connections that sign in with an API key, token, gateway or cloud provider are no longer treated as having no credentials, so a primary connection of that kind still launches. Only a Claude full sign-in account with an empty credential store counts as having none.
+- Codex usage reads no longer fail on an API-key sign-in file.
+- An installation name containing `$'`, `$&` or similar no longer breaks the page's startup script or its title, because the served page inserts the name literally.
+- Old Factory installation checkpoints are treated as inert data, so they no longer block project archive, removal or system project adoption, or prevent older records from loading.
+- When a thread's history fails to load, the error notice and its Retry button now float over the conversation with the other sync notices, so the message field no longer moves.
+- Return persisted Factory queue snapshots while one background refresh runs. Bound GitHub and agent reads, retain stale evidence after failures, and avoid repeated GitHub calls for paused or draining Factories. Bootstrap their first snapshot once when none is saved, and skip disabled Factories.
+- Check cold refresh progress promptly in the overview and sidebar, then restore the normal slow interval.
+- Keep unversioned Codex collaboration snapshots from overriding an observed child turn. Providers that lack turn observations retain child-state snapshot handling.
+- Keep Codex child lifecycle notifications live while reading history. Child model updates no longer report lifecycle status.
+- Preserve the order of Codex child starts and completions when history discovers their route. A child can keep running after the parent turn finishes.
+- Preserve Codex child lifecycle observations when history reconstructs a stale launch card. Ordinary child progress cannot settle or reopen the child turn.
+- A participant scope restore that fails while staging its bytes now removes the partial staging file.
+- A broker settings change whose restart outcome cannot be read no longer restores the old participant scope when the coordinator already runs the new configuration, which pins the new scope. Restoring a scope now stages its bytes beside the scope file, so it also works when the scope is on another volume.
+- Read a paused Factory snapshot once even when an inactive panel already created its cache entry. Bound summary queue reads to three shared slots and give them bounded priority while continuing to serve waiting card reads. Retry only failed reads.
+- Show All Factories status immediately from the factory list, including paused and held factories, without waiting for GitHub queue reads. Keep cached pipeline snapshots visible with their timestamp and offer retry on failure.
+- Installation daemons re-check coordinator support for the primary connection on every successful settings read. After reconnecting to an older coordinator, the Optimizer and Factory return to launching with the first usable provider instead of waiting; a failed read keeps the last known answer.
+- System thread launches re-read the primary connection after their provider and usage reads, select again once if it changed, and otherwise wait, so they never start on a primary connection the owner just cleared or replaced.
+
+### Features
+
+- Shared profiles can save a reasoning level, including Claude Ultra Code, or follow the model default, which the editor names, such as Model default (Medium).
+- Profile picker rows show the model and effective reasoning, and the composer's profile button adds the reasoning level.
+- Choosing a profile without saved reasoning uses the model default instead of the composer's last remembered level.
+- Fable 5.2 now defaults to Medium reasoning, matching Claude Code.
+- The installation records one primary connection, stored once in shared settings and used in every environment. The Optimizer, Factory and other system threads launch with it, through its profile when one is set. Without one they wait instead of picking whichever provider is usable first.
+- Upgrades adopt the only usable connection as primary once. With several, Settings asks the owner to choose: General Status shows "Choose a primary connection for system threads", and Providers marks the primary connection and offers Make primary, with a confirmation, on other ready connections.
+- Standalone daemons show the same Primary badge and Make primary action on their providers page, saved in the daemon's own config.
+- When the primary connection is off, signed out or not ready anywhere, General Status says "Your primary connection is unavailable. Choose another for system threads." Turning off the primary connection first warns that system threads will wait. Nothing switches automatically.
+- Add a skippable Vorteo setup guide after owner sign-in. Progress belongs to the installation in this browser, Skip stays distinct from Finish, and **More > Show setup again** reopens it. The branded welcome and demo remain; the upstream walkthrough stays hidden.
+- Add Follow system alongside the Vorteo appearance presets. Setup also shows saved agent tools and skills, changing them only through explicit actions.
+- Setup offers one detected Host provider and highlights a verified sign-in. Existing installation controls own sign-in and supported sharing to Dev; additional providers stay in Settings. An explicit Use saves the primary connection on supported hosts. Older hosts keep the choice only in the guide and say it was not saved. Skip and account creation never choose a primary connection.
+- Show the Projects folder, retain manual Add project and offer capability-gated suggestions from agent history with retry. The System project does not count as a first user project.
+- Explain PWA access and supported direct or SSH Add host methods, with an installation-address QR code and CLI help. Phone pairing and app-store links stay retired.
+
+### Improvements
+
+- The startup error page offers Open recovery beside Reload and Copy diagnostics when the installation has a private recovery address, so the owner can reach the native interface while the main address cannot start.
+
+## Unreleased - 2026-11-11
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-11
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-11
+
+### Maintenance
+
+- Combine 2 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-11
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-11
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-11
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-11
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-11
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-11
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-10
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-10
+
+### Fixes
+
+- Claude model selectors now include every model the installed Claude Code reports, with its own name, description and effort levels, instead of hiding models missing from Vorteo's built-in list. New Claude releases appear without a Vorteo update once the CLI supports them; fast mode, context window size and disabled thinking still need a built-in entry.
+- Add Fable 5.2 to the built-in Claude models with fast mode and a 1M context window, so its toggle, context meter and subagent label work on every daemon and survive a failed model probe. Effort levels a newer CLI reports but this daemon cannot launch are left out, and gateway or cloud spellings of built-in models no longer appear twice.
+- Running agents on a newer minor release, such as Fable 5.2, no longer display as the older major model.
+- Pin Claude Code 2.1.321, which adds Fable 5.2. Static analysis found its Keychain naming, credentials file, storage and refresh locks, setup-token handling and MCP discovery probe unchanged from 2.1.318.
+
+## Unreleased - 2026-11-10
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## 26.11.902 - 2026-11-09
+
+Hourly blocked-work reviews, which reread whole conversations and could spend a large share of a weekly Claude limit, are now off by default. When an owner turns them back on in Settings, a blocked thread gets at most three reviews, at 5, 15 and 30 minutes, inside the prompt cache window, then none until someone writes to it. This release also brings Lab live development, Claude reset visibility, and phone, tablet and queue refinements.
+
+### Fixes
+
+- Keep tablet workspace tabs at the standard height while retaining the workspace name.
+- Keep Send distinct from the separate Queue action on touch tablets, including drafts with images.
+- Bring conversation content eight pixels closer to the composer edges and allow tablet column resizing to the available boundary.
+- Give expanded context charts the same evenly segmented capacity ring as collapsed tiles, retaining category colors and adding a blue, violet and green sweep when only totals are available.
+- Round Settings search and Back controls to the surrounding panel radius, match their hit-area height, and right-align the search field at its placeholder width.
+- Reduce the shared phone toolbar height and balance collapsed detail tiles across rows without counting hidden cards.
+- Expand phone Files, Changes and pull request details in place with the other conversation cards.
+- Keep fullscreen editing in the existing editor, with actions along the bottom and profile and browser controls hidden.
+- Use matching gaps between composer actions and detail tiles, center the empty phone placeholder, and keep recording at a fixed height.
+- Route the phone right-edge opener to Settings and give Settings its own return-to-workspace swipe, while keeping an open sidebar's close gesture separate.
+- When the installer refuses a release that would drop a commit a source upgrade installed, it now advises fixing forward on main and source-upgrading again, keeping snapshot restores for damaged state.
+- When the installer will not take over a source upgrade, it says why, such as a Host build still running, and how to clear it.
+- A `--source` checkout that lacks the installed commit now gets a clear error suggesting a fetch of main, instead of a false report that the release drops the commit.
+- Start live development on installations whose main address is a custom domain, using their private `.ts.net` address for the dev server.
+- Give card and sidebar section headers, including Open questions and Quota, the same quiet hover fill and 8px corners as the workspace rows.
+- Match small sidebar row actions (the project add button and the workspace menu trigger) to the row's kebab hover.
+- Align the conversation resize bar with the message field's right edge; read-only threads keep it on the column edge.
+- Dragging the docked Explorer's edge no longer rewrites the app's shared stylesheet on every frame, so resizing stays smooth.
+- Show free Claude limit resets, such as Fable resets, in the account picker by identifying Claude usage and reset requests as the installed Claude Code CLI.
+- Label Claude resets from the limits they clear. A reset for one model's weekly limit, such as Fable, no longer reads as a 5-hour session reset or as clearing the overall weekly limit.
+- Show the selected account's available resets in the composer's profile button caption.
+
+### Live tweaks
+
+- Remove the extra space above the Queue card's connection error by making its Retry action compact.
+- Show only the warning icon for System attention in the collapsed sidebar, with the message in a tooltip.
+
+### Features
+
+- Make Lab the single switch for live development: choosing Lab serves your browser from the live checkout with hot reload and enables lab self-updates, and Stable serves the published interface. The separate Delivery mode switch is replaced by a read-only Live development status.
+
+### Maintenance
+
+- Log each change in Claude's reset eligibility per account, without grant identifiers or labels, to confirm what Claude returns.
+- Separate bounded browser restart prerequisites from the restart behavior budget, and give the fixture ownership of acquired resources through teardown.
+
+### Changes
+
+- Blocked-work review is now off by default. Each review resumes the thread's whole conversation, so a few blocked threads could use a large share of a weekly provider limit. Turn it back on in Settings, System, **Review blocked work**; the change applies without a restart.
+- When blocked-work review is turned on, a stopped thread now gets at most three reviews, about 5, 15 and 30 minutes apart, then waits until someone messages it. The short gaps reuse the provider's prompt cache, so each review costs a fraction of the old hourly review, which reread the whole conversation every hour indefinitely. Blockers waiting on an open question are skipped, and the setting is renamed **Review blocked work**.
+
+## Unreleased - 2026-11-10
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-10
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-10
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-09
+
+### Fixes
+
+- The Queue card no longer appears expanded and empty while the queue loads or while a send now, pause, delete, reorder or edit is still syncing for a message that has already left the queue. It shows only when it has a message, an error or a change to recover.
+- On New workspace, Import session now fades away with the launch controls when the first message is submitting, and returns if creation fails.
+- A queue pause refused because the queue changed no longer strands later messages on this device. The app checks the current queue, drops a pause it already satisfies and resends it against current state. A refused resume stays for review without holding later messages, and Retry now applies it to the current queue. Rejected pause, delete and similar commands offer Dismiss instead of keeping a local copy.
+
+## Unreleased - 2026-11-09
+
+### Improvements
+
+- The working indicator beside a running turn is now a 3x3 dot grid whose dots twinkle independently, flicking on and fading smoothly back down.
+
+## Unreleased - 2026-11-09
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## 26.11.901 - 2026-11-09
+
+This candidate includes the reviewed shutdown registration repair alongside the interface and installer updates prepared in 26.11.900. Release validation and installed acceptance are required before promotion.
+
+### Fixes
+
+- Stop agent creation before starting a provider session when shutdown begins during setup. Sessions already starting still complete their required cleanup.
+
+### Maintenance
+
+- Isolate the supervisor stop regression from automatic System agent startup while preserving its shutdown and no-respawn assertions.
+
+## 26.11.900 - 2026-11-09
+
+Release preparation combines the reviewed interface, Factory and installation updates. Physical iOS keyboard, safe-area and native hit-target acceptance remains unverified.
+
+### Fixes
+
+- Add the missing Minus, Clock and Circle icons to the shared Lucide test stub for provider settings test collection and linked browser test imports.
+- Normalize the installation queue snapshot after a successful journal write so broker consumer deployment preparation can retain prepared or failed outcomes without a false reservation conflict. Genuine changes by another writer still invalidate the reservation.
+- Creating a workspace on another host without a path now returns a readable error instead of a bare validation error.
+- Fixed succeeded restarts retaining waiting-for-hold status after hold release succeeds on retry
+- Record the first line of hold release errors in existing coordinator diagnostics
+- The board icon is gone from Factory headers; the Overview button replaces it.
+- The sidebar no longer shows a Needs you count on All Factories or on Factory tiles. Questions for the owner stay in the Open questions card.
+
+- Factory pages use the History heading style. Live mode hides sample-backed reports, and owner questions replace the overview Needs you panel while issue badges remain.
+- Mobile Settings and sidebar toolbars share their surface and underline. Composer buttons no longer overlap, fullscreen keeps dictation, reset pills stay compact, folder menus align vertically and the footer clears rounded phone corners.
+- Every rotating loading indicator uses the same calm 2.7-second cycle, including the boot screen.
+- Factory account picks now treat a usage reading without its own timestamp as read when its usage list was, so fresh accounts qualify instead of every pick falling back to the configured default.
+- Factory picks for another environment reject globally disabled accounts even before that environment refreshes its readiness snapshot.
+- Factory account picks for Dev now find accounts set up through managed sign-in, such as Claude accounts, which previously never qualified there. Two accounts count as the same only when the installation's provider definitions bind both, never because their local names match.
+- Read Factory stage and runner colors when rendering so they follow the saved theme at startup.
+- Vorteo's dependencies install inside the Dev container. Node's built-in `fs.cpSync` directory copy fails with a permission error on Dev's shared Projects folder, on Node 22 and 24 alike, and `@shopify/react-native-skia` uses it during install, so every `npm ci` there failed. Linux installs now load `scripts/lib/cp-sync-js.cjs`, which keeps `fs.cpSync` calls that pass no filter of their own on Node's ordinary copy path.
+- Restore the installer animation during Host and Dev release builds when updating an existing installation from the terminal.
+
+### Changes
+
+- The Factory Foreman now gives each lead the go to start its worker, after checking the plan's files against all work in flight. Overlapping issues wait without holding a worker slot instead of colliding.
+- The Foreman picks every agent's account itself, including a planning lead's worker, so leads and workers no longer call the Factory service.
+- After each merge, the Foreman removes the merged issue's clean worktree and tells in-flight issues that touch the same files to merge the default branch right away, so conflicts appear before merge time. Issues are never combined into one branch or pull request.
+- Foreman dispatch: waiting plans never block each other (the oldest overlapping issue goes first), planning-off issues get the same overlap check from a Foreman-posted file list, a worker stops before touching a file outside its plan until the Foreman clears the wider plan, and only the Foreman checks for a pause before sending a go.
+- Factory now runs the Foreman's per-issue leads, workers and reviewers in the Dev container by default, because they run the repository's code, while the Factory role agents stay on the Host. `vorteo factory project configure --issue-agents host` keeps them on the Host. Existing Factories move new issue agents to Dev when this ships; running ones finish where they are.
+- `vorteo factory project show` reports where issue agents run and whether Dev can take them. When Dev is unavailable, the Foreman waits and says why instead of starting issue agents on the Host.
+- The Factory queue includes issue agents running on Dev, even after a switch to host mode, and still shows the Host's agents when Dev cannot be read.
+- Factory can pick a quota-aware account for an agent that will start on a connected host such as Dev: `vorteo factory project pick-account --server <server-id>` returns that host's own id for the same installation account, so work never starts on an account the host lacks or excludes. An unreadable host fails the pick instead of falling back, and a stage profile bound to one account is refused for another host because it cannot launch there.
+
+### Features
+
+- All Factories shows a compact pipeline summary above Pinned; pressing it opens the overview. Each project's Factory remains a folder-like row with a stage bar and an Overview button; pressing the row folds its contents.
+- The Foreman leads each project's Factory as a full-width tile labeled "Talk to the Factory", the place to start a conversation with the Factory. The other roles follow under Crew, then the runners.
+- The sidebar marks which Factory overview is open: the All Factories row, or a project's Factory row together with its tile under All Factories.
+- A repository's Factory now runs in one environment of an installation, its Factory home, by default the Host. Turning Factory on in Dev for a repository the Host already runs, or the reverse, is refused with a message naming where it runs, so one installation never has two Builds or two Mechanics for one repository. `vorteo factory project show` and the Factory Overview show the home.
+- Host agents can start agents in the Dev container that report back. The installation saves Dev as a connected host named "Dev container" on the Host daemon, so the ordinary agent tools with `serverId` create Dev agents with labels and a parent link, deliver their finish notices and read their status and activity.
+- Creating an agent on another host accepts `profileId`, a shared preset on the destination. The destination applies the preset's model and instructions, and the provider still selects the account. A preset bound to a different account is refused instead of quietly switching accounts.
+- Installation controls show Stable source upgrades under **Source upgrades**, with when a delegated one starts, and Install, Reject and Cancel. An open page checks for new delegated requests every ten seconds, well inside their thirty-second window.
+- Builds can request a Stable source upgrade with `request-source-upgrade` and follow it with `source-upgrade-status`. Under full maintenance delegation it starts after a thirty-second window, finishing current turns before the Host restarts; otherwise the owner approves it. Rollbacks stay with the owner.
+
+### Maintenance
+
+- Reconciled the Factory and mobile polish branch with current main without changing its reviewed interface implementation.
+- In task worktrees and `paseo.json` workspace setup, a full dependency install now waits for the environment's heavy-job slot, as the queue's rules already required. Heavy jobs mark their commands with `VORTEO_HEAVY_JOB=1`, so an install that already runs inside one, or as Builds, does not wait on itself. Installer, coordinator, web build and live dev installs keep running at once, since they can run while the Builds gate holds the slot.
+- The dependency cache stays macOS-only. Measured in Dev, copying a cached install onto the shared Projects folder took about 1m45s against about 2 minutes for `npm ci`, for a 5.6 GB cache.
+- Disabling the saved Dev host keeps it off. The coordinator only follows a changed Dev password, detected by a hash of the connection stored in the registration's metadata, and only touches the registration it owns, matched by its source and key.
+- Every owner route now has an agent request command, an exclusion or a pinned exemption; the front-door gap list is empty.
+- Reconcile published main with the installed Factory home-lock source before the next Host update.
+- Update the packaged shared metadata case to observe the error toast after a rejected save and its absence after retry. Open Settings before unlocking the retry on phone. Preserve the saved selection and both environments’ configuration checks.
+- Update the shared policy case to open Dev maintenance details through System after the old Environments shortcut was removed. Wait for Environments to render before checking that no direct restart button appears, and repeat that check after Dev details open. Preserve policy saves, draft conflicts, retries and unlocked owner access.
+- Update five packaged installation test groups to use provider Settings and inline draft profiles, and read project identity before opening the handoff sheet. Preserve compatibility, shared edits, environment exclusions, draft attachments and workspace membership checks.
+- Apply and verify the fixture's final shared settings revision before starting background reconciliation and agent launches.
+
+- Scope compatibility editor controls to the visible Settings screen and environment icons to the open profile picker, excluding retained hidden screens and sidebar rows. Merge current main validation and dependency-order fixes into the task branch.
+
+- Reopen provider details after reloading Settings, and use the compact workspace header menu for cross-environment project moves while retaining directory, membership, chat and reload checks.
+
+- Scope phone workspace actions to the destination workspace deck. Verify saved alias permissions in the shared profile record and require launch requests to leave those permissions to the daemon.
+
+- Select the visible phone workspace header when retained route screens contain the same workspace deck, preserving all project-move checks.
+
+### Interface
+
+- Combine the Factory Kanban board and statistics in one view, with a Factory selector in the title and a compact pipeline summary in the sidebar.
+- Move phone workspace details into tiles and sheets, align touch composer controls and support tablet conversation resizing.
+- Add a globe menu for thread browser access and an evenly segmented context usage ring.
+- Explain System attention, improve narrow update rows and restore weekly provider history charts.
+
+### Fixed
+
+- Restore cross-environment model compatibility warnings in the routed profile editor. Saved aliases remain unchanged, and unsupported or unavailable environment catalogs retain their existing warnings.
+
+## Unreleased - 2026-11-09
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-09
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
 ## 26.11.701 - 2026-11-07
 
 Beta that adds an All Factories view with a Needs you panel and a Stop all switch, delegates coordinator updates, settings and routine installation changes under the full maintenance grant, gives the Foreman stricter dispatch rules, and fixes Factory account picks.
@@ -12467,3 +13142,62 @@ This baseline summarizes custom features and fixes present through this version,
 - Expand General connection diagnostics with independent health HTTP, WebSocket handshake, cross-origin response and enforced browser content-policy evidence. Keep hidden DNS, TLS, VPN and device-permission failures explicitly unknown.
 - Compare saved app addresses and authentication with the installation endpoints; include device network hints, exposed local-network permission and interface source in a copyable report without credentials or storage contents.
 - Provide one-click browser error pages and a selectable report when clipboard access fails. Validate real HTTP, WebSocket, cross-origin failure and responsive rendering without daemon changes.
+
+## 26.11.902 - 2026-11-09
+
+Hourly blocked-work reviews, which reread whole conversations and could spend a large share of a weekly Claude limit, are now off by default. When an owner turns them back on in Settings, a blocked thread gets at most three reviews, at 5, 15 and 30 minutes, inside the prompt cache window, then none until someone writes to it. This release also brings Lab live development, Claude reset visibility, and phone, tablet and queue refinements.
+
+### Fixes
+
+- Keep tablet workspace tabs at the standard height while retaining the workspace name.
+- Keep Send distinct from the separate Queue action on touch tablets, including drafts with images.
+- Bring conversation content eight pixels closer to the composer edges and allow tablet column resizing to the available boundary.
+- Give expanded context charts the same evenly segmented capacity ring as collapsed tiles, retaining category colors and adding a blue, violet and green sweep when only totals are available.
+- Round Settings search and Back controls to the surrounding panel radius, match their hit-area height, and right-align the search field at its placeholder width.
+- Reduce the shared phone toolbar height and balance collapsed detail tiles across rows without counting hidden cards.
+- Expand phone Files, Changes and pull request details in place with the other conversation cards.
+- Keep fullscreen editing in the existing editor, with actions along the bottom and profile and browser controls hidden.
+- Use matching gaps between composer actions and detail tiles, center the empty phone placeholder, and keep recording at a fixed height.
+- Route the phone right-edge opener to Settings and give Settings its own return-to-workspace swipe, while keeping an open sidebar's close gesture separate.
+- When the installer refuses a release that would drop a commit a source upgrade installed, it now advises fixing forward on main and source-upgrading again, keeping snapshot restores for damaged state.
+- When the installer will not take over a source upgrade, it says why, such as a Host build still running, and how to clear it.
+- A `--source` checkout that lacks the installed commit now gets a clear error suggesting a fetch of main, instead of a false report that the release drops the commit.
+- Start live development on installations whose main address is a custom domain, using their private `.ts.net` address for the dev server.
+- Give card and sidebar section headers, including Open questions and Quota, the same quiet hover fill and 8px corners as the workspace rows.
+- Match small sidebar row actions (the project add button and the workspace menu trigger) to the row's kebab hover.
+- Align the conversation resize bar with the message field's right edge; read-only threads keep it on the column edge.
+- Dragging the docked Explorer's edge no longer rewrites the app's shared stylesheet on every frame, so resizing stays smooth.
+- Show free Claude limit resets, such as Fable resets, in the account picker by identifying Claude usage and reset requests as the installed Claude Code CLI.
+- Label Claude resets from the limits they clear. A reset for one model's weekly limit, such as Fable, no longer reads as a 5-hour session reset or as clearing the overall weekly limit.
+- Show the selected account's available resets in the composer's profile button caption.
+
+### Live tweaks
+
+- Remove the extra space above the Queue card's connection error by making its Retry action compact.
+- Show only the warning icon for System attention in the collapsed sidebar, with the message in a tooltip.
+
+### Features
+
+- Make Lab the single switch for live development: choosing Lab serves your browser from the live checkout with hot reload and enables lab self-updates, and Stable serves the published interface. The separate Delivery mode switch is replaced by a read-only Live development status.
+
+### Maintenance
+
+- Log each change in Claude's reset eligibility per account, without grant identifiers or labels, to confirm what Claude returns.
+- Separate bounded browser restart prerequisites from the restart behavior budget, and give the fixture ownership of acquired resources through teardown.
+
+### Changes
+
+- Blocked-work review is now off by default. Each review resumes the thread's whole conversation, so a few blocked threads could use a large share of a weekly provider limit. Turn it back on in Settings, System, **Review blocked work**; the change applies without a restart.
+- When blocked-work review is turned on, a stopped thread now gets at most three reviews, about 5, 15 and 30 minutes apart, then waits until someone messages it. The short gaps reuse the provider's prompt cache, so each review costs a fraction of the old hourly review, which reread the whole conversation every hour indefinitely. Blockers waiting on an open question are skipped, and the setting is renamed **Review blocked work**.
+
+## Unreleased - 2026-11-10
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-10
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below

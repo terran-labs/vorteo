@@ -10,6 +10,8 @@ export interface CharterInput {
   projectId: string;
   /** `<serverId>/<projectId>`: this installation's name in claim markers and factory.json. */
   installation: string;
+  /** Where the Foreman's per-issue leads, workers and reviewers run. */
+  issueAgents: "dev" | "host";
 }
 
 /**

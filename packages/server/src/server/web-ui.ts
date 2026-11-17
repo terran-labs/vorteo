@@ -1,4 +1,11 @@
 import type { ExecutionInstallation } from "@getpaseo/protocol/execution-installation";
+
+/**
+ * The installation descriptor a page receives, plus the private recovery origin its boot page
+ * links to. The recovery origin is written as its own global: interfaces validate the descriptor
+ * strictly, so an extra descriptor field would fail older interfaces at startup.
+ */
+export type ServedInstallation = ExecutionInstallation & { recoveryOrigin?: string };
 import { createReadStream, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -194,7 +201,7 @@ export interface WebUiMiddlewareOptions {
   label: string;
   logger: Logger;
   /** Read per page load, so owner changes such as the installation name apply on reload. */
-  installation?: ExecutionInstallation | (() => ExecutionInstallation);
+  installation?: ServedInstallation | (() => ServedInstallation);
 }
 
 export function createWebUiMiddleware(options: WebUiMiddlewareOptions): RequestHandler {
@@ -239,7 +246,7 @@ export function createWebUiMiddleware(options: WebUiMiddlewareOptions): RequestH
 }
 
 interface ServeWebUiFileOptions {
-  installation?: ExecutionInstallation;
+  installation?: ServedInstallation;
   distDir: string;
   requestPath: string;
   label: string;
@@ -313,7 +320,7 @@ interface WebUiHtmlOptions {
   html: string;
   req: Pick<Request, "headers" | "protocol">;
   label: string;
-  installation?: ExecutionInstallation;
+  installation?: ServedInstallation;
 }
 
 /** Compress after injecting the public hint; sealed HTML encodings lack that hint. */
@@ -352,7 +359,7 @@ async function sendIndexHtml(
   filePath: string,
   req: Parameters<RequestHandler>[0],
   label: string,
-  installation?: ExecutionInstallation,
+  installation?: ServedInstallation,
 ): Promise<void> {
   try {
     const raw = readFileSync(filePath, "utf-8");
@@ -407,7 +414,7 @@ function injectConnectionHint(
   html: string,
   req: Pick<Request, "headers" | "protocol">,
   label: string,
-  installation?: ExecutionInstallation,
+  installation?: ServedInstallation,
 ): string {
   const host = typeof req.headers.host === "string" ? req.headers.host : "";
   const useTls = req.protocol === "https";
@@ -424,17 +431,25 @@ function injectConnectionHint(
     useTls,
     label,
   };
-  const assignment = installation
-    ? `window.__VORTEO_EXECUTION_INSTALLATION__=${serializeInlineScriptJson(installation)}`
-    : `window.__PASEO_INITIAL_DAEMON_CONNECTION__=${serializeInlineScriptJson(hint)}`;
+  let assignment = `window.__PASEO_INITIAL_DAEMON_CONNECTION__=${serializeInlineScriptJson(hint)}`;
+  if (installation) {
+    // COMPAT(recoveryOriginGlobal): added after 26.11.902; move into the descriptor once the
+    // interface floor validates an optional descriptor recoveryOrigin.
+    const { recoveryOrigin, ...descriptor } = installation;
+    assignment = `window.__VORTEO_EXECUTION_INSTALLATION__=${serializeInlineScriptJson(descriptor)}`;
+    if (recoveryOrigin)
+      assignment += `;window.__VORTEO_RECOVERY_ORIGIN__=${serializeInlineScriptJson(recoveryOrigin)}`;
+  }
   const script = `<script>${assignment}</script>`;
   // The tab names the installation, so two open side by side are never confused.
-  const titled = installation?.name
-    ? html.replace(/<title>[^<]*<\/title>/i, `<title>${escapeHtml(installation.name)}</title>`)
+  // Function replacers keep `$'`, `$&` and similar in an owner-chosen name literal.
+  const name = installation?.name;
+  const titled = name
+    ? html.replace(/<title>[^<]*<\/title>/i, () => `<title>${escapeHtml(name)}</title>`)
     : html;
   const headClose = /<\/head>/i;
   if (headClose.test(titled)) {
-    return titled.replace(headClose, `${script}</head>`);
+    return titled.replace(headClose, () => `${script}</head>`);
   }
   return script + titled;
 }

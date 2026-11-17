@@ -1,3 +1,4 @@
+import { getProviderProbeCwd } from "../../../../utils/provider-probe-cwd.js";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -13,14 +14,20 @@ import {
   parseClaudeCodeVersion,
   resolveClaudeDisabledThinkingForModel,
 } from "./model-manifest.js";
-import { discoverClaudeModels } from "./model-discovery.js";
-import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
+import {
+  claudeRenewalDue,
+  discoverClaudeModels,
+  forgetClaudeModelDiscoveries,
+} from "./model-discovery.js";
+import type { ModelInfo, Query } from "@anthropic-ai/claude-agent-sdk";
 import {
   findClaudeModel,
   getClaudeContextWindowMaxTokens,
   getClaudeModels,
   normalizeClaudeRuntimeModelId,
+  resolveObservedClaudeModelId,
 } from "./models.js";
+import { claudeModelSupportsFastMode } from "./feature-definitions.js";
 
 describe("getClaudeContextWindowMaxTokens", () => {
   it.each([
@@ -40,6 +47,7 @@ describe("getClaudeContextWindowMaxTokens", () => {
 const createdClaudeConfigDirs: string[] = [];
 
 afterEach(async () => {
+  forgetClaudeModelDiscoveries();
   vi.unstubAllEnvs();
   await Promise.all(
     createdClaudeConfigDirs.map((dir) => fs.rm(dir, { recursive: true, force: true })),
@@ -61,7 +69,7 @@ async function createClaudeConfigDirWithRawSettings(settings: string): Promise<s
   return configDir;
 }
 
-function createCatalogClient(claudeCodeVersion = "2.1.293"): ClaudeAgentClient {
+function createCatalogClient(claudeCodeVersion = "2.1.321"): ClaudeAgentClient {
   return new ClaudeAgentClient({
     logger: createTestLogger(),
     resolveVersion: async () => claudeCodeVersion,
@@ -92,6 +100,7 @@ describe("Claude CLI update warnings", () => {
       installedVersion: "2.1.267",
       affectedModels: [
         { id: "claude-opus-5-5", label: "Opus 5.5", minimumVersion: "2.1.280" },
+        { id: "claude-fable-5-2", label: "Fable 5.2", minimumVersion: "2.1.290" },
         { id: "claude-sonnet-5-5", label: "Sonnet 5.5", minimumVersion: "2.1.284" },
         { id: "claude-haiku-5-5", label: "Haiku 5.5", minimumVersion: "2.1.293" },
       ],
@@ -102,13 +111,48 @@ describe("Claude CLI update warnings", () => {
     version = "2.1.280";
     const partial = await client.fetchCatalog({ scope: "global", force: true });
     expect(partial.cliUpdate?.affectedModels.map((model) => model.id)).toEqual([
+      "claude-fable-5-2",
       "claude-sonnet-5-5",
       "claude-haiku-5-5",
     ]);
-    version = "2.1.293";
+    version = "2.1.321";
     const after = await client.fetchCatalog({ scope: "global", force: true });
     expect(after.cliUpdate).toBeUndefined();
     expect(after.models.some((model) => model.id === "claude-opus-5-5")).toBe(true);
+  });
+
+  it("refuses a launch whose own executable is too old for the model, before the CLI starts", async () => {
+    // The catalog saw a new CLI, but this process launches an older one, as a session host did.
+    let executableVersion = "2.1.285";
+    let launches = 0;
+    const query = Object.assign((async function* () {})(), {
+      async setPermissionMode() {},
+      async applyFlagSettings() {},
+      close() {},
+    });
+    const client = new ClaudeAgentClient({
+      logger: createTestLogger(),
+      resolveVersion: async () => "2.1.321",
+      resolveBinary: async () => "/opt/homebrew/bin/claude",
+      resolveBinaryVersion: async () => executableVersion,
+      queryFactory: () => {
+        launches += 1;
+        return query as Query;
+      },
+    });
+    const session = await client.createSession({
+      provider: "claude",
+      cwd: process.cwd(),
+      model: "claude-fable-5-2",
+    });
+    await expect(session.setMode("plan")).rejects.toThrow(
+      /2\.1\.290.*2\.1\.285 from \/opt\/homebrew\/bin\/claude/,
+    );
+    expect(launches).toBe(0);
+    executableVersion = "2.1.290";
+    await session.setMode("plan");
+    expect(launches).toBe(1);
+    await session.close();
   });
 });
 
@@ -119,6 +163,7 @@ describe("getClaudeModels", () => {
       "claude-opus-5-5",
       "claude-opus-5",
       "claude-mythos-5-1",
+      "claude-fable-5-2",
       "claude-fable-5-1",
       "claude-fable-5",
       "claude-fable-5[1m]",
@@ -155,6 +200,7 @@ describe("getClaudeModels", () => {
         ["claude-opus-5-5", 1_000_000],
         ["claude-opus-5", 1_000_000],
         ["claude-mythos-5-1", 1_000_000],
+        ["claude-fable-5-2", 1_000_000],
         ["claude-fable-5-1", 1_000_000],
         ["claude-fable-5", 1_000_000],
         ["claude-fable-5[1m]", 1_000_000],
@@ -267,6 +313,7 @@ describe("getClaudeModels", () => {
     ["claude-sonnet-5[1m]", true, "high"],
     ["claude-sonnet-5-20260101", true, "high"],
     ["claude-fable-5", false, "high"],
+    ["claude-fable-5-2", false, "medium"],
     ["claude-fable-5-1", false, "high"],
     ["claude-haiku-5-5", true, "medium"],
     ["claude-haiku-5-5-20261007", true, "medium"],
@@ -343,6 +390,7 @@ describe("ClaudeAgentClient.fetchCatalog", () => {
       label: "claude-mythos-5-1",
       description: "From Claude settings.json model",
     });
+    expect(claudeModelSupportsFastMode("claude-fable-5-2")).toBe(true);
   });
 
   it("omits unconfirmed Mythos after a failed probe and retries on refresh", async () => {
@@ -399,6 +447,55 @@ describe("ClaudeAgentClient.fetchCatalog", () => {
         .filter((model) => model.id !== "claude-mythos-5-1")
         .map((model) => model.id),
     );
+  });
+
+  it("offers models Claude Code advertises before the curated catalog knows them", async () => {
+    const configDir = await createClaudeConfigDir({});
+    const client = new ClaudeAgentClient({
+      logger: createTestLogger(),
+      resolveVersion: async () => "2.1.321",
+      runtimeSettings: { env: { CLAUDE_CONFIG_DIR: configDir } },
+      discoverModels: async () => [
+        {
+          value: "default",
+          resolvedModel: "claude-opus-5-5",
+          displayName: "Default (recommended)",
+          description: "",
+        },
+        {
+          value: "opus",
+          resolvedModel: "claude-opus-6",
+          displayName: "Opus 6",
+          description: "For your toughest challenges",
+          // "ultra" stands in for an effort level a newer CLI might add.
+          supportedEffortLevels: ["medium", "ultra" as never, "max"],
+          supportsFastMode: true,
+        },
+        { value: "us.anthropic.claude-fable-5-2-v1:0", displayName: "Fable", description: "" },
+        { value: "claude-fable-5-1", displayName: "Fable 5.1", description: "" },
+      ],
+    });
+    const { models } = await client.fetchCatalog({
+      scope: "workspace",
+      cwd: configDir,
+      force: false,
+    });
+    expect(models.map((model) => model.id)).toEqual([
+      "claude-opus-6",
+      ...getClaudeModels("2.1.321")
+        .filter((model) => model.id !== "claude-mythos-5-1")
+        .map((model) => model.id),
+    ]);
+    expect(models[0]).toMatchObject({
+      label: "Opus 6",
+      description: "For your toughest challenges",
+      defaultThinkingOptionId: "medium",
+    });
+    expect(models[0]?.thinkingOptions?.map((option) => option.id)).toEqual(["medium", "max"]);
+    // Fast mode follows the curated manifest, so discovery neither grants nor revokes it.
+    expect(claudeModelSupportsFastMode("claude-opus-6")).toBe(false);
+    expect(claudeModelSupportsFastMode("claude-fable-5-2")).toBe(true);
+    expect(resolveObservedClaudeModelId("claude-opus-6-1")).toBe("claude-opus-6-1");
   });
 
   it("appends concrete models from Claude settings.json", async () => {
@@ -691,6 +788,8 @@ describe("normalizeClaudeRuntimeModelId", () => {
     expect(normalizeClaudeRuntimeModelId("us.anthropic.claude-opus-5-20260724-v1:0")).toBe(
       "claude-opus-5",
     );
+    expect(normalizeClaudeRuntimeModelId("claude-fable-5-3")).toBeNull();
+    expect(normalizeClaudeRuntimeModelId("anthropic/claude-fable-5-3[1m]")).toBeNull();
   });
 
   it("does not collapse a prefixed Sonnet 5.5 onto Sonnet 5", () => {
@@ -930,6 +1029,7 @@ describe("claudeManifestModelSupportsFastMode", () => {
     expect(claudeManifestModelSupportsFastMode("claude-sonnet-5")).toBe(false);
     expect(claudeManifestModelSupportsFastMode("claude-fable-5")).toBe(false);
     expect(claudeManifestModelSupportsFastMode("claude-fable-5-1")).toBe(false);
+    expect(claudeManifestModelSupportsFastMode("claude-fable-5-2")).toBe(true);
   });
 });
 
@@ -992,10 +1092,18 @@ describe("Claude model discovery process", () => {
         description: "",
       },
     ];
+    const probeRoot = await fs.mkdtemp(path.join(os.tmpdir(), "claude-discovery-"));
+    createdClaudeConfigDirs.push(probeRoot);
+    vi.stubEnv("TMPDIR", probeRoot);
+    vi.stubEnv("TEMP", probeRoot);
+    vi.stubEnv("TMP", probeRoot);
+    const probeCwd = await getProviderProbeCwd();
+    await fs.writeFile(path.join(probeCwd, "retained-state"), "another helper's state");
     const models = await discoverClaudeModels(
       { resolveBinary: async () => "/claude", env: { CLAUDE_CONFIG_DIR: "/provider-config" } },
       (input) => {
         expect(input.options).toMatchObject({
+          cwd: probeCwd,
           pathToClaudeCodeExecutable: "/claude",
           env: { CLAUDE_CONFIG_DIR: "/provider-config" },
           persistSession: false,
@@ -1015,6 +1123,10 @@ describe("Claude model discovery process", () => {
         };
       },
     );
+    expect(await fs.readFile(path.join(probeCwd, "retained-state"), "utf8")).toBe(
+      "another helper's state",
+    );
+    expect(await getProviderProbeCwd()).not.toBe(os.homedir());
     expect(models).toEqual(advertised);
     expect(closed).toBe(true);
     await expect(promptEnded).resolves.toEqual({ done: true, value: undefined });
@@ -1057,5 +1169,94 @@ describe("Claude model discovery process", () => {
     expect(closed).toBe(true);
     expect(assertCanSpawn).toBeTypeOf("function");
     expect(() => assertCanSpawn?.()).toThrow(failure);
+  });
+
+  it("holds a failed probe back for a minute, but not a canceled one", async () => {
+    let now = 0;
+    let probes = 0;
+    const failing = () => {
+      probes += 1;
+      return {
+        supportedModels: async () => {
+          throw new Error("probe failed");
+        },
+        close: () => {},
+      };
+    };
+    const options = {
+      resolveBinary: async () => "/claude",
+      env: { CLAUDE_CONFIG_DIR: "/failing-account" },
+      now: () => now,
+    };
+    await expect(discoverClaudeModels(options, failing)).rejects.toThrow("probe failed");
+    now = 30_000;
+    await expect(discoverClaudeModels(options, failing)).rejects.toThrow("probe failed");
+    expect(probes).toBe(1);
+    now = 2 * 60_000;
+    await expect(discoverClaudeModels(options, failing)).rejects.toThrow("probe failed");
+    expect(probes).toBe(2);
+    // A client that disconnects mid-refresh cancels it; that must not block the next refresh.
+    forgetClaudeModelDiscoveries();
+    const controller = new AbortController();
+    const canceled = () => {
+      probes += 1;
+      return {
+        supportedModels: () => {
+          controller.abort(new Error("client left"));
+          return new Promise<never>(() => {});
+        },
+        close: () => {},
+      };
+    };
+    await expect(
+      discoverClaudeModels({ ...options, signal: controller.signal }, canceled),
+    ).rejects.toThrow("client left");
+    await expect(discoverClaudeModels(options, failing)).rejects.toThrow("probe failed");
+    expect(probes).toBe(4);
+  });
+
+  it("starts no probe while a full sign-in is about to renew, and reuses the last answer", async () => {
+    const advertised = [
+      { value: "fable", resolvedModel: "claude-fable-5-2", displayName: "Fable", description: "" },
+    ];
+    let now = 0;
+    let probes = 0;
+    const open = () => {
+      probes += 1;
+      return { supportedModels: async () => advertised, close: () => {} };
+    };
+    const options = {
+      resolveBinary: async () => "/claude",
+      env: { CLAUDE_CONFIG_DIR: "/renewing-account", VORTEO_CLAUDE_SIGN_IN: "full" },
+      now: () => now,
+      // The grant expires at minute 60. A killed probe inside the renewal window loses it.
+      readGrant: async () => ({
+        accessToken: "synthetic",
+        hasRefreshToken: true,
+        expiresAt: 60 * 60_000,
+        scopes: [],
+      }),
+    };
+    // With no earlier answer the guard still starts nothing and reports no models.
+    now = 55 * 60_000;
+    expect(await discoverClaudeModels(options, open)).toEqual([]);
+    expect(probes).toBe(0);
+    now = 0;
+    expect(await discoverClaudeModels(options, open)).toEqual(advertised);
+    expect(probes).toBe(1);
+    // Client reconnects force refreshes every few seconds; they share one CLI start a minute.
+    now = 30_000;
+    expect(await discoverClaudeModels({ ...options, force: true }, open)).toEqual(advertised);
+    expect(probes).toBe(1);
+    now = 2 * 60_000;
+    expect(await discoverClaudeModels({ ...options, force: true }, open)).toEqual(advertised);
+    expect(probes).toBe(2);
+    // The provider diagnostic uses the same check before it runs `claude auth status`.
+    expect(await claudeRenewalDue(options.env, { readGrant: options.readGrant, now })).toBe(false);
+    now = 55 * 60_000;
+    expect(await claudeRenewalDue(options.env, { readGrant: options.readGrant, now })).toBe(true);
+    // Even an explicit refresh must not start a CLI that could begin the renewal.
+    expect(await discoverClaudeModels({ ...options, force: true }, open)).toEqual(advertised);
+    expect(probes).toBe(2);
   });
 });

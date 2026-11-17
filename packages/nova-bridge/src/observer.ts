@@ -28,7 +28,11 @@ export type ObservedThread = Pick<
 export interface HistoryPage {
   entries: { seqEnd: number; timestamp: string; item: { type: string } }[];
   endCursor: Cursor | null;
+  /** First row of the page. Absent from older sources. */
+  startCursor?: Cursor | null;
   hasNewer: boolean;
+  /** True when retained rows exist before this page. Absent from older sources. */
+  hasOlder?: boolean;
   gap: boolean;
   staleCursor: boolean;
   reset: boolean;
@@ -57,12 +61,14 @@ export function daemonObservationSource(connection: DaemonAccess): ObservationSo
     },
     async history(threadId, cursor) {
       const client = await connection.readClient();
-      // Start at the retained head on first observation. A one-row tail could
-      // silently skip work on an older thread changed during startup downtime.
+      // Without a trusted position, read only the newest page. Paging from the
+      // retained head made the daemon load whole histories (tens of thousands of
+      // rows) for every thread after a restart. The observer reports a gap when
+      // this window cannot reach back to monitoring start.
       return client.fetchAgentTimeline(threadId, {
         projection: "canonical",
-        limit: 100,
-        direction: "after",
+        limit: HISTORY_PAGE_LIMIT,
+        direction: cursor ? "after" : "tail",
         cursor,
       });
     },
@@ -92,6 +98,11 @@ export function daemonObservationSource(connection: DaemonAccess): ObservationSo
     },
   };
 }
+
+const HISTORY_PAGE_LIMIT = 100;
+// Pages read forward from a saved cursor in one observation. A thread that
+// outran this window is re-anchored at its tail and reported as a gap.
+const MAX_HISTORY_PAGES = 5;
 
 const SavedSchema = z.object({
   updatedAt: z.string(),
@@ -320,32 +331,72 @@ export class WorkspaceObserver {
   }
 
   private async history(threadId: string, previous: Cursor | null) {
-    let cursor = previous ?? undefined;
-    let gap = false;
-    let changed = false;
-    const errors: { cursor: Cursor; timestamp: string }[] = [];
-    let lastTimestamp: string | null = null;
-    const seen = new Set<string>();
-    do {
-      const page = await this.source.history(threadId, cursor);
-      gap ||= page.gap || page.staleCursor || page.reset;
+    const result = {
+      cursor: previous,
+      changed: false,
+      gap: false,
+      errors: [] as { cursor: Cursor; timestamp: string }[],
+      lastTimestamp: null as string | null,
+    };
+    const consume = (page: HistoryPage, skipBefore: string | null, readThrough?: Cursor) => {
       for (const entry of page.entries) {
-        if (entry.timestamp < this.startedAt && !previous) continue;
-        changed = true;
-        lastTimestamp = entry.timestamp;
+        if (skipBefore !== null && entry.timestamp < skipBefore) continue;
+        if (
+          readThrough &&
+          readThrough.epoch === page.endCursor?.epoch &&
+          entry.seqEnd <= readThrough.seq
+        )
+          continue;
+        result.changed = true;
+        result.lastTimestamp = entry.timestamp;
         if (entry.item.type === "error" && page.endCursor)
-          errors.push({
+          result.errors.push({
             cursor: { epoch: page.endCursor.epoch, seq: entry.seqEnd },
             timestamp: entry.timestamp,
           });
       }
-      cursor = page.endCursor ?? cursor;
-      if (gap || !page.hasNewer) break;
-      const key = JSON.stringify(cursor);
+      result.cursor = page.endCursor ?? result.cursor;
+    };
+    if (!previous) {
+      // First observation: one bounded tail page. If older rows exist and even
+      // the oldest row read is after monitoring start, work may hide before the
+      // window, so report a gap instead of claiming nothing else happened.
+      const page = await this.source.history(threadId);
+      consume(page, this.startedAt);
+      const oldest = page.entries[0];
+      result.gap =
+        page.gap ||
+        page.staleCursor ||
+        page.reset ||
+        (page.hasOlder === true && (!oldest || oldest.timestamp >= this.startedAt));
+      return result;
+    }
+    let cursor = previous;
+    const seen = new Set<string>();
+    for (let pages = 1; !this.disposed; pages++) {
+      const page = await this.source.history(threadId, cursor);
+      consume(page, null);
+      // On a stale cursor, gap or reset the daemon already answers with its tail.
+      if (page.gap || page.staleCursor || page.reset) {
+        result.gap = true;
+        break;
+      }
+      if (!page.hasNewer) break;
+      const key = JSON.stringify(page.endCursor);
       if (!page.endCursor || seen.has(key)) throw new Error("Timeline made no progress");
       seen.add(key);
-    } while (!this.disposed);
-    return { cursor: cursor ?? null, changed, gap, errors, lastTimestamp };
+      cursor = page.endCursor;
+      if (pages >= MAX_HISTORY_PAGES) {
+        // Re-anchor at the tail. It is a gap only if rows between the last row
+        // read and the tail's first row were skipped.
+        const tail = await this.source.history(threadId);
+        const first = tail.startCursor;
+        result.gap = !first || first.epoch !== cursor.epoch || first.seq > cursor.seq + 1;
+        consume(tail, null, cursor);
+        break;
+      }
+    }
+    return result;
   }
 
   private async observe(agent: ObservedThread, recovering: boolean): Promise<void> {
@@ -360,9 +411,16 @@ export class WorkspaceObserver {
       journal: agent.journal ?? [],
       permissions: agent.pendingPermissions.map((permission) => permission.id),
     });
-    if (saved?.updatedAt === agent.updatedAt && saved.evidence === evidence && !recovering) return;
-    if (!saved && agent.archivedAt && agent.updatedAt < this.startedAt) return;
-    const history = await this.history(agent.id, saved?.cursor ?? null);
+    // Unchanged threads need no history, even while recovering: reading every
+    // thread's timeline after a reconnect burst requests at the daemon.
+    if (saved?.updatedAt === agent.updatedAt && saved.evidence === evidence) return;
+    const untouched = !saved && agent.updatedAt < this.startedAt;
+    if (untouched && agent.archivedAt) return;
+    // Baseline an untouched older thread without reading history: nothing in it
+    // is newer than monitoring start. Its first change reads the tail.
+    const history = untouched
+      ? { cursor: null, changed: false, gap: false, errors: [], lastTimestamp: null }
+      : await this.history(agent.id, saved?.cursor ?? null);
     const notifications = this.notifications(agent, saved, evidence, history, recovering);
     const state: Saved = {
       updatedAt: agent.updatedAt,

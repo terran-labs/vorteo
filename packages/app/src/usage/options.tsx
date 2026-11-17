@@ -21,7 +21,7 @@ export function UsageOptions({
   display?: UsageDisplay;
   serverId?: string | null;
 }) {
-  const { display: defaultDisplay } = useUsageDisplay([]);
+  const { display: defaultDisplay } = useUsageDisplay();
   const display = providedDisplay ?? defaultDisplay;
   const setting = useUsageSetting(serverId);
   const { t } = useTranslation();

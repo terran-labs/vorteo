@@ -127,7 +127,7 @@ const styles = StyleSheet.create((theme) => ({
     gap: 6,
   },
   setupLinkText: {
-    color: theme.colors.accent,
+    color: theme.colors.accentText,
     fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.medium,
   },
@@ -301,7 +301,7 @@ export function WelcomeScreen({ onHostAdded }: WelcomeScreenProps) {
               {isNative ? (
                 <Pressable style={styles.setupLink} onPress={handleOpenPaseoSite}>
                   <Text style={styles.setupLinkText}>paseo.sh</Text>
-                  <ExternalLink size={14} color={theme.colors.accent} />
+                  <ExternalLink size={14} color={theme.colors.accentText} />
                 </Pressable>
               ) : null}
             </View>

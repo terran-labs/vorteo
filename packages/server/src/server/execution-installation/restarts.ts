@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { type PreviewBrokerDeploymentJob } from "@getpaseo/protocol/preview-broker-deployment";
 import {
   PreviewBrokerDeploymentWorkflow,
@@ -62,7 +63,7 @@ import {
   type NativeHelperJob,
   type NativeHelperPlan,
 } from "@getpaseo/protocol/native-helper-maintenance";
-import type { LifecycleJob } from "./lifecycle-journal.js";
+import { parseLifecycleJournal, type LifecycleJob } from "./lifecycle-journal.js";
 import {
   MaintenanceServiceJobSchema,
   type MaintenanceServiceJob,
@@ -85,7 +86,10 @@ import {
 } from "./maintenance/service-progress.js";
 import type { MaintenanceServiceNativeObservation } from "./maintenance/service-execution.js";
 import { createHash, randomUUID } from "node:crypto";
-import type { StandingInterruption } from "@getpaseo/protocol/maintenance-interruption";
+import type {
+  CooperativeDrainPreparation,
+  StandingInterruption,
+} from "@getpaseo/protocol/maintenance-interruption";
 import {
   SessionHostDecisionSchema,
   SessionHostRequestSchema,
@@ -120,7 +124,23 @@ export interface RestartStartupOptions {
   /** Operator-visible progress for each dispatch step; never silent for hours. */
   progress?: (message: string, fields: Record<string, unknown>) => void;
   dispatchDeadlineMs?: number;
+  /** How long a finish-current-turns hold may wait before applying its deadline policy. */
+  finishTurnsDeadlineMs?: number;
+  /** Automatic interruption with durable continuation, or an explicit owner decision. */
+  afterHoldDeadline?: "auto" | "ask";
+  /** Coordinator-private hold start times. Absent keeps them in memory only. */
+  holdState?: { read(): unknown; write(value: Record<string, HoldRecord>): void };
 }
+
+const HoldRecordSchema = z.strictObject({
+  startedAt: z.number().int().nonnegative(),
+  exceeded: z.boolean(),
+  revision: z.string().optional(),
+});
+type HoldRecord = z.infer<typeof HoldRecordSchema>;
+
+/** Default deadline before a finish-current-turns hold applies its configured policy. */
+export const FINISH_TURNS_DEADLINE_MS = 15 * 60_000;
 
 type NativeMaintenanceJob = NativeHelperJob | PreviewMonitorJob | SessionHostJob;
 /** Native maintenance is delegable by default; only OWNER_ONLY_OPERATIONS excludes one. */
@@ -205,6 +225,8 @@ export interface RestartExecutor {
   installMonitor?(job: PreviewMonitorJob): Promise<string>;
   factoryRuntimePlan?(): string | undefined;
   adoptFactoryRuntime?(job: RestartJob): Promise<string>;
+  /** Factory runtime adoption was retired, so no adoption can clear its recovery fence. */
+  factoryRuntimeAdoptionRetired?: boolean;
   /** Computes the exact plan for a session host operation from the coordinator's configuration. */
   sessionHostPlan?(operation: SessionHostOperation): Promise<SessionHostPlan>;
   /** Observes the job; detail only for the Host token and owners. */
@@ -258,6 +280,9 @@ export interface RestartExecutor {
     capture: DevRepairCapture,
     contributions: SourceContribution[],
   ): Promise<SourceUpdate>;
+  prepareCooperativePreparation?(job: RestartJob): Promise<CooperativeDrainPreparation>;
+  dispatchCooperativePreparation?(job: RestartJob): Promise<void>;
+  observeCooperativePreparation?(job: RestartJob): Promise<CooperativeDrainPreparation>;
   prepareInstallation?(job: RestartJob): Promise<void>;
   verifyPreparedInstallation?(job: RestartJob, options?: { signal?: AbortSignal }): Promise<void>;
   /** Final independent evidence after the locked running reservation. */
@@ -342,6 +367,13 @@ export class InstallationRestarts {
   private operationalActivitySink: OperationalActivitySink | null = null;
   private readonly progress: NonNullable<RestartStartupOptions["progress"]>;
   private readonly dispatchDeadlineMs: number;
+  private readonly finishTurnsDeadlineMs: number;
+  private readonly afterHoldDeadline: "auto" | "ask";
+  private readonly holdState: RestartStartupOptions["holdState"];
+  /** Coordinator-private: when each waiting finish-current-turns hold began. */
+  private readonly holds = new Map<string, HoldRecord>();
+  /** The last holder set logged per job, so only changes are logged. */
+  private readonly loggedHolders = new Map<string, string>();
   private jobs: RestartJob[];
   private helpers: NativeHelperJob[];
   private monitors: PreviewMonitorJob[];
@@ -366,6 +398,16 @@ export class InstallationRestarts {
   ) {
     this.progress = startup.progress ?? (() => {});
     this.dispatchDeadlineMs = startup.dispatchDeadlineMs ?? DISPATCH_READINESS_DEADLINE_MS;
+    this.finishTurnsDeadlineMs = startup.finishTurnsDeadlineMs ?? FINISH_TURNS_DEADLINE_MS;
+    this.afterHoldDeadline = startup.afterHoldDeadline ?? "ask";
+    this.holdState = startup.holdState;
+    try {
+      const saved = z.record(z.string(), HoldRecordSchema).safeParse(startup.holdState?.read());
+      if (saved.success)
+        for (const [id, record] of Object.entries(saved.data)) this.holds.set(id, record);
+    } catch {
+      // An unreadable record only restarts the deadline from now.
+    }
     this.snapshot = journal.read();
     this.jobs = this.snapshot.filter(
       (job): job is RestartJob => job.target === "host" || job.target === "container-daemon",
@@ -539,11 +581,18 @@ export class InstallationRestarts {
           "The coordinator restarted before this operation finished. Check the session host status before requesting it again.",
       };
     });
-    this.writeState(recovered, helpers, monitors, this.listServices(), undefined, {
-      sessionHosts,
-      brokers,
-      brokerDeployments,
-    });
+    this.writeState(
+      this.retireAdoptionFences(recovered),
+      helpers,
+      monitors,
+      this.listServices(),
+      undefined,
+      {
+        sessionHosts,
+        brokers,
+        brokerDeployments,
+      },
+    );
     this.active = true;
     this.reconcilePending();
   }
@@ -2266,6 +2315,28 @@ export class InstallationRestarts {
     );
   }
 
+  /**
+   * Only a successful Factory adoption cleared an adoption recovery fence. With adoption retired
+   * no adoption can succeed, so a fence left from before would block Dev restarts and broker
+   * dispatch for good. Clear it at startup and record why on the failed request.
+   */
+  // COMPAT(retiredFactoryAdoption): added after 26.11.902; remove once every installation has
+  // started a release with it, which clears any retained fence on its first activation.
+  private retireAdoptionFences(jobs: RestartJob[]): RestartJob[] {
+    if (!this.executor.factoryRuntimeAdoptionRetired) return jobs;
+    return jobs.map((job) =>
+      // Any job factoryRecoveryRequired() would count, provided it is a failed adoption.
+      job.factoryRuntimeRecoveryRequired && job.status === "failed" && job.factoryRuntimePlanSha256
+        ? {
+            ...job,
+            factoryRuntimeRecoveryRequired: false,
+            detail:
+              `${job.detail} Factory adoption was retired with the Factory controller, so this recovery fence no longer applies.`.trim(),
+          }
+        : job,
+    );
+  }
+
   private factoryRecoveryRequired(target: RestartJob["target"]): boolean {
     return this.jobs.some((job) => job.target === target && job.factoryRuntimeRecoveryRequired);
   }
@@ -2457,8 +2528,11 @@ export class InstallationRestarts {
     if (
       this.executor.restartContinuationAvailable &&
       !(await this.executor.restartContinuationAvailable(job.target))
-    )
+    ) {
+      if (current.continuationCaptureRequested)
+        throw new RestartRequestError("Recorded continuation is no longer supported by the target");
       return approved();
+    }
     if (current.continuationCaptureRequested && current.continuationCaptureId) {
       // An earlier idle attempt may have released this cause before its receipt was saved.
       if (!(await this.releaseIdleContinuation(current)))
@@ -2898,8 +2972,19 @@ export class InstallationRestarts {
         await this.executor.releaseCurrentTurns(job.target, job.id);
       }
       const current = this.jobs.find((item) => item.id === job.id);
-      if (current) this.replace({ ...withoutCaptureId(current), holdReleased: true });
-    } catch {
+      if (current) {
+        const waitingForHold =
+          current.status === "succeeded" &&
+          current.detail === "Waiting for the environment to release its restart hold.";
+        this.replace({
+          ...withoutCaptureId(current),
+          holdReleased: true,
+          detail: waitingForHold ? "Restart completed and its hold was released." : current.detail,
+        });
+      }
+    } catch (error) {
+      const detail = (error instanceof Error ? error.message : String(error)).split(/\r?\n/, 1)[0];
+      this.progress("Restart hold release failed", { jobId: job.id, target: job.target, detail });
       const current = this.jobs.find((item) => item.id === job.id);
       if (current)
         this.replace({
@@ -2932,6 +3017,7 @@ export class InstallationRestarts {
     if (this.executor.prepareUpdate) await this.prepareBatches();
     if (this.running || this.preparing) return;
     this.reconcilePending();
+    this.pruneHolds();
     this.running = true;
     try {
       await this.releaseFinishedHolds();
@@ -3262,16 +3348,191 @@ export class InstallationRestarts {
       !impact.idleRestartSupported ||
       impact.agents.length > 0 ||
       impact.pendingStarts > 0;
+    this.logHolders(current, impact);
+    if (current.cooperativeDrainPreparation && this.afterHoldDeadline === "auto") {
+      const settled = await this.advanceCooperativePreparation(current, impact);
+      return settled && !waiting;
+    }
+
     if (waiting) {
       const detail =
         impact.error ||
         (!impact.idleRestartSupported
           ? "Waiting for a daemon update that supports safe idle restarts"
           : `Waiting for ${impact.agents.length} active agents and ${impact.pendingStarts} starting operations`);
-      if (current.detail !== detail) this.replace({ ...current, detail });
+      const next = this.holdDeadline(current, detail);
+      if (next !== current) this.replace(next);
+      if (this.afterHoldDeadline === "auto" && this.holds.get(current.id)?.exceeded)
+        return this.advanceCooperativePreparation(next, impact);
       return false;
     }
     return true;
+  }
+
+  private automaticDeadline(job: RestartJob): boolean {
+    return (
+      job.cooperativeDrainPreparation?.phase === "settled" &&
+      job.cooperativeDrainPreparation.intent.approvedRevision === job.revision
+    );
+  }
+
+  private cooperativeImpactMatches(job: RestartJob, impact: RestartImpact): boolean {
+    return (
+      !impact.error &&
+      impact.idleRestartSupported &&
+      impact.pendingStarts === 0 &&
+      impact.restartDrainObservationSupported === true &&
+      impact.restartDrainId === job.id
+    );
+  }
+
+  private currentCooperativeJob(job: RestartJob): RestartJob | null {
+    const current = this.jobs.find((item) => item.id === job.id);
+    return current?.status === "approved" && current.revision === job.revision ? current : null;
+  }
+
+  private async advanceCooperativePreparation(
+    job: RestartJob,
+    impact: RestartImpact,
+  ): Promise<boolean> {
+    if (!this.cooperativeImpactMatches(job, impact)) return false;
+    if (
+      !this.executor.prepareCooperativePreparation ||
+      !this.executor.dispatchCooperativePreparation ||
+      !this.executor.observeCooperativePreparation
+    ) {
+      this.replace({
+        ...job,
+        detail:
+          "Restart deadline passed. The authenticated cooperative preparation capability is unavailable; work remains held.",
+      });
+      return false;
+    }
+    try {
+      if (!job.cooperativeDrainPreparation) {
+        const phase = await this.executor.prepareCooperativePreparation(job);
+        this.refreshApprovalPolicy();
+        const current = this.currentCooperativeJob(job);
+        if (!current) return false;
+        job = {
+          ...current,
+          cooperativeDrainPreparation: phase,
+          detail:
+            "Restart deadline passed. Preparing a bounded interruption with saved continuation.",
+        };
+        this.replace(job);
+        // Only the call that created the reservation may attempt dispatch. A
+        // reconstructed reservation is observation-only, including after a lost reply.
+        await this.executor.dispatchCooperativePreparation(job);
+        this.loadState();
+        const retained = this.jobs.find((item) => item.id === job.id);
+        if (retained?.status !== "approved" || retained.revision !== job.revision) return false;
+        job = retained;
+      }
+      const observed = await this.executor.observeCooperativePreparation(job);
+      this.refreshApprovalPolicy();
+      const current = this.currentCooperativeJob(job);
+      if (!current) return false;
+      this.replace({
+        ...current,
+        cooperativeDrainPreparation: observed,
+        detail:
+          observed.phase === "settled"
+            ? "Automatic deadline preparation settled. Verifying idle source selection."
+            : "Automatic deadline preparation is unverified. Observing the same generation without repeating interruption.",
+      });
+      return (
+        observed.phase === "settled" && impact.agents.length === 0 && impact.pendingStarts === 0
+      );
+    } catch (error) {
+      this.loadState();
+      const current = this.jobs.find((item) => item.id === job.id);
+      if (current?.status === "approved" && current.revision === job.revision)
+        this.replace({ ...current, detail: restartFailureDetail(current, error) });
+      return false;
+    }
+  }
+
+  /** Deadline state stays coordinator-private; job approval and continuation stay journaled. */
+  private holdDeadline(job: RestartJob, waitingDetail: string): RestartJob {
+    if (!job.finishCurrentTurns)
+      return job.detail === waitingDetail ? job : { ...job, detail: waitingDetail };
+    const saved = this.holds.get(job.id);
+    const held =
+      saved && (!saved.revision || saved.revision === job.revision)
+        ? saved
+        : { startedAt: this.now(), exceeded: false, revision: job.revision };
+    const exceeded = this.now() - held.startedAt >= this.finishTurnsDeadlineMs;
+    const minutes = Math.round(this.finishTurnsDeadlineMs / 60_000);
+    if (exceeded && !held.exceeded)
+      this.progress(
+        this.afterHoldDeadline === "ask"
+          ? "Restart hold passed its deadline; owner decision needed"
+          : "Restart hold passed its deadline; checking automatic restart admission",
+        {
+          job: job.id,
+          target: job.target,
+          minutes,
+          afterDeadline: this.afterHoldDeadline,
+        },
+      );
+    if (!this.holds.has(job.id) || saved?.revision !== job.revision || held.exceeded !== exceeded) {
+      this.holds.set(job.id, { ...held, exceeded, revision: job.revision });
+      this.persistHolds();
+    }
+    const detail =
+      exceeded && this.afterHoldDeadline === "ask"
+        ? `Current turns have not finished after ${minutes} minutes. ${waitingDetail}. Restart now to interrupt them, or cancel.`
+        : waitingDetail;
+    return job.detail === detail ? job : { ...job, detail };
+  }
+
+  /** Whether a waiting hold passed its deadline. Reply-only; see `holdDeadlineExceeded`. */
+  holdDeadlineExceeded(jobId: string): boolean {
+    return this.afterHoldDeadline === "ask" && this.holds.get(jobId)?.exceeded === true;
+  }
+
+  /** Forgets holds and holder logs of jobs that are no longer approved and waiting. */
+  private pruneHolds(): void {
+    const waiting = new Set(
+      this.jobs.filter((job) => job.status === "approved" && job.whenIdle).map((job) => job.id),
+    );
+    let changed = false;
+    for (const id of this.holds.keys())
+      if (!waiting.has(id)) {
+        this.holds.delete(id);
+        changed = true;
+      }
+    for (const id of this.loggedHolders.keys()) if (!waiting.has(id)) this.loggedHolders.delete(id);
+    if (changed) this.persistHolds();
+  }
+
+  private persistHolds(): boolean {
+    try {
+      this.holdState?.write(Object.fromEntries(this.holds));
+      return true;
+    } catch {
+      // Waiting can retry its timestamp, but automatic escalation requires a durable cause.
+      return false;
+    }
+  }
+
+  /** Logs each change in what a waiting restart holds for: agent IDs only, never titles. */
+  private logHolders(job: RestartJob, impact: RestartImpact): void {
+    const agents = impact.agents.map((agent) => agent.id).sort();
+    const signature = JSON.stringify([agents, impact.pendingStarts, Boolean(impact.error)]);
+    const previous = this.loggedHolders.get(job.id);
+    if (previous === signature) return;
+    this.loggedHolders.set(job.id, signature);
+    // An idle first check holds for nothing; there is no change to report.
+    if (previous === undefined && !agents.length && !impact.pendingStarts && !impact.error) return;
+    this.progress("Restart hold holders changed", {
+      job: job.id,
+      target: job.target,
+      agents,
+      pendingStarts: impact.pendingStarts,
+      inspectionFailed: Boolean(impact.error),
+    });
   }
 
   private async standingCandidateReady(job: RestartJob): Promise<boolean> {
@@ -3353,7 +3614,7 @@ export class InstallationRestarts {
     job = prepared;
     if (!this.automaticDispatchReady(job)) return;
     if (!(await this.standingCandidateReady(job))) return;
-    if (job.whenIdle && !(await this.readyAfterInspection(job))) return;
+    if (!(await this.readyAfterInspection(job))) return;
     // Inspection may have durably reserved and observed an enrolled hold.
     job = this.jobs.find((item) => item.id === job.id) ?? job;
     const captured = await this.prepareRestartContinuation(job);
@@ -3649,6 +3910,18 @@ export class InstallationRestarts {
   }
 
   private replace(next: RestartJob): void {
+    if (
+      next.status === "succeeded" &&
+      next.holdReleased &&
+      this.automaticDeadline(next) &&
+      !next.detail?.startsWith("Restarted automatically after")
+    ) {
+      next = {
+        ...next,
+        detail:
+          `Restarted automatically after the current-turn deadline. Saved work is queued to continue. ${next.detail ?? ""}`.trim(),
+      };
+    }
     this.commit(this.jobs.map((job) => (job.id === next.id ? next : job)));
   }
 
@@ -3700,7 +3973,7 @@ export class InstallationRestarts {
     for (const job of remaining.values()) activity?.change(undefined, job);
     next.push(...remaining.values());
     this.journal.write(next, evidence);
-    this.snapshot = next;
+    this.snapshot = parseLifecycleJournal(next);
     this.jobs = jobs;
     this.helpers = helpers;
     this.monitors = monitors;

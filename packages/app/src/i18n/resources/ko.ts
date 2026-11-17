@@ -3,6 +3,7 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
   projectFactory: en.projectFactory,
+  vorteoSetup: en.vorteoSetup,
   paneFind: {
     connectionFailure: "이 채팅을 검색할 수 없습니다. 호스트 연결을 확인하고 다시 시도하세요.",
     historyChangedFailure: "검색 중에 채팅이 변경되었습니다. 다시 검색하세요.",
@@ -2313,6 +2314,8 @@ export const ko: TranslationResources = {
     title: "설정",
     loading: "설정 불러오는 중...",
     groups: {
+      thisDevice: "이 기기",
+      vorteo: "Vorteo",
       app: "앱",
       host: "호스트",
     },
@@ -2932,6 +2935,11 @@ export const ko: TranslationResources = {
           title: "유휴 에이전트 해제",
           hint: "1시간 동안 활동이 없으면 메모리를 확보합니다.",
           info: "대화를 유지하면서 에이전트 프로세스를 중지합니다. 메시지를 보내면 다시 이어집니다.\n\n진행 중인 작업, 대기 중인 알림, 프로바이더 안전 검사가 있으면 정리하지 않습니다.",
+        },
+        blockedWorkReview: {
+          title: "차단된 작업 검토",
+          hint: "기본값은 꺼짐입니다. 스레드가 미완료 작업을 남기고 멈추면 짧게 검토하고, 도움이 되는 동안만 반복합니다.",
+          info: "차단되었거나 진행 중인 작업을 남기고 스레드가 멈췄는데 깨워 줄 것이 아무것도 없으면, 약 5분 뒤 미완료 작업을 확인하고 계속하라는 짧은 메시지를 받습니다. 검토가 무언가를 바꾼 경우에만 약 15분, 30분 간격으로 최대 두 번 더 이어집니다. 그 후에는 누군가 스레드에 메시지를 보낼 때까지 검토가 멈춥니다.\n\n각 검토는 스레드의 대화를 재개하므로 제공업체의 프롬프트 캐시가 식은 뒤에는 실행되지 않습니다. 스레드당 하루 최대 6회, 설치 전체로 시간당 최대 12회 검토합니다.\n\n열린 질문이나 사용자의 검토를 기다리는 항목은 건너뜁니다. 답변하면 스레드가 깨어납니다.",
         },
       },
       workspaces: {

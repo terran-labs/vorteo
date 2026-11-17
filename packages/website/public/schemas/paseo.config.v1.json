@@ -235,6 +235,84 @@
             "additionalProperties": {}
           }
         },
+        "primaryConnection": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "profileId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": ["provider"],
+              "additionalProperties": {}
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "installationPrimaryConnection": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "profileId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": ["provider"],
+              "additionalProperties": {}
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "installationPrimaryConnectionSupported": {
+          "type": "boolean"
+        },
+        "timeZone": {
+          "type": "object",
+          "properties": {
+            "override": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "reported": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": ["override", "reported"],
+          "additionalProperties": {}
+        },
         "agentProfiles": {
           "type": "array",
           "items": {
@@ -1196,6 +1274,9 @@
           }
         },
         "idleRuntimeCleanup": {
+          "type": "boolean"
+        },
+        "blockedWorkReview": {
           "type": "boolean"
         },
         "resumeOnStartup": {

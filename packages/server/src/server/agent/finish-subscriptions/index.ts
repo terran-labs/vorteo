@@ -1,3 +1,4 @@
+import { isRestartHoldError } from "../restart-hold.js";
 import { setTimeout as pause } from "node:timers/promises";
 import { HostObservationError } from "../host-operations/index.js";
 import { randomUUID } from "node:crypto";
@@ -37,9 +38,16 @@ interface Dependencies extends FinishObservation {
   store: FinishSubscriptionStore;
   messages(): AgentMessageDelivery;
   callerIsActive(agentId: string): Promise<boolean>;
+  /**
+   * The caller is held by a quota latch. Its notification would be refused, so the captured
+   * outcome and durable intent wait, retrying at the ordinary delay, until the latch clears.
+   */
+  callerIsHeld?(agentId: string): Promise<boolean>;
   serverId: string;
   logger: Logger;
   retryDelayMs?: number;
+  /** Resolves when a restart hold ends; a held delivery waits for it instead of retrying. */
+  waitForRestartHoldRelease?(signal: AbortSignal): Promise<void>;
 }
 export interface FinishRegistration {
   /** The prompt was accepted. Replaces preceding registrations for this pair. */
@@ -174,6 +182,10 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
     permissions: Set<string>,
     signal: AbortSignal,
   ): Promise<boolean> {
+    // A latched caller would refuse the notification. The retry path keeps the captured outcome
+    // and durable intent until the latch clears.
+    if (await deps.callerIsHeld?.(record.callerAgentId))
+      throw new Error("The caller is paused at a usage limit; the notification waits.");
     const requests = result.final?.pendingPermissions ?? [];
     const reason = reasonFor(result);
     for (const id of permissions)
@@ -287,6 +299,13 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
           warned = false;
         } catch (error) {
           if (signal.aborted) return;
+          if (isRestartHoldError(error) && deps.waitForRestartHoldRelease) {
+            // The caller is idle and a restart holds new turns. Retrying cannot succeed until the
+            // hold ends, so wait for it once instead of retrying every few seconds. The durable
+            // intent survives the restart itself.
+            await deps.waitForRestartHoldRelease(signal);
+            continue;
+          }
           // Delivery and storage failures retain the captured outcome and durable intent.
           // They do not spend the remote-observation budget or change the child's outcome.
           if (!warned) {

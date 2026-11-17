@@ -793,10 +793,15 @@ function resolveSheetPolicy(
   intent: WorkspaceTabOpenIntent,
 ): CompactSheetPolicy | null {
   if (state.layoutMode !== "compact" || intent === "background") return null;
-  if (intent === "reveal" && isTargetOpenAsTab(state.layoutByWorkspace[workspaceKey], target)) {
+  const policy = resolveCompactSheetPolicy(workspaceKey, target);
+  if (
+    !policy?.preferSheet &&
+    intent === "reveal" &&
+    isTargetOpenAsTab(state.layoutByWorkspace[workspaceKey], target)
+  ) {
     return null;
   }
-  return resolveCompactSheetPolicy(workspaceKey, target);
+  return policy;
 }
 
 /**

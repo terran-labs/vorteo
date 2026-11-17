@@ -1,3 +1,5 @@
+import { FileBootstrapRequestJournal } from "../coordinator-bootstrap-journal.js";
+import { openBootstrapRequests } from "../coordinator-bootstrap.js";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { realpathSync } from "node:fs";
@@ -290,4 +292,305 @@ export function attemptHostContinuationCommand(
     assertReferences();
     retainedAttempt();
   });
+}
+
+/** Live fixed-command owner for ordinary cooperative preparation. It is not an
+ * activation/candidate continuation owner and cannot execute their operations. */
+const cooperativeCommandOwners = new WeakMap<object, { enqueue(): void }>();
+
+export interface CooperativeMailboxCommandOwner {
+  readonly reservation: import("@getpaseo/protocol/maintenance-interruption").CooperativeDrainPreparation;
+  assertCurrent(): void;
+  close(): void;
+  observed: Promise<"published" | "unknown">;
+}
+
+export function cooperativeCommandDigest(value: unknown): string {
+  function canonical(input: unknown): string {
+    if (Array.isArray(input)) return `[${input.map(canonical).join(",")}]`;
+    if (input !== null && typeof input === "object") {
+      const item = input as Record<string, unknown>;
+      return `{${Object.keys(item)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${canonical(item[key])}`)
+        .join(",")}}`;
+    }
+    const encoded = JSON.stringify(input);
+    if (encoded === undefined) throw new Error("Cooperative data must be JSON");
+    return encoded;
+  }
+  return createHash("sha256")
+    .update(canonical(JSON.parse(JSON.stringify(value))))
+    .digest("hex");
+}
+
+/** Spawns only the fixed helper with its stdin still closed to commands. Native
+ * policy admission and the durable attempt must precede enqueue(). */
+export async function prepareCooperativeMailboxCommand(input: {
+  config: import("../config.js").InstallationConfig;
+  native: import("./native-daemon-inspection.js").EnrollmentDaemonObservation;
+  reservation: import("@getpaseo/protocol/maintenance-interruption").CooperativeDrainPreparation;
+}): Promise<CooperativeMailboxCommandOwner> {
+  const { spawn } = await import("node:child_process");
+  const fs = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const { BootstrapAdmissionSetupSchema, readPrivateBootstrapConfiguration } =
+    await import("../coordinator-bootstrap-host.js");
+  const endpoint = input.native.descriptor.cooperativeMailbox;
+  if (!endpoint || endpoint.endpointIdentitySha256 !== input.reservation.endpointIdentitySha256)
+    throw new Error("Native cooperative endpoint is unavailable for the exact phase");
+  input.native.assertCurrent();
+  const sourcePath = fileURLToPath(
+    new URL("../../../../scripts/cooperative-drain-mailbox.py", import.meta.url),
+  );
+  const sourceFile = await fs.promises.open(
+    sourcePath,
+    fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+  );
+  let source: Buffer;
+  try {
+    const info = await sourceFile.stat();
+    if (!info.isFile() || info.size <= 0 || info.size > 32768 || (info.mode & 0o022) !== 0)
+      throw new Error("Packaged cooperative helper custody is unavailable");
+    source = await sourceFile.readFile();
+    if (createHash("sha256").update(source).digest("hex") !== endpoint.helperSha256)
+      throw new Error("Packaged cooperative helper differs from the enrolled target helper");
+  } finally {
+    await sourceFile.close();
+  }
+  const fixedArgs = [
+    "-I",
+    "-B",
+    "-c",
+    source.toString("utf8"),
+    "publish",
+    "--scope",
+    endpoint.scopeFile,
+    "--endpoint-sha256",
+    endpoint.endpointIdentitySha256,
+    "--owner-uid",
+    String(endpoint.ownerUid),
+  ];
+  let executable: string = endpoint.pythonFile;
+  let args: string[] = fixedArgs;
+  if (input.native.descriptor.environment === "container") {
+    const settings = input.config.containerSourceUpdates;
+    const root = input.native.descriptor.installationRoot;
+    const runner = z
+      .object({ admissionSetupFile: z.string().startsWith("/") })
+      .parse(
+        readPrivateBootstrapConfiguration(
+          path.join(root, "coordinator-bootstrap-runner.json"),
+          input.native.descriptor.custodyOwnerUid,
+        ),
+      );
+    const setup = BootstrapAdmissionSetupSchema.parse(
+      readPrivateBootstrapConfiguration(
+        runner.admissionSetupFile,
+        input.native.descriptor.custodyOwnerUid,
+      ),
+    );
+    if (
+      !settings ||
+      settings.containerId !== input.native.descriptor.containerId ||
+      setup.containerId !== settings.containerId ||
+      setup.docker !== settings.docker ||
+      endpoint.ownerUid !== 0 ||
+      endpoint.readerUid !== input.native.descriptor.containerUid
+    )
+      throw new Error("Cooperative producer differs from the registered Dev native target");
+    executable = setup.docker;
+    args = [
+      "--host",
+      `unix://${setup.socket}`,
+      "exec",
+      "--interactive",
+      "--user",
+      "0",
+      setup.containerId,
+      endpoint.pythonFile,
+      ...fixedArgs,
+    ];
+  } else if (
+    endpoint.ownerUid !== process.getuid?.() ||
+    endpoint.readerUid !== process.getuid?.()
+  ) {
+    throw new Error("Cooperative producer differs from the enrolled Host owner");
+  }
+  const reservation = structuredClone(input.reservation);
+  const reservationDigest = cooperativeCommandDigest(reservation);
+  const command = Buffer.from(
+    JSON.stringify({
+      operation: "maintenance.interrupt-held-turns",
+      endpointIdentitySha256: endpoint.endpointIdentitySha256,
+      reservationSha256: cooperativeCommandDigest(reservation),
+      reservation,
+    }),
+  );
+  if (command.length > 32768) throw new Error("Cooperative command exceeds its byte budget");
+  input.native.assertCurrent();
+  const child = spawn(executable, args, {
+    env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
+    stdio: ["pipe", "pipe", "pipe"],
+    shell: false,
+  });
+  const stdin = child.stdin;
+  const end = stdin.end;
+  let consumed = false;
+  let output = "";
+  const observed = new Promise<"published" | "unknown">((resolve) => {
+    child.on("error", () => resolve("unknown"));
+    stdin.on("error", () => resolve("unknown"));
+    child.stdout.on("data", (data: Buffer) => {
+      if (Buffer.byteLength(output) + data.length > 4096) {
+        resolve("unknown");
+        return;
+      }
+      output += data.toString("utf8");
+    });
+    child.stderr.resume();
+    child.on("close", (code) => {
+      try {
+        const reply = JSON.parse(output);
+        resolve(
+          code === 0 &&
+            reply.state === "published" &&
+            reply.generation === reservation.intent.held.generation
+            ? "published"
+            : "unknown",
+        );
+      } catch {
+        resolve("unknown");
+      }
+    });
+  });
+  // Closing an unused input cannot publish a command; it is not a daemon action.
+  const timeout = setTimeout(() => {
+    stdin.destroy();
+  }, 5000);
+  timeout.unref();
+  void observed.finally(() => clearTimeout(timeout));
+  const assertCurrent = () => {
+    input.native.assertCurrent();
+    if (
+      consumed ||
+      !child.pid ||
+      cooperativeCommandDigest(reservation) !== reservationDigest ||
+      child.stdin !== stdin ||
+      stdin.end !== end ||
+      stdin.destroyed ||
+      child.exitCode !== null ||
+      reservation.intent.held.terminateAt <= Date.now()
+    )
+      throw new Error("Cooperative native command handle is no longer current");
+  };
+  const owner: CooperativeMailboxCommandOwner = Object.freeze({
+    reservation,
+    assertCurrent,
+    close() {
+      if (!consumed) stdin.destroy();
+    },
+    observed,
+  });
+  // The returned observation handle cannot enqueue. Only locked admission in
+  // this module can reach the actual retained pipe's one-use operation.
+  cooperativeCommandOwners.set(owner, {
+    enqueue() {
+      if (consumed || stdin.destroyed || child.exitCode !== null)
+        throw new Error("Cooperative native generation was already attempted");
+      consumed = true;
+      Reflect.apply(end, stdin, [command]);
+    },
+  });
+  return owner;
+}
+
+/** Two locked transactions: durable accepted phase, then an exclusive attempt
+ * and synchronous enqueue on the already-open actual native command pipe. */
+export function attemptCooperativeMailboxCommand(input: {
+  directory: string;
+  job: import("@getpaseo/protocol/execution-installation").RestartJob;
+  owner: CooperativeMailboxCommandOwner;
+  validate(job: import("@getpaseo/protocol/execution-installation").RestartJob): void;
+}): void {
+  const command = cooperativeCommandOwners.get(input.owner);
+  if (!command)
+    throw new Error("Cooperative dispatch requires the actual retained native command owner");
+  const journal = new FileBootstrapRequestJournal(input.directory);
+  const owner = input.owner;
+  const requestId = z.uuid().parse(input.job.id);
+  const generation = z.uuid().parse(owner.reservation.intent.held.generation);
+  const expected = cooperativeCommandDigest(owner.reservation);
+  const retainedJob = (jobs: readonly import("../lifecycle-journal.js").LifecycleJob[]) => {
+    const job = jobs.find((candidate) => candidate.id === requestId);
+    if (
+      !job ||
+      (job.target !== "host" && job.target !== "container-daemon") ||
+      job.status !== "approved" ||
+      job.revision !== input.job.revision ||
+      !job.cooperativeDrainPreparation ||
+      cooperativeCommandDigest({
+        ...job.cooperativeDrainPreparation,
+        phase: "reserved",
+        observation: undefined,
+      }) !== expected
+    )
+      throw new Error("Cooperative request or reserved generation changed before dispatch");
+    return job;
+  };
+  journal.mutateLifecycle(
+    (jobs) => {
+      const job = retainedJob(jobs);
+      if (job.cooperativeDrainPreparation!.phase !== "reserved")
+        throw new Error("Cooperative generation is observation-only; never enqueue again");
+      return jobs.map((candidate) =>
+        candidate.id === requestId
+          ? {
+              ...job,
+              cooperativeDrainPreparation: {
+                ...job.cooperativeDrainPreparation!,
+                phase: "accepted",
+              },
+            }
+          : candidate,
+      );
+    },
+    (_previous, next) => {
+      owner.assertCurrent();
+      input.validate(retainedJob(next));
+      return undefined;
+    },
+  );
+  journal.mutateLifecycle(
+    (jobs) => [...jobs],
+    (_previous, next) => {
+      const job = retainedJob(next);
+      if (job.cooperativeDrainPreparation!.phase !== "accepted")
+        throw new Error("Cooperative generation was no longer accepted");
+      owner.assertCurrent();
+      // mutateLifecycle checks generic work admission after its callback. This
+      // callback owns an effect, so inspect coordinator exclusion before enqueue
+      // under the same already-held lock rather than relying on that later gate.
+      if (openBootstrapRequests(journal.read()).some((request) => request.execution))
+        throw new Error("Coordinator recovery must finish before cooperative dispatch");
+      // validate must finish its native checks before its final locked policy
+      // reread. No callback-bearing checks may follow this decision.
+      input.validate(job);
+      writeInitialHostArtifact(
+        input.directory,
+        // This fence survives an older journal reader dropping the private phase.
+        // A new generation for the same request must not recreate dispatch.
+        path.join(input.directory, `cooperative-${requestId}-attempt.json`),
+        {
+          operation: "maintenance.interrupt-held-turns",
+          requestId,
+          generation,
+          reservationSha256: expected,
+          revision: job.revision,
+        },
+      );
+      command.enqueue();
+      return undefined;
+    },
+  );
 }

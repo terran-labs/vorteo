@@ -25,7 +25,7 @@ Use this index to find the document that owns your task. Read relevant subjects 
 | [docs/forge-providers.md](forge-providers.md)                   | Adding a git forge: registry/manifest, drop-in checklist, self-host/GHES, the two facts tiers                                  |
 | [docs/custom-providers.md](custom-providers.md)                 | Custom provider config: Z.AI, Alibaba/Qwen, ACP agents, profiles, custom binaries                                              |
 | [docs/plugins.md](plugins.md)                                   | Local plugin manifest, directory source config, RPCs, native surfaces, and attachment sources                                  |
-| [Bundled Factory](factory.md)                                   | Read-only observer candidate, controller adoption, native lifecycle and installation boundaries                                |
+| [Per-project Factory](factory.md)                               | Per-project role agents, heartbeats, instructions, models and workspace membership                                             |
 | [Vorteo System project](system-project.md)                      | Protected per-daemon project for standing upkeep, adoption, source setup and settings                                          |
 | [docs/service-proxy.md](service-proxy.md)                       | Service proxy: exposing workspace scripts at public URLs, DNS setup, reverse proxy config                                      |
 | [docs/development.md](development.md)                           | Dev server, build sync gotchas, CLI reference, agent state, Playwright MCP                                                     |
@@ -68,6 +68,9 @@ Host and container setup, trust boundaries, restart requests and removal: [Host 
 
 Factory worker retention and deferred configurable cleanup: [Factory follow-on updates](factory-future-updates.md).
 
+- [Previews gallery and review toolbar](preview-gallery.md): publishing, frozen versions, browser review and the forgery boundary.
 - [Managed preview monitor replacement](preview-monitor-maintenance.md): exact review, retained bytes and uncertain-outcome handling.
 
 - [Nova integration](nova-integration.md): private bridge source, operation and event contracts, and live acceptance requirements.
+
+[Installation network checks](network-connectivity.md) covers browser-to-Host paths, Tailscale relay fallback and daily maintenance diagnostics.

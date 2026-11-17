@@ -17,6 +17,7 @@ import { openExternalUrl } from "@/utils/open-external-url";
 import { toErrorMessage } from "@/utils/error-messages";
 import { SkillSelectionSheet } from "./selection-sheet";
 import { useAgentSkills, type AgentSkillsController } from "./use-agent-skills";
+import { OwnerSettingsGate } from "@/components/settings/owner-lock";
 export { useAgentSkills, type AgentSkillsController } from "./use-agent-skills";
 
 const OP_KIND_ORDER: Record<AgentSkillOperation["kind"], number> = {
@@ -132,6 +133,12 @@ export function AgentSkillsSection({ serverId }: { serverId: string }) {
     [docsIcon, handleOpenDocs, t],
   );
 
+  // Locked shared settings show the same locked card as the other owner settings, not an error.
+  if (skills.locked)
+    return (
+      <OwnerSettingsGate title={t("settings.host.skills.sectionTitle")}>{null}</OwnerSettingsGate>
+    );
+
   if (!skills.connected || !skills.supported) {
     return (
       <SettingsSection title={t("settings.host.skills.sectionTitle")} trailing={trailing}>
@@ -152,7 +159,7 @@ export function AgentSkillsSection({ serverId }: { serverId: string }) {
     <SettingsSection
       title={t("settings.host.skills.sectionTitle")}
       trailing={trailing}
-      status={skills.error ? toErrorMessage(skills.error) : null}
+      status={skills.problem ?? (skills.error ? toErrorMessage(skills.error) : null)}
     >
       <View style={settingsStyles.card} testID="host-agent-skills-card">
         <View style={settingsStyles.row}>
@@ -297,6 +304,7 @@ export function AgentSkillsRow({
     <>
       <SettingsRow
         label={t("settings.host.skills.title")}
+        error={skills.problem}
         hint={
           needsUpdate
             ? t("settings.host.skills.updateAvailable")

@@ -38,3 +38,8 @@ export function useVortonTouch() {
 }
 
 export const VORTON_ACTION_SLOT = { vortonActionSlot: "true" };
+/**
+ * A pressable pill inside a text line, such as an account's reset count. Touch layouts keep its
+ * visual size and give it a transparent 44px hit area instead of the 44px control height.
+ */
+export const VORTON_INLINE_PILL = { vortonInlinePill: "true" };
