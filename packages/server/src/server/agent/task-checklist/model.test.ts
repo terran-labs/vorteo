@@ -171,6 +171,100 @@ describe("thread checklist mutations", () => {
   });
 });
 
+test("wake conditions round-trip optionally, clear explicitly and protect expected snapshots", () => {
+  const legacy = { text: "Old task", completed: false };
+  expect(AgentTaskItemSchema.parse(legacy)).toEqual(legacy);
+  const condition = { kind: "deadline", at: "2026-11-18T20:00:00Z" } as const;
+  const created = mutateChecklist(
+    [],
+    ChecklistMutationSchema.parse({
+      operation: "create",
+      id: "wake",
+      text: "Wait",
+      wakeCondition: condition,
+    }),
+  );
+  expect(AgentTaskItemSchema.parse(JSON.parse(JSON.stringify(created[0])))).toEqual(created[0]);
+  expect(created[0].wakeCondition).toEqual(condition);
+  const { wakeCondition: _condition, ...oldSnapshot } = created[0];
+  expect(AgentTaskItemSchema.omit({ wakeCondition: true }).parse(created[0])).toEqual(oldSnapshot);
+  expect(
+    mutateChecklist(created, { operation: "update", id: "wake", text: "Renamed" })[0].wakeCondition,
+  ).toEqual(condition);
+  for (const operation of ["update", "delete"] as const) {
+    expect(() =>
+      mutateChecklist(created, {
+        operation,
+        id: "wake",
+        expectedTask: oldSnapshot,
+      }),
+    ).toThrow("changed while");
+  }
+  const cleared = mutateChecklist(
+    created,
+    ChecklistMutationSchema.parse({
+      operation: "update",
+      id: "wake",
+      expectedTask: created[0],
+      wakeCondition: null,
+    }),
+  );
+  expect(cleared[0]).toEqual(oldSnapshot);
+  expect(
+    mutateChecklist([], { operation: "create", text: "No condition", wakeCondition: null })[0],
+  ).not.toHaveProperty("wakeCondition");
+  expect(() =>
+    mutateChecklist([{ ...created[0], source: "provider" }], {
+      operation: "update",
+      id: "wake",
+      wakeCondition: null,
+    }),
+  ).toThrow("native provider task tool");
+  const targets = [
+    {
+      kind: "github_pull_request",
+      owner: "example",
+      repository: "repo",
+      number: 1,
+      state: "merged",
+    },
+    { kind: "github_workflow_run", owner: "example", repository: "repo", runId: 2, attempt: 1 },
+    {
+      kind: "github_required_checks",
+      owner: "example",
+      repository: "repo",
+      number: 1,
+      headSha: "a".repeat(40),
+      checks: ["build"],
+    },
+  ];
+  for (const wakeCondition of targets) {
+    const updated = mutateChecklist(
+      created,
+      ChecklistMutationSchema.parse({
+        operation: "update",
+        id: "wake",
+        wakeCondition,
+      }),
+    );
+    expect(AgentTaskItemSchema.parse(updated[0]).wakeCondition).toEqual(wakeCondition);
+  }
+  for (const wakeCondition of [
+    { ...condition, at: "2026-02-30T00:00:00Z" },
+    { ...targets[0], owner: "https://example.com" },
+    { ...targets[1], attempt: 0 },
+    { ...targets[2], headSha: "abc" },
+    { ...targets[2], checks: [] },
+  ]) {
+    const mutation = ChecklistMutationSchema.parse({
+      operation: "update",
+      id: "wake",
+      wakeCondition,
+    });
+    expect(() => mutateChecklist(created, mutation)).toThrow();
+  }
+});
+
 test("blocked is discretionary, incomplete, and independent of prerequisite edges", () => {
   let tasks = mutateChecklist([], {
     operation: "create",

@@ -249,6 +249,26 @@ agent snapshots and todo timelines. The stored status and task metadata remain u
 A stale edit using the downgraded snapshot fails its existing `expectedTask` check.
 The blocked status is discretionary and independent of `blockedBy` prerequisite edges.
 
+## Checklist wake conditions
+
+The optional `wakeCondition` field describes a deadline, an explicit GitHub PR state,
+a workflow run and attempt, or named required checks on a pinned PR head SHA.
+Create and update mutations accept `null` to clear it; stored items omit cleared fields.
+Structural wire parsing is separate from date and target validation during mutation.
+Provider-owned tasks remain read-only.
+
+The SDK requires `features.checklistWakeConditions === true` before sending a condition,
+including explicit clearing or a condition in an update/delete `expectedTask` snapshot.
+Ordinary checklist writes retain their existing capability requirements. Old clients
+ignore the optional response field, and new clients accept its absence. A snapshot
+that omits a stored condition fails optimistic concurrency, so an older client cannot
+unknowingly edit or delete a conditioned task. Supplied conditions compare exactly.
+
+This tranche defines the protocol and SDK boundary only. The daemon does not yet
+advertise the capability: monitoring, durable firing receipts and admission are pending.
+Schema acceptance alone does not promise a wake. Runtime support must be implemented
+before the capability is enabled.
+
 ## Thread journals
 
 Daemons advertise `features.agentJournal`. The interface gates the journal card on that capability. Journal entries travel as an optional `journal` array in existing agent snapshots; older clients ignore the field, and newer clients still accept snapshots that omit it. No new WebSocket message type is sent to older clients. The caller-bound MCP tools assign append sequence and timestamp on the server, commit before broadcasting, and deduplicate retries by entry ID. Ordinary agent snapshot writes preserve the durable journal.
