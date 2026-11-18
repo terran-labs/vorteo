@@ -51,9 +51,12 @@ import { prepareSourceBatch } from "./source-batches.js";
 import { prepareDevRepairBundle } from "./dev-source-repair.js";
 import { assertReleaseSelectionAllowed } from "./release-selection-guard.js";
 import {
+  KEEP_NEWEST,
   pruneHostReleases,
   recordLinkTargets,
   startHostReleaseRetention,
+  type HostReleaseCleanupPlan,
+  type ReleaseReference,
 } from "./host-release-retention.js";
 import {
   jobFoldersNamedInFiles,
@@ -247,6 +250,59 @@ export function hostRetentionReferences(input: {
         .map((job) => job.plan),
     ),
   ];
+}
+
+/** The configured Host release cleanup mode. Absent means a dry run: nothing is removed. */
+export function hostReleaseCleanupMode(
+  config: Pick<InstallationConfig, "hostReleaseCleanup">,
+): "off" | "dry-run" | "on" {
+  return config.hostReleaseCleanup ?? "dry-run";
+}
+
+function cleanupSentence(mode: "off" | "dry-run" | "on"): string {
+  if (mode === "off")
+    return "Host release cleanup is off; old releases remain on disk, as recorded in retention.json in this job's folder.";
+  if (mode === "dry-run")
+    return "Host release cleanup runs as a dry run in the background and removes nothing; the releases it would remove, and each reason every other release is kept, are recorded in retention.json in this job's folder.";
+  return "Old Host releases that nothing uses are removed in the background; the result, including every release kept or skipped and why, is recorded in retention.json in this job's folder.";
+}
+
+/** The retention note of a dry run. */
+function dryRunNote(plan: HostReleaseCleanupPlan | null, linkTargets: readonly string[]): string {
+  const would = plan?.remove ?? [];
+  return [
+    ` Dry run: would remove ${would.length} old Host releases${would.length ? `: ${would.join(", ")}` : ""}. Nothing was removed.`,
+    linkTargets.length ? ` Recorded recent release link targets: ${linkTargets.join(", ")}.` : "",
+    " The plan, with each reason a release is kept, is in this file; set hostReleaseCleanup to on to remove them.",
+  ].join("");
+}
+
+/** The retention note of a real run. */
+function realRunNote(run: {
+  removed: readonly string[];
+  restored: readonly string[];
+  linkTargets: readonly string[];
+  inUse: readonly string[];
+  leftovers: readonly string[];
+  failures: readonly string[];
+}): string {
+  const { removed, restored, linkTargets, inUse, leftovers, failures } = run;
+  return [
+    removed.length ? ` Removed ${removed.length} old Host releases.` : "",
+    restored.length
+      ? ` Put back ${restored.length} releases an earlier cleanup left set aside: ${restored.join(", ")}.`
+      : "",
+    linkTargets.length ? ` Kept recent release link targets: ${linkTargets.join(", ")}.` : "",
+    inUse.length
+      ? ` Kept ${inUse.length} old releases that came into use during cleanup: ${inUse.join(", ")}.`
+      : "",
+    leftovers.length
+      ? ` Removed ${leftovers.length} set-aside copies an earlier cleanup left beside their job folders: ${leftovers.join(", ")}.`
+      : "",
+    failures.length
+      ? ` Could not remove ${failures.length} old releases: ${failures.join(", ")}. They are set aside or kept, and the next cleanup tries again.`
+      : "",
+  ].join("");
 }
 
 /** Every absolute path string anywhere inside a plan or configuration value. */
@@ -834,10 +890,10 @@ export class InstallationSourceUpdates {
     // Cleanup runs after this result, outside the readiness deadline: a first prune of a
     // large backlog once took longer than the whole install window.
     startHostReleaseRetention(
-      () => this.retainHostReleases(previous),
+      (record) => this.retainHostReleases(previous, record),
       path.join(work, "retention.json"),
     );
-    return `Installed source ${update.sourceCommit}. Host replacement identity and readiness verified; interface published. Previous release retained at ${previous}. Old Host releases that nothing uses are removed in the background; the result, including every release kept or skipped, is recorded in retention.json in this job's folder.${commandMessage}`;
+    return `Installed source ${update.sourceCommit}. Host replacement identity and readiness verified; interface published. Previous release retained at ${previous}. ${cleanupSentence(hostReleaseCleanupMode(this.config))}${commandMessage}`;
   }
 
   /**
@@ -849,7 +905,17 @@ export class InstallationSourceUpdates {
    * aside, so a host or daemon that started meanwhile gets its release back. Any evidence
    * that cannot be read skips the cleanup with the reason. Never fails the install.
    */
-  private async retainHostReleases(previous: string): Promise<string> {
+  private async retainHostReleases(
+    previous: string,
+    record: (details: Record<string, unknown>) => void = () => {},
+  ): Promise<string> {
+    const mode = hostReleaseCleanupMode(this.config);
+    const keepNewest = this.config.hostReleaseKeepNewest ?? KEEP_NEWEST;
+    // Recorded first, so the receipt shows the settings in force even if reading fails.
+    record({ mode, keepNewest });
+    if (mode === "off")
+      return " Host release cleanup is off (hostReleaseCleanup); nothing was checked or removed.";
+    const dryRun = mode === "dry-run";
     const failures: string[] = [];
     const inUse: string[] = [];
     const leftovers: string[] = [];
@@ -882,29 +948,48 @@ export class InstallationSourceUpdates {
         const unfinished = lifecycle
           .filter((job) => ["pending", "approved", "running"].includes(job.status))
           .map((job) => path.join(releaseRoot, job.id));
+        const sessionHostRelease = await readSessionHostRelease(home);
+        const labeled = (reason: string, paths: readonly string[]): ReleaseReference[] =>
+          paths.map((reference) => ({ path: reference, reason }));
         return [
-          ...hostRetentionReferences({
-            config: this.config,
-            previous,
-            plans,
-            unfinished,
-            sessionHostRelease: await readSessionHostRelease(home),
-            lifecycle,
-          }),
-          ...linkTargets.map((target) => path.join(releaseRoot, target)),
-          // Listed again on every read, so a file added after the first read is still seen.
-          ...(await jobFoldersNamedInFiles(
-            releaseRoot,
-            aliases,
-            await persistentReferenceFiles({
-              hostHome: home,
-              launchAgents:
-                process.platform === "darwin"
-                  ? path.join(os.homedir(), "Library", "LaunchAgents")
-                  : null,
+          ...labeled(
+            "named by the installation configuration or a coordinator or broker plan",
+            hostRetentionReferences({
+              config: this.config,
+              previous,
+              plans,
+              unfinished,
+              sessionHostRelease,
+              lifecycle,
             }),
-          )),
-          ...(await releaseProcessPaths(releaseRoot)),
+          ),
+          ...labeled("selected release (current)", [this.hostSettings().currentReleaseLink]),
+          ...labeled("previous release (rollback)", [previous]),
+          ...labeled("an unfinished job", unfinished),
+          ...labeled(
+            "the running session host's release",
+            sessionHostRelease ? [sessionHostRelease] : [],
+          ),
+          ...labeled(
+            "a recent release link target",
+            linkTargets.map((target) => path.join(releaseRoot, target)),
+          ),
+          // Listed again on every read, so a file added after the first read is still seen.
+          ...labeled(
+            "named by a LaunchAgent or Chrome native host wrapper",
+            await jobFoldersNamedInFiles(
+              releaseRoot,
+              aliases,
+              await persistentReferenceFiles({
+                hostHome: home,
+                launchAgents:
+                  process.platform === "darwin"
+                    ? path.join(os.homedir(), "Library", "LaunchAgents")
+                    : null,
+              }),
+            ),
+          ),
+          ...labeled("a running process uses it", await releaseProcessPaths(releaseRoot)),
         ];
       };
       const startedAt = new Map<string, number>();
@@ -912,36 +997,33 @@ export class InstallationSourceUpdates {
         const time = Date.parse(String((job as { createdAt?: unknown }).createdAt));
         if (Number.isFinite(time)) startedAt.set(job.id, time);
       }
+      let plan: HostReleaseCleanupPlan | null = null;
       const removed = await pruneHostReleases({
         releaseRoot,
         referenced: await references(),
         inUse: references,
-        keepNewest: this.config.hostReleaseKeepNewest,
+        keepNewest,
         startedAt,
+        dryRun,
+        // Written before anything is deleted, so every real run leaves what it removes and why.
+        onPlan: (computed) => {
+          plan = computed;
+          record({ plan: computed });
+        },
         onRestored: (folder) => restored.push(path.basename(folder)),
         onError: (folder) => failures.push(path.basename(folder)),
         onInUse: (folder) => inUse.push(path.basename(folder)),
         onLeftover: (folder) => leftovers.push(path.basename(folder)),
       });
-      return [
-        removed.length ? ` Removed ${removed.length} old Host releases.` : "",
-        restored.length
-          ? ` Put back ${restored.length} releases an earlier cleanup left set aside: ${restored.join(", ")}.`
-          : "",
-        linkTargets.length ? ` Kept recent release link targets: ${linkTargets.join(", ")}.` : "",
-        inUse.length
-          ? ` Kept ${inUse.length} old releases that came into use during cleanup: ${inUse.join(", ")}.`
-          : "",
-        leftovers.length
-          ? ` Removed ${leftovers.length} set-aside copies an earlier cleanup left beside their job folders: ${leftovers.join(", ")}.`
-          : "",
-        failures.length
-          ? ` Could not remove ${failures.length} old releases: ${failures.join(", ")}. They are set aside or kept, and the next cleanup tries again.`
-          : "",
-      ].join("");
+      return dryRun
+        ? dryRunNote(plan, linkTargets)
+        : realRunNote({ removed, restored, linkTargets, inUse, leftovers, failures });
     } catch (error) {
       const reason = error instanceof Error ? error.message.split("\n")[0] : String(error);
-      return ` Old Host releases were not pruned this time: ${reason}`;
+      record({ error: reason });
+      return dryRun
+        ? ` Dry run could not finish, so a real run would have been skipped: ${reason}`
+        : ` Old Host releases were not pruned this time: ${reason}`;
     }
   }
 

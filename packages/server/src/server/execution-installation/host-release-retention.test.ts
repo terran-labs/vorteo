@@ -1,6 +1,7 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import {
   existsSync,
+  lstatSync,
   readFileSync,
   readdirSync,
   mkdirSync,
@@ -40,6 +41,7 @@ import {
   resolveReference,
   restoreSetAsideReleases,
   startHostReleaseRetention,
+  type HostReleaseCleanupPlan,
 } from "./host-release-retention.js";
 
 const roots: string[] = [];
@@ -1094,4 +1096,61 @@ test("deletion stops when the release root is reached through a link", async () 
   // Two of the three children were never removed.
   const left = readdirSync(path.join(moved, "reviewed-updates", `.deleting-${id(0)}`));
   expect(left.filter((name) => ["a", "b", "build-x"].includes(name))).toHaveLength(2);
+});
+
+/** Every entry under `root` with its type, size, inode and modification time. */
+function treeSnapshot(root: string): string[] {
+  const entries: string[] = [];
+  const walk = (directory: string) => {
+    const info = lstatSync(directory);
+    entries.push(`${path.relative(root, directory)} ${info.ino} ${info.mtimeMs} dir`);
+    for (const name of readdirSync(directory).sort()) {
+      const full = path.join(directory, name);
+      const child = lstatSync(full);
+      if (child.isDirectory()) walk(full);
+      else entries.push(`${path.relative(root, full)} ${child.ino} ${child.size} ${child.mtimeMs}`);
+    }
+  };
+  walk(root);
+  return entries;
+}
+
+test("a dry run changes nothing and lists exactly what a real run then removes", async () => {
+  const f = fixture(6);
+  // An earlier cleanup's leftovers: a copy beside its job folder, and an unfinished deletion.
+  mkdirSync(path.join(f.root, `.pruning-${id(2)}-${"c".repeat(16)}`, "build-old"), {
+    recursive: true,
+  });
+  mkdirSync(path.join(f.root, `.deleting-${id(9)}-${"d".repeat(16)}`));
+  const input = {
+    releaseRoot: f.root,
+    referenced: [f.current, { path: f.release(1), reason: "previous release (rollback)" }],
+    keepNewest: 2,
+    inUse: async () => [f.release(0)],
+  };
+  const before = treeSnapshot(f.base);
+  let dry: HostReleaseCleanupPlan | null = null;
+  expect(
+    await pruneHostReleases({ ...input, dryRun: true, onPlan: (plan) => (dry = plan) }),
+  ).toEqual([]);
+  expect(treeSnapshot(f.base)).toEqual(before);
+  expect(dry).toEqual({
+    remove: [id(3)],
+    removeCopies: [`.pruning-${id(2)}-${"c".repeat(16)}`],
+    finish: [`.deleting-${id(9)}-${"d".repeat(16)}`],
+    kept: {
+      [id(0)]: ["in use"],
+      [id(1)]: ["previous release (rollback)"],
+      [id(2)]: ["an earlier set-aside copy of it exists"],
+      [id(4)]: ["one of the newest releases"],
+      [id(5)]: ["one of the newest releases", "referenced"],
+    },
+  });
+  let real: HostReleaseCleanupPlan | null = null;
+  const removed = await pruneHostReleases({ ...input, onPlan: (plan) => (real = plan) });
+  expect(real).toEqual(dry);
+  // What it planned, plus the deletion an earlier cleanup started and this one finished.
+  expect(removed.sort()).toEqual([...dry!.remove, id(9)].sort());
+  expect(existsSync(f.release(3))).toBe(false);
+  expect(existsSync(f.release(0))).toBe(true);
 });

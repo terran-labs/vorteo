@@ -41,13 +41,38 @@ const DELETING = new RegExp(`^\\.deleting-(${JOB_ID})(?:-[0-9a-f]{16})?$`);
 /** Newest job folders kept beyond everything that is referenced, unless configured. */
 export const KEEP_NEWEST = 3;
 
+/** A path that keeps the job folder it names, optionally with why, for the cleanup record. */
+export type ReleaseReference = string | { path: string; reason: string };
+
+/**
+ * What one cleanup removes, or in a dry run would remove, and why everything else stays.
+ * Reported once, before anything is deleted.
+ */
+export interface HostReleaseCleanupPlan {
+  /** Job folders removed. */
+  remove: string[];
+  /** Set-aside copies an earlier cleanup left beside their job folder, removed. */
+  removeCopies: string[];
+  /** Deletions an earlier cleanup started and this one finishes. */
+  finish: string[];
+  /** Every other job folder and set-aside copy, with each reason it stays. */
+  kept: Record<string, string[]>;
+}
+
 export interface HostReleaseRetention {
   /** The configured `sourceUpdates.releaseRoot`; only its direct job folders are pruned. */
   releaseRoot: string;
   /** Paths that must stay, such as the selected and previous releases and every
    * release a coordinator plan or unfinished job names. Paths outside the root are ignored. */
-  referenced: readonly string[];
+  referenced: readonly ReleaseReference[];
   keepNewest?: number;
+  /**
+   * Compute everything a real run does, including the in-use read, report it through
+   * `onPlan` and stop: no lock, no rename, no deletion. Nothing under the root changes.
+   */
+  dryRun?: boolean;
+  /** Called once with the plan, in a real run after the in-use check and before deletion. */
+  onPlan?: (plan: HostReleaseCleanupPlan) => void;
   /**
    * When each job started, by job folder name, from the job's own record. A folder's
    * modification time changes whenever an entry inside it is added or removed, so it is only
@@ -63,7 +88,7 @@ export interface HostReleaseRetention {
    * candidates are set aside. A set-aside folder it names is put back instead of deleted. When
    * it throws, every folder is put back and the error is rethrown: unknown is never absence.
    */
-  inUse?: () => Promise<readonly string[]>;
+  inUse?: () => Promise<readonly ReleaseReference[]>;
   /** A candidate that turned out to be in use and was put back. */
   onInUse?: (directory: string) => void;
   /**
@@ -349,13 +374,44 @@ async function rootEntry(root: string, target: string): Promise<string | null> {
   return resolved.slice(root.length + 1).split(path.sep)[0] || null;
 }
 
-async function rootEntries(root: string, targets: readonly string[]): Promise<Set<string>> {
-  const entries = new Set<string>();
+/** Root entries the references name, each with every reason given for it. */
+type Named = ReadonlyMap<string, ReadonlySet<string>>;
+
+async function rootEntries(
+  root: string,
+  targets: readonly ReleaseReference[],
+  fallback: string,
+): Promise<Map<string, Set<string>>> {
+  const entries = new Map<string, Set<string>>();
   for (const target of targets) {
-    const entry = await rootEntry(root, target);
-    if (entry) entries.add(entry);
+    const { path: reference, reason } =
+      typeof target === "string" ? { path: target, reason: fallback } : target;
+    const entry = await rootEntry(root, reference);
+    if (!entry) continue;
+    const reasons = entries.get(entry) ?? new Set<string>();
+    reasons.add(reason);
+    entries.set(entry, reasons);
   }
   return entries;
+}
+
+/** Every reason a job folder stays, under its own name or the given set-aside names. */
+function keepReasons(input: {
+  name: string;
+  entries: readonly string[];
+  newest: ReadonlySet<string>;
+  referenced: Named;
+  live: Named;
+  shadowed: boolean;
+}): string[] {
+  const reasons = new Set<string>();
+  if (input.newest.has(input.name)) reasons.add("one of the newest releases");
+  for (const entry of [input.name, ...input.entries]) {
+    for (const reason of input.referenced.get(entry) ?? []) reasons.add(reason);
+    for (const reason of input.live.get(entry) ?? []) reasons.add(reason);
+  }
+  if (input.shadowed) reasons.add("an earlier set-aside copy of it exists");
+  return [...reasons];
 }
 
 /** The device and inode of a folder: what a later rename or removal must still find. */
@@ -404,13 +460,86 @@ interface Doomed {
  */
 export async function pruneHostReleases(input: HostReleaseRetention): Promise<string[]> {
   const root = await realpath(input.releaseRoot);
+  if (input.dryRun) {
+    input.onPlan?.(await planDryRun(root, input));
+    return [];
+  }
   return withReleaseRootLock(root, () => pruneLocked(root, input));
+}
+
+/**
+ * The plan a real run would carry out now, read without changing anything: no lock, no
+ * restore, no rename. A set-aside folder whose own name is free counts as put back, as the
+ * real run's first step would do. The in-use read happens once, where the real run reads it
+ * after setting candidates aside; between the two nothing can start from a set-aside folder,
+ * so the same evidence gives the same result. Evidence that cannot be read throws.
+ */
+async function planDryRun(root: string, input: HostReleaseRetention) {
+  const referenced = await rootEntries(root, input.referenced, "referenced");
+  const listing = await listJobFolders(root, input.startedAt);
+  const named = new Set(listing.folders.map((folder) => folder.name));
+  const folders = [...listing.folders];
+  const copies: SetAsideEntry[] = [];
+  for (const copy of listing.setAside) {
+    if (named.has(copy.name)) {
+      copies.push(copy);
+      continue;
+    }
+    // The real run puts this back first; it is then an ordinary job folder.
+    named.add(copy.name);
+    const recorded = input.startedAt?.get(copy.name);
+    const time = Number.isFinite(recorded)
+      ? recorded!
+      : (await stat(path.join(root, copy.entry))).mtimeMs;
+    folders.push({ name: copy.name, time });
+  }
+  folders.sort((a, b) => b.time - a.time);
+  const newest = new Set(folders.slice(0, input.keepNewest ?? KEEP_NEWEST).map((f) => f.name));
+  const shadowed = new Set(copies.map((copy) => copy.name));
+  const candidates = folders.filter(
+    ({ name }) => !newest.has(name) && !referenced.has(name) && !shadowed.has(name),
+  );
+  const live =
+    input.inUse && candidates.length + copies.length > 0
+      ? await rootEntries(root, await input.inUse(), "in use")
+      : new Map<string, Set<string>>();
+  const plan: HostReleaseCleanupPlan = {
+    remove: [],
+    removeCopies: [],
+    finish: listing.deleting.map((started) => started.entry),
+    kept: {},
+  };
+  for (const { name } of folders) {
+    const reasons = keepReasons({
+      name,
+      entries: listing.setAside.filter((copy) => copy.name === name).map((copy) => copy.entry),
+      newest,
+      referenced,
+      live,
+      shadowed: shadowed.has(name),
+    });
+    if (reasons.length === 0) plan.remove.push(name);
+    else plan.kept[name] = reasons;
+  }
+  for (const copy of copies) {
+    const reasons = keepReasons({
+      name: copy.entry,
+      entries: [copy.name],
+      newest: new Set(),
+      referenced,
+      live,
+      shadowed: false,
+    });
+    if (reasons.length === 0) plan.removeCopies.push(copy.entry);
+    else plan.kept[copy.entry] = reasons;
+  }
+  return plan;
 }
 
 async function pruneLocked(root: string, input: HostReleaseRetention): Promise<string[]> {
   // Before anything else: a cleanup that died mid-run may have left releases hidden.
   await restoreAbandoned(root, input);
-  const referenced = await rootEntries(root, input.referenced);
+  const referenced = await rootEntries(root, input.referenced, "referenced");
   const listing = await listJobFolders(root, input.startedAt);
   const newest = new Set(
     listing.folders.slice(0, input.keepNewest ?? KEEP_NEWEST).map((f) => f.name),
@@ -429,10 +558,10 @@ async function pruneLocked(root: string, input: HostReleaseRetention): Promise<s
   const shadowed = new Set(listing.setAside.map((copy) => copy.name));
   const mine = await setAsideCandidates(run, shadowed);
 
-  let live = new Set<string>();
+  let live = new Map<string, Set<string>>();
   if (input.inUse && mine.size + listing.setAside.length > 0) {
     try {
-      live = await rootEntries(root, await input.inUse());
+      live = await rootEntries(root, await input.inUse(), "in use");
     } catch (error) {
       // Unknown is never absence: put back this run's folders and any an earlier run left.
       for (const [name, identity] of mine) await putBack(run, name, identity);
@@ -441,14 +570,58 @@ async function pruneLocked(root: string, input: HostReleaseRetention): Promise<s
     }
   }
   const doomed = await restoreInUse(run, live, mine, listing.setAside);
+  input.onPlan?.(realPlan({ run, live, shadowed, listing, doomed }));
   return deleteDoomed(run, listing.deleting, doomed);
+}
+
+/** What this run is about to delete, and why every other job folder and copy stays. */
+function realPlan(input: {
+  run: Cleanup;
+  live: Named;
+  shadowed: ReadonlySet<string>;
+  listing: Awaited<ReturnType<typeof listJobFolders>>;
+  doomed: readonly Doomed[];
+}): HostReleaseCleanupPlan {
+  const { run, live, listing, doomed } = input;
+  const plan: HostReleaseCleanupPlan = {
+    remove: doomed.filter((folder) => !folder.leftover).map((folder) => folder.name),
+    removeCopies: doomed.filter((folder) => folder.leftover).map((folder) => folder.entry),
+    finish: listing.deleting.map((started) => started.entry),
+    kept: {},
+  };
+  const removed = new Set([...plan.remove, ...plan.removeCopies]);
+  for (const { name } of listing.folders) {
+    if (removed.has(name)) continue;
+    const reasons = keepReasons({
+      name,
+      entries: [run.aside(name)],
+      newest: run.newest,
+      referenced: run.referenced,
+      live,
+      shadowed: input.shadowed.has(name),
+    });
+    plan.kept[name] = reasons.length ? reasons : ["could not be set aside or put back; see errors"];
+  }
+  for (const copy of listing.setAside) {
+    if (removed.has(copy.entry) || !run.present.has(copy.name)) continue;
+    const reasons = keepReasons({
+      name: copy.entry,
+      entries: [copy.name],
+      newest: new Set(),
+      referenced: run.referenced,
+      live,
+      shadowed: false,
+    });
+    plan.kept[copy.entry] = reasons.length ? reasons : ["could not be checked; see errors"];
+  }
+  return plan;
 }
 
 interface Cleanup {
   input: HostReleaseRetention;
   root: string;
-  /** Root entries the caller's references name. */
-  referenced: ReadonlySet<string>;
+  /** Root entries the caller's references name, with why. */
+  referenced: Named;
   /** Job folders that exist under their own name. */
   present: ReadonlySet<string>;
   newest: ReadonlySet<string>;
@@ -498,7 +671,7 @@ async function setAsideCandidates(run: Cleanup, shadowed: ReadonlySet<string>) {
  */
 async function restoreInUse(
   run: Cleanup,
-  live: ReadonlySet<string>,
+  live: Named,
   mine: ReadonlyMap<string, Identity>,
   earlier: readonly SetAsideEntry[],
 ): Promise<Doomed[]> {
@@ -638,11 +811,13 @@ function writeRetentionReceipt(file: string, receipt: Record<string, unknown>): 
 /**
  * Start one release cleanup after an install has already reported its result, so its
  * duration never counts against the install's readiness deadline. A cleanup that is
- * still running makes this a no-op. The outcome is written to `receiptFile`.
+ * still running makes this a no-op. The outcome is written to `receiptFile`. `record` adds
+ * details, such as the mode and the plan, to the receipt at once, so a run that dies while
+ * deleting still leaves what it was removing and why; they stay in the final receipt.
  * Returns whether a cleanup started.
  */
 export function startHostReleaseRetention(
-  prune: () => Promise<string>,
+  prune: (record: (details: Record<string, unknown>) => void) => Promise<string>,
   receiptFile: string,
   now: () => Date = () => new Date(),
 ): boolean {
@@ -655,11 +830,17 @@ export function startHostReleaseRetention(
     return false;
   }
   const startedAt = now().toISOString();
+  let details: Record<string, unknown> = {};
   writeRetentionReceipt(receiptFile, { status: "running", startedAt });
+  const record = (more: Record<string, unknown>) => {
+    details = { ...details, ...more };
+    writeRetentionReceipt(receiptFile, { ...details, status: "running", startedAt });
+  };
   running = (async () => {
     try {
-      const note = (await prune()).trim();
+      const note = (await prune(record)).trim();
       writeRetentionReceipt(receiptFile, {
+        ...details,
         status: "finished",
         startedAt,
         finishedAt: now().toISOString(),
@@ -667,6 +848,7 @@ export function startHostReleaseRetention(
       });
     } catch (error) {
       writeRetentionReceipt(receiptFile, {
+        ...details,
         status: "failed",
         startedAt,
         finishedAt: now().toISOString(),
