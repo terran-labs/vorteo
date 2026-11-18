@@ -49,7 +49,8 @@ export async function linkedReleasePathsInCommands(
   return [...found];
 }
 
-async function pathsInListing(
+/** Every release path a process listing names, directly or through a link outside the root. */
+export async function pathsInListing(
   root: string,
   listing: { files: string; commands: string },
 ): Promise<string[]> {

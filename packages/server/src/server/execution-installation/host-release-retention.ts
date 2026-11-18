@@ -504,18 +504,24 @@ async function restoreInUse(
 ): Promise<Doomed[]> {
   const doomed: Doomed[] = [];
   for (const [name, identity] of mine) {
+    // setAsideCandidates never sets aside a referenced folder, so the last check only guards
+    // against that changing; no input reaches it today.
     const used = live.has(name) || live.has(run.aside(name)) || run.referenced.has(name);
     if (!used) doomed.push({ name, entry: run.aside(name), identity, leftover: false });
-    else if (await putBack(run, name, identity))
-      run.input.onInUse?.(path.join(run.root, name));
+    else if (await putBack(run, name, identity)) run.input.onInUse?.(path.join(run.root, name));
   }
   // Earlier set-aside copies still here could not be put back: their job folder exists.
   for (const copy of earlier) {
     if (!run.present.has(copy.name)) continue; // Its restore failed; leave it for later.
-    if (live.has(copy.entry) || run.referenced.has(copy.entry))
+    // A job folder recreated after a crash may be the impostor and the copy the real release,
+    // so anything naming the job, under either name, keeps the copy too.
+    const named = [copy.entry, copy.name].some(
+      (entry) => live.has(entry) || run.referenced.has(entry),
+    );
+    if (named)
       run.input.onError?.(
         path.join(run.root, copy.entry),
-        new Error("A set-aside copy beside its job folder is in use"),
+        new Error("A set-aside copy beside its job folder may hold a release in use"),
       );
     else doomed.push({ ...copy, leftover: true });
   }

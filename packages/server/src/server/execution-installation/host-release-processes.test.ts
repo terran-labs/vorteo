@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -15,6 +16,7 @@ import { pruneHostReleases } from "./host-release-retention.js";
 import {
   jobFoldersNamedInFiles,
   linkedReleasePathsInCommands,
+  pathsInListing,
   persistentReferenceFiles,
   releasePathsInProcessListing,
 } from "./host-release-processes.js";
@@ -211,4 +213,36 @@ test("review: a binary or UTF-16 property list naming a non-ASCII path keeps its
     }),
   ).toEqual([job(2)]);
   expect(readFileSync(target, "utf8")).toContain("setInterval");
+});
+
+test("an unreadable reference file stops the cleanup instead of naming nothing", async () => {
+  const base = realpathSync(mkdtempSync(path.join(tmpdir(), "host-unreadable-")));
+  roots.push(base);
+  const wrapper = path.join(base, "chrome-native-host");
+  writeFileSync(wrapper, `exec "${base}/releases/00000000-0000-4000-8000-000000000001/x"`);
+  chmodSync(wrapper, 0o000);
+  try {
+    await expect(
+      jobFoldersNamedInFiles(path.join(base, "releases"), [], [wrapper]),
+    ).rejects.toMatchObject({ code: "EACCES" });
+  } finally {
+    chmodSync(wrapper, 0o600);
+  }
+});
+
+test("a process listing names a release its command line reaches through a link", async () => {
+  // Nothing in the working directory or mapped files names the release; only argv does,
+  // through the `current` link.
+  const base = realpathSync(mkdtempSync(path.join(tmpdir(), "host-listing-")));
+  roots.push(base);
+  const releases = path.join(base, "releases");
+  const release = path.join(releases, "00000000-0000-4000-8000-000000000001", "build-x");
+  mkdirSync(release, { recursive: true });
+  symlinkSync(release, path.join(base, "current"));
+  expect(
+    await pathsInListing(releases, {
+      files: "p1\nfcwd\nn/\n",
+      commands: `/usr/local/bin/node ${base}/current/main.js\n`,
+    }),
+  ).toEqual([path.join(release, "main.js")]);
 });

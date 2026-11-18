@@ -993,3 +993,105 @@ test("an oversized release link history skips the cleanup", async () => {
     recordLinkTargets({ releaseRoot: f.root, links: [f.current], historyFile }),
   ).rejects.toThrow("too large");
 });
+
+test("a set-aside copy beside a recreated, referenced job folder is kept", async () => {
+  // A crash left the real release under its set-aside name and something recreated the job
+  // folder. Only the job folder is referenced, yet the copy may be the release in use.
+  const f = fixture(4);
+  writeFileSync(path.join(f.release(0), "original"), "real");
+  const copy = path.join(f.root, `.pruning-${id(0)}-${"a".repeat(16)}`);
+  renameSync(path.join(f.root, id(0)), copy);
+  mkdirSync(f.release(0), { recursive: true });
+  const failed: string[] = [];
+  const leftovers: string[] = [];
+  await pruneHostReleases({
+    releaseRoot: f.root,
+    referenced: [f.current, f.release(0)],
+    keepNewest: 1,
+    onError: (folder) => failed.push(path.basename(folder)),
+    onLeftover: (folder) => leftovers.push(path.basename(folder)),
+  });
+  expect(leftovers).toEqual([]);
+  expect(failed).toEqual([path.basename(copy)]);
+  expect(readFileSync(path.join(copy, "build-x", "original"), "utf8")).toBe("real");
+  expect(existsSync(f.release(0))).toBe(true);
+});
+
+test("a set-aside copy that a reference names directly is kept", async () => {
+  // Nothing names the job folder, and the copy is never set aside again, so only the
+  // reference check on the copy's own name protects it.
+  const f = fixture(4);
+  const copy = path.join(f.root, `.pruning-${id(0)}-${"b".repeat(16)}`);
+  mkdirSync(path.join(copy, "build-old"), { recursive: true });
+  await pruneHostReleases({
+    releaseRoot: f.root,
+    referenced: [f.current, path.join(copy, "build-old")],
+    keepNewest: 1,
+    onError: () => undefined,
+  });
+  expect(existsSync(path.join(copy, "build-old"))).toBe(true);
+  // Job 0 itself is shadowed by the copy and left for a later cleanup.
+  expect(existsSync(f.release(0))).toBe(true);
+});
+
+test("a session host whose release disappears right after it publishes fails its start", async () => {
+  // The second check: cleanup set the release aside between the host's first look and its
+  // receipt. Simulated by moving the job folder the moment the receipt lands.
+  const f = fixture(2);
+  const directory = path.join(f.base, "home", "session-host");
+  mkdirSync(directory, { recursive: true });
+  vi.resetModules();
+  vi.doMock("node:fs/promises", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("node:fs/promises")>();
+    const rename = async (from: string, to: string) => {
+      await actual.rename(from, to);
+      if (path.basename(to) === "release.json")
+        await actual.rename(path.join(f.root, id(0)), path.join(f.root, `.pruning-${id(0)}`));
+    };
+    return { ...actual, default: { ...actual, rename }, rename };
+  });
+  try {
+    const files = await import("../session-host/host-files.js");
+    const lock = await files.acquireHostLock(path.join(directory, "host.sock"));
+    try {
+      await expect(files.writeSessionHostRelease(directory, f.release(0))).rejects.toBeInstanceOf(
+        files.SessionHostReleaseRemovedError,
+      );
+      expect(existsSync(path.join(directory, "release.json"))).toBe(true);
+    } finally {
+      await lock.release();
+    }
+  } finally {
+    vi.doUnmock("node:fs/promises");
+    vi.resetModules();
+  }
+});
+
+test("deletion stops when the release root is reached through a link", async () => {
+  // An ancestor swapped for a link leaves the folder's device and inode unchanged; only the
+  // canonical path check sees that removal now goes through the link.
+  const f = fixture(2);
+  renameSync(path.join(f.root, id(0)), deleting(f, 0));
+  for (const child of ["a", "b"]) mkdirSync(path.join(deleting(f, 0), child));
+  const moved = `${f.base}-moved`;
+  roots.push(moved);
+  let swapped = false;
+  const failed: string[] = [];
+  await pruneHostReleases({
+    releaseRoot: f.root,
+    referenced: [f.current],
+    removeRelease: async (directory) => {
+      await removeReleaseTree(directory);
+      if (swapped) return;
+      swapped = true;
+      renameSync(f.base, moved);
+      symlinkSync(moved, f.base);
+    },
+    onError: (folder) => failed.push(path.basename(folder)),
+  });
+  expect(swapped).toBe(true);
+  expect(failed).toEqual([id(0)]);
+  // Two of the three children were never removed.
+  const left = readdirSync(path.join(moved, "reviewed-updates", `.deleting-${id(0)}`));
+  expect(left.filter((name) => ["a", "b", "build-x"].includes(name))).toHaveLength(2);
+});
