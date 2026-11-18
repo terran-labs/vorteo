@@ -669,6 +669,15 @@ export class AgentStorage {
     return record ? currentChecklistWakeGenerations(record, observed) : [];
   }
 
+  /** Match our durable receipts after preparation without treating them as fresh observations. */
+  currentChecklistWakeClaims(
+    agentId: string,
+    claims: readonly ChecklistWakeGeneration[],
+  ): ChecklistWakeGeneration[] {
+    const record = this.getLoadedRecord(agentId);
+    return record ? currentChecklistWakeGenerations(record, claims, true) : [];
+  }
+
   /** Claim only after admission permits a wake. A receipt is not proof of provider delivery. */
   async claimChecklistWakeGenerations(
     agentId: string,
@@ -1107,10 +1116,14 @@ function reconcileChecklistWakeGenerations(
 function currentChecklistWakeGenerations(
   record: StoredAgentRecord,
   observed: readonly ChecklistWakeGeneration[],
+  claimed = false,
 ): ChecklistWakeGeneration[] {
   if (record.archivedAt) return [];
   const current = (record.checklistWakeGenerations ?? []).filter((entry) => {
-    if (entry.claim || !observed.some((candidate) => isDeepStrictEqual(candidate, entry)))
+    if (
+      Boolean(entry.claim) !== claimed ||
+      !observed.some((candidate) => isDeepStrictEqual(candidate, entry))
+    )
       return false;
     return (record.tasks ?? []).some(
       (task) =>

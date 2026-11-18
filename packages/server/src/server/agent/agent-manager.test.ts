@@ -16040,6 +16040,11 @@ test("Vorteo checklist mutations survive provider updates, history refresh, and 
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const client = new SessionRecordingAgentClient();
   const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const queue = new MessageQueueService(
+    new MessageQueueStore(workdir),
+    new QueueAttachmentStore(workdir),
+  );
+  manager.setMessageQueueControl(queue);
   const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
     workspaceId: undefined,
   });
@@ -16174,12 +16179,39 @@ test("Vorteo checklist mutations survive provider updates, history refresh, and 
       id: "ui",
       wakeCondition: condition,
     });
+    const goal: AgentGoal = {
+      threadId: "retained",
+      objective: "Finish accepted work",
+      status: "blocked",
+      tokenBudget: 1000,
+      tokensUsed: 400,
+      timeUsedSeconds: 5,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const goals = new CodexGoals({ request: async () => ({ goal }), onChange() {} });
+    goals.bind("retained");
+    Object.defineProperty(manager.getAgent(agent.id)!.session!, "goals", { value: goals });
+    // Explicitly armed children are eligible even when timed reviews exclude them.
+    await manager.setLabels(agent.id, { [PARENT_AGENT_ID_LABEL]: "parent" });
+    await manager.flush();
+    const ready = storage.getLoadedRecord(agent.id)!.checklistWakeGenerations!;
+    const stream = await manager.startChecklistConditionWake(agent.id, ready, () => true);
+    expect(stream).not.toBeNull();
+    if (!stream) throw new Error("Expected condition wake");
+    for await (const event of stream) void event;
+    expect(goals.state).toMatchObject({ status: "ready", goal });
+    expect(await manager.startChecklistConditionWake(agent.id, ready, () => true)).toBeNull();
+    await manager.flush();
+    const recovered = new AgentStorage(join(workdir, "agents"), logger);
+    expect((await recovered.get(agent.id))?.checklistWakeGenerations?.[0].claim).toBeDefined();
     const deleted = (await storage.get(agent.id))!.checklistWakeGenerations!;
     await manager.mutateChecklist(agent.id, { operation: "delete", id: "ui" });
     expect(storage.currentChecklistWakeGenerations(agent.id, deleted)).toEqual([]);
     expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBeUndefined();
     expect((await storage.get(agent.id))?.blockedReviewCount).toBeUndefined();
   } finally {
+    queue.close();
     await manager.closeAgent(agent.id);
     await manager.flush();
     rmSync(workdir, { recursive: true, force: true });
@@ -16272,96 +16304,173 @@ test.each([true, false])(
   },
 );
 
-test.each(["active", "usageLimited", "spent", "restart", "queue", "stopped"] as const)(
-  "periodic blocked review respects %s admission with a blocked checklist",
-  async (condition) => {
-    const workdir = mkdtempSync(join(tmpdir(), "blocked-review-manager-"));
-    const storage = new AgentStorage(join(workdir, "agents"), logger);
-    const client = new SessionRecordingAgentClient();
-    let now = Date.now();
-    const manager = new AgentManager({
-      clients: { codex: client },
-      registry: storage,
-      logger,
-      now: () => now,
+test.each([
+  ...(["active", "usageLimited", "spent", "restart", "queue", "stopped"] as const).map(
+    (condition) => ({ trigger: "review" as const, condition }),
+  ),
+  ...(
+    [
+      "paused",
+      "complete",
+      "spent",
+      "restart",
+      "queue",
+      "stopped",
+      "archived",
+      "registration",
+      "quota",
+      "usageHold",
+      "accountHold",
+      "queueGoal",
+      "readiness",
+      "uncertain",
+      "restartContinuation",
+      "claimStop",
+      "claimEdit",
+      "claimGoal",
+      "claimAccount",
+    ] as const
+  ).map((condition) => ({ trigger: "condition" as const, condition })),
+])("blocked work respects $condition admission for $trigger", async ({ trigger, condition }) => {
+  const workdir = mkdtempSync(join(tmpdir(), "blocked-review-manager-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const client = new SessionRecordingAgentClient();
+  let now = Date.now();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    now: () => now,
+  });
+  const queue = new MessageQueueService(
+    new MessageQueueStore(workdir),
+    new QueueAttachmentStore(workdir),
+  );
+  manager.setMessageQueueControl(queue);
+  const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  const goal: AgentGoal = {
+    threadId: "retained",
+    objective: "Finish accepted work",
+    status: "blocked",
+    tokenBudget: 1000,
+    tokensUsed: 400,
+    timeUsedSeconds: 5,
+    createdAt: 1,
+    updatedAt: 2,
+  };
+  const holdAccount = async () => {
+    const record = storage.getLoadedRecord(agent.id)!;
+    await storage.upsert({
+      ...record,
+      id: randomUUID(),
+      config: {
+        ...record.config,
+        usageLimitHold: { stoppedAt: new Date(now).toISOString(), attempts: 0 },
+      },
     });
-    const queue = new MessageQueueService(
-      new MessageQueueStore(workdir),
-      new QueueAttachmentStore(workdir),
-    );
-    manager.setMessageQueueControl(queue);
-    let agentId: string | undefined;
-    try {
-      const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
-        workspaceId: undefined,
-      });
-      agentId = agent.id;
-      const goal: AgentGoal = {
-        threadId: "retained",
-        objective: "Finish accepted work",
-        status: "blocked",
-        tokenBudget: 1000,
-        tokensUsed: 400,
-        timeUsedSeconds: 5,
-        createdAt: 1,
-        updatedAt: 2,
-      };
-      const goals = new CodexGoals({
-        request: async () => ({ goal }),
-        onChange() {},
-      });
-      goals.bind("retained");
-      Object.defineProperty(client.sessions[0], "goals", { value: goals });
-      await manager.mutateChecklist(agent.id, {
-        operation: "create",
-        id: "blocked",
-        text: "Check prerequisite",
-      });
-      await manager.mutateChecklist(agent.id, {
-        operation: "update",
-        id: "blocked",
-        status: "blocked",
-        description: "Waiting for the accepted dependency",
-      });
-      // Change native state after discovery to prove a stale hint cannot admit work.
-      if (
-        condition !== "spent" &&
-        condition !== "restart" &&
-        condition !== "queue" &&
-        condition !== "stopped"
-      )
-        goal.status = condition;
-      if (condition === "spent") goal.tokensUsed = 1000;
-      await manager.flush();
-      const reviewRecord = storage.getLoadedRecord(agent.id)!;
-      now =
-        Math.max(
-          Date.parse(reviewRecord.createdAt),
-          Date.parse(reviewRecord.lastActivityAt ?? reviewRecord.createdAt),
-        ) + 300_001;
-      expect(storage.getLoadedRecord(agent.id)).toMatchObject({
-        persistence: { sessionId: client.sessions[0]!.id },
-      });
-      expect(manager.getAgent(agent.id)).toMatchObject({
-        lifecycle: "idle",
-        activeTurnId: null,
-      });
-      expect(blockedReviewDue(storage.getLoadedRecord(agent.id)!, now)).toBe(true);
+  };
+  let reads = 0;
+  const goals = new CodexGoals({
+    request: async () => {
+      if (condition === "uncertain") throw new Error("Native goal unavailable");
+      if (++reads === 2) {
+        if (condition === "claimGoal") goal.status = "paused";
+        if (condition === "claimAccount") await holdAccount();
+        if (condition === "claimEdit")
+          await manager.mutateChecklist(agent.id, {
+            operation: "update",
+            id: "blocked",
+            wakeCondition: { kind: "deadline", at: new Date(now + 1).toISOString() },
+          });
+      }
+      return { goal };
+    },
+    onChange() {},
+  });
+  goals.bind("retained");
+  Object.defineProperty(client.sessions[0], "goals", { value: goals });
+  try {
+    manager.setChecklistWakeConditionsReadiness(() => true);
+    await manager.mutateChecklist(agent.id, {
+      operation: "create",
+      id: "blocked",
+      text: "Check prerequisite",
+    });
+    await manager.mutateChecklist(agent.id, {
+      operation: "update",
+      id: "blocked",
+      status: "blocked",
+      description: "Waiting for the accepted dependency",
+      ...(trigger === "condition"
+        ? { wakeCondition: { kind: "deadline" as const, at: new Date(now).toISOString() } }
+        : {}),
+    });
+    if (
+      condition === "active" ||
+      condition === "usageLimited" ||
+      condition === "paused" ||
+      condition === "complete"
+    )
+      goal.status = condition;
+    if (condition === "spent") goal.tokensUsed = 1000;
+    await manager.flush();
+    const record = storage.getLoadedRecord(agent.id)!;
+    const observed = record.checklistWakeGenerations ?? [];
+    now =
+      Math.max(
+        Date.parse(record.createdAt),
+        Date.parse(record.lastActivityAt ?? record.createdAt),
+      ) + 300_001;
+    expect(blockedReviewDue(record, now)).toBe(true);
+    const applyHold = async () => {
       if (condition === "restart") manager.beginRestartDrain(randomUUID());
       if (condition === "queue") await queue.pause(agent.id);
-      expect(
-        await manager.startBlockedTaskReview(agent.id, () => condition !== "stopped"),
-      ).toBeNull();
-      expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBeUndefined();
-      expect(manager.getAgent(agent.id)?.lifecycle).toBe("idle");
-    } finally {
-      queue.close();
-      if (agentId) await manager.closeAgent(agentId);
-      await manager.flush();
-      rmSync(workdir, { recursive: true, force: true });
-    }
-  },
-);
+      if (condition === "archived") await manager.archiveAgent(agent.id);
+      if (condition === "registration") manager.prepareForShutdown();
+      if (condition === "quota")
+        await storage.upsert({
+          ...record,
+          config: { ...record.config, quotaPausedAt: new Date(now).toISOString() },
+        });
+      if (condition === "usageHold")
+        await manager.updateUsageLimitHold(agent.id, () => ({
+          stoppedAt: new Date(now).toISOString(),
+          attempts: 0,
+        }));
+      if (condition === "accountHold") await holdAccount();
+      if (condition === "queueGoal")
+        await storage.upsert({ ...record, queueGoalHold: { phase: "held", goal } });
+      if (condition === "readiness") manager.setChecklistWakeConditionsReadiness(() => false);
+      if (condition === "restartContinuation")
+        await queue.captureRestartContinuation(agent.id, randomUUID());
+    };
+    await applyHold();
+    const canContinue = () =>
+      condition !== "stopped" &&
+      !(
+        condition === "claimStop" &&
+        storage.getLoadedRecord(agent.id)?.checklistWakeGenerations?.some((entry) => entry.claim)
+      );
+    expect(
+      await (trigger === "review"
+        ? manager.startBlockedTaskReview(agent.id, canContinue)
+        : manager.startChecklistConditionWake(agent.id, observed, canContinue)),
+    ).toBeNull();
+    expect(
+      storage.getLoadedRecord(agent.id)?.checklistWakeGenerations?.every((entry) => !entry.claim) ??
+        true,
+    ).toBe(true);
+    expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBeUndefined();
+    expect((await storage.get(agent.id))?.blockedReviewCount).toBeUndefined();
+  } finally {
+    queue.close();
+    await manager.closeAgent(agent.id);
+    await manager.flush();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
 
 test("periodic review scan honors the hourly cooldown and stops without creating another session", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "blocked-review-manager-"));
