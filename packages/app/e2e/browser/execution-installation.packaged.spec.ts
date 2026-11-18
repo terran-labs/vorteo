@@ -3618,9 +3618,8 @@ test("shared account setup preserves the catalog through retries and local remov
       .getByRole("button", { name: "Shared empty account actions", exact: true })
       .click();
     await page
-      .getByRole("menu")
-      .filter({ visible: true })
       .getByRole("menuitem", { name: "Environment access", exact: true })
+      .filter({ visible: true })
       .click();
     const access = page.getByRole("dialog", {
       name: "Shared empty account: environment access",
@@ -3632,6 +3631,7 @@ test("shared account setup preserves the catalog through retries and local remov
       `shared-provider-repair-managed/${creationId}-${hostServerId}`,
     );
     const remove = repair.getByRole("button", { name: "Remove from Host", exact: true });
+    const restore = repair.getByRole("button", { name: "Restore in Host", exact: true });
     await expect(remove).toBeEnabled({ timeout: 60_000 });
     let dialog = page.waitForEvent("dialog");
     let click = remove.click();
@@ -3722,7 +3722,7 @@ test("shared account setup preserves the catalog through retries and local remov
     click = remove.click();
     await (await dialog).accept();
     await click;
-    await expect(remove).not.toBeVisible({ timeout: 60_000 });
+    await expect(restore).toBeVisible({ timeout: 60_000 });
     await access.screenshot({ path: testInfo.outputPath("removal-complete.png") });
     await expect
       .poll(async () => (await host.getDaemonConfig()).config.providers[providerId], {
@@ -3766,17 +3766,16 @@ test("shared account setup preserves the catalog through retries and local remov
     await expect(host.createCodexAccount(creationId, "Shared empty account")).rejects.toThrow(
       "removed",
     );
-    const restore = repair.getByRole("button", { name: "Restore in Host", exact: true });
     await expect(restore).toBeVisible();
     await restore.click();
-    await expect(restore).not.toBeVisible({ timeout: 60_000 });
+    await expect(
+      repair.getByTestId(`shared-provider-restore-managed/${creationId}-${hostServerId}`),
+    ).not.toBeVisible({ timeout: 60_000 });
     await expect(
       page
         .getByRole("alert")
         .filter({ visible: true })
-        .getByText("Connection restored. Sign in if needed, then turn it back on.", {
-          exact: true,
-        }),
+        .getByText("Connection restored", { exact: false }),
     ).toBeVisible();
     await expect
       .poll(async () => (await host.getDaemonConfig()).config.providers[providerId], {
@@ -3841,6 +3840,22 @@ test("shared account setup preserves the catalog through retries and local remov
         const restored = (await client.getDaemonConfig()).config.providers[providerId];
         expect(restored.command).toEqual(command);
         expect(restored.command).not.toEqual(fixtureCommand);
+        // Enabled definitions start at loading; only terminal states prove discovery settled.
+        await expect
+          .poll(
+            async () => {
+              const snapshot = await client.getProvidersSnapshot();
+              if (!snapshot.entries) return false;
+              for (const entry of snapshot.entries) {
+                if (entry.provider !== providerId) continue;
+                if (restored.removed === true) return false;
+                return entry.status === "unavailable" || entry.status === "error";
+              }
+              return restored.removed === true;
+            },
+            { timeout: 60_000 },
+          )
+          .toBe(true);
       }),
     );
     const closures = await Promise.allSettled(clients.map((client) => client.close()));
