@@ -1,7 +1,17 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { afterEach, expect, test } from "vitest";
+import { pruneHostReleases } from "./host-release-retention.js";
 import {
   jobFoldersNamedInFiles,
   linkedReleasePathsInCommands,
@@ -146,4 +156,59 @@ test("Chrome native host wrappers and LaunchAgents name the releases they launch
   expect(
     await persistentReferenceFiles({ hostHome: path.join(base, "none"), launchAgents: null }),
   ).toEqual([]);
+});
+
+/** A property list written by Python's plistlib, binary or UTF-16 XML, naming `target`. */
+function writePlist(file: string, target: string, format: "binary" | "utf16-xml") {
+  const script =
+    format === "binary"
+      ? "import plistlib,sys;plistlib.dump({'ProgramArguments':['/usr/bin/node',sys.argv[2]]},open(sys.argv[1],'wb'),fmt=plistlib.FMT_BINARY)"
+      : "import plistlib,sys;open(sys.argv[1],'wb').write(plistlib.dumps({'ProgramArguments':['/usr/bin/node',sys.argv[2]]}).decode().replace('UTF-8','UTF-16').encode('utf-16'))";
+  execFileSync("python3", ["-I", "-c", script, file, target]);
+}
+
+test("review: a binary or UTF-16 property list naming a non-ASCII path keeps its release", async () => {
+  // A binary plist stores any string with a non-ASCII character as UTF-16BE, root and job ID
+  // included; a byte search for the ASCII path found nothing and the release was deleted.
+  const base = realpathSync(mkdtempSync(path.join(tmpdir(), "host-plist-")));
+  roots.push(base);
+  const releases = path.join(base, "releases");
+  const job = (n: number) => `00000000-0000-4000-8000-00000000000${n}`;
+  for (let n = 0; n < 4; n++) mkdirSync(path.join(releases, job(n), "build"), { recursive: true });
+  const target = path.join(releases, job(0), "build", "é.js");
+  writeFileSync(target, "setInterval(() => {}, 1000);");
+  const binary = path.join(base, "binary.plist");
+  writePlist(binary, target, "binary");
+  const utf16 = path.join(base, "utf16.plist");
+  writePlist(utf16, path.join(releases, job(1), "build", "ü.js"), "utf16-xml");
+
+  // The byte search alone, with parsing stubbed out, reads both UTF-16 encodings.
+  expect(
+    (await jobFoldersNamedInFiles(releases, [], [binary, utf16], async () => [])).sort(),
+  ).toEqual([path.join(releases, job(0)), path.join(releases, job(1))]);
+
+  // A property list that cannot be parsed skips the cleanup.
+  await expect(
+    jobFoldersNamedInFiles(releases, [], [binary], async () => {
+      throw new Error("unparseable");
+    }),
+  ).rejects.toThrow("unparseable");
+
+  // With the real parser: plutil on macOS; elsewhere parsing is refused, which is fail closed.
+  const scan = jobFoldersNamedInFiles(releases, [], [binary, utf16]);
+  if (process.platform !== "darwin") {
+    await expect(scan).rejects.toThrow("cannot be parsed");
+    return;
+  }
+  const referenced = await scan;
+  expect(referenced.sort()).toEqual([path.join(releases, job(0)), path.join(releases, job(1))]);
+  expect(
+    await pruneHostReleases({
+      releaseRoot: releases,
+      referenced,
+      keepNewest: 1,
+      startedAt: new Map([0, 1, 2, 3].map((n) => [job(n), n])),
+    }),
+  ).toEqual([job(2)]);
+  expect(readFileSync(target, "utf8")).toContain("setInterval");
 });

@@ -2,6 +2,7 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import {
   existsSync,
   readFileSync,
+  readdirSync,
   mkdirSync,
   renameSync,
   unlinkSync,
@@ -11,11 +12,12 @@ import {
   symlinkSync,
   utimesSync,
   writeFileSync,
+  chmodSync,
 } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { setReleaseImmutable } from "./coordinator-bootstrap-release-seal.js";
 import type { InstallationConfig } from "./config.js";
 import { hostRetentionReferences } from "./source-updates.js";
@@ -28,12 +30,14 @@ import {
   SessionHostFileError,
 } from "../session-host/host-files.js";
 import { sessionHostReleaseRoot } from "../session-host/service.js";
-import { releaseProcessPaths } from "./host-release-processes.js";
+import { linkedReleasePathsInCommands, releaseProcessPaths } from "./host-release-processes.js";
 import {
   hostReleaseRetentionIdle,
   pruneHostReleases,
   recordLinkTargets,
+  ReleaseRootLockedError,
   removeReleaseTree,
+  resolveReference,
   restoreSetAsideReleases,
   startHostReleaseRetention,
 } from "./host-release-retention.js";
@@ -66,10 +70,22 @@ function fixture(count: number) {
   return { base, root, release, current };
 }
 
-const setAside = (f: ReturnType<typeof fixture>, index: number) =>
-  path.join(f.root, `.pruning-${id(index)}`);
+/**
+ * The folder a cleanup set aside or started deleting for job `index`, as it is named on disk
+ * now: `<prefix>-<job id>-<run nonce>`, or the form without a nonce, which earlier cleanups
+ * used and tests create directly. Falls back to that form when neither exists.
+ */
+function namedEntry(f: ReturnType<typeof fixture>, prefix: string, index: number): string {
+  const base = `${prefix}-${id(index)}`;
+  const found = readdirSync(f.root).find(
+    (name) =>
+      name === base || (/^-[0-9a-f]{16}$/.test(name.slice(base.length)) && name.startsWith(base)),
+  );
+  return path.join(f.root, found ?? base);
+}
+const setAside = (f: ReturnType<typeof fixture>, index: number) => namedEntry(f, ".pruning", index);
 const deleting = (f: ReturnType<typeof fixture>, index: number) =>
-  path.join(f.root, `.deleting-${id(index)}`);
+  namedEntry(f, ".deleting", index);
 
 /** A process whose working directory is `cwd`, running until the test ends. */
 async function processIn(cwd: string, args: string[] = []): Promise<ChildProcess> {
@@ -809,4 +825,171 @@ test("only a missing release fails a session host start", async () => {
   } finally {
     await lock.release();
   }
+});
+
+/** A promise and the function that settles it, for pausing a cleanup at a chosen point. */
+function gate() {
+  let open!: () => void;
+  const opened = new Promise<void>((resolve) => (open = resolve));
+  return { open, opened };
+}
+
+/** What the lock records for a process: `ps` start time in the same locale as the code. */
+function processStart(pid: number): string {
+  return execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
+    env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+  })
+    .toString()
+    .trim();
+}
+
+test("review: overlapping cleanups and a startup restore never delete a folder another cleanup protects", async () => {
+  // Reviewer's interleaving, with B and the startup restore in an independent module instance,
+  // so nothing in-memory serializes them: A sets X aside and pauses in its in-use read; the
+  // restore and cleanup B then run against the same root.
+  const f = fixture(4);
+  const keep = [1, 2, 3].map((index) => path.join(f.root, id(index)));
+  const aPaused = gate();
+  const aResume = gate();
+  const a = pruneHostReleases({
+    releaseRoot: f.root,
+    referenced: keep,
+    keepNewest: 1,
+    inUse: async () => {
+      aPaused.open();
+      await aResume.opened;
+      return [];
+    },
+  });
+  await aPaused.opened;
+  vi.resetModules();
+  const other = await import("./host-release-retention.js");
+  expect(other.pruneHostReleases).not.toBe(pruneHostReleases);
+  // The restore leaves A's folder set aside, so nothing can start from X meanwhile.
+  expect(await other.restoreSetAsideReleases(f.root)).toBeNull();
+  expect(existsSync(f.release(0))).toBe(false);
+  expect(existsSync(setAside(f, 0))).toBe(true);
+  // B, which would see X in use, cannot start, so it never sets X aside for A to consume.
+  let bInUseRead = false;
+  await expect(
+    other.pruneHostReleases({
+      releaseRoot: f.root,
+      referenced: keep,
+      keepNewest: 1,
+      inUse: async () => {
+        bInUseRead = true;
+        return [f.release(0)];
+      },
+    }),
+  ).rejects.toMatchObject({ name: "ReleaseRootLockedError" });
+  expect(bInUseRead).toBe(false);
+  aResume.open();
+  // A deletes only what its own evidence, gathered while X stayed hidden, found unused.
+  expect(await a).toEqual([id(0)]);
+  // The lock is released: the next cleanup runs.
+  await expect(
+    other.pruneHostReleases({ releaseRoot: f.root, referenced: keep, keepNewest: 1 }),
+  ).resolves.toEqual([]);
+});
+
+test("a cleanup never renames or deletes a set-aside folder that is not the one it set aside", async () => {
+  // Defence in depth beside the lock: something bypassing it puts A's folder back and leaves
+  // a different folder under A's set-aside name.
+  const f = fixture(3);
+  const failed: string[] = [];
+  let impostor = "";
+  const removed = await pruneHostReleases({
+    releaseRoot: f.root,
+    referenced: [f.current],
+    keepNewest: 1,
+    inUse: async () => {
+      impostor = setAside(f, 0);
+      renameSync(impostor, path.join(f.root, id(0)));
+      mkdirSync(impostor);
+      writeFileSync(path.join(impostor, "precious"), "keep");
+      return [];
+    },
+    onError: (folder) => failed.push(path.basename(folder)),
+  });
+  expect(removed).toEqual([id(1)]);
+  expect(failed).toEqual([id(0)]);
+  expect(readFileSync(path.join(impostor, "precious"), "utf8")).toBe("keep");
+  expect(existsSync(f.release(0))).toBe(true);
+});
+
+test("a cleanup lock held by a live process is respected, and a stale one is taken over", async () => {
+  const f = fixture(3);
+  const lock = path.join(f.root, ".cleanup.lock");
+  const holder = await processIn(f.base);
+  writeFileSync(lock, JSON.stringify({ pid: holder.pid, start: processStart(holder.pid!) }));
+  await expect(
+    pruneHostReleases({ releaseRoot: f.root, referenced: [f.current], keepNewest: 1 }),
+  ).rejects.toBeInstanceOf(ReleaseRootLockedError);
+  expect(await restoreSetAsideReleases(f.root)).toBeNull();
+  // An unreadable lock, such as one being written, is never assumed free.
+  writeFileSync(lock, "{");
+  await expect(
+    pruneHostReleases({ releaseRoot: f.root, referenced: [f.current], keepNewest: 1 }),
+  ).rejects.toBeInstanceOf(ReleaseRootLockedError);
+  // The holder exits: its lock is stale.
+  writeFileSync(lock, JSON.stringify({ pid: holder.pid, start: processStart(holder.pid!) }));
+  holder.kill("SIGKILL");
+  await new Promise((resolve) => holder.once("exit", resolve));
+  expect(existsSync(f.release(0))).toBe(true);
+  expect(
+    await pruneHostReleases({ releaseRoot: f.root, referenced: [f.current], keepNewest: 2 }),
+  ).toEqual([id(0)]);
+  expect(existsSync(lock)).toBe(false);
+  // A reused process ID: alive, but started at another time, so not the holder.
+  writeFileSync(lock, JSON.stringify({ pid: process.pid, start: "Thu Jan  1 00:00:00 1970" }));
+  expect(await restoreSetAsideReleases(f.root)).toEqual([]);
+  expect(existsSync(lock)).toBe(false);
+});
+
+test("review: a reference that cannot be resolved for any reason but absence stops the cleanup", async () => {
+  // EACCES on the only link to a release must not read as a missing path.
+  const f = fixture(3);
+  const sealed = path.join(f.base, "sealed");
+  mkdirSync(sealed);
+  symlinkSync(f.release(0), path.join(sealed, "link"));
+  const reference = path.join(sealed, "link", "packages");
+  chmodSync(sealed, 0o000);
+  try {
+    await expect(resolveReference(reference)).rejects.toMatchObject({ code: "EACCES" });
+    await expect(
+      linkedReleasePathsInCommands(f.root, `/usr/bin/node ${reference}/main.js`),
+    ).rejects.toMatchObject({ code: "EACCES" });
+    await expect(
+      pruneHostReleases({
+        releaseRoot: f.root,
+        referenced: [f.current, reference],
+        keepNewest: 1,
+      }),
+    ).rejects.toMatchObject({ code: "EACCES" });
+    await expect(
+      pruneHostReleases({
+        releaseRoot: f.root,
+        referenced: [f.current],
+        keepNewest: 1,
+        inUse: async () => [reference],
+      }),
+    ).rejects.toMatchObject({ code: "EACCES" });
+    // Nothing was deleted, and nothing stays set aside.
+    for (const index of [0, 1, 2]) expect(existsSync(f.release(index))).toBe(true);
+    // Absence still continues lexically.
+    expect(await resolveReference(path.join(f.base, "missing", "x"))).toBe(
+      path.join(f.base, "missing", "x"),
+    );
+  } finally {
+    chmodSync(sealed, 0o755);
+  }
+});
+
+test("an oversized release link history skips the cleanup", async () => {
+  const f = fixture(2);
+  const historyFile = path.join(f.base, "release-link-history.json");
+  writeFileSync(historyFile, JSON.stringify({ version: 1, targets: [], pad: "x".repeat(70_000) }));
+  await expect(
+    recordLinkTargets({ releaseRoot: f.root, links: [f.current], historyFile }),
+  ).rejects.toThrow("too large");
 });
