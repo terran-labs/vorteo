@@ -6172,13 +6172,26 @@ export class AgentManager {
     for (const question of pending) await this.deliverAnswer(agentId, question);
   }
 
+  private checklistWakeConditionsReady: (() => boolean) | null = null;
+
+  /** Bootstrap supplies live readiness only when all condition monitors are installed together. */
+  setChecklistWakeConditionsReadiness(reader: () => boolean): void {
+    this.checklistWakeConditionsReady = reader;
+  }
+
+  supportsChecklistWakeConditions(): boolean {
+    return this.checklistWakeConditionsReady?.() === true;
+  }
+
   readChecklist(agentId: string): AgentTaskItem[] {
     return structuredClone(this.requireAgent(agentId).tasks ?? []);
   }
 
   async mutateChecklist(agentId: string, mutation: ChecklistMutation): Promise<AgentTaskItem[]> {
     const agent = this.requireAgent(agentId);
-    const committed = await this.requireRegistry().mutateChecklist(agentId, mutation);
+    const committed = await this.requireRegistry().mutateChecklist(agentId, mutation, () =>
+      this.supportsChecklistWakeConditions(),
+    );
     const items = mergeProviderChecklist(agent.tasks ?? [], committed);
     this.touchUpdatedAt(agent);
     this.recordAndDispatchTimelineItem(agentId, { type: "todo", items }, agent.provider);

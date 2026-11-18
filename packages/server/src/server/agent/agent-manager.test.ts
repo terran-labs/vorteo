@@ -16084,6 +16084,101 @@ test("Vorteo checklist mutations survive provider updates, history refresh, and 
     await manager.closeAgent(agent.id);
     await ensureAgentLoaded(agent.id, { agentManager: manager, agentStorage: storage, logger });
     expect(manager.readChecklist(agent.id)).toEqual(managed);
+
+    const condition = { kind: "deadline", at: "2026-11-18T20:00:00Z" } as const;
+    expect(manager.supportsChecklistWakeConditions()).toBe(false);
+    await expect(
+      manager.mutateChecklist(agent.id, {
+        operation: "update",
+        id: "ui",
+        wakeCondition: condition,
+      }),
+    ).rejects.toThrow("monitoring is unavailable");
+    manager.setChecklistWakeConditionsReadiness(() => true);
+    await manager.mutateChecklist(agent.id, {
+      operation: "update",
+      id: "ui",
+      wakeCondition: condition,
+      metadata: { generation: "caller-forgery", claimedAt: condition.at },
+    });
+    const armed = structuredClone((await storage.get(agent.id))!);
+    const observed = armed.checklistWakeGenerations!;
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({ taskId: "ui", condition });
+    expect(observed[0].generation).not.toBe("caller-forgery");
+    expect(observed[0].claim).toBeUndefined();
+    await manager.flush();
+    expect((await storage.get(agent.id))?.checklistWakeGenerations).toEqual(observed);
+    // A refusal spends nothing; concurrent repeated observations claim only once.
+    const now = Date.parse(condition.at);
+    expect(
+      await storage.claimChecklistWakeGenerations(agent.id, observed, now, () => false),
+    ).toEqual([]);
+    const claims = await Promise.all([
+      storage.claimChecklistWakeGenerations(agent.id, observed, now, () => true),
+      storage.claimChecklistWakeGenerations(agent.id, observed, now, () => true),
+    ]);
+    expect(claims).toEqual([
+      [{ ...observed[0], claim: { id: expect.any(String), at: new Date(now).toISOString() } }],
+      [],
+    ]);
+    await storage.upsert(armed);
+    expect((await storage.get(agent.id))?.checklistWakeGenerations).toEqual(claims[0]);
+    const reloaded = new AgentStorage(join(workdir, "agents"), logger);
+    expect((await reloaded.get(agent.id))?.checklistWakeGenerations).toEqual(claims[0]);
+    expect(
+      await reloaded.claimChecklistWakeGenerations(agent.id, observed, now, () => true),
+    ).toEqual([]);
+    // A hold discovered after claim persistence can return the exact claim without rearming an edited task.
+    await storage.releaseChecklistWakeClaims(agent.id, claims[0]);
+    expect(storage.currentChecklistWakeGenerations(agent.id, observed)).toEqual(observed);
+    const reclaimed = await storage.claimChecklistWakeGenerations(
+      agent.id,
+      observed,
+      now,
+      () => true,
+    );
+    expect(reclaimed[0].claim!.id).not.toBe(claims[0][0].claim!.id);
+    await storage.releaseChecklistWakeClaims(agent.id, claims[0]);
+    expect((await storage.get(agent.id))?.checklistWakeGenerations).toEqual(reclaimed);
+    await storage.releaseChecklistWakeClaims(agent.id, reclaimed);
+    await manager.mutateChecklist(agent.id, {
+      operation: "update",
+      id: "ui",
+      wakeCondition: { ...condition, at: "2026-11-19T20:00:00Z" },
+    });
+    const replacement = (await storage.get(agent.id))!.checklistWakeGenerations!;
+    expect(replacement[0].generation).not.toBe(observed[0].generation);
+    expect(
+      await storage.claimChecklistWakeGenerations(agent.id, observed, now, () => true),
+    ).toEqual([]);
+    await storage.releaseChecklistWakeClaims(agent.id, claims[0]);
+    expect((await storage.get(agent.id))?.checklistWakeGenerations).toEqual(replacement);
+    await manager.mutateChecklist(agent.id, {
+      operation: "update",
+      id: "ui",
+      wakeCondition: replacement[0].condition,
+    });
+    const rearmed = (await storage.get(agent.id))!.checklistWakeGenerations!;
+    expect(rearmed[0].generation).not.toBe(replacement[0].generation);
+    await manager.mutateChecklist(agent.id, { operation: "update", id: "ui", status: "pending" });
+    expect((await storage.get(agent.id))?.checklistWakeGenerations).toBeUndefined();
+    expect(storage.currentChecklistWakeGenerations(agent.id, rearmed)).toEqual([]);
+    await manager.mutateChecklist(agent.id, { operation: "update", id: "ui", status: "blocked" });
+    const nextStretch = (await storage.get(agent.id))!.checklistWakeGenerations!;
+    expect(nextStretch[0].generation).not.toBe(rearmed[0].generation);
+    await manager.mutateChecklist(agent.id, { operation: "update", id: "ui", wakeCondition: null });
+    expect(storage.currentChecklistWakeGenerations(agent.id, nextStretch)).toEqual([]);
+    await manager.mutateChecklist(agent.id, {
+      operation: "update",
+      id: "ui",
+      wakeCondition: condition,
+    });
+    const deleted = (await storage.get(agent.id))!.checklistWakeGenerations!;
+    await manager.mutateChecklist(agent.id, { operation: "delete", id: "ui" });
+    expect(storage.currentChecklistWakeGenerations(agent.id, deleted)).toEqual([]);
+    expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBeUndefined();
+    expect((await storage.get(agent.id))?.blockedReviewCount).toBeUndefined();
   } finally {
     await manager.closeAgent(agent.id);
     await manager.flush();

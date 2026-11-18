@@ -264,10 +264,12 @@ ignore the optional response field, and new clients accept its absence. A snapsh
 that omits a stored condition fails optimistic concurrency, so an older client cannot
 unknowingly edit or delete a conditioned task. Supplied conditions compare exactly.
 
-This tranche defines the protocol and SDK boundary only. The daemon does not yet
-advertise the capability: monitoring, durable firing receipts and admission are pending.
-Schema acceptance alone does not promise a wake. Runtime support must be implemented
-before the capability is enabled.
+The daemon stores generations and claim receipts separately from editable task metadata.
+Serialized mutations reject non-null condition writes unless the live runtime reports
+complete monitoring support. Clearing and ordinary writes remain available. No production
+runtime currently installs that readiness callback or advertises the capability; monitoring,
+GitHub observations and wake admission are pending. Schema acceptance alone does not promise
+a wake. Enable readiness and the capability only when all accepted conditions can be evaluated.
 
 ## Thread journals
 

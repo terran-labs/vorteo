@@ -1,3 +1,8 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AgentStorage } from "../agent-storage.js";
+import { createTestLogger } from "../../../test-utils/test-logger.js";
 import { createChecklistTools } from "./tools.js";
 import { z } from "zod";
 import type { AgentTaskItem } from "@getpaseo/protocol/agent-types";
@@ -171,7 +176,7 @@ describe("thread checklist mutations", () => {
   });
 });
 
-test("wake conditions round-trip optionally, clear explicitly and protect expected snapshots", () => {
+test("wake conditions round-trip optionally, clear explicitly and protect expected snapshots", async () => {
   const legacy = { text: "Old task", completed: false };
   expect(AgentTaskItemSchema.parse(legacy)).toEqual(legacy);
   const condition = { kind: "deadline", at: "2026-11-18T20:00:00Z" } as const;
@@ -262,6 +267,59 @@ test("wake conditions round-trip optionally, clear explicitly and protect expect
       wakeCondition,
     });
     expect(() => mutateChecklist(created, mutation)).toThrow();
+  }
+  const directory = mkdtempSync(join(tmpdir(), "wake-wire-"));
+  const storage = new AgentStorage(directory, createTestLogger());
+  try {
+    await storage.upsert({
+      id: "thread",
+      provider: "codex",
+      cwd: directory,
+      createdAt: condition.at,
+      updatedAt: condition.at,
+      labels: {},
+      lastStatus: "idle",
+    });
+    await expect(
+      storage.mutateChecklist("thread", {
+        operation: "create",
+        id: "task",
+        text: "Wait",
+        wakeCondition: condition,
+      }),
+    ).rejects.toThrow("monitoring is unavailable");
+    await storage.mutateChecklist("thread", { operation: "create", id: "task", text: "Wait" });
+    await expect(
+      storage.mutateChecklist("thread", {
+        operation: "update",
+        id: "task",
+        wakeCondition: condition,
+      }),
+    ).rejects.toThrow("monitoring is unavailable");
+    // Readiness may disappear while a mutation awaits the store's serialized write.
+    let ready = true;
+    const pending = storage.mutateChecklist(
+      "thread",
+      {
+        operation: "update",
+        id: "task",
+        wakeCondition: condition,
+      },
+      () => ready,
+    );
+    ready = false;
+    await expect(pending).rejects.toThrow("monitoring is unavailable");
+    const ordinary = await storage.mutateChecklist("thread", {
+      operation: "update",
+      id: "task",
+      text: "Still editable",
+      wakeCondition: null,
+    });
+    expect(ordinary[0]).toMatchObject({ text: "Still editable" });
+    expect(ordinary[0]).not.toHaveProperty("wakeCondition");
+  } finally {
+    await storage.flush();
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
