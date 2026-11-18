@@ -145,15 +145,35 @@ test("Chrome native host wrappers and LaunchAgents name the releases they launch
   // Neither a lookalike root nor a longer name is a job folder of this root.
   writeFileSync(
     path.join(agents, "local.example.other.plist"),
-    `<string>${releases}-archive/${job(3)}/x</string><string>${releases}/${job(4)}0/x</string>`,
+    `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><array><string>${releases}-archive/${job(3)}/x</string><string>${releases}/${job(4)}0/x</string></array></plist>
+`,
   );
   writeFileSync(path.join(agents, "notes.txt"), `${releases}/${job(5)}/x`);
 
   const persistent = await persistentReferenceFiles({ hostHome: home, launchAgents: agents });
-  expect((await jobFoldersNamedInFiles(releases, [alias], persistent)).sort()).toEqual([
-    path.join(releases, job(1)),
-    path.join(releases, job(2)),
+  // Account b has no wrapper; its path is listed, and a missing file names nothing.
+  expect(persistent.map((file) => path.basename(file)).sort()).toEqual([
+    "chrome-native-host",
+    "chrome-native-host",
+    "local.example.job.plist",
+    "local.example.other.plist",
   ]);
+  // The wrapper is plain text and is read the same way on every platform.
+  const wrappers = persistent.filter((file) => !file.endsWith(".plist"));
+  expect(await jobFoldersNamedInFiles(releases, [alias], wrappers)).toEqual([
+    path.join(releases, job(1)),
+  ]);
+  // The LaunchAgents' text, searched with parsing stubbed out, on every platform.
+  expect(
+    (await jobFoldersNamedInFiles(releases, [alias], persistent, async () => [])).sort(),
+  ).toEqual([path.join(releases, job(1)), path.join(releases, job(2))]);
+  // Real parsing is plutil on macOS. Elsewhere it is refused, so the scan fails closed and
+  // the cleanup is skipped; the Host scans no LaunchAgents there.
+  const scan = jobFoldersNamedInFiles(releases, [alias], persistent);
+  if (process.platform === "darwin")
+    expect((await scan).sort()).toEqual([path.join(releases, job(1)), path.join(releases, job(2))]);
+  else await expect(scan).rejects.toThrow("Property lists cannot be parsed");
   // No account directory and no LaunchAgents: nothing to read, not a failure.
   expect(
     await persistentReferenceFiles({ hostHome: path.join(base, "none"), launchAgents: null }),
@@ -215,20 +235,24 @@ test("review: a binary or UTF-16 property list naming a non-ASCII path keeps its
   expect(readFileSync(target, "utf8")).toContain("setInterval");
 });
 
-test("an unreadable reference file stops the cleanup instead of naming nothing", async () => {
-  const base = realpathSync(mkdtempSync(path.join(tmpdir(), "host-unreadable-")));
-  roots.push(base);
-  const wrapper = path.join(base, "chrome-native-host");
-  writeFileSync(wrapper, `exec "${base}/releases/00000000-0000-4000-8000-000000000001/x"`);
-  chmodSync(wrapper, 0o000);
-  try {
-    await expect(
-      jobFoldersNamedInFiles(path.join(base, "releases"), [], [wrapper]),
-    ).rejects.toMatchObject({ code: "EACCES" });
-  } finally {
-    chmodSync(wrapper, 0o600);
-  }
-});
+// Root reads any file whatever its mode, so a mode-000 file is no test of a failed read.
+test.skipIf(process.getuid?.() === 0)(
+  "an unreadable reference file stops the cleanup instead of naming nothing",
+  async () => {
+    const base = realpathSync(mkdtempSync(path.join(tmpdir(), "host-unreadable-")));
+    roots.push(base);
+    const wrapper = path.join(base, "chrome-native-host");
+    writeFileSync(wrapper, `exec "${base}/releases/00000000-0000-4000-8000-000000000001/x"`);
+    chmodSync(wrapper, 0o000);
+    try {
+      await expect(
+        jobFoldersNamedInFiles(path.join(base, "releases"), [], [wrapper]),
+      ).rejects.toMatchObject({ code: "EACCES" });
+    } finally {
+      chmodSync(wrapper, 0o600);
+    }
+  },
+);
 
 test("a process listing names a release its command line reaches through a link", async () => {
   // Nothing in the working directory or mapped files names the release; only argv does,

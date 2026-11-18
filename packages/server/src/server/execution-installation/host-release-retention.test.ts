@@ -948,44 +948,48 @@ test("a cleanup lock held by a live process is respected, and a stale one is tak
   expect(existsSync(lock)).toBe(false);
 });
 
-test("review: a reference that cannot be resolved for any reason but absence stops the cleanup", async () => {
-  // EACCES on the only link to a release must not read as a missing path.
-  const f = fixture(3);
-  const sealed = path.join(f.base, "sealed");
-  mkdirSync(sealed);
-  symlinkSync(f.release(0), path.join(sealed, "link"));
-  const reference = path.join(sealed, "link", "packages");
-  chmodSync(sealed, 0o000);
-  try {
-    await expect(resolveReference(reference)).rejects.toMatchObject({ code: "EACCES" });
-    await expect(
-      linkedReleasePathsInCommands(f.root, `/usr/bin/node ${reference}/main.js`),
-    ).rejects.toMatchObject({ code: "EACCES" });
-    await expect(
-      pruneHostReleases({
-        releaseRoot: f.root,
-        referenced: [f.current, reference],
-        keepNewest: 1,
-      }),
-    ).rejects.toMatchObject({ code: "EACCES" });
-    await expect(
-      pruneHostReleases({
-        releaseRoot: f.root,
-        referenced: [f.current],
-        keepNewest: 1,
-        inUse: async () => [reference],
-      }),
-    ).rejects.toMatchObject({ code: "EACCES" });
-    // Nothing was deleted, and nothing stays set aside.
-    for (const index of [0, 1, 2]) expect(existsSync(f.release(index))).toBe(true);
-    // Absence still continues lexically.
-    expect(await resolveReference(path.join(f.base, "missing", "x"))).toBe(
-      path.join(f.base, "missing", "x"),
-    );
-  } finally {
-    chmodSync(sealed, 0o755);
-  }
-});
+// Root searches any directory whatever its mode, so a mode-000 directory raises no EACCES.
+test.skipIf(process.getuid?.() === 0)(
+  "review: a reference that cannot be resolved for any reason but absence stops the cleanup",
+  async () => {
+    // EACCES on the only link to a release must not read as a missing path.
+    const f = fixture(3);
+    const sealed = path.join(f.base, "sealed");
+    mkdirSync(sealed);
+    symlinkSync(f.release(0), path.join(sealed, "link"));
+    const reference = path.join(sealed, "link", "packages");
+    chmodSync(sealed, 0o000);
+    try {
+      await expect(resolveReference(reference)).rejects.toMatchObject({ code: "EACCES" });
+      await expect(
+        linkedReleasePathsInCommands(f.root, `/usr/bin/node ${reference}/main.js`),
+      ).rejects.toMatchObject({ code: "EACCES" });
+      await expect(
+        pruneHostReleases({
+          releaseRoot: f.root,
+          referenced: [f.current, reference],
+          keepNewest: 1,
+        }),
+      ).rejects.toMatchObject({ code: "EACCES" });
+      await expect(
+        pruneHostReleases({
+          releaseRoot: f.root,
+          referenced: [f.current],
+          keepNewest: 1,
+          inUse: async () => [reference],
+        }),
+      ).rejects.toMatchObject({ code: "EACCES" });
+      // Nothing was deleted, and nothing stays set aside.
+      for (const index of [0, 1, 2]) expect(existsSync(f.release(index))).toBe(true);
+      // Absence still continues lexically.
+      expect(await resolveReference(path.join(f.base, "missing", "x"))).toBe(
+        path.join(f.base, "missing", "x"),
+      );
+    } finally {
+      chmodSync(sealed, 0o755);
+    }
+  },
+);
 
 test("an oversized release link history skips the cleanup", async () => {
   const f = fixture(2);
