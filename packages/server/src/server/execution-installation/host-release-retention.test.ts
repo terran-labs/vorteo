@@ -1122,11 +1122,15 @@ test("a dry run changes nothing and lists exactly what a real run then removes",
     recursive: true,
   });
   mkdirSync(path.join(f.root, `.deleting-${id(9)}-${"d".repeat(16)}`));
+  // A copy whose own name is free: the real run puts it back first. Its job started between
+  // jobs 3 and 4, though its folder is the newest on disk, so job time decides it.
+  mkdirSync(path.join(f.root, `.pruning-${id(7)}`, "build-x"), { recursive: true });
   const input = {
     releaseRoot: f.root,
     referenced: [f.current, { path: f.release(1), reason: "previous release (rollback)" }],
     keepNewest: 2,
     inUse: async () => [f.release(0)],
+    startedAt: new Map([0, 1, 2, 3, 4, 5, 3.5].map((time, n) => [id(n === 6 ? 7 : n), time])),
   };
   const before = treeSnapshot(f.base);
   let dry: HostReleaseCleanupPlan | null = null;
@@ -1135,7 +1139,7 @@ test("a dry run changes nothing and lists exactly what a real run then removes",
   ).toEqual([]);
   expect(treeSnapshot(f.base)).toEqual(before);
   expect(dry).toEqual({
-    remove: [id(3)],
+    remove: [id(7), id(3)],
     removeCopies: [`.pruning-${id(2)}-${"c".repeat(16)}`],
     finish: [`.deleting-${id(9)}-${"d".repeat(16)}`],
     kept: {
@@ -1153,4 +1157,31 @@ test("a dry run changes nothing and lists exactly what a real run then removes",
   expect(removed.sort()).toEqual([...dry!.remove, id(9)].sort());
   expect(existsSync(f.release(3))).toBe(false);
   expect(existsSync(f.release(0))).toBe(true);
+});
+
+test("a real run records its plan before the first deletion", async () => {
+  // After setting aside and putting back, before anything is removed: a cleanup that dies
+  // while deleting has already said what it was removing and why.
+  const f = fixture(5);
+  mkdirSync(path.join(f.root, `.deleting-${id(9)}-${"e".repeat(16)}`, "build-x"), {
+    recursive: true,
+  });
+  const events: string[] = [];
+  await pruneHostReleases({
+    releaseRoot: f.root,
+    referenced: [f.current],
+    keepNewest: 1,
+    onPlan: (plan) => {
+      events.push(`plan ${plan.remove.length}`);
+      // Every folder it plans to remove is still there, set aside.
+      for (const name of plan.remove)
+        expect(existsSync(setAside(f, Number(name.slice(-1))))).toBe(true);
+    },
+    removeRelease: async (directory) => {
+      events.push("delete");
+      await removeReleaseTree(directory);
+    },
+  });
+  expect(events[0]).toBe("plan 4");
+  expect(events.filter((event) => event === "delete").length).toBeGreaterThan(0);
 });
