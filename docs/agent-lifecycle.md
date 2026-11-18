@@ -214,6 +214,23 @@ native goal and rejects paused, completed, limited or uncertain state. The flag 
 without changing activity timestamps or the review cooldown. Older records acquire it
 when their native goal is next observed.
 
+### Condition wake preparation and Phase 1 limitation
+
+Condition monitoring is being prepared; production condition writes and capability
+advertisement remain disabled until all supported GitHub targets can be evaluated.
+The prepared service excludes conditioned items from timed reviews and uses shared
+admission without spending review slots. Monitoring itself uses no model; an admitted
+wake resumes the existing full thread.
+
+Phase 1 cannot resolve Factory pause or drain authority through a parent on another
+server. Factory work with remote, missing, cyclic or unreadable local authority stays armed and unspent
+but does not wake. A daemon-owned suppression receipt records the first reason and authority
+identity once per condition generation, survives reload and produces a structured log
+when first recorded. The receipt never authorizes a wake or consumes its firing claim.
+Ordinary threads and Factory children with resolved local authority remain eligible.
+Cross-host authority lookup is tracked separately in
+[issue #483](https://github.com/terran-labs/vorteo/issues/483).
+
 ## Relationships
 
 Agents can launch other agents via the agent-scoped `create_agent` MCP tool. Agent-scoped creation is always asynchronous and always stamps `paseo.parent-agent-id`, pointing back at the caller. Omit `workspaceId` to use the caller's workspace, or pass an existing workspace ID returned by `create_workspace`. Placement never changes parentage.

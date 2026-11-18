@@ -112,6 +112,14 @@ const ChecklistWakeGenerationSchema = z.object({
   condition: ChecklistWakeConditionSchema,
   armedAt: z.string().datetime(),
   claim: z.object({ id: z.string().uuid(), at: z.string().datetime() }).optional(),
+  suppression: z
+    .object({
+      reason: z.string(),
+      at: z.string().datetime(),
+      serverId: z.string(),
+      agentId: z.string(),
+    })
+    .optional(),
 });
 export type ChecklistWakeGeneration = z.infer<typeof ChecklistWakeGenerationSchema>;
 
@@ -678,6 +686,37 @@ export class AgentStorage {
     return record ? currentChecklistWakeGenerations(record, claims, true) : [];
   }
 
+  /** Advisory evidence only: recording suppression never spends or authorizes a wake. */
+  async recordChecklistWakeSuppression(
+    agentId: string,
+    observed: readonly ChecklistWakeGeneration[],
+    suppression: NonNullable<ChecklistWakeGeneration["suppression"]>,
+  ): Promise<ChecklistWakeGeneration[]> {
+    const captured = structuredClone(observed);
+    const receipt = structuredClone(suppression);
+    await this.load();
+    let recorded: ChecklistWakeGeneration[] = [];
+    await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (!record) return null;
+        recorded = currentChecklistWakeGenerations(record, captured)
+          .filter((entry) => !entry.suppression)
+          .map((entry) => Object.assign({}, entry, { suppression: receipt }));
+        if (!recorded.length) return null;
+        const byGeneration = new Map(recorded.map((entry) => [entry.generation, entry]));
+        return {
+          ...record,
+          checklistWakeGenerations: record.checklistWakeGenerations?.map(
+            (entry) => byGeneration.get(entry.generation) ?? entry,
+          ),
+        };
+      },
+      { checklistWakeWrite: true },
+    );
+    return structuredClone(recorded);
+  }
+
   /** Claim only after admission permits a wake. A receipt is not proof of provider delivery. */
   async claimChecklistWakeGenerations(
     agentId: string,
@@ -724,7 +763,7 @@ export class AgentStorage {
         if (!record) return null;
         let changed = false;
         const checklistWakeGenerations = (record.checklistWakeGenerations ?? []).map((entry) => {
-          if (!entry.claim || !captured.some((claim) => isDeepStrictEqual(claim, entry)))
+          if (!entry.claim || !captured.some((claim) => sameChecklistWakeGeneration(claim, entry)))
             return entry;
           changed = true;
           const { claim: _claim, ...armed } = entry;
@@ -1113,6 +1152,16 @@ function reconcileChecklistWakeGenerations(
   return generations.length > 0 ? generations : undefined;
 }
 
+/** Advisory receipts may arrive after capture; generation and firing receipt must still match. */
+function sameChecklistWakeGeneration(
+  a: ChecklistWakeGeneration,
+  b: ChecklistWakeGeneration,
+): boolean {
+  const { suppression: _a, ...first } = a;
+  const { suppression: _b, ...second } = b;
+  return isDeepStrictEqual(first, second);
+}
+
 function currentChecklistWakeGenerations(
   record: StoredAgentRecord,
   observed: readonly ChecklistWakeGeneration[],
@@ -1122,7 +1171,7 @@ function currentChecklistWakeGenerations(
   const current = (record.checklistWakeGenerations ?? []).filter((entry) => {
     if (
       Boolean(entry.claim) !== claimed ||
-      !observed.some((candidate) => isDeepStrictEqual(candidate, entry))
+      !observed.some((candidate) => sameChecklistWakeGeneration(candidate, entry))
     )
       return false;
     return (record.tasks ?? []).some(

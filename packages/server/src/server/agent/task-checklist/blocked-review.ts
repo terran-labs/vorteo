@@ -49,6 +49,7 @@ export function reviewableTasks(
   return (record.tasks ?? []).filter(
     (task) =>
       !task.completed &&
+      !task.wakeCondition &&
       (task.status === "blocked" || task.status === "in_progress") &&
       !(task.id && awaitingOwner.has(task.id)),
   );
@@ -92,7 +93,11 @@ export function hasReviewableBlockedWork(record: StoredAgentRecord): boolean {
     usageLimited;
   const delegated = record.labels[PARENT_AGENT_ID_LABEL];
   if (externallyOwned || held || delegated || !record.persistence?.sessionId) return false;
-  if (record.blockedGoalReviewNeeded === true) return true;
+  if (record.blockedGoalReviewNeeded === true) {
+    // Goal-only threads still need discovery; explicitly monitored work already has a wake.
+    const unfinished = (record.tasks ?? []).filter((task) => !task.completed);
+    if (unfinished.length === 0 || unfinished.some((task) => !task.wakeCondition)) return true;
+  }
   return reviewableTasks(record).length > 0;
 }
 
@@ -125,7 +130,7 @@ export function blockedReviewDue(record: StoredAgentRecord, now: number): boolea
 
 export const BLOCKED_REVIEW_PROMPT =
   "Automatic stall review. This thread stopped with unfinished checklist items and nothing set to wake it. " +
-  "Check each blocked or in-progress item against current evidence and act on any that is ready " +
+  "Check each blocked or in-progress item without a wake condition against current evidence and act on any that is ready " +
   "(a green pull request, a finished job, an answered question), within the owner's existing authorization. " +
   "For an item still waiting: if a command can detect the change, start a background watcher that wakes " +
   "you; if it waits on the owner, set it to review with one line saying what they must do. Update the " +
