@@ -1,3 +1,5 @@
+import { waitForSettingsConvergence } from "../support/helpers/settings-convergence";
+import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
 import { openSettings } from "../support/helpers/app";
 import { completeInstallationSetupGuide } from "../support/helpers/installation-setup-guide";
 import {
@@ -3384,15 +3386,13 @@ test("shared provider policy projects through authenticated admission without mo
   });
   expect(response.ok()).toBe(true);
   const saved = InstallationSettingsSnapshotSchema.parse(await response.json());
-  await expect
-    .poll(
-      async () =>
-        Object.values((await read()).sources).every(
-          (status) => status.appliedRevision === saved.revision && status.pendingRevision === null,
-        ),
-      { timeout: 60_000 },
-    )
-    .toBe(true);
+  await waitForSettingsConvergence({
+    read,
+    poll: expect.poll,
+    minimumRevision: saved.revision,
+    providerDefinitions,
+    serverIds: config.public.environments.map((environment) => environment.serverId),
+  });
   for (const kind of ["host", "container"] as const) {
     const client = await connectReadyInstallationDaemon(kind);
     try {
@@ -3440,35 +3440,34 @@ test("shared account setup preserves the catalog through retries and local remov
   const providerId = `codex-account-${creationId}`;
   const definitions = initial.settings?.providerDefinitions;
   if (!definitions) throw new Error("Provider catalog is not initialized");
+  const providerDefinitions: InstallationProvider[] = [
+    ...definitions,
+    {
+      id: `managed/${creationId}`,
+      providerType: "codex",
+      accountSetup: { provider: "codex", creationId },
+      bindings: Object.fromEntries(daemons.map((daemon) => [daemon.serverId, providerId])),
+      policy: { label: "Shared empty account", enabled: true },
+    },
+  ];
   const response = await page.request.patch(`${origin}/api/installation/owner/settings`, {
     headers: { Origin: origin },
     data: {
       expectedRevision: initial.revision,
       settings: {
-        providerDefinitions: [
-          ...definitions,
-          {
-            id: `managed/${creationId}`,
-            providerType: "codex",
-            accountSetup: { provider: "codex", creationId },
-            bindings: Object.fromEntries(daemons.map((daemon) => [daemon.serverId, providerId])),
-            policy: { label: "Shared empty account", enabled: true },
-          },
-        ],
+        providerDefinitions,
       },
     },
   });
   expect(response.ok()).toBe(true);
   const saved = InstallationSettingsSnapshotSchema.parse(await response.json());
-  await expect
-    .poll(
-      async () =>
-        Object.values((await read()).sources).every(
-          (status) => status.appliedRevision === saved.revision && status.pendingRevision === null,
-        ),
-      { timeout: 60_000 },
-    )
-    .toBe(true);
+  await waitForSettingsConvergence({
+    read,
+    poll: expect.poll,
+    minimumRevision: saved.revision,
+    providerDefinitions,
+    serverIds: config.public.environments.map((environment) => environment.serverId),
+  });
   const homes: unknown[] = [];
   for (const kind of ["host", "container"] as const) {
     const client = await connectReadyInstallationDaemon(kind);
