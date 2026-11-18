@@ -51,6 +51,13 @@ interface RejectionCase {
 
 const rejections: RejectionCase[] = [
   {
+    name: "duplicate managed definition",
+    change: (sample) => {
+      sample.settings.providerDefinitions.push(structuredClone(providerDefinitions[1]));
+      return sample;
+    },
+  },
+  {
     name: "overwritten policy",
     change: (sample) => {
       sample.settings.providerDefinitions[1].policy.label = "Overwritten";
