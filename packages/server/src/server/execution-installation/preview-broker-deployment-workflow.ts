@@ -26,6 +26,8 @@ interface DeploymentQueue {
   requestExists(id: string): boolean;
   jobs(): PreviewBrokerDeploymentJob[];
   replace(job: PreviewBrokerDeploymentJob): void;
+  refreshPreparation(job: PreviewBrokerDeploymentJob): boolean;
+  failPreparation(job: PreviewBrokerDeploymentJob, reason: string): PreviewBrokerDeploymentJob;
   executor?: BrokerDeploymentExecutor;
   now(): number;
 }
@@ -37,8 +39,50 @@ export class BrokerDeploymentRefused extends Error {
   }
 }
 
+export class BrokerDeploymentReservationChanged extends BrokerDeploymentRefused {
+  readonly code = "deployment_reservation_changed";
+
+  constructor() {
+    super("Full installation journal reservation changed");
+  }
+}
+
+export class BrokerDeploymentPersistenceUncertain extends Error {
+  readonly code = "deployment_preparation_persistence_uncertain";
+  readonly outcome = "recorded_uncertain";
+
+  constructor(
+    readonly requestId: string,
+    readonly preparationReason: string,
+    readonly persistenceReason: string,
+  ) {
+    super(
+      `Deployment ${requestId} was recorded, but its preparation outcome could not be persisted`,
+    );
+  }
+}
+
 const digest = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+// eslint-disable-next-line no-control-regex -- ANSI CSI and OSC sequences are the target.
+const TERMINAL_ESCAPES = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
+// eslint-disable-next-line no-control-regex -- C0, DEL and C1 controls are the target.
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/g;
+
+/**
+ * The first line of an error, bounded, for job details and the installation log.
+ * Terminal escapes and control characters are removed, and a carriage return ends the
+ * line like a newline, so the surfaced text cannot rewrite what the reader sees.
+ */
+export function firstLine(error: unknown): string {
+  const text = (error instanceof Error ? error.message : String(error)).replace(
+    TERMINAL_ESCAPES,
+    "",
+  );
+  const line = (text.split(/[\r\n]/, 1)[0] ?? "").replace(CONTROL_CHARACTERS, "");
+  return line.trim().slice(0, 300) || "unknown error";
+}
 
 /** The installation queue remains the sole journal and dispatch owner. */
 export class PreviewBrokerDeploymentWorkflow {
@@ -77,25 +121,47 @@ export class PreviewBrokerDeploymentWorkflow {
       detail: "Checking exact consumer files, preserved requests and declared native participants",
     };
     this.queue.replace(job);
-    const assertCurrent = this.reservation();
-    try {
-      await this.executor().validateBrokerDeploymentPlan(structuredClone(job.plan));
-      assertCurrent();
-      this.queue.replace({
-        ...job,
-        stage: "prepared",
-        detail: "Review consumer replacement. Channel trust rebind requires a separate approval.",
-      });
-    } catch {
-      const current = this.current(job.id);
-      if (current.status === "pending" && current.revision === job.revision)
+    // Only validation can retry, once, against a fresh full-journal reservation.
+    // Approval and native dispatch never inherit this retry.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const assertCurrent = this.reservation();
+        if (attempt > 0) {
+          if (!(await this.executor().brokerDeploymentCompatible()))
+            throw new BrokerDeploymentRefused("Consumer deployment capability unavailable");
+          assertCurrent();
+        }
+        await this.executor().validateBrokerDeploymentPlan(structuredClone(job.plan));
+        assertCurrent();
         this.queue.replace({
-          ...current,
-          status: "failed",
-          detail: "Consumer preparation refused",
+          ...job,
+          stage: "prepared",
+          detail: "Review consumer replacement. Channel trust rebind requires a separate approval.",
         });
+        return structuredClone(this.current(job.id));
+      } catch (error) {
+        const reason = firstLine(error);
+        try {
+          if (
+            error instanceof BrokerDeploymentReservationChanged &&
+            attempt === 0 &&
+            this.queue.refreshPreparation(job)
+          )
+            continue;
+          process.stderr.write(
+            `Broker consumer deployment ${job.id} preparation refused: ${reason}\n`,
+          );
+          return structuredClone(this.queue.failPreparation(job, reason));
+        } catch (persistenceError) {
+          throw new BrokerDeploymentPersistenceUncertain(
+            job.id,
+            reason,
+            firstLine(persistenceError),
+          );
+        }
+      }
     }
-    return structuredClone(this.current(job.id));
+    throw new BrokerDeploymentRefused("Preparation retry exhausted");
   }
 
   decide(input: unknown): PreviewBrokerDeploymentJob {
@@ -241,7 +307,7 @@ export class PreviewBrokerDeploymentWorkflow {
     return () => {
       this.queue.requireActive();
       if (JSON.stringify(this.queue.snapshot()) !== retained)
-        throw new BrokerDeploymentRefused("Full installation queue reservation changed");
+        throw new BrokerDeploymentReservationChanged();
     };
   }
 

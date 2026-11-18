@@ -2,6 +2,251 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-17
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## 26.11.1700 - 2026-11-17
+
+### Fixes
+
+- Opening an unloaded thread shows its history again instead of "The original transcript could not be read." Since 26.11.1600, every unloaded thread was read from saved history without loading, and a thread whose provider replays no saved history got that error: a completed plugin-provider thread after its plugin reloads, a thread on another provider without history replay, or a Claude thread that was never prompted or whose transcript is gone.
+- Only Claude and Codex threads keep the memory protection from 26.11.1600: opening them reads saved history without loading the thread. Threads on every other provider with a saved session, including OpenCode, plugin and ACP providers, load through their provider again and stay in memory until archived, as before 26.11.1600. A Claude thread whose transcript is empty or missing also loads, which costs little because it has little or no history. A Codex thread whose saved history read fails still shows that read error.
+
+### Maintenance
+
+- Prepare release 26.11.1700, which replaces 26.11.1601 as the stable release.
+
+## Unreleased - 2026-11-17
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## 26.11.1601 - 2026-11-16
+
+### Fixes
+
+- Opening an unloaded OpenCode thread shows its history again. Since 26.11.1600, timeline reads served saved history without resuming the thread, and OpenCode has no way to read saved history passively, so these threads showed an error instead, which after a daemon restart meant every OpenCode thread. OpenCode-family threads load through their provider to show history, as before; Claude and Codex threads keep reading saved history without resuming.
+
+### Maintenance
+
+- Prepare release 26.11.1601, which replaces 26.11.1600 as the stable candidate.
+
+## Unreleased - 2026-11-17
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## 26.11.1600 - 2026-11-16
+
+### Fixes
+
+- Preserve linked workspace classification when a bare repository selects that checkout as its main worktree.
+- Report missing archived local checkouts correctly even when an older metadata projection persisted them as worktrees.
+- Keep ordinary repository checkouts classified as local workspaces during metadata-only discovery, creation and reconciliation, preserving missing-directory recovery behavior.
+- Count workspace rows rather than their drag wrapper buttons in grouped-project browser checks.
+- Skip stall reviews for role threads of a Factory project the owner has paused or drained.
+- Count a review as progress only when it starts a new background watcher, not when one was already running.
+- A background watcher no longer dies silently when the daemon restarts beside a running session host. Startup used to close every idle hosted session, ending any background shell, monitor or subagent meant to wake the thread; a session whose provider reports such work is now kept, with no prompt.
+- A thread that started a watcher in its last turn, or whose prompt was in flight, is no longer treated as idle when the session host ends before the daemon could check it.
+- No user-visible change.
+- A daemon restart beside a slow or wedged session host no longer stalls startup while it checks idle hosted sessions for background work. Checks run eight at a time with a 20-second limit on the checks together; a session still unanswered at the limit is kept, with no prompt. The limit covers only these checks, not listing, attaching or closing sessions.
+- A session host restart no longer wakes dormant threads. Before, every loaded hosted thread got a new provider process and a "continue the work in progress" prompt, so idle threads ran turns, could hit an exhausted account's usage limit and held gigabytes of provider processes. Now only a thread with a turn or permission in flight continues; an idle thread whose background shells, monitors or subagents stopped with the host gets one prompt to check them; every other thread stays closed until it is needed.
+- Keep owner attention after a restart hold deadline when its policy is omitted. Automatic interruption requires an explicit `auto` setting and the existing authenticated preparation checks.
+- A supervisor paused at a usage limit now receives finish notifications from workers that completed during the pause once the pause clears, instead of losing them.
+- Agents are no longer told a message was not delivered when only the run start was slow after the provider received it.
+- Restarting the daemon no longer releases a quota pause while the same account's usage-limit stop is still waiting, including Codex stops without a reset time.
+- A usage limit on one account no longer pauses worker-team members on other accounts. The supervisor and workers with quota left keep running; the supervisor cannot start a new worker on the limited account.
+- Agents now learn when a message to a paused thread is refused: at send time when the pause is already known, or as an errored notification when a queued message is refused at delivery.
+- Daemon start releases quota pauses left on accounts that are not limited.
+- Keep previews inside the workspace that published them. The Previews card opens on this thread and can widen only to this workspace; the daemon no longer sends a card, an owner action or an agent's feedback request anything from another workspace.
+- Keep the daemon CLI path in the native preview broker's pins exactly as given. Resolving it through the release link pinned one release, so a reinstall after any Host update was refused as a changed identity.
+- Ask for Codex reconnection when authentication setup or turn-start RPCs refuse a refresh, even while the old access token still answers usage requests. A refusal from an older sign-in cannot mark a completed reconnect as rejected.
+- The Claude provider diagnostic no longer risks signing a subscription account out. It runs `claude auth status` with a five second limit, and close to the sign-in's expiry that command could begin renewing the sign-in and be stopped midway. Inside the last ten minutes before expiry, and after it, the diagnostic now reports that the sign-in was not checked instead of running the command.
+- Vorteo starts far fewer Claude Code processes to list models. Every client reconnect forced a fresh model list, which on a busy installation started a process per account every five seconds. A forced refresh now reuses an answer less than a minute old, and a failed check is not retried within a minute.
+- Identify created checklist tasks by their new Vorteo ID so native task ordering cannot cause creation results or metadata checks to select another task.
+- A preview broker consumer deployment for brokers that were already serving requests now completes instead of ending in "Deployment remains unresolved". After restoring the brokers it no longer expects their ledger and request files to stand still, and recovery can confirm such a run from its evidence.
+- Preview broker consumer deployment works when its pinned Python is a Homebrew or python.org framework install. Preparation previously always refused with "Consumer preparation refused", because the framework launcher re-executes a different binary that the coordinator's process custody check would not accept. A refused preparation now shows its real reason in installation controls and the installation log.
+- Avoid scanning tracked files during workspace reconciliation and checkout discovery when only repository roots, branch, remote and worktree ownership are needed.
+- Stop the main workspace pane rerendering while the Explorer is dragged. The header's "new terminal from profile" action was rebuilt on every workspace render, which rebuilt the header and the pane with it.
+- Never run a stall review on a cold prompt cache. A slot missed by more than 15 minutes is forfeited, so turning the setting on no longer reviews threads that stopped days ago.
+- End a thread's review ladder as soon as a review leaves its checklist unchanged.
+- Cap reviews at 6 per thread per day and 12 per hour for the installation, and log each review's account, tokens and outcome.
+- Reuse successful background skill catalog settlement for one minute, reducing repeated directory scans while other shared settings continue reconciling every five seconds.
+- Attach the Previews service to the agent manager at startup, so the publish and feedback tools and the Previews feature flag are present on a running daemon.
+- Restrict Previews thumbnail rendering to one snapshot's own files in a sandboxed browser process, and stop rendering live links, so a published address cannot make the daemon read an internal service into an image.
+- Copy snapshot files through descriptors opened without following links, refuse hard-linked files and directories that leave the published tree, and enforce the size limit on bytes actually read.
+- Send feedback written in a frame embedded in a live preview only after confirmation on a top-level page that cannot be framed.
+- Compare the full origin on Previews posts and compare version ids in constant time.
+- Tie feedback on a live preview to the exact version the owner reviewed. The comment frame, the confirmation page and the daemon carry that version, and a send is refused when the address has been published again since.
+- Copy snapshots in a separate process that walks the published tree by working directory and opens files by bare name without following links, so a tree rewritten during the copy cannot redirect it.
+- Read the Previews version row style inside the stylesheet, not at module load, and add the Previews icon to one test's local icon mock.
+- Switch the preview broker to another Tailscale node while holding the broker's lock, after verifying the old node against its pinned identity, and remove reservations that name the old hostname.
+- Allow the Previews comment frame and pairing page to follow only the exact origins the broker reserved, with no hostname-wide allowance.
+- Refuse a previews node directory, state directory or socket that is not owned by the current user and private.
+- Refuse a preview broker directory that is not owned by the current user with mode 0700, before writing files or taking the lock.
+- Recognize the previews node's login agent by the canonical path of its binary, so removal works when the binary was given through a link.
+- Refuse a published path that is itself a link, verify each directory step of a snapshot copy by device and inode, and stop a copy that exceeds its entry, depth or 60 second budget.
+- Let the preview broker move to a dedicated node after that node has joined the tailnet. The move verifies the old node's identity and that it publishes none of the broker's ports, and no longer requires its access scope to be unchanged.
+- Add a reviewed way to accept a changed tailnet access scope on the same node: `--accept-access-scope` on the native broker installer prints the grants added and removed, each source and destination with its device name, ports and protocols, and keeps the reserved origins of running previews.
+- Keep a hosted agent's background shells, monitors and subagents alive while a session host upgrade is pending. Idle release used to close a quiet hosted session after five minutes even when a watcher was about to wake it, so the thread stopped silently until another message arrived. A thread holding a long watcher now holds the host upgrade until the watcher ends.
+- Hosted sessions that never ran a turn since their provider process started stay releasable. Claude and Codex report that they cannot stop before their first turn, so sessions opened only for reading would otherwise have held every host upgrade and escaped idle cleanup.
+- Keep routine Host watch checks on worktree metadata; require an explicit investigation flag for expensive file scans.
+- Share a finite, capped deadline across discovery and Host and Dev probes, and report missing paths and failed probes as unknown.
+- Main CI's server tests pass again: a Factory account-choice test now names a primary connection. Since the primary connection change, a standalone daemon launches only with a chosen primary connection, and the test still assumed the earlier first-usable-provider rule.
+- Reuse unchanged skill package inventory summaries during repeated shared-settings checks. Invalidation compares recursive path, type, size, timestamp and inode metadata, including receipts and executable modes, so nested edits and package replacement refresh the inventory without reopening unchanged package contents.
+- Keep skill mutation, detail, export and launch validation uncached. Inventory discovery still checks for additions and removals; cached summaries are bounded and do not authorize changes.
+- Keep sidebar-only workspaces off the active Git fallback cadence. Focused workspaces, open checkout views and running agents retain active polling; idle workspaces refresh at most once per five minutes unless a watcher event or explicit request arrives.
+- Share overlapping fallback polls and use minimal stat checks for routine polls on shared filesystems. Watcher events, explicit reads and a five-minute verification stay strict, limiting stale status from same-size edits with unchanged whole-second modification times. Read-only Git commands retain disabled optional index writes; untracked caching remains unchanged.
+- Keep checklist tool responses compact so large stored records do not overwhelm agent context. Limit new or patched task metadata to 8 KiB and retain full detail reads by task ID.
+- The model list check no longer signs Claude subscription accounts out. Vorteo starts a short Claude Code process to list an account's models and stops it as soon as it answers. Close to the sign-in's eight hour expiry that process also began renewing the sign-in, and stopping it midway discarded the renewed sign-in and signed the account out. Vorteo now skips the check in the last ten minutes before expiry and after it, and reuses the last answer. An ordinary catalog refresh also reuses a fresh answer for ten minutes; a forced refresh still starts a process.
+- An account whose access has expired but which can still renew is no longer reported as signed out. Its next agent session starts and renews the sign-in.
+- Check release identity and installed source containment before taking upgrade snapshots, so refused updates do not consume backup space or evict rollback points. Repeat checks after backup and retain source updater validation before installation.
+- Apply the same tree-containment rule to installer and tracked Host release prechecks, allowing local integration histories whose changes are already present in the release.
+- Report a busy button, or one kept focusable while disabled, as disabled to screen readers. The framework overwrote the flag, so "Check for updates" read as enabled during a check.
+- Stop demo mode sending every fresh page load outside Settings to the welcome screen. The simulated installation treated the demo hosts as connections still to register.
+- Name a settings row button by its visible text, then its row, without repeating itself: "Discard" on "Discard title changes" reads as "Discard title changes".
+- Keep the System needs attention button working where no query client is mounted. It read provider and update rows through a hook that required one and failed without it.
+- Allow release updates after tracked Host source merges when a clean merge preserves exactly the release tree. Refuse installed changes missing from the release and retain the installed prerequisite in the staged bundle.
+- Pass the signing-in account to shared sign-in routing in the redesigned provider sign-in panel, so older Codex accounts reconnect through their own daemon after the Settings redesign.
+- Reconnecting an older Codex account now signs it in. With Host-owned Codex sign-in on, every Codex reconnect went to the installation coordinator, which only signs in accounts the installation created, so older accounts never got a new sign-in. Those accounts now sign in through their own daemon, which writes the account's sign-in where its agents read it.
+- Settings shows a Codex account as needing reconnection once Codex reports that it could not refresh the stored sign-in. Previously the access token kept answering usage reads, so the account looked connected while every new agent failed.
+- Jump links keep working after System needs attention or a drill-in page: each page now finds only its own elements.
+- System no longer leaves an empty band at the bottom of the page or under the Host card.
+- Section headers stay on one line.
+- Locked settings no longer leave Health on Checking forever.
+- Removed controls that did nothing: the sidebar History, Schedules and Usage switches, usage window pins, the Usage modal, the unused profile editor and the hidden Show setup again row.
+- On phones, the dictation recording panel now reaches the screen's left, right and bottom edges, including the area under the home indicator, and fades in at its top instead of meeting the cards above with a hard edge.
+- Two-line thread titles in the phone toolbar sit level with the toolbar buttons instead of slightly low.
+- Spinners the user is waiting on, such as Send, stopping an agent and dictation that is transcribing, spin at upstream Paseo's original speed with a heavier ring. Background status spinners keep their calm tempo.
+- Phone recording backgrounds refresh their edge measurements after keyboard visibility and browser visual viewport changes.
+- Clarify that prominent action spinners use the faster 750ms cycle on every platform; passive indicators retain the 2700ms cycle.
+- The Host watch quotes every worktree path inside Dev, bounds Dev's pass with a time limit there too, counts a worktree whose history cannot be read as unchecked, and handles an empty or contended lock file.
+- The Host watch counts every open file of the Docker VM, including the descriptors lsof prints truncated as `*<digits>`, which are most of them under pressure.
+- Install the `vorteo` command on existing Host installations during a normal update, including the first update from a coordinator that predates the command. An unrelated `vorteo` is left alone, and the update explains how to add the command's folder to PATH instead of editing a shell profile.
+- Permit Chromium to chroot inside its user namespace without adding container capabilities. The Dev seccomp profile is generated from pinned upstream plus six documented exceptions and verified in full. Applying it requires container recreation.
+- Settings pages that locked when owner access expired now unlock again within a few seconds after you unlock on another page or tab. The page asks the server to confirm the session; it never trusts another page's word for it.
+- A shared plugin you were adding or updating stays open, with its reviewed source, while Settings is temporarily locked, so you can save it after unlocking.
+- Cooperative interruption now checks the current standing grant after manual finish approval. Paused or revoked authority blocks reservation and dispatch.
+- Preview broker consumer deployment now accepts brokers that are already serving requests, such as after an operator repinned their channel when a reboot renumbered the disk. It stops them first, takes its preservation baseline once they have stopped, and restarts the original brokers if it aborts before replacing any file. Each broker's admission mode is part of the approved plan, and the approval explains that running brokers restart on the new code and serve requests immediately.
+- Approved updates can restart automatically after the current-turn deadline when their retained enrollment explicitly covers the installed native cooperative phase. Durable continuation, matching hold and actual idle settlement remain required. Automatic restart must be explicitly enabled; omission keeps the owner prompt. System records completion after saved work is released to continue.
+- One environment no longer deletes another environment's worktree metadata. Vorteo locks the worktrees it creates, archive and recovery forget only their own worktree's registration instead of pruning the whole repository, and a new worktree never reuses a path another environment registered.
+
+### Fixed
+
+- Markdown links and notes are readable in Starship light and Scriptorium. They now use the accent text color, which reaches 4.5:1 on every working surface; the dark themes look the same as before.
+- Accent-coloured text is readable in every theme. Links, the Talk action on factory cards, the selected Profile model label, the welcome screen link and the update success label now use an accent text color that reaches 4.5:1 on every working surface: the brighter accent in Starship dark, Midas, Ember and Neon, the accent itself in Starship light, and a darker brown in Scriptorium. Accent buttons, borders, focus rings and icons are unchanged.
+
+### Maintenance
+
+- Prepare release 26.11.1600 from the source installed on the owner installation since November 14.
+- Vorteo vendors Vorton 26.11.1500's theme reference, which adopts Scriptorium's accent #86684a. Every mapped color now matches Vorton, and the drift check declares no exceptions while still failing on any undeclared difference.
+- Vendor Vorton's generated theme reference from commit e8e7980 with its source commit and SHA-256, and add a sync script that copies it from a local Vorton checkout.
+- The theme test now fails when a Vorteo palette color drifts from the Vorton reference, when a declared exception no longer differs, or when the vendored file is edited by hand. Neon and Scriptorium accents are declared owner-approved exceptions; 30 other differences (raised surfaces, accent text on Midas, Ember and Neon, and the shared status and destructive colors) are listed as undecided pending the owner.
+- Re-vendor Vorton's theme reference from commit 98955e4, where Vorton adopted Vorteo's status family, a separate destructive role, the raised surfaces and black accent text in Midas, Ember and Neon. The theme test now maps Vorteo's destructive color to Vorton's destructive role, and all 30 undecided differences are gone; only the owner-kept Scriptorium and Neon accents remain declared.
+- Move the stored review claim tests inside the review window now that late slots are forfeited.
+- The Vorton theme drift check no longer declares a Neon accent exception; the Scriptorium accent is the only remaining one.
+- Merge the remaining Nov 12 Host batch onto the installed Settings redesign, retaining account-scoped Codex sign-in, restart safeguards, broker admission and installer command support.
+- Fix the Codex concurrent reconnect test for the asynchronous sign-in read that now precedes connecting. The test waits for the reconnect spawn, gives a second caller time to start a duplicate, then checks that exactly one reconnect ran.
+- Vorteo :: Builds now installs ready work immediately, without asking the owner. Quiet windows exclude only themselves, and leads that schedule their next step for a later day are asked to start now.
+- Merge current main into the remaining Nov 12 Host batch before review, retaining the installed Settings code and the separate Codex start-refusal correction.
+- The theme test checks accent text contrast on all four working surfaces in all six themes. The Vorton drift check is unchanged.
+- Refresh the reviewed worktree environment ownership fix against current main.
+- Refresh the reviewed Time Machine exclusions for regenerable folders against current main.
+- Log the end of the Previews thumbnail renderer's error output instead of the start, so a failed browser launch records its reason and not only its arguments.
+- Add the Previews card's icons to the app's browser-test icon stub, so browser-mode tests that load the task cards import cleanly.
+- Add daily browser-to-Host network path checks to installation maintenance, with bounded Tailscale diagnostics and guidance for nearby devices that remain relayed.
+- Require known-peer filtering before diagnostic output and redacted network maintenance reports. Reuse daily checks and unchanged relay investigations.
+- Refresh Host watch after the Time Machine consolidation reached main.
+- Keep Host watch compatible with the latest System health documentation.
+- Refresh Host watch against current main while preserving its read-only reporting behavior.
+- Update session Git observer assertions to require background registration for workspace-list observation. Both workspace update and checkout status delivery retain coverage.
+- Model Darwin's canonical system Python in Host custody test fixtures so Linux runners do not substitute their symlinked interpreter. Production canonical-path and ownership checks remain unchanged.
+- Worktree registration cleanup resolves link paths before trusting them, so a link that walks out of a repository's worktrees folder is never taken for a registration, and relative registration links still match their worktree.
+- Repair two Factory account choice tests whose daemon settings chose no primary connection, so the pick for a stage without a profile never ranked any account.
+- Correct the restart test to expect blocking when a target loses support for its recorded continuation.
+- `scripts/worktree-locks.mjs` locks existing Vorteo worktrees in every Vorteo layout and, with `--unlock`, removes only Vorteo's locks before a downgrade. Worktree cleanup lifts Vorteo's lock only for the worktree it removes.
+
+### Improvements
+
+- Move the star rating onto each Previews tile, over the bottom left of its thumbnail. With a mouse the five stars appear when the tile is hovered and light up to the star under the pointer; a saved rating stays visible as a small chip. On a touch screen, tapping the chip opens the stars and tapping the tile still opens the preview.
+- Say under a Previews tile without a picture why it has none: a live page, a PDF, or no thumbnail on this environment.
+- Show the Previews card immediately after Open questions and before the task checklist.
+- Time Machine skips dependency installs inside task artifacts, at the owner's request, without excluding the evidence, screenshots or checkout source stored there.
+- Settings is denser on desktop, its sidebar is narrower, and Back and search share one short row.
+- Settings search is a combobox with announced results, and every jump from the sidebar, search or a Fix button moves keyboard focus to its target.
+- Host, Dev and Updates in System are each one compact row.
+- Pane headers no longer repeat "This device" beside every group.
+- Turning off Check usage hides the sidebar footer meter for that host and stops its polling.
+- Shared controls expose selected, expanded, checked and busy state on web; dialogs are named; the segmented control is a radio group; the off switch has a border; text fields link their label, hint and error.
+- Starship's light accent is #0a5fbd, with white text on it.
+- A read-only Host check reports file-table pressure (system, the Docker VM process and Dev's cached shared-folder inodes), task worktrees with uncommitted or unpushed work older than a day, and whether the latest completed Time Machine backup contains the precious folders. Hourly upkeep can alert on it.
+- The Host watch's stale-worktree check also covers worktrees only Dev can see, such as those on Dev's worktree volume, by reading them inside Dev.
+- Time Machine skips dependency installs, build output and Host releases without crawling the disk: new task worktrees exclude their `node_modules`, `dist` and `build` folders when dependencies install, the installer excludes each release revision it builds, and an upkeep command re-applies exclusions to named folders in seconds. Installation safety snapshots are excluded too, at the owner's request, because they copy state Time Machine already backs up. Source and project files stay backed up.
+
+### Changed
+
+- Neon's accent is now violet (#8b5cf6) instead of blue, matching Vorton. Buttons, switches, selected borders, links and accent tints in Neon follow it; black text on the accent measures 4.96:1. The lighter violet focus ring and the theme preview are unchanged.
+
+### Features
+
+- Review threads that stop with work left in progress, not only blocked work, when nothing else will wake them. Threads with live background work or a running subagent are left alone.
+- Settings > General > Installation has a Time zone row. Automatic follows the browser of the owner device that opened Vorteo most recently; a searchable list of zones overrides it. The choice is shared by the installation and reaches the Host and Dev.
+- Agents learn the owner's time zone. Each launch adds one line naming it with the current abbreviation, and the list hosts tool returns it.
+- Serve previews on a dedicated hostname. The native preview broker can publish through a second Tailscale node with its own state and socket, installed as a login agent, and the Previews comment frame and pairing page follow each reserved preview origin by name.
+- Add a Previews gallery. Agents publish web pages, slide decks, images, PDFs and live preview links as frozen versions with thumbnails; you rate them, pick between options with a reason, approve a version and compare versions from a Previews card under the conversation.
+- Add browser review. Open a version in your browser, pick an element or region and comment; the comment reaches the authoring thread with the version and location, and agents read all feedback with `get_preview_feedback`.
+- Add an injecting reverse proxy that puts the review toolbar on live previews without changing the preview broker, with live reload passed through.
+- System opens with a Health list: one row per problem, with its current status and a Fix button that jumps to the control that resolves it, or one quiet All good row. The sidebar's System needs attention button counts the same rows and lands on the list.
+- Settings has two groups under ruled headings. This device holds Interface, which now includes the former Notifications & privacy panes. Vorteo holds General, Providers, Agents, Voice, Projects & integrations and System, and Environments is now a group inside System. Old addresses still open the right place.
+- Each environment is one row whose Edit button opens its full settings in a dialog, with environment exceptions in a collapsed group.
+- The owner lock is a Locked and Unlocked radio group at the top of the Settings sidebar.
+- Providers are flattened into one card with Move up and Move down buttons. A provider whose only connection is signed out shows Connect beside its switch, and Reconnect N expired walks through every expired connection.
+- The connect and reconnect dialog keeps one status line that changes in place, puts links and codes in copy fields, and never shifts between steps.
+- Lists longer than five items collapse into a summary row with a Manage dialog.
+- Device groups such as Theme, Fonts, Layout, Chat, Sending, Editor, Terminal, Files and Open location have their own Reset button.
+- Rarely used controls sit in one collapsed Advanced group per section; searches and jumps open it.
+- The installation name saves on Enter or when the field loses focus.
+- Data saving is automatic from the browser's signals. The startup screen's Enable data saver is the only manual override, and Follow browser in Settings > Interface > Fonts clears it.
+- The browser demo simulates a Demo Lab installation, so installation-wide settings show sample data.
+
+### Known limitations
+
+- A daemon without an installation has no Time zone control, so its agents get no time zone line.
+- Factory role schedules and the Optimizer review still use the daemon's own zone, which is UTC in Dev.
+- The System needs attention button counts provider, primary connection and update rows only after Health has rendered once in a session.
+- The single Connect shortcut covers Claude and Codex account types.
+- The daemon still answers the provider usage list while usage is off.
+- End-to-end specs were updated by reading the code and were not run for this change.
+- Extra-muted text in Midas, Scriptorium and Ember, and the accent as small text in Midas and Ember, remain below the contrast the accessibility audit asks for.
+
+### Factory charter changes
+
+- Mechanic: the system project gains shared daily connectivity checks; other projects are unchanged. Existing project additions retain the normal charter review gate.
+- Mechanic: clarify pre-output privacy filtering and daily evidence reuse in system installation guidance.
+
+## Unreleased - 2026-11-15
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-14
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-14
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
 ## Unreleased - 2026-11-14
 
 ### Fixed
@@ -20,6 +265,10 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ### Maintenance
 
 - Combine 1 source contributions; retain their release notes below
+
+- Keep the daemon inside its memory limit for long threads that switch accounts. Each switch now stores only its own new history as a streamed segment instead of a full copy, existing copies migrate on first read without deleting any of them, and a thread replays at most its newest 48 MB of retained history.
+- Opening or paging an unloaded thread reads its saved history without resuming it, so a client that pages every thread no longer keeps them all in memory. Saved reads run two at a time.
+- Give the production daemon worker a heap limit of a quarter of usable memory, capped at 12 GB, when that exceeds Node's default. A 64 GB Host gets 12 GB instead of about 4 GB; smaller machines and the packaged desktop app keep the default, and a heap flag in `NODE_OPTIONS` or the supervisor's arguments still wins.
 
 ## Unreleased - 2026-11-14
 

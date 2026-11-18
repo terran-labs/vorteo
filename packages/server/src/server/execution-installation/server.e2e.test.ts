@@ -1,3 +1,7 @@
+import {
+  PreviewBrokerDeploymentJobSchema,
+  PreviewBrokerDeploymentPreparationSchema,
+} from "@getpaseo/protocol/preview-broker-deployment";
 import { recoverClaudeOAuthGrant } from "./accounts/claude-oauth-recovery.js";
 import type { ClaudeOAuthRuntime } from "./accounts/claude-oauth-runtime.js";
 import { retainEnrollmentNativeIdentity } from "./maintenance/native-registration.js";
@@ -37,6 +41,7 @@ import {
   chmodSync,
   mkdtempSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
   readFileSync,
@@ -791,8 +796,12 @@ test("shared settings require owner access and persist revisioned writes before 
     await createInstallationSettingsReader(clientFile).read({ ...hostAdmission, revision: 1 }),
   ).toEqual({
     ...hostAdmission,
-    // The client normalizes an older admission's absent primary choice to null.
-    settings: { ...hostAdmission.settings, primaryConnection: null },
+    // The reader negotiates primary connection and time zone fields.
+    settings: {
+      ...hostAdmission.settings,
+      primaryConnection: null,
+      timeZone: { override: null, reported: null },
+    },
   });
   guest.offline = true;
   const update = {
@@ -1070,6 +1079,7 @@ async function fixture(
   startupFence?: InstallationStartupFence,
   helperExecutor?: Pick<
     RestartExecutor,
+    | "brokerDeployment"
     | "validateHelperPlan"
     | "installHelper"
     | "verifyHelperRecovery"
@@ -2554,6 +2564,171 @@ test("helper controls require owner authentication and preparation refuses guest
       })
     ).status,
   ).toBe(400);
+});
+
+function brokerDeploymentHttpPreparation() {
+  const id = randomUUID();
+  const hash = "a".repeat(64);
+  const file = { path: "/protected/file", sha256: hash };
+  const expected = { kind: "present", sha256: hash, identity: Array(9).fill("1") };
+  const consumer = { expected, candidate: file, mode: 0o600 };
+  const target = (root: string) => ({
+    root,
+    directory: [1, 2, 501, 20, 0o700],
+    preservationSha256: hash,
+    files: {
+      "https_broker.py": consumer,
+      "https-preview.py": consumer,
+      "host_config.py": consumer,
+      "channel_identity.py": { ...consumer, expected: { kind: "absent" } },
+    },
+  });
+  const input = PreviewBrokerDeploymentPreparationSchema.parse({
+    id,
+    reason: "Deploy reviewed broker consumers",
+    plan: {
+      version: 1,
+      operation: "preview-broker-consumer-deployment",
+      id,
+      installationId: randomUUID(),
+      sourceCommit: "a".repeat(40),
+      evidenceDirectory: `/evidence/${id}`,
+      evidenceDirectoryIdentity: [1, 2, 501, 20, 0o700],
+      bootUUID: randomUUID(),
+      targets: [target("/host"), target("/dev")],
+      registrations: [
+        {
+          root: "/host",
+          domain: "gui/501",
+          enabled: true,
+          override: "absent",
+          label: "host",
+          plist: file,
+          disposition: "absent",
+          process: null,
+        },
+        {
+          root: "/dev",
+          domain: "gui/501",
+          enabled: true,
+          override: "absent",
+          label: "dev",
+          plist: file,
+          disposition: "absent",
+          process: null,
+        },
+      ],
+      participantEvidence: [file],
+      manualParticipants: [],
+    },
+  });
+  return input;
+}
+
+test("broker deployment HTTP and scoped client distinguish refusal, retained failure and persistence uncertainty", async () => {
+  const compatible = vi.fn(async () => false);
+  let persistenceFails = false;
+  let fixtureRoot = "";
+  let lockBlocked = false;
+  function restoreJournalLock() {
+    if (!lockBlocked) return;
+    const lock = path.join(fixtureRoot, "coordinator-bootstrap.lock");
+    rmSync(lock, { recursive: true });
+    renameSync(`${lock}.saved`, lock);
+    lockBlocked = false;
+  }
+  const execute = vi.fn(async () => {
+    throw new Error("unexpected native deployment");
+  });
+  const validate = vi.fn(async () => {
+    if (persistenceFails) {
+      // A directory cannot be opened as the journal's writable lock, even with elevated access.
+      const lock = path.join(fixtureRoot, "coordinator-bootstrap.lock");
+      renameSync(lock, `${lock}.saved`);
+      lockBlocked = true;
+      mkdirSync(lock, { mode: 0o700 });
+    }
+    throw new Error("fixture_candidate_invalid");
+  });
+  try {
+    const f = await fixture(undefined, undefined, undefined, false, false, undefined, undefined, {
+      brokerDeployment: {
+        brokerDeploymentCompatible: compatible,
+        validateBrokerDeploymentPlan: validate,
+        executeBrokerDeployment: execute,
+        observeBrokerDeployment: async () => {
+          throw new Error("unexpected observation");
+        },
+      },
+    });
+    fixtureRoot = f.root;
+    const route = "/api/installation/broker-deployment-requests";
+    const input = brokerDeploymentHttpPreparation();
+    expect((await f.request(route, "host-agent-test-token", input)).status).toBe(409);
+    expect((await f.request(`${route}/${input.id}`, "host-agent-test-token")).status).toBe(404);
+    compatible.mockResolvedValue(true);
+    const response = await f.request(route, "host-agent-test-token", input);
+    expect(response.status).toBe(201);
+    const failed = PreviewBrokerDeploymentJobSchema.parse(await response.json());
+    expect(failed).toMatchObject({ id: input.id, status: "failed", stage: "preparing" });
+    expect(await (await f.request(route, "host-agent-test-token", input)).json()).toEqual(failed);
+    expect(await (await f.request(`${route}/${input.id}`, "host-agent-test-token")).json()).toEqual(
+      failed,
+    );
+    expect(validate).toHaveBeenCalledTimes(1);
+
+    const client = path.join(f.root, "host-client.json");
+    const requestFile = path.join(f.root, "broker-request.json");
+    writeFileSync(
+      client,
+      JSON.stringify({ origin: f.url, kind: "host-agent", token: "host-agent-test-token" }),
+      { mode: 0o600 },
+    );
+    writeFileSync(requestFile, JSON.stringify(input), { mode: 0o600 });
+    const script = path.resolve(
+      import.meta.dirname,
+      "../../../../../scripts/installation-agent.mjs",
+    );
+    const run = () =>
+      promisify(execFile)(process.execPath, [
+        script,
+        "--config",
+        client,
+        "request-broker-consumer-deployment",
+        "--request-file",
+        requestFile,
+      ]);
+    expect(JSON.parse((await run()).stdout)).toMatchObject({ id: input.id, status: "failed" });
+
+    persistenceFails = true;
+    const uncertainInput = brokerDeploymentHttpPreparation();
+    const uncertain = await f.request(route, "host-agent-test-token", uncertainInput);
+    expect(uncertain.status).toBe(503);
+    expect(await uncertain.json()).toMatchObject({
+      code: "deployment_preparation_persistence_uncertain",
+      outcome: "recorded_uncertain",
+      requestId: uncertainInput.id,
+      preparationReason: "fixture_candidate_invalid",
+      persistenceReason: expect.any(String),
+    });
+    restoreJournalLock();
+    expect(
+      await (await f.request(`${route}/${uncertainInput.id}`, "host-agent-test-token")).json(),
+    ).toMatchObject({ id: uncertainInput.id, status: "pending", stage: "preparing" });
+    const cliInput = brokerDeploymentHttpPreparation();
+    writeFileSync(requestFile, JSON.stringify(cliInput), { mode: 0o600 });
+    await expect(run()).rejects.toMatchObject({
+      stderr: expect.stringContaining("deployment_preparation_persistence_uncertain"),
+    });
+    restoreJournalLock();
+    expect(
+      await (await f.request(`${route}/${cliInput.id}`, "host-agent-test-token")).json(),
+    ).toMatchObject({ id: cliInput.id, status: "pending", stage: "preparing" });
+    expect(execute).not.toHaveBeenCalled();
+    expect(f.calls).toEqual([]);
+  } finally {
+    restoreJournalLock();
+  }
 });
 
 function helperHttpPreparation() {

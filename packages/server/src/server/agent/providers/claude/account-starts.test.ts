@@ -1,9 +1,14 @@
 import { expect, test, vi } from "vitest";
-import { mkdtemp, mkdir, writeFile, symlink, rm, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, symlink, rm, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { createTestLogger } from "../../../../test-utils/test-logger.js";
+import { ClaudeAgentClient } from "./agent.js";
 import {
   acquireClaudeStartSlot,
+  claudeRenewalInProgress,
+  CLAUDE_RENEWAL_LOCK_FILE,
+  waitForClaudeRenewal,
   claudeDebugLogFile,
   CLAUDE_DEBUG_LOGS_SETTINGS_FILE,
   CLAUDE_START_SLOT_MAX_MS,
@@ -87,3 +92,48 @@ test.each(["private", "public", "symlink"] as const)(
     }
   },
 );
+
+// Stopping a Claude Code process that holds the renewal lock loses the account's sign-in.
+test("a stop waits for the account's sign-in renewal lock, but not for an abandoned one", async () => {
+  const configDir = await mkdtemp(path.join(tmpdir(), "claude-renewal-"));
+  const lock = path.join(configDir, CLAUDE_RENEWAL_LOCK_FILE);
+  const env = { CLAUDE_CONFIG_DIR: configDir, VORTEO_CLAUDE_SIGN_IN: "full" };
+  try {
+    expect(await waitForClaudeRenewal(env, { maxMs: 0 })).toBe(true);
+
+    await mkdir(lock);
+    expect(await claudeRenewalInProgress(configDir)).toBe(true);
+    expect(await waitForClaudeRenewal(env, { maxMs: 30, pollMs: 5 })).toBe(false);
+    // An account that cannot renew through Claude Code never waits.
+    expect(await waitForClaudeRenewal({ CLAUDE_CONFIG_DIR: configDir }, { maxMs: 30 })).toBe(true);
+    const stop = waitForClaudeRenewal(env, { maxMs: 5_000, pollMs: 5 });
+    await rm(lock, { recursive: true });
+    expect(await stop).toBe(true);
+
+    // Closing a session of the account holds off while the lock is live.
+    await mkdir(lock);
+    const client = new ClaudeAgentClient({
+      logger: createTestLogger(),
+      resolveVersion: async () => "2.1.321",
+      runtimeSettings: { env },
+    });
+    const session = await client.createSession({ provider: "claude", cwd: configDir });
+    let closed = false;
+    const closing = session.close().then(() => {
+      closed = true;
+      return undefined;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(closed).toBe(false);
+    await rm(lock, { recursive: true });
+    await closing;
+
+    // A lock left by a dead process must not hold every later stop.
+    await mkdir(lock);
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lock, old, old);
+    expect(await claudeRenewalInProgress(configDir)).toBe(false);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});

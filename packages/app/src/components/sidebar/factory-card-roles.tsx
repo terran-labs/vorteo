@@ -28,8 +28,8 @@ import { SidebarWorkspaceContextMenu } from "./sidebar-workspace-menu";
 import { WorkspaceStatusIndicator, isSidebarRowCalm } from "./sidebar-workspace-row-content";
 
 const ThemedMessage = withUnistyles(MessageCircle);
-const accentColor = (theme: Theme) => ({ color: theme.colors.accent });
-const talkIcon = <ThemedMessage size={12} uniProps={accentColor} />;
+const accentTextColor = (theme: Theme) => ({ color: theme.colors.accentText });
+const talkIcon = <ThemedMessage size={12} uniProps={accentTextColor} />;
 
 /** Gutter between tiles, on each side of a cell. */
 const CELL_GUTTER = 2;
@@ -395,7 +395,7 @@ const styles = StyleSheet.create((theme) => ({
   chipTextMuted: { color: theme.colors.foregroundMuted },
   chipTextPrimary: { fontSize: theme.fontSize.base, fontWeight: theme.fontWeight.medium },
   talk: { flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 1, minWidth: 0 },
-  talkText: { color: theme.colors.accent, fontSize: theme.fontSize.sm },
+  talkText: { color: theme.colors.accentText, fontSize: theme.fontSize.sm },
 }));
 
 /** Shared with the All Factories card, whose per-Factory chips take the same shape. */

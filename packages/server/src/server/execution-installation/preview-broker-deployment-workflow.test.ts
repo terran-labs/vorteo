@@ -1,4 +1,5 @@
 import { assertCoordinatorLifecycleIdle } from "./coordinator-bootstrap.js";
+import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -8,6 +9,7 @@ import {
 } from "@getpaseo/protocol/preview-broker-deployment";
 import {
   PreviewBrokerDeploymentWorkflow,
+  firstLine,
   type BrokerDeploymentExecutor,
 } from "./preview-broker-deployment-workflow.js";
 
@@ -97,6 +99,23 @@ function fixture() {
       jobs = [...jobs.filter((prior) => prior.id !== job.id), structuredClone(job)];
       written.push(job.status);
     },
+    refreshPreparation: (job) =>
+      isDeepStrictEqual(
+        jobs.find((item) => item.id === job.id),
+        job,
+      ),
+    failPreparation: (job, reason) => {
+      const retained = jobs.find((item) => item.id === job.id)!;
+      if (
+        retained.status === "pending" &&
+        retained.stage === "preparing" &&
+        retained.revision === job.revision
+      ) {
+        retained.status = "failed";
+        retained.detail = `Consumer preparation refused: ${reason}`;
+      }
+      return retained;
+    },
     executor,
     now: Date.now,
   });
@@ -151,6 +170,31 @@ describe("broker consumer deployment queue boundary", () => {
     expect(f.jobs()[0].stage).toBe("recovery_required");
     expect(f.jobs()[0].status).toBe("failed");
     expect(f.executor.executeBrokerDeployment).toHaveBeenCalledTimes(1);
+  });
+
+  it("records the first line of a refused preparation in the job and the log", async () => {
+    const f = fixture();
+    f.executor.validateBrokerDeploymentPlan = vi.fn(async () => {
+      throw new Error("Deployment child custody differs\nsecond line stays out");
+    });
+    const log = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const job = await f.workflow.prepare(f.input, "host-agent");
+    expect(job.status).toBe("failed");
+    expect(job.detail).toBe("Consumer preparation refused: Deployment child custody differs");
+    expect(log).toHaveBeenCalledWith(
+      `Broker consumer deployment ${f.input.id} preparation refused: Deployment child custody differs\n`,
+    );
+  });
+
+  it("surfaces refusal text without terminal escapes or control characters", () => {
+    expect(firstLine(new Error("\u001b[31mcustody\u001b[0m differs\rFORGED"))).toBe(
+      "custody differs",
+    );
+    expect(firstLine(new Error("bell\u0007 osc\u001b]0;title\u0007 c1\u009b end"))).toBe(
+      "bell osc c1 end",
+    );
+    expect(firstLine(new Error("\r\n"))).toBe("unknown error");
+    expect(firstLine("x".repeat(400))).toHaveLength(300);
   });
 
   it("recovery observes without preparation or effect replay", async () => {

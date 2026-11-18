@@ -128,6 +128,14 @@ The drivers live in [`scripts/release/e2e/`](../scripts/release/e2e/); the `CONT
 
 [`scripts/release/latest.mjs`](../scripts/release/latest.mjs) resolves the release an installer or in-app upgrade installs: the newest `release-<version>` tag for stable, or the newest tag of either kind for beta, in calendar order, honoring `VORTEO_VERSION` (a tag name such as `release-26.10.3001` or a version such as `26.10.3001`). It exits 2 when no release exists.
 
+<a id="heavy-legs-before-stable"></a>
+
+### Read the heavy tests before stable
+
+Install tests prove the installer. They do not run the server end-to-end tests or the browser suite, and ordinary pull request CI skips those heavy jobs. Before promoting a beta to stable, dispatch the [CI](../.github/workflows/ci.yml) workflow manually on the prepared release commit (`gh workflow run ci.yml --ref <release branch>`); a manual dispatch runs the heavy jobs. Compare every failing job, test by test, with the same jobs on the previous stable release's run. Promote only when `server-tests (ubuntu-latest)` passes and every failure that is not on the previous release's list is explained in the release record. Rerun a job once to tell an intermittent failure from a real one; a failure that recurs blocks stable.
+
+Release 26.11.1601 skipped this step. Its tag run was the first to execute those tests, after stable was published, and it showed a history regression that 26.11.1700 then repaired.
+
 <a id="install-address"></a>
 
 ### Install address

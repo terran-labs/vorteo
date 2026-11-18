@@ -19,6 +19,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { expect, test } from "vitest";
 import { resolveManagedWorker } from "./managed-release.js";
 import { supervisorPersistedConfig } from "./supervisor-persisted-config.js";
+import { resolveWorkerHeapLimitMb } from "./worker-heap-limit.js";
 import {
   resolveSherpaLoaderEnv,
   sherpaLoaderEnvKey,
@@ -673,3 +674,21 @@ posixTest.each(["selected schema", "reader alias", "selection changes", "missing
     }
   },
 );
+
+test("the production worker heap limit scales with usable memory and respects overrides", () => {
+  const gib = 1024 ** 3;
+  const host = {
+    totalMemoryBytes: 64 * gib,
+    constrainedMemoryBytes: 0,
+    defaultHeapLimitBytes: 4288 * 1024 ** 2,
+    nodeOptions: undefined,
+    execArgv: [],
+  };
+  expect(resolveWorkerHeapLimitMb(host)).toBe(12288);
+  // A smaller machine, or a container capped at 8 GB inside a larger VM, keeps Node's default.
+  expect(resolveWorkerHeapLimitMb({ ...host, totalMemoryBytes: 16 * gib })).toBeNull();
+  expect(resolveWorkerHeapLimitMb({ ...host, constrainedMemoryBytes: 8 * gib })).toBeNull();
+  expect(
+    resolveWorkerHeapLimitMb({ ...host, nodeOptions: "--max-old-space-size=2048" }),
+  ).toBeNull();
+});

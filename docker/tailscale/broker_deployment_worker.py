@@ -7,8 +7,8 @@ import sys
 import time
 from channel_identity import physical_directory, read_file, file_identity
 from broker_deployment import (deploy_files, exclusive, encode, sha, preservation, assert_preserved, directory_pin,
-                               approved_preservation_sha256)
-from broker_deployment_observation import NativeObservation
+                               approved_preservation_sha256, stable_state)
+from broker_deployment_observation import NativeObservation, route_argv
 
 
 class ParentGuard:
@@ -29,6 +29,10 @@ class ParentGuard:
         if json.loads(raw) != {**message, 'admitted': True}:
             raise ValueError('Parent queue or protected custody refused')
 
+
+# Version 2 workers record window-verified.json and mark admission.json with this value.
+# Version 1 workers wrote no marker, which selects the legacy confirmation rule.
+EVIDENCE_VERSION = 2
 
 # Transient states while a scheduler generation finishes; every other refusal is final.
 SETTLING = ('Unlisted broker caller or waiting generation remains', 'Old registered consumer remains active')
@@ -135,7 +139,19 @@ class Deployment:
             raise ValueError('Preservation inventory changed after suppression')
         return self.preservation_sha256(root, state)
 
-    def verify_files(self):
+    def verify_files(self, restored=False):
+        """The committed consumers, their plan and baseline, and what each broker preserved.
+
+        Inside the suppressed window (restored=False) every root's full inventory must be
+        preserved from the baseline: config, installed marker, channel files and ledger.
+        Once the brokers run again (restored=True), a running-admission broker serves
+        requests: it rewrites its ledger, consumes inbox files and writes receipts and
+        origins. Those were already proven preserved across the window (deploy_files
+        writes commit.json only after that check). After restore such a root compares
+        only the committed consumers and its config and installed marker, which no
+        broker run writes. Its window inbox additions come from commit.json. A refusing
+        broker never reaches its inbox, so it keeps the full comparison.
+        """
         commit, digest = self.read('commit.json')
         if commit['planSha256'] != sha(encode(self.inner)):
             raise ValueError('File commitment belongs to another plan')
@@ -160,8 +176,17 @@ class Deployment:
         after = {}
         for target in self.plan['targets']:
             root = target['root']
-            after[root] = json.loads(encode(preservation(Path(root))))
-            additions[root] = assert_preserved(before['preservation'][root], after[root])
+            baseline = before['preservation'][root]
+            if restored and self.mode(root) == 'running':
+                # Never snapshot a live channel: a working broker may hold a pending start.
+                _, current = stable_state(Path(root))
+                after[root] = json.loads(encode(current))
+                if after[root] != {'config': baseline['config'], 'marker': baseline['marker']}:
+                    raise ValueError('Broker config or installed marker changed')
+                additions[root] = commit['inboxAdditions'][root]
+            else:
+                after[root] = json.loads(encode(preservation(Path(root))))
+                additions[root] = assert_preserved(baseline, after[root])
         return digest, sha(encode(commit['files'])), {'baseline': before['preservation'], 'after': after, 'inboxAdditions': additions}
 
     def restored_states(self):
@@ -181,7 +206,7 @@ class Deployment:
     def execute(self):
         before = settle(self.observer.validate, self.settle_seconds)
         self.record('admission.json', {'outerPlanSha256': self.outer, 'admission': self.observer.admission,
-                                       'registrations': before})
+                                       'registrations': before, 'evidenceVersion': EVIDENCE_VERSION})
         for index, binding in enumerate(self.packet['bindings']):
             raw, _ = read_file(binding['plist']['path'], protected=True)
             self.guard()
@@ -214,8 +239,13 @@ class Deployment:
         except BaseException as error:
             self.restore_after_abort(error)
             raise
-        self.verify_files()
+        commit, files, window_report = self.verify_files()
         self.observer.assert_suppressed()
+        # Evidence that every channel was intact at the end of the suppressed window,
+        # recorded before any broker runs again and bound to the plan and commitment.
+        window = {'outerPlanSha256': self.outer, 'commitSha256': commit, 'installedFilesSha256': files,
+                  'preservationSha256': sha(encode(window_report)), 'preservationReport': window_report}
+        self.record('window-verified.json', window)
         for index, (expected, binding) in enumerate(zip(self.plan['registrations'], self.packet['bindings'])):
             self.observer.assert_admission(binding)
             if expected['enabled']:
@@ -223,8 +253,9 @@ class Deployment:
             if expected['disposition'] == 'loaded':
                 self.command(index, 'bootstrap', binding)
         states = self.restored_states()
-        commit, files, preservation_report = self.verify_files()
+        commit, files, preservation_report = self.verify_files(restored=True)
         self.record('deployment-commit.json', {'outerPlanSha256': self.outer, 'commitSha256': commit,
+                    'windowVerifiedSha256': sha(encode(window)),
                     'installedFilesSha256': files, 'preservationSha256': sha(encode(preservation_report)),
                     'preservationReport': preservation_report,
                     'registrationsSha256': sha(encode(states)), 'states': states})
@@ -274,13 +305,17 @@ class Deployment:
         unresolved = {'kind': 'unresolved', 'id': self.plan['id'], 'planSha256': self.outer,
                       'reason': 'evidence-unconfirmed'}
         try:
-            receipt, _ = self.read('deployment-commit.json')
             before, _ = self.read('before.json')
             if self.observer.admission is None:
                 self.observer.admission = self.recorded_admission()
-            if before['outerPlanSha256'] != self.outer or receipt['outerPlanSha256'] != self.outer:
+            if before['outerPlanSha256'] != self.outer:
                 return unresolved
-            commit, files, current_preservation = self.verify_files()
+            if not (self.root / 'deployment-commit.json').exists():
+                return self.confirm_without_receipt() or unresolved
+            receipt, _ = self.read('deployment-commit.json')
+            if receipt['outerPlanSha256'] != self.outer:
+                return unresolved
+            commit, files, current_preservation = self.verify_files(restored=True)
             self.restored_states()
             historical = receipt['preservationReport']
             if (receipt['preservationSha256'] != sha(encode(historical)) or
@@ -292,6 +327,12 @@ class Deployment:
             for root, names in historical['inboxAdditions'].items():
                 if not isinstance(names, list) or names != sorted(set(names)) or any(not name.startswith('inbox/') for name in names):
                     return unresolved
+                if self.mode(root) == 'running':
+                    # Config and marker unchanged since the receipt; window additions as committed.
+                    if (historical['after'][root] != current_preservation['after'][root] or
+                            names != current_preservation['inboxAdditions'][root]):
+                        return unresolved
+                    continue
                 if assert_preserved(historical['baseline'][root], historical['after'][root]) != names:
                     return unresolved
                 assert_preserved(historical['after'][root], current_preservation['after'][root])
@@ -303,9 +344,11 @@ class Deployment:
                         state['plistSha256'] != binding['plist']['sha256']):
                     return unresolved
                 process = state['process']
-                if process is not None and (process['argv'] != binding['argv'] or process['uid'] != os.getuid()):
+                if process is not None and (not route_argv(process['argv'], binding) or process['uid'] != os.getuid()):
                     return unresolved
             if receipt['commitSha256'] != commit or receipt['installedFilesSha256'] != files:
+                return unresolved
+            if receipt.get('windowVerifiedSha256') != self.verified_window(commit):
                 return unresolved
             self.guard()
             return {'kind': 'committed', 'id': self.plan['id'], 'planSha256': self.outer,
@@ -313,6 +356,85 @@ class Deployment:
         except (OSError, ValueError, KeyError, TypeError):
             return unresolved
 
+    def confirm_without_receipt(self):
+        """Confirm a run that committed and restored but never wrote its final receipt.
+
+        Read-only: it writes nothing. Applies to refusing and running admission alike.
+        Every step of the run must have left its evidence bound to this plan: the
+        admission, the post-suppression baseline, all eight per-file intents and
+        acknowledgements equal to commit.json, the end-of-window check (version 2 runs;
+        see verified_window), and for each broker an acknowledged suppression and
+        restoration matching its approved registration. What refuses an aborted run is
+        that last requirement: an abort before the first write never wrote commit.json,
+        and one after it never restored the brokers. The abort-record check is only a
+        belt, since abort records are best-effort and none is written once replacement
+        has begun. The same checks as a receipt then apply to the live state:
+        committed consumers, preservation as restored (the full comparison for
+        refusing brokers), and restored registrations. Returns None when anything is
+        missing.
+        """
+        names = {path.name for path in self.root.iterdir()}
+        if any(name.startswith('abort-') for name in names):
+            return None
+        admission, _ = self.read('admission.json')
+        if admission['outerPlanSha256'] != self.outer:
+            return None
+        commit, _ = self.read('commit.json')
+        acks = []
+        for index in range(8):
+            self.read(f'intent-{index}.json')
+            ack, _ = self.read(f'ack-{index}.json')
+            acks.append(ack)
+        if acks != commit['files']:
+            return None
+        for index, expected in enumerate(self.plan['registrations']):
+            needed = ((['disable', 'enable'] if expected['enabled'] else []) +
+                      (['bootout', 'bootstrap'] if expected['disposition'] == 'loaded' else []))
+            for action in needed:
+                intent, _ = self.read(f'effect-{index}-{action}-intent.json')
+                ack, _ = self.read(f'effect-{index}-{action}-ack.json')
+                if intent['outerPlanSha256'] != self.outer or ack['outerPlanSha256'] != self.outer:
+                    return None
+        commit_digest, files, report = self.verify_files(restored=True)
+        self.verified_window(commit_digest)
+        states = self.restored_states()
+        self.guard()
+        return {'kind': 'committed', 'id': self.plan['id'], 'planSha256': self.outer,
+                'commitSha256': commit_digest, 'installedFilesSha256': files,
+                'preservationSha256': sha(encode(report)), 'registrationsSha256': sha(encode(states))}
+
+    def verified_window(self, commit_digest):
+        """The digest of the run's end-of-window evidence, or None under the legacy rule.
+
+        A version 2 run (admission.json carries evidenceVersion 2) must have
+        window-verified.json bound to this plan, to the commitment and to the baseline,
+        with each root's full inventory preserved from that baseline. A run whose
+        admission.json has no evidenceVersion was made by a worker that never wrote the
+        window record. For it, the window proof is commit.json: deploy_files writes it
+        only after its under-lock preservation check, bound to the inner plan digest.
+        Raises when the evidence is inconsistent.
+        """
+        if not (self.root / 'admission.json').exists():
+            return None
+        admission, _ = self.read('admission.json')
+        if admission['outerPlanSha256'] != self.outer:
+            raise ValueError('Recorded admission belongs to another plan')
+        if 'evidenceVersion' not in admission:
+            return None
+        if admission['evidenceVersion'] != EVIDENCE_VERSION:
+            raise ValueError('Unknown deployment evidence version')
+        window, digest = self.read('window-verified.json')
+        before, _ = self.read('before.json')
+        report = window['preservationReport']
+        if (window['outerPlanSha256'] != self.outer or window['commitSha256'] != commit_digest or
+                window['preservationSha256'] != sha(encode(report)) or
+                report['baseline'] != before['preservation'] or
+                set(report['after']) != {target['root'] for target in self.plan['targets']}):
+            raise ValueError('Window evidence does not bind this plan')
+        for root, after in report['after'].items():
+            if assert_preserved(report['baseline'][root], after) != report['inboxAdditions'][root]:
+                raise ValueError('Window evidence does not show a preserved channel')
+        return digest
 
     def recorded_admission(self):
         """Admission from evidence. Attempts made before running admission existed

@@ -7,7 +7,9 @@ export type FinishNotificationReason =
   | "needs permission"
   | "is unavailable"
   | "was closed"
-  | "was canceled";
+  | "was canceled"
+  | "is not running"
+  | "could not be reopened";
 
 export const finishNotificationEvents = {
   "host unreachable": "errored",
@@ -19,9 +21,11 @@ export const finishNotificationEvents = {
   "is unavailable": "closed",
   // Use the existing failure event so older clients still parse agent-message metadata.
   "was canceled": "errored",
+  "is not running": "errored",
+  "could not be reopened": "errored",
 } as const;
 
-const FINISH_NOTIFICATION_MESSAGE_LIMIT = 4000;
+export const FINISH_NOTIFICATION_MESSAGE_LIMIT = 4000;
 
 interface FinishNotificationBodyInput {
   childAgentId: string;
@@ -43,6 +47,14 @@ export function formatFinishNotificationBody(params: FinishNotificationBodyInput
   const statusLine = `Agent ${params.childAgentId} (${params.title}) ${params.reason}.`;
   const sections = [statusLine];
   if (params.serverId) sections.push(`Server: ${params.serverId}`);
+  if (params.reason === "is not running")
+    sections.push(
+      "It stopped when the daemon restarted, or was released while idle, and its last turn may be unfinished. This notification stays armed: you will be notified when it next finishes. Prompt or resume it to continue.",
+    );
+  if (params.reason === "could not be reopened")
+    sections.push(
+      "It was still running when the daemon restarted, and this daemon could not reopen it, so its last turn may be unfinished. Read its last response, then prompt or resume it. This notification has ended.",
+    );
   if (params.reason === "needs permission" && params.permissionRequest) {
     sections.push(
       "Respond with `respond_to_permission` using the `agentId` and `requestId` below.",

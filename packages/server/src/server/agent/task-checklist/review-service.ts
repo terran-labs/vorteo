@@ -31,25 +31,17 @@ interface ReviewServiceOptions {
    * failed read skips every Factory role thread for that scan rather than risk prompting one.
    */
   pausedFactoryProjects?: () => Promise<ReadonlySet<string>>;
+  /**
+   * Threads an active heartbeat or schedule will prompt again. One whose unfinished items are
+   * all in progress is left to that wake. A failed read reviews as if there were none.
+   */
+  scheduledWakes?: () => Promise<ReadonlySet<string>>;
   now?: () => number;
 }
 
 function inPausedFactory(record: StoredAgentRecord, paused: ReadonlySet<string> | null): boolean {
   const project = factoryProjectOf(record);
   return project !== null && (paused === null || paused.has(project));
-}
-
-/** The change in session cost; a provider restarted for the review reports cost from zero again. */
-function reviewCost(
-  before: StoredAgentRecord,
-  after: StoredAgentRecord | null,
-): number | undefined {
-  const cost = (snapshot: StoredAgentRecord | null) =>
-    snapshot?.lastUsage?.totalCostUsd ?? snapshot?.lastUsage?.estimatedCostUsd;
-  const costBefore = cost(before);
-  const costAfter = cost(after);
-  if (costBefore === undefined || costAfter === undefined) return undefined;
-  return Number((costAfter >= costBefore ? costAfter - costBefore : costAfter).toFixed(4));
 }
 
 /** One daemon-owned timer reviews existing threads; it never creates a thread or schedule. */
@@ -100,6 +92,7 @@ export class BlockedTaskReviewService {
       const limited = new Map<string, boolean>();
       const due: StoredAgentRecord[] = [];
       const paused = await this.pausedFactoryProjects();
+      const scheduled = await this.scheduledWakes();
       for (const record of records) {
         if (
           this.stopped ||
@@ -109,6 +102,9 @@ export class BlockedTaskReviewService {
           return;
         const now = this.now();
         if (this.notDue(record, now) || inPausedFactory(record, paused)) continue;
+        // A heartbeat already wakes this thread; blocked items are still reviewed, because a
+        // blocker can clear long before the next scheduled run.
+        if (scheduled.has(record.id) && onlyInProgressWork(record)) continue;
         if (this.capReached(record.id, now)) {
           // Recheck after the usual retry gap instead of logging the skip every scan.
           this.attempts.set(record.id, now);
@@ -154,6 +150,15 @@ export class BlockedTaskReviewService {
     }
   }
 
+  private async scheduledWakes(): Promise<ReadonlySet<string>> {
+    try {
+      return (await this.options.scheduledWakes?.()) ?? new Set();
+    } catch (error) {
+      this.options.logger.warn({ err: error }, "Could not read scheduled wakes");
+      return new Set();
+    }
+  }
+
   /** Drops expired entries, then reports whether this thread or the installation is at its cap. */
   private capReached(agentId: string, now: number): boolean {
     let lastHour = 0;
@@ -163,11 +168,15 @@ export class BlockedTaskReviewService {
       else this.started.delete(id);
       lastHour += kept.filter((time) => now - time < HOUR_MS).length;
     }
+    const lastDay = this.started.get(agentId)?.length ?? 0;
     const reached =
       lastHour >= BLOCKED_REVIEW_HOURLY_INSTALLATION_CAP ||
-      (this.started.get(agentId)?.length ?? 0) >= BLOCKED_REVIEW_DAILY_THREAD_CAP;
+      lastDay >= BLOCKED_REVIEW_DAILY_THREAD_CAP;
     if (reached)
-      this.options.logger.info({ agentId, lastHour }, "Blocked-work review skipped at its cap");
+      this.options.logger.info(
+        { agentId, lastHour, lastDay },
+        "Blocked-work review skipped at its cap",
+      );
     return reached;
   }
 
@@ -181,6 +190,7 @@ export class BlockedTaskReviewService {
   private async review(record: StoredAgentRecord, awaitingChild: boolean): Promise<void> {
     const agentId = record.id;
     const scheduledAt = this.started.get(agentId)?.at(-1) ?? this.now();
+    let reachedProvider = false;
     try {
       // Only a runtime that was already loaded can hold a watcher; one resumed for this review
       // starts with none.
@@ -199,6 +209,7 @@ export class BlockedTaskReviewService {
         this.release(agentId, scheduledAt);
         return;
       }
+      reachedProvider = true;
       const startedAt = this.now();
       const usage: AgentUsage = {};
       for await (const event of stream) {
@@ -216,7 +227,7 @@ export class BlockedTaskReviewService {
         (!after || reviewFingerprint(after) === reviewFingerprint(before)) && !startedWatcher;
       if (unchanged) await this.options.agentStorage.spendBlockedReviewLadder(agentId);
       // One line per review makes its cost and yield measurable from the daemon log alone.
-      // Providers do not report cache writes here; the session cost difference includes them.
+      // Tokens are the measure: the stored session cost does not move during a review.
       this.options.logger.info(
         {
           agentId,
@@ -229,12 +240,13 @@ export class BlockedTaskReviewService {
           cachedInputTokens: usage.cachedInputTokens,
           outputTokens: usage.outputTokens,
           contextTokens: usage.contextWindowUsedTokens,
-          costUsd: reviewCost(before, after),
         },
         "Blocked-work review finished",
       );
     } catch (error) {
-      // Failed preparation or inference must not retry every scheduler tick.
+      // Failed preparation or inference must not retry every scheduler tick. A review that
+      // failed before its prompt was sent spent nothing, so it does not count toward the caps.
+      if (!reachedProvider) this.release(agentId, scheduledAt);
       this.options.logger.warn({ err: error, agentId }, "Blocked-work review could not complete");
     }
   }

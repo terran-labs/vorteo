@@ -1,6 +1,9 @@
 import { ClaudeOAuthRecoveryRequestSchema } from "./accounts/claude-oauth-recovery.js";
 import { InstallationManagement } from "./management.js";
-import { BrokerDeploymentRefused } from "./preview-broker-deployment-workflow.js";
+import {
+  BrokerDeploymentRefused,
+  BrokerDeploymentPersistenceUncertain,
+} from "./preview-broker-deployment-workflow.js";
 import { coordinatorDispatchStatuses } from "./coordinator-bootstrap-dispatch-status.js";
 import { localInstallationOrigin, localInstallationEnvironments } from "./local-access.js";
 import {
@@ -515,19 +518,21 @@ function serverCoordinatorSettings(
  */
 function restoreHostReleasesAtStart(config: InstallationConfig, logger: Logger): void {
   if (!config.sourceUpdates) return;
-  void restoreSetAsideReleases(config.sourceUpdates.releaseRoot, {
-    onRestored: (folder) => logger.warn({ folder }, "Put back a Host release left set aside"),
-    onError: (folder, error) =>
-      logger.warn({ folder, err: error }, "Could not put back a Host release left set aside"),
-  })
-    .then((restored) => {
+  const releaseRoot = config.sourceUpdates.releaseRoot;
+  void (async () => {
+    try {
+      const restored = await restoreSetAsideReleases(releaseRoot, {
+        onRestored: (folder) => logger.warn({ folder }, "Put back a Host release left set aside"),
+        onError: (folder, error) =>
+          logger.warn({ folder, err: error }, "Could not put back a Host release left set aside"),
+      });
       // A cleanup in another coordinator holds the root; it restores first itself.
       if (restored === null)
         logger.info("A Host release cleanup is running; startup restore left it alone");
-    })
-    .catch((error: unknown) => {
+    } catch (error) {
       logger.warn({ err: error }, "Could not check for Host releases left set aside");
-    });
+    }
+  })();
 }
 
 export function createInstallationServer(
@@ -3499,6 +3504,18 @@ export function createInstallationServer(
       error instanceof InstallationTypeStateError
     ) {
       res.status(409).json({ error: error.message });
+      return;
+    }
+    if (error instanceof BrokerDeploymentPersistenceUncertain) {
+      // Additive HTTP error details; legacy clients retain the error string.
+      res.status(503).json({
+        error: error.message,
+        code: error.code,
+        outcome: error.outcome,
+        requestId: error.requestId,
+        preparationReason: error.preparationReason,
+        persistenceReason: error.persistenceReason,
+      });
       return;
     }
     // Dev answered with a cause the owner can act on; relay it instead of a bare 500.

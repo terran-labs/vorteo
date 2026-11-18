@@ -117,7 +117,7 @@ const styles = StyleSheet.create((theme) => ({
   muted: { color: theme.colors.foregroundExtraMuted, fontSize: theme.fontSize.sm - 1 },
   stale: { color: theme.colors.statusWarning },
   keyOpen: { color: theme.colors.foregroundMuted },
-  link: { color: theme.colors.accent, fontSize: theme.fontSize.sm - 1 },
+  link: { color: theme.colors.accentText, fontSize: theme.fontSize.sm - 1 },
   key: { flexDirection: "row", flexWrap: "wrap", columnGap: theme.spacing[3], rowGap: 6 },
   keyEntry: { flexDirection: "row", alignItems: "center", gap: 6, width: "45%" },
   zone: { width: "100%", marginTop: 2 },

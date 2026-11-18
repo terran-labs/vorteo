@@ -1,6 +1,8 @@
 import { fileURLToPath } from "url";
 import { appendFileSync, existsSync, mkdirSync, realpathSync } from "node:fs";
 import path from "node:path";
+import { totalmem } from "node:os";
+import { getHeapStatistics } from "node:v8";
 import {
   acquirePidLock,
   PidLockError,
@@ -17,6 +19,7 @@ import { supervisorPersistedConfig } from "./supervisor-persisted-config.js";
 import { parseControllerLifetimeFd, runSupervisor } from "./supervisor.js";
 import { reapTerminalWorkers } from "../src/terminal/terminal-worker-reaper.js";
 import { resolveSupervisorLogFile } from "./supervisor-log-config.js";
+import { resolveWorkerHeapLimitMb } from "./worker-heap-limit.js";
 
 // Managed maintenance verifies the launch entry through OS arguments. Changing
 // the title overwrites that evidence, just as it does for a managed worker.
@@ -82,7 +85,16 @@ function resolveDevWorkerEntry(): string {
 function resolveWorkerExecArgv(workerEntry: string, devMode: boolean): string[] {
   const execArgv = workerEntry.endsWith(".ts") ? ["--import", "tsx"] : [];
   if (!devMode) {
-    return execArgv;
+    // Node's default limit (about 4 GB) is far below what large Hosts can give the daemon.
+    const heapLimitMb = resolveWorkerHeapLimitMb({
+      totalMemoryBytes: totalmem(),
+      constrainedMemoryBytes: process.constrainedMemory?.(),
+      defaultHeapLimitBytes: getHeapStatistics().heap_size_limit,
+      nodeOptions: process.env.NODE_OPTIONS,
+      // The supervisor's own flags change its reported default; treat them as an override.
+      execArgv: [...process.execArgv, ...execArgv],
+    });
+    return heapLimitMb === null ? execArgv : [`--max-old-space-size=${heapLimitMb}`, ...execArgv];
   }
   const devArgs = [
     "--heapsnapshot-near-heap-limit=3",

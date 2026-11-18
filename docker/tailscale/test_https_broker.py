@@ -490,6 +490,53 @@ class WorkspacePolicyTests(unittest.TestCase):
                 installer.approve_workspaces(self.config, [approval], self.workspaces)
 
 
+    def test_installer_accepts_reviewed_scope_on_same_node_only(self):
+        spec = importlib.util.spec_from_file_location('installer', Path(__file__).with_name('install-https-broker.py'))
+        installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
+        rule = lambda source: {'Srcs': [source], 'IPProto': [6],
+                               'Dsts': [{'Net': '100.64.0.1/32', 'Ports': {'First': 32768, 'Last': 60999}}]}
+        status = {'Self': {'DNSName': 'aubrey.ts.net.', 'TailscaleIPs': ['100.64.0.1']},
+                  'Peer': {'k': {'DNSName': 'previews.ts.net.', 'TailscaleIPs': ['100.64.0.9']}}}
+        before_rules, after_rules = [rule('100.64.0.3/32')], [rule('100.64.0.3/32'), rule('100.64.0.9/32')]
+        pinned = lambda **change: {'nodeId': 'n1', 'hostname': 'aubrey.ts.net', 'packetFilterHash': 'old', **change}
+        old = pinned(accessScope=installer.access_scope(before_rules))
+        self.assertIsNone(installer.pin_network(old, pinned(), status, before_rules))
+        self.assertIsNone(installer.pin_network({}, pinned(packetFilterHash='new'), status, after_rules))
+        # A changed scope on the same node refuses without the flag, printing what it would accept.
+        with self.assertRaisesRegex(ValueError, '--accept-access-scope') as refused:
+            installer.pin_network(old, pinned(packetFilterHash='new'), status, after_rules)
+        self.assertIn('"sourceDevice": "previews"', str(refused.exception))
+        config = pinned(packetFilterHash='new')
+        accepted = installer.pin_network(old, config, status, after_rules, accept_scope=True)
+        self.assertEqual([(grant['source'], grant['sourceDevice'], grant['destinationDevice']) for grant in accepted['addedGrants']],
+                         [('100.64.0.9/32', 'previews', 'aubrey')])
+        self.assertEqual(accepted['removedGrants'], [])
+        self.assertEqual(config['accessScope'], installer.access_scope(after_rules))
+        # The flag never covers a different node or hostname.
+        for other in (pinned(packetFilterHash='new', nodeId='n2'), pinned(packetFilterHash='new', hostname='other.ts.net'),
+                      pinned(nodeId='n2')):
+            with self.assertRaisesRegex(ValueError, 'network identity'):
+                installer.pin_network(old, other, status, after_rules, accept_scope=True)
+        # A config pinned before access scopes were recorded lists every current grant.
+        legacy = {key: old[key] for key in ('nodeId', 'hostname', 'packetFilterHash')}
+        first = installer.pin_network(legacy, pinned(packetFilterHash='new'), status, after_rules, accept_scope=True)
+        self.assertIn('no earlier record', first['comparison']); self.assertEqual(len(first['allGrants']), 2)
+        # The commit happens under the broker's own lock, against the config that was checked.
+        from channel_identity import broker_lock
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(os.path.realpath(directory)); root.chmod(0o700)
+            atomic(root / 'host-config.json', old)
+            replaced = []
+            installer.commit_under_lock(root, old, config, lambda: replaced.append('first'))
+            self.assertEqual((safe_read(root / 'host-config.json'), replaced), (config, ['first']))
+            with self.assertRaisesRegex(ValueError, 'changed during install'):
+                installer.commit_under_lock(root, old, pinned(packetFilterHash='other'), lambda: replaced.append('stale'))
+            with broker_lock(root):
+                with self.assertRaisesRegex(ValueError, 'busy'):
+                    installer.commit_under_lock(root, config, config, lambda: replaced.append('busy'), wait=0.2)
+            self.assertEqual((safe_read(root / 'host-config.json'), replaced), (config, ['first']))
+
+
 class Fake:
     def __init__(self):
         self.config = {'TCP': {'44443': {'HTTPS': True}}, 'Web': {'test.example.ts.net:44443': {'Handlers': {'/': {'Proxy': 'http://127.0.0.1:39000'}}}}}

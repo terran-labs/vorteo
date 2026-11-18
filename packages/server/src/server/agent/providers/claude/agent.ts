@@ -128,6 +128,7 @@ import {
   acquireClaudeStartSlot,
   claudeDebugLogFile,
   claudeProviderSettling,
+  waitForClaudeRenewal,
 } from "./account-starts.js";
 import { THINKING_APPLIES_NEXT_TURN_NOTICE } from "../../provider-notices.js";
 import {
@@ -3454,6 +3455,21 @@ class ClaudeAgentSession implements AgentSession {
     return claudeProviderSettling(this.childStartedAt);
   }
 
+  /**
+   * Holds a stop of this session's CLI, briefly, while its account is renewing the sign-in. Every
+   * path that ends the CLI waits here first, including the query pump, whose exit makes the SDK
+   * end the process.
+   */
+  private async waitForRenewalBeforeStop(): Promise<void> {
+    const finished = await waitForClaudeRenewal(this.harnessEnvironment);
+    if (!finished) {
+      this.logger.warn(
+        { agentId: this.agentId },
+        "Stopping a Claude process while its account's sign-in renewal lock is still held",
+      );
+    }
+  }
+
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     const runtime: ClaudeClosingRuntime = {
@@ -3483,6 +3499,8 @@ class ClaudeAgentSession implements AgentSession {
       "provider.claude.session_close.start",
     );
     this.closed = true;
+    // Nothing below may end the CLI while its account is mid-renewal.
+    await this.waitForRenewalBeforeStop();
     // Observe native failure immediately, even when history never settles. History
     // still gates replay-state cleanup, so close can remain pending after child exit.
     await Promise.all([
@@ -3991,6 +4009,9 @@ class ClaudeAgentSession implements AgentSession {
   private async retireQuery(): Promise<void> {
     const oldQuery = this.query;
     if (!oldQuery) return;
+    // Wait while everything is still attached, so no second CLI starts beside this one.
+    await this.waitForRenewalBeforeStop();
+    if (this.query !== oldQuery) return;
     const oldInput = this.input;
     // Null out query/input BEFORE awaiting the old iterator's return so the
     // old pump sees this.query !== activeQuery and skips failActiveTurns.
@@ -4845,15 +4866,20 @@ class ClaudeAgentSession implements AgentSession {
         "provider.claude.raw_event",
       );
     };
+    // Leaving the pump makes the SDK end the CLI, so a closed or retired query waits here too.
+    const leavePump = async (): Promise<true> => {
+      await this.waitForRenewalBeforeStop();
+      return true;
+    };
     const handlePumpedMessage = async (message: SDKMessage): Promise<boolean> => {
-      if (!this.ownsQuery(activeQuery)) return true;
+      if (!this.ownsQuery(activeQuery)) return leavePump();
       this.processingSdkMessages++;
       try {
         this.runtimeSafety.observe(message);
         logRawMessage(message);
         consecutiveInterruptAbortRecoveries = 0;
         if (await this.handleMissingResumedConversation(message, activeQuery)) return true;
-        if (!this.ownsQuery(activeQuery)) return true;
+        if (!this.ownsQuery(activeQuery)) return leavePump();
         await this.routeSdkMessageFromPump(message);
         return false;
       } finally {
@@ -5118,8 +5144,12 @@ class ClaudeAgentSession implements AgentSession {
     // Ending the input retires the process on purpose. Detach first so its exit
     // is not reported as a crash.
     const retiredChild = this.childProcess;
+    const retiredInput = this.input;
     this.childProcess = null;
-    this.input?.end();
+    // Wait detached, holding the handles: an exit during the wait is then not a crash, and
+    // nothing started meanwhile is ended in its place.
+    await this.waitForRenewalBeforeStop();
+    retiredInput?.end();
     await this.awaitWithTimeout(
       activeQuery.return?.(),
       "query pump return on missing resumed conversation",

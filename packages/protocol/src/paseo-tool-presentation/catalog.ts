@@ -199,6 +199,23 @@ export const PASEO_TOOL_CATALOG = {
     context: field("modeId"),
     detail: { inputOrder: ["agentId", "modeId"] },
   },
+  switch_agent_profile: {
+    label: "Switch thread account",
+    completedLabel: "Switched thread account",
+    context: targetAgent(),
+    detail: {
+      inputOrder: [
+        "agentId",
+        "workspaceId",
+        "projectId",
+        "sourceProvider",
+        "provider",
+        "profileId",
+        "reason",
+        "dryRun",
+      ],
+    },
+  },
   cancel_agent: {
     label: "Cancel agent",
     completedLabel: "Canceled agent",

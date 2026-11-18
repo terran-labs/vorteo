@@ -12,42 +12,51 @@ export const ProfileSwitchRecordSchema = z.object({
 });
 export type ProfileSwitchRecord = z.infer<typeof ProfileSwitchRecordSchema>;
 
-/**
- * Provider history covers only the current native session, which lives in the
- * current account's home. Everything the thread showed before its latest switch,
- * ending with that switch's marker, is retained here and replayed first.
- */
-export const SwitchHistorySchema = z.object({
-  switchId: z.string(),
-  events: z.array(
-    z.object({
-      timestamp: z.string(),
-      turnId: z.string().optional(),
-      item: AgentTimelineItemPayloadSchema,
-    }),
-  ),
+export const SwitchHistoryEventSchema = z.object({
+  timestamp: z.string(),
+  turnId: z.string().optional(),
+  item: AgentTimelineItemPayloadSchema,
 });
-export type SwitchHistory = z.infer<typeof SwitchHistorySchema>;
+export type SwitchHistoryEvent = z.infer<typeof SwitchHistoryEventSchema>;
 
-export function buildSwitchHistory(
+/**
+ * Provider history covers only the current native session, which lives in the current
+ * account's home. Everything the thread showed before its latest switch, ending with that
+ * switch's marker, is retained and replayed first. Each switch retains only the rows after
+ * the previous switch's marker; earlier rows already live in that switch's segment.
+ */
+export function* selectSwitchSegmentEvents(
   rows: readonly AgentTimelineRow[],
+  previousSwitchId: string | null,
   record: ProfileSwitchRecord,
-): SwitchHistory {
-  const events = rows.map((row) => ({
-    timestamp: row.timestamp,
-    ...(row.turnId ? { turnId: row.turnId } : {}),
-    item: row.item,
-  }));
-  events.push({ timestamp: record.switchedAt, item: record.marker });
-  return { switchId: record.marker.switchId, events };
+): Generator<SwitchHistoryEvent> {
+  let start = 0;
+  if (previousSwitchId !== null) {
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      const item = rows[index].item;
+      if (item.type === "profile_switch" && item.switchId === previousSwitchId) {
+        start = index + 1;
+        break;
+      }
+    }
+  }
+  for (let index = start; index < rows.length; index += 1) {
+    const row = rows[index];
+    yield {
+      timestamp: row.timestamp,
+      ...(row.turnId ? { turnId: row.turnId } : {}),
+      item: row.item,
+    };
+  }
+  yield { timestamp: record.switchedAt, item: record.marker };
 }
 
 export async function* prependSwitchHistory(
-  retained: SwitchHistory | null,
+  retained: AsyncIterable<SwitchHistoryEvent> | Iterable<SwitchHistoryEvent> | null,
   provider: AgentProvider,
   history: AsyncIterable<AgentStreamEvent> | Iterable<AgentStreamEvent>,
 ): AsyncGenerator<AgentStreamEvent> {
-  for (const event of retained?.events ?? []) {
+  for await (const event of retained ?? []) {
     yield {
       type: "timeline",
       provider,

@@ -38,6 +38,7 @@ import { getHostName } from "./host-name.js";
 import { randomUUID } from "node:crypto";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import type { AgentManager, AgentMetricsSnapshot } from "./agent/agent-manager.js";
+import { isQuotaAdmissionRefusal } from "./agent/agent-manager.js";
 import { isRestartHoldError } from "./agent/restart-hold.js";
 import type { AgentStorage } from "./agent/agent-storage.js";
 import type { DownloadTokenStore } from "./file-download/token-store.js";
@@ -818,6 +819,8 @@ export class VoiceAssistantWebSocketServer {
           await waitForAgentRunStartWithTimeout(agentManager, batch.recipientId);
         return disposition;
       },
+      admit: (recipientId) => agentManager.assertNoQuotaLatch(recipientId),
+      isRefusal: isQuotaAdmissionRefusal,
       onError: (err, batch) =>
         isRestartHoldError(err)
           ? this.logger.info(
@@ -2579,6 +2582,8 @@ export class VoiceAssistantWebSocketServer {
         agentConfigApply: true,
         // COMPAT(agentProfileSwitch): added in Vorteo 2026-10, remove gate after 2027-04-22.
         agentProfileSwitch: true,
+        // COMPAT(agentProfileSwitchPreview): added 2026-11-17; retain gate through 2027-05-17.
+        agentProfileSwitchPreview: true,
         // COMPAT(agentProviderRecovery): added in Vorteo 2026-10, remove gate after 2027-04-28.
         agentProviderRecovery: true,
       },

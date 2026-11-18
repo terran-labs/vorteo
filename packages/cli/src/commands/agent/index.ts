@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { addSwitchProfileOptions, runSwitchProfileCommand } from "./switch-profile.js";
 import { runModeCommand } from "./mode.js";
 import { addArchiveOptions, runArchiveCommand } from "./archive.js";
 import { addDeleteOptions, runDeleteCommand } from "./delete.js";
@@ -67,6 +68,10 @@ export function createAgentCommand(): Command {
 
   addJsonAndDaemonHostOptions(addWaitOptions(agent.command("wait"))).action(
     withOutput(runWaitCommand),
+  );
+
+  addJsonAndDaemonHostOptions(addSwitchProfileOptions(agent.command("switch-profile"))).action(
+    withOutput(runSwitchProfileCommand),
   );
 
   // Advanced agent commands (less common operations)

@@ -700,7 +700,7 @@ it.each([
       backgroundColor: theme.colors.surface1,
       borderColor: theme.colors.surface2,
       admonitions: {
-        note: { color: theme.colors.accentBright, backgroundColor: theme.colors.surface2 },
+        note: { color: theme.colors.accentText, backgroundColor: theme.colors.surface2 },
         tip: { color: theme.colors.statusSuccess, backgroundColor: theme.colors.surface2 },
         important: { color: theme.colors.statusMerged, backgroundColor: theme.colors.surface2 },
         warning: { color: theme.colors.statusWarning, backgroundColor: theme.colors.surface2 },
@@ -712,9 +712,9 @@ it.each([
       backgroundColor: theme.colors.surface2,
       borderColor: "transparent",
     });
-    expect(style.link?.color).toBe(theme.colors.accentBright);
+    expect(style.link?.color).toBe(theme.colors.accentText);
     expect(style.linkVariants?.["^(?!https?://).+"]).toEqual({
-      color: theme.colors.accentBright,
+      color: theme.colors.accentText,
     });
     expect(style.thematicBreak?.color).toBe(theme.colors.border);
   },

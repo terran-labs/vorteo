@@ -57,17 +57,17 @@ export function createMarkdownStyles(
         padding: 12,
         gapWidth: 8,
         admonitions: {
-          note: { color: theme.colors.accentBright, backgroundColor: theme.colors.surface2 },
+          note: { color: theme.colors.accentText, backgroundColor: theme.colors.surface2 },
           tip: { color: theme.colors.statusSuccess, backgroundColor: theme.colors.surface2 },
           important: { color: theme.colors.statusMerged, backgroundColor: theme.colors.surface2 },
           warning: { color: theme.colors.statusWarning, backgroundColor: theme.colors.surface2 },
           caution: { color: theme.colors.statusDanger, backgroundColor: theme.colors.surface2 },
         },
       },
-      link: { color: theme.colors.accentBright, underline: false },
+      link: { color: theme.colors.accentText, underline: false },
       linkVariants: {
         "^(?!https?://).+": {
-          color: theme.colors.accentBright,
+          color: theme.colors.accentText,
         },
       },
       code: {

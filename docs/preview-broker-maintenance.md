@@ -118,6 +118,60 @@ managed and manual scope; this is not an assertion about arbitrary same-user
 imports. Participant commitments must cover the execution window and remain
 current. Imported or waiting generations must settle before replacement.
 
+When the pinned Python is a macOS framework launcher,
+`<framework>/Versions/<v>/bin/python<v>`, the executor runs the interpreter that
+launcher re-executes, `<framework>/Versions/<v>/Resources/Python.app/Contents/MacOS/Python`,
+and holds native child custody to that path and its argv. The path comes from the
+pinned, canonical launcher path by that fixed pattern only, never from the
+environment or `PATH`. It must be a canonical, owner-only executable outside
+writable Dev mounts, and its digest must not change during the invocation; if it
+is missing or fails those checks, preparation refuses. Any other interpreter path
+runs as pinned. The worker likewise admits a live broker generation whose argv is
+the binding argv, or the same argv with `argv[0]` replaced by that launcher's
+`Python.app` image, and refuses any other interpreter. A refused preparation
+records the first line of its error in the job detail and the installation log.
+The coordinator uses the existing refusal sanitizer before deriving preparation
+and persistence reasons, removing terminal escapes and control characters and
+limiting text to one line. The requester relies on server-side sanitization of
+these fields and does not sanitize them itself. Local transport error formatting
+is unchanged.
+
+Preparation refuses before recording when admission or compatible readers are
+unavailable. Once recorded, a refused preparation returns the retained failed
+job through the ordinary successful HTTP response; inspect its `status`.
+A concurrent journal write permits one fresh validation attempt only while the
+request itself is unchanged. Both attempts retain full-journal reservations.
+Validation retries never approve a request or replay native deployment effects.
+The fresh reservation belongs only to that preparation attempt. New preparation,
+owner decisions and dispatch refuse if disk differs from the coordinator's
+evaluated snapshot. After a preparation-only refresh, the coordinator retains
+only the outcome it durably wrote for that same request, so later ordinary queue
+writes preserve its prepared state or failure reason. It does not adopt another
+writer's records, decisions or revisions. Deployment writes do not refresh other
+lifecycle queues.
+Status and same-identity resubmission read retained receipts without advancing
+that snapshot or admitting subsequent work.
+
+Failure bookkeeping uses the existing locked journal mutation and admission
+checks. It changes only the same pending, preparing request revision and exact
+plan to failed, preserving other records and competing lifecycle decisions.
+Repeating the same identity returns its retained state without preparing again;
+a changed reason or plan requires a new identity.
+
+If failure bookkeeping cannot persist, the HTTP error retains `error` and adds
+`code: "deployment_preparation_persistence_uncertain"`,
+`outcome: "recorded_uncertain"`, `requestId`, `preparationReason` and
+`persistenceReason`. These are optional error-response additions; successful job
+shapes and WebSocket schemas are unchanged. The scoped client directs you to
+`broker-deployment-status ID`. A retained preparing record after this error is
+unresolved. Resubmission reports it without repairing it or retrying native work.
+If another writer removed the request during bookkeeping, this response still
+reports persistence uncertainty; status may report no retained request.
+Legacy ordinary queue writes can still overwrite other writers' records; this
+repair only prevents reversion of the owned deployment outcome.
+Participant-scope replacement remains a separate operation and is not supplied
+by this repair.
+
 Dispatch records child intent before a single spawn. An inherited private channel
 rechecks coordinator configuration, protected artifacts, full queue reservation
 and native child identity before each native boundary. The worker disables the
@@ -141,7 +195,10 @@ any effect. A plan without the field means refusing.
   digest covers only the config and installed marker, and it pins no scheduler
   process generation. The worker takes the full inventory baseline after
   suppression; under the broker locks the inventory must still equal it exactly,
-  and it is compared across the commit window as in refusing mode.
+  and it is compared across the commit window as in refusing mode. Once the
+  broker runs again, its ledger, inbox, receipts and origins are its own working
+  state, so after restore the worker compares only the committed consumer files
+  and the config and installed marker, which no broker run writes.
 
 Both modes compare the approved preservation digest before any native effect, so
 a wrong mode or stale preparation refuses while the brokers still run.
@@ -166,7 +223,24 @@ Coordinators older than the release that added the `admission` field cannot pars
 a journal containing it. Once a deployment with that field has run, rolling the
 coordinator or Host back below that release is not supported. Lost replies retain uncertainty. After a lost reply or any file
 write, recovery reads evidence and native state without replaying commands,
-replacing files or automatically restoring registrations.
+replacing files or automatically restoring registrations. Before re-enabling any broker, the worker records `window-verified.json`: the
+full end-of-window preservation report, bound to the plan and to `commit.json`.
+The final receipt carries its digest.
+
+Recovery can confirm a run that committed and restored but never wrote its final
+receipt, in refusing and running mode alike. Every per-file intent and
+acknowledgement must match `commit.json`, every suppression and restoration
+effect must be acknowledged for this plan, and the same post-restore checks must
+pass: the full live comparison for a refusing broker, and committed files, config
+and installed marker for a running one. A run whose `admission.json` carries
+`evidenceVersion` 2 must also have a consistent `window-verified.json`. A run
+without that marker was made by a worker that never wrote the window record; for
+it, `commit.json`, written only after the under-lock preservation check, stands
+for the window check. What refuses an aborted run is the missing evidence: an
+abort before the first write leaves no `commit.json`, and one after it leaves no
+restoration acknowledgements. Abort records are best-effort and are not written
+once replacement has begun, so their absence proves nothing. That confirmation
+writes nothing.
 The client commands are `request-broker-consumer-deployment --request-file` and
 `broker-deployment-status ID`. Submission requires the configured capability;
 exact approval remains separate. Source validation is not installed availability.

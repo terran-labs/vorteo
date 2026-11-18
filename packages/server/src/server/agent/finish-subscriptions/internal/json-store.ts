@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { writeJsonFileAtomic } from "../../../atomic-file.js";
 import type { FinishSubscription, FinishSubscriptionStore } from "../index.js";
+import type { FinishObservationResult } from "./observation-buffer.js";
 
 const recordsSchema = z.array(
   z.object({
@@ -11,6 +12,13 @@ const recordsSchema = z.array(
     childAgentId: z.string().min(1),
     serverId: z.string().min(1).optional(),
     requireParentOwnership: z.boolean().optional(),
+    notRunningNoticeSent: z.boolean().optional(),
+    // Delivered back as observed; the daemon wrote it, so only its shape is checked here.
+    captured: z
+      .custom<FinishObservationResult>(
+        (value) => typeof value === "object" && value !== null && "status" in value,
+      )
+      .optional(),
   }),
 );
 

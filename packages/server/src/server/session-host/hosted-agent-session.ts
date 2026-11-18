@@ -166,8 +166,11 @@ export interface HostedAgentSessionOptions {
    * until that history has been read, so no row appears twice.
    */
   rebuild?: { throughSeq: number; lossy: boolean };
-  /** Called once when the host no longer runs the session, so the agent can continue elsewhere. */
-  onLost?(): void;
+  /**
+   * Called once when the host no longer runs the session, with what the end of its provider
+   * process interrupted, so the agent continues only when it had work in progress.
+   */
+  onLost?(loss: HostedSessionLoss, reason: HostedSessionLossReason): void;
   logger: Logger;
 }
 
@@ -222,6 +225,35 @@ function goalIntent(args: string): "goal" | undefined {
  * them. Deliberately absent: initialTimeline, quota observation and admission guards; quota-governed
  * sessions are never opened in the host.
  */
+/**
+ * What a session's provider process was doing when its host ended: running a turn or waiting on a
+ * permission, idle with background work (a background shell, monitor or subagent meant to wake
+ * the agent) that died with it, or idle with nothing to continue.
+ */
+export type HostedSessionLoss = "turn" | "background" | "idle";
+
+/** Why a loss was classified as it was, for the log line that reports the agent's recovery. */
+export type HostedSessionLossReason =
+  | "turn_in_flight"
+  | "permission_pending"
+  | "turn_call_cut"
+  | "background_work"
+  | "no_cached_answer"
+  | "nothing_in_progress";
+
+/**
+ * How long after a turn ends the provider is asked whether it holds background work. A provider
+ * still settling its turn's messages answers that it cannot stop, which would read as work.
+ */
+const BACKGROUND_CHECK_DELAY_MS = 3_000;
+
+/** Calls that start or continue a turn before the host reports it. */
+const TURN_CALLS: ReadonlySet<SessionHostMethod> = new Set([
+  "startTurn",
+  "steerActiveTurn",
+  "respondToPermission",
+]);
+
 export class HostedAgentSession implements AgentSession {
   readonly provider: string;
   /** Goal state and commands, present only when the hosted session supports goals. */
@@ -260,6 +292,19 @@ export class HostedAgentSession implements AgentSession {
   private persistenceView: AgentPersistenceHandle | null = null;
   /** Delivers held live events if the rebuilt history is never read or never applied. */
   private releaseTimer: NodeJS.Timeout | null = null;
+  /**
+   * The host's last answer to whether stopping the provider would lose background work, cached
+   * because a host that ended can no longer be asked. Null until the host has answered.
+   */
+  private backgroundWork: boolean | null = null;
+  /** Set when this worker saw a turn start in the current provider process. */
+  private turnSeen = false;
+  /**
+   * Set when the connection ended under a call that starts or continues a turn. Its turn may have
+   * begun in the provider before the host could report it, so a loss now counts as a turn.
+   */
+  private turnCallCut = false;
+  private backgroundCheckTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly options: HostedAgentSessionOptions) {
     this.provider = options.provider;
@@ -276,6 +321,9 @@ export class HostedAgentSession implements AgentSession {
     this.bind(options.channel);
     if (this.liveHeld)
       this.armRelease(REBUILD_UNREAD_RELEASE_MS, "Hosted history was not read in time");
+    // A session taken over from another worker may have run turns this worker never saw; the
+    // host's answer covers them, since its check counts every turn of the provider process.
+    if (options.rebuild) this.scheduleBackgroundCheck(0);
   }
 
   get id(): string | null {
@@ -397,6 +445,7 @@ export class HostedAgentSession implements AgentSession {
     // Not required, since the next attach fences this one, but it puts the handoff in the audit log.
     if (wasAttached) this.channel.release();
     this.clearReleaseTimer();
+    this.clearBackgroundCheck();
     this.subscribers.clear();
     this.held = [];
   }
@@ -730,7 +779,15 @@ export class HostedAgentSession implements AgentSession {
     if (status === "lost") throw new StaleProviderSessionError(this.snapshot.id ?? "hosted");
     if (status === "reattaching") throw new HostedSessionReconnectingError();
     if (status !== "attached") throw new HostedSessionUnavailableError(status);
-    const value = await this.channel.call(call);
+    let value: JsonValue;
+    try {
+      value = await this.channel.call(call);
+    } catch (error) {
+      // The connection detaches this session before its pending calls settle, so a call cut by
+      // the host's end sees a status other than attached here.
+      if (TURN_CALLS.has(call.method) && this.status !== "attached") this.turnCallCut = true;
+      throw error;
+    }
     const result = parseCallResult(call.method as M, value);
     if (!result.success) throw new HostedSessionResultError(call.method);
     return result.data;
@@ -745,7 +802,65 @@ export class HostedAgentSession implements AgentSession {
   }
 
   private accept(value: JsonValue, seq: number): void {
-    this.emit(this.interpret(value, seq), seq);
+    const event = this.interpret(value, seq);
+    if (event?.type === "turn_started") {
+      this.turnSeen = true;
+      // The turn may start background work, so the answer from before it no longer holds.
+      this.backgroundWork = null;
+      this.clearBackgroundCheck();
+    } else if (
+      event?.type === "turn_completed" ||
+      event?.type === "turn_failed" ||
+      event?.type === "turn_canceled"
+    )
+      this.scheduleBackgroundCheck(BACKGROUND_CHECK_DELAY_MS);
+    this.emit(event, seq);
+  }
+
+  /**
+   * Refreshes the cached background work answer. Background work starts only during a turn, so
+   * asking after each turn ends keeps the answer current; work that ends on its own wakes the
+   * agent with another turn, which asks again. A host without the check leaves it unknown.
+   */
+  private scheduleBackgroundCheck(delayMs: number): void {
+    this.clearBackgroundCheck();
+    this.backgroundCheckTimer = setTimeout(() => {
+      this.backgroundCheckTimer = null;
+      void this.refreshBackgroundWork();
+    }, delayMs);
+    this.backgroundCheckTimer.unref();
+  }
+
+  private async refreshBackgroundWork(): Promise<void> {
+    const check = this.status === "attached" ? this.canStopRuntime : undefined;
+    if (!check) return;
+    try {
+      this.backgroundWork = !(await check());
+    } catch {
+      // Unanswered, as when the host is ending: unknown, so a session that ran a turn continues.
+      this.backgroundWork = null;
+    }
+  }
+
+  private clearBackgroundCheck(): void {
+    if (this.backgroundCheckTimer) clearTimeout(this.backgroundCheckTimer);
+    this.backgroundCheckTimer = null;
+  }
+
+  /**
+   * A turn or permission in flight was interrupted. Otherwise the last answer decides; a session
+   * the host never answered for counts as having background work only if this worker saw it run
+   * a turn, so sessions merely loaded for reading are released without a prompt.
+   */
+  private lossKind(): { loss: HostedSessionLoss; reason: HostedSessionLossReason } {
+    if (this.snapshot.activeTurnId) return { loss: "turn", reason: "turn_in_flight" };
+    if (this.snapshot.pendingPermissions.length > 0)
+      return { loss: "turn", reason: "permission_pending" };
+    if (this.turnCallCut) return { loss: "turn", reason: "turn_call_cut" };
+    if (this.backgroundWork === true) return { loss: "background", reason: "background_work" };
+    if (this.backgroundWork === null && this.turnSeen)
+      return { loss: "background", reason: "no_cached_answer" };
+    return { loss: "idle", reason: "nothing_in_progress" };
   }
 
   /** Applies state entries to the mirror and turns everything else into an event, or nothing. */
@@ -946,6 +1061,8 @@ export class HostedAgentSession implements AgentSession {
       this.snapshot = HostedSessionSnapshotSchema.parse(next.channel.attach.snapshot);
       this.snapshotSeq = next.channel.attach.lastSeq;
       this.status = "attached";
+      // The host kept the session, so its snapshot reports any turn the cut call started.
+      this.turnCallCut = false;
       this.bind(next.channel);
       if (next.lossy) this.emit(this.lossyNotice(), null);
       if (this.interruptPending) {
@@ -1031,19 +1148,22 @@ export class HostedAgentSession implements AgentSession {
   }
 
   /**
-   * The provider process ended with its host. Like a restart, the turn is canceled here and the
-   * agent continues from a queued continuation on a fresh session. The applied record stays until
+   * The provider process ended with its host. Like a restart, the turn is canceled here, and an
+   * agent with work in progress continues from a queued continuation on a fresh session. The applied record stays until
    * the agent moves to that session, so a worker that stops first leaves it for the next startup.
    */
   private markLost(): void {
+    // Read before releaseTurn clears the turn and permissions it reports.
+    const { loss, reason } = this.lossKind();
     this.status = "lost";
+    this.clearBackgroundCheck();
     this.releaseTurn({
       type: "turn_canceled",
       provider: this.provider,
       reason: "The session host stopped. This task continues from a queued continuation.",
     });
     try {
-      this.options.onLost?.();
+      this.options.onLost?.(loss, reason);
     } catch (error) {
       this.options.logger.warn({ err: error }, "Hosted session loss handler threw");
     }

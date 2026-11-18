@@ -170,20 +170,40 @@ test("explicit interrupt and conflicting session modes retain ordered dispatch b
   ]);
 });
 
-test("dispatch failures reject waits before and after flush and do not poison later messages", async () => {
+test("dispatch failures reject waits, report the refusal to the sender, and do not poison later messages", async () => {
   const clock = createClock();
-  const failed = new Error("provider rejected");
+  const failed = new Error("Quota exhausted. This task is paused.");
   const errors: unknown[] = [];
+  const sent: Array<{ recipientId: string; prompt: AgentPromptInput }> = [];
   const delivery = createAgentMessageDelivery({
     schedule: clock.schedule,
     dispatch: async (request) => {
       if (request.messageIds.includes("bad")) throw failed;
+      if (request.messageIds.includes("slow")) {
+        // The provider has the prompt; only the run-start wait failed afterwards.
+        request.onDispatch("turn_started");
+        throw new Error("Timed out waiting for the run to start");
+      }
+      sent.push(request);
       return "steered";
     },
     onError: (error) => {
       errors.push(error);
     },
+    // Every failure counts as a refusal here, so only the handoff decides what is reported.
+    isRefusal: () => true,
+    admit: (recipientId) => {
+      if (recipientId === "latched") throw new Error("Quota exhausted.");
+    },
   });
+  // A recipient known to be paused refuses at send time instead of returning a queued receipt.
+  expect(() =>
+    delivery.enqueue({
+      recipientId: "latched",
+      source: { kind: "agent-message", agentId: "worker" },
+      prompt: "report",
+    }),
+  ).toThrow("Quota exhausted.");
   const message = {
     recipientId: "parent",
     source: { kind: "agent-message" as const, agentId: "worker" },
@@ -198,10 +218,23 @@ test("dispatch failures reject waits before and after flush and do not poison la
     delivery.waitForDispatch("parent", new AbortController().signal),
   ).rejects.toBe(failed);
   await Promise.all([before, after, expect(bad.dispatched).rejects.toBe(failed)]);
+  const slow = delivery.enqueue({ ...message, recipientId: "sibling", messageId: "slow" });
+  clock.advance(2000);
+  await expect(slow.dispatched).rejects.toThrow("Timed out");
   const next = delivery.enqueue({ ...message, messageId: "next" });
   await delivery.close();
   await expect(next.dispatched).resolves.toBe("steered");
-  expect(errors).toEqual([failed]);
+  expect(errors).toEqual([failed, expect.any(Error)]);
+  // Only the refusal before handoff is reported; the handed-off "slow" message is not.
+  expect(sent.filter((request) => request.recipientId === "worker")).toHaveLength(1);
+  const report = sent.find((request) => request.recipientId === "worker");
+  expect(parseAgentMessages(String(report?.prompt))).toEqual([
+    {
+      id: expect.any(String),
+      source: { kind: "agent-notification", agentId: "parent", event: "errored" },
+      text: "Your message bad was not delivered. Quota exhausted. This task is paused.",
+    },
+  ]);
 });
 
 test("canceling a completion wait leaves queued delivery intact", async () => {

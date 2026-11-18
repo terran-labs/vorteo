@@ -67,13 +67,18 @@ class MemoryJournal implements RestartJournal {
 class CanonicalLifecycleJournal implements RestartJournal {
   jobs: LifecycleJob[] = [];
   failWrite = false;
+  writeFailure = "disk unavailable";
 
   read(): LifecycleJob[] {
     return structuredClone(this.jobs);
   }
 
+  mutate(update: (previous: readonly LifecycleJob[]) => LifecycleJob[]): void {
+    this.write(update(this.read()));
+  }
+
   write(jobs: LifecycleJob[]): void {
-    if (this.failWrite) throw new Error("disk unavailable");
+    if (this.failWrite) throw new Error(this.writeFailure);
     this.jobs = lifecycleJournal.parseLifecycleJournal(jobs);
   }
 }
@@ -162,6 +167,7 @@ async function brokerDeploymentJournal(storage: "memory" | "file") {
     const journal: RestartJournal = {
       read: () => file.readLifecycle(),
       write: (jobs) => file.writeLifecycle(jobs),
+      mutate: (update) => file.mutateLifecycle(update, undefined),
     };
     return {
       journal,
@@ -173,6 +179,57 @@ async function brokerDeploymentJournal(storage: "memory" | "file") {
     throw error;
   }
 }
+
+test.each(["dispatch", "decision", "prepare"] as const)(
+  "broker deployment refuses %s when a foreign writer changes evaluated coordinator state",
+  async (operation) => {
+    const journal = new CanonicalLifecycleJournal();
+    const brokerDeployment = inertBrokerDeploymentExecutor();
+    const queue = new InstallationRestarts(journal, {
+      restart: async () => "unexpected restart",
+      brokerDeployment,
+    });
+    const input = brokerDeploymentPreparation();
+    const prepared = await queue.prepareBrokerDeployment(input, "host-agent");
+    const decision = {
+      operation: input.plan.operation,
+      id: prepared.id,
+      revision: prepared.revision,
+      planSha256: prepared.planSha256,
+      decision: "approve",
+    };
+    if (operation === "dispatch") queue.decideBrokerDeployment(decision);
+    const foreign = RestartJobSchema.parse({
+      id: randomUUID(),
+      revision: randomUUID(),
+      target: "host",
+      requestedBy: "owner",
+      reason: "Wait for current turns",
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      status: "pending",
+      finishCurrentTurns: true,
+      detail: "Foreign writer adds a dispatch fence",
+    });
+    journal.mutate((previous) => [...previous, foreign]);
+    const retained = journal.read();
+    expect(queue.listBrokerDeployments()).toEqual(
+      retained.filter((job) => job.target === "preview-broker-deployment"),
+    );
+    const refusal = { code: "deployment_reservation_changed" };
+    if (operation === "dispatch") await expect.soft(queue.drain()).rejects.toMatchObject(refusal);
+    else if (operation === "decision")
+      expect
+        .soft(() => queue.decideBrokerDeployment(decision))
+        .toThrowError(expect.objectContaining(refusal));
+    else
+      await expect
+        .soft(queue.prepareBrokerDeployment(brokerDeploymentPreparation(), "host-agent"))
+        .rejects.toMatchObject(refusal);
+    expect.soft(journal.read()).toEqual(retained);
+    expect(brokerDeployment.executeBrokerDeployment).not.toHaveBeenCalled();
+  },
+);
 
 test.each([
   { storage: "memory", rejected: false, status: "pending", stage: "prepared" },
@@ -217,7 +274,7 @@ test.each([
   },
 );
 
-test("broker deployment snapshot rejects a genuine second file journal writer", async () => {
+test("broker deployment records failure without losing a genuine second writer metadata change", async () => {
   const directory = await realpath(await mkdtemp(path.join(tmpdir(), "deployment-conflict-")));
   try {
     await chmod(directory, 0o700);
@@ -226,6 +283,7 @@ test("broker deployment snapshot rejects a genuine second file journal writer", 
     const journal: RestartJournal = {
       read: () => file.readLifecycle(),
       write: (jobs) => file.writeLifecycle(jobs),
+      mutate: (update) => file.mutateLifecycle(update, undefined),
     };
     let resumeValidation!: () => void;
     const paused = new Promise<void>((resolve) => {
@@ -244,10 +302,10 @@ test("broker deployment snapshot rejects a genuine second file journal writer", 
       restart: async () => "unexpected restart",
       brokerDeployment,
     });
-    const preparing = queue.prepareBrokerDeployment(brokerDeploymentPreparation(), "host-agent");
-    const refused = expect(preparing).rejects.toThrow(
-      "Full installation journal reservation changed",
-    );
+    const record = vi.fn();
+    queue.setOperationalActivitySink({ record, recordDropped: vi.fn() });
+    const input = brokerDeploymentPreparation();
+    const preparing = queue.prepareBrokerDeployment(input, "host-agent");
     try {
       await validationStarted;
       secondWriter.mutateLifecycle(
@@ -258,8 +316,16 @@ test("broker deployment snapshot rejects a genuine second file journal writer", 
       resumeValidation();
     }
     const competing = secondWriter.readLifecycle();
-    await refused;
-    expect(new FileBootstrapRequestJournal(directory).readLifecycle()).toEqual(competing);
+    const result = await preparing;
+    expect(result).toMatchObject({ status: "failed", stage: "preparing" });
+    expect(record.mock.calls.map(([event]) => event.phase)).toEqual(["pending", "failed"]);
+    expect(result.detail).toContain("Changed by a second writer");
+    expect({ ...result, status: competing[0].status, detail: competing[0].detail }).toEqual(
+      competing[0],
+    );
+    expect(new FileBootstrapRequestJournal(directory).readLifecycle()).toEqual([result]);
+    expect(await queue.prepareBrokerDeployment(input, "host-agent")).toEqual(result);
+    expect(brokerDeployment.validateBrokerDeploymentPlan).toHaveBeenCalledTimes(1);
     expect(competing).toHaveLength(1);
     expect(competing[0].detail).toBe("Changed by a second writer");
     expect(brokerDeployment.executeBrokerDeployment).not.toHaveBeenCalled();
@@ -267,6 +333,210 @@ test("broker deployment snapshot rejects a genuine second file journal writer", 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test.each([
+  { storage: "memory", outcome: "retry" },
+  { storage: "memory", outcome: "validation-failed" },
+  { storage: "memory", outcome: "retry-conflict" },
+  { storage: "file", outcome: "retry" },
+  { storage: "file", outcome: "validation-failed" },
+] as const)(
+  "broker preparation preserves another writer with $storage and $outcome",
+  async ({ storage, outcome }) => {
+    const f = await brokerDeploymentJournal(storage);
+    try {
+      let resume!: () => void;
+      let started!: () => void;
+      const paused = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      const validating = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const executor = inertBrokerDeploymentExecutor();
+      let attempts = 0;
+      vi.mocked(executor.validateBrokerDeploymentPlan).mockImplementation(async () => {
+        attempts++;
+        if (attempts === 1) {
+          started();
+          await paused;
+          if (outcome === "validation-failed") throw new Error("candidate_invalid");
+        } else if (outcome === "retry-conflict") {
+          f.journal.mutate!((previous) => {
+            const next: LifecycleJob[] = [];
+            for (const job of previous)
+              next.push(
+                job.id === unrelated.id ? { ...job, detail: "Second concurrent write" } : job,
+              );
+            return next;
+          });
+        }
+      });
+      const unrelated = RestartJobSchema.parse({
+        id: randomUUID(),
+        revision: randomUUID(),
+        target: "host",
+        requestedBy: "owner",
+        reason: "Unrelated writer",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        createdAt: new Date().toISOString(),
+        status: "rejected",
+        detail: "Retain this writer",
+      });
+      const queue = new InstallationRestarts(f.journal, {
+        restart: async () => "unexpected",
+        brokerDeployment: executor,
+      });
+      const input = brokerDeploymentPreparation();
+      const preparing = queue.prepareBrokerDeployment(input, "host-agent");
+      await validating;
+      f.journal.mutate!((previous) => [...previous, unrelated]);
+      resume();
+      const result = await preparing;
+      expect(result.status).toBe(outcome === "retry" ? "pending" : "failed");
+      expect(result.stage).toBe(outcome === "retry" ? "prepared" : "preparing");
+      expect(result.approvedAt).toBeUndefined();
+      expect(attempts).toBe(outcome === "validation-failed" ? 1 : 2);
+      const expectedOther =
+        outcome === "retry-conflict"
+          ? { ...unrelated, detail: "Second concurrent write" }
+          : unrelated;
+      expect(f.reopen()).toEqual([result, expectedOther]);
+      expect(await queue.prepareBrokerDeployment(input, "host-agent")).toEqual(result);
+      expect(queue.list()).toEqual([]);
+      for (const decision of ["approve", "cancel"] as const) {
+        const decide = () =>
+          queue.decideBrokerDeployment({
+            operation: result.operation,
+            id: result.id,
+            revision: result.revision,
+            planSha256: result.planSha256,
+            decision,
+          });
+        if (outcome === "retry")
+          expect(decide).toThrowError(
+            expect.objectContaining({ code: "deployment_reservation_changed" }),
+          );
+        else
+          expect(decide).toThrowError(expect.objectContaining({ name: "BrokerDeploymentRefused" }));
+      }
+      expect(f.reopen()).toEqual([result, expectedOther]);
+      expect(executor.executeBrokerDeployment).not.toHaveBeenCalled();
+      await expect(
+        queue.prepareBrokerDeployment({ ...input, reason: "Different work" }, "host-agent"),
+      ).rejects.toThrow();
+    } finally {
+      await f.cleanup();
+    }
+  },
+);
+
+test.each(["failed", "prepared"] as const)(
+  "ordinary queue writes retain the owned %s preparation outcome",
+  async (outcome) => {
+    const journal = new CanonicalLifecycleJournal();
+    const executor = inertBrokerDeploymentExecutor();
+    let resume!: () => void;
+    let started!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const validating = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    vi.mocked(executor.validateBrokerDeploymentPlan).mockImplementationOnce(async () => {
+      started();
+      await paused;
+      if (outcome === "failed") throw new Error("candidate_invalid");
+    });
+    const queue = new InstallationRestarts(journal, {
+      restart: async () => "unexpected",
+      brokerDeployment: executor,
+    });
+    const input = brokerDeploymentPreparation();
+    const preparing = queue.prepareBrokerDeployment(input, "host-agent");
+    await validating;
+    journal.mutate((previous) => [
+      ...previous,
+      RestartJobSchema.parse({
+        id: randomUUID(),
+        revision: randomUUID(),
+        target: "host",
+        requestedBy: "owner",
+        reason: "Foreign writer",
+        detail: "Foreign restart fence",
+        status: "pending",
+        finishCurrentTurns: true,
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    ]);
+    resume();
+    const result = await preparing;
+    expect(result).toMatchObject({
+      status: outcome === "failed" ? "failed" : "pending",
+      stage: outcome === "failed" ? "preparing" : "prepared",
+    });
+    if (outcome === "failed")
+      expect(result.detail).toBe("Consumer preparation refused: candidate_invalid");
+    queue.request({ target: "host", reason: "Ordinary queue write" }, "owner");
+    expect(journal.read().find((job) => job.id === input.id)).toEqual(result);
+    expect(queue.listBrokerDeployments()).toEqual([result]);
+    expect(executor.executeBrokerDeployment).not.toHaveBeenCalled();
+  },
+);
+
+test.each(["cancel", "revision", "persistence"] as const)(
+  "preparation preserves competing %s outcomes",
+  async (change) => {
+    const journal = new CanonicalLifecycleJournal();
+    const executor = inertBrokerDeploymentExecutor();
+    const queue = new InstallationRestarts(journal, {
+      restart: async () => "unexpected",
+      brokerDeployment: executor,
+    });
+    vi.mocked(executor.validateBrokerDeploymentPlan).mockImplementation(async () => {
+      if (change === "persistence") {
+        journal.failWrite = true;
+        journal.writeFailure = "\u001b[31mdisk unavailable\u001b[0m\nprivate persistence detail";
+      } else
+        journal.mutate((previous) => {
+          const next: LifecycleJob[] = [];
+          for (const job of previous)
+            next.push(
+              change === "cancel"
+                ? { ...job, status: "rejected" }
+                : { ...job, revision: randomUUID() },
+            );
+          return next;
+        });
+      throw new Error("\u001b[31mcandidate_invalid\u001b[0m\nprivate preparation detail");
+    });
+    const input = brokerDeploymentPreparation();
+    if (change === "persistence") {
+      await expect(queue.prepareBrokerDeployment(input, "host-agent")).rejects.toMatchObject({
+        code: "deployment_preparation_persistence_uncertain",
+        outcome: "recorded_uncertain",
+        requestId: input.id,
+        preparationReason: "candidate_invalid",
+        persistenceReason: "disk unavailable",
+      });
+      expect(journal.read()[0]).toMatchObject({
+        id: input.id,
+        status: "pending",
+        stage: "preparing",
+      });
+    } else {
+      const result = await queue.prepareBrokerDeployment(input, "host-agent");
+      expect(journal.read()).toEqual([result]);
+      expect(result.status).toBe(change === "cancel" ? "rejected" : "pending");
+    }
+    const retained = journal.read()[0];
+    expect(await queue.prepareBrokerDeployment(input, "host-agent")).toEqual(retained);
+    expect(executor.validateBrokerDeploymentPlan).toHaveBeenCalledTimes(1);
+    expect(executor.executeBrokerDeployment).not.toHaveBeenCalled();
+  },
+);
 
 test("broker deployment snapshot advances only after a successful journal write", async () => {
   const journal = new CanonicalLifecycleJournal();

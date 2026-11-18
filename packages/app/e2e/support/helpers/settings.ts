@@ -276,7 +276,11 @@ export async function openSettingsEnvironment(page: Page, serverId: string): Pro
   const details = settingsEnvironmentDetails(page, serverId);
   if (await details.isVisible()) return;
   await closeSettingsDialog(page);
-  await page.getByTestId(`settings-environment-row-${serverId}-open`).click();
+  await page
+    .getByTestId("settings-scroll-page")
+    .filter({ visible: true })
+    .getByTestId(`settings-environment-row-${serverId}-open`)
+    .click();
   await expect(details).toBeVisible();
 }
 
@@ -286,9 +290,10 @@ export async function openSettingsEnvironment(page: Page, serverId: string): Pro
  */
 export async function openSettingsEnvironmentExceptions(page: Page, serverId: string) {
   await openSettingsEnvironment(page, serverId);
-  const toggle = page.getByTestId(`settings-environment-exceptions-${serverId}-toggle`);
+  const details = settingsEnvironmentDetails(page, serverId);
+  const toggle = details.getByTestId(`settings-environment-exceptions-${serverId}-toggle`);
   if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
-  return settingsEnvironmentDetails(page, serverId);
+  return details;
 }
 
 /** One environment's full settings, inside its Edit dialog. */

@@ -1,6 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { z } from "zod";
-import { readValidatedJson } from "@/storage/validated-storage";
+import { readValidatedJson, type ValidatedStorage } from "@/storage/validated-storage";
 import type { GuideStorage } from "./model";
 
 const recordSchema = z.object({
@@ -15,9 +15,17 @@ export function guideStorageKey(installationId: string): string {
   return `@vorteo:setup:v1:${encodeURIComponent(installationId)}`;
 }
 
-export const guideStorage: GuideStorage = {
-  read: (installationId) =>
-    readValidatedJson(AsyncStorage, guideStorageKey(installationId), recordSchema),
-  write: (installationId, record) =>
-    AsyncStorage.setItem(guideStorageKey(installationId), JSON.stringify(record)),
-};
+interface GuideStorageBackend extends ValidatedStorage {
+  setItem(key: string, value: string): Promise<void>;
+}
+
+export function createGuideStorage(backend: GuideStorageBackend): GuideStorage {
+  return {
+    read: (installationId) =>
+      readValidatedJson(backend, guideStorageKey(installationId), recordSchema),
+    write: (installationId, record) =>
+      backend.setItem(guideStorageKey(installationId), JSON.stringify(record)),
+  };
+}
+
+export const guideStorage: GuideStorage = createGuideStorage(AsyncStorage);

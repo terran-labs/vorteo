@@ -16,7 +16,11 @@ import {
   assertBootstrapPathsProtected,
 } from "./coordinator-bootstrap-artifact.js";
 import { createNativeBootstrapServiceReader } from "./coordinator-bootstrap-service.js";
-import { monitorCommand, verifyExecutable } from "./preview-monitor-executor.js";
+import {
+  digestProtectedExecutable,
+  monitorCommand,
+  verifyExecutable,
+} from "./preview-monitor-executor.js";
 import { InstallationConfigSchema, type InstallationConfig } from "./config.js";
 import { parseLifecycleJournal } from "./lifecycle-journal.js";
 import type { BrokerDeploymentExecutor } from "./preview-broker-deployment-workflow.js";
@@ -34,6 +38,22 @@ interface Context {
   configurationFile: { path: string; sha256: string };
   assertActive(): void;
   writableMountRoots(): Promise<readonly string[]>;
+}
+
+/**
+ * macOS framework builds install `<framework>/Versions/<v>/bin/python<v>` as a launcher
+ * that re-executes `<framework>/Versions/<v>/Resources/Python.app/Contents/MacOS/Python`
+ * with that path as argv[0]. Native custody observes the re-executed image, so the
+ * executor spawns it directly. The path is derived from the pinned, canonical launcher
+ * by this fixed pattern alone: no environment, PATH or symlink lookup. Any other
+ * interpreter path runs unchanged.
+ */
+const FRAMEWORK_LAUNCHER =
+  /^(\/(?:[^/]+\/)*Python\.framework\/Versions\/([0-9]+\.[0-9]+))\/bin\/python\2$/;
+
+export function frameworkInterpreterPath(launcher: string): string | null {
+  const match = FRAMEWORK_LAUNCHER.exec(launcher);
+  return match ? `${match[1]}/Resources/Python.app/Contents/MacOS/Python` : null;
 }
 
 /** Fixed native operation. Production assembly never supplies permissive test ports. */
@@ -65,6 +85,7 @@ export function createPreviewBrokerDeploymentExecutor(context: Context): BrokerD
     const read = (pin: { path: string; sha256: string }) => readBootstrapPreparedFile(pin, roots);
     await read(context.configurationFile);
     await verifyExecutable(configuration.python, roots);
+    const interpreter = await runningInterpreter(roots);
     await verifyExecutable(configuration.recovery.node, roots);
     await read(configuration.nativeInspector);
     for (const pin of [
@@ -103,7 +124,22 @@ export function createPreviewBrokerDeploymentExecutor(context: Context): BrokerD
         for (const file of Object.values(target.files)) await read(file.candidate);
     }
     context.assertActive();
-    return { roots, scope, worker, modules };
+    return { roots, scope, worker, modules, interpreter };
+  }
+
+  /**
+   * The executable the deployment child actually runs. A framework launcher's target
+   * carries no configured pin, but the pinned launcher would execute that same fixed
+   * relative path, so it gets the same protection checks (canonical, owner-only,
+   * outside writable mounts) plus a digest taken here that every later recheck within
+   * the invocation must match. A missing or unprotected target refuses; there is no
+   * fallback to the launcher.
+   */
+  async function runningInterpreter(roots: readonly string[]) {
+    const derived = frameworkInterpreterPath(configuration.python.path);
+    if (!derived) return configuration.python;
+    // Protection checks come before any read, on one no-follow, non-blocking descriptor.
+    return { path: derived, sha256: await digestProtectedExecutable(derived, roots) };
   }
 
   async function verifyEvidenceDirectory(plan: PreviewBrokerDeploymentPlan) {
@@ -144,6 +180,15 @@ export function createPreviewBrokerDeploymentExecutor(context: Context): BrokerD
   ) {
     assertReservation();
     const prepared = await protectedInputs(plan, operation === "observe");
+    const { interpreter } = prepared;
+    const recheck = async () => {
+      const again = await protectedInputs(plan, operation === "observe");
+      if (
+        again.interpreter.path !== interpreter.path ||
+        again.interpreter.sha256 !== interpreter.sha256
+      )
+        throw Error("Deployment interpreter changed");
+    };
     assertReservation();
     const reader = await createNativeBootstrapServiceReader({
       helperPath: configuration.nativeInspector.path,
@@ -180,7 +225,7 @@ export function createPreviewBrokerDeploymentExecutor(context: Context): BrokerD
       assertReservation();
     }
     const deadline = Date.now() + 120_000;
-    const child = spawn(configuration.python.path, ["-I", "-B", "-c", program], {
+    const child = spawn(interpreter.path, ["-I", "-B", "-c", program], {
       cwd: "/",
       env: { PATH: "/usr/bin:/bin", LANG: "C" },
       stdio: ["pipe", "pipe", "pipe", "pipe"],
@@ -238,9 +283,9 @@ export function createPreviewBrokerDeploymentExecutor(context: Context): BrokerD
         identity.parentPid !== process.pid ||
         identity.uid !== process.getuid?.() ||
         identity.bootId.toLowerCase() !== plan.bootUUID.toLowerCase() ||
-        identity.executable !== configuration.python.path ||
+        identity.executable !== interpreter.path ||
         identity.argumentsSha256 !==
-          digest(JSON.stringify([configuration.python.path, "-I", "-B", "-c", program]))
+          digest(JSON.stringify([interpreter.path, "-I", "-B", "-c", program]))
       )
         throw Error("Deployment child custody differs");
       if (operation === "execute")
@@ -276,7 +321,7 @@ export function createPreviewBrokerDeploymentExecutor(context: Context): BrokerD
           if (message.sequence !== ++sequence || pending)
             throw Error("Deployment guard sequence changed");
           assertReservation();
-          await protectedInputs(plan, operation === "observe");
+          await recheck();
           const current = await reader.inspectRunningProcess(child.pid!);
           if (JSON.stringify(current) !== JSON.stringify(identity))
             throw Error("Deployment child identity changed");
@@ -293,7 +338,7 @@ export function createPreviewBrokerDeploymentExecutor(context: Context): BrokerD
     );
     const result = JSON.parse(await completed) as unknown;
     assertReservation();
-    await protectedInputs(plan, operation === "observe");
+    await recheck();
     assertReservation();
     return result;
   }

@@ -93,17 +93,25 @@ def validate_plan(plan, allowed_roots):
                 raise ValueError('Incomplete candidate artifact')
 
 
-def preservation(root):
+def stable_state(root):
+    """Config and installed marker: what no broker run writes, only an installer.
+
+    Returns the parsed config too, for callers that go on to snapshot its channel.
+    """
     raw, info = read_file(root / 'host-config.json', protected=True)
     config = json.loads(raw)
     if config['deployment'] != str(root):
         raise ValueError('Broker config belongs to another deployment')
     marker, marker_info = read_file(Path(config['channel']) / 'installed.json', protected=True)
-    return {
+    return config, {
         'config': {'sha256': sha(raw), 'identity': file_identity(info)},
         'marker': {'sha256': sha(marker), 'identity': file_identity(marker_info)},
-        'inventory': snapshot(config),
     }
+
+
+def preservation(root):
+    config, state = stable_state(root)
+    return {**state, 'inventory': snapshot(config)}
 
 
 def stable_preservation(state):

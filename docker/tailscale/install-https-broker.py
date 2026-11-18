@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Install the narrow broker into an existing deployment, without restarting Vorteo."""
 import argparse
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -8,10 +9,68 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from access_scope import access_scope, device_names, scope_change
+from channel_identity import broker_lock
 from host_config import discover
 from launch_agent import install, label_for, owned_plist
 from https_broker import Runtime, WS, atomic, digest, safe_dir
+
+
+NETWORK_FIELDS = ('packetFilterHash', 'nodeId', 'hostname')
+
+
+def pin_network(previous, config, status, packet_filter, accept_scope=False):
+    """Pin the node and its access scope; refuse any change except a reviewed scope re-pin.
+
+    `config` already carries the observed hostname, node ID and packet-filter hash. A
+    different node or hostname always refuses. The same node with a different access
+    scope is accepted only with --accept-access-scope, after the administrator has read
+    the grants added and removed, which a refusal prints. Returns that summary when a
+    scope is accepted, else None.
+    """
+    config['accessScope'] = access_scope(packet_filter)
+    changed = [field for field in NETWORK_FIELDS if previous.get(field) and previous[field] != config[field]]
+    if not changed:
+        return None
+    if changed != ['packetFilterHash']:
+        raise ValueError('Existing network identity or access scope changed; review before reinstalling')
+    summary = scope_change(previous, config, device_names(status), packet_filter)
+    if not accept_scope:
+        raise ValueError('Tailnet access scope changed on the same node. Review it, then rerun with '
+                         '--accept-access-scope: ' + json.dumps(summary, sort_keys=True))
+    return summary
+
+
+@contextmanager
+def waiting_broker_lock(root, seconds=120):
+    """The broker's own lock, waited for. A broker run holds it for under a minute."""
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            with broker_lock(root) as check:
+                yield check
+                return
+        except BlockingIOError:
+            if time.monotonic() > deadline:
+                raise ValueError('The preview broker is busy; try the install again') from None
+            time.sleep(0.5)
+
+
+def commit_under_lock(root, previous, config, replace_files, wait=120):
+    """Replace the broker and commit its config under the broker's own lock.
+
+    The config the install was checked against must still be the one on disk, so a
+    concurrent change is never overwritten with pins reviewed against older state.
+    """
+    with waiting_broker_lock(root, wait):
+        path = root / 'host-config.json'
+        current = json.loads(path.read_text()) if path.exists() else {}
+        if current != previous:
+            raise ValueError('Broker config changed during install; rerun the install')
+        replace_files()
+        atomic(path, config)
 
 
 def approve_workspaces(config, approvals, workspaces):
@@ -46,6 +105,9 @@ def main():
     parser.add_argument('--approve-workspace', action='append', default=[], metavar='WORKSPACE_ID=PATH')
     parser.add_argument('--reserved-port', type=int, action='append', default=[443, 6767, 6768, 44443])
     parser.add_argument('--rollback')
+    # Re-pin the access scope of the SAME node after a reviewed tailnet change, such as a
+    # device joining or leaving. A refusal without it prints what would be accepted.
+    parser.add_argument('--accept-access-scope', action='store_true')
     parser.add_argument('--restore-after-restart', action=argparse.BooleanOptionalAction, default=None,
                         help='restore previously verified previews after daemon/container restart; omission preserves existing policy')
     args = parser.parse_args()
@@ -98,9 +160,7 @@ def main():
     c['nodeId'] = status['Self']['ID']
     netmap = json.loads(subprocess.check_output(ts + ['debug', 'netmap']))
     c['packetFilterHash'] = digest(netmap.get('PacketFilter'))
-    for field in ('packetFilterHash', 'nodeId', 'hostname'):
-        if previous.get(field) and previous[field] != c[field]:
-            raise ValueError('Existing network identity or access scope changed; review before reinstalling')
+    accepted = pin_network(previous, c, status, netmap.get('PacketFilter'), args.accept_access_scope)
     # Installation does not change grants. The operator reviews this non-secret
     # policy hash against the existing destination range before installation.
     rules = netmap.get('PacketFilter', [])
@@ -117,12 +177,14 @@ def main():
     for name in ['host-config.json', 'https_broker.py', 'channel_identity.py', 'host_config.py', 'launch_agent.py', 'host-recovery.py', 'https-preview.py']:
         if (root / name).exists():
             shutil.copy2(root / name, backup / name)
-    for name in ['https_broker.py', 'channel_identity.py', 'host_config.py', 'launch_agent.py', 'https-preview.py', 'host-recovery.py', 'uninstall-https-broker.py']:
-        temp = root / (name + '.install')
-        shutil.copyfile(source / name, temp)
-        temp.chmod(0o700)
-        os.replace(temp, root / name)
-    atomic(root / 'host-config.json', c)
+    def replace_files():
+        for name in ['https_broker.py', 'channel_identity.py', 'host_config.py', 'launch_agent.py', 'https-preview.py', 'host-recovery.py', 'uninstall-https-broker.py']:
+            temp = root / (name + '.install')
+            shutil.copyfile(source / name, temp)
+            temp.chmod(0o700)
+            os.replace(temp, root / name)
+
+    commit_under_lock(root, previous, c, replace_files)
     bin_dir = home / '.local/bin'
     bin_dir.mkdir(parents=True, exist_ok=True)
     for source_name, dest_name in [('paseo-preview.mjs', 'paseo-preview'), ('preview-broker-client.mjs', 'preview-broker-client.mjs')]:
@@ -149,7 +211,8 @@ def main():
                'EnvironmentVariables': {'HOME': str(Path.home()), 'PATH': '/usr/bin:/bin:/usr/local/bin'}}
     # COMPAT(shared-broker-label): added in v0.7.2, remove after 2027-03-16.
     install(content, root / 'https_broker.py', ['local.paseo.https-preview-broker'])
-    print(json.dumps({'installed': str(root), 'backup': str(backup), 'label': label, 'containerRestarted': False}))
+    print(json.dumps({'installed': str(root), 'backup': str(backup), 'label': label, 'containerRestarted': False,
+                      **({'acceptedAccessScope': accepted} if accepted else {})}))
 
 
 if __name__ == '__main__':

@@ -2629,12 +2629,52 @@ export const AgentProfileSwitchRequestMessageSchema = z.object({
   model: z.string().nullable().optional(),
   thinkingOptionId: z.string().nullable().optional(),
   reason: z.enum(["manual", "quota"]).optional(),
+  dryRun: z.boolean().optional(),
+  explanation: z.string().optional(),
+  sourceScope: z
+    .object({
+      provider: z.string(),
+      cwd: z.string(),
+      workspaceId: z.string().optional(),
+      projectId: z.string().optional(),
+    })
+    .optional(),
   requestId: z.string(),
 });
 
+// COMPAT(agentProfileSwitchPreview): added 2026-11-17; retain gate through 2027-05-17.
+export const AgentProfileSwitchResultSchema = z.object({
+  agentId: z.string(),
+  // Hosts do not produce `would-switch` yet: a dry run cannot check the target passively.
+  outcome: z.enum(["switched", "refused", "skipped", "would-switch"]),
+  provider: z.string().optional(),
+  model: z.string().nullable().optional(),
+  modeId: z.string().nullable().optional(),
+  thinkingOptionId: z.string().nullable().optional(),
+  features: z.record(z.string(), z.unknown()).optional(),
+  status: z.string().optional(),
+  error: z.string().optional(),
+  auditError: z.string().optional(),
+  /** Why the thread cannot switch, such as `busy` or `out-of-scope`. Open set of codes. */
+  refusalCode: z.string().optional(),
+  /**
+   * Present on dry-run results. `sourceEligible` means the source thread passed eligibility and
+   * scope checks; the target account is not checked, and provider and settings fields are omitted.
+   */
+  preview: z
+    .object({
+      sourceEligible: z.boolean(),
+      targetChecked: z.boolean(),
+    })
+    .optional(),
+});
+export type AgentProfileSwitchResult = z.infer<typeof AgentProfileSwitchResultSchema>;
+
 export const AgentProfileSwitchResponseMessageSchema = z.object({
   type: z.literal("agent.profile.switch.response"),
-  payload: AgentActionResponsePayloadSchema,
+  payload: AgentActionResponsePayloadSchema.extend({
+    result: AgentProfileSwitchResultSchema.optional(),
+  }),
 });
 
 export const AgentDetachRequestMessageSchema = z.object({
@@ -4644,6 +4684,8 @@ export const ServerInfoStatusPayloadSchema = z
         agentConfigApply: z.boolean().optional(),
         // COMPAT(agentProfileSwitch): added in Vorteo 2026-10, remove gate after 2027-04-22.
         agentProfileSwitch: z.boolean().optional(),
+        // COMPAT(agentProfileSwitchPreview): added 2026-11-17; retain gate through 2027-05-17.
+        agentProfileSwitchPreview: z.boolean().optional(),
         // COMPAT(agentProviderRecovery): added in Vorteo 2026-10, remove gate after 2027-04-28.
         agentProviderRecovery: z.boolean().optional(),
         // COMPAT(localProjectConfig): added in Vorteo 2026-10, remove gate after 2027-04-22.

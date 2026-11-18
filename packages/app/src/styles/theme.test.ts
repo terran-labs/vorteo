@@ -151,6 +151,15 @@ describe("Theme catalog", () => {
       }
     }
   });
+  it("keeps accent-coloured text readable on every working surface", () => {
+    for (const option of THEME_OPTIONS) {
+      if (!("theme" in option)) continue;
+      const c = option.theme.colors;
+      for (const surface of [c.surface0, c.surface1, c.surface2, c.surface3]) {
+        expect(contrast(c.accentText, surface), option.name).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
   it("offers all six reference themes and system selection without retired choices", () => {
     expect(THEME_OPTIONS.map((option) => option.name)).toEqual([
       "starship-light",
@@ -247,8 +256,8 @@ describe("Vorton theme reference", () => {
 
   type ColorField = keyof Theme["colors"];
   // Reference role to the built Vorteo color it governs. Roles Vorteo does not map (divider,
-  // accentDecorative, focusRing, selection) and Vorteo-only fields (accentBright, surface4,
-  // borderAccent) are not compared.
+  // accentDecorative, selection) and Vorteo-only fields (accentBright, surface4, borderAccent)
+  // are not compared.
   const ROLE_FIELDS: ReadonlyArray<readonly [string, ColorField]> = [
     ["background", "surface0"],
     ["surfaceDeep", "surface1"],
@@ -264,6 +273,7 @@ describe("Vorton theme reference", () => {
     ["warning", "statusWarning"],
     ["danger", "statusDanger"],
     ["destructive", "destructive"],
+    ["focusRing", "ring"],
   ];
 
   // One row per exception: theme, Vorteo field, Vorteo value, reference value, reason.
@@ -275,14 +285,9 @@ describe("Vorton theme reference", () => {
     reason: string,
   ];
 
-  const KEPT_SCRIPTORIUM =
-    "Owner kept Vorteo's heading accent (Freed's accent-primary) over Vorton's secondary.";
-  const KEPT_NEON = "Owner kept Vorteo's blue control accent over Vorton's violet.";
-  // Differences the owner decided to keep.
-  const DECIDED: DriftException[] = [
-    ["scriptorium", "accent", "#86684a", "#b08a61", KEPT_SCRIPTORIUM],
-    ["neon", "accent", "#3b82f6", "#8b5cf6", KEPT_NEON],
-  ];
+  // Differences the owner decided to keep. The owner decided every colour matches in all
+  // products, so the list is empty; declare a row here only for a future intentional difference.
+  const DECIDED: readonly DriftException[] = [];
 
   function canonicalColor(value: string): string {
     const text = value.trim().toLowerCase();

@@ -126,6 +126,9 @@ export async function connectSessionHost(
     socket.destroy();
     greeted?.(error);
     greeted = null;
+    // Rejecting pending calls and detaching channels below must stay in this one synchronous pass:
+    // HostedAgentSession detects a turn call cut off by the host's end because its session has
+    // already detached when the rejection reaches the caller.
     for (const waiter of pending.values()) waiter.reject(error);
     pending.clear();
     // Connection listeners run first, so sessions that reattach never reuse this connection.

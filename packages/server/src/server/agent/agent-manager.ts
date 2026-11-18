@@ -163,10 +163,11 @@ import {
 import { invokeRewindCapability, type RewindMode } from "./rewind/rewind.js";
 import { hasArmedFinishNotification, isSystemInjectedEnvelope } from "./agent-prompt.js";
 import {
-  buildSwitchHistory,
   prependSwitchHistory,
+  selectSwitchSegmentEvents,
   type ProfileSwitchRecord,
 } from "./profile-switch/history.js";
+import { SwitchHistoryTooLargeError } from "./profile-switch/history-store.js";
 import { readRecordedContext } from "./profile-switch/context.js";
 import type {
   AgentToolAccessSetting,
@@ -208,15 +209,96 @@ const STORED_AGENT_CAPABILITIES: AgentCapabilityFlags = {
 
 type TimeoutResult = "completed" | "timed_out";
 
-export class ProfileSwitchError extends Error {}
+/**
+ * Machine-readable reasons a thread cannot switch accounts. The wire carries these as plain
+ * strings so clients tolerate codes added later.
+ */
+export type ProfileSwitchRefusalCode =
+  | "not-found"
+  | "archived"
+  | "managed"
+  | "not-loaded"
+  | "busy"
+  | "source-changed"
+  | "out-of-scope"
+  | "unknown-setting"
+  | "incompatible-target"
+  | "invalid-selection"
+  | "refused";
+
+export class ProfileSwitchError extends Error {
+  readonly code: ProfileSwitchRefusalCode;
+
+  constructor(message: string, code: ProfileSwitchRefusalCode = "refused") {
+    super(message);
+    this.code = code;
+  }
+}
+
+export type ProviderSubagentHistoryEvent = Extract<AgentStreamEvent, { type: "provider_subagent" }>;
+
+/** Runs at most `limit` tasks at once, in arrival order. */
+class ConcurrencyLimit {
+  private active = 0;
+  private readonly waiting: Array<() => void> = [];
+
+  constructor(private readonly limit: number) {}
+
+  async run<T>(task: () => Promise<T>): Promise<T> {
+    // A finishing task hands its slot straight to the next waiter.
+    if (this.active >= this.limit) await new Promise<void>((wake) => this.waiting.push(wake));
+    else this.active += 1;
+    try {
+      return await task();
+    } finally {
+      const next = this.waiting.shift();
+      if (next) next();
+      else this.active -= 1;
+    }
+  }
+}
+
+/**
+ * Retained switch history replayed into a thread's in-memory timeline, in JSON bytes. Older
+ * events stay on disk. Parsed timeline objects cost a multiple of their JSON size, so this
+ * keeps one thread well inside the daemon's heap.
+ */
+const SWITCH_HISTORY_REPLAY_MAX_BYTES = 48 * 1024 * 1024;
+/** One switch's new history, in JSON bytes. A larger switch is refused before anything changes. */
+const SWITCH_SEGMENT_MAX_BYTES = 256 * 1024 * 1024;
+/** Saved transcripts read at once; each read holds one thread's history transiently. */
+const SAVED_TIMELINE_CONCURRENT_READS = 2;
 
 export interface AgentProfileSwitchInput {
   /** Fully resolved launch configuration for the target account and profile. */
   config: AgentSessionConfig;
   reason: ProfileSwitchTimelineItem["reason"];
   carriedContextChars: number;
+  /** Effective source settings captured before profile resolution. */
+  preservedSettings?: Pick<AgentSessionConfig, "modeId" | "thinkingOptionId" | "featureValues">;
+  /** Live settings captured by the command before any asynchronous target resolution. */
+  expectedSource?: {
+    config: AgentSessionConfig;
+    runtimeInfo?: AgentRuntimeInfo;
+    workspaceId?: string;
+    currentModeId?: string | null;
+    features?: AgentFeature[];
+  };
+  validateScope?: (source: {
+    provider: string;
+    cwd: string;
+    workspaceId?: string;
+  }) => Promise<void>;
+  carryContext?: (context: string) => string;
   /** Captured without resuming the unavailable source account. Rechecked under the lifecycle lock. */
   storedSource?: { record: StoredAgentRecord; rows: AgentTimelineRow[] };
+}
+
+interface AgentProfileSwitchPreviewInput extends Pick<
+  AgentProfileSwitchInput,
+  "expectedSource" | "validateScope"
+> {
+  storedSource?: Pick<NonNullable<AgentProfileSwitchInput["storedSource"]>, "record">;
 }
 
 function describeProfileEndpoint(
@@ -606,6 +688,40 @@ function matchesIdleObservation(
   expected: IdleSessionObservation,
 ): boolean {
   return agent.updatedAt.getTime() === expected.updatedAt && agent.session === expected.session;
+}
+
+/** A thread held by a quota latch refused a prompt. */
+export class QuotaLatchError extends Error {}
+
+/** The recipient refused a prompt at admission because of a quota latch or reserve. */
+export function isQuotaAdmissionRefusal(error: unknown): boolean {
+  return error instanceof QuotaLatchError || error instanceof QuotaReserveAdmissionError;
+}
+
+/**
+ * The team a quota latch covers: a worker-profile supervisor and its workers. A thread whose
+ * parent is not such a supervisor is its own root. Shared by the stop and the startup release.
+ */
+function quotaTeamRoot(
+  thread: { id: string },
+  parentId: string | undefined,
+  parentConfig: { profileLaunch?: { worker?: unknown } | null } | null | undefined,
+): string {
+  return parentId && parentConfig?.profileLaunch?.worker ? parentId : thread.id;
+}
+
+/**
+ * The quota latch a child inherits from its parent. A parent's latch means its account is
+ * limited, so it holds only a child on that same account; see pauseQuotaTeam.
+ */
+function inheritedQuotaPause(
+  parent:
+    | { provider: AgentProvider; config?: { quotaPausedAt?: string | null } | null }
+    | null
+    | undefined,
+  provider: AgentProvider,
+): string | undefined {
+  return parent?.provider === provider ? (parent.config?.quotaPausedAt ?? undefined) : undefined;
 }
 
 /** Quota, usage-limit and controller custody each expect the agent's current session to stay. */
@@ -1426,6 +1542,28 @@ export class AgentManager {
     return until;
   }
 
+  /**
+   * Refuses a thread held by a quota latch. Unknown threads pass; the full admission check
+   * reports them. Agent message delivery calls this at enqueue so a sender learns of the pause
+   * from its receipt instead of after the queued dispatch fails.
+   */
+  assertNoQuotaLatch(agentId: string): void {
+    const agent = this.agents.get(agentId) ?? this.registry?.getLoadedRecord(agentId);
+    if (!agent) return;
+    const parentId = agent.labels[PARENT_AGENT_ID_LABEL];
+    const parent = parentId
+      ? (this.agents.get(parentId) ?? this.registry?.getLoadedRecord(parentId))
+      : undefined;
+    // A parent's pause says its account is limited. It holds a child only on that same account
+    // (a child resumed or created around the latch); a child on another account has its own quota.
+    const parentPaused = parent?.config?.quotaPausedAt && parent.provider === agent.provider;
+    if (agent.config?.quotaPausedAt || parentPaused) {
+      throw new QuotaLatchError(
+        "Quota exhausted. This task is paused until the usage limit resets, then continues automatically unless resume is off. To continue sooner, select a preset and start a successor task.",
+      );
+    }
+  }
+
   assertQuotaNotPaused(agentId: string): void {
     const agent = this.agents.get(agentId) ?? this.registry?.getLoadedRecord(agentId);
     if (!agent) throw new Error(`Agent ${agentId} not found.`);
@@ -1439,11 +1577,7 @@ export class AgentManager {
     ) {
       throw new QuotaReserveAdmissionError("usage_unavailable");
     }
-    if (agent.config?.quotaPausedAt || parent?.config?.quotaPausedAt) {
-      throw new Error(
-        "Quota exhausted. This task is paused until the usage limit resets, then continues automatically unless resume is off. To continue sooner, select a preset and start a successor task.",
-      );
-    }
+    this.assertNoQuotaLatch(agentId);
     assertQuotaReserveAdmission(agent.config?.quotaReserve);
     assertQuotaReserveAdmission(parent?.config?.quotaReserve);
     this.assertFreshReserveObservation(agent);
@@ -1465,28 +1599,51 @@ export class AgentManager {
     return Number.isFinite(age) && age >= 0 && age <= (observation?.maxAgeMs ?? -1);
   }
 
+  /**
+   * The team latch covers only the exhausted account, so a supervisor with quota keeps running.
+   * It must not start a new worker into that account's wall instead.
+   */
+  private async assertWorkerAccountAvailable(
+    parent: ManagedAgent | StoredAgentRecord | null | undefined,
+    provider: AgentProvider,
+  ): Promise<void> {
+    if (!parent?.config?.profileLaunch?.worker || !this.registry) return;
+    const limitedUntil = await this.usageLimitedUntil(provider);
+    if (limitedUntil)
+      throw new Error(
+        `Quota exhausted on this account until ${limitedUntil}. Start the worker on another account.`,
+      );
+  }
+
   private async quotaRootId(failed: ManagedAgent): Promise<string> {
     const parentId = failed.labels[PARENT_AGENT_ID_LABEL];
     if (!parentId) return failed.id;
     const config =
       this.agents.get(parentId)?.config ?? (await this.registry?.get(parentId))?.config;
-    return config?.profileLaunch?.worker ? parentId : failed.id;
+    return quotaTeamRoot(failed, parentId, config);
   }
 
   /**
-   * Latches a worker team when one member stops at a usage limit, so a supervisor cannot keep
-   * starting work into the same wall. A thread without teammates only records its hold.
+   * Latches the members of a worker team that share the exhausted account when one member stops
+   * at a usage limit. Teammates on other accounts, the supervisor included, keep running: their
+   * quota is not spent. A supervisor still cannot start work into the same wall, because
+   * createAgent refuses a new worker on an account usageLimitedUntil reports as limited.
+   * A thread without teammates only records its hold.
    */
   private async pauseQuotaTeam(failed: ManagedAgent): Promise<void> {
     const pausedAt = new Date().toISOString();
     const rootId = await this.quotaRootId(failed);
-    const isTeammate = (labels: Record<string, string>, id: string) =>
-      id === rootId || labels[PARENT_AGENT_ID_LABEL] === rootId;
+    const isTeammate = (labels: Record<string, string>, id: string, provider: AgentProvider) =>
+      (id === rootId || labels[PARENT_AGENT_ID_LABEL] === rootId) && provider === failed.provider;
     // Only worker-profile teams latch: a worker's supervisor, or a supervisor itself.
     if (rootId === failed.id && !failed.config.profileLaunch?.worker) return;
     const records = (await this.registry?.list()) ?? [];
-    const loadedTeam = this.listAgents().filter((agent) => isTeammate(agent.labels, agent.id));
-    const storedTeam = records.filter((record) => isTeammate(record.labels, record.id));
+    const loadedTeam = this.listAgents().filter((agent) =>
+      isTeammate(agent.labels, agent.id, agent.provider),
+    );
+    const storedTeam = records.filter((record) =>
+      isTeammate(record.labels, record.id, record.provider),
+    );
     failed.config.quotaPausedAt = pausedAt;
     const team = loadedTeam;
     // Latch the entire team before persistence or cancellation can wake a parent.
@@ -1524,7 +1681,10 @@ export class AgentManager {
       }
     }
   }
-  /** Clears the team latch around one thread, for a resume after its usage limit reset. */
+  /**
+   * Clears the team latch around one thread, for a resume after its usage limit reset. Only
+   * teammates on the thread's own account clear: another account's latch waits for its own reset.
+   */
   async releaseQuotaTeam(agentId: string): Promise<void> {
     const registry = this.requireRegistry();
     const records = await registry.list();
@@ -1538,8 +1698,46 @@ export class AgentManager {
     const resetAt = new Date(this.now()).toISOString();
     for (const record of records) {
       if (record.id !== rootId && record.labels[PARENT_AGENT_ID_LABEL] !== rootId) continue;
+      if (record.provider !== subject.provider) continue;
       await this.clearQuotaPause(record.id, resetAt);
     }
+  }
+
+  /**
+   * Clears quota latches the account-scoped rule would not have set. Before latches were scoped,
+   * one stop also latched teammates on other accounts, and nothing would ever release them. A
+   * latch stays while a teammate on its own account holds an unreleased usage-limit hold, with
+   * or without a reset time; that hold's release or reset path clears it. A hold set to Don't
+   * resume is never released automatically, so once its known reset time passes it no longer
+   * keeps teammates latched. Runs once at daemon start.
+   */
+  async releaseStaleQuotaPauses(): Promise<number> {
+    const registry = this.requireRegistry();
+    const now = this.now();
+    const resetAt = new Date(now).toISOString();
+    const records = (await registry.list()).filter((record) => !record.archivedAt);
+    const byId = new Map(records.map((record) => [record.id, record]));
+    // Same team root as quotaRootId: a worker-profile supervisor and its workers.
+    const rootOf = (record: StoredAgentRecord) => {
+      const parentId = record.labels[PARENT_AGENT_ID_LABEL];
+      return quotaTeamRoot(record, parentId, parentId ? byId.get(parentId)?.config : undefined);
+    };
+    const heldAccounts = new Set<string>();
+    for (const record of records) {
+      const hold =
+        this.agents.get(record.id)?.config.usageLimitHold ?? record.config?.usageLimitHold;
+      if (!hold || hold.releasedAt) continue;
+      if (hold.optOut && hold.resetsAt && Date.parse(hold.resetsAt) <= now) continue;
+      heldAccounts.add(JSON.stringify([rootOf(record), record.provider]));
+    }
+    let released = 0;
+    for (const record of records) {
+      if (!record.config?.quotaPausedAt) continue;
+      if (heldAccounts.has(JSON.stringify([rootOf(record), record.provider]))) continue;
+      await this.clearQuotaPause(record.id, resetAt);
+      released += 1;
+    }
+    return released;
   }
 
   private readonly pluginLifecycle: PluginLifecycle | undefined;
@@ -1576,12 +1774,15 @@ export class AgentManager {
   private readonly idFactory: () => string;
   private readonly registry?: AgentStorage;
   private readonly durableTimelineStore?: AgentTimelineStore;
+  private readonly savedTimelineReads = new ConcurrencyLimit(SAVED_TIMELINE_CONCURRENT_READS);
   private readonly previousStatuses = new Map<string, AgentLifecycleStatus>();
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly agentRegistrationTasks = new Set<Promise<void>>();
   private readonly inFlightAgentCloses = new Map<string, Promise<void>>();
   /** Agents whose idle session is being released; no run may start until the close settles. */
   private readonly automaticCloses = new Set<string>();
+  /** Agents whose closed state is being emitted by an automatic release, not an explicit close. */
+  private readonly releasingRuntimes = new Set<string>();
   private readonly reloadedSessionCloses = new WeakMap<AgentSession, Promise<void>>();
   private readonly runtimeCleanupIdentities = new WeakMap<AgentSession, object>();
   private readonly collectingRuntimes = new Set<string>();
@@ -2684,10 +2885,25 @@ export class AgentManager {
   }
 
   /**
-   * The session host no longer runs this agent's session, as after a host crash. Like a restart,
-   * the agent continues from a queued message on a fresh session, hosted again when possible.
+   * The session host no longer runs this agent's session, as after a host crash or restart. An
+   * interrupted turn, or background work that died with the host, continues from a queued message
+   * on a fresh session, hosted again when possible. An idle session with nothing in progress is
+   * released like an idle agent and reopens on demand, so a host restart neither starts a provider
+   * for every loaded thread nor prompts threads that had no work.
    */
-  async continueAfterHostedSessionLoss(agentId: string): Promise<void> {
+  async continueAfterHostedSessionLoss(
+    agentId: string,
+    loss: "turn" | "background" | "idle" = "turn",
+    reason?: string,
+  ): Promise<void> {
+    if (loss === "idle") {
+      await this.releaseAfterHostedSessionLoss(agentId, reason);
+      return;
+    }
+    this.logger.info(
+      { agentId, loss, reason },
+      "Hosted session ended with its host; the agent continues its work",
+    );
     if (this.agents.has(agentId)) {
       await this.drainSessionEvents(agentId).catch(() => {});
       // During a restart drain no session may open. The next worker loads the agent afresh and
@@ -2703,7 +2919,36 @@ export class AgentManager {
         }
       }
     }
-    await this.messageQueueControl?.queueHostedSessionContinuation?.(agentId, String(Date.now()));
+    await this.messageQueueControl?.queueHostedSessionContinuation?.(
+      agentId,
+      String(Date.now()),
+      loss,
+    );
+    this.messageQueueControl?.wake(agentId);
+  }
+
+  /**
+   * Leaves an idle agent whose host ended closed and resumable. A release the idle checks refuse,
+   * such as for an agent with a live goal, keeps the agent loaded on its lost session, which the
+   * next prompt replaces. Neither path starts a provider; queued work still runs.
+   */
+  private async releaseAfterHostedSessionLoss(agentId: string, reason?: string): Promise<void> {
+    if (this.agents.has(agentId)) {
+      await this.drainSessionEvents(agentId).catch(() => {});
+      if (!this.isRestartDraining()) {
+        const released = await this.releaseIdleSession(agentId).catch((error: unknown) => {
+          this.logger.warn(
+            { err: error, agentId },
+            "Could not release an idle agent after its host ended",
+          );
+          return false;
+        });
+        this.logger.info(
+          { agentId, released, loss: "idle", reason },
+          "Idle agent's hosted session ended with its host; it reopens on demand",
+        );
+      }
+    }
     this.messageQueueControl?.wake(agentId);
   }
 
@@ -3101,18 +3346,42 @@ export class AgentManager {
     if (savedSource?.useRetainedTimeline && this.timelineStore.has(id))
       return this.timelineStore.fetch(id, options);
     if (!loadLegacyRows) throw new Error("Saved timeline storage is unavailable");
-    const rows = await loadLegacyRows();
+    const rows = await this.savedTimelineReads.run(loadLegacyRows);
     // Native transcripts predate durable timelines. Keep pagination stable across reads,
     // and reset cursors if the transcript changes, without registering a live session.
-    const epoch = createHash("sha256").update(JSON.stringify(rows)).digest("hex");
+    // Hash row by row: one string for a whole long transcript can exceed the heap.
+    const hash = createHash("sha256");
+    for (const row of rows) hash.update(`${JSON.stringify(row)}\n`);
     const saved = new InMemoryAgentTimelineStore();
-    saved.initialize(id, { rows, epoch });
+    saved.initialize(id, { rows, epoch: hash.digest("hex") });
     return saved.fetch(id, options);
   }
 
   listProviderSubagents(parentAgentId: string): ProviderSubagentDescriptor[] {
     this.requirePublicAgent(parentAgentId);
     return this.providerSubagents.list(parentAgentId);
+  }
+
+  /**
+   * Lists an unloaded thread's provider children from its saved history without loading it.
+   * Only descriptors are kept; child transcripts load with the thread, which replaces these.
+   */
+  restoreSavedProviderSubagents(
+    parentAgentId: string,
+    events: readonly ProviderSubagentHistoryEvent[],
+  ): void {
+    if (this.agents.has(parentAgentId)) return;
+    const before = JSON.stringify(this.providerSubagents.list(parentAgentId));
+    const removed = this.providerSubagents.deleteParent(parentAgentId);
+    const updates: ProviderSubagentStoreEvent[] = [];
+    for (const { provider, event } of events) {
+      if (event.type === "timeline") continue;
+      updates.push(this.providerSubagents.apply(parentAgentId, provider, event));
+    }
+    // Paging rereads the same history; announce only an actual change.
+    if (JSON.stringify(this.providerSubagents.list(parentAgentId)) === before) return;
+    for (const event of [...removed, ...updates])
+      this.dispatch({ type: "provider_subagent", event });
   }
 
   listProviderSubagentActivity(): ProviderSubagentDescriptor[] {
@@ -3153,6 +3422,9 @@ export class AgentManager {
       ? (this.agents.get(parentId) ?? (await this.registry?.get(parentId)))
       : undefined;
     if (parent) this.assertQuotaNotPaused(parent.id);
+    // Only team workers wait on the check; other creation must not yield here.
+    if (parent?.config?.profileLaunch?.worker)
+      await this.assertWorkerAccountAvailable(parent, config.provider);
     if (parent?.config?.profileLaunch?.worker) {
       const pending = this.pendingWorkerCreations.get(parent.id) ?? 0;
       const running = this.listAgents().filter(
@@ -3317,7 +3589,11 @@ export class AgentManager {
     const session = await client.createSession(providerLaunchConfig, launchContext, createOptions);
     await this.requireExternalMcpSupport(session, providerLaunchConfig, launchContext);
     const parentId = options.labels?.[PARENT_AGENT_ID_LABEL];
-    const pausedAt = parentId ? this.agents.get(parentId)?.config.quotaPausedAt : undefined;
+    // A latch that landed while this worker was starting.
+    const pausedAt = inheritedQuotaPause(
+      parentId ? this.agents.get(parentId) : undefined,
+      storedConfig.provider,
+    );
     if (pausedAt) storedConfig.quotaPausedAt = pausedAt;
     const agent = await this.registerSession(session, storedConfig, resolvedAgentId, {
       labels: options.labels,
@@ -3438,9 +3714,8 @@ export class AgentManager {
     } as AgentSessionConfig;
     const parentId = options?.labels?.[PARENT_AGENT_ID_LABEL];
     if (parentId) {
-      const parent = await this.registry?.get(parentId);
-      const pausedAt =
-        this.agents.get(parentId)?.config.quotaPausedAt ?? parent?.config?.quotaPausedAt;
+      const parent = this.agents.get(parentId) ?? (await this.registry?.get(parentId));
+      const pausedAt = inheritedQuotaPause(parent, handle.provider);
       if (pausedAt) mergedConfig.quotaPausedAt = pausedAt;
     }
     // Decide residency from durable state inside the lifecycle lane. A loader may
@@ -3739,6 +4014,7 @@ export class AgentManager {
   async readStoredSwitchHistory(
     record: StoredAgentRecord,
     history: AsyncIterable<AgentStreamEvent>,
+    onProviderSubagent?: (event: ProviderSubagentHistoryEvent) => void,
   ): Promise<AgentTimelineRow[]> {
     const events: AgentStreamEvent[] = [];
     for await (const event of history) events.push(event);
@@ -3751,6 +4027,7 @@ export class AgentManager {
       passive: true,
     })) {
       const event = limitAgentStreamEventContent(rawEvent);
+      if (event.type === "provider_subagent") onProviderSubagent?.(event);
       if (event.type !== "timeline") continue;
       if (event.item.type === "user_message" && isSystemInjectedEnvelope(event.item.text)) continue;
       rows.push({
@@ -3781,23 +4058,262 @@ export class AgentManager {
     );
   }
 
+  /**
+   * Checks source eligibility and scope under the lifecycle lock. Resolves when the source could
+   * switch; never contacts the target account, because provider discovery can start sessions.
+   */
+  previewAgentProfile(agentId: string, input: AgentProfileSwitchPreviewInput): Promise<void> {
+    return this.runLifecycleMutation(agentId, async () => {
+      this.assertAcceptingAgentRegistrations();
+      const { existing, source } = await this.resolveProfileSwitchSource(
+        agentId,
+        input.storedSource,
+      );
+      const expectedSource =
+        input.expectedSource ??
+        structuredClone({
+          config: source.config,
+          runtimeInfo: source.runtimeInfo,
+          workspaceId: source.workspaceId,
+          currentModeId: existing?.currentModeId,
+          features: existing?.features,
+        });
+      await this.checkProfileSwitchScope(input, expectedSource);
+      await this.assertProfileSwitchSourceCurrent(agentId, input, expectedSource, existing);
+    });
+  }
+
+  private async checkProfileSwitchScope(
+    input: AgentProfileSwitchPreviewInput,
+    expectedSource: NonNullable<AgentProfileSwitchInput["expectedSource"]>,
+  ): Promise<void> {
+    if (!input.validateScope) return;
+    try {
+      await input.validateScope({
+        provider: expectedSource.config.provider,
+        cwd: expectedSource.config.cwd,
+        workspaceId: expectedSource.workspaceId,
+      });
+    } catch (error) {
+      if (error instanceof ProfileSwitchError) throw error;
+      throw new ProfileSwitchError(
+        error instanceof Error ? error.message : String(error),
+        "out-of-scope",
+      );
+    }
+  }
+
+  /** Coordinator requests and source preconditions recheck the source; app switches do not. */
+  private async recheckProfileSwitchSource(
+    agentId: string,
+    input: AgentProfileSwitchPreviewInput,
+    expectedSource: NonNullable<AgentProfileSwitchInput["expectedSource"]>,
+    existing: ManagedAgent | undefined,
+  ): Promise<void> {
+    if (input.expectedSource === undefined && input.validateScope === undefined) return;
+    await this.assertProfileSwitchSourceCurrent(agentId, input, expectedSource, existing);
+  }
+
+  private async prepareProfileSwitch(agentId: string, input: AgentProfileSwitchInput) {
+    this.assertAcceptingAgentRegistrations();
+    const { existing, source } = await this.resolveProfileSwitchSource(agentId, input.storedSource);
+    const expectedSource =
+      input.expectedSource ??
+      structuredClone({
+        config: source.config,
+        runtimeInfo: source.runtimeInfo,
+        workspaceId: source.workspaceId,
+        currentModeId: existing?.currentModeId,
+        features: existing?.features,
+      });
+    this.requireEnabledProvider(input.config.provider);
+    const client = await this.requireAvailableClient({ provider: input.config.provider });
+    const prepared = await this.prepareSessionConfig(input.config, agentId);
+    if (input.preservedSettings) {
+      await this.validateProfileSwitchSettings(
+        expectedSource.config.provider,
+        input.preservedSettings,
+        prepared.storedConfig,
+        client,
+      );
+    }
+    await this.checkProfileSwitchScope(input, expectedSource);
+    await this.recheckProfileSwitchSource(agentId, input, expectedSource, existing);
+    return { existing, source, client, expectedSource, ...prepared };
+  }
+
+  private async assertProfileSwitchSourceCurrent(
+    agentId: string,
+    input: AgentProfileSwitchPreviewInput,
+    expectedSource: NonNullable<AgentProfileSwitchInput["expectedSource"]>,
+    existing: ManagedAgent | undefined,
+  ): Promise<void> {
+    const current = await this.resolveProfileSwitchSource(agentId, input.storedSource);
+    if (
+      input.validateScope &&
+      !isDeepStrictEqual(
+        {
+          provider: current.stored?.provider,
+          cwd: current.stored?.cwd,
+          workspaceId: current.stored?.workspaceId,
+        },
+        {
+          provider: expectedSource.config.provider,
+          cwd: expectedSource.config.cwd,
+          workspaceId: expectedSource.workspaceId,
+        },
+      )
+    ) {
+      throw new ProfileSwitchError(
+        "The thread's scope changed. Retry the account switch.",
+        "source-changed",
+      );
+    }
+    if (
+      current.existing !== existing ||
+      current.source.workspaceId !== expectedSource.workspaceId ||
+      !isDeepStrictEqual(current.source.config, expectedSource.config) ||
+      !isDeepStrictEqual(current.source.runtimeInfo, expectedSource.runtimeInfo) ||
+      current.existing?.currentModeId !== expectedSource.currentModeId ||
+      !isDeepStrictEqual(current.existing?.features, expectedSource.features)
+    ) {
+      throw new ProfileSwitchError(
+        "The thread's settings changed. Retry the account switch.",
+        "source-changed",
+      );
+    }
+  }
+
+  async validateProfileSwitchSettings(
+    sourceProvider: AgentProvider,
+    preserved: NonNullable<AgentProfileSwitchInput["preservedSettings"]>,
+    target: AgentSessionConfig,
+    client?: AgentClient,
+  ): Promise<void> {
+    const sourceFamily = this.resolveProviderFamily(sourceProvider);
+    if (
+      sourceProvider !== target.provider &&
+      (!sourceFamily || sourceFamily !== this.resolveProviderFamily(target.provider))
+    ) {
+      throw new ProfileSwitchError(
+        "Incompatible target: permission and feature preservation across providers cannot be established.",
+        "incompatible-target",
+      );
+    }
+    const resolved = {
+      modeId: target.modeId,
+      thinkingOptionId: target.thinkingOptionId,
+      featureValues: target.featureValues ?? {},
+    };
+    const expected = {
+      modeId: preserved.modeId,
+      thinkingOptionId: preserved.thinkingOptionId,
+      featureValues: preserved.featureValues ?? {},
+    };
+    if (!isDeepStrictEqual(resolved, expected)) {
+      throw new ProfileSwitchError(
+        "Incompatible target: profile resolution changed preserved mode, thinking or feature values.",
+        "incompatible-target",
+      );
+    }
+    // Resolve the client only after family compatibility, before provider-specific admission.
+    client ??= await this.requireAvailableClient({ provider: target.provider });
+    const catalog = await client.fetchCatalog({
+      scope: "workspace",
+      cwd: target.cwd,
+      force: false,
+      providerOptions: target.providerOptions,
+    });
+    if (
+      target.modeId
+        ? !catalog.modes.some((mode) => mode.id === target.modeId)
+        : catalog.modes.length > 0
+    ) {
+      throw new ProfileSwitchError(
+        "Incompatible target: the preserved permission mode is unsupported or unknown.",
+        "incompatible-target",
+      );
+    }
+    const model = target.model
+      ? catalog.models.find(
+          (candidate) =>
+            candidate.id === target.model || candidate.aliases?.includes(target.model!),
+        )
+      : catalog.models.find((candidate) => candidate.isDefault);
+    if (target.model && !model)
+      throw new ProfileSwitchError(
+        "Incompatible target: the model is not advertised.",
+        "incompatible-target",
+      );
+    if (
+      target.thinkingOptionId &&
+      !model?.thinkingOptions?.some((option) => option.id === target.thinkingOptionId)
+    ) {
+      throw new ProfileSwitchError(
+        "Incompatible target: the preserved thinking option is not advertised for this model.",
+        "incompatible-target",
+      );
+    }
+    await this.validateProfileSwitchFeatures(target, client);
+  }
+
+  private async validateProfileSwitchFeatures(
+    target: AgentSessionConfig,
+    client: AgentClient,
+  ): Promise<void> {
+    const entries = Object.entries(target.featureValues ?? {});
+    const features = (await client.listFeatures?.(target)) ?? [];
+    if (features.some((feature) => !Object.hasOwn(target.featureValues ?? {}, feature.id))) {
+      throw new ProfileSwitchError(
+        "Incompatible target: effective source feature values are unknown.",
+        "unknown-setting",
+      );
+    }
+    for (const [id, value] of entries) {
+      const feature = features.find((candidate) => candidate.id === id);
+      const supported =
+        feature?.type === "toggle"
+          ? typeof value === "boolean"
+          : feature?.type === "select" &&
+            typeof value === "string" &&
+            feature.options.some((option) => option.id === value);
+      if (!supported)
+        throw new ProfileSwitchError(
+          `Incompatible target: preserved feature '${id}' is unsupported.`,
+          "incompatible-target",
+        );
+    }
+  }
+
   private async switchAgentProfileInternal(
     agentId: string,
     input: AgentProfileSwitchInput,
   ): Promise<ManagedAgent> {
-    this.assertAcceptingAgentRegistrations();
     const {
       existing,
       source,
-      rows: sourceRows,
-    } = await this.resolveProfileSwitchSource(agentId, input.storedSource);
-
-    this.requireEnabledProvider(input.config.provider);
-    const client = await this.requireAvailableClient({ provider: input.config.provider });
-    const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
-      input.config,
-      agentId,
-    );
+      client,
+      storedConfig,
+      launchConfig,
+      paseoToolPolicy,
+      expectedSource,
+    } = await this.prepareProfileSwitch(agentId, input);
+    if (existing) await this.hydrateTimelineFromLegacyProviderHistory(existing);
+    const sourceRows = input.storedSource
+      ? input.storedSource.rows
+      : this.timelineStore.getRows(agentId);
+    let carriedContextChars = input.carriedContextChars;
+    if (input.carryContext) {
+      const context = readRecordedContext(sourceRows.map((row) => row.item));
+      const instructions = input.carryContext(context);
+      storedConfig.systemPrompt = [storedConfig.systemPrompt, instructions]
+        .filter(Boolean)
+        .join("\n\n");
+      launchConfig.systemPrompt = [launchConfig.systemPrompt, instructions]
+        .filter(Boolean)
+        .join("\n\n");
+      carriedContextChars = context.length;
+    }
     const hadPreviousPaseoToolPolicy = this.paseoToolPolicies.has(agentId);
     const previousPaseoToolPolicy = this.paseoToolPolicies.get(agentId);
     const launchContext = await this.buildLaunchContext(
@@ -3826,14 +4342,28 @@ export class AgentManager {
           source.runtimeInfo?.model ?? source.config.model,
         ),
         to: describeProfileEndpoint(storedConfig, storedConfig.model),
-        carriedContextChars: input.carriedContextChars,
+        carriedContextChars,
       },
     };
     // The record only references this history once registration commits the switch.
-    await this.requireRegistry().writeSwitchHistory(
-      agentId,
-      buildSwitchHistory(sourceRows, record),
-    );
+    const previousSwitchId = source.profileSwitches?.at(-1)?.marker.switchId ?? null;
+    try {
+      await this.requireRegistry().switchHistory.writeSegment(agentId, {
+        switchId: record.marker.switchId,
+        previousSwitchId,
+        events: selectSwitchSegmentEvents(sourceRows, previousSwitchId, record),
+        maxBytes: SWITCH_SEGMENT_MAX_BYTES,
+      });
+    } catch (error) {
+      if (!(error instanceof SwitchHistoryTooLargeError)) throw error;
+      throw new ProfileSwitchError(
+        "This thread's history since its last switch is too large to switch accounts safely. Start a new task instead; this thread has not changed.",
+      );
+    }
+
+    // History and launch preparation yield. Recheck before closing the source; settings
+    // setters share this lifecycle lane and resolve their session only after acquiring it.
+    await this.recheckProfileSwitchSource(agentId, input, expectedSource, existing);
 
     let session: AgentSession | undefined;
     let closedExisting: ManagedAgentClosed | undefined;
@@ -3885,6 +4415,14 @@ export class AgentManager {
       }
     }
     await this.appendTimelineItem(agentId, record.marker);
+    await this.requireRegistry()
+      .switchHistory.pruneUnreferenced(agentId, [
+        ...(source.profileSwitches ?? []).map((entry) => entry.marker.switchId),
+        record.marker.switchId,
+      ])
+      .catch((error: unknown) => {
+        this.logger.warn({ err: error, agentId }, "Failed to prune superseded switch history");
+      });
     this.logger.info(
       { agentId, from: record.marker.from.provider, to: record.marker.to.provider },
       "agent.profile.switched",
@@ -3894,34 +4432,37 @@ export class AgentManager {
 
   private async resolveProfileSwitchSource(
     agentId: string,
-    storedSource: AgentProfileSwitchInput["storedSource"],
+    storedSource: AgentProfileSwitchPreviewInput["storedSource"],
   ) {
     const existing = this.agents.get(agentId);
     const stored = await this.requireRegistry().get(agentId);
     if (stored?.archivedAt)
-      throw new ProfileSwitchError("Restore this thread before switching accounts.");
+      throw new ProfileSwitchError("Restore this thread before switching accounts.", "archived");
     if (!existing && !storedSource)
-      throw new ProfileSwitchError("Reload this thread before switching accounts.");
+      throw new ProfileSwitchError("Reload this thread before switching accounts.", "not-loaded");
     if (storedSource && !isDeepStrictEqual(stored, storedSource.record))
       throw new ProfileSwitchError(
         "The thread changed during recovery. Retry to read its latest state.",
+        "source-changed",
       );
     const source = existing ?? this.profileSwitchSource(storedSource?.record);
     const isBusy = this.hasInFlightRun(agentId) || (existing?.pendingPermissions.size ?? 0) > 0;
     if (isBusy)
       throw new ProfileSwitchError(
         "Wait for the current turn and any permission requests to finish before switching.",
+        "busy",
       );
     if (source.internal || source.config.controllerExecutionId)
-      throw new ProfileSwitchError("This thread is managed by Vorteo and cannot switch accounts.");
-    if (existing) await this.hydrateTimelineFromLegacyProviderHistory(existing);
-    const rows = storedSource?.rows ?? this.timelineStore.getRows(agentId);
-
-    return { existing, source, rows };
+      throw new ProfileSwitchError(
+        "This thread is managed by Vorteo and cannot switch accounts.",
+        "managed",
+      );
+    return { existing, source, stored };
   }
 
   private profileSwitchSource(record: StoredAgentRecord | undefined) {
-    if (!record) throw new ProfileSwitchError("The source thread is missing. Reload and retry.");
+    if (!record)
+      throw new ProfileSwitchError("The source thread is missing. Reload and retry.", "not-found");
     return {
       config: { ...buildStoredAgentConfig(record), title: record.title ?? undefined },
       runtimeInfo: undefined,
@@ -4162,6 +4703,14 @@ export class AgentManager {
     }
   }
 
+  /**
+   * True while an automatic release (idle release, hosted upgrade release, runtime collector)
+   * emits this agent's closed state. Subscribers run synchronously inside that emit.
+   */
+  isReleasingRuntime(agentId: string): boolean {
+    return this.releasingRuntimes.has(agentId);
+  }
+
   private isIdleReleasable(agentId: string, expected?: IdleSessionObservation): boolean {
     const agent = this.agents.get(agentId);
     if (!agent?.session || agent.lifecycle !== "idle" || agent.internal) return false;
@@ -4219,7 +4768,15 @@ export class AgentManager {
       persistError = error;
     }
     this.detachPluginTools(agentId);
-    this.emitClosedAgent(closedAgent, { persist: false });
+    // Idle release, the hosted upgrade release and the runtime collector close a runtime that
+    // reopens on demand. Watchers must not take that close as the agent's end.
+    const automatic = condition !== undefined || this.automaticCloses.has(agentId);
+    if (automatic) this.releasingRuntimes.add(agentId);
+    try {
+      this.emitClosedAgent(closedAgent, { persist: false });
+    } finally {
+      this.releasingRuntimes.delete(agentId);
+    }
     this.logger.trace(
       {
         agentId,
@@ -4475,19 +5032,21 @@ export class AgentManager {
   }
 
   async setAgentMode(agentId: string, modeId: string): Promise<AgentProviderNotice | null> {
-    const agent = this.requireSessionAgent(agentId);
-    const notice = (await agent.session.setMode(modeId)) ?? null;
-    await this.drainSessionEvents(agentId);
-    const currentMode = (await agent.session.getCurrentMode()) ?? modeId;
-    agent.config.modeId = currentMode ?? undefined;
-    agent.currentModeId = currentMode;
-    // Update runtimeInfo to reflect the new mode
-    if (agent.runtimeInfo) {
-      agent.runtimeInfo = { ...agent.runtimeInfo, modeId: currentMode };
-    }
-    this.touchUpdatedAt(agent);
-    this.emitState(agent);
-    return notice;
+    return this.runLifecycleMutation(agentId, async () => {
+      const agent = this.requireSessionAgent(agentId);
+      const notice = (await agent.session.setMode(modeId)) ?? null;
+      await this.drainSessionEvents(agentId);
+      const currentMode = (await agent.session.getCurrentMode()) ?? modeId;
+      agent.config.modeId = currentMode ?? undefined;
+      agent.currentModeId = currentMode;
+      // Update runtimeInfo to reflect the new mode
+      if (agent.runtimeInfo) {
+        agent.runtimeInfo = { ...agent.runtimeInfo, modeId: currentMode };
+      }
+      this.touchUpdatedAt(agent);
+      this.emitState(agent);
+      return notice;
+    });
   }
 
   /** Null when the agent's provider does not report a context breakdown. */
@@ -4834,70 +5393,76 @@ export class AgentManager {
   }
 
   async setAgentModel(agentId: string, modelId: string | null): Promise<void> {
-    const agent = this.requireSessionAgent(agentId);
-    const normalizedModelId =
-      typeof modelId === "string" && modelId.trim().length > 0 ? modelId : null;
+    return this.runLifecycleMutation(agentId, async () => {
+      const agent = this.requireSessionAgent(agentId);
+      const normalizedModelId =
+        typeof modelId === "string" && modelId.trim().length > 0 ? modelId : null;
 
-    if (agent.session.setModel) {
-      await agent.session.setModel(normalizedModelId);
-    }
-    await this.drainSessionEvents(agentId);
+      if (agent.session.setModel) {
+        await agent.session.setModel(normalizedModelId);
+      }
+      await this.drainSessionEvents(agentId);
 
-    agent.config.model = normalizedModelId ?? undefined;
-    if (agent.runtimeInfo) {
-      agent.runtimeInfo = { ...agent.runtimeInfo, model: normalizedModelId };
-    }
-    this.refreshSessionPersistence(agent);
-    this.touchUpdatedAt(agent);
-    this.emitState(agent);
+      agent.config.model = normalizedModelId ?? undefined;
+      if (agent.runtimeInfo) {
+        agent.runtimeInfo = { ...agent.runtimeInfo, model: normalizedModelId };
+      }
+      this.refreshSessionPersistence(agent);
+      this.touchUpdatedAt(agent);
+      this.emitState(agent);
+    });
   }
 
   async setAgentThinkingOption(
     agentId: string,
     thinkingOptionId: string | null,
   ): Promise<AgentProviderNotice | null> {
-    const agent = this.requireSessionAgent(agentId);
-    const normalizedThinkingOptionId =
-      typeof thinkingOptionId === "string" && thinkingOptionId.trim().length > 0
-        ? thinkingOptionId
-        : null;
+    return this.runLifecycleMutation(agentId, async () => {
+      const agent = this.requireSessionAgent(agentId);
+      const normalizedThinkingOptionId =
+        typeof thinkingOptionId === "string" && thinkingOptionId.trim().length > 0
+          ? thinkingOptionId
+          : null;
 
-    let notice: AgentProviderNotice | null = null;
-    if (agent.session.setThinkingOption) {
-      notice = (await agent.session.setThinkingOption(normalizedThinkingOptionId)) ?? null;
-    }
-    await this.drainSessionEvents(agentId);
+      let notice: AgentProviderNotice | null = null;
+      if (agent.session.setThinkingOption) {
+        notice = (await agent.session.setThinkingOption(normalizedThinkingOptionId)) ?? null;
+      }
+      await this.drainSessionEvents(agentId);
 
-    let effectiveThinkingOptionId = normalizedThinkingOptionId;
-    const runtimeInfo = await agent.session.getRuntimeInfo();
-    if (runtimeInfo.thinkingOptionId !== undefined) {
-      effectiveThinkingOptionId = runtimeInfo.thinkingOptionId;
-    }
+      let effectiveThinkingOptionId = normalizedThinkingOptionId;
+      const runtimeInfo = await agent.session.getRuntimeInfo();
+      if (runtimeInfo.thinkingOptionId !== undefined) {
+        effectiveThinkingOptionId = runtimeInfo.thinkingOptionId;
+      }
 
-    agent.config.thinkingOptionId = effectiveThinkingOptionId ?? undefined;
-    if (agent.runtimeInfo) {
-      agent.runtimeInfo = {
-        ...agent.runtimeInfo,
-        thinkingOptionId: effectiveThinkingOptionId,
-      };
-    }
-    this.touchUpdatedAt(agent);
-    this.emitState(agent);
-    return notice;
+      agent.config.thinkingOptionId = effectiveThinkingOptionId ?? undefined;
+      if (agent.runtimeInfo) {
+        agent.runtimeInfo = {
+          ...agent.runtimeInfo,
+          thinkingOptionId: effectiveThinkingOptionId,
+        };
+      }
+      this.touchUpdatedAt(agent);
+      this.emitState(agent);
+      return notice;
+    });
   }
 
   async setAgentFeature(agentId: string, featureId: string, value: unknown): Promise<void> {
-    const agent = this.requireAgent(agentId);
+    return this.runLifecycleMutation(agentId, async () => {
+      const agent = this.requireAgent(agentId);
 
-    if (!agent.session.setFeature) {
-      throw new Error("Agent session does not support setting features");
-    }
+      if (!agent.session.setFeature) {
+        throw new Error("Agent session does not support setting features");
+      }
 
-    await agent.session.setFeature(featureId, value);
-    await this.drainSessionEvents(agentId);
-    agent.config.featureValues = { ...agent.config.featureValues, [featureId]: value };
-    this.touchUpdatedAt(agent);
-    this.emitState(agent);
+      await agent.session.setFeature(featureId, value);
+      await this.drainSessionEvents(agentId);
+      agent.config.featureValues = { ...agent.config.featureValues, [featureId]: value };
+      this.touchUpdatedAt(agent);
+      this.emitState(agent);
+    });
   }
 
   async setTitle(agentId: string, title: string): Promise<void> {
@@ -5020,7 +5585,29 @@ export class AgentManager {
   }
 
   async clearAgentAttention(agentId: string): Promise<void> {
-    const agent = this.requireAgent(agentId);
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      // Viewing a thread must not start its provider, so an unloaded agent's record is updated.
+      // Resume runs in the same lane, so its writes cannot interleave with this read and write,
+      // and a thread it loaded meanwhile takes the loaded path.
+      await this.runLifecycleMutation(agentId, async () => {
+        if (this.agents.has(agentId)) return this.clearAgentAttention(agentId);
+        const registry = this.requireRegistry();
+        const record = await registry.get(agentId);
+        if (!record) throw new Error(`Agent not found: ${agentId}`);
+        if (record.archivedAt || !record.requiresAttention) return;
+        const nextRecord: StoredAgentRecord = {
+          ...record,
+          updatedAt: this.nextStoredUpdatedAt(record),
+          requiresAttention: false,
+          attentionReason: null,
+          attentionTimestamp: null,
+        };
+        await registry.upsert(nextRecord);
+        this.dispatchStoredAgentState(nextRecord);
+      });
+      return;
+    }
     if (agent.attention.requiresAttention) {
       agent.attention = { requiresAttention: false };
       await this.persistSnapshot(agent);
@@ -5048,24 +5635,28 @@ export class AgentManager {
       return;
     }
 
-    const registry = this.requireRegistry();
-    const record = await registry.get(agentId);
-    const hasFinishedStatus = record?.lastStatus === "idle" || record?.lastStatus === "closed";
-    const canMarkUnread =
-      record && !record.internal && !record.archivedAt && !record.requiresAttention;
-    if (!canMarkUnread || !hasFinishedStatus) {
-      throw new Error(`Agent is no longer finished and read: ${agentId}`);
-    }
-    const updatedAt = this.nextStoredUpdatedAt(record);
-    const nextRecord: StoredAgentRecord = {
-      ...record,
-      updatedAt,
-      requiresAttention: true,
-      attentionReason: "finished",
-      attentionTimestamp: updatedAt,
-    };
-    await registry.upsert(nextRecord);
-    this.dispatchStoredAgentState(nextRecord);
+    // Same lane as resume, as for clearing attention.
+    return this.runLifecycleMutation(agentId, async () => {
+      if (this.agents.has(agentId)) return this.markAgentUnread(agentId);
+      const registry = this.requireRegistry();
+      const record = await registry.get(agentId);
+      const hasFinishedStatus = record?.lastStatus === "idle" || record?.lastStatus === "closed";
+      const canMarkUnread =
+        record && !record.internal && !record.archivedAt && !record.requiresAttention;
+      if (!canMarkUnread || !hasFinishedStatus) {
+        throw new Error(`Agent is no longer finished and read: ${agentId}`);
+      }
+      const updatedAt = this.nextStoredUpdatedAt(record);
+      const nextRecord: StoredAgentRecord = {
+        ...record,
+        updatedAt,
+        requiresAttention: true,
+        attentionReason: "finished",
+        attentionTimestamp: updatedAt,
+      };
+      await registry.upsert(nextRecord);
+      this.dispatchStoredAgentState(nextRecord);
+    });
   }
 
   async archiveSnapshot(agentId: string, archivedAt: string): Promise<StoredAgentRecord> {
@@ -7553,20 +8144,13 @@ export class AgentManager {
   private async readSwitchHistory(agent: Pick<ActiveManagedAgent, "id" | "profileSwitches">) {
     const latest = agent.profileSwitches?.at(-1);
     if (!latest || !this.registry) return null;
-    try {
-      return await this.registry.readSwitchHistory(agent.id, latest.marker.switchId);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      // Keep the thread loadable and the switch visible when its retained history is gone.
-      this.logger.warn(
-        { agentId: agent.id },
-        "Retained history before a profile switch is missing",
-      );
-      return {
-        switchId: latest.marker.switchId,
-        events: [{ timestamp: latest.switchedAt, item: latest.marker }],
-      };
-    }
+    const retained = await this.registry.switchHistory.read(agent.id, latest.marker.switchId, {
+      maxBytes: SWITCH_HISTORY_REPLAY_MAX_BYTES,
+    });
+    if (retained) return retained;
+    // Keep the thread loadable and the switch visible when its retained history is unavailable.
+    this.logger.warn({ agentId: agent.id }, "Retained history before a profile switch is missing");
+    return [{ timestamp: latest.switchedAt, item: latest.marker }];
   }
 
   private async hydrateTimelineFromLegacyProviderHistory(

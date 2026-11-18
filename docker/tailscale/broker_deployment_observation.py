@@ -56,6 +56,31 @@ def diagnostic(raw,header,service=False):
     return pids[0] if pids else None
 
 
+FRAMEWORK_LAUNCHER = re.compile(r'(/(?:[^/]+/)*Python\.framework/Versions/([0-9]+\.[0-9]+))/bin/python\2')
+
+
+def framework_interpreter(launcher):
+    """The image a macOS framework launcher re-executes, or None for any other path.
+
+    `<framework>/Versions/<v>/bin/python<v>` re-executes
+    `<framework>/Versions/<v>/Resources/Python.app/Contents/MacOS/Python` with that
+    path as argv[0]. Derived from the launcher path alone, never from the environment.
+    """
+    match = FRAMEWORK_LAUNCHER.fullmatch(launcher)
+    return f'{match[1]}/Resources/Python.app/Contents/MacOS/Python' if match else None
+
+
+def route_argv(argv, binding):
+    """A live broker runs the protected route: the binding argv exactly, or the same
+    argv with argv[0] replaced by its framework launcher's re-executed image. Nothing
+    else is admitted, so a foreign interpreter running the route is still refused."""
+    if argv == binding['argv']:
+        return True
+    image = framework_interpreter(binding['interpreter'])
+    return (image is not None and binding['argv'][:1] == [binding['interpreter']]
+            and argv == [image] + binding['argv'][1:])
+
+
 def registration(label, uid, invoke=run):
     """Recognize only a narrow native diagnostic grammar, never any nonzero as absent."""
     if not re.fullmatch(r'[A-Za-z0-9.-]+',label):raise ValueError('Invalid label')
@@ -170,7 +195,7 @@ class NativeObservation:
         enabled = not (record.get('Disabled', False) if override is None else override)
         reg = registration(binding['label'], os.getuid(), self.invoke)
         process = self.process(reg['pid']) if reg['pid'] else None
-        if process is not None and process['argv'] != binding['argv']:
+        if process is not None and not route_argv(process['argv'], binding):
             raise ValueError('Registered broker process differs from protected route')
         self.guard()
         return {'disposition': reg['state'], 'enabled': enabled,

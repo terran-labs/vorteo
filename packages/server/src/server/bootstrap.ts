@@ -1277,6 +1277,11 @@ export async function createPaseoDaemon(
   await agentStorage.initialize();
   const reserveRecoveryStops = await reconcileQuotaReserveStartup(agentStorage);
   logger.info({ reserveRecoveryStops }, "Quota reserve startup reconciliation completed");
+  const staleQuotaPausesReleased = await agentManager.releaseStaleQuotaPauses();
+  logger.info(
+    { staleQuotaPausesReleased },
+    "Released quota pauses on accounts that are not limited",
+  );
   const providerUsageService = new ProviderUsageService({
     logger,
     getProviderConfigs: () => daemonConfigStore.get().providers,
@@ -1802,6 +1807,22 @@ export async function createPaseoDaemon(
           .map((project) => project.projectId),
       );
     },
+    // Only a run that will really happen within a day counts as a wake: a schedule held for
+    // quota may never fire, and a weekly one would hide a stalled thread for a week.
+    scheduledWakes: async () => {
+      const horizon = Date.now() + 24 * 60 * 60_000;
+      return new Set(
+        (await scheduleService.list()).flatMap((schedule) =>
+          schedule.status === "active" &&
+          schedule.quotaState?.state !== "held" &&
+          schedule.nextRunAt &&
+          Date.parse(schedule.nextRunAt) <= horizon &&
+          schedule.target.type === "agent"
+            ? [schedule.target.agentId]
+            : [],
+        ),
+      );
+    },
   });
   const usageLimitResumes = new UsageLimitResumeService({
     agentManager,
@@ -1831,9 +1852,10 @@ export async function createPaseoDaemon(
     );
     return null;
   });
-  // A hosted session that ends with its host continues the way a restart would.
-  sessionHostRouting.onSessionLost = (agentId) => {
-    void agentManager.continueAfterHostedSessionLoss(agentId);
+  // A hosted session that ends with its host continues the way a restart would when it had a turn
+  // or background work in progress; an idle one is released and reopens on demand.
+  sessionHostRouting.onSessionLost = (agentId, loss, reason) => {
+    void agentManager.continueAfterHostedSessionLoss(agentId, loss, reason);
   };
   const hostedIdleRelease = startIdleReleaseForUpgrade(
     config.paseoHome,
@@ -1975,19 +1997,24 @@ export async function createPaseoDaemon(
       if (!wsServer) throw new Error("Daemon is not accepting agent messages");
       return wsServer.agentMessages;
     },
+    // A quota-latched caller is still active: its notifications wait for the latch to clear
+    // instead of being dropped, so a supervisor learns what finished while it was paused.
     callerIsActive: async (agentId) => {
       const record = await agentStorage.get(agentId);
-      return record
-        ? !record.archivedAt &&
-            !record.config?.quotaPausedAt &&
-            !agentManager.getAgent(agentId)?.config.quotaPausedAt
-        : Boolean(agentManager.getAgent(agentId)) &&
-            !agentManager.getAgent(agentId)?.config.quotaPausedAt;
+      return record ? !record.archivedAt : Boolean(agentManager.getAgent(agentId));
     },
+    callerIsHeld: async (agentId) =>
+      Boolean(
+        agentManager.getAgent(agentId)?.config.quotaPausedAt ??
+        (await agentStorage.get(agentId))?.config?.quotaPausedAt,
+      ),
     ...createFinishObservation({
       agentManager,
       agentStorage,
       waitForResume: restartRecovery.waitForResume,
+      // A hosted turn still running at startup is reported live once adopted, never from the
+      // closed status the previous worker stored at shutdown.
+      pendingAdoption: (agentId) => sessionHostRouting.adoptions.has(agentId),
       serverId,
       logger,
       messages: () => {
@@ -2459,7 +2486,7 @@ export async function createPaseoDaemon(
           .get(agentId)
           .then((record) =>
             record?.lastStatus === "running" && !record.archivedAt
-              ? agentManager.continueAfterHostedSessionLoss(agentId)
+              ? agentManager.continueAfterHostedSessionLoss(agentId, "turn", "recorded_running")
               : undefined,
           )
           .catch((error: unknown) =>

@@ -260,6 +260,8 @@ export interface LightThemeConfig {
   borderAccent: string;
   accent: string;
   accentBright: string;
+  // Accent-coloured text; defaults to the accent in light themes and its brighter variant in dark.
+  accentText?: string;
   accentForeground?: string;
   primary: string;
   primaryForeground: string;
@@ -312,6 +314,7 @@ export function buildLightSemanticColors(tint: LightThemeConfig) {
     accentSubtle: hexColorWithAlpha(tint.accent, 0.13),
     accentSubtleHovered: hexColorWithAlpha(tint.accent, 0.2),
     accentBright: tint.accentBright,
+    accentText: tint.accentText ?? tint.accent,
     accentForeground: tint.accentForeground ?? tint.surface0,
 
     destructive: tint.destructive,
@@ -369,6 +372,8 @@ export interface DarkThemeConfig {
   borderAccent: string;
   accent: string;
   accentBright: string;
+  // Accent-coloured text; defaults to the accent in light themes and its brighter variant in dark.
+  accentText?: string;
   accentForeground?: string;
   destructive: string;
   terminalBlack: string;
@@ -422,6 +427,7 @@ export function buildDarkSemanticColors(tint: DarkThemeConfig) {
     accentSubtle: hexColorWithAlpha(tint.accent, 0.13),
     accentSubtleHovered: hexColorWithAlpha(tint.accent, 0.2),
     accentBright: tint.accentBright,
+    accentText: tint.accentText ?? tint.accentBright,
     accentForeground: tint.accentForeground ?? "#ffffff",
 
     destructive: tint.destructive,
@@ -672,6 +678,11 @@ interface AppearancePalette {
   strong: string;
   accent: string;
   bright: string;
+  // Accent-coloured text when neither the accent (light) nor bright (dark) reaches 4.5:1 on
+  // root through raised.
+  accentText?: string;
+  // Focus ring when it differs from bright.
+  ring?: string;
 }
 const APPEARANCE_PALETTES: Record<AppearanceId, AppearancePalette> = {
   "starship-light": {
@@ -688,6 +699,8 @@ const APPEARANCE_PALETTES: Record<AppearanceId, AppearancePalette> = {
     // (4.83:1 on root); white text on it is 6.20:1. Was #2997ff at 2.35:1.
     accent: "#0a5fbd",
     bright: "#1672c8",
+    // Vorton's ring: 4.83:1 on root, the worst surface (was #1672c8 at 3.82:1).
+    ring: "#0a5fbd",
   },
   "starship-dark": {
     root: "#222222",
@@ -715,6 +728,9 @@ const APPEARANCE_PALETTES: Record<AppearanceId, AppearancePalette> = {
     strong: "rgba(132,100,68,0.28)",
     accent: "#86684a",
     bright: "#86684a",
+    // The accent is 3.93:1 on deep, so accent text uses Vorton's darker heading-gradient start
+    // (6.01, 5.49, 6.28, 6.45:1 on root, deep, surface, raised).
+    accentText: "#6e5239",
   },
   midas: {
     root: "#2b231d",
@@ -754,7 +770,10 @@ const APPEARANCE_PALETTES: Record<AppearanceId, AppearancePalette> = {
     muted: "#8b8da8",
     border: "rgba(255,255,255,0.08)",
     strong: "rgba(139,92,246,0.24)",
-    accent: "#3b82f6",
+    // Vorton's violet (owner decision 2026-11-14, was blue #3b82f6). Black text on it is 4.96:1.
+    // As small text it reaches 4.5:1 only on root and deep (4.33 on surface, 3.80 on raised), so
+    // accent text uses the #a78bfa variant, also the focus ring, at 5.9:1 or more on every surface.
+    accent: "#8b5cf6",
     bright: "#a78bfa",
   },
 };
@@ -782,6 +801,7 @@ function buildAppearanceTheme(id: AppearanceId) {
     borderAccent: p.strong,
     accent: p.accent,
     accentBright: p.bright,
+    accentText: p.accentText ?? (light ? p.accent : p.bright),
     // Starship light's darker accent carries white text, like Scriptorium's.
     accentForeground: id === "scriptorium" || id === "starship-light" ? "#ffffff" : "#000000",
     primary: p.text,
@@ -789,7 +809,7 @@ function buildAppearanceTheme(id: AppearanceId) {
     destructive: light ? "#b3261e" : "#ff7168",
     terminalBlack: light ? "#353540" : "#777780",
     terminalBrightBlack: light ? "#5f5f69" : "#aeaeb2",
-    ring: p.bright,
+    ring: p.ring ?? p.bright,
   };
   const base = light
     ? buildLightTheme(buildLightSemanticColors(config))

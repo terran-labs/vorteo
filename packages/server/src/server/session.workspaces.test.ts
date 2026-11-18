@@ -67,6 +67,7 @@ import { createTerminalManager } from "../terminal/terminal-manager.js";
 
 import { AgentManager, type AgentManagerEvent, type ManagedAgent } from "./agent/agent-manager.js";
 import { InMemoryAgentTimelineStore } from "./agent/agent-timeline-store.js";
+import { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 
 import type { ProviderSubagentDescriptor } from "./agent/provider-subagents/store.js";
 
@@ -2943,7 +2944,7 @@ test.each([false, true])(
   },
 );
 
-test("timeline polling allows one explicit attempt during a failed native load cooldown", async () => {
+test("timeline polling reads saved history without resuming and backs off failed reads", async () => {
   const record = makeStoredAgent({
     id: "00000000-0000-4000-8000-000000000116",
     cwd: process.cwd(),
@@ -2951,13 +2952,21 @@ test("timeline polling allows one explicit attempt during a failed native load c
   });
   record.persistence = { provider: "codex", sessionId: "native-thread" };
   const client = new CreateAgentTestClient();
-  const resume = vi
-    .spyOn(client, "resumeSession")
-    .mockRejectedValueOnce(new Error("Native history unavailable"))
-    .mockRejectedValueOnce(new Error("Native history still unavailable"));
+  const resume = vi.spyOn(client, "resumeSession");
   const manager = new AgentManager({ clients: { codex: client }, logger: createTestLogger() });
   const providers = createProviderSnapshotManagerStub();
   providers.listRegisteredProviderIds.mockReturnValue(["codex"]);
+  const failures = ["Native history unavailable", "Native history still unavailable"];
+  const readHistory = vi.fn(async function* (): AsyncGenerator<AgentStreamEvent> {
+    const failure = failures.shift();
+    if (failure) throw new Error(failure);
+    yield {
+      type: "timeline",
+      provider: "codex",
+      item: { type: "assistant_message", text: "Saved answer" },
+    };
+  });
+  providers.manager.readSessionHistory = readHistory;
   const emitted: SessionOutboundMessage[] = [];
   const session = createSessionForWorkspaceTests({
     liveAgentManager: manager,
@@ -2980,21 +2989,92 @@ test("timeline polling allows one explicit attempt during a failed native load c
   try {
     expect((await read("initial-failure"))?.error).toBe("Native history unavailable");
     expect((await read("observer-retry"))?.error).toBe("Native history unavailable");
-    expect(resume).toHaveBeenCalledTimes(1);
+    expect(readHistory).toHaveBeenCalledTimes(1);
     expect((await read("manual-retry", true))?.error).toBe("Native history still unavailable");
     expect((await read("repeated-manual-retry", true))?.error).toBe(
       "Native history still unavailable",
     );
-    expect(resume).toHaveBeenCalledTimes(2);
+    expect(readHistory).toHaveBeenCalledTimes(2);
     vi.advanceTimersByTime(30_000);
-    expect((await read("after-cooldown"))?.error).toBeNull();
-    expect((await read("after-recovery"))?.error).toBeNull();
-    expect(resume).toHaveBeenCalledTimes(3);
+    expect(await read("after-cooldown")).toMatchObject({
+      error: null,
+      entries: [{ item: { type: "assistant_message", text: "Saved answer" } }],
+    });
+    // Reading history never registers the thread, so nothing stays resident between pages.
+    expect(resume).not.toHaveBeenCalled();
+    expect(manager.getAgent(record.id)).toBeNull();
   } finally {
     vi.useRealTimers();
     await manager.closeAgent(record.id);
   }
 });
+
+// Only Claude and Codex transcripts replay in full without resuming. OpenCode refuses passive
+// reads (unstubbed here, so a saved read would hit the real guard), and plugin or ACP providers
+// may replay nothing, so those
+// threads load through their provider. A Claude thread whose transcript replays nothing, such as
+// one never prompted, falls back to loading instead of reporting an unreadable transcript.
+test.each([
+  { provider: "opencode-work", base: "opencode", history: "real", loads: true, savedReads: 0 },
+  { provider: "pi-work", base: "pi", history: "none", loads: true, savedReads: 0 },
+  { provider: "claude-work", base: "claude", history: "answer", loads: false, savedReads: 1 },
+  { provider: "claude-new", base: "claude", history: "none", loads: true, savedReads: 1 },
+] as const)(
+  "timeline requests for an unloaded $base thread with $history history load it: $loads",
+  async ({ provider, base, history, loads, savedReads }) => {
+    const record = makeStoredAgent({
+      id: "00000000-0000-4000-8000-000000000118",
+      cwd: process.cwd(),
+      updatedAt: "2026-11-16T00:00:00.000Z",
+    });
+    record.provider = provider;
+    record.persistence = { provider, sessionId: `native-${base}` };
+    const client = new CreateAgentTestClient();
+    const resume = vi.spyOn(client, "resumeSession");
+    const manager = new AgentManager({
+      clients: { [provider]: client },
+      logger: createTestLogger(),
+    });
+    const providers = new ProviderSnapshotManager({
+      logger: createTestLogger(),
+      providerOverrides: { [provider]: { extends: base, label: `Work ${base}` } },
+    });
+    const savedRead = vi.spyOn(providers, "readSessionHistory");
+    if (history !== "real") {
+      savedRead.mockImplementation(async function* (): AsyncGenerator<AgentStreamEvent> {
+        if (history === "none") return;
+        yield {
+          type: "timeline",
+          provider,
+          item: { type: "assistant_message", text: "Saved answer" },
+        };
+      });
+    }
+    const emitted: SessionOutboundMessage[] = [];
+    const session = createSessionForWorkspaceTests({
+      liveAgentManager: manager,
+      providerSnapshotManager: providers,
+      agentStorage: { get: async () => record, list: async () => [record] },
+      onMessage: (message) => emitted.push(message),
+    });
+    try {
+      await session.handleMessage({
+        type: "fetch_agent_timeline_request",
+        requestId: `${provider}-history`,
+        agentId: record.id,
+      });
+      expect(findByType(emitted, "fetch_agent_timeline_response")?.payload).toMatchObject({
+        error: null,
+        agent: { id: record.id },
+      });
+      expect(resume).toHaveBeenCalledTimes(loads ? 1 : 0);
+      expect(savedRead).toHaveBeenCalledTimes(savedReads);
+    } finally {
+      await manager.closeAgent(record.id).catch(() => {});
+      await providers.shutdown();
+    }
+  },
+);
 
 test("a timeline read crossing close keeps the retained cursor without creating a session", async () => {
   const record = makeStoredAgent({
@@ -3120,37 +3200,13 @@ test.each([false, true])(
   },
 );
 
-test("provider subagent polling before opening restores children after quiet hydration", async () => {
+test("provider subagent polling before opening restores children from saved history", async () => {
   const workdir = mkdtempSync(path.join(tmpdir(), "provider-child-open-"));
   const logger = asSessionLogger(createTestLogger());
   const storage = new AgentStorage(path.join(workdir, "agents"), logger);
-  class ChildHistorySession extends CreateAgentTestSession {
-    override async *streamHistory(): AsyncGenerator<AgentStreamEvent> {
-      yield {
-        type: "provider_subagent",
-        provider: "codex",
-        event: {
-          type: "upsert",
-          id: "restored-child",
-          title: "Restored child",
-          status: "completed",
-        },
-      };
-    }
-  }
-  class ChildHistoryClient extends CreateAgentTestClient {
-    override async resumeSession(
-      _handle: AgentPersistenceHandle,
-      overrides?: Partial<AgentSessionConfig>,
-    ): Promise<AgentSession> {
-      return new ChildHistorySession({ provider: "codex", cwd: overrides?.cwd ?? workdir });
-    }
-  }
-  const manager = new AgentManager({
-    clients: { codex: new ChildHistoryClient() },
-    registry: storage,
-    logger,
-  });
+  const client = new CreateAgentTestClient();
+  const resume = vi.spyOn(client, "resumeSession");
+  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
   const record = makeStoredAgent({
     id: "00000000-0000-4000-8000-000000000115",
     cwd: workdir,
@@ -3161,6 +3217,18 @@ test("provider subagent polling before opening restores children after quiet hyd
   const emitted: SessionOutboundMessage[] = [];
   const providers = createProviderSnapshotManagerStub();
   providers.listRegisteredProviderIds.mockReturnValue(["codex"]);
+  providers.manager.readSessionHistory = async function* (): AsyncGenerator<AgentStreamEvent> {
+    yield {
+      type: "provider_subagent",
+      provider: "codex",
+      event: { type: "upsert", id: "restored-child", title: "Restored child", status: "completed" },
+    };
+    yield {
+      type: "timeline",
+      provider: "codex",
+      item: { type: "assistant_message", text: "Done" },
+    };
+  };
   const session = createSessionForWorkspaceTests({
     liveAgentManager: manager,
     providerSnapshotManager: providers.manager,
@@ -3204,8 +3272,9 @@ test("provider subagent polling before opening restores children after quiet hyd
         }),
       },
     });
+    expect(resume).not.toHaveBeenCalled();
+    expect(manager.getAgent(record.id)).toBeNull();
   } finally {
-    await manager.closeAgent(record.id);
     rmSync(workdir, { recursive: true, force: true });
   }
 });

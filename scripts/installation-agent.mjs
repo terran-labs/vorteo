@@ -951,6 +951,13 @@ if (
   if (!response.ok) {
     const failure = await response.json().catch(() => null);
     const detail = typeof failure?.error === "string" ? `: ${failure.error}` : "";
+    if (failure?.outcome === "recorded_uncertain" && typeof failure.requestId === "string") {
+      throw new Error(
+        `Deployment ${failure.requestId} was recorded; persistence of its preparation outcome is uncertain (${failure.code}). ` +
+          `Read broker-deployment-status ${failure.requestId} before another submission. ` +
+          `Preparation: ${failure.preparationReason}. Persistence: ${failure.persistenceReason}`,
+      );
+    }
     throw new Error(`Installation rejected the request (${response.status})${detail}`);
   }
   let result = await response.json();
