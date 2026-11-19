@@ -23,6 +23,7 @@ import {
   type AnsweredQuestions,
   type OwnerAnswerInput,
 } from "./questions/model.js";
+import { ChecklistWakeConditionSchema } from "@getpaseo/protocol/task-checklist";
 import { AgentTaskItemSchema } from "@getpaseo/protocol/messages";
 import type { AgentTaskItem } from "@getpaseo/protocol/agent-types";
 import {
@@ -104,10 +105,32 @@ export const GoalSubmissionSchema = z.object({
 });
 export type GoalSubmission = z.infer<typeof GoalSubmissionSchema>;
 
+/** Daemon-owned generation and admission receipt, never editable task metadata. */
+const ChecklistWakeGenerationSchema = z.object({
+  taskId: z.string(),
+  generation: z.string().uuid(),
+  condition: ChecklistWakeConditionSchema,
+  armedAt: z.string().datetime(),
+  claim: z.object({ id: z.string().uuid(), at: z.string().datetime() }).optional(),
+  unavailable: z
+    .object({ reason: z.string(), at: z.string().datetime(), cwd: z.string() })
+    .optional(),
+  suppression: z
+    .object({
+      reason: z.string(),
+      at: z.string().datetime(),
+      serverId: z.string(),
+      agentId: z.string(),
+    })
+    .optional(),
+});
+export type ChecklistWakeGeneration = z.infer<typeof ChecklistWakeGenerationSchema>;
+
 const STORED_AGENT_SCHEMA = z.object({
   journal: z.array(AgentJournalEntrySchema).optional(),
   questions: z.array(AgentQuestionSchema).optional(),
   tasks: z.array(AgentTaskItemSchema).optional(),
+  checklistWakeGenerations: z.array(ChecklistWakeGenerationSchema).optional(),
   goalSubmissions: z.array(GoalSubmissionSchema).optional(),
   profileSwitches: z.array(ProfileSwitchRecordSchema).optional(),
   // Discovery hint only. Admission always re-reads the native goal.
@@ -608,7 +631,11 @@ export class AgentStorage {
     return structuredClone(committed);
   }
 
-  async mutateChecklist(agentId: string, mutation: ChecklistMutation): Promise<AgentTaskItem[]> {
+  async mutateChecklist(
+    agentId: string,
+    mutation: ChecklistMutation,
+    canMonitorWakeConditions: () => boolean = () => false,
+  ): Promise<AgentTaskItem[]> {
     await this.load();
     let committed: AgentTaskItem[] | null = null;
     await this.queueRecordMutation(
@@ -616,10 +643,25 @@ export class AgentStorage {
       (record) => {
         if (!record || record.archivedAt)
           throw new ChecklistError("not_found", "Only an active thread can edit its checklist.");
+        // Evaluate readiness inside the serialized write, including after asynchronous loading.
+        const attachesCondition = "wakeCondition" in mutation && mutation.wakeCondition != null;
+        if (attachesCondition && !canMonitorWakeConditions()) {
+          throw new ChecklistError(
+            "invalid",
+            "Checklist wake-condition monitoring is unavailable.",
+          );
+        }
         committed = mutateChecklist(record.tasks ?? [], mutation);
-        return { ...record, tasks: committed, updatedAt: new Date().toISOString() };
+        const updatedAt = new Date().toISOString();
+        const checklistWakeGenerations = reconcileChecklistWakeGenerations(
+          record,
+          committed,
+          mutation,
+          updatedAt,
+        );
+        return { ...record, tasks: committed, checklistWakeGenerations, updatedAt };
       },
-      { checklistWrite: true },
+      { checklistWrite: true, checklistWakeWrite: true },
     );
     if (committed === null)
       throw new ChecklistError(
@@ -627,6 +669,142 @@ export class AgentStorage {
         "The thread was deleted before the checklist could be saved.",
       );
     return committed;
+  }
+
+  /** Recheck captured observations against committed task state before claiming a wake. */
+  currentChecklistWakeGenerations(
+    agentId: string,
+    observed: readonly ChecklistWakeGeneration[],
+  ): ChecklistWakeGeneration[] {
+    const record = this.getLoadedRecord(agentId);
+    return record ? currentChecklistWakeGenerations(record, observed) : [];
+  }
+
+  /** Match our durable receipts after preparation without treating them as fresh observations. */
+  currentChecklistWakeClaims(
+    agentId: string,
+    claims: readonly ChecklistWakeGeneration[],
+  ): ChecklistWakeGeneration[] {
+    const record = this.getLoadedRecord(agentId);
+    return record ? currentChecklistWakeGenerations(record, claims, true) : [];
+  }
+
+  /** Advisory evidence only: recording suppression never spends or authorizes a wake. */
+  async recordChecklistWakeSuppression(
+    agentId: string,
+    observed: readonly ChecklistWakeGeneration[],
+    suppression: NonNullable<ChecklistWakeGeneration["suppression"]>,
+  ): Promise<ChecklistWakeGeneration[]> {
+    const captured = structuredClone(observed);
+    const receipt = structuredClone(suppression);
+    await this.load();
+    let recorded: ChecklistWakeGeneration[] = [];
+    await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (!record) return null;
+        recorded = currentChecklistWakeGenerations(record, captured)
+          .filter((entry) => !entry.suppression)
+          .map((entry) => Object.assign({}, entry, { suppression: receipt }));
+        if (!recorded.length) return null;
+        const byGeneration = new Map(recorded.map((entry) => [entry.generation, entry]));
+        return {
+          ...record,
+          checklistWakeGenerations: record.checklistWakeGenerations?.map(
+            (entry) => byGeneration.get(entry.generation) ?? entry,
+          ),
+        };
+      },
+      { checklistWakeWrite: true },
+    );
+    return structuredClone(recorded);
+  }
+
+  /** First unavailable evidence is advisory and cannot claim or rearm a generation. */
+  async recordChecklistWakeUnavailable(
+    agentId: string,
+    observed: ChecklistWakeGeneration,
+    unavailable: NonNullable<ChecklistWakeGeneration["unavailable"]>,
+  ): Promise<boolean> {
+    const captured = structuredClone(observed);
+    const receipt = structuredClone(unavailable);
+    await this.load();
+    let recorded = false;
+    await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (!record || record.cwd !== receipt.cwd) return null;
+        const current = currentChecklistWakeGenerations(record, [captured])[0];
+        if (!current || current.unavailable) return null;
+        recorded = true;
+        return {
+          ...record,
+          checklistWakeGenerations: record.checklistWakeGenerations?.map((entry) =>
+            entry.generation === current.generation ? { ...entry, unavailable: receipt } : entry,
+          ),
+        };
+      },
+      { checklistWakeWrite: true },
+    );
+    return recorded;
+  }
+
+  /** Claim only after admission permits a wake. A receipt is not proof of provider delivery. */
+  async claimChecklistWakeGenerations(
+    agentId: string,
+    observed: readonly ChecklistWakeGeneration[],
+    now: number,
+    canClaim: () => boolean,
+  ): Promise<ChecklistWakeGeneration[]> {
+    const captured = structuredClone(observed);
+    await this.load();
+    let claimed: ChecklistWakeGeneration[] = [];
+    await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (!record || !canClaim()) return null;
+        const current = currentChecklistWakeGenerations(record, captured);
+        if (current.length === 0) return null;
+        const claimedAt = new Date(now).toISOString();
+        claimed = current.map((entry) =>
+          Object.assign({}, entry, {
+            claim: { id: randomUUID(), at: claimedAt },
+          }),
+        );
+        const byGeneration = new Map(claimed.map((entry) => [entry.generation, entry]));
+        const checklistWakeGenerations = (record.checklistWakeGenerations ?? []).map(
+          (entry) => byGeneration.get(entry.generation) ?? entry,
+        );
+        return { ...record, checklistWakeGenerations };
+      },
+      { checklistWakeWrite: true },
+    );
+    return structuredClone(claimed);
+  }
+
+  /** A hold that wins after durable preparation returns only its exact unspent claims. */
+  async releaseChecklistWakeClaims(
+    agentId: string,
+    claims: readonly ChecklistWakeGeneration[],
+  ): Promise<void> {
+    const captured = structuredClone(claims);
+    await this.load();
+    await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (!record) return null;
+        let changed = false;
+        const checklistWakeGenerations = (record.checklistWakeGenerations ?? []).map((entry) => {
+          if (!entry.claim || !captured.some((claim) => sameChecklistWakeGeneration(claim, entry)))
+            return entry;
+          changed = true;
+          const { claim: _claim, ...armed } = entry;
+          return armed;
+        });
+        return changed ? { ...record, checklistWakeGenerations } : null;
+      },
+      { checklistWakeWrite: true },
+    );
   }
 
   private queueRecordMutation(
@@ -971,6 +1149,75 @@ export function projectDirNameFromCwd(cwd: string): string {
   return prefix + withoutRoot.replace(/[\\/]+/g, "-");
 }
 
+function reconcileChecklistWakeGenerations(
+  record: StoredAgentRecord,
+  tasks: readonly AgentTaskItem[],
+  mutation: ChecklistMutation,
+  now: string,
+): ChecklistWakeGeneration[] | undefined {
+  const previous = new Map(
+    (record.checklistWakeGenerations ?? []).map((entry) => [entry.taskId, entry]),
+  );
+  const generations: ChecklistWakeGeneration[] = [];
+  for (const task of tasks) {
+    if (
+      task.source !== "vorteo" ||
+      task.status !== "blocked" ||
+      task.completed ||
+      !task.id ||
+      !task.wakeCondition
+    )
+      continue;
+    const prior = previous.get(task.id);
+    const explicitlyRearmed =
+      mutation.operation === "update" && mutation.id === task.id && mutation.wakeCondition != null;
+    const unchanged = prior && isDeepStrictEqual(prior.condition, task.wakeCondition);
+    if (unchanged && !explicitlyRearmed) generations.push(prior);
+    else
+      generations.push({
+        taskId: task.id,
+        generation: randomUUID(),
+        condition: structuredClone(task.wakeCondition),
+        armedAt: now,
+      });
+  }
+  return generations.length > 0 ? generations : undefined;
+}
+
+/** Advisory receipts may arrive after capture; generation and firing receipt must still match. */
+function sameChecklistWakeGeneration(
+  a: ChecklistWakeGeneration,
+  b: ChecklistWakeGeneration,
+): boolean {
+  const { suppression: _a, unavailable: _ua, ...first } = a;
+  const { suppression: _b, unavailable: _ub, ...second } = b;
+  return isDeepStrictEqual(first, second);
+}
+
+function currentChecklistWakeGenerations(
+  record: StoredAgentRecord,
+  observed: readonly ChecklistWakeGeneration[],
+  claimed = false,
+): ChecklistWakeGeneration[] {
+  if (record.archivedAt) return [];
+  const current = (record.checklistWakeGenerations ?? []).filter((entry) => {
+    if (
+      Boolean(entry.claim) !== claimed ||
+      !observed.some((candidate) => sameChecklistWakeGeneration(candidate, entry))
+    )
+      return false;
+    return (record.tasks ?? []).some(
+      (task) =>
+        task.id === entry.taskId &&
+        task.source === "vorteo" &&
+        task.status === "blocked" &&
+        !task.completed &&
+        isDeepStrictEqual(task.wakeCondition, entry.condition),
+    );
+  });
+  return structuredClone(current);
+}
+
 /** Background snapshots preserve the checklist's latest committed mutation. */
 function preserveManagedChecklist(
   record: StoredAgentRecord,
@@ -984,6 +1231,7 @@ function preserveManagedChecklist(
 interface RecordMutationOptions {
   goalReviewWrite?: boolean;
   checklistWrite?: boolean;
+  checklistWakeWrite?: boolean;
   journalWrite?: boolean;
   questionsWrite?: boolean;
   blockedReviewWrite?: boolean;
@@ -1002,6 +1250,8 @@ function preserveOwnedRecordFields({ record, existing, options }: OwnedRecordFie
   if (!options.journalWrite && existing) record.journal = existing.journal;
   if (!options.questionsWrite && existing) record.questions = existing.questions;
   if (!options.checklistWrite) preserveManagedChecklist(record, existing);
+  if (!options.checklistWakeWrite)
+    record.checklistWakeGenerations = existing?.checklistWakeGenerations;
   if (!options.blockedReviewWrite && existing) {
     record.lastBlockedReviewAt = existing.lastBlockedReviewAt;
     record.blockedReviewCount = existing.blockedReviewCount;

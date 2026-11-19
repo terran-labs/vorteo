@@ -249,6 +249,34 @@ agent snapshots and todo timelines. The stored status and task metadata remain u
 A stale edit using the downgraded snapshot fails its existing `expectedTask` check.
 The blocked status is discretionary and independent of `blockedBy` prerequisite edges.
 
+## Checklist wake conditions
+
+The optional `wakeCondition` field describes a deadline, an explicit GitHub PR state,
+a workflow run and attempt, or named required checks on a pinned PR head SHA.
+The PR state `closed` means finished by closure or merge; `merged` requires a merge.
+Create and update mutations accept `null` to clear it; stored items omit cleared fields.
+Structural wire parsing is separate from date and target validation during mutation.
+Provider-owned tasks remain read-only.
+
+The SDK requires `features.checklistWakeConditions === true` before sending a condition,
+including explicit clearing or a condition in an update/delete `expectedTask` snapshot.
+Ordinary checklist writes retain their existing capability requirements. Old clients
+ignore the optional response field, and new clients accept its absence. A snapshot
+that omits a stored condition fails optimistic concurrency, so an older client cannot
+unknowingly edit or delete a conditioned task. Supplied conditions compare exactly.
+
+The daemon stores generations and claim receipts separately from editable task metadata.
+Serialized mutations reject non-null condition writes unless the live runtime reports
+complete monitoring support. Clearing and ordinary writes remain available. Bootstrap installs the condition monitor and shared GitHub adapter together. The advertised
+capability and mutation guard use the same live readiness callback, which refuses writes
+while monitoring is stopped or the daemon is draining. Shared wake admission preserves holds and validates exact
+claim receipts before reservation. Schema acceptance alone does not promise
+a wake. The capability reports installed monitoring support; per-target availability remains
+live daemon state, outside wire fields and editable metadata. Unavailable targets remain
+armed but regain eligibility under the existing opt-in review ladder, without resetting it.
+The first concrete unavailable reason is recorded once per generation separately from claims.
+Enable readiness and the capability only when all accepted condition kinds have evaluators.
+
 ## Thread journals
 
 Daemons advertise `features.agentJournal`. The interface gates the journal card on that capability. Journal entries travel as an optional `journal` array in existing agent snapshots; older clients ignore the field, and newer clients still accept snapshots that omit it. No new WebSocket message type is sent to older clients. The caller-bound MCP tools assign append sequence and timestamp on the server, commit before broadcasting, and deduplicate retries by entry ID. Ordinary agent snapshot writes preserve the durable journal.

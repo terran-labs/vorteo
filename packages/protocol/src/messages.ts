@@ -4566,6 +4566,7 @@ export const ServerInfoStatusPayloadSchema = z
         agentTaskSnapshots: z.boolean().optional(),
         agentChecklistMutations: z.boolean().optional(),
         checklistBlockedStatus: z.boolean().optional(),
+        checklistWakeConditions: z.boolean().optional(),
         sidebarState: z.boolean().optional(),
         // COMPAT(sidebarFolders): added 2026-10-22; gate folder writes until the daemon floor includes them.
         sidebarFolders: z.boolean().optional(),

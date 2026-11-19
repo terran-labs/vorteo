@@ -4070,150 +4070,424 @@ for (const width of [1280, 390]) {
       InstallationSettingsSnapshotSchema.parse(
         await (
           await page.request.post(`${origin}/api/installation/owner/settings/read`, {
-            headers: { Origin: origin, "X-Vorteo-Provider-Removal": "1" },
+            headers: {
+              Origin: origin,
+              "X-Vorteo-Provider-Removal": "1",
+              "X-Vorteo-Primary-Connection": "1",
+            },
             data: {},
           })
         ).json(),
       );
     const before = await read();
-    const originals = before.settings?.providerDefinitions;
-    if (!originals) throw new Error("Missing provider definitions");
-    const reorderClient = await connectReadyInstallationDaemon("host");
-    const originalCodex = (await reorderClient.getDaemonConfig()).config.providers.codex;
+    const originalDefinitions = before.settings?.providerDefinitions;
+    const originalPrimary = before.settings?.primaryConnection;
+    if (originalPrimary === undefined) throw new Error("Missing primary connection capability");
+    if (!originalDefinitions) throw new Error("Missing provider definitions");
+    const originals = originalDefinitions;
+    const mockDefinitions = originals.filter((entry) => entry.providerType === "mock");
+    expect(mockDefinitions).toHaveLength(1);
+    const [mockDefinition] = mockDefinitions;
+    if (!mockDefinition?.accountId) throw new Error("Missing shared Mock account fixture");
+    const clients: Awaited<ReturnType<typeof connectReadyInstallationDaemon>>[] = [];
+    const runtimeOriginals: {
+      client: (typeof clients)[number];
+      providerId: string;
+      mockProviderId: string;
+      command: string[];
+      status: string;
+    }[] = [];
+    const fixtureCommand = [
+      process.execPath,
+      path.resolve(__dirname, "../fixtures/catalog-codex.mjs"),
+    ];
+    const serverIds = config.public.environments.map((environment) => environment.serverId);
+    const failures: unknown[] = [];
+    async function collectFailure(operation: () => Promise<void>) {
+      try {
+        await operation();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
     try {
-      // Give the disabled group a second installed CLI instead of dragging between groups.
-      await reorderClient.patchDaemonConfig({
-        providers: {
-          codex: {
-            command: [process.execPath, path.resolve(__dirname, "../fixtures/catalog-codex.mjs")],
-          },
-        },
-      });
-      await reorderClient.refreshProvidersSnapshot({ providers: ["codex"] });
-      const prepared = await read();
-      const setup = await page.request.patch(`${origin}/api/installation/owner/settings`, {
-        headers: { Origin: origin, "X-Vorteo-Provider-Removal": "1" },
-        data: {
-          expectedRevision: prepared.revision,
-          settings: {
-            providerDefinitions: originals.map((entry, index) => ({
-              ...entry,
-              policy: {
-                ...entry.policy,
-                order:
-                  ({ mock: 0, codex: 1 } as Record<string, number>)[entry.providerType] ??
-                  index + 2,
-                ...(entry.providerType === "codex" ? { enabled: false } : {}),
-              },
-            })),
-          },
-        },
-      });
-      expect(setup.ok()).toBe(true);
-      await page.goto(`${origin}/settings/providers`);
-      const family = page.getByTestId("provider-family-mock");
-      await expect(family).toHaveCount(1);
-      await expect(page.locator('[data-testid^="shared-provider-environment-"]')).toHaveCount(0);
-      await expect(page.getByTestId("host-page-add-provider-card")).toHaveCount(0);
-      const enabled = family.getByRole("switch", { name: "Enable mock everywhere", exact: true });
-      await expect(enabled).toBeChecked();
-      await enabled.click();
-      await expect(enabled).not.toBeChecked();
-      await expect
-        .poll(async () =>
-          (await read()).settings?.providerDefinitions
-            ?.filter((entry) => entry.providerType === "mock")
-            .every((entry) => entry.policy.enabled === false),
-        )
-        .toBe(true);
-      await expect
-        .poll(
-          async () =>
-            Object.values((await read()).sources).every(
-              (source) => source.pendingRevision === null,
-            ),
-          { timeout: 60000 },
-        )
-        .toBe(true);
-      for (const kind of ["host", "container"] as const) {
-        const client = await connectReadyInstallationDaemon(kind);
-        try {
-          expect((await client.getDaemonConfig()).config.providers.mock.enabled).toBe(false);
-        } finally {
-          await client.close();
+      async function captureCodexBindings() {
+        for (const environment of config.public.environments) {
+          const client = await connectReadyInstallationDaemon(environment.kind);
+          clients.push(client);
+          const localConfig = (await client.getDaemonConfig()).config;
+          const definitions = originals.filter(
+            (entry) =>
+              entry.providerType === "codex" && entry.bindings[environment.serverId] === "codex",
+          );
+          expect(definitions).toHaveLength(1);
+          const providerId = definitions[0]?.bindings[environment.serverId];
+          if (!providerId) throw new Error("Missing environment Codex binding");
+          const binding = ProviderOverrideSchema.parse(localConfig.providers[providerId] ?? {});
+          await expect
+            .poll(async () => {
+              const observed = (await client.getProvidersSnapshot()).entries?.find(
+                (entry) => entry.provider === providerId,
+              );
+              return observed !== undefined && observed.status !== "loading";
+            })
+            .toBe(true);
+          const discovery = (await client.getProvidersSnapshot()).entries?.find(
+            (entry) => entry.provider === providerId,
+          );
+          if (!discovery) throw new Error("Missing original Codex binding discovery");
+          // Guard against a fixture runtime override leaking from an earlier case.
+          expect(discovery.status).not.toBe("ready");
+          const mockProviderId = mockDefinition.bindings[environment.serverId];
+          if (!mockProviderId) throw new Error("Missing environment Mock binding");
+          runtimeOriginals.push({
+            client,
+            providerId,
+            mockProviderId,
+            command: [...(binding.command ?? ["codex"])],
+            status: discovery.status,
+          });
         }
       }
-      if (width === 1280) {
-        const handle = family.getByTestId("provider-family-drag-mock");
-        await handle.focus();
-        await page.keyboard.press("Space");
-        await expect(handle).toHaveAttribute("aria-pressed", "true");
-        await page.keyboard.press("ArrowDown");
-        await expect(page.locator('[id^="DndLiveRegion-"]')).toContainText(
-          "over droppable area codex",
-        );
-        await page.keyboard.press("Space");
-        await expect
-          .poll(
-            async () =>
-              (await read()).settings?.providerDefinitions?.find(
-                (entry) => entry.providerType === "mock",
-              )?.policy.order,
-          )
-          .toBe(1);
+      async function prepareCodexBindings() {
+        for (const { client, providerId } of runtimeOriginals) {
+          await client.patchDaemonConfig({
+            providers: { [providerId]: { command: fixtureCommand } },
+          });
+          await client.refreshProvidersSnapshot({ providers: [providerId] });
+          await expect
+            .poll(async () =>
+              (await client.getProvidersSnapshot()).entries?.find(
+                (entry) => entry.provider === providerId,
+              ),
+            )
+            .toMatchObject({ provider: providerId, enabled: true, status: "ready" });
+        }
       }
-      await openProviderPage(page, "mock");
-      await openConnectionAction(page, null, "rename");
-      await page.getByTestId("shared-provider-rename-dialog-input").fill("Renamed fixture account");
-      await page.getByTestId("shared-provider-rename-dialog-submit").click();
-      await expect(page.getByTestId("shared-provider-rename-dialog")).not.toBeVisible();
-      await expect(
-        page
+      async function expectMockRuntime(enabled: boolean) {
+        for (const { client, mockProviderId } of runtimeOriginals) {
+          expect((await client.getDaemonConfig()).config.providers[mockProviderId].enabled).toBe(
+            enabled,
+          );
+          await expect
+            .poll(async () =>
+              (await client.getProvidersSnapshot()).entries?.find(
+                (entry) => entry.provider === mockProviderId,
+              ),
+            )
+            .toMatchObject({
+              provider: mockProviderId,
+              enabled,
+              status: enabled ? "ready" : "unavailable",
+            });
+        }
+      }
+      async function exerciseFamily() {
+        // Keyboard reordering requires installed families in the same enabled group.
+        await captureCodexBindings();
+        const prepared = await read();
+        const setup = await page.request.patch(`${origin}/api/installation/owner/settings`, {
+          headers: {
+            Origin: origin,
+            "X-Vorteo-Provider-Removal": "1",
+            "X-Vorteo-Primary-Connection": "1",
+          },
+          data: {
+            expectedRevision: prepared.revision,
+            settings: {
+              providerDefinitions: originals.map((entry, index) => ({
+                ...entry,
+                policy: {
+                  ...entry.policy,
+                  order:
+                    ({ mock: 0, codex: 1 } as Record<string, number>)[entry.providerType] ??
+                    index + 2,
+                  ...(entry.providerType === "codex" &&
+                  Object.values(entry.bindings).every((id) => id === "codex")
+                    ? { enabled: true }
+                    : {}),
+                },
+              })),
+            },
+          },
+        });
+        expect(setup.ok()).toBe(true);
+        const setupSnapshot = InstallationSettingsSnapshotSchema.parse(await setup.json());
+        const setupDefinitions = setupSnapshot.settings?.providerDefinitions;
+        if (!setupDefinitions) throw new Error("Missing provider definitions in setup response");
+        await waitForSettingsConvergence({
+          read,
+          poll: expect.poll,
+          minimumRevision: setupSnapshot.revision,
+          providerDefinitions: setupDefinitions,
+          serverIds,
+        });
+        await prepareCodexBindings();
+
+        await page.goto(`${origin}/settings/providers`);
+        const family = page.getByTestId("provider-family-mock").filter({ visible: true });
+        await expect(family).toHaveCount(1);
+        await expect(page.locator('[data-testid^="shared-provider-environment-"]')).toHaveCount(0);
+        await expect(page.getByTestId("host-page-add-provider-card")).toHaveCount(0);
+        const enabled = family.getByRole("switch", { name: "Enable Mock everywhere", exact: true });
+        await expect(enabled).toBeChecked();
+        const codexFamily = page.getByTestId("provider-family-codex").filter({ visible: true });
+        await expect(
+          codexFamily.getByRole("switch", { name: "Enable Codex everywhere", exact: true }),
+        ).toBeChecked();
+        if (width === 1280) {
+          const handle = family.getByTestId("provider-family-drag-mock");
+          await handle.focus();
+          await page.keyboard.press("Space");
+          await expect(handle).toHaveAttribute("aria-pressed", "true");
+          await page.keyboard.press("ArrowDown");
+          // Wait for this sortable context's accessible target state before dropping.
+          await expect(
+            family.locator("xpath=../..").locator(':scope > [id^="DndLiveRegion-"]'),
+          ).toContainText("over droppable area codex");
+          await page.keyboard.press("Space");
+          await expect
+            .poll(
+              async () =>
+                (await read()).settings?.providerDefinitions?.find(
+                  (entry) => entry.providerType === "mock",
+                )?.policy.order,
+            )
+            .toBe(1);
+        }
+        const beforeDisable = await read();
+        const beforeDisableDefinitions = beforeDisable.settings?.providerDefinitions;
+        if (!beforeDisableDefinitions)
+          throw new Error("Missing provider definitions before Mock disable");
+        const disableResponse = page.waitForResponse(
+          (response) =>
+            response.url() === `${origin}/api/installation/owner/settings` &&
+            response.request().method() === "PATCH",
+        );
+        const mockIsPrimary = mockDefinitions.some(
+          (definition) => definition.id === beforeDisable.settings?.primaryConnection?.providerId,
+        );
+        if (mockIsPrimary) {
+          const confirmation = page.waitForEvent("dialog");
+          const disabling = enabled.click();
+          const dialog = await confirmation;
+          expect(dialog.message()).toMatch(/^Turn off Mock\?/);
+          await dialog.accept();
+          await disabling;
+        } else {
+          await enabled.click();
+        }
+        const disabled = await disableResponse;
+        expect(disabled.ok()).toBe(true);
+        const disabledSnapshot = InstallationSettingsSnapshotSchema.parse(await disabled.json());
+        await waitForSettingsConvergence({
+          read,
+          poll: expect.poll,
+          minimumRevision: disabledSnapshot.revision,
+          providerDefinitions: beforeDisableDefinitions.map((entry) =>
+            entry.providerType === "mock"
+              ? Object.assign({}, entry, {
+                  policy: Object.assign({}, entry.policy, { enabled: false }),
+                })
+              : entry,
+          ),
+          serverIds,
+        });
+        await expectMockRuntime(false);
+        await expect(enabled).toBeVisible();
+        await expect(enabled).not.toBeChecked();
+        const enableResponse = page.waitForResponse(
+          (response) =>
+            response.url() === `${origin}/api/installation/owner/settings` &&
+            response.request().method() === "PATCH",
+        );
+        await enabled.click();
+        const reenabled = await enableResponse;
+        expect(reenabled.ok()).toBe(true);
+        const enabledSnapshot = InstallationSettingsSnapshotSchema.parse(await reenabled.json());
+        await waitForSettingsConvergence({
+          read,
+          poll: expect.poll,
+          minimumRevision: enabledSnapshot.revision,
+          providerDefinitions: beforeDisableDefinitions.map((entry) =>
+            entry.providerType === "mock"
+              ? Object.assign({}, entry, {
+                  policy: Object.assign({}, entry.policy, { enabled: true }),
+                })
+              : entry,
+          ),
+          serverIds,
+        });
+        await expectMockRuntime(true);
+        await expect(enabled).toBeChecked();
+        await family.getByTestId("provider-family-open-mock").click();
+        const connections = family
           .getByTestId("provider-detail-connections")
-          .getByText("Renamed fixture account", { exact: true }),
-      ).toBeVisible();
-      // Removing the provider is a quiet row at the bottom of its details; the row leaves the list.
-      const dialog = page.waitForEvent("dialog");
-      const click = page.getByTestId("provider-detail-remove-mock").click();
-      await (await dialog).accept();
-      await click;
-      await expect(page.getByTestId("shared-provider-order-list")).toBeVisible();
-      await expect(family).toHaveCount(0);
-      const removed = (await read()).settings?.providerDefinitions?.filter(
-        (entry) => entry.providerType === "mock",
-      );
-      expect(removed?.map((entry) => entry.id)).toEqual(
-        originals.filter((entry) => entry.providerType === "mock").map((entry) => entry.id),
-      );
-      expect(removed?.every((entry) => entry.removed && entry.policy.enabled === false)).toBe(true);
-      await page.getByRole("button", { name: "Add provider", exact: true }).click();
-      await page.getByRole("button", { name: "Restore provider", exact: true }).click();
-      await expect(page.getByRole("button", { name: "Restore provider", exact: true })).toHaveCount(
-        0,
-      );
-      await page
-        .getByTestId("provider-add-sheet")
-        .getByRole("button", { name: "Close", exact: true })
-        .click();
-      await expect(page.getByTestId("provider-add-sheet")).not.toBeVisible();
-      await family.scrollIntoViewIfNeeded();
-      await expect(family).toBeVisible();
-      await expect(
-        family.getByRole("switch", { name: "Enable mock everywhere", exact: true }),
-      ).not.toBeChecked();
-      await page.screenshot({ path: testInfo.outputPath("provider-families.png"), fullPage: true });
+          .filter({ visible: true });
+        await expect(connections).toBeVisible();
+        await connections.getByTestId(`provider-connection-menu-${mockDefinition.id}`).click();
+        await page
+          .getByRole("menuitem", { name: "Rename", exact: true })
+          .filter({ visible: true })
+          .click();
+        await page
+          .getByTestId("shared-provider-rename-dialog-input")
+          .filter({ visible: true })
+          .fill("Renamed fixture account");
+        await page
+          .getByTestId("shared-provider-rename-dialog-submit")
+          .filter({ visible: true })
+          .click();
+        await expect(page.getByTestId("shared-provider-rename-dialog")).not.toBeVisible();
+        await expect(
+          connections.getByText("Renamed fixture account", { exact: true }),
+        ).toBeVisible();
+        const beforeRemoval = await read();
+        expect(
+          beforeRemoval.settings?.providerDefinitions?.find(
+            (entry) => entry.id === mockDefinition.id,
+          )?.policy.label,
+        ).toBe("Renamed fixture account");
+        const beforeRemovalDefinitions = beforeRemoval.settings?.providerDefinitions;
+        if (!beforeRemovalDefinitions)
+          throw new Error("Missing provider definitions before removal");
+        const expectedRemoved = beforeRemovalDefinitions.map((entry) =>
+          entry.providerType === "mock"
+            ? Object.assign({}, entry, {
+                removed: true,
+                policy: Object.assign({}, entry.policy, { enabled: false }),
+              })
+            : entry,
+        );
+        const removalResponse = page.waitForResponse(
+          (response) =>
+            response.url() === `${origin}/api/installation/owner/settings` &&
+            response.request().method() === "PATCH",
+        );
+        const dialog = page.waitForEvent("dialog");
+        const click = family.getByTestId("provider-detail-remove-mock").click();
+        const removalDialog = await dialog;
+        expect(removalDialog.message()).toMatch(/^Remove Mock from Vorteo\?/);
+        await removalDialog.accept();
+        await click;
+        const removal = await removalResponse;
+        expect(removal.ok()).toBe(true);
+        const removedSnapshot = InstallationSettingsSnapshotSchema.parse(await removal.json());
+        await waitForSettingsConvergence({
+          read,
+          poll: expect.poll,
+          minimumRevision: removedSnapshot.revision,
+          providerDefinitions: expectedRemoved,
+          serverIds,
+        });
+        await expect(family).toHaveCount(0);
+        const removed = (await read()).settings?.providerDefinitions?.filter(
+          (entry) => entry.providerType === "mock",
+        );
+        expect(removed?.map((entry) => entry.id)).toEqual(
+          originals.filter((entry) => entry.providerType === "mock").map((entry) => entry.id),
+        );
+        expect(removed?.every((entry) => entry.removed && entry.policy.enabled === false)).toBe(
+          true,
+        );
+        await page
+          .getByRole("button", { name: "Add provider", exact: true })
+          .filter({ visible: true })
+          .click();
+        const addSheet = page
+          .getByRole("dialog", { name: "Add provider", exact: true })
+          .filter({ visible: true });
+        const restoreResponse = page.waitForResponse(
+          (response) =>
+            response.url() === `${origin}/api/installation/owner/settings` &&
+            response.request().method() === "PATCH",
+        );
+        await addSheet
+          .getByText("Mock", { exact: true })
+          .locator("..")
+          .getByRole("button", { name: "Restore provider", exact: true })
+          .click();
+        const restoration = await restoreResponse;
+        expect(restoration.ok()).toBe(true);
+        const restoredSnapshot = InstallationSettingsSnapshotSchema.parse(await restoration.json());
+        await waitForSettingsConvergence({
+          read,
+          poll: expect.poll,
+          minimumRevision: restoredSnapshot.revision,
+          providerDefinitions: expectedRemoved.map((entry) =>
+            entry.providerType === "mock" ? Object.assign({}, entry, { removed: false }) : entry,
+          ),
+          serverIds,
+        });
+        await addSheet.getByRole("button", { name: "Close", exact: true }).click();
+        await expect(addSheet).not.toBeVisible();
+        await expectMockRuntime(false);
+        await expect(enabled).toBeVisible();
+        await expect(enabled).not.toBeChecked();
+        await page.screenshot({
+          path: testInfo.outputPath("provider-families.png"),
+          fullPage: true,
+        });
+      }
+      await collectFailure(exerciseFamily);
+      async function restoreDefinitions() {
+        const latest = await read();
+        const cleanup = await page.request.patch(`${origin}/api/installation/owner/settings`, {
+          headers: {
+            Origin: origin,
+            "X-Vorteo-Provider-Removal": "1",
+            "X-Vorteo-Primary-Connection": "1",
+          },
+          data: {
+            expectedRevision: latest.revision,
+            settings: { providerDefinitions: originals, primaryConnection: originalPrimary },
+          },
+        });
+        expect(cleanup.ok()).toBe(true);
+        const cleaned = InstallationSettingsSnapshotSchema.parse(await cleanup.json());
+        await waitForSettingsConvergence({
+          read,
+          poll: expect.poll,
+          minimumRevision: cleaned.revision,
+          providerDefinitions: originals,
+          serverIds,
+        });
+        expect((await read()).settings?.primaryConnection).toEqual(originalPrimary);
+      }
+      await collectFailure(restoreDefinitions);
+      for (const original of runtimeOriginals) {
+        async function restoreCodexCommand() {
+          const { client, providerId, command } = original;
+          await client.patchDaemonConfig({ providers: { [providerId]: { command } } });
+          await expect
+            .poll(
+              async () => (await client.getDaemonConfig()).config.providers[providerId]?.command,
+            )
+            .toEqual(command);
+        }
+        await collectFailure(restoreCodexCommand);
+        async function restoreCodexDiscovery() {
+          const { client, providerId, status } = original;
+          await client.refreshProvidersSnapshot({ providers: [providerId] });
+          await expect
+            .poll(
+              async () =>
+                (await client.getProvidersSnapshot()).entries?.find(
+                  (entry) => entry.provider === providerId,
+                )?.status,
+            )
+            .toBe(status);
+        }
+        await collectFailure(restoreCodexDiscovery);
+      }
+    } catch (error) {
+      failures.push(error);
     } finally {
-      const latest = await read();
-      await page.request.patch(`${origin}/api/installation/owner/settings`, {
-        headers: { Origin: origin, "X-Vorteo-Provider-Removal": "1" },
-        data: { expectedRevision: latest.revision, settings: { providerDefinitions: originals } },
-      });
-      await reorderClient.patchDaemonConfig({
-        providers: { codex: { command: originalCodex?.command ?? ["codex"] } },
-      });
-      await reorderClient.refreshProvidersSnapshot({ providers: ["codex"] });
-      await reorderClient.close();
+      for (const client of clients) await collectFailure(() => client.close());
     }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1)
+      throw new AggregateError(failures, "Provider family case and cleanup failures");
   });
 }
 
@@ -5258,63 +5532,173 @@ for (const width of [1280, 390]) {
     await page.getByTestId("installation-password").fill(ownerPassword);
     await page.getByTestId("installation-unlock").click();
     await expect(page.getByTestId("installation-password")).not.toBeVisible();
-    const read = async () =>
-      InstallationSettingsSnapshotSchema.parse(
-        await (
-          await page.request.post(`${origin}/api/installation/owner/settings/read`, {
-            headers: { Origin: origin },
-            data: {},
-          })
-        ).json(),
-      );
+    const headers = {
+      Origin: origin,
+      "X-Vorteo-Provider-Removal": "1",
+      "X-Vorteo-Primary-Connection": "1",
+    };
+    const read = async () => {
+      const response = await page.request.post(`${origin}/api/installation/owner/settings/read`, {
+        headers,
+        data: {},
+      });
+      expect(response.ok()).toBe(true);
+      return InstallationSettingsSnapshotSchema.parse(await response.json());
+    };
     const before = await read();
     const definitions = before.settings?.providerDefinitions;
+    const originalPrimary = before.settings?.primaryConnection;
     if (!definitions) throw new Error("Missing shared provider catalog");
+    if (originalPrimary === undefined) throw new Error("Missing primary connection capability");
     const creationId = randomUUID();
     const id = `claude-browser-${creationId}`;
     const providerId = `claude-account-${creationId}`;
-    const response = await page.request.patch(`${origin}/api/installation/owner/settings`, {
-      headers: { Origin: origin },
-      data: {
-        expectedRevision: before.revision,
-        settings: {
-          providerDefinitions: [
-            ...definitions,
-            {
-              id,
-              providerType: "claude",
-              accountSetup: { provider: "claude", creationId },
-              bindings: Object.fromEntries(daemons.map((daemon) => [daemon.serverId, providerId])),
-              policy: { label: "Shared Claude fixture", enabled: true },
-            },
-          ],
+    const serverIds = config.public.environments.map((environment) => environment.serverId);
+    const failures: unknown[] = [];
+    async function collectFailure(operation: () => Promise<void>) {
+      try {
+        await operation();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    const fixture: InstallationProvider = {
+      id,
+      providerType: "claude",
+      accountSetup: { provider: "claude", creationId },
+      bindings: Object.fromEntries(daemons.map((daemon) => [daemon.serverId, providerId])),
+      policy: { label: "Shared Claude fixture", enabled: true },
+    };
+    let restoredDefinitions = definitions;
+    let restoredPrimary = originalPrimary;
+    let restoredRevision = before.revision;
+    async function patchFixture(
+      current: Awaited<ReturnType<typeof read>>,
+      operation: "add" | "remove",
+      attempt: "initial" | "conflict-retry" = "initial",
+    ): Promise<Awaited<ReturnType<typeof read>>> {
+      const currentDefinitions = current.settings?.providerDefinitions;
+      const primaryConnection = current.settings?.primaryConnection;
+      if (!currentDefinitions) throw new Error("Missing provider catalog during fixture update");
+      if (primaryConnection === undefined) throw new Error("Missing primary connection capability");
+      const providerDefinitions = currentDefinitions.filter((entry) => entry.id !== id);
+      if (operation === "add") providerDefinitions.push(fixture);
+      else {
+        // Preserve concurrent catalog and primary choices, removing only this case's fixture.
+        restoredDefinitions = providerDefinitions;
+        restoredPrimary = primaryConnection;
+        restoredRevision = current.revision;
+      }
+      const response = await page.request.patch(`${origin}/api/installation/owner/settings`, {
+        headers,
+        data: {
+          expectedRevision: current.revision,
+          settings: { providerDefinitions, primaryConnection },
         },
-      },
-    });
-    expect(response.ok()).toBe(true);
+      });
+      // First-load browser settings can win the revision race after our read.
+      if (response.status() === 409 && attempt === "initial")
+        return patchFixture(await read(), operation, "conflict-retry");
+      let diagnostic = `Fixture ${operation} PATCH: HTTP ${response.status()}, expectedRevision ${current.revision}`;
+      if (!response.ok()) {
+        const body = await response.json().catch(() => null);
+        const knownErrors = [
+          "Invalid request",
+          "Shared settings reference an unknown environment or resource.",
+          "A project must stay available in at least one environment, keyed by its absolute root path.",
+          "That connection is no longer available.",
+          "Choose a time zone from the list.",
+          "Reload shared settings and explicitly resolve every initial policy difference.",
+          "Read every installation environment before editing shared settings.",
+          "Installation request failed",
+        ];
+        const text = await response.text();
+        const accessRefusal = text === "Unauthorized" || text === "Forbidden";
+        // Settings errors are fixed messages; never print arbitrary response fields or catalogs.
+        const safeBody = {
+          error: knownErrors.includes(body?.error) ? body.error : "Unrecognized error omitted",
+          reason:
+            typeof body?.reason === "string" &&
+            /^(environment|provider|provider-binding|plugin|skill|terminal-profile|metadata-provider|installation-instructions|project-policy|primary-connection|primary-connection-unavailable|time-zone)$/.test(
+              body.reason,
+            )
+              ? body.reason
+              : null,
+          access: accessRefusal ? text : null,
+          revision: typeof body?.revision === "number" ? body.revision : null,
+        };
+        diagnostic += `, body ${JSON.stringify(safeBody)}`;
+      }
+      expect(response.ok(), diagnostic).toBe(true);
+      const accepted = InstallationSettingsSnapshotSchema.parse(await response.json());
+      if (operation === "remove") restoredRevision = accepted.revision;
+      return accepted;
+    }
     try {
+      const created = await patchFixture(before, "add");
+      const createdDefinitions = created.settings?.providerDefinitions;
+      if (!createdDefinitions) throw new Error("Missing fixture provider catalog");
+      expect(createdDefinitions.find((entry) => entry.id === id)).toMatchObject({
+        accountSetup: { provider: "claude", creationId },
+        policy: { label: "Shared Claude fixture", enabled: true },
+      });
+      await waitForSettingsConvergence({
+        read,
+        poll: expect.poll,
+        minimumRevision: created.revision,
+        providerDefinitions: createdDefinitions,
+        serverIds,
+      });
+      expect((await read()).settings?.primaryConnection).toEqual(originalPrimary);
       await page.goto(`${origin}/settings/providers`);
-      await openProviderPage(page, "claude");
-      await openConnectionAction(page, id, "access");
-      const sheet =
-        width === 390
-          ? page.getByRole("slider", { name: "Bottom Sheet", exact: true })
-          : page.getByTestId("provider-manage-sheet");
-      await expect(sheet.getByText("Connect Claude once.", { exact: false })).toBeVisible();
-      await expect(sheet.getByRole("button", { name: "Connect Claude", exact: true })).toHaveCount(
-        1,
+      const settings = page.getByTestId("settings-scroll-page").filter({ visible: true });
+      const family = settings.getByTestId("provider-family-claude").filter({ visible: true });
+      await family.getByTestId("provider-family-open-claude").click();
+      const claude = groupInstallationProviders(createdDefinitions).find(
+        (entry) => entry.id === "claude",
       );
+      const account = claude?.accounts.find((entry) =>
+        entry.definitions.some((definition) => definition.id === id),
+      );
+      if (!claude || !account) throw new Error("Missing fixture Claude account");
+      let connections = family;
+      if (claude.accounts.length > 5) {
+        await family
+          .getByRole("button", {
+            name: `Show all ${claude.accounts.length} Claude connections`,
+            exact: true,
+          })
+          .click();
+        connections = page
+          .getByRole("dialog", { name: "Claude connections", exact: true })
+          .filter({ visible: true });
+        await expect(connections).toBeVisible();
+      }
+      await connections
+        .getByTestId(`provider-account-${account.id}`)
+        .getByRole("button", { name: "Shared Claude fixture: Connect account", exact: true })
+        .click();
+      // On phone the modal test ID marks only its header, not the sibling scroll body.
+      const dialog = page
+        .getByRole("dialog", { name: "Connect Shared Claude fixture", exact: true })
+        .filter({ visible: true });
+      await expect(dialog).toBeVisible();
+      const panel = dialog.getByTestId("provider-login-panel");
       await expect(
-        sheet.getByRole("button", { name: "Connect Claude", exact: true }),
-      ).toBeEnabled();
-      await expect(sheet.getByRole("tab")).toHaveCount(0);
-      await expect(sheet.getByText("Not connected.", { exact: true })).toBeVisible();
-      await sheet
-        .getByRole("button", { name: "Connect Claude", exact: true })
-        .scrollIntoViewIfNeeded();
-      await expect(
-        sheet.getByRole("button", { name: "Connect Claude", exact: true }),
-      ).toBeInViewport();
+        panel.getByText(
+          "Sign in once. Every environment in this installation uses this connection.",
+          {
+            exact: true,
+          },
+        ),
+      ).toBeVisible();
+      const connect = panel.getByRole("button", { name: "Connect Claude", exact: true });
+      await expect(connect).toHaveCount(1);
+      await expect(connect).toBeEnabled();
+      await expect(dialog.getByRole("tab")).toHaveCount(0);
+      await expect(panel.getByText("Not connected", { exact: true })).toBeVisible();
+      await connect.scrollIntoViewIfNeeded();
+      await expect(connect).toBeInViewport();
       await page.screenshot({ path: info.outputPath(`claude-shared-${width}.png`) });
       // Rendering the connection must not initiate provider authorization.
       const status = await page.request.post(
@@ -5325,23 +5709,33 @@ for (const width of [1280, 390]) {
         },
       );
       expect(status.ok()).toBe(true);
-      expect((await status.json()).login.status).toBe("idle");
+      const connection = await status.json();
+      expect(connection.login.status).toBe("idle");
+      expect(connection.connection.connected).toBe(false);
       expect(claudeAuthorizationStarts).toBe(0);
+    } catch (error) {
+      failures.push(error);
     } finally {
-      const current = await read();
-      const currentDefinitions = current.settings?.providerDefinitions;
-      expect(currentDefinitions).toBeDefined();
-      const restored = await page.request.patch(`${origin}/api/installation/owner/settings`, {
-        headers: { Origin: origin },
-        data: {
-          expectedRevision: current.revision,
-          settings: {
-            providerDefinitions: currentDefinitions!.filter((entry) => entry.id !== id),
-          },
-        },
+      // Protect partial setup too, and observe restoration even if its PATCH fails.
+      await collectFailure(async () => {
+        await patchFixture(await read(), "remove");
       });
-      expect(restored.ok()).toBe(true);
+      await collectFailure(async () => {
+        await waitForSettingsConvergence({
+          read,
+          poll: expect.poll,
+          minimumRevision: restoredRevision,
+          providerDefinitions: restoredDefinitions,
+          serverIds,
+        });
+      });
+      await collectFailure(async () => {
+        expect((await read()).settings?.primaryConnection).toEqual(restoredPrimary);
+      });
     }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1)
+      throw new AggregateError(failures, "Claude management case and cleanup failures");
   });
 }
 
