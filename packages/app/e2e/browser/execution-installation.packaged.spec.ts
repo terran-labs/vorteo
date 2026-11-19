@@ -4271,6 +4271,10 @@ for (const width of [1280, 390]) {
           await page.keyboard.press("Space");
           await expect(handle).toHaveAttribute("aria-pressed", "true");
           await page.keyboard.press("ArrowDown");
+          // Wait for this sortable context's accessible target state before dropping.
+          await expect(
+            family.locator("xpath=../..").locator(':scope > [id^="DndLiveRegion-"]'),
+          ).toContainText("over droppable area codex");
           await page.keyboard.press("Space");
           await expect
             .poll(

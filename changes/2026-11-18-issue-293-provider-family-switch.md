@@ -6,7 +6,7 @@
 
 - Prepare the environment Codex bindings with the isolated catalog fixture in both daemons, reorder while Mock and Codex are enabled, and restore each recorded command and discovery state. Verify disabled Mock settings and discovery in both environments, then temporarily re-enable the fixture through settings for #495 before connection actions. Disabled restoration checks persisted state and requires the Mock switch to remain visible and unchecked. The final assertion remains blocked by the disabled-family control defect tracked in #495.
 
-- Verify keyboard reordering through pickup state and persisted order, removing the announcement-copy assertion that matched both enabled and disabled sortable contexts.
+- Verify keyboard reordering through pickup state and persisted order in both browser projects. Before dropping, wait for the Codex target announcement inside Mock’s sortable context so the other group cannot match. This synchronizes the target transition without sleeps; packaged verification remains pending.
 
 ## Maintenance review
 
