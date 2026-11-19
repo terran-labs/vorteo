@@ -13,6 +13,8 @@ export interface CoordinatorRestartState {
   coordinatorRequestOpen(): boolean;
   /** Known only once the lab journal has loaded; false before that. */
   labUpdateActive(): boolean;
+  /** A Host release cleanup running in this coordinator, which a restart would cut. */
+  hostReleaseCleanupRunning(): boolean;
 }
 
 /**
@@ -37,5 +39,8 @@ export function coordinatorRestartBlocker(
   if (state.hostJobBusy()) return "Wait for the approved Host restart or update to finish.";
   if (state.coordinatorRequestOpen()) return "Wait for the open coordinator request to finish.";
   if (state.labUpdateActive()) return "Wait for the lab self-update to finish.";
+  // A release upgrade waits for it at its own coordinator step instead.
+  if (state.hostReleaseCleanupRunning())
+    return "Host release cleanup is running; try again when it finishes.";
   return null;
 }

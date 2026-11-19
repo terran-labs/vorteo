@@ -36,6 +36,7 @@ import {
   HostReleaseCleanupUnsupportedError,
   hostReleaseRetentionIdle,
   pruneHostReleases,
+  recoverHostReleasesAtStart,
   restoreHostReleasesAtStart,
   recordLinkTargets,
   ReleaseRootLockedError,
@@ -1235,4 +1236,53 @@ test("on Windows every cleanup entry point refuses before touching anything", as
   restoreHostReleasesAtStart({ releaseRoot: f.root }, logger);
   await expect.poll(() => existsSync(f.release(0))).toBe(true);
   expect(logged).toEqual(["Put back a Host release left set aside"]);
+});
+
+test("at start, a cleanup a restart interrupted is marked with what it did and did not remove", async () => {
+  // The coordinator restarted six minutes into a real run: one folder gone, one half deleted,
+  // one still set aside, one never reached. Its receipt still said "running".
+  const f = fixture(6);
+  const nonce = "f3a87b8c7cbaa308";
+  rmSync(path.join(f.root, id(0)), { recursive: true });
+  renameSync(path.join(f.root, id(1)), path.join(f.root, `.deleting-${id(1)}-${nonce}`));
+  renameSync(path.join(f.root, id(2)), path.join(f.root, `.pruning-${id(2)}-${nonce}`));
+  const receipt = (job: number) => path.join(f.root, id(job), "retention.json");
+  const running = {
+    version: 1,
+    status: "running",
+    startedAt: "2026-11-19T08:24:07.000Z",
+    mode: "on",
+    keepNewest: 3,
+    plan: { remove: [id(0), id(1), id(2), id(3)], removeCopies: [], finish: [], kept: {} },
+  };
+  writeFileSync(receipt(4), JSON.stringify(running));
+  writeFileSync(receipt(5), JSON.stringify({ version: 1, status: "running", mode: "dry-run" }));
+  const finished = JSON.stringify({ version: 1, status: "finished", note: "Removed 1." });
+  writeFileSync(receipt(3), finished);
+  const recovery = await recoverHostReleasesAtStart(f.root, {
+    now: () => new Date("2026-11-19T08:40:00.000Z"),
+  });
+  expect(recovery).toEqual({ restored: [id(2)], interrupted: [id(4), id(5)].sort() });
+  expect(JSON.parse(readFileSync(receipt(4), "utf8"))).toEqual({
+    ...running,
+    status: "interrupted",
+    interruptedAt: "2026-11-19T08:40:00.000Z",
+    note: "The coordinator restarted before this cleanup finished. It removed 1 of the 4 folders it planned to remove.",
+    outcome: {
+      removed: [id(0)],
+      notRemoved: {
+        [id(1)]:
+          `deletion started and not finished: .deleting-${id(1)}-${nonce}; the next cleanup finishes it`,
+        [id(2)]: "still present under its own name",
+        [id(3)]: "still present under its own name",
+      },
+    },
+  });
+  expect(JSON.parse(readFileSync(receipt(5), "utf8"))).toMatchObject({
+    status: "interrupted",
+    note: "The coordinator restarted before this cleanup finished. A dry run removes nothing.",
+  });
+  expect(readFileSync(receipt(3), "utf8")).toBe(finished);
+  // Nothing else changed: the half-deleted folder waits for the next cleanup.
+  expect(existsSync(path.join(f.root, `.deleting-${id(1)}-${nonce}`))).toBe(true);
 });

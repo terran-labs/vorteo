@@ -129,7 +129,8 @@ function fakePorts(changes: Partial<LabUpdatePorts> = {}) {
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 test("Stable refuses; Lab approves, builds, restarts Host, then swaps the coordinator", async () => {
-  const { ports, calls, state } = fakePorts();
+  let cleaning = false;
+  const { ports, calls, state } = fakePorts({ hostReleaseCleanupRunning: () => cleaning });
   const updates = new LabSelfUpdates(createLabUpdateJournal(directory), ports);
   state.blocker = "Lab self-updates run only when the installation type is Lab.";
   await expect(updates.request({}, "host-agent")).rejects.toThrow(
@@ -151,6 +152,11 @@ test("Stable refuses; Lab approves, builds, restarts Host, then swaps the coordi
   await updates.drain();
   expect(state.host).toBe("/releases/lab-new");
   state.restarts[0].state = { status: "succeeded", detail: "Restarted" };
+  // A Host release cleanup the restart started holds the coordinator swap until it ends.
+  cleaning = true;
+  await updates.drain();
+  expect(calls.some((call) => call.startsWith("swap"))).toBe(false);
+  cleaning = false;
   await updates.drain();
   // The worker restart alone leaves the supervisor on the old release; the service restarts once,
   // before the coordinator swap.

@@ -51,6 +51,20 @@ function installation() {
   return { disk, follow, clock };
 }
 
+/** Every field of the shared restart state, each reporting nothing in progress. */
+function restartCheckState(): CoordinatorRestartState {
+  return {
+    upgradeActive: () => false,
+    followDispatching: () => false,
+    settingsDispatching: () => false,
+    customDomainRunning: () => false,
+    hostJobBusy: () => false,
+    coordinatorRequestOpen: () => false,
+    labUpdateActive: () => false,
+    hostReleaseCleanupRunning: () => false,
+  };
+}
+
 /** The shared restart check with nothing else in progress, apart from `busy`. */
 function restartCheck(busy: Partial<Record<keyof CoordinatorRestartState, boolean>>) {
   const state = Object.fromEntries(
@@ -62,6 +76,7 @@ function restartCheck(busy: Partial<Record<keyof CoordinatorRestartState, boolea
       "hostJobBusy",
       "coordinatorRequestOpen",
       "labUpdateActive",
+      "hostReleaseCleanupRunning",
     ].map((key) => [key, () => busy[key as keyof CoordinatorRestartState] === true]),
   ) as unknown as CoordinatorRestartState;
   return () => coordinatorRestartBlocker(state, "settings");
@@ -327,6 +342,30 @@ test.each([
         conflict: restartCheck({ customDomainRunning: true }),
       });
       await expect(requestRefresh(state, settings)).rejects.toThrow("custom domain");
+    },
+  },
+  {
+    name: "refuses every coordinator restart but a release upgrade while a Host release cleanup runs",
+    run: async () => {
+      const state = installation();
+      const { settings } = settingsPorts(state, {
+        conflict: restartCheck({ hostReleaseCleanupRunning: true }),
+      });
+      await expect(requestRefresh(state, settings)).rejects.toThrow(
+        "Host release cleanup is running",
+      );
+      const busy = Object.fromEntries(
+        Object.keys(restartCheckState()).map((key) => [
+          key,
+          () => key === "hostReleaseCleanupRunning",
+        ]),
+      ) as unknown as CoordinatorRestartState;
+      for (const self of ["follow", "custom-domain", "settings"] as const)
+        expect(coordinatorRestartBlocker(busy, self)).toBe(
+          "Host release cleanup is running; try again when it finishes.",
+        );
+      // The upgrade waits for it at its own coordinator step instead.
+      expect(coordinatorRestartBlocker(busy, "upgrade")).toBeNull();
     },
   },
   {

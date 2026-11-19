@@ -176,7 +176,10 @@ import { InstructionRequestError, InstructionRequests } from "./settings/instruc
 
 import { inspectContainerSource } from "./container-updates.js";
 import { RestartTargetSchema } from "@getpaseo/protocol/execution-installation";
-import { restoreHostReleasesAtStart } from "./host-release-retention.js";
+import {
+  hostReleaseRetentionRunning,
+  restoreHostReleasesAtStart,
+} from "./host-release-retention.js";
 import { InstallationSourceUpdates } from "./source-updates.js";
 import {
   InstallationOverviewReader,
@@ -755,6 +758,7 @@ export function createInstallationServer(
       coordinatorRequests !== undefined &&
       openBootstrapRequests(coordinatorRequests.list()).length > 0,
     labUpdateActive: () => labRuntime.updates.activeLoaded() !== null,
+    hostReleaseCleanupRunning: () => hostReleaseRetentionRunning(),
   };
   const restartBlocker = (self: CoordinatorRestart) =>
     coordinatorRestartBlocker(restartState, self);
