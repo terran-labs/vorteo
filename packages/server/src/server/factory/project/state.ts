@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
+  ProjectFactoryAssignmentDiagnosticSchema,
   ProjectFactoryIssueAgentsSchema,
   ProjectFactoryRoleIdSchema,
 } from "@getpaseo/server/factory-project";
@@ -87,6 +88,7 @@ const AssignmentStateSchema = z.object({
   triage: z.string().nullable(),
   releases: z.string().nullable(),
   detail: z.string().nullable(),
+  diagnostics: ProjectFactoryAssignmentDiagnosticSchema.optional(),
   readAt: z.string(),
 });
 export type AssignmentState = z.infer<typeof AssignmentStateSchema>;

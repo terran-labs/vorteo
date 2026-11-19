@@ -25,7 +25,11 @@ import {
 import { charterVersion } from "./instructions.js";
 import { PROJECT_FACTORY_ROLE_LABEL, PROJECT_FACTORY_ROLES } from "./roles.js";
 import { DRAIN_ENDED, drainNotice, ProjectFactoryService, type PromptOutcome } from "./service.js";
-import { factoryProjectQueue } from "@getpaseo/server/factory-project";
+import {
+  ProjectFactoryAssignmentSchema,
+  ProjectFactoryStateSchema,
+  factoryProjectQueue,
+} from "@getpaseo/server/factory-project";
 import {
   daemonFactoryAccounts,
   readDestinationAccounts,
@@ -34,9 +38,16 @@ import {
   type InstallationAccountsAuthority,
 } from "./account-choice.js";
 import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
-import type { FactoryGitHub, GitHubResponse } from "./claims.js";
+import {
+  assignmentBlock,
+  createFactoryGitHub,
+  readAssignment,
+  type FactoryGitHub,
+  type GitHubResponse,
+  type FactorySubprocess,
+} from "./claims.js";
 import type { GhRunner } from "./tick-gate.js";
-import { projectFactoryStatePath } from "./state.js";
+import { ProjectFactoryStateStore, projectFactoryStatePath } from "./state.js";
 import type { DevAgent, IssueAgentHosts } from "./issue-agent-host.js";
 import { DEV_HOST_SOURCE_KEY } from "../../execution-installation/dev-host-link.js";
 import type { HostSummary } from "@getpaseo/protocol/hosts";
@@ -262,13 +273,18 @@ class FakeSchedules {
 
 function service(
   gh?: GhRunner,
-  installation: { paseoHome?: string; serverId?: string; home?: FactoryHomePort } = {},
+  installation: {
+    paseoHome?: string;
+    serverId?: string;
+    home?: FactoryHomePort;
+    github?: FactoryGitHub;
+  } = {},
 ): ProjectFactoryService {
   const instance = new ProjectFactoryService({
     paseoHome: installation.paseoHome ?? home,
     serverId: installation.serverId ?? "srv_test",
     home: installation.home,
-    github,
+    github: installation.github ?? github,
     accounts,
     hosts: () => issueHosts,
     projects,
@@ -2180,6 +2196,233 @@ describe("several installations on one repository", () => {
       }),
     ).rejects.toThrow(`Project ${PROJECT} already runs Factory for Acme/App`);
   });
+});
+
+describe("Factory assignment diagnostics", () => {
+  const SECRET = "fake-sensitive-value-do-not-retain";
+  const LOCAL = `srv_test/${PROJECT}`;
+  const assignedRoles = ["factory-triage", "factory-releases"] as const;
+
+  function included(status: number, body: unknown): string {
+    return `HTTP/2.0 ${status} Result\r\n\r\n${JSON.stringify(body)}`;
+  }
+
+  function contents(text: string): string {
+    return included(200, { content: Buffer.from(text).toString("base64"), encoding: "base64" });
+  }
+
+  class FakeSubprocess {
+    error: unknown = null;
+    stdout = contents(JSON.stringify({ version: 1, triage: LOCAL, releases: LOCAL }));
+    run: FactorySubprocess = (file, args, options, callback) => {
+      expect(file).toBe("gh");
+      expect(args).toEqual([
+        "api",
+        "--include",
+        "-X",
+        "GET",
+        `repos/${REPO}/contents/.github/factory.json`,
+      ]);
+      expect(options).toEqual({ timeout: 20_000, maxBuffer: 8 * 1024 * 1024 });
+      callback(this.error, this.stdout, SECRET);
+      return { stdin: null };
+    };
+  }
+
+  const failures = [
+    {
+      name: "actual-timeout-shaped kill has unknown cause",
+      error: { code: null, signal: "SIGTERM", killed: true },
+      category: "signal",
+      code: null,
+      signal: "SIGTERM",
+      killed: true,
+      timeout: "unknown",
+    },
+    {
+      name: "explicit supported timeout",
+      error: { code: "ETIMEDOUT", killed: true },
+      category: "timeout",
+      code: "ETIMEDOUT",
+      signal: null,
+      killed: true,
+      timeout: "confirmed",
+    },
+    {
+      name: "missing executable",
+      error: { code: "ENOENT" },
+      category: "spawn",
+      code: "ENOENT",
+      signal: null,
+      killed: null,
+      timeout: "unknown",
+    },
+    {
+      name: "numeric exit",
+      error: { code: 7, signal: null, killed: false },
+      category: "exit",
+      code: 7,
+      signal: null,
+      killed: false,
+      timeout: "unknown",
+    },
+    {
+      name: "signal termination",
+      error: { code: null, signal: "SIGTERM", killed: false },
+      category: "signal",
+      code: null,
+      signal: "SIGTERM",
+      killed: false,
+      timeout: "unknown",
+    },
+    {
+      name: "unrecognized code and signal",
+      error: { code: SECRET, signal: SECRET },
+      category: "transport",
+      code: null,
+      signal: null,
+      killed: null,
+      timeout: "unknown",
+    },
+    {
+      name: "out-of-range exit",
+      error: { code: 256 },
+      category: "transport",
+      code: null,
+      signal: null,
+      killed: null,
+      timeout: "unknown",
+    },
+    {
+      name: "HTTP error takes precedence",
+      error: { code: 1, killed: false },
+      stdout: included(403, { message: SECRET }),
+      category: "http",
+      httpStatus: 403,
+    },
+    { name: "unparsable HTTP body", stdout: `HTTP/2.0 200 OK\n\n${SECRET}`, category: "response" },
+    {
+      name: "malformed envelope",
+      stdout: included(200, { content: SECRET, encoding: "unknown" }),
+      category: "response",
+    },
+    { name: "no HTTP response", stdout: SECRET, category: "transport" },
+    {
+      name: "invalid decoded JSON",
+      stdout: contents(SECRET),
+      category: "content",
+      source: "invalid",
+    },
+    {
+      name: "strict schema rejects unknown keys",
+      stdout: contents(JSON.stringify({ version: 1, triage: LOCAL, secret: SECRET })),
+      category: "schema",
+      source: "invalid",
+    },
+  ];
+
+  test.each(failures)("$name stays safe and blocks both roles", async (failure) => {
+    const subprocess = new FakeSubprocess();
+    subprocess.stdout = failure.stdout ?? "";
+    subprocess.error = failure.error
+      ? {
+          ...failure.error,
+          message: SECRET,
+          cmd: SECRET,
+          args: [SECRET],
+          env: { SECRET },
+          cause: new Error(SECRET),
+        }
+      : null;
+    const adapter = createFactoryGitHub(subprocess.run);
+    const factory = service(undefined, { github: adapter });
+    const enabled = await enable(factory);
+    for (const role of assignedRoles) {
+      expect(agents.initialPrompts.get(roleAgent(enabled, role))).toContain("Do nothing now");
+      await factory.tick(PROJECT, role);
+    }
+    const shown = ProjectFactoryStateSchema.parse(await factory.get(PROJECT));
+    const assignment = ProjectFactoryAssignmentSchema.parse(shown.assignment);
+    expect(assignment).toMatchObject({
+      source: failure.source ?? "unreadable",
+      triage: null,
+      releases: null,
+    });
+    expect(assignment.diagnostics).toMatchObject({
+      category: failure.category,
+      code: failure.code ?? null,
+      signal: failure.signal ?? null,
+      killed: failure.killed ?? null,
+      timeout: failure.timeout ?? "unknown",
+      httpStatus: failure.httpStatus ?? null,
+    });
+    expect(assignment.detail).toBe(assignment.diagnostics?.reason);
+    expect(assignment.detail!.length).toBeLessThanOrEqual(240);
+    expect(assignment.detail).not.toMatch(/[\r\n]/);
+    for (const role of assignedRoles) {
+      const key = role === "factory-triage" ? "triage" : "releases";
+      expect(assignment[key]).not.toBe(LOCAL);
+      expect(assignmentBlock(assignment, key, role, LOCAL)).not.toBeNull();
+      expect(shown.roles.find((entry) => entry.role === role)?.status?.line).toContain("Off here:");
+      expect(
+        agents.prompts.filter((prompt) => prompt.agentId === roleAgent(enabled, role)),
+      ).toEqual([]);
+    }
+    const persisted = await new ProjectFactoryStateStore(projectFactoryStatePath(home)).read();
+    expect(persisted.projects[PROJECT]?.assignment).toEqual(assignment);
+    expect(JSON.stringify(shown)).not.toContain(SECRET);
+    expect(readFileSync(projectFactoryStatePath(home), "utf8")).not.toContain(SECRET);
+    // Older readers strip the optional field; old assignments still parse in the new reader.
+    const oldAssignment = ProjectFactoryAssignmentSchema.omit({ diagnostics: true }).parse(
+      assignment,
+    );
+    expect(ProjectFactoryAssignmentSchema.parse(oldAssignment)).toEqual(oldAssignment);
+  });
+
+  test("a failed refresh never reuses a previously valid local assignment", async () => {
+    const subprocess = new FakeSubprocess();
+    const factory = service(undefined, { github: createFactoryGitHub(subprocess.run) });
+    const enabled = await enable(factory);
+    expect(enabled.assignment).toMatchObject({ source: "file", triage: LOCAL, releases: LOCAL });
+    subprocess.stdout = "";
+    subprocess.error = { code: "ENOENT" };
+    for (const role of assignedRoles) await factory.tick(PROJECT, role);
+    const shown = await factory.get(PROJECT);
+    expect(shown.assignment).toMatchObject({
+      source: "unreadable",
+      triage: null,
+      releases: null,
+      diagnostics: { category: "spawn" },
+    });
+    for (const role of assignedRoles) {
+      expect(
+        agents.prompts.filter((prompt) => prompt.agentId === roleAgent(enabled, role)),
+      ).toEqual([]);
+    }
+  });
+
+  test.each([200, 404])(
+    "HTTP %s preserves success and missing-file behavior despite a process error",
+    async (status) => {
+      const subprocess = new FakeSubprocess();
+      if (status === 404) subprocess.stdout = included(404, { message: SECRET });
+      subprocess.error = { code: 1, message: SECRET };
+      const adapter = createFactoryGitHub(subprocess.run);
+      const assignment = await readAssignment(adapter, REPO, clock);
+      expect(assignment.source).toBe(status === 200 ? "file" : "none");
+      expect(assignment.detail).toBeNull();
+      expect(assignment.diagnostics).toBeUndefined();
+      const factory = service(undefined, { github: adapter });
+      const enabled = await enable(factory);
+      for (const role of assignedRoles) {
+        expect(agents.initialPrompts.get(roleAgent(enabled, role))).not.toContain("Do nothing now");
+        await factory.tick(PROJECT, role);
+        expect(agents.prompts.some((prompt) => prompt.agentId === roleAgent(enabled, role))).toBe(
+          true,
+        );
+      }
+    },
+  );
 });
 
 describe("one Factory home per installation", () => {
