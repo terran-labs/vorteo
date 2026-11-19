@@ -365,6 +365,31 @@ function requestPredatesPolicy(
   return Date.parse(job.createdAt) < threshold && !standing?.activationStep;
 }
 
+// Keep the restart outcome and first failure across recovery, but replace the latest
+// release status on each retry so repeated failures cannot grow the receipt.
+function holdReleaseDetail(job: RestartJob, error?: string): string {
+  const marker = "\nHold release initially failed: ";
+  const [outcome, history] = job.detail.split(marker, 2);
+  const firstFailure = history?.split("\n", 1)[0];
+  if (error === undefined && firstFailure === undefined) {
+    if (
+      job.status === "succeeded" &&
+      outcome === "Waiting for the environment to release its restart hold."
+    )
+      return "Restart completed and its hold was released.";
+    return job.detail;
+  }
+  const retainedFailure = firstFailure ?? error;
+  let releaseStatus = "Hold release confirmed after retry.";
+  if (error !== undefined) {
+    releaseStatus =
+      error === retainedFailure
+        ? "Hold release remains unconfirmed."
+        : `Hold release unconfirmed: ${error}`;
+  }
+  return `${outcome}${marker}${retainedFailure}\n${releaseStatus}`;
+}
+
 export class InstallationRestarts {
   private operationalActivitySink: OperationalActivitySink | null = null;
   private readonly progress: NonNullable<RestartStartupOptions["progress"]>;
@@ -3088,23 +3113,24 @@ export class InstallationRestarts {
       }
       const current = this.jobs.find((item) => item.id === job.id);
       if (current) {
-        const waitingForHold =
-          current.status === "succeeded" &&
-          current.detail === "Waiting for the environment to release its restart hold.";
         this.replace({
           ...withoutCaptureId(current),
           holdReleased: true,
-          detail: waitingForHold ? "Restart completed and its hold was released." : current.detail,
+          detail: holdReleaseDetail(current),
         });
       }
     } catch (error) {
-      const detail = (error instanceof Error ? error.message : String(error)).split(/\r?\n/, 1)[0];
+      const detail = (error instanceof Error ? error.message : String(error)).split(
+        /\r\n|\r|\n/,
+        1,
+      )[0];
       this.progress("Restart hold release failed", { jobId: job.id, target: job.target, detail });
       const current = this.jobs.find((item) => item.id === job.id);
       if (current)
         this.replace({
           ...current,
-          detail: "Waiting for the environment to release its restart hold.",
+          holdReleased: false,
+          detail: holdReleaseDetail(current, detail),
         });
     }
   }
@@ -3597,7 +3623,7 @@ export class InstallationRestarts {
     }
     const detail =
       exceeded && this.afterHoldDeadline === "ask"
-        ? `Current turns have not finished after ${minutes} minutes. ${waitingDetail}. Restart now to interrupt them, or cancel.`
+        ? `Current turns have not finished after ${minutes} minutes. ${waitingDetail}. Keep waiting, choose Force restart now to review interrupting current turns, or cancel.`
         : waitingDetail;
     return job.detail === detail ? job : { ...job, detail };
   }

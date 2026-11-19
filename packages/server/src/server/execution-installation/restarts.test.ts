@@ -597,17 +597,24 @@ test("force restart persists continuation intent before capture and releases onl
   expect(calls).toEqual(["capture", "restart", "ready"]);
 });
 
-test.each(["legacy", "continuation"] as const)(
-  "%s hold release retry restores completed detail after journal recovery without restarting",
-  async (adapter) => {
+test.each([
+  { adapter: "legacy", error: "Timeout waiting for message (5000ms)" },
+  { adapter: "continuation", error: "Timeout waiting for message (5000ms)" },
+  { adapter: "legacy", error: "target offline" },
+  { adapter: "continuation", error: "target offline" },
+])(
+  "$adapter release preserves $error after journal recovery without restarting",
+  async ({ adapter, error }) => {
     const journal = new MemoryJournal();
-    const restart = vi.fn(async () => "replacement verified");
+    const restart = vi.fn(async () => "unexpected force restart");
+    const restartWhenIdle = vi.fn(async () => "replacement verified");
     const release = vi.fn(async () => true);
-    release.mockRejectedValueOnce(new Error("target offline\nprivate diagnostic continuation"));
+    release.mockRejectedValue(new Error(`${error}\nprivate diagnostic continuation`));
+    const now = () => Date.parse("2026-11-19T00:00:00Z");
     const progress = vi.fn();
     const executor: RestartExecutor = {
       restart,
-      restartWhenIdle: restart,
+      restartWhenIdle,
       inspect: async () => idleImpact("host"),
       holdCurrentTurns: async () => {},
       releaseCurrentTurns: async () => {
@@ -620,7 +627,7 @@ test.each(["legacy", "continuation"] as const)(
     const queue = new InstallationRestarts(
       journal,
       executor,
-      Date.now,
+      now,
       {},
       {
         fenced: false,
@@ -634,25 +641,44 @@ test.each(["legacy", "continuation"] as const)(
     await queue.drain();
     expect(journal.jobs[0]).toMatchObject({
       status: "succeeded",
-      detail: "Waiting for the environment to release its restart hold.",
+      detail: `replacement verified\nHold release initially failed: ${error}\nHold release remains unconfirmed.`,
+      holdReleased: false,
     });
-    expect(journal.jobs[0].holdReleased).not.toBe(true);
+    const failedDetail = journal.jobs[0].detail;
+    expect(JSON.stringify(journal.jobs)).not.toContain("private diagnostic continuation");
+    expect(restartWhenIdle).toHaveBeenCalledTimes(1);
+    expect(restart).not.toHaveBeenCalled();
     expect(release).toHaveBeenCalledTimes(1);
     expect(progress).toHaveBeenLastCalledWith("Restart hold release failed", {
       jobId: request.id,
       target: "host",
-      detail: "target offline",
+      detail: error,
     });
-    const reopened = new InstallationRestarts(journal, executor);
+    const reopened = new InstallationRestarts(journal, executor, now);
+    expect(reopened.list()[0]).toMatchObject({ holdReleased: false, detail: failedDetail });
+    await reopened.drain();
+    expect(journal.jobs[0]).toMatchObject({ holdReleased: false, detail: failedDetail });
+    expect(restartWhenIdle).toHaveBeenCalledTimes(1);
+    expect(restart).not.toHaveBeenCalled();
+    release.mockRejectedValueOnce(new Error("release acknowledgement lost\rsecond diagnostic"));
+    await reopened.drain();
+    expect(journal.jobs[0]).toMatchObject({
+      holdReleased: false,
+      detail: `replacement verified\nHold release initially failed: ${error}\nHold release unconfirmed: release acknowledgement lost`,
+    });
+    expect(restartWhenIdle).toHaveBeenCalledTimes(1);
+    expect(restart).not.toHaveBeenCalled();
+    release.mockResolvedValue(true);
     await reopened.drain();
     expect(journal.jobs[0]).toMatchObject({
       status: "succeeded",
-      detail: "Restart completed and its hold was released.",
+      detail: `replacement verified\nHold release initially failed: ${error}\nHold release confirmed after retry.`,
       holdReleased: true,
     });
     await reopened.drain();
-    expect(release).toHaveBeenCalledTimes(2);
-    expect(restart).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(4);
+    expect(restartWhenIdle).toHaveBeenCalledTimes(1);
+    expect(restart).not.toHaveBeenCalled();
   },
 );
 
@@ -702,7 +728,9 @@ test("failed restart retains uncertain continuation when replacement refuses can
   const reopened = new InstallationRestarts(journal, executor);
   await reopened.drain();
   expect(release).toHaveBeenCalledWith("host", request.id, "cancelled");
-  expect(reopened.list()[0]?.holdReleased).toBeUndefined();
+  expect(reopened.list()[0]?.holdReleased).toBe(false);
+  expect(reopened.list()[0]?.detail).toContain("replacement readiness unknown");
+  expect(reopened.list()[0]?.detail).toContain("Restart continuation remains held");
   expect(reopened.list()[0]?.continuationCaptureRequested).toBe(true);
   expect(restart).toHaveBeenCalledTimes(1);
 });
@@ -747,7 +775,7 @@ test("a legacy executor cannot bypass recorded continuation capture", async () =
   expect(restart).not.toHaveBeenCalled();
   expect(reopened.list()[0]?.continuationCaptureRequested).toBe(true);
   expect(reopened.list()[0]?.status).toBe("failed");
-  expect(reopened.list()[0]?.holdReleased).toBeUndefined();
+  expect(reopened.list()[0]?.holdReleased).toBe(false);
 });
 
 test("retained approved idle capture refuses a missing adapter before dispatch", async () => {
@@ -864,13 +892,14 @@ test("a finish-current-turns hold asks the owner after its deadline and logs hol
     },
   };
   const progress: Array<{ message: string; fields: Record<string, unknown> }> = [];
+  const restart = vi.fn(async () => "unexpected force restart");
   const restartWhenIdle = vi.fn(async () => "replacement verified");
   const executor: RestartExecutor = {
     restartContinuationAvailable: async () => false,
     inspect: async () => idleImpact("host", busy),
     holdCurrentTurns: async () => {},
     releaseCurrentTurns: async () => {},
-    restart: async () => "wrong",
+    restart,
     restartWhenIdle,
   };
   const startup = (): RestartStartupOptions => ({
@@ -895,13 +924,16 @@ test("a finish-current-turns hold asks the owner after its deadline and logs hol
   expect(recovered.holdDeadlineExceeded(request.id)).toBe(true);
   expect(recovered.list()[0]).toMatchObject({
     status: "approved",
-    detail: expect.stringContaining("Restart now to interrupt them, or cancel."),
+    detail: expect.stringContaining(
+      "Keep waiting, choose Force restart now to review interrupting current turns, or cancel.",
+    ),
   });
   // Neither the journal nor the shared job carries the private hold fields.
   expect(JSON.stringify(journal.jobs)).not.toContain("holdStartedAt");
   expect(JSON.stringify(journal.jobs)).not.toContain("holdDeadlineExceeded");
   // Past the deadline it stops waiting silently, but never interrupts the turns itself.
   expect(restartWhenIdle).not.toHaveBeenCalled();
+  expect(restart).not.toHaveBeenCalled();
   expect(progress.filter((entry) => entry.message.includes("deadline"))).toHaveLength(1);
   // Holder changes are logged by ID only, once per change, and never for an idle first check.
   const holders = progress.filter((entry) => entry.message === "Restart hold holders changed");
@@ -915,6 +947,8 @@ test("a finish-current-turns hold asks the owner after its deadline and logs hol
   recovered.request({ target: "container-daemon", reason: "Next" }, "owner");
   await recovered.drain();
   expect(saved).toEqual({});
+  expect(restart).not.toHaveBeenCalled();
+  expect(restartWhenIdle).toHaveBeenCalledTimes(1);
 });
 
 test.each([
@@ -965,13 +999,20 @@ test.each([
     expect(queue.holdDeadlineExceeded(request.id)).toBe(true);
     expect(queue.list()[0]).toMatchObject({
       status: "approved",
-      detail: expect.stringContaining("Restart now to interrupt them, or cancel."),
+      detail: expect.stringContaining(
+        "Keep waiting, choose Force restart now to review interrupting current turns, or cancel.",
+      ),
     });
     expect(journal.jobs[0]?.cooperativeDrainPreparation).toBeUndefined();
     expect(prepare).not.toHaveBeenCalled();
     expect(dispatch).not.toHaveBeenCalled();
     expect(observe).not.toHaveBeenCalled();
     expect(restart).not.toHaveBeenCalled();
+    queue.decide(request.id, queue.list()[0].revision, "cancel");
+    await queue.drain();
+    expect(queue.list()[0]).toMatchObject({ status: "rejected" });
+    expect(restart).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
   },
 );
 
@@ -1309,9 +1350,10 @@ test("a terminal continuation awaiting release does not fence another target's r
   await queue.drain();
   expect(release).toHaveBeenCalledWith("host", stuck.id, "cancelled");
   expect(restart).toHaveBeenCalledWith("container-daemon");
+  expect(restart).toHaveBeenCalledTimes(1);
   expect(queue.list().map((job) => [job.target, job.status, job.holdReleased])).toEqual([
-    ["host", "rejected", undefined],
-    ["container-daemon", "succeeded", undefined],
+    ["host", "rejected", false],
+    ["container-daemon", "succeeded", false],
   ]);
 });
 
