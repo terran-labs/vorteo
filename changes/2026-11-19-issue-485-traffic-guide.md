@@ -5,6 +5,9 @@
 
 ### Fixes
 
+- Isolate traffic observers from send outcomes, compact connection and burst logs, retain open-client continuity and keep sampling budgets per collector.
+- Replace counter permutations with a shorter server fan-out and observer-failure check, and document UTC rollover and prior-day capture cadence.
+
 - Classify direct sockets by their HTTP attachment context so traffic observation supports existing socket adapters and test doubles without a concrete WebSocket constructor.
 
 ## Maintenance review

@@ -66,13 +66,8 @@ export async function sendBoundedPhysicalFrameAndWait(params: {
   onHighWater: () => void;
   observe?: (outcome: PhysicalTrafficOutcome, bytes: number) => void;
 }): Promise<boolean> {
-  const {
-    socket,
-    frame,
-    frameBytes = outboundFrameByteLength(frame),
-    onHighWater,
-    observe,
-  } = params;
+  const { socket, frame, frameBytes = outboundFrameByteLength(frame), onHighWater } = params;
+  const observe = safeObserver(params.observe);
   observe?.("attempted", frameBytes);
   if (socket.readyState !== 1) {
     observe?.("rejected", frameBytes);
@@ -96,30 +91,32 @@ export async function sendBoundedPhysicalFrameAndWait(params: {
     try {
       result = socket.send(frame, (error) => {
         callbackUsed = true;
-        complete(error ? "failed" : "completed");
         if (error) reject(error);
         else resolve();
+        complete(error ? "failed" : "completed");
       });
     } catch (error) {
-      observe?.("rejected", frameBytes);
       reject(error);
+      observe?.("rejected", frameBytes);
       return;
     }
     observe?.("accepted", frameBytes);
     if (result && typeof result.then === "function") {
-      result.then(
-        () => {
-          complete("completed");
-          return resolve();
-        },
-        (error) => {
-          complete("failed");
-          reject(error);
-        },
-      );
+      void result
+        .then(
+          () => {
+            resolve();
+            return complete("completed");
+          },
+          (error) => {
+            reject(error);
+            complete("failed");
+          },
+        )
+        .catch(reject);
     } else if (socket.send.length < 2 && !callbackUsed) {
-      complete("completionUnknown");
       resolve();
+      complete("completionUnknown");
     }
   });
   return true;
@@ -140,13 +137,8 @@ export function sendBoundedPhysicalFrame(params: {
   onHighWater: () => void;
   observe?: (outcome: PhysicalTrafficOutcome, bytes: number) => void;
 }): boolean {
-  const {
-    socket,
-    frame,
-    frameBytes = outboundFrameByteLength(frame),
-    onHighWater,
-    observe,
-  } = params;
+  const { socket, frame, frameBytes = outboundFrameByteLength(frame), onHighWater } = params;
+  const observe = safeObserver(params.observe);
   observe?.("attempted", frameBytes);
   if (socket.readyState !== 1) {
     observe?.("rejected", frameBytes);
@@ -166,13 +158,28 @@ export function sendBoundedPhysicalFrame(params: {
   }
   observe?.("accepted", frameBytes);
   if (result && typeof result.then === "function") {
-    void result.then(
-      () => observe?.("completed", frameBytes),
-      () => observe?.("failed", frameBytes),
-    );
+    void result
+      .then(
+        () => observe?.("completed", frameBytes),
+        () => observe?.("failed", frameBytes),
+      )
+      .catch(() => undefined);
   } else {
     // Ordinary sends do not request callbacks. Preserve that transport contract.
     observe?.("completionUnknown", frameBytes);
   }
   return true;
+}
+
+// Observers are synchronous diagnostics. Their failures cannot settle or reject a send.
+function safeObserver(
+  observe: ((outcome: PhysicalTrafficOutcome, bytes: number) => void) | undefined,
+) {
+  return (outcome: PhysicalTrafficOutcome, bytes: number): void => {
+    try {
+      observe?.(outcome, bytes);
+    } catch {
+      // The metrics collector counts its own failures; arbitrary observers stay isolated too.
+    }
+  };
 }

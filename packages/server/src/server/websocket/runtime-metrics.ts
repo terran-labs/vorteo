@@ -255,11 +255,8 @@ function getTopCounts(map: Map<string, number>, limit: number): Array<[string, n
 // Disable repeat sampling without changing byte accounting or transport behavior.
 const TRAFFIC_NOVELTY_ENABLED = true;
 const TRAFFIC_FINGERPRINT_CAP = 128;
-const TRAFFIC_GLOBAL_FINGERPRINT_CAP = 128 * 128;
+const TRAFFIC_TOTAL_FINGERPRINT_CAP = 128 * 128;
 const TRAFFIC_SIGNATURE_BYTES = 4096;
-let fingerprintBudgetSecond = -1;
-let fingerprintBudgetRemaining = 0;
-let retainedFingerprintCount = 0;
 
 const TRAFFIC_CONNECTION_CAP = 256;
 const TRAFFIC_CLIENT_CAP = 128;
@@ -350,6 +347,12 @@ interface TrafficDay {
 
 /** Counts observation layers independently. None of these counters prove client receipt. */
 export class WebSocketTrafficMetrics {
+  private fingerprintBudgetSecond = -1;
+  private fingerprintBudgetRemaining = 0;
+  private retainedFingerprintCount = 0;
+  private accountingErrors = 0;
+  private flushCount = 0;
+  private lastEmittedDayNumber = Number.NaN;
   private readonly epoch = randomUUID();
   private readonly key = randomBytes(32);
   private readonly startedAt: number;
@@ -375,34 +378,36 @@ export class WebSocketTrafficMetrics {
   }
 
   open(identity: TrafficConnectionIdentity): void {
-    if (this.connections.has(identity.connectionId)) return;
-    if (this.connections.size >= TRAFFIC_CONNECTION_CAP) {
-      this.connectionOverflow++;
-      return;
-    }
-    // Copy only allowlisted fields. The source identity also contains private request metadata.
-    this.connections.set(identity.connectionId, {
-      connectionId: identity.connectionId,
-      transport: identity.transport,
-      peer: identity.peer,
-      browserOrigin: identity.browserOrigin,
-      clientType: "unknown",
-      routed: false,
-      client: null,
-      hello: "pending",
-      reconnectOrdinal: null,
-      openedAt: this.clock(),
-      closedAt: null,
-      attempted: volume(),
-      frameAttempts: volume(),
-      frameAccepted: volume(),
-      types: new Map(),
-      bursts: BURST_WINDOWS_MS.map((windowMs) => ({
-        windowMs,
-        bytes: 0,
-        windowBytes: 0,
+    this.account(() => {
+      if (this.connections.has(identity.connectionId)) return;
+      if (this.connections.size >= TRAFFIC_CONNECTION_CAP) {
+        this.connectionOverflow++;
+        return;
+      }
+      // Copy only allowlisted fields. The source identity also contains private request metadata.
+      this.connections.set(identity.connectionId, {
+        connectionId: identity.connectionId,
+        transport: identity.transport,
+        peer: identity.peer,
+        browserOrigin: identity.browserOrigin,
+        clientType: "unknown",
+        routed: false,
+        client: null,
+        hello: "pending",
+        reconnectOrdinal: null,
+        openedAt: this.clock(),
+        closedAt: null,
+        attempted: volume(),
+        frameAttempts: volume(),
+        frameAccepted: volume(),
         types: new Map(),
-      })),
+        bursts: BURST_WINDOWS_MS.map((windowMs) => ({
+          windowMs,
+          bytes: 0,
+          windowBytes: 0,
+          types: new Map(),
+        })),
+      });
     });
   }
 
@@ -413,85 +418,117 @@ export class WebSocketTrafficMetrics {
     resumed: boolean;
     routed: boolean;
   }): void {
-    const connection = this.connections.get(params.connectionId);
-    if (!connection) return;
-    const now = this.clock();
-    this.expireClients(now);
-    const client = createHmac("sha256", this.key)
-      .update(params.continuityKey)
-      .digest("hex")
-      .slice(0, 24);
-    const previous = this.clients.get(client);
-    connection.reconnectOrdinal = previous ? previous.connections : null;
-    if (!previous && this.clients.size >= TRAFFIC_CLIENT_CAP) {
-      const oldest = this.clients.keys().next().value;
-      if (oldest !== undefined) this.removeClient(oldest);
-      this.clientEvictions++;
-    }
-    this.clients.delete(client);
-    this.clients.set(client, {
-      lastSeenAt: now,
-      connections: (previous?.connections ?? 0) + 1,
-      fingerprints: previous?.fingerprints ?? new Map(),
+    this.account(() => {
+      const connection = this.connections.get(params.connectionId);
+      if (!connection) return;
+      const now = this.clock();
+      this.expireClients(now);
+      const client = createHmac("sha256", this.key)
+        .update(params.continuityKey)
+        .digest("hex")
+        .slice(0, 24);
+      const previous = this.clients.get(client);
+      connection.reconnectOrdinal = previous ? previous.connections : null;
+      if (!previous && this.clients.size >= TRAFFIC_CLIENT_CAP) {
+        const oldest = this.clients.keys().next().value;
+        if (oldest !== undefined) this.removeClient(oldest);
+        this.clientEvictions++;
+      }
+      this.clients.delete(client);
+      this.clients.set(client, {
+        lastSeenAt: now,
+        connections: (previous?.connections ?? 0) + 1,
+        fingerprints: previous?.fingerprints ?? new Map(),
+      });
+      connection.client = client;
+      connection.clientType = params.clientType;
+      connection.routed = params.routed;
+      connection.hello = params.resumed ? "resumed" : "initial";
     });
-    connection.client = client;
-    connection.clientType = params.clientType;
-    connection.routed = params.routed;
-    connection.hello = params.resumed ? "resumed" : "initial";
   }
 
   close(connectionId: string | undefined): void {
-    if (!connectionId) return;
-    const connection = this.connections.get(connectionId);
-    if (connection && connection.closedAt === null) connection.closedAt = this.clock();
+    this.account(() => {
+      if (!connectionId) return;
+      const connection = this.connections.get(connectionId);
+      if (connection && connection.closedAt === null) {
+        connection.closedAt = this.clock();
+        const client = connection.client ? this.clients.get(connection.client) : undefined;
+        if (client && connection.client) {
+          client.lastSeenAt = connection.closedAt;
+          this.clients.delete(connection.client);
+          this.clients.set(connection.client, client);
+        }
+      }
+    });
   }
 
   publication(recipients: number): void {
-    this.eachTotals((totals) => {
-      totals.publications++;
-      totals.recipientCandidates += recipients;
+    this.account(() => {
+      this.eachTotals((totals) => {
+        totals.publications++;
+        totals.recipientCandidates += recipients;
+      });
     });
   }
 
   rejectBeforeSerialization(): void {
-    this.eachTotals((totals) => totals.rejectedBeforeSerialization++);
+    this.account(() => {
+      this.eachTotals((totals) => totals.rejectedBeforeSerialization++);
+    });
   }
 
-  attempt(params: { connectionId: string | undefined; type: string; bytes: number }): void {
-    const now = this.clock();
-    const type = this.typeKey(params.type);
-    this.eachTotals((totals) => addVolume(totals.logicalAttempts, params.bytes));
-    addBytes(this.types, type, params.bytes);
-    const day = this.currentDay(now);
-    addBytes(day.types, type, params.bytes);
-    const connection = params.connectionId ? this.connections.get(params.connectionId) : undefined;
-    if (!connection) {
-      addVolume(this.unattributed, params.bytes);
-      addBytes(this.transports, "unknown", params.bytes);
-      addBytes(day.transports, "unknown", params.bytes);
-      return;
-    }
-    const transport = connection.routed ? "routed" : connection.transport;
-    addBytes(this.transports, transport, params.bytes);
-    addBytes(day.transports, transport, params.bytes);
-    addVolume(connection.attempted, params.bytes);
-    addBytes(connection.types, type, params.bytes);
-    const age = Math.max(0, now - connection.openedAt);
-    for (const burst of connection.bursts) {
-      if (age >= burst.windowMs) continue;
-      burst.bytes += params.bytes;
-      burst.windowBytes += params.bytes;
-      addBytes(burst.types, type, params.bytes);
-    }
-    const client = connection.client ? this.clients.get(connection.client) : undefined;
-    if (client && connection.client && now - client.lastSeenAt >= TRAFFIC_RETENTION_MS) {
-      this.removeClient(connection.client);
-      this.clientEvictions++;
-    } else if (client && connection.client) {
-      client.lastSeenAt = now;
-      this.clients.delete(connection.client);
-      this.clients.set(connection.client, client);
-    }
+  attempt(params: {
+    connectionId: string | undefined;
+    type?: string;
+    message?: WSOutboundMessage;
+    bytes: number;
+  }): void {
+    this.account(() => {
+      const now = this.clock();
+      const type = this.typeKey(
+        params.message ? outboundTrafficType(params.message) : (params.type ?? "binary"),
+      );
+      this.eachTotals((totals) => addVolume(totals.logicalAttempts, params.bytes));
+      addBytes(this.types, type, params.bytes);
+      const day = this.currentDay(now);
+      addBytes(day.types, type, params.bytes);
+      const connection = params.connectionId
+        ? this.connections.get(params.connectionId)
+        : undefined;
+      if (!connection) {
+        addVolume(this.unattributed, params.bytes);
+        addBytes(this.transports, "unknown", params.bytes);
+        addBytes(day.transports, "unknown", params.bytes);
+        return;
+      }
+      const transport = connection.routed ? "routed" : connection.transport;
+      addBytes(this.transports, transport, params.bytes);
+      addBytes(day.transports, transport, params.bytes);
+      addVolume(connection.attempted, params.bytes);
+      addBytes(connection.types, type, params.bytes);
+      const age = Math.max(0, now - connection.openedAt);
+      for (const burst of connection.bursts) {
+        if (age >= burst.windowMs) continue;
+        burst.bytes += params.bytes;
+        burst.windowBytes += params.bytes;
+        addBytes(burst.types, type, params.bytes);
+      }
+      const client = connection.client ? this.clients.get(connection.client) : undefined;
+      if (
+        client &&
+        connection.client &&
+        connection.closedAt !== null &&
+        now - client.lastSeenAt >= TRAFFIC_RETENTION_MS
+      ) {
+        this.removeClient(connection.client);
+        this.clientEvictions++;
+      } else if (client && connection.client) {
+        client.lastSeenAt = now;
+        this.clients.delete(connection.client);
+        this.clients.set(connection.client, client);
+      }
+    });
   }
 
   sample(params: {
@@ -500,35 +537,39 @@ export class WebSocketTrafficMetrics {
     frame: string | Uint8Array;
     bytes: number;
   }): void {
-    let fullFrame: keyof RepeatPopulation = "unknown";
-    let content: keyof RepeatPopulation = "unknown";
-    const connection = params.connectionId ? this.connections.get(params.connectionId) : undefined;
-    const client = connection?.client ? this.clients.get(connection.client) : undefined;
-    const eligible = TRAFFIC_NOVELTY_ENABLED && client && eligibleRepeatPayload(params.message);
-    if (eligible && typeof params.frame === "string") {
-      // Reserve the entire upper bound before reading content or encoding a signature.
-      if (this.reserveFingerprintInput(TRAFFIC_SIGNATURE_BYTES)) {
-        const signature = sampledContentSignature(eligible);
-        if (signature !== null) content = this.fingerprint(client, "content", signature);
+    this.account(() => {
+      let fullFrame: keyof RepeatPopulation = "unknown";
+      let content: keyof RepeatPopulation = "unknown";
+      const connection = params.connectionId
+        ? this.connections.get(params.connectionId)
+        : undefined;
+      const client = connection?.client ? this.clients.get(connection.client) : undefined;
+      const eligible = TRAFFIC_NOVELTY_ENABLED && client && eligibleRepeatPayload(params.message);
+      if (eligible && typeof params.frame === "string") {
+        // Reserve the entire upper bound before reading content or encoding a signature.
+        if (this.reserveFingerprintInput(TRAFFIC_SIGNATURE_BYTES)) {
+          const signature = sampledContentSignature(eligible);
+          if (signature !== null) content = this.fingerprint(client, "content", signature);
+        }
+        if (params.bytes <= 64 * 1024 && this.reserveFingerprintInput(params.bytes)) {
+          fullFrame = this.fingerprint(client, "frame", params.frame);
+        }
       }
-      if (params.bytes <= 64 * 1024 && this.reserveFingerprintInput(params.bytes)) {
-        fullFrame = this.fingerprint(client, "frame", params.frame);
-      }
-    }
-    this.eachTotals((totals) => {
-      addVolume(totals.fullFrameRepeat[fullFrame], params.bytes);
-      addVolume(totals.contentRepeatEstimate[content], params.bytes);
+      this.eachTotals((totals) => {
+        addVolume(totals.fullFrameRepeat[fullFrame], params.bytes);
+        addVolume(totals.contentRepeatEstimate[content], params.bytes);
+      });
     });
   }
 
   private reserveFingerprintInput(bytes: number): boolean {
     const second = Math.floor(this.clock() / 1000);
-    if (second !== fingerprintBudgetSecond) {
-      fingerprintBudgetSecond = second;
-      fingerprintBudgetRemaining = 1024 * 1024;
+    if (second !== this.fingerprintBudgetSecond) {
+      this.fingerprintBudgetSecond = second;
+      this.fingerprintBudgetRemaining = 1024 * 1024;
     }
-    if (bytes > fingerprintBudgetRemaining) return false;
-    fingerprintBudgetRemaining -= bytes;
+    if (bytes > this.fingerprintBudgetRemaining) return false;
+    this.fingerprintBudgetRemaining -= bytes;
     this.eachTotals((totals) => (totals.fingerprintInputReservedBytes += bytes));
     return true;
   }
@@ -547,17 +588,19 @@ export class WebSocketTrafficMetrics {
     if (client.fingerprints.size >= TRAFFIC_FINGERPRINT_CAP) {
       const oldest = client.fingerprints.keys().next().value;
       if (oldest !== undefined) client.fingerprints.delete(oldest);
-      retainedFingerprintCount--;
+      this.retainedFingerprintCount--;
       this.eachTotals((totals) => totals.fingerprintEvictions++);
     }
-    if (retainedFingerprintCount >= TRAFFIC_GLOBAL_FINGERPRINT_CAP) return "unknown";
+    if (this.retainedFingerprintCount >= TRAFFIC_TOTAL_FINGERPRINT_CAP) return "unknown";
     client.fingerprints.set(digest, this.clock());
-    retainedFingerprintCount++;
+    this.retainedFingerprintCount++;
     return "sampledUnseen";
   }
 
   outcome(outcome: TrafficOutcome, bytes: number): void {
-    this.eachTotals((totals) => addVolume(totals[outcome], bytes));
+    this.account(() => {
+      this.eachTotals((totals) => addVolume(totals[outcome], bytes));
+    });
   }
 
   physical(params: {
@@ -566,124 +609,137 @@ export class WebSocketTrafficMetrics {
     outcome: PhysicalTrafficOutcome;
     bytes: number;
   }): void {
-    const connection = params.connectionId ? this.connections.get(params.connectionId) : undefined;
-    if (params.outcome === "attempted" && connection)
-      addVolume(connection.frameAttempts, params.bytes);
-    if (params.outcome === "accepted") {
-      if (connection) addVolume(connection.frameAccepted, params.bytes);
-      const transport = params.routed ? "routed" : (connection?.transport ?? "unknown");
-      addBytes(this.frameTransports, transport, params.bytes);
-      addBytes(this.currentDay(this.clock()).acceptedFrameTransports, transport, params.bytes);
-    }
-    this.eachTotals((totals) => {
-      const layer = params.routed ? totals.routedFrames : totals.physicalFrames;
-      addVolume(layer[params.outcome], params.bytes);
+    this.account(() => {
+      const connection = params.connectionId
+        ? this.connections.get(params.connectionId)
+        : undefined;
+      if (params.outcome === "attempted" && connection)
+        addVolume(connection.frameAttempts, params.bytes);
+      if (params.outcome === "accepted") {
+        if (connection) addVolume(connection.frameAccepted, params.bytes);
+        const transport = params.routed ? "routed" : (connection?.transport ?? "unknown");
+        addBytes(this.frameTransports, transport, params.bytes);
+        addBytes(this.currentDay(this.clock()).acceptedFrameTransports, transport, params.bytes);
+      }
+      this.eachTotals((totals) => {
+        const layer = params.routed ? totals.routedFrames : totals.physicalFrames;
+        addVolume(layer[params.outcome], params.bytes);
+      });
     });
   }
 
   snapshotAndReset() {
-    const now = this.clock();
-    this.expireClients(now);
-    this.currentDay(now);
-    const connections = [...this.connections.values()].sort(
-      (a, b) => b.attempted.bytes - a.attempted.bytes,
+    return (
+      this.account(() => {
+        const now = this.clock();
+        this.refreshOpenClients(now);
+        this.expireClients(now);
+        this.currentDay(now);
+        const includePriorDay =
+          this.dayNumber !== this.lastEmittedDayNumber || ++this.flushCount % 120 === 0;
+        this.lastEmittedDayNumber = this.dayNumber;
+        // Type labels occur once; detail tables reference their numeric index.
+        const typeNames = [...this.typeKeys, "other"];
+        const typeIds = new Map(typeNames.map((type, index) => [type, index]));
+        const detail = (values: Map<string, number>, limit = 12) => {
+          const { top, other } = topBytes(values, limit);
+          return { top: top.map(([type, bytes]) => [typeIds.get(type), bytes]), other };
+        };
+        const connections = [...this.connections.values()].sort(
+          (a, b) => b.attempted.bytes - a.attempted.bytes,
+        );
+        const top = connections.slice(0, 12).map((connection) => ({
+          connectionId: connection.connectionId,
+          transport: connection.transport,
+          routed: connection.routed,
+          peer: connection.peer,
+          browserOrigin: connection.browserOrigin,
+          clientType: connection.clientType,
+          client: connection.client,
+          hello: connection.hello,
+          reconnectOrdinal: connection.reconnectOrdinal,
+          ageMs: Math.max(0, (connection.closedAt ?? now) - connection.openedAt),
+          closed: connection.closedAt !== null,
+          attempted: compactVolume(connection.attempted),
+          frameAttempts: compactVolume(connection.frameAttempts),
+          frameAccepted: compactVolume(connection.frameAccepted),
+          types: detail(connection.types, 5),
+        }));
+        const burstConnections = connections
+          .filter((connection) => connection.bursts[2].windowBytes > 0)
+          .sort((a, b) => b.bursts[2].windowBytes - a.bursts[2].windowBytes);
+        const bursts = burstConnections
+          .slice(0, 12)
+          .map((connection) => compactBurst(connection, typeIds));
+        const snapshot = {
+          accountingErrors: this.accountingErrors,
+          processEpoch: this.epoch,
+          processStartedAt: this.startedAt,
+          coveredStart: this.windowStartedAt,
+          coveredEnd: now,
+          logicalAdmission: "unknown" as const,
+          noveltyEnabled: TRAFFIC_NOVELTY_ENABLED,
+          contentSample: repeatCoverage(this.totals.contentRepeatEstimate),
+          fullFrameSample: repeatCoverage(this.totals.fullFrameRepeat),
+          retainedFingerprints: [...this.clients.values()].reduce(
+            (sum, client) => sum + client.fingerprints.size,
+            0,
+          ),
+          burstBasis: "attemptTime" as const,
+          totals: compactTotals(this.totals),
+          typeNames,
+          types: detail(this.types),
+          transports: Object.fromEntries(this.transports),
+          acceptedFrameTransports: Object.fromEntries(this.frameTransports),
+          connectionFields: top.length ? Object.keys(top[0]) : [],
+          connections: top.map((connection) => Object.values(connection)),
+          otherBurstWindowAttemptedBytes: burstConnections
+            .slice(12)
+            .reduce((sum, c) => sum + c.bursts[2].windowBytes, 0),
+          burstWindowsMs: BURST_WINDOWS_MS,
+          burstFields: bursts.length ? Object.keys(bursts[0]) : [],
+          burstConnections: bursts.map((burst) => Object.values(burst)),
+          otherConnectionAttemptedBytes: connections
+            .slice(12)
+            .reduce((sum, c) => sum + c.attempted.bytes, 0),
+          unattributedAttempts: this.unattributed,
+          connectionOverflow: this.connectionOverflow,
+          clientEvictions: this.clientEvictions,
+          retainedConnections: this.connections.size,
+          retainedClients: this.clients.size,
+          days: [...this.days.values()]
+            .filter((day) => day === this.day || includePriorDay)
+            .map((day) => ({
+              date: day.date,
+              coveredStart: day.coveredStart,
+              coveredEnd: day.coveredEnd,
+              totals: compactTotals(day.totals),
+              types: detail(day.types),
+              transports: Object.fromEntries(day.transports),
+              acceptedFrameTransports: Object.fromEntries(day.acceptedFrameTransports),
+            })),
+        };
+        this.totals = trafficTotals();
+        this.types.clear();
+        this.transports.clear();
+        this.frameTransports.clear();
+        this.unattributed = volume();
+        this.connectionOverflow = 0;
+        this.clientEvictions = 0;
+        this.windowStartedAt = now;
+        for (const [id, connection] of this.connections) {
+          if (connection.closedAt !== null) this.connections.delete(id);
+          else {
+            connection.attempted = volume();
+            connection.frameAttempts = volume();
+            connection.frameAccepted = volume();
+            connection.types.clear();
+            for (const burst of connection.bursts) burst.windowBytes = 0;
+          }
+        }
+        return snapshot;
+      }) ?? { accountingErrors: this.accountingErrors }
     );
-    const top = connections.slice(0, 12).map((connection) => ({
-      connectionId: connection.connectionId,
-      transport: connection.transport,
-      routed: connection.routed,
-      peer: connection.peer,
-      browserOrigin: connection.browserOrigin,
-      clientType: connection.clientType,
-      client: connection.client,
-      hello: connection.hello,
-      reconnectOrdinal: connection.reconnectOrdinal,
-      ageMs: Math.max(0, (connection.closedAt ?? now) - connection.openedAt),
-      closed: connection.closedAt !== null,
-      attempted: { ...connection.attempted },
-      frameAttempts: { ...connection.frameAttempts },
-      frameAccepted: { ...connection.frameAccepted },
-      types: topBytes(connection.types),
-      bursts: connection.bursts.map((burst) => ({
-        windowMs: burst.windowMs,
-        cumulativeAttemptedBytes: burst.bytes,
-        windowAttemptedBytes: burst.windowBytes,
-        types: topBytes(burst.types),
-      })),
-    }));
-    const burstConnections = connections
-      .filter((connection) => connection.bursts[2].windowBytes > 0)
-      .sort((a, b) => b.bursts[2].windowBytes - a.bursts[2].windowBytes);
-    const snapshot = {
-      processEpoch: this.epoch,
-      processStartedAt: this.startedAt,
-      coveredStart: this.windowStartedAt,
-      coveredEnd: now,
-      logicalAdmission: "unknown" as const,
-      noveltyEnabled: TRAFFIC_NOVELTY_ENABLED,
-      contentSample: repeatCoverage(this.totals.contentRepeatEstimate),
-      fullFrameSample: repeatCoverage(this.totals.fullFrameRepeat),
-      retainedFingerprints: [...this.clients.values()].reduce(
-        (sum, client) => sum + client.fingerprints.size,
-        0,
-      ),
-      burstBasis: "attemptTime" as const,
-      totals: this.totals,
-      types: topBytes(this.types),
-      transports: Object.fromEntries(this.transports),
-      acceptedFrameTransports: Object.fromEntries(this.frameTransports),
-      connections: top,
-      otherBurstWindowAttemptedBytes: burstConnections
-        .slice(12)
-        .reduce((sum, c) => sum + c.bursts[2].windowBytes, 0),
-      burstConnections: burstConnections.slice(0, 12).map((connection) => ({
-        connectionId: connection.connectionId,
-        windows: connection.bursts.map((burst) => ({
-          windowMs: burst.windowMs,
-          cumulativeAttemptedBytes: burst.bytes,
-          windowAttemptedBytes: burst.windowBytes,
-          types: topBytes(burst.types),
-        })),
-      })),
-      otherConnectionAttemptedBytes: connections
-        .slice(12)
-        .reduce((sum, c) => sum + c.attempted.bytes, 0),
-      unattributedAttempts: this.unattributed,
-      connectionOverflow: this.connectionOverflow,
-      clientEvictions: this.clientEvictions,
-      retainedConnections: this.connections.size,
-      retainedClients: this.clients.size,
-      days: [...this.days.values()].map((day) => ({
-        date: day.date,
-        coveredStart: day.coveredStart,
-        coveredEnd: day.coveredEnd,
-        totals: structuredClone(day.totals),
-        contentSample: repeatCoverage(day.totals.contentRepeatEstimate),
-        fullFrameSample: repeatCoverage(day.totals.fullFrameRepeat),
-        types: topBytes(day.types),
-        transports: Object.fromEntries(day.transports),
-        acceptedFrameTransports: Object.fromEntries(day.acceptedFrameTransports),
-      })),
-    };
-    this.totals = trafficTotals();
-    this.types.clear();
-    this.transports.clear();
-    this.frameTransports.clear();
-    this.unattributed = volume();
-    this.connectionOverflow = 0;
-    this.clientEvictions = 0;
-    this.windowStartedAt = now;
-    for (const [id, connection] of this.connections) {
-      if (connection.closedAt !== null) this.connections.delete(id);
-      else {
-        connection.attempted = volume();
-        connection.frameAttempts = volume();
-        connection.frameAccepted = volume();
-        connection.types.clear();
-        for (const burst of connection.bursts) burst.windowBytes = 0;
-      }
-    }
-    return snapshot;
   }
 
   private typeKey(type: string): string {
@@ -733,15 +789,38 @@ export class WebSocketTrafficMetrics {
   }
 
   dispose(): void {
-    for (const key of this.clients.keys()) this.removeClient(key);
-    this.connections.clear();
+    this.account(() => {
+      for (const key of this.clients.keys()) this.removeClient(key);
+      this.connections.clear();
+    });
   }
 
   private removeClient(key: string): void {
     const removed = this.clients.get(key)?.fingerprints.size ?? 0;
-    retainedFingerprintCount -= removed;
+    this.retainedFingerprintCount -= removed;
     if (removed > 0) this.eachTotals((totals) => (totals.fingerprintEvictions += removed));
     this.clients.delete(key);
+  }
+
+  private refreshOpenClients(now: number): void {
+    for (const connection of this.connections.values()) {
+      if (connection.closedAt !== null || !connection.client) continue;
+      const client = this.clients.get(connection.client);
+      if (!client) continue;
+      client.lastSeenAt = now;
+      this.clients.delete(connection.client);
+      this.clients.set(connection.client, client);
+    }
+  }
+
+  private account<T>(observe: () => T): T | undefined {
+    try {
+      return observe();
+    } catch {
+      // Diagnostics must never change application delivery, including during a flush.
+      this.accountingErrors++;
+      return undefined;
+    }
   }
 
   private expireClients(now: number): void {
@@ -803,11 +882,11 @@ function trafficTotals(): TrafficTotals {
   };
 }
 
-function topBytes(map: Map<string, number>) {
+function topBytes(map: Map<string, number>, limit = 12) {
   const sorted = [...map.entries()].sort((a, b) => b[1] - a[1]);
   return {
-    top: sorted.slice(0, 12),
-    other: sorted.slice(12).reduce((sum, [, bytes]) => sum + bytes, 0),
+    top: sorted.slice(0, limit),
+    other: sorted.slice(limit).reduce((sum, [, bytes]) => sum + bytes, 0),
   };
 }
 
@@ -938,4 +1017,46 @@ function sampledScalar(value: unknown): string | null {
       ? value
       : value.slice(0, 128) + value.slice(middle, middle + 128) + value.slice(-128);
   return JSON.stringify([value.length, sample]);
+}
+
+// Log-only encoding: zero volumes are 0; nonzero volumes are [count, bytes].
+function compactVolume(value: TrafficVolume) {
+  return value.count === 0 && value.bytes === 0 ? 0 : [value.count, value.bytes];
+}
+
+function compactTotals(totals: TrafficTotals) {
+  const volumes = (values: RepeatPopulation | Record<PhysicalTrafficOutcome, TrafficVolume>) =>
+    Object.fromEntries(Object.entries(values).map(([key, value]) => [key, compactVolume(value)]));
+  return {
+    ...totals,
+    logicalAttempts: compactVolume(totals.logicalAttempts),
+    fulfilled: compactVolume(totals.fulfilled),
+    rejectedOrFailed: compactVolume(totals.rejectedOrFailed),
+    synchronousRejection: compactVolume(totals.synchronousRejection),
+    fullFrameRepeat: volumes(totals.fullFrameRepeat),
+    contentRepeatEstimate: volumes(totals.contentRepeatEstimate),
+    physicalFrames: volumes(totals.physicalFrames),
+    routedFrames: volumes(totals.routedFrames),
+  };
+}
+
+function compactBurst(connection: TrafficConnection, typeIds: Map<string, number>) {
+  // Rank by the cumulative ten-second window and share its labels across windows.
+  const selected = topBytes(connection.bursts[2].types, 3).top.map(([type]) => type);
+  return {
+    connectionId: connection.connectionId,
+    // [cumulative attempted bytes, this-flush attempted bytes], in burstWindowsMs order
+    windows: connection.bursts.map((burst) => [burst.bytes, burst.windowBytes]),
+    // [type index, first-one-second bytes, first-five-second bytes, first-ten-second bytes]
+    types: selected.map((type) => [
+      typeIds.get(type),
+      ...connection.bursts.map((burst) => burst.types.get(type) ?? 0),
+    ]),
+    otherTypeBytes: connection.bursts.map((burst) =>
+      [...burst.types.entries()].reduce(
+        (sum, [type, bytes]) => sum + (selected.includes(type) ? 0 : bytes),
+        0,
+      ),
+    ),
+  };
 }

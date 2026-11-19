@@ -120,7 +120,6 @@ import {
 import { resolveSessionAdmission } from "./session-admission-auth.js";
 import {
   WebSocketRuntimeMetricsWindow,
-  outboundTrafficType,
   type PhysicalTrafficOutcome,
   type WebSocketRuntimeCounters,
   type WebSocketRuntimeDiagnosticSnapshot,
@@ -1600,8 +1599,7 @@ export class VoiceAssistantWebSocketServer {
     message?: WSOutboundMessage,
   ): Promise<void> {
     const connectionId = this.socketIdentities.get(ws)?.connectionId;
-    const type = message ? outboundTrafficType(message) : "binary";
-    this.runtimeMetrics.traffic.attempt({ connectionId, type, bytes });
+    this.runtimeMetrics.traffic.attempt({ connectionId, message, bytes });
     this.runtimeMetrics.traffic.sample({ connectionId, message, frame, bytes });
     const transport = this.chunkedSocket(ws);
     const admittedBytes = transport.isWriting
@@ -1620,10 +1618,12 @@ export class VoiceAssistantWebSocketServer {
     }
     // Framing promises conflate admission failures with failures after admission.
     // Fulfillment is also not a transport completion or client receipt guarantee.
-    void sending.then(
-      () => this.runtimeMetrics.traffic.outcome("fulfilled", bytes),
-      () => this.runtimeMetrics.traffic.outcome("rejectedOrFailed", bytes),
-    );
+    void sending
+      .then(
+        () => this.runtimeMetrics.traffic.outcome("fulfilled", bytes),
+        () => this.runtimeMetrics.traffic.outcome("rejectedOrFailed", bytes),
+      )
+      .catch(() => undefined);
     return sending;
   }
 
@@ -1681,9 +1681,11 @@ export class VoiceAssistantWebSocketServer {
     message?: WSOutboundMessage,
   ): void {
     try {
-      void this.sendSocketFrame(ws, frame, frameBytes, false, message).then(recordSent, (err) => {
-        this.logger.warn({ err }, "ws_send_failed");
-      });
+      void this.sendSocketFrame(ws, frame, frameBytes, false, message)
+        .then(recordSent, (err) => {
+          this.logger.warn({ err }, "ws_send_failed");
+        })
+        .catch(() => undefined);
     } catch (err) {
       this.logger.warn({ err }, "ws_send_failed");
     }
@@ -1778,16 +1780,6 @@ export class VoiceAssistantWebSocketServer {
     const requestMetadata = extractSocketRequestMetadata(request);
     const identity = createWebSocketConnectionIdentity(requestMetadata, metadata);
     this.socketIdentities.set(ws, identity);
-    const trafficTransport =
-      identity.transport === "direct" && request === undefined
-        ? "externalAdapter"
-        : identity.transport;
-    this.runtimeMetrics.traffic.open({
-      connectionId: identity.connectionId,
-      transport: trafficTransport,
-      peer: identity.peer,
-      browserOrigin: identity.browserOrigin,
-    });
     const connectionLogger = this.logger.child(toConnectionLogFields(identity));
 
     const pending: PendingConnection = {
@@ -1819,15 +1811,31 @@ export class VoiceAssistantWebSocketServer {
     this.pendingConnections.set(ws, pending);
     this.incrementRuntimeCounter("connectedAwaitingHello");
     this.bindSocketHandlers(ws);
+    const trafficTransport =
+      identity.transport === "direct" && request === undefined
+        ? "externalAdapter"
+        : identity.transport;
+    this.runtimeMetrics.traffic.open({
+      connectionId: identity.connectionId,
+      transport: trafficTransport,
+      peer: identity.peer,
+      browserOrigin: identity.browserOrigin,
+    });
+    if (ws.readyState !== 1) this.runtimeMetrics.traffic.close(identity.connectionId);
 
-    pending.connectionLogger.info(
-      {
-        ...toConnectionLogFields(identity),
-        totalPendingConnections: this.pendingConnections.size,
-      },
-      "Client connected; awaiting hello",
-    );
-    if (initialHello) await this.handleHelloSafely({ ws, message: initialHello, pending });
+    try {
+      pending.connectionLogger.info(
+        {
+          ...toConnectionLogFields(identity),
+          totalPendingConnections: this.pendingConnections.size,
+        },
+        "Client connected; awaiting hello",
+      );
+      if (initialHello) await this.handleHelloSafely({ ws, message: initialHello, pending });
+    } catch (error) {
+      this.runtimeMetrics.traffic.close(identity.connectionId);
+      throw error;
+    }
   }
 
   private createSessionConnection(params: {
