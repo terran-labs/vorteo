@@ -2489,6 +2489,10 @@ test("source builds fail before activation, uncertain dispatch retains selection
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "source-activation-")));
   const retention = await import("./host-release-retention.js");
   const prune = vi.spyOn(retention, "pruneHostReleases");
+  // The real listing takes seconds; host-release-processes.test.ts covers it.
+  const processes = vi
+    .spyOn(await import("./host-release-processes.js"), "releaseProcessPaths")
+    .mockResolvedValue([]);
   try {
     const previous = path.join(root, "previous");
     await mkdir(previous);
@@ -2673,20 +2677,79 @@ test("source builds fail before activation, uncertain dispatch retains selection
       /retention\.json in this job.s folder\. Installed the vorteo command\.$/,
     );
     await hostReleaseRetentionIdle();
-    expect(prune).not.toHaveBeenCalled();
-    expect(installed.detail).toContain("cleanup is suspended");
+    // Cleanup runs after this install as a dry run, the default. The earlier failed attempts
+    // in this test left job folders nothing uses; it lists them and removes nothing.
+    expect(prune).toHaveBeenCalledTimes(1);
+    const retained = prune.mock.calls[0]![0];
+    expect(retained.inUse).toBeTypeOf("function");
+    expect(
+      retained.referenced.map((reference) =>
+        typeof reference === "string" ? reference : reference.path,
+      ),
+    ).toEqual(expect.arrayContaining([path.join(root, "current"), previous]));
+    expect(installed.detail).toContain("runs as a dry run in the background and removes nothing");
     expect(installed.detail).toContain("retention.json");
     const retentionReceipt = JSON.parse(
       await readFile(path.join(root, installed.id, "retention.json"), "utf8"),
     );
-    expect(retentionReceipt).toMatchObject({ status: "finished" });
-    expect(retentionReceipt.note).toContain("not pruned");
-    expect(retentionReceipt.note).toContain("exclusive lifetime");
+    expect(retentionReceipt).toMatchObject({ status: "finished", mode: "dry-run", keepNewest: 3 });
+    const wouldRemove: string[] = retentionReceipt.plan.remove;
+    expect(wouldRemove).toHaveLength(3);
+    expect(retentionReceipt.note).toBe(
+      `Dry run: would remove 3 old Host releases: ${wouldRemove.join(", ")}. Nothing was removed. Recorded recent release link targets: ${installed.id}. The plan, with each reason a release is kept, is in this file; set hostReleaseCleanup to on to remove them.`,
+    );
+    for (const folder of wouldRemove)
+      await expect(realpath(path.join(root, folder))).resolves.toBeTruthy();
+    // The release just selected is kept, among other reasons, as the current selection.
+    expect(retentionReceipt.plan.kept[installed.id]).toContain("selected release (current)");
+    // One listing for the references read first, one for the in-use check.
+    expect(processes).toHaveBeenCalledTimes(2);
+    // The release just installed and the one it replaced are both still there.
+    await expect(realpath(path.join(root, "current"))).resolves.toContain(root);
+    await expect(realpath(previous)).resolves.toBe(previous);
     expect(await readFile(path.join(root, "published"), "utf8")).toBe("yes");
     expect(updates.source().baseCommit).toBe(update.sourceCommit);
     expect(restart).toHaveBeenCalledTimes(2);
 
-    const nextUpdate = { ...update, baseCommit: update.sourceCommit, sourceCommit: "d".repeat(40) };
+    // Each cleanup mode after its own successful install.
+    let chainCommit = update.sourceCommit;
+    const installWith = async (mode: "off" | "on" | undefined, commit: string) => {
+      config.hostReleaseCleanup = mode;
+      const source = { ...update, baseCommit: chainCommit, sourceCommit: commit.repeat(40) };
+      updates.stage(source, bundle);
+      await rm(path.join(root, "published"));
+      const job = (await dispatch(source))!;
+      expect(job.status).toBe("succeeded");
+      chainCommit = source.sourceCommit;
+      await hostReleaseRetentionIdle();
+      const receipt = JSON.parse(await readFile(path.join(root, job.id, "retention.json"), "utf8"));
+      return { job, receipt };
+    };
+    const off = await installWith("off", "1");
+    expect(off.job.detail).toContain("Host release cleanup is off");
+    expect(off.receipt).toMatchObject({ status: "finished", mode: "off" });
+    expect(off.receipt.note).toContain("cleanup is off");
+    expect(off.receipt.plan).toBeUndefined();
+    const on = await installWith("on", "2");
+    expect(on.job.detail).toContain("are removed in the background");
+    expect(on.receipt).toMatchObject({ status: "finished", mode: "on" });
+    // Everything the dry run listed is gone now, and the record says what went and why.
+    expect(on.receipt.plan.remove).toEqual(expect.arrayContaining(wouldRemove));
+    expect(on.receipt.note).toMatch(/^Removed \d+ old Host releases\./);
+    for (const folder of on.receipt.plan.remove)
+      await expect(readFile(path.join(root, folder, "activation.json"))).rejects.toThrow();
+    // A dry run whose evidence cannot be read never fails the Host update.
+    processes.mockRejectedValueOnce(new Error("fixture listing failed"));
+    const failedDryRun = await installWith(undefined, "3");
+    expect(failedDryRun.receipt).toMatchObject({
+      status: "finished",
+      mode: "dry-run",
+      error: "fixture listing failed",
+    });
+    expect(failedDryRun.receipt.note).toContain("Dry run could not finish");
+    config.hostReleaseCleanup = undefined;
+
+    const nextUpdate = { ...update, baseCommit: chainCommit, sourceCommit: "d".repeat(40) };
     updates.stage(nextUpdate, bundle);
     await rm(path.join(root, "published"));
     await writeFile(
@@ -2714,7 +2777,7 @@ test("source builds fail before activation, uncertain dispatch retains selection
     });
     expect(updates.source().baseCommit).toBe(nextUpdate.sourceCommit);
     await queue.drain();
-    expect(restart).toHaveBeenCalledTimes(3);
+    expect(restart).toHaveBeenCalledTimes(6);
 
     const writeReceipt = lifecycleJournal.writeLifecycleReceipt;
     let installedCommit = nextUpdate.sourceCommit;
@@ -2746,10 +2809,11 @@ test("source builds fail before activation, uncertain dispatch retains selection
       }
     }
     await queue.drain();
-    expect(restart).toHaveBeenCalledTimes(5);
+    expect(restart).toHaveBeenCalledTimes(8);
   } finally {
     await hostReleaseRetentionIdle();
     prune.mockRestore();
+    processes.mockRestore();
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -1,0 +1,7 @@
+### Fixes
+
+- Host release cleanup can no longer delete a release in use when two cleanups, or a cleanup and a coordinator start, overlap; it reads binary and UTF-16 LaunchAgents property lists; and it stops instead of deleting when a reference cannot be read.
+
+## Maintenance review
+
+Second independent review of safe release pruning. Cleanup and the startup restore share a lock file in the release root that every process honors, with stale locks detected by process ID and start time. Set-aside and deletion names carry a per-run nonce, and each rename or removal checks the device and inode recorded for that run. Property lists are parsed with `plutil`, failing closed when parsing fails or off macOS, and every scanned file is also searched in UTF-8, Latin-1 and both UTF-16 byte orders. Reference resolution continues lexically only on `ENOENT` or `ENOTDIR`; other errors stop the cleanup. Persistent reference files are listed again on each evidence read, and the link history is capped at 64 KiB. The reviewer's two reproductions now assert the safe outcome, the overlap running in an independent module instance, with tests for the lock, identity mismatch, stale and reused process IDs, a throwing parser, EACCES and an oversized history. Disabling the lock, the identity check or the UTF-16 decodings fails them. Documented in the installation reference and the customizations inventory. README overview and onboarding are unchanged. Not installed.
