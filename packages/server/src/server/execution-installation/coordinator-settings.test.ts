@@ -61,7 +61,7 @@ function restartCheckState(): CoordinatorRestartState {
     hostJobBusy: () => false,
     coordinatorRequestOpen: () => false,
     labUpdateActive: () => false,
-    hostReleaseCleanupRunning: () => false,
+    hostReleaseCleanup: () => null,
   };
 }
 
@@ -76,9 +76,10 @@ function restartCheck(busy: Partial<Record<keyof CoordinatorRestartState, boolea
       "hostJobBusy",
       "coordinatorRequestOpen",
       "labUpdateActive",
-      "hostReleaseCleanupRunning",
     ].map((key) => [key, () => busy[key as keyof CoordinatorRestartState] === true]),
   ) as unknown as CoordinatorRestartState;
+  state.hostReleaseCleanup = () =>
+    busy.hostReleaseCleanup ? { lapsesAt: new Date("2026-11-19T09:00:00.000Z") } : null;
   return () => coordinatorRestartBlocker(state, "settings");
 }
 
@@ -349,20 +350,18 @@ test.each([
     run: async () => {
       const state = installation();
       const { settings } = settingsPorts(state, {
-        conflict: restartCheck({ hostReleaseCleanupRunning: true }),
+        conflict: restartCheck({ hostReleaseCleanup: true }),
       });
       await expect(requestRefresh(state, settings)).rejects.toThrow(
         "Host release cleanup is running",
       );
-      const busy = Object.fromEntries(
-        Object.keys(restartCheckState()).map((key) => [
-          key,
-          () => key === "hostReleaseCleanupRunning",
-        ]),
-      ) as unknown as CoordinatorRestartState;
+      const busy: CoordinatorRestartState = {
+        ...restartCheckState(),
+        hostReleaseCleanup: () => ({ lapsesAt: new Date("2026-11-19T09:00:00.000Z") }),
+      };
       for (const self of ["follow", "custom-domain", "settings"] as const)
         expect(coordinatorRestartBlocker(busy, self)).toBe(
-          "Host release cleanup is running; try again when it finishes.",
+          "Host release cleanup is running; try again when it finishes. This check lapses at 2026-11-19T09:00:00.000Z.",
         );
       // The upgrade waits for it at its own coordinator step instead.
       expect(coordinatorRestartBlocker(busy, "upgrade")).toBeNull();

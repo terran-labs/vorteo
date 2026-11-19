@@ -1,4 +1,4 @@
-import { cleanupWaitDetail, hostReleaseRetentionRunning } from "./host-release-retention.js";
+import { cleanupWaitDetail, hostReleaseCleanupDeleting } from "./host-release-retention.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -606,7 +606,9 @@ export class LabSelfUpdates {
         waits: this.cleanupWaits,
         id: record.id,
         now: this.ports.now().getTime(),
-        running: (this.ports.hostReleaseCleanupRunning ?? hostReleaseRetentionRunning)(),
+        running: this.ports.hostReleaseCleanupRunning
+          ? this.ports.hostReleaseCleanupRunning()
+          : hostReleaseCleanupDeleting() !== null,
       });
       if (wait) return { status: "waiting", detail: wait };
       // Recorded before the launch: the handoff restarts this process.

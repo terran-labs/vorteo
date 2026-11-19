@@ -36,8 +36,8 @@ import {
 } from "./delegated-admission.js";
 import {
   coordinatorRestartBlocker,
+  coordinatorRestartState,
   type CoordinatorRestart,
-  type CoordinatorRestartState,
 } from "./coordinator-restart-guard.js";
 import {
   lookupWorkerLaunch,
@@ -176,10 +176,7 @@ import { InstructionRequestError, InstructionRequests } from "./settings/instruc
 
 import { inspectContainerSource } from "./container-updates.js";
 import { RestartTargetSchema } from "@getpaseo/protocol/execution-installation";
-import {
-  hostReleaseRetentionRunning,
-  restoreHostReleasesAtStart,
-} from "./host-release-retention.js";
+import { restoreHostReleasesAtStart } from "./host-release-retention.js";
 import { InstallationSourceUpdates } from "./source-updates.js";
 import {
   InstallationOverviewReader,
@@ -744,7 +741,7 @@ export function createInstallationServer(
     logger,
   });
   // One check for every coordinator restart, at request, approval and dispatch.
-  const restartState: CoordinatorRestartState = {
+  const restartState = coordinatorRestartState({
     upgradeActive: () =>
       Boolean(releaseRuntime?.upgrades?.active() ?? releaseRuntime?.sourceUpgrades?.active()),
     followDispatching: () => Boolean(releaseRuntime?.coordinatorFollow.dispatching()),
@@ -758,8 +755,7 @@ export function createInstallationServer(
       coordinatorRequests !== undefined &&
       openBootstrapRequests(coordinatorRequests.list()).length > 0,
     labUpdateActive: () => labRuntime.updates.activeLoaded() !== null,
-    hostReleaseCleanupRunning: () => hostReleaseRetentionRunning(),
-  };
+  });
   const restartBlocker = (self: CoordinatorRestart) =>
     coordinatorRestartBlocker(restartState, self);
   // Lab self-updates and release upgrades both replace the Host and coordinator releases.

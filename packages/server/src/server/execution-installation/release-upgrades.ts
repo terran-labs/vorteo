@@ -1,4 +1,4 @@
-import { cleanupWaitDetail, hostReleaseRetentionRunning } from "./host-release-retention.js";
+import { cleanupWaitDetail, hostReleaseCleanupDeleting } from "./host-release-retention.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -686,7 +686,9 @@ abstract class UpgradePipeline<Ports extends UpgradePorts = UpgradePorts> {
         waits: this.cleanupWaits,
         id: record.id,
         now: this.ports.now().getTime(),
-        running: (this.ports.hostReleaseCleanupRunning ?? hostReleaseRetentionRunning)(),
+        running: this.ports.hostReleaseCleanupRunning
+          ? this.ports.hostReleaseCleanupRunning()
+          : hostReleaseCleanupDeleting() !== null,
       });
       if (wait) return { status: "waiting", detail: wait };
       // Record the launch before it happens: the helper restarts this process.
