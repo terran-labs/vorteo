@@ -5562,30 +5562,80 @@ for (const width of [1280, 390]) {
         failures.push(error);
       }
     }
-    try {
+    const fixture: InstallationProvider = {
+      id,
+      providerType: "claude",
+      accountSetup: { provider: "claude", creationId },
+      bindings: Object.fromEntries(daemons.map((daemon) => [daemon.serverId, providerId])),
+      policy: { label: "Shared Claude fixture", enabled: true },
+    };
+    let restoredDefinitions = definitions;
+    let restoredPrimary = originalPrimary;
+    let restoredRevision = before.revision;
+    async function patchFixture(
+      current: Awaited<ReturnType<typeof read>>,
+      operation: "add" | "remove",
+      attempt: "initial" | "conflict-retry" = "initial",
+    ): Promise<Awaited<ReturnType<typeof read>>> {
+      const currentDefinitions = current.settings?.providerDefinitions;
+      const primaryConnection = current.settings?.primaryConnection;
+      if (!currentDefinitions) throw new Error("Missing provider catalog during fixture update");
+      if (primaryConnection === undefined) throw new Error("Missing primary connection capability");
+      const providerDefinitions = currentDefinitions.filter((entry) => entry.id !== id);
+      if (operation === "add") providerDefinitions.push(fixture);
+      else {
+        // Preserve concurrent catalog and primary choices, removing only this case's fixture.
+        restoredDefinitions = providerDefinitions;
+        restoredPrimary = primaryConnection;
+        restoredRevision = current.revision;
+      }
       const response = await page.request.patch(`${origin}/api/installation/owner/settings`, {
         headers,
         data: {
-          expectedRevision: before.revision,
-          settings: {
-            primaryConnection: originalPrimary,
-            providerDefinitions: [
-              ...definitions,
-              {
-                id,
-                providerType: "claude",
-                accountSetup: { provider: "claude", creationId },
-                bindings: Object.fromEntries(
-                  daemons.map((daemon) => [daemon.serverId, providerId]),
-                ),
-                policy: { label: "Shared Claude fixture", enabled: true },
-              },
-            ],
-          },
+          expectedRevision: current.revision,
+          settings: { providerDefinitions, primaryConnection },
         },
       });
-      expect(response.ok()).toBe(true);
-      const created = InstallationSettingsSnapshotSchema.parse(await response.json());
+      // First-load browser settings can win the revision race after our read.
+      if (response.status() === 409 && attempt === "initial")
+        return patchFixture(await read(), operation, "conflict-retry");
+      let diagnostic = `Fixture ${operation} PATCH: HTTP ${response.status()}, expectedRevision ${current.revision}`;
+      if (!response.ok()) {
+        const body = await response.json().catch(() => null);
+        const knownErrors = [
+          "Invalid request",
+          "Shared settings reference an unknown environment or resource.",
+          "A project must stay available in at least one environment, keyed by its absolute root path.",
+          "That connection is no longer available.",
+          "Choose a time zone from the list.",
+          "Reload shared settings and explicitly resolve every initial policy difference.",
+          "Read every installation environment before editing shared settings.",
+          "Installation request failed",
+        ];
+        const text = await response.text();
+        const accessRefusal = text === "Unauthorized" || text === "Forbidden";
+        // Settings errors are fixed messages; never print arbitrary response fields or catalogs.
+        const safeBody = {
+          error: knownErrors.includes(body?.error) ? body.error : "Unrecognized error omitted",
+          reason:
+            typeof body?.reason === "string" &&
+            /^(environment|provider|provider-binding|plugin|skill|terminal-profile|metadata-provider|installation-instructions|project-policy|primary-connection|primary-connection-unavailable|time-zone)$/.test(
+              body.reason,
+            )
+              ? body.reason
+              : null,
+          access: accessRefusal ? text : null,
+          revision: typeof body?.revision === "number" ? body.revision : null,
+        };
+        diagnostic += `, body ${JSON.stringify(safeBody)}`;
+      }
+      expect(response.ok(), diagnostic).toBe(true);
+      const accepted = InstallationSettingsSnapshotSchema.parse(await response.json());
+      if (operation === "remove") restoredRevision = accepted.revision;
+      return accepted;
+    }
+    try {
+      const created = await patchFixture(before, "add");
       const createdDefinitions = created.settings?.providerDefinitions;
       if (!createdDefinitions) throw new Error("Missing fixture provider catalog");
       expect(createdDefinitions.find((entry) => entry.id === id)).toMatchObject({
@@ -5668,32 +5718,19 @@ for (const width of [1280, 390]) {
     } finally {
       // Protect partial setup too, and observe restoration even if its PATCH fails.
       await collectFailure(async () => {
-        const current = await read();
-        const currentDefinitions = current.settings?.providerDefinitions;
-        if (!currentDefinitions) throw new Error("Missing provider catalog during cleanup");
-        const restored = await page.request.patch(`${origin}/api/installation/owner/settings`, {
-          headers,
-          data: {
-            expectedRevision: current.revision,
-            settings: {
-              providerDefinitions: currentDefinitions.filter((entry) => entry.id !== id),
-              primaryConnection: originalPrimary,
-            },
-          },
-        });
-        expect(restored.ok()).toBe(true);
+        await patchFixture(await read(), "remove");
       });
       await collectFailure(async () => {
         await waitForSettingsConvergence({
           read,
           poll: expect.poll,
-          minimumRevision: before.revision,
-          providerDefinitions: definitions,
+          minimumRevision: restoredRevision,
+          providerDefinitions: restoredDefinitions,
           serverIds,
         });
       });
       await collectFailure(async () => {
-        expect((await read()).settings?.primaryConnection).toEqual(originalPrimary);
+        expect((await read()).settings?.primaryConnection).toEqual(restoredPrimary);
       });
     }
     if (failures.length === 1) throw failures[0];
