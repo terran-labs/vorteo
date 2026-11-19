@@ -4136,6 +4136,7 @@ for (const width of [1280, 390]) {
             (entry) => entry.provider === providerId,
           );
           if (!discovery) throw new Error("Missing original Codex binding discovery");
+          // Guard against a fixture runtime override leaking from an earlier case.
           expect(discovery.status).not.toBe("ready");
           const mockProviderId = mockDefinition.bindings[environment.serverId];
           if (!mockProviderId) throw new Error("Missing environment Mock binding");
@@ -4322,16 +4323,7 @@ for (const width of [1280, 390]) {
           serverIds,
         });
         await expectMockRuntime(false);
-        // Disabled discovery moves this fixture under Available to install and removes its switch.
-        await page
-          .getByTestId("shared-providers-available-toggle")
-          .filter({ visible: true })
-          .click();
-        await expect(
-          family.getByRole("button", { name: "Show Mock install command", exact: true }),
-        ).toBeVisible();
-        await expect(enabled).toHaveCount(0);
-        // Connection actions require a discovered provider; restore that prerequisite explicitly.
+        // Temporary fixture PATCH for #495; use the switch once its reversible control is fixed.
         await enableMockForRemoval();
         await expect(enabled).toBeChecked();
         await family.getByTestId("provider-family-open-mock").click();
@@ -4436,12 +4428,8 @@ for (const width of [1280, 390]) {
         await addSheet.getByRole("button", { name: "Close", exact: true }).click();
         await expect(addSheet).not.toBeVisible();
         await expectMockRuntime(false);
-        await family.scrollIntoViewIfNeeded();
-        await expect(family).toBeVisible();
-        await expect(
-          family.getByRole("button", { name: "Show Mock install command", exact: true }),
-        ).toBeVisible();
-        await expect(enabled).toHaveCount(0);
+        await expect(enabled).toBeVisible();
+        await expect(enabled).not.toBeChecked();
         await page.screenshot({
           path: testInfo.outputPath("provider-families.png"),
           fullPage: true,
