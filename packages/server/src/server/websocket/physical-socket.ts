@@ -1,3 +1,5 @@
+import type { PhysicalTrafficOutcome } from "./runtime-metrics.js";
+
 // OOM backstop for a socket whose client stopped draining. A daemon normally has
 // 1-10 physical sockets (tens at the outside), so 64 MiB bounds abandoned queues
 // without treating ordinary large frames as a protocol or frame-size violation.
@@ -62,25 +64,59 @@ export async function sendBoundedPhysicalFrameAndWait(params: {
   frame: string | Uint8Array | ArrayBuffer;
   frameBytes?: number;
   onHighWater: () => void;
+  observe?: (outcome: PhysicalTrafficOutcome, bytes: number) => void;
 }): Promise<boolean> {
   const { socket, frame, frameBytes = outboundFrameByteLength(frame), onHighWater } = params;
-  if (socket.readyState !== 1) return false;
+  const observe = safeObserver(params.observe);
+  observe?.("attempted", frameBytes);
+  if (socket.readyState !== 1) {
+    observe?.("rejected", frameBytes);
+    return false;
+  }
   if (!physicalSocketHasCapacity(socket, frameBytes)) {
+    observe?.("rejected", frameBytes);
     onHighWater();
     return false;
   }
 
+  let completionObserved = false;
+  const complete = (outcome: PhysicalTrafficOutcome) => {
+    if (completionObserved) return;
+    completionObserved = true;
+    observe?.(outcome, frameBytes);
+  };
   await new Promise<void>((resolve, reject) => {
     let callbackUsed = false;
-    const result = socket.send(frame, (error) => {
-      callbackUsed = true;
-      if (error) reject(error);
-      else resolve();
-    });
+    let result: void | Promise<void>;
+    try {
+      result = socket.send(frame, (error) => {
+        callbackUsed = true;
+        if (error) reject(error);
+        else resolve();
+        complete(error ? "failed" : "completed");
+      });
+    } catch (error) {
+      reject(error);
+      observe?.("rejected", frameBytes);
+      return;
+    }
+    observe?.("accepted", frameBytes);
     if (result && typeof result.then === "function") {
-      result.then(resolve, reject);
+      void result
+        .then(
+          () => {
+            resolve();
+            return complete("completed");
+          },
+          (error) => {
+            reject(error);
+            complete("failed");
+          },
+        )
+        .catch(reject);
     } else if (socket.send.length < 2 && !callbackUsed) {
       resolve();
+      complete("completionUnknown");
     }
   });
   return true;
@@ -99,16 +135,51 @@ export function sendBoundedPhysicalFrame(params: {
   frame: string | Uint8Array | ArrayBuffer;
   frameBytes?: number;
   onHighWater: () => void;
+  observe?: (outcome: PhysicalTrafficOutcome, bytes: number) => void;
 }): boolean {
   const { socket, frame, frameBytes = outboundFrameByteLength(frame), onHighWater } = params;
-  if (socket.readyState !== 1) return false;
+  const observe = safeObserver(params.observe);
+  observe?.("attempted", frameBytes);
+  if (socket.readyState !== 1) {
+    observe?.("rejected", frameBytes);
+    return false;
+  }
   if (!physicalSocketHasCapacity(socket, frameBytes)) {
+    observe?.("rejected", frameBytes);
     onHighWater();
     return false;
   }
-  const result = socket.send(frame);
+  let result: void | Promise<void>;
+  try {
+    result = socket.send(frame);
+  } catch (error) {
+    observe?.("rejected", frameBytes);
+    throw error;
+  }
+  observe?.("accepted", frameBytes);
   if (result && typeof result.then === "function") {
-    void result.catch(() => undefined);
+    void result
+      .then(
+        () => observe?.("completed", frameBytes),
+        () => observe?.("failed", frameBytes),
+      )
+      .catch(() => undefined);
+  } else {
+    // Ordinary sends do not request callbacks. Preserve that transport contract.
+    observe?.("completionUnknown", frameBytes);
   }
   return true;
+}
+
+// Observers are synchronous diagnostics. Their failures cannot settle or reject a send.
+function safeObserver(
+  observe: ((outcome: PhysicalTrafficOutcome, bytes: number) => void) | undefined,
+) {
+  return (outcome: PhysicalTrafficOutcome, bytes: number): void => {
+    try {
+      observe?.(outcome, bytes);
+    } catch {
+      // The metrics collector counts its own failures; arbitrary observers stay isolated too.
+    }
+  };
 }

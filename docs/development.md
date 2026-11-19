@@ -368,6 +368,127 @@ The supervisor rotates `daemon.log`. Persisted `log.file.rotate` settings in
 `PASEO_LOG_ROTATE_SIZE` and `PASEO_LOG_ROTATE_COUNT` env vars override the
 defaults. The default rotation is `10m` x `3` files everywhere.
 
+### Outbound traffic accounting
+
+The existing 30-second `ws_runtime_metrics` line includes `traffic`. Logical bytes
+are UTF-8 JSON or binary bytes at each recipient's send attempt, after any legacy
+serialization. Fan-out counts each recipient; publications and recipient candidates
+are separate counters. Permission or capacity exclusions before serialization are
+counted without inventing byte lengths. Attempt bytes do not establish admission,
+enqueueing, transmission or receipt. The framing promise reports fulfilled or
+rejected-or-failed; synchronous rejection is separate. Admission time is unknown. A local admission observer is a possible follow-up only
+if these measurements show that backpressure matters. Outcome counters belong to the interval when observed,
+so an outcome can describe an attempt from an earlier interval.
+
+Transport classes distinguish direct WebSockets, relay, hub, external adapters and
+routed traffic. Physical helpers report plaintext frame attempts, accepted calls, rejections and
+observable local completion/error separately. Ordinary synchronous sends do not
+request completion callbacks and report completion unknown. Chunk headers belong
+to this layer only. Routed virtual frames have their own totals; never add them to
+physical hop frames or logical payloads. Encryption, WebSocket/TLS/TCP/tailnet
+overhead, retransmissions, relay control pings and forwarding outside these helpers
+are excluded. These counters cannot reproduce a laptop network monitor's total.
+
+Connection detail retains at most 256 records, including closed records until the
+next flush. Top 12 contributors and an other bucket preserve aggregate accounting;
+capacity overflow loses individual attribution, not aggregate bytes. Type/subtype
+keys cap at 128. Client continuity uses a process-keyed opaque digest, at most 128
+records and 10 minutes of idle retention. No payload, origin, address or raw
+principal/client ID enters this traffic object. Continuity can be unknown after
+restart, expiry or eviction. An ordinal counts prior retained connections claiming
+the same authenticated principal/client key, including simultaneous connections;
+it does not identify a unique tab or person.
+
+The first 1, 5 and 10 seconds are cumulative **attempt-time** windows measured from
+connection creation, including refetch responses. They do not prove reconnect
+causality. Per-window counters reset on flush; cumulative burst counters last for the connection.
+Burst contributors are ranked only by bytes attempted within the current flush window;
+unchanged historical bursts do not displace newly reconnecting contributors.
+Current and prior UTC calendar-day aggregates include bounded type and transport
+attribution, process epoch and covered timestamps. Current-day totals repeat each
+flush; prior-day totals follow the reduced cadence described below. Preserve day snapshots outside Git before a restart or log
+rotation; join different epochs by covered interval, never sum repeated snapshots
+within one epoch/day. Missing process epochs cannot be reconstructed from a short
+surviving log. Do not extrapolate a one-minute sample into a day.
+
+Connection and burst details are compact tables: `connectionFields` and `burstFields`
+name each row's columns. `typeNames` maps numeric type indices back to message families.
+Volume counters encode zero as `0` and nonzero values as `[count, bytes]`. Connection
+rows carry the top five types plus other bytes; burst rows carry the top three types
+ranked by their ten-second contribution, with per-window other bytes. `burstWindowsMs`
+defines window order; each window contains `[cumulative bytes, this-flush bytes]`.
+Burst type rows contain `[type index, first-1s bytes, first-5s bytes, first-10s bytes]`.
+Frozen bursts are absent from ordinary connection rows and stop appearing after a
+flush with no new burst bytes. Aggregate totals retain all attribution omitted by these caps.
+
+`accountingErrors` counts observer failures over the collector's lifetime. Every public
+collector operation is isolated from application sends; a failed snapshot emits only
+that error counter. Physical observers cannot alter transport promise settlement.
+An error means diagnostic coverage may be incomplete, not that application delivery failed.
+
+Day rollover is UTC midnight: 4 PM Pacific Standard Time, including November, and
+5 PM Pacific Daylight Time. The current day appears every flush. The retained prior
+day appears at rollover and every 120 non-rollover flushes, about hourly at the normal
+30-second interval. Capture rollover and those hourly snapshots outside Git; rotating
+logs between them can lose the latest prior-day receipt. A lost process epoch still
+cannot be reconstructed. Open idle connections refresh continuity at each flush;
+closed clients retain the existing ten-minute idle expiry.
+
+#### Bounded repeat estimates
+
+`fullFrameRepeat` compares keyed whole-frame fingerprints for eligible provider
+snapshot and timeline JSON frames no larger than 64 KiB. Matching fingerprints
+indicate the same serialized bytes within retained coverage, subject to hash
+collisions; they say nothing about receipt. `contentRepeatEstimate` uses provider
+snapshot revisions when supplied, or a deterministic content sample that includes
+timeline epoch/sequence fields. Matching revisions and samples do not establish
+semantic equality. Both populations classify attempted bytes as sampled unseen,
+sampled repeat or unknown. Unseen means absent from retained fingerprints, not new
+to the person or client forever. Delivery to another client has independent history.
+
+Content signatures exclude request/subscription IDs and generation/fetch timestamps.
+They visit at most 256 values, with depth at most eight, using a fixed schema-field
+allowlist rather than enumerating arbitrary objects. Arrays sample first, middle and
+last positions; strings longer than 384 UTF-16 units sample 128 units at those
+positions. Unsampled edits and fields outside that allowlist are invisible. Provider
+revision signatures include scope and snapshot hash; a revision may describe content
+that a not-modified reply omits. These are estimates of repeated content, not exact
+avoidable-byte counts.
+
+Before reading content, each signature reserves 4 KiB from a collector-instance 1 MiB per
+second input budget; full-frame hashing reserves its exact eligible length. The
+conservative reservation is not refunded. Budget, traversal or retention exhaustion,
+unsupported families and binary frames remain unknown, never new. At most 128 keyed
+fingerprints per client and 16,384 per collector instance are retained, with eviction counts.
+Client expiry, capacity eviction and server disposal release fingerprints. Only
+fingerprints, numeric counters and timestamps persist, never sampled text. Set
+`TRAFFIC_NOVELTY_ENABLED` in `runtime-metrics.ts` to false to disable sampling while
+keeping byte accounting. This adds no setting or wire capability.
+
+Coverage and the sent-to-estimated-new ratio use only the comparable sampled
+**attempt** population. The ratio has an explicit infinite state when all comparable
+bytes repeat and an undefined state when no comparable bytes exist. Unknown bytes
+are excluded from the ratio. Flush/day totals retain the populations needed to
+recompute it without extrapolation; day objects omit the redundant derived ratios.
+
+#### Capture and interpretation
+
+The diagnostic owner should preserve representative active-work and idle captures
+outside Git, recording duration, connection changes, type/transport bytes, burst
+windows, sample coverage, fan-out and the existing event-loop/heap observations.
+Keep the final day snapshot for every process epoch and UTC date, plus its coverage
+interval. Record missing intervals rather than filling them from a brief sample.
+Confirm the laptop monitor's interval, inbound/outbound directions and process/network
+attribution before comparing its totals with these narrower outbound layers. Rank
+traffic-reduction follow-ups only from avoidable-byte and latency evidence.
+
+Log output is measured separately from send-path overhead. The scratch comparison
+uses 18 open connections and 13 reconnects, twelve message families and full-length
+connection IDs, including active bursts, a steady flush and a prior-day repeat.
+Preserve the workload and before/after sizes with review evidence. Compact output
+reduces repetition; it is not a guarantee that every possible capped workload fits
+under 10 KB. Include log volume and snapshot/serialization cost in live acceptance.
+
 ### Git process pressure
 
 If Git refreshes consume too much CPU, disk, or antivirus capacity, especially on Windows, reduce
