@@ -368,6 +368,49 @@ The supervisor rotates `daemon.log`. Persisted `log.file.rotate` settings in
 `PASEO_LOG_ROTATE_SIZE` and `PASEO_LOG_ROTATE_COUNT` env vars override the
 defaults. The default rotation is `10m` x `3` files everywhere.
 
+### Outbound traffic accounting
+
+The existing 30-second `ws_runtime_metrics` line includes `traffic`. Logical bytes
+are UTF-8 JSON or binary bytes at each recipient's send attempt, after any legacy
+serialization. Fan-out counts each recipient; publications and recipient candidates
+are separate counters. Permission or capacity exclusions before serialization are
+counted without inventing byte lengths. Attempt bytes do not establish admission,
+enqueueing, transmission or receipt. The framing promise reports fulfilled or
+rejected-or-failed; synchronous rejection is separate. Admission time is unknown. A local admission observer is a possible follow-up only
+if these measurements show that backpressure matters. Outcome counters belong to the interval when observed,
+so an outcome can describe an attempt from an earlier interval.
+
+Transport classes distinguish direct WebSockets, relay, hub, external adapters and
+routed traffic. Physical helpers report plaintext frame attempts, accepted calls, rejections and
+observable local completion/error separately. Ordinary synchronous sends do not
+request completion callbacks and report completion unknown. Chunk headers belong
+to this layer only. Routed virtual frames have their own totals; never add them to
+physical hop frames or logical payloads. Encryption, WebSocket/TLS/TCP/tailnet
+overhead, retransmissions, relay control pings and forwarding outside these helpers
+are excluded. These counters cannot reproduce a laptop network monitor's total.
+
+Connection detail retains at most 256 records, including closed records until the
+next flush. Top 12 contributors and an other bucket preserve aggregate accounting;
+capacity overflow loses individual attribution, not aggregate bytes. Type/subtype
+keys cap at 128. Client continuity uses a process-keyed opaque digest, at most 128
+records and 10 minutes of idle retention. No payload, origin, address or raw
+principal/client ID enters this traffic object. Continuity can be unknown after
+restart, expiry or eviction. An ordinal counts prior retained connections claiming
+the same authenticated principal/client key, including simultaneous connections;
+it does not identify a unique tab or person.
+
+The first 1, 5 and 10 seconds are cumulative **attempt-time** windows measured from
+connection creation, including refetch responses. They do not prove reconnect
+causality. Per-window counters reset on flush; cumulative burst counters last for the connection.
+Burst contributors are ranked only by bytes attempted within the current flush window;
+unchanged historical bursts do not displace newly reconnecting contributors.
+Current and prior UTC calendar-day aggregates include bounded type and transport
+attribution and repeat each flush, with process epoch
+and covered timestamps. Preserve day snapshots outside Git before a restart or log
+rotation; join different epochs by covered interval, never sum repeated snapshots
+within one epoch/day. Missing process epochs cannot be reconstructed from a short
+surviving log. Do not extrapolate a one-minute sample into a day.
+
 ### Git process pressure
 
 If Git refreshes consume too much CPU, disk, or antivirus capacity, especially on Windows, reduce

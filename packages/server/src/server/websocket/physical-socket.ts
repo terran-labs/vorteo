@@ -1,3 +1,5 @@
+import type { PhysicalTrafficOutcome } from "./runtime-metrics.js";
+
 // OOM backstop for a socket whose client stopped draining. A daemon normally has
 // 1-10 physical sockets (tens at the outside), so 64 MiB bounds abandoned queues
 // without treating ordinary large frames as a protocol or frame-size violation.
@@ -62,24 +64,61 @@ export async function sendBoundedPhysicalFrameAndWait(params: {
   frame: string | Uint8Array | ArrayBuffer;
   frameBytes?: number;
   onHighWater: () => void;
+  observe?: (outcome: PhysicalTrafficOutcome, bytes: number) => void;
 }): Promise<boolean> {
-  const { socket, frame, frameBytes = outboundFrameByteLength(frame), onHighWater } = params;
-  if (socket.readyState !== 1) return false;
+  const {
+    socket,
+    frame,
+    frameBytes = outboundFrameByteLength(frame),
+    onHighWater,
+    observe,
+  } = params;
+  observe?.("attempted", frameBytes);
+  if (socket.readyState !== 1) {
+    observe?.("rejected", frameBytes);
+    return false;
+  }
   if (!physicalSocketHasCapacity(socket, frameBytes)) {
+    observe?.("rejected", frameBytes);
     onHighWater();
     return false;
   }
 
+  let completionObserved = false;
+  const complete = (outcome: PhysicalTrafficOutcome) => {
+    if (completionObserved) return;
+    completionObserved = true;
+    observe?.(outcome, frameBytes);
+  };
   await new Promise<void>((resolve, reject) => {
     let callbackUsed = false;
-    const result = socket.send(frame, (error) => {
-      callbackUsed = true;
-      if (error) reject(error);
-      else resolve();
-    });
+    let result: void | Promise<void>;
+    try {
+      result = socket.send(frame, (error) => {
+        callbackUsed = true;
+        complete(error ? "failed" : "completed");
+        if (error) reject(error);
+        else resolve();
+      });
+    } catch (error) {
+      observe?.("rejected", frameBytes);
+      reject(error);
+      return;
+    }
+    observe?.("accepted", frameBytes);
     if (result && typeof result.then === "function") {
-      result.then(resolve, reject);
+      result.then(
+        () => {
+          complete("completed");
+          return resolve();
+        },
+        (error) => {
+          complete("failed");
+          reject(error);
+        },
+      );
     } else if (socket.send.length < 2 && !callbackUsed) {
+      complete("completionUnknown");
       resolve();
     }
   });
@@ -99,16 +138,41 @@ export function sendBoundedPhysicalFrame(params: {
   frame: string | Uint8Array | ArrayBuffer;
   frameBytes?: number;
   onHighWater: () => void;
+  observe?: (outcome: PhysicalTrafficOutcome, bytes: number) => void;
 }): boolean {
-  const { socket, frame, frameBytes = outboundFrameByteLength(frame), onHighWater } = params;
-  if (socket.readyState !== 1) return false;
+  const {
+    socket,
+    frame,
+    frameBytes = outboundFrameByteLength(frame),
+    onHighWater,
+    observe,
+  } = params;
+  observe?.("attempted", frameBytes);
+  if (socket.readyState !== 1) {
+    observe?.("rejected", frameBytes);
+    return false;
+  }
   if (!physicalSocketHasCapacity(socket, frameBytes)) {
+    observe?.("rejected", frameBytes);
     onHighWater();
     return false;
   }
-  const result = socket.send(frame);
+  let result: void | Promise<void>;
+  try {
+    result = socket.send(frame);
+  } catch (error) {
+    observe?.("rejected", frameBytes);
+    throw error;
+  }
+  observe?.("accepted", frameBytes);
   if (result && typeof result.then === "function") {
-    void result.catch(() => undefined);
+    void result.then(
+      () => observe?.("completed", frameBytes),
+      () => observe?.("failed", frameBytes),
+    );
+  } else {
+    // Ordinary sends do not request callbacks. Preserve that transport contract.
+    observe?.("completionUnknown", frameBytes);
   }
   return true;
 }

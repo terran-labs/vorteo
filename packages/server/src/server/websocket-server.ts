@@ -120,6 +120,8 @@ import {
 import { resolveSessionAdmission } from "./session-admission-auth.js";
 import {
   WebSocketRuntimeMetricsWindow,
+  outboundTrafficType,
+  type PhysicalTrafficOutcome,
   type WebSocketRuntimeCounters,
   type WebSocketRuntimeDiagnosticSnapshot,
 } from "./websocket/runtime-metrics.js";
@@ -1478,9 +1480,15 @@ export class VoiceAssistantWebSocketServer {
         !blocked || !review
           ? serializeLegacyChecklistMessage(message, prepared.payload, { blocked, review })
           : prepared.payload;
-      this.sendFrameToClient(ws, payload, outboundFrameByteLength(payload), () => {
-        this.runtimeMetrics.recordOutboundMessage(message, ws.bufferedAmount);
-      });
+      this.sendFrameToClient(
+        ws,
+        payload,
+        outboundFrameByteLength(payload),
+        () => {
+          this.runtimeMetrics.recordOutboundMessage(message, ws.bufferedAmount);
+        },
+        outboundTrafficType(message),
+      );
     }
   }
 
@@ -1489,12 +1497,15 @@ export class VoiceAssistantWebSocketServer {
     message: WSOutboundMessage,
     reportRejection: boolean,
   ): { sockets: WebSocketLike[]; payload: string; bytes: number } | null {
-    const writableSockets = [...sockets].filter((ws) => {
+    const candidates = [...sockets];
+    this.runtimeMetrics.traffic.publication(candidates.length);
+    const writableSockets = candidates.filter((ws) => {
       if (
         message.type === "session" &&
         this.sessions.get(ws)?.session.delivery.permits(ws, message.message) !== true
       ) {
         this.incrementRuntimeCounter("applicationJsonRejected");
+        this.runtimeMetrics.traffic.rejectBeforeSerialization();
         // Legacy broadcasts intentionally exclude modern sockets. Targeted failures are bugs.
         if (reportRejection)
           this.logger.warn(
@@ -1507,7 +1518,9 @@ export class VoiceAssistantWebSocketServer {
           );
         return false;
       }
-      return this.ensureOutboundCapacity(ws, 0);
+      const writable = this.ensureOutboundCapacity(ws, 0);
+      if (!writable) this.runtimeMetrics.traffic.rejectBeforeSerialization();
+      return writable;
     });
     if (writableSockets.length === 0) {
       return null;
@@ -1517,6 +1530,7 @@ export class VoiceAssistantWebSocketServer {
     try {
       payload = JSON.stringify(message);
     } catch (err) {
+      for (const _ws of writableSockets) this.runtimeMetrics.traffic.rejectBeforeSerialization();
       this.logger.warn({ err }, "ws_serialize_failed");
       return null;
     }
@@ -1548,6 +1562,13 @@ export class VoiceAssistantWebSocketServer {
             socket: ws,
             frame,
             onHighWater: () => this.closeAtOutboundHighWater(ws),
+            observe: (outcome: PhysicalTrafficOutcome, bytes: number) =>
+              this.runtimeMetrics.traffic.physical({
+                connectionId: this.socketIdentities.get(ws)?.connectionId,
+                routed: ws instanceof VirtualHostSocket,
+                outcome,
+                bytes,
+              }),
           };
           if (waitForDrain)
             return sendBoundedPhysicalFrameAndWait(params).then((sent) => {
@@ -1575,14 +1596,35 @@ export class VoiceAssistantWebSocketServer {
     frame: string | Uint8Array,
     bytes: number,
     waitForDrain = false,
+    type = "binary",
   ): Promise<void> {
+    this.runtimeMetrics.traffic.attempt({
+      connectionId: this.socketIdentities.get(ws)?.connectionId,
+      type,
+      bytes,
+    });
     const transport = this.chunkedSocket(ws);
     const admittedBytes = transport.isWriting
       ? bytes
       : Math.min(bytes, ws.maxFrameBytes ?? 32 * 1024 * 1024);
-    if (!this.ensureOutboundCapacity(ws, admittedBytes))
+    if (!this.ensureOutboundCapacity(ws, admittedBytes)) {
+      this.runtimeMetrics.traffic.outcome("synchronousRejection", bytes);
       return Promise.reject(new Error("Source is closed"));
-    return transport.send(frame, { waitForDrain, byteLength: bytes });
+    }
+    let sending: Promise<void>;
+    try {
+      sending = transport.send(frame, { waitForDrain, byteLength: bytes });
+    } catch (error) {
+      this.runtimeMetrics.traffic.outcome("synchronousRejection", bytes);
+      throw error;
+    }
+    // Framing promises conflate admission failures with failures after admission.
+    // Fulfillment is also not a transport completion or client receipt guarantee.
+    void sending.then(
+      () => this.runtimeMetrics.traffic.outcome("fulfilled", bytes),
+      () => this.runtimeMetrics.traffic.outcome("rejectedOrFailed", bytes),
+    );
+    return sending;
   }
 
   private async sendMessageToClientAndWait(
@@ -1592,7 +1634,13 @@ export class VoiceAssistantWebSocketServer {
     const prepared = this.prepareJsonDelivery([ws], message, true);
     if (!prepared) throw new Error("Source message delivery unavailable");
     try {
-      await this.sendSocketFrame(ws, prepared.payload, prepared.bytes, true);
+      await this.sendSocketFrame(
+        ws,
+        prepared.payload,
+        prepared.bytes,
+        true,
+        outboundTrafficType(message),
+      );
       this.runtimeMetrics.recordOutboundMessage(message, ws.bufferedAmount);
     } catch (err) {
       this.logger.warn({ err }, "ws_send_failed");
@@ -1601,8 +1649,10 @@ export class VoiceAssistantWebSocketServer {
   }
 
   private sendBinaryToClient(ws: WebSocketLike, frame: Uint8Array, reportRejection = true): void {
+    if (reportRejection) this.runtimeMetrics.traffic.publication(1);
     if (!this.sessions.get(ws)?.session.delivery.permitsBinary(ws, frame)) {
       this.incrementRuntimeCounter("applicationBinaryRejected");
+      this.runtimeMetrics.traffic.rejectBeforeSerialization();
       if (reportRejection)
         this.logger.warn({ bytes: frame.byteLength }, "ws_application_binary_delivery_denied");
       return;
@@ -1613,8 +1663,10 @@ export class VoiceAssistantWebSocketServer {
   }
 
   private async sendBinaryToClientAndWait(ws: WebSocketLike, frame: Uint8Array): Promise<void> {
+    this.runtimeMetrics.traffic.publication(1);
     if (!this.sessions.get(ws)?.session.delivery.permitsBinary(ws, frame)) {
       this.incrementRuntimeCounter("applicationBinaryRejected");
+      this.runtimeMetrics.traffic.rejectBeforeSerialization();
       this.logger.warn({ bytes: frame.byteLength }, "ws_application_binary_delivery_denied");
       return;
     }
@@ -1632,9 +1684,10 @@ export class VoiceAssistantWebSocketServer {
     frame: string | Uint8Array,
     frameBytes: number,
     recordSent: () => void,
+    type = "binary",
   ): void {
     try {
-      void this.sendSocketFrame(ws, frame, frameBytes).then(recordSent, (err) => {
+      void this.sendSocketFrame(ws, frame, frameBytes, false, type).then(recordSent, (err) => {
         this.logger.warn({ err }, "ws_send_failed");
       });
     } catch (err) {
@@ -1702,6 +1755,7 @@ export class VoiceAssistantWebSocketServer {
   }
 
   private sendBinaryToConnection(connection: SessionConnection, frame: Uint8Array): void {
+    this.runtimeMetrics.traffic.publication(connection.sockets.size);
     for (const ws of connection.sockets) {
       this.sendBinaryToClient(ws, frame, false);
     }
@@ -1730,6 +1784,16 @@ export class VoiceAssistantWebSocketServer {
     const requestMetadata = extractSocketRequestMetadata(request);
     const identity = createWebSocketConnectionIdentity(requestMetadata, metadata);
     this.socketIdentities.set(ws, identity);
+    const trafficTransport =
+      identity.transport === "direct" && !(ws instanceof WebSocket)
+        ? "externalAdapter"
+        : identity.transport;
+    this.runtimeMetrics.traffic.open({
+      connectionId: identity.connectionId,
+      transport: trafficTransport,
+      peer: identity.peer,
+      browserOrigin: identity.browserOrigin,
+    });
     const connectionLogger = this.logger.child(toConnectionLogFields(identity));
 
     const pending: PendingConnection = {
@@ -2083,6 +2147,13 @@ export class VoiceAssistantWebSocketServer {
     }
     const sessionKey = sessionConnectionKey(admitted.principalId, clientId);
     const existing = pluginId ? undefined : this.externalSessionsByKey.get(sessionKey);
+    this.runtimeMetrics.traffic.hello({
+      connectionId: pending.identity.connectionId,
+      continuityKey: sessionKey,
+      clientType: message.clientType,
+      resumed: existing !== undefined,
+      routed: message.routed === true,
+    });
     if (existing) {
       this.resumeSession({ ws, message, pending, existing });
       return;
@@ -2689,6 +2760,7 @@ export class VoiceAssistantWebSocketServer {
 
     this.applicationSocketLease.release(ws);
     const identity = this.socketIdentities.get(ws);
+    this.runtimeMetrics.traffic.close(identity?.connectionId);
     const identityFields = identity ? toConnectionLogFields(identity) : {};
     const pending = this.clearPendingConnection(ws);
     if (pending) {
@@ -2800,6 +2872,7 @@ export class VoiceAssistantWebSocketServer {
     }
 
     for (const socket of connection.sockets) {
+      this.runtimeMetrics.traffic.close(this.socketIdentities.get(socket)?.connectionId);
       this.sessions.delete(socket);
       this.socketIdentities.delete(socket);
     }
@@ -3211,6 +3284,7 @@ export class VoiceAssistantWebSocketServer {
     const agentSnapshot = this.agentManager.getMetricsSnapshot();
     const gitCommandMetrics = snapshotGitCommandRuntimeMetrics();
     const loggedMetrics = {
+      traffic: runtimeMetrics.traffic,
       windowMs: runtimeMetrics.windowMs,
       final: Boolean(options?.final),
       sessions: {
