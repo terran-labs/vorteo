@@ -926,7 +926,10 @@ export class InstallationPanelModel {
       this.fail(error);
       this.publish({
         error: null,
-        helperError: failureMessage(error, "Helper decision unconfirmed. Refresh before retrying."),
+        helperError: failureMessage(
+          error,
+          "Helper decision unconfirmed. Refresh before retrying.",
+        ).split(/\r\n|\r|\n/, 1)[0],
       });
     } finally {
       this.publish({ busy: false });

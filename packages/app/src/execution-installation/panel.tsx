@@ -91,6 +91,8 @@ import { confirmDialog } from "@/utils/confirm-dialog";
 import { JoinedField } from "@/components/settings/joined-field";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
+import { Alert } from "@/components/ui/alert";
+import { useTranslation } from "react-i18next";
 
 import { getHostRuntimeStore, useHostRegistryLoaded } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
@@ -542,11 +544,31 @@ function InstallationSystemAdvancedBody({ model }: { model: InstallationPanelMod
 }
 
 function InstallationActionStatus({
+  model,
   state,
+  target,
 }: {
+  model: InstallationPanelModel;
   state: ReturnType<InstallationPanelModel["getState"]>;
+  target: "host" | "container-daemon";
 }) {
-  return <SettingsStatusLine message={state.error ?? state.helperError} />;
+  const { t } = useTranslation();
+  const controlSize = useVortonTouch() ? "md" : "sm";
+  const dismiss = useCallback(() => model.dismissHelperError(), [model]);
+  // Helper, monitor and broker controls belong to Host even when Dev details are mounted.
+  const helperError = target === "host" ? state.helperError : null;
+  return (
+    <>
+      <SettingsStatusLine message={state.error} />
+      {helperError ? (
+        <Alert variant="error" description={helperError.split(/\r\n|\r|\n/, 1)[0]}>
+          <Button variant="ghost" size={controlSize} onPress={dismiss}>
+            {t("common.actions.dismiss")}
+          </Button>
+        </Alert>
+      ) : null}
+    </>
+  );
 }
 
 function InstallationSystemDetailsBody({
@@ -608,7 +630,7 @@ function InstallationSystemDetailsBody({
   return (
     <View testID={`system-installation-details-${target}`}>
       <View style={settingsStyles.card} testID="installation-card">
-        <InstallationActionStatus state={state} />
+        <InstallationActionStatus model={model} state={state} target={target} />
         {target === "host" ? <CoordinatorMaintenanceReviews /> : null}
         {state.unlocked ? (
           <>

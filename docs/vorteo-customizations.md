@@ -3130,6 +3130,8 @@ Maintenance review: a runner renewal may attach `previewBrokerDeployment` or `pr
 
 ## Optional native macOS helper
 
+Helper action failures appear once in a dismissible error alert beside the Host controls, using the first line of the sanitized client error. Polling preserves the failure until dismissal, retry or access reset. Monitor and broker failures share that Host alert; Dev details do not repeat it. Packaged desktop and phone validation remains pending for this source change.
+
 Legacy coordinator compatibility: an unavailable helper query is retried once per minute instead of every settings refresh. Owner lock checks still apply during the delay, and upgraded coordinators are discovered without reloading.
 
 Tracked helper maintenance uses the coordinator lifecycle journal, Host-scoped preparation and status commands, exact manual owner approval, artifact and signing checks, and interrupted-installation recovery without replay. The review exposes signing identities and rollback availability; locked controls retain public status counts. Coordinator plans bind helper configuration changes and retain the paired Docker identity. Isolated lifecycle, HTTP, client and desktop/phone checks pass. Production activation still requires a coordinator rollback release compatible with helper configuration and journal records, an approved signing route, tracked installation and live Safari acceptance.
