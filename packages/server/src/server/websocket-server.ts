@@ -31,7 +31,7 @@ import { stat } from "node:fs/promises";
 import type { CreationSnapshot } from "@getpaseo/protocol/messages";
 import { CreationService } from "./creation/index.js";
 import { MessageReceipts } from "./message-receipts/index.js";
-import { WebSocket, WebSocketServer } from "ws";
+import { type WebSocket, WebSocketServer } from "ws";
 import type { IncomingMessage, Server as HTTPServer } from "http";
 import { join } from "path";
 import { getHostName } from "./host-name.js";
@@ -1779,7 +1779,7 @@ export class VoiceAssistantWebSocketServer {
     const identity = createWebSocketConnectionIdentity(requestMetadata, metadata);
     this.socketIdentities.set(ws, identity);
     const trafficTransport =
-      identity.transport === "direct" && !(ws instanceof WebSocket)
+      identity.transport === "direct" && request === undefined
         ? "externalAdapter"
         : identity.transport;
     this.runtimeMetrics.traffic.open({
