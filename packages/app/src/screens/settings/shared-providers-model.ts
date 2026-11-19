@@ -25,6 +25,8 @@ export interface ProviderFamily {
   enabled: boolean;
   /** Its CLI was found in at least one environment. Null while snapshots are still loading. */
   installed: boolean | null;
+  /** Detected installation or a saved owner choice, independent of current readiness. */
+  controllable: boolean;
   accounts: ProviderAccount[];
 }
 
@@ -108,6 +110,7 @@ export function groupInstallationProviders(
         name: familyName(type, definitions, manifest?.label),
         enabled: false,
         installed: false,
+        controllable: false,
         accounts: [],
       };
       families.set(type, family);
@@ -115,6 +118,7 @@ export function groupInstallationProviders(
     const enabled = providerEnabled(definition, sources);
     family.enabled ||= enabled;
     const installed = installedAnywhere(definition, sources);
+    family.controllable ||= installed === true || definition.policy.enabled !== undefined;
     if (installed === true || family.installed === true) family.installed = true;
     else if (installed === null) family.installed = null;
     const isDefault =
@@ -134,6 +138,12 @@ export function groupInstallationProviders(
       });
   }
   return [...families.values()];
+}
+
+/** One grouping for rendering, drag sorting and accessible movement. Unknown detection stays visible. */
+export function providerFamilyGroup(family: ProviderFamily): "on" | "off" | "available" {
+  if (!family.controllable && family.installed === false) return "available";
+  return family.enabled ? "on" : "off";
 }
 
 /**

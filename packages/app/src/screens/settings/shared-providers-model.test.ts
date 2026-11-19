@@ -4,6 +4,7 @@ import {
   awaitingFirstConnection,
   connectionsNeedingSignIn,
   groupInstallationProviders,
+  providerFamilyGroup,
   providersNeedingAttention,
   type SignInSource,
   type ProviderDetectionSource,
@@ -115,6 +116,77 @@ test("detection is unknown while a snapshot loads, and off by default meanwhile"
     detection({ claude: "loading" }),
   );
   expect([checking.enabled, checking.installed]).toEqual([false, null]);
+});
+
+test("a saved family choice stays reversible through disable, reload, restoration and re-enable", () => {
+  const definition: InstallationProvider = {
+    ...builtin("codex"),
+    accountId: "work",
+    policy: { label: "Work", order: 3 },
+  };
+  const untouched = builtin("pi");
+  function familyState(saved: InstallationProvider, status: string | undefined) {
+    const families = groupInstallationProviders(
+      [saved, untouched],
+      "active",
+      detection(status === undefined ? undefined : { codex: status, pi: "unavailable" }),
+    );
+    return families.map((family) => ({
+      id: family.id,
+      enabled: family.enabled,
+      installed: family.installed,
+      controllable: family.controllable,
+      group: providerFamilyGroup(family),
+    }));
+  }
+  const available = {
+    id: "pi",
+    enabled: false,
+    installed: false,
+    controllable: false,
+    group: "available",
+  };
+  expect(familyState(definition, "ready")).toEqual([
+    { id: "codex", enabled: true, installed: true, controllable: true, group: "on" },
+    available,
+  ]);
+  const disabled = { ...definition, policy: { ...definition.policy, enabled: false } };
+  const off = { id: "codex", enabled: false, installed: false, controllable: true, group: "off" };
+  expect(familyState(disabled, "unavailable")).toEqual([off, available]);
+  // Recompute from saved definitions with no in-memory history of the ready snapshot.
+  expect(familyState(structuredClone(disabled), "unavailable")).toEqual([off, available]);
+  expect(familyState(disabled, undefined)[0]).toEqual({ ...off, installed: null });
+  const removed = { ...disabled, removed: true };
+  expect(familyState(removed, "unavailable")).toEqual([available]);
+  const restored = { ...structuredClone(removed), removed: false };
+  expect(familyState(restored, "unavailable")).toEqual([off, available]);
+  const [family] = groupInstallationProviders(
+    [restored],
+    "active",
+    detection({ codex: "unavailable" }),
+  );
+  expect(family.accounts[0].definitions).toEqual([restored]);
+  expect(restored.bindings).toEqual(definition.bindings);
+  expect(restored.accountId).toBe(definition.accountId);
+  expect(restored.policy).toEqual({ ...definition.policy, enabled: false });
+  // Missing bindings do not erase a saved choice or prove installation.
+  expect(familyState({ ...restored, bindings: {} }, "ready")).toEqual([off, available]);
+  expect(familyState({ ...definition, bindings: {} }, "ready")[0]).toMatchObject({
+    installed: false,
+    controllable: false,
+    group: "available",
+  });
+  const enabled = { ...restored, policy: { ...restored.policy, enabled: true } };
+  for (const [status, installed] of [
+    ["unavailable", false],
+    ["loading", null],
+    ["ready", true],
+  ] as const) {
+    expect(familyState(structuredClone(enabled), status)).toEqual([
+      { id: "codex", enabled: true, installed, controllable: true, group: "on" },
+      available,
+    ]);
+  }
 });
 
 test("needs attention skips failing providers that are off by default", () => {
