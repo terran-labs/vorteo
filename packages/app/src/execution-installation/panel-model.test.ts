@@ -690,6 +690,7 @@ test("restart summaries identify Dev requests and durable Host automatic approva
 
 test("helper model observes without approving and refuses stale decisions", async () => {
   let decisions = 0;
+  const failureReason = "Decision unconfirmed; refresh before retrying";
   const model = new InstallationPanelModel({
     restartSummary: async () => null,
     restoreSession: async () => false,
@@ -706,7 +707,7 @@ test("helper model observes without approving and refuses stale decisions", asyn
     listHelpers: async () => [helperReviewFixture],
     decideHelper: async () => {
       decisions++;
-      throw new Error("Decision unconfirmed; refresh before retrying");
+      throw new Error(`${failureReason}\nAdditional diagnostic detail`);
     },
   });
   await model.unlock();
@@ -722,13 +723,14 @@ test("helper model observes without approving and refuses stale decisions", asyn
   expect(model.getState()).toMatchObject({
     busy: false,
     error: null,
-    helperError: "Decision unconfirmed; refresh before retrying",
+    helperError: failureReason,
     helperJobs: [helperReviewFixture],
   });
   await model.refresh();
-  expect(model.getState().helperError).toBe("Decision unconfirmed; refresh before retrying");
+  expect(model.getState().helperError).toBe(failureReason);
   model.dismissHelperError();
   expect(model.getState().helperError).toBeNull();
+  expect(decisions).toBe(1);
   await model.lock();
   expect(model.getState().helperJobs).toEqual([]);
 });
