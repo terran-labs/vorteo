@@ -5473,53 +5473,74 @@ test("native helper recovery remains visible through refresh and locked controls
   const id = randomUUID();
   helperFailures.add(id);
   helperVerificationFailures.add(id);
-  const response = await request("helper-requests", hostToken, {
-    id,
-    reason: "Review isolated failed helper fixture",
-    plan: helperReviewFixture.plan,
-  });
-  expect(response.status).toBe(201);
-  await page.goto(`${origin}/settings/general?installation=1&restart=${id}`);
-  await openOwnerUnlock(page);
-  await page.getByTestId("installation-password").fill(ownerPassword);
-  await page.getByTestId("installation-unlock").click();
-  const card = page.getByTestId(`helper-request-${id}`);
-  await card.getByTestId(`helper-${id}-approve`).click();
-  await expect(card).toContainText("Needs recovery");
-  await expect(card.getByTestId(`helper-${id}-approve`)).toHaveCount(0);
-  await card.getByTestId(`helper-${id}-verify-installed`).click();
-  const error = page.getByRole("alert").filter({ hasText: "Installation request failed" });
-  await expect(error).toBeVisible();
-  // Owner requests travel through the daemon socket. Cross the five-second
-  // background refresh interval to check that the error survives polling.
-  await page.waitForTimeout(6000);
-  await expect(error).toBeVisible();
-  await page.getByRole("button", { name: "Dismiss", exact: true }).click();
-  await expect(error).toHaveCount(0);
-  await page.getByTestId("installation-lock").click();
-  await expect
-    .poll(async () => {
-      const summary = await fetch(`${origin}/api/installation/restart-summary`);
-      return (await summary.json()).nativeHelper.recovery;
-    })
-    .toBe(1);
-  await expect(card).toHaveCount(0);
-  await openOwnerUnlock(page);
-  await page.getByTestId("installation-password").fill(ownerPassword);
-  await page.getByTestId("installation-unlock").click();
-  await expect(card).toContainText("Needs recovery");
-  await card.screenshot({ path: info.outputPath("helper-needs-recovery.png") });
-  helperVerificationFailures.delete(id);
-  await card.getByTestId(`helper-${id}-verify-installed`).click();
-  await expect(card).toContainText(
-    "The installed helper is verified. The earlier failure remains in history.",
-  );
-  expect(helperInstallations.filter((value) => value === id)).toHaveLength(1);
-  await page.reload();
-  await expect(card).toContainText(
-    "The installed helper is verified. The earlier failure remains in history.",
-  );
-  expect(helperInstallations.filter((value) => value === id)).toHaveLength(1);
+  try {
+    const response = await request("helper-requests", hostToken, {
+      id,
+      reason: "Review isolated failed helper fixture",
+      plan: helperReviewFixture.plan,
+    });
+    expect(response.status).toBe(201);
+    await page.goto(`${origin}/settings/general?installation=1&restart=${id}`);
+    await openOwnerUnlock(page);
+    await page.getByTestId("installation-password").fill(ownerPassword);
+    await page.getByTestId("installation-unlock").click();
+    const hostDetails = page
+      .getByTestId("system-installation-details-host")
+      .filter({ visible: true });
+    const card = hostDetails.getByTestId(`helper-request-${id}`);
+    await card.getByTestId(`helper-${id}-approve`).click();
+    await expect(card).toContainText("Needs recovery");
+    await expect(card.getByTestId(`helper-${id}-approve`)).toHaveCount(0);
+    await card.getByTestId(`helper-${id}-verify-installed`).click();
+    const error = page.getByRole("alert").filter({ hasText: "Installation request failed" });
+    await expect(error).toBeVisible();
+    // Owner requests travel through the daemon socket. Cross the five-second
+    // background refresh interval to check that the error survives polling.
+    await page.waitForTimeout(6000);
+    await expect(error).toBeVisible();
+    await error.getByRole("button", { name: "Dismiss", exact: true }).click();
+    await expect(error).toHaveCount(0);
+    // Keep the recovery link while revealing the owner controls on either width.
+    const advanced = page.getByTestId("settings-system-advanced").filter({ visible: true });
+    const toggle = advanced.getByTestId("settings-system-advanced-toggle");
+    await expect(toggle).toBeVisible();
+    if ((await toggle.getAttribute("aria-expanded")) === "false") await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const lock = advanced.getByTestId("installation-lock");
+    await expect(lock).toBeVisible();
+    await lock.click();
+    await expect(advanced.getByTestId("installation-locked")).toBeChecked();
+    await expect
+      .poll(async () => {
+        const summary = await fetch(`${origin}/api/installation/restart-summary`);
+        return (await summary.json()).nativeHelper.recovery;
+      })
+      .toBe(1);
+    await expect(hostDetails).toBeVisible();
+    await expect(card).toHaveCount(0);
+    await advanced.getByTestId("installation-owner-unlock").click();
+    await page.getByTestId("installation-password").fill(ownerPassword);
+    await page.getByTestId("installation-unlock").click();
+    await expect(card).toContainText("Needs recovery");
+    await card.screenshot({ path: info.outputPath("helper-needs-recovery.png") });
+    helperVerificationFailures.delete(id);
+    expect(helperVerificationFailures.has(id)).toBe(false);
+    await card.getByTestId(`helper-${id}-verify-installed`).click();
+    await expect(card).toContainText(
+      "The installed helper is verified. The earlier failure remains in history.",
+    );
+    expect(helperInstallations.filter((value) => value === id)).toHaveLength(1);
+    await page.reload();
+    await expect(card).toContainText(
+      "The installed helper is verified. The earlier failure remains in history.",
+    );
+    expect(helperInstallations.filter((value) => value === id)).toHaveLength(1);
+  } finally {
+    helperFailures.delete(id);
+    helperVerificationFailures.delete(id);
+    expect(helperFailures.has(id)).toBe(false);
+    expect(helperVerificationFailures.has(id)).toBe(false);
+  }
 });
 
 for (const width of [1280, 390]) {

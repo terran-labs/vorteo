@@ -3130,7 +3130,7 @@ Maintenance review: a runner renewal may attach `previewBrokerDeployment` or `pr
 
 ## Optional native macOS helper
 
-Helper action failures appear once in a dismissible error alert beside the Host controls, using the first line of the sanitized client error. Polling preserves the failure until dismissal, retry or access reset. Monitor and broker failures share that Host alert; Dev details do not repeat it. Broker and monitor review cases check that stale decisions show an accessible alert and that Dismiss clears it, while retaining approval, access and clipping coverage. Packaged desktop and phone validation remains pending for this source change.
+Helper action failures appear once in a dismissible error alert beside the Host controls, using the first line of the sanitized client error. Polling preserves the failure until dismissal, retry or access reset. Monitor and broker failures share that Host alert; Dev details do not repeat it. Broker and monitor review cases check that stale decisions show an accessible alert and that Dismiss clears it, while retaining approval, access and clipping coverage. The packaged recovery case opens the visible System Advanced controls before locking, waits for the checked lock state, and checks card absence on the retained recovery surface. It preserves recovery verification and single-install checks through reload and restores fixture failure flags. Full desktop and phone acceptance of this navigation repair remains with Builds.
 
 Legacy coordinator compatibility: an unavailable helper query is retried once per minute instead of every settings refresh. Owner lock checks still apply during the delay, and upgraded coordinators are discovered without reloading.
 
