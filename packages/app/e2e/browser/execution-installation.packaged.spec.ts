@@ -5532,63 +5532,173 @@ for (const width of [1280, 390]) {
     await page.getByTestId("installation-password").fill(ownerPassword);
     await page.getByTestId("installation-unlock").click();
     await expect(page.getByTestId("installation-password")).not.toBeVisible();
-    const read = async () =>
-      InstallationSettingsSnapshotSchema.parse(
-        await (
-          await page.request.post(`${origin}/api/installation/owner/settings/read`, {
-            headers: { Origin: origin },
-            data: {},
-          })
-        ).json(),
-      );
+    const headers = {
+      Origin: origin,
+      "X-Vorteo-Provider-Removal": "1",
+      "X-Vorteo-Primary-Connection": "1",
+    };
+    const read = async () => {
+      const response = await page.request.post(`${origin}/api/installation/owner/settings/read`, {
+        headers,
+        data: {},
+      });
+      expect(response.ok()).toBe(true);
+      return InstallationSettingsSnapshotSchema.parse(await response.json());
+    };
     const before = await read();
     const definitions = before.settings?.providerDefinitions;
+    const originalPrimary = before.settings?.primaryConnection;
     if (!definitions) throw new Error("Missing shared provider catalog");
+    if (originalPrimary === undefined) throw new Error("Missing primary connection capability");
     const creationId = randomUUID();
     const id = `claude-browser-${creationId}`;
     const providerId = `claude-account-${creationId}`;
-    const response = await page.request.patch(`${origin}/api/installation/owner/settings`, {
-      headers: { Origin: origin },
-      data: {
-        expectedRevision: before.revision,
-        settings: {
-          providerDefinitions: [
-            ...definitions,
-            {
-              id,
-              providerType: "claude",
-              accountSetup: { provider: "claude", creationId },
-              bindings: Object.fromEntries(daemons.map((daemon) => [daemon.serverId, providerId])),
-              policy: { label: "Shared Claude fixture", enabled: true },
-            },
-          ],
+    const serverIds = config.public.environments.map((environment) => environment.serverId);
+    const failures: unknown[] = [];
+    async function collectFailure(operation: () => Promise<void>) {
+      try {
+        await operation();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    const fixture: InstallationProvider = {
+      id,
+      providerType: "claude",
+      accountSetup: { provider: "claude", creationId },
+      bindings: Object.fromEntries(daemons.map((daemon) => [daemon.serverId, providerId])),
+      policy: { label: "Shared Claude fixture", enabled: true },
+    };
+    let restoredDefinitions = definitions;
+    let restoredPrimary = originalPrimary;
+    let restoredRevision = before.revision;
+    async function patchFixture(
+      current: Awaited<ReturnType<typeof read>>,
+      operation: "add" | "remove",
+      attempt: "initial" | "conflict-retry" = "initial",
+    ): Promise<Awaited<ReturnType<typeof read>>> {
+      const currentDefinitions = current.settings?.providerDefinitions;
+      const primaryConnection = current.settings?.primaryConnection;
+      if (!currentDefinitions) throw new Error("Missing provider catalog during fixture update");
+      if (primaryConnection === undefined) throw new Error("Missing primary connection capability");
+      const providerDefinitions = currentDefinitions.filter((entry) => entry.id !== id);
+      if (operation === "add") providerDefinitions.push(fixture);
+      else {
+        // Preserve concurrent catalog and primary choices, removing only this case's fixture.
+        restoredDefinitions = providerDefinitions;
+        restoredPrimary = primaryConnection;
+        restoredRevision = current.revision;
+      }
+      const response = await page.request.patch(`${origin}/api/installation/owner/settings`, {
+        headers,
+        data: {
+          expectedRevision: current.revision,
+          settings: { providerDefinitions, primaryConnection },
         },
-      },
-    });
-    expect(response.ok()).toBe(true);
+      });
+      // First-load browser settings can win the revision race after our read.
+      if (response.status() === 409 && attempt === "initial")
+        return patchFixture(await read(), operation, "conflict-retry");
+      let diagnostic = `Fixture ${operation} PATCH: HTTP ${response.status()}, expectedRevision ${current.revision}`;
+      if (!response.ok()) {
+        const body = await response.json().catch(() => null);
+        const knownErrors = [
+          "Invalid request",
+          "Shared settings reference an unknown environment or resource.",
+          "A project must stay available in at least one environment, keyed by its absolute root path.",
+          "That connection is no longer available.",
+          "Choose a time zone from the list.",
+          "Reload shared settings and explicitly resolve every initial policy difference.",
+          "Read every installation environment before editing shared settings.",
+          "Installation request failed",
+        ];
+        const text = await response.text();
+        const accessRefusal = text === "Unauthorized" || text === "Forbidden";
+        // Settings errors are fixed messages; never print arbitrary response fields or catalogs.
+        const safeBody = {
+          error: knownErrors.includes(body?.error) ? body.error : "Unrecognized error omitted",
+          reason:
+            typeof body?.reason === "string" &&
+            /^(environment|provider|provider-binding|plugin|skill|terminal-profile|metadata-provider|installation-instructions|project-policy|primary-connection|primary-connection-unavailable|time-zone)$/.test(
+              body.reason,
+            )
+              ? body.reason
+              : null,
+          access: accessRefusal ? text : null,
+          revision: typeof body?.revision === "number" ? body.revision : null,
+        };
+        diagnostic += `, body ${JSON.stringify(safeBody)}`;
+      }
+      expect(response.ok(), diagnostic).toBe(true);
+      const accepted = InstallationSettingsSnapshotSchema.parse(await response.json());
+      if (operation === "remove") restoredRevision = accepted.revision;
+      return accepted;
+    }
     try {
+      const created = await patchFixture(before, "add");
+      const createdDefinitions = created.settings?.providerDefinitions;
+      if (!createdDefinitions) throw new Error("Missing fixture provider catalog");
+      expect(createdDefinitions.find((entry) => entry.id === id)).toMatchObject({
+        accountSetup: { provider: "claude", creationId },
+        policy: { label: "Shared Claude fixture", enabled: true },
+      });
+      await waitForSettingsConvergence({
+        read,
+        poll: expect.poll,
+        minimumRevision: created.revision,
+        providerDefinitions: createdDefinitions,
+        serverIds,
+      });
+      expect((await read()).settings?.primaryConnection).toEqual(originalPrimary);
       await page.goto(`${origin}/settings/providers`);
-      await openProviderPage(page, "claude");
-      await openConnectionAction(page, id, "access");
-      const sheet =
-        width === 390
-          ? page.getByRole("slider", { name: "Bottom Sheet", exact: true })
-          : page.getByTestId("provider-manage-sheet");
-      await expect(sheet.getByText("Connect Claude once.", { exact: false })).toBeVisible();
-      await expect(sheet.getByRole("button", { name: "Connect Claude", exact: true })).toHaveCount(
-        1,
+      const settings = page.getByTestId("settings-scroll-page").filter({ visible: true });
+      const family = settings.getByTestId("provider-family-claude").filter({ visible: true });
+      await family.getByTestId("provider-family-open-claude").click();
+      const claude = groupInstallationProviders(createdDefinitions).find(
+        (entry) => entry.id === "claude",
       );
+      const account = claude?.accounts.find((entry) =>
+        entry.definitions.some((definition) => definition.id === id),
+      );
+      if (!claude || !account) throw new Error("Missing fixture Claude account");
+      let connections = family;
+      if (claude.accounts.length > 5) {
+        await family
+          .getByRole("button", {
+            name: `Show all ${claude.accounts.length} Claude connections`,
+            exact: true,
+          })
+          .click();
+        connections = page
+          .getByRole("dialog", { name: "Claude connections", exact: true })
+          .filter({ visible: true });
+        await expect(connections).toBeVisible();
+      }
+      await connections
+        .getByTestId(`provider-account-${account.id}`)
+        .getByRole("button", { name: "Shared Claude fixture: Connect account", exact: true })
+        .click();
+      // On phone the modal test ID marks only its header, not the sibling scroll body.
+      const dialog = page
+        .getByRole("dialog", { name: "Connect Shared Claude fixture", exact: true })
+        .filter({ visible: true });
+      await expect(dialog).toBeVisible();
+      const panel = dialog.getByTestId("provider-login-panel");
       await expect(
-        sheet.getByRole("button", { name: "Connect Claude", exact: true }),
-      ).toBeEnabled();
-      await expect(sheet.getByRole("tab")).toHaveCount(0);
-      await expect(sheet.getByText("Not connected.", { exact: true })).toBeVisible();
-      await sheet
-        .getByRole("button", { name: "Connect Claude", exact: true })
-        .scrollIntoViewIfNeeded();
-      await expect(
-        sheet.getByRole("button", { name: "Connect Claude", exact: true }),
-      ).toBeInViewport();
+        panel.getByText(
+          "Sign in once. Every environment in this installation uses this connection.",
+          {
+            exact: true,
+          },
+        ),
+      ).toBeVisible();
+      const connect = panel.getByRole("button", { name: "Connect Claude", exact: true });
+      await expect(connect).toHaveCount(1);
+      await expect(connect).toBeEnabled();
+      await expect(dialog.getByRole("tab")).toHaveCount(0);
+      await expect(panel.getByText("Not connected", { exact: true })).toBeVisible();
+      await connect.scrollIntoViewIfNeeded();
+      await expect(connect).toBeInViewport();
       await page.screenshot({ path: info.outputPath(`claude-shared-${width}.png`) });
       // Rendering the connection must not initiate provider authorization.
       const status = await page.request.post(
@@ -5599,23 +5709,33 @@ for (const width of [1280, 390]) {
         },
       );
       expect(status.ok()).toBe(true);
-      expect((await status.json()).login.status).toBe("idle");
+      const connection = await status.json();
+      expect(connection.login.status).toBe("idle");
+      expect(connection.connection.connected).toBe(false);
       expect(claudeAuthorizationStarts).toBe(0);
+    } catch (error) {
+      failures.push(error);
     } finally {
-      const current = await read();
-      const currentDefinitions = current.settings?.providerDefinitions;
-      expect(currentDefinitions).toBeDefined();
-      const restored = await page.request.patch(`${origin}/api/installation/owner/settings`, {
-        headers: { Origin: origin },
-        data: {
-          expectedRevision: current.revision,
-          settings: {
-            providerDefinitions: currentDefinitions!.filter((entry) => entry.id !== id),
-          },
-        },
+      // Protect partial setup too, and observe restoration even if its PATCH fails.
+      await collectFailure(async () => {
+        await patchFixture(await read(), "remove");
       });
-      expect(restored.ok()).toBe(true);
+      await collectFailure(async () => {
+        await waitForSettingsConvergence({
+          read,
+          poll: expect.poll,
+          minimumRevision: restoredRevision,
+          providerDefinitions: restoredDefinitions,
+          serverIds,
+        });
+      });
+      await collectFailure(async () => {
+        expect((await read()).settings?.primaryConnection).toEqual(restoredPrimary);
+      });
     }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1)
+      throw new AggregateError(failures, "Claude management case and cleanup failures");
   });
 }
 
