@@ -51,6 +51,7 @@ import { prepareSourceBatch } from "./source-batches.js";
 import { prepareDevRepairBundle } from "./dev-source-repair.js";
 import { assertReleaseSelectionAllowed } from "./release-selection-guard.js";
 import {
+  assertHostReleaseCleanupSupported,
   KEEP_NEWEST,
   pruneHostReleases,
   recordLinkTargets,
@@ -922,6 +923,8 @@ export class InstallationSourceUpdates {
     const restored: string[] = [];
     let linkTargets: string[] = [];
     try {
+      // Before anything is read or written, link history included.
+      assertHostReleaseCleanupSupported();
       const home = this.config.host.startupValidation?.home;
       if (!home) throw new Error("Session host home is unknown; retaining old Host releases");
       const releaseRoot = await realpath(this.hostSettings().releaseRoot);

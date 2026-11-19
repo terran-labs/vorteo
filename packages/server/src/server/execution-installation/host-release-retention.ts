@@ -115,6 +115,7 @@ export async function restoreSetAsideReleases(
   releaseRoot: string,
   callbacks: Pick<HostReleaseRetention, "onError" | "onRestored"> = {},
 ): Promise<string[] | null> {
+  assertHostReleaseCleanupSupported();
   const root = await realpath(releaseRoot);
   try {
     return await withReleaseRootLock(root, () => restoreAbandoned(root, callbacks));
@@ -145,6 +146,54 @@ async function restoreAbandoned(
     }
   }
   return restored;
+}
+
+/** Host release cleanup refuses Windows; see assertHostReleaseCleanupSupported. */
+export class HostReleaseCleanupUnsupportedError extends Error {
+  constructor() {
+    super("Host release cleanup is not supported on Windows");
+    this.name = "HostReleaseCleanupUnsupportedError";
+  }
+}
+
+/**
+ * Release cleanup runs only on the macOS Host and Linux. On Windows its lock (/bin/ps), process
+ * evidence (lsof, ps, /proc) and POSIX link resolution do not apply, and resolved paths lose
+ * their drive letter, so every entry point refuses there before it reads or writes anything.
+ */
+export function assertHostReleaseCleanupSupported(): void {
+  if (process.platform === "win32") throw new HostReleaseCleanupUnsupportedError();
+}
+
+/**
+ * At coordinator start, put back releases a coordinator that died during cleanup left set
+ * aside, where nothing can start from them. Runs alongside the rest of startup and never fails
+ * it: the restore takes the release root lock, so it never runs while a cleanup in any process
+ * holds folders set aside, and every outcome is only logged. A no-op on Windows.
+ */
+export function restoreHostReleasesAtStart(
+  sourceUpdates: { releaseRoot: string } | undefined,
+  logger: {
+    info(message: string): void;
+    warn(fields: Record<string, unknown>, message: string): void;
+  },
+): void {
+  if (!sourceUpdates || process.platform === "win32") return;
+  const { releaseRoot } = sourceUpdates;
+  void (async () => {
+    try {
+      const restored = await restoreSetAsideReleases(releaseRoot, {
+        onRestored: (folder) => logger.warn({ folder }, "Put back a Host release left set aside"),
+        onError: (folder, error) =>
+          logger.warn({ folder, err: error }, "Could not put back a Host release left set aside"),
+      });
+      // A cleanup in another coordinator holds the root; it restores first itself.
+      if (restored === null)
+        logger.info("A Host release cleanup is running; startup restore left it alone");
+    } catch (error) {
+      logger.warn({ err: error }, "Could not check for Host releases left set aside");
+    }
+  })();
 }
 
 /** Another cleanup or restore, in this process or another, holds the release root. */
@@ -279,6 +328,7 @@ export async function recordLinkTargets(input: {
   links: readonly string[];
   historyFile: string;
 }): Promise<string[]> {
+  assertHostReleaseCleanupSupported();
   const root = await realpath(input.releaseRoot);
   let previous: string[] = [];
   try {
@@ -459,6 +509,7 @@ interface Doomed {
  * never consume a folder another set aside.
  */
 export async function pruneHostReleases(input: HostReleaseRetention): Promise<string[]> {
+  assertHostReleaseCleanupSupported();
   const root = await realpath(input.releaseRoot);
   if (input.dryRun) {
     input.onPlan?.(await planDryRun(root, input));
