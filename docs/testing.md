@@ -207,6 +207,20 @@ Test suites in this repo are heavy. Running them in bulk freezes the machine, es
 - Teardown kills the process tree, because a Windows signal reaches only the direct child and leaves forked workers holding the listening port.
 - The `asdf`-backed local Elixir relay stays POSIX-only, so the `relay-deployment` Playwright project is unavailable on Windows.
 
+## Website browser installation in CI
+
+The required `typecheck` job installs Chromium and WebKit, including their OS dependencies, before verifying website mockups and public package contents. The website Playwright configuration requires both browsers.
+
+Issue #478 traced slow successful installs to apt fetching 126 MB through a regional EC2 Ubuntu archive: 27m59s to 32m59s at 63.8 to 75.2 kB/s, followed by roughly nine seconds of browser downloads. A fast Azure comparison fetched 126 MB in five seconds. These logs establish a slow transfer route, not its underlying network cause; a browser cache would not fix it.
+
+On the disposable runner, the install step logs Ubuntu source URIs before and after replacing only an EC2 regional archive URI ending in `/ubuntu` with `https://archive.ubuntu.com/ubuntu`. It handles legacy lists and deb822 URI fields while preserving suites, components, signing options, security repositories, Azure sources, mirror lists and third-party sources. An EC2 URI that cannot be normalized safely fails the step.
+
+Installation permits two attempts total, with a five-second delay. Each dependency phase has 180 seconds and each browser phase 120 seconds, with five seconds of termination grace. Successful dependencies are reused on the second attempt. The pinned Playwright CLI runs directly from the checkout, avoiding an implicit package download. Its dependency installer runs under a root-owned timeout so termination reaches apt and dpkg in the same process group.
+
+Before retrying failed dependencies, the step allows ten seconds to acquire the apt/dpkg locks, then requires `dpkg --configure -a` to succeed within 30 seconds. Both operations have five seconds of termination grace and fail closed. Playwright 1.58.2 offers a dry-run shell command, not a structured package list or download-only interface; bounded recovery avoids parsing and executing a modified installer command. The 12-minute outer limit covers source normalization, both attempts, lock checks, recovery and diagnostics. Logs retain installer output and report phase, attempt, elapsed seconds, exit status and terminal failure.
+
+Local shell and scratch-source experiments verify control flow, not hosted throughput or browser launch dependencies. The draft PR must record its own run and job links, starting mirror, whether rewriting fired, phase durations and successful website, mockup and package checks. A fast Azure or mirror-list runner does not prove repaired AWS throughput. If the canonical archive remains slow, report its throughput for review without raising the timeout.
+
 ## Pull-request test routing
 
 PR checks are routed by the behavior each suite proves, using `.github/ci-paths.yml`. Every Vorteo commit bumps the version in every manifest, so before filtering, `scripts/ci-neutralize-version-bumps.mjs` restores manifests whose only change is that version in a local commit the runner never pushes. Without it, the bump matches the `workspace` group and every pull request runs the full suite. A package does not inherit every test suite of its runtime consumers: app changes do not run CLI or Electron-wrapper tests, and protocol changes do not run every package that imports the protocol. Cross-package static compatibility belongs to `typecheck`; full integration coverage runs on merge groups, nightly and in manual CI runs.
