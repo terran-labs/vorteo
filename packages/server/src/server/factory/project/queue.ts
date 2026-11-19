@@ -341,7 +341,10 @@ function recordedReview(pr: PullRequest, viewerLogin: string): "approved" | "cha
   // The Foreman records its read-only reviewer's reply. This is display evidence,
   // never merge authorization; its charter still requires all merge gates.
   for (const comment of pr.comments.nodes.toReversed()) {
-    if (comment.author?.login !== viewerLogin || !comment.body.startsWith("(AI Generated)."))
+    if (
+      comment.author?.login !== viewerLogin ||
+      !/^\(AI Generated\)\.?(?:\n\n|\r\n\r\n)/.test(comment.body)
+    )
       continue;
     const lines = comment.body.split(/\r?\n/).map((line) => line.trim());
     if (lines.includes(`APPROVE ${pr.headRefOid}`)) return "approved";

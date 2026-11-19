@@ -503,7 +503,31 @@ test("public release notes require an executive summary instead of concatenated 
   const summary =
     "**A simpler first installation.** Ready accounts receive starter profiles.\n\n### Features\n\n- Create a workspace immediately.\n\n### Fixes\n\n- Recognize native authentication.";
   assert.equal(curatedReleaseNotes(summary), `${summary}\n`);
-  assert.equal(curatedReleaseNotes(`(AI Generated).\n\n${summary}`), curatedReleaseNotes(summary));
+  for (const header of ["(AI Generated)", "(AI Generated)."]) {
+    for (const newline of ["\n", "\r\n"]) {
+      assert.equal(
+        curatedReleaseNotes(`${header}${newline}${newline}${summary}`),
+        curatedReleaseNotes(summary),
+      );
+    }
+  }
+  assert.equal(
+    curatedReleaseNotes(`(AI Generated).\n\n(AI Generated)\r\n\r\n${summary}`),
+    curatedReleaseNotes(summary),
+  );
+  for (const prefix of [
+    "(AI Generated) prose\n\n",
+    "(AI Generated).extra\n\n",
+    "(ai generated)\n\n",
+    " (AI Generated)\n\n",
+    "(AI Generated) \n\n",
+    "(AI Generated).\n",
+    "(AI Generated)\n \n",
+    "Quoted later:\n\n(AI Generated).\n\n",
+  ]) {
+    const notes = `${prefix}${summary}`;
+    assert.equal(curatedReleaseNotes(notes), `${notes.trim()}\n`);
+  }
   for (const notes of [
     undefined,
     "",

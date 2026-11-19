@@ -363,7 +363,7 @@ function installerAsset(plan) {
 export function curatedReleaseNotes(input) {
   if (typeof input !== "string" || !input.trim())
     throw new ReleaseRefusal("Publishing a release requires curated notes via --notes-file.");
-  const notes = input.replace(/^(?:\s*\(AI Generated\)\.\s*)+/i, "").trim();
+  const notes = input.replace(/^(?:\(AI Generated\)\.?(?:\n\n|\r\n\r\n))+/, "").trim();
   if (
     /^[ \t]{0,3}#{1,6}\s+(?:Unreleased\b|(?:Vorteo\s+)?v?\d+(?:\.\d+){2}|20\d{2}-\d{2}-\d{2})/im.test(
       notes,
