@@ -4747,6 +4747,7 @@ describe("ForgeService", () => {
     let host: string | null = "github.acme.internal";
     let changeHostDuringPath = false;
     let frozenWakeTime: number | undefined;
+    let commandDelayMs = 0;
     let remaining = 80;
     let restRemaining = 80;
     let authMissing = false;
@@ -4767,7 +4768,8 @@ describe("ForgeService", () => {
       active++;
       peak = Math.max(peak, active);
       try {
-        await Promise.resolve();
+        if (commandDelayMs) await new Promise((resolve) => setTimeout(resolve, commandDelayMs));
+        else await Promise.resolve();
         if (authMissing) throw new GitHubAuthenticationError({ stderr: "not logged in" });
         const reset = Math.floor(Date.now() / 1000) + 600;
         const resource = { limit: 100, remaining, reset };
@@ -5004,6 +5006,51 @@ describe("ForgeService", () => {
       calls.slice(lateReads).every((call) => call.envOverlay?.GH_HOST === "shifted.acme.internal"),
     ).toBe(true);
     transitioning.release();
+
+    // Twenty minutes of actual polling: availability spans refreshes, satisfaction does not.
+    commandDelayMs = 1_500;
+    const continuous = await wakeService.subscribeChecklistWake({
+      cwd: "/continuous",
+      condition: pr,
+    });
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(continuous.availability().available).toBe(true);
+    let availableSeconds = 0;
+    let unavailableSeconds = 0;
+    for (let second = 0; second < 1_200; second++) {
+      await vi.advanceTimersByTimeAsync(1_000);
+      if (continuous.availability().available) availableSeconds++;
+      else unavailableSeconds++;
+      if (active) expect(continuous.read()).toBe("unresolved");
+    }
+    expect({ availableSeconds, unavailableSeconds }).toEqual({
+      availableSeconds: 1_200,
+      unavailableSeconds: 0,
+    });
+    authMissing = true;
+    await vi.advanceTimersByTimeAsync(130_000);
+    expect(continuous.availability().available).toBe(false);
+    expect(continuous.read()).toBe("unresolved");
+    authMissing = false;
+    await vi.advanceTimersByTimeAsync(310_000);
+    expect(continuous.availability().available).toBe(true);
+    // Advancing the clock without executing timers simulates a missed scheduling window.
+    vi.setSystemTime(Date.now() + 190_000);
+    expect(continuous.availability().available).toBe(false);
+    expect(continuous.read()).toBe("unresolved");
+    continuous.release();
+    closedState = "CLOSED";
+    const closedWithoutMerge = await wakeService.subscribeChecklistWake({
+      cwd: "/closed-without-merge",
+      condition: { ...pr, number: 2 },
+    });
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(closedWithoutMerge.availability()).toEqual({
+      available: false,
+      reason: "pull request closed without merge",
+    });
+    expect(closedWithoutMerge.read()).toBe("unresolved");
+    closedWithoutMerge.release();
     wakeService.dispose();
   });
 

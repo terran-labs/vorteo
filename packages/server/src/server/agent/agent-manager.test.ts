@@ -16272,6 +16272,8 @@ test("Vorteo checklist mutations survive provider updates, history refresh, and 
     const ready = storage.getLoadedRecord(agent.id)!.checklistWakeGenerations!;
     let githubReady = false;
     let githubAvailable = true;
+    let sourceCurrent = true;
+    let sourceChecks = 0;
     let retained = 0;
     let releases = 0;
     const github: ChecklistGithubObservationPort = {
@@ -16279,7 +16281,10 @@ test("Vorteo checklist mutations survive provider updates, history refresh, and 
         retained++;
         return {
           read: () => (githubAvailable && githubReady ? "satisfied" : "unresolved"),
-          isCurrentSource: async () => true,
+          isCurrentSource: async () => {
+            sourceChecks++;
+            return sourceCurrent;
+          },
           availability: () =>
             githubAvailable
               ? { available: true }
@@ -16383,12 +16388,40 @@ test("Vorteo checklist mutations survive provider updates, history refresh, and 
       (entry) => entry.taskId === "checks",
     )!;
     expect(service.isMonitoring(monitored, checksGeneration)).toBe(true); // A valid unsatisfied result is observable.
+    // Sample the real service before and after fifteen-second scans, including refused wakes.
+    githubReady = true;
+    await service.tick(); // Queue pause refuses admission, leaving the generation armed.
+    const measurementStart = now;
+    let availableSamples = 0;
+    let unavailableSamples = 0;
+    for (let second = 1; second <= 1_200; second++) {
+      now = measurementStart + second * 1_000;
+      if (service.isMonitoring(monitored, checksGeneration)) availableSamples++;
+      else unavailableSamples++;
+      if (second % 15 === 0) await service.tick();
+      expect(service.isMonitoring(monitored, checksGeneration)).toBe(true);
+    }
+    expect({ availableSamples, unavailableSamples }).toEqual({
+      availableSamples: 1_200,
+      unavailableSamples: 0,
+    });
+    expect(sourceChecks).toBeGreaterThanOrEqual(12);
+    expect(storage.currentChecklistWakeGenerations(agent.id, [checksGeneration])).toHaveLength(1);
+    githubReady = false;
+    sourceCurrent = false;
+    now += 90_000;
+    await service.tick();
+    expect(service.isMonitoring(monitored, checksGeneration)).toBe(false);
+    sourceCurrent = true;
+    now += 120_000;
+    await service.tick();
+    expect(service.isMonitoring(monitored, checksGeneration)).toBe(true);
     githubAvailable = false;
     await service.tick();
     expect(service.isMonitoring(monitored, checksGeneration)).toBe(false);
     const unavailable = storage.getLoadedRecord(agent.id)!.checklistWakeGenerations!;
     expect(unavailable.find((entry) => entry.taskId === "checks")).toMatchObject({
-      unavailable: { reason: "GitHub authentication is unavailable" },
+      unavailable: { reason: "GitHub observer unavailable for this workspace" },
     });
     expect(unavailable.every((entry) => !entry.claim)).toBe(true);
     await service.tick();
@@ -16422,7 +16455,7 @@ test("Vorteo checklist mutations survive provider updates, history refresh, and 
     });
     await service.tick();
     expect(retained).toBe(1);
-    expect(releases).toBe(1);
+    expect(releases).toBe(2);
     service.stop();
     expect(retained).toBe(0);
     const recreated = new ChecklistWakeService(serviceOptions);

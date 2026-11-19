@@ -1201,6 +1201,12 @@ function wakePullRequestSatisfied(
   pr: z.infer<typeof WakePrSchema> | null,
 ): boolean {
   if (!pr || pr.number !== condition.number) return false;
+  if (
+    condition.kind === "github_pull_request" &&
+    condition.state === "merged" &&
+    pr.state === "CLOSED"
+  )
+    throw new WakeTargetUnavailableError("pull request closed without merge");
   if (condition.kind === "github_pull_request")
     return pr.state === "MERGED" || (condition.state === "closed" && pr.state === "CLOSED");
   const commit = pr.commits?.nodes.length === 1 ? pr.commits.nodes[0]?.commit : undefined;
@@ -1423,7 +1429,7 @@ export function createGitHubService(options: CreateGitHubServiceOptions = {}): G
         continue;
       target.running = true;
       target.satisfiedUntil = 0;
-      target.observedUntil = 0;
+      // Monitoring remains available during a bounded routine refresh; satisfaction does not.
       wakeReads++;
       void pollWake(target).finally(() => {
         target.running = false;
@@ -1517,7 +1523,11 @@ export function createGitHubService(options: CreateGitHubServiceOptions = {}): G
       if (valid() && (pollPausedUntilByHost.get(target.host) ?? 0) <= deps.now()) {
         target.errors = 0;
         delete target.unavailableReason;
-        target.observedUntil = deps.now() + GITHUB_POLL_SLOW_INTERVAL_MS;
+        // Cover the next aligned poll and its sequential budget and target commands.
+        // A missed or stalled poll still expires without extending this deadline.
+        target.observedUntil =
+          alignGitHubPollTime(deps.now() + GITHUB_POLL_SLOW_INTERVAL_MS) +
+          2 * GITHUB_COMMAND_TIMEOUT_MS;
         target.observedPollStartedAt = pollStartedAt;
         target.observedPollOrder = pollOrder;
         target.satisfiedUntil = satisfied ? deps.now() + GITHUB_POLL_SLOW_INTERVAL_MS : 0;

@@ -218,13 +218,19 @@ when their native goal is next observed.
 
 Condition monitoring handles deadlines and explicit GitHub PR states, workflow attempts
 and named terminal checks on a pinned PR head. A PR `closed` condition accepts either
-closure or merge; `merged` requires a merge. Readiness and capability advertisement
+closure or merge; `merged` requires a merge. A PR closed without merge makes a
+`merged` condition unavailable, restoring existing opt-in review eligibility. Readiness and capability advertisement
 follow the live monitor lifecycle. Only blocked items with an exact current unspent generation and live monitoring
 availability are excluded from timed reviews. The service uses shared admission without
 spending review slots. Monitoring itself uses no model; an admitted
 wake resumes the existing full thread. Local Factory authority is captured only after queued
 operations settle. Another queued operation, service stop or parent-chain change invalidates
 that authority before wake reservation; refused claims remain unspent.
+
+Healthy GitHub monitoring stays available through the next aligned poll and its two
+30-second command budgets. Routine refresh invalidates satisfaction, not monitoring
+availability; failed or missed polls still expire. Source checks refresh before
+expiry even when wake admission is backed off.
 
 Attach conditions to managed blocked items for external prerequisites. Use finish
 subscriptions when waiting for another agent and Review for owner decisions. A condition

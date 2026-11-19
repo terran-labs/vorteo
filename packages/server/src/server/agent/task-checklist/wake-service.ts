@@ -120,8 +120,8 @@ export class ChecklistWakeService {
         for (const generation of observed) {
           if (!this.canContinue()) break;
           if (
-            (this.refusedUntil.get(generation.generation) ?? 0) <= this.now() &&
-            (await this.satisfied(record, generation))
+            (await this.satisfied(record, generation)) &&
+            (this.refusedUntil.get(generation.generation) ?? 0) <= this.now()
           )
             satisfied.push(generation);
         }
@@ -207,7 +207,9 @@ export class ChecklistWakeService {
         this.retained.set(generation.generation, retained);
         this.retryAfter.delete(generation.generation);
       }
-      if (retained.sourceCheckedUntil <= this.now()) {
+      // Refresh two scan intervals early, including while admission is backed off.
+      // Failure releases the observation immediately; a stalled refresh still expires.
+      if (retained.sourceCheckedUntil <= this.now() + 30_000) {
         if (!(await retained.subscription.isCurrentSource()))
           throw new Error("GitHub workspace source changed");
         retained.sourceCheckedUntil = this.now() + 120_000;
