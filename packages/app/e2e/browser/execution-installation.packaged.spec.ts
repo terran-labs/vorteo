@@ -4182,36 +4182,6 @@ for (const width of [1280, 390]) {
             });
         }
       }
-      async function enableMockForRemoval() {
-        const current = await read();
-        const definitions = current.settings?.providerDefinitions;
-        if (!definitions) throw new Error("Missing provider definitions before Mock removal setup");
-        const expected = definitions.map((entry) =>
-          entry.providerType === "mock"
-            ? Object.assign({}, entry, {
-                policy: Object.assign({}, entry.policy, { enabled: true }),
-              })
-            : entry,
-        );
-        const response = await page.request.patch(`${origin}/api/installation/owner/settings`, {
-          headers: {
-            Origin: origin,
-            "X-Vorteo-Provider-Removal": "1",
-            "X-Vorteo-Primary-Connection": "1",
-          },
-          data: { expectedRevision: current.revision, settings: { providerDefinitions: expected } },
-        });
-        expect(response.ok()).toBe(true);
-        const saved = InstallationSettingsSnapshotSchema.parse(await response.json());
-        await waitForSettingsConvergence({
-          read,
-          poll: expect.poll,
-          minimumRevision: saved.revision,
-          providerDefinitions: expected,
-          serverIds,
-        });
-        await expectMockRuntime(true);
-      }
       async function exerciseFamily() {
         // Keyboard reordering requires installed families in the same enabled group.
         await captureCodexBindings();
@@ -4324,8 +4294,31 @@ for (const width of [1280, 390]) {
           serverIds,
         });
         await expectMockRuntime(false);
-        // Temporary fixture PATCH for #495; use the switch once its reversible control is fixed.
-        await enableMockForRemoval();
+        await expect(enabled).toBeVisible();
+        await expect(enabled).not.toBeChecked();
+        const enableResponse = page.waitForResponse(
+          (response) =>
+            response.url() === `${origin}/api/installation/owner/settings` &&
+            response.request().method() === "PATCH",
+        );
+        await enabled.click();
+        const reenabled = await enableResponse;
+        expect(reenabled.ok()).toBe(true);
+        const enabledSnapshot = InstallationSettingsSnapshotSchema.parse(await reenabled.json());
+        await waitForSettingsConvergence({
+          read,
+          poll: expect.poll,
+          minimumRevision: enabledSnapshot.revision,
+          providerDefinitions: beforeDisableDefinitions.map((entry) =>
+            entry.providerType === "mock"
+              ? Object.assign({}, entry, {
+                  policy: Object.assign({}, entry.policy, { enabled: true }),
+                })
+              : entry,
+          ),
+          serverIds,
+        });
+        await expectMockRuntime(true);
         await expect(enabled).toBeChecked();
         await family.getByTestId("provider-family-open-mock").click();
         const connections = family
