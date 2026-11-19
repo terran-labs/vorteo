@@ -1457,6 +1457,7 @@ export class VoiceAssistantWebSocketServer {
     this.pendingConnections.clear();
     this.sessions.clear();
     this.socketIdentities.clear();
+    this.runtimeMetrics.traffic.dispose();
     this.externalSessionsByKey.clear();
     this.wss.close();
   }
@@ -1487,7 +1488,7 @@ export class VoiceAssistantWebSocketServer {
         () => {
           this.runtimeMetrics.recordOutboundMessage(message, ws.bufferedAmount);
         },
-        outboundTrafficType(message),
+        message,
       );
     }
   }
@@ -1596,13 +1597,12 @@ export class VoiceAssistantWebSocketServer {
     frame: string | Uint8Array,
     bytes: number,
     waitForDrain = false,
-    type = "binary",
+    message?: WSOutboundMessage,
   ): Promise<void> {
-    this.runtimeMetrics.traffic.attempt({
-      connectionId: this.socketIdentities.get(ws)?.connectionId,
-      type,
-      bytes,
-    });
+    const connectionId = this.socketIdentities.get(ws)?.connectionId;
+    const type = message ? outboundTrafficType(message) : "binary";
+    this.runtimeMetrics.traffic.attempt({ connectionId, type, bytes });
+    this.runtimeMetrics.traffic.sample({ connectionId, message, frame, bytes });
     const transport = this.chunkedSocket(ws);
     const admittedBytes = transport.isWriting
       ? bytes
@@ -1634,13 +1634,7 @@ export class VoiceAssistantWebSocketServer {
     const prepared = this.prepareJsonDelivery([ws], message, true);
     if (!prepared) throw new Error("Source message delivery unavailable");
     try {
-      await this.sendSocketFrame(
-        ws,
-        prepared.payload,
-        prepared.bytes,
-        true,
-        outboundTrafficType(message),
-      );
+      await this.sendSocketFrame(ws, prepared.payload, prepared.bytes, true, message);
       this.runtimeMetrics.recordOutboundMessage(message, ws.bufferedAmount);
     } catch (err) {
       this.logger.warn({ err }, "ws_send_failed");
@@ -1684,10 +1678,10 @@ export class VoiceAssistantWebSocketServer {
     frame: string | Uint8Array,
     frameBytes: number,
     recordSent: () => void,
-    type = "binary",
+    message?: WSOutboundMessage,
   ): void {
     try {
-      void this.sendSocketFrame(ws, frame, frameBytes, false, type).then(recordSent, (err) => {
+      void this.sendSocketFrame(ws, frame, frameBytes, false, message).then(recordSent, (err) => {
         this.logger.warn({ err }, "ws_send_failed");
       });
     } catch (err) {

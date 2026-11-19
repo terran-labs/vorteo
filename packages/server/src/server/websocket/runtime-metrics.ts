@@ -252,6 +252,15 @@ function getTopCounts(map: Map<string, number>, limit: number): Array<[string, n
   return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit);
 }
 
+// Disable repeat sampling without changing byte accounting or transport behavior.
+const TRAFFIC_NOVELTY_ENABLED = true;
+const TRAFFIC_FINGERPRINT_CAP = 128;
+const TRAFFIC_GLOBAL_FINGERPRINT_CAP = 128 * 128;
+const TRAFFIC_SIGNATURE_BYTES = 4096;
+let fingerprintBudgetSecond = -1;
+let fingerprintBudgetRemaining = 0;
+let retainedFingerprintCount = 0;
+
 const TRAFFIC_CONNECTION_CAP = 256;
 const TRAFFIC_CLIENT_CAP = 128;
 const TRAFFIC_TYPE_CAP = 128;
@@ -281,7 +290,17 @@ interface TrafficVolume {
   bytes: number;
 }
 
+interface RepeatPopulation {
+  sampledUnseen: TrafficVolume;
+  sampledRepeat: TrafficVolume;
+  unknown: TrafficVolume;
+}
+
 interface TrafficTotals {
+  fullFrameRepeat: RepeatPopulation;
+  contentRepeatEstimate: RepeatPopulation;
+  fingerprintEvictions: number;
+  fingerprintInputReservedBytes: number;
   logicalAttempts: TrafficVolume;
   fulfilled: TrafficVolume;
   rejectedOrFailed: TrafficVolume;
@@ -316,6 +335,7 @@ interface TrafficConnection extends TrafficConnectionIdentity {
 interface TrafficContinuity {
   lastSeenAt: number;
   connections: number;
+  fingerprints: Map<string, number>;
 }
 
 interface TrafficDay {
@@ -405,11 +425,15 @@ export class WebSocketTrafficMetrics {
     connection.reconnectOrdinal = previous ? previous.connections : null;
     if (!previous && this.clients.size >= TRAFFIC_CLIENT_CAP) {
       const oldest = this.clients.keys().next().value;
-      if (oldest !== undefined) this.clients.delete(oldest);
+      if (oldest !== undefined) this.removeClient(oldest);
       this.clientEvictions++;
     }
     this.clients.delete(client);
-    this.clients.set(client, { lastSeenAt: now, connections: (previous?.connections ?? 0) + 1 });
+    this.clients.set(client, {
+      lastSeenAt: now,
+      connections: (previous?.connections ?? 0) + 1,
+      fingerprints: previous?.fingerprints ?? new Map(),
+    });
     connection.client = client;
     connection.clientType = params.clientType;
     connection.routed = params.routed;
@@ -460,11 +484,76 @@ export class WebSocketTrafficMetrics {
       addBytes(burst.types, type, params.bytes);
     }
     const client = connection.client ? this.clients.get(connection.client) : undefined;
-    if (client && connection.client) {
+    if (client && connection.client && now - client.lastSeenAt >= TRAFFIC_RETENTION_MS) {
+      this.removeClient(connection.client);
+      this.clientEvictions++;
+    } else if (client && connection.client) {
       client.lastSeenAt = now;
       this.clients.delete(connection.client);
       this.clients.set(connection.client, client);
     }
+  }
+
+  sample(params: {
+    connectionId: string | undefined;
+    message: WSOutboundMessage | undefined;
+    frame: string | Uint8Array;
+    bytes: number;
+  }): void {
+    let fullFrame: keyof RepeatPopulation = "unknown";
+    let content: keyof RepeatPopulation = "unknown";
+    const connection = params.connectionId ? this.connections.get(params.connectionId) : undefined;
+    const client = connection?.client ? this.clients.get(connection.client) : undefined;
+    const eligible = TRAFFIC_NOVELTY_ENABLED && client && eligibleRepeatPayload(params.message);
+    if (eligible && typeof params.frame === "string") {
+      // Reserve the entire upper bound before reading content or encoding a signature.
+      if (this.reserveFingerprintInput(TRAFFIC_SIGNATURE_BYTES)) {
+        const signature = sampledContentSignature(eligible);
+        if (signature !== null) content = this.fingerprint(client, "content", signature);
+      }
+      if (params.bytes <= 64 * 1024 && this.reserveFingerprintInput(params.bytes)) {
+        fullFrame = this.fingerprint(client, "frame", params.frame);
+      }
+    }
+    this.eachTotals((totals) => {
+      addVolume(totals.fullFrameRepeat[fullFrame], params.bytes);
+      addVolume(totals.contentRepeatEstimate[content], params.bytes);
+    });
+  }
+
+  private reserveFingerprintInput(bytes: number): boolean {
+    const second = Math.floor(this.clock() / 1000);
+    if (second !== fingerprintBudgetSecond) {
+      fingerprintBudgetSecond = second;
+      fingerprintBudgetRemaining = 1024 * 1024;
+    }
+    if (bytes > fingerprintBudgetRemaining) return false;
+    fingerprintBudgetRemaining -= bytes;
+    this.eachTotals((totals) => (totals.fingerprintInputReservedBytes += bytes));
+    return true;
+  }
+
+  private fingerprint(
+    client: TrafficContinuity,
+    kind: string,
+    input: string,
+  ): keyof RepeatPopulation {
+    const digest = kind + ":" + createHmac("sha256", this.key).update(input).digest("hex");
+    if (client.fingerprints.has(digest)) {
+      client.fingerprints.delete(digest);
+      client.fingerprints.set(digest, this.clock());
+      return "sampledRepeat";
+    }
+    if (client.fingerprints.size >= TRAFFIC_FINGERPRINT_CAP) {
+      const oldest = client.fingerprints.keys().next().value;
+      if (oldest !== undefined) client.fingerprints.delete(oldest);
+      retainedFingerprintCount--;
+      this.eachTotals((totals) => totals.fingerprintEvictions++);
+    }
+    if (retainedFingerprintCount >= TRAFFIC_GLOBAL_FINGERPRINT_CAP) return "unknown";
+    client.fingerprints.set(digest, this.clock());
+    retainedFingerprintCount++;
+    return "sampledUnseen";
   }
 
   outcome(outcome: TrafficOutcome, bytes: number): void {
@@ -531,6 +620,13 @@ export class WebSocketTrafficMetrics {
       coveredStart: this.windowStartedAt,
       coveredEnd: now,
       logicalAdmission: "unknown" as const,
+      noveltyEnabled: TRAFFIC_NOVELTY_ENABLED,
+      contentSample: repeatCoverage(this.totals.contentRepeatEstimate),
+      fullFrameSample: repeatCoverage(this.totals.fullFrameRepeat),
+      retainedFingerprints: [...this.clients.values()].reduce(
+        (sum, client) => sum + client.fingerprints.size,
+        0,
+      ),
       burstBasis: "attemptTime" as const,
       totals: this.totals,
       types: topBytes(this.types),
@@ -562,6 +658,8 @@ export class WebSocketTrafficMetrics {
         coveredStart: day.coveredStart,
         coveredEnd: day.coveredEnd,
         totals: structuredClone(day.totals),
+        contentSample: repeatCoverage(day.totals.contentRepeatEstimate),
+        fullFrameSample: repeatCoverage(day.totals.fullFrameRepeat),
         types: topBytes(day.types),
         transports: Object.fromEntries(day.transports),
         acceptedFrameTransports: Object.fromEntries(day.acceptedFrameTransports),
@@ -634,10 +732,22 @@ export class WebSocketTrafficMetrics {
     return day;
   }
 
+  dispose(): void {
+    for (const key of this.clients.keys()) this.removeClient(key);
+    this.connections.clear();
+  }
+
+  private removeClient(key: string): void {
+    const removed = this.clients.get(key)?.fingerprints.size ?? 0;
+    retainedFingerprintCount -= removed;
+    if (removed > 0) this.eachTotals((totals) => (totals.fingerprintEvictions += removed));
+    this.clients.delete(key);
+  }
+
   private expireClients(now: number): void {
     for (const [key, client] of this.clients) {
       if (now - client.lastSeenAt < TRAFFIC_RETENTION_MS) break;
-      this.clients.delete(key);
+      this.removeClient(key);
       this.clientEvictions++;
     }
   }
@@ -677,6 +787,10 @@ function physicalTotals(): Record<PhysicalTrafficOutcome, TrafficVolume> {
 
 function trafficTotals(): TrafficTotals {
   return {
+    fullFrameRepeat: repeatPopulation(),
+    contentRepeatEstimate: repeatPopulation(),
+    fingerprintEvictions: 0,
+    fingerprintInputReservedBytes: 0,
     logicalAttempts: volume(),
     fulfilled: volume(),
     rejectedOrFailed: volume(),
@@ -695,4 +809,133 @@ function topBytes(map: Map<string, number>) {
     top: sorted.slice(0, 12),
     other: sorted.slice(12).reduce((sum, [, bytes]) => sum + bytes, 0),
   };
+}
+
+function repeatPopulation(): RepeatPopulation {
+  return { sampledUnseen: volume(), sampledRepeat: volume(), unknown: volume() };
+}
+
+function repeatCoverage(population: RepeatPopulation) {
+  const comparable = population.sampledUnseen.bytes + population.sampledRepeat.bytes;
+  const total = comparable + population.unknown.bytes;
+  let ratioState: "finite" | "infinite" | "undefined" = "finite";
+  if (comparable === 0) ratioState = "undefined";
+  else if (population.sampledUnseen.bytes === 0) ratioState = "infinite";
+  return {
+    ratioBasis: "attemptedComparableBytes" as const,
+    comparableBytes: comparable,
+    byteCoverage: total === 0 ? null : comparable / total,
+    sentToEstimatedNewRatio:
+      population.sampledUnseen.bytes === 0 ? null : comparable / population.sampledUnseen.bytes,
+    ratioState,
+  };
+}
+
+function eligibleRepeatPayload(message: WSOutboundMessage | undefined): unknown {
+  if (message?.type !== "session") return null;
+  const session = message.message;
+  switch (session.type) {
+    case "get_providers_snapshot_response":
+    case "providers_snapshot_update":
+      // Snapshot hashes describe revisions, not semantic equality or client receipt.
+      if (session.payload.snapshotHash) {
+        return ["providers", session.payload.cwd ?? null, session.payload.snapshotHash];
+      }
+      return session.payload;
+    case "fetch_agent_timeline_response":
+      return session.payload;
+    case "agent_stream":
+      return session.payload.event.type === "timeline" ? session.payload : null;
+    default:
+      return null;
+  }
+}
+
+// Fixed schema fields avoid enumerating arbitrary objects. Request/subscription IDs,
+// generation timestamps and provider fetch timestamps are deliberately excluded.
+const CONTENT_SIGNATURE_FIELDS = [
+  "agentId",
+  "epoch",
+  "projection",
+  "direction",
+  "window",
+  "minSeq",
+  "maxSeq",
+  "nextSeq",
+  "startCursor",
+  "endCursor",
+  "seq",
+  "seqStart",
+  "seqEnd",
+  "reset",
+  "gap",
+  "entries",
+  "event",
+  "item",
+  "type",
+  "text",
+  "content",
+  "role",
+  "status",
+  "name",
+  "input",
+  "output",
+  "provider",
+  "models",
+  "id",
+  "label",
+  "availability",
+  "model",
+  "capabilities",
+  "cwd",
+];
+
+/** A deterministic sample, never a semantic-equality claim. Large unsampled changes are invisible. */
+function sampledContentSignature(payload: unknown): string | null {
+  let nodes = 0;
+  let bytes = 0;
+  const parts: string[] = [];
+  const append = (text: string): boolean => {
+    bytes += Buffer.byteLength(text);
+    if (bytes > TRAFFIC_SIGNATURE_BYTES) return false;
+    parts.push(text);
+    return true;
+  };
+  const visit = (value: unknown, depth: number): boolean => {
+    if (++nodes > 256) return false;
+    const scalar = sampledScalar(value);
+    if (scalar !== null) return append(scalar);
+    if (typeof value !== "object" || value === null) return append("null");
+    if (depth >= 8) return false;
+    if (Array.isArray(value)) {
+      if (!append(`array:${value.length}[`)) return false;
+      const positions = [...new Set([0, Math.floor(value.length / 2), value.length - 1])];
+      for (const position of positions) {
+        if (position < 0 || position >= value.length) continue;
+        if (!append(`${position}:`) || !visit(value[position], depth + 1)) return false;
+      }
+      return append("]");
+    }
+    if (!append("{")) return false;
+    for (const field of CONTENT_SIGNATURE_FIELDS) {
+      if (!(field in value)) continue;
+      const child: unknown = Reflect.get(value, field);
+      if (!append(field + ":") || !visit(child, depth + 1)) return false;
+    }
+    return append("}");
+  };
+  return visit(payload, 0) ? parts.join("") : null;
+}
+
+function sampledScalar(value: unknown): string | null {
+  if (value === null || typeof value === "boolean" || typeof value === "number")
+    return JSON.stringify(value);
+  if (typeof value !== "string") return null;
+  // Bound before encoding; sample first, middle and last UTF-16 positions.
+  const middle = Math.floor(value.length / 2);
+  const sample =
+    value.length <= 384
+      ? value
+      : value.slice(0, 128) + value.slice(middle, middle + 128) + value.slice(-128);
+  return JSON.stringify([value.length, sample]);
 }

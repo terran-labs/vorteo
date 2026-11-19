@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import type { WSOutboundMessage } from "../messages.js";
 import {
   APPLICATION_SOCKET_LEASE_MS,
   ApplicationSocketLease,
@@ -384,4 +385,72 @@ test("traffic accounting separates attempts, physical outcomes, fan-out and reta
   expect(nextDay.retainedConnections).toBe(0);
   expect(nextDay.retainedClients).toBe(0);
   expect(nextDay.days.map((day) => day.totals.logicalAttempts.bytes)).toEqual([321, 0]);
+
+  metrics.open(identity("sample"));
+  hello("sample", false);
+  const sample = (
+    connectionId: string,
+    requestId: string,
+    snapshotHash = "private-revision",
+    cwd = "private-scope",
+  ) => {
+    const message: WSOutboundMessage = {
+      type: "session",
+      message: {
+        type: "get_providers_snapshot_response",
+        payload: { entries: [], requestId, snapshotHash, cwd, generatedAt: "now" },
+      },
+    };
+    const frame = JSON.stringify(message);
+    const bytes = Buffer.byteLength(frame);
+    metrics.attempt({ connectionId, type: "providers", bytes });
+    metrics.sample({ connectionId, message, frame, bytes });
+  };
+  sample("sample", "one");
+  sample("sample", "two");
+  sample("sample", "two");
+  const repeats = metrics.snapshotAndReset();
+  expect(repeats.totals.fullFrameRepeat.sampledUnseen.count).toBe(2);
+  expect(repeats.totals.fullFrameRepeat.sampledRepeat.count).toBe(1);
+  expect(repeats.totals.contentRepeatEstimate.sampledUnseen.count).toBe(1);
+  expect(repeats.totals.contentRepeatEstimate.sampledRepeat.count).toBe(2);
+  expect(JSON.stringify(repeats)).not.toContain("private-revision");
+  expect(JSON.stringify(repeats)).not.toContain("private-scope");
+  metrics.close("sample");
+  metrics.open(identity("resampled"));
+  hello("resampled", true);
+  sample("resampled", "two");
+  const resumedSample = metrics.snapshotAndReset();
+  expect(resumedSample.contentSample.ratioState).toBe("infinite");
+  expect(resumedSample.contentSample.sentToEstimatedNewRatio).toBeNull();
+  metrics.open(identity("other-client"));
+  metrics.hello({
+    connectionId: "other-client",
+    continuityKey: "another",
+    clientType: "browser",
+    resumed: false,
+    routed: false,
+  });
+  sample("other-client", "two");
+  expect(metrics.snapshotAndReset().totals.fullFrameRepeat.sampledUnseen.count).toBe(1);
+  for (let index = 0; index < 200; index++) {
+    now += 10;
+    sample("resampled", String(index), String(index));
+  }
+  const evicted = metrics.snapshotAndReset();
+  expect(evicted.retainedFingerprints).toBeLessThanOrEqual(130);
+  expect(evicted.totals.fingerprintEvictions).toBeGreaterThan(0);
+  now += 1000;
+  sample("resampled", "large", "large-revision", "x".repeat(100_000));
+  const largeSample = metrics.snapshotAndReset();
+  expect(largeSample.totals.fullFrameRepeat.unknown.count).toBe(1);
+  expect(largeSample.totals.contentRepeatEstimate.sampledUnseen.count).toBe(1);
+  now += 1000;
+  for (let index = 0; index < 1000; index++) sample("resampled", "budget");
+  const limited = metrics.snapshotAndReset();
+  expect(limited.totals.fingerprintInputReservedBytes).toBeLessThanOrEqual(1024 * 1024);
+  expect(limited.totals.contentRepeatEstimate.unknown.count).toBeGreaterThan(0);
+  expect(limited.totals.logicalAttempts.count).toBe(1000);
+  metrics.dispose();
+  expect(metrics.snapshotAndReset().retainedFingerprints).toBe(0);
 });

@@ -411,6 +411,60 @@ rotation; join different epochs by covered interval, never sum repeated snapshot
 within one epoch/day. Missing process epochs cannot be reconstructed from a short
 surviving log. Do not extrapolate a one-minute sample into a day.
 
+#### Bounded repeat estimates
+
+`fullFrameRepeat` compares keyed whole-frame fingerprints for eligible provider
+snapshot and timeline JSON frames no larger than 64 KiB. Matching fingerprints
+indicate the same serialized bytes within retained coverage, subject to hash
+collisions; they say nothing about receipt. `contentRepeatEstimate` uses provider
+snapshot revisions when supplied, or a deterministic content sample that includes
+timeline epoch/sequence fields. Matching revisions and samples do not establish
+semantic equality. Both populations classify attempted bytes as sampled unseen,
+sampled repeat or unknown. Unseen means absent from retained fingerprints, not new
+to the person or client forever. Delivery to another client has independent history.
+
+Content signatures exclude request/subscription IDs and generation/fetch timestamps.
+They visit at most 256 values, with depth at most eight, using a fixed schema-field
+allowlist rather than enumerating arbitrary objects. Arrays sample first, middle and
+last positions; strings longer than 384 UTF-16 units sample 128 units at those
+positions. Unsampled edits and fields outside that allowlist are invisible. Provider
+revision signatures include scope and snapshot hash; a revision may describe content
+that a not-modified reply omits. These are estimates of repeated content, not exact
+avoidable-byte counts.
+
+Before reading content, each signature reserves 4 KiB from a process-wide 1 MiB per
+second input budget; full-frame hashing reserves its exact eligible length. The
+conservative reservation is not refunded. Budget, traversal or retention exhaustion,
+unsupported families and binary frames remain unknown, never new. At most 128 keyed
+fingerprints per client and 16,384 process-wide are retained, with eviction counts.
+Client expiry, capacity eviction and server disposal release fingerprints. Only
+fingerprints, numeric counters and timestamps persist, never sampled text. Set
+`TRAFFIC_NOVELTY_ENABLED` in `runtime-metrics.ts` to false to disable sampling while
+keeping byte accounting. This adds no setting or wire capability.
+
+Coverage and the sent-to-estimated-new ratio use only the comparable sampled
+**attempt** population. The ratio has an explicit infinite state when all comparable
+bytes repeat and an undefined state when no comparable bytes exist. Unknown bytes
+are excluded from the ratio. Flush/day totals retain the populations needed to
+recompute it without extrapolation.
+
+#### Capture and interpretation
+
+The diagnostic owner should preserve representative active-work and idle captures
+outside Git, recording duration, connection changes, type/transport bytes, burst
+windows, sample coverage, fan-out and the existing event-loop/heap observations.
+Keep the final day snapshot for every process epoch and UTC date, plus its coverage
+interval. Record missing intervals rather than filling them from a brief sample.
+Confirm the laptop monitor's interval, inbound/outbound directions and process/network
+attribution before comparing its totals with these narrower outbound layers. Rank
+traffic-reduction follow-ups only from avoidable-byte and latency evidence.
+
+Bounded detail can still produce substantial logs. The capped scratch accounting
+workload produced a 66,395-byte traffic object; at one line every 30 seconds that
+alone is about 191 MB per day, excluding the other metrics fields. Real output depends
+on retained contributors and type lengths. Include log volume and the periodic
+snapshot/serialization cost in deployment acceptance, not only per-message overhead.
+
 ### Git process pressure
 
 If Git refreshes consume too much CPU, disk, or antivirus capacity, especially on Windows, reduce
