@@ -1,4 +1,5 @@
-import type { StoredAgentRecord } from "../agent-storage.js";
+import { isDeepStrictEqual } from "node:util";
+import type { ChecklistWakeGeneration, StoredAgentRecord } from "../agent-storage.js";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import { PROJECT_FACTORY_ROLE_LABEL } from "../../factory/project/roles.js";
 
@@ -33,6 +34,28 @@ export function factoryProjectOf(record: StoredAgentRecord): string | null {
   return role && separator > 0 ? role.slice(0, separator) : null;
 }
 
+export type ChecklistWakeAvailability = (
+  record: StoredAgentRecord,
+  generation: ChecklistWakeGeneration,
+) => boolean;
+
+/** A condition field alone cannot promise that anything will wake this item. */
+export function hasMonitoredWakeCondition(
+  record: StoredAgentRecord,
+  task: NonNullable<StoredAgentRecord["tasks"]>[number],
+  available?: ChecklistWakeAvailability,
+): boolean {
+  if (record.archivedAt || task.source !== "vorteo" || task.completed || task.status !== "blocked")
+    return false;
+  return (record.checklistWakeGenerations ?? []).some(
+    (entry) =>
+      !entry.claim &&
+      entry.taskId === task.id &&
+      isDeepStrictEqual(entry.condition, task.wakeCondition) &&
+      available?.(record, entry) === true,
+  );
+}
+
 /**
  * Unfinished items a review could move: blocked ones, and in-progress ones left behind when the
  * thread stopped. Items an open question covers are skipped because the answer arrives as a
@@ -40,6 +63,7 @@ export function factoryProjectOf(record: StoredAgentRecord): string | null {
  */
 export function reviewableTasks(
   record: StoredAgentRecord,
+  available?: ChecklistWakeAvailability,
 ): NonNullable<StoredAgentRecord["tasks"]> {
   const awaitingOwner = new Set(
     (record.questions ?? [])
@@ -49,6 +73,7 @@ export function reviewableTasks(
   return (record.tasks ?? []).filter(
     (task) =>
       !task.completed &&
+      !hasMonitoredWakeCondition(record, task, available) &&
       (task.status === "blocked" || task.status === "in_progress") &&
       !(task.id && awaitingOwner.has(task.id)),
   );
@@ -58,9 +83,12 @@ export function reviewableTasks(
  * True when every reviewable item is merely in progress. Such a thread is reviewed only when
  * nothing else will wake it: live background work or a running subagent reports back by itself.
  */
-export function onlyInProgressWork(record: StoredAgentRecord): boolean {
+export function onlyInProgressWork(
+  record: StoredAgentRecord,
+  available?: ChecklistWakeAvailability,
+): boolean {
   if (record.blockedGoalReviewNeeded === true) return false;
-  const tasks = reviewableTasks(record);
+  const tasks = reviewableTasks(record, available);
   return tasks.length > 0 && tasks.every((task) => task.status === "in_progress");
 }
 
@@ -80,7 +108,10 @@ export function reviewFingerprint(record: StoredAgentRecord): string {
 }
 
 /** This is an ordinary thread review, never a second governor or worker scheduler. */
-export function hasReviewableBlockedWork(record: StoredAgentRecord): boolean {
+export function hasReviewableBlockedWork(
+  record: StoredAgentRecord,
+  available?: ChecklistWakeAvailability,
+): boolean {
   const externallyOwned = record.owner || record.config?.controllerExecutionId;
   // A thread waiting for a usage limit to reset is resumed by UsageLimitResumeService instead.
   const usageLimited = record.config?.usageLimitHold && !record.config.usageLimitHold.releasedAt;
@@ -92,8 +123,16 @@ export function hasReviewableBlockedWork(record: StoredAgentRecord): boolean {
     usageLimited;
   const delegated = record.labels[PARENT_AGENT_ID_LABEL];
   if (externallyOwned || held || delegated || !record.persistence?.sessionId) return false;
-  if (record.blockedGoalReviewNeeded === true) return true;
-  return reviewableTasks(record).length > 0;
+  if (record.blockedGoalReviewNeeded === true) {
+    // Goal-only threads still need discovery; explicitly monitored work already has a wake.
+    const unfinished = (record.tasks ?? []).filter((task) => !task.completed);
+    if (
+      unfinished.length === 0 ||
+      unfinished.some((task) => !hasMonitoredWakeCondition(record, task, available))
+    )
+      return true;
+  }
+  return reviewableTasks(record, available).length > 0;
 }
 
 function parseTime(value: string | null | undefined): number | undefined {
@@ -111,8 +150,12 @@ export function blockedReviewsUsed(record: StoredAgentRecord): number {
   return record.blockedReviewCount ?? 0;
 }
 
-export function blockedReviewDue(record: StoredAgentRecord, now: number): boolean {
-  if (!hasReviewableBlockedWork(record)) return false;
+export function blockedReviewDue(
+  record: StoredAgentRecord,
+  now: number,
+  available?: ChecklistWakeAvailability,
+): boolean {
+  if (!hasReviewableBlockedWork(record, available)) return false;
   const timestamps = [record.createdAt, record.lastActivityAt, record.lastBlockedReviewAt];
   const parsed = timestamps.filter((value): value is string => value !== undefined).map(Date.parse);
   if (!parsed.every(Number.isFinite)) return false;
