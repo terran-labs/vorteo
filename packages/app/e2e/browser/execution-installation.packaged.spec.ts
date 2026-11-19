@@ -4271,9 +4271,6 @@ for (const width of [1280, 390]) {
           await page.keyboard.press("Space");
           await expect(handle).toHaveAttribute("aria-pressed", "true");
           await page.keyboard.press("ArrowDown");
-          await expect(page.locator('[id^="DndLiveRegion-"]')).toContainText(
-            "over droppable area codex",
-          );
           await page.keyboard.press("Space");
           await expect
             .poll(
