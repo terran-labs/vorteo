@@ -16216,6 +16216,7 @@ test("Vorteo checklist mutations survive provider updates, history refresh, and 
     };
     let nativeReads = 0;
     let relocate = false;
+    let duringAdmission: (() => Promise<void>) | undefined;
     const goals = new CodexGoals({
       request: async () => {
         if (++nativeReads === 2 && relocate) {
@@ -16225,6 +16226,7 @@ test("Vorteo checklist mutations survive provider updates, history refresh, and 
             cwd: join(workdir, "relocated"),
           });
         }
+        if (nativeReads === 2 && duringAdmission) await duringAdmission();
         return { goal };
       },
       onChange() {},
@@ -16266,9 +16268,12 @@ test("Vorteo checklist mutations survive provider updates, history refresh, and 
       github,
       ready: () => true,
       now: () => now,
-      pausedFactoryProjects: async () => {
+      captureFactoryAuthority: async () => {
         if (pauseReadFails) throw new Error("Factory state unavailable");
-        return pausedProjects;
+        return {
+          read: (project: string) =>
+            pausedProjects.has(project) ? ("paused" as const) : ("running" as const),
+        };
       },
     };
     const service = new ChecklistWakeService(serviceOptions);
@@ -16380,6 +16385,21 @@ test("Vorteo checklist mutations survive provider updates, history refresh, and 
     ).toBe(true);
     expect(retained).toBe(0);
     await storage.upsert({ ...storage.getLoadedRecord(agent.id)!, cwd: workdir });
+    for (const change of ["pause", "parent"] as const) {
+      nativeReads = 0;
+      duringAdmission = async () => {
+        if (change === "pause") pausedProjects.add("factory");
+        else await manager.setLabels(agent.id, { [PARENT_SERVER_ID_LABEL]: "remote" });
+      };
+      await recreated.tick();
+      expect(starts).toBe(0);
+      expect(
+        storage.getLoadedRecord(agent.id)!.checklistWakeGenerations!.every((entry) => !entry.claim),
+      ).toBe(true);
+      pausedProjects.clear();
+      await manager.setLabels(agent.id, { [PARENT_SERVER_ID_LABEL]: "local" });
+    }
+    duringAdmission = undefined;
     await recreated.tick();
     await vi.waitFor(() => {
       expect(starts).toBe(1);

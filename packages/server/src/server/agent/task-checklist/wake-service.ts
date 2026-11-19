@@ -26,7 +26,9 @@ interface WakeServiceOptions {
   github: ChecklistGithubObservationPort;
   /** True only when all accepted condition kinds and their runtime dependencies are installed. */
   ready: () => boolean;
-  pausedFactoryProjects: () => Promise<ReadonlySet<string>>;
+  captureFactoryAuthority: () => Promise<{
+    read(projectId: string): "running" | "paused" | "draining" | "unavailable";
+  }>;
   now?: () => number;
 }
 
@@ -44,6 +46,7 @@ export class ChecklistWakeService {
   private scanning = false;
   private readonly waking = new Set<string>();
   private readonly retained = new Map<string, RetainedObservation>();
+  private readonly retryAfter = new Map<string, number>();
   private readonly now: () => number;
 
   constructor(private readonly options: WakeServiceOptions) {
@@ -81,6 +84,12 @@ export class ChecklistWakeService {
     try {
       const records = await this.options.agentStorage.list();
       this.prune();
+      const generations = new Set(
+        records.flatMap((record) =>
+          (record.checklistWakeGenerations ?? []).map((entry) => entry.generation),
+        ),
+      );
+      for (const id of this.retryAfter.keys()) if (!generations.has(id)) this.retryAfter.delete(id);
       for (const record of records) {
         if (!this.canContinue()) break;
         if (!this.active(record) || this.waking.has(record.id)) continue;
@@ -133,6 +142,7 @@ export class ChecklistWakeService {
   private releaseAll(): void {
     for (const retained of this.retained.values()) retained.subscription.release();
     this.retained.clear();
+    this.retryAfter.clear();
   }
 
   private async satisfied(
@@ -141,6 +151,7 @@ export class ChecklistWakeService {
   ): Promise<boolean> {
     const condition = generation.condition;
     if (condition.kind === "deadline") return Date.parse(condition.at) <= this.now();
+    if ((this.retryAfter.get(generation.generation) ?? 0) > this.now()) return false;
     try {
       let retained = this.retained.get(generation.generation);
       if (!retained) {
@@ -155,9 +166,11 @@ export class ChecklistWakeService {
         }
         retained = { agentId: record.id, cwd: record.cwd, generation, subscription };
         this.retained.set(generation.generation, retained);
+        this.retryAfter.delete(generation.generation);
       }
       return retained.subscription.read() === "satisfied";
     } catch (error) {
+      this.retryAfter.set(generation.generation, this.now() + 120_000);
       this.options.logger.warn(
         { err: error, agentId: record.id },
         "Checklist GitHub observation unavailable",
@@ -167,8 +180,16 @@ export class ChecklistWakeService {
   }
 
   /** Children inherit Factory pause suppression from their recorded parent chain. */
-  private async factoryAllows(record: StoredAgentRecord): Promise<boolean> {
+  private async factoryAllows(record: StoredAgentRecord): Promise<(() => boolean) | null> {
     const projects = new Set<string>();
+    const identities = new Map<string, string>();
+    const identity = (id: string) => {
+      const stored = this.options.agentStorage.getLoadedRecord(id);
+      return JSON.stringify(
+        stored ? [stored.archivedAt, Object.entries(stored.labels).sort()] : null,
+      );
+    };
+    const unchanged = () => [...identities].every(([id, value]) => identity(id) === value);
     const visited = new Set<string>();
     let factoryOwned = false;
     let unresolved = false;
@@ -183,6 +204,7 @@ export class ChecklistWakeService {
         reason = "Cyclic Factory parent authority";
         break;
       }
+      identities.set(current.id, identity(current.id));
       visited.add(current.id);
       const project = factoryProjectOf(current);
       if (project) projects.add(project);
@@ -202,6 +224,7 @@ export class ChecklistWakeService {
         reason = "Remote Factory parent authority unavailable";
         break;
       }
+      identities.set(parent.agentId, identity(parent.agentId));
       current = this.options.agentStorage.getLoadedRecord(parent.agentId);
       if (!current) {
         unresolved = true;
@@ -212,15 +235,21 @@ export class ChecklistWakeService {
     // An ordinary thread with a missing parent does not acquire a new hold.
     if (factoryOwned && (unresolved || !projects.size)) {
       await this.suppress(record, authority, reason);
-      return false;
+      return null;
     }
-    if (!projects.size) return true;
+    if (!projects.size) return unchanged() ? unchanged : null;
     try {
-      const paused = await this.options.pausedFactoryProjects();
-      return ![...projects].some((project) => paused.has(project));
+      const snapshot = await this.options.captureFactoryAuthority();
+      if ([...projects].some((project) => snapshot.read(project) === "unavailable")) {
+        await this.suppress(record, authority, "Local Factory pause authority unavailable");
+        return null;
+      }
+      const allowed = () =>
+        unchanged() && [...projects].every((project) => snapshot.read(project) === "running");
+      return allowed() ? allowed : null;
     } catch {
       await this.suppress(record, authority, "Local Factory pause authority unavailable");
-      return false;
+      return null;
     }
   }
 
@@ -252,14 +281,23 @@ export class ChecklistWakeService {
     observed: ChecklistWakeGeneration[],
   ): Promise<void> {
     const agentId = record.id;
+    let factoryAllows: (() => boolean) | null = null;
     const canContinue = () =>
-      this.canContinue() && this.options.agentStorage.getLoadedRecord(agentId)?.cwd === record.cwd;
+      !!factoryAllows?.() &&
+      this.canContinue() &&
+      this.options.agentStorage.getLoadedRecord(agentId)?.cwd === record.cwd &&
+      observed.every(
+        (entry) =>
+          entry.condition.kind === "deadline" ||
+          this.retained.get(entry.generation)?.subscription.read() === "satisfied",
+      );
     this.waking.add(agentId);
     let draining = false;
     try {
-      if (!canContinue()) return;
+      if (!this.canContinue()) return;
       await ensureUnarchivedAgentLoaded(agentId, this.options);
-      if (!canContinue() || !(await this.factoryAllows(record))) return;
+      factoryAllows = await this.factoryAllows(record);
+      if (!canContinue()) return;
       const stream = await this.options.agentManager.startChecklistConditionWake(
         agentId,
         observed,

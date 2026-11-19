@@ -214,13 +214,27 @@ native goal and rejects paused, completed, limited or uncertain state. The flag 
 without changing activity timestamps or the review cooldown. Older records acquire it
 when their native goal is next observed.
 
-### Condition wake preparation and Phase 1 limitation
+### Condition wakes and Phase 1 limitation
 
-Condition monitoring is being prepared; production condition writes and capability
-advertisement remain disabled until all supported GitHub targets can be evaluated.
-The prepared service excludes conditioned items from timed reviews and uses shared
+Condition monitoring handles deadlines and explicit GitHub PR states, workflow attempts
+and named terminal checks on a pinned PR head. Readiness and capability advertisement
+follow the live monitor lifecycle. The service excludes conditioned items from timed reviews and uses shared
 admission without spending review slots. Monitoring itself uses no model; an admitted
-wake resumes the existing full thread.
+wake resumes the existing full thread. Local Factory authority is captured only after queued
+operations settle. Another queued operation, service stop or parent-chain change invalidates
+that authority before wake reservation; refused claims remain unspent.
+
+Attach conditions to managed blocked items for external prerequisites. Use finish
+subscriptions when waiting for another agent and Review for owner decisions. A condition
+that is already satisfied can wake the thread on its first observation. Replacing or
+explicitly attaching a condition rearms it; leaving blocked status or deleting the item
+cancels it. Refused admission leaves the condition unspent.
+
+Required checks must all be present and terminal on the pinned current PR head; failure
+counts as terminal. Missing checks, a changed head, unknown state and API errors remain
+unresolved. Condition wakes do not spend timed-review rungs or update review timestamps.
+Phase 1 includes no model pre-check; that work is tracked in
+[issue #479](https://github.com/terran-labs/vorteo/issues/479).
 
 Phase 1 cannot resolve Factory pause or drain authority through a parent on another
 server. Factory work with remote, missing, cyclic or unreadable local authority stays armed and unspent

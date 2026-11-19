@@ -6299,7 +6299,11 @@ export class AgentManager {
   }
 
   supportsChecklistWakeConditions(): boolean {
-    return this.checklistWakeConditionsReady?.() === true;
+    return (
+      this.acceptingAgentRegistrations &&
+      !this.isRestartDraining() &&
+      this.checklistWakeConditionsReady?.() === true
+    );
   }
 
   readChecklist(agentId: string): AgentTaskItem[] {

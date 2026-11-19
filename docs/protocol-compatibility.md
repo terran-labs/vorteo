@@ -266,9 +266,9 @@ unknowingly edit or delete a conditioned task. Supplied conditions compare exact
 
 The daemon stores generations and claim receipts separately from editable task metadata.
 Serialized mutations reject non-null condition writes unless the live runtime reports
-complete monitoring support. Clearing and ordinary writes remain available. No production
-runtime currently installs that readiness callback or advertises the capability; production monitoring wiring
-and GitHub observations are pending. Shared wake admission preserves holds and validates exact
+complete monitoring support. Clearing and ordinary writes remain available. Bootstrap installs the condition monitor and shared GitHub adapter together. The advertised
+capability and mutation guard use the same live readiness callback, which refuses writes
+while monitoring is stopped or the daemon is draining. Shared wake admission preserves holds and validates exact
 claim receipts before reservation. Schema acceptance alone does not promise
 a wake. Enable readiness and the capability only when all accepted conditions can be evaluated.
 
