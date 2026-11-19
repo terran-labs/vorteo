@@ -4089,7 +4089,18 @@ for (const width of [1280, 390]) {
     expect(mockDefinitions).toHaveLength(1);
     const [mockDefinition] = mockDefinitions;
     if (!mockDefinition?.accountId) throw new Error("Missing shared Mock account fixture");
-    const reorderClient = await connectReadyInstallationDaemon("host");
+    const clients: Awaited<ReturnType<typeof connectReadyInstallationDaemon>>[] = [];
+    const runtimeOriginals: {
+      client: (typeof clients)[number];
+      providerId: string;
+      mockProviderId: string;
+      command: string[];
+      status: string;
+    }[] = [];
+    const fixtureCommand = [
+      process.execPath,
+      path.resolve(__dirname, "../fixtures/catalog-codex.mjs"),
+    ];
     const serverIds = config.public.environments.map((environment) => environment.serverId);
     const failures: unknown[] = [];
     async function collectFailure(operation: () => Promise<void>) {
@@ -4100,30 +4111,109 @@ for (const width of [1280, 390]) {
       }
     }
     try {
-      const originalCodex = (await reorderClient.getDaemonConfig()).config.providers.codex;
-      await expect
-        .poll(async () => {
-          const discovery = (await reorderClient.getProvidersSnapshot()).entries?.find(
-            (entry) => entry.provider === "codex",
+      async function captureCodexBindings() {
+        for (const environment of config.public.environments) {
+          const client = await connectReadyInstallationDaemon(environment.kind);
+          clients.push(client);
+          const localConfig = (await client.getDaemonConfig()).config;
+          const definitions = originals.filter(
+            (entry) =>
+              entry.providerType === "codex" && entry.bindings[environment.serverId] === "codex",
           );
-          return discovery !== undefined && discovery.status !== "loading";
-        })
-        .toBe(true);
-      const originalDiscovery = (await reorderClient.getProvidersSnapshot()).entries?.find(
-        (entry) => entry.provider === "codex",
-      );
-      if (!originalDiscovery) throw new Error("Missing original Codex discovery");
-      const originalDiscoveryStatus = originalDiscovery.status;
-      async function exerciseFamily() {
-        // Give the disabled group a second installed CLI instead of dragging between groups.
-        await reorderClient.patchDaemonConfig({
-          providers: {
-            codex: {
-              command: [process.execPath, path.resolve(__dirname, "../fixtures/catalog-codex.mjs")],
-            },
+          expect(definitions).toHaveLength(1);
+          const providerId = definitions[0]?.bindings[environment.serverId];
+          if (!providerId) throw new Error("Missing environment Codex binding");
+          const binding = ProviderOverrideSchema.parse(localConfig.providers[providerId] ?? {});
+          await expect
+            .poll(async () => {
+              const observed = (await client.getProvidersSnapshot()).entries?.find(
+                (entry) => entry.provider === providerId,
+              );
+              return observed !== undefined && observed.status !== "loading";
+            })
+            .toBe(true);
+          const discovery = (await client.getProvidersSnapshot()).entries?.find(
+            (entry) => entry.provider === providerId,
+          );
+          if (!discovery) throw new Error("Missing original Codex binding discovery");
+          expect(discovery.status).not.toBe("ready");
+          const mockProviderId = mockDefinition.bindings[environment.serverId];
+          if (!mockProviderId) throw new Error("Missing environment Mock binding");
+          runtimeOriginals.push({
+            client,
+            providerId,
+            mockProviderId,
+            command: [...(binding.command ?? ["codex"])],
+            status: discovery.status,
+          });
+        }
+      }
+      async function prepareCodexBindings() {
+        for (const { client, providerId } of runtimeOriginals) {
+          await client.patchDaemonConfig({
+            providers: { [providerId]: { command: fixtureCommand } },
+          });
+          await client.refreshProvidersSnapshot({ providers: [providerId] });
+          await expect
+            .poll(async () =>
+              (await client.getProvidersSnapshot()).entries?.find(
+                (entry) => entry.provider === providerId,
+              ),
+            )
+            .toMatchObject({ provider: providerId, enabled: true, status: "ready" });
+        }
+      }
+      async function expectMockRuntime(enabled: boolean) {
+        for (const { client, mockProviderId } of runtimeOriginals) {
+          expect((await client.getDaemonConfig()).config.providers[mockProviderId].enabled).toBe(
+            enabled,
+          );
+          await expect
+            .poll(async () =>
+              (await client.getProvidersSnapshot()).entries?.find(
+                (entry) => entry.provider === mockProviderId,
+              ),
+            )
+            .toMatchObject({
+              provider: mockProviderId,
+              enabled,
+              status: enabled ? "ready" : "unavailable",
+            });
+        }
+      }
+      async function enableMockForRemoval() {
+        const current = await read();
+        const definitions = current.settings?.providerDefinitions;
+        if (!definitions) throw new Error("Missing provider definitions before Mock removal setup");
+        const expected = definitions.map((entry) =>
+          entry.providerType === "mock"
+            ? Object.assign({}, entry, {
+                policy: Object.assign({}, entry.policy, { enabled: true }),
+              })
+            : entry,
+        );
+        const response = await page.request.patch(`${origin}/api/installation/owner/settings`, {
+          headers: {
+            Origin: origin,
+            "X-Vorteo-Provider-Removal": "1",
+            "X-Vorteo-Primary-Connection": "1",
           },
+          data: { expectedRevision: current.revision, settings: { providerDefinitions: expected } },
         });
-        await reorderClient.refreshProvidersSnapshot({ providers: ["codex"] });
+        expect(response.ok()).toBe(true);
+        const saved = InstallationSettingsSnapshotSchema.parse(await response.json());
+        await waitForSettingsConvergence({
+          read,
+          poll: expect.poll,
+          minimumRevision: saved.revision,
+          providerDefinitions: expected,
+          serverIds,
+        });
+        await expectMockRuntime(true);
+      }
+      async function exerciseFamily() {
+        // Keyboard reordering requires installed families in the same enabled group.
+        await captureCodexBindings();
         const prepared = await read();
         const setup = await page.request.patch(`${origin}/api/installation/owner/settings`, {
           headers: {
@@ -4141,13 +4231,28 @@ for (const width of [1280, 390]) {
                   order:
                     ({ mock: 0, codex: 1 } as Record<string, number>)[entry.providerType] ??
                     index + 2,
-                  ...(entry.providerType === "codex" ? { enabled: false } : {}),
+                  ...(entry.providerType === "codex" &&
+                  Object.values(entry.bindings).every((id) => id === "codex")
+                    ? { enabled: true }
+                    : {}),
                 },
               })),
             },
           },
         });
         expect(setup.ok()).toBe(true);
+        const setupSnapshot = InstallationSettingsSnapshotSchema.parse(await setup.json());
+        const setupDefinitions = setupSnapshot.settings?.providerDefinitions;
+        if (!setupDefinitions) throw new Error("Missing provider definitions in setup response");
+        await waitForSettingsConvergence({
+          read,
+          poll: expect.poll,
+          minimumRevision: setupSnapshot.revision,
+          providerDefinitions: setupDefinitions,
+          serverIds,
+        });
+        await prepareCodexBindings();
+
         await page.goto(`${origin}/settings/providers`);
         const family = page.getByTestId("provider-family-mock").filter({ visible: true });
         await expect(family).toHaveCount(1);
@@ -4155,45 +4260,10 @@ for (const width of [1280, 390]) {
         await expect(page.getByTestId("host-page-add-provider-card")).toHaveCount(0);
         const enabled = family.getByRole("switch", { name: "Enable Mock everywhere", exact: true });
         await expect(enabled).toBeChecked();
-        const beforeDisable = await read();
-        const mockIsPrimary = mockDefinitions.some(
-          (definition) => definition.id === beforeDisable.settings?.primaryConnection?.providerId,
-        );
-        if (mockIsPrimary) {
-          const confirmation = page.waitForEvent("dialog");
-          const disabling = enabled.click();
-          const dialog = await confirmation;
-          expect(dialog.message()).toMatch(/^Turn off Mock\?/);
-          await dialog.accept();
-          await disabling;
-        } else {
-          await enabled.click();
-        }
-        await expect(enabled).not.toBeChecked();
-        await expect
-          .poll(async () =>
-            (await read()).settings?.providerDefinitions
-              ?.filter((entry) => entry.providerType === "mock")
-              .every((entry) => entry.policy.enabled === false),
-          )
-          .toBe(true);
-        await expect
-          .poll(
-            async () =>
-              Object.values((await read()).sources).every(
-                (source) => source.pendingRevision === null,
-              ),
-            { timeout: 60000 },
-          )
-          .toBe(true);
-        for (const kind of ["host", "container"] as const) {
-          const client = await connectReadyInstallationDaemon(kind);
-          try {
-            expect((await client.getDaemonConfig()).config.providers.mock.enabled).toBe(false);
-          } finally {
-            await client.close();
-          }
-        }
+        const codexFamily = page.getByTestId("provider-family-codex").filter({ visible: true });
+        await expect(
+          codexFamily.getByRole("switch", { name: "Enable Codex everywhere", exact: true }),
+        ).toBeChecked();
         if (width === 1280) {
           const handle = family.getByTestId("provider-family-drag-mock");
           await handle.focus();
@@ -4213,6 +4283,57 @@ for (const width of [1280, 390]) {
             )
             .toBe(1);
         }
+        const beforeDisable = await read();
+        const beforeDisableDefinitions = beforeDisable.settings?.providerDefinitions;
+        if (!beforeDisableDefinitions)
+          throw new Error("Missing provider definitions before Mock disable");
+        const disableResponse = page.waitForResponse(
+          (response) =>
+            response.url() === `${origin}/api/installation/owner/settings` &&
+            response.request().method() === "PATCH",
+        );
+        const mockIsPrimary = mockDefinitions.some(
+          (definition) => definition.id === beforeDisable.settings?.primaryConnection?.providerId,
+        );
+        if (mockIsPrimary) {
+          const confirmation = page.waitForEvent("dialog");
+          const disabling = enabled.click();
+          const dialog = await confirmation;
+          expect(dialog.message()).toMatch(/^Turn off Mock\?/);
+          await dialog.accept();
+          await disabling;
+        } else {
+          await enabled.click();
+        }
+        const disabled = await disableResponse;
+        expect(disabled.ok()).toBe(true);
+        const disabledSnapshot = InstallationSettingsSnapshotSchema.parse(await disabled.json());
+        await waitForSettingsConvergence({
+          read,
+          poll: expect.poll,
+          minimumRevision: disabledSnapshot.revision,
+          providerDefinitions: beforeDisableDefinitions.map((entry) =>
+            entry.providerType === "mock"
+              ? Object.assign({}, entry, {
+                  policy: Object.assign({}, entry.policy, { enabled: false }),
+                })
+              : entry,
+          ),
+          serverIds,
+        });
+        await expectMockRuntime(false);
+        // Disabled discovery moves this fixture under Available to install and removes its switch.
+        await page
+          .getByTestId("shared-providers-available-toggle")
+          .filter({ visible: true })
+          .click();
+        await expect(
+          family.getByRole("button", { name: "Show Mock install command", exact: true }),
+        ).toBeVisible();
+        await expect(enabled).toHaveCount(0);
+        // Connection actions require a discovered provider; restore that prerequisite explicitly.
+        await enableMockForRemoval();
+        await expect(enabled).toBeChecked();
         await family.getByTestId("provider-family-open-mock").click();
         const connections = family
           .getByTestId("provider-detail-connections")
@@ -4241,7 +4362,10 @@ for (const width of [1280, 390]) {
             (entry) => entry.id === mockDefinition.id,
           )?.policy.label,
         ).toBe("Renamed fixture account");
-        const expectedRemoved = beforeRemoval.settings!.providerDefinitions!.map((entry) =>
+        const beforeRemovalDefinitions = beforeRemoval.settings?.providerDefinitions;
+        if (!beforeRemovalDefinitions)
+          throw new Error("Missing provider definitions before removal");
+        const expectedRemoved = beforeRemovalDefinitions.map((entry) =>
           entry.providerType === "mock"
             ? Object.assign({}, entry, {
                 removed: true,
@@ -4311,11 +4435,13 @@ for (const width of [1280, 390]) {
         });
         await addSheet.getByRole("button", { name: "Close", exact: true }).click();
         await expect(addSheet).not.toBeVisible();
+        await expectMockRuntime(false);
         await family.scrollIntoViewIfNeeded();
         await expect(family).toBeVisible();
         await expect(
-          family.getByRole("switch", { name: "Enable Mock everywhere", exact: true }),
-        ).not.toBeChecked();
+          family.getByRole("button", { name: "Show Mock install command", exact: true }),
+        ).toBeVisible();
+        await expect(enabled).toHaveCount(0);
         await page.screenshot({
           path: testInfo.outputPath("provider-families.png"),
           fullPage: true,
@@ -4347,30 +4473,35 @@ for (const width of [1280, 390]) {
         expect((await read()).settings?.primaryConnection).toEqual(originalPrimary);
       }
       await collectFailure(restoreDefinitions);
-      async function restoreCodexCommand() {
-        const command = originalCodex?.command ?? ["codex"];
-        await reorderClient.patchDaemonConfig({ providers: { codex: { command } } });
-        await expect
-          .poll(async () => (await reorderClient.getDaemonConfig()).config.providers.codex?.command)
-          .toEqual(command);
+      for (const original of runtimeOriginals) {
+        async function restoreCodexCommand() {
+          const { client, providerId, command } = original;
+          await client.patchDaemonConfig({ providers: { [providerId]: { command } } });
+          await expect
+            .poll(
+              async () => (await client.getDaemonConfig()).config.providers[providerId]?.command,
+            )
+            .toEqual(command);
+        }
+        await collectFailure(restoreCodexCommand);
+        async function restoreCodexDiscovery() {
+          const { client, providerId, status } = original;
+          await client.refreshProvidersSnapshot({ providers: [providerId] });
+          await expect
+            .poll(
+              async () =>
+                (await client.getProvidersSnapshot()).entries?.find(
+                  (entry) => entry.provider === providerId,
+                )?.status,
+            )
+            .toBe(status);
+        }
+        await collectFailure(restoreCodexDiscovery);
       }
-      await collectFailure(restoreCodexCommand);
-      async function restoreCodexDiscovery() {
-        await reorderClient.refreshProvidersSnapshot({ providers: ["codex"] });
-        await expect
-          .poll(
-            async () =>
-              (await reorderClient.getProvidersSnapshot()).entries?.find(
-                (entry) => entry.provider === "codex",
-              )?.status,
-          )
-          .toBe(originalDiscoveryStatus);
-      }
-      await collectFailure(restoreCodexDiscovery);
     } catch (error) {
       failures.push(error);
     } finally {
-      await collectFailure(() => reorderClient.close());
+      for (const client of clients) await collectFailure(() => client.close());
     }
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1)
