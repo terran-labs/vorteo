@@ -220,7 +220,7 @@ export async function openPullRequest(
   const description =
     body ??
     [
-      "(AI Generated).",
+      "(AI Generated)",
       "",
       `Delivers ${plan.outgoing.length} commit(s) to ${plan.branch}:`,
       "",
