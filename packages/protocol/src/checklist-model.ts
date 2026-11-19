@@ -1,7 +1,8 @@
 import type { AgentTaskItem, AgentTimelineItem } from "./agent-types.js";
 
 export { ChecklistMutationSchema, type ChecklistMutation } from "./task-checklist.js";
-import type { ChecklistMutation } from "./task-checklist.js";
+import { z } from "zod";
+import type { ChecklistMutation, ChecklistWakeCondition } from "./task-checklist.js";
 
 export function mergeTaskMetadata(
   current: AgentTaskItem["metadata"],
@@ -51,6 +52,47 @@ export class ChecklistError extends Error {
   ) {
     super(message);
     this.name = "ChecklistError";
+  }
+}
+
+/** Reject invalid targets after structural parsing, without involving transport codegen. */
+function validateWakeCondition(condition: ChecklistWakeCondition): void {
+  if (condition.kind === "deadline") {
+    if (!z.iso.datetime({ offset: true }).safeParse(condition.at).success) {
+      throw new ChecklistError(
+        "invalid",
+        "Wake deadline must be an ISO timestamp with a timezone.",
+      );
+    }
+    return;
+  }
+  const validOwner = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,38})$/.test(condition.owner);
+  const validRepository = /^[a-zA-Z0-9_.-]{1,100}$/.test(condition.repository);
+  const dotRepository = condition.repository === "." || condition.repository === "..";
+  if (!validOwner || !validRepository || dotRepository) {
+    throw new ChecklistError(
+      "invalid",
+      "Wake target must name a GitHub owner and repository, not a URL.",
+    );
+  }
+  const identifiers =
+    condition.kind === "github_workflow_run"
+      ? [condition.runId, condition.attempt]
+      : [condition.number];
+  if (identifiers.some((value) => !Number.isSafeInteger(value) || value <= 0)) {
+    throw new ChecklistError("invalid", "Wake target numbers must be positive safe integers.");
+  }
+  if (condition.kind !== "github_required_checks") return;
+  if (!/^[a-fA-F0-9]{40}$/.test(condition.headSha)) {
+    throw new ChecklistError("invalid", "Required checks must pin a full PR head SHA.");
+  }
+  const invalidChecks =
+    condition.checks.length === 0 ||
+    condition.checks.length > 100 ||
+    condition.checks.some((name) => !name.trim() || name.length > 300) ||
+    new Set(condition.checks).size !== condition.checks.length;
+  if (invalidChecks) {
+    throw new ChecklistError("invalid", "Name between 1 and 100 distinct required checks.");
   }
 }
 
@@ -123,23 +165,30 @@ export function mutateChecklist(
     mutation = { ...mutation, text };
   }
   if (mutation.operation === "create") {
-    const { operation: _operation, id = platform.createId(), progress, ...fields } = mutation;
+    const {
+      operation: _operation,
+      id = platform.createId(),
+      progress,
+      wakeCondition,
+      ...fields
+    } = mutation;
     if (items.some((item) => item.id === id)) {
       throw new ChecklistError("duplicate", `Task ${id} already exists. Read it before retrying.`);
     }
     if (items.length >= 500)
       throw new ChecklistError("limit", "A checklist can contain at most 500 tasks.");
-    const next: AgentTaskItem[] = [
-      ...items,
-      normalizeTaskProgress({
+    const created = applyWakeCondition(
+      {
         ...fields,
         ...(progress === null || progress === undefined ? {} : { progress }),
         id,
         source: "vorteo",
         status: "pending",
         completed: false,
-      }),
-    ];
+      },
+      wakeCondition,
+    );
+    const next: AgentTaskItem[] = [...items, normalizeTaskProgress(created)];
     validateDependencies(next.filter((item) => item.source === "vorteo"));
     return next;
   }
@@ -189,6 +238,21 @@ export function mutateChecklist(
   return updateTask(items, current, mutation);
 }
 
+/** Omission preserves the condition; null removes it from stored task data. */
+function applyWakeCondition(
+  task: AgentTaskItem,
+  wakeCondition: ChecklistWakeCondition | null | undefined,
+): AgentTaskItem {
+  if (wakeCondition === undefined) return task;
+  const updated = { ...task };
+  if (wakeCondition === null) delete updated.wakeCondition;
+  else {
+    validateWakeCondition(wakeCondition);
+    updated.wakeCondition = wakeCondition;
+  }
+  return updated;
+}
+
 /** Apply an explicit progress value or clearing, and drop derived progress when checks are emptied. */
 function applyProgressFields(
   current: AgentTaskItem,
@@ -233,10 +297,12 @@ function updateTask(
     addBlocks,
     addBlockedBy,
     progress,
+    wakeCondition,
     ...fields
   } = mutation;
   const status = fields.status ?? current.status ?? "pending";
   let updated: AgentTaskItem = { ...current, ...fields, status, completed: status === "completed" };
+  updated = applyWakeCondition(updated, wakeCondition);
   updated = applyProgressFields(current, updated, progress, fields.checks);
   assertChecksPassedForCompletion(updated, fields);
   if (fields.metadata !== undefined)

@@ -2,6 +2,7 @@ import { RestartHoldError } from "./restart-hold.js";
 import { pendingCodexAsyncQuestions } from "./providers/codex/async-questions.js";
 import type { HeldRestart } from "@getpaseo/protocol/messages";
 import {
+  type ChecklistWakeAvailability,
   blockedReviewDue,
   hasReviewableBlockedWork,
   reviewableTasks,
@@ -137,7 +138,7 @@ import type { AgentUsageLimitResumeAction, UsageLimitHold } from "@getpaseo/prot
 import { usageLimitContinuationText } from "./usage-limit/resume-service.js";
 import { buildArchivedAgentRecord, type ArchivedStoredAgentRecord } from "./agent-archive.js";
 import { restoreStoredUsage, toStoredAgentRecord } from "./agent-projections.js";
-import type { StoredAgentRecord, AgentStorage } from "./agent-storage.js";
+import type { StoredAgentRecord, AgentStorage, ChecklistWakeGeneration } from "./agent-storage.js";
 import type { AgentOwner } from "./agent-owner.js";
 import { ProviderQuotaExhaustedError } from "./quota-error.js";
 import {
@@ -2156,6 +2157,90 @@ export class AgentManager {
     agentId: string,
     canContinue: () => boolean,
   ): Promise<AsyncGenerator<AgentStreamEvent> | null> {
+    return this.startBlockedWork(agentId, canContinue, { kind: "review" });
+  }
+
+  /** The monitor supplies satisfied observations, never a direct provider start. */
+  startChecklistConditionWake(
+    agentId: string,
+    observed: readonly ChecklistWakeGeneration[],
+    canContinue: () => boolean,
+  ): Promise<AsyncGenerator<AgentStreamEvent> | null> {
+    return this.startBlockedWork(agentId, canContinue, {
+      kind: "condition",
+      observed: structuredClone(observed),
+    });
+  }
+
+  /** Refuse known holds before a condition scan restores a provider runtime. */
+  async canPrepareChecklistConditionWake(
+    agentId: string,
+    observed: readonly ChecklistWakeGeneration[],
+    canContinue: () => boolean,
+  ): Promise<boolean> {
+    const eligible = () => {
+      const record = this.registry?.getLoadedRecord(agentId);
+      return (
+        !!record &&
+        this.supportsChecklistWakeConditions() &&
+        canContinue() &&
+        this.blockedWorkRecordEligible(record) &&
+        !!this.registry?.currentChecklistWakeGenerations(agentId, observed).length
+      );
+    };
+    if (!eligible()) return false;
+    const record = this.registry!.getLoadedRecord(agentId)!;
+    if (await this.usageLimitedUntil(record.provider)) return false;
+    return eligible();
+  }
+
+  private blockedWorkRecordEligible(record: StoredAgentRecord): boolean {
+    return !(
+      record.archivedAt ||
+      record.internal ||
+      record.owner ||
+      record.config?.controllerExecutionId ||
+      record.queueGoalHold ||
+      record.config?.quotaPausedAt ||
+      (record.config?.usageLimitHold && !record.config.usageLimitHold.releasedAt) ||
+      !record.persistence?.sessionId
+    );
+  }
+
+  private blockedWorkRuntimeEligible(agent: ActiveManagedAgent): boolean {
+    const agentId = agent.id;
+    if (
+      this.agents.get(agentId) !== agent ||
+      agent.lifecycle !== "idle" ||
+      agent.queueGoalHold ||
+      agent.activeTurnId ||
+      agent.pendingPermissions.size ||
+      this.runs.hasRun(agentId) ||
+      this.collectingRuntimes.has(agentId) ||
+      this.automaticCloses.has(agentId) ||
+      agent.config.quotaPausedAt ||
+      agent.owner ||
+      this.controllerSessions.has(agentId) ||
+      agent.config.controllerExecutionId ||
+      (agent.config.usageLimitHold && !agent.config.usageLimitHold.releasedAt)
+    )
+      return false;
+    try {
+      this.assertQuotaNotPaused(agentId);
+      this.assertManagedWorkerStartAllowed(agent, agentId);
+    } catch {
+      return false;
+    }
+    return true;
+  }
+
+  private async startBlockedWork(
+    agentId: string,
+    canContinue: () => boolean,
+    trigger:
+      | { kind: "review" }
+      | { kind: "condition"; observed: readonly ChecklistWakeGeneration[] },
+  ): Promise<AsyncGenerator<AgentStreamEvent> | null> {
     const registry = this.registry;
     const queue = this.messageQueueControl;
     if (!registry || !queue?.withIdleQueue) return null;
@@ -2165,19 +2250,17 @@ export class AgentManager {
         if (!agent || !agent.session || agent.lifecycle !== "idle") return null;
         const threadEligible = () => {
           const record = registry.getLoadedRecord(agentId);
-          if (!record || !hasReviewableBlockedWork(record)) return false;
-          if (!foregroundAllowsStart() || !goalAllowsStart()) return false;
-          if (!canContinue() || !this.acceptingAgentRegistrations || this.isRestartDraining())
-            return false;
+          if (!record) return false;
           if (
-            this.agents.get(agentId) !== agent ||
-            agent.lifecycle !== "idle" ||
-            agent.queueGoalHold
+            trigger.kind === "review" &&
+            !hasReviewableBlockedWork(record, this.checklistWakeMonitorAvailable)
           )
             return false;
-          if (agent.activeTurnId || agent.pendingPermissions.size || this.runs.hasRun(agentId))
+          if (trigger.kind === "condition" && !this.supportsChecklistWakeConditions()) return false;
+          if (!this.blockedWorkRecordEligible(record) || !this.blockedWorkRuntimeEligible(agent))
             return false;
-          if (agent.config.quotaPausedAt || agent.owner || this.controllerSessions.has(agentId))
+          if (!foregroundAllowsStart() || !goalAllowsStart()) return false;
+          if (!canContinue() || !this.acceptingAgentRegistrations || this.isRestartDraining())
             return false;
           return true;
         };
@@ -2186,7 +2269,12 @@ export class AgentManager {
           const state = agent.session.goals?.state;
           if (!state) {
             const record = registry.getLoadedRecord(agentId);
-            return record !== null && record !== undefined && reviewableTasks(record).length > 0;
+            return (
+              trigger.kind === "condition" ||
+              (record !== null &&
+                record !== undefined &&
+                reviewableTasks(record, this.checklistWakeMonitorAvailable).length > 0)
+            );
           }
           if (
             state.status !== "ready" ||
@@ -2197,23 +2285,85 @@ export class AgentManager {
           const goal = state.goal;
           if (!goal) {
             const record = registry.getLoadedRecord(agentId);
-            return record !== null && record !== undefined && reviewableTasks(record).length > 0;
+            return (
+              trigger.kind === "condition" ||
+              (record !== null &&
+                record !== undefined &&
+                reviewableTasks(record, this.checklistWakeMonitorAvailable).length > 0)
+            );
           }
           if (goal.status !== "blocked") return false;
           return goal.tokenBudget === null || goal.tokensUsed < goal.tokenBudget;
         };
-        if (!threadEligible()) return null;
-        if (agent.session.goals) await this.readAgentGoal(agentId);
-        const record = registry.getLoadedRecord(agentId);
-        if (!eligible() || !record || !blockedReviewDue(record, this.now())) return null;
+        const triggerEligible = () => {
+          const record = registry.getLoadedRecord(agentId);
+          return trigger.kind === "review"
+            ? !!record && blockedReviewDue(record, this.now(), this.checklistWakeMonitorAvailable)
+            : registry.currentChecklistWakeGenerations(agentId, trigger.observed).length > 0;
+        };
+        if (!threadEligible() || !triggerEligible()) return null;
+        if (agent.session.goals) {
+          try {
+            await this.readAgentGoal(agentId);
+          } catch (error) {
+            if (trigger.kind === "review") throw error;
+            return null;
+          }
+        }
+        if (!eligible() || !triggerEligible()) return null;
+        if (await this.usageLimitedUntil(agent.provider)) return null;
+        if (!eligible() || !triggerEligible()) return null;
         return queue.withIdleQueue!(agentId, async (queueAllowsStart) => {
-          if (!eligible() || !queueAllowsStart()) return null;
-          if (!(await registry.claimBlockedReview(agentId, this.now()))) return null;
-          if (!eligible() || !queueAllowsStart()) return null;
-          // No await between the last admission check and synchronous run reservation.
-          return this.streamAgent(agentId, BLOCKED_REVIEW_PROMPT, {
-            origin: "agent",
-          });
+          const admissionAllowsStart = () => eligible() && queueAllowsStart();
+          if (!admissionAllowsStart() || !triggerEligible()) return null;
+          if (await this.usageLimitedUntil(agent.provider)) return null;
+          if (!admissionAllowsStart() || !triggerEligible()) return null;
+          if (trigger.kind === "review") {
+            if (!(await registry.claimBlockedReview(agentId, this.now()))) return null;
+            if (!admissionAllowsStart()) return null;
+            if (await this.usageLimitedUntil(agent.provider)) return null;
+            if (!admissionAllowsStart()) return null;
+            // No await between the last admission check and synchronous run reservation.
+            return this.streamAgent(agentId, BLOCKED_REVIEW_PROMPT, { origin: "agent" });
+          }
+          const claims = await registry.claimChecklistWakeGenerations(
+            agentId,
+            trigger.observed,
+            this.now(),
+            admissionAllowsStart,
+          );
+          if (claims.length === 0) return null;
+          let reserved = false;
+          try {
+            const claimsAllowStart = () =>
+              admissionAllowsStart() &&
+              registry.currentChecklistWakeClaims(agentId, claims).length === claims.length;
+            if (!claimsAllowStart()) return null;
+            // Persistence yielded: refresh native goal authority before reserving the run.
+            if (agent.session.goals) {
+              try {
+                await this.readAgentGoal(agentId);
+              } catch {
+                return null;
+              }
+            }
+            if (!claimsAllowStart()) return null;
+            if (await this.usageLimitedUntil(agent.provider)) return null;
+            if (!claimsAllowStart()) return null;
+            const taskIds: string[] = [];
+            for (const claim of claims) taskIds.push(claim.taskId);
+            const prompt =
+              "A monitored prerequisite is satisfied for checklist item(s): " +
+              taskIds.join(", ") +
+              ". Recheck current evidence and continue only within existing authorization. " +
+              "This notification does not complete work, change goals, or override any pause or budget.";
+            // Account usage was checked above; streamAgent checks quota and reserves synchronously.
+            const stream = this.streamAgent(agentId, prompt, { origin: "agent" });
+            reserved = true;
+            return stream;
+          } finally {
+            if (!reserved) await registry.releaseChecklistWakeClaims(agentId, claims);
+          }
         });
       }),
     );
@@ -6172,13 +6322,36 @@ export class AgentManager {
     for (const question of pending) await this.deliverAnswer(agentId, question);
   }
 
+  private checklistWakeMonitorAvailable: ChecklistWakeAvailability = () => false;
+
+  setChecklistWakeMonitorAvailability(reader: ChecklistWakeAvailability): void {
+    this.checklistWakeMonitorAvailable = reader;
+  }
+
+  private checklistWakeConditionsReady: (() => boolean) | null = null;
+
+  /** Bootstrap supplies live readiness only when all condition monitors are installed together. */
+  setChecklistWakeConditionsReadiness(reader: () => boolean): void {
+    this.checklistWakeConditionsReady = reader;
+  }
+
+  supportsChecklistWakeConditions(): boolean {
+    return (
+      this.acceptingAgentRegistrations &&
+      !this.isRestartDraining() &&
+      this.checklistWakeConditionsReady?.() === true
+    );
+  }
+
   readChecklist(agentId: string): AgentTaskItem[] {
     return structuredClone(this.requireAgent(agentId).tasks ?? []);
   }
 
   async mutateChecklist(agentId: string, mutation: ChecklistMutation): Promise<AgentTaskItem[]> {
     const agent = this.requireAgent(agentId);
-    const committed = await this.requireRegistry().mutateChecklist(agentId, mutation);
+    const committed = await this.requireRegistry().mutateChecklist(agentId, mutation, () =>
+      this.supportsChecklistWakeConditions(),
+    );
     const items = mergeProviderChecklist(agent.tasks ?? [], committed);
     this.touchUpdatedAt(agent);
     this.recordAndDispatchTimelineItem(agentId, { type: "todo", items }, agent.provider);
