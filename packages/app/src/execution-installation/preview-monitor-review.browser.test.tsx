@@ -247,13 +247,26 @@ test("production monitor review preserves exact evidence and manual gates at 390
     const systemDetails = container.querySelector<HTMLElement>(
       '[data-testid="system-installation-details-host"]',
     )!;
-    const heightBeforeError = systemDetails.getBoundingClientRect().height;
+    const alert = page.getByTestId("system-installation-details-host").getByRole("alert");
+    expect(model.getState().helperError).toBeNull();
+    await expect.element(alert).not.toBeInTheDocument();
     await act(() => model.decideMonitor({ ...current, revision: current.revision + 1 }, "approve"));
     const helperError = model.getState().helperError!;
     expect(helperError).toContain("request changed");
     await expect.element(page.getByText(helperError, { exact: true })).toBeVisible();
     expect(systemDetails.textContent).toContain(helperError);
-    expect(systemDetails.getBoundingClientRect().height).toBe(heightBeforeError);
+    await expect.element(alert).toBeVisible();
+    await expect
+      .element(alert.getByText(helperError.split(/\r\n|\r|\n/, 1)[0], { exact: true }))
+      .toBeVisible();
+    const dismiss = alert.getByRole("button", { name: "Dismiss", exact: true });
+    await expect.element(dismiss).toBeVisible();
+    await expect.element(dismiss).toBeEnabled();
+    await act(async () => {
+      await dismiss.click();
+    });
+    await expect.element(alert).not.toBeInTheDocument();
+    expect(model.getState().helperError).toBeNull();
     await act(() => model.lock());
     for (const width of [390]) {
       await page.viewport(width, 900);
