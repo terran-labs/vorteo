@@ -44,6 +44,12 @@ export const WINDOWS_EXCLUDED_SUITES = [
   "src/server/execution-installation/factory-gate.test.ts",
   // The Host launcher update swaps an owner-controlled launchd plist on the macOS Host.
   "src/server/execution-installation/host-launcher-update.test.ts",
+  // Host release cleanup runs only on the macOS Host. Its cross-process lock reads holder start
+  // times with /bin/ps, process evidence comes from lsof, ps or /proc, references resolve POSIX
+  // links, and set-aside renames rely on POSIX rename semantics. On Windows it refuses before
+  // any rename: the lock's ps call and the process listing both throw.
+  "src/server/execution-installation/host-release-processes.test.ts",
+  "src/server/execution-installation/host-release-retention.test.ts",
   "src/server/execution-installation/maintenance/authorization.test.ts",
   "src/server/execution-installation/maintenance/dev-registration-execution.test.ts",
   "src/server/execution-installation/maintenance/dev-registration-native-executor.test.ts",

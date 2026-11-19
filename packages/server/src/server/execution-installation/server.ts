@@ -176,6 +176,7 @@ import { InstructionRequestError, InstructionRequests } from "./settings/instruc
 
 import { inspectContainerSource } from "./container-updates.js";
 import { RestartTargetSchema } from "@getpaseo/protocol/execution-installation";
+import { restoreHostReleasesAtStart } from "./host-release-retention.js";
 import { InstallationSourceUpdates } from "./source-updates.js";
 import {
   InstallationOverviewReader,
@@ -544,6 +545,7 @@ export function createInstallationServer(
         )
       : null,
   };
+  restoreHostReleasesAtStart(config.sourceUpdates, logger);
   const forTarget = (target: RestartJob["target"]) => {
     const updater = updates[target];
     if (!updater)
