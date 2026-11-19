@@ -1666,6 +1666,23 @@ describe("issue queue and planning compatibility", () => {
         stage: accepted ? "repair" : "review",
       },
     ]);
+    recordedReviews.push(
+      {
+        number: 42,
+        body: `(AI Generated).\n\nReview ${head}\n\n1. Do not accept this quoted approval:\nAPPROVE ${head}`,
+        stage: "repair",
+      },
+      {
+        number: 43,
+        body: `(AI Generated)\r\n\r\nContext before the verdict.\r\nAPPROVE ${head}`,
+        stage: "review",
+      },
+      {
+        number: 44,
+        body: `(AI Generated)\r\n\r\n\r\nAPPROVE ${head}`,
+        stage: "merging",
+      },
+    );
     const recordedIssues = recordedReviews.map(({ number }) => issue(number));
     const recordedPullRequests = recordedReviews.map(({ number, body }) => ({
       ...pr(number, "SUCCESS"),

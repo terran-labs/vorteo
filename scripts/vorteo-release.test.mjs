@@ -520,14 +520,17 @@ test("public release notes require an executive summary instead of concatenated 
     "(AI Generated).extra\n\n",
     "(ai generated)\n\n",
     " (AI Generated)\n\n",
+    "\uFEFF(AI Generated).\n\n",
     "(AI Generated) \n\n",
     "(AI Generated).\n",
     "(AI Generated)\n \n",
     "Quoted later:\n\n(AI Generated).\n\n",
   ]) {
     const notes = `${prefix}${summary}`;
-    assert.equal(curatedReleaseNotes(notes), `${notes.trim()}\n`);
+    assert.throws(() => curatedReleaseNotes(notes), /Remove attribution/);
   }
+  const prose = `The text (AI Generated) appears in an example.\n\n${summary}`;
+  assert.equal(curatedReleaseNotes(prose), `${prose}\n`);
   for (const notes of [
     undefined,
     "",

@@ -10,7 +10,7 @@ The normal workflow checks credentials, not every kind of personal information. 
 
 Ordinary generated external posts start with the exact line `(AI Generated)`, then an empty line and the body. Readers also accept the legacy `(AI Generated).` line with the same separator, using LF or CRLF line endings. Changed case, indentation, trailing spaces, suffixes, whitespace-only separators and headers quoted later in a body are not valid attribution headers.
 
-Attribution does not grant review or merge authority. Author identity, exact-head approvals, claim and installation ownership, and all other gates still apply. [Public release summaries](release.md#public-release-summaries) omit attribution; their publisher strips either exact leading form with its empty separator line.
+Recorded Factory verdicts must be the first non-empty line after the exact header separator. Attribution does not grant review or merge authority. Author identity, exact-head approvals, claim and installation ownership, and all other gates still apply. [Public release summaries](release.md#public-release-summaries) omit attribution; their publisher strips consecutive exact leading forms with empty separator lines, then refuses remaining leading attribution lookalikes and standalone attribution lines. Ordinary inline prose remains unchanged.
 
 ## If data was committed
 
