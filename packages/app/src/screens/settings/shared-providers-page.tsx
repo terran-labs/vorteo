@@ -6,6 +6,7 @@ import {
   awaitingFirstConnection,
   connectionsNeedingSignIn,
   groupInstallationProviders,
+  providerFamilyGroup,
   providerInstallHint,
   providerInstallCommand,
   type ConnectionSignIn,
@@ -22,6 +23,8 @@ import {
 } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { CAN_HOVER, hoverGroup, hoverStyle } from "@/styles/hover";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import { useMutation } from "@tanstack/react-query";
 import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
 import type { InstallationEnvironment } from "@getpaseo/protocol/execution-installation";
@@ -59,8 +62,10 @@ const ThemedChevron = withUnistyles(ChevronRight);
 const gripColor = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
 /** "2 connections", or what is wrong when nothing is enabled. */
-function familySummary(family: ProviderFamily, awaitingConnection: boolean): string {
-  if (family.installed === false) return "Not installed";
+function familySummary(family: ProviderFamily, awaitingConnection: boolean, t: TFunction): string {
+  if (family.controllable && !family.enabled && family.installed !== true)
+    return t("settings.providers.statuses.disabled");
+  if (family.installed === false) return t("settings.providers.statuses.notInstalled");
   if (family.installed === null) return "Checking";
   if (awaitingConnection) return "Not connected";
   const count = family.accounts.length;
@@ -109,6 +114,7 @@ function ProviderFamilyCard({
   canMoveUp?: boolean;
   canMoveDown?: boolean;
 }) {
+  const { t } = useTranslation();
   const toggle = useCallback(
     async (enabled: boolean) => {
       if (!enabled && primary && !(await confirmDisablePrimary(family.name, confirmDialog))) return;
@@ -146,10 +152,11 @@ function ProviderFamilyCard({
     [],
   );
   const cardStyle = useMemo(
-    () => [family.installed !== false && settingsStyles.card, styles.item],
-    [family.installed],
+    () => [providerFamilyGroup(family) !== "available" && settingsStyles.card, styles.item],
+    [family],
   );
-  const summary = familySummary(family, Boolean(firstConnection));
+  const summary = familySummary(family, Boolean(firstConnection), t);
+  const showInstall = family.installed === false && (!family.controllable || family.enabled);
   const nameBlock = (
     <FamilyName id={family.id} name={family.name} primary={primary} summary={summary} />
   );
@@ -193,8 +200,7 @@ function ProviderFamilyCard({
               usage={firstConnection.usage}
             />
           ) : null}
-          {/* A switch for a CLI that is installed nowhere would change nothing. */}
-          {family.installed ? (
+          {family.controllable ? (
             <Switch
               value={family.enabled}
               onValueChange={toggle}
@@ -202,7 +208,7 @@ function ProviderFamilyCard({
               accessibilityLabel={`Enable ${family.name} everywhere`}
             />
           ) : null}
-          {family.installed === false ? (
+          {showInstall ? (
             <Button
               {...webExpandedProps}
               variant="outline"
@@ -218,9 +224,8 @@ function ProviderFamilyCard({
       </View>
       {open ? (
         <View testID={`provider-family-detail-${family.id}`}>
-          {family.installed === false ? (
-            <InstallCommand providerType={family.id} name={family.name} />
-          ) : (
+          {showInstall ? <InstallCommand providerType={family.id} name={family.name} /> : null}
+          {providerFamilyGroup(family) !== "available" ? (
             <>
               {canMoveUp || canMoveDown ? (
                 <FamilyOrder
@@ -234,7 +239,7 @@ function ProviderFamilyCard({
               ) : null}
               <ProviderDetail providerType={family.id} />
             </>
-          )}
+          ) : null}
         </View>
       ) : null}
     </View>
@@ -573,11 +578,11 @@ function ProviderCatalog({
   const movePosition = useCallback(
     (item: ProviderFamily) => {
       const list = families.filter(
-        (family) => family.installed === true && family.enabled === item.enabled,
+        (family) => providerFamilyGroup(family) === providerFamilyGroup(item),
       );
       const index = list.indexOf(item);
       return {
-        showDrag: item.installed === true && list.length > 1,
+        showDrag: item.controllable && list.length > 1,
         canMoveUp: index > 0,
         canMoveDown: index >= 0 && index < list.length - 1,
       };
@@ -590,11 +595,11 @@ function ProviderCatalog({
       const item = families.find((family) => family.id === providerType);
       if (!item) return;
       const list = families.filter(
-        (family) => family.installed === true && family.enabled === item.enabled,
+        (family) => providerFamilyGroup(family) === providerFamilyGroup(item),
       );
       const from = list.indexOf(item);
       const to = from + offset;
-      if (to < 0 || to >= list.length) return;
+      if (from < 0 || to < 0 || to >= list.length) return;
       const ordered = [...list];
       [ordered[from], ordered[to]] = [ordered[to]!, ordered[from]!];
       void reorder(ordered).catch(() => undefined);
@@ -621,7 +626,7 @@ function ProviderCatalog({
     [data, change, expanded, toggleExpanded, primary, signInSources, move, movePosition],
   );
   const availableFamilies = useMemo(
-    () => families.filter((family) => family.installed === false),
+    () => families.filter((family) => providerFamilyGroup(family) === "available"),
     [families],
   );
   const openedFocus = useRef<string | null>(null);
@@ -672,7 +677,7 @@ function ProviderCatalog({
         <DraggableList
           key={String(enabled)}
           data={families.filter(
-            (family) => family.installed !== false && family.enabled === enabled,
+            (family) => providerFamilyGroup(family) === (enabled ? "on" : "off"),
           )}
           keyExtractor={familyKey}
           renderItem={renderFamily}
