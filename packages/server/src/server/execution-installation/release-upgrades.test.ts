@@ -169,6 +169,42 @@ test("keeps an installer-built Host job and requests it only once", async () => 
   expect(statuses(upgrades).status).toBe("failed");
 });
 
+test("waits for a running Host release cleanup before restarting the coordinator", async () => {
+  // The Host step starts a cleanup; restarting the coordinator under it cut one part way.
+  let cleaning = true;
+  const fake = fakePorts({ hostReleaseCleanupRunning: () => cleaning });
+  const upgrades = new InstallationUpgrades(journal, fake.ports);
+  await approved(upgrades);
+  await upgrades.drain();
+  fake.finishHost("succeeded");
+  await upgrades.drain();
+  await upgrades.drain();
+  expect(fake.calls.some((call) => call.startsWith("swap"))).toBe(false);
+  expect(upgrades.list()[0]!.steps[3]).toMatchObject({
+    status: "running",
+    detail: expect.stringContaining("Waiting for Host release cleanup to finish"),
+  });
+  cleaning = false;
+  await upgrades.drain();
+  expect(fake.calls.at(-1)).toBe("swap /releases/old -> /releases/new");
+});
+
+test("restarts the coordinator after 30 minutes even if a Host release cleanup still runs", async () => {
+  // A cleanup cut by a restart is safe; the bound keeps an upgrade from waiting forever.
+  const fake = fakePorts({ hostReleaseCleanupRunning: () => true });
+  const upgrades = new InstallationUpgrades(journal, fake.ports);
+  await approved(upgrades);
+  await upgrades.drain();
+  fake.finishHost("succeeded");
+  await upgrades.drain();
+  fake.advanceClock(30 * 60_000 - 1);
+  await upgrades.drain();
+  expect(fake.calls.some((call) => call.startsWith("swap"))).toBe(false);
+  fake.advanceClock(1);
+  await upgrades.drain();
+  expect(fake.calls.at(-1)).toBe("swap /releases/old -> /releases/new");
+});
+
 test("runs every step in order and records each one", async () => {
   const fake = fakePorts();
   const upgrades = new InstallationUpgrades(journal, fake.ports);
