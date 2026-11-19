@@ -4070,20 +4070,35 @@ for (const width of [1280, 390]) {
       InstallationSettingsSnapshotSchema.parse(
         await (
           await page.request.post(`${origin}/api/installation/owner/settings/read`, {
-            headers: { Origin: origin, "X-Vorteo-Provider-Removal": "1" },
+            headers: {
+              Origin: origin,
+              "X-Vorteo-Provider-Removal": "1",
+              "X-Vorteo-Primary-Connection": "1",
+            },
             data: {},
           })
         ).json(),
       );
     const before = await read();
-    const originals = before.settings?.providerDefinitions;
-    if (!originals) throw new Error("Missing provider definitions");
+    const originalDefinitions = before.settings?.providerDefinitions;
+    const originalPrimary = before.settings?.primaryConnection;
+    if (originalPrimary === undefined) throw new Error("Missing primary connection capability");
+    if (!originalDefinitions) throw new Error("Missing provider definitions");
+    const originals = originalDefinitions;
     const mockDefinitions = originals.filter((entry) => entry.providerType === "mock");
     expect(mockDefinitions).toHaveLength(1);
     const [mockDefinition] = mockDefinitions;
     if (!mockDefinition?.accountId) throw new Error("Missing shared Mock account fixture");
     const reorderClient = await connectReadyInstallationDaemon("host");
     const serverIds = config.public.environments.map((environment) => environment.serverId);
+    const failures: unknown[] = [];
+    async function collectFailure(operation: () => Promise<void>) {
+      try {
+        await operation();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
     try {
       const originalCodex = (await reorderClient.getDaemonConfig()).config.providers.codex;
       await expect
@@ -4098,7 +4113,8 @@ for (const width of [1280, 390]) {
         (entry) => entry.provider === "codex",
       );
       if (!originalDiscovery) throw new Error("Missing original Codex discovery");
-      try {
+      const originalDiscoveryStatus = originalDiscovery.status;
+      async function exerciseFamily() {
         // Give the disabled group a second installed CLI instead of dragging between groups.
         await reorderClient.patchDaemonConfig({
           providers: {
@@ -4110,7 +4126,11 @@ for (const width of [1280, 390]) {
         await reorderClient.refreshProvidersSnapshot({ providers: ["codex"] });
         const prepared = await read();
         const setup = await page.request.patch(`${origin}/api/installation/owner/settings`, {
-          headers: { Origin: origin, "X-Vorteo-Provider-Removal": "1" },
+          headers: {
+            Origin: origin,
+            "X-Vorteo-Provider-Removal": "1",
+            "X-Vorteo-Primary-Connection": "1",
+          },
           data: {
             expectedRevision: prepared.revision,
             settings: {
@@ -4135,7 +4155,20 @@ for (const width of [1280, 390]) {
         await expect(page.getByTestId("host-page-add-provider-card")).toHaveCount(0);
         const enabled = family.getByRole("switch", { name: "Enable Mock everywhere", exact: true });
         await expect(enabled).toBeChecked();
-        await enabled.click();
+        const beforeDisable = await read();
+        const mockIsPrimary = mockDefinitions.some(
+          (definition) => definition.id === beforeDisable.settings?.primaryConnection?.providerId,
+        );
+        if (mockIsPrimary) {
+          const confirmation = page.waitForEvent("dialog");
+          const disabling = enabled.click();
+          const dialog = await confirmation;
+          expect(dialog.message()).toMatch(/^Turn off Mock\?/);
+          await dialog.accept();
+          await disabling;
+        } else {
+          await enabled.click();
+        }
         await expect(enabled).not.toBeChecked();
         await expect
           .poll(async () =>
@@ -4203,6 +4236,11 @@ for (const width of [1280, 390]) {
           connections.getByText("Renamed fixture account", { exact: true }),
         ).toBeVisible();
         const beforeRemoval = await read();
+        expect(
+          beforeRemoval.settings?.providerDefinitions?.find(
+            (entry) => entry.id === mockDefinition.id,
+          )?.policy.label,
+        ).toBe("Renamed fixture account");
         const expectedRemoved = beforeRemoval.settings!.providerDefinitions!.map((entry) =>
           entry.providerType === "mock"
             ? Object.assign({}, entry, {
@@ -4218,7 +4256,9 @@ for (const width of [1280, 390]) {
         );
         const dialog = page.waitForEvent("dialog");
         const click = family.getByTestId("provider-detail-remove-mock").click();
-        await (await dialog).accept();
+        const removalDialog = await dialog;
+        expect(removalDialog.message()).toMatch(/^Remove Mock from Vorteo\?/);
+        await removalDialog.accept();
         await click;
         const removal = await removalResponse;
         expect(removal.ok()).toBe(true);
@@ -4230,9 +4270,6 @@ for (const width of [1280, 390]) {
           providerDefinitions: expectedRemoved,
           serverIds,
         });
-        await expect(
-          page.getByTestId("shared-provider-order-list").filter({ visible: true }),
-        ).toBeVisible();
         await expect(family).toHaveCount(0);
         const removed = (await read()).settings?.providerDefinitions?.filter(
           (entry) => entry.providerType === "mock",
@@ -4247,7 +4284,9 @@ for (const width of [1280, 390]) {
           .getByRole("button", { name: "Add provider", exact: true })
           .filter({ visible: true })
           .click();
-        const addSheet = page.getByTestId("provider-add-sheet").filter({ visible: true });
+        const addSheet = page
+          .getByRole("dialog", { name: "Add provider", exact: true })
+          .filter({ visible: true });
         const restoreResponse = page.waitForResponse(
           (response) =>
             response.url() === `${origin}/api/installation/owner/settings` &&
@@ -4281,47 +4320,61 @@ for (const width of [1280, 390]) {
           path: testInfo.outputPath("provider-families.png"),
           fullPage: true,
         });
-      } finally {
-        try {
-          const latest = await read();
-          const cleanup = await page.request.patch(`${origin}/api/installation/owner/settings`, {
-            headers: { Origin: origin, "X-Vorteo-Provider-Removal": "1" },
-            data: {
-              expectedRevision: latest.revision,
-              settings: { providerDefinitions: originals },
-            },
-          });
-          expect(cleanup.ok()).toBe(true);
-          const cleaned = InstallationSettingsSnapshotSchema.parse(await cleanup.json());
-          await waitForSettingsConvergence({
-            read,
-            poll: expect.poll,
-            minimumRevision: cleaned.revision,
-            providerDefinitions: originals,
-            serverIds,
-          });
-        } finally {
-          const command = originalCodex?.command ?? ["codex"];
-          await reorderClient.patchDaemonConfig({ providers: { codex: { command } } });
-          await expect
-            .poll(
-              async () => (await reorderClient.getDaemonConfig()).config.providers.codex?.command,
-            )
-            .toEqual(command);
-          await reorderClient.refreshProvidersSnapshot({ providers: ["codex"] });
-          await expect
-            .poll(
-              async () =>
-                (await reorderClient.getProvidersSnapshot()).entries?.find(
-                  (entry) => entry.provider === "codex",
-                )?.status,
-            )
-            .toBe(originalDiscovery.status);
-        }
       }
+      await collectFailure(exerciseFamily);
+      async function restoreDefinitions() {
+        const latest = await read();
+        const cleanup = await page.request.patch(`${origin}/api/installation/owner/settings`, {
+          headers: {
+            Origin: origin,
+            "X-Vorteo-Provider-Removal": "1",
+            "X-Vorteo-Primary-Connection": "1",
+          },
+          data: {
+            expectedRevision: latest.revision,
+            settings: { providerDefinitions: originals, primaryConnection: originalPrimary },
+          },
+        });
+        expect(cleanup.ok()).toBe(true);
+        const cleaned = InstallationSettingsSnapshotSchema.parse(await cleanup.json());
+        await waitForSettingsConvergence({
+          read,
+          poll: expect.poll,
+          minimumRevision: cleaned.revision,
+          providerDefinitions: originals,
+          serverIds,
+        });
+        expect((await read()).settings?.primaryConnection).toEqual(originalPrimary);
+      }
+      await collectFailure(restoreDefinitions);
+      async function restoreCodexCommand() {
+        const command = originalCodex?.command ?? ["codex"];
+        await reorderClient.patchDaemonConfig({ providers: { codex: { command } } });
+        await expect
+          .poll(async () => (await reorderClient.getDaemonConfig()).config.providers.codex?.command)
+          .toEqual(command);
+      }
+      await collectFailure(restoreCodexCommand);
+      async function restoreCodexDiscovery() {
+        await reorderClient.refreshProvidersSnapshot({ providers: ["codex"] });
+        await expect
+          .poll(
+            async () =>
+              (await reorderClient.getProvidersSnapshot()).entries?.find(
+                (entry) => entry.provider === "codex",
+              )?.status,
+          )
+          .toBe(originalDiscoveryStatus);
+      }
+      await collectFailure(restoreCodexDiscovery);
+    } catch (error) {
+      failures.push(error);
     } finally {
-      await reorderClient.close();
+      await collectFailure(() => reorderClient.close());
     }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1)
+      throw new AggregateError(failures, "Provider family case and cleanup failures");
   });
 }
 
