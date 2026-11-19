@@ -444,14 +444,32 @@ test("owner expiry during session restoration does not navigate away from an ope
 });
 
 test("restart explanations lead with the authored change and keep technical detail separate", () => {
-  expect(
-    restartExplanation(
-      "(AI Generated).\n\nRestart Host to activate protected workspaces.\n\nValidation passed.\n\nRollback is prepared.",
-    ),
-  ).toEqual({
-    summary: "Restart Host to activate protected workspaces.",
-    details: "Validation passed.\n\nRollback is prepared.",
-  });
+  for (const header of ["(AI Generated)", "(AI Generated)."]) {
+    for (const newline of ["\n", "\r\n"]) {
+      expect(
+        restartExplanation(
+          `${header}${newline}${newline}Restart Host to activate protected workspaces.\n\nValidation passed.\n\nRollback is prepared.`,
+        ),
+      ).toEqual({
+        summary: "Restart Host to activate protected workspaces.",
+        details: "Validation passed.\n\nRollback is prepared.",
+      });
+    }
+  }
+  for (const prefix of [
+    "(AI Generated) prose\n\n",
+    "(AI Generated).extra\n\n",
+    "(ai generated)\n\n",
+    " (AI Generated)\n\n",
+    "(AI Generated) \n\n",
+    "(AI Generated).\n",
+    "(AI Generated)\n \n",
+    "Quoted later:\n\n(AI Generated).\n\n",
+  ]) {
+    const reason = `${prefix}Restart Host to activate protected workspaces.`;
+    const explanation = restartExplanation(reason);
+    expect(`${explanation.summary}\n\n${explanation.details}`).toContain(prefix.trim());
+  }
   expect(restartExplanation("Restart Dev to activate shared profiles.")).toEqual({
     summary: "Restart Dev to activate shared profiles.",
     details: "",

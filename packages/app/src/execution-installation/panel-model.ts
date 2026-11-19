@@ -1061,7 +1061,7 @@ export function restartExplanation(reason: string): {
   summary: string;
   details: string;
 } {
-  const text = reason.replace(/^\s*\(AI Generated\)\.?\s*/i, "").trim();
+  const text = reason.replace(/^\(AI Generated\)\.?(?:\n\n|\r\n\r\n)/, "").trim();
   const [opening, ...details] = text.split(/\n\s*\n/);
   const sentences = opening.split(/(?<=[.!?])\s+(?=[A-Z])/);
   const change =
