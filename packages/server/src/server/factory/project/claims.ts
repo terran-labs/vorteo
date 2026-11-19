@@ -1,7 +1,9 @@
-import { execFile } from "node:child_process";
+import { execFile, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
+  ProjectFactoryAssignmentDiagnosticSchema,
+  type ProjectFactoryAssignmentDiagnostic,
   projectFactoryClaimBranch,
   type ProjectFactoryClaim,
   type ProjectFactoryClaimRelease,
@@ -26,26 +28,103 @@ export interface FactoryGitHub {
   rest(method: "GET" | "POST" | "DELETE", route: string, body?: unknown): Promise<GitHubResponse>;
 }
 
-/** Runs `gh api --include` and returns the HTTP status and parsed body, including 4xx. */
-export const defaultFactoryGitHub: FactoryGitHub = {
-  rest(method, route, body) {
-    const args = ["api", "--include", "-X", method, route];
-    if (body !== undefined) args.push("--input", "-");
-    return new Promise((resolve, reject) => {
-      const child = execFile(
-        "gh",
-        args,
-        { timeout: 20_000, maxBuffer: 8 * 1024 * 1024 },
-        (error, stdout, stderr) => {
-          const parsed = parseIncluded(stdout);
-          if (parsed) return resolve(parsed);
-          reject(error ?? new Error(firstLine(stderr) || "gh returned no HTTP response."));
-        },
-      );
-      if (body !== undefined) child.stdin?.end(JSON.stringify(body));
-    });
-  },
-};
+/** The callback port keeps real execFile metadata available to focused adapter tests. */
+export interface FactorySubprocess {
+  (
+    file: string,
+    args: string[],
+    options: { timeout: number; maxBuffer: number },
+    callback: (error: unknown, stdout: string, stderr: string) => void,
+  ): Pick<ChildProcess, "stdin">;
+}
+
+/** Runs `gh api --include`; a parsed HTTP response takes precedence over process errors. */
+export function createFactoryGitHub(run: FactorySubprocess = execFile): FactoryGitHub {
+  return {
+    rest(method, route, body) {
+      const args = ["api", "--include", "-X", method, route];
+      if (body !== undefined) args.push("--input", "-");
+      return new Promise((resolve, reject) => {
+        const child = run(
+          "gh",
+          args,
+          { timeout: 20_000, maxBuffer: 8 * 1024 * 1024 },
+          (error, stdout) => {
+            const parsed = parseIncluded(stdout);
+            if (parsed) return resolve(parsed);
+            reject(new FactoryAssignmentReadError(subprocessDiagnostic(error)));
+          },
+        );
+        if (body !== undefined) child.stdin?.end(JSON.stringify(body));
+      });
+    },
+  };
+}
+
+export const defaultFactoryGitHub = createFactoryGitHub();
+
+function diagnostic(
+  category: ProjectFactoryAssignmentDiagnostic["category"],
+  reason: string,
+): ProjectFactoryAssignmentDiagnostic {
+  return {
+    category,
+    code: null,
+    signal: null,
+    killed: null,
+    timeout: "unknown",
+    httpStatus: null,
+    reason: reason.slice(0, 240),
+  };
+}
+
+function subprocessDiagnostic(error: unknown): ProjectFactoryAssignmentDiagnostic {
+  const result = diagnostic(
+    "transport",
+    "GitHub subprocess returned no HTTP response; cause unknown.",
+  );
+  if (typeof error !== "object" || error === null) return result;
+  // Read only named fields. Never retain the original error, message, cause, cmd or stderr.
+  const code = ProjectFactoryAssignmentDiagnosticSchema.shape.code.safeParse(
+    "code" in error ? error.code : null,
+  );
+  const signal = ProjectFactoryAssignmentDiagnosticSchema.shape.signal.safeParse(
+    "signal" in error ? error.signal : null,
+  );
+  result.code = code.success ? code.data : null;
+  result.signal = signal.success ? signal.data : null;
+  if ("killed" in error && typeof error.killed === "boolean") result.killed = error.killed;
+  if (result.code === "ETIMEDOUT") {
+    result.category = "timeout";
+    result.timeout = "confirmed";
+    result.reason = "GitHub subprocess reported ETIMEDOUT.";
+  } else if (typeof result.code === "number") {
+    result.category = "exit";
+    result.reason = `GitHub subprocess exited with code ${result.code}.`;
+  } else if (
+    result.code === "ENOENT" ||
+    result.code === "EACCES" ||
+    result.code === "EPERM" ||
+    result.code === "EAGAIN" ||
+    result.code === "ENOMEM"
+  ) {
+    result.category = "spawn";
+    result.reason = `GitHub subprocess could not start (${result.code}).`;
+  } else if (result.signal !== null) {
+    result.category = "signal";
+    result.reason = `GitHub subprocess ended with ${result.signal}; timeout unknown.`;
+  } else if (result.code !== null) {
+    result.reason = `GitHub subprocess failed (${result.code}); no HTTP response.`;
+  }
+  return result;
+}
+
+class FactoryAssignmentReadError extends Error {
+  constructor(readonly diagnostics: ProjectFactoryAssignmentDiagnostic) {
+    super(diagnostics.reason);
+    this.name = "FactoryAssignmentReadError";
+  }
+}
 
 function parseIncluded(stdout: string): GitHubResponse | null {
   const match = /^HTTP\/[\d.]+ (\d{3})/.exec(stdout);
@@ -59,15 +138,6 @@ function parseIncluded(stdout: string): GitHubResponse | null {
     body = text;
   }
   return { status: Number(match[1]), body };
-}
-
-function firstLine(text: string): string {
-  return (
-    text
-      .split(/\r?\n/)
-      .map((line) => line.trim().replace(/^gh: /, ""))
-      .find(Boolean) ?? ""
-  );
 }
 
 export class FactoryGitHubError extends Error {
@@ -452,37 +522,66 @@ export async function readAssignment(
   now: Date,
 ): Promise<AssignmentState> {
   const readAt = now.toISOString();
-  const off = (source: "invalid" | "unreadable", detail: string): AssignmentState => ({
+  const off = (
+    source: "invalid" | "unreadable",
+    diagnostics: ProjectFactoryAssignmentDiagnostic,
+  ): AssignmentState => ({
     source,
     triage: null,
     releases: null,
-    detail,
+    detail: diagnostics.reason,
+    diagnostics,
     readAt,
   });
   let response: GitHubResponse;
   try {
     response = await github.rest("GET", `repos/${repository}/contents/.github/factory.json`);
   } catch (error) {
-    return off("unreadable", error instanceof Error ? error.message : String(error));
+    return off(
+      "unreadable",
+      error instanceof FactoryAssignmentReadError ? error.diagnostics : subprocessDiagnostic(error),
+    );
   }
   if (response.status === 404)
     return { source: "none", triage: null, releases: null, detail: null, readAt };
   const content = z
     .object({ content: z.string(), encoding: z.literal("base64") })
     .safeParse(response.body);
-  if (response.status !== 200 || !content.success)
-    return off("unreadable", `GitHub returned HTTP ${response.status} for .github/factory.json.`);
+  if (response.status !== 200) {
+    const failure = diagnostic(
+      "http",
+      "GitHub returned an unsuccessful HTTP status for .github/factory.json.",
+    );
+    const status = ProjectFactoryAssignmentDiagnosticSchema.shape.httpStatus.safeParse(
+      response.status,
+    );
+    failure.httpStatus = status.success ? status.data : null;
+    if (failure.httpStatus !== null)
+      failure.reason = `GitHub returned HTTP ${failure.httpStatus} for .github/factory.json.`;
+    return off("unreadable", failure);
+  }
+  if (!content.success)
+    return off(
+      "unreadable",
+      diagnostic(
+        "response",
+        "GitHub returned an unusable contents envelope for .github/factory.json.",
+      ),
+    );
   let parsed: unknown;
   try {
     parsed = JSON.parse(Buffer.from(content.data.content, "base64").toString("utf8"));
   } catch {
-    return off("invalid", ".github/factory.json is not valid JSON.");
+    return off("invalid", diagnostic("content", ".github/factory.json is not valid JSON."));
   }
   const file = AssignmentFileSchema.safeParse(parsed);
   if (!file.success)
     return off(
       "invalid",
-      `.github/factory.json must be { "version": 1, "triage": "<installation>", "releases": "<installation>" }.`,
+      diagnostic(
+        "schema",
+        `.github/factory.json must be { "version": 1, "triage": "<installation>", "releases": "<installation>" }.`,
+      ),
     );
   return {
     source: "file",
