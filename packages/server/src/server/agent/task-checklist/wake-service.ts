@@ -14,6 +14,8 @@ export interface ChecklistGithubObservationPort {
   subscribe(input: { cwd: string; condition: ChecklistGithubCondition }): Promise<{
     /** Missing, stale or failed observations remain unresolved. */
     read(): "satisfied" | "unresolved";
+    availability(): { available: boolean; reason?: string };
+    isCurrentSource(): Promise<boolean>;
     release(): void;
   }>;
 }
@@ -36,6 +38,7 @@ interface RetainedObservation {
   agentId: string;
   cwd: string;
   generation: ChecklistWakeGeneration;
+  sourceCheckedUntil: number;
   subscription: Awaited<ReturnType<ChecklistGithubObservationPort["subscribe"]>>;
 }
 
@@ -47,6 +50,7 @@ export class ChecklistWakeService {
   private readonly waking = new Set<string>();
   private readonly retained = new Map<string, RetainedObservation>();
   private readonly retryAfter = new Map<string, number>();
+  private readonly refusedUntil = new Map<string, number>();
   private readonly now: () => number;
 
   constructor(private readonly options: WakeServiceOptions) {
@@ -70,6 +74,25 @@ export class ChecklistWakeService {
     this.releaseAll();
   }
 
+  /** Live, source-bound availability; a subscription alone is not an observation. */
+  isMonitoring(record: StoredAgentRecord, generation: ChecklistWakeGeneration): boolean {
+    if (!this.canContinue()) return false;
+    const current = this.options.agentStorage.getLoadedRecord(record.id);
+    if (
+      !current ||
+      current.cwd !== record.cwd ||
+      !this.options.agentStorage.currentChecklistWakeGenerations(record.id, [generation]).length
+    )
+      return false;
+    if (generation.condition.kind === "deadline") return true;
+    const retained = this.retained.get(generation.generation);
+    return (
+      retained?.cwd === record.cwd &&
+      retained.sourceCheckedUntil > this.now() &&
+      retained.subscription.availability().available === true
+    );
+  }
+
   private canContinue(): boolean {
     return !this.stopped && this.options.ready() && !this.options.agentManager.isRestartDraining();
   }
@@ -84,12 +107,7 @@ export class ChecklistWakeService {
     try {
       const records = await this.options.agentStorage.list();
       this.prune();
-      const generations = new Set(
-        records.flatMap((record) =>
-          (record.checklistWakeGenerations ?? []).map((entry) => entry.generation),
-        ),
-      );
-      for (const id of this.retryAfter.keys()) if (!generations.has(id)) this.retryAfter.delete(id);
+      this.pruneRetryDelays(records);
       for (const record of records) {
         if (!this.canContinue()) break;
         if (!this.active(record) || this.waking.has(record.id)) continue;
@@ -101,7 +119,11 @@ export class ChecklistWakeService {
         const satisfied: ChecklistWakeGeneration[] = [];
         for (const generation of observed) {
           if (!this.canContinue()) break;
-          if (await this.satisfied(record, generation)) satisfied.push(generation);
+          if (
+            (this.refusedUntil.get(generation.generation) ?? 0) <= this.now() &&
+            (await this.satisfied(record, generation))
+          )
+            satisfied.push(generation);
         }
         if (satisfied.length && this.canContinue()) await this.wake(record, satisfied);
       }
@@ -110,6 +132,16 @@ export class ChecklistWakeService {
       if (!this.canContinue()) this.releaseAll();
       this.scanning = false;
     }
+  }
+
+  private pruneRetryDelays(records: StoredAgentRecord[]): void {
+    const generations = new Set(
+      records.flatMap((record) =>
+        (record.checklistWakeGenerations ?? []).map((entry) => entry.generation),
+      ),
+    );
+    for (const retries of [this.retryAfter, this.refusedUntil])
+      for (const id of retries.keys()) if (!generations.has(id)) retries.delete(id);
   }
 
   private active(record: StoredAgentRecord): boolean {
@@ -143,6 +175,7 @@ export class ChecklistWakeService {
     for (const retained of this.retained.values()) retained.subscription.release();
     this.retained.clear();
     this.retryAfter.clear();
+    this.refusedUntil.clear();
   }
 
   private async satisfied(
@@ -164,19 +197,60 @@ export class ChecklistWakeService {
           subscription.release();
           return false;
         }
-        retained = { agentId: record.id, cwd: record.cwd, generation, subscription };
+        retained = {
+          agentId: record.id,
+          cwd: record.cwd,
+          generation,
+          subscription,
+          sourceCheckedUntil: this.now() + 120_000,
+        };
         this.retained.set(generation.generation, retained);
         this.retryAfter.delete(generation.generation);
       }
+      if (retained.sourceCheckedUntil <= this.now()) {
+        if (!(await retained.subscription.isCurrentSource()))
+          throw new Error("GitHub workspace source changed");
+        retained.sourceCheckedUntil = this.now() + 120_000;
+      }
+      const availability = retained.subscription.availability();
+      if (!availability.available && availability.reason)
+        await this.recordUnavailable(record, generation, availability.reason);
       return retained.subscription.read() === "satisfied";
-    } catch (error) {
+    } catch {
+      this.retained.get(generation.generation)?.subscription.release();
+      this.retained.delete(generation.generation);
       this.retryAfter.set(generation.generation, this.now() + 120_000);
-      this.options.logger.warn(
-        { err: error, agentId: record.id },
-        "Checklist GitHub observation unavailable",
+      await this.recordUnavailable(
+        record,
+        generation,
+        "GitHub observer unavailable for this workspace",
       );
       return false;
     }
+  }
+
+  private async recordUnavailable(
+    record: StoredAgentRecord,
+    generation: ChecklistWakeGeneration,
+    reason: string,
+  ): Promise<void> {
+    if (
+      await this.options.agentStorage.recordChecklistWakeUnavailable(record.id, generation, {
+        reason,
+        at: new Date(this.now()).toISOString(),
+        cwd: record.cwd,
+      })
+    )
+      this.options.logger.info(
+        {
+          agentId: record.id,
+          taskId: generation.taskId,
+          generation: generation.generation,
+          cwd: record.cwd,
+          reason,
+        },
+        "Checklist monitoring unavailable; ordinary opted-in review eligibility applies",
+      );
   }
 
   /** Children inherit Factory pause suppression from their recorded parent chain. */
@@ -289,12 +363,22 @@ export class ChecklistWakeService {
       observed.every(
         (entry) =>
           entry.condition.kind === "deadline" ||
-          this.retained.get(entry.generation)?.subscription.read() === "satisfied",
+          ((this.retained.get(entry.generation)?.sourceCheckedUntil ?? 0) > this.now() &&
+            this.retained.get(entry.generation)?.subscription.read() === "satisfied"),
       );
     this.waking.add(agentId);
     let draining = false;
     try {
       if (!this.canContinue()) return;
+      factoryAllows = await this.factoryAllows(record);
+      if (
+        !(await this.options.agentManager.canPrepareChecklistConditionWake(
+          agentId,
+          observed,
+          canContinue,
+        ))
+      )
+        return;
       await ensureUnarchivedAgentLoaded(agentId, this.options);
       factoryAllows = await this.factoryAllows(record);
       if (!canContinue()) return;
@@ -310,7 +394,14 @@ export class ChecklistWakeService {
     } catch (error) {
       this.options.logger.warn({ err: error, agentId }, "Checklist condition wake refused");
     } finally {
-      if (!draining) this.waking.delete(agentId);
+      if (!draining) {
+        this.waking.delete(agentId);
+        for (const entry of this.options.agentStorage.currentChecklistWakeGenerations(
+          agentId,
+          observed,
+        ))
+          this.refusedUntil.set(entry.generation, this.now() + 120_000);
+      }
     }
   }
 

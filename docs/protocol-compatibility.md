@@ -253,6 +253,7 @@ The blocked status is discretionary and independent of `blockedBy` prerequisite 
 
 The optional `wakeCondition` field describes a deadline, an explicit GitHub PR state,
 a workflow run and attempt, or named required checks on a pinned PR head SHA.
+The PR state `closed` means finished by closure or merge; `merged` requires a merge.
 Create and update mutations accept `null` to clear it; stored items omit cleared fields.
 Structural wire parsing is separate from date and target validation during mutation.
 Provider-owned tasks remain read-only.
@@ -270,7 +271,11 @@ complete monitoring support. Clearing and ordinary writes remain available. Boot
 capability and mutation guard use the same live readiness callback, which refuses writes
 while monitoring is stopped or the daemon is draining. Shared wake admission preserves holds and validates exact
 claim receipts before reservation. Schema acceptance alone does not promise
-a wake. Enable readiness and the capability only when all accepted conditions can be evaluated.
+a wake. The capability reports installed monitoring support; per-target availability remains
+live daemon state, outside wire fields and editable metadata. Unavailable targets remain
+armed but regain eligibility under the existing opt-in review ladder, without resetting it.
+The first concrete unavailable reason is recorded once per generation separately from claims.
+Enable readiness and the capability only when all accepted condition kinds have evaluators.
 
 ## Thread journals
 

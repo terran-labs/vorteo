@@ -4746,6 +4746,7 @@ describe("ForgeService", () => {
     vi.setSystemTime(0);
     let host: string | null = "github.acme.internal";
     let changeHostDuringPath = false;
+    let frozenWakeTime: number | undefined;
     let remaining = 80;
     let restRemaining = 80;
     let authMissing = false;
@@ -4753,6 +4754,7 @@ describe("ForgeService", () => {
     let partial = true;
     let checkStatus = "IN_PROGRESS";
     let attempt = 2;
+    let closedState = "CLOSED";
     let active = 0;
     let peak = 0;
     const delayed = { enabled: false, started: false, release: () => {} };
@@ -4794,7 +4796,7 @@ describe("ForgeService", () => {
               repository: {
                 pullRequest: {
                   number,
-                  state: number === 2 ? "CLOSED" : "MERGED",
+                  state: number === 2 ? closedState : "MERGED",
                   headRefOid: head,
                   commits: {
                     nodes: [
@@ -4840,7 +4842,7 @@ describe("ForgeService", () => {
       },
       resolveRepoHost: async () => host,
       resolveRepoSlug: async () => "acme/repo",
-      now: () => Date.now(),
+      now: () => frozenWakeTime ?? Date.now(),
     });
     const pr = {
       kind: "github_pull_request" as const,
@@ -4882,6 +4884,8 @@ describe("ForgeService", () => {
     expect(closed.read()).toBe("satisfied");
     expect(workflow.read()).toBe("unresolved");
     expect(checks.read()).toBe("unresolved");
+    expect(checks.availability().available).toBe(false);
+    expect(merged.availability().available).toBe(true);
     expect(peak).toBeLessThanOrEqual(2);
     expect(calls.filter((call) => call.args[1] === "rate_limit")).toHaveLength(4);
     expect(
@@ -4890,25 +4894,45 @@ describe("ForgeService", () => {
       ),
     ).toBe(true);
     const firstReads = calls.length;
-    await vi.advanceTimersByTimeAsync(119_000);
+    const newlyArmed = await wakeService.subscribeChecklistWake({ cwd: "/repo", condition: pr });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(newlyArmed.availability().available).toBe(false);
+    expect(newlyArmed.read()).toBe("unresolved"); // Older shared results cannot satisfy a new arm.
+    await vi.advanceTimersByTimeAsync(118_990);
     expect(calls).toHaveLength(firstReads);
     partial = false;
-    checkStatus = "COMPLETED";
     attempt = 1;
+    closedState = "MERGED";
     await vi.advanceTimersByTimeAsync(6_000);
+    expect(newlyArmed.read()).toBe("satisfied");
+    expect(closed.read()).toBe("satisfied"); // Closed means finished, including a merge.
+    await vi.advanceTimersByTimeAsync(125_000); // Incomplete observations use the error backoff.
+    expect(checks.read()).toBe("unresolved");
+    expect(checks.availability().available).toBe(true); // Current running checks are observable.
+    checkStatus = "COMPLETED";
+    await vi.advanceTimersByTimeAsync(125_000);
     expect(checks.read()).toBe("satisfied"); // Terminal failure clears the prerequisite too.
     expect(workflow.read()).toBe("satisfied");
+    expect(checks.availability().available).toBe(true);
     head = "b".repeat(40);
     wakeService.invalidate({ cwd: "/repo" });
     expect(checks.read()).toBe("unresolved");
     await vi.advanceTimersByTimeAsync(125_000);
     expect(checks.read()).toBe("unresolved");
+    expect(checks.availability()).toEqual({
+      available: false,
+      reason: "Pinned GitHub pull request head changed",
+    });
     authMissing = true;
     await vi.advanceTimersByTimeAsync(125_000);
     expect(merged.read()).toBe("unresolved");
+    expect(merged.availability()).toEqual({
+      available: false,
+      reason: "GitHub authentication is unavailable",
+    });
     const failedReads = calls.length;
     await vi.advanceTimersByTimeAsync(119_000);
-    expect(calls).toHaveLength(failedReads);
+    expect(calls).toHaveLength(failedReads + 1); // The head-drift target reaches its separate backoff slot.
     authMissing = false;
     remaining = 40;
     await vi.advanceTimersByTimeAsync(185_000);
@@ -4933,7 +4957,7 @@ describe("ForgeService", () => {
     const restPausedReads = calls.length;
     await vi.advanceTimersByTimeAsync(120_000);
     expect(calls).toHaveLength(restPausedReads);
-    for (const subscription of [merged, duplicate, closed, workflow, checks])
+    for (const subscription of [merged, duplicate, newlyArmed, closed, workflow, checks])
       subscription.release();
     const releasedReads = calls.length;
     await vi.advanceTimersByTimeAsync(600_000);
@@ -4941,13 +4965,25 @@ describe("ForgeService", () => {
     expect(merged.read()).toBe("unresolved");
     host = "late.acme.internal";
     delayed.enabled = true;
+    frozenWakeTime = Date.now();
     const late = await wakeService.subscribeChecklistWake({ cwd: "/late", condition: pr });
     await vi.advanceTimersByTimeAsync(10);
     expect(delayed.started).toBe(true);
+    const armedDuringRead = await wakeService.subscribeChecklistWake({
+      cwd: "/late",
+      condition: pr,
+    });
+    await vi.advanceTimersByTimeAsync(10);
     late.release();
     delayed.release();
     await flushMicrotasks();
     expect(late.read()).toBe("unresolved");
+    expect(armedDuringRead.availability().available).toBe(false);
+    expect(armedDuringRead.read()).toBe("unresolved"); // Poll and arm have the same injected timestamp.
+    frozenWakeTime = undefined;
+    await vi.advanceTimersByTimeAsync(125_000);
+    expect(armedDuringRead.read()).toBe("satisfied");
+    armedDuringRead.release();
     const lateReads = calls.length;
     await vi.advanceTimersByTimeAsync(600_000);
     expect(calls).toHaveLength(lateReads);

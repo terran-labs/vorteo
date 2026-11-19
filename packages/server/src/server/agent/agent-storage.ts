@@ -112,6 +112,9 @@ const ChecklistWakeGenerationSchema = z.object({
   condition: ChecklistWakeConditionSchema,
   armedAt: z.string().datetime(),
   claim: z.object({ id: z.string().uuid(), at: z.string().datetime() }).optional(),
+  unavailable: z
+    .object({ reason: z.string(), at: z.string().datetime(), cwd: z.string() })
+    .optional(),
   suppression: z
     .object({
       reason: z.string(),
@@ -717,6 +720,35 @@ export class AgentStorage {
     return structuredClone(recorded);
   }
 
+  /** First unavailable evidence is advisory and cannot claim or rearm a generation. */
+  async recordChecklistWakeUnavailable(
+    agentId: string,
+    observed: ChecklistWakeGeneration,
+    unavailable: NonNullable<ChecklistWakeGeneration["unavailable"]>,
+  ): Promise<boolean> {
+    const captured = structuredClone(observed);
+    const receipt = structuredClone(unavailable);
+    await this.load();
+    let recorded = false;
+    await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (!record || record.cwd !== receipt.cwd) return null;
+        const current = currentChecklistWakeGenerations(record, [captured])[0];
+        if (!current || current.unavailable) return null;
+        recorded = true;
+        return {
+          ...record,
+          checklistWakeGenerations: record.checklistWakeGenerations?.map((entry) =>
+            entry.generation === current.generation ? { ...entry, unavailable: receipt } : entry,
+          ),
+        };
+      },
+      { checklistWakeWrite: true },
+    );
+    return recorded;
+  }
+
   /** Claim only after admission permits a wake. A receipt is not proof of provider delivery. */
   async claimChecklistWakeGenerations(
     agentId: string,
@@ -1157,8 +1189,8 @@ function sameChecklistWakeGeneration(
   a: ChecklistWakeGeneration,
   b: ChecklistWakeGeneration,
 ): boolean {
-  const { suppression: _a, ...first } = a;
-  const { suppression: _b, ...second } = b;
+  const { suppression: _a, unavailable: _ua, ...first } = a;
+  const { suppression: _b, unavailable: _ub, ...second } = b;
   return isDeepStrictEqual(first, second);
 }
 

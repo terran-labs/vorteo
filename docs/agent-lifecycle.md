@@ -217,9 +217,11 @@ when their native goal is next observed.
 ### Condition wakes and Phase 1 limitation
 
 Condition monitoring handles deadlines and explicit GitHub PR states, workflow attempts
-and named terminal checks on a pinned PR head. Readiness and capability advertisement
-follow the live monitor lifecycle. The service excludes conditioned items from timed reviews and uses shared
-admission without spending review slots. Monitoring itself uses no model; an admitted
+and named terminal checks on a pinned PR head. A PR `closed` condition accepts either
+closure or merge; `merged` requires a merge. Readiness and capability advertisement
+follow the live monitor lifecycle. Only blocked items with an exact current unspent generation and live monitoring
+availability are excluded from timed reviews. The service uses shared admission without
+spending review slots. Monitoring itself uses no model; an admitted
 wake resumes the existing full thread. Local Factory authority is captured only after queued
 operations settle. Another queued operation, service stop or parent-chain change invalidates
 that authority before wake reservation; refused claims remain unspent.
@@ -232,7 +234,14 @@ cancels it. Refused admission leaves the condition unspent.
 
 Required checks must all be present and terminal on the pinned current PR head; failure
 counts as terminal. Missing checks, a changed head, unknown state and API errors remain
-unresolved. Condition wakes do not spend timed-review rungs or update review timestamps.
+unresolved. A valid unsatisfied observation still counts as available monitoring; a subscription
+alone does not. If the workspace has no GitHub adapter, the CLI or authentication is missing,
+or a pinned target no longer matches or observations fail or expire, the condition stays armed and unspent but loses its review
+exemption. A separate daemon-owned receipt records the first concrete unavailable reason
+once per generation and logs it; later recovery restores monitoring without erasing that
+history. Fallback only restores eligibility under the existing opt-in review setting and
+ladder. It does not turn reviews on, reset a ladder or promise another review after its slots
+are exhausted. Condition wakes do not spend timed-review rungs or update review timestamps.
 Phase 1 includes no model pre-check; that work is tracked in
 [issue #479](https://github.com/terran-labs/vorteo/issues/479).
 
@@ -242,6 +251,9 @@ but does not wake. A daemon-owned suppression receipt records the first reason a
 identity once per condition generation, survives reload and produces a structured log
 when first recorded. The receipt never authorizes a wake or consumes its firing claim.
 Ordinary threads and Factory children with resolved local authority remain eligible.
+A cross-server child without local Factory labels is treated as ordinary: it may wake
+while its remote Factory parent is paused because the local daemon cannot identify that
+remote authority.
 Cross-host authority lookup is tracked separately in
 [issue #483](https://github.com/terran-labs/vorteo/issues/483).
 

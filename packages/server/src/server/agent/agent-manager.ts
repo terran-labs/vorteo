@@ -2,6 +2,7 @@ import { RestartHoldError } from "./restart-hold.js";
 import { pendingCodexAsyncQuestions } from "./providers/codex/async-questions.js";
 import type { HeldRestart } from "@getpaseo/protocol/messages";
 import {
+  type ChecklistWakeAvailability,
   blockedReviewDue,
   hasReviewableBlockedWork,
   reviewableTasks,
@@ -2171,6 +2172,28 @@ export class AgentManager {
     });
   }
 
+  /** Refuse known holds before a condition scan restores a provider runtime. */
+  async canPrepareChecklistConditionWake(
+    agentId: string,
+    observed: readonly ChecklistWakeGeneration[],
+    canContinue: () => boolean,
+  ): Promise<boolean> {
+    const eligible = () => {
+      const record = this.registry?.getLoadedRecord(agentId);
+      return (
+        !!record &&
+        this.supportsChecklistWakeConditions() &&
+        canContinue() &&
+        this.blockedWorkRecordEligible(record) &&
+        !!this.registry?.currentChecklistWakeGenerations(agentId, observed).length
+      );
+    };
+    if (!eligible()) return false;
+    const record = this.registry!.getLoadedRecord(agentId)!;
+    if (await this.usageLimitedUntil(record.provider)) return false;
+    return eligible();
+  }
+
   private blockedWorkRecordEligible(record: StoredAgentRecord): boolean {
     return !(
       record.archivedAt ||
@@ -2228,7 +2251,11 @@ export class AgentManager {
         const threadEligible = () => {
           const record = registry.getLoadedRecord(agentId);
           if (!record) return false;
-          if (trigger.kind === "review" && !hasReviewableBlockedWork(record)) return false;
+          if (
+            trigger.kind === "review" &&
+            !hasReviewableBlockedWork(record, this.checklistWakeMonitorAvailable)
+          )
+            return false;
           if (trigger.kind === "condition" && !this.supportsChecklistWakeConditions()) return false;
           if (!this.blockedWorkRecordEligible(record) || !this.blockedWorkRuntimeEligible(agent))
             return false;
@@ -2244,7 +2271,9 @@ export class AgentManager {
             const record = registry.getLoadedRecord(agentId);
             return (
               trigger.kind === "condition" ||
-              (record !== null && record !== undefined && reviewableTasks(record).length > 0)
+              (record !== null &&
+                record !== undefined &&
+                reviewableTasks(record, this.checklistWakeMonitorAvailable).length > 0)
             );
           }
           if (
@@ -2258,7 +2287,9 @@ export class AgentManager {
             const record = registry.getLoadedRecord(agentId);
             return (
               trigger.kind === "condition" ||
-              (record !== null && record !== undefined && reviewableTasks(record).length > 0)
+              (record !== null &&
+                record !== undefined &&
+                reviewableTasks(record, this.checklistWakeMonitorAvailable).length > 0)
             );
           }
           if (goal.status !== "blocked") return false;
@@ -2267,7 +2298,7 @@ export class AgentManager {
         const triggerEligible = () => {
           const record = registry.getLoadedRecord(agentId);
           return trigger.kind === "review"
-            ? !!record && blockedReviewDue(record, this.now())
+            ? !!record && blockedReviewDue(record, this.now(), this.checklistWakeMonitorAvailable)
             : registry.currentChecklistWakeGenerations(agentId, trigger.observed).length > 0;
         };
         if (!threadEligible() || !triggerEligible()) return null;
@@ -6289,6 +6320,12 @@ export class AgentManager {
       (question) => question.status === "answered" && !question.answerDeliveredAt,
     );
     for (const question of pending) await this.deliverAnswer(agentId, question);
+  }
+
+  private checklistWakeMonitorAvailable: ChecklistWakeAvailability = () => false;
+
+  setChecklistWakeMonitorAvailability(reader: ChecklistWakeAvailability): void {
+    this.checklistWakeMonitorAvailable = reader;
   }
 
   private checklistWakeConditionsReady: (() => boolean) | null = null;

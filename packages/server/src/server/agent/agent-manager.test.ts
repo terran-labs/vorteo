@@ -3166,12 +3166,44 @@ test("blocked-work reviews follow a three-step ladder that only a real prompt re
     questions: [{ id: "q", status: "open", blocks: ["t"] }],
   } as unknown as StoredAgentRecord;
   expect(blockedReviewDue(asked, at(60).getTime())).toBe(false);
+  const condition = { kind: "deadline", at: at(5).toISOString() } as const;
+  const generation = {
+    taskId: "t",
+    generation: randomUUID(),
+    condition,
+    armedAt: at(0).toISOString(),
+  };
   const conditioned: StoredAgentRecord = {
     ...base,
     blockedGoalReviewNeeded: true,
-    tasks: [{ ...base.tasks![0]!, wakeCondition: { kind: "deadline", at: at(5).toISOString() } }],
+    tasks: [{ ...base.tasks![0]!, source: "vorteo", wakeCondition: condition }],
+    checklistWakeGenerations: [generation],
   };
-  expect(blockedReviewDue(conditioned, at(5).getTime())).toBe(false);
+  const available = () => true;
+  expect(blockedReviewDue(conditioned, at(5).getTime())).toBe(true);
+  expect(blockedReviewDue(conditioned, at(5).getTime(), () => false)).toBe(true);
+  expect(blockedReviewDue(conditioned, at(5).getTime(), available)).toBe(false);
+  const stale = {
+    ...conditioned,
+    tasks: [{ ...conditioned.tasks![0]!, status: "in_progress" as const }],
+    checklistWakeGenerations: [
+      { ...generation, claim: { id: randomUUID(), at: at(1).toISOString() } },
+    ],
+  };
+  expect(blockedReviewDue(stale, at(5).getTime(), available)).toBe(true);
+  expect(blockedReviewDue({ ...stale, tasks: conditioned.tasks }, at(5).getTime(), available)).toBe(
+    true,
+  );
+  expect(
+    blockedReviewDue(
+      { ...stale, checklistWakeGenerations: [generation] },
+      at(5).getTime(),
+      available,
+    ),
+  ).toBe(true);
+  expect(
+    blockedReviewDue({ ...conditioned, checklistWakeGenerations: [] }, at(5).getTime(), available),
+  ).toBe(true);
   expect(
     blockedReviewDue(
       {
@@ -3182,9 +3214,10 @@ test("blocked-work reviews follow a three-step ladder that only a real prompt re
         ],
       },
       at(5).getTime(),
+      available,
     ),
   ).toBe(true);
-  expect(blockedReviewDue({ ...conditioned, tasks: [] }, at(5).getTime())).toBe(true);
+  expect(blockedReviewDue({ ...conditioned, tasks: [] }, at(5).getTime(), available)).toBe(true);
 });
 
 test("a usage limit holds a standalone thread for its reset without pausing it", async () => {
@@ -16140,7 +16173,7 @@ test("Vorteo checklist mutations survive provider updates, history refresh, and 
     await manager.flush();
     expect((await storage.get(agent.id))?.checklistWakeGenerations).toEqual(observed);
     // A refusal spends nothing; concurrent repeated observations claim only once.
-    const now = Date.parse(condition.at);
+    let now = Date.parse(condition.at);
     expect(
       await storage.claimChecklistWakeGenerations(agent.id, observed, now, () => false),
     ).toEqual([]);
@@ -16238,13 +16271,19 @@ test("Vorteo checklist mutations survive provider updates, history refresh, and 
     await manager.flush();
     const ready = storage.getLoadedRecord(agent.id)!.checklistWakeGenerations!;
     let githubReady = false;
+    let githubAvailable = true;
     let retained = 0;
     let releases = 0;
     const github: ChecklistGithubObservationPort = {
       async subscribe() {
         retained++;
         return {
-          read: () => (githubReady ? "satisfied" : "unresolved"),
+          read: () => (githubAvailable && githubReady ? "satisfied" : "unresolved"),
+          isCurrentSource: async () => true,
+          availability: () =>
+            githubAvailable
+              ? { available: true }
+              : { available: false, reason: "GitHub authentication is unavailable" },
           release: () => {
             retained--;
             releases++;
@@ -16339,6 +16378,28 @@ test("Vorteo checklist mutations survive provider updates, history refresh, and 
     });
     await service.tick();
     expect(retained).toBe(1); // Ordinary orphaned work is not given a Factory hold.
+    const monitored = storage.getLoadedRecord(agent.id)!;
+    const checksGeneration = monitored.checklistWakeGenerations!.find(
+      (entry) => entry.taskId === "checks",
+    )!;
+    expect(service.isMonitoring(monitored, checksGeneration)).toBe(true); // A valid unsatisfied result is observable.
+    githubAvailable = false;
+    await service.tick();
+    expect(service.isMonitoring(monitored, checksGeneration)).toBe(false);
+    const unavailable = storage.getLoadedRecord(agent.id)!.checklistWakeGenerations!;
+    expect(unavailable.find((entry) => entry.taskId === "checks")).toMatchObject({
+      unavailable: { reason: "GitHub authentication is unavailable" },
+    });
+    expect(unavailable.every((entry) => !entry.claim)).toBe(true);
+    await service.tick();
+    expect(storage.getLoadedRecord(agent.id)!.checklistWakeGenerations).toEqual(unavailable);
+    const unavailableRecovery = new AgentStorage(join(workdir, "agents"), logger);
+    expect((await unavailableRecovery.get(agent.id))!.checklistWakeGenerations).toEqual(
+      unavailable,
+    );
+    githubAvailable = true;
+    expect(service.isMonitoring(monitored, checksGeneration)).toBe(true);
+
     await manager.setLabels(agent.id, {
       "factory.role": "worker",
       [PARENT_AGENT_ID_LABEL]: "parent",
@@ -16385,6 +16446,11 @@ test("Vorteo checklist mutations survive provider updates, history refresh, and 
     ).toBe(true);
     expect(retained).toBe(0);
     await storage.upsert({ ...storage.getLoadedRecord(agent.id)!, cwd: workdir });
+    const refusedReads = nativeReads;
+    now += 15_000;
+    await recreated.tick();
+    expect(nativeReads).toBe(refusedReads); // A refused generation does not prepare again every scan.
+    now += 105_000;
     for (const change of ["pause", "parent"] as const) {
       nativeReads = 0;
       duringAdmission = async () => {
@@ -16398,6 +16464,7 @@ test("Vorteo checklist mutations survive provider updates, history refresh, and 
       ).toBe(true);
       pausedProjects.clear();
       await manager.setLabels(agent.id, { [PARENT_SERVER_ID_LABEL]: "local" });
+      now += 120_000;
     }
     duringAdmission = undefined;
     await recreated.tick();
@@ -16639,7 +16706,7 @@ test.each([
         Date.parse(record.createdAt),
         Date.parse(record.lastActivityAt ?? record.createdAt),
       ) + 300_001;
-    expect(blockedReviewDue(record, now)).toBe(trigger === "review");
+    expect(blockedReviewDue(record, now, () => true)).toBe(trigger === "review");
     const applyHold = async () => {
       if (condition === "restart") manager.beginRestartDrain(randomUUID());
       if (condition === "queue") await queue.pause(agent.id);
@@ -16669,6 +16736,15 @@ test.each([
         condition === "claimStop" &&
         storage.getLoadedRecord(agent.id)?.checklistWakeGenerations?.some((entry) => entry.claim)
       );
+    if (trigger === "condition" && condition === "quota") {
+      const storedOnlyId = randomUUID();
+      await storage.upsert({ ...storage.getLoadedRecord(agent.id)!, id: storedOnlyId });
+      expect(manager.getAgent(storedOnlyId)).toBeNull();
+      expect(
+        await manager.canPrepareChecklistConditionWake(storedOnlyId, observed, canContinue),
+      ).toBe(false);
+      expect(manager.getAgent(storedOnlyId)).toBeNull();
+    }
     expect(
       await (trigger === "review"
         ? manager.startBlockedTaskReview(agent.id, canContinue)

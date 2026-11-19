@@ -1808,7 +1808,14 @@ export async function createPaseoDaemon(
         if (forge?.forge !== "github" || !supportsGitHubChecklistWake(forge.service)) {
           throw new Error("GitHub wake observation is unavailable for this workspace");
         }
-        return forge.service.subscribeChecklistWake(input);
+        const subscription = await forge.service.subscribeChecklistWake(input);
+        return {
+          ...subscription,
+          async isCurrentSource() {
+            const current = await workspaceGitService.resolveForge(input.cwd);
+            return current?.forge === "github" && current.service === forge.service;
+          },
+        };
       },
     },
     captureFactoryAuthority: async () => {
@@ -1817,7 +1824,10 @@ export async function createPaseoDaemon(
     },
   });
   agentManager.setChecklistWakeConditionsReadiness(checklistReady);
+  const monitorAvailable = checklistWakes.isMonitoring.bind(checklistWakes);
+  agentManager.setChecklistWakeMonitorAvailability(monitorAvailable);
   const blockedTaskReviews = new BlockedTaskReviewService({
+    monitorAvailable,
     agentManager,
     agentStorage,
     logger,
