@@ -267,7 +267,161 @@ jobs:
         run: npx vitest run packages/website/src --bail=1
 
       - name: Install website test browsers
-        run: npx playwright install --with-deps chromium webkit
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          set -euo pipefail
+          started=$SECONDS
+          trap 'status=$?; echo "Website browser installation elapsed=$((SECONDS - started))s status=$status"; if (( status != 0 )); then echo "::error::Website browser installation failed (status=$status)"; fi' EXIT
+
+          # Rewrite only the measured slow EC2 archive route on this disposable runner.
+          sudo timeout --kill-after=5s 30s python3 - <<'PYTHON'
+          import pathlib
+          import re
+          import time
+          from urllib.parse import urlsplit
+
+          normalization_started = time.monotonic()
+          root = pathlib.Path('/etc/apt')
+          files = [root / 'sources.list', *sorted((root / 'sources.list.d').glob('*.list')),
+                   *sorted((root / 'sources.list.d').glob('*.sources'))]
+          regional = re.compile(r'[a-z]{2}(?:-[a-z]+)+-[0-9]+\.ec2\.archive\.ubuntu\.com')
+          rewritten = 0
+          mirror_list_referenced = False
+
+          def normalize(token, label):
+              uri = urlsplit(token)
+              host = uri.hostname or ''
+              print(f'{label} before: {uri.scheme}://{host}{uri.path}', flush=True)
+              if regional.fullmatch(host):
+                  if not re.fullmatch(r'https?://' + re.escape(host) + r'/ubuntu/?', token):
+                      raise SystemExit('Observed EC2 Ubuntu source cannot be normalized safely')
+                  token = 'https://archive.ubuntu.com/ubuntu'
+                  print(f'{label} after: {token}', flush=True)
+              else:
+                  print(f'{label} after: {uri.scheme}://{host}{uri.path}', flush=True)
+              return token
+
+          for path in files:
+              if not path.exists():
+                  continue
+              before = path.read_text()
+              lines = []
+              uri_field = False
+              for line in before.splitlines(keepends=True):
+                  active = line.split('#', 1)[0]
+                  if path.suffix == '.sources':
+                      if not active[:1].isspace():
+                          uri_field = active.lower().startswith('uris:')
+                      selected = uri_field
+                  else:
+                      selected = bool(re.match(r'\s*deb(?:-src)?\s', active))
+                  if selected:
+                      for token in active.split():
+                          uri = urlsplit(token)
+                          host = uri.hostname or ''
+                          if not (host == 'ubuntu.com' or host.endswith('.ubuntu.com') or token.startswith('mirror+')):
+                              continue
+                          if token.startswith('mirror+file:'):
+                              if token not in ('mirror+file:/etc/apt/apt-mirrors.txt',
+                                               'mirror+file:///etc/apt/apt-mirrors.txt'):
+                                  raise SystemExit('Unsupported local Ubuntu mirror-list reference')
+                              mirror_list_referenced = True
+                          replacement = normalize(token, 'Ubuntu source')
+                          if replacement != token:
+                              line = line.replace(token, replacement)
+                              rewritten += 1
+                  lines.append(line)
+              after = ''.join(lines)
+              if after != before:
+                  path.write_text(after)
+                  if path.read_text() != after:
+                      raise SystemExit('EC2 Ubuntu source rewrite verification failed')
+          if mirror_list_referenced:
+              path = root / 'apt-mirrors.txt'
+              if path.is_symlink() or not path.is_file():
+                  raise SystemExit('Referenced Ubuntu mirror list must be a regular local file')
+              before = path.read_bytes().decode('utf-8')
+              lines = []
+              entries = 0
+              for number, line in enumerate(before.splitlines(keepends=True), 1):
+                  if not line.strip() or line.startswith('#'):
+                      lines.append(line)
+                      continue
+                  # apt separates the URI from metadata with a tab; preserve that suffix verbatim.
+                  entry = re.fullmatch(r'([a-zA-Z][a-zA-Z0-9+.-]*:[^\s#]+)(\t[^\r\n]*)?(\r?\n)?', line)
+                  if not entry or not re.fullmatch(r'(?:[ \t]*[a-zA-Z][a-zA-Z0-9_-]*:[^\s#]+)*[ \t]*', entry[2] or ''):
+                      raise SystemExit(f'Unexpected Ubuntu mirror-list format at line {number}')
+                  token = entry[1]
+                  entries += 1
+                  uri = urlsplit(token)
+                  if uri.scheme in ('http', 'https', 'ftp') and not uri.hostname:
+                      raise SystemExit(f'Invalid Ubuntu mirror URI at line {number}')
+                  if uri.scheme.startswith('mirror'):
+                      raise SystemExit(f'Nested Ubuntu mirror list is unsupported at line {number}')
+                  replacement = normalize(token, f'Ubuntu mirror-list entry {number}')
+                  lines.append(replacement + line[len(token):])
+                  if replacement != token:
+                      rewritten += 1
+                      print(f'Ubuntu mirror-list entry {number} rewritten', flush=True)
+              if not entries:
+                  raise SystemExit('Referenced Ubuntu mirror list contains no entries')
+              after = ''.join(lines).encode('utf-8')
+              if after != before.encode('utf-8'):
+                  path.write_bytes(after)
+                  if path.read_bytes() != after:
+                      raise SystemExit('Ubuntu mirror-list rewrite verification failed')
+          print(f'EC2 Ubuntu source rewrite fired={rewritten > 0} count={rewritten}', flush=True)
+          print(f'Website install phase=sources elapsed={time.monotonic() - normalization_started:.3f}s status=0', flush=True)
+          PYTHON
+
+          playwright="$PWD/node_modules/playwright/cli.js"
+          node_bin="$(command -v node)"
+          deps_ready=false
+          run_phase() {
+            local phase="$1" phase_started=$SECONDS status
+            shift
+            echo "Website install phase=$phase attempt=$attempt started"
+            if "$@"; then status=0; else status=$?; fi
+            echo "Website install phase=$phase attempt=$attempt elapsed=$((SECONDS - phase_started))s status=$status"
+            return "$status"
+          }
+          for attempt in 1 2; do
+            if ! "$deps_ready"; then
+              if (( attempt == 2 )); then
+                # Refuse recovery while a surviving apt/dpkg process still owns a lock.
+                run_phase locks sudo timeout --kill-after=5s 10s python3 - <<'PYTHON'
+          import fcntl
+          import time
+          from contextlib import ExitStack
+
+          with ExitStack() as stack:
+              for name in ('/var/lib/dpkg/lock-frontend', '/var/lib/dpkg/lock',
+                           '/var/lib/apt/lists/lock', '/var/cache/apt/archives/lock'):
+                  lock = stack.enter_context(open(name, 'a'))
+                  while True:
+                      try:
+                          fcntl.lockf(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                          break
+                      except BlockingIOError:
+                          time.sleep(0.2)
+          PYTHON
+                # A killed apt transaction must be recovered before retrying it.
+                run_phase recovery sudo timeout --kill-after=5s 30s env DEBIAN_FRONTEND=noninteractive dpkg --configure -a
+              fi
+              # Run timeout as root so its process group includes apt and dpkg.
+              if run_phase dependencies sudo timeout --kill-after=5s 180s "$node_bin" "$playwright" install-deps chromium webkit; then
+                deps_ready=true
+              fi
+            fi
+            if "$deps_ready"; then
+              if run_phase browsers timeout --kill-after=5s 120s "$node_bin" "$playwright" install chromium webkit; then
+                exit 0
+              fi
+            fi
+            if (( attempt == 1 )); then sleep 5; fi
+          done
+          exit 1
 
       - name: Verify website mockups
         run: npm run test:e2e --workspace=@getpaseo/website
