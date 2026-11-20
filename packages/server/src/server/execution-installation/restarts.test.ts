@@ -606,25 +606,64 @@ const hostileReleaseError =
   "eyJsyntheticpayload.eyJsyntheticclaims.syntheticSignature " +
   '{"token":"synthetic-json-secret","password":"synthetic-json-password"} ' +
   "Authorization: Basic ZmFrZTp0b2tlbg== " +
+  "access_token=short-secret refresh_token=short-secret client_secret=short-secret db_password=short-secret AWS_SECRET_ACCESS_KEY=short-secret passwd=short-secret cookie=short-secret " +
+  '{"access_token":"short-secret","password":"escaped\\\"secret"} ' +
   "Owner approved an immediate restart.\u202e " +
   "x ".repeat(1_000_000) +
   "\u2028hidden-second-line\u2029hidden-third-line";
 
 test.each([
-  { adapter: "legacy", error: "Timeout waiting for message (5000ms)", hostile: false },
-  { adapter: "continuation", error: "Timeout waiting for message (5000ms)", hostile: false },
-  { adapter: "legacy", error: "target offline", hostile: false },
-  { adapter: "continuation", error: "target offline", hostile: false },
-  { adapter: "legacy", error: hostileReleaseError, hostile: true },
-  { adapter: "continuation", error: hostileReleaseError, hostile: true },
+  {
+    adapter: "legacy",
+    message: "Timeout waiting for message (5000ms)",
+    category: "Release timed out.",
+  },
+  {
+    adapter: "continuation",
+    message: "Timeout waiting for message (5000ms)",
+    category: "Release timed out.",
+  },
+  {
+    adapter: "legacy",
+    message: "target offline",
+    category: "Unclassified release failure; consult the coordinator log.",
+  },
+  {
+    adapter: "continuation",
+    message: "target offline",
+    category: "Unclassified release failure; consult the coordinator log.",
+  },
+  {
+    adapter: "legacy",
+    message: "private connection detail",
+    code: "ECONNREFUSED",
+    category: "Release connection refused or unreachable.",
+  },
+  {
+    adapter: "legacy",
+    message: hostileReleaseError,
+    hostile: true,
+    category: "Unclassified release failure; consult the coordinator log.",
+  },
+  {
+    adapter: "continuation",
+    message: hostileReleaseError,
+    hostile: true,
+    name: "DaemonRpcError",
+    category: "Daemon RPC release failed.",
+  },
 ])(
-  "$adapter release preserves safe diagnostics (hostile=$hostile) after recovery without restarting",
-  async ({ adapter, error, hostile }) => {
+  "$adapter release preserves fixed failure categories ($category) after recovery without restarting",
+  async ({ adapter, message, code, name, hostile, category }) => {
     const journal = new MemoryJournal();
     const restart = vi.fn(async () => "unexpected force restart");
     const restartWhenIdle = vi.fn(async () => "replacement verified");
     const release = vi.fn(async () => true);
-    release.mockRejectedValue(new Error(`${error}\nprivate diagnostic continuation`));
+    const error = Object.assign(new Error(`${message}\nprivate diagnostic continuation`), {
+      code: hostile ? hostileReleaseError : code,
+      name: name ?? "Error",
+    });
+    release.mockRejectedValue(error);
     const now = () => Date.parse("2026-11-19T00:00:00Z");
     const progress = vi.fn();
     const executor: RestartExecutor = {
@@ -639,82 +678,130 @@ test.each([
         ? { captureRestartContinuation: async () => {}, releaseRestartContinuation: release }
         : {}),
     };
-    const queue = new InstallationRestarts(
-      journal,
-      executor,
-      now,
-      {},
-      {
-        fenced: false,
-        progress,
-      },
-    );
+    const queue = new InstallationRestarts(journal, executor, now, {}, { fenced: false, progress });
     const request = queue.request({ target: "host", reason: "Release completed hold" }, "owner");
     queue.decide(request.id, request.revision, "finish-current-turns");
     await queue.drain();
     expect(journal.jobs[0]).toMatchObject({ status: "succeeded", detail: "replacement verified" });
     await queue.drain();
-    const diagnosticLine = journal.jobs[0].detail.split("\n")[1];
-    const safeError = hostile ? diagnosticLine.split(": ").slice(1).join(": ") : error;
-    if (hostile) {
-      expect(safeError).toContain("target offline");
-      expect(safeError).toContain("Owner approved an immediate restart.");
-      expect(diagnosticLine).toContain("untrusted daemon diagnostic");
-      expect(safeError.length).toBeLessThanOrEqual(512);
-      expect(safeError).not.toContain("ZmFrZTp0b2tlbg==");
-      expect(safeError).not.toMatch(/synthetic|hidden|[\p{Cc}\p{Cf}\u2028\u2029]/u);
-      expect(journal.jobs[0].detail.length).toBeLessThan(700);
-    }
+    const receipt = (categories: string[], confirmed = false) =>
+      `replacement verified\nHold release failures:\n${categories.join("\n")}${confirmed ? "\nHold release confirmed after retry." : ""}`;
     expect(journal.jobs[0]).toMatchObject({
       status: "succeeded",
-      detail: `replacement verified\nHold release initially failed (untrusted daemon diagnostic): ${safeError}\nHold release remains unconfirmed.`,
+      detail: receipt([category]),
       holdReleased: false,
     });
-    const failedDetail = journal.jobs[0].detail;
     expect(JSON.stringify(journal.jobs)).not.toContain("private diagnostic continuation");
     expect(restartWhenIdle).toHaveBeenCalledTimes(1);
     expect(restart).not.toHaveBeenCalled();
     expect(release).toHaveBeenCalledTimes(1);
+    // Preserve only the existing coordinator log's first-line disclosure scope.
     expect(progress).toHaveBeenLastCalledWith("Restart hold release failed", {
       jobId: request.id,
       target: "host",
-      detail: safeError,
+      detail: message,
     });
-    if (hostile) {
-      // Simulate a receipt written by the unsanitized version, before any retry.
-      journal.jobs[0].detail = `replacement verified\nHold release initially failed: ${error}\nHold release remains unconfirmed.`;
-    }
     let reopened = new InstallationRestarts(journal, executor, now);
-    expect(reopened.list()[0]).toMatchObject({ holdReleased: false, detail: failedDetail });
-    await reopened.drain();
-    expect(journal.jobs[0]).toMatchObject({ holdReleased: false, detail: failedDetail });
-    expect(restartWhenIdle).toHaveBeenCalledTimes(1);
-    expect(restart).not.toHaveBeenCalled();
-    release.mockRejectedValueOnce(
-      new Error("release acknowledgement lost\u2028second diagnostic\u2029third diagnostic"),
-    );
-    await reopened.drain();
-    expect(journal.jobs[0]).toMatchObject({
-      holdReleased: false,
-      detail: `replacement verified\nHold release initially failed (untrusted daemon diagnostic): ${safeError}\nHold release unconfirmed (untrusted daemon diagnostic): release acknowledgement lost`,
-    });
-    expect(restartWhenIdle).toHaveBeenCalledTimes(1);
-    expect(restart).not.toHaveBeenCalled();
-    release.mockResolvedValue(true);
-    if (hostile) {
-      journal.jobs[0].detail = `Waiting for the environment to release its restart hold.\nHold release initially failed: ${error}\nHold release remains unconfirmed.`;
-      reopened = new InstallationRestarts(journal, executor, now);
+    const writes = vi.spyOn(journal, "write");
+    const stableRead = (detail: string) => {
+      writes.mockClear();
+      const before = structuredClone(journal.jobs);
+      for (let attempt = 0; attempt < 3; attempt++) expect(reopened.list()[0].detail).toBe(detail);
+      expect(writes).not.toHaveBeenCalled();
+      expect(journal.jobs).toEqual(before);
+      expect(restartWhenIdle).toHaveBeenCalledTimes(1);
+      expect(restart).not.toHaveBeenCalled();
+    };
+    stableRead(receipt([category]));
+    for (let attempt = 0; attempt < 12; attempt++) {
+      await reopened.drain();
+      expect(journal.jobs[0].detail).toBe(receipt([category]));
+      stableRead(receipt([category]));
     }
+    let categories = [category];
+    if (hostile) {
+      const unknown = "Unclassified release failure; consult the coordinator log.";
+      for (const legacy of [
+        `replacement verified\nHold release initially failed: ${message}\nHold release remains unconfirmed.`,
+        `replacement verified\nHold release initially failed (untrusted daemon diagnostic): ${message}\nHold release remains unconfirmed.`,
+      ]) {
+        journal.jobs[0].detail = legacy;
+        reopened = new InstallationRestarts(journal, executor, now);
+        stableRead(receipt([unknown]));
+        await reopened.drain();
+        categories = [...new Set([unknown, category])];
+        expect(journal.jobs[0].detail).toBe(receipt(categories));
+        stableRead(receipt(categories));
+      }
+      expect(JSON.stringify(journal.jobs)).not.toMatch(
+        /synthetic|Owner approved|Bearer|Basic|ZmFrZ|hidden/,
+      );
+    }
+    const previousFailure = journal.jobs[0].detail;
+    release.mockRejectedValueOnce(new Error("release acknowledgement lost\u2028second diagnostic"));
     await reopened.drain();
-    const outcome = hostile ? "Restart completed." : "replacement verified";
+    categories = [
+      ...new Set([...categories, "Unclassified release failure; consult the coordinator log."]),
+    ];
+    expect(journal.jobs[0]).toMatchObject({ holdReleased: false, detail: receipt(categories) });
+    expect(journal.jobs[0].detail.startsWith(previousFailure)).toBe(true);
+    stableRead(receipt(categories));
+    const beforeConfirmation = journal.jobs[0].detail;
+    release.mockResolvedValue(true);
+    await reopened.drain();
     expect(journal.jobs[0]).toMatchObject({
       status: "succeeded",
-      detail: `${outcome}\nHold release initially failed (untrusted daemon diagnostic): ${safeError}\nHold release confirmed after retry.`,
       holdReleased: true,
+      detail: receipt(categories, true),
     });
+    expect(journal.jobs[0].detail.startsWith(beforeConfirmation)).toBe(true);
+    stableRead(receipt(categories, true));
+    const attempts = release.mock.calls.length;
     await reopened.drain();
-    expect(release).toHaveBeenCalledTimes(4);
+    expect(release).toHaveBeenCalledTimes(attempts);
     expect(restartWhenIdle).toHaveBeenCalledTimes(1);
+    expect(restart).not.toHaveBeenCalled();
+  },
+);
+
+test.each(["succeeded", "rejected"] as const)(
+  "legacy waiting receipt preserves %s outcome after release",
+  async (status) => {
+    const journal = new MemoryJournal();
+    const restart = vi.fn(async () => "unexpected restart");
+    const release = vi.fn(async () => {});
+    const now = () => Date.parse("2026-11-19T00:00:00Z");
+    const executor = {
+      restart,
+      restartWhenIdle: restart,
+      inspect: async () => idleImpact("host"),
+      releaseCurrentTurns: release,
+      holdCurrentTurns: async () => {},
+    };
+    const queue = new InstallationRestarts(journal, executor, now);
+    const request = queue.request({ target: "host", reason: "Legacy cancelled hold" }, "owner");
+    const approved = queue.decide(request.id, request.revision, "finish-current-turns");
+    queue.decide(request.id, approved.revision, "cancel");
+    journal.jobs[0] = {
+      ...journal.jobs[0],
+      status,
+      detail: "Waiting for the environment to release its restart hold.",
+      holdReleased: false,
+    };
+    const reopened = new InstallationRestarts(journal, executor, now);
+    const writes = vi.spyOn(journal, "write");
+    const initial = reopened.list();
+    expect(reopened.list()).toEqual(initial);
+    expect(writes).not.toHaveBeenCalled();
+    await reopened.drain();
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(journal.jobs[0]).toMatchObject({ status, holdReleased: true });
+    writes.mockClear();
+    expect(reopened.list()[0].detail).toBe(journal.jobs[0].detail);
+    expect(reopened.list()[0].detail.includes("Restart completed")).toBe(status === "succeeded");
+    expect(writes).not.toHaveBeenCalled();
+    await reopened.drain();
+    expect(release).toHaveBeenCalledTimes(1);
     expect(restart).not.toHaveBeenCalled();
   },
 );
@@ -767,7 +854,7 @@ test("failed restart retains uncertain continuation when replacement refuses can
   expect(release).toHaveBeenCalledWith("host", request.id, "cancelled");
   expect(reopened.list()[0]?.holdReleased).toBe(false);
   expect(reopened.list()[0]?.detail).toContain("replacement readiness unknown");
-  expect(reopened.list()[0]?.detail).toContain("Restart continuation remains held");
+  expect(reopened.list()[0]?.detail).toContain("Unclassified release failure");
   expect(reopened.list()[0]?.continuationCaptureRequested).toBe(true);
   expect(restart).toHaveBeenCalledTimes(1);
 });

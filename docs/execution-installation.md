@@ -731,18 +731,23 @@ for rollback.
 
 Active request cards and history show the live receipt detail alongside the
 request summary. A failed or timed-out hold release persists `holdReleased: false`
-and a sanitized first-line reason, while retaining the restart outcome. Target-daemon
-errors are labeled as untrusted diagnostics, never owner instructions. Processing
-reads at most 4,096 characters and stores at most 512 per diagnostic; it removes
-terminal controls, stops at Unicode line separators, and redacts URLs, bearer
-values, token shapes and home-directory prefixes. Retained failure text is sanitized
-again when receipts are read or retried. A successful
-restart therefore remains distinguishable from an unconfirmed hold release.
-Only an acknowledged release sets `holdReleased: true`. A confirmed retry retains
-the first failure and records confirmation; failed retries replace the latest
-release status without accumulating duplicate errors. Release retries never
-restart the daemon again. A timeout alone does not prove daemon replacement or
-release, and this receipt does not attempt replacement reconciliation.
+and a fixed failure category, while retaining the restart outcome. Release errors
+never contribute free text to the receipt or lifecycle journal. The four categories
+are timeout, connection refused or unreachable, daemon RPC error, and unclassified
+failure with a pointer to the coordinator log. Classification inspects at most
+4,096 message characters and exact allowlisted codes; arbitrary error fields are
+not displayed. Raw first-line diagnostics remain only in the existing coordinator
+progress log at its previous disclosure scope.
+
+Receipt reads project older free-text failure history to fixed categories without
+writing the journal or changing admission snapshots. Retries persist that safe
+history, retain the first category and append each distinct category at most once.
+Only an acknowledged release sets `holdReleased: true` and appends confirmation.
+Repeated reads and retries cannot grow duplicate text. A successful restart remains
+distinguishable from an unconfirmed hold release; releasing a cancelled request's
+hold never reports a completed restart. Release retries never restart the daemon
+again. A timeout alone does not prove daemon replacement or release, and this
+receipt does not attempt replacement reconciliation.
 
 The existing idle check includes provider subagents and registrations already in
 flight. Before dispatch, the daemon drains persistence and saves agent snapshots.
