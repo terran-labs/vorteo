@@ -786,3 +786,90 @@ it.each([false, true])(
     expect(opened.groupsByHostId.size).toBe(0);
   },
 );
+
+function machineCall(
+  callId: string,
+  name: string,
+  event?: "message" | "finished" | "errored" | "permission-required" | "closed",
+): ToolCallItem {
+  const call = toolCall(callId, name);
+  if (call.payload.source !== "agent") throw new Error("Expected agent tool");
+  call.payload.data.detail = { type: "plain_text", text: `${name} body` };
+  if (event) {
+    call.payload.data.agentMessage = {
+      event,
+      sender: { id: "sender", title: "Reviewer" },
+      text: "Ready for review",
+    };
+  }
+  return call;
+}
+
+const literalEnvelope =
+  '<paseo-system version="1" kind="agent-notification" source-agent-id="sender" message-id="m" event="finished">\nDone\n</paseo-system>';
+
+describe("machine turn lines", () => {
+  const input = {
+    ...presentationOptions,
+    transform: undefined,
+    head: [],
+    isTurnActive: false,
+  };
+
+  it.each<[string, StreamItem, boolean]>([
+    ["an owner message", userMessage("owner", 1), false],
+    [
+      "a question answer",
+      { ...userMessage("answer", 1), clientMessageId: "question-answer-1" },
+      false,
+    ],
+    [
+      "an owner message quoting an envelope",
+      { ...userMessage("quoted", 1), text: literalEnvelope },
+      false,
+    ],
+    [
+      "an owner message quoting a system envelope",
+      { ...userMessage("system-quote", 1), text: "<paseo-system>\nWake up\n</paseo-system>" },
+      false,
+    ],
+    ["a heartbeat call the daemon did not inject", machineCall("provider-1", "heartbeat"), false],
+    ["an agent message", machineCall("received", "agent_message", "message"), true],
+    ["an agent notification", machineCall("finished", "agent_message", "finished"), true],
+    ["a system row", machineCall("paseo-system:abc", "heartbeat"), true],
+    ["a task notification", machineCall("task_notification_1", "task_notification"), true],
+  ])("%s collapses only when a machine produced it", (_name, item, collapses) => {
+    const result = createStreamPresentation()({ ...input, tail: [item] });
+    expect(result.tail.map((row) => row.id)).toEqual([item.id]);
+    expect(result.machineTurns.groupsByHostId.has(item.id)).toBe(collapses);
+  });
+
+  it("groups adjacent machine rows under one host and keeps the reader on it", () => {
+    const present = createStreamPresentation();
+    const anchor = createReadingAnchor();
+    const run = [
+      machineCall("finished", "agent_message", "finished"),
+      machineCall("received", "agent_message", "message"),
+      machineCall("paseo-system:abc", "heartbeat"),
+    ];
+    const tail: StreamItem[] = [userMessage("owner", 1), ...run, assistantMessage("reply", 2)];
+    const hostId = run[0]!.id;
+    const hiddenId = run[2]!.id;
+
+    const opened = present({ ...input, tail, expandedMachineHostIds: new Set([hostId]) });
+    expect(opened.tail.map((row) => row.id)).toEqual(tail.map((row) => row.id));
+    expect(opened.machineTurns.groupsByHostId.get(hostId)).toMatchObject({ expanded: true });
+    expect(opened.readingRowReplacements.get(hiddenId)).toBeUndefined();
+    anchor.reconcile(0, [{ id: hiddenId, top: 48, height: 200 }]);
+
+    const closed = present({ ...input, tail });
+    expect(closed.tail.map((row) => row.id)).toEqual(["owner", hostId, "reply"]);
+    expect(closed.machineTurns.groupsByHostId.get(hostId)?.rows).toHaveLength(3);
+    // The reader, find and the outline all resolve a hidden row to the line that stands for it.
+    expect(anchor.getRowId(closed.readingRowReplacements)).toBe(hostId);
+    expect(closed.machineTurns.hostIdByHiddenRowId.get(hiddenId)).toBe(hostId);
+    expect(closed.machineTurns.hostIdByFoldedMessageId.get(hiddenId)).toBe(hostId);
+    // The host row is revised so its mounted line redraws with the new state.
+    expect(closed.tail[1]).not.toBe(opened.tail[1]);
+  });
+});

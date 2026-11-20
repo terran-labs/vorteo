@@ -92,6 +92,7 @@ import { createStreamPresentation } from "./presentation";
 import { OverviewToolCallGroupView } from "@/tool-calls/detail-level/overview/view";
 import { IndentRail } from "@/components/indent-rail";
 import { TurnSummaryLine } from "./turn-collapse/summary-line";
+import { MachineTurnLine } from "./machine-turns/row";
 import { type AgentStreamRenderModel, buildAgentStreamRenderModel } from "./model";
 import { resolveStreamRenderStrategy } from "./strategy-resolver";
 import { type StreamSegmentRenderers, type StreamViewportHandle } from "./strategy";
@@ -486,6 +487,9 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const toolCallExpansion = useAgentToolCallExpansion(agentId);
     const expandedToolCallGroups = useExpandedToolCallGroups(toolCallExpansion);
     const [expandedTurnHostIds, setExpandedTurnHostIds] = useState<ReadonlySet<string>>(new Set());
+    const [expandedMachineHostIds, setExpandedMachineHostIds] = useState<ReadonlySet<string>>(
+      new Set(),
+    );
 
     // Get serverId (fallback to agent's serverId if not provided)
     const resolvedServerId = serverId ?? context.serverId ?? "";
@@ -657,6 +661,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           display: chatDisplay,
           autoExpandReasoning,
           expandedTurnHostIds,
+          expandedMachineHostIds,
           isTurnActive,
           activeTurnId: effectiveTurnPresentation.turnId,
         }),
@@ -668,6 +673,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         chatDisplay,
         autoExpandReasoning,
         expandedTurnHostIds,
+        expandedMachineHostIds,
         isTurnActive,
         effectiveTurnPresentation.turnId,
       ],
@@ -740,6 +746,30 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           mountedHistoryMessageIds.has(messageId) || liveHeadMessageIds.has(messageId),
       };
     }, [baseRenderModel.segments.liveHead, mountedHistoryMessageIds]);
+    const setMachineExpanded = useCallback((hostId: string, expanded: boolean) => {
+      // The rows open below their line; keep that line under the reader's pointer.
+      viewportRef.current?.holdReadingPosition();
+      setExpandedMachineHostIds((previous) => {
+        if (previous.has(hostId) === expanded) return previous;
+        const next = new Set(previous);
+        if (expanded) {
+          next.add(hostId);
+        } else {
+          next.delete(hostId);
+        }
+        return next;
+      });
+    }, []);
+    // Find and the outline reach a message behind a closed machine line by opening the line.
+    const revealMachineRow = useStableEvent((messageId: string): boolean => {
+      const hostId = presentation.machineTurns.hostIdByFoldedMessageId.get(messageId);
+      if (!hostId || expandedMachineHostIds.has(hostId)) return false;
+      setMachineExpanded(hostId, true);
+      return true;
+    });
+    const revealOutlineMessage = useStableEvent(
+      (messageId: string): boolean => revealMachineRow(messageId) || revealLoadedHistory(messageId),
+    );
     const chatOutline = useChatOutline({
       agentId,
       serverId: resolvedServerId,
@@ -751,7 +781,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       viewportRef,
       onJumpError: handleTimelineHistoryLoadError,
       mountedHistoryMessageIds,
-      revealLoadedMessage: revealLoadedHistory,
+      revealLoadedMessage: revealOutlineMessage,
     });
 
     useImperativeHandle(
@@ -816,6 +846,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     }, []);
     // Chat find reveals a match inside a collapsed turn by opening the turn first.
     const revealLoadedMessage = useStableEvent((messageId: string): boolean => {
+      if (revealMachineRow(messageId)) return true;
       const hostId = presentation.turns.hostIdByFoldedMessageId.get(messageId);
       if (hostId && !expandedTurnHostIds.has(hostId)) {
         setTurnExpanded(hostId, true);
@@ -837,12 +868,32 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       return getCollapsedTurn(layoutItem.item.id)?.expanded ? "openedHost" : "none";
     });
 
+    const getMachineGroup = useStableEvent((hostId: string) =>
+      presentation.machineTurns.groupsByHostId.get(hostId),
+    );
+    // A machine row keeps its own component; a closed line stands in for it, an open line sits
+    // above it. The rest of an opened run follows as ordinary rows.
+    const renderBehindMachineLine = useCallback(
+      (itemId: string, content: ReactNode): ReactNode => {
+        const group = getMachineGroup(itemId);
+        if (!group) return content;
+        return (
+          <>
+            <MachineTurnLine group={group} onExpandedChange={setMachineExpanded} />
+            {group.expanded ? content : null}
+          </>
+        );
+      },
+      [getMachineGroup, setMachineExpanded],
+    );
+
     const setToolCallGroupExpanded = toolCallExpansion.setGroupExpanded;
 
     const renderUserMessageItem = useCallback(
       (layoutItem: StreamLayoutItem, item: Extract<StreamItem, { kind: "user_message" }>) => {
         const collapsedTurn = getCollapsedTurn(item.id);
-        const message = (
+        const message = renderBehindMachineLine(
+          item.id,
           <UserMessage
             serverId={resolvedServerId}
             agentId={agentId}
@@ -863,7 +914,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
               item.clientMessageId !== undefined &&
               pendingClientMessageIds.has(item.clientMessageId)
             }
-          />
+          />,
         );
         if (!collapsedTurn) {
           return message;
@@ -881,6 +932,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         client,
         getCollapsedTurn,
         pendingClientMessageIds,
+        renderBehindMachineLine,
         resolvedServerId,
         setTurnExpanded,
       ],
@@ -1077,7 +1129,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           case "tool_call":
             return (
               <>
-                {renderToolCallItem(layoutItem, item)}
+                {renderBehindMachineLine(item.id, renderToolCallItem(layoutItem, item))}
                 {getCollapsedTurn(item.id) ? (
                   <TurnSummaryLine
                     turn={getCollapsedTurn(item.id)!}
@@ -1113,6 +1165,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         renderUserMessageItem,
         renderAssistantMessageItem,
         renderToolCallItem,
+        renderBehindMachineLine,
         getCollapsedTurn,
         setTurnExpanded,
         resolvedServerId,
