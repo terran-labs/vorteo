@@ -7,6 +7,7 @@ import {
   type AccessComparisonOptions,
   type AccessTier,
   type ChildEscalation,
+  type DaemonAssertions,
   type RefusalReason,
   type AccessDecision,
   type RequestedChildAccess,
@@ -26,26 +27,29 @@ function supervisor(over: Partial<SupervisorAccess> = {}): SupervisorAccess {
   return {
     provider: "claude",
     modeId: "acceptEdits",
-    modeAuthoritative: true,
     environment: HOST,
     directory: "/a/b",
     ...over,
   };
 }
 
-/** A child at its nominal tier: the owner answers, no writable config, authoritative mode. */
 function child(over: Partial<RequestedChildAccess> = {}): RequestedChildAccess {
   return {
     provider: "claude",
     modeId: "acceptEdits",
-    modeAuthoritative: true,
-    promptsAnsweredBy: "owner",
-    loadsSupervisorWritableConfig: false,
     environment: HOST,
     directory: "/a/b",
     ...over,
   };
 }
+
+/** Every daemon assertion at its most permissive truthful value: the child sits at its nominal tier. */
+const TRUTHFUL: DaemonAssertions = {
+  supervisorModeAuthoritative: true,
+  childModeAuthoritative: true,
+  childPromptsAnsweredBy: "owner",
+  childLoadsSupervisorWritableConfig: false,
+};
 
 const refused = (
   reasons: RefusalReason[],
@@ -74,7 +78,10 @@ describe("permission table", () => {
     ["omp", "ask", "attended"],
     ["omp", "full", "unattended"],
   ] as const)("%s %s is %s", (provider, modeId, tier) => {
-    expect(resolveChildTier(child({ provider, modeId }))).toEqual({ tier, escalations: [] });
+    expect(resolveChildTier(child({ provider, modeId }), TRUTHFUL)).toEqual({
+      tier,
+      escalations: [],
+    });
   });
 
   it("covers every manifest mode, or leaves its provider deliberately unmapped", () => {
@@ -93,321 +100,393 @@ describe("permission table", () => {
 });
 
 describe("compareChildAccess", () => {
-  const cases: Array<
-    [string, unknown, unknown, AccessComparisonOptions | undefined, Partial<AccessDecision>]
-  > = [
+  interface Case {
+    name: string;
+    sup: unknown;
+    req: unknown;
+    /** Merged over TRUTHFUL; `null` passes no assertions at all. */
+    asserted?: Partial<DaemonAssertions> | null;
+    options?: unknown;
+    expected: AccessDecision;
+  }
+  const unmapped = (sup: string[], req: string[]) =>
+    ({ kind: "unmapped", supervisor: sup, child: req }) as AccessDecision;
+  const exception = (req: string[]) =>
+    ({ kind: "unmapped-under-unattended-supervisor", child: req }) as AccessDecision;
+
+  const cases: Case[] = [
     // Tier ordering.
-    [
-      "equal attended tier",
-      supervisor({ provider: "codex", modeId: "auto" }),
-      child({ modeId: "default" }),
-      undefined,
-      allowed("attended", "attended"),
-    ],
-    [
-      "lower tier",
-      supervisor({ provider: "codex", modeId: "auto-review" }),
-      child({ modeId: "plan" }),
-      undefined,
-      allowed("attended", "read-only"),
-    ],
-    [
-      "higher tier",
-      supervisor({ modeId: "default" }),
-      child({ provider: "codex", modeId: "full-access" }),
-      undefined,
-      refused(["permission:exceeds-supervisor"]),
-    ],
-    // Reviewer scenarios.
-    [
-      "supervisor answers an attended child's prompts",
-      supervisor({ provider: "codex", modeId: "auto" }),
-      child({ modeId: "default", promptsAnsweredBy: "supervisor" }),
-      undefined,
-      refused(["permission:exceeds-supervisor"], ["prompts-answered-by-supervisor"]),
-    ],
-    [
-      "absent answerer means the supervisor",
-      supervisor({ modeId: "plan" }),
-      child({ modeId: "plan", promptsAnsweredBy: undefined }),
-      undefined,
-      refused(["permission:exceeds-supervisor"], ["prompts-answered-by-supervisor"]),
-    ],
-    [
-      "Codex auto under a Claude attended supervisor",
-      supervisor(),
-      child({ provider: "codex", modeId: "auto-review" }),
-      undefined,
-      refused(["permission:codex-read-scope"]),
-    ],
-    [
-      "Codex auto under an unattended Claude supervisor",
-      supervisor({ modeId: "bypassPermissions" }),
-      child({ provider: "codex", modeId: "auto" }),
-      undefined,
-      allowed("unattended", "attended"),
-    ],
-    [
-      "Claude child loading supervisor-writable config",
-      supervisor(),
-      child({ modeId: "plan", loadsSupervisorWritableConfig: undefined }),
-      undefined,
-      refused(["permission:exceeds-supervisor"], ["supervisor-writable-config"]),
-    ],
-    [
-      "non-authoritative child mode",
-      supervisor(),
-      child({ modeAuthoritative: undefined }),
-      undefined,
-      refused(["permission:exceeds-supervisor"], ["mode-not-authoritative"]),
-    ],
-    [
-      "unattended flag",
-      supervisor(),
-      child({ unattended: true }),
-      undefined,
-      refused(["permission:exceeds-supervisor"], ["unattended-flag"]),
-    ],
-    // Never over-credit the supervisor.
-    [
-      "non-authoritative supervisor is unmapped",
-      supervisor({ modeAuthoritative: undefined }),
-      child(),
-      undefined,
-      { kind: "unmapped", supervisor: ["permission:mode-not-authoritative"], child: [] },
-    ],
-    [
-      "non-authoritative unattended supervisor gets no exception",
-      supervisor({ provider: "omp", modeId: "full", modeAuthoritative: false }),
-      child({ provider: "pi", modeId: undefined }),
-      undefined,
-      {
-        kind: "unmapped",
-        supervisor: ["permission:mode-not-authoritative"],
-        child: ["permission:provider-unmapped"],
+    {
+      name: "equal attended tier",
+      sup: supervisor({ provider: "codex", modeId: "auto" }),
+      req: child({ modeId: "default" }),
+      expected: allowed("attended", "attended"),
+    },
+    {
+      name: "lower tier",
+      sup: supervisor({ provider: "codex", modeId: "auto" }),
+      req: child({ modeId: "plan" }),
+      expected: allowed("attended", "read-only"),
+    },
+    {
+      name: "higher tier",
+      sup: supervisor({ modeId: "default" }),
+      req: child({ provider: "codex", modeId: "full-access" }),
+      expected: refused(["permission:exceeds-supervisor"]),
+    },
+    // First review: who answers, configuration, authority.
+    {
+      name: "supervisor answers an attended child's prompts",
+      sup: supervisor({ provider: "codex", modeId: "auto" }),
+      req: child({ modeId: "default" }),
+      asserted: { childPromptsAnsweredBy: "supervisor" },
+      expected: refused(["permission:exceeds-supervisor"], ["prompts-answered-by-supervisor"]),
+    },
+    {
+      name: "absent answerer means the supervisor",
+      sup: supervisor({ modeId: "plan" }),
+      req: child({ modeId: "plan" }),
+      asserted: { childPromptsAnsweredBy: undefined },
+      expected: refused(["permission:exceeds-supervisor"], ["prompts-answered-by-supervisor"]),
+    },
+    {
+      name: "Claude child loading supervisor-writable config",
+      sup: supervisor(),
+      req: child({ modeId: "plan" }),
+      asserted: { childLoadsSupervisorWritableConfig: undefined },
+      expected: refused(["permission:exceeds-supervisor"], ["supervisor-writable-config"]),
+    },
+    {
+      name: "absent config input on a Codex child",
+      sup: supervisor({ provider: "codex", modeId: "auto" }),
+      req: child({ provider: "codex", modeId: "auto" }),
+      asserted: { childLoadsSupervisorWritableConfig: undefined },
+      expected: refused(["permission:exceeds-supervisor"], ["supervisor-writable-config"]),
+    },
+    {
+      name: "non-authoritative child mode",
+      sup: supervisor(),
+      req: child(),
+      asserted: { childModeAuthoritative: undefined },
+      expected: refused(["permission:exceeds-supervisor"], ["mode-not-authoritative"]),
+    },
+    {
+      name: "unattended flag",
+      sup: supervisor(),
+      req: child({ unattended: true }),
+      expected: refused(["permission:exceeds-supervisor"], ["unattended-flag"]),
+    },
+    {
+      name: "safe defaults allow nothing",
+      sup: supervisor({ modeId: "bypassPermissions" }),
+      req: child({ modeId: "plan" }),
+      asserted: null,
+      expected: unmapped(["permission:mode-not-authoritative"], []),
+    },
+    {
+      name: "assertions spread into the request are ignored",
+      sup: supervisor({ modeId: "bypassPermissions" }),
+      req: {
+        ...child({ modeId: "plan" }),
+        ...TRUTHFUL,
+        promptsAnsweredBy: "owner",
+        modeAuthoritative: true,
+        loadsSupervisorWritableConfig: false,
       },
-    ],
-    [
-      "auto_accept on a provider that ignores it",
-      supervisor({ featureValues: { auto_accept: true } }),
-      child({ modeId: "bypassPermissions" }),
-      undefined,
-      refused(["permission:exceeds-supervisor"]),
-    ],
-    [
-      'auto_accept "false" on the supervisor',
-      supervisor({
+      asserted: {
+        childModeAuthoritative: undefined,
+        childPromptsAnsweredBy: undefined,
+        childLoadsSupervisorWritableConfig: undefined,
+      },
+      expected: allowed("unattended", "unattended", [
+        "prompts-answered-by-supervisor",
+        "supervisor-writable-config",
+        "mode-not-authoritative",
+      ]),
+    },
+    // Second review: Codex read scope under any non-Codex supervisor below unattended.
+    {
+      name: "Claude plan with Codex read-only",
+      sup: supervisor({ modeId: "plan" }),
+      req: child({ provider: "codex", modeId: "read-only" }),
+      expected: refused(["permission:codex-read-scope"]),
+    },
+    {
+      name: "Claude default with Codex read-only",
+      sup: supervisor({ modeId: "default" }),
+      req: child({ provider: "codex", modeId: "read-only" }),
+      expected: refused(["permission:codex-read-scope"]),
+    },
+    {
+      name: "OMP ask with Codex auto",
+      sup: supervisor({ provider: "omp", modeId: "ask" }),
+      req: child({ provider: "codex", modeId: "auto" }),
+      expected: refused(["permission:codex-read-scope"]),
+    },
+    {
+      name: "Claude acceptEdits with Codex auto-review",
+      sup: supervisor(),
+      req: child({ provider: "codex", modeId: "auto-review" }),
+      expected: refused(["permission:codex-read-scope", "permission:machine-reviewed"]),
+    },
+    {
+      name: "Codex supervisor with Codex read-only",
+      sup: supervisor({ provider: "codex", modeId: "auto" }),
+      req: child({ provider: "codex", modeId: "read-only" }),
+      expected: allowed("attended", "read-only"),
+    },
+    {
+      name: "unattended Claude with Codex auto",
+      sup: supervisor({ modeId: "bypassPermissions" }),
+      req: child({ provider: "codex", modeId: "auto" }),
+      expected: allowed("unattended", "attended"),
+    },
+    // Second review: machine-reviewed children.
+    {
+      name: "Claude default with Claude auto",
+      sup: supervisor({ modeId: "default" }),
+      req: child({ modeId: "auto" }),
+      expected: refused(["permission:machine-reviewed"]),
+    },
+    {
+      name: "Codex auto with Codex auto-review",
+      sup: supervisor({ provider: "codex", modeId: "auto" }),
+      req: child({ provider: "codex", modeId: "auto-review" }),
+      expected: refused(["permission:machine-reviewed"]),
+    },
+    {
+      name: "Claude auto with Claude auto",
+      sup: supervisor({ modeId: "auto" }),
+      req: child({ modeId: "auto" }),
+      expected: allowed("attended", "attended"),
+    },
+    {
+      name: "Codex auto-review with Claude auto",
+      sup: supervisor({ provider: "codex", modeId: "auto-review" }),
+      req: child({ modeId: "auto" }),
+      expected: allowed("attended", "attended"),
+    },
+    // Never over-credit the supervisor.
+    {
+      name: "non-authoritative supervisor is unmapped",
+      sup: supervisor(),
+      req: child(),
+      asserted: { supervisorModeAuthoritative: undefined },
+      expected: unmapped(["permission:mode-not-authoritative"], []),
+    },
+    {
+      name: "non-authoritative unattended supervisor gets no exception",
+      sup: supervisor({ provider: "omp", modeId: "full" }),
+      req: child({ provider: "pi", modeId: undefined }),
+      asserted: { supervisorModeAuthoritative: false },
+      expected: unmapped(["permission:mode-not-authoritative"], ["permission:provider-unmapped"]),
+    },
+    {
+      name: "auto_accept on a provider that ignores it",
+      sup: supervisor({ featureValues: { auto_accept: true } }),
+      req: child({ modeId: "bypassPermissions" }),
+      expected: refused(["permission:exceeds-supervisor"]),
+    },
+    {
+      name: 'auto_accept "false" on the supervisor',
+      sup: supervisor({
         provider: "copilot",
         modeId: "allow-all",
         featureValues: { auto_accept: "false" },
       }),
-      child(),
-      undefined,
-      { kind: "unmapped", supervisor: ["feature:invalid-value"], child: [] },
-    ],
-    [
-      "auto_accept 0 on the supervisor",
-      supervisor({
+      req: child(),
+      expected: unmapped(["feature:invalid-value"], []),
+    },
+    {
+      name: "auto_accept 0 on the supervisor",
+      sup: supervisor({
         provider: "opencode",
         modeId: "full-access",
         featureValues: { auto_accept: 0 },
       }),
-      child(),
-      undefined,
-      { kind: "unmapped", supervisor: ["feature:invalid-value"], child: [] },
-    ],
-    [
-      "stray unattended property on the supervisor",
-      { ...supervisor({ modeId: "default" }), unattended: true },
-      child({ modeId: "bypassPermissions" }),
-      undefined,
-      refused(["permission:exceeds-supervisor"]),
-    ],
-    [
-      'auto_accept "true" on the child',
-      supervisor({ modeId: "bypassPermissions" }),
-      child({
+      req: child(),
+      expected: unmapped(["feature:invalid-value"], []),
+    },
+    {
+      name: "stray unattended property on the supervisor",
+      sup: { ...supervisor({ modeId: "default" }), unattended: true },
+      req: child({ modeId: "bypassPermissions" }),
+      expected: refused(["permission:exceeds-supervisor"]),
+    },
+    {
+      name: 'auto_accept "true" on the child',
+      sup: supervisor({ modeId: "bypassPermissions" }),
+      req: child({
         provider: "opencode",
         modeId: "full-access",
         featureValues: { auto_accept: "true" },
       }),
-      undefined,
-      { kind: "unmapped-under-unattended-supervisor", child: ["feature:invalid-value"] },
-    ],
+      expected: exception(["feature:invalid-value"]),
+    },
     // Unmapped and the exception.
-    [
-      "provider without modes",
-      supervisor(),
-      child({ provider: "pi", modeId: undefined }),
-      undefined,
-      { kind: "unmapped", supervisor: [], child: ["permission:provider-unmapped"] },
-    ],
-    [
-      "unresolved row",
-      supervisor(),
-      child({ provider: "copilot", modeId: COPILOT_AGENT }),
-      undefined,
-      { kind: "unmapped", supervisor: [], child: ["permission:mode-unresolved"] },
-    ],
-    [
-      "runtime mode not in the table",
-      supervisor(),
-      child({ modeId: "dontAsk" }),
-      undefined,
-      { kind: "unmapped", supervisor: [], child: ["permission:mode-unmapped"] },
-    ],
-    [
-      "absent mode",
-      supervisor({ modeId: null }),
-      child({ provider: "omp", modeId: undefined }),
-      undefined,
-      {
-        kind: "unmapped",
-        supervisor: ["permission:mode-absent"],
-        child: ["permission:mode-absent"],
-      },
-    ],
-    [
-      "unknown feature",
-      supervisor(),
-      child({ featureValues: { new_feature: true } }),
-      undefined,
-      { kind: "unmapped", supervisor: [], child: ["feature:unmapped"] },
-    ],
-    [
-      "unmapped child under an authoritative unattended supervisor",
-      supervisor({ provider: "omp", modeId: "full" }),
-      child({ provider: "pi", modeId: undefined }),
-      undefined,
-      { kind: "unmapped-under-unattended-supervisor", child: ["permission:provider-unmapped"] },
-    ],
+    {
+      name: "provider without modes",
+      sup: supervisor(),
+      req: child({ provider: "pi", modeId: undefined }),
+      expected: unmapped([], ["permission:provider-unmapped"]),
+    },
+    {
+      name: "unresolved row",
+      sup: supervisor(),
+      req: child({ provider: "copilot", modeId: COPILOT_AGENT }),
+      expected: unmapped([], ["permission:mode-unresolved"]),
+    },
+    {
+      name: "runtime mode not in the table",
+      sup: supervisor(),
+      req: child({ modeId: "dontAsk" }),
+      expected: unmapped([], ["permission:mode-unmapped"]),
+    },
+    {
+      name: "absent mode",
+      sup: supervisor({ modeId: null }),
+      req: child({ provider: "omp", modeId: undefined }),
+      expected: unmapped(["permission:mode-absent"], ["permission:mode-absent"]),
+    },
+    {
+      name: "unknown feature",
+      sup: supervisor(),
+      req: child({ featureValues: { new_feature: true } }),
+      expected: unmapped([], ["feature:unmapped"]),
+    },
+    {
+      name: "unmapped child under an authoritative unattended supervisor",
+      sup: supervisor({ provider: "omp", modeId: "full" }),
+      req: child({ provider: "pi", modeId: undefined }),
+      expected: exception(["permission:provider-unmapped"]),
+    },
     // Other dimensions.
-    [
-      "chrome under an unattended supervisor",
-      supervisor({ modeId: "bypassPermissions" }),
-      child({ featureValues: { chrome: true } }),
-      undefined,
-      refused(["feature:owner-only"]),
-    ],
-    [
-      "container to host",
-      supervisor({ environment: CONTAINER }),
-      child(),
-      undefined,
-      refused(["environment:container-to-host"]),
-    ],
-    [
-      "host to container",
-      supervisor(),
-      child({ environment: CONTAINER }),
-      undefined,
-      refused(["environment:mismatch"]),
-    ],
-    [
-      "empty environment ids",
-      supervisor({ environment: { kind: "host", id: "" } }),
-      child({ environment: { kind: "host", id: "" } }),
-      undefined,
-      refused(["environment:missing-id"]),
-    ],
-    [
-      "descendant directory",
-      supervisor(),
-      child({ directory: "/a/b/c" }),
-      undefined,
-      allowed("attended", "attended"),
-    ],
-    [
-      "sibling sharing a prefix",
-      supervisor(),
-      child({ directory: "/a/bc" }),
-      undefined,
-      refused(["directory:outside-scope"]),
-    ],
-    [
-      "unresolved ..",
-      supervisor(),
-      child({ directory: "/a/b/../../etc" }),
-      undefined,
-      refused(["directory:not-canonical"]),
-    ],
-    [
-      "supervisor scope at /",
-      supervisor({ directory: "/" }),
-      child({ directory: "/etc" }),
-      undefined,
-      refused(["directory:root-scope"]),
-    ],
-    [
-      "worktree at /",
-      supervisor(),
-      child({ directory: "/etc" }),
-      { daemonCreatedWorktrees: ["/"], worktreesRoot: "/w" },
-      refused(["directory:root-scope"]),
-    ],
-    [
-      "worktree without a root",
-      supervisor(),
-      child({ directory: "/w/t" }),
-      { daemonCreatedWorktrees: ["/w/t"] },
-      refused(["directory:worktree-outside-root"]),
-    ],
-    [
-      "worktree outside its root",
-      supervisor(),
-      child({ directory: "/x/t" }),
-      { daemonCreatedWorktrees: ["/x/t"], worktreesRoot: "/w" },
-      refused(["directory:worktree-outside-root"]),
-    ],
-    [
-      "daemon-created worktree under its root",
-      supervisor(),
-      child({ directory: "/w/t/sub" }),
-      { daemonCreatedWorktrees: ["/w/t"], worktreesRoot: "/w" },
-      allowed("attended", "attended"),
-    ],
-    [
-      "tool access change",
-      supervisor(),
-      child({ toolAccess: "clear" }),
-      undefined,
-      refused(["tool-access:agent-change"]),
-    ],
+    {
+      name: "chrome under an unattended supervisor",
+      sup: supervisor({ modeId: "bypassPermissions" }),
+      req: child({ featureValues: { chrome: true } }),
+      expected: refused(["feature:owner-only"]),
+    },
+    {
+      name: "container to host",
+      sup: supervisor({ environment: CONTAINER }),
+      req: child(),
+      expected: refused(["environment:container-to-host"]),
+    },
+    {
+      name: "host to container",
+      sup: supervisor(),
+      req: child({ environment: CONTAINER }),
+      expected: refused(["environment:mismatch"]),
+    },
+    {
+      name: "empty environment ids",
+      sup: supervisor({ environment: { kind: "host", id: "" } }),
+      req: child({ environment: { kind: "host", id: "" } }),
+      expected: refused(["environment:missing-id"]),
+    },
+    {
+      name: "descendant directory",
+      sup: supervisor(),
+      req: child({ directory: "/a/b/c" }),
+      expected: allowed("attended", "attended"),
+    },
+    {
+      name: "sibling sharing a prefix",
+      sup: supervisor(),
+      req: child({ directory: "/a/bc" }),
+      expected: refused(["directory:outside-scope"]),
+    },
+    {
+      name: "unresolved ..",
+      sup: supervisor(),
+      req: child({ directory: "/a/b/../../etc" }),
+      expected: refused(["directory:not-canonical"]),
+    },
+    {
+      name: "supervisor scope at /",
+      sup: supervisor({ directory: "/" }),
+      req: child({ directory: "/etc" }),
+      expected: refused(["directory:root-scope"]),
+    },
+    {
+      name: "worktree at /",
+      sup: supervisor(),
+      req: child({ directory: "/etc" }),
+      options: { daemonCreatedWorktrees: ["/"], worktreesRoot: "/w" },
+      expected: refused(["directory:root-scope"]),
+    },
+    {
+      name: "worktree without a root",
+      sup: supervisor(),
+      req: child({ directory: "/w/t" }),
+      options: { daemonCreatedWorktrees: ["/w/t"] },
+      expected: refused(["directory:worktree-outside-root"]),
+    },
+    {
+      name: "worktree outside its root",
+      sup: supervisor(),
+      req: child({ directory: "/x/t" }),
+      options: { daemonCreatedWorktrees: ["/x/t"], worktreesRoot: "/w" },
+      expected: refused(["directory:worktree-outside-root"]),
+    },
+    {
+      name: "daemon-created worktree under its root",
+      sup: supervisor(),
+      req: child({ directory: "/w/t/sub" }),
+      options: { daemonCreatedWorktrees: ["/w/t"], worktreesRoot: "/w" },
+      expected: allowed("attended", "attended"),
+    },
+    {
+      name: "tool access change",
+      sup: supervisor(),
+      req: child({ toolAccess: "clear" }),
+      expected: refused(["tool-access:agent-change"]),
+    },
     // Wrong input types refuse, never throw.
-    ["null supervisor", null, child(), undefined, refused(["input:invalid"])],
-    [
-      "numeric directory",
-      supervisor(),
-      { ...child(), directory: 7 },
-      undefined,
-      refused(["input:invalid"]),
-    ],
-    [
-      "array feature values",
-      supervisor(),
-      { ...child(), featureValues: [true] },
-      undefined,
-      refused(["input:invalid"]),
-    ],
-    [
-      "string worktree list",
-      supervisor(),
-      child(),
-      { daemonCreatedWorktrees: "/w/t" } as never,
-      refused(["input:invalid"]),
-    ],
-    [
-      "unknown environment kind",
-      supervisor({ environment: { kind: "vm", id: "x" } as never }),
-      child(),
-      undefined,
-      refused(["input:invalid"]),
-    ],
+    { name: "null supervisor", sup: null, req: child(), expected: refused(["input:invalid"]) },
+    {
+      name: "numeric directory",
+      sup: supervisor(),
+      req: { ...child(), directory: 7 },
+      expected: refused(["input:invalid"]),
+    },
+    {
+      name: "array feature values",
+      sup: supervisor(),
+      req: { ...child(), featureValues: [true] },
+      expected: refused(["input:invalid"]),
+    },
+    {
+      name: "string worktree list",
+      sup: supervisor(),
+      req: child(),
+      options: { daemonCreatedWorktrees: "/w/t" },
+      expected: refused(["input:invalid"]),
+    },
+    {
+      name: "unknown environment kind",
+      sup: supervisor({ environment: { kind: "vm", id: "x" } as never }),
+      req: child(),
+      expected: refused(["input:invalid"]),
+    },
   ];
 
-  it.each(cases)("%s", (_name, sup, req, options, expected) => {
+  it.each(cases)("$name", ({ sup, req, asserted, options, expected }) => {
+    const assertions = asserted === null ? undefined : { ...TRUTHFUL, ...asserted };
     expect(
-      compareChildAccess(sup as SupervisorAccess, req as RequestedChildAccess, options),
+      compareChildAccess(
+        sup as SupervisorAccess,
+        req as RequestedChildAccess,
+        assertions,
+        options as AccessComparisonOptions | undefined,
+      ),
     ).toEqual(expected);
+  });
+
+  it("refuses non-object assertions", () => {
+    expect(compareChildAccess(supervisor(), child(), null as never, {})).toEqual(
+      refused(["input:invalid"]),
+    );
   });
 });

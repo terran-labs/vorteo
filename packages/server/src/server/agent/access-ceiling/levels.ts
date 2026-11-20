@@ -13,16 +13,25 @@
  * `refused` with `input:invalid`; it never throws. Unknown values are never allowed: they are
  * refused or reported as unmapped, which callers treat as refused.
  *
+ * Trust contract. The daemon-asserted inputs (`DaemonAssertions`: who answers the child's
+ * prompts, whether it loads supervisor-writable configuration, whether each mode is authoritative)
+ * must be computed by the daemon from its own state. Never take them from `create_agent`
+ * arguments, from a request object or from the calling agent. They are a separate parameter so a
+ * request cannot be spread into them, and the request types do not carry them. `"owner"` cannot
+ * be asserted truthfully until `respond_to_permission` is gated by caller.
+ *
  * What this module does NOT know. Callers must supply or enforce each of these:
- * - Who answers the child's permission prompts (`promptsAnsweredBy`). Absent means the supervisor,
- *   and then every child mode that can prompt is unattended in effect.
- * - Whether the child's provider loads settings, hooks or allow rules from a directory the
- *   supervisor can write (`loadsSupervisorWritableConfig`). Absent means yes. Claude loads user,
- *   project and local settings; OpenCode loads its project config.
- * - Whether each mode id is authoritative (`modeAuthoritative`): the preset was actually applied
- *   and no provider option overrides its boundary (Codex `sandbox_mode`, `approval_policy`, custom
- *   config or a governed permission profile; Claude allowed tools, additional directories,
- *   sandbox, settings permissions or extra arguments). Absent means not authoritative.
+ * - Who answers the child's permission prompts (`childPromptsAnsweredBy`). Absent means the
+ *   supervisor, and then every child mode that can prompt is unattended in effect.
+ * - Whether the child's provider loads settings, hooks, allow rules or servers from a directory
+ *   the supervisor can write (`childLoadsSupervisorWritableConfig`). Absent means yes, for every
+ *   provider: Claude loads user, project and local settings, OpenCode its project config, and
+ *   Codex project configuration for trusted projects.
+ * - Whether each mode id is authoritative (`supervisorModeAuthoritative`,
+ *   `childModeAuthoritative`): the preset was actually applied and no provider option overrides
+ *   its boundary (Codex `sandbox_mode`, `approval_policy`, custom config or a governed permission
+ *   profile; Claude allowed tools, additional directories, sandbox, settings permissions or extra
+ *   arguments). Absent means not authoritative.
  * - Real paths resolved immediately before launch. This module cannot see symlinks and refuses,
  *   rather than resolves, a non-canonical path; the race between resolving and launching is the
  *   caller's.
@@ -59,12 +68,12 @@ export const PERMISSION_MODE_TABLE: readonly ModeRow[] = [
   { provider: "claude", mode: "plan", tier: "read-only" },               // No edits or commands until someone answers plan exit.
   { provider: "claude", mode: "default", tier: "attended" },             // Prompts before tools.
   { provider: "claude", mode: "acceptEdits", tier: "attended" },         // Edits automatic, commands prompt.
-  { provider: "claude", mode: "auto", tier: "attended" },                // A classifier answers, but can still escalate prompts.
+  { provider: "claude", mode: "auto", tier: "attended" },                // A classifier answers prompts; see the machine-reviewed rule.
   { provider: "claude", mode: "bypassPermissions", tier: "unattended" }, // No prompts.
   // Codex: MODE_PRESETS in providers/codex-app-server-agent.ts.
-  { provider: "codex", mode: "read-only", tier: "read-only" },           // read-only sandbox. Runtime preset; not in the manifest.
-  { provider: "codex", mode: "auto", tier: "attended" },                 // workspace-write sandbox; leaving it prompts.
-  { provider: "codex", mode: "auto-review", tier: "attended" },          // Same sandbox; the auto-reviewer answers escalations.
+  { provider: "codex", mode: "read-only", tier: "read-only" },           // Runs commands unprompted in a sandbox that reads the whole disk; see codex read-scope rule. Not in the manifest.
+  { provider: "codex", mode: "auto", tier: "attended" },                 // workspace-write sandbox; leaving it prompts. See codex read-scope rule.
+  { provider: "codex", mode: "auto-review", tier: "attended" },          // Same sandbox; the auto-reviewer answers. See both rules.
   { provider: "codex", mode: "full-access", tier: "unattended" },        // approval never, danger-full-access.
   // Copilot: ACP session modes (providers/copilot-acp-agent.ts).
   { provider: "copilot", mode: COPILOT_PLAN, tier: "unresolved" },       // Enforced by Copilot; not verifiable from our code.
@@ -102,9 +111,6 @@ const AUTO_ACCEPT_PROVIDERS: ReadonlySet<string> = new Set([
   "acp",
 ]);
 
-/** Providers that load configuration from the workspace: Claude settings sources, OpenCode project config. */
-const WORKSPACE_CONFIG_PROVIDERS: ReadonlySet<string> = new Set(["claude", "opencode"]);
-
 type FeatureRule =
   /** Boolean. `true` makes an agent unattended on AUTO_ACCEPT_PROVIDERS. */
   | "unattended-when-true"
@@ -136,8 +142,6 @@ export interface SupervisorAccess {
   provider: string;
   /** Live mode; `null` or `undefined` when the runtime reports none. */
   modeId: string | null | undefined;
-  /** True only when the mode's preset is applied and no provider option overrides it. */
-  modeAuthoritative?: boolean;
   /** Live, effective feature values. */
   featureValues?: Readonly<Record<string, unknown>>;
   environment: AccessEnvironment;
@@ -151,20 +155,34 @@ export interface RequestedChildAccess {
   provider: string;
   /** Resolved mode after inheritance; `null` or `undefined` means the provider default. */
   modeId: string | null | undefined;
-  /** True only when the mode's preset will be applied and no provider option overrides it. */
-  modeAuthoritative?: boolean;
   featureValues?: Readonly<Record<string, unknown>>;
   /** The create request's `unattended` flag. */
   unattended?: boolean;
-  /** Who answers the child's permission prompts. Anything but "owner" means the supervisor. */
-  promptsAnsweredBy?: "owner" | "supervisor";
-  /** Whether the provider loads configuration from a supervisor-writable directory. Absent: yes. */
-  loadsSupervisorWritableConfig?: boolean;
   environment: AccessEnvironment;
   /** Resolved real path of the requested working directory. */
   directory: string;
   /** Whether the request sets or clears tool access. Agents may do neither. */
   toolAccess?: ToolAccessChange;
+}
+
+/**
+ * Facts only the daemon can establish, from its own state. Never derive these from
+ * `create_agent` arguments, a request object or the calling agent. Every absent or unexpected
+ * value fails closed.
+ */
+export interface DaemonAssertions {
+  /** True only when the supervisor's mode preset is applied and no provider option overrides it. Otherwise the supervisor is unmapped. */
+  supervisorModeAuthoritative?: boolean;
+  /** True only when the child's mode preset will be applied and nothing overrides it. Otherwise the child is unattended. */
+  childModeAuthoritative?: boolean;
+  /**
+   * Who answers the child's permission prompts. Anything but "owner" means the supervisor, which
+   * makes the child unattended. "owner" cannot be truthful until `respond_to_permission` is
+   * gated by caller.
+   */
+  childPromptsAnsweredBy?: "owner" | "supervisor";
+  /** `false` only when the child's provider loads no configuration the supervisor can write. Otherwise the child is unattended. */
+  childLoadsSupervisorWritableConfig?: boolean;
 }
 
 export interface AccessComparisonOptions {
@@ -178,6 +196,7 @@ export type RefusalReason =
   | "input:invalid"
   | "permission:exceeds-supervisor"
   | "permission:codex-read-scope"
+  | "permission:machine-reviewed"
   | "feature:owner-only"
   | "environment:container-to-host"
   | "environment:mismatch"
@@ -244,8 +263,13 @@ function isValidSubject(value: unknown): value is Record<string, unknown> {
   );
 }
 
-function isValidInput(supervisor: unknown, child: unknown, options: unknown): boolean {
-  if (!isValidSubject(supervisor) || !isValidSubject(child)) return false;
+function isValidInput(
+  supervisor: unknown,
+  child: unknown,
+  asserted: unknown,
+  options: unknown,
+): boolean {
+  if (!isValidSubject(supervisor) || !isValidSubject(child) || !isRecord(asserted)) return false;
   if (child.unattended !== undefined && typeof child.unattended !== "boolean") return false;
   if (child.toolAccess !== undefined && typeof child.toolAccess !== "string") return false;
   if (!isRecord(options)) return false;
@@ -299,43 +323,80 @@ function resolveBase(subject: {
 }
 
 /** The supervisor is credited only for what is certain: never raised, never defaulted. */
-export function resolveSupervisorTier(supervisor: SupervisorAccess): Resolved {
+export function resolveSupervisorTier(
+  supervisor: SupervisorAccess,
+  asserted: DaemonAssertions,
+): Resolved {
   const base = resolveBase(supervisor);
   const unmapped = "unmapped" in base ? [...base.unmapped] : [];
-  if (supervisor.modeAuthoritative !== true) unmapped.push("permission:mode-not-authoritative");
+  if (asserted.supervisorModeAuthoritative !== true)
+    unmapped.push("permission:mode-not-authoritative");
   if (unmapped.length > 0 || "unmapped" in base) return { unmapped };
   return { tier: base.tier, escalations: [] };
 }
 
 /** The child is charged for everything that could raise it, with the reasons. */
-export function resolveChildTier(child: RequestedChildAccess): Resolved {
+export function resolveChildTier(
+  child: RequestedChildAccess,
+  asserted: DaemonAssertions,
+): Resolved {
   const base = resolveBase(child);
   if ("unmapped" in base) return base;
   const escalations: ChildEscalation[] = [];
   if (base.autoAccept) escalations.push("auto-accept");
   if (child.unattended === true) escalations.push("unattended-flag");
   // Every read-only and attended row can prompt; whoever answers holds the real boundary.
-  if (base.tier !== "unattended" && child.promptsAnsweredBy !== "owner")
+  if (base.tier !== "unattended" && asserted.childPromptsAnsweredBy !== "owner")
     escalations.push("prompts-answered-by-supervisor");
-  if (
-    WORKSPACE_CONFIG_PROVIDERS.has(child.provider) &&
-    child.loadsSupervisorWritableConfig !== false
-  )
+  if (asserted.childLoadsSupervisorWritableConfig !== false)
     escalations.push("supervisor-writable-config");
-  if (child.modeAuthoritative !== true) escalations.push("mode-not-authoritative");
+  if (asserted.childModeAuthoritative !== true) escalations.push("mode-not-authoritative");
   return { tier: escalations.length > 0 ? "unattended" : base.tier, escalations };
 }
 
+const CODEX_SANDBOXED_MODES: ReadonlySet<string> = new Set(["read-only", "auto", "auto-review"]);
+
 /**
- * Codex `auto` and `auto-review` run commands without prompting inside a sandbox that can read
- * the whole disk by default, which a Claude supervisor below unattended cannot do. Refused until
- * the owner accepts that read-scope gap; relax here if they do.
+ * Codex read-scope rule. Codex `read-only`, `auto` and `auto-review` run commands without
+ * prompting inside a sandbox that can read the whole disk by default. A non-Codex supervisor
+ * below unattended cannot do that, so the child would exceed it. Refused until the owner accepts
+ * that read-scope gap; relax here if they do.
  */
-function isCodexReadScopeGap(supervisor: SupervisorAccess, child: RequestedChildAccess): boolean {
+function isCodexReadScopeGap(
+  supervisor: SupervisorAccess,
+  supervisorTier: AccessTier,
+  child: RequestedChildAccess,
+): boolean {
   return (
-    supervisor.provider === "claude" &&
+    supervisorTier !== "unattended" &&
+    supervisor.provider !== "codex" &&
     child.provider === "codex" &&
-    (child.modeId === "auto" || child.modeId === "auto-review")
+    typeof child.modeId === "string" &&
+    CODEX_SANDBOXED_MODES.has(child.modeId)
+  );
+}
+
+/** Claude `auto` and Codex `auto-review`: a model, not a person, answers the prompts. */
+function isMachineReviewed(subject: { provider: string; modeId: string | null | undefined }) {
+  return (
+    (subject.provider === "claude" && subject.modeId === "auto") ||
+    (subject.provider === "codex" && subject.modeId === "auto-review")
+  );
+}
+
+/**
+ * Machine-reviewed rule. In a machine-reviewed child a classifier answers the prompts, so the
+ * owner is not the one gating the child; it would do without the owner what an owner-gated
+ * supervisor of the same tier needs the owner for. Refused unless the supervisor is itself
+ * machine-reviewed or unattended.
+ */
+function isMachineReviewedGap(
+  supervisor: SupervisorAccess,
+  supervisorTier: AccessTier,
+  child: RequestedChildAccess,
+): boolean {
+  return (
+    isMachineReviewed(child) && supervisorTier !== "unattended" && !isMachineReviewed(supervisor)
   );
 }
 
@@ -415,20 +476,23 @@ function scopeRefusals(
 export function compareChildAccess(
   supervisor: SupervisorAccess,
   child: RequestedChildAccess,
+  asserted: DaemonAssertions = {},
   options: AccessComparisonOptions = {},
 ): AccessDecision {
-  if (!isValidInput(supervisor, child, options))
+  if (!isValidInput(supervisor, child, asserted, options))
     return { kind: "refused", reasons: ["input:invalid"], childEscalations: [] };
 
   const refusals = scopeRefusals(supervisor, child, options);
-  const supervisorTier = resolveSupervisorTier(supervisor);
-  const childTier = resolveChildTier(child);
+  const supervisorTier = resolveSupervisorTier(supervisor, asserted);
+  const childTier = resolveChildTier(child, asserted);
   const escalations = "tier" in childTier ? childTier.escalations : [];
   if ("tier" in supervisorTier && "tier" in childTier) {
     if (TIER_RANK[childTier.tier] > TIER_RANK[supervisorTier.tier])
       refusals.push("permission:exceeds-supervisor");
-    if (supervisorTier.tier !== "unattended" && isCodexReadScopeGap(supervisor, child))
+    if (isCodexReadScopeGap(supervisor, supervisorTier.tier, child))
       refusals.push("permission:codex-read-scope");
+    if (isMachineReviewedGap(supervisor, supervisorTier.tier, child))
+      refusals.push("permission:machine-reviewed");
   }
   if (refusals.length > 0)
     return { kind: "refused", reasons: refusals, childEscalations: escalations };
