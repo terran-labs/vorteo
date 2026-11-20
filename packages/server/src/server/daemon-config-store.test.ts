@@ -1788,6 +1788,31 @@ describe("DaemonConfigStore", () => {
     expect(store.get().appendSystemPrompt).toBe("");
   });
 
+  test("quota policy survives patches that omit it and null clears it", () => {
+    const home = mkdtempSync(path.join(tmpdir(), "vorteo-quota-policy-"));
+    tempDirs.push(home);
+    const store = new DaemonConfigStore(home, reloadableConfig({}));
+    expect(store.get().quotaPolicy).toBeUndefined();
+    const quotaPolicy = {
+      version: 1 as const,
+      ladder: { low: 40, someday: 5 },
+      accounts: { "installation-account/a": { pool: false, floors: { normal: 30 } } },
+    };
+    expect(() => store.patch({ quotaPolicy: { ...quotaPolicy, ladder: { normal: 101 } } })).toThrow(
+      "Invalid quota policy",
+    );
+    store.patch({ quotaPolicy });
+    store.patch({ appendSystemPrompt: "unrelated edit" });
+    expect(store.get().quotaPolicy).toEqual(quotaPolicy);
+    // A replacement is whole, not merged into the stored ladder.
+    store.patch({ quotaPolicy: { ...quotaPolicy, ladder: { urgent: 0 } } });
+    expect(store.get().quotaPolicy?.ladder).toEqual({ urgent: 0 });
+    expect(loadPersistedConfig(home).daemon?.quotaPolicy?.ladder).toEqual({ urgent: 0 });
+    store.patch({ quotaPolicy: null });
+    expect(store.get().quotaPolicy).toBeUndefined();
+    expect(loadPersistedConfig(home).daemon?.quotaPolicy).toBeUndefined();
+  });
+
   test("shared policy accepts verified coordinator values, rejects divergence and offline writes, and preserves concurrent local edits", async () => {
     const home = mkdtempSync(path.join(tmpdir(), "vorteo-settings-admission-"));
     tempDirs.push(home);

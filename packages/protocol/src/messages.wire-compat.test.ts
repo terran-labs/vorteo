@@ -698,3 +698,25 @@ test("speech config reads remain compatible with clients before features and fut
     }).features?.voiceMode?.stt,
   ).toEqual({ provider: "future", region: "eu" });
 });
+
+test("quota policy is optional and keeps unknown priorities", () => {
+  const base = MutableDaemonConfigSchema.parse({
+    providers: {},
+    mcp: { enabled: true, injectIntoAgents: true },
+  });
+  expect(base.quotaPolicy).toBeUndefined();
+  const quotaPolicy = {
+    version: 1,
+    ladder: { low: 50, someday: 5 },
+    accounts: { "installation-account/a": { pool: false, floors: { someday: 1 } } },
+  };
+  const read = { ...base, quotaPolicy };
+  expect(MutableDaemonConfigSchema.parse(JSON.parse(JSON.stringify(read)))).toEqual(read);
+  // An older client strips nothing it relies on and still reads the config.
+  const oldSchema = MutableDaemonConfigSchema.omit({ quotaPolicy: true });
+  expect(oldSchema.parse(read)).toEqual(read);
+  expect(MutableDaemonConfigPatchSchema.parse({ quotaPolicy })).toEqual({ quotaPolicy });
+  expect(MutableDaemonConfigPatchSchema.parse({ quotaPolicy: null })).toEqual({
+    quotaPolicy: null,
+  });
+});

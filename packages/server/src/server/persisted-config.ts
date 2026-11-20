@@ -26,6 +26,7 @@ import { AgentProfileSchema, AgentSkillSelectionSchema } from "@getpaseo/protoco
 import { PluginIdSchema, PluginSourceSchema } from "@getpaseo/protocol/plugin-config";
 import { TerminalProfileSchema } from "@getpaseo/protocol/terminal-profile";
 import { SharedProviderPreferencesSchema } from "@getpaseo/protocol/provider-preferences";
+import { QuotaPolicySchema } from "@getpaseo/protocol/quota-policy";
 import { PaseoServicePortAllocationSchema } from "@getpaseo/protocol/paseo-config-schema";
 
 const observedConfigBytes = new WeakMap<PersistedConfig, { home: string; bytes: string | null }>();
@@ -306,6 +307,7 @@ export const PersistedConfigSchema = z
         timeZone: DaemonTimeZoneSchema.optional(),
         agentProfiles: z.array(AgentProfileSchema).optional(),
         sharedProviderPreferences: SharedProviderPreferencesSchema.optional(),
+        quotaPolicy: QuotaPolicySchema.optional(),
         cors: z
           .object({
             allowedOrigins: z.array(z.string()).optional(),
