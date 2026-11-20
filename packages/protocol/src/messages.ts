@@ -1,5 +1,6 @@
 import { SidebarStateChangeSchema, SidebarStateSnapshotSchema } from "./sidebar-state.js";
 import { HeldRestartSchema } from "./maintenance-interruption.js";
+import { AccountQuotaPolicyWireSchema } from "./account-quota-policy.js";
 export { HeldRestartSchema } from "./maintenance-interruption.js";
 export type { HeldRestart } from "./maintenance-interruption.js";
 import {
@@ -469,6 +470,9 @@ export const MutableDaemonConfigSchema = z
     // COMPAT(speechSettings): added in v0.12.0, optional because older daemons omit it.
     features: SpeechSettingsSchema.optional(),
     envOverrides: z.record(z.string(), z.string()).optional(),
+    // COMPAT(accountQuotaPolicy): added 2026-11-20. Stored only; nothing enforces it yet.
+    // Absent when no policy is stored and on older daemons. Only `version` is checked here.
+    accountQuotaPolicy: AccountQuotaPolicyWireSchema.optional(),
   })
   .passthrough();
 
@@ -507,6 +511,9 @@ export const MutableDaemonConfigPatchSchema = z
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
     features: SpeechSettingsPatchSchema.optional(),
+    // COMPAT(accountQuotaPolicy): added 2026-11-20. null clears the stored policy; the daemon
+    // accepts only the bounded version 1 shape.
+    accountQuotaPolicy: AccountQuotaPolicyWireSchema.nullable().optional(),
   })
   .partial()
   .passthrough();
@@ -4437,6 +4444,9 @@ export const ServerInfoStatusPayloadSchema = z
         idleRuntimeCleanupSetting: z.boolean().optional(),
         // COMPAT(blockedWorkReviewSetting): added 2026-11-09, remove gate after 2027-05-09.
         blockedWorkReviewSetting: z.boolean().optional(),
+        // COMPAT(accountQuotaPolicy): added 2026-11-20, retain until 2027-05-20. The daemon
+        // stores and returns `accountQuotaPolicy`; it does not enforce floors or pool membership.
+        accountQuotaPolicy: z.boolean().optional(),
         // COMPAT(restartRecovery): added in v0.14.0, remove gate after 2027-04-28.
         resumeOnStartupSetting: z.boolean().optional(),
         // COMPAT(terminalRestoreModes): added in v0.1.81, remove gate after 2026-11-23.

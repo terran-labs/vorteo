@@ -49,6 +49,10 @@ import {
 import type { AgentSkillSelection } from "@getpaseo/protocol/messages";
 import { parseQuotaReservePolicy } from "@getpaseo/protocol/quota-reserve";
 import {
+  parseAccountQuotaPolicyPatch,
+  type AccountQuotaPolicy,
+} from "@getpaseo/protocol/account-quota-policy";
+import {
   assertProviderConfigRemoval,
   defaultProviderAccountHomes,
 } from "../services/provider-login/removal.js";
@@ -105,6 +109,8 @@ interface SupportedMutableConfigPatch {
   pluginsEnabled?: boolean;
   plugins?: MutableDaemonConfig["plugins"];
   features?: SpeechSettingsPatch;
+  /** Replaces the stored policy whole; null clears it. */
+  accountQuotaPolicy?: AccountQuotaPolicy | null;
 }
 
 function replacementProviderPreferences(patch: SupportedMutableConfigPatch) {
@@ -340,6 +346,7 @@ const RELOADABLE_PATHS = [
   "daemon.timeZone",
   "daemon.agentProfiles",
   "daemon.sharedProviderPreferences",
+  "daemon.accountQuotaPolicy",
   "app.baseUrl",
   "agents.idleRuntimeCleanup",
   "agents.blockedWorkReview",
@@ -376,6 +383,7 @@ const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["daemon.timeZone", "timeZone"],
   ["daemon.agentProfiles", "agentProfiles"],
   ["daemon.sharedProviderPreferences", "sharedProviderPreferences"],
+  ["daemon.accountQuotaPolicy", "accountQuotaPolicy"],
   ["app.baseUrl", "app.baseUrl"],
   ["agents.idleRuntimeCleanup", "idleRuntimeCleanup"],
   ["agents.blockedWorkReview", "blockedWorkReview"],
@@ -522,7 +530,28 @@ function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMut
       ? { sharedProviderPreferences: patch.sharedProviderPreferences }
       : {}),
     ...pickPluginPatch(patch),
+    ...pickAccountQuotaPolicyPatch(patch),
   };
+}
+
+/** A stored policy is replaced whole, never merged; null removes it. */
+function replaceAccountQuotaPolicy(
+  target: { accountQuotaPolicy?: MutableDaemonConfig["accountQuotaPolicy"] },
+  patch: Pick<SupportedMutableConfigPatch, "accountQuotaPolicy">,
+): void {
+  if (patch.accountQuotaPolicy === null) delete target.accountQuotaPolicy;
+  else if (patch.accountQuotaPolicy) target.accountQuotaPolicy = patch.accountQuotaPolicy;
+}
+
+/**
+ * Account quota policy is stored, not enforced (#518). Patches are parsed into the strict,
+ * bounded version 1 shape here, before anything is merged or written, so a refused policy
+ * leaves both the file and the live config unchanged.
+ */
+function pickAccountQuotaPolicyPatch(patch: MutableDaemonConfigPatch): SupportedMutableConfigPatch {
+  const value = patch.accountQuotaPolicy;
+  if (value === undefined) return {};
+  return { accountQuotaPolicy: value === null ? null : parseAccountQuotaPolicyPatch(value) };
 }
 
 export function applyMutableProviderConfigToOverrides(
@@ -1161,6 +1190,7 @@ export class DaemonConfigStore {
     Object.assign(merged, pickPrimaryConnection(parsedPatch));
     Object.assign(merged, pickTimeZonePatch(parsedPatch));
     Object.assign(merged, replacementProviderPreferences(parsedPatch));
+    replaceAccountQuotaPolicy(merged, parsedPatch);
     const next = MutableDaemonConfigSchema.parse(
       installationOwned
         ? omitProvidersFromConfig(merged, removedProviders)
@@ -1612,6 +1642,7 @@ function mergeMutableDaemonPatch(
   if (patch.agentProfiles !== undefined) next.agentProfiles = patch.agentProfiles;
   if (patch.sharedProviderPreferences !== undefined)
     next.sharedProviderPreferences = patch.sharedProviderPreferences;
+  replaceAccountQuotaPolicy(next, patch);
   return Object.keys(next).length > 0 ? next : undefined;
 }
 

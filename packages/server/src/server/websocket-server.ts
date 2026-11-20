@@ -2469,6 +2469,8 @@ export class VoiceAssistantWebSocketServer {
         idleRuntimeCleanupSetting: true,
         // COMPAT(blockedWorkReviewSetting): added 2026-11-09, remove gate after 2027-05-09.
         blockedWorkReviewSetting: true,
+        // COMPAT(accountQuotaPolicy): added 2026-11-20, retain until 2027-05-20. Storage only.
+        accountQuotaPolicy: true,
         // COMPAT(checklistWakeConditions): added 2026-11-18, retain until 2027-05-18.
         checklistWakeConditions: this.agentManager.supportsChecklistWakeConditions(),
         resumeOnStartupSetting: true,

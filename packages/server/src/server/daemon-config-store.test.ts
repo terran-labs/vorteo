@@ -21,7 +21,9 @@ import { loadPersistedConfig, PersistedConfig } from "./persisted-config.js";
 
 import { readSpeechSettings } from "./speech/speech-settings.js";
 
-import type { MutableDaemonConfig } from "@getpaseo/protocol/messages";
+import { MutableDaemonConfigSchema, type MutableDaemonConfig } from "@getpaseo/protocol/messages";
+
+const ACCOUNT = "installation-account/11111111-1111-4111-8111-111111111111";
 
 function usageEnabled(persisted: PersistedConfig): boolean {
   return persisted.daemon?.usage?.enabled !== false;
@@ -1786,6 +1788,81 @@ describe("DaemonConfigStore", () => {
     store.patch({ terminalProfiles: [{ ...terminal, cwd: "/after" }] });
     expect(store.get().terminalProfiles).toEqual([{ ...terminal, cwd: "/after" }]);
     expect(store.get().appendSystemPrompt).toBe("");
+  });
+
+  test("account quota policy survives patches that omit it and null clears it", () => {
+    const home = mkdtempSync(path.join(tmpdir(), "vorteo-quota-policy-"));
+    tempDirs.push(home);
+    const store = new DaemonConfigStore(home, reloadableConfig({}));
+    expect(store.get().accountQuotaPolicy).toBeUndefined();
+    const accountQuotaPolicy = {
+      version: 1,
+      ladder: { low: 40, someday: 5 },
+      accounts: { [ACCOUNT]: { pool: false, floors: { normal: 30 } } },
+    };
+    store.patch({ accountQuotaPolicy });
+    store.patch({ appendSystemPrompt: "unrelated edit" });
+    expect(store.get().accountQuotaPolicy).toEqual(accountQuotaPolicy);
+    // A replacement is whole, not merged into the stored ladder.
+    store.patch({ accountQuotaPolicy: { ...accountQuotaPolicy, ladder: { urgent: 0 } } });
+    expect(store.get().accountQuotaPolicy?.ladder).toEqual({ urgent: 0 });
+    expect(loadPersistedConfig(home).daemon?.accountQuotaPolicy?.ladder).toEqual({ urgent: 0 });
+    store.patch({ accountQuotaPolicy: null });
+    expect(store.get().accountQuotaPolicy).toBeUndefined();
+    expect(loadPersistedConfig(home).daemon?.accountQuotaPolicy).toBeUndefined();
+  });
+
+  test("an invalid account quota policy is refused before anything is written", () => {
+    const home = mkdtempSync(path.join(tmpdir(), "vorteo-quota-policy-refused-"));
+    tempDirs.push(home);
+    const store = new DaemonConfigStore(home, reloadableConfig({}));
+    const stored = { version: 1, ladder: { normal: 25 }, accounts: {} };
+    store.patch({ accountQuotaPolicy: stored });
+    const file = readFileSync(path.join(home, "config.json"), "utf8");
+    let deep: unknown = 1;
+    for (let depth = 0; depth < 2_000; depth += 1) deep = { deep };
+    const tooMany = Object.fromEntries(
+      Array.from({ length: 65 }, (_, index) => [`account-${index}`, { pool: true }]),
+    );
+    for (const refused of [
+      { ...stored, ladder: { normal: deep } },
+      { ...stored, accounts: tooMany },
+      { ...stored, accounts: { "../account": { pool: true } } },
+      { ...stored, ladder: { "Normal\u202e": 10 } },
+      { ...stored, ladder: { normal: 101 } },
+      { ...stored, version: 2 },
+      { ...stored, note: { deep } },
+      { ...stored, accounts: { [ACCOUNT]: { pool: true, weight: 2 } } },
+    ]) {
+      expect(() => store.patch({ accountQuotaPolicy: refused })).toThrow(
+        "Invalid account quota policy",
+      );
+      expect(readFileSync(path.join(home, "config.json"), "utf8")).toBe(file);
+      expect(store.get().accountQuotaPolicy).toEqual(stored);
+    }
+  });
+
+  test("a stored policy of a later version or with a non-number floor still loads", () => {
+    const home = mkdtempSync(path.join(tmpdir(), "vorteo-quota-policy-future-"));
+    tempDirs.push(home);
+    for (const accountQuotaPolicy of [
+      { version: 2, tiers: [{ name: "normal", keep: "25%" }] },
+      { version: 1, ladder: { normal: "25" }, accounts: {} },
+    ]) {
+      writeFileSync(
+        path.join(home, "config.json"),
+        JSON.stringify({ version: 1, daemon: { accountQuotaPolicy } }),
+      );
+      const persisted = loadPersistedConfig(home);
+      expect(persisted.daemon?.accountQuotaPolicy).toEqual(accountQuotaPolicy);
+      const store = new DaemonConfigStore(home, {
+        ...reloadableConfig(persisted),
+        accountQuotaPolicy: persisted.daemon?.accountQuotaPolicy,
+      });
+      expect(MutableDaemonConfigSchema.parse(store.get()).accountQuotaPolicy).toEqual(
+        accountQuotaPolicy,
+      );
+    }
   });
 
   test("shared policy accepts verified coordinator values, rejects divergence and offline writes, and preserves concurrent local edits", async () => {
