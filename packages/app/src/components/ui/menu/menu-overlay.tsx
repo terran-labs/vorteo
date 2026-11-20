@@ -14,7 +14,14 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Platform, Pressable, View, type StyleProp, type ViewStyle } from "react-native";
+import {
+  Platform,
+  Pressable,
+  View,
+  type PointerEvent,
+  type StyleProp,
+  type ViewStyle,
+} from "react-native";
 import { Keyframe, runOnJS } from "react-native-reanimated";
 import { StyleSheet } from "react-native-unistyles";
 import { FloatingScrollView, FloatingSurface } from "@/components/ui/floating";
@@ -209,8 +216,8 @@ export interface AnchoredSurfaceProps {
    * Hover tracking for the surface box, per docs/hover.md: plain View, pointer events, never
    * a Pressable. Web-only by nature, which is all a flyout needs.
    */
-  onPointerEnter?: () => void;
-  onPointerLeave?: () => void;
+  onPointerEnter?: (event: PointerEvent) => void;
+  onPointerLeave?: (event: PointerEvent) => void;
   testID?: string;
   keyboardFocusScope?: KeyboardFocusScope;
   children: ReactElement;
