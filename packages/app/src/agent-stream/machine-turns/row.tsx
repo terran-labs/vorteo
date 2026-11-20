@@ -65,6 +65,8 @@ export const MachineTurnLine = memo(function MachineTurnLine({
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
       accessibilityState={accessibilityState}
+      // React Native Web does not map `accessibilityState.expanded` to `aria-expanded`.
+      aria-expanded={group.expanded}
       onPress={toggle}
       style={styles.line}
       highlightStyle={styles.linePressed}

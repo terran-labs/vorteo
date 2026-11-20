@@ -592,9 +592,16 @@ test("a scheduled heartbeat opens a separate turn without reopening the previous
     scheduleId = created.schedule!.id;
     const fired = await schedules.scheduleRunOnce({ id: scheduleId });
     expect(fired.error).toBeNull();
-    await expect(
-      page.getByTestId("tool-call-badge").filter({ hasText: /^Heartbeat/ }),
-    ).toBeVisible();
+    // The system row that starts the scheduled turn is one closed machine line; opening it
+    // shows the row itself.
+    const heartbeat = page.getByTestId("tool-call-badge").filter({ hasText: /^Heartbeat/ });
+    const machineLine = page.getByTestId("machine-turn-line").and(page.getByRole("button"));
+    await expect(machineLine).toHaveCount(1);
+    await expect(machineLine).toHaveAttribute("aria-expanded", "false");
+    await expect(heartbeat).toHaveCount(0);
+    await machineLine.click();
+    await expect(machineLine).toHaveAttribute("aria-expanded", "true");
+    await expect(heartbeat).toBeVisible();
     await expect(summaries.first()).toHaveText(previousSummary);
     const previousReply = page
       .locator(`[data-message-id="${previousReplyId}"]`)
