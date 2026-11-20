@@ -76,7 +76,7 @@ import {
   unresolvedMaintenanceService,
   type MaintenanceServiceAdmissionEvidence,
 } from "./maintenance/service-admission.js";
-import { isDeepStrictEqual } from "node:util";
+import { isDeepStrictEqual, stripVTControlCharacters } from "node:util";
 import {
   approveServiceJob,
   retainServiceRecoveryObservation,
@@ -365,29 +365,60 @@ function requestPredatesPolicy(
   return Date.parse(job.createdAt) < threshold && !standing?.activationStep;
 }
 
-// Keep the restart outcome and first failure across recovery, but replace the latest
-// release status on each retry so repeated failures cannot grow the receipt.
-function holdReleaseDetail(job: RestartJob, error?: string): string {
-  const marker = "\nHold release initially failed: ";
-  const [outcome, history] = job.detail.split(marker, 2);
-  const firstFailure = history?.split("\n", 1)[0];
-  if (error === undefined && firstFailure === undefined) {
-    if (
-      job.status === "succeeded" &&
-      outcome === "Waiting for the environment to release its restart hold."
+// Target-daemon errors are untrusted. Bound work before matching, then bound the
+// displayed reason after redaction. Never render terminal controls or extra lines.
+function releaseDiagnostic(value: string): string {
+  const firstLine = value.slice(0, 4096).split(/[\r\n\u0085\u2028\u2029]/, 1)[0];
+  const safe = stripVTControlCharacters(firstLine)
+    .replace(/[\p{Cc}\p{Cf}]/gu, "")
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]*/gi, "[redacted URL]")
+    .replace(/\b(Bearer|Basic)\s+("[^"]*"|'[^']*'|[^\s"',;}\]]+)/gi, "$1 [redacted]")
+    .replace(
+      /(["']?\b(?:password|token|secret|authorization|api[_-]?key)["']?\s*[:=]\s*)(\[redacted\]|"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi,
+      "$1[redacted]",
     )
-      return "Restart completed and its hold was released.";
+    .replace(/\b(?:sk-|gh[pousr]_|github_pat_)[a-z0-9_-]+/gi, "[redacted]")
+    .replace(/[a-z0-9_./+=-]{32,}/gi, "[redacted]")
+    .replace(
+      /(?:\/(?:Users|home)\/[^/\s"']+|\/root\b|[a-z]:\\Users\\[^\\\s"']+|~(?=\/))/gi,
+      "[home]",
+    )
+    .trim();
+  if (!safe) return "No safe diagnostic text available";
+  return safe.length > 512 ? `${safe.slice(0, 509)}...` : safe;
+}
+
+// Keep the first failure, replace the latest status, and sanitize older receipts
+// on both reads and retries. Receipt text never supplies lifecycle authority.
+function holdReleaseDetail(job: RestartJob, error?: string): string {
+  const bounded = job.detail.slice(0, 8192);
+  const marker = /\nHold release initially failed(?: \(untrusted daemon diagnostic\))?: /;
+  const match = marker.exec(bounded);
+  let outcome = match ? bounded.slice(0, match.index) : job.detail;
+  const legacyWaiting = outcome === "Waiting for the environment to release its restart hold.";
+  if (legacyWaiting && job.status === "succeeded") {
+    outcome = "Restart completed.";
+  }
+  if (!match && error === undefined) {
+    if (legacyWaiting && job.holdReleased) return "Restart completed and its hold was released.";
     return job.detail;
   }
-  const retainedFailure = firstFailure ?? error;
-  let releaseStatus = "Hold release confirmed after retry.";
-  if (error !== undefined) {
-    releaseStatus =
-      error === retainedFailure
-        ? "Hold release remains unconfirmed."
-        : `Hold release unconfirmed: ${error}`;
+  outcome = outcome.slice(0, 1024);
+  const history = match ? bounded.slice(match.index + match[0].length) : "";
+  const firstFailure = releaseDiagnostic(match ? history : error!);
+  const latest = /\nHold release unconfirmed(?: \(untrusted daemon diagnostic\))?: (.*)/.exec(
+    history,
+  );
+  const latestFailure = error ?? latest?.[1];
+  let releaseStatus = "Hold release remains unconfirmed.";
+  if (job.holdReleased && error === undefined) {
+    releaseStatus = "Hold release confirmed after retry.";
+  } else if (latestFailure !== undefined) {
+    const safeLatest = releaseDiagnostic(latestFailure);
+    if (safeLatest !== firstFailure)
+      releaseStatus = `Hold release unconfirmed (untrusted daemon diagnostic): ${safeLatest}`;
   }
-  return `${outcome}${marker}${retainedFailure}\n${releaseStatus}`;
+  return `${outcome}\nHold release initially failed (untrusted daemon diagnostic): ${firstFailure}\n${releaseStatus}`;
 }
 
 export class InstallationRestarts {
@@ -632,7 +663,11 @@ export class InstallationRestarts {
   list(): RestartJob[] {
     this.reconcilePending();
     return structuredClone(
-      this.jobs.map((job) => ({ ...job, impact: this.impactCache.get(job.target) })),
+      this.jobs.map((job) => ({
+        ...job,
+        detail: holdReleaseDetail(job),
+        impact: this.impactCache.get(job.target),
+      })),
     );
   }
 
@@ -3116,14 +3151,11 @@ export class InstallationRestarts {
         this.replace({
           ...withoutCaptureId(current),
           holdReleased: true,
-          detail: holdReleaseDetail(current),
+          detail: holdReleaseDetail({ ...current, holdReleased: true }),
         });
       }
     } catch (error) {
-      const detail = (error instanceof Error ? error.message : String(error)).split(
-        /\r\n|\r|\n/,
-        1,
-      )[0];
+      const detail = releaseDiagnostic(error instanceof Error ? error.message : String(error));
       this.progress("Restart hold release failed", { jobId: job.id, target: job.target, detail });
       const current = this.jobs.find((item) => item.id === job.id);
       if (current)

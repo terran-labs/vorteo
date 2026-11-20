@@ -731,7 +731,12 @@ for rollback.
 
 Active request cards and history show the live receipt detail alongside the
 request summary. A failed or timed-out hold release persists `holdReleased: false`
-and the error's first line, while retaining the restart outcome. A successful
+and a sanitized first-line reason, while retaining the restart outcome. Target-daemon
+errors are labeled as untrusted diagnostics, never owner instructions. Processing
+reads at most 4,096 characters and stores at most 512 per diagnostic; it removes
+terminal controls, stops at Unicode line separators, and redacts URLs, bearer
+values, token shapes and home-directory prefixes. Retained failure text is sanitized
+again when receipts are read or retried. A successful
 restart therefore remains distinguishable from an unconfirmed hold release.
 Only an acknowledged release sets `holdReleased: true`. A confirmed retry retains
 the first failure and records confirmation; failed retries replace the latest
