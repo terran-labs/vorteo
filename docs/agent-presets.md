@@ -60,7 +60,7 @@ New editors send `expectedAgentProfiles` for stale-write detection. The server p
 
 ## Supervision
 
-The supervisor uses existing Vorteo agent tools. Its frozen worker reference determines the child profile and maximum concurrent managed workers. Child creation and execution enforce the limit. Managed children cannot detach through `create_agent`; recursive worker presets are rejected. Team presets require agent-tool injection to be enabled explicitly.
+The supervisor uses existing Vorteo agent tools. Its frozen worker reference determines the child profile and maximum concurrent managed workers. Child creation and execution enforce the limit. The frozen worker names the account the team launched on. When the supervisor is later moved to another account of the same provider type, a worker launch that names the same preset and the supervisor’s current account runs there with the frozen model, mode, features and instructions; exclusions and the quota check apply to the account used. A third account, another provider type or a different preset is refused, and each refusal is logged. Managed children cannot detach through `create_agent`; recursive worker presets are rejected. Team presets require agent-tool injection to be enabled explicitly.
 
 This is lifecycle coordination, not a new security sandbox. Pi has no native selectable permission modes. In a per-person container, Pi can access that person's mounted projects and keys. Other processes and native provider subagents are outside the managed-child concurrency limit. See [the optional deployment recipe](../docker/multiplex/README.md).
 

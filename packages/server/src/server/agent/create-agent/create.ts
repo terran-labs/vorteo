@@ -312,32 +312,12 @@ export async function createAgentCommand(
   dependencies: CreateAgentCommandDependencies,
   input: CreateAgentCommandInput,
 ): Promise<CreateAgentCommandResult> {
-  const bindings = observeLaunchBindings(dependencies);
-  dependencies = await admitProfileDependencies(
-    bindings.dependencies,
-    input.kind === "session" ? input.config.profileId : input.profileId,
-  );
-  const resolved =
-    input.kind === "session"
-      ? await resolveSessionCreateAgent(dependencies, input)
-      : await resolveMcpCreateAgent(dependencies, input);
-
-  await validateSharedLaunch(dependencies, resolved.config);
-  await captureLaunchPolicy(dependencies, resolved.config, {
-    requestedProfileId: input.kind === "session" ? input.config.profileId : input.profileId,
+  const admitted = await admitAndCreateAgent(dependencies, input).catch((error: unknown) => {
+    logRefusedWorkerLaunch(dependencies, input, error);
+    throw error;
   });
-
-  if (resolved.config.quotaReserve) {
-    await dependencies.agentManager.checkQuotaReserveLaunch(resolved.config);
-  }
-
-  bindings.assertCurrent();
-
-  const snapshot = await dependencies.agentManager.createAgent(
-    resolved.config,
-    input.kind === "session" ? input.agentId : undefined,
-    resolved.createOptions,
-  );
+  const { resolved, snapshot } = admitted;
+  dependencies = admitted.dependencies;
   await input.onCreated?.({
     agentId: snapshot.id,
     createdWorktree: resolved.createdWorktree ?? null,
@@ -378,6 +358,64 @@ export async function createAgentCommand(
     initialPromptError,
     ...(resolved.createdWorktree ? { createdWorktree: resolved.createdWorktree } : {}),
   };
+}
+
+/** Everything that can refuse a launch: admission, preset resolution, policy and registration. */
+async function admitAndCreateAgent(
+  dependencies: CreateAgentCommandDependencies,
+  input: CreateAgentCommandInput,
+) {
+  const bindings = observeLaunchBindings(dependencies);
+  dependencies = await admitProfileDependencies(
+    bindings.dependencies,
+    input.kind === "session" ? input.config.profileId : input.profileId,
+  );
+  const resolved =
+    input.kind === "session"
+      ? await resolveSessionCreateAgent(dependencies, input)
+      : await resolveMcpCreateAgent(dependencies, input);
+
+  await validateSharedLaunch(dependencies, resolved.config);
+  await captureLaunchPolicy(dependencies, resolved.config, {
+    requestedProfileId: input.kind === "session" ? input.config.profileId : input.profileId,
+  });
+
+  if (resolved.config.quotaReserve) {
+    await dependencies.agentManager.checkQuotaReserveLaunch(resolved.config);
+  }
+
+  bindings.assertCurrent();
+
+  const snapshot = await dependencies.agentManager.createAgent(
+    resolved.config,
+    input.kind === "session" ? input.agentId : undefined,
+    resolved.createOptions,
+  );
+  return { dependencies, resolved, snapshot };
+}
+
+/** A supervisor only sees the refusal text; the log keeps who asked for what. */
+function logRefusedWorkerLaunch(
+  dependencies: CreateAgentCommandDependencies,
+  input: CreateAgentCommandInput,
+  error: unknown,
+): void {
+  if (input.kind !== "mcp" || !input.callerAgentId) return;
+  const caller = dependencies.agentManager.getAgent(input.callerAgentId);
+  const worker = caller?.config.profileLaunch?.worker;
+  if (!caller || !worker) return;
+  dependencies.logger.warn(
+    {
+      callerAgentId: caller.id,
+      callerProvider: caller.provider,
+      requestedProvider: input.provider,
+      requestedProfileId: input.profileId ?? null,
+      workerProfileId: worker.id,
+      workerProvider: worker.provider,
+      reason: error instanceof Error ? error.message : String(error),
+    },
+    "Managed worker launch refused",
+  );
 }
 
 function initialPromptNotificationRequest(
@@ -500,17 +538,42 @@ interface McpProfileSelection {
   caller: ManagedAgent | null;
 }
 
+/**
+ * A managed worker follows its supervisor's current account. The frozen preset names the account
+ * the team launched on; once the supervisor moves to another account of the same provider type,
+ * a launch that asks for that account runs the same preset there. Any other account keeps the
+ * preset's own, so the caller's request is refused by the checks that follow.
+ */
+function workerOnSupervisorAccount(
+  worker: AgentProfile,
+  caller: ManagedAgent | null,
+  input: CreateAgentFromMcpInput,
+  settings: MutableDaemonConfig | undefined,
+): AgentProfile {
+  const current = caller?.provider;
+  const providers = settings?.providers;
+  if (!current || !providers || current === worker.provider) return worker;
+  if (resolveProviderModel(input.provider).provider !== current) return worker;
+  if (resolveProviderType(current, providers) !== resolveProviderType(worker.provider, providers)) {
+    return worker;
+  }
+  return { ...worker, provider: current };
+}
+
 function resolveMcpProfileSelection({
   dependencies,
   input,
-  worker,
+  worker: frozen,
   caller,
 }: McpProfileSelection): AgentSessionConfig {
   const settings = dependencies.getSharedProviderConfig?.();
-  if (worker && settings?.sharedProviderPreferences?.installation) {
+  const worker = frozen && workerOnSupervisorAccount(frozen, caller, input, settings);
+  if (frozen && worker && settings?.sharedProviderPreferences?.installation) {
     // Frozen workers keep their values, but every new dispatch checks current exclusions.
+    // Canonical presets check the account in use; older references stay bound to their account.
+    const account = worker.id.startsWith("shared-profile/") ? worker.provider : frozen.provider;
     resolveProfileLaunch(
-      { provider: worker.provider, cwd: input.cwd ?? "", profileId: worker.id },
+      { provider: account, cwd: input.cwd ?? "", profileId: worker.id },
       [],
       Date.now(),
       settings,

@@ -166,6 +166,23 @@ function legacyProfileCandidates(
   return [...legacy, ...profiles.filter((profile) => !legacyIds.has(profile.id))];
 }
 
+/** Mirrors the dispatch rule: a worker may follow its supervisor within one provider type. */
+function workerAccountInstruction(
+  profile: AgentProfile,
+  worker: AgentProfile,
+  settings?: MutableDaemonConfig,
+): string {
+  const providers = settings?.providers;
+  const follows =
+    profile.provider === worker.provider ||
+    (!!providers &&
+      resolveProviderType(profile.provider, providers) ===
+        resolveProviderType(worker.provider, providers));
+  return follows
+    ? "Workers run on the account this thread currently uses: if this thread moves to another account of the same provider, keep the profileId and model and name that account as the provider. "
+    : "";
+}
+
 /** Resolve only explicit launches. Resumes already contain their frozen instructions. */
 function resolveProfileConfiguration(
   config: AgentSessionConfig,
@@ -184,6 +201,7 @@ function resolveProfileConfiguration(
     instructions.push(
       `You supervise local workers using Vorteo's create_agent tool. Use profileId ${JSON.stringify(worker.id)} ` +
         `and provider ${JSON.stringify(`${worker.provider}/${worker.model}`)}. ` +
+        workerAccountInstruction(profile, worker, sharedConfig) +
         `Assign bounded tasks with explicit file ownership. Use separate worktrees for concurrent edits. ` +
         `Review each worker's diff and run relevant tests before accepting it. ` +
         (managedWorkerLimit(profile) === null

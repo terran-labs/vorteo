@@ -113,20 +113,39 @@ export async function switchAgentProfileCommand(
   options?: ProfileSwitchOptions,
 ): Promise<AgentProfileSwitchResult | void> {
   let refusal: AgentProfileSwitchResult = { agentId: target.agentId, outcome: "refused" };
+  let eligibleDryRun = false;
   try {
     const result = await executeSwitchCommand(dependencies, target, options, (source) => {
       refusal = source;
     });
     if (options?.includeResult) return result;
     // Callers without structured results must not mistake an eligible dry run for a switch.
-    if (target.dryRun) throw new ProfileSwitchError(result.error ?? DRY_RUN_TARGET_UNCHECKED);
+    if (target.dryRun) {
+      eligibleDryRun = true;
+      throw new ProfileSwitchError(result.error ?? DRY_RUN_TARGET_UNCHECKED);
+    }
     return undefined;
   } catch (error) {
-    if (!options?.includeResult) throw error;
+    if (eligibleDryRun) throw error;
     const failure = {
       error: error instanceof Error ? error.message : String(error),
       refusalCode: profileSwitchRefusalCode(error),
     };
+    dependencies.logger.warn(
+      {
+        agentId: target.agentId,
+        actor: options?.actor ? { kind: options.actor.kind, id: options.actor.id } : null,
+        sourceProvider: refusal.provider ?? null,
+        requestedProvider: target.provider,
+        requestedModel: target.model ?? null,
+        requestedProfileId: target.profileId ?? null,
+        dryRun: target.dryRun ?? false,
+        refusalCode: failure.refusalCode,
+        reason: failure.error,
+      },
+      "Profile switch refused",
+    );
+    if (!options?.includeResult) throw error;
     // A dry run never reaches the target, so it reports no settings that could pass for the target's.
     return target.dryRun
       ? {

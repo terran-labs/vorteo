@@ -662,6 +662,11 @@ function resolveToolCallerContext(
 }
 
 /** A tool-side refusal; scope failures found by the tool itself report `out-of-scope`. */
+/** create_agent names targets as account/model; an unsplit value matches no account. */
+function parseSwitchTarget(provider: string): { provider: string; model?: string } {
+  return provider.includes("/") ? resolveRequiredProviderModel(provider) : { provider };
+}
+
 function toolSwitchRefusal(
   agentId: string,
   error: unknown,
@@ -1801,7 +1806,7 @@ function createToolCatalog(
     {
       title: "Switch thread account",
       description:
-        "Switch one thread, or a snapshot of a workspace or project's threads on a source account. Requires a reason. Each thread switches, refuses with a refusalCode, or is skipped independently. A dry run checks only the source thread's eligibility and scope (preview.sourceEligible); it does not check the target account and changes no sessions, history or journals.",
+        "Switch one thread, or a snapshot of a workspace or project's threads on a source account. provider is the target account id, or account/model to also select the model. Requires a reason. Each thread switches, refuses with a refusalCode, or is skipped independently. A dry run checks only the source thread's eligibility and scope (preview.sourceEligible); it does not check the target account and changes no sessions, history or journals.",
       inputSchema: {
         agentId: z.string().min(1).optional(),
         workspaceId: z.string().min(1).optional(),
@@ -1831,6 +1836,7 @@ function createToolCatalog(
         throw new PaseoToolInputError("Select a thread or a workspace/project and source account");
       }
       const selection = { workspaceId, projectId, sourceProvider: sourceProvider ?? "" };
+      const target = parseSwitchTarget(provider);
       const workspaces = (await options.workspaceRegistry?.list()) ?? [];
       const candidates = agentId
         ? [agentId]
@@ -1881,7 +1887,8 @@ function createToolCatalog(
               },
               {
                 agentId: id,
-                provider,
+                provider: target.provider,
+                ...(target.model ? { model: target.model } : {}),
                 profileId,
                 explanation: reason,
                 dryRun,
@@ -1922,7 +1929,20 @@ function createToolCatalog(
             ),
           );
         } catch (error) {
-          results.push(toolSwitchRefusal(id, error, dryRun));
+          const refusal = toolSwitchRefusal(id, error, dryRun);
+          childLogger.warn(
+            {
+              agentId: id,
+              callerAgentId: caller.id,
+              requestedProvider: provider,
+              requestedProfileId: profileId,
+              dryRun,
+              refusalCode: refusal.refusalCode,
+              reason: refusal.error,
+            },
+            "Profile switch refused",
+          );
+          results.push(refusal);
         }
       }
       return { content: [], structuredContent: ensureValidJson({ results }) };
