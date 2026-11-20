@@ -10,6 +10,12 @@ import {
   type ToolCallDetailProjection,
 } from "@/tool-calls/detail-level/projection";
 import type { StreamItem, UserMessageItem } from "@/types/stream";
+import {
+  collapseMachineTurns,
+  joinMachineTurns,
+  type MachineTurnLookups,
+  type MachineTurns,
+} from "./machine-turns/model";
 import { collapseTurns, type TurnCollapse } from "./turn-collapse/model";
 import type { ReadingRowReplacements } from "./reading-anchor";
 
@@ -21,12 +27,17 @@ interface PresentationInput {
   autoExpandReasoning?: boolean;
   /** User messages whose collapsed turn the reader opened. */
   expandedTurnHostIds: ReadonlySet<string>;
+  /** Rows of the machine lines the reader opened; none when omitted. */
+  expandedMachineRowIds?: ReadonlySet<string>;
+  /** No older history remains to load, so the first row is the thread's first. */
+  isTimelineStartLoaded?: boolean;
   isTurnActive: boolean;
   activeTurnId?: string | null;
 }
 
 export interface StreamPresentation extends ToolCallDetailProjection {
   turns: Omit<TurnCollapse, "tail">;
+  machineTurns: MachineTurnLookups;
   readingRowReplacements: ReadingRowReplacements;
 }
 
@@ -52,9 +63,12 @@ const NO_COLLAPSED_TURNS: StreamPresentation["turns"] = collapseTurns({
   getGroupedCalls: () => undefined,
 });
 
+const NO_EXPANDED_MACHINE_ROWS: ReadonlySet<string> = new Set();
+
 /** Source messages reach plugins before display projection. */
 export function createStreamPresentation() {
   const userMessageCache = new WeakMap<UserMessageItem, UserMessageItem>();
+  const receivedMessageCache = new WeakMap<StreamItem, UserMessageItem>();
 
   function presentUserMessage(item: UserMessageItem): UserMessageItem {
     const cached = userMessageCache.get(item);
@@ -83,13 +97,18 @@ export function createStreamPresentation() {
   let collapsedIsLatestTurnOpen = false;
   let collapsedExpandedHostIds: ReadonlySet<string> | undefined;
   let collapsed: TurnCollapse | undefined;
+  let machineTail: MachineTurns | undefined;
+  let machineTailKey: readonly unknown[] = [];
+  let machineHead: MachineTurns | undefined;
 
   function presentRows(item: StreamItem): StreamItem[] {
     if (item.kind === "tool_call" && item.payload.source === "agent") {
       const message = item.payload.data.agentMessage;
       if (message?.event === "message") {
-        return [
-          {
+        // One row per source call, so an unchanged message keeps its identity across passes.
+        let received = receivedMessageCache.get(item);
+        if (!received) {
+          received = {
             kind: "user_message",
             id: item.id,
             turnId: item.turnId,
@@ -97,8 +116,10 @@ export function createStreamPresentation() {
             timestamp: item.timestamp,
             text: message.text,
             sender: message.sender,
-          },
-        ];
+          };
+          receivedMessageCache.set(item, received);
+        }
+        return [received];
       }
     }
     return [item.kind === "user_message" ? presentUserMessage(item) : item];
@@ -107,7 +128,7 @@ export function createStreamPresentation() {
   function collapse(
     projection: ToolCallDetailProjection,
     input: PresentationInput,
-  ): Omit<StreamPresentation, "readingRowReplacements"> {
+  ): Omit<StreamPresentation, "readingRowReplacements" | "machineTurns"> {
     if (input.display !== "collapseTurns") {
       return { ...projection, turns: NO_COLLAPSED_TURNS };
     }
@@ -156,6 +177,58 @@ export function createStreamPresentation() {
     };
   }
 
+  function collapseMachineRows(
+    result: Omit<StreamPresentation, "readingRowReplacements" | "machineTurns">,
+    input: PresentationInput,
+  ): { tail: StreamItem[]; head: StreamItem[]; machineTurns: MachineTurnLookups } {
+    const expandedIds = input.expandedMachineRowIds ?? NO_EXPANDED_MACHINE_ROWS;
+    // The Full display shows every row as it is. A thread's first row is its brief, so it keeps
+    // full weight once the start of the timeline is known to be loaded.
+    const showAll = input.display === "full";
+    const firstId = input.isTimelineStartLoaded
+      ? (result.tail[0] ?? result.head[0])?.id
+      : undefined;
+    const options = {
+      expandedIds,
+      // A collapsed turn's summary line hangs under its host, so that host keeps its own line.
+      startsOwnGroup: (id: string) => result.turns.turnsByHostId.has(id),
+      isExcluded: (id: string) => showAll || id === firstId || result.groupsByHostId.has(id),
+      isNested: (id: string) => result.turns.nestedItemIds.has(id),
+    };
+    // Like turn collapse, retained history is folded again only when its inputs change. Only
+    // the trailing retained row can become a tool-call group host between those changes.
+    const last = result.tail.at(-1);
+    const key = [
+      result.tail,
+      result.turns.turnsByHostId,
+      result.turns.nestedItemIds,
+      expandedIds,
+      showAll,
+      firstId,
+      last ? result.groupsByHostId.has(last.id) : false,
+    ];
+    if (!machineTail || key.some((value, index) => value !== machineTailKey[index])) {
+      machineTail = collapseMachineTurns({
+        ...options,
+        tail: result.tail,
+        head: [],
+        previous: machineTail,
+      });
+      machineTailKey = key;
+    }
+    machineHead = collapseMachineTurns({
+      ...options,
+      tail: [],
+      head: result.head,
+      previous: machineHead,
+    });
+    return {
+      tail: machineTail.tail,
+      head: machineHead.head,
+      machineTurns: joinMachineTurns(machineTail, machineHead),
+    };
+  }
+
   return (input: PresentationInput): StreamPresentation => {
     const level: ToolCallDetailLevel = input.display === "full" ? "detailed" : "overview";
     // Retained history is not reprojected or regrouped on each live text update.
@@ -200,10 +273,16 @@ export function createStreamPresentation() {
       projection.groupsByHostId,
     );
     const retainedGroupHosts = historyGroupHosts;
+    const { tail, head: machineHeadRows, machineTurns } = collapseMachineRows(result, input);
     return {
       ...result,
+      tail,
+      head: machineHeadRows,
+      machineTurns,
       readingRowReplacements: {
         get(id) {
+          const machineHost = machineTurns.hostIdByHiddenRowId.get(id);
+          if (machineHost) return machineHost;
           if (result.turns.nestedItemIds.has(id)) return undefined;
           const groupHost = liveGroupHosts.get(id) ?? retainedGroupHosts.get(id) ?? id;
           return (
