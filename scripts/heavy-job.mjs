@@ -16,7 +16,9 @@
 // Waiters go by priority class, then arrival, then pid. The ticket filename
 // alone carries that order, so copies of this script from before priorities
 // existed, which sort the same directory by name, agree with this one. A
-// priority reorders waiters only: a running job is never displaced.
+// priority reorders waiters only: a running job is never displaced. Normal
+// tickets, old and new, stay strictly first come, first served: only a low
+// ticket ages, into normal at its own arrival time, and high is only declared.
 //
 // The holder starts only when memory allows: critical kernel memory pressure,
 // low free memory or active swapping defers the start with the reason shown.
@@ -47,7 +49,8 @@ const DECLARABLE = new Set(PRIORITIES.slice(0, 3));
 // "!" guards < "+" prefixes < digits < letters in the plain sort all copies use.
 const PRIORITY_PREFIX = { urgent: "+0-urgent-", high: "+1-high-", normal: "", low: "low-" };
 const TICKET_NAME = /^(\+0-urgent-|\+1-high-|low-|)(\d{15})-(\d+)\.json$/;
-export const AGE_STEP_MS = 20 * 60 * 1000;
+// How long a low waiter waits before it counts as normal. The override is for tests.
+export const AGE_STEP_MS = Number(process.env.VORTEO_HEAVY_AGE_MS) || 20 * 60 * 1000;
 
 export function defaultQueueDir(env = process.env) {
   return (
@@ -150,22 +153,68 @@ export function declaredPriority(argument, env = process.env) {
   return value;
 }
 
+/** Reads `--priority <value>` or `--priority=<value>` from the options before `--`. Throws on any other form. */
+export function priorityArgument(options) {
+  let value;
+  for (let index = 0; index < options.length; index += 1) {
+    const option = options[index];
+    if (option === "--label") {
+      index += 1;
+    } else if (option.startsWith("--priority")) {
+      if (value !== undefined) throw new Error("--priority was given more than once.");
+      if (option === "--priority") {
+        index += 1;
+        if (index >= options.length) throw new Error("--priority needs a value.");
+        value = options[index];
+      } else if (option.startsWith("--priority=")) {
+        value = option.slice("--priority=".length);
+      } else {
+        throw new Error(`unknown option ${option}; use --priority low|normal|high.`);
+      }
+    }
+  }
+  return value;
+}
+
 /**
- * Moves a waiter's own ticket up one class per AGE_STEP_MS waited, at most to
- * high, and returns its current path. The arrival time and pid in the name are
- * kept, so it joins the higher class at its original place. One rename(2):
- * the ticket exists under exactly one name at every instant, including if the
- * waiter dies here, and a dead waiter's ticket is pruned under either name.
+ * Renames a waiter's own ticket to the place it is due and returns its path.
+ * The arrival time and pid in the name never change.
+ *
+ * - A low ticket becomes normal once it has waited `step`, and so sorts by its
+ *   original arrival among normal tickets. Normal never ages and nothing ages
+ *   into high, so normal tickets from copies that cannot age are never passed
+ *   by one that arrived after them, except by a declared high.
+ * - A high ticket waits under its normal name while an earlier ticket from the
+ *   3 November protocol is live and unstarted. Those callers take no slot
+ *   claim: one that saw itself first may be about to start, and it cannot see
+ *   a ticket that jumps ahead afterwards. Arrival order is what it relied on.
+ *   For the same reason a low ticket does not age past such a ticket.
+ *
+ * One rename(2): the ticket exists under exactly one name at every instant,
+ * including if the waiter dies here, and a dead waiter's ticket is pruned
+ * under either name.
  */
-export function ageTicket(file, { declared = "normal", now = Date.now() } = {}) {
+export function placeTicket(
+  file,
+  { declared = "normal", now = Date.now(), step = AGE_STEP_MS, queue = [] } = {},
+) {
   const match = TICKET_NAME.exec(path.basename(file));
-  const high = PRIORITIES.indexOf("high");
-  const from = PRIORITIES.indexOf(declared);
-  if (!match || from < 0 || from >= high) return file;
-  const steps = Math.max(0, Math.floor((now - Number(match[2])) / AGE_STEP_MS));
-  const aged = PRIORITIES[Math.min(high, from + steps)];
-  const next = path.join(path.dirname(file), ticketName(Number(match[2]), match[3], aged));
-  if (next === file) return file;
+  if (!match || (declared !== "low" && declared !== "high")) return file;
+  const arrival = Number(match[2]);
+  const name = (priority) => ticketName(arrival, match[3], priority);
+  const normal = name("normal");
+  const preSlot = queue
+    .filter((entry) => !entry.gate && !entry.identity && !entry.startedAt)
+    .filter((entry) => ticketPriority(entry.file) === "normal")
+    .map((entry) => path.basename(entry.file));
+  let target = path.basename(file);
+  if (declared === "high") {
+    target = preSlot.some((other) => other < normal) ? normal : name("high");
+  } else if (target === name("low") && now - arrival >= step) {
+    if (!preSlot.some((other) => other > normal)) target = normal;
+  }
+  if (target === path.basename(file)) return file;
+  const next = path.join(path.dirname(file), target);
   try {
     fs.renameSync(file, next);
   } catch (error) {
@@ -400,12 +449,23 @@ function describe(entry) {
   return `${entry.label} (pid ${entry.pid}${entry.cwd ? `, ${entry.cwd}` : ""})`;
 }
 
-/** The class a job waits or waited in, how it got there and who set it; empty for the gate. */
+/** The class a job waits or waited in and where that came from; empty for the gate. */
 function describePriority(entry) {
-  if (entry.gate) return "";
-  const current = ticketPriority(entry.originTicket || entry.file) || entry.priority || "normal";
-  const aged = entry.priority && entry.priority !== current ? `, aged from ${entry.priority}` : "";
-  return ` [priority ${current}${aged}, ${entry.prioritySource || "legacy ticket"}]`;
+  const current = entry.gate ? null : ticketPriority(entry.originTicket || entry.file);
+  if (!current) return "";
+  const declared = entry.priority;
+  if (declared === undefined && entry.prioritySource === undefined && current === "normal") {
+    return " [priority normal, legacy ticket]";
+  }
+  // Only what this script writes is reported as declared. Anything else, such
+  // as a hand-written urgent ticket, is shown as the unverified claim it is.
+  const moved = { low: ", aged from low", high: ", held from high by an older-format waiter" };
+  const written =
+    entry.prioritySource === "declared" &&
+    DECLARABLE.has(declared) &&
+    (current === declared || (current === "normal" && moved[declared]));
+  if (!written) return ` [priority ${current}, unverified]`;
+  return ` [priority ${current}${current === declared ? "" : moved[declared]}, declared]`;
 }
 
 /** Waits for the slot. `waiter.file` follows the ticket through its promotions. */
@@ -416,16 +476,19 @@ async function waitForSlot(dir, waiter, log) {
     last = message;
   };
   for (;;) {
+    const queue = readQueue(dir);
     // Rename and bookkeeping share one synchronous step, so a signal handler
-    // always removes the ticket's current name. Every claim below follows a
-    // queue read taken after this point, never a view from before the move.
-    const aged = ageTicket(waiter.file, { declared: waiter.priority });
-    if (aged !== waiter.file) {
-      waiter.file = aged;
-      log(`Waited long enough to move up to ${ticketPriority(aged)} priority.`);
+    // always removes the ticket's current name. A move restarts the pass:
+    // every claim follows a queue read taken after the ticket's last rename.
+    const placed = placeTicket(waiter.file, { declared: waiter.priority, queue });
+    if (placed !== waiter.file) {
+      waiter.file = placed;
+      if (waiter.priority === "low") log("Waited long enough to move up to normal priority.");
+      else if (ticketPriority(placed) === "high") log("Queued at high priority again.");
+      else log("An older-format waiter arrived first; waiting behind it in arrival order.");
+      continue;
     }
     const ticket = waiter.file;
-    const queue = readQueue(dir);
     const position = queue.findIndex((entry) => entry.file === ticket);
     if (position === -1) throw new Error("heavy-job ticket disappeared from the queue");
     if (position > 0) {
@@ -470,14 +533,9 @@ async function run(args) {
     );
     return 2;
   }
-  const priorityIndex = args.indexOf("--priority");
   let priority;
   try {
-    priority = declaredPriority(
-      priorityIndex !== -1 && priorityIndex < separator
-        ? String(args[priorityIndex + 1])
-        : undefined,
-    );
+    priority = declaredPriority(priorityArgument(args.slice(0, separator)));
   } catch (error) {
     console.error(`heavy-job.mjs: ${error.message}`);
     return 2;
