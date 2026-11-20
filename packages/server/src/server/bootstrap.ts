@@ -495,7 +495,7 @@ export interface PaseoDaemonConfig {
   terminalProfiles?: TerminalProfile[];
   agentProfiles?: AgentProfile[];
   sharedProviderPreferences?: MutableDaemonConfig["sharedProviderPreferences"];
-  quotaPolicy?: MutableDaemonConfig["quotaPolicy"];
+  accountQuotaPolicy?: MutableDaemonConfig["accountQuotaPolicy"];
   installationResourceBindings?: MutableDaemonConfig["installationResourceBindings"];
   installationProjectPolicies?: MutableDaemonConfig["installationProjectPolicies"];
   primaryConnection?: MutableDaemonConfig["primaryConnection"];
@@ -684,7 +684,7 @@ function createInitialMutableDaemonConfig(config: ResolvedDaemonSettings): Mutab
     plugins: config.plugins ?? {},
     skills: { selection: config.skillSelection },
     sharedProviderPreferences: config.sharedProviderPreferences,
-    quotaPolicy: config.quotaPolicy,
+    accountQuotaPolicy: config.accountQuotaPolicy,
     installationResourceBindings: config.installationResourceBindings,
     installationProjectPolicies: config.installationProjectPolicies,
     primaryConnection: config.primaryConnection,

@@ -699,24 +699,33 @@ test("speech config reads remain compatible with clients before features and fut
   ).toEqual({ provider: "future", region: "eu" });
 });
 
-test("quota policy is optional and keeps unknown priorities", () => {
+test("account quota policy is optional and later shapes stay readable", () => {
   const base = MutableDaemonConfigSchema.parse({
     providers: {},
     mcp: { enabled: true, injectIntoAgents: true },
   });
-  expect(base.quotaPolicy).toBeUndefined();
-  const quotaPolicy = {
+  expect(base.accountQuotaPolicy).toBeUndefined();
+  const current = {
     version: 1,
     ladder: { low: 50, someday: 5 },
     accounts: { "installation-account/a": { pool: false, floors: { someday: 1 } } },
   };
-  const read = { ...base, quotaPolicy };
-  expect(MutableDaemonConfigSchema.parse(JSON.parse(JSON.stringify(read)))).toEqual(read);
-  // An older client strips nothing it relies on and still reads the config.
-  const oldSchema = MutableDaemonConfigSchema.omit({ quotaPolicy: true });
-  expect(oldSchema.parse(read)).toEqual(read);
-  expect(MutableDaemonConfigPatchSchema.parse({ quotaPolicy })).toEqual({ quotaPolicy });
-  expect(MutableDaemonConfigPatchSchema.parse({ quotaPolicy: null })).toEqual({
-    quotaPolicy: null,
+  // A later daemon may store a new version or non-number entries; clients still read the config.
+  for (const accountQuotaPolicy of [
+    current,
+    { version: 2, tiers: [{ name: "normal", keep: "25%" }] },
+    { ...current, ladder: { normal: "25" } },
+  ]) {
+    const read = { ...base, accountQuotaPolicy };
+    expect(MutableDaemonConfigSchema.parse(JSON.parse(JSON.stringify(read)))).toEqual(read);
+  }
+  // An older client without the key still reads the new config.
+  const oldSchema = MutableDaemonConfigSchema.omit({ accountQuotaPolicy: true });
+  expect(oldSchema.parse({ ...base, accountQuotaPolicy: current })).toMatchObject(base);
+  expect(MutableDaemonConfigPatchSchema.parse({ accountQuotaPolicy: current })).toEqual({
+    accountQuotaPolicy: current,
+  });
+  expect(MutableDaemonConfigPatchSchema.parse({ accountQuotaPolicy: null })).toEqual({
+    accountQuotaPolicy: null,
   });
 });

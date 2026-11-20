@@ -551,7 +551,7 @@ function resolveProfileLists(persisted: ReturnType<typeof loadPersistedConfig>) 
     terminalProfiles: persisted.daemon?.terminalProfiles,
     agentProfiles: persisted.daemon?.agentProfiles,
     sharedProviderPreferences: persisted.daemon?.sharedProviderPreferences,
-    quotaPolicy: persisted.daemon?.quotaPolicy,
+    accountQuotaPolicy: persisted.daemon?.accountQuotaPolicy,
     installationResourceBindings: persisted.daemon?.installationResourceBindings,
     // Present even when empty: the coordinator reads the key as support for project policies.
     installationProjectPolicies: persisted.daemon?.installationProjectPolicies ?? {},
@@ -613,7 +613,7 @@ export type ResolvedDaemonSettings = Pick<
   | "terminalProfiles"
   | "agentProfiles"
   | "sharedProviderPreferences"
-  | "quotaPolicy"
+  | "accountQuotaPolicy"
   | "installationResourceBindings"
   | "installationProjectPolicies"
   | "primaryConnection"

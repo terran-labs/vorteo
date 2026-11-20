@@ -1,5 +1,5 @@
 import type { ProviderUsage } from "@getpaseo/protocol/messages";
-import type { QuotaPolicy } from "@getpaseo/protocol/quota-policy";
+import type { AccountQuotaPolicyWire } from "@getpaseo/protocol/account-quota-policy";
 import { describe, expect, it } from "vitest";
 
 import { evaluateFloor, type FloorInput } from "./floor.js";
@@ -33,7 +33,7 @@ function input(over: Partial<FloorInput> & { providers?: ProviderUsage[]; fetche
   } satisfies FloorInput;
 }
 
-const policy = (value: Partial<QuotaPolicy>): QuotaPolicy => ({
+const policy = (value: Record<string, unknown>): AccountQuotaPolicyWire => ({
   version: 1,
   ladder: {},
   accounts: {},
@@ -121,6 +121,26 @@ describe("evaluateFloor", () => {
         policy: policy({ ladder: { normal: 140 }, accounts: { [REF]: { floors: { high: -1 } } } }),
       }),
       { kind: "unresolved", reason: "invalid-floor" },
+    ],
+    [
+      "a non-number floor read from a file is unresolved",
+      input({ policy: policy({ ladder: { normal: "25" } }) }),
+      { kind: "unresolved", reason: "invalid-floor" },
+    ],
+    [
+      "a policy of another version is unusable and names the version",
+      input({ policy: { version: 2, ladder: { normal: 0 } } }),
+      { kind: "unresolved", reason: "unsupported-version", version: 2, pool: null },
+    ],
+    [
+      "a reading dated after now is unmeasured",
+      input({ fetchedAt: new Date(NOW + 365 * 24 * 3_600_000).toISOString() }),
+      { kind: "unmeasured", reason: "future-dated" },
+    ],
+    [
+      "a remaining percentage over 100 is unmeasured",
+      input({ providers: [reading({ "5h": 140, weekly: 80 })] }),
+      { kind: "unmeasured", reason: "out-of-range" },
     ],
   ])("%s", (_name, given, expected) => {
     expect(evaluateFloor(given)).toMatchObject(expected);

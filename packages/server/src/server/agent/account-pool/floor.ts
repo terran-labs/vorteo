@@ -1,8 +1,9 @@
 import {
+  ACCOUNT_QUOTA_POLICY_VERSION,
   BUILT_IN_QUOTA_FLOORS,
   isQuotaFloor,
-  type QuotaPolicy,
-} from "@getpaseo/protocol/quota-policy";
+  type AccountQuotaPolicyWire,
+} from "@getpaseo/protocol/account-quota-policy";
 
 import { rankAccounts, type UsageList } from "../../factory/project/account-choice.js";
 
@@ -13,7 +14,14 @@ import { rankAccounts, type UsageList } from "../../factory/project/account-choi
  *
  * Freshness and window validity come from Factory account choice (`rankAccounts`), so both
  * agree on what counts as a usable reading. A stale reading is unmeasured; no grace period.
+ * Two checks are added here without changing account choice: a reading dated after `nowMs`
+ * and a remaining percentage outside 0 to 100 are unmeasured too.
+ *
+ * The policy is read as stored, so every value is checked here: a policy of another version is
+ * unusable, and malformed entries never count as a floor.
  */
+
+type Policy = AccountQuotaPolicyWire | null | undefined;
 
 export type FloorSource = "account" | "ladder" | "built-in";
 
@@ -32,7 +40,7 @@ export type FloorEvaluation =
   | {
       /** The floor cannot be enforced here; say so rather than guess. */
       kind: "unmeasured";
-      reason: "no-reading" | "unreadable" | "stale";
+      reason: "no-reading" | "unreadable" | "stale" | "future-dated" | "out-of-range";
       floorPct: number;
       floorSource: FloorSource;
       pool: boolean | null;
@@ -48,16 +56,29 @@ export type FloorEvaluation =
       kind: "unresolved";
       reason: "unknown-priority" | "invalid-floor";
       pool: boolean | null;
+    }
+  | {
+      /** The stored policy is a version this daemon cannot read; nothing in it is used. */
+      kind: "unresolved";
+      reason: "unsupported-version";
+      version: number;
+      pool: null;
     };
 
+/**
+ * `accountRef` and `providerId` must name the same account: the caller derives `accountRef`
+ * from `providerId` with `installationProviderReference` and that daemon's provider config.
+ * Nothing here can check that. Mismatched inputs apply one account's policy row to another's
+ * reading; a `providerId` with no reading in `usage` yields unmeasured.
+ */
 export interface FloorInput {
-  /** `installationProviderReference` of the account; keys `policy.accounts`. */
+  /** `installationProviderReference(providerId, providers)`; keys `policy.accounts`. */
   accountRef: string;
   /** The local provider id whose reading is in `usage`. */
   providerId: string;
   priority: string;
-  /** Absent policy: built-in ladder, pool membership unstated. */
-  policy?: QuotaPolicy | null;
+  /** The stored policy. Absent: built-in ladder, pool membership unstated. */
+  policy?: Policy;
   usage: UsageList;
   nowMs: number;
   /** A usage-limit hold is recorded for the account, whatever its reading says. */
@@ -72,13 +93,13 @@ export interface FloorInput {
  * never silently replaced by a lower level.
  */
 export function resolveFloor(
-  policy: QuotaPolicy | null | undefined,
+  policy: Policy,
   accountRef: string,
   priority: string,
 ): { floorPct: number; source: FloorSource } | { invalid: true } | null {
   const levels: [FloorSource, Record<string, unknown> | undefined][] = [
-    ["account", policy?.accounts?.[accountRef]?.floors],
-    ["ladder", policy?.ladder],
+    ["account", record(accountRow(policy, accountRef)?.floors)],
+    ["ladder", record(policy?.ladder)],
     ["built-in", BUILT_IN_QUOTA_FLOORS],
   ];
   for (const [source, floors] of levels) {
@@ -90,16 +111,27 @@ export function resolveFloor(
 }
 
 export function evaluateFloor(input: FloorInput): FloorEvaluation {
-  const pool = poolMembership(input.policy, input.accountRef);
   const reading = input.usage.providers.find((item) => item.providerId === input.providerId);
   const lowest = lowestWindow(reading?.windows ?? []);
+  const { policy } = input;
+  if (policy && policy.version !== ACCOUNT_QUOTA_POLICY_VERSION)
+    return {
+      kind: "unresolved",
+      reason: "unsupported-version",
+      version: policy.version,
+      pool: null,
+    };
+  const pool = poolMembership(policy, input.accountRef);
 
   if (input.limitHold) return { kind: "limited", bindingWindowId: lowest?.id ?? null, pool };
 
-  const floor = resolveFloor(input.policy, input.accountRef, input.priority);
+  const floor = resolveFloor(policy, input.accountRef, input.priority);
   if (floor === null) return { kind: "unresolved", reason: "unknown-priority", pool };
   if ("invalid" in floor) return { kind: "unresolved", reason: "invalid-floor", pool };
   const { floorPct, source: floorSource } = floor;
+
+  const unusable = readingProblem(reading, input.usage, input.nowMs);
+  if (unusable) return { kind: "unmeasured", reason: unusable, floorPct, floorSource, pool };
 
   const [judged] = rankAccounts({
     candidates: [input.providerId],
@@ -137,9 +169,36 @@ export function evaluateFloor(input: FloorInput): FloorEvaluation {
 }
 
 /** The owner's stated pool membership, or null when the policy does not say. */
-function poolMembership(policy: QuotaPolicy | null | undefined, accountRef: string) {
-  const value = policy?.accounts?.[accountRef]?.pool;
+function poolMembership(policy: Policy, accountRef: string) {
+  const value = accountRow(policy, accountRef)?.pool;
   return typeof value === "boolean" ? value : null;
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function accountRow(policy: Policy, accountRef: string): Record<string, unknown> | undefined {
+  const accounts = record(policy?.accounts);
+  return accounts && Object.hasOwn(accounts, accountRef) ? record(accounts[accountRef]) : undefined;
+}
+
+/** Checks account choice does not make: a reading from the future, or a percentage out of range. */
+function readingProblem(
+  reading: UsageList["providers"][number] | undefined,
+  usage: UsageList,
+  nowMs: number,
+): "future-dated" | "out-of-range" | null {
+  if (!reading) return null;
+  const fetchedAt = Date.parse(reading.fetchedAt ?? usage.fetchedAt);
+  if (Number.isFinite(fetchedAt) && fetchedAt > nowMs) return "future-dated";
+  const outOfRange = reading.windows.some(
+    ({ remainingPct: value }) =>
+      typeof value === "number" && Number.isFinite(value) && (value < 0 || value > 100),
+  );
+  return outOfRange ? "out-of-range" : null;
 }
 
 function lowestWindow(

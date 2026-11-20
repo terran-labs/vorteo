@@ -925,48 +925,14 @@
           },
           "required": ["version", "revision", "providers", "legacyProfiles"]
         },
-        "quotaPolicy": {
+        "accountQuotaPolicy": {
           "type": "object",
           "properties": {
             "version": {
-              "type": "number",
-              "const": 1
-            },
-            "ladder": {
-              "type": "object",
-              "propertyNames": {
-                "type": "string"
-              },
-              "additionalProperties": {
-                "type": "number"
-              }
-            },
-            "accounts": {
-              "type": "object",
-              "propertyNames": {
-                "type": "string"
-              },
-              "additionalProperties": {
-                "type": "object",
-                "properties": {
-                  "pool": {
-                    "type": "boolean"
-                  },
-                  "floors": {
-                    "type": "object",
-                    "propertyNames": {
-                      "type": "string"
-                    },
-                    "additionalProperties": {
-                      "type": "number"
-                    }
-                  }
-                },
-                "additionalProperties": {}
-              }
+              "type": "number"
             }
           },
-          "required": ["version", "ladder", "accounts"],
+          "required": ["version"],
           "additionalProperties": {}
         },
         "cors": {
