@@ -787,23 +787,34 @@ it.each([false, true])(
   },
 );
 
+type MachineEvent = "message" | "finished" | "errored" | "permission-required" | "closed";
+
 function machineCall(
   callId: string,
   name: string,
-  event?: "message" | "finished" | "errored" | "permission-required" | "closed",
+  options: { event?: MachineEvent; status?: "running" | "failed"; stamped?: boolean } = {},
 ): ToolCallItem {
   const call = toolCall(callId, name);
   if (call.payload.source !== "agent") throw new Error("Expected agent tool");
-  call.payload.data.detail = { type: "plain_text", text: `${name} body` };
-  if (event) {
-    call.payload.data.agentMessage = {
-      event,
+  const { data } = call.payload;
+  data.detail = { type: "plain_text", text: `${name} body` };
+  if (options.status) data.status = options.status;
+  if (options.stamped) data.metadata = { synthetic: true, source: "claude_task_notification" };
+  if (options.event) {
+    data.agentMessage = {
+      event: options.event,
       sender: { id: "sender", title: "Reviewer" },
       text: "Ready for review",
     };
   }
   return call;
 }
+
+const notification = (callId: string, event: MachineEvent = "finished") =>
+  machineCall(callId, "agent_message", { event });
+const systemRow = (id: string) => machineCall(`paseo-system:${id}`, "heartbeat");
+const taskNotification = (callId: string, status?: "running" | "failed") =>
+  machineCall(callId, "task_notification", { stamped: true, status });
 
 const literalEnvelope =
   '<paseo-system version="1" kind="agent-notification" source-agent-id="sender" message-id="m" event="finished">\nDone\n</paseo-system>';
@@ -815,6 +826,7 @@ describe("machine turn lines", () => {
     head: [],
     isTurnActive: false,
   };
+  const ids = (items: StreamItem[]) => items.map((item) => item.id);
 
   it.each<[string, StreamItem, boolean]>([
     ["an owner message", userMessage("owner", 1), false],
@@ -834,42 +846,100 @@ describe("machine turn lines", () => {
       false,
     ],
     ["a heartbeat call the daemon did not inject", machineCall("provider-1", "heartbeat"), false],
-    ["an agent message", machineCall("received", "agent_message", "message"), true],
-    ["an agent notification", machineCall("finished", "agent_message", "finished"), true],
-    ["a system row", machineCall("paseo-system:abc", "heartbeat"), true],
-    ["a task notification", machineCall("task_notification_1", "task_notification"), true],
-  ])("%s collapses only when a machine produced it", (_name, item, collapses) => {
-    const result = createStreamPresentation()({ ...input, tail: [item] });
-    expect(result.tail.map((row) => row.id)).toEqual([item.id]);
-    expect(result.machineTurns.groupsByHostId.has(item.id)).toBe(collapses);
+    ["a task notification the daemon did not stamp", machineCall("t", "task_notification"), false],
+    ["an errored notification", notification("errored", "errored"), false],
+    ["a permission request", notification("permission", "permission-required"), false],
+    ["a failed task notification", taskNotification("failed", "failed"), false],
+    ["a running task notification", taskNotification("running", "running"), false],
+    ["an agent message", notification("received", "message"), true],
+    ["an agent notification", notification("finished"), true],
+    ["a system row", systemRow("abc"), true],
+    ["a task notification", taskNotification("done"), true],
+  ])(
+    "%s collapses only when a machine produced it and nothing needs attention",
+    (_, item, collapses) => {
+      const result = createStreamPresentation()({ ...input, tail: [item] });
+      expect(ids(result.tail)).toEqual([item.id]);
+      expect(result.machineTurns.groupsByHostId.get(item.id) !== undefined).toBe(collapses);
+      // The Full display is the opt-out: every row keeps full weight.
+      const full = createStreamPresentation()({ ...input, tail: [item], display: "full" });
+      expect(full.machineTurns.groupsByHostId.get(item.id)).toBeUndefined();
+    },
+  );
+
+  it("keeps attention rows and the thread's first row at full weight between groups", () => {
+    const [first, second, errored, third] = [
+      notification("one"),
+      notification("two"),
+      notification("errored", "errored"),
+      notification("three"),
+    ];
+    const tail: StreamItem[] = [first, second, errored, third];
+    const hosts = (result: ReturnType<ReturnType<typeof createStreamPresentation>>) =>
+      ids(tail).filter((id) => result.machineTurns.groupsByHostId.get(id));
+
+    const paged = createStreamPresentation()({ ...input, tail });
+    expect(ids(paged.tail)).toEqual([first.id, errored.id, third.id]);
+    expect(hosts(paged)).toEqual([first.id, third.id]);
+
+    const fromStart = createStreamPresentation()({ ...input, tail, isTimelineStartLoaded: true });
+    expect(ids(fromStart.tail)).toEqual(ids(tail));
+    expect(hosts(fromStart)).toEqual([second.id, third.id]);
   });
 
   it("groups adjacent machine rows under one host and keeps the reader on it", () => {
     const present = createStreamPresentation();
     const anchor = createReadingAnchor();
-    const run = [
-      machineCall("finished", "agent_message", "finished"),
-      machineCall("received", "agent_message", "message"),
-      machineCall("paseo-system:abc", "heartbeat"),
-    ];
+    const run = [notification("finished"), notification("received", "message"), systemRow("abc")];
     const tail: StreamItem[] = [userMessage("owner", 1), ...run, assistantMessage("reply", 2)];
     const hostId = run[0]!.id;
     const hiddenId = run[2]!.id;
 
-    const opened = present({ ...input, tail, expandedMachineHostIds: new Set([hostId]) });
-    expect(opened.tail.map((row) => row.id)).toEqual(tail.map((row) => row.id));
+    // Opened by a row that is not the host, as after the host changed.
+    const opened = present({ ...input, tail, expandedMachineRowIds: new Set([hiddenId]) });
+    expect(ids(opened.tail)).toEqual(ids(tail));
     expect(opened.machineTurns.groupsByHostId.get(hostId)).toMatchObject({ expanded: true });
     expect(opened.readingRowReplacements.get(hiddenId)).toBeUndefined();
     anchor.reconcile(0, [{ id: hiddenId, top: 48, height: 200 }]);
 
+    // An earlier machine row pages in and becomes the host; the line stays open.
+    const earlier = notification("earlier");
+    const rehosted = createStreamPresentation()({
+      ...input,
+      tail: [tail[0]!, earlier, ...tail.slice(1)],
+      expandedMachineRowIds: new Set([hiddenId]),
+    });
+    expect(rehosted.machineTurns.groupsByHostId.get(earlier.id)).toMatchObject({ expanded: true });
+
     const closed = present({ ...input, tail });
-    expect(closed.tail.map((row) => row.id)).toEqual(["owner", hostId, "reply"]);
-    expect(closed.machineTurns.groupsByHostId.get(hostId)?.rows).toHaveLength(3);
+    expect(ids(closed.tail)).toEqual(["owner", hostId, "reply"]);
+    const group = closed.machineTurns.groupsByHostId.get(hostId);
+    expect(group?.rows).toHaveLength(3);
     // The reader, find and the outline all resolve a hidden row to the line that stands for it.
     expect(anchor.getRowId(closed.readingRowReplacements)).toBe(hostId);
     expect(closed.machineTurns.hostIdByHiddenRowId.get(hiddenId)).toBe(hostId);
     expect(closed.machineTurns.hostIdByFoldedMessageId.get(hiddenId)).toBe(hostId);
-    // The host row is revised so its mounted line redraws with the new state.
+    // The host row is revised so its mounted line redraws, and is left alone once it has.
     expect(closed.tail[1]).not.toBe(opened.tail[1]);
+    const again = present({ ...input, tail: [...tail] });
+    expect(again.tail[1]).toBe(closed.tail[1]);
+    expect(again.machineTurns.groupsByHostId.get(hostId)).toBe(group);
+  });
+
+  it("collapses rows in the live head the same way as in retained history", () => {
+    const present = createStreamPresentation();
+    const settled = notification("settled");
+    const live = [notification("live"), systemRow("live")];
+    const tail: StreamItem[] = [userMessage("owner", 1), assistantMessage("reply", 2), settled];
+    const streaming = present({ ...input, tail: tail.slice(0, 2), head: [settled, ...live] });
+    expect(ids(streaming.head)).toEqual([settled.id]);
+    expect(streaming.machineTurns.groupsByHostId.get(settled.id)?.rows).toHaveLength(3);
+    expect(streaming.readingRowReplacements.get(live[1]!.id)).toBe(settled.id);
+
+    const split = present({ ...input, tail, head: live });
+    expect(ids(split.tail).at(-1)).toBe(settled.id);
+    expect(ids(split.head)).toEqual([live[0]!.id]);
+    expect(split.machineTurns.groupsByHostId.get(settled.id)?.rows).toHaveLength(1);
+    expect(split.machineTurns.hostIdByHiddenRowId.get(live[1]!.id)).toBe(live[0]!.id);
   });
 });

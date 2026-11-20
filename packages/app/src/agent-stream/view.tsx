@@ -92,6 +92,7 @@ import { createStreamPresentation } from "./presentation";
 import { OverviewToolCallGroupView } from "@/tool-calls/detail-level/overview/view";
 import { IndentRail } from "@/components/indent-rail";
 import { TurnSummaryLine } from "./turn-collapse/summary-line";
+import type { MachineGroup } from "./machine-turns/model";
 import { MachineTurnLine } from "./machine-turns/row";
 import { type AgentStreamRenderModel, buildAgentStreamRenderModel } from "./model";
 import { resolveStreamRenderStrategy } from "./strategy-resolver";
@@ -414,6 +415,8 @@ const AGENT_CAPABILITY_FLAG_KEYS: (keyof AgentCapabilityFlags)[] = [
   "supportsRewindBoth",
 ];
 
+/** Enough for any reading session; bounds a set that otherwise only grows. */
+const MAX_EXPANDED_MACHINE_ROWS = 200;
 const EMPTY_STREAM_HEAD: StreamItem[] = [];
 
 function useRetainedValue<T>(value: T, active: boolean): T {
@@ -487,7 +490,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const toolCallExpansion = useAgentToolCallExpansion(agentId);
     const expandedToolCallGroups = useExpandedToolCallGroups(toolCallExpansion);
     const [expandedTurnHostIds, setExpandedTurnHostIds] = useState<ReadonlySet<string>>(new Set());
-    const [expandedMachineHostIds, setExpandedMachineHostIds] = useState<ReadonlySet<string>>(
+    const [expandedMachineRowIds, setExpandedMachineRowIds] = useState<ReadonlySet<string>>(
       new Set(),
     );
 
@@ -661,7 +664,8 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           display: chatDisplay,
           autoExpandReasoning,
           expandedTurnHostIds,
-          expandedMachineHostIds,
+          expandedMachineRowIds,
+          isTimelineStartLoaded: !remoteHasOlder,
           isTurnActive,
           activeTurnId: effectiveTurnPresentation.turnId,
         }),
@@ -673,7 +677,8 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         chatDisplay,
         autoExpandReasoning,
         expandedTurnHostIds,
-        expandedMachineHostIds,
+        expandedMachineRowIds,
+        remoteHasOlder,
         isTurnActive,
         effectiveTurnPresentation.turnId,
       ],
@@ -746,16 +751,18 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           mountedHistoryMessageIds.has(messageId) || liveHeadMessageIds.has(messageId),
       };
     }, [baseRenderModel.segments.liveHead, mountedHistoryMessageIds]);
-    const setMachineExpanded = useCallback((hostId: string, expanded: boolean) => {
+    const setMachineExpanded = useCallback((group: MachineGroup, expanded: boolean) => {
       // The rows open below their line; keep that line under the reader's pointer.
       viewportRef.current?.holdReadingPosition();
-      setExpandedMachineHostIds((previous) => {
-        if (previous.has(hostId) === expanded) return previous;
+      setExpandedMachineRowIds((previous) => {
+        // Any listed row keeps its line open, so closing a line forgets all of its rows.
         const next = new Set(previous);
-        if (expanded) {
-          next.add(hostId);
-        } else {
-          next.delete(hostId);
+        for (const row of group.rows) next.delete(row.id);
+        if (expanded) next.add(group.hostId);
+        // Rows that left the timeline are never looked up again; drop the oldest instead.
+        for (const id of next) {
+          if (next.size <= MAX_EXPANDED_MACHINE_ROWS) break;
+          next.delete(id);
         }
         return next;
       });
@@ -763,8 +770,9 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     // Find and the outline reach a message behind a closed machine line by opening the line.
     const revealMachineRow = useStableEvent((messageId: string): boolean => {
       const hostId = presentation.machineTurns.hostIdByFoldedMessageId.get(messageId);
-      if (!hostId || expandedMachineHostIds.has(hostId)) return false;
-      setMachineExpanded(hostId, true);
+      const group = hostId ? presentation.machineTurns.groupsByHostId.get(hostId) : undefined;
+      if (!group || group.expanded) return false;
+      setMachineExpanded(group, true);
       return true;
     });
     const revealOutlineMessage = useStableEvent(
@@ -879,12 +887,16 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         if (!group) return content;
         return (
           <>
-            <MachineTurnLine group={group} onExpandedChange={setMachineExpanded} />
+            <MachineTurnLine
+              group={group}
+              serverId={resolvedServerId}
+              onExpandedChange={setMachineExpanded}
+            />
             {group.expanded ? content : null}
           </>
         );
       },
-      [getMachineGroup, setMachineExpanded],
+      [getMachineGroup, resolvedServerId, setMachineExpanded],
     );
 
     const setToolCallGroupExpanded = toolCallExpansion.setGroupExpanded;
