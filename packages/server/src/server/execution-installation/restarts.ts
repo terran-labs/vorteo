@@ -365,6 +365,68 @@ function requestPredatesPolicy(
   return Date.parse(job.createdAt) < threshold && !standing?.activationStep;
 }
 
+// Only this closed vocabulary may cross from release errors into receipts.
+// Error fields remain untrusted even when they resemble codes or owner actions.
+const releaseFailures = [
+  "Release timed out.",
+  "Release connection refused or unreachable.",
+  "Daemon RPC release failed.",
+  "Unclassified release failure; consult the coordinator log.",
+] as const;
+type ReleaseFailure = (typeof releaseFailures)[number];
+
+function releaseFailure(error: unknown): ReleaseFailure {
+  const fields = error !== null && typeof error === "object" ? error : {};
+  const code = "code" in fields ? fields.code : undefined;
+  if (code === "ETIMEDOUT") return releaseFailures[0];
+  if (code === "ECONNREFUSED" || code === "ENETUNREACH" || code === "EHOSTUNREACH")
+    return releaseFailures[1];
+  if ("name" in fields && fields.name === "DaemonRpcError") return releaseFailures[2];
+  let message = typeof error === "string" ? error : "";
+  if (error instanceof Error) message = error.message;
+  // Recognize the client's existing timeout without retaining any message text.
+  if (/^Timeout waiting for message \(\d{1,9}ms\)(?:$|[\r\n])/.test(message.slice(0, 4096)))
+    return releaseFailures[0];
+  return releaseFailures[3];
+}
+
+// Reads project old free-text failures without writing or changing the snapshot.
+// Retries persist canonical, deduplicated events from the four fixed categories.
+function holdReleaseDetail(job: RestartJob, failure?: ReleaseFailure): string {
+  const bounded = job.detail.slice(0, 8192);
+  const marker =
+    /\nHold release (failures:|initially failed(?: \(untrusted daemon diagnostic\))?: )/;
+  const match = marker.exec(bounded);
+  let outcome = match ? bounded.slice(0, match.index) : job.detail;
+  const legacyWaiting = outcome === "Waiting for the environment to release its restart hold.";
+  if (!match && failure === undefined) {
+    if (legacyWaiting && job.status === "succeeded" && job.holdReleased)
+      return "Restart completed and its hold was released.";
+    return job.detail;
+  }
+  if (legacyWaiting && job.status === "succeeded") outcome = "Restart completed.";
+  outcome = outcome.slice(0, 1024);
+  const failures = new Set<ReleaseFailure>();
+  if (match) {
+    const history = bounded.slice(match.index + match[0].length);
+    if (match[1] === "failures:") {
+      for (const line of history.split("\n")) {
+        const known = releaseFailures.find((value) => line === value);
+        if (known) failures.add(known);
+      }
+      if (!failures.size) failures.add(releaseFailures[3]);
+    } else {
+      // Earlier receipts have no trustworthy structure within their diagnostic.
+      // Classify only the first failure; never replay apparent embedded events.
+      failures.add(releaseFailure(history));
+    }
+  }
+  if (failure !== undefined) failures.add(failure);
+  const confirmation =
+    job.holdReleased && failure === undefined ? "\nHold release confirmed after retry." : "";
+  return `${outcome}\nHold release failures:\n${[...failures].join("\n")}${confirmation}`;
+}
+
 export class InstallationRestarts {
   private operationalActivitySink: OperationalActivitySink | null = null;
   private readonly progress: NonNullable<RestartStartupOptions["progress"]>;
@@ -607,7 +669,11 @@ export class InstallationRestarts {
   list(): RestartJob[] {
     this.reconcilePending();
     return structuredClone(
-      this.jobs.map((job) => ({ ...job, impact: this.impactCache.get(job.target) })),
+      this.jobs.map((job) => ({
+        ...job,
+        detail: holdReleaseDetail(job),
+        impact: this.impactCache.get(job.target),
+      })),
     );
   }
 
@@ -3088,23 +3154,24 @@ export class InstallationRestarts {
       }
       const current = this.jobs.find((item) => item.id === job.id);
       if (current) {
-        const waitingForHold =
-          current.status === "succeeded" &&
-          current.detail === "Waiting for the environment to release its restart hold.";
         this.replace({
           ...withoutCaptureId(current),
           holdReleased: true,
-          detail: waitingForHold ? "Restart completed and its hold was released." : current.detail,
+          detail: holdReleaseDetail({ ...current, holdReleased: true }),
         });
       }
     } catch (error) {
-      const detail = (error instanceof Error ? error.message : String(error)).split(/\r?\n/, 1)[0];
+      const detail = (error instanceof Error ? error.message : String(error)).split(
+        /\r\n|\r|\n/,
+        1,
+      )[0];
       this.progress("Restart hold release failed", { jobId: job.id, target: job.target, detail });
       const current = this.jobs.find((item) => item.id === job.id);
       if (current)
         this.replace({
           ...current,
-          detail: "Waiting for the environment to release its restart hold.",
+          holdReleased: false,
+          detail: holdReleaseDetail(current, releaseFailure(error)),
         });
     }
   }
@@ -3597,7 +3664,7 @@ export class InstallationRestarts {
     }
     const detail =
       exceeded && this.afterHoldDeadline === "ask"
-        ? `Current turns have not finished after ${minutes} minutes. ${waitingDetail}. Restart now to interrupt them, or cancel.`
+        ? `Current turns have not finished after ${minutes} minutes. ${waitingDetail}. Keep waiting, choose Force restart now to review interrupting current turns, or cancel.`
         : waitingDetail;
     return job.detail === detail ? job : { ...job, detail };
   }
