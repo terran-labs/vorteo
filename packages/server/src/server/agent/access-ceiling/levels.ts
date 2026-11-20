@@ -197,6 +197,7 @@ export type RefusalReason =
   | "permission:exceeds-supervisor"
   | "permission:codex-read-scope"
   | "permission:machine-reviewed"
+  | "permission:unprompted-writes"
   | "feature:owner-only"
   | "environment:container-to-host"
   | "environment:mismatch"
@@ -387,16 +388,47 @@ function isMachineReviewed(subject: { provider: string; modeId: string | null | 
 /**
  * Machine-reviewed rule. In a machine-reviewed child a classifier answers the prompts, so the
  * owner is not the one gating the child; it would do without the owner what an owner-gated
- * supervisor of the same tier needs the owner for. Refused unless the supervisor is itself
- * machine-reviewed or unattended.
+ * supervisor of the same tier needs the owner for. Refused unless the supervisor is unattended
+ * or in the same machine-reviewed mode of the same provider. Same provider only: a Codex
+ * `auto-review` supervisor keeps its sandbox behind the classifier, while the Claude classifier
+ * has no sandbox behind it. Deliberately conservative; relax here to any machine-reviewed
+ * supervisor if the owner accepts that.
  */
 function isMachineReviewedGap(
   supervisor: SupervisorAccess,
   supervisorTier: AccessTier,
   child: RequestedChildAccess,
 ): boolean {
+  if (!isMachineReviewed(child) || supervisorTier === "unattended") return false;
+  return !(supervisor.provider === child.provider && supervisor.modeId === child.modeId);
+}
+
+/** Supervisor modes in which every file write prompts the owner. */
+function hasPromptedWrites(subject: { provider: string; modeId: string | null | undefined }) {
   return (
-    isMachineReviewed(child) && supervisorTier !== "unattended" && !isMachineReviewed(supervisor)
+    (subject.provider === "claude" && subject.modeId === "default") ||
+    (subject.provider === "omp" && subject.modeId === "ask")
+  );
+}
+
+/**
+ * Unprompted-writes rule. A Claude `acceptEdits` child writes files without asking, in a
+ * directory holding Git hooks, package scripts and other agents' configuration that later run
+ * unsandboxed. A supervisor whose own writes prompt the owner (Claude `default`, OMP `ask`)
+ * cannot do that, so the child is refused unless that supervisor is unattended. A Codex `auto`
+ * child under those supervisors is already refused by the Codex read-scope rule, so this rule
+ * does not repeat it.
+ */
+function isUnpromptedWritesGap(
+  supervisor: SupervisorAccess,
+  supervisorTier: AccessTier,
+  child: RequestedChildAccess,
+): boolean {
+  return (
+    supervisorTier !== "unattended" &&
+    hasPromptedWrites(supervisor) &&
+    child.provider === "claude" &&
+    child.modeId === "acceptEdits"
   );
 }
 
@@ -493,6 +525,8 @@ export function compareChildAccess(
       refusals.push("permission:codex-read-scope");
     if (isMachineReviewedGap(supervisor, supervisorTier.tier, child))
       refusals.push("permission:machine-reviewed");
+    if (isUnpromptedWritesGap(supervisor, supervisorTier.tier, child))
+      refusals.push("permission:unprompted-writes");
   }
   if (refusals.length > 0)
     return { kind: "refused", reasons: refusals, childEscalations: escalations };

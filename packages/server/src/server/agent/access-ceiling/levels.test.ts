@@ -264,7 +264,38 @@ describe("compareChildAccess", () => {
       name: "Codex auto-review with Claude auto",
       sup: supervisor({ provider: "codex", modeId: "auto-review" }),
       req: child({ modeId: "auto" }),
+      expected: refused(["permission:machine-reviewed"]),
+    },
+    {
+      name: "Codex auto-review with Codex auto-review",
+      sup: supervisor({ provider: "codex", modeId: "auto-review" }),
+      req: child({ provider: "codex", modeId: "auto-review" }),
       expected: allowed("attended", "attended"),
+    },
+    // Third review: unprompted writes under a supervisor whose writes prompt.
+    {
+      name: "Claude default with Claude acceptEdits",
+      sup: supervisor({ modeId: "default" }),
+      req: child({ modeId: "acceptEdits" }),
+      expected: refused(["permission:unprompted-writes"]),
+    },
+    {
+      name: "OMP ask with Claude acceptEdits",
+      sup: supervisor({ provider: "omp", modeId: "ask" }),
+      req: child({ modeId: "acceptEdits" }),
+      expected: refused(["permission:unprompted-writes"]),
+    },
+    {
+      name: "Claude acceptEdits with Claude acceptEdits",
+      sup: supervisor({ modeId: "acceptEdits" }),
+      req: child({ modeId: "acceptEdits" }),
+      expected: allowed("attended", "attended"),
+    },
+    {
+      name: "Claude default with Codex auto is left to the read-scope rule",
+      sup: supervisor({ modeId: "default" }),
+      req: child({ provider: "codex", modeId: "auto" }),
+      expected: refused(["permission:codex-read-scope"]),
     },
     // Never over-credit the supervisor.
     {
