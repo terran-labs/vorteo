@@ -1,38 +1,148 @@
 import assert from "node:assert/strict";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  AGE_STEP_MS,
   acquireSlot,
+  ageTicket,
+  declaredPriority,
   enqueue,
   launchSpec,
   memoryDeferral,
   readQueue,
   processIdentity,
   identityAlive,
+  ticketPriority,
 } from "./heavy-job.mjs";
 
 const temp = () => fs.mkdtempSync(path.join(os.tmpdir(), "heavy-job-"));
 
-test("the queue grants in arrival order, prunes exited holders and puts a live gate first", () => {
+test("the queue grants by priority then arrival, prunes exited holders and puts a live gate first", () => {
   const dir = temp();
   const gateMarker = path.join(dir, "gate.json");
   const alive = (pid) => pid !== 2;
-  enqueue(dir, { label: "late", pid: 3, now: 2_000 });
-  enqueue(dir, { label: "dead", pid: 2, now: 500 });
-  enqueue(dir, { label: "early", pid: 1, now: 1_000 });
-  assert.deepEqual(
-    readQueue(dir, { gateMarker, alive }).map((entry) => entry.label),
-    ["early", "late"],
+  // Written out of order: [label, priority, arrival, pid]. Expected grant order follows.
+  for (const [label, priority, now, pid] of [
+    ["low", "low", 100, 11],
+    ["late", "normal", 2_000, 3],
+    ["dead", "normal", 500, 2],
+    ["high-late", "high", 3_000, 13],
+    ["early", "normal", 1_000, 1],
+    ["high-tie-b", "high", 2_500, 14],
+    ["high-tie-a", "high", 2_500, 12],
+    ["reserved", "urgent", 9_000, 15],
+  ]) {
+    enqueue(dir, { label, priority, now, pid });
+  }
+  // A ticket from a copy of the script that predates priorities, and a running job's guard.
+  fs.writeFileSync(
+    path.join(dir, "000000000001500-7.json"),
+    JSON.stringify({ pid: 7, label: "legacy", queuedAt: 1_500 }),
   );
-  assert.equal(fs.readdirSync(dir).length, 2, "the exited holder's ticket is removed");
+  fs.writeFileSync(
+    path.join(dir, "!9-claim.json"),
+    JSON.stringify({ pid: 9, label: "running", startedAt: 1, slotGuard: true }),
+  );
+  const tickets = readQueue(dir, { gateMarker, alive });
+  assert.deepEqual(
+    tickets.map((entry) => [entry.label, ticketPriority(entry.file)]),
+    [
+      ["running", null],
+      ["reserved", "urgent"],
+      ["high-tie-a", "high"],
+      ["high-tie-b", "high"],
+      ["high-late", "high"],
+      ["early", "normal"],
+      ["legacy", "normal"],
+      ["late", "normal"],
+      ["low", "low"],
+    ],
+  );
+  const names = fs.readdirSync(dir).filter((name) => name.endsWith(".json"));
+  assert.deepEqual(
+    tickets.map((entry) => path.basename(entry.file)),
+    names.toSorted(),
+    "grant order is plain filename order, which older copies of the script also use",
+  );
+  assert.equal(names.length, 9, "the exited holder's ticket is removed");
+  assert.equal(path.basename(tickets[5].file), "000000000001000-1.json", "normal keeps its name");
 
   fs.writeFileSync(gateMarker, JSON.stringify({ pid: 4 }));
   assert.equal(readQueue(dir, { gateMarker, alive })[0].label, "Builds install gate");
   fs.writeFileSync(gateMarker, JSON.stringify({ pid: 2 }));
-  assert.equal(readQueue(dir, { gateMarker, alive })[0].label, "early");
+  assert.equal(readQueue(dir, { gateMarker, alive })[0].label, "running");
+});
+
+test("a waiter ages one class per 20 minutes up to high, and a reader never loses it mid-rename", () => {
+  const dir = temp();
+  const gateMarker = path.join(dir, "none");
+  let low = enqueue(dir, { label: "low", pid: 2, now: 500, priority: "low" });
+  enqueue(dir, { label: "first", pid: 1, now: 1_000 });
+  enqueue(dir, { label: "second", pid: 3, now: 2_000 });
+  const age = (minutes) => {
+    low = ageTicket(low, { declared: "low", now: 500 + minutes * 60_000 });
+    return path.basename(low);
+  };
+  const labels = (alive = () => true) =>
+    readQueue(dir, { gateMarker, alive }).map((entry) => entry.label);
+  assert.equal(age(19), "low-000000000000500-2.json");
+  assert.deepEqual(labels(), ["first", "second", "low"]);
+  // The rename lands after a reader listed the directory and before it reads
+  // the old name. Dropping the waiter here would let "first" and it both lead.
+  assert.deepEqual(
+    labels((pid) => {
+      if (pid === 1) age(20);
+      return true;
+    }),
+    ["low", "first", "second"],
+    "it joins normal at its original arrival, ahead of later arrivals",
+  );
+  assert.equal(path.basename(low), "000000000000500-2.json");
+  assert.equal(age(39), "000000000000500-2.json");
+  assert.equal(age(40), "+1-high-000000000000500-2.json");
+  assert.equal(age(60 * 24), "+1-high-000000000000500-2.json", "waiting never reaches urgent");
+  const ticket = JSON.parse(fs.readFileSync(low, "utf8"));
+  assert.deepEqual(
+    [ticket.queuedAt, ticket.priority, ticket.prioritySource],
+    [500, "low", "declared"],
+  );
+  assert.deepEqual(fs.readdirSync(dir).toSorted(), [
+    "+1-high-000000000000500-2.json",
+    "000000000001000-1.json",
+    "000000000002000-3.json",
+  ]);
+  const normal = enqueue(dir, { pid: 4, now: 0 });
+  assert.equal(ageTicket(normal, { now: AGE_STEP_MS - 1 }), normal);
+  assert.equal(ticketPriority(ageTicket(normal, { now: AGE_STEP_MS })), "high");
+});
+
+test("a priority is declared by argument, then environment, and urgent is refused", () => {
+  assert.equal(declaredPriority(undefined, {}), "normal");
+  assert.equal(declaredPriority(undefined, { VORTEO_HEAVY_PRIORITY: "low" }), "low");
+  assert.equal(declaredPriority("high", { VORTEO_HEAVY_PRIORITY: "low" }), "high");
+  assert.throws(() => declaredPriority("soon", {}), /--priority must be low, normal or high/);
+  assert.throws(() => declaredPriority(undefined, { VORTEO_HEAVY_PRIORITY: "urgent" }), /reserved/);
+  const dir = temp();
+  for (const [args, extra] of [
+    [["--priority", "urgent"], {}],
+    [[], { VORTEO_HEAVY_PRIORITY: "urgent" }],
+    [["--priority", "soon"], {}],
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      [path.resolve("scripts/heavy-job.mjs"), "run", ...args, "--", "true"],
+      {
+        env: { ...process.env, VORTEO_HEAVY_QUEUE_DIR: path.join(dir, "queue"), ...extra },
+        encoding: "utf8",
+      },
+    );
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /urgent is refused|must be low, normal or high/);
+  }
+  assert.equal(fs.existsSync(path.join(dir, "queue")), false, "a refused caller never queues");
 });
 
 test("memory, not load, defers a start", () => {
@@ -166,6 +276,7 @@ function launchJob(
     phase,
     duration = 300,
     finishMarker,
+    priority,
   } = {},
 ) {
   const log = path.join(root, "events");
@@ -181,6 +292,7 @@ function launchJob(
       ...(preload ? ["--import", preload] : []),
       script,
       "run",
+      ...(priority ? ["--priority", priority] : []),
       "--",
       process.execPath,
       "-e",
@@ -200,7 +312,8 @@ function launchJob(
       killSignal: "SIGKILL",
     },
   );
-  child.stderr.resume();
+  child.log = "";
+  child.stderr.on("data", (chunk) => (child.log += chunk));
   child.done = new Promise((resolve, reject) => {
     child.once("exit", (code) => resolve(code));
     child.once("error", reject);
@@ -328,6 +441,75 @@ fs.writeFileSync=(file,data,...args)=>{if(process.env.PROBE_PHASE==='post-check'
         assert.deepEqual(lines, ["start-new", "end-new", "start-old", "end-old"]);
       else assert.ok(lines.indexOf("start-old") < lines.indexOf("end-new"), lines.join(" "));
     }
+  },
+);
+
+test(
+  "priorities order waiters across script versions, and a killed high waiter frees its place",
+  { timeout: 90000 },
+  async () => {
+    const root = temp();
+    const queue = path.join(root, "queue");
+    const waiting = (pattern) => fs.readdirSync(queue).filter((name) => pattern.test(name)).length;
+    // The last copy before priorities: it knows nothing of the new ticket names.
+    const legacy = path.join(root, "legacy.mjs");
+    fs.writeFileSync(
+      legacy,
+      execFileSync("git", [
+        "show",
+        "291de7db60b429b5692f7189f5c47d035dbd0093:scripts/heavy-job.mjs",
+      ]),
+    );
+    fs.copyFileSync(
+      path.resolve("scripts/is-main-module.mjs"),
+      path.join(root, "is-main-module.mjs"),
+    );
+    const finishMarker = path.join(root, "finish-holder");
+    const holder = launchJob(root, "holder", { finishMarker });
+    await until(() => events(root).includes("start-holder"));
+    const low = launchJob(root, "low", { priority: "low", duration: 50 });
+    await until(() => waiting(/^low-/) === 1);
+    const old = launchJob(root, "old", { script: legacy, duration: 50 });
+    await until(() => waiting(/^\d/) === 2);
+    const doomed = launchJob(root, "doomed", { priority: "high" });
+    await until(() => doomed.log.includes("Queued at position"));
+    assert.equal(waiting(/^\+1-high-/), 1);
+    doomed.kill("SIGTERM"); // Only this test's own queued waiter.
+    assert.equal(await doomed.done, 143);
+    assert.equal(waiting(/^\+1-high-/), 0, "a killed waiter leaves no ticket");
+    const high = launchJob(root, "high", { priority: "high", duration: 50 });
+    await until(() => waiting(/^\+1-high-/) === 1);
+    const status = execFileSync(
+      process.execPath,
+      [path.resolve("scripts/heavy-job.mjs"), "status"],
+      {
+        env: {
+          ...process.env,
+          VORTEO_HEAVY_QUEUE_DIR: queue,
+          VORTEO_BUILDS_GATE_MARKER: path.join(root, "none"),
+        },
+        encoding: "utf8",
+      },
+    );
+    assert.deepEqual(
+      status
+        .trim()
+        .split("\n")
+        .map((line) => /^\d\. (\w+): .*\[priority (.*)\]$/.exec(line)?.slice(1)),
+      [
+        ["running", "normal, declared"],
+        ["queued", "high, declared"],
+        ["queued", "normal, legacy ticket"],
+        ["queued", "low, declared"],
+      ],
+      status,
+    );
+    fs.writeFileSync(finishMarker, "");
+    assert.deepEqual(await Promise.all([holder.done, high.done, old.done, low.done]), [0, 0, 0, 0]);
+    assert.deepEqual(
+      events(root),
+      ["holder", "high", "old", "low"].flatMap((name) => [`start-${name}`, `end-${name}`]),
+    );
   },
 );
 
