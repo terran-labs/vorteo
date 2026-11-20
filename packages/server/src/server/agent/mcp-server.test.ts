@@ -237,6 +237,18 @@ it("switch tool enforces policy, caller scope and exact batch membership", async
     });
     expect(manager.getAgent(target.id)?.provider).toBe("codex");
     expect(manager.getAgent(caller.id)?.provider).toBe("codex");
+    // Supervisors name targets as account/model; the unsplit value once matched no account.
+    const named = await catalog.executeTool("switch_agent_profile", {
+      agentId: target.id,
+      provider: "codex/gpt-5.4-mini",
+      reason: "Continue approved work",
+      dryRun: false,
+    });
+    expect(named.structuredContent).toMatchObject({
+      results: [
+        { agentId: target.id, outcome: "switched", provider: "codex", model: "gpt-5.4-mini" },
+      ],
+    });
     const snapshots = options.providerSnapshotManager;
     vi.spyOn(snapshots, "resolveCreateConfig").mockImplementationOnce(async (input) => {
       const stored = (await storage.get(target.id))!;

@@ -60,7 +60,7 @@ New editors send `expectedAgentProfiles` for stale-write detection. The server p
 
 ## Supervision
 
-The supervisor uses existing Vorteo agent tools. Its frozen worker reference determines the child profile and maximum concurrent managed workers. Child creation and execution enforce the limit. Managed children cannot detach through `create_agent`; recursive worker presets are rejected. Team presets require agent-tool injection to be enabled explicitly.
+The supervisor uses existing Vorteo agent tools. Its frozen worker reference determines the child profile and maximum concurrent managed workers. Child creation and execution enforce the limit. The account in the frozen worker reference is a default. A managed worker may also run on the account its supervisor currently uses when that account has the same provider type, whether or not the supervisor moved: the launch names the same preset and that account. A third account, another provider type or a different preset is refused. The worker's model, reasoning, features and instructions come from the frozen preset. Its permission mode does not: a launch that names a mode overrides the preset's, and the access ceiling tracked in #518 is where that will be enforced. Exclusions and the quota check apply to the account used. Refused launches are logged with a refusal code. Managed children cannot detach through `create_agent`; recursive worker presets are rejected. Team presets require agent-tool injection to be enabled explicitly.
 
 This is lifecycle coordination, not a new security sandbox. Pi has no native selectable permission modes. In a per-person container, Pi can access that person's mounted projects and keys. Other processes and native provider subagents are outside the managed-child concurrency limit. See [the optional deployment recipe](../docker/multiplex/README.md).
 
@@ -146,7 +146,7 @@ Acceptance includes threshold equality, multiple windows, stale data, manual sto
 
 ### Explicit worker accounts
 
-`workerProfileId` identifies the shared worker definition. The optional `workerAccount` field binds it to a specific account; installation edits use a portable installation account reference so each environment can resolve its own local account ID. Existing profiles without this field keep their previous account resolution. Launch refuses a missing, disabled or mismatched explicit account instead of substituting another account. The `explicitWorkerAccounts` daemon capability and the installation snapshot's `workerAccounts` flag gate editing during mixed-version updates.
+`workerProfileId` identifies the shared worker definition. The optional `workerAccount` field binds it to a specific account; installation edits use a portable installation account reference so each environment can resolve its own local account ID. Existing profiles without this field keep their previous account resolution. Launch refuses a missing, disabled or mismatched explicit account instead of substituting another account. That applies when the supervisor launches. At worker dispatch the explicit account is the default, not a pin, when it has the supervisor's provider type: see [supervision](#supervision). The `explicitWorkerAccounts` daemon capability and the installation snapshot's `workerAccounts` flag gate editing during mixed-version updates.
 
 ### Explicit uncapped managed-worker profiles
 

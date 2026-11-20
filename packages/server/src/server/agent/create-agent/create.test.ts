@@ -14,7 +14,10 @@ import { expect, test, vi } from "vitest";
 
 import { createTestLogger } from "../../../test-utils/test-logger.js";
 
-import { createTestAgentClients } from "../../test-utils/fake-agent-client.js";
+import {
+  createTestAgentClient,
+  createTestAgentClients,
+} from "../../test-utils/fake-agent-client.js";
 
 import { createProviderSnapshotManagerStub } from "../../test-utils/session-stubs.js";
 
@@ -990,6 +993,117 @@ test("a shared supervisor retains frozen worker values after inspecting installa
       }),
     );
     expect(agentManager.listAgents()).toHaveLength(1);
+  } finally {
+    await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
+  }
+});
+
+test("a managed worker follows its supervisor to another account of the same provider type only", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "worker-follows-supervisor-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const accounts = ["one", "two", "three", "other"];
+  const agentManager = new AgentManager({
+    clients: Object.fromEntries(accounts.map((id) => [id, createTestAgentClient(id)])),
+    registry: storage,
+    logger,
+  });
+  try {
+    // The team launched on account one; its supervisors have since moved.
+    const worker = {
+      id: "shared-profile/codex/worker",
+      name: "Worker",
+      provider: "one",
+      model: "gpt-5.4",
+      thinkingOptionId: "medium",
+    };
+    const supervisorOn = (provider: string) =>
+      agentManager.createAgent(
+        {
+          provider,
+          cwd: workdir,
+          profileLaunch: {
+            profile: { id: "team", name: "Team", provider: "one", workerProfileId: worker.id },
+            worker,
+          },
+        },
+        undefined,
+        { workspaceId: "worker-follows-workspace", owner: { kind: "user" } },
+      );
+    const sameType = await supervisorOn("two");
+    const otherType = await supervisorOn("other");
+    const settings = MutableDaemonConfigSchema.parse({
+      mcp: { injectIntoAgents: false },
+      providers: {
+        one: { extends: "codex" },
+        two: { extends: "codex" },
+        three: { extends: "codex" },
+        other: { extends: "claude" },
+      },
+    });
+    const launch = (
+      callerAgentId: string,
+      provider: string,
+      profileId: string | undefined,
+      launchLogger = logger,
+    ) =>
+      createAgentCommand(
+        {
+          agentManager,
+          agentStorage: storage,
+          logger: launchLogger,
+          providerSnapshotManager: createProviderSnapshotManagerStub().manager,
+          getSharedProviderConfig: () => settings,
+        },
+        {
+          kind: "mcp",
+          provider,
+          profileId,
+          callerAgentId,
+          title: "Worker",
+          background: true,
+          notifyOnFinish: false,
+        },
+      );
+    const anotherAccount = "The selected workflow belongs to another account.";
+    await expect(launch(sameType.id, "three/gpt-5.4", worker.id)).rejects.toThrow(anotherAccount);
+    await expect(launch(otherType.id, "other/gpt-5.4", worker.id)).rejects.toThrow(anotherAccount);
+    await expect(launch(sameType.id, "two/gpt-5.4", undefined)).rejects.toThrow(
+      "must launch its configured worker preset",
+    );
+
+    // The refusal record never replaces the refusal, and never grows with the request.
+    const records: unknown[] = [];
+    const withWarn = (warn: (fields: unknown) => void) =>
+      Object.assign(Object.create(logger), { warn }) as typeof logger;
+    const failing = withWarn(() => {
+      throw new Error("log sink failed");
+    });
+    const recording = withWarn((fields) => records.push(fields));
+    const oversized = `three/${"x".repeat(5000)}`;
+    await expect(launch(sameType.id, oversized, worker.id, failing)).rejects.toThrow(
+      anotherAccount,
+    );
+    await expect(launch(sameType.id, oversized, worker.id, recording)).rejects.toThrow(
+      anotherAccount,
+    );
+    expect(records).toEqual([expect.objectContaining({ refusalCode: "another-account" })]);
+    expect(JSON.stringify(records).length).toBeLessThan(2000);
+    expect(JSON.stringify(records)).not.toContain(anotherAccount);
+
+    const followed = await launch(sameType.id, "two/requested-model", worker.id);
+    expect(followed.snapshot.provider).toBe("two");
+    expect(followed.snapshot.config).toMatchObject({
+      model: "gpt-5.4",
+      thinkingOptionId: "medium",
+    });
+    expect(agentManager.getAgent(sameType.id)?.config.profileLaunch?.worker).toEqual(worker);
+
+    await agentManager.updateUsageLimitHold(followed.snapshot.id, () => ({
+      stoppedAt: new Date().toISOString(),
+    }));
+    await expect(launch(sameType.id, "two/gpt-5.4", worker.id)).rejects.toThrow(
+      "Quota exhausted on this account",
+    );
   } finally {
     await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
   }
