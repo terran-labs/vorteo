@@ -30,6 +30,7 @@ import type {
 import type { AgentAttachment, FirstAgentContext } from "../../messages.js";
 import {
   ProfileSwitchError,
+  WorkerLaunchRefusal,
   type AgentManager,
   type CreateAgentOptions,
   type ManagedAgent,
@@ -49,7 +50,7 @@ import { buildAgentPrompt } from "../prompt-attachments.js";
 import { normalizeClientMessageId, resolveClientMessageId } from "../../client-message-id.js";
 import { resolveRequiredProviderModel, type ResolvedProviderModel } from "../mcp-shared.js";
 import { resolveCreateAgentIntent } from "./intent.js";
-import { resolveProfileLaunch } from "./profile.js";
+import { ProfileLaunchError, resolveProfileLaunch } from "./profile.js";
 import {
   readInstallationProfileConfig,
   type InstallationProfileReader,
@@ -394,28 +395,62 @@ async function admitAndCreateAgent(
   return { dependencies, resolved, snapshot };
 }
 
+const LOG_STRING_LIMIT = 200;
+
+function boundLogValue(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") return value.slice(0, LOG_STRING_LIMIT);
+  if (value === null || typeof value !== "object") return value;
+  if (depth > 1) return "[omitted]";
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [key, boundLogValue(entry, depth + 1)]),
+  );
+}
+
+/**
+ * Records a refusal without ever replacing it: strings are cut to a fixed length and a failing
+ * logger is ignored. Callers pass codes, never error messages, which can carry paths or URLs.
+ */
+export function logRefusal(logger: Logger, message: string, fields: Record<string, unknown>): void {
+  try {
+    logger.warn(boundLogValue(fields), message);
+  } catch {
+    // The caller's own error matters more than this record.
+  }
+}
+
+/** A refusal's loggable code; null for any other failure. */
+function workerRefusalCode(error: unknown): string | null {
+  if (error instanceof WorkerLaunchRefusal || error instanceof ProfileLaunchError) {
+    return error.code;
+  }
+  return null;
+}
+
 /** A supervisor only sees the refusal text; the log keeps who asked for what. */
 function logRefusedWorkerLaunch(
   dependencies: CreateAgentCommandDependencies,
   input: CreateAgentCommandInput,
   error: unknown,
 ): void {
-  if (input.kind !== "mcp" || !input.callerAgentId) return;
-  const caller = dependencies.agentManager.getAgent(input.callerAgentId);
-  const worker = caller?.config.profileLaunch?.worker;
-  if (!caller || !worker) return;
-  dependencies.logger.warn(
-    {
+  const code = workerRefusalCode(error);
+  // Other failures, such as a provider that will not start, are reported where they occur.
+  if (!code || input.kind !== "mcp" || !input.callerAgentId) return;
+  try {
+    const caller = dependencies.agentManager.getAgent(input.callerAgentId);
+    const worker = caller?.config.profileLaunch?.worker;
+    if (!caller || !worker) return;
+    logRefusal(dependencies.logger, "Managed worker launch refused", {
       callerAgentId: caller.id,
       callerProvider: caller.provider,
       requestedProvider: input.provider,
       requestedProfileId: input.profileId ?? null,
       workerProfileId: worker.id,
       workerProvider: worker.provider,
-      reason: error instanceof Error ? error.message : String(error),
-    },
-    "Managed worker launch refused",
-  );
+      refusalCode: code,
+    });
+  } catch {
+    // Never let the record replace the refusal.
+  }
 }
 
 function initialPromptNotificationRequest(
@@ -539,10 +574,10 @@ interface McpProfileSelection {
 }
 
 /**
- * A managed worker follows its supervisor's current account. The frozen preset names the account
- * the team launched on; once the supervisor moves to another account of the same provider type,
- * a launch that asks for that account runs the same preset there. Any other account keeps the
- * preset's own, so the caller's request is refused by the checks that follow.
+ * The account in a frozen worker preset is a default. A launch may instead ask for the account
+ * the supervisor currently runs on, when both have one provider type, and runs the same preset
+ * there; whether the supervisor ever moved is not checked. Any other account keeps the preset's
+ * own, so the caller's request is refused by the checks that follow.
  */
 function workerOnSupervisorAccount(
   worker: AgentProfile,
@@ -605,15 +640,24 @@ function resolveMcpProfileInput(
     : null;
   const worker = caller?.config.profileLaunch?.worker;
   if (worker && input.profileId !== worker.id) {
-    throw new Error(`This supervisor must launch its configured worker preset: ${worker.id}`);
+    throw new WorkerLaunchRefusal(
+      `This supervisor must launch its configured worker preset: ${worker.id}`,
+      "preset-required",
+    );
   }
   if (worker && input.detached)
-    throw new Error("Managed workers cannot be detached from their supervisor.");
+    throw new WorkerLaunchRefusal(
+      "Managed workers cannot be detached from their supervisor.",
+      "detached",
+    );
   if (input.profileId) {
     const resolved = resolveMcpProfileSelection({ dependencies, input, worker, caller });
     if (!resolved.model) throw new Error("MCP launches require a preset with an explicit model.");
     if (resolveProviderModel(input.provider).provider !== resolved.provider) {
-      throw new Error("The requested provider must match the preset provider.");
+      throw new WorkerLaunchRefusal(
+        "The requested provider must match the preset provider.",
+        "provider-mismatch",
+      );
     }
     input = {
       ...input,

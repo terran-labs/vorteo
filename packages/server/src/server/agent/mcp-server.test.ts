@@ -245,7 +245,9 @@ it("switch tool enforces policy, caller scope and exact batch membership", async
       dryRun: false,
     });
     expect(named.structuredContent).toMatchObject({
-      results: [{ agentId: target.id, outcome: "switched", provider: "codex" }],
+      results: [
+        { agentId: target.id, outcome: "switched", provider: "codex", model: "gpt-5.4-mini" },
+      ],
     });
     const snapshots = options.providerSnapshotManager;
     vi.spyOn(snapshots, "resolveCreateConfig").mockImplementationOnce(async (input) => {

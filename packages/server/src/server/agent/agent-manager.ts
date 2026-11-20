@@ -236,6 +236,17 @@ export class ProfileSwitchError extends Error {
   }
 }
 
+/** A managed-worker launch refused by policy. The code is safe to log; the message is not. */
+export class WorkerLaunchRefusal extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+  ) {
+    super(message);
+    this.name = "WorkerLaunchRefusal";
+  }
+}
+
 export type ProviderSubagentHistoryEvent = Extract<AgentStreamEvent, { type: "provider_subagent" }>;
 
 /** Runs at most `limit` tasks at once, in arrival order. */
@@ -1611,8 +1622,9 @@ export class AgentManager {
     if (!parent?.config?.profileLaunch?.worker || !this.registry) return;
     const limitedUntil = await this.usageLimitedUntil(provider);
     if (limitedUntil)
-      throw new Error(
+      throw new WorkerLaunchRefusal(
         `Quota exhausted on this account until ${limitedUntil}. Start the worker on another account.`,
+        "quota-exhausted",
       );
   }
 
@@ -3584,8 +3596,9 @@ export class AgentManager {
       ).length;
       const limit = managedWorkerLimit(parent.config.profileLaunch.profile);
       if (limit !== null && pending + running >= limit) {
-        throw new Error(
+        throw new WorkerLaunchRefusal(
           "Worker limit reached. Wait for a worker to finish before creating another.",
+          "worker-limit",
         );
       }
       this.pendingWorkerCreations.set(parent.id, pending + 1);

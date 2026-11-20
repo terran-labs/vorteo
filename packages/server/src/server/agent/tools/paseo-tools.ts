@@ -55,7 +55,11 @@ import {
   selectProfileSwitchCandidates,
   switchAgentProfileCommand,
 } from "../profile-switch/command.js";
-import { createAgentCommand, type CreateAgentFromMcpInput } from "../create-agent/create.js";
+import {
+  createAgentCommand,
+  logRefusal,
+  type CreateAgentFromMcpInput,
+} from "../create-agent/create.js";
 import type { VoiceCallerContext, VoiceSpeakHandler } from "../../voice-types.js";
 import type { FirstAgentContext } from "../../messages.js";
 import { everyMsToFiveFieldCron } from "@getpaseo/protocol/schedule/cadence";
@@ -661,12 +665,15 @@ function resolveToolCallerContext(
   return callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
 }
 
-/** A tool-side refusal; scope failures found by the tool itself report `out-of-scope`. */
+/** Account ids and model names are short; anything longer is not a target. */
+const SWITCH_PROVIDER_MAX_LENGTH = 256;
+
 /** create_agent names targets as account/model; an unsplit value matches no account. */
 function parseSwitchTarget(provider: string): { provider: string; model?: string } {
   return provider.includes("/") ? resolveRequiredProviderModel(provider) : { provider };
 }
 
+/** A tool-side refusal; scope failures found by the tool itself report `out-of-scope`. */
 function toolSwitchRefusal(
   agentId: string,
   error: unknown,
@@ -1812,7 +1819,7 @@ function createToolCatalog(
         workspaceId: z.string().min(1).optional(),
         projectId: z.string().min(1).optional(),
         sourceProvider: z.string().min(1).optional(),
-        provider: z.string().min(1),
+        provider: z.string().min(1).max(SWITCH_PROVIDER_MAX_LENGTH),
         profileId: z.string().min(1).optional(),
         reason: z.string().trim().min(1),
         dryRun: z.boolean().optional().default(false),
@@ -1930,18 +1937,14 @@ function createToolCatalog(
           );
         } catch (error) {
           const refusal = toolSwitchRefusal(id, error, dryRun);
-          childLogger.warn(
-            {
-              agentId: id,
-              callerAgentId: caller.id,
-              requestedProvider: provider,
-              requestedProfileId: profileId,
-              dryRun,
-              refusalCode: refusal.refusalCode,
-              reason: refusal.error,
-            },
-            "Profile switch refused",
-          );
+          logRefusal(childLogger, "Profile switch refused", {
+            agentId: id,
+            callerAgentId: caller.id,
+            requestedProvider: provider,
+            requestedProfileId: profileId,
+            dryRun,
+            refusalCode: refusal.refusalCode,
+          });
           results.push(refusal);
         }
       }

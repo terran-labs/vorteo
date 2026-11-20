@@ -23,6 +23,8 @@ export class ProfileLaunchError extends Error {
   constructor(
     readonly profileId: string,
     message: string,
+    /** Safe to log, unlike the message. */
+    readonly code = "profile-launch",
   ) {
     super(message);
     this.name = "ProfileLaunchError";
@@ -76,7 +78,11 @@ function applySharedSelection(
   preferences: SharedProviderPreferences | undefined,
 ): void {
   if (profile.provider !== config.provider)
-    throw new ProfileLaunchError(profile.id, "The selected workflow belongs to another account.");
+    throw new ProfileLaunchError(
+      profile.id,
+      "The selected workflow belongs to another account.",
+      "another-account",
+    );
   // Frozen worker snapshots resolve without mutable preferences and cannot be overridden.
   if (preferences && !preferences.installation) {
     profile.model = config.model ?? profile.model;
@@ -136,7 +142,11 @@ function resolveSharedReference(
   const canonical = parts[0] === "shared-profile";
   const expectedProvider = canonical ? providerType : provider;
   if (referenceProvider !== expectedProvider)
-    throw new ProfileLaunchError(reference, "The selected workflow belongs to another account.");
+    throw new ProfileLaunchError(
+      reference,
+      "The selected workflow belongs to another account.",
+      "another-account",
+    );
   const preferences = settings.sharedProviderPreferences;
   const profile =
     preferences &&
@@ -166,7 +176,7 @@ function legacyProfileCandidates(
   return [...legacy, ...profiles.filter((profile) => !legacyIds.has(profile.id))];
 }
 
-/** Mirrors the dispatch rule: a worker may follow its supervisor within one provider type. */
+/** Mirrors the dispatch rule: the preset account, or the supervisor's current same-type account. */
 function workerAccountInstruction(
   profile: AgentProfile,
   worker: AgentProfile,
@@ -179,7 +189,7 @@ function workerAccountInstruction(
       resolveProviderType(profile.provider, providers) ===
         resolveProviderType(worker.provider, providers));
   return follows
-    ? "Workers run on the account this thread currently uses: if this thread moves to another account of the same provider, keep the profileId and model and name that account as the provider. "
+    ? "That account is the preset's default. A worker may instead run on the account this thread currently uses, when it is the same provider type: keep the profileId and model and name that account as the provider. "
     : "";
 }
 

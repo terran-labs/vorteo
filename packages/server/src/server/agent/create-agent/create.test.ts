@@ -1040,12 +1040,17 @@ test("a managed worker follows its supervisor to another account of the same pro
         other: { extends: "claude" },
       },
     });
-    const launch = (callerAgentId: string, provider: string, profileId: string | undefined) =>
+    const launch = (
+      callerAgentId: string,
+      provider: string,
+      profileId: string | undefined,
+      launchLogger = logger,
+    ) =>
       createAgentCommand(
         {
           agentManager,
           agentStorage: storage,
-          logger,
+          logger: launchLogger,
           providerSnapshotManager: createProviderSnapshotManagerStub().manager,
           getSharedProviderConfig: () => settings,
         },
@@ -1065,6 +1070,25 @@ test("a managed worker follows its supervisor to another account of the same pro
     await expect(launch(sameType.id, "two/gpt-5.4", undefined)).rejects.toThrow(
       "must launch its configured worker preset",
     );
+
+    // The refusal record never replaces the refusal, and never grows with the request.
+    const records: unknown[] = [];
+    const withWarn = (warn: (fields: unknown) => void) =>
+      Object.assign(Object.create(logger), { warn }) as typeof logger;
+    const failing = withWarn(() => {
+      throw new Error("log sink failed");
+    });
+    const recording = withWarn((fields) => records.push(fields));
+    const oversized = `three/${"x".repeat(5000)}`;
+    await expect(launch(sameType.id, oversized, worker.id, failing)).rejects.toThrow(
+      anotherAccount,
+    );
+    await expect(launch(sameType.id, oversized, worker.id, recording)).rejects.toThrow(
+      anotherAccount,
+    );
+    expect(records).toEqual([expect.objectContaining({ refusalCode: "another-account" })]);
+    expect(JSON.stringify(records).length).toBeLessThan(2000);
+    expect(JSON.stringify(records)).not.toContain(anotherAccount);
 
     const followed = await launch(sameType.id, "two/requested-model", worker.id);
     expect(followed.snapshot.provider).toBe("two");
