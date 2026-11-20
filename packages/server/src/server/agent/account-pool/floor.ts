@@ -1,7 +1,8 @@
 import {
   ACCOUNT_QUOTA_POLICY_VERSION,
+  AccountQuotaPolicyV1Schema,
   BUILT_IN_QUOTA_FLOORS,
-  isQuotaFloor,
+  type AccountQuotaPolicy,
   type AccountQuotaPolicyWire,
 } from "@getpaseo/protocol/account-quota-policy";
 
@@ -17,13 +18,14 @@ import { rankAccounts, type UsageList } from "../../factory/project/account-choi
  * Two checks are added here without changing account choice: a reading dated after `nowMs`
  * and a remaining percentage outside 0 to 100 are unmeasured too.
  *
- * The policy is read as stored, so every value is checked here: a policy of another version is
- * unusable, and malformed entries never count as a floor.
+ * Order: a recorded limit hold or an exhausted window is reported as limited whatever the policy
+ * says. Then the stored policy must be version 1 and pass the same strict schema a patch must,
+ * or the result is unresolved: a hand-edited file never falls through to a weaker floor.
  */
 
-type Policy = AccountQuotaPolicyWire | null | undefined;
-
 export type FloorSource = "account" | "ladder" | "built-in";
+
+type UnmeasuredReason = "no-reading" | "unreadable" | "stale" | "future-dated" | "out-of-range";
 
 export type FloorEvaluation =
   | {
@@ -40,7 +42,7 @@ export type FloorEvaluation =
   | {
       /** The floor cannot be enforced here; say so rather than guess. */
       kind: "unmeasured";
-      reason: "no-reading" | "unreadable" | "stale" | "future-dated" | "out-of-range";
+      reason: UnmeasuredReason;
       floorPct: number;
       floorSource: FloorSource;
       pool: boolean | null;
@@ -49,20 +51,18 @@ export type FloorEvaluation =
       /** A usage limit is recorded or a window has nothing left. */
       kind: "limited";
       bindingWindowId: string | null;
+    }
+  | {
+      /** The policy names no floor for this priority. */
+      kind: "unresolved";
+      reason: "unknown-priority";
       pool: boolean | null;
     }
   | {
-      /** The policy names no usable floor for this priority. */
+      /** The stored policy cannot be used; nothing in it applies. */
       kind: "unresolved";
-      reason: "unknown-priority" | "invalid-floor";
-      pool: boolean | null;
-    }
-  | {
-      /** The stored policy is a version this daemon cannot read; nothing in it is used. */
-      kind: "unresolved";
-      reason: "unsupported-version";
+      reason: "unsupported-version" | "invalid-policy";
       version: number;
-      pool: null;
     };
 
 /**
@@ -77,8 +77,8 @@ export interface FloorInput {
   /** The local provider id whose reading is in `usage`. */
   providerId: string;
   priority: string;
-  /** The stored policy. Absent: built-in ladder, pool membership unstated. */
-  policy?: Policy;
+  /** The stored policy, as read. Absent: built-in ladder, pool membership unstated. */
+  policy?: AccountQuotaPolicyWire | null;
   usage: UsageList;
   nowMs: number;
   /** A usage-limit hold is recorded for the account, whatever its reading says. */
@@ -87,102 +87,90 @@ export interface FloorInput {
   ownerPlaced?: boolean;
 }
 
-/**
- * The floor for a priority: the account's override, else the policy ladder, else the built-in
- * ladder. The first level that names the priority decides; a malformed value there is invalid,
- * never silently replaced by a lower level.
- */
+/** The floor for a priority: the account's override, else the policy ladder, else built-in. */
 export function resolveFloor(
-  policy: Policy,
+  policy: AccountQuotaPolicy | null,
   accountRef: string,
   priority: string,
-): { floorPct: number; source: FloorSource } | { invalid: true } | null {
-  const levels: [FloorSource, Record<string, unknown> | undefined][] = [
-    ["account", record(accountRow(policy, accountRef)?.floors)],
-    ["ladder", record(policy?.ladder)],
+): { floorPct: number; source: FloorSource } | null {
+  const levels: [FloorSource, Readonly<Record<string, number>> | undefined][] = [
+    ["account", accountRow(policy, accountRef)?.floors],
+    ["ladder", policy?.ladder],
     ["built-in", BUILT_IN_QUOTA_FLOORS],
   ];
-  for (const [source, floors] of levels) {
-    if (!floors || !Object.hasOwn(floors, priority)) continue;
-    const value = floors[priority];
-    return isQuotaFloor(value) ? { floorPct: value, source } : { invalid: true };
-  }
+  for (const [source, floors] of levels)
+    if (floors && Object.hasOwn(floors, priority)) return { floorPct: floors[priority], source };
   return null;
 }
 
 export function evaluateFloor(input: FloorInput): FloorEvaluation {
   const reading = input.usage.providers.find((item) => item.providerId === input.providerId);
-  const lowest = lowestWindow(reading?.windows ?? []);
-  const { policy } = input;
-  if (policy && policy.version !== ACCOUNT_QUOTA_POLICY_VERSION)
-    return {
-      kind: "unresolved",
-      reason: "unsupported-version",
-      version: policy.version,
-      pool: null,
-    };
-  const pool = poolMembership(policy, input.accountRef);
-
-  if (input.limitHold) return { kind: "limited", bindingWindowId: lowest?.id ?? null, pool };
-
-  const floor = resolveFloor(policy, input.accountRef, input.priority);
-  if (floor === null) return { kind: "unresolved", reason: "unknown-priority", pool };
-  if ("invalid" in floor) return { kind: "unresolved", reason: "invalid-floor", pool };
-  const { floorPct, source: floorSource } = floor;
-
-  const unusable = readingProblem(reading, input.usage, input.nowMs);
-  if (unusable) return { kind: "unmeasured", reason: unusable, floorPct, floorSource, pool };
-
+  const lowestId = lowestWindow(reading?.windows ?? [])?.id ?? null;
+  const problem = readingProblem(reading, input.usage, input.nowMs);
   const [judged] = rankAccounts({
     candidates: [input.providerId],
     usage: input.usage,
     nowMs: input.nowMs,
   }).considered;
-  switch (judged?.verdict) {
-    case "stale":
-      return { kind: "unmeasured", reason: "stale", floorPct, floorSource, pool };
-    case "exhausted":
-      return { kind: "limited", bindingWindowId: lowest?.id ?? null, pool };
-    case "qualifies":
-      break;
-    default:
-      return {
-        kind: "unmeasured",
-        reason: reading ? "unreadable" : "no-reading",
-        floorPct,
-        floorSource,
-        pool,
-      };
-  }
+  if (input.limitHold || (!problem && judged?.verdict === "exhausted"))
+    return { kind: "limited", bindingWindowId: lowestId };
+
+  const parsed = readPolicy(input.policy);
+  if ("unusable" in parsed)
+    return { kind: "unresolved", reason: parsed.unusable, version: parsed.version };
+  const { policy } = parsed;
+  const pool = accountRow(policy, input.accountRef)?.pool ?? null;
+
+  const floor = resolveFloor(policy, input.accountRef, input.priority);
+  if (floor === null) return { kind: "unresolved", reason: "unknown-priority", pool };
+  const { floorPct, source: floorSource } = floor;
+  const reason = unmeasuredReason(problem, judged?.verdict, reading !== undefined);
+  if (reason) return { kind: "unmeasured", reason, floorPct, floorSource, pool };
   // `qualifies` guarantees at least one window and all finite percentages.
-  const remainingPct = judged.remainingPct!;
+  const remainingPct = judged!.remainingPct!;
   const below = remainingPct < floorPct;
   return {
     kind: below ? "below-floor" : "above-floor",
     floorPct,
     floorSource,
-    bindingWindowId: lowest!.id,
+    bindingWindowId: lowestId!,
     remainingPct,
     ownerPlacementExempt: below && input.ownerPlaced === true,
     pool,
   };
 }
 
-/** The owner's stated pool membership, or null when the policy does not say. */
-function poolMembership(policy: Policy, accountRef: string) {
-  const value = accountRow(policy, accountRef)?.pool;
-  return typeof value === "boolean" ? value : null;
+/** Why a reading cannot be measured against a floor, or null when it qualifies. */
+function unmeasuredReason(
+  problem: "future-dated" | "out-of-range" | null,
+  verdict: string | undefined,
+  hasReading: boolean,
+): UnmeasuredReason | null {
+  if (problem) return problem;
+  if (verdict === "qualifies") return null;
+  if (verdict === "stale") return "stale";
+  return hasReading ? "unreadable" : "no-reading";
 }
 
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
+/** The stored policy in the version 1 shape, or why it cannot be used. Absent is usable. */
+function readPolicy(
+  policy: AccountQuotaPolicyWire | null | undefined,
+):
+  | { policy: AccountQuotaPolicy | null }
+  | { unusable: "unsupported-version" | "invalid-policy"; version: number } {
+  if (!policy) return { policy: null };
+  if (policy.version !== ACCOUNT_QUOTA_POLICY_VERSION)
+    return { unusable: "unsupported-version", version: policy.version };
+  const parsed = AccountQuotaPolicyV1Schema.safeParse(policy);
+  return parsed.success
+    ? { policy: parsed.data }
+    : { unusable: "invalid-policy", version: policy.version };
+}
+
+function accountRow(policy: AccountQuotaPolicy | null, accountRef: string) {
+  return policy && Object.hasOwn(policy.accounts, accountRef)
+    ? policy.accounts[accountRef]
     : undefined;
-}
-
-function accountRow(policy: Policy, accountRef: string): Record<string, unknown> | undefined {
-  const accounts = record(policy?.accounts);
-  return accounts && Object.hasOwn(accounts, accountRef) ? record(accounts[accountRef]) : undefined;
 }
 
 /** Checks account choice does not make: a reading from the future, or a percentage out of range. */

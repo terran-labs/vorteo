@@ -6,6 +6,7 @@ import { evaluateFloor, type FloorInput } from "./floor.js";
 
 const NOW = Date.parse("2026-11-19T12:00:00Z");
 const REF = "installation-account/11111111-1111-4111-8111-111111111111";
+const UPPER_HEX_REF = "installation-account/ABCDEF12-3456-4789-ABCD-EF1234567890";
 
 function reading(windows: Record<string, number | null>, extra: Partial<ProviderUsage> = {}) {
   return {
@@ -116,21 +117,50 @@ describe("evaluateFloor", () => {
       { kind: "unresolved", reason: "unknown-priority" },
     ],
     [
-      "a malformed floor is unresolved, not replaced by a lower level",
+      "an override keyed by an uppercase-hex installation account applies",
+      input({
+        accountRef: UPPER_HEX_REF,
+        policy: policy({
+          accounts: { [UPPER_HEX_REF]: { floors: { normal: 45 } } },
+        }),
+      }),
+      { kind: "below-floor", floorPct: 45, floorSource: "account" },
+    ],
+    [
+      "a malformed floor makes the policy unusable, never a lower level's floor",
       input({
         policy: policy({ ladder: { normal: 140 }, accounts: { [REF]: { floors: { high: -1 } } } }),
       }),
-      { kind: "unresolved", reason: "invalid-floor" },
+      { kind: "unresolved", reason: "invalid-policy", version: 1 },
     ],
     [
       "a non-number floor read from a file is unresolved",
       input({ policy: policy({ ladder: { normal: "25" } }) }),
-      { kind: "unresolved", reason: "invalid-floor" },
+      { kind: "unresolved", reason: "invalid-policy", version: 1 },
     ],
     [
       "a policy of another version is unusable and names the version",
       input({ policy: { version: 2, ladder: { normal: 0 } } }),
-      { kind: "unresolved", reason: "unsupported-version", version: 2, pool: null },
+      { kind: "unresolved", reason: "unsupported-version", version: 2 },
+    ],
+    ...(
+      [
+        ["a ladder that is a string", { ladder: "garbage" }],
+        ["a ladder that is an array", { ladder: [90] }],
+        ["accounts that are a string", { accounts: "x" }],
+        ["an account row that is a number", { accounts: { [REF]: 90 } }],
+        ["account floors that are a string", { accounts: { [REF]: { floors: "90" } } }],
+        ["an unknown field", { note: "added by a newer client" }],
+      ] as const
+    ).map(([what, malformed]): [string, FloorInput, Record<string, unknown>] => [
+      `${what} makes the policy unusable, not above floor`,
+      input({ policy: policy(malformed), providers: [reading({ "5h": 45 })] }),
+      { kind: "unresolved", reason: "invalid-policy", version: 1 },
+    ]),
+    [
+      "a limit hold is limited even under an unusable policy",
+      input({ limitHold: true, policy: { version: 2 } }),
+      { kind: "limited", bindingWindowId: "5h" },
     ],
     [
       "a reading dated after now is unmeasured",

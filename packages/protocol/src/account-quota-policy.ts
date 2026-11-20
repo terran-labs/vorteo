@@ -6,10 +6,12 @@ import { z } from "zod";
  * see docs/vorteo-customizations.md. Not to be confused with the schedule quota governor's
  * `quotaPolicy`.
  *
- * Two shapes. The wire and persisted shape checks only that `version` is a number, so a later
- * version or a hand-edited value never makes a daemon config unreadable or stops a daemon. A
- * daemon accepts a patch only in the strict, bounded version 1 shape below, before writing
- * anything. Readers treat any other version as unusable.
+ * Two shapes. The wire and persisted shape checks only that the policy is an object with a
+ * numeric `version`, so a later version or a non-number entry still loads and stays readable to
+ * clients. A missing or non-number `version`, or an array or null as the policy, fails that
+ * check and stops a daemon from starting, like any other invalid config entry. A daemon accepts
+ * a patch only in the strict, bounded version 1 shape below, before writing anything; readers
+ * treat any other version, or a version 1 policy that fails that shape, as unusable.
  */
 
 export const ACCOUNT_QUOTA_POLICY_VERSION = 1;
@@ -38,13 +40,14 @@ export const ACCOUNT_QUOTA_POLICY_MAX_ACCOUNTS = 64;
 export const ACCOUNT_QUOTA_POLICY_MAX_PRIORITIES = 16;
 
 /**
- * Exactly what `installationProviderReference` produces: `installation-account/<uuid>`, or a
- * local provider id, which provider config restricts to `^[a-z][a-z0-9-]*$` (capped here at 64).
+ * Exactly what `installationProviderReference` produces: `installation-account/<uuid>`, with
+ * hex in either case as the installation account id schema allows, or a local provider id,
+ * which provider config restricts to `^[a-z][a-z0-9-]*$` (capped here at 64).
  */
 const AccountRefSchema = z
   .string()
   .regex(
-    /^(?:installation-account\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z][a-z0-9-]{0,63})$/u,
+    /^(?:installation-account\/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[a-z][a-z0-9-]{0,63})$/u,
   );
 /** Lowercase names such as `normal`; room for later levels without free-form text. */
 const PriorityNameSchema = z.string().regex(/^[a-z][a-z0-9-]{0,31}$/u);
@@ -61,22 +64,20 @@ const FloorsV1Schema = boundedRecord(
   ACCOUNT_QUOTA_POLICY_MAX_PRIORITIES,
 );
 
-/** The only shape a daemon stores. Unknown fields are stripped. */
-export const AccountQuotaPolicyV1Schema = z.object({
+/**
+ * The only shape a daemon stores. Strict: an unknown field is refused, not dropped, so a newer
+ * client never loses data silently. A new field therefore requires a new version.
+ */
+export const AccountQuotaPolicyV1Schema = z.strictObject({
   version: z.literal(ACCOUNT_QUOTA_POLICY_VERSION),
   ladder: FloorsV1Schema,
   accounts: boundedRecord(
     AccountRefSchema,
-    z.object({ pool: z.boolean().optional(), floors: FloorsV1Schema.optional() }),
+    z.strictObject({ pool: z.boolean().optional(), floors: FloorsV1Schema.optional() }),
     ACCOUNT_QUOTA_POLICY_MAX_ACCOUNTS,
   ),
 });
 export type AccountQuotaPolicy = z.infer<typeof AccountQuotaPolicyV1Schema>;
-
-/** A floor is a finite percentage from 0 to 100. */
-export function isQuotaFloor(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100;
-}
 
 /** Checks a patched policy; throws a readable error, so the caller refuses before writing. */
 export function parseAccountQuotaPolicyPatch(value: unknown): AccountQuotaPolicy {

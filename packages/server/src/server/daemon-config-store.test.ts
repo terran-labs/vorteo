@@ -1800,7 +1800,7 @@ describe("DaemonConfigStore", () => {
       ladder: { low: 40, someday: 5 },
       accounts: { [ACCOUNT]: { pool: false, floors: { normal: 30 } } },
     };
-    store.patch({ accountQuotaPolicy: { ...accountQuotaPolicy, note: "stripped" } });
+    store.patch({ accountQuotaPolicy });
     store.patch({ appendSystemPrompt: "unrelated edit" });
     expect(store.get().accountQuotaPolicy).toEqual(accountQuotaPolicy);
     // A replacement is whole, not merged into the stored ladder.
@@ -1831,6 +1831,8 @@ describe("DaemonConfigStore", () => {
       { ...stored, ladder: { "Normal\u202e": 10 } },
       { ...stored, ladder: { normal: 101 } },
       { ...stored, version: 2 },
+      { ...stored, note: { deep } },
+      { ...stored, accounts: { [ACCOUNT]: { pool: true, weight: 2 } } },
     ]) {
       expect(() => store.patch({ accountQuotaPolicy: refused })).toThrow(
         "Invalid account quota policy",
