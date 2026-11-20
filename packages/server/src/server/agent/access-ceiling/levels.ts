@@ -1,47 +1,47 @@
 /**
  * Supervisor access ceiling: the access table and a pure comparator (#518 slice 1, #528).
  *
- * Answers one question: may an agent (the supervisor) start or move a child agent with the
- * requested access, given the supervisor's own live access? Nothing calls this yet. Enforcement
- * and report-only wiring are later slices; until then this module changes no behaviour.
+ * Answers one question: may an agent (the supervisor) start a child agent with the requested
+ * access, given the supervisor's own live access? Nothing calls this yet. Enforcement and
+ * report-only wiring are later slices; until then this module changes no behaviour.
  *
- * Purity: no I/O and no imports from the agent manager or providers. Callers resolve everything
- * that needs the filesystem or runtime state before calling, in particular:
- * - directories must already be resolved real paths (symlinks followed, `.`/`..` removed). This
- *   module cannot see symlinks; a non-canonical path is refused, never resolved here.
- * - the child's mode and feature values must be the resolved create config (after mode
- *   inheritance and the provider's create-config resolution), and the supervisor's must be its
- *   live, effective values.
+ * Three tiers, per the independent security review on PR #535: read-only, attended, unattended.
+ * A finer ordering of the attended modes is not defensible as a ceiling, because a child's real
+ * access depends on who answers its prompts and on configuration it loads, not on its mode name.
  *
- * Unknown input is never allowed: an unknown provider, mode, feature, environment or
- * tool-access value is either refused or reported as unmapped, which callers treat as refused.
+ * Purity: no I/O and no imports from the agent manager or providers. Malformed input returns
+ * `refused` with `input:invalid`; it never throws. Unknown values are never allowed: they are
+ * refused or reported as unmapped, which callers treat as refused.
  *
- * What this does NOT cover (callers and later slices own these): credentials and account choice;
- * provider options that override a mode's boundary (Codex `sandbox_mode`, `approval_policy`
- * and named permission profiles, Claude settings allow lists, OpenCode agent permission config,
- * custom Copilot agent profiles); MCP servers and tools handed to the child; who answers the
- * child's permission prompts (answering Claude's plan-exit prompt moves a `plan` child to
- * `acceptEdits`); mode changes after launch; network access; caller identity (#525).
+ * What this module does NOT know. Callers must supply or enforce each of these:
+ * - Who answers the child's permission prompts (`promptsAnsweredBy`). Absent means the supervisor,
+ *   and then every child mode that can prompt is unattended in effect.
+ * - Whether the child's provider loads settings, hooks or allow rules from a directory the
+ *   supervisor can write (`loadsSupervisorWritableConfig`). Absent means yes. Claude loads user,
+ *   project and local settings; OpenCode loads its project config.
+ * - Whether each mode id is authoritative (`modeAuthoritative`): the preset was actually applied
+ *   and no provider option overrides its boundary (Codex `sandbox_mode`, `approval_policy`, custom
+ *   config or a governed permission profile; Claude allowed tools, additional directories,
+ *   sandbox, settings permissions or extra arguments). Absent means not authoritative.
+ * - Real paths resolved immediately before launch. This module cannot see symlinks and refuses,
+ *   rather than resolves, a non-canonical path; the race between resolving and launching is the
+ *   caller's.
+ * - Gates on later changes. `respond_to_permission`, `set_agent_mode` and `update_agent` accept any
+ *   agent id today, and `update_agent` can turn on `auto_accept`; a check at launch bounds none
+ *   of them.
+ * Also outside this module: credentials and account choice, MCP servers and tools handed to the
+ * child, network access, and caller identity (#525).
  */
 
-/** Permission level. A child's level must be less than or equal to its supervisor's. */
-export type AccessLevel = 0 | 1 | 2 | 3 | 4;
+export type AccessTier = "read-only" | "attended" | "unattended";
 
-export const ACCESS_LEVEL_NAMES: Record<AccessLevel, string> = {
-  0: "read or plan",
-  1: "ask every time",
-  2: "edits automatic, commands ask",
-  3: "machine-reviewed",
-  4: "unattended",
-};
+const TIER_RANK: Record<AccessTier, number> = { "read-only": 0, attended: 1, unattended: 2 };
 
 interface ModeRow {
   provider: string;
   mode: string;
-  /** "unresolved" rows are fail-closed: they report unmapped until a reviewer assigns a level. */
-  level: AccessLevel | "unresolved";
-  /** Level proposed in #518, kept for the reviewer. Never used by the comparator. */
-  proposed?: AccessLevel;
+  /** "unresolved" rows are fail-closed: they report unmapped until a reviewer assigns a tier. */
+  tier: AccessTier | "unresolved";
 }
 
 const COPILOT_AGENT = "https://agentclientprotocol.com/protocol/session-modes#agent";
@@ -49,69 +49,86 @@ const COPILOT_PLAN = "https://agentclientprotocol.com/protocol/session-modes#pla
 const COPILOT_AUTOPILOT = "https://agentclientprotocol.com/protocol/session-modes#autopilot";
 
 /**
- * The permission-mode table. One row per (provider, mode id); ids are taken from the provider
- * implementations, not from the #518 proposal. Each comment says why the row sits where it does.
+ * The permission-mode table, as signed by the security review. Mode ids come from the provider
+ * implementations. A row's tier is the mode's nominal boundary; the comparator raises a child to
+ * unattended when prompts, configuration or mode authority undercut it.
  */
 // prettier-ignore
 export const PERMISSION_MODE_TABLE: readonly ModeRow[] = [
   // Claude: Agent SDK permission modes, passed through unchanged (providers/claude/agent.ts).
-  { provider: "claude", mode: "plan", level: 0 },              // SDK plan mode: no edits or commands run. Answering plan exit moves it to acceptEdits.
-  { provider: "claude", mode: "default", level: 1 },           // SDK default: prompts before each tool needing permission.
-  { provider: "claude", mode: "acceptEdits", level: 2 },       // File edits auto-approved; shell commands still prompt. No OS sandbox.
-  { provider: "claude", mode: "auto", level: 3 },              // A model classifier answers permission prompts.
-  { provider: "claude", mode: "bypassPermissions", level: 4 }, // No prompts at all; manifest marks it isUnattended.
-  // Codex: MODE_PRESETS in providers/codex-app-server-agent.ts (approval policy + OS sandbox).
-  { provider: "codex", mode: "read-only", level: 0 },          // read-only sandbox, on-request. Runtime preset accepted by setMode; not in the manifest.
-  { provider: "codex", mode: "auto", level: 2 },               // workspace-write sandbox, on-request, user reviewer: edits and sandboxed commands run; leaving the sandbox asks.
-  { provider: "codex", mode: "auto-review", level: 3 },        // Same sandbox as auto, but escalations go to the auto-review subagent.
-  { provider: "codex", mode: "full-access", level: 4 },        // approval never + danger-full-access sandbox; isUnattended.
-  // Copilot: ACP session modes (providers/copilot-acp-agent.ts). Copilot enforces agent and plan itself.
-  { provider: "copilot", mode: COPILOT_PLAN, level: "unresolved", proposed: 0 },  // Copilot's own plan mode ("creating and executing" plans); read-only is not verifiable from our code.
-  { provider: "copilot", mode: COPILOT_AGENT, level: "unresolved", proposed: 2 }, // Copilot decides which tools prompt; whether edits are automatic is not verifiable from our code.
-  { provider: "copilot", mode: "allow-all", level: 4 },        // Sets Copilot's allow_all option: every tool, path and URL request approved.
-  { provider: "copilot", mode: COPILOT_AUTOPILOT, level: 4 },  // Legacy request id; writeCopilotProviderMode turns it into allow-all.
-  // OpenCode: modes are OpenCode agents the user can redefine, with permissions from the user's OpenCode config.
-  { provider: "opencode", mode: "plan", level: "unresolved", proposed: 0 },  // Read-only only in OpenCode's default config; users can change it.
-  { provider: "opencode", mode: "build", level: "unresolved", proposed: 2 }, // Prompting depends on the user's OpenCode permission config.
-  { provider: "opencode", mode: "full-access", level: 4 },     // Legacy request id; resolved to build with auto_accept on.
+  { provider: "claude", mode: "plan", tier: "read-only" },               // No edits or commands until someone answers plan exit.
+  { provider: "claude", mode: "default", tier: "attended" },             // Prompts before tools.
+  { provider: "claude", mode: "acceptEdits", tier: "attended" },         // Edits automatic, commands prompt.
+  { provider: "claude", mode: "auto", tier: "attended" },                // A classifier answers, but can still escalate prompts.
+  { provider: "claude", mode: "bypassPermissions", tier: "unattended" }, // No prompts.
+  // Codex: MODE_PRESETS in providers/codex-app-server-agent.ts.
+  { provider: "codex", mode: "read-only", tier: "read-only" },           // read-only sandbox. Runtime preset; not in the manifest.
+  { provider: "codex", mode: "auto", tier: "attended" },                 // workspace-write sandbox; leaving it prompts.
+  { provider: "codex", mode: "auto-review", tier: "attended" },          // Same sandbox; the auto-reviewer answers escalations.
+  { provider: "codex", mode: "full-access", tier: "unattended" },        // approval never, danger-full-access.
+  // Copilot: ACP session modes (providers/copilot-acp-agent.ts).
+  { provider: "copilot", mode: COPILOT_PLAN, tier: "unresolved" },       // Enforced by Copilot; not verifiable from our code.
+  { provider: "copilot", mode: COPILOT_AGENT, tier: "unresolved" },      // Copilot decides which tools prompt.
+  { provider: "copilot", mode: "allow-all", tier: "unattended" },        // Sets Copilot's allow_all: every request approved.
+  { provider: "copilot", mode: COPILOT_AUTOPILOT, tier: "unattended" },  // Legacy id; written as allow-all.
+  // OpenCode: modes are user-redefinable agents with permissions from the user's OpenCode config.
+  { provider: "opencode", mode: "plan", tier: "unresolved" },            // Read-only only in OpenCode's default config.
+  { provider: "opencode", mode: "build", tier: "unresolved" },           // Prompting depends on user config.
+  { provider: "opencode", mode: "full-access", tier: "unattended" },     // Legacy id; resolves to build with auto_accept on.
   // Oh My Pi: --approval-mode flags (providers/omp/provider-config.ts).
-  { provider: "omp", mode: "ask", level: 1 },                  // --approval-mode always-ask: write and exec tools prompt.
-  { provider: "omp", mode: "write", level: "unresolved", proposed: 2 }, // --approval-mode write: "writes require approval", which contradicts L2; exec behaviour unverified.
-  { provider: "omp", mode: "full", level: 4 },                 // --approval-mode yolo; isUnattended.
+  { provider: "omp", mode: "ask", tier: "attended" },                    // always-ask: write and exec prompt.
+  { provider: "omp", mode: "write", tier: "unresolved" },                // "writes require approval"; exec behaviour unverified.
+  { provider: "omp", mode: "full", tier: "unattended" },                 // yolo.
 ];
 
 /**
  * Providers deliberately left out of the table: every mode they have reports unmapped. Pi has
- * no modes; mock providers are development-only. Generic ACP, other ACP wrappers (Cursor, Kimi,
- * Kiro), plugin and custom providers are absent too: their modes are reported at runtime.
+ * no modes; mock providers are development-only. Generic ACP, other ACP wrappers, plugin and
+ * custom providers are absent too: their modes are reported at runtime.
  */
 export const DELIBERATELY_UNMAPPED_PROVIDERS: readonly string[] = ["pi", "mock", "mock-slow"];
 
+/**
+ * Providers whose runtime honours `auto_accept` (opencode-agent.ts and acp-agent.ts). Owner-defined
+ * ACP providers can have any id; they have no table rows, so they are unmapped either way.
+ */
+const AUTO_ACCEPT_PROVIDERS: ReadonlySet<string> = new Set([
+  "opencode",
+  "copilot",
+  "cursor",
+  "kimi",
+  "kiro",
+  "traecli",
+  "acp",
+]);
+
+/** Providers that load configuration from the workspace: Claude settings sources, OpenCode project config. */
+const WORKSPACE_CONFIG_PROVIDERS: ReadonlySet<string> = new Set(["claude", "opencode"]);
+
 type FeatureRule =
-  /** A truthy value makes the agent unattended (L4). `false` is neutral. */
-  | "unattended-when-on"
-  /** Only the owner may turn it on: an agent-requested child with it on is refused. */
-  | "owner-only-when-on"
-  /** Has no bearing on permissions. */
+  /** Boolean. `true` makes an agent unattended on AUTO_ACCEPT_PROVIDERS. */
+  | "unattended-when-true"
+  /** Boolean. Only the owner may turn it on: an agent-requested child with `true` is refused. */
+  | "owner-only-when-true"
+  /** Has no bearing on permissions; any value. */
   | "neutral";
 
 /**
  * Feature ids that bear on access. Any other feature id with a value is unmapped, so a new
- * provider feature cannot widen access silently. Absent (`undefined` or `null`) values are ignored.
+ * provider feature cannot widen access silently. Access features must be boolean on both sides;
+ * any other value is unmapped. Absent (`undefined` or `null`) values are ignored.
  */
 export const FEATURE_TABLE: Readonly<Record<string, FeatureRule>> = {
-  auto_accept: "unattended-when-on", // OpenCode and every ACP provider: approves each tool permission prompt.
-  chrome: "owner-only-when-on", // Claude and Codex: hands the agent the owner's logged-in browser.
+  auto_accept: "unattended-when-true", // OpenCode and ACP: approves every tool permission prompt.
+  chrome: "owner-only-when-true", // Claude and Codex: hands the agent the owner's logged-in browser.
   fast_mode: "neutral", // Claude and OMP: model speed only.
   service_tier: "neutral", // Codex: billing tier only.
   plan_mode: "neutral", // Codex: planning collaboration mode; sandbox and approvals unchanged.
 };
 
-export type EnvironmentKind = "host" | "container";
-
 export interface AccessEnvironment {
-  kind: EnvironmentKind;
-  /** Identifies the environment instance, for example a container id. */
+  kind: "host" | "container";
+  /** Identifies the environment instance. Absent or empty refuses. */
   id: string;
 }
 
@@ -119,6 +136,8 @@ export interface SupervisorAccess {
   provider: string;
   /** Live mode; `null` or `undefined` when the runtime reports none. */
   modeId: string | null | undefined;
+  /** True only when the mode's preset is applied and no provider option overrides it. */
+  modeAuthoritative?: boolean;
   /** Live, effective feature values. */
   featureValues?: Readonly<Record<string, unknown>>;
   environment: AccessEnvironment;
@@ -132,9 +151,15 @@ export interface RequestedChildAccess {
   provider: string;
   /** Resolved mode after inheritance; `null` or `undefined` means the provider default. */
   modeId: string | null | undefined;
+  /** True only when the mode's preset will be applied and no provider option overrides it. */
+  modeAuthoritative?: boolean;
   featureValues?: Readonly<Record<string, unknown>>;
   /** The create request's `unattended` flag. */
   unattended?: boolean;
+  /** Who answers the child's permission prompts. Anything but "owner" means the supervisor. */
+  promptsAnsweredBy?: "owner" | "supervisor";
+  /** Whether the provider loads configuration from a supervisor-writable directory. Absent: yes. */
+  loadsSupervisorWritableConfig?: boolean;
   environment: AccessEnvironment;
   /** Resolved real path of the requested working directory. */
   directory: string;
@@ -145,15 +170,21 @@ export interface RequestedChildAccess {
 export interface AccessComparisonOptions {
   /** Resolved real paths of worktrees the daemon creates for this call. */
   daemonCreatedWorktrees?: readonly string[];
+  /** Resolved real path every daemon-created worktree must sit under. Required with worktrees. */
+  worktreesRoot?: string;
 }
 
 export type RefusalReason =
+  | "input:invalid"
   | "permission:exceeds-supervisor"
+  | "permission:codex-read-scope"
   | "feature:owner-only"
   | "environment:container-to-host"
   | "environment:mismatch"
-  | "environment:unknown"
+  | "environment:missing-id"
   | "directory:not-canonical"
+  | "directory:root-scope"
+  | "directory:worktree-outside-root"
   | "directory:outside-scope"
   | "tool-access:agent-change";
 
@@ -162,54 +193,150 @@ export type UnmappedReason =
   | "permission:mode-absent"
   | "permission:mode-unmapped"
   | "permission:mode-unresolved"
-  | "feature:unmapped";
+  | "permission:mode-not-authoritative"
+  | "feature:unmapped"
+  | "feature:invalid-value";
+
+/** Why a child's effective tier is above its mode's tier. */
+export type ChildEscalation =
+  | "prompts-answered-by-supervisor"
+  | "supervisor-writable-config"
+  | "mode-not-authoritative"
+  | "auto-accept"
+  | "unattended-flag";
 
 export type AccessDecision =
-  | { kind: "allowed"; supervisorLevel: AccessLevel; childLevel: AccessLevel }
-  | { kind: "refused"; reasons: RefusalReason[] }
+  | {
+      kind: "allowed";
+      supervisorTier: AccessTier;
+      childTier: AccessTier;
+      childEscalations: ChildEscalation[];
+    }
+  | { kind: "refused"; reasons: RefusalReason[]; childEscalations: ChildEscalation[] }
   | { kind: "unmapped"; supervisor: UnmappedReason[]; child: UnmappedReason[] }
   /**
-   * Owner-confirmed exception: an unattended (L4) supervisor may launch a child with no mapping.
+   * Owner-confirmed exception: an unattended supervisor may launch a child with no mapping.
    * Distinct from `allowed` so callers can audit it; this module does not decide to apply it.
+   * Unreachable for an unmapped or non-authoritative supervisor.
    */
   | { kind: "unmapped-under-unattended-supervisor"; child: UnmappedReason[] };
 
-type PermissionResult = { level: AccessLevel } | { unmapped: UnmappedReason[] };
+type Resolved =
+  | { tier: AccessTier; escalations: ChildEscalation[] }
+  | { unmapped: UnmappedReason[] };
 
-function lookupMode(provider: string, modeId: string | null | undefined): PermissionResult {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === "string";
+}
+
+function isValidSubject(value: unknown): value is Record<string, unknown> {
+  return (
+    isRecord(value) &&
+    typeof value.provider === "string" &&
+    isOptionalString(value.modeId) &&
+    (value.featureValues === undefined || isRecord(value.featureValues)) &&
+    isRecord(value.environment) &&
+    typeof value.directory === "string"
+  );
+}
+
+function isValidInput(supervisor: unknown, child: unknown, options: unknown): boolean {
+  if (!isValidSubject(supervisor) || !isValidSubject(child)) return false;
+  if (child.unattended !== undefined && typeof child.unattended !== "boolean") return false;
+  if (child.toolAccess !== undefined && typeof child.toolAccess !== "string") return false;
+  if (!isRecord(options)) return false;
+  const worktrees = options.daemonCreatedWorktrees;
+  if (worktrees !== undefined) {
+    if (!Array.isArray(worktrees) || !worktrees.every((item) => typeof item === "string"))
+      return false;
+  }
+  return options.worktreesRoot === undefined || typeof options.worktreesRoot === "string";
+}
+
+function lookupMode(
+  provider: string,
+  modeId: string | null | undefined,
+): { tier: AccessTier } | { unmapped: UnmappedReason } {
   const rows = PERMISSION_MODE_TABLE.filter((row) => row.provider === provider);
-  if (rows.length === 0) return { unmapped: ["permission:provider-unmapped"] };
-  if (modeId === null || modeId === undefined) return { unmapped: ["permission:mode-absent"] };
+  if (rows.length === 0) return { unmapped: "permission:provider-unmapped" };
+  if (modeId === null || modeId === undefined) return { unmapped: "permission:mode-absent" };
   const row = rows.find((candidate) => candidate.mode === modeId);
-  if (!row) return { unmapped: ["permission:mode-unmapped"] };
-  if (row.level === "unresolved") return { unmapped: ["permission:mode-unresolved"] };
-  return { level: row.level };
+  if (!row) return { unmapped: "permission:mode-unmapped" };
+  if (row.tier === "unresolved") return { unmapped: "permission:mode-unresolved" };
+  return { tier: row.tier };
 }
 
 function presentFeatures(values: Readonly<Record<string, unknown>> | undefined) {
   return Object.entries(values ?? {}).filter(([, value]) => value !== undefined && value !== null);
 }
 
-/** Effective permission level from mode, features and the unattended flag. */
-export function resolvePermissionLevel(subject: {
+/** Mode and features, shared by both sides. Returns whether `auto_accept` applies. */
+function resolveBase(subject: {
   provider: string;
   modeId: string | null | undefined;
   featureValues?: Readonly<Record<string, unknown>>;
-  unattended?: boolean;
-}): PermissionResult {
+}): { tier: AccessTier; autoAccept: boolean } | { unmapped: UnmappedReason[] } {
+  const unmapped: UnmappedReason[] = [];
   const mode = lookupMode(subject.provider, subject.modeId);
-  const unmapped = "unmapped" in mode ? [...mode.unmapped] : [];
-  let level: AccessLevel = "level" in mode ? mode.level : 0;
+  if ("unmapped" in mode) unmapped.push(mode.unmapped);
+  let autoAccept = false;
   for (const [id, value] of presentFeatures(subject.featureValues)) {
     const rule = Object.hasOwn(FEATURE_TABLE, id) ? FEATURE_TABLE[id] : undefined;
     if (rule === undefined) {
       if (!unmapped.includes("feature:unmapped")) unmapped.push("feature:unmapped");
-    } else if (rule === "unattended-when-on" && value !== false) {
-      level = 4;
+    } else if (rule !== "neutral" && typeof value !== "boolean") {
+      if (!unmapped.includes("feature:invalid-value")) unmapped.push("feature:invalid-value");
+    } else if (rule === "unattended-when-true" && value === true) {
+      autoAccept = AUTO_ACCEPT_PROVIDERS.has(subject.provider);
     }
   }
-  if (subject.unattended === true) level = 4;
-  return unmapped.length > 0 ? { unmapped } : { level };
+  if (unmapped.length > 0 || "unmapped" in mode) return { unmapped };
+  return { tier: autoAccept ? "unattended" : mode.tier, autoAccept };
+}
+
+/** The supervisor is credited only for what is certain: never raised, never defaulted. */
+export function resolveSupervisorTier(supervisor: SupervisorAccess): Resolved {
+  const base = resolveBase(supervisor);
+  const unmapped = "unmapped" in base ? [...base.unmapped] : [];
+  if (supervisor.modeAuthoritative !== true) unmapped.push("permission:mode-not-authoritative");
+  if (unmapped.length > 0 || "unmapped" in base) return { unmapped };
+  return { tier: base.tier, escalations: [] };
+}
+
+/** The child is charged for everything that could raise it, with the reasons. */
+export function resolveChildTier(child: RequestedChildAccess): Resolved {
+  const base = resolveBase(child);
+  if ("unmapped" in base) return base;
+  const escalations: ChildEscalation[] = [];
+  if (base.autoAccept) escalations.push("auto-accept");
+  if (child.unattended === true) escalations.push("unattended-flag");
+  // Every read-only and attended row can prompt; whoever answers holds the real boundary.
+  if (base.tier !== "unattended" && child.promptsAnsweredBy !== "owner")
+    escalations.push("prompts-answered-by-supervisor");
+  if (
+    WORKSPACE_CONFIG_PROVIDERS.has(child.provider) &&
+    child.loadsSupervisorWritableConfig !== false
+  )
+    escalations.push("supervisor-writable-config");
+  if (child.modeAuthoritative !== true) escalations.push("mode-not-authoritative");
+  return { tier: escalations.length > 0 ? "unattended" : base.tier, escalations };
+}
+
+/**
+ * Codex `auto` and `auto-review` run commands without prompting inside a sandbox that can read
+ * the whole disk by default, which a Claude supervisor below unattended cannot do. Refused until
+ * the owner accepts that read-scope gap; relax here if they do.
+ */
+function isCodexReadScopeGap(supervisor: SupervisorAccess, child: RequestedChildAccess): boolean {
+  return (
+    supervisor.provider === "claude" &&
+    child.provider === "codex" &&
+    (child.modeId === "auto" || child.modeId === "auto-review")
+  );
 }
 
 /** Canonical absolute POSIX path: no empty, `.` or `..` segments and no trailing slash. */
@@ -224,8 +351,7 @@ function isCanonicalPath(path: string): boolean {
 
 /** True when `path` is `base` or below it. `/a/bc` is not below `/a/b`. */
 function isWithin(path: string, base: string): boolean {
-  if (path === base) return true;
-  return path.startsWith(base === "/" ? "/" : `${base}/`);
+  return path === base || path.startsWith(`${base}/`);
 }
 
 function directoryRefusal(
@@ -234,8 +360,18 @@ function directoryRefusal(
   options: AccessComparisonOptions,
 ): RefusalReason | null {
   const worktrees = options.daemonCreatedWorktrees ?? [];
+  const root = options.worktreesRoot;
   const paths = [supervisor.directory, child.directory, ...worktrees];
+  if (root !== undefined) paths.push(root);
   if (!paths.every(isCanonicalPath)) return "directory:not-canonical";
+  if (supervisor.directory === "/" || worktrees.includes("/") || root === "/")
+    return "directory:root-scope";
+  if (
+    worktrees.some(
+      (worktree) => root === undefined || worktree === root || !isWithin(worktree, root),
+    )
+  )
+    return "directory:worktree-outside-root";
   if (isWithin(child.directory, supervisor.directory)) return null;
   if (worktrees.some((worktree) => isWithin(child.directory, worktree))) return null;
   return "directory:outside-scope";
@@ -243,11 +379,33 @@ function directoryRefusal(
 
 function environmentRefusal(supervisor: AccessEnvironment, child: AccessEnvironment) {
   const known = (kind: unknown) => kind === "host" || kind === "container";
-  if (!known(supervisor.kind) || !known(child.kind)) return "environment:unknown";
+  if (!known(supervisor.kind) || !known(child.kind)) return "input:invalid";
+  const hasId = (id: unknown) => typeof id === "string" && id.length > 0;
+  if (!hasId(supervisor.id) || !hasId(child.id)) return "environment:missing-id";
   if (supervisor.kind === "container" && child.kind === "host")
     return "environment:container-to-host";
   if (supervisor.kind !== child.kind || supervisor.id !== child.id) return "environment:mismatch";
   return null;
+}
+
+/** Refusals from the dimensions other than permission tier. */
+function scopeRefusals(
+  supervisor: SupervisorAccess,
+  child: RequestedChildAccess,
+  options: AccessComparisonOptions,
+): RefusalReason[] {
+  const refusals: RefusalReason[] = [];
+  const ownerOnlyOn = presentFeatures(child.featureValues).some(
+    ([id, value]) => FEATURE_TABLE[id] === "owner-only-when-true" && value !== false,
+  );
+  if (ownerOnlyOn) refusals.push("feature:owner-only");
+  const environment = environmentRefusal(supervisor.environment, child.environment);
+  if (environment) refusals.push(environment);
+  const directory = directoryRefusal(supervisor, child, options);
+  if (directory) refusals.push(directory);
+  if (child.toolAccess !== undefined && child.toolAccess !== "unchanged")
+    refusals.push("tool-access:agent-change");
+  return refusals;
 }
 
 /**
@@ -259,34 +417,35 @@ export function compareChildAccess(
   child: RequestedChildAccess,
   options: AccessComparisonOptions = {},
 ): AccessDecision {
-  const refusals: RefusalReason[] = [];
-  const ownerOnlyOn = presentFeatures(child.featureValues).some(
-    ([id, value]) => FEATURE_TABLE[id] === "owner-only-when-on" && value !== false,
-  );
-  if (ownerOnlyOn) refusals.push("feature:owner-only");
-  const environment = environmentRefusal(supervisor.environment, child.environment);
-  if (environment) refusals.push(environment);
-  const directory = directoryRefusal(supervisor, child, options);
-  if (directory) refusals.push(directory);
-  if (child.toolAccess !== undefined && child.toolAccess !== "unchanged")
-    refusals.push("tool-access:agent-change");
+  if (!isValidInput(supervisor, child, options))
+    return { kind: "refused", reasons: ["input:invalid"], childEscalations: [] };
 
-  const supervisorLevel = resolvePermissionLevel(supervisor);
-  const childLevel = resolvePermissionLevel(child);
-  if ("level" in supervisorLevel && "level" in childLevel) {
-    if (childLevel.level > supervisorLevel.level) refusals.push("permission:exceeds-supervisor");
+  const refusals = scopeRefusals(supervisor, child, options);
+  const supervisorTier = resolveSupervisorTier(supervisor);
+  const childTier = resolveChildTier(child);
+  const escalations = "tier" in childTier ? childTier.escalations : [];
+  if ("tier" in supervisorTier && "tier" in childTier) {
+    if (TIER_RANK[childTier.tier] > TIER_RANK[supervisorTier.tier])
+      refusals.push("permission:exceeds-supervisor");
+    if (supervisorTier.tier !== "unattended" && isCodexReadScopeGap(supervisor, child))
+      refusals.push("permission:codex-read-scope");
   }
-  if (refusals.length > 0) return { kind: "refused", reasons: refusals };
+  if (refusals.length > 0)
+    return { kind: "refused", reasons: refusals, childEscalations: escalations };
 
-  if ("unmapped" in childLevel && "level" in supervisorLevel && supervisorLevel.level === 4) {
-    return { kind: "unmapped-under-unattended-supervisor", child: childLevel.unmapped };
-  }
-  if ("unmapped" in supervisorLevel || "unmapped" in childLevel) {
+  if ("unmapped" in childTier && "tier" in supervisorTier && supervisorTier.tier === "unattended")
+    return { kind: "unmapped-under-unattended-supervisor", child: childTier.unmapped };
+  if ("unmapped" in supervisorTier || "unmapped" in childTier) {
     return {
       kind: "unmapped",
-      supervisor: "unmapped" in supervisorLevel ? supervisorLevel.unmapped : [],
-      child: "unmapped" in childLevel ? childLevel.unmapped : [],
+      supervisor: "unmapped" in supervisorTier ? supervisorTier.unmapped : [],
+      child: "unmapped" in childTier ? childTier.unmapped : [],
     };
   }
-  return { kind: "allowed", supervisorLevel: supervisorLevel.level, childLevel: childLevel.level };
+  return {
+    kind: "allowed",
+    supervisorTier: supervisorTier.tier,
+    childTier: childTier.tier,
+    childEscalations: escalations,
+  };
 }
