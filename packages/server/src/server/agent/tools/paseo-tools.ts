@@ -137,8 +137,9 @@ import { createThreadGoalTools } from "./thread-goal.js";
 import {
   beginCeilingReport,
   reportIfSwitched,
-  reportRemoteCreate,
+  reportRemoteOperation,
   reportSchedule,
+  reportSessionMode,
   type CeilingOperation,
 } from "../access-ceiling/admit.js";
 import { createPauseGoalTool } from "./pause-goal.js";
@@ -867,8 +868,8 @@ function createToolCatalog(
           if (response.isError) await remoteNotification?.reject();
           else remoteNotification?.accept();
           await registerRemoteCreation(name, destination, input, response);
-          reportRemoteCreate(
-            () => ceilingReport("remote_create_agent"),
+          reportRemoteOperation(
+            ceilingReport,
             name,
             destination,
             options.serverId,
@@ -2509,6 +2510,13 @@ function createToolCatalog(
         void receipt.dispatched.catch(() => {
           rejectNotification();
         });
+        reportSessionMode(
+          () => ceilingReport("send_agent_prompt"),
+          (id) => agentManager.getAgent(id),
+          agentId,
+          sessionMode,
+          receipt.dispatched,
+        );
         return {
           content: [],
           structuredContent: {
@@ -3824,7 +3832,7 @@ function createToolCatalog(
       });
       // Who answered whose prompt is the fact the ceiling depends on.
       if (callerAgentId && callerAgentId !== agentId)
-        void ceiling.reportPermissionAnswer(agentId, response.behavior);
+        void ceiling.reportPermissionAnswer(agentId, response);
       return {
         content: [],
         structuredContent: ensureValidJson({ success: true }),

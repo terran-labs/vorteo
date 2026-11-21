@@ -59,6 +59,8 @@ const REPORT_CODE = "access_ceiling_report";
 export type CeilingOperation =
   | "create_agent"
   | "remote_create_agent"
+  | "send_agent_prompt"
+  | "remote_send_agent_prompt"
   | "set_agent_mode"
   | "update_agent"
   | "respond_to_permission"
@@ -540,7 +542,14 @@ export interface CeilingEvaluation {
    * Records one agent's answer to another agent's permission prompt at info, with the
    * comparator's result for the pair. Never rejects.
    */
-  reportPermissionAnswer(targetAgentId: string, behavior: "allow" | "deny"): Promise<void>;
+  reportPermissionAnswer(
+    targetAgentId: string,
+    response: {
+      behavior: "allow" | "deny";
+      updatedPermissions?: unknown[];
+      selectedActionId?: string;
+    },
+  ): Promise<void>;
 }
 
 const NOOP_EVALUATION: CeilingEvaluation = {
@@ -625,18 +634,31 @@ export function reportSchedule(
 }
 
 /**
- * A successful `create_agent` forwarded to a connected host. Only the validated tool input is
- * known here; the remote directory cannot be resolved on this machine, so it is passed empty.
+ * A successful `create_agent`, or a `send_agent_prompt` carrying `sessionMode`, forwarded to a
+ * connected host. Only the validated tool input is known here. For a create, the remote
+ * directory cannot be resolved on this machine, so it is passed empty. For a prompt, the
+ * recipient's record lives on the other host, so the line is unmapped with a fixed reason and
+ * says the mode change was requested, not that it applied.
  */
-export function reportRemoteCreate(
-  evaluate: () => CeilingEvaluation,
+export function reportRemoteOperation(
+  evaluate: (operation: CeilingOperation) => CeilingEvaluation,
   tool: string,
   destination: string | undefined,
   localServerId: string | undefined,
   input: Record<string, unknown>,
   failed: boolean | undefined,
 ): void {
-  if (tool !== "create_agent" || failed || !destination || destination === localServerId) return;
+  if (failed || !destination || destination === localServerId) return;
+  if (tool === "send_agent_prompt") {
+    if (typeof input.sessionMode !== "string" || !input.sessionMode) return;
+    void evaluate("remote_send_agent_prompt").reportRequested({
+      label: destination,
+      unresolved: "remote-recipient",
+      extra: { remoteServerId: destination, change: "session-mode", applied: "unknown-remote" },
+    });
+    return;
+  }
+  if (tool !== "create_agent") return;
   const settings = (input.settings ?? {}) as {
     modeId?: unknown;
     features?: unknown;
@@ -651,11 +673,12 @@ export function reportRemoteCreate(
     provider = null;
   }
   const extra = { remoteServerId: destination, targetDirectory: "unresolved-remote" };
+  const evaluation = evaluate("remote_create_agent");
   if (!provider) {
-    void evaluate().reportRequested({ label: destination, unresolved: "remote-provider", extra });
+    void evaluation.reportRequested({ label: destination, unresolved: "remote-provider", extra });
     return;
   }
-  void evaluate().reportRequested({
+  void evaluation.reportRequested({
     label: destination,
     provider,
     modeId: typeof settings.modeId === "string" ? settings.modeId : null,
@@ -666,6 +689,49 @@ export function reportRemoteCreate(
     facts: { environmentId: destination },
     extra,
   });
+}
+
+/**
+ * A queued `send_agent_prompt` with `sessionMode`: the recipient's mode is set when the batch
+ * dispatches, seconds later. Reports after dispatch, never awaited. A rejected or cancelled
+ * dispatch logs only if the recipient's mode did change to the requested one (the mode is set
+ * before the prompt starts, so a later failure can leave it applied). Without `sessionMode`
+ * nothing is reported.
+ */
+export function reportSessionMode(
+  evaluate: () => CeilingEvaluation,
+  getAgent: (agentId: string) => CeilingAgentRecord | null | undefined,
+  agentId: string,
+  sessionMode: string | undefined,
+  dispatched: Promise<unknown>,
+): void {
+  if (!sessionMode) return;
+  let evaluation: CeilingEvaluation;
+  let before: string | null = null;
+  try {
+    evaluation = evaluate();
+    const target = getAgent(agentId);
+    before = target ? liveModeId(target) : null;
+  } catch {
+    return;
+  }
+  const modeNow = (): string | null => {
+    try {
+      const target = getAgent(agentId);
+      return target ? liveModeId(target) : null;
+    } catch {
+      return null;
+    }
+  };
+  dispatched
+    .then(
+      () => evaluation.report(agentId, { change: "session-mode" }),
+      () =>
+        modeNow() === sessionMode && before !== sessionMode
+          ? evaluation.report(agentId, { change: "session-mode", dispatch: "failed-after-mode" })
+          : undefined,
+    )
+    .catch(() => undefined);
 }
 
 function logFailure(
@@ -792,13 +858,19 @@ export function beginCeilingReport(
         logFailure(dependencies.logger, operation, "error");
       }
     },
-    reportPermissionAnswer: async (targetAgentId, behavior) => {
+    reportPermissionAnswer: async (targetAgentId, response) => {
       const base = {
         code: REPORT_CODE,
         operation,
         callerAgentId,
         targetAgentId,
-        behavior: behavior === "allow" ? "allow" : "deny",
+        behavior: response.behavior === "allow" ? "allow" : "deny",
+        // Counts only: persistent rule or mode updates and a provider action choice widen more
+        // than one call. Their content is caller text and is not logged.
+        permissionUpdates: Array.isArray(response.updatedPermissions)
+          ? response.updatedPermissions.length
+          : 0,
+        selectedAction: typeof response.selectedActionId === "string",
         callerIdentity: "mcp-session-query",
       };
       try {

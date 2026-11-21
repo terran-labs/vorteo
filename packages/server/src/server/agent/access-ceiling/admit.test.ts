@@ -9,6 +9,7 @@ import { z } from "zod";
 
 import { createTestLogger } from "../../../test-utils/test-logger.js";
 import type { ScheduleService } from "../../schedule/service.js";
+import { createTestAgentMessages } from "../../test-utils/agent-messages.js";
 import { createTestAgentClients } from "../../test-utils/fake-agent-client.js";
 import { createProviderSnapshotManagerStub } from "../../test-utils/session-stubs.js";
 import { AgentManager } from "../agent-manager.js";
@@ -284,8 +285,14 @@ describe("access ceiling report-only logging", () => {
       })),
       resume: vi.fn(async () => {}),
     };
+    const messages = createTestAgentMessages({
+      agentManager: manager,
+      agentStorage: storage,
+      logger,
+    });
     const catalog = (callerAgentId?: string) =>
       createPaseoToolCatalog({
+        agentMessages: () => messages,
         agentManager: manager,
         agentStorage: storage,
         logger: catalogLogger,
@@ -319,6 +326,7 @@ describe("access ceiling report-only logging", () => {
       visible,
       createOrReplace,
       scheduleService,
+      messages,
     };
   }
 
@@ -345,6 +353,18 @@ describe("access ceiling report-only logging", () => {
       }),
       expected: { success: true },
       message: PERMISSION_ANSWER_MESSAGE,
+    },
+    {
+      // Queued: the recipient's mode is set when the batch dispatches.
+      name: "send_agent_prompt",
+      args: (childId: string) => ({
+        agentId: childId,
+        prompt: "Continue",
+        sessionMode: "bypassPermissions",
+        notifyOnFinish: false,
+      }),
+      expected: { success: true, deliveryStatus: "queued" },
+      message: WOULD_REFUSE_MESSAGE,
     },
   ] as const;
 
@@ -383,8 +403,10 @@ describe("access ceiling report-only logging", () => {
     const result = await fixture
       .catalog(fixture.supervisor.id)
       .executeTool(operation.name, operation.args(fixture.child.id));
-    expect(result.structuredContent).toEqual(operation.expected);
+    expect(result.structuredContent).toMatchObject(operation.expected);
     await vi.waitFor(() => expect(fixture.visible()).toHaveLength(1));
+    if (operation.name !== "respond_to_permission")
+      expect(fixture.manager.getAgent(fixture.child.id)?.currentModeId).toBe("bypassPermissions");
     expect(fixture.lines(operation.message)[0]).toMatchObject({
       operation: operation.name,
       callerAgentId: fixture.supervisor.id,
@@ -538,6 +560,20 @@ describe("access ceiling report-only logging", () => {
     });
   });
 
+  it("logs nothing for a prompt sent without sessionMode", async () => {
+    const fixture = await setup();
+    const result = await fixture.catalog(fixture.supervisor.id).executeTool("send_agent_prompt", {
+      agentId: fixture.child.id,
+      prompt: "Continue",
+      notifyOnFinish: false,
+    });
+    expect(result.structuredContent).toMatchObject({ success: true, deliveryStatus: "queued" });
+    await fixture.messages.waitForDispatch(fixture.child.id, new AbortController().signal);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(fixture.manager.getAgent(fixture.child.id)?.currentModeId).toBe("default");
+    for (const message of CEILING_MESSAGES) expect(fixture.lines(message)).toEqual([]);
+  });
+
   it("logs nothing for a session without a calling agent", async () => {
     const fixture = await setup();
     const result = await fixture
@@ -568,7 +604,7 @@ describe("access ceiling report-only logging", () => {
         const result = await fixture
           .catalog(fixture.supervisor.id)
           .executeTool(operation.name, operation.args(fixture.child.id));
-        expect(result.structuredContent).toEqual(operation.expected);
+        expect(result.structuredContent).toMatchObject(operation.expected);
       }
       // Each failure was reached: the comparator's is logged once per operation with a fixed
       // code; the logger's is swallowed after the attempt.
