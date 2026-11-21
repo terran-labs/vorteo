@@ -10,7 +10,7 @@ import time
 import unittest
 from unittest.mock import patch
 import uuid
-from https_broker import Broker, Runtime, NativeRuntime, atomic, safe_read, validate
+from https_broker import Broker, ListenerLost, Runtime, NativeRuntime, atomic, safe_read, validate
 
 
 class NativeWorkspacePolicyTests(unittest.TestCase):
@@ -242,8 +242,9 @@ class NativeWorkspacePolicyTests(unittest.TestCase):
     def test_real_native_listener_identity(self):
         # Disposable HTTP fixture only; never start or stop an installed daemon.
         runtime = NativeRuntime({})
-        code = 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1",0)); s.listen(); print(s.getsockname()[1],flush=True); time.sleep(30)'
-        process = subprocess.Popen([sys.executable, '-c', code], stdout=subprocess.PIPE, text=True,
+        code = ('import socket,sys,time; s=socket.socket(); s.bind(("127.0.0.1",0)); s.listen(); '
+                'print(s.getsockname()[1],flush=True); sys.stdin.readline(); s.close(); print("closed",flush=True); time.sleep(30)')
+        process = subprocess.Popen([sys.executable, '-c', code], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
                                    env={**os.environ, 'PASEO_TERMINAL_ID': 'terminal_fixture'})
         try:
             port = int(process.stdout.readline())
@@ -252,17 +253,38 @@ class NativeWorkspacePolicyTests(unittest.TestCase):
             self.assertEqual(runtime.listener_identity(port, 'terminal_fixture'), identity)
             with self.assertRaisesRegex(ValueError, 'managed terminal'):
                 runtime.listener_identity(port, 'terminal_other')
-            # The in-process recheck used during a timeout grace, with no subprocess.
-            recorded = {'listener': identity, 'terminal': 'terminal_fixture'}
+            # The in-process recheck used during a timeout grace: no subprocess,
+            # and its libproc socket layout agrees with what lsof just proved.
+            recorded = {'listener': identity, 'terminal': 'terminal_fixture', 'backend': port}
+            self.assertTrue(runtime.in_process_check_agrees(port, identity))
+            self.assertFalse(runtime.in_process_check_agrees(port + 1 if port < 65535 else port - 1, identity))
             self.assertTrue(runtime.listener_unchanged(recorded))
             with self.assertRaisesRegex(ValueError, 'managed terminal'):
                 runtime.listener_unchanged({**recorded, 'terminal': 'terminal_other'})
+            process.stdin.write('\n'); process.stdin.flush(); process.stdout.readline()
+            # Alive with the same identity, but no longer listening on the port.
+            with self.assertRaisesRegex(ListenerLost, 'loopback port'):
+                runtime.listener_unchanged(recorded)
         finally:
-            process.terminate()
+            process.kill()
             process.wait(timeout=5)
-            process.stdout.close()
-        with self.assertRaises(ValueError):
+            process.stdout.close(); process.stdin.close()
+        with self.assertRaisesRegex(ListenerLost, 'exited'):
             runtime.listener_unchanged(recorded)
+        # A wildcard bind is not the loopback address the route proxies to, and a
+        # listener that allows shared-port binding cannot be vouched for: neither earns grace.
+        variants = {'wildcard': code.replace('"127.0.0.1"', '"0.0.0.0"'),
+                    'shared': code.replace('s.bind(', 's.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEPORT,1); s.bind(')}
+        for name, variant in variants.items():
+            other = subprocess.Popen([sys.executable, '-c', variant], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            try:
+                port = int(other.stdout.readline())
+                self.assertFalse(runtime.in_process_check_agrees(port, f'{other.pid}:0'), name)
+                if name == 'shared':
+                    with self.assertRaisesRegex(OSError, 'Shared-port'):
+                        runtime.loopback_listener_held(other.pid, port)
+            finally:
+                other.kill(); other.wait(timeout=5); other.stdout.close(); other.stdin.close()
 
     def test_registered_native_workspace_uses_real_host_path(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -577,10 +599,18 @@ class Fake:
         self.config['TCP'].pop(str(p), None); self.config['Web'].pop(f'test.example.ts.net:{p}', None)
     def verify(self, url):
         if self.fail_verify: raise subprocess.CalledProcessError(1, 'verify')
-    listener_same = True
+    # The in-process recheck during a timeout grace: 'same', 'exited', 'terminal',
+    # 'closed' (alive but no longer listening) or 'error' (cannot evaluate).
+    listener_state = 'same'
+    agrees = True
     def listener_unchanged(self, entry):
-        if not self.listener_same: raise ValueError('Backend listener process changed; explicit start required')
+        state = self.listener_state
+        if state == 'exited': raise ListenerLost('Backend listener process exited')
+        if state == 'closed': raise ListenerLost('Backend listener no longer holds its loopback port')
+        if state == 'terminal': raise ValueError('Listener is not owned by the managed terminal')
+        if state == 'error': raise OSError('Unexpected socket_fdinfo layout')
         return True
+    def in_process_check_agrees(self, port, listener): return self.agrees
 
 
 class Tests(unittest.TestCase):
@@ -628,28 +658,50 @@ class Tests(unittest.TestCase):
     def test_check_timeouts_keep_route_only_within_grace(self):
         def timeout(p): raise subprocess.TimeoutExpired('curl', 3)
         def refused(p): raise subprocess.CalledProcessError(7, 'curl')
+        def timing_out(state):
+            return lambda b, rt: (setattr(rt, 'backend_ready', timeout), setattr(rt, 'listener_state', state))
+        def ledger_entry(b): return b.ledger['entries']['wks_test.preview']
+        container = lambda rt: (setattr(rt, 'listener_unchanged', lambda e: Runtime.listener_unchanged(rt, e)),
+                                setattr(rt, 'in_process_check_agrees', lambda p, l: Runtime.in_process_check_agrees(rt, p, l)))
         steps = {
-            'ok': lambda b, rt: setattr(rt, 'backend_ready', lambda p: None),
-            'timeout': lambda b, rt: setattr(rt, 'backend_ready', timeout),
+            'ok': lambda b, rt: (setattr(rt, 'backend_ready', lambda p: None), setattr(rt, 'listener_state', 'same')),
+            'timeout': timing_out('same'),
             'refused': lambda b, rt: setattr(rt, 'backend_ready', refused),
-            'gone': lambda b, rt: (setattr(rt, 'backend_ready', timeout), setattr(rt, 'listener_same', False)),
-            'stale': lambda b, rt: (setattr(rt, 'backend_ready', timeout), b.ledger['entries']['wks_test.preview'].update(verifiedAt=time.time() - 91)),
+            'terminal': timing_out('terminal'),  # a live process now claims another terminal
+            'exited': timing_out('exited'),
+            'closed': timing_out('closed'),  # alive, same identity, no longer listening
+            'unevaluable': timing_out('error'),
+            'stale': lambda b, rt: (setattr(rt, 'backend_ready', timeout), ledger_entry(b).update(verifiedAt=time.time() - 91)),
+            'clock back': lambda b, rt: (setattr(rt, 'backend_ready', timeout), ledger_entry(b).update(verifiedAt=time.time() + 60)),
+            'disagreeing ok': lambda b, rt: (setattr(rt, 'backend_ready', lambda p: None), setattr(rt, 'agrees', False)),
+            'stop': lambda b, rt: b.handle(self.request('stop')),
         }
-        # steps, then (route published, ledger status, desired, misses)
+        # setup, steps, then (route published, ledger status, desired, misses)
         cases = [
-            (['timeout'], (True, 'unverified', 'running', 1)),
-            (['timeout'] * 3, (False, 'failed', 'running', None)),
-            (['timeout'] * 3 + ['ok'], (True, 'ready', 'running', None)),
-            (['stale'], (False, 'failed', 'running', None)),
-            (['timeout', 'timeout', 'ok', 'timeout', 'timeout'], (True, 'unverified', 'running', 2)),
-            (['timeout', 'gone'], (False, 'failed', 'stopped', None)),
-            (['timeout', 'refused'], (False, 'failed', 'running', None)),
+            (None, ['timeout'], (True, 'unverified', 'running', 1)),
+            (None, ['timeout'] * 3, (False, 'failed', 'running', None)),
+            (None, ['timeout'] * 3 + ['ok'], (True, 'ready', 'running', None)),
+            (None, ['stale'], (False, 'failed', 'running', None)),
+            (None, ['clock back'], (False, 'failed', 'running', None)),
+            (None, ['timeout', 'timeout', 'ok', 'timeout', 'timeout'], (True, 'unverified', 'running', 2)),
+            (None, ['timeout', 'terminal'], (False, 'failed', 'stopped', None)),
+            (None, ['timeout', 'refused'], (False, 'failed', 'running', None)),
+            # A process that exits or closes its port withdraws at once but keeps the
+            # running intent, so the next clean check republishes it.
+            (None, ['timeout', 'exited'], (False, 'failed', 'running', None)),
+            (None, ['timeout', 'closed'], (False, 'failed', 'running', None)),
+            (None, ['timeout', 'closed', 'ok'], (True, 'ready', 'running', None)),
+            (None, ['unevaluable'], (False, 'failed', 'running', None)),
+            (None, ['disagreeing ok', 'timeout'], (False, 'failed', 'running', None)),
+            (container, ['timeout'], (False, 'failed', 'running', None)),
+            (None, ['timeout', 'stop'], (False, 'stopped', 'stopped', None)),
         ]
         for driver in ('reconcile', 'status'):
-            for sequence, expected in cases:
-                with self.subTest(driver=driver, sequence=sequence):
+            for setup, sequence, expected in cases:
+                with self.subTest(driver=driver, sequence=sequence, container=setup is not None):
                     runtime = Fake(); broker = Broker(self.c, runtime)
                     broker.ledger = {'entries': {}, 'requests': {}}
+                    if setup: setup(runtime)
                     broker.handle(self.request())
                     for step in sequence:
                         steps[step](broker, runtime)
@@ -659,11 +711,64 @@ class Tests(unittest.TestCase):
                             try: result = broker.handle(self.request('status'))
                             except Exception: result = {'status': 'failed'}
                             # An unverified route is never reported as ready or with its URL.
-                            if step != 'ok': self.assertNotIn('url', result)
+                            if step not in ('ok', 'disagreeing ok'): self.assertNotIn('url', result)
                     entry = safe_read(broker.ledger_path)['entries']['wks_test.preview']
                     self.assertEqual(('44444' in runtime.config['TCP'], entry['status'], entry['desired'], entry.get('misses')), expected)
                     if expected[1] == 'unverified': self.assertIn('unverified', entry['error'])
-                    if not expected[0] and sequence[-1] in ('timeout', 'stale'): self.assertIn('timed out', entry['error'])
+                    if not expected[0]: self.assertNotIn('url', entry)
+                    if expected[1] == 'stopped': self.assertNotIn('error', entry)
+                    if not expected[0] and sequence[-1] in ('timeout', 'stale', 'clock back', 'unevaluable'):
+                        self.assertIn('timed out', entry['error'])
+
+    def test_restart_recovery_survives_a_timed_out_identity_check(self):
+        # restore-after-restart on; the daemon restart kills the service, and the
+        # next cycle's daemon identity call times out. The route is withdrawn, but
+        # recovery still brings the preview back after a clean cycle, as on main.
+        self.c['restoreAfterRestart'] = True
+        self.b.handle(self.request())
+        self.runtime.daemon = 'boot:200:2'
+        self.runtime.entry.update(lifecycle='stopped', terminalId=None, port=33488)
+        self.runtime.listener_state = 'exited'
+        def slow(): raise subprocess.TimeoutExpired('lsof', 12)
+        self.runtime.daemon_identity = slow
+        Broker(self.c, self.runtime).reconcile()
+        entry = safe_read(self.b.ledger_path)['entries']['wks_test.preview']
+        self.assertEqual((entry['desired'], entry['status']), ('running', 'failed'))
+        self.assertNotIn('44444', self.runtime.config['TCP'])
+        del self.runtime.daemon_identity
+        self.runtime.listener_state = 'same'
+        Broker(self.c, self.runtime).reconcile()
+        entry = safe_read(self.b.ledger_path)['entries']['wks_test.preview']
+        self.assertEqual((entry['status'], entry['backend'], self.runtime.starts), ('ready', 33488, 1))
+        self.assertIn('44444', self.runtime.config['TCP'])
+
+    def test_timed_out_cleanup_removal_keeps_the_definite_error(self):
+        # The daemon changes during verification and the cleanup removal times out:
+        # the recovery decision stands with the removal pending, and no grace starts.
+        self.c['restoreAfterRestart'] = True
+        self.b.handle(self.request())
+        calls = iter(['boot:100:1', 'boot:100:1', 'boot:200:2'])
+        self.runtime.daemon_identity = lambda: next(calls, 'boot:200:2')
+        def slow(p): raise subprocess.TimeoutExpired('tailscale', 12)
+        self.runtime.remove_mapping = slow
+        Broker(self.c, self.runtime).reconcile()
+        entry = safe_read(self.b.ledger_path)['entries']['wks_test.preview']
+        self.assertEqual((entry['status'], entry['error'], entry.get('removalPending')), ('pending', 'Daemon changed during verification', True))
+        self.assertNotIn('misses', entry); self.assertNotIn('url', entry)
+        self.assertIn('44444', self.runtime.config['TCP'])  # still published until a removal succeeds
+
+    def test_start_during_timeout_grace_starts_a_fresh_count(self):
+        self.b.handle(self.request())
+        def timeout(p): raise subprocess.TimeoutExpired('curl', 3)
+        self.runtime.backend_ready = timeout
+        self.b.reconcile()
+        self.assertEqual(safe_read(self.b.ledger_path)['entries']['wks_test.preview']['misses'], 1)
+        result = self.b.handle(self.request())
+        entry = safe_read(self.b.ledger_path)['entries']['wks_test.preview']
+        # An explicit start under load still withdraws an unproven route, as before.
+        self.assertEqual(result['status'], 'pending'); self.assertNotIn('url', result)
+        self.assertNotIn('misses', entry); self.assertNotIn('44444', self.runtime.config['TCP'])
+
     def test_external_conflict_never_removed(self):
         self.b.handle(self.request());self.runtime.config['Web']['test.example.ts.net:44444']['Handlers']['/']['Proxy']='http://127.0.0.1:55555'
         with self.assertRaises(ValueError):self.b.handle(self.request('stop'))
