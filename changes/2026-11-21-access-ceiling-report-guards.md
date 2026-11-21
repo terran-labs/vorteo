@@ -4,4 +4,4 @@
 
 ## Maintenance review
 
-Fix to the report-only supervisor access ceiling; the inventory entry is unchanged because its behaviour and logged lines are unchanged. Tests cover each wired operation with poisoned reporting inputs against reporting stubbed out. README overview and onboarding are unchanged. Source only; not installed.
+Fix to the report-only supervisor access ceiling; the inventory entry is unchanged because its behaviour and logged lines are unchanged. Ten test cases, each of which fails when the guard is a pass-through, cover poisoned schedule targets against reporting stubbed out, hostile inputs to each report helper and evaluation methods that reject. README overview and onboarding are unchanged. Source only; not installed.

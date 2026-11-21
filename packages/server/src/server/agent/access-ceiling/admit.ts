@@ -571,7 +571,7 @@ const NOOP_EVALUATION = NOOP_CEILING_EVALUATION;
  * become an unhandled rejection. All reporting work belongs inside `run`, including reading the
  * hook's arguments, so nothing between an operation and its result runs unguarded.
  */
-export function guardCeiling<T>(fallback: T, run: () => T): T {
+export function guardCeiling<T, F = T>(fallback: F, run: () => T): T | F {
   try {
     const result = run();
     if (result !== null && typeof result === "object" && "then" in result) {
@@ -584,6 +584,11 @@ export function guardCeiling<T>(fallback: T, run: () => T): T {
   } catch {
     return fallback;
   }
+}
+
+/** Hands a discarded report's promise to the guard, so a rejection is always handled. */
+function settle(report: Promise<unknown>): void {
+  guardCeiling(undefined, () => report);
 }
 
 /** Every method of an evaluation, routed through the guard. */
@@ -606,7 +611,7 @@ export function reportIfSwitched(
   result: { agentId: string; outcome: string } | undefined,
 ): void {
   guardCeiling(undefined, () => {
-    if (result?.outcome === "switched") void evaluation.report(result.agentId);
+    if (result?.outcome === "switched") settle(evaluation.report(result.agentId));
   });
 }
 
@@ -656,26 +661,28 @@ export function reportSchedule(
         }
       | undefined;
     if (schedule.target.type !== "new-agent" || !config?.provider) {
-      void evaluation.reportRequested({ label: schedule.id, unresolved: "schedule-target" });
+      settle(evaluation.reportRequested({ label: schedule.id, unresolved: "schedule-target" }));
       return;
     }
-    void evaluation.reportRequested({
-      label: schedule.id,
-      provider: config.provider,
-      modeId: config.modeId ?? null,
-      featureValues: config.featureValues,
-      providerOptions: config.providerOptions,
-      cwd: config.cwd,
-      // The schedule service launches every run with `unattended: true` (schedule/service.ts).
-      facts: { unattended: true },
-      extra: {
-        scheduleId: schedule.id,
-        isolation: config.isolation ?? "local",
-        // Schedule records do not store who created them. Join on scheduleId against
-        // create_schedule lines to tell an agent's own schedule from one it did not arrange.
-        ...(options.triggered ? { scheduleCreator: "not-recorded" } : {}),
-      },
-    });
+    settle(
+      evaluation.reportRequested({
+        label: schedule.id,
+        provider: config.provider,
+        modeId: config.modeId ?? null,
+        featureValues: config.featureValues,
+        providerOptions: config.providerOptions,
+        cwd: config.cwd,
+        // The schedule service launches every run with `unattended: true` (schedule/service.ts).
+        facts: { unattended: true },
+        extra: {
+          scheduleId: schedule.id,
+          isolation: config.isolation ?? "local",
+          // Schedule records do not store who created them. Join on scheduleId against
+          // create_schedule lines to tell an agent's own schedule from one it did not arrange.
+          ...(options.triggered ? { scheduleCreator: "not-recorded" } : {}),
+        },
+      }),
+    );
   });
 }
 
@@ -698,11 +705,13 @@ export function reportRemoteOperation(
     if (failed || !destination || destination === localServerId) return;
     if (tool === "send_agent_prompt") {
       if (typeof input.sessionMode !== "string" || !input.sessionMode) return;
-      void evaluate("remote_send_agent_prompt").reportRequested({
-        label: destination,
-        unresolved: "remote-recipient",
-        extra: { remoteServerId: destination, change: "session-mode", applied: "unknown-remote" },
-      });
+      settle(
+        evaluate("remote_send_agent_prompt").reportRequested({
+          label: destination,
+          unresolved: "remote-recipient",
+          extra: { remoteServerId: destination, change: "session-mode", applied: "unknown-remote" },
+        }),
+      );
       return;
     }
     if (tool !== "create_agent") return;
@@ -722,20 +731,24 @@ export function reportRemoteOperation(
     const extra = { remoteServerId: destination, targetDirectory: "unresolved-remote" };
     const evaluation = evaluate("remote_create_agent");
     if (!provider) {
-      void evaluation.reportRequested({ label: destination, unresolved: "remote-provider", extra });
+      settle(
+        evaluation.reportRequested({ label: destination, unresolved: "remote-provider", extra }),
+      );
       return;
     }
-    void evaluation.reportRequested({
-      label: destination,
-      provider,
-      modeId: typeof settings.modeId === "string" ? settings.modeId : null,
-      featureValues:
-        settings.features && typeof settings.features === "object"
-          ? (settings.features as Record<string, unknown>)
-          : undefined,
-      facts: { environmentId: destination },
-      extra,
-    });
+    settle(
+      evaluation.reportRequested({
+        label: destination,
+        provider,
+        modeId: typeof settings.modeId === "string" ? settings.modeId : null,
+        featureValues:
+          settings.features && typeof settings.features === "object"
+            ? (settings.features as Record<string, unknown>)
+            : undefined,
+        facts: { environmentId: destination },
+        extra,
+      }),
+    );
   });
 }
 

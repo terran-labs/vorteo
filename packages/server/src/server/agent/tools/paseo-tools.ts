@@ -2071,9 +2071,9 @@ function createToolCatalog(
 
       // Return immediately for async creation.
       const currentSnapshot = agentManager.getAgent(snapshot.id) ?? snapshot;
-      guardCeiling(undefined, () => {
-        void ceilingReport("create_agent").report(snapshot.id, { detached: resolvedArgs.detached });
-      });
+      guardCeiling(undefined, () =>
+        ceilingReport("create_agent").report(snapshot.id, { detached: resolvedArgs.detached }),
+      );
       const guidance =
         callerAgentId && notifyOnFinish && initialPromptStarted
           ? "You will get notified when the created agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives."
@@ -2833,7 +2833,7 @@ function createToolCatalog(
       const ceiling = ceilingReport("update_agent");
       if (settings?.modeId !== undefined) {
         await agentManager.setAgentMode(agentId, settings.modeId);
-        guardCeiling(undefined, () => void ceiling.report(agentId, { change: "mode" }));
+        guardCeiling(undefined, () => ceiling.report(agentId, { change: "mode" }));
       }
       if (settings?.model !== undefined) {
         await agentManager.setAgentModel(agentId, settings.model);
@@ -2844,7 +2844,7 @@ function createToolCatalog(
       if (settings?.features) {
         for (const [featureId, value] of Object.entries(settings.features)) {
           await agentManager.setAgentFeature(agentId, featureId, value);
-          guardCeiling(undefined, () => void ceiling.report(agentId, { change: "feature" }));
+          guardCeiling(undefined, () => ceiling.report(agentId, { change: "feature" }));
         }
       }
 
@@ -3778,7 +3778,7 @@ function createToolCatalog(
     async ({ agentId, modeId }) => {
       const ceiling = ceilingReport("set_agent_mode");
       const result = await setAgentModeCommand({ agentManager }, { agentId, modeId });
-      guardCeiling(undefined, () => void ceiling.report(agentId));
+      guardCeiling(undefined, () => ceiling.report(agentId));
       return {
         content: [],
         structuredContent: ensureValidJson({
@@ -3849,10 +3849,11 @@ function createToolCatalog(
         logger: childLogger,
       });
       // Who answered whose prompt is the fact the ceiling depends on.
-      guardCeiling(undefined, () => {
-        if (callerAgentId && callerAgentId !== agentId)
-          void ceiling.reportPermissionAnswer(agentId, response);
-      });
+      guardCeiling(undefined, () =>
+        callerAgentId && callerAgentId !== agentId
+          ? ceiling.reportPermissionAnswer(agentId, response)
+          : undefined,
+      );
       return {
         content: [],
         structuredContent: ensureValidJson({ success: true }),

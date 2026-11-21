@@ -24,7 +24,6 @@ import {
   reportIfSwitched,
   reportRemoteOperation,
   reportSchedule,
-  reportSessionMode,
   deriveAssertions,
   liveModeId,
   modeAuthority,
@@ -39,13 +38,24 @@ import {
 import { compareChildAccess } from "./levels.js";
 
 // Reporting can be stubbed: the hooks' guard then runs nothing, as if reporting were absent.
-const reporting = vi.hoisted(() => ({ stubbed: false }));
+// With `rejecting`, every evaluation method the hooks receive returns a rejected promise.
+const reporting = vi.hoisted(() => ({ stubbed: false, rejecting: false }));
 vi.mock("./admit.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./admit.js")>();
+  const rejected = () => Promise.reject(new Error("evaluation rejected"));
   return {
     ...actual,
-    guardCeiling: <T>(fallback: T, run: () => T): T =>
+    guardCeiling: <T, F = T>(fallback: F, run: () => T): T | F =>
       reporting.stubbed ? fallback : actual.guardCeiling(fallback, run),
+    beginCeilingReport: (...args: Parameters<typeof actual.beginCeilingReport>) =>
+      reporting.rejecting
+        ? {
+            report: rejected,
+            reportRequested: rejected,
+            noteTarget: () => {},
+            reportPermissionAnswer: rejected,
+          }
+        : actual.beginCeilingReport(...args),
   };
 });
 
@@ -707,8 +717,11 @@ describe("access ceiling report-only logging", () => {
     },
   );
 
-  /** A schedule whose target the tool's own JSON handling accepts but reporting cannot read. */
-  function poisonedSchedule(schedule: StoredSchedule, poison: "getter" | "cyclic" | "bigint") {
+  /**
+   * A schedule whose target the tool's own JSON handling accepts but reporting cannot read: a
+   * non-enumerable getter that throws, or a BigInt that JSON.stringify rejects.
+   */
+  function poisonedSchedule(schedule: StoredSchedule, poison: "getter" | "bigint") {
     const config = { ...(schedule.target as { config: Record<string, unknown> }).config };
     if (poison === "getter") {
       // Not enumerable, so the tool's serialiser never reads it; reporting does.
@@ -719,9 +732,7 @@ describe("access ceiling report-only logging", () => {
         },
       });
     } else {
-      const value: Record<string, unknown> = {};
-      if (poison === "cyclic") value.self = value;
-      config.featureValues = { poisoned: poison === "bigint" ? 1n : value };
+      config.featureValues = { poisoned: 1n };
     }
     return { ...schedule, target: { ...schedule.target, config } } as StoredSchedule;
   }
@@ -740,102 +751,62 @@ describe("access ceiling report-only logging", () => {
     return text.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "<id>");
   }
 
-  type Fixture = Awaited<ReturnType<typeof setup>>;
-  const poisons = ["getter", "cyclic", "bigint"] as const;
-  /** Each wired operation, with a poisoned reporting input that the operation itself tolerates. */
-  const guarded: Array<{
-    name: string;
-    poison: (fixture: Fixture, kind: (typeof poisons)[number]) => Promise<void> | void;
-    run: (fixture: Fixture) => Promise<unknown>;
-  }> = [
-    ...(
-      ["create_schedule", "update_schedule", "run_schedule_once", "resume_schedule"] as const
-    ).map((name) => ({
-      name,
-      poison: async (fixture: Fixture, kind: (typeof poisons)[number]) => {
-        const tools = fixture.catalog(fixture.supervisor.id);
-        if (name !== "create_schedule")
-          await tools.executeTool("create_schedule", { prompt: "Nightly", cron: "0 3 * * *" });
-        const poisonNext = (method: "createOrReplace" | "update" | "runOnce" | "inspect") =>
-          fixture.scheduleService[method].mockImplementationOnce((async (
-            input: CreateScheduleInput,
-          ) =>
-            poisonedSchedule(
-              method === "createOrReplace"
-                ? storedSchedule(input)
-                : ((await fixture.createOrReplace.mock.results.at(-1)!.value) as StoredSchedule),
-              kind,
-            )) as never);
-        if (name === "create_schedule") poisonNext("createOrReplace");
-        if (name === "update_schedule") poisonNext("update");
-        if (name === "run_schedule_once") poisonNext("runOnce");
-        if (name === "resume_schedule") poisonNext("inspect");
-      },
-      run: async (fixture: Fixture) => {
-        const tools = fixture.catalog(fixture.supervisor.id);
-        if (name === "create_schedule")
-          return tools.executeTool(name, { prompt: "Nightly", cron: "0 3 * * *" });
-        if (name === "update_schedule")
-          return tools.executeTool(name, { id: "schedule-1", mode: "full-access" });
-        return tools.executeTool(name, { id: "schedule-1" });
-      },
-    })),
-    // The other operations read only agent records. A throwing getter on the calling agent's
-    // record is read by reporting and by nothing in these operations.
-    ...(
-      ["set_agent_mode", "update_agent", "respond_to_permission", "send_agent_prompt"] as const
-    ).map((name) => ({
-      name,
-      poison: (fixture: Fixture) => {
-        vi.spyOn(fixture.manager, "respondToPermission").mockResolvedValue(undefined);
-        Object.defineProperty(fixture.manager.getAgent(fixture.supervisor.id)!, "runtimeInfo", {
-          configurable: true,
-          get() {
-            throw new Error("poisoned getter");
-          },
-        });
-      },
-      run: async (fixture: Fixture) => {
-        const operation = operations.find((entry) => entry.name === name)!;
-        const result = await fixture
-          .catalog(fixture.supervisor.id)
-          .executeTool(name, operation.args(fixture.child.id));
-        if (name === "send_agent_prompt")
-          await fixture.messages.waitForDispatch(fixture.child.id, new AbortController().signal);
-        return {
-          result: { ...(result.structuredContent as object), messageId: undefined },
-          mode: fixture.manager.getAgent(fixture.child.id)?.currentModeId,
-        };
-      },
-    })),
-  ];
+  const scheduleMethod = {
+    create_schedule: "createOrReplace",
+    update_schedule: "update",
+    run_schedule_once: "runOnce",
+    resume_schedule: "inspect",
+  } as const;
+  const scheduleArgs = {
+    create_schedule: { prompt: "Nightly", cron: "0 3 * * *" },
+    update_schedule: { id: "schedule-1", mode: "full-access" },
+    run_schedule_once: { id: "schedule-1" },
+    resume_schedule: { id: "schedule-1" },
+  } as const;
 
-  it.each(
-    guarded.flatMap((operation) =>
-      poisons.map((kind) => [operation.name, kind, operation] as const),
-    ),
-  )(
-    "%s with a %s reporting input returns what it returns with reporting stubbed",
-    async (_, kind, operation) => {
+  // Each row fails when the guard is replaced by a pass-through: the schedule tools read the
+  // record only after the schedule service succeeded, so an unguarded throw replaces success.
+  // The agent-record operations are not here: an inner guard in beginCeilingReport already
+  // absorbs a poisoned record, so such a case passes with or without this guard.
+  it.each([
+    ["create_schedule", "getter"],
+    ["run_schedule_once", "getter"],
+    ["resume_schedule", "getter"],
+    ["update_schedule", "getter"],
+    ["update_schedule", "bigint"],
+  ] as const)(
+    "%s with a %s in the schedule target returns what it returns with reporting stubbed",
+    async (name, kind) => {
       const unhandled: unknown[] = [];
       const onUnhandled = (reason: unknown) => unhandled.push(reason);
       process.on("unhandledRejection", onUnhandled);
+      const outcome = async (stubbed: boolean) => {
+        const fixture = await setup();
+        const tools = fixture.catalog(fixture.supervisor.id);
+        if (name !== "create_schedule")
+          await tools.executeTool("create_schedule", { prompt: "Nightly", cron: "0 3 * * *" });
+        fixture.scheduleService[scheduleMethod[name]].mockImplementationOnce((async (
+          input: CreateScheduleInput,
+        ) =>
+          poisonedSchedule(
+            name === "create_schedule"
+              ? storedSchedule(input)
+              : ((await fixture.createOrReplace.mock.results.at(-1)!.value) as StoredSchedule),
+            kind,
+          )) as never);
+        reporting.stubbed = stubbed;
+        try {
+          return normalized(
+            fixture,
+            await tools
+              .executeTool(name, scheduleArgs[name])
+              .catch((error: Error) => ({ error: error.message })),
+          );
+        } finally {
+          reporting.stubbed = false;
+        }
+      };
       try {
-        const outcome = async (stubbed: boolean) => {
-          const fixture = await setup();
-          if (!stubbed) await operation.poison(fixture, kind);
-          else if (operation.name.endsWith("_schedule") || operation.name === "run_schedule_once")
-            await operation.poison(fixture, kind);
-          reporting.stubbed = stubbed;
-          try {
-            return normalized(
-              fixture,
-              await operation.run(fixture).catch((error: Error) => ({ error: error.message })),
-            );
-          } finally {
-            reporting.stubbed = false;
-          }
-        };
         expect(await outcome(false)).toBe(await outcome(true));
         await new Promise((resolve) => setTimeout(resolve, 50));
         expect(unhandled).toEqual([]);
@@ -859,17 +830,6 @@ describe("access ceiling report-only logging", () => {
           false,
         ),
     ],
-    [
-      "reportSessionMode",
-      () =>
-        reportSessionMode(
-          () => NOOP_CEILING_EVALUATION,
-          () => hostile() as never,
-          "agent",
-          "bypassPermissions",
-          hostile() as never,
-        ),
-    ],
     ["reportIfSwitched", () => reportIfSwitched(NOOP_CEILING_EVALUATION, hostile() as never)],
     [
       "reportPermissionAnswer",
@@ -889,6 +849,63 @@ describe("access ceiling report-only logging", () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(unhandled).toEqual([]);
     } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("handles evaluation methods that reject at every hook site", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    const fixture = await setup();
+    vi.spyOn(fixture.manager, "respondToPermission").mockResolvedValue(undefined);
+    vi.spyOn(fixture.manager, "setAgentFeature").mockResolvedValue(undefined);
+    reporting.rejecting = true;
+    try {
+      const tools = fixture.catalog(fixture.supervisor.id);
+      const child = { agentId: fixture.child.id };
+      expect(
+        (await tools.executeTool("set_agent_mode", { ...child, modeId: "bypassPermissions" }))
+          .structuredContent,
+      ).toEqual({ success: true, newMode: "bypassPermissions" });
+      expect(
+        (
+          await tools.executeTool("update_agent", {
+            ...child,
+            settings: { modeId: "default", features: { fast_mode: true } },
+          })
+        ).structuredContent,
+      ).toEqual({ success: true });
+      expect(
+        (
+          await tools.executeTool("respond_to_permission", {
+            ...child,
+            requestId: "request-1",
+            response: { behavior: "allow" },
+          })
+        ).structuredContent,
+      ).toEqual({ success: true });
+      expect(
+        (await tools.executeTool("create_schedule", { prompt: "Nightly", cron: "0 3 * * *" }))
+          .structuredContent,
+      ).toMatchObject({ id: "schedule-1" });
+      expect(
+        (
+          await tools.executeTool("create_agent", {
+            relationship: { kind: "subagent" },
+            workspace: { kind: "current" },
+            title: "Child",
+            provider: "codex/gpt-5.4",
+            initialPrompt: "Do work",
+            notifyOnFinish: false,
+            settings: { modeId: "full-access" },
+          })
+        ).structuredContent,
+      ).toMatchObject({ currentModeId: "full-access" });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(unhandled).toEqual([]);
+    } finally {
+      reporting.rejecting = false;
       process.off("unhandledRejection", onUnhandled);
     }
   });
