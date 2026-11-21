@@ -18,6 +18,13 @@ import { AgentStorage } from "../agent-storage.js";
 import { createPaseoToolCatalog } from "../tools/paseo-tools.js";
 import {
   ALLOWED_MESSAGE,
+  beginCeilingReport,
+  guardCeiling,
+  NOOP_CEILING_EVALUATION,
+  reportIfSwitched,
+  reportRemoteOperation,
+  reportSchedule,
+  reportSessionMode,
   deriveAssertions,
   liveModeId,
   modeAuthority,
@@ -30,6 +37,17 @@ import {
   type CeilingAgentRecord,
 } from "./admit.js";
 import { compareChildAccess } from "./levels.js";
+
+// Reporting can be stubbed: the hooks' guard then runs nothing, as if reporting were absent.
+const reporting = vi.hoisted(() => ({ stubbed: false }));
+vi.mock("./admit.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./admit.js")>();
+  return {
+    ...actual,
+    guardCeiling: <T>(fallback: T, run: () => T): T =>
+      reporting.stubbed ? fallback : actual.guardCeiling(fallback, run),
+  };
+});
 
 // Wrapped so one case can make the comparator throw; every other case uses the real one.
 vi.mock("./levels.js", async (importOriginal) => {
@@ -161,6 +179,21 @@ describe("access ceiling input derivation", () => {
   });
 });
 
+/** An object every property read of which throws, including `then`. */
+function hostile(): unknown {
+  return new Proxy(
+    {},
+    {
+      get() {
+        throw new Error("hostile read");
+      },
+      has() {
+        throw new Error("hostile read");
+      },
+    },
+  );
+}
+
 const CEILING_MESSAGES = [
   WOULD_REFUSE_MESSAGE,
   ALLOWED_MESSAGE,
@@ -284,6 +317,7 @@ describe("access ceiling report-only logging", () => {
         name: input.name ?? null,
       })),
       resume: vi.fn(async () => {}),
+      runOnce: vi.fn(async () => createOrReplace.mock.results.at(-1)!.value as StoredSchedule),
     };
     const messages = createTestAgentMessages({
       agentManager: manager,
@@ -327,6 +361,7 @@ describe("access ceiling report-only logging", () => {
       createOrReplace,
       scheduleService,
       messages,
+      home,
     };
   }
 
@@ -671,4 +706,190 @@ describe("access ceiling report-only logging", () => {
       }
     },
   );
+
+  /** A schedule whose target the tool's own JSON handling accepts but reporting cannot read. */
+  function poisonedSchedule(schedule: StoredSchedule, poison: "getter" | "cyclic" | "bigint") {
+    const config = { ...(schedule.target as { config: Record<string, unknown> }).config };
+    if (poison === "getter") {
+      // Not enumerable, so the tool's serialiser never reads it; reporting does.
+      Object.defineProperty(config, "modeId", {
+        enumerable: false,
+        get() {
+          throw new Error("poisoned getter");
+        },
+      });
+    } else {
+      const value: Record<string, unknown> = {};
+      if (poison === "cyclic") value.self = value;
+      config.featureValues = { poisoned: poison === "bigint" ? 1n : value };
+    }
+    return { ...schedule, target: { ...schedule.target, config } } as StoredSchedule;
+  }
+
+  /** The tool result with fixture-specific ids and paths replaced, so two fixtures compare. */
+  function normalized(fixture: Awaited<ReturnType<typeof setup>>, value: unknown): string {
+    let text = JSON.stringify(value, (_key, entry) =>
+      typeof entry === "bigint" ? `${entry}n` : entry,
+    );
+    for (const [from, to] of [
+      [fixture.home, "<home>"],
+      [fixture.supervisor.id, "<supervisor>"],
+      [fixture.child.id, "<child>"],
+    ])
+      text = text.split(from).join(to);
+    return text.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "<id>");
+  }
+
+  type Fixture = Awaited<ReturnType<typeof setup>>;
+  const poisons = ["getter", "cyclic", "bigint"] as const;
+  /** Each wired operation, with a poisoned reporting input that the operation itself tolerates. */
+  const guarded: Array<{
+    name: string;
+    poison: (fixture: Fixture, kind: (typeof poisons)[number]) => Promise<void> | void;
+    run: (fixture: Fixture) => Promise<unknown>;
+  }> = [
+    ...(
+      ["create_schedule", "update_schedule", "run_schedule_once", "resume_schedule"] as const
+    ).map((name) => ({
+      name,
+      poison: async (fixture: Fixture, kind: (typeof poisons)[number]) => {
+        const tools = fixture.catalog(fixture.supervisor.id);
+        if (name !== "create_schedule")
+          await tools.executeTool("create_schedule", { prompt: "Nightly", cron: "0 3 * * *" });
+        const poisonNext = (method: "createOrReplace" | "update" | "runOnce" | "inspect") =>
+          fixture.scheduleService[method].mockImplementationOnce((async (
+            input: CreateScheduleInput,
+          ) =>
+            poisonedSchedule(
+              method === "createOrReplace"
+                ? storedSchedule(input)
+                : ((await fixture.createOrReplace.mock.results.at(-1)!.value) as StoredSchedule),
+              kind,
+            )) as never);
+        if (name === "create_schedule") poisonNext("createOrReplace");
+        if (name === "update_schedule") poisonNext("update");
+        if (name === "run_schedule_once") poisonNext("runOnce");
+        if (name === "resume_schedule") poisonNext("inspect");
+      },
+      run: async (fixture: Fixture) => {
+        const tools = fixture.catalog(fixture.supervisor.id);
+        if (name === "create_schedule")
+          return tools.executeTool(name, { prompt: "Nightly", cron: "0 3 * * *" });
+        if (name === "update_schedule")
+          return tools.executeTool(name, { id: "schedule-1", mode: "full-access" });
+        return tools.executeTool(name, { id: "schedule-1" });
+      },
+    })),
+    // The other operations read only agent records. A throwing getter on the calling agent's
+    // record is read by reporting and by nothing in these operations.
+    ...(
+      ["set_agent_mode", "update_agent", "respond_to_permission", "send_agent_prompt"] as const
+    ).map((name) => ({
+      name,
+      poison: (fixture: Fixture) => {
+        vi.spyOn(fixture.manager, "respondToPermission").mockResolvedValue(undefined);
+        Object.defineProperty(fixture.manager.getAgent(fixture.supervisor.id)!, "runtimeInfo", {
+          configurable: true,
+          get() {
+            throw new Error("poisoned getter");
+          },
+        });
+      },
+      run: async (fixture: Fixture) => {
+        const operation = operations.find((entry) => entry.name === name)!;
+        const result = await fixture
+          .catalog(fixture.supervisor.id)
+          .executeTool(name, operation.args(fixture.child.id));
+        if (name === "send_agent_prompt")
+          await fixture.messages.waitForDispatch(fixture.child.id, new AbortController().signal);
+        return {
+          result: { ...(result.structuredContent as object), messageId: undefined },
+          mode: fixture.manager.getAgent(fixture.child.id)?.currentModeId,
+        };
+      },
+    })),
+  ];
+
+  it.each(
+    guarded.flatMap((operation) =>
+      poisons.map((kind) => [operation.name, kind, operation] as const),
+    ),
+  )(
+    "%s with a %s reporting input returns what it returns with reporting stubbed",
+    async (_, kind, operation) => {
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      try {
+        const outcome = async (stubbed: boolean) => {
+          const fixture = await setup();
+          if (!stubbed) await operation.poison(fixture, kind);
+          else if (operation.name.endsWith("_schedule") || operation.name === "run_schedule_once")
+            await operation.poison(fixture, kind);
+          reporting.stubbed = stubbed;
+          try {
+            return normalized(
+              fixture,
+              await operation.run(fixture).catch((error: Error) => ({ error: error.message })),
+            );
+          } finally {
+            reporting.stubbed = false;
+          }
+        };
+        expect(await outcome(false)).toBe(await outcome(true));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+      }
+    },
+  );
+
+  it.each([
+    ["reportSchedule", () => reportSchedule(NOOP_CEILING_EVALUATION, hostile() as never)],
+    [
+      "reportRemoteOperation",
+      () =>
+        reportRemoteOperation(
+          () => NOOP_CEILING_EVALUATION,
+          "create_agent",
+          "remote",
+          "local",
+          hostile() as never,
+          false,
+        ),
+    ],
+    [
+      "reportSessionMode",
+      () =>
+        reportSessionMode(
+          () => NOOP_CEILING_EVALUATION,
+          () => hostile() as never,
+          "agent",
+          "bypassPermissions",
+          hostile() as never,
+        ),
+    ],
+    ["reportIfSwitched", () => reportIfSwitched(NOOP_CEILING_EVALUATION, hostile() as never)],
+    [
+      "reportPermissionAnswer",
+      () =>
+        beginCeilingReport(
+          { getAgent: () => hostile() as never, logger: createTestLogger() },
+          "caller",
+          "respond_to_permission",
+        ).reportPermissionAnswer("target", hostile() as never),
+    ],
+  ] as const)("%s never throws or rejects on hostile input", async (_, call) => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      expect(() => guardCeiling(undefined, call as () => unknown)).not.toThrow();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
 });
