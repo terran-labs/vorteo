@@ -3823,6 +3823,7 @@ function createToolCatalog(
     },
     async ({ agentId, requestId, response }) => {
       const ceiling = ceilingReport("respond_to_permission");
+      ceiling.noteTarget(agentId);
       await respondToAgentPermission({
         agentManager,
         agentId,

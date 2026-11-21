@@ -418,14 +418,18 @@ describe("access ceiling report-only logging", () => {
 
   // Who answers prompts is the fact the ceiling depends on, so it is counted whatever the
   // comparator says, including when an unattended responder would be allowed.
+  // The last row's answer raises the requester's mode, as approving a plan exit does.
   it.each([
-    ["attended", "default", "deny"],
-    ["unattended", "bypassPermissions", "allow"],
+    ["attended", "default", "deny", null],
+    ["unattended", "bypassPermissions", "allow", null],
+    ["raising", "bypassPermissions", "allow", "bypassPermissions"],
   ] as const)(
     "logs a %s agent's answer to another agent's prompt at info",
-    async (_, mode, behavior) => {
+    async (_, mode, behavior, raisesTo) => {
       const fixture = await setup(mode);
-      vi.spyOn(fixture.manager, "respondToPermission").mockResolvedValue(undefined);
+      vi.spyOn(fixture.manager, "respondToPermission").mockImplementation(async (agentId) => {
+        if (raisesTo) await fixture.manager.setAgentMode(agentId, raisesTo);
+      });
       await fixture.catalog(fixture.supervisor.id).executeTool("respond_to_permission", {
         agentId: fixture.child.id,
         requestId: "request-1",
@@ -441,8 +445,14 @@ describe("access ceiling report-only logging", () => {
         callerProvider: "claude",
         targetProvider: "claude",
         callerMode: mode,
-        targetMode: "default",
+        targetMode: raisesTo ?? "default",
         behavior,
+        modeBefore: "default",
+        modeAfter: raisesTo ?? "default",
+        modeChanged: raisesTo !== null,
+        tierBefore: "attended",
+        tierAfter: raisesTo ? "unattended" : "attended",
+        classBefore: "owner-gated-writes",
       });
       expect(fixture.lines(WOULD_REFUSE_MESSAGE)).toEqual([]);
     },
@@ -558,6 +568,41 @@ describe("access ceiling report-only logging", () => {
       scheduleId: "schedule-1",
       scheduleCreator: "not-recorded",
     });
+  });
+
+  // A failed dispatch logs only a mode change that happened: the mode is set before the run.
+  it.each([
+    ["the mode change is rejected", "setAgentMode", 0],
+    ["the run fails after the mode is applied", "tryRunOutOfBand", 1],
+  ] as const)("a sessionMode prompt whose dispatch fails because %s", async (_, step, count) => {
+    const fixture = await setup();
+    const failing = vi
+      .spyOn(fixture.manager, step)
+      .mockRejectedValueOnce(new Error("dispatch failed"));
+    const result = await fixture.catalog(fixture.supervisor.id).executeTool("send_agent_prompt", {
+      agentId: fixture.child.id,
+      prompt: "Continue",
+      sessionMode: "bypassPermissions",
+      notifyOnFinish: false,
+    });
+    expect(result.structuredContent).toMatchObject({ success: true, deliveryStatus: "queued" });
+    await fixture.messages
+      .waitForDispatch(fixture.child.id, new AbortController().signal)
+      .catch(() => undefined);
+    expect(failing).toHaveBeenCalled();
+    expect(fixture.manager.getAgent(fixture.child.id)?.currentModeId).toBe(
+      count ? "bypassPermissions" : "default",
+    );
+    await vi.waitFor(() => expect(fixture.lines(WOULD_REFUSE_MESSAGE)).toHaveLength(count));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(fixture.lines(WOULD_REFUSE_MESSAGE)).toHaveLength(count);
+    if (count)
+      expect(fixture.lines(WOULD_REFUSE_MESSAGE)[0]).toMatchObject({
+        operation: "send_agent_prompt",
+        change: "session-mode",
+        dispatch: "failed-after-mode",
+        targetMode: "bypassPermissions",
+      });
   });
 
   it("logs nothing for a prompt sent without sessionMode", async () => {

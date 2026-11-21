@@ -542,6 +542,11 @@ export interface CeilingEvaluation {
    * Records one agent's answer to another agent's permission prompt at info, with the
    * comparator's result for the pair. Never rejects.
    */
+  /**
+   * Snapshots a target's record now, synchronously, so a later report can say what it was
+   * before the operation. Cheap: a lookup and a shallow copy. Never throws.
+   */
+  noteTarget(targetAgentId: string): void;
   reportPermissionAnswer(
     targetAgentId: string,
     response: {
@@ -555,6 +560,7 @@ export interface CeilingEvaluation {
 const NOOP_EVALUATION: CeilingEvaluation = {
   report: async () => {},
   reportRequested: async () => {},
+  noteTarget: () => {},
   reportPermissionAnswer: async () => {},
 };
 
@@ -734,6 +740,48 @@ export function reportSessionMode(
     .catch(() => undefined);
 }
 
+/**
+ * Mode before and after a permission answer, from the requester's records. "unknown" when a
+ * record is missing. Tier and attended class come from the same helpers as the self-change rule
+ * and are added only when both modes map.
+ */
+function answerModeChange(
+  before: CeilingAgentRecord | null,
+  after: CeilingAgentRecord | null,
+): Record<string, unknown> {
+  const modeBefore = before ? liveModeId(before) : "unknown";
+  const modeAfter = after ? liveModeId(after) : "unknown";
+  const fields: Record<string, unknown> = {
+    modeBefore,
+    modeAfter,
+    modeChanged: before !== null && after !== null && modeBefore !== modeAfter,
+  };
+  if (!before || !after) return fields;
+  const from = ownTier(before);
+  const to = ownTier(after);
+  if (!("tier" in from) || !("tier" in to)) return fields;
+  const classOf = (agent: CeilingAgentRecord) =>
+    attendedClass({ provider: agent.provider, modeId: liveModeId(agent) }) ?? "none";
+  return {
+    ...fields,
+    tierBefore: from.tier,
+    tierAfter: to.tier,
+    classBefore: classOf(before),
+    classAfter: classOf(after),
+  };
+}
+
+function safeAnswerModeChange(
+  before: CeilingAgentRecord | null,
+  after: CeilingAgentRecord | null,
+): Record<string, unknown> {
+  try {
+    return answerModeChange(before, after);
+  } catch {
+    return { modeBefore: "unknown", modeAfter: "unknown", modeChanged: false };
+  }
+}
+
 function logFailure(
   logger: Logger,
   operation: CeilingOperation,
@@ -804,6 +852,8 @@ export function beginCeilingReport(
     });
   }
 
+  const noted = new Map<string, CeilingAgentRecord | null>();
+
   function emit(fields: Record<string, unknown>): void {
     if (fields.result === "allowed") logAt(dependencies.logger, "debug", fields, ALLOWED_MESSAGE);
     else logRefusal(dependencies.logger, WOULD_REFUSE_MESSAGE, fields);
@@ -858,7 +908,27 @@ export function beginCeilingReport(
         logFailure(dependencies.logger, operation, "error");
       }
     },
+    noteTarget: (targetAgentId) => {
+      try {
+        const target = dependencies.getAgent(targetAgentId);
+        noted.set(targetAgentId, target ? snapshotRecord(target) : null);
+      } catch {
+        noted.set(targetAgentId, null);
+      }
+    },
     reportPermissionAnswer: async (targetAgentId, response) => {
+      const before = noted.get(targetAgentId) ?? null;
+      noted.delete(targetAgentId);
+      // The after-value is the requester's record when this report starts, right after the
+      // answer handler returned. A provider that applies a mode change later, after the daemon's
+      // state refresh, shows as unchanged here, so modeChanged undercounts rather than guesses.
+      let after: CeilingAgentRecord | null = null;
+      try {
+        const target = dependencies.getAgent(targetAgentId);
+        after = target ? snapshotRecord(target) : null;
+      } catch {
+        after = null;
+      }
       const base = {
         code: REPORT_CODE,
         operation,
@@ -871,10 +941,11 @@ export function beginCeilingReport(
           ? response.updatedPermissions.length
           : 0,
         selectedAction: typeof response.selectedActionId === "string",
+        ...safeAnswerModeChange(before, after),
         callerIdentity: "mcp-session-query",
       };
       try {
-        const target = dependencies.getAgent(targetAgentId);
+        const target = after;
         if (!caller || !target) {
           logAt(
             dependencies.logger,
@@ -884,7 +955,7 @@ export function beginCeilingReport(
           );
           return;
         }
-        const fields = await compare(caller, snapshotRecord(target), {}, {});
+        const fields = await compare(caller, target, {}, {});
         logAt(dependencies.logger, "info", { ...fields, ...base }, PERMISSION_ANSWER_MESSAGE);
       } catch {
         logAt(dependencies.logger, "info", { ...base, result: "error" }, PERMISSION_ANSWER_MESSAGE);
