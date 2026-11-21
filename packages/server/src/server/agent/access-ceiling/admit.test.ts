@@ -245,7 +245,7 @@ describe("access ceiling report-only logging", () => {
     for (const cleanup of cleanups.splice(0)) await cleanup();
   });
 
-  async function setup(supervisorMode = "default") {
+  async function setup(supervisorMode = "default", supervisorProvider = "claude") {
     const home = realpathSync(await mkdtemp(join(tmpdir(), "ceiling-")));
     const logger = createTestLogger();
     const storage = new AgentStorage(join(home, "agents"), logger);
@@ -259,11 +259,11 @@ describe("access ceiling report-only logging", () => {
       registry: storage,
       logger,
     });
-    const launch = (modeId: string) =>
-      manager.createAgent({ provider: "claude", cwd: home, modeId }, undefined, {
+    const launch = (modeId: string, provider = "claude") =>
+      manager.createAgent({ provider, cwd: home, modeId }, undefined, {
         workspaceId: "wks_ceiling",
       });
-    const supervisor = await launch(supervisorMode);
+    const supervisor = await launch(supervisorMode, supervisorProvider);
     const child = await launch("default");
     const catalogLogger = createTestLogger();
     const toolLogger = catalogLogger.child({});
@@ -275,6 +275,15 @@ describe("access ceiling report-only logging", () => {
       debug: vi.spyOn(toolLogger, "debug"),
     };
     const createOrReplace = vi.fn(async (input: CreateScheduleInput) => storedSchedule(input));
+    const scheduleService = {
+      createOrReplace,
+      inspect: vi.fn(async () => createOrReplace.mock.results.at(-1)!.value as StoredSchedule),
+      update: vi.fn(async (input: { name?: string | null }) => ({
+        ...((await createOrReplace.mock.results.at(-1)!.value) as StoredSchedule),
+        name: input.name ?? null,
+      })),
+      resume: vi.fn(async () => {}),
+    };
     const catalog = (callerAgentId?: string) =>
       createPaseoToolCatalog({
         agentManager: manager,
@@ -284,7 +293,7 @@ describe("access ceiling report-only logging", () => {
         serverId: "server-ceiling",
         ...(callerAgentId ? { callerAgentId } : {}),
         providerSnapshotManager: providerSnapshots(),
-        scheduleService: { createOrReplace } as unknown as ScheduleService,
+        scheduleService: scheduleService as unknown as ScheduleService,
       });
     const lines = (message: string, level?: keyof typeof spies) =>
       Object.entries(spies)
@@ -300,7 +309,17 @@ describe("access ceiling report-only logging", () => {
       await storage.flush();
       await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     });
-    return { manager, supervisor, child, catalog, spies, lines, visible, createOrReplace };
+    return {
+      manager,
+      supervisor,
+      child,
+      catalog,
+      spies,
+      lines,
+      visible,
+      createOrReplace,
+      scheduleService,
+    };
   }
 
   /** Each operation an agent can run on another, with the result it returns today. */
@@ -428,6 +447,33 @@ describe("access ceiling report-only logging", () => {
     expect(fixture.lines(WOULD_REFUSE_MESSAGE)).toEqual([]);
   });
 
+  // Each row is one change an agent makes to itself, and whether a default-level log shows it.
+  it.each([
+    ["opencode", "build", "full-access", "self-escalation"],
+    ["opencode", "plan", "full-access", "self-escalation"],
+    ["claude", "default", "acceptEdits", "self-class-escalation"],
+    ["claude", "default", "auto", "self-class-escalation"],
+    ["claude", "acceptEdits", "auto", "self-class-change"],
+    ["claude", "acceptEdits", "default", null],
+  ] as const)("%s %s to %s logs %s", async (provider, from, to, reason) => {
+    const fixture = await setup(from, provider);
+    await fixture
+      .catalog(fixture.supervisor.id)
+      .executeTool("set_agent_mode", { agentId: fixture.supervisor.id, modeId: to });
+    await vi.waitFor(() =>
+      expect(fixture.lines(reason ? SELF_ESCALATION_MESSAGE : SELF_CHANGE_MESSAGE)).toHaveLength(1),
+    );
+    expect(fixture.visible()).toHaveLength(reason ? 1 : 0);
+    if (reason) {
+      expect(fixture.lines(SELF_ESCALATION_MESSAGE)[0]).toMatchObject({
+        operation: "self_set_agent_mode",
+        modeBefore: from,
+        modeAfter: to,
+        reason,
+      });
+    }
+  });
+
   it("logs an applied mode change when a later update step fails, and nothing for no change", async () => {
     const fixture = await setup();
     const tools = fixture.catalog(fixture.supervisor.id);
@@ -477,6 +523,19 @@ describe("access ceiling report-only logging", () => {
       reasons: "permission:exceeds-supervisor",
     });
     expect(fixture.lines(WOULD_REFUSE_MESSAGE)[0]!.childEscalations).toContain("unattended-flag");
+
+    // A name-only update leaves the future agent alone and logs nothing; a resume logs it again.
+    const tools = fixture.catalog(fixture.supervisor.id);
+    await tools.executeTool("update_schedule", { id: "schedule-1", name: "Renamed" });
+    expect(fixture.scheduleService.update).toHaveBeenCalledTimes(1);
+    await tools.executeTool("resume_schedule", { id: "schedule-1" });
+    expect(fixture.scheduleService.resume).toHaveBeenCalledWith("schedule-1");
+    await vi.waitFor(() => expect(fixture.lines(WOULD_REFUSE_MESSAGE)).toHaveLength(2));
+    expect(fixture.lines(WOULD_REFUSE_MESSAGE)[1]).toMatchObject({
+      operation: "resume_schedule",
+      scheduleId: "schedule-1",
+      scheduleCreator: "not-recorded",
+    });
   });
 
   it("logs nothing for a session without a calling agent", async () => {

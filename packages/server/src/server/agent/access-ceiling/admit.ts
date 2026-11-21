@@ -35,6 +35,7 @@ import { logRefusal } from "../create-agent/create.js";
 import { isPaseoOwnedWorktreeCwd } from "../../../utils/worktree.js";
 import { resolveRequiredProviderModel } from "../mcp-shared.js";
 import {
+  attendedClass,
   compareChildAccess,
   resolveSupervisorTier,
   type AccessComparisonOptions,
@@ -64,7 +65,8 @@ export type CeilingOperation =
   | "switch_agent_profile"
   | "create_schedule"
   | "update_schedule"
-  | "run_schedule_once";
+  | "run_schedule_once"
+  | "resume_schedule";
 
 /** The parts of a managed agent the derivation reads. A snapshot, so later changes do not leak in. */
 export type CeilingAgentRecord = Pick<
@@ -445,11 +447,54 @@ function ownTier(agent: CeilingAgentRecord): { tier: AccessTier } | { unmapped: 
   return "tier" in resolved ? { tier: resolved.tier } : { unmapped: codes(resolved.unmapped) };
 }
 
+/** What a self change can alter that bears on access: provider, mode and feature values. */
+function accessState(agent: CeilingAgentRecord): string {
+  const features = Object.entries(effectiveFeatureValues(agent)).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
+  return JSON.stringify([agent.provider, liveModeId(agent), features]);
+}
+
+export type SelfChangeReason =
+  | "self-escalation"
+  | "self-unmapped"
+  | "self-from-unmapped"
+  | "self-class-escalation"
+  | "self-class-change";
+
 /**
  * The self-change rule. An agent's own prompts are not answered by a supervisor, so the
- * supervisor and child comparison does not apply. Logs at warn only when the tier rises or the
- * new state is unmapped or unresolved; a restriction or same-tier change logs at debug.
+ * supervisor and child comparison does not apply. A change is logged when:
+ * - the new tier is unattended and the old state was not (including from unmapped);
+ * - the new state is unmapped or unresolved;
+ * - the old state was unmapped or unresolved and anything bearing on access changed;
+ * - the tier rises;
+ * - within attended, owner-gated writes move to unprompted writes or machine review
+ *   (`self-class-escalation`), or those two swap, since neither contains the other
+ *   (`self-class-change`).
+ * A restriction or a same-class change logs at debug only.
  */
+export function selfChangeReason(
+  before: CeilingAgentRecord,
+  after: CeilingAgentRecord,
+): SelfChangeReason | null {
+  const from = ownTier(before);
+  const to = ownTier(after);
+  const fromTier = "tier" in from ? from.tier : null;
+  const toTier = "tier" in to ? to.tier : null;
+  if (toTier === "unattended" && fromTier !== "unattended") return "self-escalation";
+  if (toTier === null) return "self-unmapped";
+  if (fromTier === null)
+    return accessState(before) === accessState(after) ? null : "self-from-unmapped";
+  if (TIER_RANK[toTier] > TIER_RANK[fromTier]) return "self-escalation";
+  if (fromTier !== "attended" || toTier !== "attended") return null;
+  const fromClass = attendedClass({ provider: before.provider, modeId: liveModeId(before) });
+  const toClass = attendedClass({ provider: after.provider, modeId: liveModeId(after) });
+  if (!fromClass || !toClass || fromClass === toClass || toClass === "owner-gated-writes")
+    return null;
+  return fromClass === "owner-gated-writes" ? "self-class-escalation" : "self-class-change";
+}
+
 function selfChangeLine(
   operation: CeilingOperation,
   before: CeilingAgentRecord,
@@ -458,9 +503,9 @@ function selfChangeLine(
 ): { message: string; warn: boolean; fields: Record<string, unknown> } {
   const from = ownTier(before);
   const to = ownTier(after);
-  let reason: "self-escalation" | "self-unmapped" | null = null;
-  if ("unmapped" in to) reason = "self-unmapped";
-  else if ("tier" in from && TIER_RANK[to.tier] > TIER_RANK[from.tier]) reason = "self-escalation";
+  const reason = selfChangeReason(before, after);
+  const classOf = (agent: CeilingAgentRecord) =>
+    attendedClass({ provider: agent.provider, modeId: liveModeId(agent) }) ?? "none";
   const fields = {
     code: REPORT_CODE,
     operation: `self_${operation}`,
@@ -470,6 +515,8 @@ function selfChangeLine(
     modeAfter: liveModeId(after),
     tierBefore: "tier" in from ? from.tier : "unmapped",
     tierAfter: "tier" in to ? to.tier : "unmapped",
+    classBefore: classOf(before),
+    classAfter: classOf(after),
     ...("unmapped" in from ? { unmappedBefore: from.unmapped } : {}),
     ...("unmapped" in to ? { unmappedAfter: to.unmapped } : {}),
     reason: reason ?? "self-no-rise",
@@ -510,11 +557,40 @@ export function reportIfSwitched(
   if (result?.outcome === "switched") void evaluation.report(result.agentId);
 }
 
+interface ScheduleLike {
+  id: string;
+  target: { type: string; config?: unknown };
+}
+
+/** The target fields that bear on access: provider, mode, features and directory. */
+function scheduleTargetKey(schedule: ScheduleLike): string {
+  const config = (schedule.target.config ?? {}) as Record<string, unknown>;
+  const features = Object.entries((config.featureValues ?? {}) as Record<string, unknown>).sort(
+    ([a], [b]) => a.localeCompare(b),
+  );
+  return JSON.stringify([
+    schedule.target.type,
+    config.provider,
+    config.modeId,
+    features,
+    config.cwd,
+    config.isolation,
+  ]);
+}
+
 /** A schedule's future agent, from the record the schedule service returned. */
 export function reportSchedule(
   evaluation: CeilingEvaluation,
-  schedule: { id: string; target: { type: string; config?: unknown } },
+  schedule: ScheduleLike,
+  options: {
+    /** The schedule before an update: an update that leaves the target alone logs nothing. */
+    previous?: ScheduleLike;
+    /** The agent ran or resumed an existing schedule rather than arranging one. */
+    triggered?: boolean;
+  } = {},
 ): void {
+  if (options.previous && scheduleTargetKey(options.previous) === scheduleTargetKey(schedule))
+    return;
   const config = schedule.target.config as
     | {
         provider?: string;
@@ -538,7 +614,13 @@ export function reportSchedule(
     cwd: config.cwd,
     // The schedule service launches every run with `unattended: true` (schedule/service.ts).
     facts: { unattended: true },
-    extra: { scheduleId: schedule.id, isolation: config.isolation ?? "local" },
+    extra: {
+      scheduleId: schedule.id,
+      isolation: config.isolation ?? "local",
+      // Schedule records do not store who created them. Join on scheduleId against
+      // create_schedule lines to tell an agent's own schedule from one it did not arrange.
+      ...(options.triggered ? { scheduleCreator: "not-recorded" } : {}),
+    },
   });
 }
 

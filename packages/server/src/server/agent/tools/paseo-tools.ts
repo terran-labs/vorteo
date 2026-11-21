@@ -3371,6 +3371,7 @@ function createToolCatalog(
       }
 
       await requireScheduleTarget(id, "new-agent");
+      // Not reported to the access ceiling: pausing only stops future agents.
       await runScheduleAction(() => scheduleService.pause(id));
       return {
         content: [],
@@ -3396,8 +3397,9 @@ function createToolCatalog(
         throw new Error("Schedule service is not configured");
       }
 
-      await requireScheduleTarget(id, "new-agent");
+      const schedule = await requireScheduleTarget(id, "new-agent");
       await runScheduleAction(() => scheduleService.resume(id));
+      reportSchedule(ceilingReport("resume_schedule"), schedule, { triggered: true });
       return {
         content: [],
         structuredContent: ensureValidJson({ success: true }),
@@ -3493,9 +3495,9 @@ function createToolCatalog(
         throw new Error("Schedule service is not configured");
       }
 
-      await requireScheduleTarget(input.id, "new-agent");
+      const previous = await requireScheduleTarget(input.id, "new-agent");
       const schedule = await scheduleService.update(buildScheduleUpdateInput(input));
-      reportSchedule(ceilingReport("update_schedule"), schedule);
+      reportSchedule(ceilingReport("update_schedule"), schedule, { previous });
 
       return {
         content: [],
@@ -3544,7 +3546,7 @@ function createToolCatalog(
       }
       await requireScheduleTarget(id, "new-agent");
       const schedule = await runScheduleAction(() => scheduleService.runOnce(id));
-      reportSchedule(ceilingReport("run_schedule_once"), schedule);
+      reportSchedule(ceilingReport("run_schedule_once"), schedule, { triggered: true });
       return {
         content: [],
         structuredContent: ensureValidJson(schedule),
