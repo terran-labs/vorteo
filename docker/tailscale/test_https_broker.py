@@ -252,10 +252,17 @@ class NativeWorkspacePolicyTests(unittest.TestCase):
             self.assertEqual(runtime.listener_identity(port, 'terminal_fixture'), identity)
             with self.assertRaisesRegex(ValueError, 'managed terminal'):
                 runtime.listener_identity(port, 'terminal_other')
+            # The in-process recheck used during a timeout grace, with no subprocess.
+            recorded = {'listener': identity, 'terminal': 'terminal_fixture'}
+            self.assertTrue(runtime.listener_unchanged(recorded))
+            with self.assertRaisesRegex(ValueError, 'managed terminal'):
+                runtime.listener_unchanged({**recorded, 'terminal': 'terminal_other'})
         finally:
             process.terminate()
             process.wait(timeout=5)
             process.stdout.close()
+        with self.assertRaises(ValueError):
+            runtime.listener_unchanged(recorded)
 
     def test_registered_native_workspace_uses_real_host_path(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -570,6 +577,10 @@ class Fake:
         self.config['TCP'].pop(str(p), None); self.config['Web'].pop(f'test.example.ts.net:{p}', None)
     def verify(self, url):
         if self.fail_verify: raise subprocess.CalledProcessError(1, 'verify')
+    listener_same = True
+    def listener_unchanged(self, entry):
+        if not self.listener_same: raise ValueError('Backend listener process changed; explicit start required')
+        return True
 
 
 class Tests(unittest.TestCase):
@@ -614,6 +625,45 @@ class Tests(unittest.TestCase):
         self.runtime.fail_verify=True
         self.assertEqual(self.b.handle(self.request())['status'],'pending')
         self.assertNotIn('44444',self.runtime.config['TCP'])
+    def test_check_timeouts_keep_route_only_within_grace(self):
+        def timeout(p): raise subprocess.TimeoutExpired('curl', 3)
+        def refused(p): raise subprocess.CalledProcessError(7, 'curl')
+        steps = {
+            'ok': lambda b, rt: setattr(rt, 'backend_ready', lambda p: None),
+            'timeout': lambda b, rt: setattr(rt, 'backend_ready', timeout),
+            'refused': lambda b, rt: setattr(rt, 'backend_ready', refused),
+            'gone': lambda b, rt: (setattr(rt, 'backend_ready', timeout), setattr(rt, 'listener_same', False)),
+            'stale': lambda b, rt: (setattr(rt, 'backend_ready', timeout), b.ledger['entries']['wks_test.preview'].update(verifiedAt=time.time() - 91)),
+        }
+        # steps, then (route published, ledger status, desired, misses)
+        cases = [
+            (['timeout'], (True, 'unverified', 'running', 1)),
+            (['timeout'] * 3, (False, 'failed', 'running', None)),
+            (['timeout'] * 3 + ['ok'], (True, 'ready', 'running', None)),
+            (['stale'], (False, 'failed', 'running', None)),
+            (['timeout', 'timeout', 'ok', 'timeout', 'timeout'], (True, 'unverified', 'running', 2)),
+            (['timeout', 'gone'], (False, 'failed', 'stopped', None)),
+            (['timeout', 'refused'], (False, 'failed', 'running', None)),
+        ]
+        for driver in ('reconcile', 'status'):
+            for sequence, expected in cases:
+                with self.subTest(driver=driver, sequence=sequence):
+                    runtime = Fake(); broker = Broker(self.c, runtime)
+                    broker.ledger = {'entries': {}, 'requests': {}}
+                    broker.handle(self.request())
+                    for step in sequence:
+                        steps[step](broker, runtime)
+                        if driver == 'reconcile':
+                            broker.reconcile()
+                        else:
+                            try: result = broker.handle(self.request('status'))
+                            except Exception: result = {'status': 'failed'}
+                            # An unverified route is never reported as ready or with its URL.
+                            if step != 'ok': self.assertNotIn('url', result)
+                    entry = safe_read(broker.ledger_path)['entries']['wks_test.preview']
+                    self.assertEqual(('44444' in runtime.config['TCP'], entry['status'], entry['desired'], entry.get('misses')), expected)
+                    if expected[1] == 'unverified': self.assertIn('unverified', entry['error'])
+                    if not expected[0] and sequence[-1] in ('timeout', 'stale'): self.assertIn('timed out', entry['error'])
     def test_external_conflict_never_removed(self):
         self.b.handle(self.request());self.runtime.config['Web']['test.example.ts.net:44444']['Handlers']['/']['Proxy']='http://127.0.0.1:55555'
         with self.assertRaises(ValueError):self.b.handle(self.request('stop'))

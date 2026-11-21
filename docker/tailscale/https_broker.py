@@ -20,6 +20,12 @@ MAX_BYTES = 4096
 ID = re.compile(r'^[a-f0-9-]{36}$')
 WS = re.compile(r'^wks_[a-zA-Z0-9_-]{1,80}$')
 SERVICE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$')
+# A check that times out proves nothing about the backend, so a verified route
+# survives a short run of them. The route is withdrawn on the third consecutive
+# timeout, or once this many seconds have passed since its last full
+# verification, whichever comes first. Every other failure withdraws at once.
+TIMEOUT_MISS_LIMIT = 3
+TIMEOUT_GRACE_SECONDS = 90
 
 
 def digest(value):
@@ -388,6 +394,14 @@ if(found.length!==1)throw Error('Expected exactly one managed loopback listener'
     def verify(self, url):
         self.command(['/usr/bin/curl', '--fail', '--silent', '--show-error', '--max-time', '8', '--output', '/dev/null', url])
 
+    def listener_unchanged(self, entry):
+        """Recheck the recorded listener without a subprocess, for timeout grace.
+
+        Every container identity check needs `docker exec`, the call that times
+        out under load, so the container runtime cannot vouch for the listener
+        and gives no grace: a timeout withdraws the route as before."""
+        return False
+
 
 class NativeRuntime(Runtime):
     """Same broker contract for the logged-in macOS user's native daemon."""
@@ -495,6 +509,26 @@ class NativeRuntime(Runtime):
         if self.listener_pid(port) != pid or self.process_identity(pid) != before:
             raise ValueError('Listener changed during identity verification')
         return f"{pid}:{before['birth']}"
+
+    def listener_unchanged(self, entry):
+        """Recheck the recorded listener in process, without lsof or curl.
+
+        libproc and sysctl answer from the kernel without spawning anything, so
+        this still works when subprocess checks time out. It proves the process
+        that passed the last full check is alive, is the same process (microsecond
+        birth time defeats PID reuse) and still carries the managed terminal ID.
+        It cannot prove that process still holds the port; see the PR for #358."""
+        recorded = entry.get('listener')
+        if not isinstance(recorded, str) or not entry.get('terminal'):
+            return False
+        pid, _, birth = recorded.partition(':')
+        if not pid.isdigit() or not birth:
+            return False
+        if self.process_identity(int(pid))['birth'] != birth:
+            raise ValueError('Backend listener process changed; explicit start required')
+        if self.terminal_environment(int(pid)) != entry['terminal']:
+            raise ValueError('Listener is not owned by the managed terminal')
+        return True
 
     def terminal_environment(self, pid):
         # Read KERN_PROCARGS2 directly, separating argv from env. Parsing ps
@@ -681,8 +715,11 @@ class Broker:
                 raise RecoveryPending('Daemon changed during verification')
             entry['daemon'] = daemon
             entry.pop('recovery', None)
-        entry.pop('error', None)
-        entry.update(status='ready', url=url)
+        for stale in ('error', 'misses', 'removalPending'):
+            entry.pop(stale, None)
+        # Only a full verification opens a timeout grace window. A remembered
+        # "ready" from an earlier run never does once this time is too old.
+        entry.update(status='ready', url=url, verifiedAt=time.time())
         self.save()
         return {'status': 'ready', 'url': url, 'frontendPort': entry['frontend'], 'backendPort': port}
 
@@ -740,10 +777,17 @@ class Broker:
                 return {'status': 'stopped', 'frontendPort': entry.get('frontend')}
             try:
                 return self.activate(entry)
-            except Exception:
-                if entry.get('backend'):
-                    self.remove(entry)
-                raise
+            except Exception as error:
+                if not entry.get('backend'):
+                    raise
+                # Same rule as reconcile(), so the two paths cannot drift apart.
+                outcome = self.settle_failure(entry, error)
+                if outcome is None:
+                    # Kept but unverified: never report it as ready or hand out the URL.
+                    return {'status': 'pending', 'message': entry['error'], 'misses': entry['misses'], 'frontendPort': entry['frontend']}
+                if isinstance(outcome, subprocess.TimeoutExpired):
+                    return {'status': 'pending', 'message': entry['error'], 'frontendPort': entry['frontend']}
+                raise outcome
         if r['operation'] == 'stop':
             if not entry:
                 current = self.runtime.current(r['workspaceId'], r['service'])
@@ -793,12 +837,73 @@ class Broker:
             self.save()
             return {'status': 'pending', 'message': 'Backend or HTTPS is not ready; inspect status', 'frontendPort': entry['frontend']}
 
+    def settle_failure(self, entry, error):
+        """Apply one rule to a failed check of a route, for reconcile() and status.
+
+        Returns None while a timeout grace keeps the route, otherwise the error
+        that withdrew it. A timeout says nothing about who is listening, so a
+        verified route may survive a short run of them. Everything else, and any
+        change the in-process listener recheck finds, withdraws at once."""
+        try:
+            if self.hold_for_timeout(entry, error):
+                return None
+        except ValueError as changed:
+            error = changed
+        except Exception:
+            pass  # A recheck that cannot answer grants no grace.
+        # A stopped entry only retries its removal; it has no route to recover.
+        timed_out = isinstance(error, subprocess.TimeoutExpired) and entry.get('desired') == 'running'
+        # Fail closed on process/config changes. Never revive a stopped service.
+        if isinstance(error, ValueError):
+            entry.update(desired='stopped', stoppedAt=time.time())
+        if timed_out:
+            message = 'Checks timed out; route withdrawn until a check succeeds'
+        elif isinstance(error, (ValueError, RecoveryPending)):
+            message = str(error)
+        else:
+            message = type(error).__name__
+        # Keep 'failed' after timeouts: the rebind refuses while any entry is 'pending'.
+        entry.update(status='pending' if isinstance(error, RecoveryPending) else 'failed', error=message)
+        for stale in ('url', 'misses'):
+            entry.pop(stale, None)
+        try:
+            self.remove(entry)
+            entry.pop('removalPending', None)
+        except ValueError:
+            entry['error'] = 'Mapping removal requires administrator review'
+            error = ValueError(entry['error'])
+        except Exception:
+            # Usually another timeout. The route may still be published; the
+            # next cycle retries the removal, so no administrator is needed.
+            entry['removalPending'] = True
+        self.save()
+        return error
+
+    def hold_for_timeout(self, entry, error):
+        if not isinstance(error, subprocess.TimeoutExpired):
+            return False
+        if entry.get('desired') != 'running' or entry.get('status') not in ('ready', 'unverified'):
+            return False
+        misses = entry.get('misses', 0) + 1
+        verified = entry.get('verifiedAt')
+        if type(verified) not in (int, float) or not 0 <= time.time() - verified < TIMEOUT_GRACE_SECONDS:
+            return False
+        if misses >= TIMEOUT_MISS_LIMIT or not self.runtime.listener_unchanged(entry):
+            return False
+        entry.update(status='unverified', misses=misses,
+                     error=f'Checks timed out ({misses} of {TIMEOUT_MISS_LIMIT}); route kept but unverified')
+        self.save()
+        return True
+
     def reconcile(self):
         deadline = time.monotonic() + 20
         entries = list(self.ledger['entries'].values())[:32]
         if not entries:
             return
         cursor = self.ledger.get('reconcileCursor', 0) % len(entries)
+        # One serve status read per cycle covers every stopped entry; remove()
+        # reads again before it changes anything.
+        published = None
         for index in range(len(entries)):
             if time.monotonic() > deadline:
                 break
@@ -809,22 +914,15 @@ class Broker:
                 continue
             try:
                 if entry['desired'] == 'stopped':
-                    self.remove(entry)
+                    if published is None:
+                        published = self.runtime.publication()
+                    if self.address(entry) in published.get('Web', {}) or str(entry['frontend']) in published.get('TCP', {}):
+                        self.remove(entry)
                     continue
                 self.restore_after_restart(entry)
                 self.activate(entry)
             except Exception as error:
-                # Fail closed on process/config changes. Never revive a stopped service.
-                if isinstance(error, ValueError):
-                    entry.update(desired='stopped', stoppedAt=time.time())
-                entry.update(status='pending' if isinstance(error, RecoveryPending) else 'failed',
-                             error=str(error) if isinstance(error, (ValueError, RecoveryPending)) else type(error).__name__)
-                entry.pop('url', None)
-                try:
-                    self.remove(entry)
-                except Exception:
-                    entry['error'] = 'Mapping removal requires administrator review'
-                self.save()
+                self.settle_failure(entry, error)
 
     def run(self):
         with broker_lock(self.root):
