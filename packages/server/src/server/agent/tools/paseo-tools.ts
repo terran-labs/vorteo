@@ -137,6 +137,8 @@ import { createThreadGoalTools } from "./thread-goal.js";
 import {
   beginCeilingReport,
   reportIfSwitched,
+  reportRemoteCreate,
+  reportSchedule,
   type CeilingOperation,
 } from "../access-ceiling/admit.js";
 import { createPauseGoalTool } from "./pause-goal.js";
@@ -865,6 +867,14 @@ function createToolCatalog(
           if (response.isError) await remoteNotification?.reject();
           else remoteNotification?.accept();
           await registerRemoteCreation(name, destination, input, response);
+          reportRemoteCreate(
+            () => ceilingReport("remote_create_agent"),
+            name,
+            destination,
+            options.serverId,
+            input,
+            response.isError,
+          );
           return {
             ...response,
             structuredContent: {
@@ -2804,6 +2814,7 @@ function createToolCatalog(
       const ceiling = ceilingReport("update_agent");
       if (settings?.modeId !== undefined) {
         await agentManager.setAgentMode(agentId, settings.modeId);
+        void ceiling.report(agentId, { change: "mode" });
       }
       if (settings?.model !== undefined) {
         await agentManager.setAgentModel(agentId, settings.model);
@@ -2814,11 +2825,11 @@ function createToolCatalog(
       if (settings?.features) {
         for (const [featureId, value] of Object.entries(settings.features)) {
           await agentManager.setAgentFeature(agentId, featureId, value);
+          void ceiling.report(agentId, { change: "feature" });
         }
       }
 
       await updateAgentCommand({ agentManager }, { agentId, name, labels });
-      if (settings?.modeId !== undefined || settings?.features) void ceiling.report(agentId);
 
       return {
         content: [],
@@ -3213,6 +3224,7 @@ function createToolCatalog(
         ...(maxRuns === undefined ? {} : { maxRuns }),
         ...(expiresAt === undefined ? {} : { expiresAt }),
       });
+      reportSchedule(ceilingReport("create_schedule"), schedule);
 
       return {
         content: [],
@@ -3483,6 +3495,7 @@ function createToolCatalog(
 
       await requireScheduleTarget(input.id, "new-agent");
       const schedule = await scheduleService.update(buildScheduleUpdateInput(input));
+      reportSchedule(ceilingReport("update_schedule"), schedule);
 
       return {
         content: [],
@@ -3531,6 +3544,7 @@ function createToolCatalog(
       }
       await requireScheduleTarget(id, "new-agent");
       const schedule = await runScheduleAction(() => scheduleService.runOnce(id));
+      reportSchedule(ceilingReport("run_schedule_once"), schedule);
       return {
         content: [],
         structuredContent: ensureValidJson(schedule),
@@ -3807,7 +3821,8 @@ function createToolCatalog(
         logger: childLogger,
       });
       // Who answered whose prompt is the fact the ceiling depends on.
-      if (callerAgentId && callerAgentId !== agentId) void ceiling.report(agentId);
+      if (callerAgentId && callerAgentId !== agentId)
+        void ceiling.reportPermissionAnswer(agentId, response.behavior);
       return {
         content: [],
         structuredContent: ensureValidJson({ success: true }),

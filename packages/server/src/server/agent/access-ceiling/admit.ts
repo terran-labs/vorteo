@@ -7,9 +7,18 @@
  * is caught and logged once with a fixed code.
  *
  * Trust contract (see `levels.ts`): every daemon-asserted input below is computed from daemon
- * state. Nothing is read from tool arguments or from anything the calling agent supplies. The
- * records are read after the operation succeeds, so the target's mode and features are the
- * values the provider actually reports, not the values requested.
+ * state. Nothing is read from tool arguments or from anything the calling agent supplies. An
+ * existing target's record is read after each change is applied, so its mode and features are
+ * the values the provider reports. A target that does not exist yet (a schedule's future agent,
+ * a create on a connected host) is described by the daemon's stored request: the schedule record
+ * the service returned, or the validated tool input forwarded to the other host.
+ *
+ * Four kinds of line, all with `code: "access_ceiling_report"`:
+ * - "Access ceiling would refuse" (warn): a supervisor and child comparison that is not allowed.
+ * - "Access ceiling self-escalation" (warn): an agent raised its own tier or left the table.
+ * - "Agent answered another agent's permission prompt" (info): every such answer, whatever the
+ *   comparator says, because who answers prompts is the fact the ceiling depends on.
+ * - "Access ceiling would allow" (debug) and quiet self changes (debug).
  *
  * Caller identity. The caller is the `callerAgentId` the agent MCP session was opened with. Owner
  * actions from the app arrive as WebSocket session requests and never reach these tools, and a
@@ -24,11 +33,14 @@ import type { Logger } from "pino";
 import type { ManagedAgent } from "../agent-manager.js";
 import { logRefusal } from "../create-agent/create.js";
 import { isPaseoOwnedWorktreeCwd } from "../../../utils/worktree.js";
+import { resolveRequiredProviderModel } from "../mcp-shared.js";
 import {
   compareChildAccess,
+  resolveSupervisorTier,
   type AccessComparisonOptions,
   type AccessDecision,
   type AccessEnvironment,
+  type AccessTier,
   type DaemonAssertions,
   type RequestedChildAccess,
   type SupervisorAccess,
@@ -36,15 +48,23 @@ import {
 
 export const WOULD_REFUSE_MESSAGE = "Access ceiling would refuse";
 export const ALLOWED_MESSAGE = "Access ceiling would allow";
+export const SELF_ESCALATION_MESSAGE = "Access ceiling self-escalation";
+export const SELF_CHANGE_MESSAGE = "Access ceiling self change";
+export const PERMISSION_ANSWER_MESSAGE = "Agent answered another agent's permission prompt";
 export const REPORT_FAILED_MESSAGE = "Access ceiling report failed";
 export const REPORT_FAILED_CODE = "access_ceiling_report_failed";
+const REPORT_CODE = "access_ceiling_report";
 
 export type CeilingOperation =
   | "create_agent"
+  | "remote_create_agent"
   | "set_agent_mode"
   | "update_agent"
   | "respond_to_permission"
-  | "switch_agent_profile";
+  | "switch_agent_profile"
+  | "create_schedule"
+  | "update_schedule"
+  | "run_schedule_once";
 
 /** The parts of a managed agent the derivation reads. A snapshot, so later changes do not leak in. */
 export type CeilingAgentRecord = Pick<
@@ -177,6 +197,18 @@ function isWithin(path: string, base: string): boolean {
   return path === base || base === "/" || path.startsWith(`${base}/`);
 }
 
+/** Facts about a child the daemon has from the request it stored or forwarded, not from a record. */
+export interface ChildRequestFacts {
+  /**
+   * A connected host's server id. Its environment kind is not known here, so the child is given
+   * this daemon's kind; the differing id alone makes the comparator refuse with
+   * `environment:mismatch`, as the signed table requires for cross-environment launches.
+   */
+  environmentId?: string;
+  /** The launch's `unattended` flag. The schedule service always launches with `true`. */
+  unattended?: boolean;
+}
+
 export interface ReporterDependencies {
   getAgent(agentId: string): ManagedAgent | null | undefined;
   logger: Logger;
@@ -194,6 +226,7 @@ export async function buildComparison(
   dependencies: Pick<ReporterDependencies, "serverId" | "paseoHome" | "worktreesRoot">,
   supervisor: CeilingAgentRecord,
   child: CeilingAgentRecord,
+  request: ChildRequestFacts = {},
 ): Promise<{
   supervisor: SupervisorAccess;
   child: RequestedChildAccess;
@@ -201,6 +234,9 @@ export async function buildComparison(
   options: AccessComparisonOptions;
 }> {
   const environment = daemonEnvironment(dependencies.serverId);
+  const childEnvironment = request.environmentId
+    ? { kind: environment.kind, id: request.environmentId }
+    : environment;
   const [supervisorDirectory, childDirectory] = await Promise.all([
     resolveRealPath(supervisor.cwd),
     resolveRealPath(child.cwd),
@@ -234,8 +270,9 @@ export async function buildComparison(
       provider: child.provider,
       modeId: liveModeId(child),
       featureValues: effectiveFeatureValues(child),
-      environment,
+      environment: childEnvironment,
       directory: childDirectory,
+      ...(request.unattended !== undefined ? { unattended: request.unattended } : {}),
       // Agents cannot change tool access through these operations; the comparator only needs to
       // know nothing was set or cleared.
       toolAccess: "unchanged",
@@ -311,11 +348,11 @@ function evaluationFields(
   extra: Record<string, unknown>,
 ): Record<string, unknown> {
   return {
-    code: "access_ceiling_report",
+    code: REPORT_CODE,
     operation,
     callerAgentId: supervisor.id,
-    targetAgentId: child.id,
-    selfChange: supervisor.id === child.id,
+    // Empty for a target that does not exist yet; its schedule or server id is in the extras.
+    targetAgentId: child.id || null,
     callerProvider: supervisor.provider,
     targetProvider: child.provider,
     callerMode: liveModeId(supervisor),
@@ -348,15 +385,122 @@ export function snapshotRecord(agent: CeilingAgentRecord): CeilingAgentRecord {
   };
 }
 
-export interface CeilingEvaluation {
-  /**
-   * Evaluates the target's current record against the caller as it was when `begin` ran. Never
-   * rejects; callers do not await it.
-   */
-  report(targetAgentId: string, extra?: Record<string, unknown>): Promise<void>;
+/** A target that does not exist yet, as the daemon stored or forwarded it. */
+export type RequestedTarget =
+  | {
+      /** A label for the log: the schedule id, or the remote server id. */
+      label: string;
+      provider: string;
+      modeId?: string | null;
+      featureValues?: Record<string, unknown>;
+      providerOptions?: Record<string, unknown>;
+      /** A path on this machine, resolved immediately before the comparison. */
+      cwd?: string;
+      facts: ChildRequestFacts;
+      extra?: Record<string, unknown>;
+    }
+  | { label: string; unresolved: string; extra?: Record<string, unknown> };
+
+/**
+ * A record for a requested child. The configured mode equals the live mode by construction, so
+ * mode authority follows the same provider-option rules as a created agent; an absent mode stays
+ * absent and the comparator reports it unmapped.
+ */
+function requestedRecord(
+  target: Extract<RequestedTarget, { provider: string }>,
+): CeilingAgentRecord {
+  return {
+    id: "",
+    provider: target.provider,
+    cwd: target.cwd ?? "",
+    currentModeId: target.modeId ?? null,
+    features: [],
+    config: {
+      provider: target.provider,
+      cwd: target.cwd ?? "",
+      ...(target.modeId ? { modeId: target.modeId } : {}),
+      ...(target.providerOptions ? { providerOptions: target.providerOptions } : {}),
+      ...(target.featureValues ? { featureValues: target.featureValues } : {}),
+    },
+  };
 }
 
-const NOOP_EVALUATION: CeilingEvaluation = { report: async () => {} };
+const TIER_RANK: Record<AccessTier, number> = { "read-only": 0, attended: 1, unattended: 2 };
+
+/**
+ * An agent's own tier from the comparator's mode table and feature rules alone. Authority is not
+ * asserted here: this only places a mode in the table, so a change can be compared with the last.
+ */
+function ownTier(agent: CeilingAgentRecord): { tier: AccessTier } | { unmapped: string } {
+  const resolved = resolveSupervisorTier(
+    {
+      provider: agent.provider,
+      modeId: liveModeId(agent),
+      featureValues: effectiveFeatureValues(agent),
+      environment: { kind: "host", id: "self" },
+      directory: "/",
+    },
+    { supervisorModeAuthoritative: true },
+  );
+  return "tier" in resolved ? { tier: resolved.tier } : { unmapped: codes(resolved.unmapped) };
+}
+
+/**
+ * The self-change rule. An agent's own prompts are not answered by a supervisor, so the
+ * supervisor and child comparison does not apply. Logs at warn only when the tier rises or the
+ * new state is unmapped or unresolved; a restriction or same-tier change logs at debug.
+ */
+function selfChangeLine(
+  operation: CeilingOperation,
+  before: CeilingAgentRecord,
+  after: CeilingAgentRecord,
+  extra: Record<string, unknown>,
+): { message: string; warn: boolean; fields: Record<string, unknown> } {
+  const from = ownTier(before);
+  const to = ownTier(after);
+  let reason: "self-escalation" | "self-unmapped" | null = null;
+  if ("unmapped" in to) reason = "self-unmapped";
+  else if ("tier" in from && TIER_RANK[to.tier] > TIER_RANK[from.tier]) reason = "self-escalation";
+  const fields = {
+    code: REPORT_CODE,
+    operation: `self_${operation}`,
+    agentId: after.id,
+    provider: after.provider,
+    modeBefore: liveModeId(before),
+    modeAfter: liveModeId(after),
+    tierBefore: "tier" in from ? from.tier : "unmapped",
+    tierAfter: "tier" in to ? to.tier : "unmapped",
+    ...("unmapped" in from ? { unmappedBefore: from.unmapped } : {}),
+    ...("unmapped" in to ? { unmappedAfter: to.unmapped } : {}),
+    reason: reason ?? "self-no-rise",
+    callerIdentity: "mcp-session-query",
+    ...extra,
+  };
+  return reason
+    ? { message: SELF_ESCALATION_MESSAGE, warn: true, fields }
+    : { message: SELF_CHANGE_MESSAGE, warn: false, fields };
+}
+
+export interface CeilingEvaluation {
+  /**
+   * Evaluates an existing target's current record against the caller. An agent changing itself
+   * gets the self-change rule instead. Never rejects; callers do not await it.
+   */
+  report(targetAgentId: string, extra?: Record<string, unknown>): Promise<void>;
+  /** Evaluates a target that does not exist yet. Never rejects. */
+  reportRequested(target: RequestedTarget): Promise<void>;
+  /**
+   * Records one agent's answer to another agent's permission prompt at info, with the
+   * comparator's result for the pair. Never rejects.
+   */
+  reportPermissionAnswer(targetAgentId: string, behavior: "allow" | "deny"): Promise<void>;
+}
+
+const NOOP_EVALUATION: CeilingEvaluation = {
+  report: async () => {},
+  reportRequested: async () => {},
+  reportPermissionAnswer: async () => {},
+};
 
 /** Reports an account switch only when it happened; refusals, skips and dry runs change nothing. */
 export function reportIfSwitched(
@@ -364,6 +508,82 @@ export function reportIfSwitched(
   result: { agentId: string; outcome: string } | undefined,
 ): void {
   if (result?.outcome === "switched") void evaluation.report(result.agentId);
+}
+
+/** A schedule's future agent, from the record the schedule service returned. */
+export function reportSchedule(
+  evaluation: CeilingEvaluation,
+  schedule: { id: string; target: { type: string; config?: unknown } },
+): void {
+  const config = schedule.target.config as
+    | {
+        provider?: string;
+        modeId?: string;
+        cwd?: string;
+        isolation?: string;
+        featureValues?: Record<string, unknown>;
+        providerOptions?: Record<string, unknown>;
+      }
+    | undefined;
+  if (schedule.target.type !== "new-agent" || !config?.provider) {
+    void evaluation.reportRequested({ label: schedule.id, unresolved: "schedule-target" });
+    return;
+  }
+  void evaluation.reportRequested({
+    label: schedule.id,
+    provider: config.provider,
+    modeId: config.modeId ?? null,
+    featureValues: config.featureValues,
+    providerOptions: config.providerOptions,
+    cwd: config.cwd,
+    // The schedule service launches every run with `unattended: true` (schedule/service.ts).
+    facts: { unattended: true },
+    extra: { scheduleId: schedule.id, isolation: config.isolation ?? "local" },
+  });
+}
+
+/**
+ * A successful `create_agent` forwarded to a connected host. Only the validated tool input is
+ * known here; the remote directory cannot be resolved on this machine, so it is passed empty.
+ */
+export function reportRemoteCreate(
+  evaluate: () => CeilingEvaluation,
+  tool: string,
+  destination: string | undefined,
+  localServerId: string | undefined,
+  input: Record<string, unknown>,
+  failed: boolean | undefined,
+): void {
+  if (tool !== "create_agent" || failed || !destination || destination === localServerId) return;
+  const settings = (input.settings ?? {}) as {
+    modeId?: unknown;
+    features?: unknown;
+  };
+  let provider: string | null = null;
+  try {
+    provider =
+      typeof input.provider === "string"
+        ? resolveRequiredProviderModel(input.provider).provider
+        : null;
+  } catch {
+    provider = null;
+  }
+  const extra = { remoteServerId: destination, targetDirectory: "unresolved-remote" };
+  if (!provider) {
+    void evaluate().reportRequested({ label: destination, unresolved: "remote-provider", extra });
+    return;
+  }
+  void evaluate().reportRequested({
+    label: destination,
+    provider,
+    modeId: typeof settings.modeId === "string" ? settings.modeId : null,
+    featureValues:
+      settings.features && typeof settings.features === "object"
+        ? (settings.features as Record<string, unknown>)
+        : undefined,
+    facts: { environmentId: destination },
+    extra,
+  });
 }
 
 function logFailure(
@@ -378,10 +598,24 @@ function logFailure(
   }
 }
 
+function logAt(
+  logger: Logger,
+  level: "info" | "debug",
+  fields: Record<string, unknown>,
+  message: string,
+) {
+  try {
+    logger[level](boundFields(fields), message);
+  } catch {
+    // Never let the record replace the operation's outcome.
+  }
+}
+
 /**
- * Starts one report-only evaluation. Captures the calling agent before the operation runs, because
- * the caller can be the target. Returns a no-op when there is no calling agent (owner or top-level
- * sessions). Never throws.
+ * Starts one report-only evaluation and captures the calling agent when called. Callers that
+ * change state call it before the change, because the caller can be the target; `create_agent`
+ * calls it after creation, which does not change the caller. Returns a no-op when there is no
+ * calling agent (owner or top-level sessions). Never throws.
  */
 export function beginCeilingReport(
   dependencies: ReporterDependencies,
@@ -396,6 +630,37 @@ export function beginCeilingReport(
   } catch {
     caller = null;
   }
+
+  async function compare(
+    supervisor: CeilingAgentRecord,
+    child: CeilingAgentRecord,
+    facts: ChildRequestFacts,
+    extra: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const input = await buildComparison(dependencies, supervisor, child, facts);
+    const decision = compareChildAccess(
+      input.supervisor,
+      input.child,
+      input.asserted,
+      input.options,
+    );
+    const favourable = compareChildAccess(
+      input.supervisor,
+      input.child,
+      FAVOURABLE_ASSERTIONS,
+      input.options,
+    );
+    return evaluationFields(operation, supervisor, child, decision, favourable, input.asserted, {
+      ...(facts.unattended !== undefined ? { requestedUnattended: facts.unattended } : {}),
+      ...extra,
+    });
+  }
+
+  function emit(fields: Record<string, unknown>): void {
+    if (fields.result === "allowed") logAt(dependencies.logger, "debug", fields, ALLOWED_MESSAGE);
+    else logRefusal(dependencies.logger, WOULD_REFUSE_MESSAGE, fields);
+  }
+
   return {
     report: async (targetAgentId, extra = {}) => {
       try {
@@ -404,40 +669,71 @@ export function beginCeilingReport(
           logFailure(dependencies.logger, operation, "record-missing");
           return;
         }
-        const supervisor = caller;
         const child = snapshotRecord(target);
-        const input = await buildComparison(dependencies, supervisor, child);
-        const decision = compareChildAccess(
-          input.supervisor,
-          input.child,
-          input.asserted,
-          input.options,
-        );
-        const favourable = compareChildAccess(
-          input.supervisor,
-          input.child,
-          FAVOURABLE_ASSERTIONS,
-          input.options,
-        );
-        const fields = evaluationFields(
-          operation,
-          supervisor,
-          child,
-          decision,
-          favourable,
-          input.asserted,
-          extra,
-        );
-        if (decision.kind === "allowed") {
-          try {
-            dependencies.logger.debug(boundFields(fields), ALLOWED_MESSAGE);
-          } catch {
-            // Never let the record replace the operation's outcome.
-          }
+        if (child.id === caller.id) {
+          const line = selfChangeLine(operation, caller, child, extra);
+          // The next step of a multi-step update compares with this one, not the first.
+          caller = child;
+          if (line.warn) logRefusal(dependencies.logger, line.message, line.fields);
+          else logAt(dependencies.logger, "debug", line.fields, line.message);
           return;
         }
-        logRefusal(dependencies.logger, WOULD_REFUSE_MESSAGE, fields);
+        emit(await compare(caller, child, {}, extra));
       } catch {
+        logFailure(dependencies.logger, operation, "error");
+      }
+    },
+    reportRequested: async (target) => {
+      try {
+        if (!caller) {
+          logFailure(dependencies.logger, operation, "record-missing");
+          return;
+        }
+        if ("unresolved" in target) {
+          // Missing evidence is reported as unmapped with its reason, never guessed.
+          logRefusal(dependencies.logger, WOULD_REFUSE_MESSAGE, {
+            code: REPORT_CODE,
+            operation,
+            callerAgentId: caller.id,
+            callerProvider: caller.provider,
+            callerMode: liveModeId(caller),
+            result: "unmapped",
+            classification: "unmapped",
+            childUnmapped: `target:unresolved-${target.unresolved}`,
+            callerIdentity: "mcp-session-query",
+            ...target.extra,
+          });
+          return;
+        }
+        emit(await compare(caller, requestedRecord(target), target.facts, target.extra ?? {}));
+      } catch {
+        logFailure(dependencies.logger, operation, "error");
+      }
+    },
+    reportPermissionAnswer: async (targetAgentId, behavior) => {
+      const base = {
+        code: REPORT_CODE,
+        operation,
+        callerAgentId,
+        targetAgentId,
+        behavior: behavior === "allow" ? "allow" : "deny",
+        callerIdentity: "mcp-session-query",
+      };
+      try {
+        const target = dependencies.getAgent(targetAgentId);
+        if (!caller || !target) {
+          logAt(
+            dependencies.logger,
+            "info",
+            { ...base, result: "record-missing" },
+            PERMISSION_ANSWER_MESSAGE,
+          );
+          return;
+        }
+        const fields = await compare(caller, snapshotRecord(target), {}, {});
+        logAt(dependencies.logger, "info", { ...fields, ...base }, PERMISSION_ANSWER_MESSAGE);
+      } catch {
+        logAt(dependencies.logger, "info", { ...base, result: "error" }, PERMISSION_ANSWER_MESSAGE);
         logFailure(dependencies.logger, operation, "error");
       }
     },
