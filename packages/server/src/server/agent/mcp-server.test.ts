@@ -8950,3 +8950,226 @@ describe("legacy MCP deferred setup ordering", () => {
     },
   );
 });
+
+import { compareChildAccess } from "./access-ceiling/levels.js";
+
+import {
+  ALLOWED_MESSAGE,
+  REPORT_FAILED_CODE,
+  REPORT_FAILED_MESSAGE,
+  WOULD_REFUSE_MESSAGE,
+} from "./access-ceiling/admit.js";
+
+// Report-only access ceiling (#530). The comparator is wrapped so one case can make it throw.
+vi.mock("./access-ceiling/levels.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./access-ceiling/levels.js")>();
+  return { ...actual, compareChildAccess: vi.fn(actual.compareChildAccess) };
+});
+
+describe("access ceiling report-only logging", () => {
+  const ceilingMessages = new Set([WOULD_REFUSE_MESSAGE, ALLOWED_MESSAGE, REPORT_FAILED_MESSAGE]);
+
+  /** The fake provider's test feature is not in the access table and would make every side unmapped. */
+  function withoutFeatures(client: AgentClient): AgentClient {
+    const strip = (session: AgentSession) =>
+      Object.defineProperty(session, "features", { get: () => [] });
+    return new Proxy(client, {
+      get(target, property) {
+        const value = Reflect.get(target, property, target);
+        if (typeof value !== "function") return value;
+        if (property !== "createSession" && property !== "resumeSession") return value.bind(target);
+        return async (...args: unknown[]) => strip(await value.apply(target, args));
+      },
+    });
+  }
+
+  async function setup() {
+    const home = realpathSync(await mkdtemp(join(tmpdir(), "mcp-ceiling-")));
+    const logger = createTestLogger();
+    const storage = new AgentStorage(join(home, "agents"), logger);
+    const manager = new AgentManager({
+      clients: Object.fromEntries(
+        Object.entries(createTestAgentClients()).map(([id, client]) => [
+          id,
+          withoutFeatures(client),
+        ]),
+      ),
+      registry: storage,
+      logger,
+    });
+    const launch = (modeId: string) =>
+      manager.createAgent({ provider: "claude", cwd: home, modeId }, undefined, {
+        workspaceId: "wks_ceiling",
+      });
+    const supervisor = await launch("default");
+    const child = await launch("default");
+    const catalogLogger = createTestLogger();
+    const toolLogger = catalogLogger.child({});
+    // pino types a child's bindings differently from its parent; the instance is the same kind.
+    vi.spyOn(catalogLogger, "child").mockReturnValue(toolLogger as never);
+    const warn = vi.spyOn(toolLogger, "warn");
+    const debug = vi.spyOn(toolLogger, "debug");
+    const catalog = (callerAgentId?: string) =>
+      createPaseoToolCatalog({
+        agentManager: manager,
+        agentStorage: storage,
+        logger: catalogLogger,
+        paseoHome: home,
+        serverId: "server-ceiling",
+        ...(callerAgentId ? { callerAgentId } : {}),
+        providerSnapshotManager: createOpenCodeManager().manager,
+      });
+    const lines = (message: string) =>
+      [...warn.mock.calls, ...debug.mock.calls]
+        .filter((call) => call[1] === message)
+        .map((call) => call[0] as Record<string, unknown>);
+    const cleanup = () => removeAgentStateDir(manager, storage, home);
+    return { manager, supervisor, child, catalog, warn, debug, lines, cleanup };
+  }
+
+  /** Each operation an agent can run on another, with the result it returns today. */
+  const operations = [
+    {
+      name: "set_agent_mode",
+      args: (childId: string) => ({ agentId: childId, modeId: "bypassPermissions" }),
+      expected: { success: true, newMode: "bypassPermissions" },
+    },
+    {
+      name: "update_agent",
+      args: (childId: string) => ({ agentId: childId, settings: { modeId: "bypassPermissions" } }),
+      expected: { success: true },
+    },
+    {
+      name: "respond_to_permission",
+      args: (childId: string) => ({
+        agentId: childId,
+        requestId: "request-1",
+        response: { behavior: "allow" },
+      }),
+      expected: { success: true },
+    },
+  ] as const;
+
+  it("creates a child above its supervisor as before and logs one would-refuse line", async () => {
+    const fixture = await setup();
+    try {
+      const result = await fixture.catalog(fixture.supervisor.id).executeTool("create_agent", {
+        relationship: { kind: "subagent" },
+        workspace: { kind: "current" },
+        title: "Child",
+        provider: "codex/gpt-5.4",
+        initialPrompt: "Do work",
+        notifyOnFinish: false,
+        settings: { modeId: "full-access" },
+      });
+      const childId = z.object({ agentId: z.string() }).parse(result.structuredContent).agentId;
+      expect(result.structuredContent).toMatchObject({ currentModeId: "full-access" });
+      expect(fixture.manager.getAgent(childId)?.currentModeId).toBe("full-access");
+      await vi.waitFor(() => expect(fixture.lines(WOULD_REFUSE_MESSAGE)).toHaveLength(1));
+      expect(fixture.lines(WOULD_REFUSE_MESSAGE)[0]).toMatchObject({
+        operation: "create_agent",
+        callerAgentId: fixture.supervisor.id,
+        targetAgentId: childId,
+        callerProvider: "claude",
+        targetProvider: "codex",
+        callerMode: "default",
+        targetMode: "full-access",
+        result: "refused",
+        reasons: "permission:exceeds-supervisor",
+        classification: "known-violation",
+        assertedChildPromptsAnsweredBy: "supervisor",
+        assertedChildLoadsSupervisorWritableConfig: true,
+        assertedSupervisorModeAuthoritative: true,
+        assertedChildModeAuthoritative: true,
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it.each(operations)("$name on another agent succeeds as before and logs", async (operation) => {
+    const fixture = await setup();
+    try {
+      vi.spyOn(fixture.manager, "respondToPermission").mockResolvedValue(undefined);
+      const result = await fixture
+        .catalog(fixture.supervisor.id)
+        .executeTool(operation.name, operation.args(fixture.child.id));
+      expect(result.structuredContent).toEqual(operation.expected);
+      await vi.waitFor(() => expect(fixture.lines(WOULD_REFUSE_MESSAGE)).toHaveLength(1));
+      expect(fixture.lines(WOULD_REFUSE_MESSAGE)[0]).toMatchObject({
+        operation: operation.name,
+        callerAgentId: fixture.supervisor.id,
+        targetAgentId: fixture.child.id,
+        result: "refused",
+        reasons: "permission:exceeds-supervisor",
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("logs nothing for a session without a calling agent", async () => {
+    const fixture = await setup();
+    try {
+      const result = await fixture
+        .catalog()
+        .executeTool("set_agent_mode", { agentId: fixture.child.id, modeId: "bypassPermissions" });
+      expect(result.structuredContent).toEqual({ success: true, newMode: "bypassPermissions" });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      for (const message of ceilingMessages) expect(fixture.lines(message)).toEqual([]);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it.each(["comparator", "logger"] as const)(
+    "keeps every operation's result when the %s throws",
+    async (failure) => {
+      const fixture = await setup();
+      try {
+        vi.spyOn(fixture.manager, "respondToPermission").mockResolvedValue(undefined);
+        if (failure === "comparator") {
+          vi.mocked(compareChildAccess).mockImplementation(() => {
+            throw new Error("comparator failed");
+          });
+        } else {
+          for (const spy of [fixture.warn, fixture.debug]) {
+            const original = spy.getMockImplementation();
+            spy.mockImplementation(function (this: unknown, ...args: unknown[]) {
+              if (ceilingMessages.has(args[1] as string)) throw new Error("logger failed");
+              return (original as ((...rest: unknown[]) => void) | undefined)?.apply(this, args);
+            } as never);
+          }
+        }
+        for (const operation of operations) {
+          const result = await fixture
+            .catalog(fixture.supervisor.id)
+            .executeTool(operation.name, operation.args(fixture.child.id));
+          expect(result.structuredContent).toEqual(operation.expected);
+        }
+        // Each failure was reached: the comparator's is logged once per operation with a fixed
+        // code; the logger's is swallowed after the attempt.
+        const reached = failure === "comparator" ? REPORT_FAILED_MESSAGE : WOULD_REFUSE_MESSAGE;
+        await vi.waitFor(() => expect(fixture.lines(reached)).toHaveLength(operations.length));
+        if (failure === "comparator") {
+          expect(fixture.lines(REPORT_FAILED_MESSAGE).map((line) => line.operation)).toEqual(
+            operations.map((operation) => operation.name),
+          );
+          expect(fixture.lines(REPORT_FAILED_MESSAGE)[0]).toMatchObject({
+            code: REPORT_FAILED_CODE,
+            reason: "error",
+          });
+        }
+      } finally {
+        vi.mocked(compareChildAccess).mockImplementation(
+          (
+            await vi.importActual<typeof import("./access-ceiling/levels.js")>(
+              "./access-ceiling/levels.js",
+            )
+          ).compareChildAccess,
+        );
+        await fixture.cleanup();
+      }
+    },
+  );
+});

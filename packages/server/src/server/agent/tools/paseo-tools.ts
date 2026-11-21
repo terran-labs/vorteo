@@ -134,6 +134,11 @@ import {
 import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
 import { isPaseoToolEnabled } from "../paseo-tool-policy.js";
 import { createThreadGoalTools } from "./thread-goal.js";
+import {
+  beginCeilingReport,
+  reportIfSwitched,
+  type CeilingOperation,
+} from "../access-ceiling/admit.js";
 import { createPauseGoalTool } from "./pause-goal.js";
 import { createJournalTools } from "../journal/tools.js";
 import { createChecklistTools } from "../task-checklist/tools.js";
@@ -712,6 +717,19 @@ function createToolCatalog(
     component: "paseo-tool-catalog",
   });
   const callerContext = resolveToolCallerContext(callerAgentId, resolveCallerContext);
+  // Report-only access ceiling (#530): logs, never refuses, never awaited. See admit.ts.
+  const ceilingReport = (operation: CeilingOperation) =>
+    beginCeilingReport(
+      {
+        getAgent: (id) => agentManager.getAgent(id),
+        logger: childLogger,
+        serverId: options.serverId,
+        paseoHome: options.paseoHome,
+        worktreesRoot: options.worktreesRoot,
+      },
+      callerAgentId,
+      operation,
+    );
 
   const parseToolInput = async (tool: PaseoToolDefinition, input: unknown): Promise<unknown> => {
     const inputSchema = tool.inputSchema;
@@ -1853,6 +1871,7 @@ function createToolCatalog(
             selection,
           });
       const results: AgentProfileSwitchResult[] = [];
+      const ceiling = ceilingReport("switch_agent_profile");
       for (const id of candidates) {
         try {
           const record = await agentStorage.get(id);
@@ -1935,6 +1954,7 @@ function createToolCatalog(
               },
             ),
           );
+          reportIfSwitched(ceiling, results.at(-1));
         } catch (error) {
           const refusal = toolSwitchRefusal(id, error, dryRun);
           logRefusal(childLogger, "Profile switch refused", {
@@ -2033,6 +2053,7 @@ function createToolCatalog(
 
       // Return immediately for async creation.
       const currentSnapshot = agentManager.getAgent(snapshot.id) ?? snapshot;
+      void ceilingReport("create_agent").report(snapshot.id, { detached: resolvedArgs.detached });
       const guidance =
         callerAgentId && notifyOnFinish && initialPromptStarted
           ? "You will get notified when the created agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives."
@@ -2780,6 +2801,7 @@ function createToolCatalog(
     },
     async ({ agentId, name, labels, settings }) => {
       assertAgentCanSetFeatures(settings?.features);
+      const ceiling = ceilingReport("update_agent");
       if (settings?.modeId !== undefined) {
         await agentManager.setAgentMode(agentId, settings.modeId);
       }
@@ -2796,6 +2818,7 @@ function createToolCatalog(
       }
 
       await updateAgentCommand({ agentManager }, { agentId, name, labels });
+      if (settings?.modeId !== undefined || settings?.features) void ceiling.report(agentId);
 
       return {
         content: [],
@@ -3712,7 +3735,9 @@ function createToolCatalog(
       },
     },
     async ({ agentId, modeId }) => {
+      const ceiling = ceilingReport("set_agent_mode");
       const result = await setAgentModeCommand({ agentManager }, { agentId, modeId });
+      void ceiling.report(agentId);
       return {
         content: [],
         structuredContent: ensureValidJson({
@@ -3773,6 +3798,7 @@ function createToolCatalog(
       },
     },
     async ({ agentId, requestId, response }) => {
+      const ceiling = ceilingReport("respond_to_permission");
       await respondToAgentPermission({
         agentManager,
         agentId,
@@ -3780,6 +3806,8 @@ function createToolCatalog(
         response,
         logger: childLogger,
       });
+      // Who answered whose prompt is the fact the ceiling depends on.
+      if (callerAgentId && callerAgentId !== agentId) void ceiling.report(agentId);
       return {
         content: [],
         structuredContent: ensureValidJson({ success: true }),
