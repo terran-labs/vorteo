@@ -86,6 +86,7 @@ import {
   type ScriptStatusUpdateMessage,
   type StartWorkspaceScriptRequest,
   type WorkspaceScriptListRequest,
+  type WorkspaceSharedFilesListRequest,
   type WorkspaceScriptStartRequest,
   type WorkspaceScriptStopRequest,
   type CloseItemsRequest,
@@ -172,6 +173,7 @@ import {
   type ProviderSubagentHistoryEvent,
 } from "./agent/agent-manager.js";
 import { buildTimelinePromptIndex } from "./agent/timeline-prompt-index.js";
+import { buildWorkspaceSharedFileIndex, isExistingFile } from "./agent/timeline-shared-files.js";
 import { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 import type {
   AgentManagerEvent,
@@ -3979,6 +3981,8 @@ export class Session {
         return this.handleStartWorkspaceScriptRequest(msg);
       case "workspace.script.list.request":
         return this.handleWorkspaceScriptListRequest(msg);
+      case "workspace.shared_files.list.request":
+        return this.handleWorkspaceSharedFilesListRequest(msg);
       case "workspace.script.start.request":
         return this.handleWorkspaceScriptStartRequest(msg);
       case "workspace.script.stop.request":
@@ -9309,6 +9313,47 @@ export class Session {
 
   private handleStartWorkspaceScriptRequest(request: StartWorkspaceScriptRequest): Promise<void> {
     return this.workspaceScripts.start(request);
+  }
+
+  private async handleWorkspaceSharedFilesListRequest(
+    request: WorkspaceSharedFilesListRequest,
+  ): Promise<void> {
+    try {
+      const records = await this.agentStorage.listByWorkspace(request.workspaceId);
+      const visible = records.filter((record) => !record.archivedAt && !record.internal);
+      const threads = await Promise.all(
+        visible.map(async (record) => ({
+          agentId: record.id,
+          cwd: record.cwd,
+          rows: await this.agentManager.getSavedTimelineRows(record.id),
+        })),
+      );
+      const index = await buildWorkspaceSharedFileIndex({ threads, isFile: isExistingFile });
+      this.emit({
+        type: "workspace.shared_files.list.response",
+        payload: {
+          requestId: request.requestId,
+          workspaceId: request.workspaceId,
+          ...index,
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.sessionLogger.error(
+        { err: error, workspaceId: request.workspaceId },
+        "Failed to handle workspace.shared_files.list.request",
+      );
+      this.emit({
+        type: "workspace.shared_files.list.response",
+        payload: {
+          requestId: request.requestId,
+          workspaceId: request.workspaceId,
+          files: [],
+          truncated: false,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
   }
 
   private async handleWorkspaceScriptListRequest(

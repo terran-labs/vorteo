@@ -3482,13 +3482,18 @@ export class AgentManager {
 
   async getTimelineRows(id: string): Promise<AgentTimelineRow[]> {
     this.requireAgent(id);
+    return this.getSavedTimelineRows(id);
+  }
+
+  /** History of any stored thread, loaded or not. Never starts its provider. */
+  async getSavedTimelineRows(id: string): Promise<AgentTimelineRow[]> {
     if (this.durableTimelineStore) {
       return projectTimelineRows({
         rows: await this.durableTimelineStore.getCommittedRows(id),
         mode: "projected",
       }).map((entry) => Object.assign({ seq: entry.seqEnd }, entry));
     }
-    return this.timelineStore.getRows(id);
+    return this.timelineStore.has(id) ? this.timelineStore.getRows(id) : [];
   }
 
   fetchTimeline(id: string, options?: AgentTimelineFetchOptions): AgentTimelineFetchResult {

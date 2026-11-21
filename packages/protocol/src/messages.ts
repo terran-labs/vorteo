@@ -3675,6 +3675,12 @@ export const StartWorkspaceScriptRequestSchema = z.object({
   requestId: z.string(),
 });
 
+export const WorkspaceSharedFilesListRequestSchema = z.object({
+  type: z.literal("workspace.shared_files.list.request"),
+  workspaceId: z.string(),
+  requestId: z.string(),
+});
+
 export const WorkspaceScriptListRequestSchema = z.object({
   type: z.literal("workspace.script.list.request"),
   workspaceId: z.string(),
@@ -4129,6 +4135,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   CreateTerminalRequestSchema,
   RenameTerminalRequestSchema,
   StartWorkspaceScriptRequestSchema,
+  WorkspaceSharedFilesListRequestSchema,
   WorkspaceScriptListRequestSchema,
   WorkspaceScriptStartRequestSchema,
   WorkspaceScriptStopRequestSchema,
@@ -4465,6 +4472,8 @@ export const ServerInfoStatusPayloadSchema = z
         agentTimelinePromptIndexAfterSeq: z.boolean().optional(),
         // COMPAT(agentHistorySearch): added in v0.3.0, remove gate after 2027-02-07.
         agentHistorySearch: z.boolean().optional(),
+        // COMPAT(workspaceSharedFiles): added in v0.15.0, remove gate after 2027-05-18.
+        workspaceSharedFiles: z.boolean().optional(),
         // COMPAT(checkoutRefresh): added in v0.1.86, remove gate after 2026-11-29.
         checkoutRefresh: z.boolean().optional(),
         // COMPAT(workspaceMultiplicity): added in v0.1.97, drop the gate when floor >= v0.1.97
@@ -5561,6 +5570,40 @@ const WorkspaceScriptOperationPayloadSchema = z.object({
   script: WorkspaceScriptPayloadSchema.nullable().optional(),
   scripts: z.array(WorkspaceScriptPayloadSchema).optional(),
   error: z.string().nullable(),
+});
+
+export const WorkspaceSharedFileSchema = z.object({
+  agentId: z.string(),
+  seq: z.number().int().nonnegative(),
+  timestamp: z.string(),
+  role: z.enum(["user", "assistant"]),
+  kind: z.enum(["image", "file"]),
+  name: z.string(),
+  source: z.discriminatedUnion("type", [
+    // A host path an agent linked. `exists` is whether it is still a file on the host.
+    z.object({ type: z.literal("link"), path: z.string(), exists: z.boolean() }),
+    // An upload captured with its message; read it with agent.queue.attachment.get.request.
+    z.object({
+      type: z.literal("upload"),
+      messageId: z.string(),
+      attachmentId: z.string(),
+      mimeType: z.string(),
+      size: z.number().int().nonnegative(),
+    }),
+  ]),
+});
+
+export const WorkspaceSharedFilesListResponseMessageSchema = z.object({
+  type: z.literal("workspace.shared_files.list.response"),
+  payload: z.object({
+    requestId: z.string(),
+    workspaceId: z.string(),
+    // Newest first, one entry per file.
+    files: z.array(WorkspaceSharedFileSchema),
+    // True when older files were dropped to keep the response bounded.
+    truncated: z.boolean(),
+    error: z.string().nullable(),
+  }),
 });
 
 export const WorkspaceScriptListResponseMessageSchema = z.object({
@@ -8115,6 +8158,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   WorkspaceGithubSearchRepositoriesResponseSchema,
   ProjectGithubCloneResponseSchema,
   StartWorkspaceScriptResponseMessageSchema,
+  WorkspaceSharedFilesListResponseMessageSchema,
   WorkspaceScriptListResponseMessageSchema,
   WorkspaceScriptStartResponseMessageSchema,
   WorkspaceScriptStopResponseMessageSchema,
@@ -8384,6 +8428,8 @@ export type ProjectGithubCloneResponse = z.infer<typeof ProjectGithubCloneRespon
 export type StartWorkspaceScriptResponseMessage = z.infer<
   typeof StartWorkspaceScriptResponseMessageSchema
 >;
+export type WorkspaceSharedFilesListRequest = z.infer<typeof WorkspaceSharedFilesListRequestSchema>;
+export type WorkspaceSharedFile = z.infer<typeof WorkspaceSharedFileSchema>;
 export type WorkspaceScriptListRequest = z.infer<typeof WorkspaceScriptListRequestSchema>;
 export type WorkspaceScriptStartRequest = z.infer<typeof WorkspaceScriptStartRequestSchema>;
 export type WorkspaceScriptStopRequest = z.infer<typeof WorkspaceScriptStopRequestSchema>;
