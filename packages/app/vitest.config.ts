@@ -90,7 +90,7 @@ export default defineConfig({
   ],
   test: {
     environment: "node",
-    exclude: [...configDefaults.exclude, "e2e/**"],
+    exclude: [...configDefaults.exclude, "e2e/browser/**"],
     projects: [
       {
         extends: true,
@@ -103,9 +103,15 @@ export default defineConfig({
             "native-release-version.test.ts",
             "app.config.test.ts",
             "vitest-environment.test.ts",
+            // Upstream Node test of a Playwright helper; specs stay excluded under e2e/browser.
+            "e2e/support/helpers/stream-smoothness.test.ts",
           ],
           setupFiles: [path.resolve(__dirname, "vitest.setup.ts")],
-          exclude: [...configDefaults.exclude, "e2e/**", "src/**/*.browser.{test,spec}.{ts,tsx}"],
+          exclude: [
+            ...configDefaults.exclude,
+            "e2e/browser/**",
+            "src/**/*.browser.{test,spec}.{ts,tsx}",
+          ],
         },
       },
       {
