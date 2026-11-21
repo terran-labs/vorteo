@@ -1,7 +1,9 @@
 import copy
+import ctypes
 import importlib.util
 import json
 import os
+import socket
 from pathlib import Path
 import subprocess
 import sys
@@ -10,7 +12,7 @@ import time
 import unittest
 from unittest.mock import patch
 import uuid
-from https_broker import Broker, ListenerLost, Runtime, NativeRuntime, atomic, safe_read, validate
+from https_broker import Broker, ListenerLost, Runtime, NativeRuntime, _libproc_socket_types, atomic, loopback_listener_port, safe_read, validate
 
 
 class NativeWorkspacePolicyTests(unittest.TestCase):
@@ -238,16 +240,75 @@ class NativeWorkspacePolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'managed terminal'):
             runtime.listener_identity(40001, 'terminal_expected')
 
+    def test_native_in_process_checks_without_libproc(self):
+        # Runs on every platform: real structure types, stubbed kernel answers.
+        _, SocketFDInfo = _libproc_socket_types()
+        def socket_record(state=1, vflag=1, address=(127, 0, 0, 1), kind=2, reuse=False, port=40001):
+            info = SocketFDInfo()
+            info.psi.soi_kind = kind
+            info.psi.soi_options = 0x0200 if reuse else 0
+            tcp = info.psi.soi_proto.pri_tcp
+            tcp.tcpsi_state = state
+            tcp.tcpsi_ini.insi_vflag = vflag
+            tcp.tcpsi_ini.insi_lport = socket.htons(port)
+            for index, byte in enumerate(address): tcp.tcpsi_ini.insi_laddr.ina_46.i46a_addr4[index] = byte
+            return info
+        size = ctypes.sizeof(SocketFDInfo)
+        cases = [
+            ({}, (40001, False)),
+            ({'state': 4}, None),  # an accepted connection on the backend port is not a listener
+            ({'vflag': 2}, None),  # IPv6 socket whose IPv4 view happens to read 127.0.0.1
+            ({'address': (0, 0, 0, 0)}, None),  # wildcard
+            ({'kind': 1}, None),  # not TCP
+            ({'reuse': True}, (40001, True)),
+        ]
+        for fields, expected in cases:
+            with self.subTest(fields=fields):
+                self.assertEqual(loopback_listener_port(socket_record(**fields), size), expected)
+        with self.assertRaisesRegex(OSError, 'layout'):
+            loopback_listener_port(socket_record(), size - 8)
+
+        runtime = NativeRuntime({})
+        runtime.loopback_listening_ports = lambda pid: {40001: False}
+        self.assertTrue(runtime.in_process_check_agrees(40001, '123:1:2'))
+        self.assertFalse(runtime.in_process_check_agrees(40002, '123:1:2'))
+        runtime.loopback_listening_ports = lambda pid: {40001: True}
+        self.assertFalse(runtime.in_process_check_agrees(40001, '123:1:2'))  # shared port
+        def unevaluable(pid): raise OSError('Unexpected socket_fdinfo layout')
+        runtime.loopback_listening_ports = unevaluable
+        self.assertFalse(runtime.in_process_check_agrees(40001, '123:1:2'))
+        # agree_always_true: a check that says yes for every port never agrees.
+        runtime.loopback_listening_ports = lambda pid: {40001: False}
+        runtime.loopback_listener_held = lambda pid, port: True
+        self.assertFalse(runtime.in_process_check_agrees(40001, '123:1:2'))
+
+        recheck = NativeRuntime({})
+        recorded = {'listener': '123:1:2', 'terminal': 'terminal_fixture', 'backend': 40001}
+        recheck.process_identity = lambda pid: {'pid': pid, 'parent': 1, 'birth': '1:2'}
+        recheck.loopback_listening_ports = lambda pid: {40001: False}
+        def unreadable(pid): raise ValueError('Listener environment unavailable')
+        recheck.terminal_environment = unreadable
+        # An unreadable environment is a lost listener, never an identity change that stops the preview.
+        with self.assertRaisesRegex(ListenerLost, 'environment unavailable'):
+            recheck.listener_unchanged(recorded)
+        recheck.terminal_environment = lambda pid: 'terminal_other'
+        with self.assertRaisesRegex(ValueError, 'managed terminal'):
+            recheck.listener_unchanged(recorded)
+
     @unittest.skipUnless(sys.platform == 'darwin', 'macOS process ownership probe')
     def test_real_native_listener_identity(self):
         # Disposable HTTP fixture only; never start or stop an installed daemon.
         runtime = NativeRuntime({})
         code = ('import socket,sys,time; s=socket.socket(); s.bind(("127.0.0.1",0)); s.listen(); '
-                'print(s.getsockname()[1],flush=True); sys.stdin.readline(); s.close(); print("closed",flush=True); time.sleep(30)')
+                'print(s.getsockname()[1],flush=True); c,_=s.accept(); print("accepted",flush=True); '
+                'sys.stdin.readline(); s.close(); print("closed",flush=True); time.sleep(30)')
         process = subprocess.Popen([sys.executable, '-c', code], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
                                    env={**os.environ, 'PASEO_TERMINAL_ID': 'terminal_fixture'})
+        client = None
         try:
             port = int(process.stdout.readline())
+            client = socket.create_connection(('127.0.0.1', port), timeout=5)
+            self.assertEqual(process.stdout.readline().strip(), 'accepted')
             identity = runtime.listener_identity(port, 'terminal_fixture')
             self.assertTrue(identity.startswith(str(process.pid) + ':'))
             self.assertEqual(runtime.listener_identity(port, 'terminal_fixture'), identity)
@@ -262,10 +323,12 @@ class NativeWorkspacePolicyTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'managed terminal'):
                 runtime.listener_unchanged({**recorded, 'terminal': 'terminal_other'})
             process.stdin.write('\n'); process.stdin.flush(); process.stdout.readline()
-            # Alive with the same identity, but no longer listening on the port.
+            # Alive with the same identity and an accepted connection still open on
+            # the backend port, but no longer listening: the listener is lost.
             with self.assertRaisesRegex(ListenerLost, 'loopback port'):
                 runtime.listener_unchanged(recorded)
         finally:
+            if client: client.close()
             process.kill()
             process.wait(timeout=5)
             process.stdout.close(); process.stdin.close()
@@ -717,6 +780,8 @@ class Tests(unittest.TestCase):
                     if expected[1] == 'unverified': self.assertIn('unverified', entry['error'])
                     if not expected[0]: self.assertNotIn('url', entry)
                     if expected[1] == 'stopped': self.assertNotIn('error', entry)
+                    lost = {'exited': 'Backend listener process exited', 'closed': 'Backend listener no longer holds its loopback port'}
+                    if sequence[-1] in lost: self.assertEqual(entry['error'], lost[sequence[-1]])
                     if not expected[0] and sequence[-1] in ('timeout', 'stale', 'clock back', 'unevaluable'):
                         self.assertIn('timed out', entry['error'])
 
@@ -756,6 +821,22 @@ class Tests(unittest.TestCase):
         self.assertEqual((entry['status'], entry['error'], entry.get('removalPending')), ('pending', 'Daemon changed during verification', True))
         self.assertNotIn('misses', entry); self.assertNotIn('url', entry)
         self.assertIn('44444', self.runtime.config['TCP'])  # still published until a removal succeeds
+
+    def test_timed_out_stale_route_removal_after_restart_keeps_recovery_pending(self):
+        # After a daemon restart the stale route must go before recovery starts the
+        # service. If that removal times out, recovery stays pending with the removal
+        # pending, the service is not started and no grace begins.
+        self.c['restoreAfterRestart'] = True
+        self.b.handle(self.request())
+        self.runtime.daemon = 'boot:200:2'
+        self.runtime.entry.update(lifecycle='stopped', terminalId=None, port=33488)
+        def slow(p): raise subprocess.TimeoutExpired('tailscale', 12)
+        self.runtime.remove_mapping = slow
+        Broker(self.c, self.runtime).reconcile()
+        entry = safe_read(self.b.ledger_path)['entries']['wks_test.preview']
+        self.assertEqual((entry['status'], entry['error'], entry.get('removalPending'), entry['desired']),
+                         ('pending', 'Removing the stale route after a daemon restart is pending', True, 'running'))
+        self.assertNotIn('misses', entry); self.assertNotIn('url', entry); self.assertEqual(self.runtime.starts, 0)
 
     def test_start_during_timeout_grace_starts_a_fresh_count(self):
         self.b.handle(self.request())

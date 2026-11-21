@@ -251,6 +251,28 @@ def _libproc_socket_types():
     return _libproc_socket_types.cached
 
 
+def loopback_listener_port(info, size):
+    """Decide one socket_fdinfo from proc_pidfdinfo, without touching the kernel.
+
+    Returns (port, set SO_REUSEPORT) for a TCP socket in the LISTEN state on
+    IPv4 127.0.0.1, and None for anything else, including an accepted or other
+    connected socket on the same port. Raises OSError when the kernel's
+    structure size differs from the declared layout."""
+    import ctypes
+    if size != ctypes.sizeof(info):
+        raise OSError('Unexpected socket_fdinfo layout')
+    socket_info = info.psi
+    if socket_info.soi_kind != 2:  # SOCKINFO_TCP
+        return None
+    tcp = socket_info.soi_proto.pri_tcp
+    address = tcp.tcpsi_ini
+    if (tcp.tcpsi_state != 1  # TSI_S_LISTEN
+            or not address.insi_vflag & 0x1  # INI_IPV4
+            or bytes(address.insi_laddr.ina_46.i46a_addr4) != bytes([127, 0, 0, 1])):
+        return None
+    return socket.ntohs(address.insi_lport & 0xffff), bool(socket_info.soi_options & 0x0200)  # SO_REUSEPORT
+
+
 class Runtime:
     def __init__(self, config):
         self.c = config
@@ -661,21 +683,44 @@ class NativeRuntime(Runtime):
         return True
 
     def in_process_check_agrees(self, port, listener):
+        """Self-check run at every full verification, right after lsof proved the listener.
+
+        The in-process check must say yes for the proven port and no for a port
+        the process does not listen on, so a check that always says yes never
+        agrees. Any error, including an unevaluable probe, means no agreement."""
         pid, _, _ = str(listener).partition(':')
         try:
-            return pid.isdigit() and self.loopback_listener_held(int(pid), port) is True
+            if not pid.isdigit():
+                return False
+            pid = int(pid)
+            listening = self.loopback_listening_ports(pid)
+            # Deterministic: the first port after the proven one that this process
+            # does not hold on loopback, wrapping round below it.
+            probe = next((candidate for candidate in (*range(port + 1, 65536), *range(1, port))
+                          if candidate not in listening), None)
+            if probe is None:
+                return False
+            return self.loopback_listener_held(pid, port) is True and self.loopback_listener_held(pid, probe) is False
         except Exception:
             return False  # An error or an unevaluable layout means no grace later.
 
     def loopback_listener_held(self, pid, port):
         """Whether pid holds a TCP socket listening on exactly 127.0.0.1:port.
 
-        Reads the process's descriptors through libproc, with no subprocess.
         Returns False when pid holds no such listener; a wildcard or IPv6 bind
         on the port does not count, because the route proxies to 127.0.0.1.
         Raises OSError when it cannot vouch: the kernel returned a structure of
         another size, or the listener set SO_REUSEPORT, which would let another
         process bind the same address and port beside it."""
+        listening = self.loopback_listening_ports(pid)
+        if listening.get(port):
+            raise OSError('Shared-port listener; cannot vouch for the port')
+        return port in listening
+
+    def loopback_listening_ports(self, pid):
+        """Map each port pid listens on at 127.0.0.1 to whether it set SO_REUSEPORT.
+
+        Reads the process's descriptors through libproc, with no subprocess."""
         import ctypes
         ProcFDInfo, SocketFDInfo = _libproc_socket_types()
         libproc = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
@@ -693,8 +738,7 @@ class NativeRuntime(Runtime):
         written = listing(pid, 1, 0, fds, ctypes.sizeof(fds))
         if written <= 0 or written % ctypes.sizeof(ProcFDInfo):
             raise OSError('Listener descriptors unavailable')
-        loopback = bytes([127, 0, 0, 1])
-        held = False
+        listening = {}
         for fd in fds[:written // ctypes.sizeof(ProcFDInfo)]:
             if fd.proc_fdtype != 2:  # PROX_FDTYPE_SOCKET
                 continue
@@ -702,22 +746,11 @@ class NativeRuntime(Runtime):
             size = detail(pid, fd.proc_fd, 3, ctypes.byref(info), ctypes.sizeof(info))  # PROC_PIDFDSOCKETINFO
             if size <= 0:
                 continue  # Closed since the listing.
-            if size != ctypes.sizeof(info):
-                raise OSError('Unexpected socket_fdinfo layout')
-            socket_info = info.psi
-            if socket_info.soi_kind != 2:  # SOCKINFO_TCP
-                continue
-            tcp = socket_info.soi_proto.pri_tcp
-            address = tcp.tcpsi_ini
-            if (tcp.tcpsi_state != 1  # TSI_S_LISTEN
-                    or socket.ntohs(address.insi_lport & 0xffff) != port
-                    or not address.insi_vflag & 0x1  # INI_IPV4
-                    or bytes(address.insi_laddr.ina_46.i46a_addr4) != loopback):
-                continue
-            if socket_info.soi_options & 0x0200:  # SO_REUSEPORT
-                raise OSError('Shared-port listener; cannot vouch for the port')
-            held = True
-        return held
+            found = loopback_listener_port(info, size)
+            if found is not None:
+                port, shared = found
+                listening[port] = listening.get(port, False) or shared
+        return listening
 
     def terminal_environment(self, pid):
         # Read KERN_PROCARGS2 directly, separating argv from env. Parsing ps
