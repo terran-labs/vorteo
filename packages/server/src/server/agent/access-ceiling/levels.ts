@@ -411,6 +411,28 @@ function hasPromptedWrites(subject: { provider: string; modeId: string | null | 
   );
 }
 
+/** The signed table's attended classes. */
+export type AttendedClass = "owner-gated-writes" | "unprompted-writes" | "machine-reviewed";
+
+/**
+ * The attended class of a mode, from the same predicates the refusal rules use, or null for a
+ * mode in no class. Additive export for report-only self-change logging (#530); the comparator
+ * does not call it.
+ */
+export function attendedClass(subject: {
+  provider: string;
+  modeId: string | null | undefined;
+}): AttendedClass | null {
+  if (hasPromptedWrites(subject)) return "owner-gated-writes";
+  if (isMachineReviewed(subject)) return "machine-reviewed";
+  if (
+    (subject.provider === "claude" && subject.modeId === "acceptEdits") ||
+    (subject.provider === "codex" && subject.modeId === "auto")
+  )
+    return "unprompted-writes";
+  return null;
+}
+
 /**
  * Unprompted-writes rule. A Claude `acceptEdits` child writes files without asking, in a
  * directory holding Git hooks, package scripts and other agents' configuration that later run
