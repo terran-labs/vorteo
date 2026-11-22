@@ -29,18 +29,13 @@ import {
   type UseDictationResult,
 } from "./use-dictation.shared";
 
-interface ParkedRecording {
-  segments: string[];
-  storedId: string | null;
-  createdAt: number;
-  format: string;
-}
-
 /**
  * Recordings longer than this are turned into a Save audio file only when the owner presses it,
  * so an automatic background build cannot hold hundreds of megabytes.
  */
 const BACKGROUND_EXPORT_MAX_SECONDS = 20 * 60;
+/** Longest a closing composer waits for its microphone stop before handing its audio over. */
+const HANDOVER_STOP_WAIT_MS = 5_000;
 /** A notice still waiting for its writes after this long says the recording is not saved. */
 const SAVING_STALL_MS = 10_000;
 
@@ -50,34 +45,6 @@ function recordingDurationSeconds(segments: readonly string[]): number {
     bytes += decodedSegmentBytes(segment);
   }
   return bytes / PCM_BYTES_PER_SECOND;
-}
-
-/** Threads whose unsent audio this composer keeps in memory after moving to another thread. */
-const MAX_PARKED_RECORDINGS = 3;
-
-/**
- * Bounds parked audio, about 10 MB per 4 minutes. Drops the oldest copies that are complete on
- * the device and releases them, so their thread offers them back from storage. Copies that exist
- * only in memory are never dropped.
- */
-function trimParked(
-  parked: Map<string, ParkedRecording>,
-  store: DictationRecordingStore | null,
-  justParked: string,
-): void {
-  for (const [scope, entry] of parked) {
-    if (parked.size <= MAX_PARKED_RECORDINGS) {
-      return;
-    }
-    // The thread just parked may still be receiving its last audio after stop; keep it whole.
-    if (scope === justParked) {
-      continue;
-    }
-    if (store && entry.storedId && store.isComplete(entry.storedId)) {
-      parked.delete(scope);
-      store.release(entry.storedId);
-    }
-  }
 }
 
 function resolveRecordingStore(
@@ -104,35 +71,34 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     recordingScope,
     recordingServerId,
   } = options;
+  /**
+   * The thread this instance serves, fixed at mount. The composer is keyed by recording scope, so
+   * a thread switch unmounts this instance and mounts a new one; no state ever crosses threads.
+   */
+  const scope = useRef(recordingScope).current;
+  if (recordingScope !== scope && process.env.NODE_ENV !== "production") {
+    console.error(
+      "[useDictation] The recording scope changed without a remount; key the composer by scope.",
+    );
+  }
   // Only composers that name their thread persist audio; null disables device storage.
-  const recordingStore = resolveRecordingStore(options.recordingStore, recordingScope);
+  const recordingStore = resolveRecordingStore(options.recordingStore, scope);
   const recordingStoreRef = useRef(recordingStore);
   recordingStoreRef.current = recordingStore;
+  const recordingServerIdRef = useRef(recordingServerId);
+  recordingServerIdRef.current = recordingServerId;
   /** Id of the stored copy of the audio in the sender, while it awaits a confirmed transcript. */
   const storedRecordingIdRef = useRef<string | null>(null);
   /** One automatic Retry when the connection returns after a failure while disconnected. */
   const autoRetryArmedRef = useRef(false);
   const retryRef = useRef<() => Promise<void>>(async () => undefined);
-  /** Scope the in-memory audio belongs to; it never follows the composer into another thread. */
-  const audioScopeRef = useRef<string | undefined>(recordingScope);
-  /** Unsent audio of other threads this composer showed, kept in memory until it returns. */
-  const parkedRef = useRef(new Map<string, ParkedRecording>());
-  /**
-   * Thread and stored recording the microphone is capturing for, fixed when capture starts.
-   * Audio can arrive after the composer moved to another thread: the web source emits its last
-   * partial second after stop, and the MediaRecorder fallback delivers the whole recording then.
-   */
-  const pendingStopRef = useRef<Promise<void> | null>(null);
   const captureStartedAtRef = useRef(0);
-  const captureTargetRef = useRef<{
-    scope: string | undefined;
-    storedId: string | null;
-    createdAt: number;
-  } | null>(null);
+  /** False once unmounted; audio that arrives after (a stop's tail) must not touch React state. */
+  const mountedRef = useRef(true);
   /**
    * Identity of the audio in the sender. Changes whenever the sender holds a different recording
-   * (a new capture, a thread switch, a restore, a clear), so nothing prepared for one recording
-   * is ever used for another, even when the status stays "failed" across a thread switch.
+   * (a new capture, a restore, a clear), so nothing prepared for one recording is used for
+   * another.
    */
   const audioTokenRef = useRef(0);
   /** Bumped on every change to the sender's audio, so effects keyed on it rerun. */
@@ -144,7 +110,9 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       audioTokenRef.current += 1;
       savingSinceRef.current = null;
     }
-    setAudioVersion((version) => version + 1);
+    if (mountedRef.current) {
+      setAudioVersion((version) => version + 1);
+    }
   }, []);
 
   const [isRecording, setIsRecording] = useState(false);
@@ -410,39 +378,19 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
 
   const audio = useDictationAudioSource({
     onPcmSegment: (audioData) => {
-      const target = captureTargetRef.current;
-      if (target && target.scope !== audioScopeRef.current) {
-        // Late audio from a thread the composer has left goes to that thread's parked copy. With
-        // no parked copy, the device copy alone gets it, so a return restores the whole recording
-        // from storage instead of a parked tail.
-        const parked = target.scope ? parkedRef.current.get(target.scope) : undefined;
-        if (parked) {
-          parked.segments.push(audioData);
-        } else if (target.scope && !target.storedId) {
-          // Memory is the only copy, as in MediaRecorder fallback mode without device storage.
-          parkedRef.current.set(target.scope, {
-            segments: [audioData],
-            storedId: null,
-            createdAt: target.createdAt,
-            format: PCM_DICTATION_FORMAT,
-          });
-        }
-        if (target.storedId) {
-          recordingStoreRef.current?.append(target.storedId, audioData);
-        }
-        return;
-      }
+      // One instance serves one thread, so every segment, including a tail that arrives after
+      // unmount, belongs to this instance's recording.
       senderRef.current?.enqueueSegment(audioData);
       const storedId = storedRecordingIdRef.current;
       if (storedId) {
         recordingStoreRef.current?.append(storedId, audioData);
       }
-      if (!isRecordingRef.current) {
+      if (!isRecordingRef.current && mountedRef.current) {
         // Audio that arrived after capture ended (a stop's tail) changes what Save audio and the
         // notice describe, so they refresh.
         markAudioChanged(false);
         if (!isProcessingRef.current && statusRef.current === "idle") {
-          // Such as a tail restored with an empty parked copy: it still waits for Retry or Discard.
+          // It still waits for Retry or Discard.
           setStatus("failed");
         }
       }
@@ -464,97 +412,70 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     audioStopRef.current = audio.stop;
   }, [audio.stop]);
 
-  /**
-   * Whether a start must not proceed. Runs before a start and again after every wait inside it,
-   * since the thread, the capture flags and the buffered audio can all change during a wait.
-   */
-  const isStartBlocked = useCallback(
-    (scope: string | undefined): boolean => {
-      if (audioScopeRef.current !== scope || isRecordingRef.current || isProcessingRef.current) {
-        return true;
-      }
-      // An unsent recording is never wiped by a new start: offer its Retry and Discard again.
-      if (senderRef.current?.hasSegments()) {
-        setStatus("failed");
-        return true;
-      }
-      return false;
-    },
-    [setStatus],
-  );
+  /** Whether a start must not proceed. */
+  const isStartBlocked = useCallback((): boolean => {
+    if (isRecordingRef.current || isProcessingRef.current) {
+      return true;
+    }
+    // An unsent recording is never wiped by a new start: offer its Retry and Discard again.
+    if (senderRef.current?.hasSegments()) {
+      setStatus("failed");
+      return true;
+    }
+    return false;
+  }, [setStatus]);
 
   /** Prepares a new capture: replaces the empty stored id and begins a stored recording. */
-  const beginCapture = useCallback(
-    (scope: string | undefined) => {
-      // A stored id with no audio in memory is an empty recording (memory always holds at least
-      // what the device holds); delete it rather than leave an empty row behind.
-      if (storedRecordingIdRef.current) {
-        void recordingStoreRef.current?.delete(storedRecordingIdRef.current);
-        storedRecordingIdRef.current = null;
-      }
-      setError(null);
-      setPartialTranscript("");
-      setDuration(0);
-      setIsProcessing(false);
-      setStatus("recording");
-      clearStreamingState();
-      autoRetryArmedRef.current = false;
-      storedRecordingIdRef.current =
-        scope && recordingStoreRef.current
-          ? recordingStoreRef.current.begin(scope, PCM_DICTATION_FORMAT, recordingServerId)
-          : null;
-      recordingCreatedAtRef.current = Date.now();
-      captureTargetRef.current = {
-        scope,
-        storedId: storedRecordingIdRef.current,
-        createdAt: recordingCreatedAtRef.current,
-      };
-      recordingFormatRef.current = PCM_DICTATION_FORMAT;
-    },
-    [clearStreamingState, recordingServerId, setStatus],
-  );
+  const beginCapture = useCallback(() => {
+    // A stored id with no audio in memory is an empty recording (memory always holds at least
+    // what the device holds); delete it rather than leave an empty row behind.
+    if (storedRecordingIdRef.current) {
+      void recordingStoreRef.current?.delete(storedRecordingIdRef.current);
+      storedRecordingIdRef.current = null;
+    }
+    setError(null);
+    setPartialTranscript("");
+    setDuration(0);
+    setIsProcessing(false);
+    setStatus("recording");
+    clearStreamingState();
+    autoRetryArmedRef.current = false;
+    storedRecordingIdRef.current =
+      scope && recordingStoreRef.current
+        ? recordingStoreRef.current.begin(scope, PCM_DICTATION_FORMAT, recordingServerId)
+        : null;
+    recordingCreatedAtRef.current = Date.now();
+    recordingFormatRef.current = PCM_DICTATION_FORMAT;
+  }, [clearStreamingState, recordingServerId, scope, setStatus]);
 
-  /** Opens the microphone; false when it failed or the composer moved to another thread. */
-  const openMicrophone = useCallback(
-    async (scope: string | undefined): Promise<boolean> => {
-      try {
-        await audio.start();
-      } catch (err) {
-        await audio.stop().catch(() => undefined);
-        if (audioScopeRef.current !== scope) {
-          // The scope switch already parked this thread's recording and owns the state.
-          return false;
-        }
-        stopDurationTracking();
-        isRecordingRef.current = false;
-        setIsRecording(false);
-        if (senderRef.current?.hasSegments()) {
-          setStatus("failed");
-        } else {
-          setStatus("idle");
-          deleteStoredRecording();
-        }
-        reportError(err, "Failed to start dictation");
+  /** Opens the microphone; false when it failed or this composer closed meanwhile. */
+  const openMicrophone = useCallback(async (): Promise<boolean> => {
+    try {
+      await audio.start();
+    } catch (err) {
+      await audio.stop().catch(() => undefined);
+      if (!mountedRef.current) {
         return false;
       }
-      if (audioScopeRef.current !== scope) {
-        // Stop; any audio routes to the thread it was captured for, which the switch parked.
-        await audio.stop().catch(() => undefined);
-        // Switched away during the permission prompt with nothing captured: drop the empty
-        // parked entry and its empty stored row instead of leaving them for the age prune.
-        const parked = scope ? parkedRef.current.get(scope) : undefined;
-        if (scope && parked && parked.segments.length === 0) {
-          parkedRef.current.delete(scope);
-          if (parked.storedId) {
-            void recordingStoreRef.current?.delete(parked.storedId);
-          }
-        }
-        return false;
+      stopDurationTracking();
+      isRecordingRef.current = false;
+      setIsRecording(false);
+      if (senderRef.current?.hasSegments()) {
+        setStatus("failed");
+      } else {
+        setStatus("idle");
+        deleteStoredRecording();
       }
-      return true;
-    },
-    [audio, deleteStoredRecording, reportError, setStatus, stopDurationTracking],
-  );
+      reportError(err, "Failed to start dictation");
+      return false;
+    }
+    if (!mountedRef.current) {
+      // Closed while the microphone opened; the unmount hands over anything captured.
+      await audio.stop().catch(() => undefined);
+      return false;
+    }
+    return true;
+  }, [audio, deleteStoredRecording, reportError, setStatus, stopDurationTracking]);
 
   const startDictation = useCallback(async () => {
     if (
@@ -564,7 +485,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     ) {
       return;
     }
-    if (isStartBlocked(recordingScope)) {
+    if (isStartBlocked()) {
       return;
     }
     const startAllowed = canStart ? canStart() : true;
@@ -574,19 +495,10 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
 
     actionGateRef.current.starting = true;
     try {
-      const pendingStop = pendingStopRef.current;
-      if (pendingStop) {
-        // The left thread's last audio may land during this wait; check again afterwards.
-        await pendingStop;
-        if (pendingStopRef.current === pendingStop) {
-          pendingStopRef.current = null;
-        }
-        if (isStartBlocked(recordingScope)) {
-          return;
-        }
-      }
-      beginCapture(recordingScope);
-      if (!(await openMicrophone(recordingScope))) {
+      // The audio source's start waits for every microphone stop in flight, including a
+      // previous composer instance's, before it opens a new capture.
+      beginCapture();
+      if (!(await openMicrophone())) {
         return;
       }
       isRecordingRef.current = true;
@@ -612,7 +524,6 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     enableDuration,
     isStartBlocked,
     openMicrophone,
-    recordingScope,
     reportError,
     startDurationTracking,
     startNewStream,
@@ -634,7 +545,6 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
         return;
       }
       actionGateRef.current.cancelling = true;
-      const scopeAtCancel = audioScopeRef.current;
       stopDurationTracking();
       setDuration(0);
       setError(null);
@@ -649,9 +559,8 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       } catch (err) {
         reportError(err, "Failed to cancel dictation");
       } finally {
-        // If the composer moved to another thread during the stop, the switch parked this
-        // thread's audio and owns the state: never apply this cancel to the new thread.
-        if (audioScopeRef.current === scopeAtCancel) {
+        // A composer that closed during the stop hands its audio over on unmount instead.
+        if (mountedRef.current) {
           isRecordingRef.current = false;
           setIsRecording(false);
           setIsProcessing(false);
@@ -938,71 +847,17 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     deleteStoredRecording();
   }, [clearStreamingState, deleteStoredRecording, setStatus]);
 
-  // Tie unsent audio to its thread. When this composer is reused for another thread without a
-  // remount, park the previous thread's audio in memory (the device copy stays too), show the new
-  // thread's own unsent audio, or offer back its stored recording after a reload, an app kill, a
-  // Host restart or leaving the thread.
+  // Offer back this thread's unsent recording: one left by a previous composer for the thread
+  // (handed over on unmount), or one on the device after a reload, an app kill or a Host restart.
+  // The device store is the only restore path.
   useEffect(() => {
-    const previousScope = audioScopeRef.current;
-    audioScopeRef.current = recordingScope;
-    const sender = senderRef.current;
-    if (sender && previousScope !== recordingScope) {
-      attemptGuardRef.current.cancel();
-      if (isRecordingRef.current) {
-        // A new start waits for this stop, so the left thread's tail lands before new capture.
-        pendingStopRef.current = audioStopRef.current().catch(() => undefined);
-      }
-      stopDurationTracking();
-      const wasCapturing = isRecordingRef.current;
-      if (previousScope && (wasCapturing || sender.hasSegments() || storedRecordingIdRef.current)) {
-        parkedRef.current.set(previousScope, {
-          segments: sender.getSegments(),
-          storedId: storedRecordingIdRef.current,
-          createdAt: recordingCreatedAtRef.current,
-          format: recordingFormatRef.current,
-        });
-        trimParked(parkedRef.current, recordingStoreRef.current, previousScope);
-      }
-      sender.cancel();
-      sender.clearAll();
-      // Everything prepared or reported for the left thread's audio is now stale.
-      markAudioChanged(true);
-      preparedExportRef.current?.prepared.release();
-      preparedExportRef.current = null;
-      setSaveAudioState("idle");
-      storedRecordingIdRef.current = null;
-      recordingCreatedAtRef.current = 0;
-      recordingFormatRef.current = PCM_DICTATION_FORMAT;
-      autoRetryArmedRef.current = false;
-      isRecordingRef.current = false;
-      setIsRecording(false);
-      isProcessingRef.current = false;
-      setIsProcessing(false);
-      setDuration(0);
-      setError(null);
-      latestPartialTranscriptRef.current = "";
-      setPartialTranscript("");
-      const parked = recordingScope ? parkedRef.current.get(recordingScope) : undefined;
-      if (parked && recordingScope) {
-        parkedRef.current.delete(recordingScope);
-        sender.loadSegments(parked.segments);
-        storedRecordingIdRef.current = parked.storedId;
-        recordingCreatedAtRef.current = parked.createdAt;
-        recordingFormatRef.current = parked.format;
-        markAudioChanged(true);
-        // A thread left before its first audio arrived may have nothing yet; its tail sets failed.
-        setStatus(parked.segments.length > 0 ? "failed" : "idle");
-        return;
-      }
-      setStatus("idle");
-    }
     const store = recordingStore;
-    if (!store || !recordingScope) {
+    if (!store || !scope) {
       return;
     }
     let cancelled = false;
     const offerBack = async () => {
-      const pending = await store.findPending(recordingScope);
+      const pending = await store.findPending(scope);
       if (!pending) {
         return;
       }
@@ -1015,7 +870,21 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
         isRecordingRef.current ||
         isProcessingRef.current
       ) {
-        store.release(pending.recording.id);
+        if (pending.fromMemory) {
+          // Never drop memory-only audio: hand it back for the next mount.
+          store.retainInMemory(scope, {
+            segments: pending.segments,
+            createdAt: pending.recording.createdAt,
+            format: pending.recording.format,
+            storedId:
+              pending.recording.incomplete && !pending.recording.id.startsWith("memory-")
+                ? pending.recording.id
+                : null,
+            serverId: pending.recording.serverId,
+          });
+        } else {
+          store.release(pending.recording.id);
+        }
         return;
       }
       storedRecordingIdRef.current = pending.recording.id;
@@ -1030,7 +899,16 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     return () => {
       cancelled = true;
     };
-  }, [markAudioChanged, recordingScope, recordingStore, setStatus, stopDurationTracking]);
+  }, [markAudioChanged, recordingStore, scope, setStatus]);
+
+  // The Host a recording is delivered to is the one stamped on it: a draft that switches Host
+  // restamps the recording it holds, so removing a Host deletes exactly its recordings.
+  useEffect(() => {
+    const id = storedRecordingIdRef.current;
+    if (id && recordingServerId) {
+      recordingStoreRef.current?.restamp(id, recordingServerId);
+    }
+  }, [recordingServerId, audioVersion]);
 
   const reset = useCallback(() => {
     setIsRecording(false);
@@ -1050,27 +928,60 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     }
   }, [clearStreamingState, setStatus, stopDurationTracking]);
 
+  // Unmount, including a thread switch (the composer is keyed by scope): stop capture, let the
+  // stop's last audio land in this instance's own recording, then leave the recording for the
+  // next mount. Audio not wholly on the device is handed to the store in memory.
   useEffect(() => {
+    mountedRef.current = true;
     const attemptGuard = attemptGuardRef.current;
     const audioStop = audioStopRef;
-    const parked = parkedRef.current;
     return () => {
+      mountedRef.current = false;
       attemptGuard.cancel();
       stopDurationTracking();
-      void audioStop.current().catch(() => undefined);
-      senderRef.current?.dispose();
-      // Leaving the composer keeps the stored audio for the next mount to offer back.
-      const storedIds = [
-        storedRecordingIdRef.current,
-        ...[...parked.values()].map((entry) => entry.storedId),
-      ];
-      for (const storedId of storedIds) {
-        if (storedId) {
-          recordingStoreRef.current?.release(storedId);
+      const store = recordingStoreRef.current;
+      const finishHandover = store && scope ? store.beginHandover(scope) : null;
+      const handOver = async () => {
+        // A stop that never settles must not hold the recording back from the next mount: hand
+        // over after a bounded wait with whatever audio has arrived.
+        let stopTimer: ReturnType<typeof setTimeout> | null = null;
+        await Promise.race([
+          audioStop.current().catch(() => undefined),
+          new Promise<void>((resolve) => {
+            stopTimer = setTimeout(resolve, HANDOVER_STOP_WAIT_MS);
+          }),
+        ]);
+        if (stopTimer) {
+          clearTimeout(stopTimer);
         }
-      }
+        const sender = senderRef.current;
+        const storedId = storedRecordingIdRef.current;
+        try {
+          if (store && scope && sender?.hasSegments()) {
+            await store.flush();
+            const count = sender.getSegmentCount();
+            if (store.persistence(storedId, count) !== "stored") {
+              store.retainInMemory(scope, {
+                segments: sender.getSegments(),
+                createdAt: recordingCreatedAtRef.current || Date.now(),
+                format: recordingFormatRef.current,
+                storedId: storedId && !storedId.startsWith("memory-") ? storedId : null,
+                serverId: recordingServerIdRef.current,
+              });
+              return;
+            }
+          }
+          if (storedId) {
+            store?.release(storedId);
+          }
+        } finally {
+          sender?.dispose();
+          finishHandover?.();
+        }
+      };
+      void handOver();
     };
-  }, [stopDurationTracking]);
+  }, [scope, stopDurationTracking]);
 
   // Keep the notice line honest: recompute where the unsent audio lives whenever the dictation
   // state changes or the store reports progress or a failure. "stored" requires every segment in

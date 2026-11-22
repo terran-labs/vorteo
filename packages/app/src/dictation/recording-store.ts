@@ -61,7 +61,27 @@ export type DictationRecordingPersistence = "stored" | "saving" | "memory-only" 
 export interface PendingDictationRecording {
   recording: StoredDictationRecording;
   segments: string[];
+  /**
+   * The audio came from a composer's memory, not the device: the device copy is missing or
+   * incomplete, so the notice must not say it is kept. recording.id is the incomplete device row
+   * when there is one, or a placeholder id that no device row uses.
+   */
+  fromMemory?: boolean;
 }
+
+/** Audio a closing composer could not leave on the device, kept for the next mount. */
+export interface RetainedDictationRecording {
+  segments: string[];
+  createdAt: number;
+  format: string;
+  /** The device row holding part of it, if any; adopting the audio adopts this row too. */
+  storedId: string | null;
+  serverId?: string;
+}
+
+const MEMORY_RECORDING_PREFIX = "memory-";
+
+type RetainedEntry = RetainedDictationRecording & { retainedAt: number };
 
 /**
  * About 50 minutes of 16 kHz 16-bit mono audio in base64; a 4 minute recording is about 10 MB.
@@ -109,6 +129,10 @@ export class DictationRecordingStore {
   /** Recordings with at least one segment that could not be stored. */
   private readonly incomplete = new Set<string>();
   private failure: Error | null = null;
+  /** Audio left by closing composers that is not (wholly) on the device, newest last. */
+  private readonly retained = new Map<string, RetainedEntry[]>();
+  /** Handovers registered by closing composers whose stop has not finished yet. */
+  private readonly handovers = new Map<string, Set<Promise<void>>>();
   /** Segments of each recording durably written, counted only after the write succeeded. */
   private readonly durable = new Map<string, number>();
   private readonly listeners = new Set<(event: DictationRecordingStoreEvent) => void>();
@@ -137,7 +161,7 @@ export class DictationRecordingStore {
    * only when the device holds every one of them.
    */
   persistence(id: string | null, segmentCount: number): DictationRecordingPersistence {
-    if (!id || !this.backend) {
+    if (!id || !this.backend || id.startsWith(MEMORY_RECORDING_PREFIX)) {
       return "memory-only";
     }
     if (this.incomplete.has(id)) {
@@ -261,6 +285,126 @@ export class DictationRecordingStore {
     });
   }
 
+  /**
+   * Registers that a composer for this scope is closing and may hand over audio. A mount for the
+   * same scope waits for it in findPending, so the audio is never missed or offered twice. The
+   * caller must call the returned function once the handover is done.
+   */
+  beginHandover(scope: string): () => void {
+    let finish: () => void = () => undefined;
+    const done = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const pending = this.handovers.get(scope) ?? new Set<Promise<void>>();
+    pending.add(done);
+    this.handovers.set(scope, pending);
+    return () => {
+      pending.delete(done);
+      if (pending.size === 0 && this.handovers.get(scope) === pending) {
+        this.handovers.delete(scope);
+      }
+      finish();
+    };
+  }
+
+  /**
+   * Keeps audio a closing composer could not leave on the device for the next mount of its
+   * scope, for as long as the page lives. The device row it partly fills, if any, stays owned by
+   * this instance so another tab is never offered the incomplete copy meanwhile.
+   */
+  retainInMemory(scope: string, recording: RetainedDictationRecording): void {
+    if (recording.segments.length === 0) {
+      return;
+    }
+    if (recording.storedId) {
+      this.active.add(recording.storedId);
+    }
+    const list = this.retained.get(scope) ?? [];
+    const entry: RetainedEntry = { ...recording, retainedAt: this.now() };
+    list.push(entry);
+    this.retained.set(scope, list);
+    this.boundRetained(entry);
+  }
+
+  /**
+   * Keeps memory-held audio within the same byte budget as the device store, dropping the
+   * oldest first. Every drop is reported as an eviction, so the owner is told; a dropped entry's
+   * partial device row is released and stays on the device. The entry being retained now is
+   * never dropped: it is that recording's only copy, so retention may exceed the budget by it.
+   */
+  private boundRetained(justRetained: RetainedEntry): void {
+    const entries: { scope: string; entry: RetainedEntry; bytes: number }[] = [];
+    let total = 0;
+    for (const [scope, list] of this.retained) {
+      for (const entry of list) {
+        const bytes = entry.segments.reduce((sum, segment) => sum + segment.length, 0);
+        entries.push({ scope, entry, bytes });
+        total += bytes;
+      }
+    }
+    entries.sort((left, right) => left.entry.retainedAt - right.entry.retainedAt);
+    for (const { scope, entry, bytes } of entries) {
+      if (total <= this.maxBytes) {
+        return;
+      }
+      if (entry === justRetained) {
+        continue;
+      }
+      this.dropRetained(scope, entry, "space");
+      total -= bytes;
+    }
+  }
+
+  private dropRetained(scope: string, entry: RetainedEntry, reason: "space" | "host"): void {
+    const list = this.retained.get(scope);
+    if (!list) {
+      return;
+    }
+    const index = list.indexOf(entry);
+    if (index >= 0) {
+      list.splice(index, 1);
+    }
+    if (list.length === 0) {
+      this.retained.delete(scope);
+    }
+    if (entry.storedId) {
+      this.release(entry.storedId);
+    }
+    if (reason === "space") {
+      this.emit({ kind: "evicted", recording: this.describeRetained(scope, entry), reason });
+    }
+  }
+
+  private describeRetained(scope: string, entry: RetainedEntry): StoredDictationRecording {
+    return {
+      id: entry.storedId ?? `${MEMORY_RECORDING_PREFIX}${this.createId()}`,
+      scope,
+      ...(entry.serverId ? { serverId: entry.serverId } : {}),
+      format: entry.format,
+      createdAt: entry.createdAt,
+      updatedAt: entry.retainedAt,
+      segmentCount: entry.segments.length,
+      bytes: entry.segments.reduce((total, segment) => total + segment.length, 0),
+      incomplete: true,
+    };
+  }
+
+  /** Records the Host the audio is delivered to, when a draft switches Host. */
+  restamp(id: string, serverId: string | undefined): void {
+    if (!serverId || id.startsWith(MEMORY_RECORDING_PREFIX)) {
+      return;
+    }
+    this.enqueue(id, async (backend, known) => {
+      const recording = known.get(id);
+      if (!recording || recording.serverId === serverId) {
+        return;
+      }
+      const next = { ...recording, serverId };
+      known.set(id, next);
+      await this.withRetry(() => backend.putRecording(next));
+    });
+  }
+
   /** Gives up ownership so a later mount or another tab may offer the recording back. */
   release(id: string): void {
     this.active.delete(id);
@@ -289,6 +433,15 @@ export class DictationRecordingStore {
 
   /** Deletes every recording made against a host, for host removal. */
   async deleteForServer(serverId: string): Promise<void> {
+    // Memory-held audio for the removed Host goes too; it is private to that Host.
+    // Copied first: dropping an entry changes the map and the list being walked.
+    for (const [scope, list] of Array.from(this.retained)) {
+      for (const entry of Array.from(list)) {
+        if (entry.serverId === serverId) {
+          this.dropRetained(scope, entry, "host");
+        }
+      }
+    }
     const backend = this.backend;
     if (!backend) {
       return;
@@ -312,11 +465,52 @@ export class DictationRecordingStore {
    * The caller owns the result and must call release() if it does not use it.
    */
   async findPending(scope: string): Promise<PendingDictationRecording | null> {
+    // A composer for this scope may still be closing; wait until it has handed over.
+    const handovers = this.handovers.get(scope);
+    if (handovers && handovers.size > 0) {
+      await Promise.all(handovers);
+    }
+    const memory = this.takeRetained(scope);
+    if (memory) {
+      return memory;
+    }
     const backend = this.backend;
     if (!backend) {
       return null;
     }
     return this.exclusive(() => this.findPendingNow(backend, scope));
+  }
+
+  /** Newest audio retained in memory for the scope, adopted by the caller. */
+  private takeRetained(scope: string): PendingDictationRecording | null {
+    const list = this.retained.get(scope);
+    const entry = list?.pop();
+    if (list && list.length === 0) {
+      this.retained.delete(scope);
+    }
+    if (!entry) {
+      return null;
+    }
+    const id = entry.storedId ?? `${MEMORY_RECORDING_PREFIX}${this.createId()}`;
+    if (entry.storedId) {
+      // Still owned by this instance since the handover; the caller now holds it.
+      this.active.add(entry.storedId);
+    }
+    return {
+      recording: {
+        id,
+        scope,
+        ...(entry.serverId ? { serverId: entry.serverId } : {}),
+        format: entry.format,
+        createdAt: entry.createdAt,
+        updatedAt: this.now(),
+        segmentCount: entry.segments.length,
+        bytes: entry.segments.reduce((total, segment) => total + segment.length, 0),
+        incomplete: true,
+      },
+      segments: entry.segments,
+      fromMemory: true,
+    };
   }
 
   private async findPendingNow(

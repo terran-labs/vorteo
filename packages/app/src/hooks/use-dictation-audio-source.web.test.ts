@@ -14,6 +14,8 @@ const node = () => ({ connect: vi.fn(), disconnect: vi.fn() });
 
 class FakeAudioContext {
   static processor: FakeProcessor | null = null;
+  /** Models an AudioContext close that never settles, as on some iOS builds. */
+  static hangClose = false;
   sampleRate = 16000;
   destination = {};
   createMediaStreamSource() {
@@ -28,6 +30,9 @@ class FakeAudioContext {
     return { gain: { value: 1 }, ...node() };
   }
   async close() {
+    if (FakeAudioContext.hangClose) {
+      await new Promise(() => undefined);
+    }
     // Teardown takes a moment, as in a browser; the last partial segment is emitted after it.
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -117,4 +122,52 @@ describe("web dictation audio source", () => {
     await expect(starting).rejects.toThrow("closed");
     expect(track.stop).toHaveBeenCalled();
   });
+
+  it("waits for another instance's stop, so a remounted composer never overlaps the old capture", async () => {
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    const calls: string[] = [];
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: async () => {
+          calls.push("open");
+          return { getTracks: () => [{ stop: vi.fn() }] };
+        },
+      },
+    });
+    const closing = renderHook(() =>
+      useDictationAudioSource({ onPcmSegment: () => calls.push("old tail") }),
+    );
+    await act(() => closing.result.current.start());
+    act(() => {
+      FakeAudioContext.processor?.onaudioprocess?.({
+        inputBuffer: { getChannelData: () => new Float32Array(8000).fill(0.1) },
+      });
+    });
+    const reopened = renderHook(() => useDictationAudioSource({ onPcmSegment: vi.fn() }));
+
+    await act(() => Promise.all([closing.result.current.stop(), reopened.result.current.start()]));
+    expect(calls).toEqual(["open", "old tail", "open"]);
+  });
+
+  it("starts within a bounded wait when another instance's stop never settles", async () => {
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: async () => ({ getTracks: () => [{ stop: vi.fn() }] }) },
+    });
+    const stuck = renderHook(() => useDictationAudioSource({ onPcmSegment: vi.fn() }));
+    await act(() => stuck.result.current.start());
+    FakeAudioContext.hangClose = true;
+    try {
+      void stuck.result.current.stop();
+      const next = renderHook(() => useDictationAudioSource({ onPcmSegment: vi.fn() }));
+      const startedAt = Date.now();
+      await act(() => next.result.current.start());
+      // It waited for the stuck stop, then went ahead instead of blocking every later start.
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(4_900);
+    } finally {
+      FakeAudioContext.hangClose = false;
+    }
+  }, 15_000);
 });
