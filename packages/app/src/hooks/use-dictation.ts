@@ -10,7 +10,9 @@ import { AttemptGuard } from "@/utils/attempt-guard";
 import {
   DURATION_TICK_MS,
   PCM_DICTATION_FORMAT,
+  SHORT_CAPTURE_DISCARD_MS,
   toError,
+  type DictationCancelOptions,
   type DictationStatus,
   type UseDictationOptions,
   type UseDictationResult,
@@ -49,6 +51,16 @@ function trimParked(
   }
 }
 
+function resolveRecordingStore(
+  injected: DictationRecordingStore | null | undefined,
+  recordingScope: string | undefined,
+): DictationRecordingStore | null {
+  if (injected !== undefined) {
+    return injected;
+  }
+  return recordingScope ? getDeviceDictationRecordingStore() : null;
+}
+
 export function useDictation(options: UseDictationOptions): UseDictationResult {
   const { t } = useTranslation();
   const {
@@ -63,9 +75,8 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     recordingScope,
     recordingServerId,
   } = options;
-  // Only composers that name their thread persist audio; tests inject their own store.
-  const recordingStore =
-    options.recordingStore ?? (recordingScope ? getDeviceDictationRecordingStore() : null);
+  // Only composers that name their thread persist audio; null disables device storage.
+  const recordingStore = resolveRecordingStore(options.recordingStore, recordingScope);
   const recordingStoreRef = useRef(recordingStore);
   recordingStoreRef.current = recordingStore;
   /** Id of the stored copy of the audio in the sender, while it awaits a confirmed transcript. */
@@ -83,6 +94,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
    * partial second after stop, and the MediaRecorder fallback delivers the whole recording then.
    */
   const pendingStopRef = useRef<Promise<void> | null>(null);
+  const captureStartedAtRef = useRef(0);
   const captureTargetRef = useRef<{ scope: string | undefined; storedId: string | null } | null>(
     null,
   );
@@ -335,6 +347,9 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
         const parked = target.scope ? parkedRef.current.get(target.scope) : undefined;
         if (parked) {
           parked.segments.push(audioData);
+        } else if (target.scope && !target.storedId) {
+          // Memory is the only copy, as in MediaRecorder fallback mode without device storage.
+          parkedRef.current.set(target.scope, { segments: [audioData], storedId: null });
         }
         if (target.storedId) {
           recordingStoreRef.current?.append(target.storedId, audioData);
@@ -345,6 +360,11 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       const storedId = storedRecordingIdRef.current;
       if (storedId) {
         recordingStoreRef.current?.append(storedId, audioData);
+      }
+      if (!isRecordingRef.current && !isProcessingRef.current && statusRef.current === "idle") {
+        // Audio that arrived after capture ended, such as a tail restored with an empty parked
+        // copy, still waits for Retry or Discard.
+        setStatus("failed");
       }
     },
     onError: (err) => {
@@ -422,6 +442,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
         return;
       }
       isRecordingRef.current = true;
+      captureStartedAtRef.current = Date.now();
       setIsRecording(true);
       if (enableDuration) {
         startDurationTracking();
@@ -452,52 +473,61 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     stopDurationTracking,
   ]);
 
-  const cancelDictation = useCallback(async () => {
-    attemptGuardRef.current.cancel();
-    if (actionGateRef.current.cancelling) {
-      return;
-    }
-    if (!isRecordingRef.current && !isProcessingRef.current) {
-      return;
-    }
-    actionGateRef.current.cancelling = true;
-    stopDurationTracking();
-    setDuration(0);
-    setError(null);
+  const cancelDictation = useCallback(
+    async (cancelOptions?: DictationCancelOptions) => {
+      attemptGuardRef.current.cancel();
+      // A press of the Cancel button on a short capture is a discard; anything longer, and every
+      // other cancel path, keeps the audio for Retry or Discard.
+      const discardShortCapture =
+        cancelOptions?.source === "button" &&
+        isRecordingRef.current &&
+        Date.now() - captureStartedAtRef.current < SHORT_CAPTURE_DISCARD_MS;
+      if (actionGateRef.current.cancelling) {
+        return;
+      }
+      if (!isRecordingRef.current && !isProcessingRef.current) {
+        return;
+      }
+      actionGateRef.current.cancelling = true;
+      stopDurationTracking();
+      setDuration(0);
+      setError(null);
 
-    try {
       try {
-        senderRef.current?.cancel();
-      } catch {
-        // no-op
+        try {
+          senderRef.current?.cancel();
+        } catch {
+          // no-op
+        }
+        await audio.stop();
+      } catch (err) {
+        reportError(err, "Failed to cancel dictation");
+      } finally {
+        isRecordingRef.current = false;
+        setIsRecording(false);
+        setIsProcessing(false);
+        isProcessingRef.current = false;
+        // Cancel stops capture and the stream but never deletes audio: Escape, the voice button
+        // and cancelling an upload all land on Retry and Discard. Only Discard deletes.
+        if (senderRef.current?.hasSegments() && !discardShortCapture) {
+          setStatus("failed");
+        } else {
+          setStatus("idle");
+          clearStreamingState();
+          deleteStoredRecording();
+        }
+        actionGateRef.current.cancelling = false;
       }
-      await audio.stop();
-    } catch (err) {
-      reportError(err, "Failed to cancel dictation");
-    } finally {
-      isRecordingRef.current = false;
-      setIsRecording(false);
-      setIsProcessing(false);
-      isProcessingRef.current = false;
-      // Cancel stops capture and the stream but never deletes audio: Escape, the voice button
-      // and cancelling an upload all land on Retry and Discard. Only Discard deletes.
-      if (senderRef.current?.hasSegments()) {
-        setStatus("failed");
-      } else {
-        setStatus("idle");
-        clearStreamingState();
-        deleteStoredRecording();
-      }
-      actionGateRef.current.cancelling = false;
-    }
-  }, [
-    audio,
-    clearStreamingState,
-    deleteStoredRecording,
-    reportError,
-    setStatus,
-    stopDurationTracking,
-  ]);
+    },
+    [
+      audio,
+      clearStreamingState,
+      deleteStoredRecording,
+      reportError,
+      setStatus,
+      stopDurationTracking,
+    ],
+  );
 
   const confirmDictation = useCallback(async () => {
     if (actionGateRef.current.confirming) {
@@ -631,7 +661,8 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
         pendingStopRef.current = audioStopRef.current().catch(() => undefined);
       }
       stopDurationTracking();
-      if (previousScope && (sender.hasSegments() || storedRecordingIdRef.current)) {
+      const wasCapturing = isRecordingRef.current;
+      if (previousScope && (wasCapturing || sender.hasSegments() || storedRecordingIdRef.current)) {
         parkedRef.current.set(previousScope, {
           segments: sender.getSegments(),
           storedId: storedRecordingIdRef.current,
@@ -655,7 +686,8 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
         parkedRef.current.delete(recordingScope);
         sender.loadSegments(parked.segments);
         storedRecordingIdRef.current = parked.storedId;
-        setStatus("failed");
+        // A thread left before its first audio arrived may have nothing yet; its tail sets failed.
+        setStatus(parked.segments.length > 0 ? "failed" : "idle");
         return;
       }
       setStatus("idle");

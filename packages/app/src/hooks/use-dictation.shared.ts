@@ -32,12 +32,20 @@ export interface UseDictationResult {
   error: string | null;
   status: DictationStatus;
   startDictation: () => Promise<void>;
-  cancelDictation: () => Promise<void>;
+  cancelDictation: (options?: DictationCancelOptions) => Promise<void>;
   confirmDictation: () => Promise<void>;
   retryFailedDictation: () => Promise<void>;
   discardFailedDictation: () => void;
   reset: () => void;
 }
+
+export interface DictationCancelOptions {
+  /** "button" for an explicit press of Cancel dictation; other paths keep the audio. */
+  source?: "button";
+}
+
+/** A Cancel button press on a capture shorter than this discards it instead of keeping it. */
+export const SHORT_CAPTURE_DISCARD_MS = 5_000;
 
 export const DURATION_TICK_MS = 1000;
 export const PCM_DICTATION_FORMAT = "audio/pcm;rate=16000;bits=16";

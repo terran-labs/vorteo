@@ -11,7 +11,10 @@ import type { DictationAudioSourceConfig } from "@/hooks/use-dictation-audio-sou
 import { useDictation } from "./use-dictation";
 import type { UseDictationOptions } from "./use-dictation.shared";
 
-const audioSource: { config: DictationAudioSourceConfig | null; tailOnStop: string | null } = {
+const audioSource: {
+  config: DictationAudioSourceConfig | null;
+  tailOnStop: string | string[] | null;
+} = {
   config: null,
   tailOnStop: null,
 };
@@ -24,10 +27,11 @@ vi.mock("@/hooks/use-dictation-audio-source", () => ({
       // Like the web source, emit the last partial segment only after stop has awaited teardown.
       stop: async () => {
         await Promise.resolve();
+        // An array models MediaRecorder fallback mode, which delivers the whole recording here.
         const tail = audioSource.tailOnStop;
         audioSource.tailOnStop = null;
-        if (tail) {
-          audioSource.config?.onPcmSegment(tail);
+        for (const segment of typeof tail === "string" ? [tail] : (tail ?? [])) {
+          audioSource.config?.onPcmSegment(segment);
         }
       },
       volume: 0,
@@ -106,7 +110,7 @@ class FakeClient {
   }
 }
 
-function renderDictation(client: FakeClient, store: DictationRecordingStore) {
+function renderDictation(client: FakeClient, store: DictationRecordingStore | null) {
   const onTranscript = vi.fn();
   const hook = renderHook(
     ({ scope }: { scope: string }) =>
@@ -313,6 +317,48 @@ describe("useDictation keeps recordings until a transcript is confirmed", () => 
     await act(() => result.current.retryFailedDictation());
     expect(client.chunksFor(client.starts.at(-1))).toEqual(["a0", "a-tail"]);
     expect(onTranscript).toHaveBeenCalledTimes(2);
+
+    // Without device storage, memory is the only copy: a thread left before any audio arrived,
+    // as in MediaRecorder fallback mode, keeps the whole recording delivered at stop.
+    const memoryOnly = renderDictation(new FakeClient(), null);
+    await act(() => memoryOnly.result.current.startDictation());
+    audioSource.tailOnStop = ["m0", "m1", "m2"];
+    memoryOnly.rerender({ scope: "host:other" });
+    await waitFor(() => expect(memoryOnly.result.current.status).toBe("idle"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    memoryOnly.rerender({ scope: "host:agent" });
+    await waitFor(() => expect(memoryOnly.result.current.status).toBe("failed"));
+    await act(() => memoryOnly.result.current.retryFailedDictation());
+    expect(memoryOnly.onTranscript).toHaveBeenCalledWith("hello world", expect.anything());
+  });
+
+  it("discards a capture under five seconds when Cancel is pressed, and keeps a longer one", async () => {
+    const now = vi.spyOn(Date, "now");
+    try {
+      const backend = new MemoryDictationRecordingBackend();
+      const store = new DictationRecordingStore(backend);
+      const { result } = renderDictation(new FakeClient(), store);
+
+      now.mockReturnValue(10_000);
+      await recordSegments(result, ["short"]);
+      now.mockReturnValue(14_999);
+      await act(() => result.current.cancelDictation({ source: "button" }));
+      expect(result.current.status).toBe("idle");
+      await store.flush();
+      expect(backend.recordings.size).toBe(0);
+
+      now.mockReturnValue(20_000);
+      await recordSegments(result, ["long"]);
+      now.mockReturnValue(25_000);
+      await act(() => result.current.cancelDictation({ source: "button" }));
+      expect(result.current.status).toBe("failed");
+      await store.flush();
+      expect([...backend.segments.values()][0]).toEqual(["long"]);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it("keeps a just-parked thread whole while its late audio arrives, even with full memory", async () => {

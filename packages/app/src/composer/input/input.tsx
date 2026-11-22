@@ -1771,7 +1771,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
 
     const handleCancelRecording = useCallback(async () => {
       dictationIntentRef.current = "insert";
-      await cancelDictation();
+      await cancelDictation({ source: "button" });
     }, [cancelDictation]);
 
     const handleAcceptRecording = useCallback(async () => {
