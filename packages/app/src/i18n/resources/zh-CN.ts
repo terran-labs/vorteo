@@ -379,6 +379,7 @@ export const zhCN: TranslationResources = {
       cancel: "取消听写",
       retry: "重试听写",
       saveAudio: "保存音频",
+      preparingAudio: "正在准备音频文件…",
       saveFailed: "无法保存音频。请重试。",
       recordingKept: "录音已保留。",
       recordingNotSaved: "这段录音没有保存在此设备上。在发送之前请保持此页面打开，或保存音频。",

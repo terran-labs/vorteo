@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 
 import { getDeviceDictationRecordingStore } from "@/dictation/device-recording-store";
 import { DictationStreamSender } from "@/dictation/dictation-stream-sender";
+import { decodedSegmentBytes, PCM_BYTES_PER_SECOND } from "@/dictation/recording-wav";
 import {
   prepareDictationExport,
   shareDictationExport,
@@ -30,6 +31,24 @@ import {
 interface ParkedRecording {
   segments: string[];
   storedId: string | null;
+  createdAt: number;
+  format: string;
+}
+
+/**
+ * Recordings longer than this are turned into a Save audio file only when the owner presses it,
+ * so an automatic background build cannot hold hundreds of megabytes.
+ */
+const BACKGROUND_EXPORT_MAX_SECONDS = 20 * 60;
+/** A notice still waiting for its writes after this long says the recording is not saved. */
+const SAVING_STALL_MS = 10_000;
+
+function recordingDurationSeconds(segments: readonly string[]): number {
+  let bytes = 0;
+  for (const segment of segments) {
+    bytes += decodedSegmentBytes(segment);
+  }
+  return bytes / PCM_BYTES_PER_SECOND;
 }
 
 /** Threads whose unsent audio this composer keeps in memory after moving to another thread. */
@@ -104,9 +123,28 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
    */
   const pendingStopRef = useRef<Promise<void> | null>(null);
   const captureStartedAtRef = useRef(0);
-  const captureTargetRef = useRef<{ scope: string | undefined; storedId: string | null } | null>(
-    null,
-  );
+  const captureTargetRef = useRef<{
+    scope: string | undefined;
+    storedId: string | null;
+    createdAt: number;
+  } | null>(null);
+  /**
+   * Identity of the audio in the sender. Changes whenever the sender holds a different recording
+   * (a new capture, a thread switch, a restore, a clear), so nothing prepared for one recording
+   * is ever used for another, even when the status stays "failed" across a thread switch.
+   */
+  const audioTokenRef = useRef(0);
+  /** Bumped on every change to the sender's audio, so effects keyed on it rerun. */
+  const [audioVersion, setAudioVersion] = useState(0);
+  /** When the notice started reading "saving"; a write that never lands falls back to not saved. */
+  const savingSinceRef = useRef<number | null>(null);
+  const markAudioChanged = useCallback((newRecording: boolean) => {
+    if (newRecording) {
+      audioTokenRef.current += 1;
+      savingSinceRef.current = null;
+    }
+    setAudioVersion((version) => version + 1);
+  }, []);
 
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -146,7 +184,11 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   /** Format of the audio in the sender; a recovered recording carries its stored format. */
   const recordingFormatRef = useRef(PCM_DICTATION_FORMAT);
   /** The Save audio file, built when the failed state appears so the press can share at once. */
-  const preparedExportRef = useRef<PreparedDictationExport | null>(null);
+  const preparedExportRef = useRef<{ token: number; prepared: PreparedDictationExport } | null>(
+    null,
+  );
+  /** True while a Save audio press waits for its file to be built. */
+  const [isPreparingAudio, setIsPreparingAudio] = useState(false);
   const [recordingPersistence, setRecordingPersistence] =
     useState<DictationRecordingPersistence | null>(null);
 
@@ -230,7 +272,8 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     senderRef.current?.clearAll();
     latestPartialTranscriptRef.current = "";
     setPartialTranscript("");
-  }, []);
+    markAudioChanged(true);
+  }, [markAudioChanged]);
 
   /** Deletes the device copy. Call only after a transcript is applied or the owner discards. */
   const deleteStoredRecording = useCallback(() => {
@@ -367,7 +410,12 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
           parked.segments.push(audioData);
         } else if (target.scope && !target.storedId) {
           // Memory is the only copy, as in MediaRecorder fallback mode without device storage.
-          parkedRef.current.set(target.scope, { segments: [audioData], storedId: null });
+          parkedRef.current.set(target.scope, {
+            segments: [audioData],
+            storedId: null,
+            createdAt: target.createdAt,
+            format: PCM_DICTATION_FORMAT,
+          });
         }
         if (target.storedId) {
           recordingStoreRef.current?.append(target.storedId, audioData);
@@ -379,10 +427,14 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       if (storedId) {
         recordingStoreRef.current?.append(storedId, audioData);
       }
-      if (!isRecordingRef.current && !isProcessingRef.current && statusRef.current === "idle") {
-        // Audio that arrived after capture ended, such as a tail restored with an empty parked
-        // copy, still waits for Retry or Discard.
-        setStatus("failed");
+      if (!isRecordingRef.current) {
+        // Audio that arrived after capture ended (a stop's tail) changes what Save audio and the
+        // notice describe, so they refresh.
+        markAudioChanged(false);
+        if (!isProcessingRef.current && statusRef.current === "idle") {
+          // Such as a tail restored with an empty parked copy: it still waits for Retry or Discard.
+          setStatus("failed");
+        }
       }
     },
     onError: (err) => {
@@ -441,8 +493,12 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
         scope && recordingStoreRef.current
           ? recordingStoreRef.current.begin(scope, PCM_DICTATION_FORMAT, recordingServerId)
           : null;
-      captureTargetRef.current = { scope, storedId: storedRecordingIdRef.current };
       recordingCreatedAtRef.current = Date.now();
+      captureTargetRef.current = {
+        scope,
+        storedId: storedRecordingIdRef.current,
+        createdAt: recordingCreatedAtRef.current,
+      };
       recordingFormatRef.current = PCM_DICTATION_FORMAT;
     },
     [clearStreamingState, recordingServerId, setStatus],
@@ -744,49 +800,97 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     );
   }, []);
 
+  /** The prepared file, only if it was built from exactly the audio the sender holds now. */
+  const currentPreparedExport = useCallback((): PreparedDictationExport | null => {
+    const entry = preparedExportRef.current;
+    const segmentCount = senderRef.current?.getSegmentCount() ?? 0;
+    if (
+      entry &&
+      entry.token === audioTokenRef.current &&
+      entry.prepared.segmentCount === segmentCount
+    ) {
+      return entry.prepared;
+    }
+    return null;
+  }, []);
+
+  const keepPreparedExport = useCallback((token: number, prepared: PreparedDictationExport) => {
+    if (
+      token !== audioTokenRef.current ||
+      senderRef.current?.getSegmentCount() !== prepared.segmentCount
+    ) {
+      // The audio changed while the file was built; never keep it for another recording.
+      prepared.release();
+      return false;
+    }
+    preparedExportRef.current?.prepared.release();
+    preparedExportRef.current = { token, prepared };
+    return true;
+  }, []);
+
   const saveFailedRecording = useCallback((): Promise<void> => {
     const segmentCount = senderRef.current?.getSegmentCount() ?? 0;
     if (segmentCount === 0) {
       return Promise.resolve();
     }
-    const prepared = preparedExportRef.current;
-    if (prepared && prepared.segmentCount === segmentCount) {
-      // Prepared in advance: share() runs inside this press, as iOS requires.
-      return shareDictationExport(prepared).then(() => undefined, reportSaveFailure);
+    const ready = currentPreparedExport();
+    if (ready) {
+      // Prepared in advance from this exact audio: share() runs inside this press, as iOS
+      // requires.
+      return shareDictationExport(ready).then(() => undefined, reportSaveFailure);
     }
-    // Not ready yet. Build it now; if the browser then refuses the share because the press is
-    // too old, the owner sees "could not save" and the next press shares the ready file.
+    // Not ready (still building, too long to build in the background, or just changed). Build
+    // it now; if the browser then refuses the share because the press is too old, the owner sees
+    // "could not save" and the next press shares the ready file.
+    const token = audioTokenRef.current;
+    setIsPreparingAudio(true);
     return prepareExport()
       .then((fresh) => {
-        preparedExportRef.current?.release();
-        preparedExportRef.current = fresh;
+        if (!keepPreparedExport(token, fresh)) {
+          throw new Error("The recording changed while its audio file was prepared");
+        }
         return shareDictationExport(fresh);
       })
-      .then(() => undefined, reportSaveFailure);
-  }, [prepareExport, reportSaveFailure]);
+      .then(() => undefined, reportSaveFailure)
+      .finally(() => {
+        if (token === audioTokenRef.current) {
+          setIsPreparingAudio(false);
+        }
+      });
+  }, [currentPreparedExport, keepPreparedExport, prepareExport, reportSaveFailure]);
 
-  // Build the Save audio file while the failed state shows, and drop it once the recording is
-  // sent, discarded or recording again.
+  // Build the Save audio file in the background while the failed state shows, keyed to the
+  // audio's identity so a thread switch or a late tail rebuilds it. Recordings longer than the
+  // background limit are built only when Save audio is pressed, to bound memory. The file is
+  // dropped once the recording is sent, discarded or recording starts again.
   useEffect(() => {
     if (status !== "failed") {
-      preparedExportRef.current?.release();
+      preparedExportRef.current?.prepared.release();
       preparedExportRef.current = null;
       return;
     }
-    const segmentCount = senderRef.current?.getSegmentCount() ?? 0;
-    if (segmentCount === 0 || preparedExportRef.current?.segmentCount === segmentCount) {
+    if (currentPreparedExport()) {
       return;
     }
+    preparedExportRef.current?.prepared.release();
+    preparedExportRef.current = null;
+    const segments = senderRef.current?.getSegments() ?? [];
+    if (
+      segments.length === 0 ||
+      recordingDurationSeconds(segments) > BACKGROUND_EXPORT_MAX_SECONDS
+    ) {
+      return;
+    }
+    const token = audioTokenRef.current;
     let cancelled = false;
     const prepareInBackground = async () => {
       try {
         const prepared = await prepareExport();
-        if (cancelled || senderRef.current?.getSegmentCount() !== prepared.segmentCount) {
+        if (cancelled) {
           prepared.release();
           return;
         }
-        preparedExportRef.current?.release();
-        preparedExportRef.current = prepared;
+        keepPreparedExport(token, prepared);
       } catch (err) {
         console.warn("[useDictation] Could not prepare dictation audio for saving", err);
       }
@@ -795,7 +899,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     return () => {
       cancelled = true;
     };
-  }, [prepareExport, status]);
+  }, [audioVersion, currentPreparedExport, keepPreparedExport, prepareExport, status]);
 
   const discardFailedDictation = useCallback(() => {
     attemptGuardRef.current.cancel();
@@ -829,12 +933,21 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
         parkedRef.current.set(previousScope, {
           segments: sender.getSegments(),
           storedId: storedRecordingIdRef.current,
+          createdAt: recordingCreatedAtRef.current,
+          format: recordingFormatRef.current,
         });
         trimParked(parkedRef.current, recordingStoreRef.current, previousScope);
       }
       sender.cancel();
       sender.clearAll();
+      // Everything prepared or reported for the left thread's audio is now stale.
+      markAudioChanged(true);
+      preparedExportRef.current?.prepared.release();
+      preparedExportRef.current = null;
+      setIsPreparingAudio(false);
       storedRecordingIdRef.current = null;
+      recordingCreatedAtRef.current = 0;
+      recordingFormatRef.current = PCM_DICTATION_FORMAT;
       autoRetryArmedRef.current = false;
       isRecordingRef.current = false;
       setIsRecording(false);
@@ -849,6 +962,9 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
         parkedRef.current.delete(recordingScope);
         sender.loadSegments(parked.segments);
         storedRecordingIdRef.current = parked.storedId;
+        recordingCreatedAtRef.current = parked.createdAt;
+        recordingFormatRef.current = parked.format;
+        markAudioChanged(true);
         // A thread left before its first audio arrived may have nothing yet; its tail sets failed.
         setStatus(parked.segments.length > 0 ? "failed" : "idle");
         return;
@@ -881,6 +997,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       recordingCreatedAtRef.current = pending.recording.createdAt;
       recordingFormatRef.current = pending.recording.format;
       current.loadSegments(pending.segments);
+      markAudioChanged(true);
       setError(null);
       setStatus("failed");
     };
@@ -888,7 +1005,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     return () => {
       cancelled = true;
     };
-  }, [recordingScope, recordingStore, setStatus, stopDurationTracking]);
+  }, [markAudioChanged, recordingScope, recordingStore, setStatus, stopDurationTracking]);
 
   const reset = useCallback(() => {
     setIsRecording(false);
@@ -933,22 +1050,42 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   // Keep the notice line honest: recompute where the unsent audio lives whenever the dictation
   // state changes or the store reports progress or a failure. "stored" requires every segment in
   // memory to be on the device. Owner-facing storage toasts come from one app-level listener.
+  // A write that never lands (a hung IndexedDB) must not leave the notice silent forever: after
+  // SAVING_STALL_MS of "saving" it says the recording is not saved.
   useEffect(() => {
+    let stallTimer: ReturnType<typeof setTimeout> | null = null;
     const refresh = () => {
       const segmentCount = senderRef.current?.getSegmentCount() ?? 0;
       const store = recordingStoreRef.current;
-      setRecordingPersistence(
+      let persistence: DictationRecordingPersistence | null =
         segmentCount > 0
           ? (store?.persistence(storedRecordingIdRef.current, segmentCount) ?? "memory-only")
-          : null,
-      );
+          : null;
+      if (persistence === "saving") {
+        savingSinceRef.current ??= Date.now();
+        const waited = Date.now() - savingSinceRef.current;
+        if (waited >= SAVING_STALL_MS) {
+          persistence = "memory-only";
+        } else if (!stallTimer) {
+          stallTimer = setTimeout(() => {
+            stallTimer = null;
+            refresh();
+          }, SAVING_STALL_MS - waited);
+        }
+      } else {
+        savingSinceRef.current = null;
+      }
+      setRecordingPersistence(persistence);
     };
     refresh();
-    if (!recordingStore) {
-      return;
-    }
-    return recordingStore.subscribe(refresh);
-  }, [recordingStore, status]);
+    const unsubscribe = recordingStore?.subscribe(refresh);
+    return () => {
+      unsubscribe?.();
+      if (stallTimer) {
+        clearTimeout(stallTimer);
+      }
+    };
+  }, [audioVersion, recordingStore, status]);
 
   return {
     isRecording,
@@ -966,6 +1103,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     discardFailedDictation,
     saveFailedRecording,
     recordingPersistence,
+    isPreparingAudio,
     reset,
   };
 }

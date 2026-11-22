@@ -385,6 +385,7 @@ export const ru: TranslationResources = {
       cancel: "Отменить диктовку",
       retry: "Повторить диктовку",
       saveAudio: "Сохранить аудио",
+      preparingAudio: "Подготовка аудиофайла…",
       saveFailed: "Не удалось сохранить аудио. Попробуйте ещё раз.",
       recordingKept: "Ваша запись сохранена.",
       recordingNotSaved:

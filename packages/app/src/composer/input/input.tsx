@@ -588,8 +588,10 @@ function MessageInputAutoFocus({
  */
 function resolveDictationPersistenceNotice(
   persistence: DictationRecordingPersistence | null,
+  isPreparingAudio: boolean,
   t: (key: string) => string,
 ): string | undefined {
+  if (isPreparingAudio) return t("message.dictation.preparingAudio");
   if (!persistence) return undefined;
   // While the last writes are still landing, say nothing rather than claim either way.
   if (persistence === "saving") return undefined;
@@ -1729,6 +1731,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       discardFailedDictation,
       saveFailedRecording,
       recordingPersistence,
+      isPreparingAudio,
     } = useDictation({
       client,
       onTranscript: handleDictationTranscript,
@@ -1740,7 +1743,11 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       recordingScope: resolveDictationRecordingScope(voiceAgentId),
       recordingServerId: voiceServerId,
     });
-    const dictationPersistenceNotice = resolveDictationPersistenceNotice(recordingPersistence, t);
+    const dictationPersistenceNotice = resolveDictationPersistenceNotice(
+      recordingPersistence,
+      isPreparingAudio,
+      t,
+    );
 
     const handleSaveFailedRecording = useCallback(() => {
       // Called straight from the press, so the web share sheet keeps the user's gesture.

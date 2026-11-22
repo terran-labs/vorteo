@@ -380,6 +380,7 @@ export const ar: TranslationResources = {
       cancel: "إلغاء الإملاء",
       retry: "أعد محاولة الإملاء",
       saveAudio: "حفظ الصوت",
+      preparingAudio: "جارٍ تجهيز ملف الصوت…",
       saveFailed: "تعذّر حفظ الصوت. حاول مرة أخرى.",
       recordingKept: "تم الاحتفاظ بتسجيلك.",
       recordingNotSaved:

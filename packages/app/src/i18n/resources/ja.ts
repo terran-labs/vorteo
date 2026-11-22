@@ -387,6 +387,7 @@ export const ja: TranslationResources = {
       cancel: "音声入力をキャンセル",
       retry: "音声入力を再試行",
       saveAudio: "音声を保存",
+      preparingAudio: "音声ファイルを準備しています…",
       saveFailed: "音声を保存できませんでした。もう一度お試しください。",
       recordingKept: "録音は保持されています。",
       recordingNotSaved:

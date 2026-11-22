@@ -31,13 +31,14 @@ export async function prepareDictationExport(
     typeof File === "function"
       ? new File(parts, fileName, { type: "audio/wav" })
       : new Blob(parts, { type: "audio/wav" });
+  // The browser now owns the bytes; drop the decoded parts so only one copy stays alive.
+  parts.length = 0;
   return {
     fileName,
     segmentCount: segments.length,
     file: blob,
-    release: () => {
-      parts.length = 0;
-    },
+    // Dropping the reference to the prepared export lets the browser free the file.
+    release: () => undefined,
   };
 }
 

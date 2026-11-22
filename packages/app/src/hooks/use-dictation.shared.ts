@@ -44,6 +44,8 @@ export interface UseDictationResult {
   saveFailedRecording: () => Promise<void>;
   /** Where the unsent recording lives, or null when there is none. Drives the notice line. */
   recordingPersistence: import("@/dictation/recording-store").DictationRecordingPersistence | null;
+  /** True while a Save audio press waits for its file; the overlay says it is being prepared. */
+  isPreparingAudio: boolean;
   reset: () => void;
 }
 

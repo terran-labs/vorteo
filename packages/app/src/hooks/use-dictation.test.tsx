@@ -478,4 +478,48 @@ describe("useDictation keeps recordings until a transcript is confirmed", () => 
     await act(() => memoryOnly.result.current.cancelDictation());
     expect(memoryOnly.result.current.recordingPersistence).toBe("memory-only");
   });
+
+  it("saves the audio of the thread on screen when two failed threads hold equal counts", async () => {
+    const store = new DictationRecordingStore(new MemoryDictationRecordingBackend());
+    const { result, rerender } = renderDictation(new FakeClient(), store);
+
+    await recordSegments(result, ["A0", "A1"]);
+    await act(() => result.current.cancelDictation());
+    rerender({ scope: "host:other" });
+    await waitFor(() => expect(result.current.status).toBe("idle"));
+    await recordSegments(result, ["B0", "B1"]);
+    await act(() => result.current.cancelDictation());
+    expect(result.current.status).toBe("failed");
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Back to A: the status stays "failed", but the file prepared for B must not be used.
+    rerender({ scope: "host:agent" });
+    await waitFor(() => expect(result.current.status).toBe("failed"));
+    exportCalls.length = 0;
+    await act(() => result.current.saveFailedRecording());
+    expect(exportCalls).toEqual([{ segments: ["A0", "A1"] }]);
+  });
+
+  it("says a recording is not saved when its writes never land", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const backend = new MemoryDictationRecordingBackend();
+      // A hung IndexedDB: segment writes never complete.
+      backend.putSegment = () => new Promise<void>(() => undefined);
+      const store = new DictationRecordingStore(backend);
+      const { result } = renderDictation(new FakeClient(), store);
+
+      await recordSegments(result, ["h0"]);
+      await act(() => result.current.cancelDictation());
+      expect(result.current.recordingPersistence).toBe("saving");
+      await act(async () => {
+        vi.advanceTimersByTime(10_001);
+      });
+      expect(result.current.recordingPersistence).toBe("memory-only");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

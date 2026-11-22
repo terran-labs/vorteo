@@ -5,6 +5,7 @@ export const DICTATION_PCM_FORMAT = "audio/pcm;rate=16000;bits=16";
 export const DICTATION_SAMPLE_RATE = 16_000;
 const BITS_PER_SAMPLE = 16;
 const CHANNELS = 1;
+export const PCM_BYTES_PER_SECOND = (DICTATION_SAMPLE_RATE * CHANNELS * BITS_PER_SAMPLE) / 8;
 export const WAV_HEADER_BYTES = 44;
 /** Segments decoded between yields, so preparing a long recording never freezes the page. */
 export const WAV_SEGMENTS_PER_YIELD = 32;
