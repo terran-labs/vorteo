@@ -459,4 +459,61 @@ describe("useDictation keeps recordings until a transcript is confirmed", () => 
     const back = renderDictation(new FakeClient(), store, "dictation:thread-a");
     await waitFor(() => expect(back.result.current.status).toBe("failed"));
   });
+
+  it("retries an unsent recording in this composer, never merging it with this composer's own", async () => {
+    const backend = new MemoryDictationRecordingBackend();
+    const store = new DictationRecordingStore(backend);
+    // A recording left in another thread.
+    const elsewhere = renderDictation(new FakeClient(), store, "dictation:other");
+    await recordSegments(elsewhere.result, ["o0", "o1"]);
+    await act(() => elsewhere.result.current.cancelDictation());
+    elsewhere.unmount();
+    await act(async () => {
+      await store.flush();
+    });
+    const [unsent] = await store.listUnsent();
+    expect(unsent?.scope).toBe("dictation:other");
+
+    // This composer holds its own unsent audio: refused, nothing merged.
+    const client = new FakeClient();
+    const here = renderDictation(client, store, "dictation:here");
+    await recordSegments(here.result, ["h0"]);
+    await act(() => here.result.current.cancelDictation());
+    let result: string | undefined;
+    await act(async () => {
+      result = await here.result.current.adoptUnsentRecording(unsent!.key);
+    });
+    expect(result).toBe("busy");
+    await act(() => here.result.current.discardFailedDictation());
+
+    // Idle now: it moves to this thread, is retried, and the transcript deletes it.
+    await act(async () => {
+      result = await here.result.current.adoptUnsentRecording(unsent!.key);
+    });
+    expect(result).toBe("adopted");
+    await waitFor(() =>
+      expect(here.onTranscript).toHaveBeenCalledWith("hello world", expect.anything()),
+    );
+    expect(client.chunksFor(client.starts.at(-1))).toEqual(["o0", "o1"]);
+    await waitFor(() => expect(backend.recordings.has(unsent!.key)).toBe(false));
+  });
+
+  it("deletes the empty row of a composer closed before any audio, and flags a copy whose stop hung", async () => {
+    const backend = new MemoryDictationRecordingBackend();
+    const store = new DictationRecordingStore(backend);
+    const empty = renderDictation(new FakeClient(), store, "dictation:empty");
+    await act(() => empty.result.current.startDictation());
+    empty.unmount();
+    await waitFor(() => expect(backend.recordings.size).toBe(0));
+
+    const hung = renderDictation(new FakeClient(), store, "dictation:hung");
+    await recordSegments(hung.result, ["x0"]);
+    audioSource.stopDelayMs = 60_000;
+    hung.unmount();
+    await new Promise((resolve) => setTimeout(resolve, 5_300));
+    audioSource.stopDelayMs = 0;
+    const reopened = renderDictation(new FakeClient(), store, "dictation:hung");
+    await waitFor(() => expect(reopened.result.current.status).toBe("failed"));
+    expect(reopened.result.current.recordingMayBeTruncated).toBe(true);
+  }, 20_000);
 });

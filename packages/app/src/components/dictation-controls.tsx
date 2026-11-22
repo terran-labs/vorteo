@@ -286,6 +286,32 @@ function OverlayStatusLine({
   );
 }
 
+/** A quiet link from the failed overlay to the Unsent recordings list. */
+function OverlayUnsentLink({
+  action,
+}: {
+  action: { label: string; onPress: () => void } | null | undefined;
+}) {
+  const { theme } = useUnistyles();
+  const textStyle = useMemo(
+    () => ({ color: theme.colors.accentForeground, textDecorationLine: "underline" as const }),
+    [theme.colors.accentForeground],
+  );
+  if (!action) {
+    return null;
+  }
+  return (
+    <Pressable
+      onPress={action.onPress}
+      accessibilityRole="button"
+      hitSlop={12}
+      testID="dictation-other-unsent"
+    >
+      <Text style={textStyle}>{action.label}</Text>
+    </Pressable>
+  );
+}
+
 /** Saves the unsent recording as an audio file; waits while its file is being built. */
 function SaveAudioButton({
   onSave,
@@ -333,7 +359,10 @@ export function DictationOverlay({
   onSave,
   isSavingAudio,
   persistenceNotice,
+  otherUnsentAction,
 }: Omit<DictationControlsProps, "onStart" | "disabled" | "transcript"> & {
+  /** Opens the Unsent recordings list; shown in the failed state when others exist. */
+  otherUnsentAction?: { label: string; onPress: () => void } | null;
   errorText?: string;
   /** Saves the unsent recording as an audio file; shown in the failed state. */
   onSave?: () => void;
@@ -485,7 +514,9 @@ export function DictationOverlay({
       </Pressable>
 
       <View
-        pointerEvents={touch ? "none" : "auto"}
+        // box-none on touch: the centre still passes touches through, but the Unsent
+        // recordings link inside it stays tappable.
+        pointerEvents={touch ? "box-none" : "auto"}
         style={[
           overlayStyles.centerContainer,
           touch && overlayStyles.touchCenter,
@@ -509,6 +540,7 @@ export function DictationOverlay({
           notice={persistenceNotice}
           style={overlayTranscriptTextStyle}
         />
+        <OverlayUnsentLink action={otherUnsentAction} />
       </View>
 
       <View style={[overlayStyles.actionButtonsContainer, touch && overlayStyles.touchActions]}>

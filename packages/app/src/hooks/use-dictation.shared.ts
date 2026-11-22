@@ -46,6 +46,14 @@ export interface UseDictationResult {
   recordingPersistence: import("@/dictation/recording-store").DictationRecordingPersistence | null;
   /** Save audio progress: preparing after a press (button disabled), or ready for a second press. */
   saveAudioState: SaveAudioState;
+  /** The unsent recording was handed over before its stop finished; its end may be missing. */
+  recordingMayBeTruncated: boolean;
+  /**
+   * Retries an unsent recording from the Unsent recordings list in this composer. "busy" when
+   * this composer is recording, sending or holding its own unsent audio; "gone" when another tab
+   * or composer took it first.
+   */
+  adoptUnsentRecording: (key: string) => Promise<AdoptUnsentResult>;
   reset: () => void;
 }
 
@@ -58,6 +66,8 @@ export interface DictationCancelOptions {
 export const SHORT_CAPTURE_DISCARD_MS = 5_000;
 
 export type SaveAudioState = "idle" | "preparing" | "ready";
+
+export type AdoptUnsentResult = "adopted" | "busy" | "gone";
 
 export const DURATION_TICK_MS = 1000;
 export const PCM_DICTATION_FORMAT = DICTATION_PCM_FORMAT;
