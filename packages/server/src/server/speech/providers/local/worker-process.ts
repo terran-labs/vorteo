@@ -1,3 +1,4 @@
+import type { EventEmitter } from "node:events";
 import pino from "pino";
 
 import type { StreamingTranscriptionSession } from "../../speech-provider.js";
@@ -6,7 +7,10 @@ import { getLocalSpeechModelDir, type LocalSttModelId, type LocalTtsModelId } fr
 import { getLocalSttEngine, getLocalTtsEngine } from "./sherpa/model-catalog.js";
 import { SherpaOfflineRecognizerEngine } from "./sherpa/sherpa-offline-recognizer.js";
 import { SherpaOnnxParakeetSTT } from "./sherpa/sherpa-parakeet-stt.js";
-import { SherpaParakeetRealtimeTranscriptionSession } from "./sherpa/sherpa-parakeet-realtime-session.js";
+import {
+  SherpaParakeetRealtimeTranscriptionSession,
+  type RealtimeTranscriptionProgress,
+} from "./sherpa/sherpa-parakeet-realtime-session.js";
 import { SherpaOnnxTTS } from "./sherpa/sherpa-tts.js";
 import {
   ensureSileroVadModel,
@@ -163,6 +167,10 @@ function trackTranscriptionSession(
   });
   session.on("transcript", (payload) => {
     sendToParent({ type: "session.transcript", sessionId, payload });
+  });
+  // Only the realtime dictation session reports progress; other sessions never emit it.
+  (session as unknown as EventEmitter).on("progress", (payload: RealtimeTranscriptionProgress) => {
+    sendToParent({ type: "session.progress", sessionId, payload });
   });
   session.on("error", (err) => {
     sendToParent({

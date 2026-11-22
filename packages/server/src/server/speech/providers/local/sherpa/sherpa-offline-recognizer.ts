@@ -61,6 +61,8 @@ interface SherpaOfflineRecognizerNative {
   config?: { featConfig?: { sampleRate?: number } };
   createStream: () => unknown;
   decode: (stream: unknown) => void;
+  /** Decodes on libuv's thread pool; present in sherpa-onnx-node 1.12 and later. */
+  decodeAsync?: (stream: unknown) => Promise<{ text?: string } | string | undefined>;
   getResult: (stream: unknown) => { text?: string } | string | undefined;
   free?: () => void;
 }
@@ -71,10 +73,24 @@ interface SherpaOfflineStreamNative {
   free?: () => void;
 }
 
+function resultText(result: { text?: string } | string | undefined): string {
+  return String(
+    (typeof result === "object" && result && "text" in result ? result.text : undefined) ??
+      result ??
+      "",
+  ).trim();
+}
+
 export class SherpaOfflineRecognizerEngine {
   public readonly recognizer: SherpaOfflineRecognizerNative;
   public readonly sampleRate: number;
+  /**
+   * Longest audio one decode covers, or null when unbounded. Sherpa's Whisper decodes only the
+   * first 30 seconds and discards the rest with a stderr warning.
+   */
+  public readonly maxDecodeSeconds: number | null;
   private readonly logger: pino.Logger;
+  private decodeQueue: Promise<unknown> = Promise.resolve();
 
   constructor(config: SherpaOfflineRecognizerConfig, logger: pino.Logger) {
     this.logger = logger.child({
@@ -87,6 +103,7 @@ export class SherpaOfflineRecognizerEngine {
       assertFileExists(path.join(config.modelDir, name), `${config.engine.family} model file`);
     }
 
+    this.maxDecodeSeconds = config.engine.family === "whisper" ? 30 : null;
     const sherpa = loadSherpaOnnxNode();
 
     const recognizerConfig = {
@@ -142,6 +159,25 @@ export class SherpaOfflineRecognizerEngine {
     } else {
       stream.acceptWaveform(sampleRate, samples);
     }
+  }
+
+  /**
+   * Decodes a stream and returns its trimmed text. The native decode runs off the JavaScript
+   * thread when the binding supports it, so the worker keeps answering IPC during a decode that
+   * can take tens of seconds. Decodes on one recognizer run one at a time, because voice and
+   * dictation sessions can share it.
+   */
+  decodeText(stream: SherpaOfflineStreamNative): Promise<string> {
+    const run = async (): Promise<string> => {
+      if (typeof this.recognizer.decodeAsync === "function") {
+        return resultText(await this.recognizer.decodeAsync(stream));
+      }
+      this.recognizer.decode(stream);
+      return resultText(this.recognizer.getResult(stream));
+    };
+    const decoded = this.decodeQueue.then(run, run);
+    this.decodeQueue = decoded.catch(() => undefined);
+    return decoded;
   }
 
   free(): void {

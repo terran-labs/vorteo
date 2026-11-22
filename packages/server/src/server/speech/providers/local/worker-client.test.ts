@@ -105,6 +105,7 @@ class PausedIpcWorker {
 function createClient(options?: {
   idleTtlMs?: number;
   requestTimeoutMs?: number;
+  sessionStartBudgetMs?: number;
   sessionStartWarmTimeoutMs?: number;
   sessionStartColdTimeoutMs?: number;
 }) {
@@ -118,6 +119,7 @@ function createClient(options?: {
       voiceTtsModel: "kokoro-en-v0_19",
     },
     requestTimeoutMs: options?.requestTimeoutMs ?? 1000,
+    sessionStartBudgetMs: options?.sessionStartBudgetMs,
     sessionStartWarmTimeoutMs: options?.sessionStartWarmTimeoutMs,
     sessionStartColdTimeoutMs: options?.sessionStartColdTimeoutMs,
     idleTtlMs: options?.idleTtlMs ?? 1000,
@@ -480,7 +482,7 @@ describe("LocalSpeechWorkerClient session start recovery", () => {
     expect(workers[0].kills).toBe(0);
   });
 
-  it("keeps a busy worker and its streaming session, and closes a start that answers late", async () => {
+  it("never kills a healthy slow worker for a start, and closes a start that answers late", async () => {
     const { client, workers } = createClient(timeouts);
     const active = await connectSession(client, () => workers[0]);
     const activeErrors: Error[] = [];
@@ -492,13 +494,8 @@ describe("LocalSpeechWorkerClient session start recovery", () => {
     const lateConnect = late.connect();
     lateConnect.catch(() => {});
     const lateRequest = sentOfType(workers[0], "session.create").at(-1)!;
-    // The worker is still serving the streaming session while the new start waits.
-    await sleep(20);
-    workers[0].emitWorkerMessage({
-      type: "session.transcript",
-      sessionId: active.request.sessionId,
-      payload: { segmentId: "seg-1", transcript: "partial", isFinal: false },
-    });
+    // The worker says nothing while the new start waits, but it has not been silent for the
+    // whole request timeout, so it is slow, not dead.
 
     await expect(lateConnect).rejects.toMatchObject({ code: "speech_worker_timeout" });
     expect(workers).toHaveLength(1);
@@ -512,11 +509,13 @@ describe("LocalSpeechWorkerClient session start recovery", () => {
     ]);
   });
 
-  it("fails streaming sessions with speech_worker_timeout when the shared worker is dead to them too", async () => {
+  it("replaces a shared worker silent for the whole request timeout and fails its sessions", async () => {
     const { client, workers } = createClient(timeouts);
     const active = await connectSession(client, () => workers[0]);
     const activeErrors: Error[] = [];
     active.session.on("error", (error: Error) => activeErrors.push(error));
+    // Nothing at all from the worker for longer than the request timeout.
+    await sleep(timeouts.requestTimeoutMs + 20);
 
     const next = new WorkerBackedSpeechToTextProvider(client, "dictationStt").createSession({
       logger: pino({ level: "silent" }),
@@ -531,5 +530,48 @@ describe("LocalSpeechWorkerClient session start recovery", () => {
     expect(workers[0].kills).toBe(1);
     expect(activeErrors).toHaveLength(1);
     expect(activeErrors[0]).toMatchObject({ code: "speech_worker_timeout" });
+  });
+
+  it("keeps the whole start, retry included, within the start budget", async () => {
+    const { client, workers } = createClient({
+      ...timeouts,
+      sessionStartWarmTimeoutMs: 100,
+      sessionStartColdTimeoutMs: 100,
+      sessionStartBudgetMs: 150,
+    });
+    const session = new WorkerBackedSpeechToTextProvider(client, "dictationStt").createSession({
+      logger: pino({ level: "silent" }),
+    });
+
+    const startedAt = Date.now();
+    await expect(session.connect()).rejects.toMatchObject({ code: "speech_worker_timeout" });
+    expect(Date.now() - startedAt).toBeLessThan(250);
+    expect(workers).toHaveLength(2);
+  });
+
+  it("keeps requests alive while the worker reports progress and forwards it to the session", async () => {
+    const { client, workers } = createClient({ ...timeouts, requestTimeoutMs: 60 });
+    const active = await connectSession(client, () => workers[0]);
+    const progress: unknown[] = [];
+    active.session.on("progress", (event) => progress.push(event));
+
+    const synthesize = client.synthesizeSpeech("queued behind decoding");
+    const request = sentOfType(workers[0], "tts.synthesize")[0];
+    // Decodes keep completing for well past the inactivity bound.
+    for (let decoded = 1; decoded <= 5; decoded++) {
+      await sleep(40);
+      workers[0].emitWorkerMessage({
+        type: "session.progress",
+        sessionId: active.request.sessionId,
+        payload: { decodedSegments: decoded, pendingSegments: 5 - decoded, pendingAudioMs: 0 },
+      });
+    }
+    workers[0].respond(request, {
+      audio: bufferToWorkerBytes(Buffer.from([1])),
+      format: "pcm;rate=24000",
+    });
+
+    await expect(synthesize).resolves.toMatchObject({ format: "pcm;rate=24000" });
+    expect(progress.at(-1)).toEqual({ decodedSegments: 5, pendingSegments: 0, pendingAudioMs: 0 });
   });
 });

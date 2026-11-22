@@ -26,22 +26,34 @@ import type {
 import { bufferToWorkerBytes, workerBytesToBuffer } from "./worker-bytes.js";
 import { SpeechProviderError, isSpeechProviderError } from "../speech-provider-error.js";
 
-/** Bound for ordinary worker requests, and for a session start that queues behind other work. */
-const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
 /**
- * Bound for starting a session on a worker that has already built that session kind and has
- * no other work. Creating a session on a warm worker does no model work, so a start that takes
- * this long means the worker is wedged. Measured warm starts on the Host take well under a second.
+ * Requests other than session starts fail only after the worker has sent nothing at all for
+ * this long; any message restarts the timer. Native decodes run off the worker's JavaScript
+ * thread, so a healthy worker answers within moments even while decoding, and a worker silent
+ * this long is wedged. It also exceeds the longest single decode measured (55 seconds for
+ * whisper-turbo on efficiency cores), for a binding without an async decode.
+ */
+const DEFAULT_REQUEST_TIMEOUT_MS = 60000;
+/**
+ * Bound for starting a session kind the worker has already built. A warm start does no model
+ * work and the worker's thread is free during decodes, so measured warm starts take well under
+ * a second.
  */
 const SESSION_START_WARM_TIMEOUT_MS = 8000;
 /**
  * Bound for the first start of a session kind on a worker, which includes spawning the worker
  * and loading the recognizer. Host logs show 1.1 to 2.7 seconds for this (whisper-turbo,
- * parakeet) and loading whisper-turbo in-process took 2.0 seconds at a load average near 24.
- * Twenty seconds leaves wide headroom while the warm bound plus one cold retry stays under the
- * client's 30 second start wait.
+ * parakeet), and loading whisper-turbo in-process took 0.7 to 3.6 seconds at load averages of 17
+ * to 24.
  */
 const SESSION_START_COLD_TIMEOUT_MS = 20000;
+/**
+ * The whole start, including one retry on a fresh worker, finishes within this budget so the
+ * failure reaches the client before its own 30 second start wait gives up.
+ */
+const SESSION_START_BUDGET_MS = 28000;
+/** A retry with less of the budget left than this would only fail late; give up instead. */
+const SESSION_START_MIN_RETRY_MS = 3000;
 const DEFAULT_IDLE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_LOCAL_SAMPLE_RATE = 16000;
 const STDERR_TAIL_MAX_CHARS = 8000;
@@ -69,6 +81,8 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
+  /** Set when the request's timer restarts on any message from the worker. */
+  restartTimer?: () => void;
   type: LocalSpeechWorkerRequest["type"];
   summary: Record<string, unknown>;
   startedAt: number;
@@ -78,6 +92,7 @@ interface LocalSpeechWorkerClientOptions {
   config: LocalSpeechWorkerConfig;
   logger: pino.Logger;
   requestTimeoutMs?: number;
+  sessionStartBudgetMs?: number;
   sessionStartWarmTimeoutMs?: number;
   sessionStartColdTimeoutMs?: number;
   idleTtlMs?: number;
@@ -196,6 +211,7 @@ export class LocalSpeechWorkerClient {
   private readonly config: LocalSpeechWorkerConfig;
   private readonly logger: pino.Logger;
   private readonly requestTimeoutMs: number;
+  private readonly sessionStartBudgetMs: number;
   private readonly sessionStartWarmTimeoutMs: number;
   private readonly sessionStartColdTimeoutMs: number;
   private readonly idleTtlMs: number;
@@ -215,8 +231,8 @@ export class LocalSpeechWorkerClient {
   private readonly connectingSessionIds = new Set<string>();
   /** Session kinds the current worker has already built, so later starts get the warm bound. */
   private workerSessionKinds = new Set<LocalSpeechSessionKind>();
-  /** Messages received from the current worker, used to tell a busy worker from a wedged one. */
-  private workerMessageCount = 0;
+  /** When the current worker spawned or last sent anything; long silence means it is wedged. */
+  private lastWorkerActivityAt = 0;
   /** `session.create` requests that timed out; a late success must close the session it made. */
   private readonly abandonedSessionCreates = new Map<string, string>();
 
@@ -224,6 +240,7 @@ export class LocalSpeechWorkerClient {
     this.config = options.config;
     this.logger = options.logger.child({ component: "local-speech-worker-client" });
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.sessionStartBudgetMs = options.sessionStartBudgetMs ?? SESSION_START_BUDGET_MS;
     this.sessionStartWarmTimeoutMs =
       options.sessionStartWarmTimeoutMs ?? SESSION_START_WARM_TIMEOUT_MS;
     this.sessionStartColdTimeoutMs =
@@ -259,13 +276,14 @@ export class LocalSpeechWorkerClient {
     emitter: EventEmitter,
   ): Promise<{ sessionId: string; requiredSampleRate: number }> {
     const sessionId = randomUUID();
+    const deadline = Date.now() + this.sessionStartBudgetMs;
     this.connectingSessionIds.add(sessionId);
     try {
       for (let attempt = 1; ; attempt++) {
         // A teardown or exit during the previous attempt clears session bookkeeping.
         this.activeSessionIds.add(sessionId);
         this.sessionEmitters.set(sessionId, emitter);
-        const outcome = await this.attemptSessionCreate(kind, sessionId, attempt);
+        const outcome = await this.attemptSessionCreate(kind, sessionId, attempt, deadline);
         if (outcome.ok) {
           return { sessionId, requiredSampleRate: outcome.result.requiredSampleRate };
         }
@@ -286,19 +304,22 @@ export class LocalSpeechWorkerClient {
   /**
    * Starts a session once. A start that fails because the worker is unusable (timed out while
    * unresponsive, exited, or unreachable) tears that worker down and asks for one retry on a
-   * fresh worker. A worker that is busy serving other sessions is never killed for a slow start:
-   * if it has sent anything since this start was sent, the start fails and the worker stays.
+   * fresh worker, if enough of the start budget remains. A worker serving other sessions is
+   * never killed for a slow start unless it has also been silent for the whole request timeout,
+   * the same silence that fails its other requests.
    */
   private async attemptSessionCreate(
     kind: LocalSpeechSessionKind,
     sessionId: string,
     attempt: number,
+    deadline: number,
   ): Promise<
     | { ok: true; result: LocalSpeechCreateSessionResult }
     | { ok: false; retry: boolean; error: Error }
   > {
-    const canRetry = attempt === 1;
     const sentAt = Date.now();
+    const minRetryMs = Math.min(SESSION_START_MIN_RETRY_MS, this.sessionStartBudgetMs / 4);
+    const canRetry = () => attempt === 1 && deadline - Date.now() >= minRetryMs;
     let worker: LocalSpeechWorkerProcess;
     try {
       worker = this.ensureWorker();
@@ -309,21 +330,21 @@ export class LocalSpeechWorkerClient {
         { cause: err },
       );
       this.logger.warn(
-        { err: error, requestType: "session.create", kind, attempt, retry: canRetry },
+        { err: error, requestType: "session.create", kind, attempt, retry: canRetry() },
         "Local speech worker spawn failed",
       );
-      return { ok: false, retry: canRetry, error };
+      return { ok: false, retry: canRetry(), error };
     }
     const workerPid = this.workerPid;
-    const messageCountAtSend = this.workerMessageCount;
     const otherWork = this.hasOtherWork(sessionId);
     const cold = !this.workerSessionKinds.has(kind);
-    let timeoutMs = this.sessionStartWarmTimeoutMs;
-    if (otherWork) {
-      timeoutMs = this.requestTimeoutMs;
-    } else if (cold) {
-      timeoutMs = this.sessionStartColdTimeoutMs;
-    }
+    const timeoutMs = Math.max(
+      1,
+      Math.min(
+        cold ? this.sessionStartColdTimeoutMs : this.sessionStartWarmTimeoutMs,
+        deadline - sentAt,
+      ),
+    );
 
     try {
       const result = await this.sendRequest<LocalSpeechCreateSessionResult>(
@@ -345,28 +366,28 @@ export class LocalSpeechWorkerClient {
       const context = { workerPid, requestType: "session.create", kind, attempt, elapsedMs };
 
       if (code === "speech_worker_timeout") {
-        const busy =
-          otherWork && this.worker === worker && this.workerMessageCount > messageCountAtSend;
+        const silentMs = Date.now() - this.lastWorkerActivityAt;
+        const busy = otherWork && this.worker === worker && silentMs < this.requestTimeoutMs;
         if (busy) {
           this.logger.warn(
-            { ...context, timeoutMs, retry: false, workerState: "busy" },
+            { ...context, timeoutMs, silentMs, retry: false, workerState: "busy" },
             "Local speech session start timed out behind other work; keeping the worker",
           );
           return { ok: false, retry: false, error };
         }
         this.logger.warn(
-          { ...context, timeoutMs, retry: canRetry, workerState: "unresponsive" },
+          { ...context, timeoutMs, silentMs, retry: canRetry(), workerState: "unresponsive" },
           "Local speech session start timed out; replacing the worker",
         );
         this.teardownWorker(worker, "session.create timed out", sessionId);
-        return { ok: false, retry: canRetry, error };
+        return { ok: false, retry: canRetry(), error };
       }
       if (code === "speech_worker_exited" || code === "speech_unavailable") {
         this.logger.warn(
-          { ...context, err: error, retry: canRetry },
+          { ...context, err: error, retry: canRetry() },
           "Local speech session start failed because the worker is unusable",
         );
-        return { ok: false, retry: canRetry, error };
+        return { ok: false, retry: canRetry(), error };
       }
       // The worker answered with an error, such as a missing model; a new worker would too.
       return { ok: false, retry: false, error };
@@ -389,7 +410,7 @@ export class LocalSpeechWorkerClient {
   private teardownWorker(
     worker: LocalSpeechWorkerProcess,
     reason: string,
-    retainedSessionId: string,
+    retainedSessionId: string | null,
   ): void {
     if (this.worker !== worker) {
       return;
@@ -521,13 +542,15 @@ export class LocalSpeechWorkerClient {
     const requestId = randomUUID();
     const message = { ...input, requestId } as LocalSpeechWorkerRequest;
     const requestSummary = summarizeWorkerRequest(message);
+    // Session starts carry a fixed bound; every other request waits while the worker shows life.
+    const restartsOnActivity = options.timeoutMs === undefined;
     const timeoutMs = options.timeoutMs ?? this.requestTimeoutMs;
     this.inFlightRequests++;
     this.clearIdleTimer();
 
     return new Promise<T>((resolve, reject) => {
       const startedAt = Date.now();
-      const timeout = setTimeout(() => {
+      const onTimeout = () => {
         this.pendingRequests.delete(requestId);
         this.inFlightRequests = Math.max(0, this.inFlightRequests - 1);
         options.onTimeout?.(requestId);
@@ -551,15 +574,26 @@ export class LocalSpeechWorkerClient {
             `Local speech worker request timed out: ${input.type}`,
           ),
         );
-      }, timeoutMs);
-      this.pendingRequests.set(requestId, {
+        if (restartsOnActivity) {
+          // The worker sent nothing for the whole timeout while it had work: it is wedged.
+          this.teardownWorker(worker, `${input.type} got no reply`, null);
+        }
+      };
+      const entry: PendingRequest = {
         resolve: (value) => resolve(value as T),
         reject,
-        timeout,
+        timeout: setTimeout(onTimeout, timeoutMs),
         type: message.type,
         summary: requestSummary,
         startedAt,
-      });
+      };
+      if (restartsOnActivity) {
+        entry.restartTimer = () => {
+          clearTimeout(entry.timeout);
+          entry.timeout = setTimeout(onTimeout, timeoutMs);
+        };
+      }
+      this.pendingRequests.set(requestId, entry);
 
       worker.send(message, (error) => {
         if (!error) {
@@ -589,7 +623,7 @@ export class LocalSpeechWorkerClient {
     this.worker = worker;
     this.workerPid = worker.pid ?? null;
     this.workerSessionKinds = new Set();
-    this.workerMessageCount = 0;
+    this.lastWorkerActivityAt = Date.now();
     // Abandoned starts belonged to the previous worker, which is gone.
     this.abandonedSessionCreates.clear();
     this.stderrTail = "";
@@ -638,7 +672,10 @@ export class LocalSpeechWorkerClient {
       // A replaced worker's late messages must not touch the new worker's sessions.
       return;
     }
-    this.workerMessageCount++;
+    this.lastWorkerActivityAt = Date.now();
+    for (const pending of this.pendingRequests.values()) {
+      pending.restartTimer?.();
+    }
     if (isResponse(message)) {
       const pending = this.pendingRequests.get(message.requestId);
       if (!pending) {
@@ -676,6 +713,9 @@ export class LocalSpeechWorkerClient {
         return;
       case "session.error":
         emitter.emit("error", new Error(message.error));
+        return;
+      case "session.progress":
+        emitter.emit("progress", message.payload);
         return;
     }
   }

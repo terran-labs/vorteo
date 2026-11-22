@@ -107,6 +107,12 @@ export type LocalSpeechWorkerEvent =
       type: "session.error";
       sessionId: string;
       error: string;
+    }
+  | {
+      /** Decoding progress for a dictation session; see RealtimeTranscriptionProgress. */
+      type: "session.progress";
+      sessionId: string;
+      payload: { decodedSegments: number; pendingSegments: number; pendingAudioMs: number };
     };
 
 export type LocalSpeechWorkerToParentMessage = LocalSpeechWorkerResponse | LocalSpeechWorkerEvent;
