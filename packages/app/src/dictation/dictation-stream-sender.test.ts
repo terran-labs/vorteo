@@ -339,4 +339,42 @@ describe("DictationStreamSender", () => {
     });
     expect(client.finishes).toEqual([{ dictationId: "d1", finalSeq: 479 }]);
   });
+  it("cancels a timed-out start, keeps the audio and paces the replay against acknowledgements", async () => {
+    const client = new FakeDaemonClient();
+    client.autoAck = false;
+    const ids = ["d1", "d2"];
+    const sender = new DictationStreamSender({
+      client,
+      format: "audio/pcm;rate=16000;bits=16",
+      createDictationId: () => ids.shift() ?? "dX",
+    });
+    const start = vi.spyOn(client, "startDictationStream");
+    start.mockRejectedValueOnce(new Error("Timeout waiting for message"));
+
+    client.isConnected = false;
+    for (let seq = 0; seq < 100; seq += 1) {
+      sender.enqueueSegment(`segment-${seq}`);
+    }
+    client.isConnected = true;
+    await expect(sender.restartStream("start")).rejects.toThrow("Timeout");
+    expect(client.cancels).toEqual(["d1"]);
+    expect(sender.getSegmentCount()).toBe(100);
+
+    const finish = sender.finish(sender.getFinalSeq());
+    await tick();
+    await tick();
+    expect(client.chunks.map((chunk) => chunk.seq)).toEqual(
+      Array.from({ length: 32 }, (_, i) => i),
+    );
+
+    client.emitAck("d2", 31);
+    expect(client.chunks).toHaveLength(64);
+    client.emitAck("d2", 63);
+    client.emitAck("d2", 95);
+    client.emitAck("d2", 99);
+    await expect(finish).resolves.toEqual({ dictationId: "d2", text: "ok" });
+    expect(client.chunks.map((chunk) => chunk.audio)).toEqual(
+      Array.from({ length: 100 }, (_, seq) => `segment-${seq}`),
+    );
+  });
 });

@@ -98,6 +98,7 @@ import {
 import { projectIconCache } from "@/projects/icon-cache";
 import { createPerformanceTrace } from "@/performance/native-trace";
 import { revokePushNotifications } from "@/push-notifications";
+import { getDeviceDictationRecordingStore } from "@/dictation/device-recording-store";
 import { createAppWebSocketFactory } from "./websocket-factory";
 
 export type HostRuntimeConnectionStatus = "idle" | "connecting" | "online" | "offline" | "error";
@@ -2316,6 +2317,8 @@ export class HostRuntimeStore {
 
   async removeHost(serverId: string): Promise<void> {
     await this.revokePushNotifications({ client: this.getClient(serverId), serverId });
+    // Unsent dictation audio is private to the host it was recorded for.
+    await getDeviceDictationRecordingStore().deleteForServer(serverId);
     const remaining = this.hosts.filter((daemon) => daemon.serverId !== serverId);
     this.setHostsAndSync(remaining);
     await this.persistHosts();
