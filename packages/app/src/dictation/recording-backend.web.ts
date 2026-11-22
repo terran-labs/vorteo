@@ -1,5 +1,9 @@
 import { demoStorageName } from "@/demo/mode";
-import type { DictationRecordingBackend, StoredDictationRecording } from "./recording-store";
+import type {
+  DictationRecordingBackend,
+  DictationRecordingClaimRelease,
+  StoredDictationRecording,
+} from "./recording-store";
 
 // IndexedDB keeps recordings across reloads, tab closes and PWA restarts on web and iOS Safari.
 const DATABASE_NAME = demoStorageName("vorteo-dictation-recordings");
@@ -89,9 +93,36 @@ export function createIndexedDbDictationRecordingBackend(
   };
 }
 
+/**
+ * Holds a Web Lock per recording for as long as this tab owns it, so a second tab on the same
+ * thread is never offered a recording the first is writing, retrying or discarding. The lock is
+ * dropped automatically when the tab closes or crashes.
+ */
+export function createWebLockClaim(
+  locks: LockManager,
+): (id: string) => Promise<DictationRecordingClaimRelease | null> {
+  return (id) =>
+    new Promise((resolve, reject) => {
+      locks
+        .request(`vorteo-dictation-recording:${id}`, { ifAvailable: true }, (lock) => {
+          if (!lock) {
+            resolve(null);
+            return undefined;
+          }
+          return new Promise<void>((release) => {
+            resolve(() => release());
+          });
+        })
+        .catch(reject);
+    });
+}
+
 export function createDeviceDictationRecordingBackend(): DictationRecordingBackend | null {
   if (typeof indexedDB === "undefined" || typeof IDBKeyRange === "undefined") {
     return null;
   }
-  return createIndexedDbDictationRecordingBackend(indexedDB, IDBKeyRange);
+  const backend = createIndexedDbDictationRecordingBackend(indexedDB, IDBKeyRange);
+  const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
+  // Without Web Locks (Safari before 15.4) the store falls back to the updated-at heartbeat.
+  return locks ? { ...backend, claim: createWebLockClaim(locks) } : backend;
 }

@@ -30,6 +30,8 @@ type ConnectionListener = (state: { status: string }) => void;
 class FakeClient {
   isConnected = true;
   failStarts = false;
+  failFinishes = 0;
+  finishText = "hello world";
   starts: string[] = [];
   chunks: Array<{ dictationId: string; seq: number; audio: string }> = [];
   finishes: Array<{ dictationId: string; finalSeq: number }> = [];
@@ -56,7 +58,11 @@ class FakeClient {
 
   async finishDictationStream(dictationId: string, finalSeq: number) {
     this.finishes.push({ dictationId, finalSeq });
-    return { dictationId, text: "hello world" };
+    if (this.failFinishes > 0) {
+      this.failFinishes -= 1;
+      throw new Error("Timeout waiting for message");
+    }
+    return { dictationId, text: this.finishText };
   }
 
   cancelDictationStream(dictationId: string): void {
@@ -91,15 +97,29 @@ class FakeClient {
 
 function renderDictation(client: FakeClient, store: DictationRecordingStore) {
   const onTranscript = vi.fn();
-  const hook = renderHook(() =>
-    useDictation({
-      client: client as unknown as UseDictationOptions["client"],
-      onTranscript,
-      recordingScope: "host:agent",
-      recordingStore: store,
-    }),
+  const hook = renderHook(
+    ({ scope }: { scope: string }) =>
+      useDictation({
+        client: client as unknown as UseDictationOptions["client"],
+        onTranscript,
+        recordingScope: scope,
+        recordingStore: store,
+      }),
+    { initialProps: { scope: "host:agent" } },
   );
   return { ...hook, onTranscript };
+}
+
+async function recordSegments(
+  result: { current: ReturnType<typeof useDictation> },
+  segments: string[],
+) {
+  await act(() => result.current.startDictation());
+  act(() => {
+    for (const segment of segments) {
+      audioSource.config?.onPcmSegment(segment);
+    }
+  });
 }
 
 describe("useDictation keeps recordings until a transcript is confirmed", () => {
@@ -174,5 +194,81 @@ describe("useDictation keeps recordings until a transcript is confirmed", () => 
     );
     expect(client.chunksFor(client.starts.at(-1))).toEqual(["a", "b", "c", "d"]);
     await waitFor(() => expect(backend.recordings.size).toBe(0));
+  });
+
+  it("keeps every segment when dictation is cancelled, and Retry still sends them", async () => {
+    const client = new FakeClient();
+    const backend = new MemoryDictationRecordingBackend();
+    const store = new DictationRecordingStore(backend);
+    const { result, onTranscript } = renderDictation(client, store);
+
+    await recordSegments(result, ["c0", "c1", "c2"]);
+    await act(() => result.current.cancelDictation());
+
+    expect(result.current.status).toBe("failed");
+    await store.flush();
+    expect([...backend.segments.values()][0]).toEqual(["c0", "c1", "c2"]);
+
+    await act(() => result.current.retryFailedDictation());
+    expect(client.chunksFor(client.starts.at(-1))).toEqual(["c0", "c1", "c2"]);
+    expect(onTranscript).toHaveBeenCalledWith("hello world", expect.anything());
+    await waitFor(() => expect(backend.recordings.size).toBe(0));
+  });
+
+  it("treats an empty final transcript as a failure and keeps the audio", async () => {
+    const client = new FakeClient();
+    client.finishText = "   ";
+    const backend = new MemoryDictationRecordingBackend();
+    const store = new DictationRecordingStore(backend);
+    const { result, onTranscript } = renderDictation(client, store);
+
+    await recordSegments(result, ["e0", "e1"]);
+    await act(() => result.current.confirmDictation());
+
+    expect(result.current.status).toBe("failed");
+    expect(onTranscript).not.toHaveBeenCalled();
+    await store.flush();
+    expect(backend.recordings.size).toBe(1);
+    expect([...backend.segments.values()][0]).toEqual(["e0", "e1"]);
+  });
+
+  it("cancels the timed-out stream on the server before a Retry replays", async () => {
+    const client = new FakeClient();
+    client.failFinishes = 1;
+    const store = new DictationRecordingStore(new MemoryDictationRecordingBackend());
+    const { result } = renderDictation(client, store);
+
+    await recordSegments(result, ["f0", "f1"]);
+    await act(() => result.current.confirmDictation());
+    expect(result.current.status).toBe("failed");
+    const timedOut = client.finishes[0]!.dictationId;
+
+    await act(() => result.current.retryFailedDictation());
+    expect(client.cancels).toContain(timedOut);
+    const retryId = client.starts.at(-1);
+    expect(retryId).not.toBe(timedOut);
+    expect(client.chunksFor(retryId)).toEqual(["f0", "f1"]);
+  });
+
+  it("does not carry one thread's unsent audio into another thread's composer", async () => {
+    const client = new FakeClient();
+    const store = new DictationRecordingStore(new MemoryDictationRecordingBackend());
+    const { result, rerender, onTranscript } = renderDictation(client, store);
+
+    await recordSegments(result, ["a0", "a1"]);
+    await act(() => result.current.cancelDictation());
+    expect(result.current.status).toBe("failed");
+
+    rerender({ scope: "host:other" });
+    await waitFor(() => expect(result.current.status).toBe("idle"));
+    const startsBefore = client.starts.length;
+    await act(() => result.current.retryFailedDictation());
+    expect(client.starts).toHaveLength(startsBefore);
+
+    rerender({ scope: "host:agent" });
+    await waitFor(() => expect(result.current.status).toBe("failed"));
+    await act(() => result.current.retryFailedDictation());
+    expect(client.chunksFor(client.starts.at(-1))).toEqual(["a0", "a1"]);
+    expect(onTranscript).toHaveBeenCalledTimes(1);
   });
 });

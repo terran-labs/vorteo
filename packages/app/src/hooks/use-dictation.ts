@@ -27,6 +27,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     canConfirm,
     enableDuration = false,
     recordingScope,
+    recordingServerId,
   } = options;
   // Only composers that name their thread persist audio; tests inject their own store.
   const recordingStore =
@@ -38,6 +39,10 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   /** One automatic Retry when the connection returns after a failure while disconnected. */
   const autoRetryArmedRef = useRef(false);
   const retryRef = useRef<() => Promise<void>>(async () => undefined);
+  /** Scope the in-memory audio belongs to; it never follows the composer into another thread. */
+  const audioScopeRef = useRef<string | undefined>(recordingScope);
+  /** Unsent audio of other threads this composer showed, kept in memory until it returns. */
+  const parkedRef = useRef(new Map<string, { segments: string[]; storedId: string | null }>());
 
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -217,25 +222,6 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     });
   }, [client]);
 
-  const handleStreamingTranscriptionSuccess = useCallback(
-    (text: string, requestId: string) => {
-      setIsProcessing(false);
-      isProcessingRef.current = false;
-      setDuration(0);
-      setStatus("idle");
-
-      const transcriptText =
-        text.trim().length > 0 ? text.trim() : latestPartialTranscriptRef.current.trim();
-      clearStreamingState();
-
-      if (transcriptText) {
-        onTranscriptRef.current?.(transcriptText, { requestId });
-      }
-      deleteStoredRecording();
-    },
-    [clearStreamingState, deleteStoredRecording, setStatus],
-  );
-
   const handleDictationFailure = useCallback(
     (failure: unknown) => {
       const normalized = toError(failure);
@@ -262,6 +248,39 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     },
     [client, deleteStoredRecording, reportError, setStatus, stopDurationTracking],
   );
+
+  /**
+   * Applies a final transcript. Only a non-empty final text counts as confirmation and deletes
+   * the stored audio; an empty final keeps the audio and offers Retry. A partial transcript is
+   * never used in place of the final, since it may be missing the end of the recording.
+   */
+  const handleStreamingTranscriptionSuccess = useCallback(
+    (text: string, requestId: string) => {
+      const transcriptText = text.trim();
+      if (!transcriptText) {
+        handleDictationFailure(new Error(t("message.dictation.failedRetry")));
+        return;
+      }
+      setIsProcessing(false);
+      isProcessingRef.current = false;
+      setDuration(0);
+      setStatus("idle");
+      clearStreamingState();
+      onTranscriptRef.current?.(transcriptText, { requestId });
+      deleteStoredRecording();
+    },
+    [clearStreamingState, deleteStoredRecording, handleDictationFailure, setStatus, t],
+  );
+
+  /** Ends a confirm that captured no audio at all; there is nothing to keep or transcribe. */
+  const finishWithoutAudio = useCallback(() => {
+    setIsProcessing(false);
+    isProcessingRef.current = false;
+    setDuration(0);
+    setStatus("idle");
+    clearStreamingState();
+    deleteStoredRecording();
+  }, [clearStreamingState, deleteStoredRecording, setStatus]);
 
   const audio = useDictationAudioSource({
     onPcmSegment: (audioData) => {
@@ -317,9 +336,10 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     setStatus("recording");
     clearStreamingState();
     autoRetryArmedRef.current = false;
+    audioScopeRef.current = recordingScope;
     storedRecordingIdRef.current =
       recordingScope && recordingStoreRef.current
-        ? recordingStoreRef.current.begin(recordingScope, PCM_DICTATION_FORMAT)
+        ? recordingStoreRef.current.begin(recordingScope, PCM_DICTATION_FORMAT, recordingServerId)
         : null;
 
     try {
@@ -362,6 +382,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     deleteStoredRecording,
     enableDuration,
     recordingScope,
+    recordingServerId,
     reportError,
     setStatus,
     startDurationTracking,
@@ -396,9 +417,15 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       setIsRecording(false);
       setIsProcessing(false);
       isProcessingRef.current = false;
-      setStatus("idle");
-      clearStreamingState();
-      deleteStoredRecording();
+      // Cancel stops capture and the stream but never deletes audio: Escape, the voice button
+      // and cancelling an upload all land on Retry and Discard. Only Discard deletes.
+      if (senderRef.current?.hasSegments()) {
+        setStatus("failed");
+      } else {
+        setStatus("idle");
+        clearStreamingState();
+        deleteStoredRecording();
+      }
       actionGateRef.current.cancelling = false;
     }
   }, [
@@ -440,7 +467,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
 
       const finalSeq = senderRef.current?.getFinalSeq() ?? -1;
       if (finalSeq < 0) {
-        handleStreamingTranscriptionSuccess("", generateMessageId());
+        finishWithoutAudio();
         return;
       }
 
@@ -460,6 +487,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     canConfirm,
     handleDictationFailure,
     handleStreamingTranscriptionSuccess,
+    finishWithoutAudio,
     setStatus,
     stopDurationTracking,
     ensureFinalTranscript,
@@ -488,8 +516,10 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     const attemptId = attemptGuardRef.current.next();
 
     try {
-      // Close any half-open stream, then replay every segment from seq 0 on a new stream.
-      sender.cancel();
+      // Cancel every stream the server may still be transcribing, including one whose finish
+      // timed out here, then replay every segment from seq 0 on a new stream.
+      await sender.cancelOpenStreams();
+      attemptGuardRef.current.assertCurrent(attemptId);
       await sender.restartStream("retry");
       attemptGuardRef.current.assertCurrent(attemptId);
       const text = await ensureFinalTranscript(sender.getFinalSeq());
@@ -524,9 +554,48 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     deleteStoredRecording();
   }, [clearStreamingState, deleteStoredRecording, setStatus]);
 
-  // Offer back a recording this composer left without a confirmed transcript: after a reload,
-  // an app kill, a Host restart or leaving the thread.
+  // Tie unsent audio to its thread. When this composer is reused for another thread without a
+  // remount, park the previous thread's audio in memory (the device copy stays too), show the new
+  // thread's own unsent audio, or offer back its stored recording after a reload, an app kill, a
+  // Host restart or leaving the thread.
   useEffect(() => {
+    const previousScope = audioScopeRef.current;
+    audioScopeRef.current = recordingScope;
+    const sender = senderRef.current;
+    if (sender && previousScope !== recordingScope) {
+      attemptGuardRef.current.cancel();
+      if (isRecordingRef.current) {
+        void audioStopRef.current().catch(() => undefined);
+      }
+      stopDurationTracking();
+      if (sender.hasSegments() && previousScope) {
+        parkedRef.current.set(previousScope, {
+          segments: sender.getSegments(),
+          storedId: storedRecordingIdRef.current,
+        });
+      }
+      sender.cancel();
+      sender.clearAll();
+      storedRecordingIdRef.current = null;
+      autoRetryArmedRef.current = false;
+      isRecordingRef.current = false;
+      setIsRecording(false);
+      isProcessingRef.current = false;
+      setIsProcessing(false);
+      setDuration(0);
+      setError(null);
+      latestPartialTranscriptRef.current = "";
+      setPartialTranscript("");
+      const parked = recordingScope ? parkedRef.current.get(recordingScope) : undefined;
+      if (parked && recordingScope) {
+        parkedRef.current.delete(recordingScope);
+        sender.loadSegments(parked.segments);
+        storedRecordingIdRef.current = parked.storedId;
+        setStatus("failed");
+        return;
+      }
+      setStatus("idle");
+    }
     const store = recordingStore;
     if (!store || !recordingScope) {
       return;
@@ -534,22 +603,23 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     let cancelled = false;
     const offerBack = async () => {
       const pending = await store.findPending(recordingScope);
-      if (cancelled || !pending || pending.segments.length === 0) {
+      if (!pending) {
         return;
       }
-      const sender = senderRef.current;
+      const current = senderRef.current;
       if (
-        !sender ||
-        sender.hasSegments() ||
+        cancelled ||
+        !current ||
+        current.hasSegments() ||
         statusRef.current !== "idle" ||
         isRecordingRef.current ||
         isProcessingRef.current
       ) {
+        store.release(pending.recording.id);
         return;
       }
-      store.adopt(pending.recording.id);
       storedRecordingIdRef.current = pending.recording.id;
-      sender.loadSegments(pending.segments);
+      current.loadSegments(pending.segments);
       setError(null);
       setStatus("failed");
     };
@@ -557,7 +627,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     return () => {
       cancelled = true;
     };
-  }, [recordingScope, recordingStore, setStatus]);
+  }, [recordingScope, recordingStore, setStatus, stopDurationTracking]);
 
   const reset = useCallback(() => {
     setIsRecording(false);
@@ -580,15 +650,21 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   useEffect(() => {
     const attemptGuard = attemptGuardRef.current;
     const audioStop = audioStopRef;
+    const parked = parkedRef.current;
     return () => {
       attemptGuard.cancel();
       stopDurationTracking();
       void audioStop.current().catch(() => undefined);
       senderRef.current?.dispose();
       // Leaving the composer keeps the stored audio for the next mount to offer back.
-      const storedId = storedRecordingIdRef.current;
-      if (storedId) {
-        recordingStoreRef.current?.release(storedId);
+      const storedIds = [
+        storedRecordingIdRef.current,
+        ...[...parked.values()].map((entry) => entry.storedId),
+      ];
+      for (const storedId of storedIds) {
+        if (storedId) {
+          recordingStoreRef.current?.release(storedId);
+        }
       }
     };
   }, [stopDurationTracking]);

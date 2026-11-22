@@ -70,5 +70,9 @@ export function createDeviceDictationRecordingBackend(): DictationRecordingBacke
     async deleteRecording(id) {
       await FileSystem.deleteAsync(recordingDirectory(id), { idempotent: true });
     },
+    // One app process owns the files; the store's own ownership set covers several composers.
+    async claim() {
+      return () => undefined;
+    },
   };
 }

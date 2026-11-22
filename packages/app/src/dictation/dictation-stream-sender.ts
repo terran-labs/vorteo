@@ -5,11 +5,14 @@ import { i18n } from "@/i18n/i18next";
 const MAX_CHUNKS_PER_FLUSH_TURN = 128;
 const DICTATION_DRAIN_IDLE_TIMEOUT_MS = 30_000;
 /**
- * Chunks sent beyond the last server acknowledgement. The server acknowledges each chunk after
- * forwarding it to speech-to-text, so a replay of a long stored recording advances at the pace
- * the server accepts instead of flooding it. Web segments are about one second each.
+ * Chunks sent beyond the last server acknowledgement. This bounds how much of a long replay sits
+ * unacknowledged in the socket and the server's receive buffer. It does not throttle
+ * transcription: the server acknowledges a chunk when it hands it to speech-to-text, before the
+ * chunk is transcribed. Web segments are about one second each.
  */
 const MAX_UNACKNOWLEDGED_CHUNKS = 32;
+/** Pause after cancelling stale server streams before a Retry opens a new one. */
+const CANCEL_SETTLE_MS = 500;
 
 const waitForNextFlushTurn = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -70,6 +73,12 @@ export class DictationStreamSender {
   private drainWaiters: Array<() => void> = [];
   private clientCleanup: (() => void) | null = null;
 
+  /**
+   * Streams the server may still hold open, including ones whose finish timed out on the client
+   * while the server kept transcribing. Retry cancels all of them before replaying.
+   */
+  private readonly openStreams = new Set<string>();
+
   private startGeneration = 0;
   private startPromise: Promise<void> | null = null;
 
@@ -105,6 +114,11 @@ export class DictationStreamSender {
 
   getDictationId(): string | null {
     return this.dictationId;
+  }
+
+  /** A copy of the buffered segments, for keeping a thread's audio while another is shown. */
+  getSegments(): string[] {
+    return [...this.segments];
   }
 
   getSegmentCount(): number {
@@ -227,6 +241,7 @@ export class DictationStreamSender {
 
     const dictationId = this.createDictationId();
     this.dictationId = dictationId;
+    this.openStreams.add(dictationId);
     this.sendSeq = 0;
     this.acknowledgedSeq = -1;
     this.streamReady = false;
@@ -247,6 +262,7 @@ export class DictationStreamSender {
         try {
           if (client.isConnected) {
             client.cancelDictationStream(dictationId);
+            this.openStreams.delete(dictationId);
           }
         } catch {
           // Best effort: the server also drops the stream when the socket closes.
@@ -295,7 +311,35 @@ export class DictationStreamSender {
 
     this.flush();
     await this.waitForFlushDrain(finalSeq);
-    return client.finishDictationStream(dictationId, finalSeq);
+    const result = await client.finishDictationStream(dictationId, finalSeq);
+    this.openStreams.delete(dictationId);
+    return result;
+  }
+
+  /**
+   * Cancels every stream the server may still be working on, then waits briefly so the server
+   * drops them before a replay starts. Without this, a Retry after a finish that timed out on the
+   * client could run a second transcription of the same audio beside the first. The protocol
+   * has no cancel acknowledgement, so the wait is a short fixed bound.
+   */
+  async cancelOpenStreams(settleMs = CANCEL_SETTLE_MS): Promise<void> {
+    const client = this.client;
+    const ids = [...this.openStreams];
+    this.resetStreamForReplay();
+    if (!client?.isConnected || ids.length === 0) {
+      return;
+    }
+    for (const id of ids) {
+      try {
+        client.cancelDictationStream(id);
+        this.openStreams.delete(id);
+      } catch {
+        // Still tracked; the next Retry sends the cancel again.
+      }
+    }
+    if (settleMs > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, settleMs));
+    }
   }
 
   cancel(): void {
@@ -303,6 +347,7 @@ export class DictationStreamSender {
     const dictationId = this.dictationId;
     if (client?.isConnected && dictationId) {
       client.cancelDictationStream(dictationId);
+      this.openStreams.delete(dictationId);
     }
     this.resetStreamForReplay();
   }

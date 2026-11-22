@@ -16,6 +16,8 @@ export interface UseDictationOptions {
    * until a transcript is confirmed or discarded, and offered back when the composer mounts.
    */
   recordingScope?: string;
+  /** Host the recordings are made against; removing that host deletes them. */
+  recordingServerId?: string;
   /** Overrides the device store; tests pass a store over a fake backend. */
   recordingStore?: import("@/dictation/recording-store").DictationRecordingStore | null;
 }
