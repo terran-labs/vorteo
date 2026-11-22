@@ -144,6 +144,10 @@ export class DictationRecordingStore {
     this.active.add(id);
     this.enqueue(async (backend, known) => {
       await this.claimFor(backend, id);
+      if (!this.active.has(id)) {
+        // Released before this queued claim ran; do not hold the lock until the tab closes.
+        this.release(id);
+      }
       await this.prune(backend, known);
       known.set(id, recording);
       await this.withRetry(() => backend.putRecording(recording));
@@ -281,7 +285,13 @@ export class DictationRecordingStore {
           continue;
         }
         this.active.add(recording.id);
-        const segments = await backend.readSegments(recording.id, recording.segmentCount);
+        let segments: string[];
+        try {
+          segments = await backend.readSegments(recording.id, recording.segmentCount);
+        } catch (error) {
+          this.release(recording.id);
+          throw error;
+        }
         if (segments.length !== recording.segmentCount) {
           this.release(recording.id);
           continue;

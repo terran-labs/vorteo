@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 
 import { getDeviceDictationRecordingStore } from "@/dictation/device-recording-store";
 import { DictationStreamSender } from "@/dictation/dictation-stream-sender";
+import type { DictationRecordingStore } from "@/dictation/recording-store";
 import { useDictationAudioSource } from "@/hooks/use-dictation-audio-source";
 import { generateMessageId } from "@/types/stream";
 import { AttemptGuard } from "@/utils/attempt-guard";
@@ -14,6 +15,34 @@ import {
   type UseDictationOptions,
   type UseDictationResult,
 } from "./use-dictation.shared";
+
+interface ParkedRecording {
+  segments: string[];
+  storedId: string | null;
+}
+
+/** Threads whose unsent audio this composer keeps in memory after moving to another thread. */
+const MAX_PARKED_RECORDINGS = 3;
+
+/**
+ * Bounds parked audio, about 10 MB per 4 minutes. Drops the oldest copies that are complete on
+ * the device and releases them, so their thread offers them back from storage. Copies that exist
+ * only in memory are never dropped.
+ */
+function trimParked(
+  parked: Map<string, ParkedRecording>,
+  store: DictationRecordingStore | null,
+): void {
+  for (const [scope, entry] of parked) {
+    if (parked.size <= MAX_PARKED_RECORDINGS) {
+      return;
+    }
+    if (store && entry.storedId && store.isComplete(entry.storedId)) {
+      parked.delete(scope);
+      store.release(entry.storedId);
+    }
+  }
+}
 
 export function useDictation(options: UseDictationOptions): UseDictationResult {
   const { t } = useTranslation();
@@ -42,7 +71,16 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   /** Scope the in-memory audio belongs to; it never follows the composer into another thread. */
   const audioScopeRef = useRef<string | undefined>(recordingScope);
   /** Unsent audio of other threads this composer showed, kept in memory until it returns. */
-  const parkedRef = useRef(new Map<string, { segments: string[]; storedId: string | null }>());
+  const parkedRef = useRef(new Map<string, ParkedRecording>());
+  /**
+   * Thread and stored recording the microphone is capturing for, fixed when capture starts.
+   * Audio can arrive after the composer moved to another thread: the web source emits its last
+   * partial second after stop, and the MediaRecorder fallback delivers the whole recording then.
+   */
+  const pendingStopRef = useRef<Promise<void> | null>(null);
+  const captureTargetRef = useRef<{ scope: string | undefined; storedId: string | null } | null>(
+    null,
+  );
 
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -284,6 +322,22 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
 
   const audio = useDictationAudioSource({
     onPcmSegment: (audioData) => {
+      const target = captureTargetRef.current;
+      if (target && target.scope !== audioScopeRef.current) {
+        // Late audio from a thread the composer has left goes to that thread's parked copy.
+        if (target.scope) {
+          const parked = parkedRef.current.get(target.scope) ?? {
+            segments: [],
+            storedId: target.storedId,
+          };
+          parked.segments.push(audioData);
+          parkedRef.current.set(target.scope, parked);
+        }
+        if (target.storedId) {
+          recordingStoreRef.current?.append(target.storedId, audioData);
+        }
+        return;
+      }
       senderRef.current?.enqueueSegment(audioData);
       const storedId = storedRecordingIdRef.current;
       if (storedId) {
@@ -329,6 +383,10 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     }
 
     actionGateRef.current.starting = true;
+    if (pendingStopRef.current) {
+      await pendingStopRef.current;
+      pendingStopRef.current = null;
+    }
     setError(null);
     setPartialTranscript("");
     setDuration(0);
@@ -341,6 +399,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       recordingScope && recordingStoreRef.current
         ? recordingStoreRef.current.begin(recordingScope, PCM_DICTATION_FORMAT, recordingServerId)
         : null;
+    captureTargetRef.current = { scope: recordingScope, storedId: storedRecordingIdRef.current };
 
     try {
       try {
@@ -565,14 +624,16 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     if (sender && previousScope !== recordingScope) {
       attemptGuardRef.current.cancel();
       if (isRecordingRef.current) {
-        void audioStopRef.current().catch(() => undefined);
+        // A new start waits for this stop, so the left thread's tail lands before new capture.
+        pendingStopRef.current = audioStopRef.current().catch(() => undefined);
       }
       stopDurationTracking();
-      if (sender.hasSegments() && previousScope) {
+      if (previousScope && (sender.hasSegments() || storedRecordingIdRef.current)) {
         parkedRef.current.set(previousScope, {
           segments: sender.getSegments(),
           storedId: storedRecordingIdRef.current,
         });
+        trimParked(parkedRef.current, recordingStoreRef.current);
       }
       sender.cancel();
       sender.clearAll();

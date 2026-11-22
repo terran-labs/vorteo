@@ -11,14 +11,25 @@ import type { DictationAudioSourceConfig } from "@/hooks/use-dictation-audio-sou
 import { useDictation } from "./use-dictation";
 import type { UseDictationOptions } from "./use-dictation.shared";
 
-const audioSource: { config: DictationAudioSourceConfig | null } = { config: null };
+const audioSource: { config: DictationAudioSourceConfig | null; tailOnStop: string | null } = {
+  config: null,
+  tailOnStop: null,
+};
 
 vi.mock("@/hooks/use-dictation-audio-source", () => ({
   useDictationAudioSource: (config: DictationAudioSourceConfig) => {
     audioSource.config = config;
     return {
       start: async () => undefined,
-      stop: async () => undefined,
+      // Like the web source, emit the last partial segment only after stop has awaited teardown.
+      stop: async () => {
+        await Promise.resolve();
+        const tail = audioSource.tailOnStop;
+        audioSource.tailOnStop = null;
+        if (tail) {
+          audioSource.config?.onPcmSegment(tail);
+        }
+      },
       volume: 0,
       isPaused: false,
     };
@@ -125,6 +136,7 @@ async function recordSegments(
 describe("useDictation keeps recordings until a transcript is confirmed", () => {
   beforeEach(() => {
     audioSource.config = null;
+    audioSource.tailOnStop = null;
   });
 
   it("keeps audio after a timed-out start, offers Retry, replays it and then deletes it", async () => {
@@ -270,5 +282,36 @@ describe("useDictation keeps recordings until a transcript is confirmed", () => 
     await act(() => result.current.retryFailedDictation());
     expect(client.chunksFor(client.starts.at(-1))).toEqual(["a0", "a1"]);
     expect(onTranscript).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes audio that arrives after a thread switch to the thread it was recorded in", async () => {
+    const client = new FakeClient();
+    const backend = new MemoryDictationRecordingBackend();
+    const store = new DictationRecordingStore(backend);
+    const { result, rerender, onTranscript } = renderDictation(client, store);
+
+    await recordSegments(result, ["a0"]);
+    audioSource.tailOnStop = "a-tail";
+    rerender({ scope: "host:other" });
+    await waitFor(() => expect(result.current.status).toBe("idle"));
+    await act(async () => {
+      await store.flush();
+    });
+
+    // Thread B starts its own dictation; none of A's audio may reach it.
+    await recordSegments(result, ["b0"]);
+    await act(() => result.current.confirmDictation());
+    const bStream = client.finishes.at(-1)!.dictationId;
+    expect(client.chunksFor(bStream)).toEqual(["b0"]);
+
+    rerender({ scope: "host:agent" });
+    await waitFor(() => expect(result.current.status).toBe("failed"));
+    await store.flush();
+    const aRecording = [...backend.recordings.values()].find((r) => r.scope === "host:agent")!;
+    expect(backend.segments.get(aRecording.id)).toEqual(["a0", "a-tail"]);
+
+    await act(() => result.current.retryFailedDictation());
+    expect(client.chunksFor(client.starts.at(-1))).toEqual(["a0", "a-tail"]);
+    expect(onTranscript).toHaveBeenCalledTimes(2);
   });
 });
