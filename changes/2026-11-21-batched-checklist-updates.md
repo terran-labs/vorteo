@@ -4,4 +4,4 @@
 
 ## Maintenance review
 
-Updated the thread checklist entry in the customizations inventory with the batched form. The tool input is daemon-local, so the wire protocol, the app's checklist request and older clients are unchanged. README overview and onboarding are unchanged. Source only; installing it needs a daemon restart.
+Updated the thread checklist entry in the customizations inventory with the batched form. The tool input is daemon-local, so the wire protocol, the app's checklist request and older clients are unchanged. After review, the batch field is declared loosely and each item is validated strictly before any is applied, so the tool schema providers load grows by about 230 characters rather than doubling, and null counts as an omitted field. README overview and onboarding are unchanged. Source only; installing it needs a daemon restart.

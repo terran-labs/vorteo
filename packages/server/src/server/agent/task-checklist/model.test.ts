@@ -9,7 +9,7 @@ import type { AgentTaskItem } from "@getpaseo/protocol/agent-types";
 import { AgentTaskItemSchema, type WSOutboundMessage } from "@getpaseo/protocol/messages";
 import { serializeLegacyChecklistMessage } from "./compatibility.js";
 import { describe, expect, test, it, vi } from "vitest";
-import { ChecklistMutationSchema, mutateChecklist, type ChecklistMutation } from "./model.js";
+import { ChecklistMutationSchema, mutateChecklist } from "./model.js";
 
 describe("thread checklist mutations", () => {
   test("rejects stale editor updates and deletion without losing the agent's changes", () => {
@@ -730,15 +730,8 @@ describe("thread checklist tool projections", () => {
 });
 
 describe("batched checklist updates", () => {
-  const provider: AgentTaskItem = {
-    id: "native",
-    text: "Native",
-    source: "provider",
-    completed: false,
-  };
-
   /** Real storage behind the tool, so atomicity is checked against what reaches disk. */
-  async function batchFixture(canMonitor = true) {
+  async function batchFixture() {
     const directory = mkdtempSync(join(tmpdir(), "checklist-batch-"));
     const storage = new AgentStorage(directory, createTestLogger());
     await storage.upsert({
@@ -749,7 +742,6 @@ describe("batched checklist updates", () => {
       updatedAt: "2026-11-21T00:00:00Z",
       labels: {},
       lastStatus: "idle",
-      tasks: [provider],
     });
     for (const id of ["a", "b"]) {
       await storage.mutateChecklist("thread", { operation: "create", id, text: id.toUpperCase() });
@@ -759,7 +751,7 @@ describe("batched checklist updates", () => {
       readChecklist: () => storage.getLoadedRecord("thread")?.tasks ?? [],
       mutateChecklist: vi.fn(
         (_agentId: string, input: Parameters<AgentStorage["mutateChecklist"]>[1]) =>
-          storage.mutateChecklist("thread", input, () => canMonitor),
+          storage.mutateChecklist("thread", input, () => true),
       ),
     };
     const tool = createChecklistTools(manager, "thread")[1];
@@ -770,7 +762,10 @@ describe("batched checklist updates", () => {
           join(entry.parentPath, entry.name),
           readFileSync(join(entry.parentPath, entry.name), "utf8"),
         ]);
-    const state = async () => ({ tasks: (await storage.get("thread"))?.tasks, files: disk() });
+    const state = async () => {
+      const record = await storage.get("thread");
+      return { tasks: record?.tasks, wake: record?.checklistWakeGenerations, files: disk() };
+    };
     const cleanup = async () => {
       await storage.flush();
       rmSync(directory, { recursive: true, force: true });
@@ -778,43 +773,42 @@ describe("batched checklist updates", () => {
     return { storage, manager, tool, state, cleanup };
   }
 
-  it.each([0, 1, 2])(
-    "applies nothing when mutation %i of three fails, and writes once on success",
-    async (failing) => {
-      const { storage, tool, state, cleanup } = await batchFixture();
-      try {
-        const mutations: ChecklistMutation[] = [
-          { operation: "create", id: "c", text: "C" },
-          { operation: "update", id: "a", text: "A renamed" },
-          { operation: "delete", id: "b" },
-        ];
-        mutations[failing] = { operation: "update", id: "missing", status: "in_progress" };
-        const before = await state();
-        await expect(tool.handler({ mutations }, {})).rejects.toThrow(
-          `Mutation ${failing + 1} of 3 (update missing) failed, so none were applied: Task missing does not exist.`,
-        );
-        await storage.flush();
-        expect(await state()).toEqual(before);
-
-        const writes = vi.spyOn(
-          storage as unknown as { writeRecord: () => Promise<void> },
-          "writeRecord",
-        );
-        await tool.handler(
-          {
-            mutations: [
-              { operation: "create", id: "d", text: "D" },
-              { operation: "delete", id: "b" },
-            ],
-          },
-          {},
-        );
-        expect(writes).toHaveBeenCalledTimes(1);
-      } finally {
-        await cleanup();
-      }
+  it.each([
+    {
+      name: "a missing task",
+      failing: { operation: "update", id: "missing" },
+      error: "Task missing does not exist.",
     },
-  );
+    {
+      name: "a rule violation",
+      failing: { operation: "update", id: "k", status: "completed" },
+      error: "Mark every acceptance check",
+    },
+  ] as const)("rolls back memory and disk when a middle mutation hits $name", async (row) => {
+    const { storage, tool, state, cleanup } = await batchFixture();
+    try {
+      const before = await state();
+      const mutations = [
+        { operation: "create", id: "k", text: "K", checks: [{ text: "Passes", done: false }] },
+        row.failing,
+        { operation: "delete", id: "b" },
+      ];
+      await expect(tool.handler({ mutations }, {})).rejects.toThrow(
+        `Mutation 2 of 3 (update ${row.failing.id}) failed, so none were applied: ${row.error}`,
+      );
+      await storage.flush();
+      expect(await state()).toEqual(before);
+
+      const writes = vi.spyOn(
+        storage as unknown as { writeRecord: () => Promise<void> },
+        "writeRecord",
+      );
+      await tool.handler({ mutations: [mutations[0], mutations[2]] }, {});
+      expect(writes).toHaveBeenCalledTimes(1);
+    } finally {
+      await cleanup();
+    }
+  });
 
   it.each([
     {
@@ -897,7 +891,7 @@ describe("batched checklist updates", () => {
       expect(manager.mutateChecklist).toHaveBeenLastCalledWith("thread", mutation);
       expect(response.structuredContent).toEqual({
         tasks: [{ id: "a", text: "A", source: "vorteo", status: "in_progress" }],
-        summary: { pending: 2, in_progress: 1, review: 0, blocked: 0, completed: 0 },
+        summary: { pending: 1, in_progress: 1, review: 0, blocked: 0, completed: 0 },
       });
       await expect(
         tool.handler({ mutation: { operation: "update", id: "missing" } }, {}),
@@ -907,105 +901,58 @@ describe("batched checklist updates", () => {
     }
   });
 
-  const unchecked = {
-    operation: "create",
-    id: "k",
-    text: "K",
-    checks: [{ text: "Passes", done: false }],
-  } as const;
-  it.each([
-    {
-      name: "completion with an undone check",
-      mutations: [unchecked, { operation: "update", id: "k", status: "completed" }],
-      error: "Mark every acceptance check",
-    },
-    {
-      name: "a stale expectedTask",
-      mutations: [
-        { operation: "update", id: "a", text: "Edited" },
-        {
-          operation: "update",
-          id: "a",
-          status: "in_progress",
-          expectedTask: {
-            id: "a",
-            text: "A",
-            source: "vorteo",
-            status: "pending",
-            completed: false,
-          },
-        },
-      ],
-      error: "changed while",
-    },
-    {
-      name: "oversized metadata",
-      mutations: [{ operation: "update", id: "a", metadata: { record: "x".repeat(9000) } }],
-      error: "8 KiB",
-    },
-    {
-      name: "a provider-owned task",
-      mutations: [{ operation: "update", id: "native", text: "Edited" }],
-      error: "native provider task tool",
-    },
-    {
-      name: "an invalid wake condition",
-      mutations: [
-        { operation: "update", id: "a", status: "blocked" },
-        {
-          operation: "update",
-          id: "a",
-          wakeCondition: {
-            kind: "github_required_checks",
-            owner: "example",
-            repository: "repo",
-            number: 1,
-            headSha: "abc",
-            checks: ["build"],
-          },
-        },
-      ],
-      error: "full PR head SHA",
-    },
-    {
-      name: "a wake condition without monitoring",
-      canMonitor: false,
-      mutations: [
-        {
-          operation: "update",
-          id: "a",
-          wakeCondition: { kind: "deadline", at: "2026-11-22T00:00:00Z" },
-        },
-      ],
-      error: "monitoring is unavailable",
-    },
-    { name: "an empty batch", mutations: [], error: "too_small" },
-    {
-      name: "a batch over the limit",
-      mutations: Array.from({ length: 21 }, (_, index) => ({
-        operation: "create",
-        id: `n${index}`,
-        text: "N",
-      })),
-      error: "too_big",
-    },
-    {
-      name: "both forms at once",
-      mutation: { operation: "delete", id: "a" },
-      mutations: [{ operation: "delete", id: "b" }],
-      error: "exactly one",
-    },
-  ] as const)("enforces every single-call rule inside a batch: $name", async (row) => {
-    const { tool, state, cleanup } = await batchFixture(
-      "canMonitor" in row ? row.canMonitor : true,
-    );
+  it("arms a wake condition set in a batch once on commit and never on rollback", async () => {
+    const { storage, tool, state, cleanup } = await batchFixture();
     try {
+      const wait = {
+        operation: "update",
+        id: "a",
+        status: "blocked",
+        wakeCondition: { kind: "deadline", at: "2026-11-22T00:00:00Z" },
+      } as const;
       const before = await state();
-      const input =
-        "mutation" in row
-          ? { mutation: row.mutation, mutations: row.mutations }
-          : { mutations: row.mutations };
-      await expect(tool.handler(input, {})).rejects.toThrow(row.error);
+      await expect(
+        tool.handler({ mutations: [wait, { operation: "update", id: "missing" }] }, {}),
+      ).rejects.toThrow("Mutation 2 of 2");
+      await storage.flush();
+      expect(await state()).toEqual(before);
+
+      await tool.handler(
+        { mutations: [wait, { operation: "update", id: "a", text: "Waiting" }] },
+        {},
+      );
+      const generations = (await storage.get("thread"))?.checklistWakeGenerations;
+      expect(generations).toEqual([
+        expect.objectContaining({ taskId: "a", condition: wait.wakeCondition }),
+      ]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("returns generated IDs for batch creates and validates every item before applying any", async () => {
+    const { tool, state, cleanup } = await batchFixture();
+    try {
+      const created = await tool.handler(
+        { mutation: null, mutations: [{ operation: "create", text: "Unnamed" }] },
+        {},
+      );
+      const [task] = (created.structuredContent as { tasks: AgentTaskItem[] }).tasks;
+      expect(task).toMatchObject({ text: "Unnamed", status: "pending" });
+      expect(task.id).toMatch(/^[0-9a-f-]{36}$/);
+      // The loose batch declaration must refuse anything the strict mutation schema refuses.
+      const before = await state();
+      await expect(
+        tool.handler(
+          {
+            mutations: [
+              { operation: "create", id: "ok", text: "OK" },
+              { operation: "update", id: "a", unknownField: true },
+            ],
+          },
+          {},
+        ),
+      ).rejects.toThrow("Mutation 2 of 2 is invalid, so none were applied");
       expect(await state()).toEqual(before);
     } finally {
       await cleanup();

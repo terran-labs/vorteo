@@ -8696,6 +8696,12 @@ describe("thread checklist MCP tools", () => {
       unsubscribe();
       expect(batch.isError).not.toBe(true);
       expect(updates).toHaveLength(1);
+      // Some providers send null for an omitted optional field; it must count as absent.
+      const withNull = await client.callTool({
+        name: "update_checklist",
+        arguments: { mutation: { operation: "update", id: "two", text: "Two" }, mutations: null },
+      });
+      expect(withNull.isError).not.toBe(true);
       expect((await storage.get(agent.id))?.tasks?.map((item) => item.id)).toEqual([
         "verify",
         "one",
