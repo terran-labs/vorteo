@@ -107,6 +107,8 @@ export type LocalSpeechWorkerEvent =
       type: "session.error";
       sessionId: string;
       error: string;
+      /** A SpeechProviderErrorCode when the worker raised a typed failure. */
+      code?: string;
     }
   | {
       /** Decoding progress for a dictation session; see RealtimeTranscriptionProgress. */

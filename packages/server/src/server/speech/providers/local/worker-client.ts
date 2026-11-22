@@ -24,7 +24,11 @@ import type {
   LocalSpeechWorkerToParentMessage,
 } from "./worker-protocol.js";
 import { bufferToWorkerBytes, workerBytesToBuffer } from "./worker-bytes.js";
-import { SpeechProviderError, isSpeechProviderError } from "../speech-provider-error.js";
+import {
+  SpeechProviderError,
+  isSpeechProviderError,
+  isSpeechProviderErrorCode,
+} from "../speech-provider-error.js";
 
 /**
  * Requests other than session starts fail only after the worker has sent nothing at all for
@@ -712,7 +716,13 @@ export class LocalSpeechWorkerClient {
         emitter.emit("speech_stopped");
         return;
       case "session.error":
-        emitter.emit("error", new Error(message.error));
+        emitter.emit(
+          "error",
+          new SpeechProviderError(
+            isSpeechProviderErrorCode(message.code) ? message.code : "speech_decode_failed",
+            message.error,
+          ),
+        );
         return;
       case "session.progress":
         emitter.emit("progress", message.payload);

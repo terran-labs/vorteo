@@ -5,7 +5,12 @@ import { SherpaOnnxParakeetSTT } from "./sherpa-parakeet-stt.js";
 import type { SherpaParakeetSttConfig } from "./sherpa-parakeet-stt.js";
 import type { TranscriptionResult } from "../../../speech-provider.js";
 import { SherpaParakeetRealtimeTranscriptionSession } from "./sherpa-parakeet-realtime-session.js";
-import type { SherpaOfflineRecognizerEngine } from "./sherpa-offline-recognizer.js";
+import {
+  decodeBoundMs,
+  withDecodeBound,
+  type SherpaOfflineRecognizerEngine,
+} from "./sherpa-offline-recognizer.js";
+import { SpeechProviderError } from "../../speech-provider-error.js";
 
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -100,7 +105,7 @@ describe("SherpaOnnxParakeetSTT session", () => {
  */
 function createFakeOfflineEngine(maxDecodeSeconds: number | null, holdDecodes = false) {
   const decodedSampleCounts: number[] = [];
-  const held: Array<() => void> = [];
+  const held: Array<(error?: Error) => void> = [];
   const engine = {
     sampleRate: 16000,
     maxDecodeSeconds,
@@ -114,13 +119,21 @@ function createFakeOfflineEngine(maxDecodeSeconds: number | null, holdDecodes = 
       if (!holdDecodes) {
         return Promise.resolve(text);
       }
-      return new Promise<string>((resolve) => held.push(() => resolve(text)));
+      return new Promise<string>((resolve, reject) => {
+        held.push((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve(text);
+        });
+      });
     },
   };
   return {
     engine: engine as unknown as SherpaOfflineRecognizerEngine,
     decodedSampleCounts,
-    releaseNextDecode: () => held.shift()?.(),
+    releaseNextDecode: (error?: Error) => held.shift()?.(error),
   };
 }
 
@@ -225,6 +238,56 @@ describe("SherpaParakeetRealtimeTranscriptionSession", () => {
       releaseNextDecode();
       await vi.advanceTimersByTimeAsync(1);
       expect(finals).toEqual(["s240000", "s16000"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a native decode that never returns", async () => {
+    vi.useFakeTimers();
+    try {
+      const hung = withDecodeBound(new Promise<string>(() => {}), decodeBoundMs(15_000));
+      const outcome = expect(hung).rejects.toMatchObject({ code: "speech_worker_timeout" });
+      await vi.advanceTimersByTimeAsync(120_000);
+      await outcome;
+      expect(decodeBoundMs(60_000)).toBe(240_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops heartbeats when closed or when a wedged decode fails with its typed code", async () => {
+    vi.useFakeTimers();
+    try {
+      const { engine, releaseNextDecode } = createFakeOfflineEngine(null, true);
+      const wedged = new SherpaParakeetRealtimeTranscriptionSession({ engine });
+      await wedged.connect();
+      const errors: Error[] = [];
+      let wedgedProgress = 0;
+      wedged.on("error", (error: Error) => errors.push(error));
+      wedged.on("progress", () => wedgedProgress++);
+      wedged.appendPcm16(tone(2));
+      wedged.commit();
+      await vi.advanceTimersByTimeAsync(10_000);
+      releaseNextDecode(new SpeechProviderError("speech_worker_timeout", "decode overran"));
+      await vi.advanceTimersByTimeAsync(1);
+      const afterFailure = wedgedProgress;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatchObject({ code: "speech_worker_timeout" });
+      expect(wedgedProgress).toBe(afterFailure);
+
+      const closed = new SherpaParakeetRealtimeTranscriptionSession({ engine });
+      await closed.connect();
+      let closedProgress = 0;
+      closed.on("progress", () => closedProgress++);
+      closed.appendPcm16(tone(2));
+      closed.commit();
+      await vi.advanceTimersByTimeAsync(10_000);
+      closed.close();
+      const atClose = closedProgress;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(closedProgress).toBe(atClose);
     } finally {
       vi.useRealTimers();
     }

@@ -112,6 +112,7 @@ export class SherpaParakeetRealtimeTranscriptionSession
   /** True while a decode is in flight; decodes for one session run one at a time. */
   private working = false;
   private workRequestedWhileBusy = false;
+  private heartbeat: ReturnType<typeof setInterval> | null = null;
   private partialTimer: ReturnType<typeof setTimeout> | null = null;
   private lastPartialDecodeMs = 0;
   private lastDecodeEndedAt = 0;
@@ -179,6 +180,14 @@ export class SherpaParakeetRealtimeTranscriptionSession
     this.takeOpenAudio();
     this.commitQueue.length = 0;
     this.clearPartialTimer();
+    this.stopHeartbeat();
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeat) {
+      clearInterval(this.heartbeat);
+      this.heartbeat = null;
+    }
   }
 
   private scheduleWork(): void {
@@ -225,8 +234,15 @@ export class SherpaParakeetRealtimeTranscriptionSession
   }
 
   private async finalizeSegment(commit: QueuedCommit): Promise<void> {
-    // The worker's thread is free during the decode, so keep reporting that work continues.
-    const heartbeat = setInterval(() => this.emitProgress(), PROGRESS_HEARTBEAT_MS);
+    // The worker's thread is free during the decode, so keep reporting that work continues. The
+    // engine bounds each decode, so a hung native call cannot keep this alive forever.
+    this.heartbeat = setInterval(() => {
+      if (this.connected) {
+        this.emitProgress();
+      } else {
+        this.stopHeartbeat();
+      }
+    }, PROGRESS_HEARTBEAT_MS);
     let finalText: string;
     try {
       const window = this.windowSeconds();
@@ -244,7 +260,7 @@ export class SherpaParakeetRealtimeTranscriptionSession
       }
       return;
     } finally {
-      clearInterval(heartbeat);
+      this.stopHeartbeat();
       this.decodedSegments++;
     }
     if (!this.connected) {
@@ -367,7 +383,10 @@ export class SherpaParakeetRealtimeTranscriptionSession
     try {
       const floatSamples = pcm16leToFloat32(pcm16, gain);
       this.engine.acceptWaveform(stream, this.engine.sampleRate, floatSamples);
-      return await this.engine.decodeText(stream);
+      return await this.engine.decodeText(
+        stream,
+        (floatSamples.length / this.engine.sampleRate) * 1000,
+      );
     } finally {
       this.lastDecodeEndedAt = Date.now();
       try {

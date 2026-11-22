@@ -4,6 +4,7 @@ import type pino from "pino";
 
 import { engineFiles, type SttEngine } from "./model-catalog.js";
 import { loadSherpaOnnxNode } from "./sherpa-onnx-node-loader.js";
+import { SpeechProviderError } from "../../speech-provider-error.js";
 
 function assertFileExists(filePath: string, label: string): void {
   if (!existsSync(filePath)) {
@@ -81,6 +82,39 @@ function resultText(result: { text?: string } | string | undefined): string {
   ).trim();
 }
 
+/**
+ * Longest one decode may run before the recognizer is treated as wedged: four times the audio
+ * length, and never less than two minutes. Measured decodes take 0.2 to 4 times the audio
+ * length (whisper-turbo on efficiency cores under load is the slowest).
+ */
+const MIN_DECODE_BOUND_MS = 120_000;
+const DECODE_BOUND_AUDIO_MULTIPLIER = 4;
+
+export function decodeBoundMs(audioMs: number): number {
+  return Math.max(MIN_DECODE_BOUND_MS, DECODE_BOUND_AUDIO_MULTIPLIER * audioMs);
+}
+
+/**
+ * Rejects with `speech_worker_timeout` when `decode` has not settled within `boundMs`. A native
+ * decode cannot be cancelled, so the caller must give up on the whole recognizer.
+ */
+export function withDecodeBound<T>(decode: Promise<T>, boundMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bound = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new SpeechProviderError(
+            "speech_worker_timeout",
+            `Local speech decode did not finish within ${Math.round(boundMs / 1000)} s`,
+          ),
+        ),
+      boundMs,
+    );
+  });
+  return Promise.race([decode, bound]).finally(() => clearTimeout(timer));
+}
+
 export class SherpaOfflineRecognizerEngine {
   public readonly recognizer: SherpaOfflineRecognizerNative;
   public readonly sampleRate: number;
@@ -91,6 +125,8 @@ export class SherpaOfflineRecognizerEngine {
   public readonly maxDecodeSeconds: number | null;
   private readonly logger: pino.Logger;
   private decodeQueue: Promise<unknown> = Promise.resolve();
+  /** Set when a decode overran its bound; the native call may still hold the recognizer. */
+  private wedgedError: Error | null = null;
 
   constructor(config: SherpaOfflineRecognizerConfig, logger: pino.Logger) {
     this.logger = logger.child({
@@ -165,12 +201,27 @@ export class SherpaOfflineRecognizerEngine {
    * Decodes a stream and returns its trimmed text. The native decode runs off the JavaScript
    * thread when the binding supports it, so the worker keeps answering IPC during a decode that
    * can take tens of seconds. Decodes on one recognizer run one at a time, because voice and
-   * dictation sessions can share it.
+   * dictation sessions can share it. A decode that overruns `decodeBoundMs(audioMs)` marks the
+   * recognizer wedged: it and every later decode reject with `speech_worker_timeout`, and the
+   * worker process must be replaced.
    */
-  decodeText(stream: SherpaOfflineStreamNative): Promise<string> {
+  decodeText(stream: SherpaOfflineStreamNative, audioMs: number): Promise<string> {
     const run = async (): Promise<string> => {
+      if (this.wedgedError) {
+        throw this.wedgedError;
+      }
       if (typeof this.recognizer.decodeAsync === "function") {
-        return resultText(await this.recognizer.decodeAsync(stream));
+        try {
+          return resultText(
+            await withDecodeBound(this.recognizer.decodeAsync(stream), decodeBoundMs(audioMs)),
+          );
+        } catch (err) {
+          if (err instanceof SpeechProviderError && err.code === "speech_worker_timeout") {
+            this.wedgedError = err;
+            this.logger.warn({ audioMs }, "Sherpa offline decode overran its bound");
+          }
+          throw err;
+        }
       }
       this.recognizer.decode(stream);
       return resultText(this.recognizer.getResult(stream));

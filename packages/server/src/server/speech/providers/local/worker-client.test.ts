@@ -574,4 +574,27 @@ describe("LocalSpeechWorkerClient session start recovery", () => {
     await expect(synthesize).resolves.toMatchObject({ format: "pcm;rate=24000" });
     expect(progress.at(-1)).toEqual({ decodedSegments: 5, pendingSegments: 0, pendingAudioMs: 0 });
   });
+
+  it("replaces a worker whose recognizer wedged and fails the session with a typed code", async () => {
+    const { client, workers } = createClient(timeouts);
+    const active = await connectSession(client, () => workers[0]);
+    const errors: Array<Error & { code?: string }> = [];
+    active.session.on("error", (error: Error) => errors.push(error));
+
+    // The worker reports the overrun decode, then exits because the recognizer is stuck.
+    workers[0].emitWorkerMessage({
+      type: "session.error",
+      sessionId: active.request.sessionId,
+      error: "Local speech decode did not finish within 120 s",
+      code: "speech_worker_timeout",
+    });
+    workers[0].emit("close", 75, null);
+    expect(errors.map((error) => error.code)).toEqual([
+      "speech_worker_timeout",
+      "speech_worker_exited",
+    ]);
+
+    await connectSession(client, () => workers[1]);
+    expect(workers).toHaveLength(2);
+  });
 });
