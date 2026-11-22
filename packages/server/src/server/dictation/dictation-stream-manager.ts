@@ -22,6 +22,40 @@ const DICTATION_FINAL_TIMEOUT_MAX_MS = 5 * 60 * 1000;
 const DICTATION_FINAL_TIMEOUT_PER_PENDING_SEGMENT_MS = 15 * 1000;
 const DICTATION_FINAL_TIMEOUT_PER_PENDING_AUDIO_SECOND_MS = 1500;
 const DICTATION_FINAL_TIMEOUT_PER_MISSING_SEQ_MS = 250;
+// The client gives up on a start after 30 seconds. Answering first lets it show why.
+const DEFAULT_DICTATION_START_TIMEOUT_MS = 25_000;
+
+/**
+ * Stable reasons sent as `reasonCode` on `dictation_stream_error`, so clients can explain a
+ * failure without parsing its text. Older clients ignore the field. Speech providers may add
+ * their own codes, such as `speech_worker_timeout`, `speech_worker_exited` or
+ * `speech_unavailable`, by throwing an error with a matching `code` property.
+ */
+export const DICTATION_REASON_CODES = {
+  sttNotConfigured: "stt_not_configured",
+  streamNotStarted: "stream_not_started",
+  speechStartTimeout: "speech_start_timeout",
+  transcriptionTimeout: "transcription_timeout",
+} as const;
+
+// A local model on a loaded machine can take over 30 seconds to decode one segment, and a long
+// recording queues many. Once a provider reports progress, the final wait lasts as long as it
+// keeps progressing and fails only after this long without any.
+export const DICTATION_FINAL_NO_PROGRESS_TIMEOUT_MS = 2 * 60 * 1000;
+// Backstop for a provider that reports progress forever without finishing.
+export const DICTATION_FINAL_PROGRESS_CEILING_MS = 60 * 60 * 1000;
+// Progress refreshes the client's deadline at most this often.
+const DICTATION_PROGRESS_REFRESH_INTERVAL_MS = 5000;
+
+// Lower snake case only, so Node system codes and free text never reach the wire.
+const PROVIDER_REASON_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+
+/** Reads a provider's typed reason from an error's own string `code` property. */
+export function readProviderReasonCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object" || !Object.hasOwn(error, "code")) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && PROVIDER_REASON_CODE.test(code) ? code : undefined;
+}
 const DICTATION_SILENCE_PEAK_THRESHOLD = Number.parseInt(
   process.env.PASEO_DICTATION_SILENCE_PEAK_THRESHOLD ?? "300",
   10,
@@ -93,6 +127,10 @@ interface DictationStreamState {
   finishSealed: boolean;
   finalSeq: number | null;
   finalTimeout: ReturnType<typeof setTimeout> | null;
+  /** Set once the provider emits `progress`; switches the final wait to progress-based. */
+  reportsProgress: boolean;
+  finishRequestedAt: number | null;
+  lastProgressRefreshAt: number;
 }
 
 export type DictationStreamOutboundMessage =
@@ -112,6 +150,7 @@ export type DictationStreamOutboundMessage =
         dictationId: string;
         error: string;
         retryable: boolean;
+        reasonCode?: string;
         debugRecordingPath?: string;
       };
     }
@@ -133,6 +172,7 @@ export class DictationStreamManager {
   private readonly resolveStt: () => SpeechToTextProvider | null;
   private readonly language: string;
   private readonly finalTimeoutMs: number;
+  private readonly startTimeoutMs: number;
   private readonly autoCommitSeconds: number;
   private readonly onIdle: (() => void) | undefined;
   private readonly streams = new Map<string, DictationStreamState>();
@@ -144,6 +184,7 @@ export class DictationStreamManager {
     stt: Resolvable<SpeechToTextProvider | null>;
     language?: string;
     finalTimeoutMs?: number;
+    startTimeoutMs?: number;
     autoCommitSeconds?: number;
     onIdle?: () => void;
   }) {
@@ -154,6 +195,7 @@ export class DictationStreamManager {
     this.resolveStt = toResolver(params.stt);
     this.language = params.language ?? "en";
     this.finalTimeoutMs = params.finalTimeoutMs ?? DEFAULT_DICTATION_FINAL_TIMEOUT_MS;
+    this.startTimeoutMs = params.startTimeoutMs ?? DEFAULT_DICTATION_START_TIMEOUT_MS;
     this.autoCommitSeconds =
       params.autoCommitSeconds ??
       parseNonNegativeNumber(process.env.PASEO_DICTATION_AUTO_COMMIT_SECONDS) ??
@@ -181,7 +223,12 @@ export class DictationStreamManager {
 
     const sttProvider = this.resolveStt();
     if (!sttProvider) {
-      this.failDictationStream(dictationId, "Dictation STT not configured", false);
+      this.failDictationStream(
+        dictationId,
+        "Dictation STT not configured",
+        false,
+        DICTATION_REASON_CODES.sttNotConfigured,
+      );
       return;
     }
 
@@ -198,7 +245,7 @@ export class DictationStreamManager {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.failDictationStream(dictationId, message, false);
+      this.failDictationStream(dictationId, message, false, readProviderReasonCode(error));
       return;
     }
 
@@ -260,7 +307,22 @@ export class DictationStreamManager {
       finishSealed: false,
       finalSeq: null,
       finalTimeout: null,
+      reportsProgress: false,
+      finishRequestedAt: null,
+      lastProgressRefreshAt: 0,
     });
+
+    // Optional provider signal, read by event name so providers without it keep today's
+    // estimated deadline: `progress` with `{ decodedSegments, pendingSegments, pendingAudioMs }`.
+    (stt as unknown as { on(event: "progress", handler: () => void): unknown }).on(
+      "progress",
+      () => {
+        const state = this.streams.get(dictationId);
+        if (state?.stt !== stt) return;
+        state.reportsProgress = true;
+        this.refreshFinalDeadlineOnProgress(state);
+      },
+    );
 
     stt.on("committed", ({ segmentId }) => {
       const state = this.streams.get(dictationId);
@@ -320,17 +382,36 @@ export class DictationStreamManager {
         this.maybeFinalizeDictationStream(dictationId);
         return;
       }
-      void this.failAndCleanupDictationStream(dictationId, message, true);
+      void this.failAndCleanupDictationStream(
+        dictationId,
+        message,
+        true,
+        readProviderReasonCode(err),
+      );
     });
 
+    let startTimer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await stt.connect();
+      const startTimedOut = new Promise<never>((_, reject) => {
+        startTimer = setTimeout(
+          () =>
+            reject(
+              Object.assign(new Error("Speech service did not start in time"), {
+                code: DICTATION_REASON_CODES.speechStartTimeout,
+              }),
+            ),
+          this.startTimeoutMs,
+        );
+      });
+      await Promise.race([stt.connect(), startTimedOut]);
     } catch (error) {
       if (this.streams.get(dictationId)?.stt !== stt) return;
       const message = error instanceof Error ? error.message : String(error);
-      this.failDictationStream(dictationId, message, true);
+      this.failDictationStream(dictationId, message, true, readProviderReasonCode(error));
       this.cleanupDictationStream(dictationId);
       return;
+    } finally {
+      clearTimeout(startTimer);
     }
     if (this.streams.get(dictationId)?.stt !== stt) return;
 
@@ -345,7 +426,12 @@ export class DictationStreamManager {
   }): Promise<void> {
     const state = this.streams.get(params.dictationId);
     if (!state) {
-      this.failDictationStream(params.dictationId, "Dictation stream not started", true);
+      this.failDictationStream(
+        params.dictationId,
+        "Dictation stream not started",
+        true,
+        DICTATION_REASON_CODES.streamNotStarted,
+      );
       return;
     }
 
@@ -382,7 +468,12 @@ export class DictationStreamManager {
           this.maybeAutoCommitDictationSegment(state);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          void this.failAndCleanupDictationStream(params.dictationId, message, true);
+          void this.failAndCleanupDictationStream(
+            params.dictationId,
+            message,
+            true,
+            readProviderReasonCode(error),
+          );
           return;
         }
 
@@ -408,7 +499,12 @@ export class DictationStreamManager {
   public async handleFinish(dictationId: string, finalSeq: number): Promise<void> {
     const state = this.streams.get(dictationId);
     if (!state) {
-      this.failDictationStream(dictationId, "Dictation stream not started", true);
+      this.failDictationStream(
+        dictationId,
+        "Dictation stream not started",
+        true,
+        DICTATION_REASON_CODES.streamNotStarted,
+      );
       return;
     }
 
@@ -449,25 +545,13 @@ export class DictationStreamManager {
       return;
     }
 
+    updatedState.finishRequestedAt = Date.now();
     const timeoutEstimate = this.estimateFinalizationTimeout(updatedState);
-    if (updatedState.finalTimeout) {
-      clearTimeout(updatedState.finalTimeout);
-    }
-    updatedState.finalTimeout = setTimeout(() => {
-      void this.failAndCleanupDictationStream(
-        dictationId,
-        "Timed out waiting for final transcription",
-        true,
-      );
-    }, timeoutEstimate.timeoutMs);
-
-    this.emit({
-      type: "dictation_stream_finish_accepted",
-      payload: {
-        dictationId,
-        timeoutMs: timeoutEstimate.timeoutMs,
-      },
-    });
+    // Older clients wait only for this first deadline, so progress never shortens it.
+    const timeoutMs = updatedState.reportsProgress
+      ? Math.max(timeoutEstimate.timeoutMs, this.progressDeadlineMs(updatedState))
+      : timeoutEstimate.timeoutMs;
+    this.armFinalTimeout(updatedState, timeoutMs);
 
     this.logger.debug(
       {
@@ -477,7 +561,8 @@ export class DictationStreamManager {
         pendingSegments: timeoutEstimate.pendingSegments,
         pendingAudioSeconds: timeoutEstimate.pendingAudioSeconds,
         missingSeqCount: timeoutEstimate.missingSeqCount,
-        timeoutMs: timeoutEstimate.timeoutMs,
+        reportsProgress: updatedState.reportsProgress,
+        timeoutMs,
       },
       "Accepted dictation finish request with adaptive timeout budget",
     );
@@ -528,10 +613,15 @@ export class DictationStreamManager {
     return path;
   }
 
-  private failDictationStream(dictationId: string, error: string, retryable: boolean): void {
+  private failDictationStream(
+    dictationId: string,
+    error: string,
+    retryable: boolean,
+    reasonCode?: string,
+  ): void {
     this.emit({
       type: "dictation_stream_error",
-      payload: { dictationId, error, retryable },
+      payload: { dictationId, error, retryable, ...(reasonCode ? { reasonCode } : {}) },
     });
   }
 
@@ -539,6 +629,7 @@ export class DictationStreamManager {
     dictationId: string,
     error: string,
     retryable: boolean,
+    reasonCode?: string,
   ): Promise<void> {
     const state = this.streams.get(dictationId);
     const debugRecordingPath = await this.maybePersistDictationStreamAudio(dictationId);
@@ -549,6 +640,7 @@ export class DictationStreamManager {
         dictationId,
         error,
         retryable,
+        ...(reasonCode ? { reasonCode } : {}),
         ...(debugRecordingPath ? { debugRecordingPath } : {}),
       },
     });
@@ -565,6 +657,42 @@ export class DictationStreamManager {
       });
     }
     this.cleanupDictationStream(dictationId);
+  }
+
+  /**
+   * Fails the stream after `timeoutMs` and tells the client the same deadline. A later
+   * `dictation_stream_finish_accepted` for the same stream replaces the deadline; older clients
+   * wait only for the first one and ignore the rest.
+   */
+  private armFinalTimeout(state: DictationStreamState, timeoutMs: number): void {
+    const { dictationId } = state;
+    if (state.finalTimeout) clearTimeout(state.finalTimeout);
+    state.finalTimeout = setTimeout(() => {
+      void this.failAndCleanupDictationStream(
+        dictationId,
+        "Timed out waiting for final transcription",
+        true,
+        DICTATION_REASON_CODES.transcriptionTimeout,
+      );
+    }, timeoutMs);
+    this.emit({
+      type: "dictation_stream_finish_accepted",
+      payload: { dictationId, timeoutMs },
+    });
+  }
+
+  private progressDeadlineMs(state: DictationStreamState): number {
+    const elapsed = Date.now() - (state.finishRequestedAt ?? Date.now());
+    const remaining = DICTATION_FINAL_PROGRESS_CEILING_MS - elapsed;
+    return Math.max(1, Math.min(DICTATION_FINAL_NO_PROGRESS_TIMEOUT_MS, remaining));
+  }
+
+  private refreshFinalDeadlineOnProgress(state: DictationStreamState): void {
+    if (state.finishRequestedAt === null || !state.finalTimeout) return;
+    const now = Date.now();
+    if (now - state.lastProgressRefreshAt < DICTATION_PROGRESS_REFRESH_INTERVAL_MS) return;
+    state.lastProgressRefreshAt = now;
+    this.armFinalTimeout(state, this.progressDeadlineMs(state));
   }
 
   private cleanupDictationStream(dictationId: string): void {
@@ -680,7 +808,12 @@ export class DictationStreamManager {
           this.requestDictationCommit(state);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          void this.failAndCleanupDictationStream(dictationId, message, true);
+          void this.failAndCleanupDictationStream(
+            dictationId,
+            message,
+            true,
+            readProviderReasonCode(error),
+          );
           return;
         }
       }

@@ -73,6 +73,10 @@ export const ja: TranslationResources = {
       folderOutsideWorkspace: "{{path}} はこのワークスペースの外にあります",
       unexpectedDictationError: "音声入力処理中に予期しないエラーが発生しました。",
       hostConnectionLost: "ホストとの接続が切れました。再接続後にもう一度お試しください。",
+      hostRequestTimeout:
+        "ホストが時間内に応答しませんでした。接続を確認して、もう一度お試しください。",
+      hostRestarting:
+        "ホストが再起動中か、アップデートをインストール中です。再接続後にもう一度お試しください。",
     },
     connectionStatus: {
       online: "オンライン",
@@ -386,6 +390,18 @@ export const ja: TranslationResources = {
       insertAndSend: "文字起こしを挿入して送信",
       failed: "音声入力に失敗しました: {{error}}",
       failedRetry: "音声入力に失敗しました。再試行をタップしてください。",
+      stillTranscribing: "ホストは長い録音をまだ文字起こし中です。失敗していません。",
+      errors: {
+        speechService: "ホストの音声サービスが応答しませんでした。もう一度お試しください。",
+        speechDecodeFailed:
+          "ホストの音声サービスがこの録音を文字起こしできませんでした。もう一度お試しください。",
+        speechNotConfigured: "ホストで音声入力が設定されていません。",
+        streamLost: "ホストがこの音声入力を見失いました。もう一度お試しください。",
+        transcriptionTimeout:
+          "ホストの文字起こしに時間がかかりすぎました。もう一度お試しください。",
+        hostRestarting:
+          "ホストが再起動中か、アップデートをインストール中です。復帰後にもう一度お試しください。",
+      },
     },
     question: {
       responseFailed: "回答を送信できませんでした。もう一度お試しください。",

@@ -74,6 +74,10 @@ export const es: TranslationResources = {
       unexpectedDictationError: "Se produjo un error inesperado al manejar el dictado.",
       hostConnectionLost:
         "Se perdió la conexión con el host. Inténtalo de nuevo cuando se reconecte.",
+      hostRequestTimeout:
+        "El host no respondió a tiempo. Comprueba la conexión e inténtalo de nuevo.",
+      hostRestarting:
+        "El host se está reiniciando o instalando una actualización. Inténtalo de nuevo cuando se reconecte.",
     },
     connectionStatus: {
       online: "En línea",
@@ -387,6 +391,17 @@ export const es: TranslationResources = {
       insertAndSend: "Insertar transcripción y enviar",
       failed: "Fallo en el dictado:{{error}}",
       failedRetry: "El dictado falló. Toca reintentar.",
+      stillTranscribing: "El host sigue transcribiendo una grabación larga. No ha fallado.",
+      errors: {
+        speechService: "El servicio de voz del host no respondió. Inténtalo de nuevo.",
+        speechDecodeFailed:
+          "El servicio de voz del host no pudo transcribir esta grabación. Inténtalo de nuevo.",
+        speechNotConfigured: "El dictado no está configurado en el host.",
+        streamLost: "El host perdió este dictado. Inténtalo de nuevo.",
+        transcriptionTimeout: "El host tardó demasiado en transcribir. Inténtalo de nuevo.",
+        hostRestarting:
+          "El host se está reiniciando o instalando una actualización. Inténtalo de nuevo cuando vuelva.",
+      },
     },
     question: {
       responseFailed: "No se pudo enviar tu respuesta. Inténtalo de nuevo.",
