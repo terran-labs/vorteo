@@ -5,7 +5,10 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import pino from "pino";
 
-import { DictationStreamManager } from "./dictation-stream-manager.js";
+import {
+  DICTATION_FINAL_NO_PROGRESS_TIMEOUT_MS,
+  DictationStreamManager,
+} from "./dictation-stream-manager.js";
 import { loadPersistedConfig } from "../persisted-config.js";
 import { resolveSpeechConfig } from "../speech/speech-config-resolver.js";
 import type {
@@ -593,4 +596,106 @@ it("closes every dictation stream when one provider cleanup fails", async () => 
   expect(first.closed).toBe(true);
   expect(second.closed).toBe(true);
   expect(manager.hasDemand).toBe(false);
+});
+
+it.each([
+  {
+    name: "forwards a provider's typed code",
+    connect: () =>
+      Promise.reject(
+        Object.assign(new Error("worker timed out"), { code: "speech_worker_timeout" }),
+      ),
+    reasonCode: "speech_worker_timeout",
+  },
+  {
+    name: "drops system codes that are not dictation reasons",
+    connect: () => Promise.reject(Object.assign(new Error("reset"), { code: "ECONNRESET" })),
+    reasonCode: undefined,
+  },
+  {
+    name: "answers a stalled start before the client gives up",
+    connect: () => new Promise<void>(() => {}),
+    reasonCode: "speech_start_timeout",
+  },
+])("start failure $name", async ({ connect, reasonCode }) => {
+  class FailingSession extends FakeRealtimeSession {
+    override connect(): Promise<void> {
+      return connect();
+    }
+  }
+  const session = new FailingSession();
+  const messages: Array<{ type: string; payload?: unknown }> = [];
+  const manager = new DictationStreamManager({
+    logger: pino({ level: "silent" }),
+    emit: (message) => messages.push(message),
+    sessionId: "typed-start-failure",
+    stt: new FakeSttProvider(session),
+    startTimeoutMs: 5,
+  });
+  await manager.handleStart("dictation", "audio/pcm;rate=24000;bits=16");
+  expect(messages).toHaveLength(1);
+  expect(messages[0]).toMatchObject({ type: "dictation_stream_error" });
+  expect((messages[0].payload as { reasonCode?: string }).reasonCode).toBe(reasonCode);
+  expect(session.closed).toBe(true);
+});
+
+it.each([
+  { name: "keeps waiting while a long transcription reports progress", progress: "steady" },
+  { name: "fails after the no-progress bound once progress stops", progress: "stops" },
+  { name: "keeps the estimated deadline for a provider without progress", progress: "none" },
+] as const)("final wait $name", async ({ progress }) => {
+  vi.useFakeTimers();
+  try {
+    const session = new FakeRealtimeSession();
+    const emitted: Array<{ type: string; payload: unknown }> = [];
+    const manager = new DictationStreamManager({
+      logger: pino({ level: "silent" }),
+      emit: (msg) => emitted.push(msg),
+      sessionId: "progress",
+      stt: new FakeSttProvider(session),
+      finalTimeoutMs: 5000,
+    });
+    await manager.handleStart("d", "audio/pcm;rate=24000;bits=16");
+    await manager.handleChunk({
+      dictationId: "d",
+      seq: 0,
+      audioBase64: buildPcmBase64(2000, 2400),
+      format: "audio/pcm;rate=24000;bits=16",
+    });
+    session.emitCommitted("seg-1");
+    if (progress !== "none") session.emit("progress", { decodedSegments: 0, pendingSegments: 1 });
+    await manager.handleFinish("d", 0);
+    const errors = () => emitted.filter((msg) => msg.type === "dictation_stream_error");
+
+    if (progress === "steady") {
+      for (let elapsed = 0; elapsed < 12 * 60_000; elapsed += 20_000) {
+        await vi.advanceTimersByTimeAsync(20_000);
+        session.emit("progress", { decodedSegments: 1, pendingSegments: 1 });
+      }
+      // The finish commits the tail as a second segment.
+      session.emitCommitted("seg-2");
+      session.emitTranscript("seg-1", "long", true);
+      session.emitTranscript("seg-2", "recording", true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(errors()).toEqual([]);
+      expect(emitted.some((msg) => msg.type === "dictation_stream_final")).toBe(true);
+      return;
+    }
+
+    if (progress === "stops") {
+      await vi.advanceTimersByTimeAsync(DICTATION_FINAL_NO_PROGRESS_TIMEOUT_MS - 1000);
+      expect(errors()).toEqual([]);
+    }
+    await vi.advanceTimersByTimeAsync(progress === "stops" ? 1001 : 5 * 60_000 + 1);
+    expect(errors()).toHaveLength(1);
+    expect((errors()[0].payload as { reasonCode?: string }).reasonCode).toBe(
+      "transcription_timeout",
+    );
+    if (progress === "none") {
+      const accepted = emitted.filter((msg) => msg.type === "dictation_stream_finish_accepted");
+      expect(accepted).toHaveLength(1);
+    }
+  } finally {
+    vi.useRealTimers();
+  }
 });

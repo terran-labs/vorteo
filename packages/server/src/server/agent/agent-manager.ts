@@ -27,7 +27,7 @@ import {
   mergeProviderChecklistEvent,
   mergeProviderChecklist,
   managedChecklist,
-  type ChecklistMutation,
+  type ChecklistMutationInput,
 } from "./task-checklist/model.js";
 import type { AgentTaskItem } from "@getpaseo/protocol/agent-types";
 import { installationProviderReference } from "@getpaseo/protocol/installation-settings";
@@ -6360,7 +6360,14 @@ export class AgentManager {
     return structuredClone(this.requireAgent(agentId).tasks ?? []);
   }
 
-  async mutateChecklist(agentId: string, mutation: ChecklistMutation): Promise<AgentTaskItem[]> {
+  /**
+   * Apply one mutation, or a batch that commits as one write. Either way clients receive a single
+   * checklist update.
+   */
+  async mutateChecklist(
+    agentId: string,
+    mutation: ChecklistMutationInput,
+  ): Promise<AgentTaskItem[]> {
     const agent = this.requireAgent(agentId);
     const committed = await this.requireRegistry().mutateChecklist(agentId, mutation, () =>
       this.supportsChecklistWakeConditions(),

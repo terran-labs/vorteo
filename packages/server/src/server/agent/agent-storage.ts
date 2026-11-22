@@ -30,7 +30,10 @@ import {
   mutateChecklist,
   mergeProviderChecklist,
   ChecklistError,
+  batchChecklistError,
+  isChecklistBatch,
   type ChecklistMutation,
+  type ChecklistMutationInput,
 } from "./task-checklist/model.js";
 import { SkillSnapshotSchema } from "@getpaseo/protocol/skill-library";
 import { randomUUID } from "node:crypto";
@@ -633,7 +636,7 @@ export class AgentStorage {
 
   async mutateChecklist(
     agentId: string,
-    mutation: ChecklistMutation,
+    input: ChecklistMutationInput,
     canMonitorWakeConditions: () => boolean = () => false,
   ): Promise<AgentTaskItem[]> {
     await this.load();
@@ -643,23 +646,23 @@ export class AgentStorage {
       (record) => {
         if (!record || record.archivedAt)
           throw new ChecklistError("not_found", "Only an active thread can edit its checklist.");
-        // Evaluate readiness inside the serialized write, including after asynchronous loading.
-        const attachesCondition = "wakeCondition" in mutation && mutation.wakeCondition != null;
-        if (attachesCondition && !canMonitorWakeConditions()) {
-          throw new ChecklistError(
-            "invalid",
-            "Checklist wake-condition monitoring is unavailable.",
-          );
+        if (!isChecklistBatch(input)) {
+          const next = applyChecklistMutation(record, input, canMonitorWakeConditions);
+          committed = next.tasks ?? [];
+          return next;
         }
-        committed = mutateChecklist(record.tasks ?? [], mutation);
-        const updatedAt = new Date().toISOString();
-        const checklistWakeGenerations = reconcileChecklistWakeGenerations(
-          record,
-          committed,
-          mutation,
-          updatedAt,
-        );
-        return { ...record, tasks: committed, checklistWakeGenerations, updatedAt };
+        // A batch applies in order against a working copy. Any failure throws before this
+        // callback returns, so nothing is written and the stored checklist stays as it was.
+        let next = record;
+        input.forEach((mutation, index) => {
+          try {
+            next = applyChecklistMutation(next, mutation, canMonitorWakeConditions);
+          } catch (error) {
+            throw batchChecklistError(error, index, input);
+          }
+        });
+        committed = next.tasks ?? [];
+        return next;
       },
       { checklistWrite: true, checklistWakeWrite: true },
     );
@@ -1147,6 +1150,31 @@ export function projectDirNameFromCwd(cwd: string): string {
     return sanitizedRoot || "root";
   }
   return prefix + withoutRoot.replace(/[\\/]+/g, "-");
+}
+
+/**
+ * Apply one checklist mutation to a record, with every rule a standalone call enforces. Batches
+ * call this once per mutation so wake generations reconcile against each intermediate state.
+ */
+function applyChecklistMutation(
+  record: StoredAgentRecord,
+  mutation: ChecklistMutation,
+  canMonitorWakeConditions: () => boolean,
+): StoredAgentRecord {
+  // Evaluate readiness inside the serialized write, including after asynchronous loading.
+  const attachesCondition = "wakeCondition" in mutation && mutation.wakeCondition != null;
+  if (attachesCondition && !canMonitorWakeConditions()) {
+    throw new ChecklistError("invalid", "Checklist wake-condition monitoring is unavailable.");
+  }
+  const tasks = mutateChecklist(record.tasks ?? [], mutation);
+  const updatedAt = new Date().toISOString();
+  const checklistWakeGenerations = reconcileChecklistWakeGenerations(
+    record,
+    tasks,
+    mutation,
+    updatedAt,
+  );
+  return { ...record, tasks, checklistWakeGenerations, updatedAt };
 }
 
 function reconcileChecklistWakeGenerations(
