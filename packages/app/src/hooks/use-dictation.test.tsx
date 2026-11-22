@@ -314,4 +314,38 @@ describe("useDictation keeps recordings until a transcript is confirmed", () => 
     expect(client.chunksFor(client.starts.at(-1))).toEqual(["a0", "a-tail"]);
     expect(onTranscript).toHaveBeenCalledTimes(2);
   });
+
+  it("keeps a just-parked thread whole while its late audio arrives, even with full memory", async () => {
+    const client = new FakeClient();
+    const backend = new MemoryDictationRecordingBackend();
+    const store = new DictationRecordingStore(backend, { retryDelayMs: 0 });
+    const { result, rerender } = renderDictation(client, store);
+
+    // Three threads whose device copies are incomplete, so they must stay parked in memory.
+    for (const scope of ["t1", "t2", "t3"]) {
+      rerender({ scope });
+      await waitFor(() => expect(result.current.status).toBe("idle"));
+      backend.failNextSegmentWrites = 3;
+      await recordSegments(result, [`${scope}-0`]);
+      await act(() => result.current.cancelDictation());
+      await act(async () => {
+        await store.flush();
+      });
+    }
+
+    rerender({ scope: "t4" });
+    await waitFor(() => expect(result.current.status).toBe("idle"));
+    await recordSegments(result, ["t4-0", "t4-1"]);
+    audioSource.tailOnStop = "t4-tail";
+    rerender({ scope: "t5" });
+    await waitFor(() => expect(result.current.status).toBe("idle"));
+    await act(async () => {
+      await store.flush();
+    });
+
+    rerender({ scope: "t4" });
+    await waitFor(() => expect(result.current.status).toBe("failed"));
+    await act(() => result.current.retryFailedDictation());
+    expect(client.chunksFor(client.starts.at(-1))).toEqual(["t4-0", "t4-1", "t4-tail"]);
+  });
 });

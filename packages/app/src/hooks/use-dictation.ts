@@ -32,10 +32,15 @@ const MAX_PARKED_RECORDINGS = 3;
 function trimParked(
   parked: Map<string, ParkedRecording>,
   store: DictationRecordingStore | null,
+  justParked: string,
 ): void {
   for (const [scope, entry] of parked) {
     if (parked.size <= MAX_PARKED_RECORDINGS) {
       return;
+    }
+    // The thread just parked may still be receiving its last audio after stop; keep it whole.
+    if (scope === justParked) {
+      continue;
     }
     if (store && entry.storedId && store.isComplete(entry.storedId)) {
       parked.delete(scope);
@@ -324,14 +329,12 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     onPcmSegment: (audioData) => {
       const target = captureTargetRef.current;
       if (target && target.scope !== audioScopeRef.current) {
-        // Late audio from a thread the composer has left goes to that thread's parked copy.
-        if (target.scope) {
-          const parked = parkedRef.current.get(target.scope) ?? {
-            segments: [],
-            storedId: target.storedId,
-          };
+        // Late audio from a thread the composer has left goes to that thread's parked copy. With
+        // no parked copy, the device copy alone gets it, so a return restores the whole recording
+        // from storage instead of a parked tail.
+        const parked = target.scope ? parkedRef.current.get(target.scope) : undefined;
+        if (parked) {
           parked.segments.push(audioData);
-          parkedRef.current.set(target.scope, parked);
         }
         if (target.storedId) {
           recordingStoreRef.current?.append(target.storedId, audioData);
@@ -633,7 +636,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
           segments: sender.getSegments(),
           storedId: storedRecordingIdRef.current,
         });
-        trimParked(parkedRef.current, recordingStoreRef.current);
+        trimParked(parkedRef.current, recordingStoreRef.current, previousScope);
       }
       sender.cancel();
       sender.clearAll();

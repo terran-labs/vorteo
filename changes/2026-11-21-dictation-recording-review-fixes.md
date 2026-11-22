@@ -5,7 +5,7 @@
 - Retry first cancels any stream the Host may still be transcribing, so a slow finish cannot run two transcriptions of the same recording.
 - Pressing Enter in a hidden text field no longer sends a draft while dictation audio is waiting.
 - A failed storage write is retried, and a recording missing a segment is never offered back as whole. Storage stays on for later recordings.
-- A second browser tab no longer takes over a recording the first tab owns. A composer reused for another thread keeps each thread's audio separate, including the last second of audio that arrives after the switch, and a new dictation waits for the previous thread's microphone to stop.
+- A second browser tab no longer takes over a recording the first tab owns. A composer reused for another thread keeps each thread's audio separate, including the last second of audio that arrives after the switch even when several threads' audio is held in memory, and a new dictation waits for the previous thread's microphone to stop.
 - Removing a host deletes the dictation recordings made against it.
 
 ## Maintenance review
