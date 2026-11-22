@@ -47,6 +47,8 @@ export type TimelineReducerSideEffect =
 export interface AgentStreamReducerSideEffect {
   type: "catch_up";
   cursor: { epoch: string; endSeq: number };
+  /** Set when a live event carried this epoch instead of the cursor's: the history was replaced. */
+  foreignEpoch?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1567,6 +1569,22 @@ function processTimelineSequencingGate(input: {
       resetLiveTimeline: true,
     };
   }
+  if (decision === "drop_epoch" && currentCursor) {
+    // The daemon now streams another epoch, for example after this history was read from a
+    // saved transcript while the thread was closed. Dropping silently froze the thread; a
+    // catch-up from the stale cursor makes the daemon answer with a reset to its live epoch.
+    return {
+      ...base,
+      shouldApplyStreamEvent: false,
+      sideEffects: [
+        {
+          type: "catch_up",
+          cursor: { epoch: currentCursor.epoch, endSeq: currentCursor.endSeq },
+          foreignEpoch: epoch,
+        },
+      ],
+    };
+  }
   return {
     ...base,
     shouldApplyStreamEvent: false,
@@ -1733,6 +1751,10 @@ export function createAgentStreamReducerQueue(
   input: CreateAgentStreamReducerQueueInput,
 ): AgentStreamReducerQueue {
   const pendingByAgentId = new Map<string, AgentStreamReducerEvent[]>();
+  // The epoch recovery each agent last requested. A burst of foreign-epoch events asks once,
+  // and a daemon that keeps answering with the old epoch cannot turn every live event into
+  // another fetch. Adopting the foreign epoch clears it, so a later replacement recovers again.
+  const epochRecoveries = new Map<string, { from: string; to: string }>();
   let scheduledFlushId: number | null = null;
 
   const cancelScheduledFlush = () => {
@@ -1753,14 +1775,23 @@ export function createAgentStreamReducerQueue(
       cancelScheduledFlush();
     }
 
-    const result = processAgentStreamEvents({
-      events,
-      ...input.getSnapshot(agentId),
-    });
+    const snapshot = input.getSnapshot(agentId);
+    const recovery = epochRecoveries.get(agentId);
+    if (recovery && snapshot.currentCursor?.epoch === recovery.to) epochRecoveries.delete(agentId);
+    const result = processAgentStreamEvents({ events, ...snapshot });
 
     input.commit(agentId, result, events);
-    if (result.sideEffects.length > 0) {
-      input.handleSideEffects(agentId, result.sideEffects);
+    const sideEffects = result.sideEffects.filter((effect) => {
+      if (effect.foreignEpoch === undefined) return true;
+      const requested = epochRecoveries.get(agentId);
+      if (requested?.from === effect.cursor.epoch && requested.to === effect.foreignEpoch) {
+        return false;
+      }
+      epochRecoveries.set(agentId, { from: effect.cursor.epoch, to: effect.foreignEpoch });
+      return true;
+    });
+    if (sideEffects.length > 0) {
+      input.handleSideEffects(agentId, sideEffects);
     }
   };
 

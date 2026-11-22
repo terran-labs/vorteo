@@ -2,6 +2,12 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-22
+
+### Fixes
+
+- A thread no longer stops showing new messages after its history was read while the Host had the thread closed. That read hands the app a different version of the history than the live stream, and the app used to drop every new event without asking to catch up, so the thread looked frozen until Reload agent. The app now asks the Host for the current history once per mismatch and resumes live updates. A burst of mismatched events asks once, and a Host that keeps answering with the old version cannot make the app fetch repeatedly.
+
 ## Unreleased - 2026-11-17
 
 ### Maintenance
