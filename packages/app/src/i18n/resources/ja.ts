@@ -386,6 +386,16 @@ export const ja: TranslationResources = {
       start: "音声入力を開始",
       cancel: "音声入力をキャンセル",
       retry: "音声入力を再試行",
+      saveAudio: "音声を保存",
+      audioReady: "音声ファイルの準備ができました。もう一度「音声を保存」を押してください。",
+      preparingAudio: "音声ファイルを準備しています…",
+      saveFailed: "音声を保存できませんでした。もう一度お試しください。",
+      recordingKept: "録音は保持されています。",
+      recordingNotSaved:
+        "この録音はこのデバイスに保存されていません。送信されるまでこのページを開いたままにするか、音声を保存してください。",
+      recordingEvicted: "空き容量を確保するため、未送信の古い録音を削除しました。",
+      storageUnavailable:
+        "このデバイスは現在録音を保存できません。音声入力が送信されるまでこのページを開いたままにしてください。",
       insert: "文字起こしを挿入",
       insertAndSend: "文字起こしを挿入して送信",
       failed: "音声入力に失敗しました: {{error}}",

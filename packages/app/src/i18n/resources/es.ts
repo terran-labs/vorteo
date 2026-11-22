@@ -387,6 +387,16 @@ export const es: TranslationResources = {
       start: "Iniciar dictado de voz",
       cancel: "Cancelar dictado",
       retry: "Reintentar el dictado",
+      saveAudio: "Guardar audio",
+      audioReady: "El archivo de audio está listo. Pulsa Guardar audio otra vez.",
+      preparingAudio: "Preparando el archivo de audio…",
+      saveFailed: "No se pudo guardar el audio. Inténtalo de nuevo.",
+      recordingKept: "Tu grabación se conserva.",
+      recordingNotSaved:
+        "Esta grabación no está guardada en este dispositivo. Mantén esta página abierta hasta que se envíe, o guarda el audio.",
+      recordingEvicted: "Se eliminó una grabación anterior sin enviar para liberar espacio.",
+      storageUnavailable:
+        "Este dispositivo no puede guardar grabaciones ahora. Mantén esta página abierta hasta que se envíe el dictado.",
       insert: "Insertar transcripción",
       insertAndSend: "Insertar transcripción y enviar",
       failed: "Fallo en el dictado:{{error}}",
