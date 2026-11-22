@@ -37,7 +37,7 @@ it("accepts a unique stable identity and tolerates repeated observations of it",
   });
 });
 
-it("requires identity, never repeated text, and rejects competing provider messages", () => {
+it("needs identity for untimestamped rows and rejects competing provider messages", () => {
   const sameText: AgentStreamEvent = {
     type: "timeline",
     provider: "codex",
@@ -65,16 +65,16 @@ it("requires identity, never repeated text, and rejects competing provider messa
   ).toBeNull();
 });
 
-it("accepts a unique timestamped text match when the transcript keeps no client ID", () => {
-  // A Claude transcript row: no clientMessageId, and the provider ID was never recorded.
-  const transcript = (messageId: string, timestamp: string): AgentStreamEvent => ({
+it("accepts text only as the next user turn within the bound, for text-only items", () => {
+  // Claude transcript rows: no clientMessageId, and the provider ID was never recorded.
+  const row = (messageId: string, timestamp: string, text = item.text): AgentStreamEvent => ({
     type: "timeline",
     provider: "claude",
     turnId: `turn-${messageId}`,
     timestamp,
-    item: { type: "user_message", text: item.text, messageId },
+    item: { type: "user_message", text, messageId },
   });
-  const delivered = transcript("native-1", "2026-09-17T00:01:03Z");
+  const delivered = row("native-1", "2026-09-17T00:01:03Z");
   expect(classifyQueueAcceptance(item, undefined, [delivered])).toEqual({
     kind: "accepted",
     evidence: {
@@ -83,14 +83,21 @@ it("accepts a unique timestamped text match when the transcript keeps no client 
       acceptedAt: "2026-09-17T00:01:03Z",
     },
   });
-  // Text sent before the attempt started is an earlier message, not this delivery.
-  const earlier = transcript("native-0", "2026-09-17T00:00:30Z");
+  // An attachment or context the row does not show could have been dropped: not evidence.
+  const image = { id: "image", fileName: "shot.png", mimeType: "image/png", size: 1 };
+  expect(
+    classifyQueueAcceptance({ ...item, attachments: [image] }, undefined, [delivered]),
+  ).toEqual({ kind: "none" });
+  // Another user turn came first, so the identical text later is a different message.
+  const other = row("native-0", "2026-09-17T00:01:02Z", "Something else");
+  expect(classifyQueueAcceptance(item, undefined, [other, delivered])).toEqual({ kind: "none" });
+  // Identical text typed long after the attempt is not this delivery.
+  const days = row("native-9", "2026-09-25T00:01:03Z");
+  expect(classifyQueueAcceptance(item, undefined, [days])).toEqual({ kind: "none" });
+  // Text sent before the attempt started is an earlier message.
+  const earlier = row("native-e", "2026-09-17T00:00:30Z");
   expect(classifyQueueAcceptance(item, undefined, [earlier])).toEqual({ kind: "none" });
-  // Two candidates, by text or by identity, need the owner's review rather than a guess.
-  const again = transcript("native-2", "2026-09-17T00:02:00Z");
-  expect(classifyQueueAcceptance(item, undefined, [delivered, again])).toEqual({
-    kind: "ambiguous",
-  });
+  // Two identity matches need the owner's review rather than a guess.
   const otherIdentified: AgentStreamEvent = {
     ...echo,
     turnId: "other-turn",

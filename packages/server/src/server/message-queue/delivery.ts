@@ -1,6 +1,9 @@
 import type { QueueItem, QueueSnapshot } from "@getpaseo/protocol/message-queue";
 import type { AgentStreamEvent, AgentPromptInput } from "../agent/agent-sdk-types.js";
 import { MessageQueueStore } from "./store.js";
+import { UNCONFIRMED_DELIVERY_BOUND_MS } from "./evidence.js";
+
+export { UNCONFIRMED_DELIVERY_BOUND_MS };
 
 export interface QueueDeliveryPort {
   canStartWork?(): boolean;
@@ -35,9 +38,6 @@ export interface QueueDeliveryPort {
   changed(snapshot: QueueSnapshot): void;
   failed(error: unknown, agentId: string): void;
 }
-
-/** How long an uncertain message may stay unconfirmed by history before the owner must decide. */
-export const UNCONFIRMED_DELIVERY_BOUND_MS = 15 * 60_000;
 
 export class QueueDeliveryWorker {
   private readonly running = new Map<string, Promise<void>>();
