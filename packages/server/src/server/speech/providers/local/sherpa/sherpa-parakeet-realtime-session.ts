@@ -5,6 +5,34 @@ import type { StreamingTranscriptionSession } from "../../../speech-provider.js"
 import { pcm16lePeakAbs, pcm16leToFloat32 } from "../../../audio.js";
 import { SherpaOfflineRecognizerEngine } from "./sherpa-offline-recognizer.js";
 
+/**
+ * Partial transcripts may use at most a third of the worker's time: after a partial decode
+ * that took D milliseconds, the next one waits at least this multiple of D. Decodes are
+ * synchronous native calls on the worker's only thread, and Whisper pads every decode to 30
+ * seconds, so one decode can take many seconds on a loaded machine.
+ */
+const PARTIAL_DECODE_COST_MULTIPLIER = 2;
+/**
+ * When a segment's audio is ahead of wall-clock time by more than this, the audio is being
+ * replayed faster than real time and nobody is watching partials, so they are skipped.
+ */
+const REPLAY_DETECTION_SLACK_MS = 1000;
+
+interface QueuedCommit {
+  segmentId: string;
+  previousSegmentId: string | null;
+  pcm16: Buffer;
+}
+
+/**
+ * Streams dictation through an offline recognizer by re-decoding the open segment for
+ * partials and decoding each committed segment once for its final transcript.
+ *
+ * Decoding never runs inside the caller's `appendPcm16` or `commit`: work is scheduled with
+ * `setImmediate`, one decode per turn, so the worker keeps answering IPC (appends, other
+ * sessions' starts) between decodes. Final decodes of committed segments run before any
+ * partial, in commit order, and always cover the whole segment.
+ */
 export class SherpaParakeetRealtimeTranscriptionSession
   extends EventEmitter
   implements StreamingTranscriptionSession
@@ -18,9 +46,12 @@ export class SherpaParakeetRealtimeTranscriptionSession
   private lastPartialText = "";
 
   private pcm16: Buffer = Buffer.alloc(0);
-  private lastDecodeAt = 0;
-  private decoding = false;
-  private pendingDecode = false;
+  private segmentAudioStartedAt = 0;
+  private readonly commitQueue: QueuedCommit[] = [];
+  private workScheduled = false;
+  private partialTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastPartialDecodeMs = 0;
+  private lastDecodeEndedAt = 0;
   private readonly minDecodeIntervalMs: number;
 
   constructor(params: { engine: SherpaOfflineRecognizerEngine; minDecodeIntervalMs?: number }) {
@@ -44,12 +75,11 @@ export class SherpaParakeetRealtimeTranscriptionSession
       return;
     }
 
-    try {
-      this.pcm16 = this.pcm16.length === 0 ? chunk : Buffer.concat([this.pcm16, chunk]);
-      void this.maybeDecode(false);
-    } catch (err) {
-      this.emit("error", err instanceof Error ? err : new Error(String(err)));
+    if (this.pcm16.length === 0) {
+      this.segmentAudioStartedAt = Date.now();
     }
+    this.pcm16 = this.pcm16.length === 0 ? chunk : Buffer.concat([this.pcm16, chunk]);
+    this.scheduleWork();
   }
 
   commit(): void {
@@ -58,24 +88,16 @@ export class SherpaParakeetRealtimeTranscriptionSession
       return;
     }
 
-    void (async () => {
-      try {
-        await this.maybeDecode(true);
-        const finalText = this.lastPartialText;
-        const segmentId = this.currentSegmentId!;
-        const previousSegmentId = this.previousSegmentId;
-
-        this.emit("committed", { segmentId, previousSegmentId });
-        this.emit("transcript", { segmentId, transcript: finalText, isFinal: true });
-
-        this.previousSegmentId = segmentId;
-        this.currentSegmentId = uuidv4();
-        this.lastPartialText = "";
-        this.pcm16 = Buffer.alloc(0);
-      } catch (err) {
-        this.emit("error", err instanceof Error ? err : new Error(String(err)));
-      }
-    })();
+    this.commitQueue.push({
+      segmentId: this.currentSegmentId,
+      previousSegmentId: this.previousSegmentId,
+      pcm16: this.pcm16,
+    });
+    this.previousSegmentId = this.currentSegmentId;
+    this.currentSegmentId = uuidv4();
+    this.lastPartialText = "";
+    this.pcm16 = Buffer.alloc(0);
+    this.scheduleWork();
   }
 
   clear(): void {
@@ -91,50 +113,113 @@ export class SherpaParakeetRealtimeTranscriptionSession
     this.connected = false;
     this.currentSegmentId = null;
     this.pcm16 = Buffer.alloc(0);
+    this.commitQueue.length = 0;
+    this.clearPartialTimer();
   }
 
-  private async maybeDecode(force: boolean): Promise<void> {
-    if (!this.connected || !this.currentSegmentId) {
+  private scheduleWork(): void {
+    if (this.workScheduled || !this.connected) {
+      return;
+    }
+    this.workScheduled = true;
+    setImmediate(() => {
+      this.workScheduled = false;
+      this.runWork();
+    });
+  }
+
+  private runWork(): void {
+    if (!this.connected) {
+      return;
+    }
+
+    const commit = this.commitQueue.shift();
+    if (commit) {
+      this.finalizeSegment(commit);
+      if (this.commitQueue.length > 0 || this.pcm16.length > 0) {
+        this.scheduleWork();
+      }
+      return;
+    }
+
+    this.maybeDecodePartial();
+  }
+
+  private finalizeSegment(commit: QueuedCommit): void {
+    let finalText: string;
+    try {
+      finalText = this.decode(commit.pcm16);
+    } catch (err) {
+      this.emit("error", err instanceof Error ? err : new Error(String(err)));
+      return;
+    }
+    this.emit("committed", {
+      segmentId: commit.segmentId,
+      previousSegmentId: commit.previousSegmentId,
+    });
+    this.emit("transcript", {
+      segmentId: commit.segmentId,
+      transcript: finalText,
+      isFinal: true,
+    });
+  }
+
+  private maybeDecodePartial(): void {
+    const segmentId = this.currentSegmentId;
+    if (!segmentId || this.pcm16.length === 0) {
       return;
     }
 
     const now = Date.now();
-    if (!force && now - this.lastDecodeAt < this.minDecodeIntervalMs) {
+    const audioMs = (this.pcm16.length / 2 / this.engine.sampleRate) * 1000;
+    if (audioMs > now - this.segmentAudioStartedAt + REPLAY_DETECTION_SLACK_MS) {
+      // Replayed faster than real time: the final decode on commit is all that matters.
       return;
     }
 
-    if (this.decoding) {
-      this.pendingDecode = true;
+    const interval = Math.max(
+      this.minDecodeIntervalMs,
+      this.lastPartialDecodeMs * PARTIAL_DECODE_COST_MULTIPLIER,
+    );
+    const waitMs = this.lastDecodeEndedAt + interval - now;
+    if (waitMs > 0) {
+      if (!this.partialTimer) {
+        this.partialTimer = setTimeout(() => {
+          this.partialTimer = null;
+          this.scheduleWork();
+        }, waitMs);
+      }
       return;
     }
 
-    this.decoding = true;
+    const startedAt = Date.now();
+    let text: string;
     try {
-      const text = await this.decodeNow();
-      this.lastDecodeAt = Date.now();
-      if (text !== this.lastPartialText) {
-        this.lastPartialText = text;
-        this.emit("transcript", {
-          segmentId: this.currentSegmentId,
-          transcript: text,
-          isFinal: false,
-        });
-      }
-    } finally {
-      this.decoding = false;
-      if (this.pendingDecode) {
-        this.pendingDecode = false;
-        await this.maybeDecode(true);
-      }
+      text = this.decode(this.pcm16);
+    } catch (err) {
+      this.emit("error", err instanceof Error ? err : new Error(String(err)));
+      return;
+    }
+    this.lastPartialDecodeMs = Date.now() - startedAt;
+    if (text !== this.lastPartialText && this.currentSegmentId === segmentId) {
+      this.lastPartialText = text;
+      this.emit("transcript", { segmentId, transcript: text, isFinal: false });
     }
   }
 
-  private async decodeNow(): Promise<string> {
-    if (this.pcm16.length === 0) {
+  private clearPartialTimer(): void {
+    if (this.partialTimer) {
+      clearTimeout(this.partialTimer);
+      this.partialTimer = null;
+    }
+  }
+
+  private decode(pcm16: Buffer): string {
+    if (pcm16.length === 0) {
       return "";
     }
 
-    const peak = pcm16lePeakAbs(this.pcm16);
+    const peak = pcm16lePeakAbs(pcm16);
     const peakFloat = peak / 32768.0;
     const targetPeak = 0.6;
     const maxGain = 50;
@@ -143,7 +228,7 @@ export class SherpaParakeetRealtimeTranscriptionSession
 
     const stream = this.engine.createStream();
     try {
-      const floatSamples = pcm16leToFloat32(this.pcm16, gain);
+      const floatSamples = pcm16leToFloat32(pcm16, gain);
       this.engine.acceptWaveform(stream, this.engine.sampleRate, floatSamples);
       this.engine.recognizer.decode(stream);
       const result = this.engine.recognizer.getResult(stream);
@@ -153,6 +238,7 @@ export class SherpaParakeetRealtimeTranscriptionSession
           "",
       ).trim();
     } finally {
+      this.lastDecodeEndedAt = Date.now();
       try {
         stream.free?.();
       } catch {
