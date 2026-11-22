@@ -72,6 +72,7 @@ import { HorizontalScrollProvider } from "@/contexts/horizontal-scroll-context";
 import { SessionProvider } from "@/contexts/session-context";
 import { SidebarCalloutProvider } from "@/contexts/sidebar-callout-context";
 import { InstallationUpdateToasts } from "@/components/installation-update-toasts";
+import { DictationStorageNotices } from "@/dictation/storage-notices";
 import { FloatingNoticeLayoutProvider } from "@/contexts/floating-notice-layout";
 import { ToastProvider } from "@/contexts/toast-context";
 import { VoiceProvider } from "@/contexts/voice-context";
@@ -893,6 +894,7 @@ function RuntimeProviders({ children }: { children: ReactNode }) {
           <ProjectMoveModalHost />
           <SidebarFolderDialogHost />
           <InstallationUpdateToasts />
+          <DictationStorageNotices />
         </ProvidersWrapper>
       </SidebarCalloutProvider>
     </HostRuntimeBootstrapProvider>

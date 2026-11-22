@@ -90,4 +90,31 @@ describe("web dictation audio source", () => {
     // The second capture opens only after the first delivered its last audio.
     expect(calls).toEqual(["open", "tail", "open"]);
   });
+
+  it("releases a microphone granted after the composer closed during the permission prompt", async () => {
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    const track = { stop: vi.fn() };
+    let grant: (stream: unknown) => void = () => undefined;
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: () =>
+          new Promise((resolve) => {
+            grant = resolve;
+          }),
+      },
+    });
+    const { result, unmount } = renderHook(() =>
+      useDictationAudioSource({ onPcmSegment: vi.fn() }),
+    );
+
+    const starting = result.current.start();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    unmount();
+    grant({ getTracks: () => [track] });
+    await expect(starting).rejects.toThrow("closed");
+    expect(track.stop).toHaveBeenCalled();
+  });
 });

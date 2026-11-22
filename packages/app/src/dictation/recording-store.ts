@@ -48,10 +48,15 @@ export interface DictationRecordingBackend {
 export type DictationRecordingStoreEvent =
   | { kind: "evicted"; recording: StoredDictationRecording; reason: "space" | "age" }
   | { kind: "unavailable"; error: Error }
-  | { kind: "incomplete"; id: string };
+  | { kind: "incomplete"; id: string }
+  /** More of a recording reached the device; the persistence state may have changed. */
+  | { kind: "written"; id: string };
 
-/** Where a recording's audio currently lives. */
-export type DictationRecordingPersistence = "stored" | "memory-only" | "incomplete";
+/**
+ * Where a recording's audio currently lives. "stored" is positive evidence: every segment the
+ * caller holds is durably on the device. "saving" means writes are still queued.
+ */
+export type DictationRecordingPersistence = "stored" | "saving" | "memory-only" | "incomplete";
 
 export interface PendingDictationRecording {
   recording: StoredDictationRecording;
@@ -104,6 +109,8 @@ export class DictationRecordingStore {
   /** Recordings with at least one segment that could not be stored. */
   private readonly incomplete = new Set<string>();
   private failure: Error | null = null;
+  /** Segments of each recording durably written, counted only after the write succeeded. */
+  private readonly durable = new Map<string, number>();
   private readonly listeners = new Set<(event: DictationRecordingStoreEvent) => void>();
 
   constructor(
@@ -125,12 +132,22 @@ export class DictationRecordingStore {
     };
   }
 
-  /** Where a recording's audio lives; null id means nothing was stored for it. */
-  persistence(id: string | null): DictationRecordingPersistence {
-    if (!id || !this.isAvailable) {
+  /**
+   * Where a recording's audio lives, given how many segments the caller holds. Reports "stored"
+   * only when the device holds every one of them.
+   */
+  persistence(id: string | null, segmentCount: number): DictationRecordingPersistence {
+    if (!id || !this.backend) {
       return "memory-only";
     }
-    return this.incomplete.has(id) ? "incomplete" : "stored";
+    if (this.incomplete.has(id)) {
+      return "incomplete";
+    }
+    const written = this.durable.get(id);
+    if (written === segmentCount) {
+      return "stored";
+    }
+    return this.isAvailable ? "saving" : "memory-only";
   }
 
   private emit(event: DictationRecordingStoreEvent): void {
@@ -160,6 +177,8 @@ export class DictationRecordingStore {
   /** Starts a stored recording and returns its id, or null when nothing can be stored. */
   begin(scope: string, format: string, serverId?: string): string | null {
     if (!this.backend) {
+      // No device storage at all: tell the owner once per recording.
+      this.emit({ kind: "unavailable", error: new Error("Device storage is unavailable") });
       return null;
     }
     // A failure to open storage is retried with each new recording rather than for the session.
@@ -177,7 +196,7 @@ export class DictationRecordingStore {
       bytes: 0,
     };
     this.active.add(id);
-    this.enqueue(async (backend, known) => {
+    this.enqueue(id, async (backend, known) => {
       await this.claimFor(backend, id);
       if (!this.active.has(id)) {
         // Released before this queued claim ran; do not hold the lock until the tab closes.
@@ -185,7 +204,13 @@ export class DictationRecordingStore {
       }
       await this.prune(backend, known);
       known.set(id, recording);
-      await this.withRetry(() => backend.putRecording(recording));
+      try {
+        await this.withRetry(() => backend.putRecording(recording));
+      } catch (error) {
+        await this.markIncomplete(backend, known, recording, error);
+        return;
+      }
+      this.durable.set(id, 0);
     });
     return id;
   }
@@ -195,7 +220,7 @@ export class DictationRecordingStore {
     if (!this.backend) {
       return;
     }
-    this.enqueue(async (backend, known) => {
+    this.enqueue(id, async (backend, known) => {
       const recording = known.get(id);
       if (!recording || this.incomplete.has(id)) {
         // A gap cannot be repaired later, so stop writing after the first lost segment.
@@ -229,7 +254,10 @@ export class DictationRecordingStore {
         await this.withRetry(() => backend.putRecording(next));
       } catch (error) {
         await this.markIncomplete(backend, known, next, error);
+        return;
       }
+      this.durable.set(id, seq + 1);
+      this.emit({ kind: "written", id });
     });
   }
 
@@ -255,6 +283,7 @@ export class DictationRecordingStore {
       console.warn("[DictationRecordingStore] Failed to delete recording", error);
     });
     this.incomplete.delete(id);
+    this.durable.delete(id);
     this.release(id);
   }
 
@@ -332,6 +361,7 @@ export class DictationRecordingStore {
           this.release(recording.id);
           continue;
         }
+        this.durable.set(recording.id, segments.length);
         return { recording, segments };
       }
       return null;
@@ -356,25 +386,38 @@ export class DictationRecordingStore {
     return run;
   }
 
-  private enqueue(task: StoreTask): void {
+  private enqueue(id: string, task: StoreTask): void {
     const backend = this.backend;
     if (!backend) {
       return;
     }
-    this.queue = this.queue.then(() => this.runTask(backend, task));
+    this.queue = this.queue.then(() => this.runTask(backend, id, task));
   }
 
-  private async runTask(backend: DictationRecordingBackend, task: StoreTask): Promise<void> {
+  private async runTask(
+    backend: DictationRecordingBackend,
+    id: string,
+    task: StoreTask,
+  ): Promise<void> {
     let known: Map<string, StoredDictationRecording>;
     try {
       known = await this.loadKnown(backend);
     } catch (error) {
+      const wasFailing = this.failure !== null;
       this.failure = error instanceof Error ? error : new Error(String(error));
-      this.emit({ kind: "unavailable", error: this.failure });
-      console.warn(
-        "[DictationRecordingStore] Device storage unavailable; keeping dictation audio in memory only",
-        this.failure,
-      );
+      // The write this task carried is lost, so the device copy now has a gap.
+      if (!this.incomplete.has(id)) {
+        this.incomplete.add(id);
+        this.emit({ kind: "incomplete", id });
+      }
+      // Tell the owner on the transition into failure only, not once per segment.
+      if (!wasFailing) {
+        this.emit({ kind: "unavailable", error: this.failure });
+        console.warn(
+          "[DictationRecordingStore] Device storage unavailable; keeping dictation audio in memory only",
+          this.failure,
+        );
+      }
       return;
     }
     try {

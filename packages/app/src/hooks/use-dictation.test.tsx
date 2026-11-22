@@ -23,8 +23,14 @@ const audioSource: {
 
 const exportCalls: Array<{ segments: readonly string[] }> = [];
 vi.mock("@/dictation/recording-export", () => ({
-  exportDictationRecording: async (segments: readonly string[]) => {
-    exportCalls.push({ segments: [...segments] });
+  prepareDictationExport: async (segments: readonly string[]) => ({
+    fileName: "dictation.wav",
+    segmentCount: segments.length,
+    segments: [...segments],
+    release: () => undefined,
+  }),
+  shareDictationExport: async (prepared: { segments: string[] }) => {
+    exportCalls.push({ segments: prepared.segments });
     return "shared";
   },
 }));
@@ -435,15 +441,28 @@ describe("useDictation keeps recordings until a transcript is confirmed", () => 
 
   it("saves the audio without touching the stored recording, and says where the audio is", async () => {
     const backend = new MemoryDictationRecordingBackend();
+    // Hold segment writes, as a slow device would, until the failed state has rendered.
+    let releaseWrites: () => void = () => undefined;
+    const writesHeld = new Promise<void>((resolve) => {
+      releaseWrites = resolve;
+    });
+    const putSegment = backend.putSegment.bind(backend);
+    backend.putSegment = async (id, seq, data) => {
+      await writesHeld;
+      return putSegment(id, seq, data);
+    };
     const store = new DictationRecordingStore(backend);
     const { result } = renderDictation(new FakeClient(), store);
 
     await recordSegments(result, ["s0", "s1"]);
     await act(() => result.current.cancelDictation());
+    expect(result.current.status).toBe("failed");
+    // Until the writes land the notice claims nothing; then it says the recording is kept.
+    expect(result.current.recordingPersistence).toBe("saving");
+    releaseWrites();
     await act(async () => {
       await store.flush();
     });
-    expect(result.current.status).toBe("failed");
     expect(result.current.recordingPersistence).toBe("stored");
 
     exportCalls.length = 0;

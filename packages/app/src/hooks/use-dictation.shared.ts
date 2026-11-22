@@ -1,4 +1,5 @@
 import { i18n } from "@/i18n/i18next";
+import { DICTATION_PCM_FORMAT } from "@/dictation/recording-wav";
 
 export type DictationStatus = "idle" | "recording" | "paused" | "uploading" | "failed";
 
@@ -8,11 +9,6 @@ export interface UseDictationOptions {
   onPartialTranscript?: (text: string, meta: { requestId: string }) => void;
   onError?: (error: Error) => void;
   onPermanentFailure?: (error: Error, context: { requestId: string }) => void;
-  /**
-   * Device storage events worth telling the owner about: another unsent recording was removed
-   * to stay within the storage limits, or this device cannot store recordings right now.
-   */
-  onStorageNotice?: (notice: DictationStorageNotice) => void;
   canStart?: () => boolean;
   canConfirm?: () => boolean;
   enableDuration?: boolean;
@@ -59,10 +55,8 @@ export interface DictationCancelOptions {
 /** A Cancel button press on a capture shorter than this discards it instead of keeping it. */
 export const SHORT_CAPTURE_DISCARD_MS = 5_000;
 
-export type DictationStorageNotice = "evicted" | "unavailable";
-
 export const DURATION_TICK_MS = 1000;
-export const PCM_DICTATION_FORMAT = "audio/pcm;rate=16000;bits=16";
+export const PCM_DICTATION_FORMAT = DICTATION_PCM_FORMAT;
 
 export const toError = (error: unknown): Error => {
   if (error instanceof Error) {

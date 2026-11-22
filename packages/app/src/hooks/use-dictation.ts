@@ -3,7 +3,11 @@ import { useTranslation } from "react-i18next";
 
 import { getDeviceDictationRecordingStore } from "@/dictation/device-recording-store";
 import { DictationStreamSender } from "@/dictation/dictation-stream-sender";
-import { exportDictationRecording } from "@/dictation/recording-export";
+import {
+  prepareDictationExport,
+  shareDictationExport,
+  type PreparedDictationExport,
+} from "@/dictation/recording-export";
 import type {
   DictationRecordingPersistence,
   DictationRecordingStore,
@@ -74,7 +78,6 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     onPartialTranscript,
     onError,
     onPermanentFailure,
-    onStorageNotice,
     canStart,
     canConfirm,
     enableDuration = false,
@@ -138,12 +141,12 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     onPermanentFailureRef.current = onPermanentFailure;
   }, [onPermanentFailure]);
 
-  const onStorageNoticeRef = useRef(onStorageNotice);
-  useEffect(() => {
-    onStorageNoticeRef.current = onStorageNotice;
-  }, [onStorageNotice]);
   /** When the audio in the sender was first captured; names the saved file. */
   const recordingCreatedAtRef = useRef(0);
+  /** Format of the audio in the sender; a recovered recording carries its stored format. */
+  const recordingFormatRef = useRef(PCM_DICTATION_FORMAT);
+  /** The Save audio file, built when the failed state appears so the press can share at once. */
+  const preparedExportRef = useRef<PreparedDictationExport | null>(null);
   const [recordingPersistence, setRecordingPersistence] =
     useState<DictationRecordingPersistence | null>(null);
 
@@ -440,10 +443,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
           : null;
       captureTargetRef.current = { scope, storedId: storedRecordingIdRef.current };
       recordingCreatedAtRef.current = Date.now();
-      if (scope && !storedRecordingIdRef.current) {
-        // No device copy at all: say so before the owner speaks for minutes.
-        onStorageNoticeRef.current?.("unavailable");
-      }
+      recordingFormatRef.current = PCM_DICTATION_FORMAT;
     },
     [clearStreamingState, recordingServerId, setStatus],
   );
@@ -726,20 +726,76 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   ]);
   retryRef.current = retryFailedDictation;
 
-  const saveFailedRecording = useCallback((): Promise<void> => {
+  const reportSaveFailure = useCallback(
+    (err: unknown) => {
+      console.error("[useDictation] Failed to save dictation audio", err);
+      onErrorRef.current?.(new Error(t("message.dictation.saveFailed")));
+    },
+    [t],
+  );
+
+  const prepareExport = useCallback((): Promise<PreparedDictationExport> => {
     const segments = senderRef.current?.getSegments() ?? [];
-    if (segments.length === 0) {
+    // Memory always holds at least what the device holds, so the file is built from memory.
+    return prepareDictationExport(
+      segments,
+      recordingCreatedAtRef.current || Date.now(),
+      recordingFormatRef.current,
+    );
+  }, []);
+
+  const saveFailedRecording = useCallback((): Promise<void> => {
+    const segmentCount = senderRef.current?.getSegmentCount() ?? 0;
+    if (segmentCount === 0) {
       return Promise.resolve();
     }
-    // Memory always holds at least what the device holds, so export from memory. Nothing awaits
-    // before the export, which keeps the share sheet inside the press on iOS.
-    return exportDictationRecording(segments, recordingCreatedAtRef.current || Date.now()).then(
-      () => undefined,
-      (err: unknown) => {
-        reportError(err, "Failed to save dictation audio");
-      },
-    );
-  }, [reportError]);
+    const prepared = preparedExportRef.current;
+    if (prepared && prepared.segmentCount === segmentCount) {
+      // Prepared in advance: share() runs inside this press, as iOS requires.
+      return shareDictationExport(prepared).then(() => undefined, reportSaveFailure);
+    }
+    // Not ready yet. Build it now; if the browser then refuses the share because the press is
+    // too old, the owner sees "could not save" and the next press shares the ready file.
+    return prepareExport()
+      .then((fresh) => {
+        preparedExportRef.current?.release();
+        preparedExportRef.current = fresh;
+        return shareDictationExport(fresh);
+      })
+      .then(() => undefined, reportSaveFailure);
+  }, [prepareExport, reportSaveFailure]);
+
+  // Build the Save audio file while the failed state shows, and drop it once the recording is
+  // sent, discarded or recording again.
+  useEffect(() => {
+    if (status !== "failed") {
+      preparedExportRef.current?.release();
+      preparedExportRef.current = null;
+      return;
+    }
+    const segmentCount = senderRef.current?.getSegmentCount() ?? 0;
+    if (segmentCount === 0 || preparedExportRef.current?.segmentCount === segmentCount) {
+      return;
+    }
+    let cancelled = false;
+    const prepareInBackground = async () => {
+      try {
+        const prepared = await prepareExport();
+        if (cancelled || senderRef.current?.getSegmentCount() !== prepared.segmentCount) {
+          prepared.release();
+          return;
+        }
+        preparedExportRef.current?.release();
+        preparedExportRef.current = prepared;
+      } catch (err) {
+        console.warn("[useDictation] Could not prepare dictation audio for saving", err);
+      }
+    };
+    void prepareInBackground();
+    return () => {
+      cancelled = true;
+    };
+  }, [prepareExport, status]);
 
   const discardFailedDictation = useCallback(() => {
     attemptGuardRef.current.cancel();
@@ -823,6 +879,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       }
       storedRecordingIdRef.current = pending.recording.id;
       recordingCreatedAtRef.current = pending.recording.createdAt;
+      recordingFormatRef.current = pending.recording.format;
       current.loadSegments(pending.segments);
       setError(null);
       setStatus("failed");
@@ -874,27 +931,23 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   }, [stopDurationTracking]);
 
   // Keep the notice line honest: recompute where the unsent audio lives whenever the dictation
-  // state changes or the store reports a failure, and pass storage events on to the composer.
+  // state changes or the store reports progress or a failure. "stored" requires every segment in
+  // memory to be on the device. Owner-facing storage toasts come from one app-level listener.
   useEffect(() => {
     const refresh = () => {
-      const hasAudio = senderRef.current?.hasSegments() ?? false;
+      const segmentCount = senderRef.current?.getSegmentCount() ?? 0;
       const store = recordingStoreRef.current;
       setRecordingPersistence(
-        hasAudio ? (store?.persistence(storedRecordingIdRef.current) ?? "memory-only") : null,
+        segmentCount > 0
+          ? (store?.persistence(storedRecordingIdRef.current, segmentCount) ?? "memory-only")
+          : null,
       );
     };
     refresh();
     if (!recordingStore) {
       return;
     }
-    return recordingStore.subscribe((event) => {
-      refresh();
-      if (event.kind === "evicted") {
-        onStorageNoticeRef.current?.("evicted");
-      } else if (event.kind === "unavailable") {
-        onStorageNoticeRef.current?.("unavailable");
-      }
-    });
+    return recordingStore.subscribe(refresh);
   }, [recordingStore, status]);
 
   return {

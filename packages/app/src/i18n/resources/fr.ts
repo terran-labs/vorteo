@@ -386,6 +386,7 @@ export const fr: TranslationResources = {
       cancel: "Annuler la dictée",
       retry: "Relancer la dictée",
       saveAudio: "Enregistrer l'audio",
+      saveFailed: "L'audio n'a pas pu être enregistré. Réessayez.",
       recordingKept: "Votre enregistrement est conservé.",
       recordingNotSaved:
         "Cet enregistrement n'est pas sauvegardé sur cet appareil. Gardez cette page ouverte jusqu'à son envoi, ou enregistrez l'audio.",

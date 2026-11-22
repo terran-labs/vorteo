@@ -382,6 +382,7 @@ export const ko: TranslationResources = {
       cancel: "받아쓰기 취소",
       retry: "받아쓰기 다시 시도",
       saveAudio: "오디오 저장",
+      saveFailed: "오디오를 저장하지 못했습니다. 다시 시도하세요.",
       recordingKept: "녹음이 보관되어 있습니다.",
       recordingNotSaved:
         "이 녹음은 이 기기에 저장되지 않았습니다. 전송될 때까지 이 페이지를 열어 두거나 오디오를 저장하세요.",

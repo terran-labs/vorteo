@@ -388,6 +388,7 @@ export const es: TranslationResources = {
       cancel: "Cancelar dictado",
       retry: "Reintentar el dictado",
       saveAudio: "Guardar audio",
+      saveFailed: "No se pudo guardar el audio. Inténtalo de nuevo.",
       recordingKept: "Tu grabación se conserva.",
       recordingNotSaved:
         "Esta grabación no está guardada en este dispositivo. Mantén esta página abierta hasta que se envíe, o guarda el audio.",

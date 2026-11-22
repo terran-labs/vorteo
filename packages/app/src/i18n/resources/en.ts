@@ -663,6 +663,7 @@ export const en = {
       cancel: "Cancel dictation",
       retry: "Retry dictation",
       saveAudio: "Save audio",
+      saveFailed: "The audio could not be saved. Try again.",
       recordingKept: "Your recording is kept.",
       recordingNotSaved:
         "This recording is not saved on this device. Keep this page open until it is sent, or save the audio.",

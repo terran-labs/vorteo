@@ -37,7 +37,6 @@ import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { ArrowUp, Mic, MicOff, CornerDownLeft, ListPlus, Plus, Square } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 import { useDictation } from "@/hooks/use-dictation";
-import type { DictationStorageNotice } from "@/hooks/use-dictation.shared";
 import type { DictationRecordingPersistence } from "@/dictation/recording-store";
 import { hasFinePointer } from "@/hooks/use-fine-pointer";
 import { DictationOverlay } from "@/components/dictation-controls";
@@ -592,6 +591,8 @@ function resolveDictationPersistenceNotice(
   t: (key: string) => string,
 ): string | undefined {
   if (!persistence) return undefined;
+  // While the last writes are still landing, say nothing rather than claim either way.
+  if (persistence === "saving") return undefined;
   return persistence === "stored"
     ? t("message.dictation.recordingKept")
     : t("message.dictation.recordingNotSaved");
@@ -1704,19 +1705,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       [client, disabled, dictationUnavailableMessage, isReadyForDictation],
     );
 
-    const handleDictationStorageNotice = useCallback(
-      (notice: DictationStorageNotice) => {
-        toast.error(
-          t(
-            notice === "evicted"
-              ? "message.dictation.recordingEvicted"
-              : "message.dictation.storageUnavailable",
-          ),
-        );
-      },
-      [t, toast],
-    );
-
     const canConfirmDictation = useCallback(() => client?.isConnected ?? false, [client]);
     const isConnected = client?.isConnected ?? false;
     const isDictationStartEnabled = computeIsDictationStartEnabled(
@@ -1751,7 +1739,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       // Keeps dictation audio on the device per thread until a transcript is confirmed.
       recordingScope: resolveDictationRecordingScope(voiceAgentId),
       recordingServerId: voiceServerId,
-      onStorageNotice: handleDictationStorageNotice,
     });
     const dictationPersistenceNotice = resolveDictationPersistenceNotice(recordingPersistence, t);
 
