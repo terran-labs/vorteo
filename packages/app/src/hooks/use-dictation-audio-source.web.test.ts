@@ -117,4 +117,31 @@ describe("web dictation audio source", () => {
     await expect(starting).rejects.toThrow("closed");
     expect(track.stop).toHaveBeenCalled();
   });
+
+  it("waits for another instance's stop, so a remounted composer never overlaps the old capture", async () => {
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    const calls: string[] = [];
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: async () => {
+          calls.push("open");
+          return { getTracks: () => [{ stop: vi.fn() }] };
+        },
+      },
+    });
+    const closing = renderHook(() =>
+      useDictationAudioSource({ onPcmSegment: () => calls.push("old tail") }),
+    );
+    await act(() => closing.result.current.start());
+    act(() => {
+      FakeAudioContext.processor?.onaudioprocess?.({
+        inputBuffer: { getChannelData: () => new Float32Array(8000).fill(0.1) },
+      });
+    });
+    const reopened = renderHook(() => useDictationAudioSource({ onPcmSegment: vi.fn() }));
+
+    await act(() => Promise.all([closing.result.current.stop(), reopened.result.current.start()]));
+    expect(calls).toEqual(["open", "old tail", "open"]);
+  });
 });

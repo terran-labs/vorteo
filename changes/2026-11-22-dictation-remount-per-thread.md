@@ -5,4 +5,4 @@
 
 ## Maintenance review
 
-Work in progress for #570: replaced the per-thread parking of dictation audio with a composer keyed by thread. Interface only. README overview and onboarding are unchanged.
+Replaced the per-thread parking of dictation audio with a composer keyed by thread (#570), with tests for the handover on close, thread isolation and the microphone order across composers. Interface only. README overview and onboarding are unchanged.

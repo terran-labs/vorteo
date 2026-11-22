@@ -56,8 +56,9 @@ vi.mock("@/hooks/use-dictation-audio-source", () => ({
         // An array models MediaRecorder fallback mode, which delivers the whole recording here.
         const tail = audioSource.tailOnStop;
         audioSource.tailOnStop = null;
+        // Each source instance delivers to its own composer, as a real one does.
         for (const segment of typeof tail === "string" ? [tail] : (tail ?? [])) {
-          audioSource.config?.onPcmSegment(segment);
+          config.onPcmSegment(segment);
         }
       },
       volume: 0,
@@ -136,17 +137,19 @@ class FakeClient {
   }
 }
 
-function renderDictation(client: FakeClient, store: DictationRecordingStore | null) {
+function renderDictation(
+  client: FakeClient,
+  store: DictationRecordingStore | null,
+  scope = "host:agent",
+) {
   const onTranscript = vi.fn();
-  const hook = renderHook(
-    ({ scope }: { scope: string }) =>
-      useDictation({
-        client: client as unknown as UseDictationOptions["client"],
-        onTranscript,
-        recordingScope: scope,
-        recordingStore: store,
-      }),
-    { initialProps: { scope: "host:agent" } },
+  const hook = renderHook(() =>
+    useDictation({
+      client: client as unknown as UseDictationOptions["client"],
+      onTranscript,
+      recordingScope: scope,
+      recordingStore: store,
+    }),
   );
   return { ...hook, onTranscript };
 }
@@ -416,5 +419,44 @@ describe("useDictation keeps recordings until a transcript is confirmed", () => 
     } finally {
       prepareControl.gate = null;
     }
+  });
+
+  it("offers a recording back in full after its composer closed mid-recording", async () => {
+    // With a device store, and with no device storage at all (the audio lives only in memory).
+    for (const backend of [new MemoryDictationRecordingBackend(), null]) {
+      const store = new DictationRecordingStore(backend);
+      const first = renderDictation(new FakeClient(), store);
+      await recordSegments(first.result, ["r0", "r1"]);
+      // Closing the composer, as a thread switch does, stops the microphone; its last audio
+      // arrives after the composer is gone.
+      audioSource.tailOnStop = "r-tail";
+      first.unmount();
+
+      const client = new FakeClient();
+      const reopened = renderDictation(client, store);
+      await waitFor(() => expect(reopened.result.current.status).toBe("failed"));
+      await act(() => reopened.result.current.retryFailedDictation());
+      expect(client.chunksFor(client.starts.at(-1))).toEqual(["r0", "r1", "r-tail"]);
+      expect(reopened.onTranscript).toHaveBeenCalledWith("hello world", expect.anything());
+      reopened.unmount();
+    }
+  });
+
+  it("never shows one thread's unsent recording in another thread's composer", async () => {
+    const store = new DictationRecordingStore(new MemoryDictationRecordingBackend());
+    const first = renderDictation(new FakeClient(), store, "dictation:thread-a");
+    await recordSegments(first.result, ["a0"]);
+    await act(() => first.result.current.cancelDictation());
+    first.unmount();
+
+    const other = renderDictation(new FakeClient(), store, "dictation:thread-b");
+    await act(async () => {
+      await store.flush();
+    });
+    expect(other.result.current.status).toBe("idle");
+    other.unmount();
+
+    const back = renderDictation(new FakeClient(), store, "dictation:thread-a");
+    await waitFor(() => expect(back.result.current.status).toBe("failed"));
   });
 });
