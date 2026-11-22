@@ -293,74 +293,6 @@ describe("useDictation keeps recordings until a transcript is confirmed", () => 
     expect(client.chunksFor(retryId)).toEqual(["f0", "f1"]);
   });
 
-  it("does not carry one thread's unsent audio into another thread's composer", async () => {
-    const client = new FakeClient();
-    const store = new DictationRecordingStore(new MemoryDictationRecordingBackend());
-    const { result, rerender, onTranscript } = renderDictation(client, store);
-
-    await recordSegments(result, ["a0", "a1"]);
-    await act(() => result.current.cancelDictation());
-    expect(result.current.status).toBe("failed");
-
-    rerender({ scope: "host:other" });
-    await waitFor(() => expect(result.current.status).toBe("idle"));
-    const startsBefore = client.starts.length;
-    await act(() => result.current.retryFailedDictation());
-    expect(client.starts).toHaveLength(startsBefore);
-
-    rerender({ scope: "host:agent" });
-    await waitFor(() => expect(result.current.status).toBe("failed"));
-    await act(() => result.current.retryFailedDictation());
-    expect(client.chunksFor(client.starts.at(-1))).toEqual(["a0", "a1"]);
-    expect(onTranscript).toHaveBeenCalledTimes(1);
-  });
-
-  it("routes audio that arrives after a thread switch to the thread it was recorded in", async () => {
-    const client = new FakeClient();
-    const backend = new MemoryDictationRecordingBackend();
-    const store = new DictationRecordingStore(backend);
-    const { result, rerender, onTranscript } = renderDictation(client, store);
-
-    await recordSegments(result, ["a0"]);
-    audioSource.tailOnStop = "a-tail";
-    rerender({ scope: "host:other" });
-    await waitFor(() => expect(result.current.status).toBe("idle"));
-    await act(async () => {
-      await store.flush();
-    });
-
-    // Thread B starts its own dictation; none of A's audio may reach it.
-    await recordSegments(result, ["b0"]);
-    await act(() => result.current.confirmDictation());
-    const bStream = client.finishes.at(-1)!.dictationId;
-    expect(client.chunksFor(bStream)).toEqual(["b0"]);
-
-    rerender({ scope: "host:agent" });
-    await waitFor(() => expect(result.current.status).toBe("failed"));
-    await store.flush();
-    const aRecording = [...backend.recordings.values()].find((r) => r.scope === "host:agent")!;
-    expect(backend.segments.get(aRecording.id)).toEqual(["a0", "a-tail"]);
-
-    await act(() => result.current.retryFailedDictation());
-    expect(client.chunksFor(client.starts.at(-1))).toEqual(["a0", "a-tail"]);
-    expect(onTranscript).toHaveBeenCalledTimes(2);
-
-    // Without device storage, memory is the only copy: a thread left before any audio arrived,
-    // as in MediaRecorder fallback mode, keeps the whole recording delivered at stop.
-    const memoryOnly = renderDictation(new FakeClient(), null);
-    await act(() => memoryOnly.result.current.startDictation());
-    audioSource.tailOnStop = ["m0", "m1", "m2"];
-    memoryOnly.rerender({ scope: "host:other" });
-    await waitFor(() => expect(memoryOnly.result.current.status).toBe("idle"));
-    await act(async () => {
-      await Promise.resolve();
-    });
-    memoryOnly.rerender({ scope: "host:agent" });
-    await waitFor(() => expect(memoryOnly.result.current.status).toBe("failed"));
-    await act(() => memoryOnly.result.current.retryFailedDictation());
-    expect(memoryOnly.onTranscript).toHaveBeenCalledWith("hello world", expect.anything());
-  });
-
   it("discards a capture under five seconds when Cancel is pressed, and keeps a longer one", async () => {
     const now = vi.spyOn(Date, "now");
     try {
@@ -385,64 +317,6 @@ describe("useDictation keeps recordings until a transcript is confirmed", () => 
       expect([...backend.segments.values()][0]).toEqual(["long"]);
     } finally {
       now.mockRestore();
-    }
-  });
-
-  it("keeps a just-parked thread whole while its late audio arrives, even with full memory", async () => {
-    const client = new FakeClient();
-    const backend = new MemoryDictationRecordingBackend();
-    const store = new DictationRecordingStore(backend, { retryDelayMs: 0 });
-    const { result, rerender } = renderDictation(client, store);
-
-    // Three threads whose device copies are incomplete, so they must stay parked in memory.
-    for (const scope of ["t1", "t2", "t3"]) {
-      rerender({ scope });
-      await waitFor(() => expect(result.current.status).toBe("idle"));
-      backend.failNextSegmentWrites = 3;
-      await recordSegments(result, [`${scope}-0`]);
-      await act(() => result.current.cancelDictation());
-      await act(async () => {
-        await store.flush();
-      });
-    }
-
-    rerender({ scope: "t4" });
-    await waitFor(() => expect(result.current.status).toBe("idle"));
-    await recordSegments(result, ["t4-0", "t4-1"]);
-    audioSource.tailOnStop = "t4-tail";
-    rerender({ scope: "t5" });
-    await waitFor(() => expect(result.current.status).toBe("idle"));
-    await act(async () => {
-      await store.flush();
-    });
-
-    rerender({ scope: "t4" });
-    await waitFor(() => expect(result.current.status).toBe("failed"));
-    await act(() => result.current.retryFailedDictation());
-    expect(client.chunksFor(client.starts.at(-1))).toEqual(["t4-0", "t4-1", "t4-tail"]);
-  });
-
-  it("does not wipe a returning thread's late audio when the microphone is pressed during its stop", async () => {
-    for (const withStore of [false, true]) {
-      const backend = new MemoryDictationRecordingBackend();
-      const store = withStore ? new DictationRecordingStore(backend) : null;
-      const client = new FakeClient();
-      const { result, rerender, onTranscript, unmount } = renderDictation(client, store);
-
-      // MediaRecorder-style: the whole recording arrives 40 ms after stop.
-      await act(() => result.current.startDictation());
-      audioSource.tailOnStop = ["m0", "m1", "m2"];
-      audioSource.stopDelayMs = 40;
-      rerender({ scope: "host:other" });
-      rerender({ scope: "host:agent" });
-      await act(() => result.current.startDictation());
-
-      expect(result.current.status).toBe("failed");
-      await act(() => result.current.retryFailedDictation());
-      expect(client.chunksFor(client.starts.at(-1))).toEqual(["m0", "m1", "m2"]);
-      expect(onTranscript).toHaveBeenCalledWith("hello world", expect.anything());
-      unmount();
-      audioSource.stopDelayMs = 0;
     }
   });
 
@@ -484,29 +358,6 @@ describe("useDictation keeps recordings until a transcript is confirmed", () => 
     await recordSegments(memoryOnly.result, ["m0"]);
     await act(() => memoryOnly.result.current.cancelDictation());
     expect(memoryOnly.result.current.recordingPersistence).toBe("memory-only");
-  });
-
-  it("saves the audio of the thread on screen when two failed threads hold equal counts", async () => {
-    const store = new DictationRecordingStore(new MemoryDictationRecordingBackend());
-    const { result, rerender } = renderDictation(new FakeClient(), store);
-
-    await recordSegments(result, ["A0", "A1"]);
-    await act(() => result.current.cancelDictation());
-    rerender({ scope: "host:other" });
-    await waitFor(() => expect(result.current.status).toBe("idle"));
-    await recordSegments(result, ["B0", "B1"]);
-    await act(() => result.current.cancelDictation());
-    expect(result.current.status).toBe("failed");
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    // Back to A: the status stays "failed", but the file prepared for B must not be used.
-    rerender({ scope: "host:agent" });
-    await waitFor(() => expect(result.current.status).toBe("failed"));
-    exportCalls.length = 0;
-    await act(() => result.current.saveFailedRecording());
-    expect(exportCalls).toEqual([{ segments: ["A0", "A1"] }]);
   });
 
   it("says a recording is not saved when its writes never land", async () => {

@@ -179,6 +179,26 @@ function releaseIfDisposed(stream: MediaStream, disposed: boolean): void {
   throw new Error("Dictation audio source was closed");
 }
 
+/**
+ * Microphone stops in flight across every audio source instance. A composer remounted for
+ * another thread gets a new source while the old one may still be stopping; its start waits for
+ * all of them, so two captures never overlap and the old capture's last audio lands first.
+ */
+const microphoneStopsInFlight = new Set<Promise<void>>();
+
+function trackMicrophoneStop(stop: Promise<void>): void {
+  microphoneStopsInFlight.add(stop);
+  void stop.finally(() => {
+    microphoneStopsInFlight.delete(stop);
+  });
+}
+
+async function waitForMicrophoneStops(): Promise<void> {
+  while (microphoneStopsInFlight.size > 0) {
+    await Promise.all([...microphoneStopsInFlight].map((stop) => stop.catch(() => undefined)));
+  }
+}
+
 export function useDictationAudioSource(config: DictationAudioSourceConfig): DictationAudioSource {
   const [volume, setVolume] = useState(0);
 
@@ -258,10 +278,7 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
   const start = useCallback(async () => {
     // A start during a stop would open a second capture while the first is still emitting its
     // last audio; wait for the stop to finish first.
-    const stopping = stopInFlightRef.current;
-    if (stopping) {
-      await stopping.catch(() => undefined);
-    }
+    await waitForMicrophoneStops();
     if (disposedRef.current) {
       throw new Error("Dictation audio source was closed");
     }
@@ -472,6 +489,7 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
       }
     });
     stopInFlightRef.current = run;
+    trackMicrophoneStop(run);
     return run;
   }, [stopCapture]);
 

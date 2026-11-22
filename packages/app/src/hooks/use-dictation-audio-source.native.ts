@@ -9,6 +9,26 @@ import type {
   DictationAudioSourceConfig,
 } from "./use-dictation-audio-source.types";
 
+/**
+ * Microphone stops in flight across every audio source instance. A composer remounted for
+ * another thread gets a new source while the old one may still be stopping; its start waits for
+ * all of them, so two captures never overlap and the old capture's last audio lands first.
+ */
+const microphoneStopsInFlight = new Set<Promise<void>>();
+
+function trackMicrophoneStop(stop: Promise<void>): void {
+  microphoneStopsInFlight.add(stop);
+  void stop.finally(() => {
+    microphoneStopsInFlight.delete(stop);
+  });
+}
+
+async function waitForMicrophoneStops(): Promise<void> {
+  while (microphoneStopsInFlight.size > 0) {
+    await Promise.all([...microphoneStopsInFlight].map((stop) => stop.catch(() => undefined)));
+  }
+}
+
 export function useDictationAudioSource(config: DictationAudioSourceConfig): DictationAudioSource {
   const onPcmSegmentRef = useRef(config.onPcmSegment);
   const onErrorRef = useRef(config.onError);
@@ -57,10 +77,7 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
 
   const start = useCallback(async () => {
     // A start during a stop waits for it, so two captures never overlap.
-    const stopping = stopInFlightRef.current;
-    if (stopping) {
-      await stopping.catch(() => undefined);
-    }
+    await waitForMicrophoneStops();
     if (disposedRef.current) {
       throw new Error("Dictation audio source was closed");
     }
@@ -90,6 +107,7 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
       }
     });
     stopInFlightRef.current = run;
+    trackMicrophoneStop(run);
     return run;
   }, []);
 
