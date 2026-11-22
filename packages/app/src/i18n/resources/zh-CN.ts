@@ -72,6 +72,8 @@ export const zhCN: TranslationResources = {
       folderOutsideWorkspace: "{{path}} 不在此工作区内",
       unexpectedDictationError: "处理听写时发生意外错误。",
       hostConnectionLost: "与 Host 的连接已断开。重新连接后请重试。",
+      hostRequestTimeout: "主机未能及时响应。请重试。",
+      hostRestarting: "主机正在重启或安装更新。重新连接后请重试。",
     },
     connectionStatus: {
       online: "在线",
@@ -380,6 +382,14 @@ export const zhCN: TranslationResources = {
       insertAndSend: "插入转写并发送",
       failed: "听写失败：{{error}}",
       failedRetry: "听写失败。点按重试。",
+      stillTranscribing: "主机仍在转写一段较长的录音。没有失败。",
+      errors: {
+        speechService: "主机的语音服务没有响应。请重试。",
+        speechNotConfigured: "主机上未设置听写。",
+        streamLost: "主机丢失了这次听写。请重试。",
+        transcriptionTimeout: "主机转写耗时过长。请重试。",
+        hostRestarting: "主机正在重启或安装更新。恢复后请重试。",
+      },
     },
     question: {
       responseFailed: "未能发送你的回复，请重试。",

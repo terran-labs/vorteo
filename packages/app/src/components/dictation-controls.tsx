@@ -2,7 +2,15 @@ import { CARD_GAP } from "@/agent-stream/columns/geometry";
 import { useMobileComposerLayout } from "@/composer/mobile-layout";
 import { EdgeFade } from "@/components/ui/edge-fade";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentProps,
+} from "react";
 import { View, Text, Pressable, Keyboard } from "react-native";
 import {
   getInterfaceWindow,
@@ -18,6 +26,21 @@ import { FOOTER_HEIGHT } from "@/constants/layout";
 import type { DictationStatus } from "@/hooks/use-dictation";
 import { useVortonTouch } from "@/vorton-touch";
 import { toErrorMessage } from "@/utils/error-messages";
+
+// A long recording on a slow Host can take minutes to transcribe. After this long, say that it
+// is still working so a quiet spinner does not read as a failure. A real failure ends processing.
+const STILL_TRANSCRIBING_AFTER_MS = 20_000;
+
+function useStillTranscribing(isProcessing: boolean): boolean {
+  const [still, setStill] = useState(false);
+  useEffect(() => {
+    setStill(false);
+    if (!isProcessing) return;
+    const timer = setTimeout(() => setStill(true), STILL_TRANSCRIBING_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [isProcessing]);
+  return still;
+}
 
 interface DictationControlsProps {
   volume: number;
@@ -220,6 +243,36 @@ function useWindowEdges(enabled: boolean) {
   return { ref, edges, onLayout: measure };
 }
 
+/** The overlay's one line of status: paused, still transcribing, or why it failed. */
+function OverlayStatusLine({
+  status,
+  isProcessing,
+  errorText,
+  style,
+}: {
+  status: DictationStatus;
+  isProcessing: boolean;
+  errorText?: string;
+  style: ComponentProps<typeof Text>["style"];
+}) {
+  const { t } = useTranslation();
+  const isFailed = status === "failed";
+  const stillTranscribing = useStillTranscribing(isProcessing && !isFailed);
+  let text: string | null = null;
+  if (status === "paused") text = t("message.dictation.paused");
+  else if (isFailed) {
+    text = errorText
+      ? t("message.dictation.failed", { error: toErrorMessage(errorText) })
+      : t("message.dictation.failedRetry");
+  } else if (stillTranscribing) text = t("message.dictation.stillTranscribing");
+  if (!text) return null;
+  return (
+    <Text numberOfLines={2} style={style}>
+      {text}
+    </Text>
+  );
+}
+
 export function DictationOverlay({
   volume,
   duration,
@@ -395,18 +448,12 @@ export function DictationOverlay({
           />
           <Text style={overlayTimerTextStyle}>{formatDuration(duration)}</Text>
         </View>
-        {status === "paused" ? (
-          <Text numberOfLines={2} style={overlayTranscriptTextStyle}>
-            {t("message.dictation.paused")}
-          </Text>
-        ) : null}
-        {isFailed ? (
-          <Text numberOfLines={2} style={overlayTranscriptTextStyle}>
-            {errorText
-              ? t("message.dictation.failed", { error: toErrorMessage(errorText) })
-              : t("message.dictation.failedRetry")}
-          </Text>
-        ) : null}
+        <OverlayStatusLine
+          status={status}
+          isProcessing={isProcessing}
+          errorText={errorText}
+          style={overlayTranscriptTextStyle}
+        />
       </View>
 
       <View style={[overlayStyles.actionButtonsContainer, touch && overlayStyles.touchActions]}>
