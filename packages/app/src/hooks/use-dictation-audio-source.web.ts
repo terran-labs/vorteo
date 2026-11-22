@@ -193,9 +193,35 @@ function trackMicrophoneStop(stop: Promise<void>): void {
   });
 }
 
+/**
+ * Longest a start waits for other stops. A stop that never settles (an AudioContext close or a
+ * MediaRecorder stop event that hangs on some iOS builds) must not block every later start.
+ */
+export const MICROPHONE_STOP_WAIT_MS = 5_000;
+
 async function waitForMicrophoneStops(): Promise<void> {
-  while (microphoneStopsInFlight.size > 0) {
-    await Promise.all([...microphoneStopsInFlight].map((stop) => stop.catch(() => undefined)));
+  if (microphoneStopsInFlight.size === 0) {
+    return;
+  }
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timedOut = new Promise<"timed-out">((resolve) => {
+    timer = setTimeout(() => resolve("timed-out"), MICROPHONE_STOP_WAIT_MS);
+  });
+  const settled = (async () => {
+    while (microphoneStopsInFlight.size > 0) {
+      await Promise.all([...microphoneStopsInFlight].map((stop) => stop.catch(() => undefined)));
+    }
+    return "settled" as const;
+  })();
+  const outcome = await Promise.race([settled, timedOut]);
+  if (timer) {
+    clearTimeout(timer);
+  }
+  if (outcome === "timed-out") {
+    console.warn(
+      "[DictationAudio] A previous microphone stop did not finish; starting anyway",
+      microphoneStopsInFlight.size,
+    );
   }
 }
 

@@ -81,6 +81,8 @@ export interface RetainedDictationRecording {
 
 const MEMORY_RECORDING_PREFIX = "memory-";
 
+type RetainedEntry = RetainedDictationRecording & { retainedAt: number };
+
 /**
  * About 50 minutes of 16 kHz 16-bit mono audio in base64; a 4 minute recording is about 10 MB.
  */
@@ -128,7 +130,7 @@ export class DictationRecordingStore {
   private readonly incomplete = new Set<string>();
   private failure: Error | null = null;
   /** Audio left by closing composers that is not (wholly) on the device, newest last. */
-  private readonly retained = new Map<string, RetainedDictationRecording[]>();
+  private readonly retained = new Map<string, RetainedEntry[]>();
   /** Handovers registered by closing composers whose stop has not finished yet. */
   private readonly handovers = new Map<string, Set<Promise<void>>>();
   /** Segments of each recording durably written, counted only after the write succeeded. */
@@ -318,8 +320,68 @@ export class DictationRecordingStore {
       this.active.add(recording.storedId);
     }
     const list = this.retained.get(scope) ?? [];
-    list.push(recording);
+    list.push({ ...recording, retainedAt: this.now() });
     this.retained.set(scope, list);
+    this.boundRetained();
+  }
+
+  /**
+   * Keeps memory-held audio within the same byte budget as the device store, dropping the
+   * oldest first. Every drop is reported as an eviction, so the owner is told; a dropped entry's
+   * partial device row is released and stays on the device.
+   */
+  private boundRetained(): void {
+    const entries: { scope: string; entry: RetainedEntry; bytes: number }[] = [];
+    let total = 0;
+    for (const [scope, list] of this.retained) {
+      for (const entry of list) {
+        const bytes = entry.segments.reduce((sum, segment) => sum + segment.length, 0);
+        entries.push({ scope, entry, bytes });
+        total += bytes;
+      }
+    }
+    entries.sort((left, right) => left.entry.retainedAt - right.entry.retainedAt);
+    for (const { scope, entry, bytes } of entries) {
+      if (total <= this.maxBytes) {
+        return;
+      }
+      this.dropRetained(scope, entry, "space");
+      total -= bytes;
+    }
+  }
+
+  private dropRetained(scope: string, entry: RetainedEntry, reason: "space" | "host"): void {
+    const list = this.retained.get(scope);
+    if (!list) {
+      return;
+    }
+    const index = list.indexOf(entry);
+    if (index >= 0) {
+      list.splice(index, 1);
+    }
+    if (list.length === 0) {
+      this.retained.delete(scope);
+    }
+    if (entry.storedId) {
+      this.release(entry.storedId);
+    }
+    if (reason === "space") {
+      this.emit({ kind: "evicted", recording: this.describeRetained(scope, entry), reason });
+    }
+  }
+
+  private describeRetained(scope: string, entry: RetainedEntry): StoredDictationRecording {
+    return {
+      id: entry.storedId ?? `${MEMORY_RECORDING_PREFIX}${this.createId()}`,
+      scope,
+      ...(entry.serverId ? { serverId: entry.serverId } : {}),
+      format: entry.format,
+      createdAt: entry.createdAt,
+      updatedAt: entry.retainedAt,
+      segmentCount: entry.segments.length,
+      bytes: entry.segments.reduce((total, segment) => total + segment.length, 0),
+      incomplete: true,
+    };
   }
 
   /** Records the Host the audio is delivered to, when a draft switches Host. */
@@ -366,6 +428,15 @@ export class DictationRecordingStore {
 
   /** Deletes every recording made against a host, for host removal. */
   async deleteForServer(serverId: string): Promise<void> {
+    // Memory-held audio for the removed Host goes too; it is private to that Host.
+    // Copied first: dropping an entry changes the map and the list being walked.
+    for (const [scope, list] of Array.from(this.retained)) {
+      for (const entry of Array.from(list)) {
+        if (entry.serverId === serverId) {
+          this.dropRetained(scope, entry, "host");
+        }
+      }
+    }
     const backend = this.backend;
     if (!backend) {
       return;

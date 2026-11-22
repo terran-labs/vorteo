@@ -34,6 +34,8 @@ import {
  * so an automatic background build cannot hold hundreds of megabytes.
  */
 const BACKGROUND_EXPORT_MAX_SECONDS = 20 * 60;
+/** Longest a closing composer waits for its microphone stop before handing its audio over. */
+const HANDOVER_STOP_WAIT_MS = 5_000;
 /** A notice still waiting for its writes after this long says the recording is not saved. */
 const SAVING_STALL_MS = 10_000;
 
@@ -940,7 +942,18 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       const store = recordingStoreRef.current;
       const finishHandover = store && scope ? store.beginHandover(scope) : null;
       const handOver = async () => {
-        await audioStop.current().catch(() => undefined);
+        // A stop that never settles must not hold the recording back from the next mount: hand
+        // over after a bounded wait with whatever audio has arrived.
+        let stopTimer: ReturnType<typeof setTimeout> | null = null;
+        await Promise.race([
+          audioStop.current().catch(() => undefined),
+          new Promise<void>((resolve) => {
+            stopTimer = setTimeout(resolve, HANDOVER_STOP_WAIT_MS);
+          }),
+        ]);
+        if (stopTimer) {
+          clearTimeout(stopTimer);
+        }
         const sender = senderRef.current;
         const storedId = storedRecordingIdRef.current;
         try {
