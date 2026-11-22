@@ -23,6 +23,7 @@ import {
   SHORT_CAPTURE_DISCARD_MS,
   toError,
   type DictationCancelOptions,
+  type SaveAudioState,
   type DictationStatus,
   type UseDictationOptions,
   type UseDictationResult,
@@ -187,8 +188,17 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   const preparedExportRef = useRef<{ token: number; prepared: PreparedDictationExport } | null>(
     null,
   );
-  /** True while a Save audio press waits for its file to be built. */
-  const [isPreparingAudio, setIsPreparingAudio] = useState(false);
+  /**
+   * Save audio progress the overlay shows: "preparing" while a press waits for its file (the
+   * button is disabled), "ready" when that file finished after the press, whose gesture can no
+   * longer open the share sheet, so the owner presses again.
+   */
+  const [saveAudioState, setSaveAudioState] = useState<SaveAudioState>("idle");
+  /** The one build in flight for a recording; presses and the background build share it. */
+  const preparingExportRef = useRef<{
+    token: number;
+    promise: Promise<PreparedDictationExport | null>;
+  } | null>(null);
   const [recordingPersistence, setRecordingPersistence] =
     useState<DictationRecordingPersistence | null>(null);
 
@@ -828,42 +838,72 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     return true;
   }, []);
 
+  /**
+   * Builds the Save audio file for the current recording once. Concurrent callers for the same
+   * recording share the build, so presses during a long build never start a second one.
+   */
+  const prepareOnce = useCallback((): Promise<PreparedDictationExport | null> => {
+    const token = audioTokenRef.current;
+    const inFlight = preparingExportRef.current;
+    if (inFlight && inFlight.token === token) {
+      return inFlight.promise;
+    }
+    const promise = prepareExport()
+      .then((prepared) => (keepPreparedExport(token, prepared) ? prepared : null))
+      .finally(() => {
+        if (preparingExportRef.current?.promise === promise) {
+          preparingExportRef.current = null;
+        }
+      });
+    preparingExportRef.current = { token, promise };
+    return promise;
+  }, [keepPreparedExport, prepareExport]);
+
   const saveFailedRecording = useCallback((): Promise<void> => {
     const segmentCount = senderRef.current?.getSegmentCount() ?? 0;
     if (segmentCount === 0) {
       return Promise.resolve();
     }
+    const token = audioTokenRef.current;
+    const failedForThisRecording = (err: unknown) => {
+      // A thread switch made the result irrelevant; never report it under another recording.
+      if (token === audioTokenRef.current) {
+        setSaveAudioState("idle");
+        reportSaveFailure(err);
+      }
+    };
     const ready = currentPreparedExport();
     if (ready) {
-      // Prepared in advance from this exact audio: share() runs inside this press, as iOS
-      // requires.
-      return shareDictationExport(ready).then(() => undefined, reportSaveFailure);
+      // Prepared from this exact audio: share() runs inside this press, as iOS requires.
+      setSaveAudioState("idle");
+      return shareDictationExport(ready).then(() => undefined, failedForThisRecording);
     }
-    // Not ready (still building, too long to build in the background, or just changed). Build
-    // it now; if the browser then refuses the share because the press is too old, the owner sees
-    // "could not save" and the next press shares the ready file.
-    const token = audioTokenRef.current;
-    setIsPreparingAudio(true);
-    return prepareExport()
-      .then((fresh) => {
-        if (!keepPreparedExport(token, fresh)) {
+    // Not ready. This press's gesture will be gone by the time the file exists, so it does not
+    // share: it builds (or joins the build in flight) and then asks for a second press.
+    setSaveAudioState("preparing");
+    const prepareForNextPress = async () => {
+      try {
+        const prepared = await prepareOnce();
+        if (token !== audioTokenRef.current) {
+          return;
+        }
+        if (!prepared) {
           throw new Error("The recording changed while its audio file was prepared");
         }
-        return shareDictationExport(fresh);
-      })
-      .then(() => undefined, reportSaveFailure)
-      .finally(() => {
-        if (token === audioTokenRef.current) {
-          setIsPreparingAudio(false);
-        }
-      });
-  }, [currentPreparedExport, keepPreparedExport, prepareExport, reportSaveFailure]);
+        setSaveAudioState("ready");
+      } catch (err) {
+        failedForThisRecording(err);
+      }
+    };
+    return prepareForNextPress();
+  }, [currentPreparedExport, prepareOnce, reportSaveFailure]);
 
   // Build the Save audio file in the background while the failed state shows, keyed to the
   // audio's identity so a thread switch or a late tail rebuilds it. Recordings longer than the
   // background limit are built only when Save audio is pressed, to bound memory. The file is
   // dropped once the recording is sent, discarded or recording starts again.
   useEffect(() => {
+    setSaveAudioState("idle");
     if (status !== "failed") {
       preparedExportRef.current?.prepared.release();
       preparedExportRef.current = null;
@@ -881,25 +921,10 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     ) {
       return;
     }
-    const token = audioTokenRef.current;
-    let cancelled = false;
-    const prepareInBackground = async () => {
-      try {
-        const prepared = await prepareExport();
-        if (cancelled) {
-          prepared.release();
-          return;
-        }
-        keepPreparedExport(token, prepared);
-      } catch (err) {
-        console.warn("[useDictation] Could not prepare dictation audio for saving", err);
-      }
-    };
-    void prepareInBackground();
-    return () => {
-      cancelled = true;
-    };
-  }, [audioVersion, currentPreparedExport, keepPreparedExport, prepareExport, status]);
+    prepareOnce().catch((err: unknown) => {
+      console.warn("[useDictation] Could not prepare dictation audio for saving", err);
+    });
+  }, [audioVersion, currentPreparedExport, prepareOnce, status]);
 
   const discardFailedDictation = useCallback(() => {
     attemptGuardRef.current.cancel();
@@ -944,7 +969,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       markAudioChanged(true);
       preparedExportRef.current?.prepared.release();
       preparedExportRef.current = null;
-      setIsPreparingAudio(false);
+      setSaveAudioState("idle");
       storedRecordingIdRef.current = null;
       recordingCreatedAtRef.current = 0;
       recordingFormatRef.current = PCM_DICTATION_FORMAT;
@@ -1103,7 +1128,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     discardFailedDictation,
     saveFailedRecording,
     recordingPersistence,
-    isPreparingAudio,
+    saveAudioState,
     reset,
   };
 }

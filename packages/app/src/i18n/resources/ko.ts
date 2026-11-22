@@ -382,6 +382,7 @@ export const ko: TranslationResources = {
       cancel: "받아쓰기 취소",
       retry: "받아쓰기 다시 시도",
       saveAudio: "오디오 저장",
+      audioReady: "오디오 파일이 준비되었습니다. 오디오 저장을 다시 누르세요.",
       preparingAudio: "오디오 파일을 준비하는 중…",
       saveFailed: "오디오를 저장하지 못했습니다. 다시 시도하세요.",
       recordingKept: "녹음이 보관되어 있습니다.",

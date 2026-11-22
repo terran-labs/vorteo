@@ -286,6 +286,37 @@ function OverlayStatusLine({
   );
 }
 
+/** Saves the unsent recording as an audio file; waits while its file is being built. */
+function SaveAudioButton({
+  onSave,
+  isSaving,
+  style,
+}: {
+  onSave: () => void;
+  isSaving: boolean;
+  style: ComponentProps<typeof Pressable>["style"];
+}) {
+  const { theme } = useUnistyles();
+  const { t } = useTranslation();
+  const accessibilityState = useMemo(() => ({ disabled: isSaving, busy: isSaving }), [isSaving]);
+  const buttonStyle = useMemo(
+    () => [style, isSaving && overlayStyles.buttonDisabled],
+    [isSaving, style],
+  );
+  return (
+    <Pressable
+      onPress={onSave}
+      disabled={isSaving}
+      accessibilityRole="button"
+      accessibilityLabel={t("message.dictation.saveAudio")}
+      accessibilityState={accessibilityState}
+      style={buttonStyle as ComponentProps<typeof Pressable>["style"]}
+    >
+      <Download size={theme.iconSize.lg} color={theme.colors.accentForeground} strokeWidth={2.5} />
+    </Pressable>
+  );
+}
+
 export function DictationOverlay({
   volume,
   duration,
@@ -300,11 +331,14 @@ export function DictationOverlay({
   onRetry,
   onDiscard,
   onSave,
+  isSavingAudio,
   persistenceNotice,
 }: Omit<DictationControlsProps, "onStart" | "disabled" | "transcript"> & {
   errorText?: string;
   /** Saves the unsent recording as an audio file; shown in the failed state. */
   onSave?: () => void;
+  /** The file is being built; the button waits so presses cannot start a second build. */
+  isSavingAudio?: boolean;
   persistenceNotice?: string;
 }) {
   const { theme } = useUnistyles();
@@ -484,18 +518,11 @@ export function DictationOverlay({
           </View>
         ) : null}
         {!actionsDisabled && isFailed && onSave ? (
-          <Pressable
-            onPress={onSave}
-            accessibilityRole="button"
-            accessibilityLabel={t("message.dictation.saveAudio")}
+          <SaveAudioButton
+            onSave={onSave}
+            isSaving={isSavingAudio === true}
             style={overlayEditButtonStyle}
-          >
-            <Download
-              size={theme.iconSize.lg}
-              color={theme.colors.accentForeground}
-              strokeWidth={2.5}
-            />
-          </Pressable>
+          />
         ) : null}
         {!actionsDisabled && isFailed ? (
           <Pressable

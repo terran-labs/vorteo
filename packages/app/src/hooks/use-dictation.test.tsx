@@ -22,13 +22,20 @@ const audioSource: {
 };
 
 const exportCalls: Array<{ segments: readonly string[] }> = [];
+const prepareControl: { calls: number; gate: Promise<void> | null } = { calls: 0, gate: null };
 vi.mock("@/dictation/recording-export", () => ({
-  prepareDictationExport: async (segments: readonly string[]) => ({
-    fileName: "dictation.wav",
-    segmentCount: segments.length,
-    segments: [...segments],
-    release: () => undefined,
-  }),
+  prepareDictationExport: async (segments: readonly string[]) => {
+    prepareControl.calls += 1;
+    if (prepareControl.gate) {
+      await prepareControl.gate;
+    }
+    return {
+      fileName: "dictation.wav",
+      segmentCount: segments.length,
+      segments: [...segments],
+      release: () => undefined,
+    };
+  },
   shareDictationExport: async (prepared: { segments: string[] }) => {
     exportCalls.push({ segments: prepared.segments });
     return "shared";
@@ -520,6 +527,43 @@ describe("useDictation keeps recordings until a transcript is confirmed", () => 
       expect(result.current.recordingPersistence).toBe("memory-only");
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it("builds the file once for repeated presses and asks for a second press when it is ready", async () => {
+    let finishBuild: () => void = () => undefined;
+    prepareControl.calls = 0;
+    prepareControl.gate = new Promise<void>((resolve) => {
+      finishBuild = resolve;
+    });
+    try {
+      const store = new DictationRecordingStore(new MemoryDictationRecordingBackend());
+      const { result } = renderDictation(new FakeClient(), store);
+      await recordSegments(result, ["p0", "p1"]);
+      await act(() => result.current.cancelDictation());
+      expect(result.current.status).toBe("failed");
+
+      // Two quick presses while the build is still running share that one build.
+      exportCalls.length = 0;
+      let presses: Promise<void>[] = [];
+      act(() => {
+        presses = [result.current.saveFailedRecording(), result.current.saveFailedRecording()];
+      });
+      expect(result.current.saveAudioState).toBe("preparing");
+      await act(async () => {
+        finishBuild();
+        await Promise.all(presses);
+      });
+      expect(prepareControl.calls).toBe(1);
+      // That press's gesture is gone, so nothing was shared; the owner presses again.
+      expect(exportCalls).toEqual([]);
+      expect(result.current.saveAudioState).toBe("ready");
+
+      await act(() => result.current.saveFailedRecording());
+      expect(exportCalls).toEqual([{ segments: ["p0", "p1"] }]);
+      expect(prepareControl.calls).toBe(1);
+    } finally {
+      prepareControl.gate = null;
     }
   });
 });

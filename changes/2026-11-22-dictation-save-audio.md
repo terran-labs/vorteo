@@ -1,6 +1,6 @@
 ### Features
 
-- A failed dictation offers Save audio, which saves the recording as a WAV file without deleting it: through the share sheet on iPhone and the installed web app, as a download in other browsers, and through the share sheet in the native app. The file is prepared while the failure shows, so the press opens the share sheet at once; if saving fails, a notice says so. Save audio always saves the recording of the thread on screen, and recordings over 20 minutes are prepared when pressed, with a notice while that runs.
+- A failed dictation offers Save audio, which saves the recording as a WAV file without deleting it: through the share sheet on iPhone and the installed web app, as a download in other browsers, and through the share sheet in the native app. The file is prepared while the failure shows, so the press opens the share sheet at once; if saving fails, a notice says so. Save audio always saves the recording of the thread on screen, and recordings over 20 minutes are prepared when pressed, with the button waiting and a notice while that runs; when the file is ready the notice asks for a second press, since the first press can no longer open the share sheet.
 
 ### Fixes
 

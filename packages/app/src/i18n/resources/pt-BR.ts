@@ -385,6 +385,7 @@ export const ptBR: TranslationResources = {
       cancel: "Cancelar ditado",
       retry: "Tentar ditado novamente",
       saveAudio: "Salvar áudio",
+      audioReady: "O arquivo de áudio está pronto. Toque em Salvar áudio de novo.",
       preparingAudio: "Preparando o arquivo de áudio…",
       saveFailed: "Não foi possível salvar o áudio. Tente novamente.",
       recordingKept: "Sua gravação foi mantida.",

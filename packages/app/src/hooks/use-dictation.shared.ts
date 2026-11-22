@@ -44,8 +44,8 @@ export interface UseDictationResult {
   saveFailedRecording: () => Promise<void>;
   /** Where the unsent recording lives, or null when there is none. Drives the notice line. */
   recordingPersistence: import("@/dictation/recording-store").DictationRecordingPersistence | null;
-  /** True while a Save audio press waits for its file; the overlay says it is being prepared. */
-  isPreparingAudio: boolean;
+  /** Save audio progress: preparing after a press (button disabled), or ready for a second press. */
+  saveAudioState: SaveAudioState;
   reset: () => void;
 }
 
@@ -56,6 +56,8 @@ export interface DictationCancelOptions {
 
 /** A Cancel button press on a capture shorter than this discards it instead of keeping it. */
 export const SHORT_CAPTURE_DISCARD_MS = 5_000;
+
+export type SaveAudioState = "idle" | "preparing" | "ready";
 
 export const DURATION_TICK_MS = 1000;
 export const PCM_DICTATION_FORMAT = DICTATION_PCM_FORMAT;

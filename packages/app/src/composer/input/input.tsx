@@ -38,6 +38,7 @@ import { ArrowUp, Mic, MicOff, CornerDownLeft, ListPlus, Plus, Square } from "lu
 import * as Haptics from "expo-haptics";
 import { useDictation } from "@/hooks/use-dictation";
 import type { DictationRecordingPersistence } from "@/dictation/recording-store";
+import type { SaveAudioState } from "@/hooks/use-dictation.shared";
 import { hasFinePointer } from "@/hooks/use-fine-pointer";
 import { DictationOverlay } from "@/components/dictation-controls";
 import { RealtimeVoiceOverlay } from "@/components/realtime-voice-overlay";
@@ -588,10 +589,11 @@ function MessageInputAutoFocus({
  */
 function resolveDictationPersistenceNotice(
   persistence: DictationRecordingPersistence | null,
-  isPreparingAudio: boolean,
+  saveAudioState: SaveAudioState,
   t: (key: string) => string,
 ): string | undefined {
-  if (isPreparingAudio) return t("message.dictation.preparingAudio");
+  if (saveAudioState === "preparing") return t("message.dictation.preparingAudio");
+  if (saveAudioState === "ready") return t("message.dictation.audioReady");
   if (!persistence) return undefined;
   // While the last writes are still landing, say nothing rather than claim either way.
   if (persistence === "saving") return undefined;
@@ -626,6 +628,7 @@ function MessageInputOverlay({
   onRetryFailedRecording,
   onDiscardFailedRecording,
   onSaveFailedRecording,
+  isSavingAudio,
   dictationPersistenceNotice,
   onRealtimeVoiceStop,
 }: {
@@ -652,6 +655,7 @@ function MessageInputOverlay({
   onRetryFailedRecording: () => void;
   onDiscardFailedRecording: () => void;
   onSaveFailedRecording: () => void;
+  isSavingAudio: boolean;
   dictationPersistenceNotice: string | undefined;
   onRealtimeVoiceStop: () => void;
 }) {
@@ -671,6 +675,7 @@ function MessageInputOverlay({
         onRetry={dictationStatus === "failed" ? onRetryFailedRecording : undefined}
         onDiscard={dictationStatus === "failed" ? onDiscardFailedRecording : undefined}
         onSave={dictationStatus === "failed" ? onSaveFailedRecording : undefined}
+        isSavingAudio={isSavingAudio}
         persistenceNotice={dictationPersistenceNotice}
       />
     );
@@ -1731,7 +1736,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       discardFailedDictation,
       saveFailedRecording,
       recordingPersistence,
-      isPreparingAudio,
+      saveAudioState,
     } = useDictation({
       client,
       onTranscript: handleDictationTranscript,
@@ -1745,7 +1750,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     });
     const dictationPersistenceNotice = resolveDictationPersistenceNotice(
       recordingPersistence,
-      isPreparingAudio,
+      saveAudioState,
       t,
     );
 
@@ -2580,6 +2585,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
             onRetryFailedRecording={handleRetryFailedRecording}
             onDiscardFailedRecording={handleDiscardFailedRecording}
             onSaveFailedRecording={handleSaveFailedRecording}
+            isSavingAudio={saveAudioState === "preparing"}
             dictationPersistenceNotice={dictationPersistenceNotice}
             onRealtimeVoiceStop={handleRealtimeVoiceStop}
           />
@@ -2604,6 +2610,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         handleRetryFailedRecording,
         handleDiscardFailedRecording,
         handleSaveFailedRecording,
+        saveAudioState,
         dictationPersistenceNotice,
         handleRealtimeVoiceStop,
       ],
