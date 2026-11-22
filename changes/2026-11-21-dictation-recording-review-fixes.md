@@ -7,6 +7,7 @@
 - A failed storage write is retried, and a recording missing a segment is never offered back as whole. Storage stays on for later recordings.
 - A second browser tab no longer takes over a recording the first tab owns. A composer reused for another thread keeps each thread's audio separate, including the last second of audio that arrives after the switch even when several threads' audio is held in memory or the device cannot store it, and a new dictation waits for the previous thread's microphone to stop, then checks again that no unsent audio arrived before it starts.
 - Removing a host deletes the dictation recordings made against it.
+- Stopping the microphone twice at once, as when the composer closes during dictation, no longer stores the last second of audio, or the whole recording in MediaRecorder mode, twice.
 
 ## Maintenance review
 

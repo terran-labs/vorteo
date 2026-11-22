@@ -55,9 +55,23 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
     await engine.startCapture();
   }, [getOrCreateEngine]);
 
-  const stop = useCallback(async () => {
-    await engineRef.current?.stopCapture();
-    setVolume(0);
+  // Concurrent callers share one in-flight stop, so a stop that overlaps another (unmount, a
+  // thread switch during cancel or confirm) cannot deliver the last audio twice.
+  const stopInFlightRef = useRef<Promise<void> | null>(null);
+  const stop = useCallback((): Promise<void> => {
+    if (stopInFlightRef.current) {
+      return stopInFlightRef.current;
+    }
+    const run = (async () => {
+      await engineRef.current?.stopCapture();
+      setVolume(0);
+    })().finally(() => {
+      if (stopInFlightRef.current === run) {
+        stopInFlightRef.current = null;
+      }
+    });
+    stopInFlightRef.current = run;
+    return run;
   }, []);
 
   useEffect(() => {

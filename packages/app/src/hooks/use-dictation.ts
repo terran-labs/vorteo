@@ -406,10 +406,10 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   /** Prepares a new capture: replaces the empty stored id and begins a stored recording. */
   const beginCapture = useCallback(
     (scope: string | undefined) => {
-      // A stored id with no audio in memory is an empty recording; release it rather than
-      // leaving it claimed when the new recording replaces the id.
+      // A stored id with no audio in memory is an empty recording (memory always holds at least
+      // what the device holds); delete it rather than leave an empty row behind.
       if (storedRecordingIdRef.current) {
-        recordingStoreRef.current?.release(storedRecordingIdRef.current);
+        void recordingStoreRef.current?.delete(storedRecordingIdRef.current);
         storedRecordingIdRef.current = null;
       }
       setError(null);
@@ -454,6 +454,15 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       if (audioScopeRef.current !== scope) {
         // Stop; any audio routes to the thread it was captured for, which the switch parked.
         await audio.stop().catch(() => undefined);
+        // Switched away during the permission prompt with nothing captured: drop the empty
+        // parked entry and its empty stored row instead of leaving them for the age prune.
+        const parked = scope ? parkedRef.current.get(scope) : undefined;
+        if (scope && parked && parked.segments.length === 0) {
+          parkedRef.current.delete(scope);
+          if (parked.storedId) {
+            void recordingStoreRef.current?.delete(parked.storedId);
+          }
+        }
         return false;
       }
       return true;
