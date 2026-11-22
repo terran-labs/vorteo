@@ -6,7 +6,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
-- A thread no longer stops showing new messages after its history was read while the Host had the thread closed. That read hands the app a different version of the history than the live stream, and the app used to drop every new event without asking to catch up, so the thread looked frozen until Reload agent. The app now asks the Host for the current history once per mismatch and resumes live updates. A burst of mismatched events asks once, and a Host that keeps answering with the old version cannot make the app fetch repeatedly.
+- A thread no longer stops showing new messages after its history was read while the Host had the thread closed. That read hands the app a different version of the history than the live stream, and the app used to drop every new event without asking to catch up, so the thread looked frozen until Reload agent. The app now asks the Host for the current history and resumes live updates. A burst of mismatched events asks once, and if the mismatch persists the app asks again at most every 30 seconds instead of fetching on every event.
 
 ## Unreleased - 2026-11-17
 

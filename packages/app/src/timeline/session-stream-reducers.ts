@@ -1499,7 +1499,15 @@ export interface CreateAgentStreamReducerQueueInput {
   handleSideEffects: (agentId: string, sideEffects: AgentStreamReducerSideEffect[]) => void;
   scheduleFlush: (callback: () => void) => number;
   cancelFlush: (id: number) => void;
+  /** Milliseconds clock for spacing repeated epoch recoveries; defaults to Date.now. */
+  now?: () => number;
 }
+
+/**
+ * How long a repeated foreign-epoch recovery for the same epoch pair waits. Running catch-ups
+ * already absorb bursts; this spaces retries when one settled without adopting the epoch.
+ */
+export const EPOCH_RECOVERY_RETRY_MS = 30_000;
 
 function processTimelineSequencingGate(input: {
   event: AgentStreamEventPayload;
@@ -1751,10 +1759,13 @@ export function createAgentStreamReducerQueue(
   input: CreateAgentStreamReducerQueueInput,
 ): AgentStreamReducerQueue {
   const pendingByAgentId = new Map<string, AgentStreamReducerEvent[]>();
-  // The epoch recovery each agent last requested. A burst of foreign-epoch events asks once,
-  // and a daemon that keeps answering with the old epoch cannot turn every live event into
-  // another fetch. Adopting the foreign epoch clears it, so a later replacement recovers again.
-  const epochRecoveries = new Map<string, { from: string; to: string }>();
+  // The epoch recovery each agent last requested. The same pair asks again only after
+  // EPOCH_RECOVERY_RETRY_MS, so a daemon that keeps answering with the old epoch costs one
+  // fetch per interval, and a catch-up that settled without adopting the epoch (the thread
+  // closed again, or the sync skipped it) is retried instead of leaving the thread deaf.
+  // Adopting the foreign epoch clears it, so a later replacement recovers at once.
+  const epochRecoveries = new Map<string, { from: string; to: string; at: number }>();
+  const now = input.now ?? Date.now;
   let scheduledFlushId: number | null = null;
 
   const cancelScheduledFlush = () => {
@@ -1784,10 +1795,15 @@ export function createAgentStreamReducerQueue(
     const sideEffects = result.sideEffects.filter((effect) => {
       if (effect.foreignEpoch === undefined) return true;
       const requested = epochRecoveries.get(agentId);
-      if (requested?.from === effect.cursor.epoch && requested.to === effect.foreignEpoch) {
+      const at = now();
+      if (
+        requested?.from === effect.cursor.epoch &&
+        requested.to === effect.foreignEpoch &&
+        at - requested.at < EPOCH_RECOVERY_RETRY_MS
+      ) {
         return false;
       }
-      epochRecoveries.set(agentId, { from: effect.cursor.epoch, to: effect.foreignEpoch });
+      epochRecoveries.set(agentId, { from: effect.cursor.epoch, to: effect.foreignEpoch, at });
       return true;
     });
     if (sideEffects.length > 0) {

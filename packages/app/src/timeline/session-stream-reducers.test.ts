@@ -10,6 +10,7 @@ import {
 import {
   createAgentStreamReducerQueue,
   deriveAgentStreamTurnLiveness,
+  EPOCH_RECOVERY_RETRY_MS,
   processTimelineResponse,
   processAgentStreamEvent,
   processAgentStreamEvents,
@@ -4548,7 +4549,9 @@ describe("createAgentStreamReducerQueue", () => {
     const scheduler = createManualScheduler();
     const catchUps: AgentStreamReducerSideEffect[] = [];
     let cursor = { epoch: "saved-transcript-hash", startSeq: 371, endSeq: 410 };
+    let clock = 0;
     const queue = createAgentStreamReducerQueue({
+      now: () => clock,
       getSnapshot: () => ({
         currentTail: [makeAssistantItem("saved row")],
         currentHead: [],
@@ -4579,12 +4582,18 @@ describe("createAgentStreamReducerQueue", () => {
       },
     ]);
 
+    // A catch-up that settled without adopting the epoch is retried after the interval.
+    clock = EPOCH_RECOVERY_RETRY_MS;
+    queue.enqueue("agent-1", foreign("live-epoch", 471));
+    scheduler.flushOne();
+    expect(catchUps).toHaveLength(2);
+
     // Once the reset adopts the live epoch, a later replacement recovers again.
     cursor = { epoch: "live-epoch", startSeq: 431, endSeq: 470 };
     queue.enqueue("agent-1", foreign("replaced-epoch", 9));
     scheduler.flushOne();
-    expect(catchUps).toHaveLength(2);
-    expect(catchUps[1]).toMatchObject({ foreignEpoch: "replaced-epoch" });
+    expect(catchUps).toHaveLength(3);
+    expect(catchUps[2]).toMatchObject({ foreignEpoch: "replaced-epoch" });
   });
 
   it("flushes queued events synchronously for one agent before canonical history is applied", () => {
