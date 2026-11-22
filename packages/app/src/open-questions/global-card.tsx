@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { selectPendingArchiveAgentIds, usePendingArchiveState } from "@/hooks/use-archive-agent";
 import { useHosts } from "@/runtime/host-runtime";
+import { useShallow } from "zustand/shallow";
 import { useSessionStore } from "@/stores/session-store";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { OpenQuestion, useQuestionAnswer } from "./card";
@@ -25,26 +26,42 @@ import { InstallationUpdateItem, useInstallationUpdate } from "./installation-up
 
 const HEADING_ICON = <TaskCardIcon kind="question" />;
 
+type SessionState = ReturnType<typeof useSessionStore.getState>;
+type HostSession = NonNullable<SessionState["sessions"][string]>;
+/** Per question-enabled host: its id, agents and workspaces, flattened for a shallow compare. */
+type HostQuestionSources = Array<string | HostSession["agents"] | HostSession["workspaces"]>;
+
+// Stream events rewrite the session store many times a second without touching agents or
+// workspaces, so the card selects only those maps; an unchanged list keeps the card still.
+function selectQuestionSources(state: SessionState): HostQuestionSources {
+  const sources: HostQuestionSources = [];
+  for (const [serverId, session] of Object.entries(state.sessions)) {
+    if (!session?.serverInfo?.features?.agentQuestions) continue;
+    sources.push(serverId, session.agents, session.workspaces);
+  }
+  return sources;
+}
+
 /** Every thread's waiting questions on every connected host, answerable without opening it. */
 function useThreadQuestions(): ThreadQuestions[] {
-  const sessions = useSessionStore((state) => state.sessions);
+  const sources = useSessionStore(useShallow(selectQuestionSources));
   const hosts = useHosts();
   const pending = usePendingArchiveState();
   return useMemo(() => {
     const labels = new Map(hosts.map((host) => [host.serverId, host.label]));
     const inputs: QuestionHostInput[] = [];
-    for (const [serverId, session] of Object.entries(sessions)) {
-      if (!session?.serverInfo?.features?.agentQuestions) continue;
+    for (let index = 0; index < sources.length; index += 3) {
+      const serverId = sources[index] as string;
       inputs.push({
         serverId,
         hostLabel: labels.get(serverId) ?? serverId,
-        agents: session.agents.values(),
-        workspaces: session.workspaces,
+        agents: (sources[index + 1] as HostSession["agents"]).values(),
+        workspaces: sources[index + 2] as HostSession["workspaces"],
         pendingArchive: selectPendingArchiveAgentIds(pending, serverId),
       });
     }
     return collectThreadQuestions(inputs);
-  }, [hosts, pending, sessions]);
+  }, [hosts, pending, sources]);
 }
 
 export function GlobalOpenQuestionsCard({ onBeforeNavigate }: { onBeforeNavigate?: () => void }) {
