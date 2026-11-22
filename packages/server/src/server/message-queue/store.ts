@@ -3,7 +3,7 @@ import { mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import type { AgentStreamEvent } from "../agent/agent-sdk-types.js";
-import { findQueueAcceptanceEvidence } from "./evidence.js";
+import { classifyQueueAcceptance } from "./evidence.js";
 import {
   QueueAcceptedMessageSchema,
   QueueIdSchema as IdSchema,
@@ -75,6 +75,10 @@ interface RestartContinuationRelease {
 
 // The daemon is the single writer. Each task's read/modify/commit belongs in this
 // lane, including reads, so no caller can observe an uncommitted mutation.
+/** Shown when more than one provider message could be this delivery: it may already have arrived. */
+export const AMBIGUOUS_DELIVERY_REASON =
+  "Delivery could not be confirmed: this message appears more than once in the thread's history, so the host cannot tell which copy is this delivery. Check the thread before retrying, because a retry may send it again; otherwise discard it.";
+
 /**
  * Shown on an uncertain message that its history never confirmed. It may have been received
  * without evidence the host can match, so the text says unconfirmed, not failed, and warns
@@ -375,8 +379,8 @@ export class MessageQueueStore {
         const nativeId = record.providerMessageIds.find(
           (entry) => entry.messageId === item.id,
         )?.providerMessageId;
-        const evidence = findQueueAcceptanceEvidence(item, nativeId, history);
-        if (!evidence) {
+        const acceptance = classifyQueueAcceptance(item, nativeId, history);
+        if (acceptance.kind !== "accepted") {
           const startedAt = Date.parse(item.delivery.startedAt);
           if (
             options?.unconfirmedBefore !== undefined &&
@@ -386,12 +390,16 @@ export class MessageQueueStore {
             item.delivery = {
               status: "failed",
               attemptId: item.delivery.attemptId,
-              reason: UNCONFIRMED_DELIVERY_REASON,
+              reason:
+                acceptance.kind === "ambiguous"
+                  ? AMBIGUOUS_DELIVERY_REASON
+                  : UNCONFIRMED_DELIVERY_REASON,
             };
             unconfirmed = true;
           }
           continue;
         }
+        const { evidence } = acceptance;
         record.accepted.push({
           messageId: item.id,
           attemptId: item.delivery.attemptId,

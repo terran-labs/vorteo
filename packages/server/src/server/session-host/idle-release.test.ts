@@ -99,6 +99,7 @@ test("a connector without the flag never releases anything", async () => {
 
 test("an agent that reopens without new activity backs off until new activity resets it", async () => {
   let now = NOW;
+  let pending = true;
   let returning = agent({ id: "returning" });
   const closed: string[] = [];
   const release = startHostedIdleRelease({
@@ -109,7 +110,7 @@ test("an agent that reopens without new activity backs off until new activity re
         closed.push(id);
       },
     },
-    connector: { upgradePending: async () => true },
+    connector: { upgradePending: async () => pending },
     logger,
     now: () => now,
   });
@@ -129,5 +130,11 @@ test("an agent that reopens without new activity backs off until new activity re
   returning = agent({ id: "returning", updatedAt: new Date(now - 10 * 60_000 + 1) });
   expect(await release.runOnce()).toEqual(["returning"]);
   expect(closed).toEqual(["returning", "returning", "returning"]);
+  // A later upgrade starts without the previous upgrade's backoff.
+  pending = false;
+  expect(await release.runOnce()).toEqual([]);
+  now += 3 * 24 * 60 * 60_000;
+  pending = true;
+  expect(await release.runOnce()).toEqual(["returning"]);
   release.stop();
 });

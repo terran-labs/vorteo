@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import type { QueueItem } from "@getpaseo/protocol/message-queue";
 import type { AgentStreamEvent } from "../agent/agent-sdk-types.js";
-import { findQueueAcceptanceEvidence } from "./evidence.js";
+import { classifyQueueAcceptance, findQueueAcceptanceEvidence } from "./evidence.js";
 
 const item: QueueItem = {
   id: "client-message",
@@ -63,4 +63,40 @@ it("requires identity, never repeated text, and rejects competing provider messa
   expect(
     findQueueAcceptanceEvidence({ ...item, delivery: { status: "queued" } }, undefined, [echo]),
   ).toBeNull();
+});
+
+it("accepts a unique timestamped text match when the transcript keeps no client ID", () => {
+  // A Claude transcript row: no clientMessageId, and the provider ID was never recorded.
+  const transcript = (messageId: string, timestamp: string): AgentStreamEvent => ({
+    type: "timeline",
+    provider: "claude",
+    turnId: `turn-${messageId}`,
+    timestamp,
+    item: { type: "user_message", text: item.text, messageId },
+  });
+  const delivered = transcript("native-1", "2026-09-17T00:01:03Z");
+  expect(classifyQueueAcceptance(item, undefined, [delivered])).toEqual({
+    kind: "accepted",
+    evidence: {
+      turnId: "turn-native-1",
+      providerMessageId: "native-1",
+      acceptedAt: "2026-09-17T00:01:03Z",
+    },
+  });
+  // Text sent before the attempt started is an earlier message, not this delivery.
+  const earlier = transcript("native-0", "2026-09-17T00:00:30Z");
+  expect(classifyQueueAcceptance(item, undefined, [earlier])).toEqual({ kind: "none" });
+  // Two candidates, by text or by identity, need the owner's review rather than a guess.
+  const again = transcript("native-2", "2026-09-17T00:02:00Z");
+  expect(classifyQueueAcceptance(item, undefined, [delivered, again])).toEqual({
+    kind: "ambiguous",
+  });
+  const otherIdentified: AgentStreamEvent = {
+    ...echo,
+    turnId: "other-turn",
+    item: { ...echo.item, messageId: "other-native" } as typeof echo.item,
+  };
+  expect(classifyQueueAcceptance(item, undefined, [echo, otherIdentified])).toEqual({
+    kind: "ambiguous",
+  });
 });

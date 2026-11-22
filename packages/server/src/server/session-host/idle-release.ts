@@ -125,6 +125,8 @@ export function startHostedIdleRelease(options: IdleReleaseOptions): IdleRelease
   async function runOnce(): Promise<string[]> {
     if (!(await options.connector.upgradePending?.())) {
       retained.clear();
+      // Backoffs belong to one pending upgrade; the next upgrade releases every agent afresh.
+      backoffs.clear();
       return [];
     }
     const released: string[] = [];
