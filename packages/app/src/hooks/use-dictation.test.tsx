@@ -14,9 +14,11 @@ import type { UseDictationOptions } from "./use-dictation.shared";
 const audioSource: {
   config: DictationAudioSourceConfig | null;
   tailOnStop: string | string[] | null;
+  stopDelayMs: number;
 } = {
   config: null,
   tailOnStop: null,
+  stopDelayMs: 0,
 };
 
 vi.mock("@/hooks/use-dictation-audio-source", () => ({
@@ -27,6 +29,9 @@ vi.mock("@/hooks/use-dictation-audio-source", () => ({
       // Like the web source, emit the last partial segment only after stop has awaited teardown.
       stop: async () => {
         await Promise.resolve();
+        if (audioSource.stopDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, audioSource.stopDelayMs));
+        }
         // An array models MediaRecorder fallback mode, which delivers the whole recording here.
         const tail = audioSource.tailOnStop;
         audioSource.tailOnStop = null;
@@ -141,6 +146,7 @@ describe("useDictation keeps recordings until a transcript is confirmed", () => 
   beforeEach(() => {
     audioSource.config = null;
     audioSource.tailOnStop = null;
+    audioSource.stopDelayMs = 0;
   });
 
   it("keeps audio after a timed-out start, offers Retry, replays it and then deletes it", async () => {
@@ -393,5 +399,29 @@ describe("useDictation keeps recordings until a transcript is confirmed", () => 
     await waitFor(() => expect(result.current.status).toBe("failed"));
     await act(() => result.current.retryFailedDictation());
     expect(client.chunksFor(client.starts.at(-1))).toEqual(["t4-0", "t4-1", "t4-tail"]);
+  });
+
+  it("does not wipe a returning thread's late audio when the microphone is pressed during its stop", async () => {
+    for (const withStore of [false, true]) {
+      const backend = new MemoryDictationRecordingBackend();
+      const store = withStore ? new DictationRecordingStore(backend) : null;
+      const client = new FakeClient();
+      const { result, rerender, onTranscript, unmount } = renderDictation(client, store);
+
+      // MediaRecorder-style: the whole recording arrives 40 ms after stop.
+      await act(() => result.current.startDictation());
+      audioSource.tailOnStop = ["m0", "m1", "m2"];
+      audioSource.stopDelayMs = 40;
+      rerender({ scope: "host:other" });
+      rerender({ scope: "host:agent" });
+      await act(() => result.current.startDictation());
+
+      expect(result.current.status).toBe("failed");
+      await act(() => result.current.retryFailedDictation());
+      expect(client.chunksFor(client.starts.at(-1))).toEqual(["m0", "m1", "m2"]);
+      expect(onTranscript).toHaveBeenCalledWith("hello world", expect.anything());
+      unmount();
+      audioSource.stopDelayMs = 0;
+    }
   });
 });

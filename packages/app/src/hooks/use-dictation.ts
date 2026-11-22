@@ -384,51 +384,61 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     audioStopRef.current = audio.stop;
   }, [audio.stop]);
 
-  const startDictation = useCallback(async () => {
-    if (
-      actionGateRef.current.starting ||
-      actionGateRef.current.confirming ||
-      actionGateRef.current.cancelling
-    ) {
-      return;
-    }
-    if (isRecordingRef.current || isProcessingRef.current) {
-      return;
-    }
-    // An unsent recording is never wiped by a new start: offer its Retry and Discard again.
-    if (senderRef.current?.hasSegments()) {
-      setStatus("failed");
-      return;
-    }
-    const startAllowed = canStart ? canStart() : true;
-    if (!startAllowed) {
-      return;
-    }
+  /**
+   * Whether a start must not proceed. Runs before a start and again after every wait inside it,
+   * since the thread, the capture flags and the buffered audio can all change during a wait.
+   */
+  const isStartBlocked = useCallback(
+    (scope: string | undefined): boolean => {
+      if (audioScopeRef.current !== scope || isRecordingRef.current || isProcessingRef.current) {
+        return true;
+      }
+      // An unsent recording is never wiped by a new start: offer its Retry and Discard again.
+      if (senderRef.current?.hasSegments()) {
+        setStatus("failed");
+        return true;
+      }
+      return false;
+    },
+    [setStatus],
+  );
 
-    actionGateRef.current.starting = true;
-    if (pendingStopRef.current) {
-      await pendingStopRef.current;
-      pendingStopRef.current = null;
-    }
-    setError(null);
-    setPartialTranscript("");
-    setDuration(0);
-    setIsProcessing(false);
-    setStatus("recording");
-    clearStreamingState();
-    autoRetryArmedRef.current = false;
-    audioScopeRef.current = recordingScope;
-    storedRecordingIdRef.current =
-      recordingScope && recordingStoreRef.current
-        ? recordingStoreRef.current.begin(recordingScope, PCM_DICTATION_FORMAT, recordingServerId)
-        : null;
-    captureTargetRef.current = { scope: recordingScope, storedId: storedRecordingIdRef.current };
+  /** Prepares a new capture: replaces the empty stored id and begins a stored recording. */
+  const beginCapture = useCallback(
+    (scope: string | undefined) => {
+      // A stored id with no audio in memory is an empty recording; release it rather than
+      // leaving it claimed when the new recording replaces the id.
+      if (storedRecordingIdRef.current) {
+        recordingStoreRef.current?.release(storedRecordingIdRef.current);
+        storedRecordingIdRef.current = null;
+      }
+      setError(null);
+      setPartialTranscript("");
+      setDuration(0);
+      setIsProcessing(false);
+      setStatus("recording");
+      clearStreamingState();
+      autoRetryArmedRef.current = false;
+      storedRecordingIdRef.current =
+        scope && recordingStoreRef.current
+          ? recordingStoreRef.current.begin(scope, PCM_DICTATION_FORMAT, recordingServerId)
+          : null;
+      captureTargetRef.current = { scope, storedId: storedRecordingIdRef.current };
+    },
+    [clearStreamingState, recordingServerId, setStatus],
+  );
 
-    try {
+  /** Opens the microphone; false when it failed or the composer moved to another thread. */
+  const openMicrophone = useCallback(
+    async (scope: string | undefined): Promise<boolean> => {
       try {
         await audio.start();
       } catch (err) {
         await audio.stop().catch(() => undefined);
+        if (audioScopeRef.current !== scope) {
+          // The scope switch already parked this thread's recording and owns the state.
+          return false;
+        }
         stopDurationTracking();
         isRecordingRef.current = false;
         setIsRecording(false);
@@ -439,6 +449,49 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
           deleteStoredRecording();
         }
         reportError(err, "Failed to start dictation");
+        return false;
+      }
+      if (audioScopeRef.current !== scope) {
+        // Stop; any audio routes to the thread it was captured for, which the switch parked.
+        await audio.stop().catch(() => undefined);
+        return false;
+      }
+      return true;
+    },
+    [audio, deleteStoredRecording, reportError, setStatus, stopDurationTracking],
+  );
+
+  const startDictation = useCallback(async () => {
+    if (
+      actionGateRef.current.starting ||
+      actionGateRef.current.confirming ||
+      actionGateRef.current.cancelling
+    ) {
+      return;
+    }
+    if (isStartBlocked(recordingScope)) {
+      return;
+    }
+    const startAllowed = canStart ? canStart() : true;
+    if (!startAllowed) {
+      return;
+    }
+
+    actionGateRef.current.starting = true;
+    try {
+      const pendingStop = pendingStopRef.current;
+      if (pendingStop) {
+        // The left thread's last audio may land during this wait; check again afterwards.
+        await pendingStop;
+        if (pendingStopRef.current === pendingStop) {
+          pendingStopRef.current = null;
+        }
+        if (isStartBlocked(recordingScope)) {
+          return;
+        }
+      }
+      beginCapture(recordingScope);
+      if (!(await openMicrophone(recordingScope))) {
         return;
       }
       isRecordingRef.current = true;
@@ -458,19 +511,16 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       actionGateRef.current.starting = false;
     }
   }, [
-    audio,
+    beginCapture,
     canStart,
-    clearStreamingState,
     client,
-    deleteStoredRecording,
     enableDuration,
+    isStartBlocked,
+    openMicrophone,
     recordingScope,
-    recordingServerId,
     reportError,
-    setStatus,
     startDurationTracking,
     startNewStream,
-    stopDurationTracking,
   ]);
 
   const cancelDictation = useCallback(
@@ -489,6 +539,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
         return;
       }
       actionGateRef.current.cancelling = true;
+      const scopeAtCancel = audioScopeRef.current;
       stopDurationTracking();
       setDuration(0);
       setError(null);
@@ -503,18 +554,22 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       } catch (err) {
         reportError(err, "Failed to cancel dictation");
       } finally {
-        isRecordingRef.current = false;
-        setIsRecording(false);
-        setIsProcessing(false);
-        isProcessingRef.current = false;
-        // Cancel stops capture and the stream but never deletes audio: Escape, the voice button
-        // and cancelling an upload all land on Retry and Discard. Only Discard deletes.
-        if (senderRef.current?.hasSegments() && !discardShortCapture) {
-          setStatus("failed");
-        } else {
-          setStatus("idle");
-          clearStreamingState();
-          deleteStoredRecording();
+        // If the composer moved to another thread during the stop, the switch parked this
+        // thread's audio and owns the state: never apply this cancel to the new thread.
+        if (audioScopeRef.current === scopeAtCancel) {
+          isRecordingRef.current = false;
+          setIsRecording(false);
+          setIsProcessing(false);
+          isProcessingRef.current = false;
+          // Cancel stops capture and the stream but keeps the audio for Retry or Discard,
+          // except a Cancel button press on a short capture.
+          if (senderRef.current?.hasSegments() && !discardShortCapture) {
+            setStatus("failed");
+          } else {
+            setStatus("idle");
+            clearStreamingState();
+            deleteStoredRecording();
+          }
         }
         actionGateRef.current.cancelling = false;
       }
@@ -567,6 +622,10 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       attemptGuardRef.current.assertCurrent(attemptId);
       handleStreamingTranscriptionSuccess(transcriptText, generateMessageId());
     } catch (err) {
+      // A cancel, Discard or thread switch during the wait owns the state now.
+      if (!attemptGuardRef.current.isCurrent(attemptId)) {
+        return;
+      }
       if (err instanceof Error && err.name === "AttemptCancelledError") {
         return;
       }
@@ -618,6 +677,10 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       attemptGuardRef.current.assertCurrent(attemptId);
       handleStreamingTranscriptionSuccess(text, generateMessageId());
     } catch (err) {
+      // A cancel, Discard or thread switch during the wait owns the state now.
+      if (!attemptGuardRef.current.isCurrent(attemptId)) {
+        return;
+      }
       if (err instanceof Error && err.name === "AttemptCancelledError") {
         return;
       }
