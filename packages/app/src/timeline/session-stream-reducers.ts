@@ -47,6 +47,8 @@ export type TimelineReducerSideEffect =
 export interface AgentStreamReducerSideEffect {
   type: "catch_up";
   cursor: { epoch: string; endSeq: number };
+  /** Set when a live event carried this epoch instead of the cursor's: the history was replaced. */
+  foreignEpoch?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1497,7 +1499,15 @@ export interface CreateAgentStreamReducerQueueInput {
   handleSideEffects: (agentId: string, sideEffects: AgentStreamReducerSideEffect[]) => void;
   scheduleFlush: (callback: () => void) => number;
   cancelFlush: (id: number) => void;
+  /** Milliseconds clock for spacing repeated epoch recoveries; defaults to Date.now. */
+  now?: () => number;
 }
+
+/**
+ * How long a repeated foreign-epoch recovery for the same epoch pair waits. Running catch-ups
+ * already absorb bursts; this spaces retries when one settled without adopting the epoch.
+ */
+export const EPOCH_RECOVERY_RETRY_MS = 30_000;
 
 function processTimelineSequencingGate(input: {
   event: AgentStreamEventPayload;
@@ -1565,6 +1575,22 @@ function processTimelineSequencingGate(input: {
       nextTimelineCursor: { epoch, startSeq: seq, endSeq: seq },
       cursorChanged: true,
       resetLiveTimeline: true,
+    };
+  }
+  if (decision === "drop_epoch" && currentCursor) {
+    // The daemon now streams another epoch, for example after this history was read from a
+    // saved transcript while the thread was closed. Dropping silently froze the thread; a
+    // catch-up from the stale cursor makes the daemon answer with a reset to its live epoch.
+    return {
+      ...base,
+      shouldApplyStreamEvent: false,
+      sideEffects: [
+        {
+          type: "catch_up",
+          cursor: { epoch: currentCursor.epoch, endSeq: currentCursor.endSeq },
+          foreignEpoch: epoch,
+        },
+      ],
     };
   }
   return {
@@ -1733,6 +1759,13 @@ export function createAgentStreamReducerQueue(
   input: CreateAgentStreamReducerQueueInput,
 ): AgentStreamReducerQueue {
   const pendingByAgentId = new Map<string, AgentStreamReducerEvent[]>();
+  // The epoch recovery each agent last requested. The same pair asks again only after
+  // EPOCH_RECOVERY_RETRY_MS, so a daemon that keeps answering with the old epoch costs one
+  // fetch per interval, and a catch-up that settled without adopting the epoch (the thread
+  // closed again, or the sync skipped it) is retried instead of leaving the thread deaf.
+  // Adopting the foreign epoch clears it, so a later replacement recovers at once.
+  const epochRecoveries = new Map<string, { from: string; to: string; at: number }>();
+  const now = input.now ?? Date.now;
   let scheduledFlushId: number | null = null;
 
   const cancelScheduledFlush = () => {
@@ -1753,14 +1786,28 @@ export function createAgentStreamReducerQueue(
       cancelScheduledFlush();
     }
 
-    const result = processAgentStreamEvents({
-      events,
-      ...input.getSnapshot(agentId),
-    });
+    const snapshot = input.getSnapshot(agentId);
+    const recovery = epochRecoveries.get(agentId);
+    if (recovery && snapshot.currentCursor?.epoch === recovery.to) epochRecoveries.delete(agentId);
+    const result = processAgentStreamEvents({ events, ...snapshot });
 
     input.commit(agentId, result, events);
-    if (result.sideEffects.length > 0) {
-      input.handleSideEffects(agentId, result.sideEffects);
+    const sideEffects = result.sideEffects.filter((effect) => {
+      if (effect.foreignEpoch === undefined) return true;
+      const requested = epochRecoveries.get(agentId);
+      const at = now();
+      if (
+        requested?.from === effect.cursor.epoch &&
+        requested.to === effect.foreignEpoch &&
+        at - requested.at < EPOCH_RECOVERY_RETRY_MS
+      ) {
+        return false;
+      }
+      epochRecoveries.set(agentId, { from: effect.cursor.epoch, to: effect.foreignEpoch, at });
+      return true;
+    });
+    if (sideEffects.length > 0) {
+      input.handleSideEffects(agentId, sideEffects);
     }
   };
 
