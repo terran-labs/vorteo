@@ -73,7 +73,7 @@ export const fr: TranslationResources = {
       folderOutsideWorkspace: "{{path}} se trouve en dehors de cet espace de travail",
       unexpectedDictationError: "Une erreur inattendue s’est produite pendant la dictée.",
       hostConnectionLost: "Connexion à l'hôte perdue. Réessayez une fois la connexion rétablie.",
-      hostRequestTimeout: "L'hôte n'a pas répondu à temps. Réessayez.",
+      hostRequestTimeout: "L'hôte n'a pas répondu à temps. Vérifiez la connexion et réessayez.",
       hostRestarting:
         "L'hôte redémarre ou installe une mise à jour. Réessayez une fois la connexion rétablie.",
     },
@@ -392,6 +392,8 @@ export const fr: TranslationResources = {
       stillTranscribing: "L'hôte transcrit encore un long enregistrement. Il n'a pas échoué.",
       errors: {
         speechService: "Le service vocal de l'hôte n'a pas répondu. Réessayez.",
+        speechDecodeFailed:
+          "Le service vocal de l'hôte n'a pas pu transcrire cet enregistrement. Réessayez.",
         speechNotConfigured: "La dictée n'est pas configurée sur l'hôte.",
         streamLost: "L'hôte a perdu cette dictée. Réessayez.",
         transcriptionTimeout: "L'hôte a mis trop de temps à transcrire. Réessayez.",

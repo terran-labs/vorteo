@@ -72,7 +72,7 @@ export const ar: TranslationResources = {
       folderOutsideWorkspace: "{{path}} خارج مساحة العمل هذه",
       unexpectedDictationError: "حدث خطأ غير متوقع أثناء معالجة الإملاء.",
       hostConnectionLost: "انقطع الاتصال بالمضيف. حاول مرة أخرى بعد إعادة الاتصال.",
-      hostRequestTimeout: "لم يستجب المضيف في الوقت المحدد. حاول مرة أخرى.",
+      hostRequestTimeout: "لم يستجب المضيف في الوقت المحدد. تحقق من الاتصال وحاول مرة أخرى.",
       hostRestarting: "المضيف يعيد التشغيل أو يثبّت تحديثًا. حاول مرة أخرى بعد إعادة الاتصال.",
     },
     connectionStatus: {
@@ -386,6 +386,7 @@ export const ar: TranslationResources = {
       stillTranscribing: "لا يزال المضيف ينسخ تسجيلًا طويلًا. لم يفشل.",
       errors: {
         speechService: "لم تستجب خدمة الكلام على المضيف. حاول مرة أخرى.",
+        speechDecodeFailed: "تعذّر على خدمة الكلام في المضيف نسخ هذا التسجيل. حاول مرة أخرى.",
         speechNotConfigured: "الإملاء غير مُعدّ على المضيف.",
         streamLost: "فقد المضيف هذا الإملاء. حاول مرة أخرى.",
         transcriptionTimeout: "استغرق المضيف وقتًا طويلًا في النسخ. حاول مرة أخرى.",

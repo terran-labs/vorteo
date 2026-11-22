@@ -24,8 +24,9 @@ test.each([
     "connection_lost",
   ],
   [new DaemonConnectionError("Server shutting down"), "host_restarting"],
-  // A request timeout used to read as a lost connection, which told the owner the connection
-  // dropped while it was fine and other requests were answered. It is a slow Host instead.
+  // A request timeout used to read as a lost connection while the connection was fine. It keeps
+  // the transient connection-error path, since a silently dead socket also times out, but its
+  // message no longer claims the connection dropped.
   [new Error("Timeout waiting for message (60000ms)"), "request_timeout"],
   [
     new DaemonConnectionError("Timeout waiting for message (30000ms)", "DAEMON_REQUEST_TIMEOUT"),
@@ -34,7 +35,7 @@ test.each([
   [new Error("Name taken"), "other"],
 ] as const)("classifies %s as %s", (error, kind) => {
   expect(classifyHostError(error)).toBe(kind);
-  expect(isConnectionError(error)).toBe(kind === "connection_lost" || kind === "host_restarting");
+  expect(isConnectionError(error)).toBe(kind !== "other");
 });
 
 test("keeps host messages and drops wire diagnostics", () => {
@@ -53,6 +54,10 @@ test.each([
   [new DictationStreamError("worker", { reasonCode: "speech_worker_timeout" }), "speech_service"],
   [new DictationStreamError("worker", { reasonCode: "speech_worker_exited" }), "speech_service"],
   [new DictationStreamError("start", { reasonCode: "speech_start_timeout" }), "speech_service"],
+  [
+    new DictationStreamError("decode", { reasonCode: "speech_decode_failed" }),
+    "speech_decode_failed",
+  ],
   [new DictationStreamError("off", { reasonCode: "stt_not_configured" }), "speech_not_configured"],
   [new DictationStreamError("gone", { reasonCode: "stream_not_started" }), "stream_lost"],
   [

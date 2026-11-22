@@ -13,8 +13,9 @@ const CONNECTION_ERROR_PATTERNS = [
   /^Reconnect to an active thread\b/,
 ];
 
-// A request that went out on a live connection and got no answer in time. Liveness checks end
-// a dead connection first and reject its requests as lost, so this means the Host was slow.
+// A request that got no answer in time. The Host may be slow, or the socket may have died
+// silently: liveness checks take about 40 to 50 seconds to notice, longer than a 30 second wait.
+// So the message names both, and callers still treat it as a connection problem.
 const REQUEST_TIMEOUT_PATTERNS = [
   /^Timed? ?out waiting for message\b/,
   /^Timeout waiting for message\b/,
@@ -44,7 +45,7 @@ function normalizedMessage(error: unknown): string {
  * Why a request to the Host failed, as far as the client can tell.
  * - `connection_lost`: the connection dropped or the Host cannot be reached.
  * - `host_restarting`: the Host closed the connection announcing a restart or update.
- * - `request_timeout`: the connection stayed up but the Host did not answer in time.
+ * - `request_timeout`: the Host did not answer in time; the connection may or may not be alive.
  * - `other`: the Host answered with an error of its own.
  */
 export type HostErrorKind = "connection_lost" | "host_restarting" | "request_timeout" | "other";
@@ -65,12 +66,12 @@ export function classifyHostError(error: unknown): HostErrorKind {
 }
 
 /**
- * True when the connection itself dropped or cannot be reached, including a Host restart.
- * A request timeout on a live connection is not a connection error.
+ * True for transport failures callers should treat as transient: a dropped or unreachable
+ * connection, a Host restart, or a request timeout, which can be a silently dead socket.
+ * Only the message distinguishes them; use `classifyHostError` when the kind matters.
  */
 export function isConnectionError(error: unknown): boolean {
-  const kind = classifyHostError(error);
-  return kind === "connection_lost" || kind === "host_restarting";
+  return classifyHostError(error) !== "other";
 }
 
 /** The message to show the owner: transport failures read plainly and wire diagnostics are dropped. */
@@ -93,6 +94,7 @@ export function toErrorMessage(error: unknown): string {
  */
 export type DictationFailureKind =
   | "speech_service"
+  | "speech_decode_failed"
   | "speech_not_configured"
   | "stream_lost"
   | "transcription_timeout"
@@ -103,6 +105,7 @@ const DICTATION_REASON_KINDS: Record<string, DictationFailureKind> = {
   speech_worker_exited: "speech_service",
   speech_unavailable: "speech_service",
   speech_start_timeout: "speech_service",
+  speech_decode_failed: "speech_decode_failed",
   stt_not_configured: "speech_not_configured",
   stream_not_started: "stream_lost",
   transcription_timeout: "transcription_timeout",
@@ -127,6 +130,7 @@ export function classifyDictationError(error: unknown): DictationFailureKind {
 
 const DICTATION_MESSAGE_KEYS: Record<Exclude<DictationFailureKind, "other">, string> = {
   speech_service: "message.dictation.errors.speechService",
+  speech_decode_failed: "message.dictation.errors.speechDecodeFailed",
   speech_not_configured: "message.dictation.errors.speechNotConfigured",
   stream_lost: "message.dictation.errors.streamLost",
   transcription_timeout: "message.dictation.errors.transcriptionTimeout",

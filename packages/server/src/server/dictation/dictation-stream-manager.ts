@@ -547,8 +547,9 @@ export class DictationStreamManager {
 
     updatedState.finishRequestedAt = Date.now();
     const timeoutEstimate = this.estimateFinalizationTimeout(updatedState);
+    // Older clients wait only for this first deadline, so progress never shortens it.
     const timeoutMs = updatedState.reportsProgress
-      ? this.progressDeadlineMs(updatedState)
+      ? Math.max(timeoutEstimate.timeoutMs, this.progressDeadlineMs(updatedState))
       : timeoutEstimate.timeoutMs;
     this.armFinalTimeout(updatedState, timeoutMs);
 
