@@ -4,6 +4,12 @@ import { i18n } from "@/i18n/i18next";
 
 const MAX_CHUNKS_PER_FLUSH_TURN = 128;
 const DICTATION_DRAIN_IDLE_TIMEOUT_MS = 30_000;
+/**
+ * Chunks sent beyond the last server acknowledgement. The server acknowledges each chunk after
+ * forwarding it to speech-to-text, so a replay of a long stored recording advances at the pace
+ * the server accepts instead of flooding it. Web segments are about one second each.
+ */
+const MAX_UNACKNOWLEDGED_CHUNKS = 32;
 
 const waitForNextFlushTurn = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -59,6 +65,8 @@ export class DictationStreamSender {
   private segments: string[] = [];
   private streamReady = false;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  /** True while flush() sends; an acknowledgement arriving mid-send must not re-enter it. */
+  private flushing = false;
   private drainWaiters: Array<() => void> = [];
   private clientCleanup: (() => void) | null = null;
 
@@ -131,6 +139,12 @@ export class DictationStreamSender {
     this.resolveDrainWaiters();
   }
 
+  /** Restores segments recovered from device storage so they can be replayed from seq 0. */
+  loadSegments(segments: readonly string[]): void {
+    this.clearAll();
+    this.segments = [...segments];
+  }
+
   enqueueSegment(base64Pcm: string): void {
     this.segments.push(base64Pcm);
 
@@ -161,8 +175,24 @@ export class DictationStreamSender {
       return 0;
     }
 
+    if (this.flushing) {
+      return 0;
+    }
+    this.flushing = true;
+    try {
+      return this.sendAvailable(client, dictationId);
+    } finally {
+      this.flushing = false;
+    }
+  }
+
+  private sendAvailable(client: DictationStreamClient, dictationId: string): number {
     let sent = 0;
-    while (this.sendSeq < this.segments.length && sent < MAX_CHUNKS_PER_FLUSH_TURN) {
+    while (
+      this.sendSeq < this.segments.length &&
+      sent < MAX_CHUNKS_PER_FLUSH_TURN &&
+      this.sendSeq - this.acknowledgedSeq <= MAX_UNACKNOWLEDGED_CHUNKS
+    ) {
       const seq = this.sendSeq;
       const audio = this.segments[seq];
       try {
@@ -176,7 +206,10 @@ export class DictationStreamSender {
     }
 
     if (this.hasPendingSegments()) {
-      this.scheduleFlush();
+      // A full window resumes from handleAck; otherwise yield a turn before the next batch.
+      if (this.sendSeq - this.acknowledgedSeq <= MAX_UNACKNOWLEDGED_CHUNKS) {
+        this.scheduleFlush();
+      }
     } else {
       this.resolveDrainWaiters();
     }
@@ -210,6 +243,14 @@ export class DictationStreamSender {
       this.flush();
     })()
       .catch((error) => {
+        // A start that timed out may still open on the server later; close it so it does not linger.
+        try {
+          if (client.isConnected) {
+            client.cancelDictationStream(dictationId);
+          }
+        } catch {
+          // Best effort: the server also drops the stream when the socket closes.
+        }
         // If starting failed, keep the segments for retry but clear the stream so finish can error cleanly.
         if (this.startGeneration === generation && this.dictationId === dictationId) {
           this.dictationId = null;
@@ -283,6 +324,9 @@ export class DictationStreamSender {
     }
     this.acknowledgedSeq = message.payload.ackSeq;
     this.resolveDrainWaiters();
+    if (this.hasPendingSegments()) {
+      this.flush();
+    }
   }
 
   private invalidateStream(): void {

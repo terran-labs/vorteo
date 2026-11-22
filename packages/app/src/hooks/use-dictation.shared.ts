@@ -11,6 +11,13 @@ export interface UseDictationOptions {
   canStart?: () => boolean;
   canConfirm?: () => boolean;
   enableDuration?: boolean;
+  /**
+   * Thread and draft this composer belongs to. When set, captured audio is kept on the device
+   * until a transcript is confirmed or discarded, and offered back when the composer mounts.
+   */
+  recordingScope?: string;
+  /** Overrides the device store; tests pass a store over a fake backend. */
+  recordingStore?: import("@/dictation/recording-store").DictationRecordingStore | null;
 }
 
 export interface UseDictationResult {

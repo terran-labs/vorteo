@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { getDeviceDictationRecordingStore } from "@/dictation/device-recording-store";
 import { DictationStreamSender } from "@/dictation/dictation-stream-sender";
 import { useDictationAudioSource } from "@/hooks/use-dictation-audio-source";
 import { generateMessageId } from "@/types/stream";
@@ -25,14 +26,30 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     canStart,
     canConfirm,
     enableDuration = false,
+    recordingScope,
   } = options;
+  // Only composers that name their thread persist audio; tests inject their own store.
+  const recordingStore =
+    options.recordingStore ?? (recordingScope ? getDeviceDictationRecordingStore() : null);
+  const recordingStoreRef = useRef(recordingStore);
+  recordingStoreRef.current = recordingStore;
+  /** Id of the stored copy of the audio in the sender, while it awaits a confirmed transcript. */
+  const storedRecordingIdRef = useRef<string | null>(null);
+  /** One automatic Retry when the connection returns after a failure while disconnected. */
+  const autoRetryArmedRef = useRef(false);
+  const retryRef = useRef<() => Promise<void>>(async () => undefined);
 
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [partialTranscript, setPartialTranscript] = useState("");
   const [duration, setDuration] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<DictationStatus>("idle");
+  const [status, setStatusState] = useState<DictationStatus>("idle");
+  const statusRef = useRef<DictationStatus>("idle");
+  const setStatus = useCallback((next: DictationStatus) => {
+    statusRef.current = next;
+    setStatusState(next);
+  }, []);
   const latestPartialTranscriptRef = useRef("");
 
   const onTranscriptRef = useRef(onTranscript);
@@ -137,6 +154,16 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     setPartialTranscript("");
   }, []);
 
+  /** Deletes the device copy. Call only after a transcript is applied or the owner discards. */
+  const deleteStoredRecording = useCallback(() => {
+    const id = storedRecordingIdRef.current;
+    storedRecordingIdRef.current = null;
+    autoRetryArmedRef.current = false;
+    if (id) {
+      void recordingStoreRef.current?.delete(id);
+    }
+  }, []);
+
   const startNewStream = useCallback(async (reason: string) => {
     await senderRef.current?.restartStream(reason);
   }, []);
@@ -152,6 +179,11 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     }
     return client.subscribeConnectionStatus((next) => {
       if (next.status !== "connected") {
+        return;
+      }
+      if (autoRetryArmedRef.current && statusRef.current === "failed") {
+        autoRetryArmedRef.current = false;
+        void retryRef.current();
         return;
       }
       if (!isRecordingRef.current) {
@@ -196,12 +228,12 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
         text.trim().length > 0 ? text.trim() : latestPartialTranscriptRef.current.trim();
       clearStreamingState();
 
-      if (!transcriptText) {
-        return;
+      if (transcriptText) {
+        onTranscriptRef.current?.(transcriptText, { requestId });
       }
-      onTranscriptRef.current?.(transcriptText, { requestId });
+      deleteStoredRecording();
     },
-    [clearStreamingState],
+    [clearStreamingState, deleteStoredRecording, setStatus],
   );
 
   const handleDictationFailure = useCallback(
@@ -214,21 +246,30 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       isRecordingRef.current = false;
       setIsRecording(false);
 
+      // Captured audio is never dropped by a failure: it waits for Retry or Discard.
       if (senderRef.current?.hasSegments()) {
         setStatus("failed");
+        if (!client?.isConnected) {
+          autoRetryArmedRef.current = true;
+        }
         onPermanentFailureRef.current?.(normalized, { requestId: failureId });
       } else {
         setStatus("idle");
+        deleteStoredRecording();
       }
 
       reportError(normalized, "Failed to complete dictation");
     },
-    [reportError, stopDurationTracking],
+    [client, deleteStoredRecording, reportError, setStatus, stopDurationTracking],
   );
 
   const audio = useDictationAudioSource({
     onPcmSegment: (audioData) => {
       senderRef.current?.enqueueSegment(audioData);
+      const storedId = storedRecordingIdRef.current;
+      if (storedId) {
+        recordingStoreRef.current?.append(storedId, audioData);
+      }
     },
     onError: (err) => {
       onErrorRef.current?.(err);
@@ -258,6 +299,11 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     if (isRecordingRef.current || isProcessingRef.current) {
       return;
     }
+    // An unsent recording is never wiped by a new start: offer its Retry and Discard again.
+    if (senderRef.current?.hasSegments()) {
+      setStatus("failed");
+      return;
+    }
     const startAllowed = canStart ? canStart() : true;
     if (!startAllowed) {
       return;
@@ -270,24 +316,41 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     setIsProcessing(false);
     setStatus("recording");
     clearStreamingState();
+    autoRetryArmedRef.current = false;
+    storedRecordingIdRef.current =
+      recordingScope && recordingStoreRef.current
+        ? recordingStoreRef.current.begin(recordingScope, PCM_DICTATION_FORMAT)
+        : null;
 
     try {
-      await audio.start();
+      try {
+        await audio.start();
+      } catch (err) {
+        await audio.stop().catch(() => undefined);
+        stopDurationTracking();
+        isRecordingRef.current = false;
+        setIsRecording(false);
+        if (senderRef.current?.hasSegments()) {
+          setStatus("failed");
+        } else {
+          setStatus("idle");
+          deleteStoredRecording();
+        }
+        reportError(err, "Failed to start dictation");
+        return;
+      }
       isRecordingRef.current = true;
       setIsRecording(true);
       if (enableDuration) {
         startDurationTracking();
       }
       if (client?.isConnected) {
-        await startNewStream("start");
+        // A failed stream start leaves the microphone running and the audio buffered: confirm
+        // starts a new stream, and a failure there offers Retry. It never resets to idle.
+        await startNewStream("start").catch((err: unknown) => {
+          reportError(err, "Failed to start dictation stream");
+        });
       }
-    } catch (err) {
-      await audio.stop().catch(() => undefined);
-      stopDurationTracking();
-      isRecordingRef.current = false;
-      setIsRecording(false);
-      setStatus("idle");
-      reportError(err, "Failed to start dictation");
     } finally {
       actionGateRef.current.starting = false;
     }
@@ -296,8 +359,11 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     canStart,
     clearStreamingState,
     client,
+    deleteStoredRecording,
     enableDuration,
+    recordingScope,
     reportError,
+    setStatus,
     startDurationTracking,
     startNewStream,
     stopDurationTracking,
@@ -332,9 +398,17 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       isProcessingRef.current = false;
       setStatus("idle");
       clearStreamingState();
+      deleteStoredRecording();
       actionGateRef.current.cancelling = false;
     }
-  }, [audio, clearStreamingState, reportError, stopDurationTracking]);
+  }, [
+    audio,
+    clearStreamingState,
+    deleteStoredRecording,
+    reportError,
+    setStatus,
+    stopDurationTracking,
+  ]);
 
   const confirmDictation = useCallback(async () => {
     if (actionGateRef.current.confirming) {
@@ -386,26 +460,40 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     canConfirm,
     handleDictationFailure,
     handleStreamingTranscriptionSuccess,
+    setStatus,
     stopDurationTracking,
     ensureFinalTranscript,
   ]);
 
   const retryFailedDictation = useCallback(async () => {
-    if (!senderRef.current?.hasSegments()) {
+    const sender = senderRef.current;
+    if (!sender?.hasSegments() || isProcessingRef.current || isRecordingRef.current) {
       return;
     }
+    if (!client?.isConnected) {
+      // Nothing can reach the Host now. Keep the audio and resend once the connection returns.
+      autoRetryArmedRef.current = true;
+      setStatus("failed");
+      reportError(
+        new Error(t("common.errors.daemonClientDisconnected")),
+        "Dictation retry waiting for connection",
+      );
+      return;
+    }
+    autoRetryArmedRef.current = false;
     setError(null);
     setStatus("uploading");
     setIsProcessing(true);
     isProcessingRef.current = true;
+    const attemptId = attemptGuardRef.current.next();
 
     try {
-      if (!client?.isConnected) {
-        throw new Error(t("common.errors.daemonClientDisconnected"));
-      }
-      senderRef.current.resetStreamForReplay();
-      const finalSeq = senderRef.current.getFinalSeq();
-      const text = await ensureFinalTranscript(finalSeq);
+      // Close any half-open stream, then replay every segment from seq 0 on a new stream.
+      sender.cancel();
+      await sender.restartStream("retry");
+      attemptGuardRef.current.assertCurrent(attemptId);
+      const text = await ensureFinalTranscript(sender.getFinalSeq());
+      attemptGuardRef.current.assertCurrent(attemptId);
       handleStreamingTranscriptionSuccess(text, generateMessageId());
     } catch (err) {
       if (err instanceof Error && err.name === "AttemptCancelledError") {
@@ -418,17 +506,58 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     ensureFinalTranscript,
     handleDictationFailure,
     handleStreamingTranscriptionSuccess,
+    reportError,
+    setStatus,
     t,
   ]);
+  retryRef.current = retryFailedDictation;
 
   const discardFailedDictation = useCallback(() => {
+    attemptGuardRef.current.cancel();
+    senderRef.current?.cancel();
     setIsProcessing(false);
     isProcessingRef.current = false;
     setDuration(0);
     setStatus("idle");
     setError(null);
     clearStreamingState();
-  }, [clearStreamingState]);
+    deleteStoredRecording();
+  }, [clearStreamingState, deleteStoredRecording, setStatus]);
+
+  // Offer back a recording this composer left without a confirmed transcript: after a reload,
+  // an app kill, a Host restart or leaving the thread.
+  useEffect(() => {
+    const store = recordingStore;
+    if (!store || !recordingScope) {
+      return;
+    }
+    let cancelled = false;
+    const offerBack = async () => {
+      const pending = await store.findPending(recordingScope);
+      if (cancelled || !pending || pending.segments.length === 0) {
+        return;
+      }
+      const sender = senderRef.current;
+      if (
+        !sender ||
+        sender.hasSegments() ||
+        statusRef.current !== "idle" ||
+        isRecordingRef.current ||
+        isProcessingRef.current
+      ) {
+        return;
+      }
+      store.adopt(pending.recording.id);
+      storedRecordingIdRef.current = pending.recording.id;
+      sender.loadSegments(pending.segments);
+      setError(null);
+      setStatus("failed");
+    };
+    void offerBack();
+    return () => {
+      cancelled = true;
+    };
+  }, [recordingScope, recordingStore, setStatus]);
 
   const reset = useCallback(() => {
     setIsRecording(false);
@@ -440,7 +569,13 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     setError(null);
     setStatus("idle");
     clearStreamingState();
-  }, [clearStreamingState, stopDurationTracking]);
+    // The device copy stays; the next mount offers it back.
+    const storedId = storedRecordingIdRef.current;
+    storedRecordingIdRef.current = null;
+    if (storedId) {
+      recordingStoreRef.current?.release(storedId);
+    }
+  }, [clearStreamingState, setStatus, stopDurationTracking]);
 
   useEffect(() => {
     const attemptGuard = attemptGuardRef.current;
@@ -450,6 +585,11 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       stopDurationTracking();
       void audioStop.current().catch(() => undefined);
       senderRef.current?.dispose();
+      // Leaving the composer keeps the stored audio for the next mount to offer back.
+      const storedId = storedRecordingIdRef.current;
+      if (storedId) {
+        recordingStoreRef.current?.release(storedId);
+      }
     };
   }, [stopDurationTracking]);
 

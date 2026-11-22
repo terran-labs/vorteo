@@ -580,6 +580,14 @@ function MessageInputAutoFocus({
   return null;
 }
 
+/** Stored dictation audio belongs to one thread; composers without a thread keep it in memory. */
+function resolveDictationRecordingScope(
+  serverId: string | undefined,
+  agentId: string | undefined,
+): string | undefined {
+  return serverId && agentId ? `${serverId}:${agentId}` : undefined;
+}
+
 function MessageInputOverlay({
   showDictationOverlay,
   showRealtimeOverlay,
@@ -1701,6 +1709,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       canStart: canStartDictation,
       canConfirm: canConfirmDictation,
       enableDuration: true,
+      // Keeps dictation audio on the device per thread until a transcript is confirmed.
+      recordingScope: resolveDictationRecordingScope(voiceServerId, voiceAgentId),
     });
 
     const isRealtimeVoiceForCurrentAgent = computeIsRealtimeVoiceForAgent(
