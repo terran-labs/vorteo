@@ -580,12 +580,13 @@ function MessageInputAutoFocus({
   return null;
 }
 
-/** Stored dictation audio belongs to one thread; composers without a thread keep it in memory. */
-function resolveDictationRecordingScope(
-  serverId: string | undefined,
-  agentId: string | undefined,
-): string | undefined {
-  return serverId && agentId ? `${serverId}:${agentId}` : undefined;
+/**
+ * Stored dictation audio belongs to one thread or draft. Draft composers pass their draft tab id
+ * or new-workspace draft key as the agent id, and may switch Host or Dev before the agent exists,
+ * so the server is left out: a recording follows its draft across an environment change.
+ */
+function resolveDictationRecordingScope(agentId: string | undefined): string | undefined {
+  return agentId ? `dictation:${agentId}` : undefined;
 }
 
 function MessageInputOverlay({
@@ -1710,7 +1711,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       canConfirm: canConfirmDictation,
       enableDuration: true,
       // Keeps dictation audio on the device per thread until a transcript is confirmed.
-      recordingScope: resolveDictationRecordingScope(voiceServerId, voiceAgentId),
+      recordingScope: resolveDictationRecordingScope(voiceAgentId),
     });
 
     const isRealtimeVoiceForCurrentAgent = computeIsRealtimeVoiceForAgent(
