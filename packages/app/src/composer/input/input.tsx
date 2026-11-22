@@ -37,6 +37,8 @@ import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { ArrowUp, Mic, MicOff, CornerDownLeft, ListPlus, Plus, Square } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 import { useDictation } from "@/hooks/use-dictation";
+import type { DictationStorageNotice } from "@/hooks/use-dictation.shared";
+import type { DictationRecordingPersistence } from "@/dictation/recording-store";
 import { hasFinePointer } from "@/hooks/use-fine-pointer";
 import { DictationOverlay } from "@/components/dictation-controls";
 import { RealtimeVoiceOverlay } from "@/components/realtime-voice-overlay";
@@ -582,6 +584,20 @@ function MessageInputAutoFocus({
 }
 
 /**
+ * The notice under a failed dictation says where its audio really is, so it never claims the
+ * recording is safe when device storage failed.
+ */
+function resolveDictationPersistenceNotice(
+  persistence: DictationRecordingPersistence | null,
+  t: (key: string) => string,
+): string | undefined {
+  if (!persistence) return undefined;
+  return persistence === "stored"
+    ? t("message.dictation.recordingKept")
+    : t("message.dictation.recordingNotSaved");
+}
+
+/**
  * Stored dictation audio belongs to one thread or draft. Draft composers pass their draft tab id
  * or new-workspace draft key as the agent id, and may switch Host or Dev before the agent exists,
  * so the server is left out: a recording follows its draft across an environment change.
@@ -606,6 +622,8 @@ function MessageInputOverlay({
   onAcceptAndQueueRecording,
   onRetryFailedRecording,
   onDiscardFailedRecording,
+  onSaveFailedRecording,
+  dictationPersistenceNotice,
   onRealtimeVoiceStop,
 }: {
   showDictationOverlay: boolean;
@@ -630,6 +648,8 @@ function MessageInputOverlay({
   onAcceptAndQueueRecording?: () => Promise<void>;
   onRetryFailedRecording: () => void;
   onDiscardFailedRecording: () => void;
+  onSaveFailedRecording: () => void;
+  dictationPersistenceNotice: string | undefined;
   onRealtimeVoiceStop: () => void;
 }) {
   if (showDictationOverlay) {
@@ -647,6 +667,8 @@ function MessageInputOverlay({
         onAcceptAndQueue={onAcceptAndQueueRecording}
         onRetry={dictationStatus === "failed" ? onRetryFailedRecording : undefined}
         onDiscard={dictationStatus === "failed" ? onDiscardFailedRecording : undefined}
+        onSave={dictationStatus === "failed" ? onSaveFailedRecording : undefined}
+        persistenceNotice={dictationPersistenceNotice}
       />
     );
   }
@@ -1682,6 +1704,19 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       [client, disabled, dictationUnavailableMessage, isReadyForDictation],
     );
 
+    const handleDictationStorageNotice = useCallback(
+      (notice: DictationStorageNotice) => {
+        toast.error(
+          t(
+            notice === "evicted"
+              ? "message.dictation.recordingEvicted"
+              : "message.dictation.storageUnavailable",
+          ),
+        );
+      },
+      [t, toast],
+    );
+
     const canConfirmDictation = useCallback(() => client?.isConnected ?? false, [client]);
     const isConnected = client?.isConnected ?? false;
     const isDictationStartEnabled = computeIsDictationStartEnabled(
@@ -1704,6 +1739,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       confirmDictation,
       retryFailedDictation,
       discardFailedDictation,
+      saveFailedRecording,
+      recordingPersistence,
     } = useDictation({
       client,
       onTranscript: handleDictationTranscript,
@@ -1714,7 +1751,14 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       // Keeps dictation audio on the device per thread until a transcript is confirmed.
       recordingScope: resolveDictationRecordingScope(voiceAgentId),
       recordingServerId: voiceServerId,
+      onStorageNotice: handleDictationStorageNotice,
     });
+    const dictationPersistenceNotice = resolveDictationPersistenceNotice(recordingPersistence, t);
+
+    const handleSaveFailedRecording = useCallback(() => {
+      // Called straight from the press, so the web share sheet keeps the user's gesture.
+      void saveFailedRecording();
+    }, [saveFailedRecording]);
 
     const isRealtimeVoiceForCurrentAgent = computeIsRealtimeVoiceForAgent(
       voice,
@@ -2541,6 +2585,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
             onAcceptAndQueueRecording={queueRecordingAction}
             onRetryFailedRecording={handleRetryFailedRecording}
             onDiscardFailedRecording={handleDiscardFailedRecording}
+            onSaveFailedRecording={handleSaveFailedRecording}
+            dictationPersistenceNotice={dictationPersistenceNotice}
             onRealtimeVoiceStop={handleRealtimeVoiceStop}
           />
         </View>
@@ -2563,6 +2609,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         queueRecordingAction,
         handleRetryFailedRecording,
         handleDiscardFailedRecording,
+        handleSaveFailedRecording,
+        dictationPersistenceNotice,
         handleRealtimeVoiceStop,
       ],
     );

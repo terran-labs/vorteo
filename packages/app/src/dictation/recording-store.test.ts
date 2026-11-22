@@ -1,7 +1,12 @@
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { describe, expect, it } from "vitest";
 import { createIndexedDbDictationRecordingBackend } from "./recording-backend.web";
-import { DictationRecordingStore, MemoryDictationRecordingBackend } from "./recording-store";
+import {
+  DictationRecordingStore,
+  MemoryDictationRecordingBackend,
+  type DictationRecordingStoreEvent,
+} from "./recording-store";
+import { buildDictationWav } from "./recording-wav";
 
 const FORMAT = "audio/pcm;rate=16000;bits=16";
 
@@ -42,6 +47,8 @@ describe("DictationRecordingStore", () => {
       maxBytes: 30,
       now: () => clock,
     });
+    const events: DictationRecordingStoreEvent[] = [];
+    store.subscribe((event) => events.push(event));
     const oldest = store.begin("a", FORMAT)!;
     store.append(oldest, "x".repeat(10));
     await store.flush();
@@ -57,6 +64,14 @@ describe("DictationRecordingStore", () => {
     await store.flush();
 
     expect(store.isComplete(newest)).toBe(true);
+    // The owner is told that an older unsent recording was removed.
+    expect(events).toEqual([
+      expect.objectContaining({
+        kind: "evicted",
+        reason: "space",
+        recording: expect.objectContaining({ id: oldest }),
+      }),
+    ]);
     expect(await store.findPending("a")).toBeNull();
     expect((await store.findPending("b"))?.segments).toEqual(["y".repeat(10)]);
   });
@@ -106,5 +121,18 @@ describe("DictationRecordingStore", () => {
     await tabB.deleteForServer("server-1");
     expect(backend.recordings.size).toBe(0);
     expect(locks.size).toBe(0);
+  });
+
+  it("builds a playable 16 kHz mono WAV from the stored segments", () => {
+    const pcm = (bytes: number[]) => Buffer.from(bytes).toString("base64");
+    const wav = buildDictationWav([pcm([1, 0, 2, 0]), pcm([3, 0])]);
+    const view = new DataView(wav.buffer);
+    const ascii = (offset: number) => String.fromCharCode(...wav.slice(offset, offset + 4));
+
+    expect([ascii(0), ascii(8), ascii(12), ascii(36)]).toEqual(["RIFF", "WAVE", "fmt ", "data"]);
+    expect(view.getUint32(24, true)).toBe(16_000);
+    expect(view.getUint16(22, true)).toBe(1);
+    expect(view.getUint32(40, true)).toBe(6);
+    expect(Array.from(wav.slice(44))).toEqual([1, 0, 2, 0, 3, 0]);
   });
 });

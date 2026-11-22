@@ -662,6 +662,13 @@ export const en = {
       start: "Start voice dictation",
       cancel: "Cancel dictation",
       retry: "Retry dictation",
+      saveAudio: "Save audio",
+      recordingKept: "Your recording is kept.",
+      recordingNotSaved:
+        "This recording is not saved on this device. Keep this page open until it is sent, or save the audio.",
+      recordingEvicted: "An older unsent recording was removed to free space.",
+      storageUnavailable:
+        "This device cannot save recordings right now. Keep this page open until the dictation is sent.",
       insert: "Insert transcription",
       insertAndSend: "Insert transcription and send",
       failed: "Dictation failed: {{error}}",

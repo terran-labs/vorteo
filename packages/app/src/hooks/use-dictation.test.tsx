@@ -21,6 +21,14 @@ const audioSource: {
   stopDelayMs: 0,
 };
 
+const exportCalls: Array<{ segments: readonly string[] }> = [];
+vi.mock("@/dictation/recording-export", () => ({
+  exportDictationRecording: async (segments: readonly string[]) => {
+    exportCalls.push({ segments: [...segments] });
+    return "shared";
+  },
+}));
+
 vi.mock("@/hooks/use-dictation-audio-source", () => ({
   useDictationAudioSource: (config: DictationAudioSourceConfig) => {
     audioSource.config = config;
@@ -423,5 +431,32 @@ describe("useDictation keeps recordings until a transcript is confirmed", () => 
       unmount();
       audioSource.stopDelayMs = 0;
     }
+  });
+
+  it("saves the audio without touching the stored recording, and says where the audio is", async () => {
+    const backend = new MemoryDictationRecordingBackend();
+    const store = new DictationRecordingStore(backend);
+    const { result } = renderDictation(new FakeClient(), store);
+
+    await recordSegments(result, ["s0", "s1"]);
+    await act(() => result.current.cancelDictation());
+    await act(async () => {
+      await store.flush();
+    });
+    expect(result.current.status).toBe("failed");
+    expect(result.current.recordingPersistence).toBe("stored");
+
+    exportCalls.length = 0;
+    await act(() => result.current.saveFailedRecording());
+    expect(exportCalls).toEqual([{ segments: ["s0", "s1"] }]);
+    expect(result.current.status).toBe("failed");
+    await store.flush();
+    expect([...backend.segments.values()][0]).toEqual(["s0", "s1"]);
+
+    // Without device storage the notice must not claim the audio is kept.
+    const memoryOnly = renderDictation(new FakeClient(), null);
+    await recordSegments(memoryOnly.result, ["m0"]);
+    await act(() => memoryOnly.result.current.cancelDictation());
+    expect(memoryOnly.result.current.recordingPersistence).toBe("memory-only");
   });
 });

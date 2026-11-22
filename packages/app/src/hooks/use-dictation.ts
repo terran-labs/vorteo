@@ -3,7 +3,11 @@ import { useTranslation } from "react-i18next";
 
 import { getDeviceDictationRecordingStore } from "@/dictation/device-recording-store";
 import { DictationStreamSender } from "@/dictation/dictation-stream-sender";
-import type { DictationRecordingStore } from "@/dictation/recording-store";
+import { exportDictationRecording } from "@/dictation/recording-export";
+import type {
+  DictationRecordingPersistence,
+  DictationRecordingStore,
+} from "@/dictation/recording-store";
 import { useDictationAudioSource } from "@/hooks/use-dictation-audio-source";
 import { generateMessageId } from "@/types/stream";
 import { AttemptGuard } from "@/utils/attempt-guard";
@@ -70,6 +74,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     onPartialTranscript,
     onError,
     onPermanentFailure,
+    onStorageNotice,
     canStart,
     canConfirm,
     enableDuration = false,
@@ -132,6 +137,15 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   useEffect(() => {
     onPermanentFailureRef.current = onPermanentFailure;
   }, [onPermanentFailure]);
+
+  const onStorageNoticeRef = useRef(onStorageNotice);
+  useEffect(() => {
+    onStorageNoticeRef.current = onStorageNotice;
+  }, [onStorageNotice]);
+  /** When the audio in the sender was first captured; names the saved file. */
+  const recordingCreatedAtRef = useRef(0);
+  const [recordingPersistence, setRecordingPersistence] =
+    useState<DictationRecordingPersistence | null>(null);
 
   const isRecordingRef = useRef(isRecording);
   useEffect(() => {
@@ -425,6 +439,11 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
           ? recordingStoreRef.current.begin(scope, PCM_DICTATION_FORMAT, recordingServerId)
           : null;
       captureTargetRef.current = { scope, storedId: storedRecordingIdRef.current };
+      recordingCreatedAtRef.current = Date.now();
+      if (scope && !storedRecordingIdRef.current) {
+        // No device copy at all: say so before the owner speaks for minutes.
+        onStorageNoticeRef.current?.("unavailable");
+      }
     },
     [clearStreamingState, recordingServerId, setStatus],
   );
@@ -707,6 +726,21 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   ]);
   retryRef.current = retryFailedDictation;
 
+  const saveFailedRecording = useCallback((): Promise<void> => {
+    const segments = senderRef.current?.getSegments() ?? [];
+    if (segments.length === 0) {
+      return Promise.resolve();
+    }
+    // Memory always holds at least what the device holds, so export from memory. Nothing awaits
+    // before the export, which keeps the share sheet inside the press on iOS.
+    return exportDictationRecording(segments, recordingCreatedAtRef.current || Date.now()).then(
+      () => undefined,
+      (err: unknown) => {
+        reportError(err, "Failed to save dictation audio");
+      },
+    );
+  }, [reportError]);
+
   const discardFailedDictation = useCallback(() => {
     attemptGuardRef.current.cancel();
     senderRef.current?.cancel();
@@ -788,6 +822,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
         return;
       }
       storedRecordingIdRef.current = pending.recording.id;
+      recordingCreatedAtRef.current = pending.recording.createdAt;
       current.loadSegments(pending.segments);
       setError(null);
       setStatus("failed");
@@ -838,6 +873,30 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     };
   }, [stopDurationTracking]);
 
+  // Keep the notice line honest: recompute where the unsent audio lives whenever the dictation
+  // state changes or the store reports a failure, and pass storage events on to the composer.
+  useEffect(() => {
+    const refresh = () => {
+      const hasAudio = senderRef.current?.hasSegments() ?? false;
+      const store = recordingStoreRef.current;
+      setRecordingPersistence(
+        hasAudio ? (store?.persistence(storedRecordingIdRef.current) ?? "memory-only") : null,
+      );
+    };
+    refresh();
+    if (!recordingStore) {
+      return;
+    }
+    return recordingStore.subscribe((event) => {
+      refresh();
+      if (event.kind === "evicted") {
+        onStorageNoticeRef.current?.("evicted");
+      } else if (event.kind === "unavailable") {
+        onStorageNoticeRef.current?.("unavailable");
+      }
+    });
+  }, [recordingStore, status]);
+
   return {
     isRecording,
     isRecordingActive,
@@ -852,6 +911,8 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     confirmDictation,
     retryFailedDictation,
     discardFailedDictation,
+    saveFailedRecording,
+    recordingPersistence,
     reset,
   };
 }

@@ -49,15 +49,21 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
     onInterruptionRef.current = config.onInterruption;
   }, [config.onPcmSegment, config.onError, config.onInterruption]);
 
+  // Concurrent callers share one in-flight stop, so a stop that overlaps another (unmount, a
+  // thread switch during cancel or confirm) cannot deliver the last audio twice.
+  const stopInFlightRef = useRef<Promise<void> | null>(null);
+
   const start = useCallback(async () => {
+    // A start during a stop waits for it, so two captures never overlap.
+    const stopping = stopInFlightRef.current;
+    if (stopping) {
+      await stopping.catch(() => undefined);
+    }
     const engine = getOrCreateEngine();
     await engine.initialize();
     await engine.startCapture();
   }, [getOrCreateEngine]);
 
-  // Concurrent callers share one in-flight stop, so a stop that overlaps another (unmount, a
-  // thread switch during cancel or confirm) cannot deliver the last audio twice.
-  const stopInFlightRef = useRef<Promise<void> | null>(null);
   const stop = useCallback((): Promise<void> => {
     if (stopInFlightRef.current) {
       return stopInFlightRef.current;

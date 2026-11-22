@@ -63,4 +63,31 @@ describe("web dictation audio source", () => {
     await act(() => result.current.stop());
     expect(onPcmSegment).toHaveBeenCalledTimes(1);
   });
+
+  it("waits for an in-flight stop before opening the microphone again", async () => {
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    const calls: string[] = [];
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: async () => {
+          calls.push("open");
+          return { getTracks: () => [{ stop: vi.fn() }] };
+        },
+      },
+    });
+    const onPcmSegment = vi.fn(() => calls.push("tail"));
+    const { result } = renderHook(() => useDictationAudioSource({ onPcmSegment }));
+
+    await act(() => result.current.start());
+    act(() => {
+      FakeAudioContext.processor?.onaudioprocess?.({
+        inputBuffer: { getChannelData: () => new Float32Array(8000).fill(0.1) },
+      });
+    });
+    await act(() => Promise.all([result.current.stop(), result.current.start()]));
+
+    // The second capture opens only after the first delivered its last audio.
+    expect(calls).toEqual(["open", "tail", "open"]);
+  });
 });

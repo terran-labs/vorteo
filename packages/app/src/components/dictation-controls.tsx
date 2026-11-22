@@ -18,7 +18,16 @@ import {
   useWindowDimensions,
 } from "@/appearance/interface-geometry";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
-import { X, ArrowUp, RefreshCcw, Check, Mic, Pencil, ListPlus } from "lucide-react-native";
+import {
+  X,
+  ArrowUp,
+  RefreshCcw,
+  Check,
+  Mic,
+  Pencil,
+  ListPlus,
+  Download,
+} from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { VolumeMeter } from "./volume-meter";
 import { isWeb } from "@/constants/platform";
@@ -248,11 +257,14 @@ function OverlayStatusLine({
   status,
   isProcessing,
   errorText,
+  notice,
   style,
 }: {
   status: DictationStatus;
   isProcessing: boolean;
   errorText?: string;
+  /** Where the unsent recording lives, shown after the failure text. */
+  notice?: string;
   style: ComponentProps<typeof Text>["style"];
 }) {
   const { t } = useTranslation();
@@ -264,10 +276,11 @@ function OverlayStatusLine({
     text = errorText
       ? t("message.dictation.failed", { error: toErrorMessage(errorText) })
       : t("message.dictation.failedRetry");
+    if (notice) text = `${text} ${notice}`;
   } else if (stillTranscribing) text = t("message.dictation.stillTranscribing");
   if (!text) return null;
   return (
-    <Text numberOfLines={2} style={style}>
+    <Text numberOfLines={isFailed && notice ? 4 : 2} style={style}>
       {text}
     </Text>
   );
@@ -286,7 +299,14 @@ export function DictationOverlay({
   onAcceptAndQueue,
   onRetry,
   onDiscard,
-}: Omit<DictationControlsProps, "onStart" | "disabled" | "transcript"> & { errorText?: string }) {
+  onSave,
+  persistenceNotice,
+}: Omit<DictationControlsProps, "onStart" | "disabled" | "transcript"> & {
+  errorText?: string;
+  /** Saves the unsent recording as an audio file; shown in the failed state. */
+  onSave?: () => void;
+  persistenceNotice?: string;
+}) {
   const { theme } = useUnistyles();
   const touch = useVortonTouch();
   const mobileComposer = useMobileComposerLayout();
@@ -452,6 +472,7 @@ export function DictationOverlay({
           status={status}
           isProcessing={isProcessing}
           errorText={errorText}
+          notice={persistenceNotice}
           style={overlayTranscriptTextStyle}
         />
       </View>
@@ -461,6 +482,20 @@ export function DictationOverlay({
           <View style={overlayLoadingStyle}>
             <LoadingSpinner size="small" color={theme.colors.accentForeground} prominent />
           </View>
+        ) : null}
+        {!actionsDisabled && isFailed && onSave ? (
+          <Pressable
+            onPress={onSave}
+            accessibilityRole="button"
+            accessibilityLabel={t("message.dictation.saveAudio")}
+            style={overlayEditButtonStyle}
+          >
+            <Download
+              size={theme.iconSize.lg}
+              color={theme.colors.accentForeground}
+              strokeWidth={2.5}
+            />
+          </Pressable>
         ) : null}
         {!actionsDisabled && isFailed ? (
           <Pressable

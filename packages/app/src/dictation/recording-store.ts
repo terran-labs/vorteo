@@ -44,6 +44,15 @@ export interface DictationRecordingBackend {
   claim?(id: string): Promise<DictationRecordingClaimRelease | null>;
 }
 
+/** What the store tells the interface, so it never claims audio is safe when it is not. */
+export type DictationRecordingStoreEvent =
+  | { kind: "evicted"; recording: StoredDictationRecording; reason: "space" | "age" }
+  | { kind: "unavailable"; error: Error }
+  | { kind: "incomplete"; id: string };
+
+/** Where a recording's audio currently lives. */
+export type DictationRecordingPersistence = "stored" | "memory-only" | "incomplete";
+
 export interface PendingDictationRecording {
   recording: StoredDictationRecording;
   segments: string[];
@@ -95,6 +104,7 @@ export class DictationRecordingStore {
   /** Recordings with at least one segment that could not be stored. */
   private readonly incomplete = new Set<string>();
   private failure: Error | null = null;
+  private readonly listeners = new Set<(event: DictationRecordingStoreEvent) => void>();
 
   constructor(
     backend: DictationRecordingBackend | null,
@@ -106,6 +116,31 @@ export class DictationRecordingStore {
     this.now = options.now ?? Date.now;
     this.createId = options.createId ?? defaultCreateId;
     this.retryDelayMs = options.retryDelayMs ?? WRITE_RETRY_DELAY_MS;
+  }
+
+  subscribe(listener: (event: DictationRecordingStoreEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  /** Where a recording's audio lives; null id means nothing was stored for it. */
+  persistence(id: string | null): DictationRecordingPersistence {
+    if (!id || !this.isAvailable) {
+      return "memory-only";
+    }
+    return this.incomplete.has(id) ? "incomplete" : "stored";
+  }
+
+  private emit(event: DictationRecordingStoreEvent): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(event);
+      } catch (error) {
+        console.warn("[DictationRecordingStore] Listener failed", error);
+      }
+    }
   }
 
   /** False while the device store is missing or could not be opened. */
@@ -166,6 +201,7 @@ export class DictationRecordingStore {
         // A gap cannot be repaired later, so stop writing after the first lost segment.
         if (!recording) {
           this.incomplete.add(id);
+          this.emit({ kind: "incomplete", id });
         }
         return;
       }
@@ -334,6 +370,7 @@ export class DictationRecordingStore {
       known = await this.loadKnown(backend);
     } catch (error) {
       this.failure = error instanceof Error ? error : new Error(String(error));
+      this.emit({ kind: "unavailable", error: this.failure });
       console.warn(
         "[DictationRecordingStore] Device storage unavailable; keeping dictation audio in memory only",
         this.failure,
@@ -370,6 +407,7 @@ export class DictationRecordingStore {
     error: unknown,
   ): Promise<void> {
     this.incomplete.add(recording.id);
+    this.emit({ kind: "incomplete", id: recording.id });
     console.warn(
       "[DictationRecordingStore] Could not store every dictation segment; the full recording stays in memory",
       error,
@@ -439,6 +477,7 @@ export class DictationRecordingStore {
       if (!this.active.has(recording.id) && recording.updatedAt < cutoff) {
         known.delete(recording.id);
         await backend.deleteRecording(recording.id);
+        this.emit({ kind: "evicted", recording, reason: "age" });
       }
     }
     await this.evictOldest(backend, known, 0);
@@ -458,6 +497,7 @@ export class DictationRecordingStore {
       }
       known.delete(recording.id);
       await backend.deleteRecording(recording.id);
+      this.emit({ kind: "evicted", recording, reason: "space" });
     }
   }
 }
