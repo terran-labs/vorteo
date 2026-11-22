@@ -3009,6 +3009,83 @@ test("timeline polling reads saved history without resuming and backs off failed
   }
 });
 
+test("timeline reads of a thread closed in this process keep its live epoch", async () => {
+  const hydrated = makeStoredAgent({
+    id: "00000000-0000-4000-8000-000000000119",
+    cwd: process.cwd(),
+    updatedAt: "2026-11-22T00:00:00.000Z",
+  });
+  hydrated.persistence = { provider: "codex", sessionId: "hydrated-thread" };
+  const partial = makeStoredAgent({
+    id: "00000000-0000-4000-8000-000000000120",
+    cwd: process.cwd(),
+    updatedAt: "2026-11-22T00:00:00.000Z",
+  });
+  partial.persistence = { provider: "codex", sessionId: "partial-thread" };
+  const records = new Map([hydrated, partial].map((record) => [record.id, record]));
+  const manager = new AgentManager({
+    clients: { codex: new CreateAgentTestClient() },
+    logger: createTestLogger(),
+  });
+  const providers = createProviderSnapshotManagerStub();
+  providers.listRegisteredProviderIds.mockReturnValue(["codex"]);
+  const readHistory = vi.fn(async function* (): AsyncGenerator<AgentStreamEvent> {
+    yield {
+      type: "timeline",
+      provider: "codex",
+      item: { type: "assistant_message", text: "Transcript answer" },
+    };
+  });
+  providers.manager.readSessionHistory = readHistory;
+  const emitted: SessionOutboundMessage[] = [];
+  const session = createSessionForWorkspaceTests({
+    liveAgentManager: manager,
+    providerSnapshotManager: providers.manager,
+    agentStorage: { get: async (id: string) => records.get(id) ?? null },
+    onMessage: (message) => emitted.push(message),
+  });
+  const read = async (agentId: string) => {
+    emitted.length = 0;
+    await session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      requestId: `read-${agentId}`,
+      agentId,
+    });
+    return findByType(emitted, "fetch_agent_timeline_response")?.payload;
+  };
+
+  // An idle release closes a hydrated thread; it resumes with the same retained timeline.
+  await manager.resumeAgentFromPersistence(
+    hydrated.persistence,
+    { cwd: hydrated.cwd },
+    hydrated.id,
+  );
+  await manager.hydrateTimelineFromProvider(hydrated.id);
+  const liveEpoch = manager.fetchTimeline(hydrated.id).epoch;
+  await manager.closeAgent(hydrated.id);
+  expect(await read(hydrated.id)).toMatchObject({ error: null, epoch: liveEpoch });
+  expect(readHistory).not.toHaveBeenCalled();
+
+  // A thread closed before its history was read holds a partial timeline: read the transcript.
+  await manager.resumeAgentFromPersistence(partial.persistence, { cwd: partial.cwd }, partial.id);
+  const partialEpoch = manager.fetchTimeline(partial.id).epoch;
+  await manager.closeAgent(partial.id);
+  const transcript = await read(partial.id);
+  expect(readHistory).toHaveBeenCalledTimes(1);
+  expect(transcript?.epoch).not.toBe(partialEpoch);
+  expect(transcript?.entries).toMatchObject([
+    { item: { type: "assistant_message", text: "Transcript answer" } },
+  ]);
+
+  // Resumed again without a history read, the partial timeline must not pass as complete.
+  await manager.resumeAgentFromPersistence(partial.persistence, { cwd: partial.cwd }, partial.id);
+  expect(manager.getAgent(partial.id)?.historyPrimed).toBe(false);
+  const resumedEpoch = manager.fetchTimeline(partial.id).epoch;
+  await manager.closeAgent(partial.id);
+  expect((await read(partial.id))?.epoch).not.toBe(resumedEpoch);
+  expect(readHistory).toHaveBeenCalledTimes(2);
+});
+
 // Only Claude and Codex transcripts replay in full without resuming. OpenCode refuses passive
 // reads (unstubbed here, so a saved read would hit the real guard), and plugin or ACP providers
 // may replay nothing, so those

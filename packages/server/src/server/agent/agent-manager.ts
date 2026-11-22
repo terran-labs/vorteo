@@ -1796,6 +1796,12 @@ export class AgentManager {
   private readonly automaticCloses = new Set<string>();
   /** Agents whose closed state is being emitted by an automatic release, not an explicit close. */
   private readonly releasingRuntimes = new Set<string>();
+  /**
+   * Closed agents whose retained in-memory timeline held their full history at close. Saved reads
+   * serve it, so a closed thread keeps the epoch its clients already follow and the one it resumes
+   * with in this process, instead of a transcript-hash epoch that resets every client.
+   */
+  private readonly completeRetainedTimelines = new Set<string>();
   private readonly reloadedSessionCloses = new WeakMap<AgentSession, Promise<void>>();
   private readonly runtimeCleanupIdentities = new WeakMap<AgentSession, object>();
   private readonly collectingRuntimes = new Set<string>();
@@ -3496,6 +3502,13 @@ export class AgentManager {
     return this.timelineStore.fetch(id, options);
   }
 
+  /** True when a closed agent's retained timeline held its full history when it closed. */
+  hasCompleteRetainedTimeline(id: string): boolean {
+    return (
+      !this.agents.has(id) && this.completeRetainedTimelines.has(id) && this.timelineStore.has(id)
+    );
+  }
+
   async fetchSavedTimeline(
     id: string,
     options?: AgentTimelineFetchOptions,
@@ -3504,7 +3517,8 @@ export class AgentManager {
   ): Promise<AgentTimelineFetchResult> {
     // Reading committed history must not require starting its original provider.
     if (this.durableTimelineStore) return this.durableTimelineStore.fetchCommitted(id, options);
-    // A closed runtime can still have rows recorded before it obtained a native handle.
+    // A closed runtime can still have rows recorded before it obtained a native handle, and a
+    // runtime closed in this process keeps its complete timeline, which it also resumes with.
     if (savedSource?.useRetainedTimeline && this.timelineStore.has(id))
       return this.timelineStore.fetch(id, options);
     if (!loadLegacyRows) throw new Error("Saved timeline storage is unavailable");
@@ -4128,6 +4142,7 @@ export class AgentManager {
       if (rehydrateFromDisk) {
         // Wipe the in-memory timeline so registerSession mints a new epoch and
         // hydrateTimelineFromProvider re-streams the freshly read provider history.
+        this.completeRetainedTimelines.delete(agentId);
         this.timelineStore.delete(agentId);
         for (const event of this.providerSubagents.deleteParent(agentId)) {
           this.dispatch({ type: "provider_subagent", event });
@@ -4923,6 +4938,11 @@ export class AgentManager {
     }
     this.cancelRunningProviderSubagents(agentId);
     const closedAgent = this.prepareAgentForClosure(agent, "agent closed");
+    // Kept, a native thread's partial timeline (its history read failed or never ran) would
+    // register as primed on the next resume, skip hydration and then pass as complete to saved
+    // reads. Its rows are in the transcript, so dropping it makes that resume hydrate. Threads
+    // without a native session keep theirs: it is their only copy (6531c0a6d).
+    if (!agent.historyPrimed && agent.persistence?.sessionId) this.timelineStore.delete(agentId);
 
     let persistError: unknown;
     try {
@@ -7955,6 +7975,12 @@ export class AgentManager {
     cancelReason: string,
   ): ManagedAgentClosed {
     this.agentStreamCoalescer.flushAndDiscard(agent.id);
+    // A timeline whose history read failed or never ran is partial; saved reads use the transcript.
+    if (agent.historyPrimed && this.timelineStore.has(agent.id)) {
+      this.completeRetainedTimelines.add(agent.id);
+    } else {
+      this.completeRetainedTimelines.delete(agent.id);
+    }
     this.agents.delete(agent.id);
     this.previousStatuses.delete(agent.id);
     if (agent.unsubscribeSession) {
@@ -7988,6 +8014,7 @@ export class AgentManager {
   }
 
   private discardRetainedAgentState(agentId: string): void {
+    this.completeRetainedTimelines.delete(agentId);
     this.timelineStore.delete(agentId);
     this.paseoToolPolicies.delete(agentId);
     this.detachPluginTools(agentId);
