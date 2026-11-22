@@ -8673,6 +8673,34 @@ describe("thread checklist MCP tools", () => {
       });
       expect(invalid.isError).toBe(true);
       expect(agentManager.readChecklist(agent.id)).toEqual([task]);
+      // A batch commits as one write and reaches clients as one checklist update.
+      const updates: unknown[] = [];
+      const unsubscribe = agentManager.subscribe(
+        (event) => {
+          if (event.type === "agent_stream" && event.event.type === "timeline") {
+            if (event.event.item.type === "todo") updates.push(event.event.item);
+          }
+        },
+        { agentId: agent.id, replayState: false },
+      );
+      const batch = await client.callTool({
+        name: "update_checklist",
+        arguments: {
+          mutations: [
+            { operation: "create", id: "one", text: "One" },
+            { operation: "create", id: "two", text: "Two", blockedBy: ["one"] },
+            { operation: "update", id: "one", status: "in_progress" },
+          ],
+        },
+      });
+      unsubscribe();
+      expect(batch.isError).not.toBe(true);
+      expect(updates).toHaveLength(1);
+      expect((await storage.get(agent.id))?.tasks?.map((item) => item.id)).toEqual([
+        "verify",
+        "one",
+        "two",
+      ]);
     } finally {
       await client.close();
       await server.close();
