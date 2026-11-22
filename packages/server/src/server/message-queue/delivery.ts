@@ -5,7 +5,11 @@ import { MessageQueueStore } from "./store.js";
 export interface QueueDeliveryPort {
   canStartWork?(): boolean;
   recoveryAgentIds?(): Promise<string[]>;
-  history?(agentId: string): Promise<AgentStreamEvent[]>;
+  /**
+   * The agent's complete provider history, read without resuming its runtime where the provider
+   * allows it. Null when no complete history is available, which never marks an item unconfirmed.
+   */
+  history?(agentId: string): Promise<AgentStreamEvent[] | null>;
   prepare(
     agentId: string,
     item: QueueItem,
@@ -31,6 +35,9 @@ export interface QueueDeliveryPort {
   changed(snapshot: QueueSnapshot): void;
   failed(error: unknown, agentId: string): void;
 }
+
+/** How long an uncertain message may stay unconfirmed by history before the owner must decide. */
+export const UNCONFIRMED_DELIVERY_BOUND_MS = 15 * 60_000;
 
 export class QueueDeliveryWorker {
   private readonly running = new Map<string, Promise<void>>();
@@ -80,6 +87,7 @@ export class QueueDeliveryWorker {
   constructor(
     private readonly store: MessageQueueStore,
     private readonly port: QueueDeliveryPort,
+    private readonly now: () => number = Date.now,
   ) {}
 
   wake(agentId: string): Promise<void> {
@@ -167,10 +175,11 @@ export class QueueDeliveryWorker {
       const snapshot = await this.store.read(agentId);
       const head = snapshot.items[0];
       if (head?.delivery.status === "uncertain" && this.port.history) {
-        const reconciled = await this.store.reconcileHistory(
-          agentId,
-          await this.port.history(agentId),
-        );
+        const history = await this.port.history(agentId);
+        if (!history) return;
+        const reconciled = await this.store.reconcileHistory(agentId, history, {
+          unconfirmedBefore: this.now() - UNCONFIRMED_DELIVERY_BOUND_MS,
+        });
         if (!reconciled.changed) return;
         this.port.changed(reconciled.snapshot);
         continue;

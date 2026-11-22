@@ -75,6 +75,14 @@ interface RestartContinuationRelease {
 
 // The daemon is the single writer. Each task's read/modify/commit belongs in this
 // lane, including reads, so no caller can observe an uncommitted mutation.
+/**
+ * Shown on an uncertain message that its history never confirmed. It may have been received
+ * without evidence the host can match, so the text says unconfirmed, not failed, and warns
+ * that a retry may send it twice.
+ */
+export const UNCONFIRMED_DELIVERY_REASON =
+  "Delivery could not be confirmed: this message is not in the thread's history. It may not have reached the agent, or it may have arrived without a record the host can match. Check the thread before retrying, because a retry may send it again; otherwise discard it.";
+
 export class MessageQueueStore {
   private readonly tails = new Map<string, Promise<void>>();
   /** Called after an acceptance commits, whether by delivery, steering or history repair. */
@@ -347,20 +355,43 @@ export class MessageQueueStore {
     });
   }
 
+  /**
+   * Accepts uncertain items that the agent's history shows were received. With `unconfirmedBefore`,
+   * an uncertain item whose attempt started earlier and that this complete history read does not
+   * show is marked failed with an honest reason, so it stops prompting history reads and the owner
+   * decides whether to retry or discard it. Nothing is delivered or dropped.
+   */
   reconcileHistory(
     agentId: string,
     history: readonly AgentStreamEvent[],
+    options?: { unconfirmedBefore?: number },
   ): Promise<{ snapshot: QueueSnapshot; changed: boolean }> {
     return this.serial(agentId, async () => {
       const record = await this.load(agentId);
       const accepted: QueueItem[] = [];
+      let unconfirmed = false;
       for (const item of record.snapshot.items) {
         if (item.delivery.status !== "uncertain") continue;
         const nativeId = record.providerMessageIds.find(
           (entry) => entry.messageId === item.id,
         )?.providerMessageId;
         const evidence = findQueueAcceptanceEvidence(item, nativeId, history);
-        if (!evidence) continue;
+        if (!evidence) {
+          const startedAt = Date.parse(item.delivery.startedAt);
+          if (
+            options?.unconfirmedBefore !== undefined &&
+            Number.isFinite(startedAt) &&
+            startedAt < options.unconfirmedBefore
+          ) {
+            item.delivery = {
+              status: "failed",
+              attemptId: item.delivery.attemptId,
+              reason: UNCONFIRMED_DELIVERY_REASON,
+            };
+            unconfirmed = true;
+          }
+          continue;
+        }
         record.accepted.push({
           messageId: item.id,
           attemptId: item.delivery.attemptId,
@@ -369,13 +400,13 @@ export class MessageQueueStore {
         record.submissions.push({ item, ...evidence });
         accepted.push(item);
       }
-      const changed = accepted.length > 0;
+      const changed = accepted.length > 0 || unconfirmed;
       if (changed) {
         const ids = new Set(accepted.map((item) => item.id));
         record.snapshot.items = record.snapshot.items.filter((entry) => !ids.has(entry.id));
         record.snapshot.revision += 1;
         await this.commit(record);
-        this.notifyAccepted(agentId, accepted);
+        if (accepted.length > 0) this.notifyAccepted(agentId, accepted);
       }
       return { snapshot: record.snapshot, changed };
     });

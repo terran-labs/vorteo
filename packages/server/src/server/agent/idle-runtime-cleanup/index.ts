@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
 import { withTimeout } from "../../../utils/promise-timeout.js";
+import { isStaleProviderSessionError } from "../stale-provider-session-error.js";
 
 /** A captured runtime capability. Its lifecycle owner revalidates before releasing it. */
 export interface RuntimeCleanupCandidate {
@@ -31,6 +32,10 @@ interface CollectionResult {
   failures: Array<{ agentId: string; error: unknown }>;
 }
 const IDLE_PERIOD_MS = 60 * 60_000;
+/** First wait after a stale provider session refuses the probe or close: it never recovers on its own. */
+export const CLEANUP_FAILURE_BACKOFF_MIN_MS = 5 * 60_000;
+/** Longest wait, doubling from the minimum, matching the idle period so a recovered runtime is still collected. */
+export const CLEANUP_FAILURE_BACKOFF_MAX_MS = 60 * 60_000;
 
 /** Owns idle clocks, baseline eligibility, optional provider vetoes and the sweep lifetime. */
 export function createIdleRuntimeCleanup(options: Options) {
@@ -41,6 +46,34 @@ export function createIdleRuntimeCleanup(options: Options) {
   let generation = 0;
   const isProtected = options.isProtected ?? (() => false);
   const now = options.now ?? Date.now;
+  // Per agent, so a runtime replaced by a resume keeps its backoff. Only a stale provider session
+  // backs off: it fails identically every sweep until the agent is resumed or released. Other
+  // probe errors keep retrying each sweep and restart the idle hour once they clear.
+  const failureBackoffs = new Map<string, { delayMs: number; retryAt: number }>();
+  function resetFailureBackoff(agentId: string) {
+    if (!failureBackoffs.delete(agentId)) return;
+    options.logger.info({ agentId }, "Idle runtime cleanup backoff reset");
+  }
+  function backingOff(agentId: string, timestamp: number): boolean {
+    const failure = failureBackoffs.get(agentId);
+    return failure !== undefined && timestamp < failure.retryAt;
+  }
+  function recordFailure(agentId: string, error: unknown, timestamp: number) {
+    if (!isStaleProviderSessionError(error)) {
+      options.logger.warn({ agentId, err: error }, "Idle runtime cleanup failed");
+      return;
+    }
+    const failure = failureBackoffs.get(agentId);
+    const delayMs = failure
+      ? Math.min(failure.delayMs * 2, CLEANUP_FAILURE_BACKOFF_MAX_MS)
+      : CLEANUP_FAILURE_BACKOFF_MIN_MS;
+    failureBackoffs.set(agentId, { delayMs, retryAt: timestamp + delayMs });
+    options.logger[failure ? "debug" : "warn"](
+      { agentId, err: error },
+      "Idle runtime cleanup failed",
+    );
+    options.logger.info({ agentId, delayMs }, "Idle runtime cleanup backing off after a failure");
+  }
 
   function familyOf(root: RuntimeCleanupCandidate, runtimes: readonly RuntimeCleanupCandidate[]) {
     const family = new Map([[root.agentId, root]]);
@@ -80,10 +113,13 @@ export function createIdleRuntimeCleanup(options: Options) {
     for (const runtime of runtimes) {
       if (!isCurrent()) break;
       if (!runtime.sessionId) continue;
+      if (backingOff(runtime.agentId, timestamp)) continue;
       const family = familyOf(runtime, runtimes);
       try {
         const allowed = baselineAllows(family) && (await providersAllow(family, isCurrent));
         if (!isCurrent()) break;
+        // The probe answered, so the runtime is reachable again.
+        resetFailureBackoff(runtime.agentId);
         if (!allowed) {
           protectedAt.set(runtime.identity, { at: timestamp, protected: true });
           options.logger.debug(
@@ -126,10 +162,7 @@ export function createIdleRuntimeCleanup(options: Options) {
         if (!isCurrent()) break;
         protectedAt.set(runtime.identity, { at: timestamp, protected: true });
         result.failures.push({ agentId: runtime.agentId, error });
-        options.logger.warn(
-          { agentId: runtime.agentId, err: error },
-          "Idle runtime cleanup failed",
-        );
+        recordFailure(runtime.agentId, error, timestamp);
       }
     }
     return result;
