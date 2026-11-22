@@ -24,8 +24,40 @@ import type {
   LocalSpeechWorkerToParentMessage,
 } from "./worker-protocol.js";
 import { bufferToWorkerBytes, workerBytesToBuffer } from "./worker-bytes.js";
+import {
+  SpeechProviderError,
+  isSpeechProviderError,
+  isSpeechProviderErrorCode,
+} from "../speech-provider-error.js";
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
+/**
+ * Requests other than session starts fail only after the worker has sent nothing at all for
+ * this long; any message restarts the timer. Native decodes run off the worker's JavaScript
+ * thread, so a healthy worker answers within moments even while decoding, and a worker silent
+ * this long is wedged. It also exceeds the longest single decode measured (55 seconds for
+ * whisper-turbo on efficiency cores), for a binding without an async decode.
+ */
+const DEFAULT_REQUEST_TIMEOUT_MS = 60000;
+/**
+ * Bound for starting a session kind the worker has already built. A warm start does no model
+ * work and the worker's thread is free during decodes, so measured warm starts take well under
+ * a second.
+ */
+const SESSION_START_WARM_TIMEOUT_MS = 8000;
+/**
+ * Bound for the first start of a session kind on a worker, which includes spawning the worker
+ * and loading the recognizer. Host logs show 1.1 to 2.7 seconds for this (whisper-turbo,
+ * parakeet), and loading whisper-turbo in-process took 0.7 to 3.6 seconds at load averages of 17
+ * to 24.
+ */
+const SESSION_START_COLD_TIMEOUT_MS = 20000;
+/**
+ * The whole start, including one retry on a fresh worker, finishes within this budget so the
+ * failure reaches the client before its own 30 second start wait gives up.
+ */
+const SESSION_START_BUDGET_MS = 28000;
+/** A retry with less of the budget left than this would only fail late; give up instead. */
+const SESSION_START_MIN_RETRY_MS = 3000;
 const DEFAULT_IDLE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_LOCAL_SAMPLE_RATE = 16000;
 const STDERR_TAIL_MAX_CHARS = 8000;
@@ -53,6 +85,8 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
+  /** Set when the request's timer restarts on any message from the worker. */
+  restartTimer?: () => void;
   type: LocalSpeechWorkerRequest["type"];
   summary: Record<string, unknown>;
   startedAt: number;
@@ -62,6 +96,9 @@ interface LocalSpeechWorkerClientOptions {
   config: LocalSpeechWorkerConfig;
   logger: pino.Logger;
   requestTimeoutMs?: number;
+  sessionStartBudgetMs?: number;
+  sessionStartWarmTimeoutMs?: number;
+  sessionStartColdTimeoutMs?: number;
   idleTtlMs?: number;
   forkWorker?: () => LocalSpeechWorkerProcess;
 }
@@ -178,6 +215,9 @@ export class LocalSpeechWorkerClient {
   private readonly config: LocalSpeechWorkerConfig;
   private readonly logger: pino.Logger;
   private readonly requestTimeoutMs: number;
+  private readonly sessionStartBudgetMs: number;
+  private readonly sessionStartWarmTimeoutMs: number;
+  private readonly sessionStartColdTimeoutMs: number;
   private readonly idleTtlMs: number;
   private readonly forkWorker: () => LocalSpeechWorkerProcess;
   private readonly pendingRequests = new Map<string, PendingRequest>();
@@ -189,12 +229,26 @@ export class LocalSpeechWorkerClient {
   private stderrLineBuffer = "";
   private inFlightRequests = 0;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly intentionalWorkerCloses = new WeakSet<LocalSpeechWorkerProcess>();
+  /** Workers stopped on purpose, with the reason logged when their close arrives. */
+  private readonly intentionalWorkerCloses = new WeakMap<LocalSpeechWorkerProcess, string>();
+  /** Sessions whose start is still in progress; worker failures are reported through the start. */
+  private readonly connectingSessionIds = new Set<string>();
+  /** Session kinds the current worker has already built, so later starts get the warm bound. */
+  private workerSessionKinds = new Set<LocalSpeechSessionKind>();
+  /** When the current worker spawned or last sent anything; long silence means it is wedged. */
+  private lastWorkerActivityAt = 0;
+  /** `session.create` requests that timed out; a late success must close the session it made. */
+  private readonly abandonedSessionCreates = new Map<string, string>();
 
   constructor(options: LocalSpeechWorkerClientOptions) {
     this.config = options.config;
     this.logger = options.logger.child({ component: "local-speech-worker-client" });
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.sessionStartBudgetMs = options.sessionStartBudgetMs ?? SESSION_START_BUDGET_MS;
+    this.sessionStartWarmTimeoutMs =
+      options.sessionStartWarmTimeoutMs ?? SESSION_START_WARM_TIMEOUT_MS;
+    this.sessionStartColdTimeoutMs =
+      options.sessionStartColdTimeoutMs ?? SESSION_START_COLD_TIMEOUT_MS;
     this.idleTtlMs = options.idleTtlMs ?? DEFAULT_IDLE_TTL_MS;
     this.forkWorker = options.forkWorker ?? forkLocalSpeechWorker;
   }
@@ -226,21 +280,171 @@ export class LocalSpeechWorkerClient {
     emitter: EventEmitter,
   ): Promise<{ sessionId: string; requiredSampleRate: number }> {
     const sessionId = randomUUID();
-    this.activeSessionIds.add(sessionId);
-    this.sessionEmitters.set(sessionId, emitter);
+    const deadline = Date.now() + this.sessionStartBudgetMs;
+    this.connectingSessionIds.add(sessionId);
     try {
-      const result = await this.sendRequest<LocalSpeechCreateSessionResult>({
-        type: "session.create",
-        config: this.config,
-        sessionId,
-        kind,
-      });
-      return { sessionId, requiredSampleRate: result.requiredSampleRate };
+      for (let attempt = 1; ; attempt++) {
+        // A teardown or exit during the previous attempt clears session bookkeeping.
+        this.activeSessionIds.add(sessionId);
+        this.sessionEmitters.set(sessionId, emitter);
+        const outcome = await this.attemptSessionCreate(kind, sessionId, attempt, deadline);
+        if (outcome.ok) {
+          return { sessionId, requiredSampleRate: outcome.result.requiredSampleRate };
+        }
+        if (!outcome.retry) {
+          throw outcome.error;
+        }
+      }
     } catch (err) {
       this.activeSessionIds.delete(sessionId);
       this.sessionEmitters.delete(sessionId);
       this.scheduleIdleShutdownIfReady();
       throw err;
+    } finally {
+      this.connectingSessionIds.delete(sessionId);
+    }
+  }
+
+  /**
+   * Starts a session once. A start that fails because the worker is unusable (timed out while
+   * unresponsive, exited, or unreachable) tears that worker down and asks for one retry on a
+   * fresh worker, if enough of the start budget remains. A worker serving other sessions is
+   * never killed for a slow start unless it has also been silent for the whole request timeout,
+   * the same silence that fails its other requests.
+   */
+  private async attemptSessionCreate(
+    kind: LocalSpeechSessionKind,
+    sessionId: string,
+    attempt: number,
+    deadline: number,
+  ): Promise<
+    | { ok: true; result: LocalSpeechCreateSessionResult }
+    | { ok: false; retry: boolean; error: Error }
+  > {
+    const sentAt = Date.now();
+    const minRetryMs = Math.min(SESSION_START_MIN_RETRY_MS, this.sessionStartBudgetMs / 4);
+    const canRetry = () => attempt === 1 && deadline - Date.now() >= minRetryMs;
+    let worker: LocalSpeechWorkerProcess;
+    try {
+      worker = this.ensureWorker();
+    } catch (err) {
+      const error = new SpeechProviderError(
+        "speech_unavailable",
+        `Local speech worker could not start: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
+      );
+      this.logger.warn(
+        { err: error, requestType: "session.create", kind, attempt, retry: canRetry() },
+        "Local speech worker spawn failed",
+      );
+      return { ok: false, retry: canRetry(), error };
+    }
+    const workerPid = this.workerPid;
+    const otherWork = this.hasOtherWork(sessionId);
+    const cold = !this.workerSessionKinds.has(kind);
+    const timeoutMs = Math.max(
+      1,
+      Math.min(
+        cold ? this.sessionStartColdTimeoutMs : this.sessionStartWarmTimeoutMs,
+        deadline - sentAt,
+      ),
+    );
+
+    try {
+      const result = await this.sendRequest<LocalSpeechCreateSessionResult>(
+        { type: "session.create", config: this.config, sessionId, kind },
+        {
+          timeoutMs,
+          logTimeout: false,
+          onTimeout: (requestId) => this.abandonedSessionCreates.set(requestId, sessionId),
+        },
+      );
+      if (this.worker === worker) {
+        this.workerSessionKinds.add(kind);
+      }
+      return { ok: true, result };
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      const code = isSpeechProviderError(error) ? error.code : null;
+      const elapsedMs = Date.now() - sentAt;
+      const context = { workerPid, requestType: "session.create", kind, attempt, elapsedMs };
+
+      if (code === "speech_worker_timeout") {
+        const silentMs = Date.now() - this.lastWorkerActivityAt;
+        const busy = otherWork && this.worker === worker && silentMs < this.requestTimeoutMs;
+        if (busy) {
+          this.logger.warn(
+            { ...context, timeoutMs, silentMs, retry: false, workerState: "busy" },
+            "Local speech session start timed out behind other work; keeping the worker",
+          );
+          return { ok: false, retry: false, error };
+        }
+        this.logger.warn(
+          { ...context, timeoutMs, silentMs, retry: canRetry(), workerState: "unresponsive" },
+          "Local speech session start timed out; replacing the worker",
+        );
+        this.teardownWorker(worker, "session.create timed out", sessionId);
+        return { ok: false, retry: canRetry(), error };
+      }
+      if (code === "speech_worker_exited" || code === "speech_unavailable") {
+        this.logger.warn(
+          { ...context, err: error, retry: canRetry() },
+          "Local speech session start failed because the worker is unusable",
+        );
+        return { ok: false, retry: canRetry(), error };
+      }
+      // The worker answered with an error, such as a missing model; a new worker would too.
+      return { ok: false, retry: false, error };
+    }
+  }
+
+  private hasOtherWork(sessionId: string): boolean {
+    for (const activeId of this.activeSessionIds) {
+      if (activeId !== sessionId) {
+        return true;
+      }
+    }
+    return this.pendingRequests.size > 0;
+  }
+
+  /**
+   * Replaces an unresponsive worker. Its pending requests and its other sessions fail with
+   * `speech_worker_timeout`, because they were waiting on the same unresponsive process.
+   */
+  private teardownWorker(
+    worker: LocalSpeechWorkerProcess,
+    reason: string,
+    retainedSessionId: string | null,
+  ): void {
+    if (this.worker !== worker) {
+      return;
+    }
+    const error = new SpeechProviderError(
+      "speech_worker_timeout",
+      `Local speech worker stopped responding (${reason})`,
+    );
+    const failedSessionIds = Array.from(this.activeSessionIds).filter(
+      (id) => id !== retainedSessionId && !this.connectingSessionIds.has(id),
+    );
+    this.logger.warn(
+      {
+        workerPid: this.workerPid,
+        reason,
+        pendingRequests: this.describePendingRequests(),
+        failedSessionCount: failedSessionIds.length,
+      },
+      "Tearing down unresponsive local speech worker",
+    );
+    const emitters = failedSessionIds.map((id) => [id, this.sessionEmitters.get(id)] as const);
+    for (const id of failedSessionIds) {
+      this.activeSessionIds.delete(id);
+      this.sessionEmitters.delete(id);
+    }
+    this.stopWorker(error, reason);
+    for (const [id, emitter] of emitters) {
+      if (emitter) {
+        this.emitErrorIfObserved(id, emitter, error);
+      }
     }
   }
 
@@ -288,15 +492,24 @@ export class LocalSpeechWorkerClient {
   }
 
   shutdown(): void {
-    this.clearIdleTimer();
-    this.rejectAllPending(new Error("Local speech worker shut down"));
     this.activeSessionIds.clear();
     this.sessionEmitters.clear();
+    this.stopWorker(
+      new SpeechProviderError("speech_unavailable", "Local speech worker shut down"),
+      "shutdown",
+    );
+  }
+
+  /** Stops the current worker as an intentional close and rejects its pending requests. */
+  private stopWorker(error: Error, reason: string): void {
+    this.clearIdleTimer();
+    this.rejectAllPending(error);
+    this.inFlightRequests = 0;
     const worker = this.worker;
     this.worker = null;
     this.workerPid = null;
     if (worker && !worker.killed) {
-      this.intentionalWorkerCloses.add(worker);
+      this.intentionalWorkerCloses.set(worker, reason);
       try {
         worker.disconnect();
       } catch {
@@ -310,29 +523,81 @@ export class LocalSpeechWorkerClient {
     }
   }
 
-  private sendRequest<T = void>(input: LocalSpeechWorkerRequestInput): Promise<T> {
-    const worker = this.ensureWorker();
+  private sendRequest<T = void>(
+    input: LocalSpeechWorkerRequestInput,
+    options: {
+      timeoutMs?: number;
+      logTimeout?: boolean;
+      onTimeout?: (requestId: string) => void;
+    } = {},
+  ): Promise<T> {
+    let worker: LocalSpeechWorkerProcess;
+    try {
+      worker = this.ensureWorker();
+    } catch (err) {
+      return Promise.reject(
+        new SpeechProviderError(
+          "speech_unavailable",
+          `Local speech worker could not start: ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
+        ),
+      );
+    }
     const requestId = randomUUID();
     const message = { ...input, requestId } as LocalSpeechWorkerRequest;
     const requestSummary = summarizeWorkerRequest(message);
+    // Session starts carry a fixed bound; every other request waits while the worker shows life.
+    const restartsOnActivity = options.timeoutMs === undefined;
+    const timeoutMs = options.timeoutMs ?? this.requestTimeoutMs;
     this.inFlightRequests++;
     this.clearIdleTimer();
 
     return new Promise<T>((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      const startedAt = Date.now();
+      const onTimeout = () => {
         this.pendingRequests.delete(requestId);
         this.inFlightRequests = Math.max(0, this.inFlightRequests - 1);
+        options.onTimeout?.(requestId);
+        if (options.logTimeout !== false) {
+          this.logger.warn(
+            {
+              workerPid: worker.pid ?? null,
+              requestId,
+              requestType: input.type,
+              elapsedMs: Date.now() - startedAt,
+              retry: false,
+              ...requestSummary,
+            },
+            "Local speech worker request timed out",
+          );
+        }
         this.scheduleIdleShutdownIfReady();
-        reject(new Error(`Local speech worker request timed out: ${input.type}`));
-      }, this.requestTimeoutMs);
-      this.pendingRequests.set(requestId, {
+        reject(
+          new SpeechProviderError(
+            "speech_worker_timeout",
+            `Local speech worker request timed out: ${input.type}`,
+          ),
+        );
+        if (restartsOnActivity) {
+          // The worker sent nothing for the whole timeout while it had work: it is wedged.
+          this.teardownWorker(worker, `${input.type} got no reply`, null);
+        }
+      };
+      const entry: PendingRequest = {
         resolve: (value) => resolve(value as T),
         reject,
-        timeout,
+        timeout: setTimeout(onTimeout, timeoutMs),
         type: message.type,
         summary: requestSummary,
-        startedAt: Date.now(),
-      });
+        startedAt,
+      };
+      if (restartsOnActivity) {
+        entry.restartTimer = () => {
+          clearTimeout(entry.timeout);
+          entry.timeout = setTimeout(onTimeout, timeoutMs);
+        };
+      }
+      this.pendingRequests.set(requestId, entry);
 
       worker.send(message, (error) => {
         if (!error) {
@@ -346,7 +611,9 @@ export class LocalSpeechWorkerClient {
         this.pendingRequests.delete(requestId);
         this.inFlightRequests = Math.max(0, this.inFlightRequests - 1);
         this.scheduleIdleShutdownIfReady();
-        pending.reject(error);
+        pending.reject(
+          new SpeechProviderError("speech_unavailable", error.message, { cause: error }),
+        );
       });
     });
   }
@@ -355,9 +622,14 @@ export class LocalSpeechWorkerClient {
     if (this.worker && !this.worker.killed && this.worker.connected) {
       return this.worker;
     }
+    const replacedWorker = this.worker !== null;
     const worker = this.forkWorker();
     this.worker = worker;
     this.workerPid = worker.pid ?? null;
+    this.workerSessionKinds = new Set();
+    this.lastWorkerActivityAt = Date.now();
+    // Abandoned starts belonged to the previous worker, which is gone.
+    this.abandonedSessionCreates.clear();
     this.stderrTail = "";
     this.stderrLineBuffer = "";
     this.logger.info(
@@ -367,11 +639,12 @@ export class LocalSpeechWorkerClient {
         voiceSttModel: this.config.voiceSttModel,
         dictationSttModel: this.config.dictationSttModel,
         voiceTtsModel: this.config.voiceTtsModel,
+        replacedWorker,
       },
       "Local speech worker spawned",
     );
     worker.stderr?.on("data", (chunk: Buffer | string) => this.handleWorkerStderr(chunk));
-    worker.on("message", (message) => this.handleWorkerMessage(message));
+    worker.on("message", (message) => this.handleWorkerMessage(worker, message));
     worker.on("close", (code, signal) => this.handleWorkerExit(worker, code, signal));
     return worker;
   }
@@ -395,10 +668,22 @@ export class LocalSpeechWorkerClient {
     }
   }
 
-  private handleWorkerMessage(message: LocalSpeechWorkerToParentMessage): void {
+  private handleWorkerMessage(
+    worker: LocalSpeechWorkerProcess,
+    message: LocalSpeechWorkerToParentMessage,
+  ): void {
+    if (this.worker !== worker) {
+      // A replaced worker's late messages must not touch the new worker's sessions.
+      return;
+    }
+    this.lastWorkerActivityAt = Date.now();
+    for (const pending of this.pendingRequests.values()) {
+      pending.restartTimer?.();
+    }
     if (isResponse(message)) {
       const pending = this.pendingRequests.get(message.requestId);
       if (!pending) {
+        this.closeAbandonedSession(message);
         return;
       }
       clearTimeout(pending.timeout);
@@ -431,7 +716,16 @@ export class LocalSpeechWorkerClient {
         emitter.emit("speech_stopped");
         return;
       case "session.error":
-        emitter.emit("error", new Error(message.error));
+        emitter.emit(
+          "error",
+          new SpeechProviderError(
+            isSpeechProviderErrorCode(message.code) ? message.code : "speech_decode_failed",
+            message.error,
+          ),
+        );
+        return;
+      case "session.progress":
+        emitter.emit("progress", message.payload);
         return;
     }
   }
@@ -442,7 +736,8 @@ export class LocalSpeechWorkerClient {
     signal: NodeJS.Signals | null,
   ): void {
     const wasCurrentWorker = this.worker === worker;
-    const wasIntentionalClose = this.intentionalWorkerCloses.has(worker);
+    const intentionalCloseReason = this.intentionalWorkerCloses.get(worker);
+    const wasIntentionalClose = intentionalCloseReason !== undefined;
     this.intentionalWorkerCloses.delete(worker);
     const workerPid = worker.pid ?? (wasCurrentWorker ? this.workerPid : null);
     const pendingRequests = this.describePendingRequests();
@@ -453,6 +748,7 @@ export class LocalSpeechWorkerClient {
       this.logger.info(
         {
           workerPid,
+          reason: intentionalCloseReason,
           code,
           signal,
           pendingRequests,
@@ -483,7 +779,8 @@ export class LocalSpeechWorkerClient {
       return;
     }
 
-    const error = new Error(
+    const error = new SpeechProviderError(
+      "speech_worker_exited",
       buildWorkerExitMessage({
         code,
         signal,
@@ -512,13 +809,35 @@ export class LocalSpeechWorkerClient {
     this.clearIdleTimer();
     this.rejectAllPending(error);
     for (const [sessionId, emitter] of this.sessionEmitters) {
-      if (this.activeSessionIds.has(sessionId)) {
+      // A session still starting learns about the exit from its start request instead.
+      if (this.activeSessionIds.has(sessionId) && !this.connectingSessionIds.has(sessionId)) {
         this.emitErrorIfObserved(sessionId, emitter, error, workerPid);
       }
     }
     this.activeSessionIds.clear();
     this.sessionEmitters.clear();
     this.inFlightRequests = 0;
+  }
+
+  /** A start that already timed out may still succeed in the worker; close what it created. */
+  private closeAbandonedSession(message: LocalSpeechWorkerResponse): void {
+    const sessionId = this.abandonedSessionCreates.get(message.requestId);
+    if (!sessionId) {
+      return;
+    }
+    this.abandonedSessionCreates.delete(message.requestId);
+    if (!message.ok || this.activeSessionIds.has(sessionId)) {
+      // Nothing was created, or a retry reused this session ID and now owns it.
+      return;
+    }
+    this.logger.warn(
+      { workerPid: this.workerPid, requestId: message.requestId, sessionId },
+      "Closing local speech session created after its start timed out",
+    );
+    void this.sendRequest({ type: "session.close", sessionId }).catch(() => {
+      // Best effort: the worker is replaced or shutting down.
+    });
+    this.scheduleIdleShutdownIfReady();
   }
 
   private describePendingRequests(): Array<Record<string, unknown>> {

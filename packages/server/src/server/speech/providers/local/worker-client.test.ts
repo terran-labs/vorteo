@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { fork, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import pino from "pino";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   LocalSpeechWorkerClient,
@@ -102,7 +102,13 @@ class PausedIpcWorker {
   }
 }
 
-function createClient(options?: { idleTtlMs?: number }) {
+function createClient(options?: {
+  idleTtlMs?: number;
+  requestTimeoutMs?: number;
+  sessionStartBudgetMs?: number;
+  sessionStartWarmTimeoutMs?: number;
+  sessionStartColdTimeoutMs?: number;
+}) {
   const workers: FakeLocalSpeechWorker[] = [];
   const client = new LocalSpeechWorkerClient({
     logger: pino({ level: "silent" }),
@@ -112,7 +118,10 @@ function createClient(options?: { idleTtlMs?: number }) {
       dictationSttModel: "parakeet-tdt-0.6b-v2-int8",
       voiceTtsModel: "kokoro-en-v0_19",
     },
-    requestTimeoutMs: 1000,
+    requestTimeoutMs: options?.requestTimeoutMs ?? 1000,
+    sessionStartBudgetMs: options?.sessionStartBudgetMs,
+    sessionStartWarmTimeoutMs: options?.sessionStartWarmTimeoutMs,
+    sessionStartColdTimeoutMs: options?.sessionStartColdTimeoutMs,
     idleTtlMs: options?.idleTtlMs ?? 1000,
     forkWorker: () => {
       const worker = new FakeLocalSpeechWorker();
@@ -121,6 +130,14 @@ function createClient(options?: { idleTtlMs?: number }) {
     },
   });
   return { client, workers };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function sentOfType(worker: FakeLocalSpeechWorker, type: LocalSpeechWorkerRequest["type"]) {
+  return worker.sent.filter((request) => request.type === type);
 }
 
 function createCapturingLogger(): { logger: pino.Logger; records: Array<Record<string, unknown>> } {
@@ -295,10 +312,17 @@ describe("LocalSpeechWorkerClient", () => {
     const session = provider.createSession({ logger: pino({ level: "silent" }) });
 
     const connect = session.connect();
-    workers[0].emit("exit", null, "SIGABRT");
-    workers[0].stderr.emit("data", "dyld: Library not loaded: libsherpa-onnx-c-api.dylib");
-    workers[0].emit("close", null, "SIGABRT");
+    connect.catch(() => {});
+    // The start retries once on a fresh worker; both crash the same way.
+    for (let index = 0; index < 2; index++) {
+      await waitForMicrotasks();
+      workers[index].emit("exit", null, "SIGABRT");
+      workers[index].stderr.emit("data", "dyld: Library not loaded: libsherpa-onnx-c-api.dylib");
+      workers[index].emit("close", null, "SIGABRT");
+    }
 
+    expect(workers).toHaveLength(2);
+    await expect(connect).rejects.toMatchObject({ code: "speech_worker_exited" });
     await expect(connect).rejects.toThrow(
       "Local speech worker exited (signal SIGABRT) while handling session.create (dictationStt). Last stderr: dyld: Library not loaded: libsherpa-onnx-c-api.dylib",
     );
@@ -394,5 +418,183 @@ describe("LocalSpeechWorkerClient", () => {
       format: "pcm;rate=24000",
     });
     await second;
+  });
+});
+
+describe("LocalSpeechWorkerClient session start recovery", () => {
+  const timeouts = {
+    requestTimeoutMs: 150,
+    sessionStartWarmTimeoutMs: 40,
+    sessionStartColdTimeoutMs: 40,
+  };
+
+  async function connectSession(
+    client: LocalSpeechWorkerClient,
+    worker: () => FakeLocalSpeechWorker,
+  ) {
+    const session = new WorkerBackedSpeechToTextProvider(client, "dictationStt").createSession({
+      logger: pino({ level: "silent" }),
+    });
+    const connect = session.connect();
+    const request = sentOfType(worker(), "session.create").at(-1)!;
+    worker().respond(request, { requiredSampleRate: 16000 });
+    await connect;
+    return { session: session as unknown as EventEmitter, request };
+  }
+
+  it("replaces a worker whose session start hangs and succeeds on the retry", async () => {
+    const { client, workers } = createClient(timeouts);
+    const session = new WorkerBackedSpeechToTextProvider(client, "dictationStt").createSession({
+      logger: pino({ level: "silent" }),
+    });
+
+    const connect = session.connect();
+    await vi.waitFor(() => expect(workers).toHaveLength(2), { timeout: 500 });
+    expect(workers[0].kills).toBe(1);
+    const retry = sentOfType(workers[1], "session.create")[0];
+    expect(retry.sessionId).toBe(sentOfType(workers[0], "session.create")[0].sessionId);
+    workers[1].respond(retry, { requiredSampleRate: 16000 });
+
+    await expect(connect).resolves.toBeUndefined();
+  });
+
+  it("gives up with speech_worker_timeout after one retry", async () => {
+    const { client, workers } = createClient(timeouts);
+    const session = new WorkerBackedSpeechToTextProvider(client, "dictationStt").createSession({
+      logger: pino({ level: "silent" }),
+    });
+
+    await expect(session.connect()).rejects.toMatchObject({
+      code: "speech_worker_timeout",
+      message: "Local speech worker request timed out: session.create",
+    });
+    await sleep(100);
+    expect(workers).toHaveLength(2);
+    expect(workers.every((worker) => worker.kills === 1)).toBe(true);
+  });
+
+  it("starts promptly on a warm healthy worker", async () => {
+    const { client, workers } = createClient(timeouts);
+    await connectSession(client, () => workers[0]);
+    await connectSession(client, () => workers[0]);
+
+    expect(workers).toHaveLength(1);
+    expect(workers[0].kills).toBe(0);
+  });
+
+  it("never kills a healthy slow worker for a start, and closes a start that answers late", async () => {
+    const { client, workers } = createClient(timeouts);
+    const active = await connectSession(client, () => workers[0]);
+    const activeErrors: Error[] = [];
+    active.session.on("error", (error: Error) => activeErrors.push(error));
+
+    const late = new WorkerBackedSpeechToTextProvider(client, "dictationStt").createSession({
+      logger: pino({ level: "silent" }),
+    });
+    const lateConnect = late.connect();
+    lateConnect.catch(() => {});
+    const lateRequest = sentOfType(workers[0], "session.create").at(-1)!;
+    // The worker says nothing while the new start waits, but it has not been silent for the
+    // whole request timeout, so it is slow, not dead.
+
+    await expect(lateConnect).rejects.toMatchObject({ code: "speech_worker_timeout" });
+    expect(workers).toHaveLength(1);
+    expect(workers[0].kills).toBe(0);
+    expect(activeErrors).toEqual([]);
+
+    workers[0].respond(lateRequest, { requiredSampleRate: 16000 });
+    await waitForMicrotasks();
+    expect(sentOfType(workers[0], "session.close").map((request) => request.sessionId)).toEqual([
+      lateRequest.sessionId,
+    ]);
+  });
+
+  it("replaces a shared worker silent for the whole request timeout and fails its sessions", async () => {
+    const { client, workers } = createClient(timeouts);
+    const active = await connectSession(client, () => workers[0]);
+    const activeErrors: Error[] = [];
+    active.session.on("error", (error: Error) => activeErrors.push(error));
+    // Nothing at all from the worker for longer than the request timeout.
+    await sleep(timeouts.requestTimeoutMs + 20);
+
+    const next = new WorkerBackedSpeechToTextProvider(client, "dictationStt").createSession({
+      logger: pino({ level: "silent" }),
+    });
+    const nextConnect = next.connect();
+    await vi.waitFor(() => expect(workers).toHaveLength(2), { timeout: 500 });
+    workers[1].respond(sentOfType(workers[1], "session.create")[0], {
+      requiredSampleRate: 16000,
+    });
+
+    await expect(nextConnect).resolves.toBeUndefined();
+    expect(workers[0].kills).toBe(1);
+    expect(activeErrors).toHaveLength(1);
+    expect(activeErrors[0]).toMatchObject({ code: "speech_worker_timeout" });
+  });
+
+  it("keeps the whole start, retry included, within the start budget", async () => {
+    const { client, workers } = createClient({
+      ...timeouts,
+      sessionStartWarmTimeoutMs: 100,
+      sessionStartColdTimeoutMs: 100,
+      sessionStartBudgetMs: 150,
+    });
+    const session = new WorkerBackedSpeechToTextProvider(client, "dictationStt").createSession({
+      logger: pino({ level: "silent" }),
+    });
+
+    const startedAt = Date.now();
+    await expect(session.connect()).rejects.toMatchObject({ code: "speech_worker_timeout" });
+    expect(Date.now() - startedAt).toBeLessThan(250);
+    expect(workers).toHaveLength(2);
+  });
+
+  it("keeps requests alive while the worker reports progress and forwards it to the session", async () => {
+    const { client, workers } = createClient({ ...timeouts, requestTimeoutMs: 60 });
+    const active = await connectSession(client, () => workers[0]);
+    const progress: unknown[] = [];
+    active.session.on("progress", (event) => progress.push(event));
+
+    const synthesize = client.synthesizeSpeech("queued behind decoding");
+    const request = sentOfType(workers[0], "tts.synthesize")[0];
+    // Decodes keep completing for well past the inactivity bound.
+    for (let decoded = 1; decoded <= 5; decoded++) {
+      await sleep(40);
+      workers[0].emitWorkerMessage({
+        type: "session.progress",
+        sessionId: active.request.sessionId,
+        payload: { decodedSegments: decoded, pendingSegments: 5 - decoded, pendingAudioMs: 0 },
+      });
+    }
+    workers[0].respond(request, {
+      audio: bufferToWorkerBytes(Buffer.from([1])),
+      format: "pcm;rate=24000",
+    });
+
+    await expect(synthesize).resolves.toMatchObject({ format: "pcm;rate=24000" });
+    expect(progress.at(-1)).toEqual({ decodedSegments: 5, pendingSegments: 0, pendingAudioMs: 0 });
+  });
+
+  it("replaces a worker whose recognizer wedged and fails the session with a typed code", async () => {
+    const { client, workers } = createClient(timeouts);
+    const active = await connectSession(client, () => workers[0]);
+    const errors: Array<Error & { code?: string }> = [];
+    active.session.on("error", (error: Error) => errors.push(error));
+
+    // The worker reports the overrun decode, then exits because the recognizer is stuck.
+    workers[0].emitWorkerMessage({
+      type: "session.error",
+      sessionId: active.request.sessionId,
+      error: "Local speech decode did not finish within 120 s",
+      code: "speech_worker_timeout",
+    });
+    workers[0].emit("close", 75, null);
+    expect(errors.map((error) => error.code)).toEqual([
+      "speech_worker_timeout",
+      "speech_worker_exited",
+    ]);
+
+    await connectSession(client, () => workers[1]);
+    expect(workers).toHaveLength(2);
   });
 });
