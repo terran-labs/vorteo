@@ -4938,6 +4938,11 @@ export class AgentManager {
     }
     this.cancelRunningProviderSubagents(agentId);
     const closedAgent = this.prepareAgentForClosure(agent, "agent closed");
+    // Kept, a native thread's partial timeline (its history read failed or never ran) would
+    // register as primed on the next resume, skip hydration and then pass as complete to saved
+    // reads. Its rows are in the transcript, so dropping it makes that resume hydrate. Threads
+    // without a native session keep theirs: it is their only copy (6531c0a6d).
+    if (!agent.historyPrimed && agent.persistence?.sessionId) this.timelineStore.delete(agentId);
 
     let persistError: unknown;
     try {
@@ -7971,9 +7976,11 @@ export class AgentManager {
   ): ManagedAgentClosed {
     this.agentStreamCoalescer.flushAndDiscard(agent.id);
     // A timeline whose history read failed or never ran is partial; saved reads use the transcript.
-    if (agent.historyPrimed && this.timelineStore.has(agent.id))
+    if (agent.historyPrimed && this.timelineStore.has(agent.id)) {
       this.completeRetainedTimelines.add(agent.id);
-    else this.completeRetainedTimelines.delete(agent.id);
+    } else {
+      this.completeRetainedTimelines.delete(agent.id);
+    }
     this.agents.delete(agent.id);
     this.previousStatuses.delete(agent.id);
     if (agent.unsubscribeSession) {

@@ -3076,6 +3076,14 @@ test("timeline reads of a thread closed in this process keep its live epoch", as
   expect(transcript?.entries).toMatchObject([
     { item: { type: "assistant_message", text: "Transcript answer" } },
   ]);
+
+  // Resumed again without a history read, the partial timeline must not pass as complete.
+  await manager.resumeAgentFromPersistence(partial.persistence, { cwd: partial.cwd }, partial.id);
+  expect(manager.getAgent(partial.id)?.historyPrimed).toBe(false);
+  const resumedEpoch = manager.fetchTimeline(partial.id).epoch;
+  await manager.closeAgent(partial.id);
+  expect((await read(partial.id))?.epoch).not.toBe(resumedEpoch);
+  expect(readHistory).toHaveBeenCalledTimes(2);
 });
 
 // Only Claude and Codex transcripts replay in full without resuming. OpenCode refuses passive
