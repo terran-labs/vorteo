@@ -209,4 +209,18 @@ describe("DictationRecordingStore", () => {
     expect((await store.findPending("new"))?.segments).toEqual(["b".repeat(6)]);
     expect(await store.findPending("old")).toBeNull();
   });
+
+  it("never drops the recording being retained, even when it alone exceeds the budget", async () => {
+    const store = new DictationRecordingStore(null, { maxBytes: 100 });
+    const events: DictationRecordingStoreEvent[] = [];
+    store.subscribe((event) => events.push(event));
+    store.retainInMemory("long", {
+      segments: ["x".repeat(120)],
+      createdAt: 1,
+      format: FORMAT,
+      storedId: null,
+    });
+    expect(events).toEqual([]);
+    expect((await store.findPending("long"))?.segments).toEqual(["x".repeat(120)]);
+  });
 });

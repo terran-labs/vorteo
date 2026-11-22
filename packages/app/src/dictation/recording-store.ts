@@ -320,17 +320,19 @@ export class DictationRecordingStore {
       this.active.add(recording.storedId);
     }
     const list = this.retained.get(scope) ?? [];
-    list.push({ ...recording, retainedAt: this.now() });
+    const entry: RetainedEntry = { ...recording, retainedAt: this.now() };
+    list.push(entry);
     this.retained.set(scope, list);
-    this.boundRetained();
+    this.boundRetained(entry);
   }
 
   /**
    * Keeps memory-held audio within the same byte budget as the device store, dropping the
    * oldest first. Every drop is reported as an eviction, so the owner is told; a dropped entry's
-   * partial device row is released and stays on the device.
+   * partial device row is released and stays on the device. The entry being retained now is
+   * never dropped: it is that recording's only copy, so retention may exceed the budget by it.
    */
-  private boundRetained(): void {
+  private boundRetained(justRetained: RetainedEntry): void {
     const entries: { scope: string; entry: RetainedEntry; bytes: number }[] = [];
     let total = 0;
     for (const [scope, list] of this.retained) {
@@ -344,6 +346,9 @@ export class DictationRecordingStore {
     for (const { scope, entry, bytes } of entries) {
       if (total <= this.maxBytes) {
         return;
+      }
+      if (entry === justRetained) {
+        continue;
       }
       this.dropRetained(scope, entry, "space");
       total -= bytes;
