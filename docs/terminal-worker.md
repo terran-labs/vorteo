@@ -93,7 +93,7 @@ These restarts keep terminals:
 - crash restarts;
 - worker restarts: `restart_server`, Dev installs, Host installs that wait for idle, held restarts;
 - `daemon stop --keep-terminals`;
-- a Host source update with immediate replacement on a launchd (macOS) Host, once the installation coordinator carries the change. The coordinator keeps terminals only when both the candidate and the previous release re-link and the running daemon answered before the restart. A systemd Host still closes them, because the unit's default `KillMode` stops the detached terminal worker with the unit. It sends the shutdown RPC with `keepTerminals`, then starts the service again, and falls back to `kickstart -k` and says so in its receipt ([execution installation](execution-installation.md#reviewed-source-updates)).
+- a Host source update with immediate replacement on a launchd (macOS) Host, once the installation coordinator carries the change. The coordinator sends the shutdown RPC with `keepTerminals`, then starts the service again with `kickstart`. It does this only when both the candidate and the previous release re-link and the running daemon answered before the restart; otherwise it falls back to `kickstart -k` and says so in its receipt ([execution installation](execution-installation.md#reviewed-source-updates)). A systemd Host still closes terminals, because the unit's default `KillMode` stops the detached terminal worker with the unit.
 
 These close them:
 
@@ -106,7 +106,7 @@ These close them:
 
 A service's own Stop always kills its terminal.
 
-**The supervisor must carry the flag.** A worker restart keeps terminals only if the running supervisor forwards `keepTerminals` to the worker's graceful shutdown. A supervisor started before that support, like the Dev supervisor running since Nov 17, 2026, sends the shutdown without it. The worker then closes its terminals on every restart until that supervisor is replaced. Check its `Restart requested` log line: current supervisors write `keepTerminals` on it.
+**The supervisor must carry the flag.** A worker restart keeps terminals only if the running supervisor forwards `keepTerminals` to the worker's graceful shutdown. A supervisor started before that support sends the shutdown without it. The worker then closes its terminals on every restart until that supervisor is replaced. Check its `Restart requested` log line: current supervisors write `keepTerminals` on it.
 
 **Worker code reaches a long-lived worker only through a protocol bump.** Installs no longer replace the terminal worker, so it can outlive many releases. A change to worker behavior, such as a new launch marker field, reaches a running worker only when it exits on its own (no controller and no terminals), or when `TERMINAL_WORKER_PROTOCOL_VERSION` is bumped. A bumped daemon adopts the old worker to drain, so its terminals keep running, and starts new terminals in a new worker.
 
