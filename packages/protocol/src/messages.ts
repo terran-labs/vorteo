@@ -401,6 +401,19 @@ export {
   type DaemonTimeZone,
 } from "./installation-settings.js";
 
+/**
+ * The preset fence (#360): how the daemon treats agent launches and changes outside a
+ * coordinator's worker preset. "report" logs; "enforce" refuses, except for the paths listed in
+ * `report`, which keep logging. Unknown path names are kept so older daemons never refuse.
+ */
+export const PresetFencePolicySchema = z
+  .object({
+    mode: z.enum(["report", "enforce"]),
+    report: z.array(z.string().min(1).max(64)).max(32).optional(),
+  })
+  .strict();
+export type PresetFencePolicy = z.infer<typeof PresetFencePolicySchema>;
+
 export const MutableDaemonConfigSchema = z
   .object({
     // COMPAT(relayConfig): added in v0.2.6, remove after 2027-01-31 when old daemons are unsupported.
@@ -514,6 +527,10 @@ export const MutableDaemonConfigPatchSchema = z
     // COMPAT(accountQuotaPolicy): added 2026-11-20. null clears the stored policy; the daemon
     // accepts only the bounded version 1 shape.
     accountQuotaPolicy: AccountQuotaPolicyWireSchema.nullable().optional(),
+    // COMPAT(presetFenceSetting): added 2026-11-23. Write-only: the daemon accepts it only from
+    // the owner's app, saves it outside config.json and applies it at the next daemon restart.
+    // It never appears in the returned config. null clears it (report-only).
+    presetFence: PresetFencePolicySchema.nullable().optional(),
   })
   .partial()
   .passthrough();
@@ -2646,6 +2663,9 @@ export const AgentProfileSwitchRequestMessageSchema = z.object({
       projectId: z.string().optional(),
     })
     .optional(),
+  // COMPAT(presetFenceSetting): added 2026-11-23. The CLI names the agent whose shell runs it,
+  // from PASEO_AGENT_ID; the daemon checks that caller against the preset fence. Self-declared.
+  callerAgentId: z.string().optional(),
   requestId: z.string(),
 });
 
@@ -4447,6 +4467,7 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(accountQuotaPolicy): added 2026-11-20, retain until 2027-05-20. The daemon
         // stores and returns `accountQuotaPolicy`; it does not enforce floors or pool membership.
         accountQuotaPolicy: z.boolean().optional(),
+        presetFenceSetting: z.boolean().optional(),
         // COMPAT(restartRecovery): added in v0.14.0, remove gate after 2027-04-28.
         resumeOnStartupSetting: z.boolean().optional(),
         // COMPAT(terminalRestoreModes): added in v0.1.81, remove gate after 2026-11-23.

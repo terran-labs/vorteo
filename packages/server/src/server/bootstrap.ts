@@ -291,6 +291,7 @@ import { workspaceIdsOnCheckout } from "./workspace-directory.js";
 import { configureGitProcessPolicy } from "../utils/run-git-command.js";
 import { resolveGitProcessPolicy } from "../utils/git-process-scheduler.js";
 import { resolveFirstAgentPromptTitle } from "./agent/create-agent-title.js";
+import { loadStartupPresetFencePolicy } from "./agent/lead-launch/fence-policy.js";
 import {
   createAgentCommand,
   startConfirmedLeadLaunch,
@@ -1599,6 +1600,9 @@ export async function createPaseoDaemon(
   agentManager.setLeadLauncher((confirmed, record) =>
     startConfirmedLeadLaunch(createAgentCommandDependencies, confirmed, record),
   );
+  agentManager.startLeadLaunchExpiry();
+  // The preset fence policy is read once and fixed for this process (#360); see fence-policy.ts.
+  await loadStartupPresetFencePolicy(config.paseoHome, logger);
   const archiveWorkspaceByIdExternal = (workspaceId: string, requestId: string) =>
     archiveByScope(
       {
