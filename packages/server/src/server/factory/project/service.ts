@@ -216,7 +216,8 @@ class ProjectFactoryError extends Error {
 /**
  * Per-project Factory: five standing role workspaces, each with one chartered agent and one
  * heartbeat. Enable is idempotent across reruns and restarts: role agents are found by the
- * state file, then by their role label, then by adoption, and only then created.
+ * state file, then by their role label (never for the Foreman), then by adoption, and only then
+ * created.
  *
  * Heartbeats are timers this service owns rather than entries in Schedules. The schedule
  * service has no precondition hook or daemon-callback target, and its quota-governed path
@@ -1250,6 +1251,29 @@ export class ProjectFactoryService {
   }
 
   /** Binds or creates one role. Returns its workspace ID when its membership was set. */
+  /**
+   * A role's agent recovered by its role label when the state file lost it. Never the Foreman:
+   * its role record is what the Factory stage rule trusts (#360, decision O7), so only the
+   * daemon's own creation or the owner's adopt may name it. The label is reserved, but that rests
+   * on the self-declared client type (#525). A labelled thread passed over is logged so the owner
+   * can archive or adopt it.
+   */
+  private findByRoleLabel(
+    agents: StoredAgentRecord[],
+    projectId: string,
+    roleId: ProjectFactoryRoleId,
+    label: string,
+  ): StoredAgentRecord | null {
+    const labelled =
+      agents.find((candidate) => candidate.labels?.[PROJECT_FACTORY_ROLE_LABEL] === label) ?? null;
+    if (!labelled || roleId !== "factory-intake") return labelled;
+    this.logger.warn(
+      { projectId, role: roleId, agentId: labelled.id },
+      "Factory did not adopt a thread by its Foreman label",
+    );
+    return null;
+  }
+
   private async ensureRole(
     record: PersistedProjectRecord,
     role: ProjectFactoryRole,
@@ -1266,9 +1290,7 @@ export class ProjectFactoryService {
     let adoptedNow = false;
     if (!agent) {
       const agents = await this.input.agentStorage.list();
-      agent =
-        agents.find((candidate) => candidate.labels?.[PROJECT_FACTORY_ROLE_LABEL] === label) ??
-        null;
+      agent = this.findByRoleLabel(agents, projectId, role.id, label);
       const adopted =
         agent ??
         (adoptId ? await this.input.agentStorage.get(adoptId) : null) ??

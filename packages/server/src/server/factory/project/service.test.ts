@@ -492,15 +492,21 @@ describe("enable", () => {
     expect(restarted.hasTimer(PROJECT, "factory-mechanic")).toBe(true);
   });
 
-  test("a lost state file reuses the labelled agents and their workspaces", async () => {
+  test("a lost state file reuses the labelled agents, but never adopts a Foreman by its label (#360)", async () => {
     const first = await enable();
     rmSync(projectFactoryStatePath(home));
     const recovered = await enable(service());
 
-    expect(agents.created).toBe(5);
-    expect(recovered.roles.map((role) => [role.agentId, role.workspaceId])).toEqual(
-      first.roles.map((role) => [role.agentId, role.workspaceId]),
-    );
+    // Only the Foreman is created again: its label alone is no proof it holds the role.
+    expect(agents.created).toBe(6);
+    const others = (state: typeof first) =>
+      state.roles
+        .filter((role) => role.role !== "factory-intake")
+        .map((role) => [role.agentId, role.workspaceId]);
+    expect(others(recovered)).toEqual(others(first));
+    const foreman = (state: typeof first) =>
+      state.roles.find((role) => role.role === "factory-intake")?.agentId;
+    expect(foreman(recovered)).not.toBe(foreman(first));
   });
 
   test("adopt binds an existing agent and its workspace without creating one", async () => {

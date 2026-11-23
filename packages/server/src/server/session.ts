@@ -198,6 +198,7 @@ import {
   type PresetFenceRequest,
 } from "./agent/lead-launch/fence.js";
 import { switchAgentProfileCommand } from "./agent/profile-switch/command.js";
+import { factoryOwnerOnlyFields } from "./factory/project/owner-writes.js";
 import { normalizeClientMessageId } from "./client-message-id.js";
 import { createAgentForMessage, AgentCreationRequestError } from "./agent/create-agent/requests.js";
 import { resolveCreateAgentIntent, type CreateAgentIntent } from "./agent/create-agent/intent.js";
@@ -3187,12 +3188,39 @@ export class Session {
   private dispatchPluginRpcMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     if (msg.type === "plugin.rpc.invoke.request") {
       if (!this.pluginRuntime) throw new Error("Plugin service is unavailable");
+      this.assertFactoryOwnerWrite(msg.pluginId, msg.method, msg.input);
       return this.pluginRuntime
         .invokePluginRpc(msg.pluginId, msg.method, msg.input)
         .then((output) => this.replyPluginRpc(msg, output));
     }
     if (msg.type === "plugin.rpc.subscribe.request") return this.subscribePluginRpc(msg);
     return undefined;
+  }
+
+  /**
+   * Factory role holders and launch presets are the owner's (#360). A non-app client that tries
+   * to write them is refused before the service runs, and the attempt is logged with the writer
+   * and the fields. The client type is self-declared (#525); see factoryOwnerOnlyFields.
+   */
+  private assertFactoryOwnerWrite(pluginId: string, method: string, input: unknown): void {
+    if (pluginId !== "factory") return;
+    const fields = factoryOwnerOnlyFields(method, input);
+    if (fields.length === 0 || isOwnerAppClient(this.clientType)) return;
+    const request = input as { projectId?: unknown; role?: unknown };
+    this.sessionLogger.warn(
+      {
+        code: "factory_owner_only",
+        writer: `${this.clientType ?? "unknown"}:${this.clientId}`,
+        method,
+        fields,
+        projectId: typeof request.projectId === "string" ? request.projectId : null,
+        role: typeof request.role === "string" ? request.role : null,
+      },
+      "Factory setting change refused: owner app only",
+    );
+    throw new Error(
+      `Only the owner's app can change Factory role holders and launch presets (${fields.join(", ")}).`,
+    );
   }
 
   private dispatchPluginPinnedMessage(msg: SessionInboundMessage): Promise<void> | undefined {
