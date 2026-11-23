@@ -8,4 +8,4 @@
 
 ## Maintenance review
 
-Updated the private workspace previews entry with the recorded stop causes, the published status file and the faster status command. The container broker never names a restart because its daemon identity carries no wall-clock start time. Needs a preview broker deployment; no daemon restart. README overview and onboarding are unchanged. Source only; not installed.
+Updated the private workspace previews entry with the recorded stop causes, the published status file and the faster status command. The container broker never names a restart because its daemon identity carries no wall-clock start time. The published-status path is its own exported function, `printPublishedStatus`, called by `paseo-preview.mjs` before the broker client, to keep the client within the lint complexity limit. Needs a preview broker deployment; no daemon restart. README overview and onboarding are unchanged. Source only; not installed.
