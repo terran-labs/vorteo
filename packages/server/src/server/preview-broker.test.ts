@@ -51,6 +51,7 @@ describe("preview restart admission", () => {
     broker,
     workspaceId: "wks_a",
     scriptName: "web",
+    requester: "session-a",
   };
 
   test("admits only a password session, for a reserved preview that needs no review", () => {
@@ -91,12 +92,20 @@ describe("preview broker restarter", () => {
       logger: pino({ level: "silent" }),
       pollMs: 5,
     });
-    await restarter.submit("wks_a", "web", "start");
+    await restarter.submit("wks_a", "web", "start", "session-a");
     expect(restarter.inFlight("wks_a", "web")).toBe(true);
-    await expect(restarter.submit("wks_a", "web", "start")).rejects.toThrow("already running");
+    await expect(restarter.submit("wks_a", "web", "start", "session-a")).rejects.toThrow(
+      "already running",
+    );
+    // One session holds at most two of the three slots, so another session keeps one.
+    await restarter.submit("wks_a", "api", "start", "session-a");
+    expect(restarter.atCapacity("session-a")).toBe(true);
+    expect(restarter.atCapacity("session-b")).toBe(false);
 
-    const [file] = readdirSync(join(directory, "inbox"));
-    const request = JSON.parse(readFileSync(join(directory, "inbox", file), "utf8"));
+    const requests = readdirSync(join(directory, "inbox")).map((file) =>
+      JSON.parse(readFileSync(join(directory, "inbox", file), "utf8")),
+    );
+    const request = requests.find((entry) => entry.service === "web");
     // Exactly the fields the broker's validate() accepts.
     expect(Object.keys(request).sort()).toEqual([
       "createdAt",
@@ -114,6 +123,10 @@ describe("preview broker restarter", () => {
     await vi.waitFor(() => expect(restarter.outcome("wks_a", "web")?.status).toBe("failed"));
     expect(restarter.outcome("wks_a", "web")?.error).toBe("Service configuration identity changed");
     expect(onChange).toHaveBeenLastCalledWith("wks_a");
+    // Finish the second restart so nothing keeps polling after the test.
+    const other = requests.find((entry) => entry.service === "api");
+    writeFileSync(join(directory, "receipts", `${other.id}.json`), '{"status":"ready"}');
+    await vi.waitFor(() => expect(restarter.outcome("wks_a", "api")).toBeNull());
   });
 });
 

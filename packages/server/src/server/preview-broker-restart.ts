@@ -25,6 +25,8 @@ const STATUS_INTERVAL_MS = 2_000;
  * concurrent restarts must not crowd out agents' own preview requests.
  */
 const MAX_CONCURRENT_RESTARTS = 3;
+/** One session may hold this many of those slots, so it cannot keep another's restart busy. */
+const MAX_RESTARTS_PER_REQUESTER = 2;
 const MAX_RECEIPT_BYTES = 16 * 1024;
 /** A failed outcome stays visible this long unless a newer restart replaces it. */
 const OUTCOME_TTL_MS = 10 * 60_000;
@@ -45,6 +47,8 @@ export type PreviewRestartMode = "start" | "restart";
  */
 export class PreviewBrokerRestarter {
   private readonly outcomes = new Map<string, PreviewRestartOutcome>();
+  /** Who submitted each restart still in flight, by preview key. */
+  private readonly requesters = new Map<string, string>();
 
   constructor(
     private readonly deps: {
@@ -92,24 +96,35 @@ export class PreviewBrokerRestarter {
     return this.outcome(workspaceId, scriptName)?.status === "starting";
   }
 
-  atCapacity(): boolean {
+  atCapacity(requester: string): boolean {
     let running = 0;
-    for (const outcome of this.outcomes.values()) if (outcome.status === "starting") running += 1;
-    return running >= MAX_CONCURRENT_RESTARTS;
+    let mine = 0;
+    for (const [key, outcome] of this.outcomes) {
+      if (outcome.status !== "starting") continue;
+      running += 1;
+      if (this.requesters.get(key) === requester) mine += 1;
+    }
+    return running >= MAX_CONCURRENT_RESTARTS || mine >= MAX_RESTARTS_PER_REQUESTER;
   }
 
   /**
    * Submits the request and returns once it is in the inbox; the outcome follows
    * through `onChange`. Throws when the names are invalid or the inbox write fails.
    */
-  async submit(workspaceId: string, scriptName: string, mode: PreviewRestartMode): Promise<void> {
+  async submit(
+    workspaceId: string,
+    scriptName: string,
+    mode: PreviewRestartMode,
+    requester: string,
+  ): Promise<void> {
     if (!WORKSPACE_ID.test(workspaceId) || !SERVICE.test(scriptName)) {
       throw new Error("Invalid preview identity");
     }
     const key = previewServiceKey(workspaceId, scriptName);
     if (this.inFlight(workspaceId, scriptName)) throw new Error("A restart is already running");
-    if (this.atCapacity()) throw new Error("Too many preview restarts are running");
+    if (this.atCapacity(requester)) throw new Error("Too many preview restarts are running");
     const id = await this.request(mode, workspaceId, scriptName);
+    this.requesters.set(key, requester);
     this.record(key, workspaceId, { status: "starting", error: null });
     void this.follow(key, workspaceId, scriptName, id).catch((error: unknown) => {
       this.deps.logger.warn(
@@ -127,6 +142,7 @@ export class PreviewBrokerRestarter {
   ): void {
     if (outcome) this.outcomes.set(key, { ...outcome, at: this.now() / 1000 });
     else this.outcomes.delete(key);
+    if (outcome?.status !== "starting") this.requesters.delete(key);
     this.deps.onChange(workspaceId);
   }
 
@@ -225,6 +241,8 @@ export function admitPreviewRestart(input: {
   broker: PreviewBrokerService | null;
   workspaceId: string;
   scriptName: string;
+  /** The requesting session, for its share of the restart slots. */
+  requester: string;
 }): PreviewRestartRefusal | null {
   if (input.credential !== "password") {
     return { code: "owner_app_only", message: "Only the owner's app can restart a preview here" };
@@ -244,7 +262,7 @@ export function admitPreviewRestart(input: {
   if (input.restarter.inFlight(input.workspaceId, input.scriptName)) {
     return { code: "busy", message: "A restart is already running" };
   }
-  if (input.restarter.atCapacity()) {
+  if (input.restarter.atCapacity(input.requester)) {
     return { code: "busy", message: "Too many preview restarts are running" };
   }
   return null;

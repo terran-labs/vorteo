@@ -567,8 +567,6 @@ export interface SessionOptions {
   clientId: string;
   /** From authenticated transport admission, never client request data. */
   principalId?: string | null;
-  /** How transport admission authenticated this session; never client request data. */
-  admissionCredential?: SessionCredentialKind | null;
   /** Self-declared in hello; distinguishes owner interfaces from bridges and tools. */
   clientType?: "mobile" | "browser" | "cli" | "mcp" | "hub";
   permissions: readonly DaemonPermission[];
@@ -883,7 +881,8 @@ export class Session {
   private readonly authorization: SessionAuthorization;
   private readonly ownerEvidence: TaskOwnerEvidenceStore;
   private readonly principalId: string | null | undefined;
-  private admissionCredentialKind: SessionCredentialKind | null | undefined;
+  /** How each socket's own transport admission authenticated it; never request data. */
+  private readonly sourceCredentials = new WeakMap<object, SessionCredentialKind | null>();
   private readonly clientType: SessionOptions["clientType"];
   private appVersion: string | null;
   private clientCapabilities: ReadonlySet<ClientCapability>;
@@ -1085,7 +1084,6 @@ export class Session {
     this.servicePrincipals = options.servicePrincipals ?? null;
     this.principalLabel = options.principalLabel;
     this.principalId = options.principalId;
-    this.admissionCredentialKind = options.admissionCredential;
     this.clientType = options.clientType;
     this.ownerEvidence = new TaskOwnerEvidenceStore(paseoHome);
 
@@ -2572,17 +2570,18 @@ export class Session {
     return this.authorization.allowsOutbound(message);
   }
 
-  /** How the most recent connection to this session was admitted. */
-  get admissionCredential(): SessionCredentialKind | null | undefined {
-    return this.admissionCredentialKind;
+  /**
+   * How the socket that sent a request was admitted. Kept per socket because a session can
+   * hold several sockets at once: a resume adds one without closing the others, so a
+   * session-wide value would let an agent's socket borrow the owner app's next password
+   * hello. Unknown sources, such as internal calls, have none.
+   */
+  credentialFor(source: object | undefined): SessionCredentialKind | null {
+    return source ? (this.sourceCredentials.get(source) ?? null) : null;
   }
 
-  /**
-   * Replaced on every resume, like permissions and grants: a reconnect proves only what
-   * its own admission proved, never what the session's first connection proved.
-   */
-  public setAdmissionCredential(credential: SessionCredentialKind | null | undefined): void {
-    this.admissionCredentialKind = credential;
+  public setSourceCredential(source: object, credential: SessionCredentialKind | null): void {
+    this.sourceCredentials.set(source, credential);
   }
 
   public setPermissions(permissions: readonly DaemonPermission[]): void {
@@ -2936,7 +2935,7 @@ export class Session {
       this.dispatchPluginDirectoryMessage(msg) ??
       this.dispatchPluginMessage(msg) ??
       this.dispatchPluginRpcMessage(msg) ??
-      this.dispatchHostServiceMessage(msg) ??
+      this.dispatchHostServiceMessage(msg, source) ??
       this.dispatchMiscMessage(msg);
     if (promise) await promise;
   }
@@ -2982,9 +2981,12 @@ export class Session {
     );
   }
 
-  private dispatchHostServiceMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+  private dispatchHostServiceMessage(
+    msg: SessionInboundMessage,
+    source?: object,
+  ): Promise<void> | undefined {
     return (
-      this.dispatchTerminalMessage(msg) ??
+      this.dispatchTerminalMessage(msg, source) ??
       this.dispatchScheduleMessage(msg) ??
       this.dispatchServicePrincipalMessage(msg) ??
       this.speechModelsSession.dispatch(msg)
@@ -3999,7 +4001,10 @@ export class Session {
     }
   }
 
-  private dispatchTerminalMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+  private dispatchTerminalMessage(
+    msg: SessionInboundMessage,
+    source?: object,
+  ): Promise<void> | undefined {
     switch (msg.type) {
       case "start_workspace_script_request":
         return this.handleStartWorkspaceScriptRequest(msg);
@@ -4010,7 +4015,7 @@ export class Session {
       case "workspace.script.stop.request":
         return this.handleWorkspaceScriptStopRequest(msg);
       case "workspace.script.restart_preview.request":
-        return this.handleWorkspaceScriptRestartPreviewRequest(msg);
+        return this.handleWorkspaceScriptRestartPreviewRequest(msg, source);
       default:
         return this.terminalController.dispatch(msg, this.delivery);
     }
@@ -9448,6 +9453,7 @@ export class Session {
 
   private async handleWorkspaceScriptRestartPreviewRequest(
     request: WorkspaceScriptRestartPreviewRequest,
+    source?: object,
   ): Promise<void> {
     const { requestId, workspaceId, scriptName } = request;
     const respond = (accepted: boolean, refusalCode: string | null, error: string | null) =>
@@ -9458,7 +9464,7 @@ export class Session {
     try {
       const restarter = previewBrokerRestarter();
       const refusal = admitPreviewRestart({
-        credential: this.admissionCredential ?? null,
+        credential: this.credentialFor(source),
         restarter,
         brokerAvailable: (await restarter?.available()) ?? false,
         workspace: (await this.workspaceRegistry.get(workspaceId)) ?? null,
@@ -9469,12 +9475,13 @@ export class Session {
           ) ?? null,
         workspaceId,
         scriptName,
+        requester: this.getSessionId(),
       });
       if (refusal || !restarter) {
         respond(false, refusal?.code ?? "broker_unavailable", refusal?.message ?? null);
         return;
       }
-      await restarter.submit(workspaceId, scriptName, request.mode ?? "start");
+      await restarter.submit(workspaceId, scriptName, request.mode ?? "start", this.getSessionId());
       respond(true, null, null);
     } catch (error) {
       respond(

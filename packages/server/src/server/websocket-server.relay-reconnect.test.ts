@@ -24,6 +24,20 @@ import { APPLICATION_SOCKET_LEASE_MS } from "./websocket/physical-socket.js";
 import { admitPreviewRestart } from "./preview-broker-restart.js";
 import type { SessionCredentialKind } from "./authorization/index.js";
 
+function gateCode(credential: SessionCredentialKind | null) {
+  return admitPreviewRestart({
+    credential,
+    restarter: { inFlight: () => false, atCapacity: () => false },
+    brokerAvailable: true,
+    workspace: { archivedAt: null },
+    hasReservation: true,
+    broker: { workspaceId: "wks_a", service: "web" },
+    workspaceId: "wks_a",
+    scriptName: "web",
+    requester: "mock-session-id",
+  })?.code;
+}
+
 type SocketListener = (...args: unknown[]) => void;
 
 const wsModuleMock = vi.hoisted(() => {
@@ -84,9 +98,12 @@ const sessionMock = vi.hoisted(() => {
     setAgentGrants = (grants: readonly AgentGrant[] | undefined) => {
       this.args.agentGrants = grants;
     };
-    setAdmissionCredential = (credential: string | null | undefined) => {
-      this.args.admissionCredential = credential;
+    readonly sourceCredentials = new Map<object, string | null>();
+    setSourceCredential = (source: object, credential: string | null) => {
+      this.sourceCredentials.set(source, credential);
     };
+    credentialFor = (source: object | undefined) =>
+      (source ? this.sourceCredentials.get(source) : null) ?? null;
     private routed = false;
     setRouted = (routed: boolean) => {
       this.routed = routed;
@@ -588,22 +605,44 @@ describe("relay external socket reconnect behavior", () => {
       );
       await vi.waitFor(() => expect(sentServerInfoEnvelopes(agent)).toHaveLength(1));
       expect(sessionMock.instances).toHaveLength(1);
-      const credential = sessionMock.instances[0].args.admissionCredential as
-        | SessionCredentialKind
-        | null
-        | undefined;
+      const session = sessionMock.instances[0];
+      expect(gateCode(session.credentialFor(agent) as SessionCredentialKind | null)).toBe(
+        "owner_app_only",
+      );
+      expect(gateCode(session.credentialFor(app) as SessionCredentialKind | null)).toBeUndefined();
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("an agent socket left on the owner app's session stays refused after the app reconnects", async () => {
+    const server = createServer({
+      auth: {
+        password: "$2b$12$OLxyuuP9uLK30Uzc4wQX0O6liuU/Q1t5P2b0Ebf36mULvpVK3DRZW",
+        localCredential: () => "local-token",
+      },
+    });
+    const hello = async (auth: Record<string, string>) => {
+      const socket = new MockSocket();
+      await server.attachExternalSocket(socket, { transport: "relay" });
+      socket.emit("message", JSON.stringify({ ...createHelloMessage("owner-app"), auth }));
+      await vi.waitFor(() => expect(sentServerInfoEnvelopes(socket)).toHaveLength(1));
+      return socket;
+    };
+    try {
+      await hello({ kind: "password", password: "correct-password" });
+      const agent = await hello({ kind: "localCredential", token: "local-token" });
+      const owner = await hello({ kind: "password", password: "correct-password" });
+      expect(sessionMock.instances).toHaveLength(1);
+      const session = sessionMock.instances[0];
+      // The agent's socket is still attached; it must keep the kind its own hello proved.
+      expect(agent.readyState).not.toBe(3);
+      expect(gateCode(session.credentialFor(agent) as SessionCredentialKind | null)).toBe(
+        "owner_app_only",
+      );
       expect(
-        admitPreviewRestart({
-          credential: credential ?? null,
-          restarter: { inFlight: () => false },
-          brokerAvailable: true,
-          workspace: { archivedAt: null },
-          hasReservation: true,
-          broker: { workspaceId: "wks_a", service: "web" },
-          workspaceId: "wks_a",
-          scriptName: "web",
-        })?.code,
-      ).toBe("owner_app_only");
+        gateCode(session.credentialFor(owner) as SessionCredentialKind | null),
+      ).toBeUndefined();
     } finally {
       await server.close();
     }

@@ -522,7 +522,6 @@ type SessionConnection = ReconnectableSessionConnection | PluginSessionConnectio
 
 interface SocketSessionOptions {
   principalId?: string | null;
-  admissionCredential?: SessionCredentialKind | null;
   clientType?: WSHelloMessage["clientType"];
   sourceId?: string;
   clientId: string;
@@ -1868,7 +1867,6 @@ export class VoiceAssistantWebSocketServer {
       clientId,
       clientType: params.clientType,
       principalId: lifecycle.kind === "reconnectable" ? admission.principalId : null,
-      admissionCredential: admission.credential ?? null,
       appVersion,
       clientCapabilities,
       permissions: admission.permissions,
@@ -1933,6 +1931,7 @@ export class VoiceAssistantWebSocketServer {
       agentGrants: admission.agentGrants,
       principalLabel: admission.principalLabel,
     });
+    session.setSourceCredential(ws, admission.credential ?? null);
 
     const base: SessionConnectionBase = {
       session,
@@ -1981,7 +1980,6 @@ export class VoiceAssistantWebSocketServer {
       clientId: options.clientId,
       clientType: options.clientType,
       principalId: options.principalId,
-      admissionCredential: options.admissionCredential,
       appVersion: options.appVersion,
       clientCapabilities: options.clientCapabilities,
       permissions: options.permissions,
@@ -2318,7 +2316,8 @@ export class VoiceAssistantWebSocketServer {
     existing.permissionCeiling = message.sessionPermissions;
     existing.session.setPermissions(pending.admission!.permissions);
     existing.session.setAgentGrants(pending.admission!.agentGrants);
-    existing.session.setAdmissionCredential(pending.admission!.credential);
+    // Per socket: sockets already on the session keep the kind their own hello proved.
+    existing.session.setSourceCredential(ws, pending.admission!.credential ?? null);
     existing.session.setRouted(message.routed === true);
     this.assignHostSource(existing, message, pending.admission!.principalId);
     const newAppVersion = message.appVersion ?? null;
@@ -3155,8 +3154,8 @@ export class VoiceAssistantWebSocketServer {
             principalId: connection.principalId,
             permissions,
             // A routed session proves no more than the connection that carries it.
-            ...(connection.session.admissionCredential
-              ? { credential: connection.session.admissionCredential }
+            ...(connection.session.credentialFor(ws)
+              ? { credential: connection.session.credentialFor(ws)! }
               : {}),
           }),
       });
