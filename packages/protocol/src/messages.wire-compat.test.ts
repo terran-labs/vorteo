@@ -14,6 +14,7 @@ import {
   WorkspaceSetupProgressMessageSchema,
   AgentTimelineEntryPayloadSchema,
   WorkspaceScriptPayloadSchema,
+  WorkspaceScriptRestartPreviewRequestSchema,
 } from "./messages.js";
 
 test("profile switches retain legacy replies and optional preview results", () => {
@@ -246,6 +247,38 @@ describe("wire schema compatibility", () => {
         },
       ],
     });
+  });
+
+  test("a preview's origin is optional on the wire", () => {
+    const script = {
+      scriptName: "web",
+      type: "service",
+      hostname: "web",
+      port: null,
+      lifecycle: "stopped",
+      health: null,
+    };
+    expect(
+      WorkspaceScriptPayloadSchema.parse({ ...script, preview: { state: "stopped" } }).preview,
+    ).toEqual({ state: "stopped" });
+    const origin = "https://preview.example.ts.net:32780";
+    expect(
+      WorkspaceScriptPayloadSchema.parse({ ...script, preview: { state: "stopped", origin } })
+        .preview?.origin,
+    ).toBe(origin);
+  });
+
+  test("a preview stop request parses, and a request without a mode still does", () => {
+    const base = {
+      type: "workspace.script.restart_preview.request",
+      workspaceId: "wks_a",
+      scriptName: "web",
+      requestId: "r1",
+    };
+    expect(WorkspaceScriptRestartPreviewRequestSchema.parse({ ...base, mode: "stop" }).mode).toBe(
+      "stop",
+    );
+    expect(WorkspaceScriptRestartPreviewRequestSchema.parse(base).mode).toBeUndefined();
   });
 
   test("workspace script preview state is optional and accepts later values", () => {

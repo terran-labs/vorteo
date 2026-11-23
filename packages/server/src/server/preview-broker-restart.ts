@@ -37,7 +37,12 @@ interface BrokerReceipt {
   message?: string;
 }
 
-export type PreviewRestartMode = "start" | "restart";
+export type PreviewRestartMode = "start" | "restart" | "stop";
+
+/** A request still waiting on the broker; it holds a concurrency slot. */
+function inFlightStatus(status: PreviewRestartOutcome["status"] | undefined): boolean {
+  return status === "starting" || status === "stopping";
+}
 
 /**
  * Starts or restarts a managed preview through the broker's filesystem inbox, which is
@@ -83,7 +88,7 @@ export class PreviewBrokerRestarter {
     const outcome = this.outcomes.get(key);
     if (
       outcome &&
-      outcome.status !== "starting" &&
+      !inFlightStatus(outcome.status) &&
       this.now() - outcome.at * 1000 > OUTCOME_TTL_MS
     ) {
       this.outcomes.delete(key);
@@ -93,14 +98,14 @@ export class PreviewBrokerRestarter {
   }
 
   inFlight(workspaceId: string, scriptName: string): boolean {
-    return this.outcome(workspaceId, scriptName)?.status === "starting";
+    return inFlightStatus(this.outcome(workspaceId, scriptName)?.status);
   }
 
   atCapacity(requester: string): boolean {
     let running = 0;
     let mine = 0;
     for (const [key, outcome] of this.outcomes) {
-      if (outcome.status !== "starting") continue;
+      if (!inFlightStatus(outcome.status)) continue;
       running += 1;
       if (this.requesters.get(key) === requester) mine += 1;
     }
@@ -126,7 +131,12 @@ export class PreviewBrokerRestarter {
     // Reserve the slot before any await, so concurrent submits see it: checking first and
     // recording after the inbox write let N simultaneous requests all pass the limits.
     const previous = this.outcomes.get(key);
-    this.outcomes.set(key, { status: "starting", error: null, at: this.now() / 1000 });
+    this.outcomes.set(key, {
+      // A stop goes through the broker too, so it records as an explicit stop.
+      status: mode === "stop" ? "stopping" : "starting",
+      error: null,
+      at: this.now() / 1000,
+    });
     this.requesters.set(key, requester);
     let id: string;
     try {
@@ -155,7 +165,7 @@ export class PreviewBrokerRestarter {
   ): void {
     if (outcome) this.outcomes.set(key, { ...outcome, at: this.now() / 1000 });
     else this.outcomes.delete(key);
-    if (outcome?.status !== "starting") this.requesters.delete(key);
+    if (!inFlightStatus(outcome?.status)) this.requesters.delete(key);
     this.deps.onChange(workspaceId);
   }
 
@@ -199,7 +209,7 @@ export class PreviewBrokerRestarter {
       await delay(this.deps.pollMs === undefined ? STATUS_INTERVAL_MS : this.deps.pollMs);
       result = await this.receipt(await this.request("status", workspaceId, service));
     }
-    if (result?.status === "ready") {
+    if (result?.status === "ready" || result?.status === "stopped") {
       this.record(key, workspaceId, null);
     } else if (result?.status === "failed") {
       const error = typeof result.error === "string" ? result.error.slice(0, 300) : null;
@@ -229,7 +239,8 @@ export interface PreviewRestartRefusal {
     | "workspace_unavailable"
     | "no_reservation"
     | "needs_review"
-    | "busy";
+    | "busy"
+    | "capacity";
   message: string;
 }
 
@@ -276,7 +287,8 @@ export function admitPreviewRestart(input: {
     return { code: "busy", message: "A restart is already running" };
   }
   if (input.restarter.atCapacity(input.requester)) {
-    return { code: "busy", message: "Too many preview restarts are running" };
+    // Its own code, so the app can say the limit is reached rather than "this one is starting".
+    return { code: "capacity", message: "Too many preview restarts are running" };
   }
   return null;
 }

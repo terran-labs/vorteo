@@ -1,5 +1,5 @@
 import { editPersistedConfig, readPersistedConfig } from "./persisted-config.js";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 
 import { tmpdir } from "node:os";
 
@@ -2944,6 +2944,17 @@ import { installationResourceRevision } from "./execution-installation/settings/
 
 import { ConfigWriterError } from "./config-writer.js";
 
+import {
+  effectivePresetFencePolicy,
+  fixEffectivePresetFencePolicy,
+  loadStartupPresetFencePolicy,
+  policyInForce,
+  presetFencePolicyPath,
+  readPresetFencePolicyFile,
+} from "./agent/lead-launch/fence-policy.js";
+import { execFileSync } from "node:child_process";
+import pino from "pino";
+
 function captureConfigFailure(operation: () => unknown): unknown {
   try {
     operation();
@@ -2982,5 +2993,87 @@ test("registered provider defaults remain visible to migration and reload withou
     });
   } finally {
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("the preset fence policy is fixed at startup: config edits and reloads never change it (#360)", async () => {
+  const paseoHome = mkdtempSync(path.join(tmpdir(), "preset-fence-reload-"));
+  try {
+    const store = new DaemonConfigStore(paseoHome, reloadableConfig({}), undefined, {
+      reloadSource: {
+        resolve: (persisted) => ({
+          mutable: reloadableConfig(persisted),
+          overrideControlledPaths: [],
+        }),
+      },
+    });
+    fixEffectivePresetFencePolicy((await readPresetFencePolicyFile(paseoHome)).policy);
+    expect(effectivePresetFencePolicy()).toBeUndefined();
+
+    // The old door: config.json no longer accepts the key, so `paseo daemon config set` cannot.
+    writeFileSync(
+      path.join(paseoHome, "config.json"),
+      JSON.stringify({ daemon: { presetFence: { mode: "enforce" } } }),
+    );
+    expect(() => loadPersistedConfig(paseoHome)).toThrow();
+
+    // Its own file is read only at the next start, never on reload.
+    writeFileSync(path.join(paseoHome, "config.json"), JSON.stringify({}));
+    writeFileSync(presetFencePolicyPath(paseoHome), JSON.stringify({ mode: "enforce" }));
+    await store.reload();
+    expect(effectivePresetFencePolicy()).toBeUndefined();
+    expect(await readPresetFencePolicyFile(paseoHome)).toEqual({
+      policy: { mode: "enforce" },
+      source: "file",
+    });
+
+    // A malformed or partial policy is reported, not silently treated as report.
+    writeFileSync(presetFencePolicyPath(paseoHome), JSON.stringify({ mode: "Enforce" }));
+    expect(await readPresetFencePolicyFile(paseoHome)).toMatchObject({
+      policy: undefined,
+      problem: expect.stringContaining("mode"),
+    });
+  } finally {
+    fixEffectivePresetFencePolicy(undefined);
+    rmSync(paseoHome, { recursive: true, force: true });
+  }
+});
+
+test("this release never enforces, and the policy file is read bounded and validated (#360)", async () => {
+  const paseoHome = mkdtempSync(path.join(tmpdir(), "preset-fence-startup-"));
+  const file = presetFencePolicyPath(paseoHome);
+  const warnings: string[] = [];
+  const logger = Object.assign(Object.create(pino({ level: "silent" })), {
+    warn: (_fields: unknown, message: string) => warnings.push(message),
+    info: () => {},
+  }) as ReturnType<typeof pino>;
+  try {
+    // A well-formed enforce, written by anyone, is kept on disk but only reports in this release.
+    writeFileSync(file, JSON.stringify({ mode: "enforce" }));
+    await loadStartupPresetFencePolicy(paseoHome, logger);
+    expect(effectivePresetFencePolicy()?.mode).toBe("report");
+    expect(warnings).toContainEqual(expect.stringContaining("not available in this release"));
+    expect((await readPresetFencePolicyFile(paseoHome)).policy).toEqual({ mode: "enforce" });
+    // C3 flips one constant; the enforce path itself is unchanged.
+    expect(policyInForce({ policy: { mode: "enforce" }, source: "file" }, true).policy?.mode).toBe(
+      "enforce",
+    );
+
+    // An unknown path name makes the policy malformed instead of quietly enforcing that path.
+    writeFileSync(file, JSON.stringify({ mode: "enforce", report: ["create-agent"] }));
+    expect((await readPresetFencePolicyFile(paseoHome)).problem).toContain("create-agent");
+
+    // A symbolic link or a FIFO is refused without following it or blocking startup.
+    rmSync(file);
+    symlinkSync(path.join(paseoHome, "elsewhere.json"), file);
+    expect((await readPresetFencePolicyFile(paseoHome)).problem).toBe("a symbolic link");
+    rmSync(file);
+    if (process.platform !== "win32") {
+      execFileSync("mkfifo", [file]);
+      expect((await readPresetFencePolicyFile(paseoHome)).problem).toBe("not a regular file");
+    }
+  } finally {
+    fixEffectivePresetFencePolicy(undefined);
+    rmSync(paseoHome, { recursive: true, force: true });
   }
 });

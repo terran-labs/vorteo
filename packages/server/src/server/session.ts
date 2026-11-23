@@ -183,7 +183,19 @@ import type {
   ManagedAgent,
 } from "./agent/agent-manager.js";
 import { createAgentCommand } from "./agent/create-agent/create.js";
-import { checkPresetFence } from "./agent/lead-launch/fence.js";
+import {
+  effectivePresetFencePolicy,
+  readPresetFencePolicyFile,
+  writePresetFencePolicyFile,
+} from "./agent/lead-launch/fence-policy.js";
+import type { PresetFencePolicy } from "@getpaseo/protocol/messages";
+import {
+  assertNoReservedLabels,
+  isOwnerAppClient,
+  checkPresetFence,
+  type PresetFencePath,
+  type PresetFenceRequest,
+} from "./agent/lead-launch/fence.js";
 import { switchAgentProfileCommand } from "./agent/profile-switch/command.js";
 import { normalizeClientMessageId } from "./client-message-id.js";
 import { createAgentForMessage, AgentCreationRequestError } from "./agent/create-agent/requests.js";
@@ -3686,12 +3698,7 @@ export class Session {
       case "daemon.update.request":
         return this.daemonSession.handleUpdateRequest(msg);
       case "set_daemon_config_request":
-        return this.daemonConfigStore.patchFromClient(msg.config).then((config) => {
-          return this.emit({
-            type: "set_daemon_config_response",
-            payload: { requestId: msg.requestId, config },
-          });
-        });
+        return this.setDaemonConfig(msg);
       case "read_project_config_request":
         return this.projectConfigSession.handleReadProjectConfigRequest(msg);
       case "write_project_config_request":
@@ -4584,6 +4591,8 @@ export class Session {
     labels: Record<string, string> | undefined,
     requestId: string,
   ): Promise<void> {
+    // Only daemon code sets reserved labels; a CLI or other non-app client cannot (#360).
+    if (!isOwnerAppClient(this.clientType)) assertNoReservedLabels(labels);
     this.sessionLogger.info(
       {
         agentId,
@@ -5705,6 +5714,12 @@ export class Session {
     const logFields = { agentId, requestId, provider: msg.provider, profileId: msg.profileId };
     this.sessionLogger.info(logFields, "session: agent.profile.switch.request");
     try {
+      if (msg.callerAgentId && !msg.dryRun)
+        await this.sessionPresetFence("session_switch_agent_profile", msg.callerAgentId, {
+          kind: "change",
+          targetAgentId: agentId,
+          settings: true,
+        });
       const actorId = this.actorPrincipalId();
       const sourceScope = msg.sourceScope;
       const actorLabel =
@@ -5972,7 +5987,7 @@ export class Session {
         createdWorktree,
         workspacePromptTitle,
       });
-      await this.checkSessionPresetFence(msg.callerAgentId, resolvedIntent);
+      await this.checkSessionPresetFence(msg.callerAgentId, resolvedIntent, msg.labels);
       const resolvedCwd = resolve(resolvedIntent.config.cwd);
       if (!(await this.filesystem.isDirectory(resolvedCwd))) {
         throw new Error(`Working directory does not exist or is not a directory: ${resolvedCwd}`);
@@ -6067,20 +6082,77 @@ export class Session {
   private checkSessionPresetFence(
     callerAgentId: string | undefined,
     resolved: { config: { profileId?: string }; intent: { parentAgentId: string | null } },
+    labels: Record<string, string> | undefined,
+  ): Promise<void> {
+    if (callerAgentId || !isOwnerAppClient(this.clientType)) assertNoReservedLabels(labels);
+    return this.sessionPresetFence("session_create_agent", callerAgentId, {
+      kind: "launch",
+      profileId: resolved.config.profileId ?? null,
+      detached: !resolved.intent.parentAgentId,
+    });
+  }
+
+  /**
+   * The preset fence for session requests that name their calling agent. The CLI names it from
+   * PASEO_AGENT_ID, so a request without one is treated as the owner's (#525).
+   */
+  private sessionPresetFence(
+    path: PresetFencePath,
+    callerAgentId: string | undefined,
+    request: PresetFenceRequest,
   ): Promise<void> {
     return checkPresetFence(
       {
         logger: this.sessionLogger,
         getAgent: (id) => this.agentManager.getAgent(id),
         getStored: (id) => this.agentStorage.get(id),
+        serverId: this.serverId,
       },
-      "session_create_agent",
+      path,
       callerAgentId,
-      {
-        kind: "launch",
-        profileId: resolved.config.profileId ?? null,
-        detached: !resolved.intent.parentAgentId,
-      },
+      request,
+    );
+  }
+
+  /**
+   * `presetFence` is write-only here (#360). Only an owner app session may send it. It is saved
+   * to its own file, never config.json, and takes effect at the next daemon restart, which goes
+   * through the tracked restart approval. Every save and every refused attempt is logged with the
+   * writer, the policy in force and the stored values before and after. Other settings in the same
+   * request are applied as before.
+   */
+  private async setDaemonConfig(
+    msg: Extract<SessionInboundMessage, { type: "set_daemon_config_request" }>,
+  ): Promise<void> {
+    const { presetFence, ...rest } = msg.config;
+    if (Object.hasOwn(msg.config, "presetFence")) await this.savePresetFence(presetFence ?? null);
+    const config =
+      Object.keys(rest).length > 0
+        ? await this.daemonConfigStore.patchFromClient(rest)
+        : this.daemonConfigStore.get();
+    this.emit({
+      type: "set_daemon_config_response",
+      payload: { requestId: msg.requestId, config },
+    });
+  }
+
+  private async savePresetFence(requested: PresetFencePolicy | null): Promise<void> {
+    const stored = await readPresetFencePolicyFile(this.paseoHome);
+    const fields = {
+      code: "preset_fence_setting",
+      writer: `${this.clientType ?? "unknown"}:${this.clientId}`,
+      inForce: effectivePresetFencePolicy() ?? null,
+      before: stored.policy ?? null,
+      requested,
+    };
+    if (!isOwnerAppClient(this.clientType)) {
+      this.sessionLogger.warn(fields, "Preset fence setting change refused");
+      throw new Error("Only the owner's app can change the preset fence setting.");
+    }
+    await writePresetFencePolicyFile(this.paseoHome, requested);
+    this.sessionLogger.info(
+      fields,
+      "Preset fence setting saved; it applies at the next daemon restart",
     );
   }
 
@@ -6228,6 +6300,7 @@ export class Session {
   private async handleImportAgentRequest(
     msg: Extract<SessionInboundMessage, { type: "import_agent_request" }>,
   ): Promise<void> {
+    if (!isOwnerAppClient(this.clientType)) assertNoReservedLabels(msg.labels);
     const normalized = normalizeImportAgentRequest(msg);
     if ("error" in normalized) {
       this.emit({

@@ -298,6 +298,7 @@ function applyManagedPreviews(
   const stale = broker ? previewBrokerIsStale(broker, Date.now() / 1000) : false;
   for (const payload of payloads) {
     if (payload.type !== "service") continue;
+    const origin = origins.get(payload.scriptName) ?? null;
     const entry = broker?.services.get(previewServiceKey(workspaceId, payload.scriptName));
     if (broker && entry) {
       payload.preview = projectWorkspaceScriptPreview({
@@ -307,9 +308,9 @@ function applyManagedPreviews(
         health: payload.health,
         restart: restarter?.outcome(workspaceId, payload.scriptName) ?? null,
       });
+      if (origin) payload.preview = { ...payload.preview, origin };
     }
     if (payload.lifecycle !== "running") continue;
-    const origin = origins.get(payload.scriptName);
     if (origin) {
       // publicProxyUrl means reachable beyond localhost, including private tailnets.
       payload.publicProxyUrl = origin;

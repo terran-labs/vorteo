@@ -2418,7 +2418,7 @@ export class VoiceAssistantWebSocketServer {
         // COMPAT(previewRestart): added in Vorteo 2026-11, remove gate after 2027-05-23.
         // Restart accepts only password-admitted sessions, so a daemon without a password
         // has no session that could use it.
-        ...(this.passwordHash ? { previewRestart: true } : {}),
+        ...(this.passwordHash ? { previewRestart: true, previewStop: true } : {}),
         workspaceSetupObservation: true,
         workspaceSortTimes: true,
         // COMPAT(providersSnapshot): keep optional until all clients rely on snapshot flow.
@@ -2491,6 +2491,9 @@ export class VoiceAssistantWebSocketServer {
         blockedWorkReviewSetting: true,
         // COMPAT(accountQuotaPolicy): added 2026-11-20, retain until 2027-05-20. Storage only.
         accountQuotaPolicy: true,
+        // COMPAT(presetFenceSetting): added 2026-11-23, retain until 2027-05-23. The daemon reads
+        // `presetFence` and accepts changes only from the owner's app.
+        presetFenceSetting: true,
         // COMPAT(checklistWakeConditions): added 2026-11-18, retain until 2027-05-18.
         checklistWakeConditions: this.agentManager.supportsChecklistWakeConditions(),
         resumeOnStartupSetting: true,
