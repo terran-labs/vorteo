@@ -3063,10 +3063,7 @@ test("this release never enforces, and the policy file is read bounded and valid
     writeFileSync(file, JSON.stringify({ mode: "enforce", report: ["create-agent"] }));
     expect((await readPresetFencePolicyFile(paseoHome)).problem).toContain("create-agent");
 
-    // A symbolic link or a FIFO is refused without following it or blocking startup.
-    rmSync(file);
-    symlinkSync(path.join(paseoHome, "elsewhere.json"), file);
-    expect((await readPresetFencePolicyFile(paseoHome)).problem).toBe("a symbolic link");
+    // A FIFO is refused without blocking startup. Windows has no FIFOs in the file system.
     rmSync(file);
     if (process.platform !== "win32") {
       execFileSync("mkfifo", [file]);
@@ -3074,6 +3071,35 @@ test("this release never enforces, and the policy file is read bounded and valid
     }
   } finally {
     fixEffectivePresetFencePolicy(undefined);
+    rmSync(paseoHome, { recursive: true, force: true });
+  }
+});
+
+test("a symbolic link to the policy file is refused on every platform (#360)", async (context) => {
+  const paseoHome = mkdtempSync(path.join(tmpdir(), "preset-fence-link-"));
+  const file = presetFencePolicyPath(paseoHome);
+  const target = path.join(paseoHome, "elsewhere.json");
+  try {
+    // A well-formed policy behind the link must not be read, and a dangling link must not look
+    // like a missing file. Windows has no O_NOFOLLOW, so this is the case that broke there.
+    writeFileSync(target, JSON.stringify({ mode: "enforce" }));
+    try {
+      symlinkSync(target, file, "file");
+    } catch (error) {
+      // Creating links on Windows can need a privilege the runner lacks. Say so, never pass.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (process.platform === "win32" && (code === "EPERM" || code === "EACCES"))
+        context.skip(`this Windows runner cannot create symbolic links (${code})`);
+      throw error;
+    }
+    expect(await readPresetFencePolicyFile(paseoHome)).toEqual({
+      policy: undefined,
+      source: "file",
+      problem: "a symbolic link",
+    });
+    rmSync(target);
+    expect((await readPresetFencePolicyFile(paseoHome)).problem).toBe("a symbolic link");
+  } finally {
     rmSync(paseoHome, { recursive: true, force: true });
   }
 });
