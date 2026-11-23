@@ -43,6 +43,10 @@ PROBE_ONLY_SECONDS = 600
 # find the same listener again, so a preview that did not survive is withdrawn on the
 # first cycle after the daemon is back.
 DAEMON_GAP_SECONDS = 60
+# A stop whose daemon call failed, typically because the daemon was restarting, is
+# repeated by later cycles for this long, and only against the terminal that was
+# running when the owner stopped it, so a later start is never undone.
+STOP_RETRY_SECONDS = 600
 DAEMON_GAP_MESSAGE = 'Daemon is restarting; route kept while its listener answers'
 DAEMON_DOWN_MESSAGE = 'Daemon unreachable; route withdrawn until a check succeeds'
 DELAYED_MESSAGE = 'Checks are delayed; route kept while its listener answers'
@@ -1204,7 +1208,9 @@ class Broker:
                 entry = {'workspaceId': r['workspaceId'], 'service': r['service'], 'cwd': current['cwd']}
                 # A stop without a reservation still needs a durable replay barrier.
                 self.ledger['entries'][key] = entry
-            entry.update(desired='stopped', status='stopped', stoppedAt=now, stopReason='stopped')
+            # stopPending stays until the daemon has stopped the process; reconcile()
+            # repeats it if this request cannot reach the daemon.
+            entry.update(desired='stopped', status='stopped', stoppedAt=now, stopReason='stopped', stopPending=True)
             for stale in ('url', 'misses', 'error', 'restartedAt', 'daemonWorker'):
                 entry.pop(stale, None)
             self.save()
@@ -1217,6 +1223,8 @@ class Broker:
                 current = self.runtime.stoppable(r['workspaceId'], r['service'])
             if current['lifecycle'] == 'running':
                 self.runtime.lifecycle('stop', current)
+            entry.pop('stopPending', None)
+            self.save()
             return {'status': 'stopped'}
         current = self.runtime.current(r['workspaceId'], r['service'])
         if entry and 'frontend' not in entry:
@@ -1236,7 +1244,7 @@ class Broker:
             self.runtime.lifecycle('stop', current)
             current = self.runtime.current(r['workspaceId'], r['service'])
         entry.update(desired='running', status='pending', fingerprint=current['fingerprint'])
-        for stale in ('recovery', 'misses', 'stopReason', 'restartedAt', 'daemonWorker'):
+        for stale in ('recovery', 'misses', 'stopReason', 'restartedAt', 'daemonWorker', 'stopPending'):
             entry.pop(stale, None)
         self.save()
         # This is startup configuration, not a verified browser link.
@@ -1344,7 +1352,7 @@ class Broker:
         # not because the service stopped or failed to start; it keeps its running intent.
         status = 'pending' if isinstance(error, RecoveryPending) else 'withdrawn' if timed_out else 'failed'
         entry.update(status=status, error=message)
-        for stale in ('url', 'misses', 'daemonGapSince'):
+        for stale in ('url', 'misses'):
             entry.pop(stale, None)
         try:
             self.remove(entry)
@@ -1359,6 +1367,32 @@ class Broker:
             entry['removalPending'] = True
         self.save()
         return error
+
+    def repeat_stop(self, entry):
+        """Carry out a recorded stop whose daemon call failed.
+
+        Only within STOP_RETRY_SECONDS of the stop, and only against the terminal the
+        broker last verified, which a re-linked survivor keeps: a service started again
+        since then runs in another terminal and is left alone. Failures stay inside, so a
+        stopped entry never takes the running failure rules."""
+        stopped = entry.get('stoppedAt')
+        if type(stopped) not in (int, float) or not 0 <= time.time() - stopped < STOP_RETRY_SECONDS:
+            entry.pop('stopPending', None)
+            self.save()
+            return
+        try:
+            try:
+                current = self.runtime.current(entry['workspaceId'], entry['service'])
+            except WorkspaceUnavailable:
+                current = self.runtime.stoppable(entry['workspaceId'], entry['service'])
+            if current.get('lifecycle') == 'running' and entry.get('terminal') and current.get('terminalId') == entry['terminal']:
+                self.runtime.lifecycle('stop', current)
+        except (subprocess.SubprocessError, OSError):
+            return  # The daemon is still unavailable; the next cycle tries again.
+        except ValueError:
+            pass  # Nothing the broker can act on; give up rather than guess.
+        entry.pop('stopPending', None)
+        self.save()
 
     def remove_then_raise(self, entry, definite):
         """Withdraw after a definite failure without letting the removal mask it.
@@ -1404,7 +1438,8 @@ class Broker:
             entry.update(status='unverified', misses=entry.get('misses', 0) + 1,
                          daemonGapSince=since, error=DAEMON_GAP_MESSAGE)
         else:
-            entry.pop('daemonGapSince', None)
+            # daemonGapSince stays: only a full verification ends a gap, so an interleaved
+            # timeout cannot restart its 60 seconds.
             entry.update(status='unverified', misses=entry.get('misses', 0) + 1, error=DELAYED_MESSAGE)
         self.save()
         return True
@@ -1433,6 +1468,8 @@ class Broker:
                         published = self.runtime.publication()
                     if self.address(entry) in published.get('Web', {}) or str(entry['frontend']) in published.get('TCP', {}):
                         self.remove(entry)
+                    if entry.get('stopPending'):
+                        self.repeat_stop(entry)
                     continue
                 self.restore_after_restart(entry)
                 self.activate(entry)

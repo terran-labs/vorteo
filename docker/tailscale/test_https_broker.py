@@ -13,7 +13,7 @@ import time
 import unittest
 from unittest.mock import patch
 import uuid
-from https_broker import Broker, DAEMON_DOWN_MESSAGE, DAEMON_GAP_MESSAGE, DAEMON_GAP_SECONDS, DaemonUnavailable, DELAYED_MESSAGE, ListenerLost, PROBE_ONLY_SECONDS, Runtime, TIMED_OUT_MESSAGE, NativeRuntime, WorkspaceUnavailable, public_error, RESTART_ATTRIBUTION_SECONDS, STATUS_FIELDS, STATUS_FILE, _libproc_socket_types, atomic, loopback_listener_port, safe_read, validate
+from https_broker import Broker, STOP_RETRY_SECONDS, DAEMON_DOWN_MESSAGE, DAEMON_GAP_MESSAGE, DAEMON_GAP_SECONDS, DaemonUnavailable, DELAYED_MESSAGE, ListenerLost, PROBE_ONLY_SECONDS, Runtime, TIMED_OUT_MESSAGE, NativeRuntime, WorkspaceUnavailable, public_error, RESTART_ATTRIBUTION_SECONDS, STATUS_FIELDS, STATUS_FILE, _libproc_socket_types, atomic, loopback_listener_port, safe_read, validate
 
 
 class NativeWorkspacePolicyTests(unittest.TestCase):
@@ -759,6 +759,10 @@ class Tests(unittest.TestCase):
         def timing_out(state):
             return lambda b, rt: (setattr(rt, 'backend_ready', timeout), setattr(rt, 'listener_state', state))
         def ledger_entry(b): return b.ledger['entries']['wks_test.preview']
+        def later(b, seconds):
+            entry = ledger_entry(b)
+            for field in ('daemonGapSince', 'verifiedAt'):
+                if type(entry.get(field)) in (int, float): entry[field] -= seconds
         def stop(b):
             # During the daemon gap the link goes and the stop is recorded at once; only
             # the daemon's own stop of the process waits for the daemon (a known edge).
@@ -772,6 +776,10 @@ class Tests(unittest.TestCase):
             'daemon down': lambda b, rt: setattr(rt, 'daemon_down', True),
             'gap over': lambda b, rt: (setattr(rt, 'daemon_down', True), ledger_entry(b).update(daemonGapSince=time.time() - DAEMON_GAP_SECONDS - 1)),
             'back, service gone': lambda b, rt: (setattr(rt, 'daemon_down', False), rt.entry.update(lifecycle='stopped')),
+            # Time passes between checks: the gap start and the last verification age.
+            'down 20s later': lambda b, rt: (later(b, 20), setattr(rt, 'daemon_down', True), timing_out('same')(b, rt)),
+            'timeout 20s later': lambda b, rt: (later(b, 20), setattr(rt, 'daemon_down', False), timing_out('same')(b, rt)),
+            'down 61s later': lambda b, rt: (later(b, 61), setattr(rt, 'daemon_down', True)),
             'back, other listener': lambda b, rt: (setattr(rt, 'daemon_down', False), setattr(rt, 'listener_identity', lambda p, t: 'another:1')),
             'timeout': timing_out('same'),
             'refused': lambda b, rt: setattr(rt, 'backend_ready', refused),
@@ -819,6 +827,12 @@ class Tests(unittest.TestCase):
             (None, ['daemon down'] * 3, (True, 'unverified', 'running', 3)),
             (None, ['daemon down', 'daemon down', 'ok'], (True, 'ready', 'running', None)),
             (None, ['daemon down', 'gap over'], (False, 'withdrawn', 'running', None)),
+            # The 60 seconds run from the first down check: repeated failures do not renew
+            # them, nor does a timeout in between.
+            (None, ['daemon down'] + ['down 20s later'] * 3, (False, 'withdrawn', 'running', None)),
+            (None, ['daemon down', 'timeout 20s later', 'down 20s later', 'timeout 20s later', 'down 20s later'], (False, 'withdrawn', 'running', None)),
+            # A full verification ends the gap, so a later restart gets its own 60 seconds.
+            (None, ['daemon down', 'ok', 'down 61s later'], (True, 'unverified', 'running', 1)),
             (None, ['daemon down', 'exited'], (False, 'failed', 'running', None)),
             (None, ['daemon down', 'back, service gone'], (False, 'failed', 'stopped', None)),
             (None, ['daemon down', 'back, other listener'], (False, 'failed', 'stopped', None)),
@@ -843,7 +857,7 @@ class Tests(unittest.TestCase):
                             if step not in ('ok', 'disagreeing ok'): self.assertNotIn('url', result)
                     entry = safe_read(broker.ledger_path)['entries']['wks_test.preview']
                     self.assertEqual(('44444' in runtime.config['TCP'], entry['status'], entry['desired'], entry.get('misses')), expected)
-                    gap = sequence[-1] in ('daemon down', 'gap over')
+                    gap = sequence[-1] in ('daemon down', 'gap over', 'down 20s later', 'down 61s later')
                     if expected[1] == 'unverified': self.assertEqual(entry['error'], DAEMON_GAP_MESSAGE if gap else DELAYED_MESSAGE)
                     if not expected[0]: self.assertNotIn('url', entry)
                     if expected[1] == 'stopped': self.assertNotIn('error', entry)
@@ -891,8 +905,43 @@ class Tests(unittest.TestCase):
         with patch('subprocess.run', side_effect=subprocess.CalledProcessError(1, ['/usr/bin/false'])):
             with self.assertRaises(DaemonUnavailable):
                 runtime.cli(['workspace', 'ls'])
+        # A port that neither accepts nor refuses, as on a loaded machine, is no evidence.
+        with patch('socket.create_connection', side_effect=socket.timeout('timed out')):
+            self.assertIs(runtime.daemon_unreachable(), False)
         (home / 'paseo.pid').write_text('not json')
         self.assertIs(runtime.daemon_unreachable(), False)  # unreadable: no evidence
+
+    def test_stop_during_daemon_gap_is_carried_out_when_the_daemon_returns(self):
+        def stopped_during_gap():
+            runtime = Fake(); broker = Broker(self.c, runtime)
+            broker.ledger = {'entries': {}, 'requests': {}}
+            broker.handle(self.request())
+            runtime.daemon_down = True
+            with self.assertRaises(DaemonUnavailable):
+                broker.handle(self.request('stop'))
+            entry = broker.ledger['entries']['wks_test.preview']
+            # The link goes and the stop is recorded at once.
+            self.assertEqual((entry['desired'], entry['status'], '44444' in runtime.config['TCP']), ('stopped', 'stopped', False))
+            return runtime, broker, entry
+        # The daemon is back: the next cycle stops the same process, once.
+        runtime, broker, entry = stopped_during_gap()
+        broker.reconcile()
+        self.assertEqual(runtime.entry['lifecycle'], 'running')  # still down: kept pending
+        runtime.daemon_down = False
+        broker.reconcile()
+        self.assertEqual((runtime.entry['lifecycle'], entry['status'], entry.get('stopPending')), ('stopped', 'stopped', None))
+        # A service started again since then runs in another terminal and is left alone.
+        runtime, broker, entry = stopped_during_gap()
+        runtime.daemon_down = False
+        runtime.entry['terminalId'] = 'started-again'
+        broker.reconcile()
+        self.assertEqual((runtime.entry['lifecycle'], entry.get('stopPending')), ('running', None))
+        # Too long after the stop, nothing is repeated.
+        runtime, broker, entry = stopped_during_gap()
+        runtime.daemon_down = False
+        entry['stoppedAt'] -= STOP_RETRY_SECONDS + 1
+        broker.reconcile()
+        self.assertEqual((runtime.entry['lifecycle'], entry.get('stopPending')), ('running', None))
 
     def test_restart_recovery_survives_a_timed_out_identity_check(self):
         # restore-after-restart on; the daemon restart kills the service, and the
