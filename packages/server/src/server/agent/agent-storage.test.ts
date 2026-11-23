@@ -197,6 +197,33 @@ describe("AgentStorage", () => {
     expect(await reopened.claimBlockedReview(agent.id, now + 7_200_000)).toBe(false);
   });
 
+  test("forwarded governance is written once by the daemon and no snapshot or upsert changes it (#360)", async () => {
+    const agent = createManagedAgent({
+      id: "forwarded-governance",
+      persistence: { provider: "codex", sessionId: "retained" },
+    });
+    agent.labels = {};
+    await storage.applySnapshot(agent);
+    const governance = {
+      supervisorAgentId: "host-coordinator",
+      serverId: "srv_host",
+      workerProfileId: "worker-preset",
+    };
+    // A record write carrying the field, as an import or a crafted record would, is ignored.
+    await storage.upsert({ ...(await storage.get(agent.id))!, forwardedGovernance: governance });
+    expect((await storage.get(agent.id))?.forwardedGovernance).toBeUndefined();
+    expect(await storage.recordForwardedGovernance(agent.id, governance)).toBe(true);
+    // A later forwarded create naming another supervisor cannot replace it.
+    const other = { ...governance, supervisorAgentId: "other", workerProfileId: "strong" };
+    expect(await storage.recordForwardedGovernance(agent.id, other)).toBe(false);
+    // Snapshots and full-record writes without it, or clearing it, keep the recorded value.
+    await storage.applySnapshot(agent);
+    const { forwardedGovernance: _dropped, ...withoutField } = (await storage.get(agent.id))!;
+    await storage.upsert(withoutField as StoredAgentRecord);
+    const reopened = new AgentStorage(storagePath, logger);
+    expect((await reopened.get(agent.id))?.forwardedGovernance).toEqual(governance);
+  });
+
   test("journal appends preserve order, survive stale snapshots and retry without duplication", async () => {
     const agent = createManagedAgent({ id: "journal" });
     await storage.applySnapshot(agent);
