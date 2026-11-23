@@ -596,6 +596,43 @@ describe("WorkspaceScriptsButton", () => {
     }
   });
 
+  it.each([
+    ["through the broker", { previewRestart: true, previewStop: true, previewStopOutcome: true }],
+    ["through the terminal", { previewRestart: true }],
+  ])("a pending stop %s holds only its own preview's buttons", async (_name, features) => {
+    // One preview's request must not keep the owner from stopping another.
+    Object.assign(featuresMock, features);
+    restartPreviewMock.mockClear();
+    const never = () => new Promise<never>(() => {});
+    restartPreviewMock.mockImplementationOnce(never);
+    killTerminalMock.mockImplementationOnce(never);
+    const service = (scriptName: string, terminalId: string) =>
+      script({
+        scriptName,
+        type: "service",
+        lifecycle: "running",
+        terminalId,
+        preview: { state: "ready" },
+      });
+    current = renderScripts([
+      service("web", "terminal-script-1"),
+      service("api", "terminal-script-2"),
+    ]);
+    const stop = (name: string) =>
+      requireRow(name).querySelector(
+        `[data-testid="workspace-scripts-stop-${name}"]`,
+      ) as HTMLElement;
+    fireEvent.click(stop("web"));
+    // Mutation state reaches the rows on the next timer tick.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    fireEvent.click(stop("api"));
+    // Mutation state reaches the rows on the next timer tick.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    for (const key of Object.keys(featuresMock)) delete featuresMock[key];
+    const calls = [...restartPreviewMock.mock.calls, ...killTerminalMock.mock.calls];
+    expect(calls).toHaveLength(2);
+  });
+
   it("uses icon-only actions with view and fixed-position lifecycle controls", async () => {
     current = renderScripts([
       script({

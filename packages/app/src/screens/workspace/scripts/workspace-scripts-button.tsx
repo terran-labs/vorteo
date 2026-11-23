@@ -314,7 +314,7 @@ function ScriptRow({
   const hideStart = previewBlocksStart(script, preview);
   // Disabled while any request for this preview is pending, here or still with the broker.
   const stopOrRestartBlocked =
-    actions.isStopPending ||
+    actions.isStopPendingFor(script.scriptName) ||
     actions.isPreviewPendingFor(script.scriptName) ||
     previewRequestInFlight(script.preview);
   const { selected: selectedLink, targets: linkTargets } = actions.resolveLinks(script);

@@ -257,7 +257,7 @@ const es: PreviewStatusStrings = {
     didntStop: "No se detuvo",
     linkWithdrawn: "Enlace retirado",
     unconfirmed: "Sin confirmar",
-    lastKnown: "Último estado",
+    lastKnown: "Desactualizado",
   },
   actions: {
     start: "Iniciar",
@@ -391,7 +391,7 @@ const fr: PreviewStatusStrings = {
     didntStop: "Non arrêté",
     linkWithdrawn: "Lien retiré",
     unconfirmed: "Non confirmé",
-    lastKnown: "Dernier état",
+    lastKnown: "Pas à jour",
   },
   actions: {
     start: "Démarrer",
@@ -522,7 +522,7 @@ const ja: PreviewStatusStrings = {
     didntStop: "停止失敗",
     linkWithdrawn: "リンク取り下げ",
     unconfirmed: "未確認",
-    lastKnown: "前回の状態",
+    lastKnown: "最新ではない",
   },
   actions: {
     start: "開始",
@@ -600,39 +600,44 @@ const ko: PreviewStatusStrings = {
   },
   stale: {
     linkWithdrawn: {
-      today: "서버가 실행 중입니다. 링크의 마지막 상태는 회수됨이며 {{time}}에 확인했습니다.",
+      today:
+        "서버가 실행 중입니다. 마지막으로 확인된 링크 상태는 회수됨이며 {{time}}에 확인했습니다.",
       yesterday:
-        "서버가 실행 중입니다. 링크의 마지막 상태는 회수됨이며 어제 {{time}}에 확인했습니다.",
+        "서버가 실행 중입니다. 마지막으로 확인된 링크 상태는 회수됨이며 어제 {{time}}에 확인했습니다.",
       weekday:
-        "서버가 실행 중입니다. 링크의 마지막 상태는 회수됨이며 {{day}} {{time}}에 확인했습니다.",
-      date: "서버가 실행 중입니다. 링크의 마지막 상태는 회수됨이며 {{date}} {{time}}에 확인했습니다.",
+        "서버가 실행 중입니다. 마지막으로 확인된 링크 상태는 회수됨이며 {{day}} {{time}}에 확인했습니다.",
+      date: "서버가 실행 중입니다. 마지막으로 확인된 링크 상태는 회수됨이며 {{date}} {{time}}에 확인했습니다.",
     },
-    linkWithdrawnUnchecked: "서버가 실행 중입니다. 링크의 마지막 상태는 회수됨입니다.",
+    linkWithdrawnUnchecked: "서버가 실행 중입니다. 마지막으로 확인된 링크 상태는 회수됨입니다.",
     running: {
-      today: "마지막 상태: 실행 중, {{time}}에 확인. 이후 확인되지 않았습니다.",
-      yesterday: "마지막 상태: 실행 중, 어제 {{time}}에 확인. 이후 확인되지 않았습니다.",
-      weekday: "마지막 상태: 실행 중, {{day}} {{time}}에 확인. 이후 확인되지 않았습니다.",
-      date: "마지막 상태: 실행 중, {{date}} {{time}}에 확인. 이후 확인되지 않았습니다.",
+      today: "마지막으로 확인된 상태: 실행 중, {{time}}에 확인. 이후 확인되지 않았습니다.",
+      yesterday: "마지막으로 확인된 상태: 실행 중, 어제 {{time}}에 확인. 이후 확인되지 않았습니다.",
+      weekday:
+        "마지막으로 확인된 상태: 실행 중, {{day}} {{time}}에 확인. 이후 확인되지 않았습니다.",
+      date: "마지막으로 확인된 상태: 실행 중, {{date}} {{time}}에 확인. 이후 확인되지 않았습니다.",
     },
     starting: {
-      today: "마지막 상태: 시작 중, {{time}}에 확인. 이후 확인되지 않았습니다.",
-      yesterday: "마지막 상태: 시작 중, 어제 {{time}}에 확인. 이후 확인되지 않았습니다.",
-      weekday: "마지막 상태: 시작 중, {{day}} {{time}}에 확인. 이후 확인되지 않았습니다.",
-      date: "마지막 상태: 시작 중, {{date}} {{time}}에 확인. 이후 확인되지 않았습니다.",
+      today: "마지막으로 확인된 상태: 시작 중, {{time}}에 확인. 이후 확인되지 않았습니다.",
+      yesterday: "마지막으로 확인된 상태: 시작 중, 어제 {{time}}에 확인. 이후 확인되지 않았습니다.",
+      weekday:
+        "마지막으로 확인된 상태: 시작 중, {{day}} {{time}}에 확인. 이후 확인되지 않았습니다.",
+      date: "마지막으로 확인된 상태: 시작 중, {{date}} {{time}}에 확인. 이후 확인되지 않았습니다.",
     },
     notResponding: {
-      today: "마지막 상태: 응답 없음, {{time}}에 확인. 이후 확인되지 않았습니다.",
-      yesterday: "마지막 상태: 응답 없음, 어제 {{time}}에 확인. 이후 확인되지 않았습니다.",
-      weekday: "마지막 상태: 응답 없음, {{day}} {{time}}에 확인. 이후 확인되지 않았습니다.",
-      date: "마지막 상태: 응답 없음, {{date}} {{time}}에 확인. 이후 확인되지 않았습니다.",
+      today: "마지막으로 확인된 상태: 응답 없음, {{time}}에 확인. 이후 확인되지 않았습니다.",
+      yesterday:
+        "마지막으로 확인된 상태: 응답 없음, 어제 {{time}}에 확인. 이후 확인되지 않았습니다.",
+      weekday:
+        "마지막으로 확인된 상태: 응답 없음, {{day}} {{time}}에 확인. 이후 확인되지 않았습니다.",
+      date: "마지막으로 확인된 상태: 응답 없음, {{date}} {{time}}에 확인. 이후 확인되지 않았습니다.",
     },
     stopped: {
-      today: "마지막 상태: {{time}}에 중지됨. 이후 확인되지 않았습니다.",
-      yesterday: "마지막 상태: 어제 {{time}}에 중지됨. 이후 확인되지 않았습니다.",
-      weekday: "마지막 상태: {{day}} {{time}}에 중지됨. 이후 확인되지 않았습니다.",
-      date: "마지막 상태: {{date}} {{time}}에 중지됨. 이후 확인되지 않았습니다.",
+      today: "마지막으로 확인된 상태: {{time}}에 중지됨. 이후 확인되지 않았습니다.",
+      yesterday: "마지막으로 확인된 상태: 어제 {{time}}에 중지됨. 이후 확인되지 않았습니다.",
+      weekday: "마지막으로 확인된 상태: {{day}} {{time}}에 중지됨. 이후 확인되지 않았습니다.",
+      date: "마지막으로 확인된 상태: {{date}} {{time}}에 중지됨. 이후 확인되지 않았습니다.",
     },
-    unchecked: "마지막 상태가 최신이 아닙니다.",
+    unchecked: "마지막으로 확인된 상태는 최신이 아닙니다.",
   },
   short: {
     notResponding: "응답 없음",
@@ -648,7 +653,7 @@ const ko: PreviewStatusStrings = {
     didntStop: "중지 실패",
     linkWithdrawn: "링크 회수됨",
     unconfirmed: "확인 안 됨",
-    lastKnown: "마지막 상태",
+    lastKnown: "최신 아님",
   },
   actions: {
     start: "시작",
@@ -786,7 +791,7 @@ const ptBR: PreviewStatusStrings = {
     didntStop: "Não parou",
     linkWithdrawn: "Link retirado",
     unconfirmed: "Não confirmado",
-    lastKnown: "Último estado",
+    lastKnown: "Desatualizado",
   },
   actions: {
     start: "Iniciar",
@@ -1177,7 +1182,7 @@ const ar: PreviewStatusStrings = {
     didntStop: "لم تتوقف",
     linkWithdrawn: "الرابط مسحوب",
     unconfirmed: "غير مؤكد",
-    lastKnown: "آخر حالة",
+    lastKnown: "غير محدّث",
   },
   actions: {
     start: "بدء",

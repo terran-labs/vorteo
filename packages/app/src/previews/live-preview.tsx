@@ -111,7 +111,7 @@ export function LivePreviewStatus({ serverId, live }: { serverId: string; live: 
   // As in the scripts menu: wait while a request for this preview is sent or still with the
   // broker, since a second press would only be refused as busy.
   const busy =
-    actions.isStopPending ||
+    actions.isStopPendingFor(name) ||
     actions.isPreviewPendingFor(name) ||
     previewRequestInFlight(live.script.preview);
   const button = (() => {

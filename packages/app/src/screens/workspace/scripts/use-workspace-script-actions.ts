@@ -41,6 +41,8 @@ export interface WorkspaceScriptActions {
   /** Whether this preview's own start, restart or stop request is still being sent. */
   isPreviewPendingFor: (scriptName: string) => boolean;
   isStopPending: boolean;
+  /** Whether this script's own terminal stop is still being sent. */
+  isStopPendingFor: (scriptName: string) => boolean;
 }
 
 export interface UseWorkspaceScriptActionsInput {
@@ -298,6 +300,8 @@ export function useWorkspaceScriptActions({
       isPreviewPendingFor: (scriptName: string) =>
         previewMutation.isPending && previewMutation.variables?.scriptName === scriptName,
       isStopPending: stopScriptMutation.isPending,
+      isStopPendingFor: (scriptName: string) =>
+        stopScriptMutation.isPending && stopScriptMutation.variables === scriptName,
     }),
     [
       start,
@@ -311,6 +315,7 @@ export function useWorkspaceScriptActions({
       previewMutation.isPending,
       previewMutation.variables,
       stopScriptMutation.isPending,
+      stopScriptMutation.variables,
     ],
   );
 }
