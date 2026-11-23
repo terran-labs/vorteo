@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import {
+  CreateAgentRequestMessageSchema,
   MutableDaemonConfigSchema,
   MutableDaemonConfigPatchSchema,
   UsageReportEntrySchema,
@@ -797,4 +798,34 @@ test("account quota policy is optional and later shapes stay readable", () => {
   expect(MutableDaemonConfigPatchSchema.parse({ accountQuotaPolicy: null })).toEqual({
     accountQuotaPolicy: null,
   });
+});
+
+test("forwarded governance on a create is optional, and an older Dev drops it (#360 C2)", () => {
+  const create = {
+    type: "create_agent_request",
+    requestId: "forwarded",
+    config: { provider: "codex", cwd: "/work" },
+    labels: { "paseo.parent-agent-id": "host-worker", "paseo.parent-server-id": "srv_host" },
+  };
+  const forwardedGovernance = {
+    supervisorAgentId: "host-coordinator",
+    serverId: "srv_host",
+    workerProfileId: "shared-profile/worker",
+  };
+  expect(SessionInboundMessageSchema.parse({ ...create, forwardedGovernance })).toMatchObject({
+    forwardedGovernance,
+  });
+  expect(SessionInboundMessageSchema.parse(create)).not.toHaveProperty("forwardedGovernance");
+  // An older receiver's schema strips the field and creates the thread unchanged.
+  const older = CreateAgentRequestMessageSchema.omit({ forwardedGovernance: true });
+  const parsed = older.parse({ ...create, forwardedGovernance });
+  expect(parsed).not.toHaveProperty("forwardedGovernance");
+  expect(parsed.labels).toEqual(create.labels);
+  // Dev advertises the capability; a Host sends the field only when it is present.
+  const info = { status: "server_info", serverId: "srv_dev", features: {} };
+  expect(
+    ServerInfoStatusPayloadSchema.parse({ ...info, features: { forwardedGovernance: true } })
+      .features?.forwardedGovernance,
+  ).toBe(true);
+  expect(ServerInfoStatusPayloadSchema.parse(info).features?.forwardedGovernance).toBeUndefined();
 });

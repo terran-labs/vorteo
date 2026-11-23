@@ -188,8 +188,9 @@ import {
   readPresetFencePolicyFile,
   writePresetFencePolicyFile,
 } from "./agent/lead-launch/fence-policy.js";
-import type { PresetFencePolicy } from "@getpaseo/protocol/messages";
+import type { ForwardedGovernance, PresetFencePolicy } from "@getpaseo/protocol/messages";
 import {
+  admitForwardedGovernance,
   assertNoReservedLabels,
   isOwnerAppClient,
   checkPresetFence,
@@ -860,6 +861,14 @@ export class Session {
   }
   setRouted(routed: boolean): void {
     this.routed = routed;
+  }
+  /**
+   * Set by the WebSocket server, never from the hello: non-null only when the latest hello arrived
+   * on a host-link channel. The producer server is what the opener claimed (#525).
+   */
+  private hostLink: { producerServerId: string | null } | null = null;
+  setHostLink(link: { producerServerId: string | null } | null): void {
+    this.hostLink = link;
   }
   readonly delivery = new SessionDelivery(
     (source, message) => {
@@ -5988,6 +5997,7 @@ export class Session {
         workspacePromptTitle,
       });
       await this.checkSessionPresetFence(msg.callerAgentId, resolvedIntent, msg.labels);
+      const forwardedGovernance = this.admitForwardedGovernance(msg, resolvedIntent.intent.labels);
       const resolvedCwd = resolve(resolvedIntent.config.cwd);
       if (!(await this.filesystem.isDirectory(resolvedCwd))) {
         throw new Error(`Working directory does not exist or is not a directory: ${resolvedCwd}`);
@@ -6016,6 +6026,18 @@ export class Session {
           config: resolvedIntent.config,
           onCreated: async ({ agentId: registeredAgentId }) => {
             createdAgentId = registeredAgentId;
+            // Before the first prompt, so the thread's first launch is already governed.
+            if (
+              forwardedGovernance &&
+              !(await this.agentStorage.recordForwardedGovernance(
+                registeredAgentId,
+                forwardedGovernance,
+              ))
+            )
+              this.sessionLogger.warn(
+                { code: "forwarded_governance", agentId: registeredAgentId },
+                "Forwarded governance not recorded",
+              );
             await recordCreated?.(registeredAgentId);
             if (initialPrompt && !msg.callerAgentId && !msg.origin) {
               await this.ownerEvidence.record({
@@ -6076,6 +6098,34 @@ export class Session {
       });
       throw error;
     }
+  }
+
+  /**
+   * Governance a Host forwarded with this create, if this session may supply it (#360 C2). A
+   * refused value is dropped and logged; the create itself proceeds unchanged.
+   */
+  private admitForwardedGovernance(
+    msg: CreateAgentRequestMessage,
+    labels: Record<string, string>,
+  ): ForwardedGovernance | null {
+    const decision = admitForwardedGovernance({
+      governance: msg.forwardedGovernance,
+      hostLink: this.hostLink,
+      callerAgentId: msg.callerAgentId,
+      labels,
+      serverId: this.serverId,
+    });
+    if (decision && "refused" in decision)
+      this.sessionLogger.warn(
+        {
+          code: "forwarded_governance",
+          reason: decision.refused,
+          clientType: this.clientType ?? null,
+          claimed: msg.forwardedGovernance,
+        },
+        "Forwarded governance ignored",
+      );
+    return decision && "admitted" in decision ? decision.admitted : null;
   }
 
   /** An agent creating through the CLI is held to its worker preset like create_agent (#360). */
