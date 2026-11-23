@@ -12,6 +12,7 @@ import {
   type PreviewBadgeKey,
   type PreviewDescription,
 } from "@/preview-status/describe";
+import { previewRequestInFlight } from "@/preview-status/use-preview-description";
 import { useWorkspaceScriptActions } from "@/screens/workspace/scripts/use-workspace-script-actions";
 import { useSessionStore, type WorkspaceDescriptor } from "@/stores/session-store";
 import { matchLivePreview } from "./model";
@@ -73,7 +74,7 @@ const BADGE_VARIANTS: Record<PreviewBadgeKey, StatusBadgeVariant> = {
   didntStop: "error",
   linkWithdrawn: "warning",
   unconfirmed: "warning",
-  notCurrent: "muted",
+  lastKnown: "muted",
 };
 
 /** A one-word state over the tile's thumbnail; screen readers hear the whole sentence. */
@@ -90,9 +91,7 @@ export function LivePreviewBadge({ live }: { live: LivePreview }) {
     >
       <StatusBadge
         label={t(`previewStatus.badge.${badge.key}`)}
-        // An old report drops the state's colour rather than its contrast: a faded badge was
-        // unreadable on phones in the light theme.
-        variant={badge.dimmed ? "muted" : BADGE_VARIANTS[badge.key]}
+        variant={BADGE_VARIANTS[badge.key]}
         size="xs"
       />
     </View>
@@ -109,6 +108,12 @@ export function LivePreviewStatus({ serverId, live }: { serverId: string; live: 
   });
   const { action, line } = live.description;
   const name = live.script.scriptName;
+  // As in the scripts menu: wait while a request for this preview is sent or still with the
+  // broker, since a second press would only be refused as busy.
+  const busy =
+    actions.isStopPending ||
+    actions.isPreviewPendingFor(name) ||
+    previewRequestInFlight(live.script.preview);
   const button = (() => {
     switch (action) {
       case "start":
@@ -137,7 +142,7 @@ export function LivePreviewStatus({ serverId, live }: { serverId: string; live: 
           variant="outline"
           size="md"
           style={styles.target}
-          disabled={actions.isPreviewPending}
+          disabled={busy}
           onPress={button.run}
           testID="preview-live-action"
         >

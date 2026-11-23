@@ -224,30 +224,31 @@ describe("runningPreviewListLabel", () => {
 });
 
 describe("previewBadge", () => {
-  it.each<
-    [string, WorkspaceScriptPreview, ("running" | "stopped") | undefined, string | null, boolean?]
-  >([
+  it.each<[string, WorkspaceScriptPreview, ("running" | "stopped") | undefined, string | null]>([
     ["a ready preview has no badge", { state: "ready" }, "running", null],
-    [
-      "a stale ready preview never reads as current",
-      { state: "ready", stale: true },
-      "running",
-      "notCurrent",
-      true,
-    ],
     ["a stopped preview", { state: "stopped", stoppedAt: at(-5) }, "stopped", "stopped"],
+    // An old report never reads as current: its badge says only "Last known", in words.
+    ["a stale ready preview", { state: "ready", stale: true }, "running", "lastKnown"],
+    ["a stale stopped preview", { state: "stopped", stale: true }, "stopped", "lastKnown"],
+    ["a stale starting preview", { state: "starting", stale: true }, "stopped", "lastKnown"],
     [
-      "a stale stopped preview is dimmed",
-      { state: "stopped", stale: true },
-      "stopped",
-      "stopped",
-      true,
+      "a stale preview not responding",
+      { state: "not_responding", stale: true },
+      "running",
+      "lastKnown",
     ],
+    ["a stale withdrawn link", { state: "stopped", stale: true }, "running", "lastKnown"],
     [
       "an archived workspace does not go stale",
       { state: "stopped", stale: true, stopReason: "workspace_unavailable" },
       "stopped",
       "unavailable",
+    ],
+    [
+      "the daemon's own outcome stays current beside a stale report",
+      { state: "ready", stale: true, restart: { status: "failed", at: at(-1), mode: "stop" } },
+      "running",
+      "didntStop",
     ],
     ["a link that needs repair", { state: "stopped", needsReview: true }, "stopped", "needsRepair"],
     [
@@ -282,10 +283,8 @@ describe("previewBadge", () => {
       "unconfirmed",
     ],
     ["a state this app does not know", { state: "paused" }, "running", null],
-  ])("%s", (_name, preview, lifecycle, key, dimmed = false) => {
-    const badge = previewBadge(preview, lifecycle);
-    expect(badge && badge.key).toBe(key);
-    if (badge) expect(badge.dimmed).toBe(dimmed);
+  ])("%s", (_name, preview, lifecycle, key) => {
+    expect(previewBadge(preview, lifecycle)?.key ?? null).toBe(key);
   });
 });
 

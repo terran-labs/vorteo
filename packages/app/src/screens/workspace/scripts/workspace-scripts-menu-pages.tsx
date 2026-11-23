@@ -339,7 +339,9 @@ function RunningScriptPage({
   const preview = usePreviewDescription(script, actions.isManagedPreview(script));
   // Disabled while any request for this preview is pending, here or still with the broker.
   const stopOrRestartBlocked =
-    actions.isStopPending || actions.isPreviewPending || previewRequestInFlight(script.preview);
+    actions.isStopPending ||
+    actions.isPreviewPendingFor(script.scriptName) ||
+    previewRequestInFlight(script.preview);
 
   const handleOpenService = useCallback(() => {
     if (!selected) return;

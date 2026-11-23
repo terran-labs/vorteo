@@ -93,6 +93,17 @@ test.each<[string, string, string | null]>([
   ["another port is not a match", "https://p.example.ts.net:32781/", null],
   ["the same host on its default port is not a match", "https://p.example.ts.net/", null],
   ["plain http is not a match", "http://p.example.ts.net:32780/", null],
+  [
+    "a port that is a prefix of the reserved port is not a match",
+    "https://p.example.ts.net:3278/",
+    null,
+  ],
+  [
+    "a reserved port that is a prefix of the link's port is not a match",
+    "https://q.example.ts.net:32781/",
+    null,
+  ],
+  ["a reserved origin that is not https is refused", "http://p.example.ts.net:32791/", null],
   ["an origin two previews claim matches neither", "https://p.example.ts.net:32790/", null],
   ["a link that is not a URL matches nothing", "not a url", null],
 ])("live link matching: %s", (_name, liveUrl, expected) => {
@@ -108,9 +119,17 @@ test.each<[string, string, string | null]>([
       scripts: [
         service("web", "https://p.example.ts.net:32780"),
         service("api", "https://p.example.ts.net:32790"),
+        // Not something the daemon reserves; matching must refuse it even when equal.
+        service("plain", "http://p.example.ts.net:32791"),
       ],
     },
-    { workspaceId: "wks_b", scripts: [service("web", "https://p.example.ts.net:32790")] },
+    {
+      workspaceId: "wks_b",
+      scripts: [
+        service("web", "https://p.example.ts.net:32790"),
+        service("short", "https://q.example.ts.net:3278"),
+      ],
+    },
   ];
   const match = matchLivePreview(liveUrl, workspaces);
   expect(match && `${match.workspaceId}/${match.script.scriptName}`).toBe(expected);

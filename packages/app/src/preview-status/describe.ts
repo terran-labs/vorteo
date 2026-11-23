@@ -299,7 +299,7 @@ export function describePreview(
   return { ...described, line: staleLine(preview, checked, stoppedAt, t, lifecycle) };
 }
 
-/** A gallery tile's one-word state; the full sentence is its accessibility label. */
+/** A gallery tile's one- or two-word state; the full sentence is its accessibility label. */
 export type PreviewBadgeKey =
   | "starting"
   | "stopping"
@@ -311,12 +311,10 @@ export type PreviewBadgeKey =
   | "didntStop"
   | "linkWithdrawn"
   | "unconfirmed"
-  | "notCurrent";
+  | "lastKnown";
 
 export interface PreviewBadge {
   key: PreviewBadgeKey;
-  /** An old broker report: the badge says what was last known, in a dimmed style. */
-  dimmed: boolean;
 }
 
 function restartBadge(
@@ -335,11 +333,9 @@ function stateBadge(
   preview: WorkspaceScriptPreview,
   lifecycle: PreviewServerLifecycle | undefined,
 ): PreviewBadgeKey | null {
-  if (preview.needsReview) return "needsRepair";
   switch (preview.state) {
     case "ready":
-      // A running preview shows today's view, but an old report must not read as current.
-      return preview.stale ? "notCurrent" : null;
+      return null;
     case "starting":
       return "starting";
     case "not_responding":
@@ -353,16 +349,23 @@ function stateBadge(
 }
 
 /**
- * The badge for a gallery tile, from the same rules as describePreview: the outcome first,
- * then repair, then the state. Null for a ready preview or a state this app does not know.
+ * The badge for a gallery tile, from the same rules as describePreview: the daemon's own
+ * outcome first, then repair, then the broker's state. When the broker's report is old, a
+ * state badge reads only "Last known", in words rather than colour, so it never passes for
+ * current; the opened tile carries the last known state. An archived workspace keeps its
+ * reason, which does not go stale. Null for a current ready preview or an unknown state.
  */
 export function previewBadge(
   preview: WorkspaceScriptPreview,
   lifecycle?: PreviewServerLifecycle,
 ): PreviewBadge | null {
   const restart = currentRestart(preview, lifecycle);
-  const key = (restart ? restartBadge(restart) : null) ?? stateBadge(preview, lifecycle);
-  if (!key) return null;
-  // Why a preview cannot start does not go stale, as in describePreview.
-  return { key, dimmed: Boolean(preview.stale) && key !== "unavailable" };
+  const outcome = restart ? restartBadge(restart) : null;
+  if (outcome) return { key: outcome };
+  if (preview.needsReview) return { key: "needsRepair" };
+  const unavailable = preview.state === "stopped" && preview.stopReason === "workspace_unavailable";
+  const known = preview.state === "ready" || stateBadge(preview, lifecycle) !== null;
+  if (preview.stale && known && !unavailable) return { key: "lastKnown" };
+  const key = stateBadge(preview, lifecycle);
+  return key ? { key } : null;
 }

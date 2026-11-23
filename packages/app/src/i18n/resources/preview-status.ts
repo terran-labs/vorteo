@@ -111,7 +111,8 @@ const en = {
     didntStop: "Didn't stop",
     linkWithdrawn: "Link withdrawn",
     unconfirmed: "Unconfirmed",
-    notCurrent: "Not current",
+    // An old broker report: the state is in the opened tile's "Last known" line.
+    lastKnown: "Last known",
   },
   actions: {
     start: "Start",

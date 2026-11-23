@@ -38,6 +38,8 @@ export interface WorkspaceScriptActions {
   isStartPending: boolean;
   /** A preview start or restart request is in flight; Restart waits for it. */
   isPreviewPending: boolean;
+  /** Whether this preview's own start, restart or stop request is still being sent. */
+  isPreviewPendingFor: (scriptName: string) => boolean;
   isStopPending: boolean;
 }
 
@@ -289,6 +291,9 @@ export function useWorkspaceScriptActions({
       resolveLinks,
       isStartPending: startScriptMutation.isPending || previewMutation.isPending,
       isPreviewPending: previewMutation.isPending,
+      // Keyed by preview, so one request does not disable every row's Stop and Restart.
+      isPreviewPendingFor: (scriptName: string) =>
+        previewMutation.isPending && previewMutation.variables?.scriptName === scriptName,
       isStopPending: stopScriptMutation.isPending,
     }),
     [
@@ -301,6 +306,7 @@ export function useWorkspaceScriptActions({
       resolveLinks,
       startScriptMutation.isPending,
       previewMutation.isPending,
+      previewMutation.variables,
       stopScriptMutation.isPending,
     ],
   );
