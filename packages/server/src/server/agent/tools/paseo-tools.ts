@@ -13,6 +13,8 @@ import {
 import { AgentDirectory } from "../directory.js";
 import { stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { basename } from "node:path";
+import type { AgentProfile as LeadLaunchProfile } from "@getpaseo/protocol/messages";
 import { z } from "zod";
 import { TaskOwnerEvidenceStore } from "../../authorization/task-owner-evidence.js";
 import { ensureValidJson } from "../../json-utils.js";
@@ -57,9 +59,23 @@ import {
 } from "../profile-switch/command.js";
 import {
   createAgentCommand,
+  leadLaunchCreateInput,
   logRefusal,
+  prepareLeadLaunch,
+  type CreateAgentCommandDependencies,
   type CreateAgentFromMcpInput,
 } from "../create-agent/create.js";
+import {
+  leadLaunchQuestion,
+  type LeadLaunchBinding,
+  type LeadLaunchOption,
+  type LeadLaunchRecord,
+} from "../lead-launch/model.js";
+import {
+  checkPresetFence,
+  type PresetFencePath,
+  type PresetFenceRequest,
+} from "../lead-launch/fence.js";
 import type { VoiceCallerContext, VoiceSpeakHandler } from "../../voice-types.js";
 import type { FirstAgentContext } from "../../messages.js";
 import { everyMsToFiveFieldCron } from "@getpaseo/protocol/schedule/cadence";
@@ -739,6 +755,52 @@ function createToolCatalog(
       ),
     );
 
+  // Preset fence (#360): report-only until slice C; see lead-launch/fence.ts.
+  const presetFence = (path: PresetFencePath, request: PresetFenceRequest) =>
+    checkPresetFence(
+      {
+        logger: childLogger,
+        getAgent: (id) => agentManager.getAgent(id),
+        getStored: (id) => agentStorage.get(id),
+      },
+      path,
+      callerAgentId,
+      request,
+    );
+
+  /** The destination daemon does not know this caller's worker preset; check it here. */
+  const fenceRemoteCreate = async (
+    name: string,
+    destination: string | undefined,
+    input: Record<string, unknown>,
+  ): Promise<void> => {
+    if (name !== "create_agent" || destination === options.serverId) return;
+    await presetFence("remote_create_agent", {
+      kind: "launch",
+      profileId: typeof input.profileId === "string" ? input.profileId : null,
+      detached:
+        input.detached === true ||
+        (input.relationship as { kind?: unknown } | undefined)?.kind === "detached",
+    });
+  };
+
+  /** A dry run changes nothing, so only a real switch is checked. */
+  const fenceProfileSwitch = async (agentId: string, dryRun: boolean): Promise<void> => {
+    if (!dryRun)
+      await presetFence("switch_agent_profile", {
+        kind: "change",
+        targetAgentId: agentId,
+        settings: true,
+      });
+  };
+
+  /** Scheduled runs launch without a preset unless their stored target names one. */
+  const scheduleProfileId = (schedule: { target: object }): string | null => {
+    const config =
+      "config" in schedule.target ? (schedule.target.config as { profileId?: unknown }) : null;
+    return typeof config?.profileId === "string" ? config.profileId : null;
+  };
+
   const parseToolInput = async (tool: PaseoToolDefinition, input: unknown): Promise<unknown> => {
     const inputSchema = tool.inputSchema;
     if (!inputSchema) {
@@ -865,6 +927,7 @@ function createToolCatalog(
       };
       handler = async ({ serverId, ...input }, context) => {
         const destination = serverId ?? options.serverId;
+        await fenceRemoteCreate(name, destination, input);
         const remoteNotification = await prepareRemoteNotification(name, destination, input);
         try {
           const response = await hostResolver.use(serverId, (host) =>
@@ -1892,6 +1955,7 @@ function createToolCatalog(
       const ceiling = ceilingReport("switch_agent_profile");
       for (const id of candidates) {
         try {
+          await fenceProfileSwitch(id, dryRun);
           const record = await agentStorage.get(id);
           if (!record) {
             results.push({ agentId: id, outcome: "skipped", error: "Thread no longer exists" });
@@ -2021,24 +2085,7 @@ function createToolCatalog(
       const selectedProvider = resolveRequiredProviderModel(parsedArgs.provider).provider;
       const inheritedConfig = resolveInheritedProviderConfig(selectedProvider);
       const { snapshot, initialPromptStarted } = await createAgentCommand(
-        {
-          agentManager,
-          agentStorage,
-          finishSubscriptions: options.finishSubscriptions?.(),
-          logger: childLogger,
-          paseoHome: options.paseoHome,
-          worktreesRoot: options.worktreesRoot,
-          terminalManager,
-          providerSnapshotManager,
-          createPaseoWorktree: options.createPaseoWorktree,
-          getAgentProfiles: () => daemonConfigStore?.get().agentProfiles ?? [],
-          ...(daemonConfigStore ? { getSharedProviderConfig: () => daemonConfigStore.get() } : {}),
-          validateSharedConfiguration: (selection) =>
-            providerSnapshotManager.validateAgentConfiguration(selection),
-          ...(options.ensureWorkspaceForCreate
-            ? { ensureWorkspaceForCreate: options.ensureWorkspaceForCreate }
-            : {}),
-        },
+        createAgentDependencies(),
         {
           kind: "mcp",
           profileId: parsedArgs.profileId,
@@ -2094,6 +2141,174 @@ function createToolCatalog(
       return response;
     },
   );
+
+  registerTool(
+    "request_lead_launch",
+    {
+      title: "Request a lead launch",
+      description:
+        "Ask the owner to start a lead thread on a preset other than your worker preset, for example the lead of a new workspace. The daemon resolves the exact launch, asks the owner on your thread and starts nothing until the owner chooses an option in the app. There is no timeout and no default. The lead is a peer, not your subagent. You cannot revise the question; withdraw it with update_questions to cancel. The owner's answer arrives as a message with the new thread's ID. Create the workspace first with create_workspace. Only for threads launched with a worker preset; others use create_agent.",
+      inputSchema: {
+        workspaceId: z.string().min(1).describe("Existing workspace for the lead."),
+        profileId: z.string().min(1).describe("Preset to launch, from list_profiles."),
+        provider: z
+          .string()
+          .min(1)
+          .describe("Account (provider ID) to run the preset on, from list_providers."),
+        title: z.string().trim().min(1).max(60).describe("Short title for the lead thread."),
+        initialPrompt: z.string().trim().min(1).describe("The lead's first task."),
+        reason: z
+          .string()
+          .trim()
+          .min(1)
+          .max(400)
+          .describe("Why this preset rather than your worker preset. Shown to the owner as yours."),
+      },
+      outputSchema: {
+        status: z.literal("awaiting_owner"),
+        questionId: z.string(),
+        options: z.array(z.object({ optionId: z.string(), label: z.string() })),
+      },
+    },
+    async ({ workspaceId, profileId, provider, title, initialPrompt, reason }) => {
+      if (!callerAgentId)
+        throw new PaseoToolInputError("request_lead_launch requires an agent-scoped session");
+      const caller = resolveCallerAgent()!;
+      const worker = caller.config.profileLaunch?.worker;
+      if (!worker)
+        throw new PaseoToolInputError(
+          "You have no worker preset, so create_agent already accepts any preset.",
+        );
+      const placement = await resolveCreateAgentWorkspace(
+        { kind: "existing", workspaceId },
+        undefined,
+      );
+      if (!placement.cwd || !placement.workspaceId)
+        throw new PaseoToolInputError(`Workspace ${workspaceId} has no directory`);
+      const launchId = randomUUID();
+      const dependencies = createAgentDependencies();
+      const prepare = (candidateProfileId: string, account: string) =>
+        prepareLeadLaunch(
+          dependencies,
+          leadLaunchCreateInput({
+            callerAgentId,
+            launchId,
+            profileId: candidateProfileId,
+            provider: account,
+            title,
+            initialPrompt,
+            cwd: placement.cwd!,
+            workspaceId: placement.workspaceId!,
+            leadLaunch: { phase: "prepare" },
+          }),
+        );
+      const { launchOptions, workerBinding } = await buildLeadLaunchOptions({
+        worker,
+        profileId,
+        provider,
+        prepare,
+      });
+      const now = new Date().toISOString();
+      const record: LeadLaunchRecord = {
+        id: launchId,
+        callerAgentId,
+        requestedAt: now,
+        title,
+        reason,
+        initialPrompt,
+        options: launchOptions,
+        status: "pending",
+      };
+      await agentManager.requestLeadLaunch(
+        callerAgentId,
+        record,
+        leadLaunchQuestion({
+          record,
+          callerTitle: caller.config.title ?? "A coordinator",
+          workerBinding,
+          workspaceLabel: basename(placement.cwd) || placement.workspaceId,
+          now,
+        }),
+      );
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          status: "awaiting_owner",
+          questionId: launchId,
+          options: launchOptions.map(({ optionId, label }) => ({ optionId, label })),
+        }),
+      };
+    },
+  );
+
+  /**
+   * The requested launch first (its refusal reaches the agent unchanged), then up to three other
+   * presets that resolve on the same account (owner decision, 22 November), then the worker preset.
+   */
+  async function buildLeadLaunchOptions(params: {
+    worker: LeadLaunchProfile;
+    profileId: string;
+    provider: string;
+    prepare: (profileId: string, account: string) => Promise<LeadLaunchBinding>;
+  }): Promise<{ launchOptions: LeadLaunchOption[]; workerBinding: LeadLaunchBinding | null }> {
+    const { worker, profileId, prepare } = params;
+    const tryPrepare = (id: string, account: string) => prepare(id, account).catch(() => null);
+    const requested = await prepare(profileId, params.provider);
+    const config = daemonConfigStore?.get();
+    const profiles =
+      config?.sharedProviderPreferences && config
+        ? sharedProfileDefinitions(config.sharedProviderPreferences, config.providers)
+        : (config?.agentProfiles ?? []);
+    const name = profiles.find((profile) => profile.id === profileId)?.name ?? profileId;
+    const launchOptions: LeadLaunchOption[] = [
+      { optionId: "requested", profileId, label: `Start on ${name}`, binding: requested },
+    ];
+    const candidates = profiles
+      .filter((profile) => profile.id !== profileId && profile.id !== worker.id)
+      .slice(0, 8);
+    for (const profile of candidates) {
+      if (launchOptions.length >= 4) break;
+      const binding = await tryPrepare(profile.id, requested.provider);
+      if (binding)
+        launchOptions.push({
+          optionId: `alternative-${launchOptions.length}`,
+          profileId: profile.id,
+          label: `Start on ${profile.name}`,
+          binding,
+        });
+    }
+    if (profileId === worker.id) return { launchOptions, workerBinding: requested };
+    const workerBinding = await tryPrepare(worker.id, worker.provider);
+    if (workerBinding)
+      launchOptions.push({
+        optionId: "worker",
+        profileId: worker.id,
+        label: `Start on the worker preset (${worker.name})`,
+        binding: workerBinding,
+      });
+    return { launchOptions, workerBinding };
+  }
+
+  function createAgentDependencies(): CreateAgentCommandDependencies {
+    return {
+      agentManager,
+      agentStorage,
+      finishSubscriptions: options.finishSubscriptions?.(),
+      logger: childLogger,
+      paseoHome: options.paseoHome,
+      worktreesRoot: options.worktreesRoot,
+      terminalManager,
+      providerSnapshotManager,
+      createPaseoWorktree: options.createPaseoWorktree,
+      getAgentProfiles: () => daemonConfigStore?.get().agentProfiles ?? [],
+      ...(daemonConfigStore ? { getSharedProviderConfig: () => daemonConfigStore.get() } : {}),
+      validateSharedConfiguration: (selection) =>
+        providerSnapshotManager.validateAgentConfiguration(selection),
+      ...(options.ensureWorkspaceForCreate
+        ? { ensureWorkspaceForCreate: options.ensureWorkspaceForCreate }
+        : {}),
+    };
+  }
 
   type ResolvedCreateAgentToolArgs =
     | {
@@ -2471,6 +2686,12 @@ function createToolCatalog(
       if (callerAgentId && !agentManager.getAgent(agentId) && !(await agentStorage.get(agentId))) {
         throw new PaseoToolInputError(`Agent ${agentId} not found`);
       }
+      if (sessionMode)
+        await presetFence("send_agent_prompt", {
+          kind: "change",
+          targetAgentId: agentId,
+          settings: true,
+        });
       const notifying = Boolean(callerAgentId && notifyOnFinish);
       const notification =
         notifying && callerAgentId
@@ -2830,6 +3051,12 @@ function createToolCatalog(
     },
     async ({ agentId, name, labels, settings }) => {
       assertAgentCanSetFeatures(settings?.features);
+      await presetFence("update_agent", {
+        kind: "change",
+        targetAgentId: agentId,
+        settings: Object.values(settings ?? {}).some((value) => value !== undefined),
+        labels: labels ?? null,
+      });
       const ceiling = ceilingReport("update_agent");
       if (settings?.modeId !== undefined) {
         await agentManager.setAgentMode(agentId, settings.modeId);
@@ -3232,6 +3459,8 @@ function createToolCatalog(
       }
 
       const expiresAt = buildScheduleExpiry(expiresIn);
+      // Agent-created schedules carry no preset, so each run would leave the worker preset.
+      await presetFence("create_schedule", { kind: "launch", profileId: null });
       const schedule = await scheduleService.createOrReplace({
         prompt: prompt.trim(),
         cadence: buildCronScheduleCadence({
@@ -3417,6 +3646,10 @@ function createToolCatalog(
       }
 
       const schedule = await requireScheduleTarget(id, "new-agent");
+      await presetFence("resume_schedule", {
+        kind: "launch",
+        profileId: scheduleProfileId(schedule),
+      });
       await runScheduleAction(() => scheduleService.resume(id));
       guardCeiling(undefined, () =>
         reportSchedule(ceilingReport("resume_schedule"), schedule, { triggered: true }),
@@ -3517,6 +3750,10 @@ function createToolCatalog(
       }
 
       const previous = await requireScheduleTarget(input.id, "new-agent");
+      await presetFence("update_schedule", {
+        kind: "launch",
+        profileId: scheduleProfileId(previous),
+      });
       const schedule = await scheduleService.update(buildScheduleUpdateInput(input));
       guardCeiling(undefined, () =>
         reportSchedule(ceilingReport("update_schedule"), schedule, { previous }),
@@ -3567,7 +3804,11 @@ function createToolCatalog(
       if (!scheduleService) {
         throw new Error("Schedule service is not configured");
       }
-      await requireScheduleTarget(id, "new-agent");
+      const target = await requireScheduleTarget(id, "new-agent");
+      await presetFence("run_schedule_once", {
+        kind: "launch",
+        profileId: scheduleProfileId(target),
+      });
       const schedule = await runScheduleAction(() => scheduleService.runOnce(id));
       guardCeiling(undefined, () =>
         reportSchedule(ceilingReport("run_schedule_once"), schedule, { triggered: true }),
@@ -3776,6 +4017,11 @@ function createToolCatalog(
       },
     },
     async ({ agentId, modeId }) => {
+      await presetFence("set_agent_mode", {
+        kind: "change",
+        targetAgentId: agentId,
+        settings: true,
+      });
       const ceiling = ceilingReport("set_agent_mode");
       const result = await setAgentModeCommand({ agentManager }, { agentId, modeId });
       guardCeiling(undefined, () => ceiling.report(agentId));

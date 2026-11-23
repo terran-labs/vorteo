@@ -12,6 +12,8 @@ const MAX_QUESTIONS = 200;
 /** Closed questions beyond this many are pruned once answers are delivered. */
 const RETAINED_CLOSED_QUESTIONS = 20;
 const MIN_DEFAULT_WINDOW_MS = 15 * 60_000;
+/** Questions whose askedBy starts with this were built by the daemon, not an agent. */
+export const DAEMON_ASKED_BY_PREFIX = "daemon:";
 
 export class QuestionError extends Error {
   constructor(
@@ -245,6 +247,13 @@ export function mutateQuestions(
     return [...questions, asked];
   }
   const question = requireQuestion(questions, mutation.id);
+  // Daemon-asked questions carry a stored decision, such as a lead launch. The agent may withdraw
+  // one, which cancels it, but may never reword it or change its options.
+  if (mutation.operation === "update" && question.askedBy.startsWith(DAEMON_ASKED_BY_PREFIX))
+    throw new QuestionError(
+      "conflict",
+      "The daemon asked this question, so it cannot be revised. Withdraw it to cancel the request.",
+    );
   if (mutation.operation === "withdraw") {
     if (question.status === "withdrawn") return questions;
     if (question.status === "answered")
