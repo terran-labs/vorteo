@@ -45,6 +45,8 @@ export function runningPreviewListLabel(
   if (preview && script.preview?.stale) return { description: preview.line };
   // A withdrawn link on a running server is not plainly "Running": say so under the name.
   if (preview && script.preview?.state === "stopped") return { description: preview.line };
+  // A stop in flight or one that failed is news about this running row: show it whole.
+  if (preview?.stop) return { description: preview.line };
   if (preview && script.preview?.state === "not_responding") {
     return { valueKey: "previewStatus.short.notResponding" };
   }

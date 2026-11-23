@@ -22,6 +22,8 @@ export interface PreviewDescription {
    * is never hidden.
    */
   truncate?: boolean;
+  /** A stop in flight or its outcome, which a running row must show rather than "Running". */
+  stop?: boolean;
 }
 
 /** Which whole-sentence form a time takes. A future time (clock skew) is never "today". */
@@ -149,12 +151,23 @@ function stopOutcomeDescription(
         action: "stop",
         confirm: false,
         truncate: true,
+        stop: true,
       };
     }
-    return { line: t("previewStatus.line.stopFailedNoDetail"), action: "stop", confirm: false };
+    return {
+      line: t("previewStatus.line.stopFailedNoDetail"),
+      action: "stop",
+      confirm: false,
+      stop: true,
+    };
   }
   if (restart.status === "unconfirmed") {
-    return { line: t("previewStatus.line.stopUnconfirmed"), action: "stop", confirm: false };
+    return {
+      line: t("previewStatus.line.stopUnconfirmed"),
+      action: "stop",
+      confirm: false,
+      stop: true,
+    };
   }
   return null;
 }
@@ -167,7 +180,7 @@ function restartDescription(
     return { line: t("previewStatus.line.starting"), action: null, confirm: false };
   }
   if (restart.status === "stopping") {
-    return { line: t("previewStatus.line.stopping"), action: null, confirm: false };
+    return { line: t("previewStatus.line.stopping"), action: null, confirm: false, stop: true };
   }
   // An older daemon names no mode; its outcomes come only from starts and restarts.
   if (restart.mode === "stop") return stopOutcomeDescription(restart, t);
