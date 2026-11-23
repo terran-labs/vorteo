@@ -45,6 +45,9 @@ import type { Logger } from "pino";
 import { QueueGoalHoldSchema, type QueueGoalHold } from "../message-queue/goal-hold.js";
 import { ProfileSwitchRecordSchema } from "./profile-switch/history.js";
 import {
+  LEAD_LAUNCH_EXPIRED_ANSWER,
+  LEAD_LAUNCH_EXPIRY_ACTOR,
+  leadLaunchExpired,
   claimLeadLaunch,
   LeadLaunchError,
   LeadLaunchRecordSchema,
@@ -670,6 +673,63 @@ export class AgentStorage {
     if (committed === null)
       throw new QuestionError("not_found", "The thread was deleted before the launch was saved.");
     return structuredClone(committed);
+  }
+
+  /**
+   * Closes an unanswered confirmation after its time limit, in one write: the record becomes
+   * cancelled with code `expired`, and the card is closed with a plain outcome line recorded as
+   * the daemon's, never the owner's. Returns the closed question, or null when the owner answered,
+   * the agent withdrew, or the request has not expired.
+   */
+  async expireLeadLaunch(
+    agentId: string,
+    launchId: string,
+    now: number,
+  ): Promise<AgentQuestion | null> {
+    await this.load();
+    let closed: AgentQuestion | null = null;
+    await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        const launch = record?.leadLaunches?.find((item) => item.id === launchId);
+        const question = record?.questions?.find((item) => item.id === launchId);
+        if (!record || !launch || !leadLaunchExpired(launch, now) || question?.status !== "open")
+          return null;
+        const at = new Date(now).toISOString();
+        const expired: LeadLaunchRecord = {
+          ...launch,
+          status: "cancelled",
+          failureCode: "expired",
+          decidedAt: at,
+        };
+        closed = {
+          ...question,
+          status: "answered",
+          answer: LEAD_LAUNCH_EXPIRED_ANSWER,
+          answeredAt: at,
+          answeredBy: LEAD_LAUNCH_EXPIRY_ACTOR,
+        };
+        return {
+          ...record,
+          questions: record.questions!.map((item) => (item.id === launchId ? closed! : item)),
+          leadLaunches: record.leadLaunches!.map((item) => (item.id === launchId ? expired : item)),
+        };
+      },
+      { questionsWrite: true },
+    );
+    return closed ? structuredClone(closed) : null;
+  }
+
+  /** Pending launches whose time limit has passed, by coordinator thread. */
+  async listExpiredLeadLaunches(
+    now: number,
+  ): Promise<Array<{ agentId: string; launchId: string }>> {
+    const records = await this.list();
+    return records.flatMap((record) =>
+      (record.leadLaunches ?? [])
+        .filter((launch) => leadLaunchExpired(launch, now))
+        .map((launch) => ({ agentId: record.id, launchId: launch.id })),
+    );
   }
 
   async readLeadLaunch(agentId: string, launchId: string): Promise<LeadLaunchRecord | null> {

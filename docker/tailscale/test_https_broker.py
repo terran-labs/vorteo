@@ -13,7 +13,7 @@ import time
 import unittest
 from unittest.mock import patch
 import uuid
-from https_broker import Broker, ListenerLost, Runtime, NativeRuntime, RESTART_ATTRIBUTION_SECONDS, STATUS_FIELDS, STATUS_FILE, _libproc_socket_types, atomic, loopback_listener_port, safe_read, validate
+from https_broker import Broker, ListenerLost, Runtime, NativeRuntime, WorkspaceUnavailable, public_error, RESTART_ATTRIBUTION_SECONDS, STATUS_FIELDS, STATUS_FILE, _libproc_socket_types, atomic, loopback_listener_port, safe_read, validate
 
 
 class NativeWorkspacePolicyTests(unittest.TestCase):
@@ -364,6 +364,10 @@ class NativeWorkspacePolicyTests(unittest.TestCase):
             workspace['archivedAt'] = '2026-10-11'
             with self.assertRaisesRegex(ValueError, 'archived'):
                 runtime.current('wks_native', 'preview')
+            # A stop still finds the archived workspace's service by its exact name.
+            self.assertEqual(runtime.stoppable('wks_native', 'preview')['scriptName'], 'preview')
+            with self.assertRaisesRegex(ValueError, 'could not be found to stop'):
+                runtime.stoppable('wks_native', 'other')
             del workspace['archivedAt']
             alias = root / 'alias'
             alias.symlink_to(root, target_is_directory=True)
@@ -644,9 +648,17 @@ class Fake:
     def daemon_worker(self): return {'identity': self.daemon, 'startedAt': self.daemon_started}
     def preflight(self): pass
     def registered_ports(self): return {33487,39000}
+    # 'archived': start policy refuses the workspace; 'missing': the daemon no longer knows it.
+    workspace_state = 'available'
     def current(self, w, s):
+        if self.workspace_state != 'available': raise WorkspaceUnavailable('Unknown, archived or unsupported workspace')
         if w != 'wks_test' or s != 'preview': raise ValueError('Unknown service')
         return copy.deepcopy(self.entry)
+    def stoppable(self, w, s):
+        if self.workspace_state == 'missing' or w != 'wks_test' or s != 'preview':
+            return Runtime.stoppable(self, w, s)
+        return copy.deepcopy(self.entry)
+    def cli(self, args): raise ValueError('Native daemon CLI refused the preview operation')
     def publication(self):
         if any(self.config.get('AllowFunnel', {}).values()): raise ValueError('Unexpected Funnel')
         return copy.deepcopy(self.config)
@@ -706,6 +718,17 @@ class Tests(unittest.TestCase):
         with self.assertRaises(ValueError):self.b.handle(queued)
         self.b.reconcile();self.assertEqual(self.runtime.starts,0);self.assertNotIn('44444',self.runtime.config['TCP'])
         self.assertEqual(self.b.handle(self.request())['frontendPort'],44444)
+    def test_stop_in_unavailable_workspace_still_ends_the_service(self):
+        # Stopping is always safe, so start policy for an archived workspace must not keep it running.
+        self.b.handle(self.request()); self.runtime.workspace_state = 'archived'
+        self.assertEqual(self.b.handle(self.request('stop')), {'status': 'stopped'})
+        self.assertEqual(self.runtime.entry['lifecycle'], 'stopped')
+        self.assertNotIn('44444', self.runtime.config['TCP'])
+        # A workspace the daemon no longer knows cannot name its service: say so, in a fixed message.
+        self.runtime.entry['lifecycle'] = 'running'; self.runtime.workspace_state = 'missing'
+        with self.assertRaises(WorkspaceUnavailable) as raised: self.b.handle(self.request('stop'))
+        self.assertEqual(public_error(str(raised.exception)), str(raised.exception))
+        self.assertEqual(self.b.ledger['entries']['wks_test.preview']['desired'], 'stopped')
     def test_backend_reuse_fails_closed(self):
         self.b.handle(self.request());self.runtime.entry['terminalId']='different-process'
         self.b.reconcile();self.assertNotIn('44444',self.runtime.config['TCP']);self.assertEqual(self.runtime.starts,0)

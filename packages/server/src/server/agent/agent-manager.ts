@@ -19,6 +19,8 @@ import {
 } from "./questions/model.js";
 import { editThreadGoal, type ThreadGoalEdit } from "./agent-goal.js";
 import {
+  LEAD_LAUNCH_EXPIRY_ACTOR,
+  leadLaunchExpired,
   LEAD_LAUNCH_ID_LABEL,
   leadLaunchOutcomeText,
   chosenOptionId,
@@ -3007,6 +3009,46 @@ export class AgentManager {
 
   prepareForShutdown(): void {
     this.acceptingAgentRegistrations = false;
+    if (this.leadLaunchExpiryTimer) clearInterval(this.leadLaunchExpiryTimer);
+    this.leadLaunchExpiryTimer = null;
+  }
+
+  private leadLaunchExpiryTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Closes expired lead launch requests now and then hourly (#360, decision D4). */
+  startLeadLaunchExpiry(intervalMs = 60 * 60_000): void {
+    const sweep = () =>
+      void this.expireLeadLaunches().catch((error: unknown) =>
+        this.logger.warn({ err: error }, "Lead launch expiry sweep failed"),
+      );
+    sweep();
+    this.leadLaunchExpiryTimer ??= setInterval(sweep, intervalMs);
+    this.leadLaunchExpiryTimer.unref?.();
+  }
+
+  /** Closes every pending lead launch request past its time limit. */
+  async expireLeadLaunches(now = Date.now()): Promise<void> {
+    for (const { agentId, launchId } of await this.requireRegistry().listExpiredLeadLaunches(now))
+      await this.closeExpiredLeadLaunch(agentId, launchId, now);
+  }
+
+  /**
+   * Closes one expired request: the card shows a plain outcome line and the coordinator is told
+   * to ask again. A thread that is not loaded receives the message when it next loads.
+   */
+  private async closeExpiredLeadLaunch(agentId: string, launchId: string, now: number) {
+    const registry = this.requireRegistry();
+    const closed = await registry.expireLeadLaunch(agentId, launchId, now);
+    if (!closed) return;
+    this.logger.info({ agentId, launchId }, "Lead launch request expired");
+    const agent = this.agents.get(agentId);
+    if (!agent) return;
+    agent.questions = (await registry.get(agentId))?.questions;
+    this.emitState(agent, { persist: false });
+    if (!this.messageQueueControl?.queueQuestionAnswer) return;
+    await this.deliverAnswer(agentId, closed).catch((error: unknown) =>
+      this.logger.warn({ err: error, agentId }, "Expired lead launch notice was not delivered"),
+    );
   }
 
   setPaseoToolsEnabled(enabled: boolean): void {
@@ -6380,6 +6422,13 @@ export class AgentManager {
     if (!this.messageQueueControl?.queueQuestionAnswer)
       throw new QuestionError("unavailable", "This daemon cannot deliver answers to the thread.");
     const launch = await this.requireRegistry().readLeadLaunch(agentId, input.questionId);
+    if (launch && leadLaunchExpired(launch, Date.now())) {
+      await this.closeExpiredLeadLaunch(agentId, launch.id, Date.now());
+      throw new QuestionError(
+        "conflict",
+        "This launch request expired after 24 hours, so nothing was started. The agent can ask again.",
+      );
+    }
     if (launch) {
       // A launch answer must name exactly one stored option; free text is never interpreted.
       const question = (await this.readQuestions(agentId)).find(
@@ -6428,11 +6477,11 @@ export class AgentManager {
       return this.recordAnswerReceived(agentId, question.id);
     const launch = await this.requireRegistry().readLeadLaunch(agentId, question.id);
     const outcome = leadLaunchOutcomeText(launch ?? undefined);
-    await queue.queueQuestionAnswer(
-      agentId,
-      question.id,
-      outcome ? `${answerMessage(question)}\n\n${outcome}` : answerMessage(question),
-    );
+    // An expired request was closed by the daemon, not answered by the owner.
+    const expired = question.answeredBy === LEAD_LAUNCH_EXPIRY_ACTOR;
+    let message = answerMessage(question);
+    if (outcome) message = expired ? outcome : `${message}\n\n${outcome}`;
+    await queue.queueQuestionAnswer(agentId, question.id, message);
     const steered = await queue.steerQueuedMessage?.(agentId, messageId, async (item) => {
       const agent = this.agents.get(agentId);
       const turnId = agent?.activeForegroundTurnId ?? agent?.activeTurnId;
@@ -6479,7 +6528,10 @@ export class AgentManager {
     try {
       await registry.appendJournal(agentId, {
         entryId: answerJournalEntryId(question.id),
-        text: answerJournalText(question),
+        text:
+          question.answeredBy === LEAD_LAUNCH_EXPIRY_ACTOR
+            ? "A lead launch request expired after 24 hours without the owner's choice, so nothing was started."
+            : answerJournalText(question),
         machineContext: `questionId=${question.id}\nansweredBy=${question.answeredBy}`,
       });
       const loaded = this.agents.get(agentId);

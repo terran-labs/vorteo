@@ -401,6 +401,19 @@ export {
   type DaemonTimeZone,
 } from "./installation-settings.js";
 
+/**
+ * The preset fence (#360): how the daemon treats agent launches and changes outside a
+ * coordinator's worker preset. "report" logs; "enforce" refuses, except for the paths listed in
+ * `report`, which keep logging. Unknown path names are kept so older daemons never refuse.
+ */
+export const PresetFencePolicySchema = z
+  .object({
+    mode: z.enum(["report", "enforce"]),
+    report: z.array(z.string().min(1).max(64)).max(32).optional(),
+  })
+  .strict();
+export type PresetFencePolicy = z.infer<typeof PresetFencePolicySchema>;
+
 export const MutableDaemonConfigSchema = z
   .object({
     // COMPAT(relayConfig): added in v0.2.6, remove after 2027-01-31 when old daemons are unsupported.
@@ -514,6 +527,10 @@ export const MutableDaemonConfigPatchSchema = z
     // COMPAT(accountQuotaPolicy): added 2026-11-20. null clears the stored policy; the daemon
     // accepts only the bounded version 1 shape.
     accountQuotaPolicy: AccountQuotaPolicyWireSchema.nullable().optional(),
+    // COMPAT(presetFenceSetting): added 2026-11-23. Write-only: the daemon accepts it only from
+    // the owner's app, saves it outside config.json and applies it at the next daemon restart.
+    // It never appears in the returned config. null clears it (report-only).
+    presetFence: PresetFencePolicySchema.nullable().optional(),
   })
   .partial()
   .passthrough();
@@ -2646,6 +2663,9 @@ export const AgentProfileSwitchRequestMessageSchema = z.object({
       projectId: z.string().optional(),
     })
     .optional(),
+  // COMPAT(presetFenceSetting): added 2026-11-23. The CLI names the agent whose shell runs it,
+  // from PASEO_AGENT_ID; the daemon checks that caller against the preset fence. Self-declared.
+  callerAgentId: z.string().optional(),
   requestId: z.string(),
 });
 
@@ -3706,7 +3726,8 @@ export const WorkspaceScriptRestartPreviewRequestSchema = z.object({
   workspaceId: z.string(),
   scriptName: z.string(),
   requestId: z.string(),
-  mode: z.enum(["start", "restart"]).optional(),
+  // "stop" requires `features.previewStop`; an older daemon rejects it.
+  mode: z.enum(["start", "restart", "stop"]).optional(),
 });
 
 export const SubscribeTerminalRequestSchema = z.object({
@@ -4462,6 +4483,7 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(accountQuotaPolicy): added 2026-11-20, retain until 2027-05-20. The daemon
         // stores and returns `accountQuotaPolicy`; it does not enforce floors or pool membership.
         accountQuotaPolicy: z.boolean().optional(),
+        presetFenceSetting: z.boolean().optional(),
         // COMPAT(restartRecovery): added in v0.14.0, remove gate after 2027-04-28.
         resumeOnStartupSetting: z.boolean().optional(),
         // COMPAT(terminalRestoreModes): added in v0.1.81, remove gate after 2026-11-23.
@@ -4723,6 +4745,10 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(previewRestart): added in Vorteo 2026-11, remove gate after 2027-05-23.
         // The daemon accepts workspace.script.restart_preview.request.
         previewRestart: z.boolean().optional(),
+        // COMPAT(previewStop): added in Vorteo 2026-11, remove gate after 2027-05-23.
+        // workspace.script.restart_preview.request accepts mode "stop", and script payloads
+        // carry `preview.origin`.
+        previewStop: z.boolean().optional(),
       })
       .optional(),
   })
@@ -4933,11 +4959,15 @@ export const WorkspaceScriptHealthSchema = z.enum(["healthy", "unhealthy"]);
  * - state: "ready", "not_responding", "starting" or "stopped"
  * - stopReason: "stopped", "exited", "daemon_restart", "config_changed",
  *   "process_changed" or "workspace_unavailable"; absent when the cause is unknown
- * - restart.status: "starting", "failed" or "unconfirmed"
+ * - restart.status: "starting", "stopping", "failed" or "unconfirmed"
+ * - restart.mode: "start", "restart" or "stop", the request the outcome belongs to, so a
+ *   failed stop is not shown as a failed start; absent from older daemons
  * Times are ISO 8601. `stale` means the broker has not reported for over a minute.
  */
 export const WorkspaceScriptPreviewSchema = z.object({
   state: z.string(),
+  /** The broker's reserved HTTPS origin, stopped or running, so a link can be matched to it. */
+  origin: z.string().nullable().optional(),
   stopReason: z.string().nullable().optional(),
   stoppedAt: z.string().nullable().optional(),
   restartedAt: z.string().nullable().optional(),
@@ -4950,6 +4980,7 @@ export const WorkspaceScriptPreviewSchema = z.object({
       status: z.string(),
       error: z.string().nullable().optional(),
       at: z.string(),
+      mode: z.string().optional(),
     })
     .nullable()
     .optional(),
@@ -5636,7 +5667,11 @@ export const WorkspaceScriptRestartPreviewResponseMessageSchema = z.object({
     workspaceId: z.string(),
     scriptName: z.string(),
     accepted: z.boolean(),
-    /** Why it was refused, such as "owner_app_only", "needs_review" or "busy". */
+    /**
+     * Why it was refused, such as "owner_app_only", "needs_review", "busy" (this preview is
+     * already starting or stopping) or "capacity" (the session's share or the daemon's limit
+     * is in use). Clients show the error text for a code they do not know.
+     */
     refusalCode: z.string().nullable().optional(),
     error: z.string().nullable(),
   }),
