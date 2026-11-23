@@ -55,7 +55,9 @@ export type DictationRecordingStoreEvent =
   | { kind: "unavailable"; error: Error }
   | { kind: "incomplete"; id: string }
   /** More of a recording reached the device; the persistence state may have changed. */
-  | { kind: "written"; id: string };
+  | { kind: "written"; id: string }
+  /** An unsent recording was taken over or discarded; open lists should refresh. */
+  | { kind: "unsent-changed" };
 
 /**
  * Where a recording's audio currently lives. "stored" is positive evidence: every segment the
@@ -109,6 +111,9 @@ export interface UnsentDictationRecording {
 }
 
 /** An unsent recording taken over by a composer, with its audio. */
+/** "unavailable": another composer or tab holds it, or it is already gone; nothing was deleted. */
+export type DiscardUnsentResult = "discarded" | "unavailable";
+
 export interface AdoptedDictationRecording {
   recording: StoredDictationRecording;
   segments: string[];
@@ -397,6 +402,17 @@ export class DictationRecordingStore {
   }
 
   private dropRetained(scope: string, entry: RetainedEntry, reason: "space" | "silent"): void {
+    this.removeRetained(scope, entry);
+    if (entry.storedId) {
+      this.release(entry.storedId);
+    }
+    if (reason === "space") {
+      this.emit({ kind: "evicted", recording: this.describeRetained(scope, entry), reason });
+    }
+  }
+
+  /** Takes an entry out of the memory list without releasing its device row. */
+  private removeRetained(scope: string, entry: RetainedEntry): void {
     const list = this.retained.get(scope);
     if (!list) {
       return;
@@ -407,12 +423,6 @@ export class DictationRecordingStore {
     }
     if (list.length === 0) {
       this.retained.delete(scope);
-    }
-    if (entry.storedId) {
-      this.release(entry.storedId);
-    }
-    if (reason === "space") {
-      this.emit({ kind: "evicted", recording: this.describeRetained(scope, entry), reason });
     }
   }
 
@@ -658,6 +668,7 @@ export class DictationRecordingStore {
         this.incomplete.add(entry.storedId);
         this.rescope(entry.storedId, scope, serverId);
       }
+      this.emit({ kind: "unsent-changed" });
       return {
         recording: {
           id: entry.storedId ?? entry.key,
@@ -701,15 +712,23 @@ export class DictationRecordingStore {
       if (partial) {
         this.incomplete.add(key);
       }
-      this.durable.set(key, segments.length);
       const moved: StoredDictationRecording = {
         ...recording,
         scope,
         ...(serverId ? { serverId } : {}),
         segmentCount: segments.length,
       };
+      try {
+        await this.withRetry(() => backend.putRecording(moved));
+      } catch (error) {
+        // The row is unchanged on the device; let it go so every tab lists it again.
+        this.incomplete.delete(key);
+        this.release(key);
+        throw error;
+      }
       known.set(key, moved);
-      await this.withRetry(() => backend.putRecording(moved));
+      this.durable.set(key, segments.length);
+      this.emit({ kind: "unsent-changed" });
       return {
         recording: moved,
         segments,
@@ -719,19 +738,55 @@ export class DictationRecordingStore {
     });
   }
 
-  /** Discards an unsent recording from the list: the only deletion the list performs. */
-  async discardUnsent(key: string): Promise<void> {
+  /**
+   * Discards an unsent recording from the list: the only deletion the list performs. A list can be
+   * stale, so this refuses a recording any composer or tab holds now, and deletes only under its
+   * claim; the claim is released after the row is gone, never before.
+   */
+  async discardUnsent(key: string): Promise<DiscardUnsentResult> {
     for (const [scope, list] of this.retained) {
       const entry = list.find((candidate) => candidate.key === key);
       if (entry) {
-        this.dropRetained(scope, entry, "silent");
+        this.removeRetained(scope, entry);
         if (entry.storedId) {
+          // Still owned by this instance since the handover; delete() releases it afterwards.
           await this.delete(entry.storedId);
         }
-        return;
+        this.emit({ kind: "unsent-changed" });
+        return "discarded";
       }
     }
-    await this.delete(key);
+    const backend = this.backend;
+    if (!backend) {
+      return "unavailable";
+    }
+    const result = await this.exclusive(async (): Promise<DiscardUnsentResult> => {
+      // Re-read: another tab may have taken or deleted it since the list was built.
+      this.known = null;
+      const known = await this.loadKnown(backend);
+      const recording = known.get(key);
+      if (!recording || this.active.has(key)) {
+        return "unavailable";
+      }
+      if (!(await this.claimFor(backend, key))) {
+        return "unavailable";
+      }
+      if (!backend.claim && recording.updatedAt > this.now() - DICTATION_RECORDING_LIVE_WINDOW_MS) {
+        // Without a claim API, a fresh heartbeat means another tab is still writing it.
+        this.release(key);
+        return "unavailable";
+      }
+      try {
+        await this.deleteNow(backend, key);
+      } finally {
+        this.incomplete.delete(key);
+        this.durable.delete(key);
+        this.release(key);
+      }
+      return "discarded";
+    });
+    this.emit({ kind: "unsent-changed" });
+    return result;
   }
 
   private rescope(id: string, scope: string, serverId: string | undefined): void {

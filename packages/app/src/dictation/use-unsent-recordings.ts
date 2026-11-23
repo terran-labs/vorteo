@@ -28,6 +28,20 @@ export function useUnsentRecordings(store: DictationRecordingStore | null): {
     });
   }, [refresh, store]);
 
+  // Store events are per tab, so another tab's changes show up when this tab is shown again.
+  useEffect(() => {
+    if (!store || typeof document === "undefined") {
+      return;
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        refresh();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [refresh, store]);
+
   return { recordings, refresh };
 }
 

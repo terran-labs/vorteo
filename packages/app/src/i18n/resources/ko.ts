@@ -400,6 +400,7 @@ export const ko: TranslationResources = {
         retryHere: "이 입력창에서 다시 시도",
         busy: "먼저 현재 받아쓰기를 끝내거나 버리세요.",
         gone: "이 녹음은 더 이상 사용할 수 없습니다.",
+        retryFailed: "이 녹음을 다시 시도할 수 없습니다. 녹음은 목록에 남아 있습니다.",
         discard: "버리기",
         discardConfirm: "{{date}}의 녹음({{length}})을 버릴까요? 복구할 수 없습니다.",
         keep: "유지",

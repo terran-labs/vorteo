@@ -404,6 +404,7 @@ export const fr: TranslationResources = {
         retryHere: "Réessayer dans cet éditeur",
         busy: "Terminez ou abandonnez d'abord la dictée en cours.",
         gone: "Cet enregistrement n'est plus disponible.",
+        retryFailed: "Impossible de réessayer cet enregistrement. Il est toujours dans la liste.",
         discard: "Abandonner",
         discardConfirm:
           "Abandonner l'enregistrement du {{date}} ({{length}}) ? Il ne pourra pas être récupéré.",

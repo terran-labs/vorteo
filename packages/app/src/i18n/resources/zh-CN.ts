@@ -397,6 +397,7 @@ export const zhCN: TranslationResources = {
         retryHere: "在此输入框中重试",
         busy: "请先完成或放弃当前的听写。",
         gone: "此录音已不可用。",
+        retryFailed: "无法重试此录音。它仍在列表中。",
         discard: "放弃",
         discardConfirm: "要放弃 {{date}} 的录音（{{length}}）吗？放弃后无法恢复。",
         keep: "保留",

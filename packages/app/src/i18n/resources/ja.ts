@@ -405,6 +405,7 @@ export const ja: TranslationResources = {
         retryHere: "この入力欄で再試行",
         busy: "先に現在の音声入力を終えるか破棄してください。",
         gone: "この録音は利用できなくなりました。",
+        retryFailed: "この録音を再試行できませんでした。録音はリストに残っています。",
         discard: "破棄",
         discardConfirm: "{{date}} の録音（{{length}}）を破棄しますか？元に戻せません。",
         keep: "残す",

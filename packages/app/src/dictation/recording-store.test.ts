@@ -264,4 +264,39 @@ describe("DictationRecordingStore", () => {
     expect(byScope["dictation:d"]?.memoryOnly).toBe(true);
     expect(await store.readUnsent(partial)).toEqual(["p0"]);
   });
+
+  it("never deletes from a stale list a recording another tab took, and lets a failed take go", async () => {
+    const locks = new Set<string>();
+    const backend = new MemoryDictationRecordingBackend(locks);
+    const previous = new DictationRecordingStore(backend, { retryDelayMs: 0 });
+    const id = previous.begin("dictation:a", FORMAT)!;
+    previous.append(id, "a0");
+    await previous.flush();
+    previous.release(id);
+
+    const tabA = new DictationRecordingStore(backend, { retryDelayMs: 0 });
+    const tabB = new DictationRecordingStore(backend, { retryDelayMs: 0 });
+    const [staleRow] = await tabB.listUnsent();
+    expect(staleRow?.key).toBe(id);
+
+    // Moving it fails on a storage error: the claim is let go, so every tab lists it again.
+    const putRecording = backend.putRecording.bind(backend);
+    backend.putRecording = () => Promise.reject(new Error("QuotaExceededError"));
+    await expect(tabA.adoptUnsent(id, "dictation:here", undefined)).rejects.toThrow();
+    backend.putRecording = putRecording;
+    expect(locks.has(id)).toBe(false);
+    expect((await tabB.listUnsent()).map((row) => row.key)).toEqual([id]);
+
+    // Tab A takes it for Retry; tab B's stale Discard is refused and the audio survives.
+    expect((await tabA.adoptUnsent(id, "dictation:here", undefined))?.segments).toEqual(["a0"]);
+    expect(await tabB.discardUnsent(staleRow!.key)).toBe("unavailable");
+    expect(backend.segments.get(id)).toEqual(["a0"]);
+    expect(tabA.persistence(id, 1)).toBe("stored");
+
+    // Once tab A lets it go, Discard deletes it and leaves no claim behind.
+    tabA.release(id);
+    expect(await tabB.discardUnsent(id)).toBe("discarded");
+    expect(backend.recordings.has(id)).toBe(false);
+    expect(locks.size).toBe(0);
+  });
 });

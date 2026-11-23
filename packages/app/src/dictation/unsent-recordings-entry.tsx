@@ -73,7 +73,16 @@ export function useUnsentRecordingsEntry(
   const onRetry = useCallback(
     (recording: UnsentDictationRecording) => {
       const retry = async () => {
-        const result = await adoptUnsentRecording(recording.key);
+        let result: AdoptUnsentResult;
+        try {
+          result = await adoptUnsentRecording(recording.key);
+        } catch (error) {
+          // The store let the recording go again, so it stays in every tab's list.
+          console.warn("[UnsentRecordings] Retry could not take the recording", error);
+          onError(new Error(t("message.dictation.unsent.retryFailed")));
+          refresh();
+          return;
+        }
         if (result === "adopted") {
           setVisible(false);
           return;
@@ -89,9 +98,23 @@ export function useUnsentRecordingsEntry(
   );
   const onDiscard = useCallback(
     (recording: UnsentDictationRecording) => {
-      void store?.discardUnsent(recording.key).then(refresh, refresh);
+      if (!store) {
+        return;
+      }
+      const discard = async () => {
+        try {
+          // Refused when another composer or tab took it after this list was built.
+          if ((await store.discardUnsent(recording.key)) === "unavailable") {
+            onError(new Error(t("message.dictation.unsent.gone")));
+          }
+        } catch (error) {
+          console.warn("[UnsentRecordings] Discard failed", error);
+        }
+        refresh();
+      };
+      void discard();
     },
-    [refresh, store],
+    [onError, refresh, store, t],
   );
 
   const count = recordings.length;

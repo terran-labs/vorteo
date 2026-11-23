@@ -486,11 +486,22 @@ describe("useDictation keeps recordings until a transcript is confirmed", () => 
     expect(result).toBe("busy");
     await act(() => here.result.current.discardFailedDictation());
 
-    // Idle now: it moves to this thread, is retried, and the transcript deletes it.
+    // Idle now: it moves to this thread and is retried. A failed retry keeps it on the device.
+    client.failStarts = true;
     await act(async () => {
       result = await here.result.current.adoptUnsentRecording(unsent!.key);
     });
     expect(result).toBe("adopted");
+    await waitFor(() => expect(here.result.current.status).toBe("failed"));
+    await act(async () => {
+      await store.flush();
+    });
+    expect(backend.recordings.get(unsent!.key)?.scope).toBe("dictation:here");
+    expect(here.result.current.recordingPersistence).toBe("stored");
+
+    // The next retry succeeds, and the transcript deletes it.
+    client.failStarts = false;
+    await act(() => here.result.current.retryFailedDictation());
     await waitFor(() =>
       expect(here.onTranscript).toHaveBeenCalledWith("hello world", expect.anything()),
     );
@@ -508,12 +519,20 @@ describe("useDictation keeps recordings until a transcript is confirmed", () => 
 
     const hung = renderDictation(new FakeClient(), store, "dictation:hung");
     await recordSegments(hung.result, ["x0"]);
-    audioSource.stopDelayMs = 60_000;
-    hung.unmount();
-    await new Promise((resolve) => setTimeout(resolve, 5_300));
-    audioSource.stopDelayMs = 0;
+    // The handover gives up waiting for the hung stop after five seconds of fake time.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      audioSource.stopDelayMs = 60_000;
+      hung.unmount();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_001);
+      });
+    } finally {
+      vi.useRealTimers();
+      audioSource.stopDelayMs = 0;
+    }
     const reopened = renderDictation(new FakeClient(), store, "dictation:hung");
     await waitFor(() => expect(reopened.result.current.status).toBe("failed"));
     expect(reopened.result.current.recordingMayBeTruncated).toBe(true);
-  }, 20_000);
+  });
 });

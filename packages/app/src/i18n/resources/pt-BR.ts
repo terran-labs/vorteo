@@ -403,6 +403,7 @@ export const ptBR: TranslationResources = {
         retryHere: "Tentar de novo neste editor",
         busy: "Conclua ou descarte primeiro o ditado atual.",
         gone: "Esta gravação não está mais disponível.",
+        retryFailed: "Não foi possível tentar esta gravação novamente. Ela continua na lista.",
         discard: "Descartar",
         discardConfirm:
           "Descartar a gravação de {{date}} ({{length}})? Ela não poderá ser recuperada.",

@@ -681,6 +681,7 @@ export const en = {
         retryHere: "Retry in this composer",
         busy: "Finish or discard the current dictation first.",
         gone: "This recording is no longer available.",
+        retryFailed: "Could not retry this recording. It is still in the list.",
         discard: "Discard",
         discardConfirm: "Discard the recording from {{date}} ({{length}})? It cannot be recovered.",
         keep: "Keep",

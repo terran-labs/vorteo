@@ -406,6 +406,7 @@ export const es: TranslationResources = {
         retryHere: "Reintentar en este editor",
         busy: "Termina o descarta primero el dictado actual.",
         gone: "Esta grabación ya no está disponible.",
+        retryFailed: "No se pudo reintentar esta grabación. Sigue en la lista.",
         discard: "Descartar",
         discardConfirm: "¿Descartar la grabación del {{date}} ({{length}})? No se puede recuperar.",
         keep: "Conservar",
