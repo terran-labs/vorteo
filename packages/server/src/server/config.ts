@@ -26,7 +26,6 @@ import type {
 import { ProviderOverrideSchema } from "./agent/provider-launch-config.js";
 import { AgentProviderSchema } from "@getpaseo/protocol/provider-manifest";
 import { hashDaemonPassword } from "./auth.js";
-import { PresetFencePolicySchema, type MutableDaemonConfig } from "@getpaseo/protocol/messages";
 import { resolveSpeechConfig } from "./speech/speech-config-resolver.js";
 import { readSpeechSettings } from "./speech/speech-settings.js";
 import { mergeHostnames, parseHostnamesEnv, type HostnamesConfig } from "./hostnames.js";
@@ -543,15 +542,6 @@ function resolveBrowserToolsEnabled(persisted: ReturnType<typeof loadPersistedCo
 }
 
 /**
- * A stored preset fence policy this daemon understands, or undefined (report-only). A shape from
- * a newer daemon is ignored rather than refusing to start.
- */
-function readPresetFencePolicy(value: unknown): MutableDaemonConfig["presetFence"] {
-  const parsed = PresetFencePolicySchema.safeParse(value);
-  return parsed.success ? parsed.data : undefined;
-}
-
-/**
  * Both profile lists stay `undefined` when absent rather than defaulting to an
  * empty array: for terminal profiles that is what selects the built-in
  * defaults, so an empty array has to keep meaning "the user removed them all".
@@ -562,7 +552,6 @@ function resolveProfileLists(persisted: ReturnType<typeof loadPersistedConfig>) 
     agentProfiles: persisted.daemon?.agentProfiles,
     sharedProviderPreferences: persisted.daemon?.sharedProviderPreferences,
     accountQuotaPolicy: persisted.daemon?.accountQuotaPolicy,
-    presetFence: readPresetFencePolicy(persisted.daemon?.presetFence),
     installationResourceBindings: persisted.daemon?.installationResourceBindings,
     // Present even when empty: the coordinator reads the key as support for project policies.
     installationProjectPolicies: persisted.daemon?.installationProjectPolicies ?? {},
@@ -625,7 +614,6 @@ export type ResolvedDaemonSettings = Pick<
   | "agentProfiles"
   | "sharedProviderPreferences"
   | "accountQuotaPolicy"
-  | "presetFence"
   | "installationResourceBindings"
   | "installationProjectPolicies"
   | "primaryConnection"

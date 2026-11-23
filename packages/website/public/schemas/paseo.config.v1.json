@@ -935,16 +935,6 @@
           "required": ["version"],
           "additionalProperties": {}
         },
-        "presetFence": {
-          "type": "object",
-          "properties": {
-            "mode": {
-              "type": "string"
-            }
-          },
-          "required": ["mode"],
-          "additionalProperties": {}
-        },
         "cors": {
           "type": "object",
           "properties": {

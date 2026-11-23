@@ -2944,6 +2944,13 @@ import { installationResourceRevision } from "./execution-installation/settings/
 
 import { ConfigWriterError } from "./config-writer.js";
 
+import {
+  effectivePresetFencePolicy,
+  fixEffectivePresetFencePolicy,
+  presetFencePolicyPath,
+  readPresetFencePolicyFile,
+} from "./agent/lead-launch/fence-policy.js";
+
 function captureConfigFailure(operation: () => unknown): unknown {
   try {
     operation();
@@ -2982,5 +2989,48 @@ test("registered provider defaults remain visible to migration and reload withou
     });
   } finally {
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("the preset fence policy is fixed at startup: config edits and reloads never change it (#360)", async () => {
+  const paseoHome = mkdtempSync(path.join(tmpdir(), "preset-fence-reload-"));
+  try {
+    const store = new DaemonConfigStore(paseoHome, reloadableConfig({}), undefined, {
+      reloadSource: {
+        resolve: (persisted) => ({
+          mutable: reloadableConfig(persisted),
+          overrideControlledPaths: [],
+        }),
+      },
+    });
+    fixEffectivePresetFencePolicy((await readPresetFencePolicyFile(paseoHome)).policy);
+    expect(effectivePresetFencePolicy()).toBeUndefined();
+
+    // The old door: config.json no longer accepts the key, so `paseo daemon config set` cannot.
+    writeFileSync(
+      path.join(paseoHome, "config.json"),
+      JSON.stringify({ daemon: { presetFence: { mode: "enforce" } } }),
+    );
+    expect(() => loadPersistedConfig(paseoHome)).toThrow();
+
+    // Its own file is read only at the next start, never on reload.
+    writeFileSync(path.join(paseoHome, "config.json"), JSON.stringify({}));
+    writeFileSync(presetFencePolicyPath(paseoHome), JSON.stringify({ mode: "enforce" }));
+    await store.reload();
+    expect(effectivePresetFencePolicy()).toBeUndefined();
+    expect(await readPresetFencePolicyFile(paseoHome)).toEqual({
+      policy: { mode: "enforce" },
+      source: "file",
+    });
+
+    // A malformed or partial policy is reported, not silently treated as report.
+    writeFileSync(presetFencePolicyPath(paseoHome), JSON.stringify({ mode: "Enforce" }));
+    expect(await readPresetFencePolicyFile(paseoHome)).toMatchObject({
+      policy: undefined,
+      problem: expect.stringContaining("mode"),
+    });
+  } finally {
+    fixEffectivePresetFencePolicy(undefined);
+    rmSync(paseoHome, { recursive: true, force: true });
   }
 });

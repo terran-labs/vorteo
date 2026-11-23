@@ -6410,7 +6410,7 @@ describe("preset fence (#360)", () => {
     });
   });
 
-  it("refuses only enforceable reasons under enforce, and never a Factory role's launch yet", async () => {
+  it("refuses only enforceable reasons under enforce, with no exemption for a role label", async () => {
     const warnings: unknown[] = [];
     const logger = Object.assign(Object.create(createTestLogger()), {
       warn: (fields: unknown) => warnings.push(fields),
@@ -6448,7 +6448,8 @@ describe("preset fence (#360)", () => {
         "set_agent_mode",
       ),
     ).resolves.toBeUndefined();
-    await expect(check("foreman", launchOther, enforce)).resolves.toBeUndefined();
+    // A Factory role label is never an exemption: a forged label is no better than none.
+    await expect(check("foreman", launchOther, enforce)).rejects.toThrow("request_lead_launch");
     expect(warnings).toContainEqual(
       expect.objectContaining({
         callerAgentId: "foreman",

@@ -183,8 +183,14 @@ import type {
 } from "./agent/agent-manager.js";
 import { createAgentCommand } from "./agent/create-agent/create.js";
 import {
+  effectivePresetFencePolicy,
+  readPresetFencePolicyFile,
+  writePresetFencePolicyFile,
+} from "./agent/lead-launch/fence-policy.js";
+import type { PresetFencePolicy } from "@getpaseo/protocol/messages";
+import {
   assertNoReservedLabels,
-  canWritePresetFence,
+  isOwnerAppClient,
   checkPresetFence,
   type PresetFencePath,
   type PresetFenceRequest,
@@ -4553,6 +4559,8 @@ export class Session {
     labels: Record<string, string> | undefined,
     requestId: string,
   ): Promise<void> {
+    // Only daemon code sets reserved labels; a CLI or other non-app client cannot (#360).
+    if (!isOwnerAppClient(this.clientType)) assertNoReservedLabels(labels);
     this.sessionLogger.info(
       {
         agentId,
@@ -6044,7 +6052,7 @@ export class Session {
     resolved: { config: { profileId?: string }; intent: { parentAgentId: string | null } },
     labels: Record<string, string> | undefined,
   ): Promise<void> {
-    if (callerAgentId) assertNoReservedLabels(labels);
+    if (callerAgentId || !isOwnerAppClient(this.clientType)) assertNoReservedLabels(labels);
     return this.sessionPresetFence("session_create_agent", callerAgentId, {
       kind: "launch",
       profileId: resolved.config.profileId ?? null,
@@ -6067,7 +6075,6 @@ export class Session {
         getAgent: (id) => this.agentManager.getAgent(id),
         getStored: (id) => this.agentStorage.get(id),
         serverId: this.serverId,
-        policy: () => this.daemonConfigStore.get().presetFence,
       },
       path,
       callerAgentId,
@@ -6076,34 +6083,45 @@ export class Session {
   }
 
   /**
-   * Only an owner app session may change the preset fence setting, and every change is logged
-   * with who made it and the values before and after. Other settings are unaffected.
+   * `presetFence` is write-only here (#360). Only an owner app session may send it. It is saved
+   * to its own file, never config.json, and takes effect at the next daemon restart, which goes
+   * through the tracked restart approval. Every save and every refused attempt is logged with the
+   * writer, the policy in force and the stored values before and after. Other settings in the same
+   * request are applied as before.
    */
   private async setDaemonConfig(
     msg: Extract<SessionInboundMessage, { type: "set_daemon_config_request" }>,
   ): Promise<void> {
-    const before = this.daemonConfigStore.get().presetFence ?? null;
-    const writer = `${this.clientType ?? "unknown"}:${this.clientId}`;
-    const touchesFence =
-      Object.hasOwn(msg.config, "presetFence") &&
-      JSON.stringify(msg.config.presetFence ?? null) !== JSON.stringify(before);
-    if (touchesFence && !canWritePresetFence(this.clientType)) {
-      this.sessionLogger.warn(
-        { code: "preset_fence_setting", writer, before, requested: msg.config.presetFence ?? null },
-        "Preset fence setting change refused",
-      );
-      throw new Error("Only the owner's app can change the preset fence setting.");
-    }
-    const config = await this.daemonConfigStore.patchFromClient(msg.config);
-    if (touchesFence)
-      this.sessionLogger.info(
-        { code: "preset_fence_setting", writer, before, after: config.presetFence ?? null },
-        "Preset fence setting changed",
-      );
+    const { presetFence, ...rest } = msg.config;
+    if (Object.hasOwn(msg.config, "presetFence")) await this.savePresetFence(presetFence ?? null);
+    const config =
+      Object.keys(rest).length > 0
+        ? await this.daemonConfigStore.patchFromClient(rest)
+        : this.daemonConfigStore.get();
     this.emit({
       type: "set_daemon_config_response",
       payload: { requestId: msg.requestId, config },
     });
+  }
+
+  private async savePresetFence(requested: PresetFencePolicy | null): Promise<void> {
+    const stored = await readPresetFencePolicyFile(this.paseoHome);
+    const fields = {
+      code: "preset_fence_setting",
+      writer: `${this.clientType ?? "unknown"}:${this.clientId}`,
+      inForce: effectivePresetFencePolicy() ?? null,
+      before: stored.policy ?? null,
+      requested,
+    };
+    if (!isOwnerAppClient(this.clientType)) {
+      this.sessionLogger.warn(fields, "Preset fence setting change refused");
+      throw new Error("Only the owner's app can change the preset fence setting.");
+    }
+    await writePresetFencePolicyFile(this.paseoHome, requested);
+    this.sessionLogger.info(
+      fields,
+      "Preset fence setting saved; it applies at the next daemon restart",
+    );
   }
 
   private async resolveSessionCreateAgentIntent(input: {
@@ -6250,6 +6268,7 @@ export class Session {
   private async handleImportAgentRequest(
     msg: Extract<SessionInboundMessage, { type: "import_agent_request" }>,
   ): Promise<void> {
+    if (!isOwnerAppClient(this.clientType)) assertNoReservedLabels(msg.labels);
     const normalized = normalizeImportAgentRequest(msg);
     if ("error" in normalized) {
       this.emit({

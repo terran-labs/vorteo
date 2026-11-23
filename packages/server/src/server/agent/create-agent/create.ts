@@ -539,7 +539,6 @@ async function fenceInheritedWorkerLaunch(
       getAgent: (id) => dependencies.agentManager.getAgent(id),
       getStored: (id) => dependencies.agentStorage.get(id),
       serverId: dependencies.serverId,
-      policy: () => dependencies.getSharedProviderConfig?.()?.presetFence,
     },
     "create_agent",
     input.callerAgentId,

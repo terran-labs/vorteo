@@ -291,6 +291,7 @@ import { workspaceIdsOnCheckout } from "./workspace-directory.js";
 import { configureGitProcessPolicy } from "../utils/run-git-command.js";
 import { resolveGitProcessPolicy } from "../utils/git-process-scheduler.js";
 import { resolveFirstAgentPromptTitle } from "./agent/create-agent-title.js";
+import { loadStartupPresetFencePolicy } from "./agent/lead-launch/fence-policy.js";
 import {
   createAgentCommand,
   startConfirmedLeadLaunch,
@@ -497,7 +498,6 @@ export interface PaseoDaemonConfig {
   agentProfiles?: AgentProfile[];
   sharedProviderPreferences?: MutableDaemonConfig["sharedProviderPreferences"];
   accountQuotaPolicy?: MutableDaemonConfig["accountQuotaPolicy"];
-  presetFence?: MutableDaemonConfig["presetFence"];
   installationResourceBindings?: MutableDaemonConfig["installationResourceBindings"];
   installationProjectPolicies?: MutableDaemonConfig["installationProjectPolicies"];
   primaryConnection?: MutableDaemonConfig["primaryConnection"];
@@ -687,7 +687,6 @@ function createInitialMutableDaemonConfig(config: ResolvedDaemonSettings): Mutab
     skills: { selection: config.skillSelection },
     sharedProviderPreferences: config.sharedProviderPreferences,
     accountQuotaPolicy: config.accountQuotaPolicy,
-    presetFence: config.presetFence,
     installationResourceBindings: config.installationResourceBindings,
     installationProjectPolicies: config.installationProjectPolicies,
     primaryConnection: config.primaryConnection,
@@ -1602,6 +1601,8 @@ export async function createPaseoDaemon(
     startConfirmedLeadLaunch(createAgentCommandDependencies, confirmed, record),
   );
   agentManager.startLeadLaunchExpiry();
+  // The preset fence policy is read once and fixed for this process (#360); see fence-policy.ts.
+  await loadStartupPresetFencePolicy(config.paseoHome, logger);
   const archiveWorkspaceByIdExternal = (workspaceId: string, requestId: string) =>
     archiveByScope(
       {

@@ -55,6 +55,10 @@ import { deriveProjectKey } from "./project-key.js";
 import type { SessionOptions } from "./session.js";
 import type { SessionInboundMessage, SessionOutboundMessage } from "./messages.js";
 import {
+  effectivePresetFencePolicy,
+  readPresetFencePolicyFile,
+} from "./agent/lead-launch/fence-policy.js";
+import {
   asSessionInternals as asSessionInternalsHelper,
   asAgentManager,
   asAgentStorage,
@@ -6808,46 +6812,76 @@ test("a failing direct source observes fire-and-forget file replies without unha
   }
 });
 
-test("only the owner's app can change the preset fence setting (#360)", async () => {
-  const config = { mcp: { injectIntoAgents: false }, providers: {} };
-  const patchFromClient = vi.fn(async (patch: { presetFence?: unknown }) => ({
-    ...config,
-    presetFence: patch.presetFence,
-  }));
-  const request = (presetFence: unknown) =>
-    ({
-      type: "set_daemon_config_request",
-      requestId: "fence",
-      config: { presetFence },
-    }) as SessionInboundMessage;
+test("only the owner's app can save the preset fence setting, and it waits for a restart (#360)", async () => {
+  const paseoHome = mkdtempSync(join(tmpdir(), "preset-fence-session-"));
+  try {
+    const config = { mcp: { injectIntoAgents: false }, providers: {} };
+    const patchFromClient = vi.fn(async () => config);
+    const request = (presetFence: unknown) =>
+      ({
+        type: "set_daemon_config_request",
+        requestId: "fence",
+        config: { presetFence },
+      }) as SessionInboundMessage;
 
-  // An agent's CLI (or any non-app client) cannot switch the fence, in either direction.
-  const agentMessages: unknown[] = [];
-  const agentSession = createSessionForTest({
+    // An agent's CLI (or any non-app client) cannot save it, in either direction.
+    const agentMessages: unknown[] = [];
+    const agentSession = createSessionForTest({
+      clientType: "cli",
+      paseoHome,
+      messages: agentMessages,
+      daemonConfigStore: { get: vi.fn(() => config), patchFromClient },
+    });
+    await agentSession.handleMessage(request({ mode: "enforce" }));
+    expect(agentMessages).toContainEqual(
+      expect.objectContaining({
+        type: "rpc_error",
+        payload: expect.objectContaining({ requestId: "fence" }),
+      }),
+    );
+    expect((await readPresetFencePolicyFile(paseoHome)).source).toBe("default");
+    // Other settings from the same client are untouched by this check.
+    await agentSession.handleMessage({
+      type: "set_daemon_config_request",
+      requestId: "other",
+      config: { autoArchiveAfterMerge: true },
+    } as SessionInboundMessage);
+    expect(patchFromClient).toHaveBeenCalledTimes(1);
+
+    // The owner's app saves it outside config.json; the policy in force does not change.
+    const ownerSession = createSessionForTest({
+      clientType: "browser",
+      paseoHome,
+      daemonConfigStore: { get: vi.fn(() => config), patchFromClient },
+    });
+    await ownerSession.handleMessage(request({ mode: "enforce" }));
+    expect((await readPresetFencePolicyFile(paseoHome)).policy).toEqual({ mode: "enforce" });
+    expect(patchFromClient).toHaveBeenCalledTimes(1);
+    expect(effectivePresetFencePolicy()).toBeUndefined();
+  } finally {
+    rmSync(paseoHome, { recursive: true, force: true });
+  }
+});
+
+test("a CLI or other non-app client cannot write daemon-only labels (#360)", async () => {
+  const updateAgentMetadata = vi.fn();
+  const messages: unknown[] = [];
+  const session = createSessionForTest({
     clientType: "cli",
-    messages: agentMessages,
-    daemonConfigStore: { get: vi.fn(() => config), patchFromClient },
+    messages,
+    agentManager: { updateAgentMetadata, getAgent: vi.fn(() => null) },
   });
-  await agentSession.handleMessage(request({ mode: "enforce" }));
-  expect(patchFromClient).not.toHaveBeenCalled();
-  expect(agentMessages).toContainEqual(
+  await session.handleMessage({
+    type: "update_agent_request",
+    agentId: "agent-1",
+    labels: { "vorteo.factory-role": "prj:factory-intake" },
+    requestId: "labels",
+  } as SessionInboundMessage);
+  expect(updateAgentMetadata).not.toHaveBeenCalled();
+  expect(messages).toContainEqual(
     expect.objectContaining({
       type: "rpc_error",
-      payload: expect.objectContaining({ requestId: "fence" }),
+      payload: expect.objectContaining({ requestId: "labels" }),
     }),
   );
-  // Other settings from the same client are untouched by this check.
-  await agentSession.handleMessage({
-    type: "set_daemon_config_request",
-    requestId: "other",
-    config: { autoArchiveAfterMerge: true },
-  } as SessionInboundMessage);
-  expect(patchFromClient).toHaveBeenCalledTimes(1);
-
-  const ownerSession = createSessionForTest({
-    clientType: "browser",
-    daemonConfigStore: { get: vi.fn(() => config), patchFromClient },
-  });
-  await ownerSession.handleMessage(request({ mode: "enforce" }));
-  expect(patchFromClient).toHaveBeenLastCalledWith({ presetFence: { mode: "enforce" } });
 });

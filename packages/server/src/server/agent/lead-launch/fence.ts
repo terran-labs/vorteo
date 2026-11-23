@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import { PARENT_AGENT_ID_LABEL, PARENT_SERVER_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import type { PresetFencePolicy } from "@getpaseo/protocol/messages";
+import { effectivePresetFencePolicy } from "./fence-policy.js";
 import { WorkerLaunchRefusal } from "../agent-manager.js";
 import { logRefusal } from "../create-agent/create.js";
 import { LEAD_LAUNCH_ID_LABEL, LEAD_LAUNCH_REQUESTED_BY_LABEL } from "./model.js";
@@ -50,7 +51,7 @@ export interface FenceLookup {
   getStored?: (agentId: string) => Promise<FenceAgent | null | undefined>;
   /** This daemon's server ID, to tell a parent on another host from a missing one. */
   serverId?: string;
-  /** The live `presetFence` daemon setting; absent means report-only. */
+  /** Tests only. The daemon uses the policy fixed at startup (fence-policy.ts). */
   policy?: () => PresetFencePolicy | undefined;
 }
 
@@ -229,11 +230,12 @@ function shouldEnforce(
   policy: PresetFencePolicy | undefined,
   path: PresetFencePath,
   reason: string,
-  role: string | null,
 ): boolean {
   if (policy?.mode !== "enforce" || policy.report?.includes(path)) return false;
-  // Factory launches stay report-only until C1b verifies the role and its stage presets.
-  return ENFORCEABLE_REASONS.has(reason) && !role;
+  // The Factory role label is never an exemption: an unverified label must not be better than
+  // none, so it only tags the log line. C1b may allow verified Factory launches, checked against
+  // the Factory service's own role record.
+  return ENFORCEABLE_REASONS.has(reason);
 }
 
 /**
@@ -261,7 +263,7 @@ export async function checkPresetFence(
     const supervisor = governance.kind === "supervisor" ? governance.supervisor : null;
     const role = factoryRole(caller, governance);
     workerProfileId = supervisor?.config?.profileLaunch?.worker?.id ?? null;
-    enforce = shouldEnforce(dependencies.policy?.(), path, reason, role);
+    enforce = shouldEnforce((dependencies.policy ?? effectivePresetFencePolicy)(), path, reason);
     fields = fenceFields({ path, reason, enforce, caller, supervisor, governance, role, request });
   } catch {
     return;
@@ -316,11 +318,12 @@ function refusalText(reason: string | null, workerProfileId: string | null): str
 }
 
 /**
- * Who may change the `presetFence` setting: only an owner app session (`mobile` or `browser`).
- * The daemon has no unforgeable caller identity yet (#525): a client declares its own type, and
- * a CLI's calling agent comes from PASEO_AGENT_ID. Admitting Builds by its thread ID would let
- * any agent that knows the ID (it is in the installed skill) switch the fence off.
+ * An owner app session (`mobile` or `browser`). Only these may save the `presetFence` setting or
+ * write reserved labels through session requests. The daemon has no unforgeable caller identity
+ * yet (#525): a client declares its own type, and a CLI's calling agent comes from
+ * PASEO_AGENT_ID. Admitting Builds by its thread ID would let any agent that knows the ID (it is
+ * in the installed skill) switch the fence off.
  */
-export function canWritePresetFence(clientType: string | undefined): boolean {
+export function isOwnerAppClient(clientType: string | undefined): boolean {
   return clientType === "mobile" || clientType === "browser";
 }

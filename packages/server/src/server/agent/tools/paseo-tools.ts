@@ -764,7 +764,6 @@ function createToolCatalog(
         getAgent: (id) => agentManager.getAgent(id),
         getStored: (id) => agentStorage.get(id),
         serverId: options.serverId,
-        policy: () => daemonConfigStore?.get().presetFence,
       },
       path,
       callerAgentId,

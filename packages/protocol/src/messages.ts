@@ -486,9 +486,6 @@ export const MutableDaemonConfigSchema = z
     // COMPAT(accountQuotaPolicy): added 2026-11-20. Stored only; nothing enforces it yet.
     // Absent when no policy is stored and on older daemons. Only `version` is checked here.
     accountQuotaPolicy: AccountQuotaPolicyWireSchema.optional(),
-    // COMPAT(presetFenceSetting): added 2026-11-23. Absent means report-only. Only the owner's
-    // app session can change it; see the daemon's presetFence writer check.
-    presetFence: PresetFencePolicySchema.optional(),
   })
   .passthrough();
 
@@ -530,7 +527,9 @@ export const MutableDaemonConfigPatchSchema = z
     // COMPAT(accountQuotaPolicy): added 2026-11-20. null clears the stored policy; the daemon
     // accepts only the bounded version 1 shape.
     accountQuotaPolicy: AccountQuotaPolicyWireSchema.nullable().optional(),
-    // COMPAT(presetFenceSetting): added 2026-11-23. Replaces the policy whole; null clears it.
+    // COMPAT(presetFenceSetting): added 2026-11-23. Write-only: the daemon accepts it only from
+    // the owner's app, saves it outside config.json and applies it at the next daemon restart.
+    // It never appears in the returned config. null clears it (report-only).
     presetFence: PresetFencePolicySchema.nullable().optional(),
   })
   .partial()
