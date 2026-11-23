@@ -52,3 +52,12 @@ export function runningPreviewListLabel(
   }
   return { valueKey: "workspace.scripts.states.running" };
 }
+
+/**
+ * Whether the broker is still working on a start, restart or stop of this preview. Stop and
+ * Restart stay disabled meanwhile: a second press would only be refused as busy.
+ */
+export function previewRequestInFlight(preview: WorkspaceScriptPayload["preview"]): boolean {
+  const status = preview?.restart?.status;
+  return status === "starting" || status === "stopping";
+}

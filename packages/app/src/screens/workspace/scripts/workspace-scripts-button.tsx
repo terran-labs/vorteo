@@ -37,6 +37,7 @@ import { ExitCodeBadge, routeLabelKey, ScriptIcon } from "./script-marks";
 import { scriptToneColorMapping } from "./script-status";
 import {
   previewBlocksStart,
+  previewRequestInFlight,
   previewStartLabelKey,
   usePreviewDescription,
 } from "@/preview-status/use-preview-description";
@@ -311,6 +312,9 @@ function ScriptRow({
   const exitCode = script.exitCode ?? null;
   const preview = usePreviewDescription(script, actions.isManagedPreview(script));
   const hideStart = previewBlocksStart(script, preview);
+  // Disabled while any request for this preview is pending, here or still with the broker.
+  const stopOrRestartBlocked =
+    actions.isStopPending || actions.isPreviewPending || previewRequestInFlight(script.preview);
   const { selected: selectedLink, targets: linkTargets } = actions.resolveLinks(script);
   const liveTerminalId =
     script.terminalId && liveTerminalIdSet.has(script.terminalId) ? script.terminalId : null;
@@ -377,7 +381,7 @@ function ScriptRow({
         scriptName: script.scriptName,
       })}
       testID={`workspace-scripts-stop-${script.scriptName}`}
-      disabled={actions.isStopPending || actions.isPreviewPending}
+      disabled={stopOrRestartBlocked}
       icon="stop"
       onPress={handleStop}
       tooltipLabel={t("workspace.scripts.actions.stop")}
@@ -417,7 +421,7 @@ function ScriptRow({
               scriptName: script.scriptName,
             })}
             testID={`workspace-scripts-restart-${script.scriptName}`}
-            disabled={actions.isStopPending || actions.isPreviewPending}
+            disabled={stopOrRestartBlocked}
             icon="restart"
             onPress={handleRestart}
             tooltipLabel={
