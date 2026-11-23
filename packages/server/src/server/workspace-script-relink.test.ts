@@ -1,4 +1,5 @@
-import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import pino from "pino";
@@ -222,7 +223,8 @@ describe("surviving workspace script terminals", () => {
 
     async function workspacesAfter(damage: (file: string) => void): Promise<SurvivorWorkspaces> {
       const file = path.join(home, "workspaces.json");
-      rmSync(file, { force: true });
+      // A previous case may have left a directory in place of the file.
+      rmSync(file, { recursive: true, force: true });
       const writer = new FileBackedWorkspaceRegistry(file, logger);
       await writer.upsert(
         createPersistedWorkspaceRecord({
@@ -247,7 +249,15 @@ describe("surviving workspace script terminals", () => {
           "one invalid record",
           (file) => writeFileSync(file, JSON.stringify([{ workspaceId: "ws-1" }])),
         ],
-        ["unreadable", (file) => chmodSync(file, 0o000)],
+        // A directory fails the read with EISDIR on every platform. chmod 0o000 does not:
+        // Windows only sets the read-only flag, and root can still read the file.
+        [
+          "unreadable",
+          (file) => {
+            rmSync(file);
+            mkdirSync(file);
+          },
+        ],
         ["missing", (file) => rmSync(file)],
       ];
       for (const [label, damage] of damages) {
@@ -423,6 +433,55 @@ describe("surviving workspace script terminals", () => {
           hostnames: [launched],
         });
       }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  // Each branch read may take its full second; read one after another, three of them used
+  // up the deadline and nothing was re-linked.
+  it("re-links several services whose branch reads all take their full second", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "script-relink-slow-git-"));
+    const file = path.join(home, "workspace-script-terminals.json");
+    const services = ["web", "api", "docs"].map((scriptName, index) => ({
+      id: randomUUID(),
+      scriptName,
+      port: 41001 + index,
+    }));
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: 2,
+        services: services.map(({ id }) => record({ terminalId: id })),
+      }),
+    );
+    try {
+      const routes = new ScriptRouteStore();
+      await relinkWorkspaceScripts({
+        recordPath: file,
+        terminals: adopted(
+          services.map(({ id, scriptName, port }) => ({
+            session: withExitWatch(terminal({ id, name: scriptName })),
+            marker: launch({ scriptName, port }),
+          })),
+        ),
+        readWorkspaces: async () => known(ACTIVE),
+        readScript: async () => SAME_SCRIPT,
+        readBranch: readNeverAnswers,
+        restore: (decision) =>
+          restoreSurvivingService({
+            decision,
+            serviceProxy: routes,
+            serviceProxyPublicBaseUrl: null,
+            runtimeStore: new WorkspaceScriptRuntimeStore(),
+            logger,
+            onLifecycleChanged: ignoreChange,
+          }),
+        stopTerminal: async () => undefined,
+        deadlineMs: 2_500,
+        logger,
+      });
+      expect(routes.listRoutes()).toHaveLength(3);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

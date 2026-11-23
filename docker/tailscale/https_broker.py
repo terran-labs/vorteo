@@ -20,12 +20,22 @@ MAX_BYTES = 4096
 ID = re.compile(r'^[a-f0-9-]{36}$')
 WS = re.compile(r'^wks_[a-zA-Z0-9_-]{1,80}$')
 SERVICE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$')
-# A check that times out proves nothing about the backend, so a verified route
-# survives a short run of them. The route is withdrawn on the third consecutive
-# timeout, or once this many seconds have passed since its last full
-# verification, whichever comes first. Every other failure withdraws at once.
-TIMEOUT_MISS_LIMIT = 3
-TIMEOUT_GRACE_SECONDS = 90
+# A check that times out proves nothing about the backend (#358). Under load the
+# subprocess checks (the Paseo CLI twice per check, lsof, curl, tailscale) can time out
+# for minutes while the backend answers in milliseconds. So a verified route stays up
+# while a direct probe that spawns nothing passes: the listener is the same process
+# (pid and microsecond birth), still in the managed terminal, still holds its loopback
+# port, and that port accepts a connection. The probe cannot see the daemon's view of
+# the service, its configuration fingerprint or the Tailscale mapping, so the route may
+# rest on it alone for at most this long after the last full verification. Ten minutes
+# outlasts the load spikes seen so far, which withdrew routes within 30 to 90 seconds,
+# and still bounds how long a changed configuration or mapping goes unnoticed. Then
+# the route is withdrawn with status 'withdrawn' and republished by the first full
+# check that succeeds. Every other failure, and any change the probe finds, withdraws
+# at once.
+PROBE_ONLY_SECONDS = 600
+DELAYED_MESSAGE = 'Checks are delayed; route kept while its listener answers'
+TIMED_OUT_MESSAGE = 'Checks timed out; route withdrawn until a check succeeds'
 # Both installers run the broker every BROKER_INTERVAL_SECONDS (launchd StartInterval),
 # and each run spends at most RECONCILE_SECONDS rechecking entries.
 BROKER_INTERVAL_SECONDS = 10
@@ -39,6 +49,7 @@ RESTART_ATTRIBUTION_SECONDS = BROKER_INTERVAL_SECONDS + RECONCILE_SECONDS
 STATUS_FILE = 'preview-status.json'
 STATUS_FIELDS = ('workspaceId', 'service', 'frontend', 'desired', 'status', 'stopReason',
                  'stoppedAt', 'restartedAt', 'verifiedAt', 'checkedAt', 'needsReview', 'error')
+# Older brokers recorded a count in the message; a ledger may still hold one.
 UNVERIFIED_MESSAGE = re.compile(r'Checks timed out \(\d+ of \d+\); route kept but unverified')
 IDENTIFIER = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,63}')
 
@@ -319,7 +330,7 @@ def _broker_messages(path=None):
         return frozenset()
     found = set(re.findall(r"\b(?:" + names + r")\('([^'{}\\]+)'\)", source))
     found.update(re.findall(r"entry\['error'\] = '([^'{}\\]+)'", source))
-    found.add('Checks timed out; route withdrawn until a check succeeds')
+    found.update((TIMED_OUT_MESSAGE, DELAYED_MESSAGE))
     return frozenset(found)
 
 
@@ -343,10 +354,17 @@ class Runtime:
         self.base = [config['docker'], '--context', config['context']]
 
     def command(self, args, timeout=12):
-        result = subprocess.run(args, capture_output=True, timeout=timeout, check=True,
-                                # The signed macOS Tailscale binary selects its
-                                # CLI entry point only when TERM is present.
-                                env={'PATH': '/usr/bin:/bin:/usr/local/bin', 'HOME': str(Path.home()), 'TERM': 'dumb'})
+        try:
+            result = subprocess.run(args, capture_output=True, timeout=timeout, check=True,
+                                    # The signed macOS Tailscale binary selects its
+                                    # CLI entry point only when TERM is present.
+                                    env={'PATH': '/usr/bin:/bin:/usr/local/bin', 'HOME': str(Path.home()), 'TERM': 'dumb'})
+        except subprocess.CalledProcessError as error:
+            # curl exits 28 when its own --max-time runs out: like a subprocess timeout,
+            # that says the check did not finish, not that the backend is gone.
+            if args and args[0] == '/usr/bin/curl' and error.returncode == 28:
+                raise subprocess.TimeoutExpired(args, timeout) from None
+            raise
         if len(result.stdout) > 4 * 1024 * 1024:
             raise ValueError('Runtime response too large')
         return result.stdout.decode()
@@ -626,6 +644,18 @@ if(found.length!==1)throw Error('Expected exactly one managed loopback listener'
     def in_process_check_agrees(self, port, listener):
         """Whether the in-process port check confirms what the full check just proved."""
         return False
+
+    def backend_accepts(self, port):
+        """Connect to the backend on loopback, in process, without a subprocess.
+
+        The kernel completes a loopback connection to a listening socket even when the
+        server or the machine is busy. A refusal is evidence that nothing listens any
+        more; any other failure answers OSError, which grants no grace."""
+        try:
+            with socket.create_connection(('127.0.0.1', port), timeout=2):
+                return True
+        except ConnectionRefusedError:
+            raise ListenerLost('Backend port refused a direct connection') from None
 
 
 class NativeRuntime(Runtime):
@@ -1240,7 +1270,8 @@ class Broker:
 
         Returns None while a timeout grace keeps the route, otherwise the error
         that withdrew it. A timeout says nothing about who is listening, so a
-        verified route may survive a short run of them. Everything else, and any
+        verified route survives them while the direct probe passes, for at most
+        PROBE_ONLY_SECONDS. Everything else, and any
         change the in-process listener recheck finds, withdraws at once."""
         try:
             if self.hold_for_timeout(entry, error):
@@ -1256,14 +1287,17 @@ class Broker:
             entry.update(desired='stopped', stoppedAt=time.time())
             self.record_stop_cause(entry, error)
         if timed_out:
-            message = 'Checks timed out; route withdrawn until a check succeeds'
+            message = TIMED_OUT_MESSAGE
         elif isinstance(error, (ValueError, RecoveryPending, ListenerLost)) and str(error) in BROKER_MESSAGES:
             message = str(error)
         else:
             # Library errors can echo their input, such as a path or parsed text.
             message = type(error).__name__
-        # Keep 'failed' after timeouts: the rebind refuses while any entry is 'pending'.
-        entry.update(status='pending' if isinstance(error, RecoveryPending) else 'failed', error=message)
+        # Never 'pending' after timeouts: the rebind refuses while any entry is 'pending'.
+        # 'withdrawn' tells the owner the route went because checks kept timing out,
+        # not because the service stopped or failed to start; it keeps its running intent.
+        status = 'pending' if isinstance(error, RecoveryPending) else 'withdrawn' if timed_out else 'failed'
+        entry.update(status=status, error=message)
         for stale in ('url', 'misses'):
             entry.pop(stale, None)
         try:
@@ -1294,20 +1328,25 @@ class Broker:
         raise definite
 
     def hold_for_timeout(self, entry, error):
+        """Keep a verified route through a timed-out check when the direct probe passes.
+
+        Only a route that passed a full verification within PROBE_ONLY_SECONDS, whose
+        in-process check agreed with lsof at that verification, is eligible. The probe
+        raises on positive evidence of a change, which settle_failure() withdraws at once.
+        The miss count only reports how many checks were delayed; it no longer withdraws,
+        because a status request and the reconcile cycle each count one."""
         if not isinstance(error, subprocess.TimeoutExpired):
             return False
         if entry.get('desired') != 'running' or entry.get('status') not in ('ready', 'unverified'):
             return False
-        misses = entry.get('misses', 0) + 1
         verified = entry.get('verifiedAt')
-        if type(verified) not in (int, float) or not 0 <= time.time() - verified < TIMEOUT_GRACE_SECONDS:
+        if type(verified) not in (int, float) or not 0 <= time.time() - verified < PROBE_ONLY_SECONDS:
             return False
         if entry.get('inProcessCheckAgreed') is not True:
             return False
-        if misses >= TIMEOUT_MISS_LIMIT or not self.runtime.listener_unchanged(entry):
+        if not self.runtime.listener_unchanged(entry) or self.runtime.backend_accepts(entry['backend']) is not True:
             return False
-        entry.update(status='unverified', misses=misses,
-                     error=f'Checks timed out ({misses} of {TIMEOUT_MISS_LIMIT}); route kept but unverified')
+        entry.update(status='unverified', misses=entry.get('misses', 0) + 1, error=DELAYED_MESSAGE)
         self.save()
         return True
 
