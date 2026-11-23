@@ -72,6 +72,46 @@ export async function brokerClient(argv) {
   if (result.status === "failed") process.exitCode = 1;
   return true;
 }
+/** Answers a bare `status` from the broker's published state; false means ask the broker. */
+export function printPublishedStatus(argv) {
+  const [operation, ...args] = argv;
+  if (operation !== "status" || (args.length && !args[0].startsWith("--"))) return false;
+  if (!existsSync(join(channel, "installed.json")) || existsSync(join(channel, "disabled.json")))
+    return false;
+  const published = publishedStatus(args);
+  if (!published) return false;
+  console.log(JSON.stringify(published, null, 2));
+  return true;
+}
+
+// The broker writes every reservation's state on each run. Reading it answers a bare
+// status at once; asking the broker per reservation took a broker run each, serially.
+// Returns null for an older broker without the file, or a --cwd selection.
+function publishedStatus(args) {
+  if (args.length && (args.length !== 2 || args[0] !== "--workspace")) return null;
+  let published;
+  try {
+    published = JSON.parse(readFileSync(join(channel, "preview-status.json"), "utf8"));
+  } catch {
+    return null; // Missing, unreadable or truncated: ask the broker instead.
+  }
+  if (
+    published?.version !== 1 ||
+    !Array.isArray(published.services) ||
+    typeof published.publishedAt !== "number"
+  )
+    return null;
+  return {
+    // A summary, not a live check: never share a URL from it.
+    note: "As of each entry's checkedAt. For a verified URL to share, run: status SERVICE --workspace ID",
+    publishedAt: new Date(published.publishedAt * 1000).toISOString(),
+    ageSeconds: Math.round(Date.now() / 1000 - published.publishedAt),
+    services: published.services.filter(
+      (service) => !args.length || service?.workspaceId === args[1],
+    ),
+  };
+}
+
 function replace(path, text) {
   const temp = path + "." + randomUUID() + ".tmp";
   writeFileSync(temp, text, { mode: statSync(path).mode & 0o777, flag: "wx" });

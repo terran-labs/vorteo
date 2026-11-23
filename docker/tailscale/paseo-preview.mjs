@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-import { brokerClient } from "./preview-broker-client.mjs";
-if (await brokerClient(process.argv.slice(2))) process.exit(process.exitCode ?? 0);
+import { brokerClient, printPublishedStatus } from "./preview-broker-client.mjs";
+const brokerArgs = process.argv.slice(2);
+if (printPublishedStatus(brokerArgs) || (await brokerClient(brokerArgs)))
+  process.exit(process.exitCode ?? 0);
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
