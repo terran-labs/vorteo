@@ -1,7 +1,9 @@
 import type { Logger } from "pino";
 import { PARENT_AGENT_ID_LABEL, PARENT_SERVER_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import type { PresetFencePolicy } from "@getpaseo/protocol/messages";
-import { effectivePresetFencePolicy } from "./fence-policy.js";
+import { effectivePresetFencePolicy, type PresetFencePath } from "./fence-policy.js";
+
+export type { PresetFencePath } from "./fence-policy.js";
 import { WorkerLaunchRefusal } from "../agent-manager.js";
 import { logRefusal } from "../create-agent/create.js";
 import { LEAD_LAUNCH_ID_LABEL, LEAD_LAUNCH_REQUESTED_BY_LABEL } from "./model.js";
@@ -20,20 +22,6 @@ import { LEAD_LAUNCH_ID_LABEL, LEAD_LAUNCH_REQUESTED_BY_LABEL } from "./model.js
 export const PRESET_FENCE_MESSAGE = "Preset fence would refuse";
 export const PRESET_FENCE_REFUSED_MESSAGE = "Preset fence refused";
 const PRESET_FENCE_CODE = "preset_fence";
-
-export type PresetFencePath =
-  | "create_agent"
-  | "remote_create_agent"
-  | "session_create_agent"
-  | "update_agent"
-  | "set_agent_mode"
-  | "send_agent_prompt"
-  | "switch_agent_profile"
-  | "session_switch_agent_profile"
-  | "create_schedule"
-  | "update_schedule"
-  | "run_schedule_once"
-  | "resume_schedule";
 
 /** The fields the fence reads, available from a loaded thread and from its stored record. */
 export interface FenceAgent {
