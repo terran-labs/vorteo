@@ -2955,6 +2955,8 @@ No complete replacement of these custom workflows was established in this review
 
 ## Maintenance review
 
+November 23, 2026: The Unistyles web patch now batches stylesheet rebuilds per emitted change, which removes a multi-second freeze on every breakpoint crossing, theme change or font change and explains the slow fine-pointer resizing noted on November 9 (#609). Its new hunks touch only the web stylesheet and listener; drop them at Unistyles 3.8.0 or later. The Unistyles lifecycle browser test now reads the sheet on the next frame after an unmount. Native platforms are unchanged. README overview and onboarding are unchanged.
+
 November 6, 2026: Prepared beta 26.11.601 and folded the Claude sign-in renewal fixes and CI scope changes into its changelog entry and these reviews. README overview and onboarding are unchanged.
 
 November 6, 2026: Prepared beta 26.11.600 and folded the day's change fragments into its changelog entry and these reviews. README overview and onboarding are unchanged.
