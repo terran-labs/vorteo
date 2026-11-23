@@ -1100,3 +1100,215 @@ index 01026dc..3786ec4 100644
  #else
          const auto& shadowTreeRegistry = UIManagerBinding::getBinding(rt)->getUIManager().getShadowTreeRegistry();
  
+diff --git a/node_modules/react-native-unistyles/lib/commonjs/web/css/state.js b/node_modules/react-native-unistyles/lib/commonjs/web/css/state.js
+--- a/node_modules/react-native-unistyles/lib/commonjs/web/css/state.js
++++ b/node_modules/react-native-unistyles/lib/commonjs/web/css/state.js
+@@ -51,7 +51,29 @@ class CSSState {
+     (0, _core.convertToCSS)(hash, (0, _convert.convertUnistyles)(values, this.services.runtime), this);
+     this.recreate();
+   };
++  // Vorteo: rebuilding serializes every rule, and a theme or breakpoint change adds one
++  // style per mounted component, so a rebuild per add was quadratic (seconds per change).
++  // Inside a batch, adds mark the sheet dirty and the outermost batch rebuilds it once.
++  batchDepth = 0;
++  recreatePending = false;
++  removalRecreateScheduled = false;
++  batch = run => {
++    this.batchDepth += 1;
++    try {
++      return run();
++    } finally {
++      this.batchDepth -= 1;
++      if (this.batchDepth === 0 && this.recreatePending) {
++        this.recreate();
++      }
++    }
++  };
+   recreate = () => {
++    if (this.batchDepth > 0) {
++      this.recreatePending = true;
++      return;
++    }
++    this.recreatePending = false;
+     if (this.styleTag) {
+       this.styleTag.innerText = this.getStyles();
+     }
+@@ -79,7 +101,16 @@ class CSSState {
+     this.mqMap.forEach(styles => {
+       styles.delete(hash);
+     });
+-    this.recreate();
++    // Vorteo: a removed class is no longer on any element, so its rule can go in one
++    // rebuild after the current task's removals instead of one rebuild per removal.
++    if (this.removalRecreateScheduled) {
++      return;
++    }
++    this.removalRecreateScheduled = true;
++    queueMicrotask(() => {
++      this.removalRecreateScheduled = false;
++      this.recreate();
++    });
+   };
+   getStyles = () => {
+     let styles = Array.from(this.themesCSS.entries()).reduce((acc, [, themeCss]) => {
+diff --git a/node_modules/react-native-unistyles/lib/module/web/css/state.js b/node_modules/react-native-unistyles/lib/module/web/css/state.js
+--- a/node_modules/react-native-unistyles/lib/module/web/css/state.js
++++ b/node_modules/react-native-unistyles/lib/module/web/css/state.js
+@@ -47,7 +47,29 @@ export class CSSState {
+     convertToCSS(hash, convertUnistyles(values, this.services.runtime), this);
+     this.recreate();
+   };
++  // Vorteo: rebuilding serializes every rule, and a theme or breakpoint change adds one
++  // style per mounted component, so a rebuild per add was quadratic (seconds per change).
++  // Inside a batch, adds mark the sheet dirty and the outermost batch rebuilds it once.
++  batchDepth = 0;
++  recreatePending = false;
++  removalRecreateScheduled = false;
++  batch = run => {
++    this.batchDepth += 1;
++    try {
++      return run();
++    } finally {
++      this.batchDepth -= 1;
++      if (this.batchDepth === 0 && this.recreatePending) {
++        this.recreate();
++      }
++    }
++  };
+   recreate = () => {
++    if (this.batchDepth > 0) {
++      this.recreatePending = true;
++      return;
++    }
++    this.recreatePending = false;
+     if (this.styleTag) {
+       this.styleTag.innerText = this.getStyles();
+     }
+@@ -75,7 +97,16 @@ export class CSSState {
+     this.mqMap.forEach(styles => {
+       styles.delete(hash);
+     });
+-    this.recreate();
++    // Vorteo: a removed class is no longer on any element, so its rule can go in one
++    // rebuild after the current task's removals instead of one rebuild per removal.
++    if (this.removalRecreateScheduled) {
++      return;
++    }
++    this.removalRecreateScheduled = true;
++    queueMicrotask(() => {
++      this.removalRecreateScheduled = false;
++      this.recreate();
++    });
+   };
+   getStyles = () => {
+     let styles = Array.from(this.themesCSS.entries()).reduce((acc, [, themeCss]) => {
+diff --git a/node_modules/react-native-unistyles/src/web/css/state.ts b/node_modules/react-native-unistyles/src/web/css/state.ts
+--- a/node_modules/react-native-unistyles/src/web/css/state.ts
++++ b/node_modules/react-native-unistyles/src/web/css/state.ts
+@@ -66,7 +66,36 @@ export class CSSState {
+         this.recreate()
+     }
+ 
++    // Vorteo: rebuilding serializes every rule, and a theme or breakpoint change adds one
++    // style per mounted component, so a rebuild per add was quadratic (seconds per change).
++    // Inside a batch, adds mark the sheet dirty and the outermost batch rebuilds it once.
++    batchDepth = 0
++    private recreatePending = false
++    private removalRecreateScheduled = false
++
++    batch = <T>(run: () => T): T => {
++        this.batchDepth += 1
++
++        try {
++            return run()
++        } finally {
++            this.batchDepth -= 1
++
++            if (this.batchDepth === 0 && this.recreatePending) {
++                this.recreate()
++            }
++        }
++    }
++
+     recreate = () => {
++        if (this.batchDepth > 0) {
++            this.recreatePending = true
++
++            return
++        }
++
++        this.recreatePending = false
++
+         if (this.styleTag) {
+             this.styleTag.innerText = this.getStyles()
+         }
+@@ -103,7 +132,17 @@ export class CSSState {
+         this.mqMap.forEach((styles) => {
+             styles.delete(hash)
+         })
+-        this.recreate()
++        // Vorteo: a removed class is no longer on any element, so its rule can go in one
++        // rebuild after the current task's removals instead of one rebuild per removal.
++        if (this.removalRecreateScheduled) {
++            return
++        }
++
++        this.removalRecreateScheduled = true
++        queueMicrotask(() => {
++            this.removalRecreateScheduled = false
++            this.recreate()
++        })
+     }
+ 
+     getStyles = () => {
+diff --git a/node_modules/react-native-unistyles/lib/commonjs/web/listener.js b/node_modules/react-native-unistyles/lib/commonjs/web/listener.js
+--- a/node_modules/react-native-unistyles/lib/commonjs/web/listener.js
++++ b/node_modules/react-native-unistyles/lib/commonjs/web/listener.js
+@@ -18,6 +18,12 @@ class UnistylesListener {
+     this.services = services;
+   }
+   emitChanges = dependencies => {
++    // Vorteo: every subscriber restyles synchronously here; rebuild the stylesheet once after.
++    const css = this.services.registry?.css;
++    if (css?.batch && css.batchDepth === 0) {
++      css.batch(() => this.emitChanges(dependencies));
++      return;
++    }
+     for (const dependency of dependencies) {
+       const stylesheetListeners = this.stylesheetListeners[dependency] ?? [];
+       for (const listener of stylesheetListeners) {
+diff --git a/node_modules/react-native-unistyles/lib/module/web/listener.js b/node_modules/react-native-unistyles/lib/module/web/listener.js
+--- a/node_modules/react-native-unistyles/lib/module/web/listener.js
++++ b/node_modules/react-native-unistyles/lib/module/web/listener.js
+@@ -14,6 +14,12 @@ export class UnistylesListener {
+     this.services = services;
+   }
+   emitChanges = dependencies => {
++    // Vorteo: every subscriber restyles synchronously here; rebuild the stylesheet once after.
++    const css = this.services.registry?.css;
++    if (css?.batch && css.batchDepth === 0) {
++      css.batch(() => this.emitChanges(dependencies));
++      return;
++    }
+     for (const dependency of dependencies) {
+       const stylesheetListeners = this.stylesheetListeners[dependency] ?? [];
+       for (const listener of stylesheetListeners) {
+diff --git a/node_modules/react-native-unistyles/src/web/listener.ts b/node_modules/react-native-unistyles/src/web/listener.ts
+--- a/node_modules/react-native-unistyles/src/web/listener.ts
++++ b/node_modules/react-native-unistyles/src/web/listener.ts
+@@ -17,6 +17,15 @@ export class UnistylesListener {
+     constructor(private services: UnistylesServices) {}
+ 
+     emitChanges = (dependencies: Array<UnistyleDependency>) => {
++        // Vorteo: every subscriber restyles synchronously here; rebuild the stylesheet once after.
++        const css = this.services.registry?.css
++
++        if (css && css.batchDepth === 0) {
++            css.batch(() => this.emitChanges(dependencies))
++
++            return
++        }
++
+         for (const dependency of dependencies) {
+             const stylesheetListeners = this.stylesheetListeners[dependency] ?? []
+ 
