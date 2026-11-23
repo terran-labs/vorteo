@@ -49,6 +49,8 @@ const TerminalScriptLaunchSchema = z.object({
   workspaceId: z.string().min(1).max(4096),
   scriptName: z.string().min(1).max(200),
   port: z.number().int().min(1).max(65535),
+  projectSlug: z.string().max(400),
+  branchName: z.string().max(400).nullable(),
   scriptConfig: z.string().regex(/^[0-9a-f]{64}$/),
   nonce: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/),
 });
@@ -66,8 +68,6 @@ export interface AdoptedTerminals {
 export interface SurvivorWorkspace {
   cwd: string;
   archived: boolean;
-  projectSlug: string;
-  branchName: string | null;
 }
 
 /**
@@ -100,8 +100,9 @@ type LeaveReason =
 export type SurvivorDecision =
   | (ProvenLaunch & {
       action: "relink";
-      workspace: SurvivorWorkspace;
       fixedPort: number | null;
+      /** The checkout's branch now, or the launch's when git could not say. */
+      branchName: string | null;
     })
   | (ProvenLaunch & { action: "stop"; reason: "workspace_unavailable" })
   | { action: "leave"; service: SurvivingService; reason: LeaveReason }
@@ -146,6 +147,8 @@ export function decideSurvivors(input: {
   terminals: AdoptedTerminals;
   workspaces: SurvivorWorkspaces;
   scripts: ReadonlyMap<string, SurvivorScript | null>;
+  /** Current git branch per terminal id; null or absent keeps the launch's branch. */
+  branches?: ReadonlyMap<string, string | null>;
 }): SurvivorDecision[] {
   const relinked = new Set<string>();
   return input.services.map((service): SurvivorDecision => {
@@ -170,7 +173,10 @@ export function decideSurvivors(input: {
       return { action: "leave", service, reason: "duplicate" };
     }
     relinked.add(scriptKey(proven.launch));
-    return { ...proven, action: "relink", workspace, fixedPort: script.fixedPort };
+    // Read the same way the launcher's git snapshot is; unreadable keeps the launch's branch,
+    // so the route keeps the hostname it had.
+    const branchName = input.branches?.get(service.terminalId) ?? proven.launch.branchName;
+    return { ...proven, action: "relink", fixedPort: script.fixedPort, branchName };
   });
 }
 
@@ -217,6 +223,24 @@ export function createSurvivingServicesWriter(input: {
 
 class RelinkDeadlineError extends Error {}
 
+const BRANCH_READ_TIMEOUT_MS = 1_000;
+
+/** The checkout's branch, or null (keep the launch's) when git errs or is slow. */
+async function readBranchWithin(
+  readBranch: (cwd: string) => Promise<string | null>,
+  cwd: string,
+): Promise<string | null> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), BRANCH_READ_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([readBranch(cwd).catch(() => null), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Reads the record, the workspaces and each proven service's script within `deadlineMs`, then
  * re-links or stops what it proved. Past the deadline nothing is re-linked or stopped and the
@@ -227,6 +251,7 @@ export async function relinkWorkspaceScripts(input: {
   terminals: AdoptedTerminals;
   readWorkspaces(): Promise<SurvivorWorkspaces>;
   readScript(cwd: string, scriptName: string): Promise<SurvivorScript | null>;
+  readBranch(cwd: string): Promise<string | null>;
   restore(decision: Extract<SurvivorDecision, { action: "relink" }>): void;
   stopTerminal(terminalId: string): Promise<void>;
   deadlineMs: number;
@@ -281,6 +306,7 @@ async function gatherDecisions(input: {
   terminals: AdoptedTerminals;
   readWorkspaces(): Promise<SurvivorWorkspaces>;
   readScript(cwd: string, scriptName: string): Promise<SurvivorScript | null>;
+  readBranch(cwd: string): Promise<string | null>;
   logger: pino.Logger;
 }): Promise<SurvivorDecision[]> {
   const services = await readSurvivingServices(input.recordPath, input.logger);
@@ -295,46 +321,34 @@ async function gatherDecisions(input: {
   }
   const workspaces = await input.readWorkspaces();
   const scripts = new Map<string, SurvivorScript | null>();
+  const branches = new Map<string, string | null>();
   if (workspaces.known) {
-    for (const { launch } of proven) {
+    for (const { launch, terminal, service } of proven) {
       const workspace = workspaces.byId.get(launch.workspaceId);
-      if (!workspace || workspace.archived || scripts.has(scriptKey(launch))) continue;
-      scripts.set(scriptKey(launch), await input.readScript(workspace.cwd, launch.scriptName));
+      if (!workspace || workspace.archived) continue;
+      if (!scripts.has(scriptKey(launch))) {
+        scripts.set(scriptKey(launch), await input.readScript(workspace.cwd, launch.scriptName));
+      }
+      branches.set(service.terminalId, await readBranchWithin(input.readBranch, terminal.cwd));
     }
   }
-  return decideSurvivors({ services, terminals: input.terminals, workspaces, scripts });
+  return decideSurvivors({ services, terminals: input.terminals, workspaces, scripts, branches });
 }
 
 /**
  * The registry's workspaces, only when it loaded its file cleanly and lists at least one.
  * Anything else (a read or parse error, no file, an empty list) is unknown.
  */
-export async function readSurvivorWorkspaces(input: {
-  registry: {
-    loadedCleanly(): Promise<boolean>;
-    list(): Promise<
-      readonly {
-        workspaceId: string;
-        cwd: string;
-        archivedAt: string | null;
-        projectId: string;
-        branch?: string | null;
-      }[]
-    >;
-  };
-  projectSlugOf(projectId: string, cwd: string): Promise<string>;
+export async function readSurvivorWorkspaces(registry: {
+  loadedCleanly(): Promise<boolean>;
+  list(): Promise<readonly { workspaceId: string; cwd: string; archivedAt: string | null }[]>;
 }): Promise<SurvivorWorkspaces> {
-  if (!(await input.registry.loadedCleanly())) return { known: false };
-  const records = await input.registry.list();
+  if (!(await registry.loadedCleanly())) return { known: false };
+  const records = await registry.list();
   if (records.length === 0) return { known: false };
   const byId = new Map<string, SurvivorWorkspace>();
   for (const record of records) {
-    byId.set(record.workspaceId, {
-      cwd: record.cwd,
-      archived: record.archivedAt !== null,
-      projectSlug: await input.projectSlugOf(record.projectId, record.cwd),
-      branchName: record.branch ?? null,
-    });
+    byId.set(record.workspaceId, { cwd: record.cwd, archived: record.archivedAt !== null });
   }
   return { known: true, byId };
 }

@@ -802,6 +802,8 @@ it("keeps a script launch marker across adoption, only for the terminal created 
     workspaceId: "ws-launch",
     scriptName: "web",
     port: 41001,
+    projectSlug: "repo",
+    branchName: "feature/launch",
     scriptConfig: "a".repeat(64),
     nonce: "launch-nonce-000000000000001",
   };

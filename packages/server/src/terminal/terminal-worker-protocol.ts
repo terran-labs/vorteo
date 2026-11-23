@@ -30,6 +30,9 @@ export interface TerminalScriptLaunch {
   workspaceId: string;
   scriptName: string;
   port: number;
+  /** The route hostname's inputs at launch, so a re-link keeps the same address. */
+  projectSlug: string;
+  branchName: string | null;
   /** sha256 of the script's paseo.json entry at launch. */
   scriptConfig: string;
   /** Random per launch; the daemon's record of running services names it. */

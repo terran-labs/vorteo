@@ -43,6 +43,8 @@ function launch(overrides: Partial<TerminalScriptLaunch> = {}): TerminalScriptLa
     workspaceId: "ws-1",
     scriptName: "web",
     port: 41001,
+    projectSlug: "repo",
+    branchName: "feature/preview",
     scriptConfig: CONFIG,
     nonce: NONCE,
     ...overrides,
@@ -82,12 +84,7 @@ function adopted(terminals: Adopted[]): AdoptedTerminals {
   };
 }
 
-const ACTIVE: SurvivorWorkspace = {
-  cwd: "/repo/ws-1",
-  archived: false,
-  projectSlug: "repo",
-  branchName: "main",
-};
+const ACTIVE: SurvivorWorkspace = { cwd: "/repo/ws-1", archived: false };
 const SAME_SCRIPT: SurvivorScript = { scriptConfig: CONFIG, fixedPort: null };
 
 function known(workspace: SurvivorWorkspace | null): SurvivorWorkspaces {
@@ -117,6 +114,28 @@ function writeEmptyList(file: string): void {
 }
 
 function leaveIntact(): void {}
+
+async function readFeatureBranch(): Promise<string | null> {
+  return "feature/preview";
+}
+
+async function readNoBranch(): Promise<string | null> {
+  return null;
+}
+
+function readNeverAnswers(): Promise<string | null> {
+  return new Promise(() => undefined);
+}
+
+function ignoreChange(): void {}
+
+function hostnameOf(route: { hostname: string }): string {
+  return route.hostname;
+}
+
+function withExitWatch(session: TerminalSession): TerminalSession {
+  return { ...session, onExit: () => () => undefined } as unknown as TerminalSession;
+}
 
 describe("surviving workspace script terminals", () => {
   // The dangerous half. Only the worker's launch marker proves a script terminal. A terminal an
@@ -218,10 +237,7 @@ describe("surviving workspace script terminals", () => {
         }),
       );
       damage(file);
-      return readSurvivorWorkspaces({
-        registry: new FileBackedWorkspaceRegistry(file, logger),
-        projectSlugOf: async () => "repo",
-      });
+      return readSurvivorWorkspaces(new FileBackedWorkspaceRegistry(file, logger));
     }
 
     it("reads as unknown, so nothing is stopped, when the file is truncated, invalid, unreadable or missing", async () => {
@@ -268,10 +284,7 @@ describe("surviving workspace script terminals", () => {
           archivedAt: null,
         }),
       );
-      const workspaces = await readSurvivorWorkspaces({
-        registry,
-        projectSlugOf: async () => "repo",
-      });
+      const workspaces = await readSurvivorWorkspaces(registry);
       expect(workspaces.known).toBe(false);
       expect(decide({ workspaces })[0]).toMatchObject({
         action: "leave",
@@ -323,7 +336,7 @@ describe("surviving workspace script terminals", () => {
     expect(decisions[1]).toMatchObject({ reason: "duplicate" });
   });
 
-  it("restores a re-linked service from its marker and the current workspace, and still notices its exit", () => {
+  it("restores a re-linked service from its marker and still notices its exit", () => {
     const exitListeners: Array<(info: { exitCode: number | null }) => void> = [];
     const session = {
       ...terminal(),
@@ -332,10 +345,7 @@ describe("surviving workspace script terminals", () => {
         return () => undefined;
       },
     } as unknown as TerminalSession;
-    const [decision] = decide({
-      terminals: [{ session, marker: launch() }],
-      workspaces: known({ ...ACTIVE, projectSlug: "current-slug", branchName: "current-branch" }),
-    });
+    const [decision] = decide({ terminals: [{ session, marker: launch() }] });
     if (decision?.action !== "relink") throw new Error(`expected relink, got ${decision?.action}`);
     const routes = new ScriptRouteStore();
     const runtimeStore = new WorkspaceScriptRuntimeStore();
@@ -358,12 +368,7 @@ describe("surviving workspace script terminals", () => {
       service: { launchNonce: NONCE },
     });
     expect(routes.listRoutes()).toEqual([
-      expect.objectContaining({
-        workspaceId: "ws-1",
-        scriptName: "web",
-        port: 41001,
-        projectSlug: "current-slug",
-      }),
+      expect.objectContaining({ workspaceId: "ws-1", scriptName: "web", port: 41001 }),
     ]);
 
     exitListeners.forEach((listener) => listener({ exitCode: 0 }));
@@ -372,6 +377,55 @@ describe("surviving workspace script terminals", () => {
     });
     expect(routes.listRoutes()).toEqual([]);
     expect(changes).toBe(1);
+  });
+
+  // A re-linked service must come back at the address it had: a held link to the old hostname
+  // would otherwise be dead.
+  it("keeps the hostname of a service launched on a non-default branch", async () => {
+    const launched = new ScriptRouteStore().registerWorkspaceService({
+      port: 41001,
+      workspaceId: "ws-1",
+      projectSlug: "repo",
+      branchName: "feature/preview",
+      scriptName: "web",
+      publicBaseUrl: null,
+    }).hostname;
+    const home = mkdtempSync(path.join(tmpdir(), "script-relink-branch-"));
+    const file = path.join(home, "workspace-script-terminals.json");
+    writeFileSync(file, JSON.stringify({ version: 2, services: [record()] }));
+    try {
+      for (const readBranch of [readFeatureBranch, readNoBranch, readNeverAnswers]) {
+        const routes = new ScriptRouteStore();
+        await relinkWorkspaceScripts({
+          recordPath: file,
+          terminals: adopted([{ session: withExitWatch(terminal()), marker: launch() }]),
+          readWorkspaces: async () => known(ACTIVE),
+          readScript: async () => SAME_SCRIPT,
+          readBranch,
+          restore: (decision) =>
+            restoreSurvivingService({
+              decision,
+              serviceProxy: routes,
+              serviceProxyPublicBaseUrl: null,
+              runtimeStore: new WorkspaceScriptRuntimeStore(),
+              logger,
+              onLifecycleChanged: ignoreChange,
+            }),
+          stopTerminal: async () => undefined,
+          deadlineMs: 3_000,
+          logger,
+        });
+        expect({
+          readBranch: readBranch.name,
+          hostnames: routes.listRoutes().map(hostnameOf),
+        }).toEqual({
+          readBranch: readBranch.name,
+          hostnames: [launched],
+        });
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("refuses to adopt a port another service holds", () => {
@@ -458,6 +512,7 @@ describe("surviving workspace script terminals", () => {
         terminals: adopted([{ session: terminal(), marker: launch() }]),
         readWorkspaces: () => new Promise(() => undefined),
         readScript: async () => SAME_SCRIPT,
+        readBranch: readFeatureBranch,
         restore: (decision) => restored.push(decision.service.terminalId),
         stopTerminal: async (terminalId) => {
           stopped.push(terminalId);

@@ -603,6 +603,8 @@ function serviceLaunchMarker(input: {
   workspaceId: string;
   scriptName: string;
   port: number | null;
+  projectSlug: string;
+  branchName: string | null;
   config: unknown;
 }): TerminalScriptLaunch | null {
   if (input.port === null) return null;
@@ -611,6 +613,8 @@ function serviceLaunchMarker(input: {
     workspaceId: input.workspaceId,
     scriptName: input.scriptName,
     port: input.port,
+    projectSlug: input.projectSlug,
+    branchName: input.branchName,
     scriptConfig: hashScriptConfig(input.config),
     nonce: randomBytes(24).toString("base64url"),
   };
@@ -642,7 +646,7 @@ export function restoreSurvivingService(input: {
   onLifecycleChanged: () => void;
 }): void {
   const { decision, runtimeStore } = input;
-  const { launch, terminal, workspace } = decision;
+  const { launch, terminal } = decision;
   // The port comes from the worker's marker, never the record; one another service holds is
   // refused here and the survivor stays unlinked.
   adoptWorkspaceServicePort({
@@ -654,8 +658,8 @@ export function restoreSurvivingService(input: {
   const route = input.serviceProxy.registerWorkspaceService({
     port: launch.port,
     workspaceId: launch.workspaceId,
-    projectSlug: workspace.projectSlug,
-    branchName: workspace.branchName,
+    projectSlug: launch.projectSlug,
+    branchName: decision.branchName,
     scriptName: launch.scriptName,
     publicBaseUrl: input.serviceProxyPublicBaseUrl,
   });
@@ -747,7 +751,14 @@ export async function spawnWorkspaceScript(
       routeRegistered = true;
     }
 
-    const launch = serviceLaunchMarker({ workspaceId, scriptName, port, config });
+    const launch = serviceLaunchMarker({
+      workspaceId,
+      scriptName,
+      port,
+      projectSlug,
+      branchName,
+      config,
+    });
     const { terminal, reusableTerminal } = await acquireWorkspaceScriptTerminal({
       serviceScript,
       existingRuntimeEntry,

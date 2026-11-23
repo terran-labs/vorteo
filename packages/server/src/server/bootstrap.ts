@@ -264,7 +264,7 @@ import type {
 import { type PersistedConfig } from "./persisted-config.js";
 import { createServiceProxySubsystem, type ServiceProxySubsystem } from "./service-proxy.js";
 import { releaseWorkspaceServicePortPlan } from "./workspace-service-port-registry.js";
-import { deriveProjectServiceSlug, deriveProjectSlug } from "./workspace-git-metadata.js";
+import { getCurrentBranch } from "../utils/checkout-git.js";
 import {
   createSurvivingServicesWriter,
   readSurvivorWorkspaces,
@@ -1409,15 +1409,9 @@ export async function createPaseoDaemon(
     await relinkWorkspaceScripts({
       recordPath,
       terminals: terminalManager,
-      readWorkspaces: () =>
-        readSurvivorWorkspaces({
-          registry: archiveWorkspaceRegistry,
-          projectSlugOf: async (projectId, cwd) => {
-            const project = await projectRegistry.get(projectId);
-            return project ? deriveProjectServiceSlug(project) : deriveProjectSlug(cwd, null);
-          },
-        }),
+      readWorkspaces: () => readSurvivorWorkspaces(archiveWorkspaceRegistry),
       readScript: readSurvivorScript,
+      readBranch: (cwd) => getCurrentBranch(cwd),
       restore: (decision) =>
         restoreSurvivingService({
           decision,
