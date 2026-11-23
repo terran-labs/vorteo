@@ -384,7 +384,7 @@ async function admitAndCreateAgent(
 ) {
   if (input.kind === "mcp" && input.leadLaunch?.phase === "prepare")
     throw new Error("A lead launch preview never creates a thread.");
-  fenceInheritedWorkerLaunch(dependencies, input);
+  await fenceInheritedWorkerLaunch(dependencies, input);
   const admitted = await admitAgent(dependencies, input);
   if (input.kind === "mcp" && input.leadLaunch?.phase === "launch") {
     await assertConfirmedLeadLaunch(
@@ -525,14 +525,18 @@ async function assertConfirmedLeadLaunch(
  * refusal in resolveMcpProfileInput does not reach it. The preset fence reports it instead
  * (#360, log-only until slice C). The supervisor's own launches are refused there and skipped here.
  */
-function fenceInheritedWorkerLaunch(
+async function fenceInheritedWorkerLaunch(
   dependencies: CreateAgentCommandDependencies,
   input: CreateAgentCommandInput,
-): void {
+): Promise<void> {
   if (input.kind !== "mcp" || !input.callerAgentId || input.leadLaunch) return;
   if (dependencies.agentManager.getAgent(input.callerAgentId)?.config.profileLaunch?.worker) return;
-  checkPresetFence(
-    { logger: dependencies.logger, getAgent: (id) => dependencies.agentManager.getAgent(id) },
+  await checkPresetFence(
+    {
+      logger: dependencies.logger,
+      getAgent: (id) => dependencies.agentManager.getAgent(id),
+      getStored: (id) => dependencies.agentStorage.get(id),
+    },
     "create_agent",
     input.callerAgentId,
     { kind: "launch", profileId: input.profileId ?? null, detached: input.detached ?? false },

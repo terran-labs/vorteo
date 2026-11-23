@@ -121,14 +121,29 @@ function canonicalJson(value: unknown): string {
 }
 
 /**
- * The resolved configuration's digest. Only two fields are timestamps of the resolution itself
- * and differ between the ask and the click without any edit: the skill snapshot's `capturedAt`
- * and the quota reserve state's `changedAt`. They are excluded; everything else is bound.
+ * The resolved configuration's digest. Everything is bound except values that change between the
+ * ask and the click without any edit to the chosen preset. Writers of the resolved configuration
+ * checked (#584 second review): resolveProfileLaunch and resolveProfileSelection (preset fields,
+ * worker, provenance), the provider's resolveCreateConfig (mode and features from the preset and
+ * provider), captureSkillPolicy, the quota reserve, buildMcpSessionConfig and title resolution.
+ * Excluded, and only these:
+ * - `capturedAt` of the skill snapshot, wherever it lives: `skillSnapshot` on installation-bound
+ *   daemons (Host and Dev) and `profileLaunch.skillSnapshot` otherwise. The skills are bound.
+ * - `profileLaunch.configurationRevision`: the shared preferences revision, which any saved
+ *   setting bumps. The values it would protect are resolved and bound directly.
+ * - `quotaReserve.state.changedAt`: set to the resolution time.
+ * - `isDefault` on the resolved preset and its worker: choosing another default preset clears it.
  */
 export function launchConfigDigest(config: AgentSessionConfig): string {
   const stable = structuredClone(config) as unknown as Record<string, unknown>;
-  const skills = stable.skillSnapshot as Record<string, unknown> | undefined;
-  if (skills) delete skills.capturedAt;
+  const launch = stable.profileLaunch as Record<string, unknown> | undefined;
+  for (const snapshot of [stable.skillSnapshot, launch?.skillSnapshot])
+    if (snapshot) delete (snapshot as Record<string, unknown>).capturedAt;
+  if (launch) {
+    delete launch.configurationRevision;
+    for (const preset of [launch.profile, launch.worker])
+      if (preset) delete (preset as Record<string, unknown>).isDefault;
+  }
   const reserve = stable.quotaReserve as { state?: Record<string, unknown> } | undefined;
   if (reserve?.state) delete reserve.state.changedAt;
   return createHash("sha256").update(canonicalJson(stable)).digest("hex");
@@ -215,7 +230,29 @@ function clip(text: string, limit: number): string {
 
 /** Agent text on one line, so it cannot imitate the daemon's own lines on the card. */
 function oneLine(text: string, limit: number): string {
-  return clip(text.replace(/\s+/g, " ").trim(), limit);
+  return clip(plain(text), limit);
+}
+
+/**
+ * Agent text with format characters (direction overrides, zero-width characters) removed and
+ * control characters and every kind of whitespace folded to single spaces.
+ */
+function plain(text: string): string {
+  return text
+    .replace(/\p{Cf}/gu, "")
+    .replace(/[\p{Cc}\s]+/gu, " ")
+    .trim();
+}
+
+const PROMPT_EXCERPT = 500;
+const WHY_LIMIT = 2000;
+
+/** The excerpt says when it was cut and how long the full task is. */
+function promptExcerpt(prompt: string): string {
+  const text = plain(prompt);
+  if (text.length <= PROMPT_EXCERPT)
+    return `The lead's first task, in the agent's words: "${text}"`;
+  return `The lead's first task, in the agent's words (first ${PROMPT_EXCERPT} of ${text.length} characters): "${text.slice(0, PROMPT_EXCERPT)}…"`;
 }
 
 /**
@@ -232,22 +269,24 @@ export function leadLaunchQuestion(params: {
   const { record } = params;
   const requested = record.options[0]!;
   const changed = differences(requested.binding, params.workerBinding);
-  const why = [
+  // The excerpt is last, so the rest is clipped to leave it whole within the 2,000 characters.
+  const excerpt = promptExcerpt(record.initialPrompt);
+  const head = [
     `${oneLine(params.callerTitle, 80)} (${record.callerAgentId}) asks to start a lead thread that is not its worker preset. Nothing starts until you choose; no option is recommended.`,
     `Requested: ${describe(requested.binding)}.`,
     changed.length ? `Differs from the worker preset: ${changed.join("; ")}.` : "",
     `The agent's reason, in its own words: "${oneLine(record.reason, 400)}"`,
-    `The lead's first task, in the agent's words (excerpt): "${oneLine(record.initialPrompt, 500)}"`,
   ]
     .filter(Boolean)
     .join("\n");
+  const why = `${clip(head, WHY_LIMIT - excerpt.length - 1)}\n${excerpt}`;
   return {
     id: record.id,
     question: clip(
       `Start "${oneLine(record.title, 60)}" in ${params.workspaceLabel} on ${requested.binding.profileId ?? requested.binding.provider}?`,
       500,
     ),
-    why: clip(why, 2000),
+    why,
     // The card recommends nothing: the agent's requested escalation is not a default.
     recommendedDefault: "No recommendation. Choose one of the options.",
     input: {

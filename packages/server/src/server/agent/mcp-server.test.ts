@@ -6363,25 +6363,21 @@ describe("preset fence (#360)", () => {
       expect(presetFenceReason(supervisor, target, request)).toBe(reason);
     // The supervisor's worker is held to the same preset (the worker hop, #360 review B1).
     const workerThread = agents.child!;
-    expect(
-      presetFenceReason(
-        workerThread,
-        null,
-        { kind: "launch", profileId: "other-preset" },
-        supervisor,
-      ),
-    ).toBe("preset-required");
+    const governed = { kind: "supervisor" as const, supervisor };
+    const launchOther = { kind: "launch" as const, profileId: "other-preset" };
+    expect(presetFenceReason(workerThread, null, launchOther, governed)).toBe("preset-required");
     expect(
       presetFenceReason(
         workerThread,
         null,
         { kind: "launch", profileId: workerPreset.id },
-        supervisor,
+        governed,
       ),
     ).toBeNull();
-    expect(
-      presetFenceReason(workerThread, null, { kind: "launch", profileId: "other-preset" }),
-    ).toBeNull();
+    // A parent chain that cannot be followed is reported, never treated as ungoverned.
+    const unknown = { kind: "unknown" as const, why: "parent-unresolved" as const };
+    expect(presetFenceReason(workerThread, null, launchOther, unknown)).toBe("supervisor-unknown");
+    expect(presetFenceReason(workerThread, null, launchOther, { kind: "none" })).toBeNull();
     expect(presetFenceReason(agents.other!, null, { kind: "launch", profileId: "x" })).toBeNull();
   });
 
@@ -6415,6 +6411,39 @@ describe("preset fence (#360)", () => {
         reason: "governance-label",
         enforced: false,
         targetAgentId: "child",
+      }),
+    });
+  });
+
+  it("logs a worker clearing its own parent label, which would otherwise end the walk", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    spies.agentManager.getAgent.mockImplementation((id: string) => agents[id] ?? null);
+    const warnings: Array<{ fields: unknown; message: unknown }> = [];
+    const recording: ReturnType<typeof createTestLogger> = Object.assign(
+      Object.create(createTestLogger()),
+      {
+        warn: (fields: unknown, message: unknown) => warnings.push({ fields, message }),
+        child: () => recording,
+      },
+    );
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      logger: recording,
+      callerAgentId: "child",
+    });
+    await registeredTool(server, "update_agent").handler({
+      agentId: "child",
+      labels: { "paseo.parent-agent-id": "" },
+    });
+    expect(warnings).toContainEqual({
+      message: "Preset fence would refuse",
+      fields: expect.objectContaining({
+        path: "update_agent",
+        reason: "governance-label",
+        callerAgentId: "child",
+        supervisorAgentId: "supervisor",
       }),
     });
   });

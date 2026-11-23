@@ -5940,7 +5940,7 @@ export class Session {
         createdWorktree,
         workspacePromptTitle,
       });
-      this.checkSessionPresetFence(msg.callerAgentId, resolvedIntent);
+      await this.checkSessionPresetFence(msg.callerAgentId, resolvedIntent);
       const resolvedCwd = resolve(resolvedIntent.config.cwd);
       if (!(await this.filesystem.isDirectory(resolvedCwd))) {
         throw new Error(`Working directory does not exist or is not a directory: ${resolvedCwd}`);
@@ -6035,9 +6035,13 @@ export class Session {
   private checkSessionPresetFence(
     callerAgentId: string | undefined,
     resolved: { config: { profileId?: string }; intent: { parentAgentId: string | null } },
-  ): void {
-    checkPresetFence(
-      { logger: this.sessionLogger, getAgent: (id) => this.agentManager.getAgent(id) },
+  ): Promise<void> {
+    return checkPresetFence(
+      {
+        logger: this.sessionLogger,
+        getAgent: (id) => this.agentManager.getAgent(id),
+        getStored: (id) => this.agentStorage.get(id),
+      },
       "session_create_agent",
       callerAgentId,
       {

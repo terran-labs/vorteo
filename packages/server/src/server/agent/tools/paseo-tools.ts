@@ -758,20 +758,24 @@ function createToolCatalog(
   // Preset fence (#360): report-only until slice C; see lead-launch/fence.ts.
   const presetFence = (path: PresetFencePath, request: PresetFenceRequest) =>
     checkPresetFence(
-      { logger: childLogger, getAgent: (id) => agentManager.getAgent(id) },
+      {
+        logger: childLogger,
+        getAgent: (id) => agentManager.getAgent(id),
+        getStored: (id) => agentStorage.get(id),
+      },
       path,
       callerAgentId,
       request,
     );
 
   /** The destination daemon does not know this caller's worker preset; check it here. */
-  const fenceRemoteCreate = (
+  const fenceRemoteCreate = async (
     name: string,
     destination: string | undefined,
     input: Record<string, unknown>,
-  ): void => {
+  ): Promise<void> => {
     if (name !== "create_agent" || destination === options.serverId) return;
-    presetFence("remote_create_agent", {
+    await presetFence("remote_create_agent", {
       kind: "launch",
       profileId: typeof input.profileId === "string" ? input.profileId : null,
       detached:
@@ -781,9 +785,9 @@ function createToolCatalog(
   };
 
   /** A dry run changes nothing, so only a real switch is checked. */
-  const fenceProfileSwitch = (agentId: string, dryRun: boolean): void => {
+  const fenceProfileSwitch = async (agentId: string, dryRun: boolean): Promise<void> => {
     if (!dryRun)
-      presetFence("switch_agent_profile", {
+      await presetFence("switch_agent_profile", {
         kind: "change",
         targetAgentId: agentId,
         settings: true,
@@ -923,7 +927,7 @@ function createToolCatalog(
       };
       handler = async ({ serverId, ...input }, context) => {
         const destination = serverId ?? options.serverId;
-        fenceRemoteCreate(name, destination, input);
+        await fenceRemoteCreate(name, destination, input);
         const remoteNotification = await prepareRemoteNotification(name, destination, input);
         try {
           const response = await hostResolver.use(serverId, (host) =>
@@ -1951,7 +1955,7 @@ function createToolCatalog(
       const ceiling = ceilingReport("switch_agent_profile");
       for (const id of candidates) {
         try {
-          fenceProfileSwitch(id, dryRun);
+          await fenceProfileSwitch(id, dryRun);
           const record = await agentStorage.get(id);
           if (!record) {
             results.push({ agentId: id, outcome: "skipped", error: "Thread no longer exists" });
@@ -2683,7 +2687,7 @@ function createToolCatalog(
         throw new PaseoToolInputError(`Agent ${agentId} not found`);
       }
       if (sessionMode)
-        presetFence("send_agent_prompt", {
+        await presetFence("send_agent_prompt", {
           kind: "change",
           targetAgentId: agentId,
           settings: true,
@@ -3047,7 +3051,7 @@ function createToolCatalog(
     },
     async ({ agentId, name, labels, settings }) => {
       assertAgentCanSetFeatures(settings?.features);
-      presetFence("update_agent", {
+      await presetFence("update_agent", {
         kind: "change",
         targetAgentId: agentId,
         settings: Object.values(settings ?? {}).some((value) => value !== undefined),
@@ -3456,7 +3460,7 @@ function createToolCatalog(
 
       const expiresAt = buildScheduleExpiry(expiresIn);
       // Agent-created schedules carry no preset, so each run would leave the worker preset.
-      presetFence("create_schedule", { kind: "launch", profileId: null });
+      await presetFence("create_schedule", { kind: "launch", profileId: null });
       const schedule = await scheduleService.createOrReplace({
         prompt: prompt.trim(),
         cadence: buildCronScheduleCadence({
@@ -3642,7 +3646,10 @@ function createToolCatalog(
       }
 
       const schedule = await requireScheduleTarget(id, "new-agent");
-      presetFence("resume_schedule", { kind: "launch", profileId: scheduleProfileId(schedule) });
+      await presetFence("resume_schedule", {
+        kind: "launch",
+        profileId: scheduleProfileId(schedule),
+      });
       await runScheduleAction(() => scheduleService.resume(id));
       guardCeiling(undefined, () =>
         reportSchedule(ceilingReport("resume_schedule"), schedule, { triggered: true }),
@@ -3743,7 +3750,10 @@ function createToolCatalog(
       }
 
       const previous = await requireScheduleTarget(input.id, "new-agent");
-      presetFence("update_schedule", { kind: "launch", profileId: scheduleProfileId(previous) });
+      await presetFence("update_schedule", {
+        kind: "launch",
+        profileId: scheduleProfileId(previous),
+      });
       const schedule = await scheduleService.update(buildScheduleUpdateInput(input));
       guardCeiling(undefined, () =>
         reportSchedule(ceilingReport("update_schedule"), schedule, { previous }),
@@ -3795,7 +3805,10 @@ function createToolCatalog(
         throw new Error("Schedule service is not configured");
       }
       const target = await requireScheduleTarget(id, "new-agent");
-      presetFence("run_schedule_once", { kind: "launch", profileId: scheduleProfileId(target) });
+      await presetFence("run_schedule_once", {
+        kind: "launch",
+        profileId: scheduleProfileId(target),
+      });
       const schedule = await runScheduleAction(() => scheduleService.runOnce(id));
       guardCeiling(undefined, () =>
         reportSchedule(ceilingReport("run_schedule_once"), schedule, { triggered: true }),
@@ -4004,7 +4017,11 @@ function createToolCatalog(
       },
     },
     async ({ agentId, modeId }) => {
-      presetFence("set_agent_mode", { kind: "change", targetAgentId: agentId, settings: true });
+      await presetFence("set_agent_mode", {
+        kind: "change",
+        targetAgentId: agentId,
+        settings: true,
+      });
       const ceiling = ceilingReport("set_agent_mode");
       const result = await setAgentModeCommand({ agentManager }, { agentId, modeId });
       guardCeiling(undefined, () => ceiling.report(agentId));
