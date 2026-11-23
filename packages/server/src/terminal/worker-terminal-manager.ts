@@ -6,7 +6,7 @@ import type { Logger } from "pino";
 import { createExternalProcessEnv } from "../server/paseo-env.js";
 import { assertAbsolutePath, isSameOrDescendantPath } from "../server/path-utils.js";
 import { writtenDuringThisBoot } from "../server/pid-lock.js";
-import type { WorkerTerminalState } from "./terminal-worker-protocol.js";
+import type { TerminalScriptLaunch, WorkerTerminalState } from "./terminal-worker-protocol.js";
 import type { TerminalActivity, TerminalActivityState } from "@getpaseo/protocol/terminal-activity";
 import { deriveTerminalActivityStatusBucket } from "@getpaseo/protocol/terminal-activity";
 import type {
@@ -37,6 +37,7 @@ import {
   NoTerminalWorkerAvailableError,
   TerminalWorkerIncompatibleError,
   type TerminalWorkerPoolMember,
+  type TerminalWorkerService,
 } from "./terminal-worker-pool.js";
 import { pruneTerminalWorkerRuntimes } from "./terminal-worker-runtime.js";
 import type {
@@ -127,6 +128,8 @@ interface WorkerTerminalManagerOptions {
 export interface DaemonTerminalManager extends TerminalManager {
   /** Registers every terminal the connected worker already runs. Resolves with their count. */
   adoptTerminals(): Promise<number>;
+  /** The script launch marker the worker keeps for a terminal, or null when it has none. */
+  scriptLaunchOf(terminalId: string): TerminalScriptLaunch | null;
   /** Kills every terminal and verifies their programs ended. */
   closeTerminals(): Promise<void>;
   /**
@@ -177,6 +180,8 @@ export function createWorkerTerminalManager(
   const recordsById = new Map<string, WorkerTerminalRecord>();
   const terminalIdsByCwd = new Map<string, Set<string>>();
   const terminalActivityTokenById = new Map<string, string>();
+  // Script launch markers as the worker holds them, so a later daemon can prove its services.
+  const scriptLaunchById = new Map<string, TerminalScriptLaunch>();
   // Creation owns a reference to the session independently of the live-terminal
   // index. Only terminalCreated registers it; terminalExit removes it permanently.
   const pendingCreationsById = new Map<string, { session: TerminalSession | null }>();
@@ -407,6 +412,7 @@ export function createWorkerTerminalManager(
     }
     recordsById.delete(terminalId);
     terminalActivityTokenById.delete(terminalId);
+    scriptLaunchById.delete(terminalId);
     const terminalIds = terminalIdsByCwd.get(record.info.cwd);
     if (terminalIds) {
       terminalIds.delete(terminalId);
@@ -775,6 +781,9 @@ export function createWorkerTerminalManager(
       if (item.activityToken) {
         terminalActivityTokenById.set(info.id, item.activityToken);
       }
+      if (item.vorteoLaunch) {
+        scriptLaunchById.set(info.id, item.vorteoLaunch);
+      }
       cwds.add(info.cwd);
     }
     for (const cwd of cwds) {
@@ -840,6 +849,9 @@ export function createWorkerTerminalManager(
         });
         if (!creation.session) {
           throw new Error("Terminal worker completed creation without a terminalCreated event");
+        }
+        if (options.vorteoLaunch) {
+          scriptLaunchById.set(terminalId, options.vorteoLaunch);
         }
         return creation.session;
       } catch (error) {
@@ -962,6 +974,10 @@ export function createWorkerTerminalManager(
 
     adoptTerminals,
 
+    scriptLaunchOf(terminalId: string): TerminalScriptLaunch | null {
+      return scriptLaunchById.get(terminalId) ?? null;
+    },
+
     subscribeTerminalsChanged(listener: TerminalsChangedListener): () => void {
       terminalsChangedListeners.add(listener);
       return () => {
@@ -1019,7 +1035,7 @@ interface LiveWorkerRecord {
  */
 export async function startWorkerTerminalManager(
   options: StartWorkerTerminalManagerOptions,
-): Promise<DaemonTerminalManager> {
+): Promise<TerminalWorkerService> {
   const logger = options.logger.child({ module: "terminal-worker" });
   const inspector = createTerminalWorkerProcessInspector();
   const log = (message: string, fields?: Record<string, unknown>) => logger.info(fields, message);
@@ -1194,6 +1210,7 @@ export async function startWorkerTerminalManager(
     return {
       manager,
       workerPid: record.pid,
+      workerStartedAt: record.identity.startedAt,
       exited,
       ready: async () => {
         await recovery;

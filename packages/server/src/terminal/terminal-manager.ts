@@ -1,3 +1,4 @@
+import type { TerminalScriptLaunch } from "./terminal-worker-protocol.js";
 import {
   replayTerminal,
   type TerminalReplaySink,
@@ -76,6 +77,7 @@ export interface TerminalManager {
     activityUrl?: string | null;
     baseEnv?: Record<string, string>;
     paseoCliPath?: string | null;
+    vorteoLaunch?: TerminalScriptLaunch;
   }): Promise<TerminalSession>;
   registerCwdEnv(options: { cwd: string; env: Record<string, string> }): void;
   validateTerminalActivityToken(terminalId: string, token: string): "valid" | "unknown" | "invalid";

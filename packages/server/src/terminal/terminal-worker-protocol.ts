@@ -18,6 +18,27 @@ export interface WorkerTerminalInfo {
   activity: TerminalActivity | null;
 }
 
+/**
+ * Vorteo: set only by the workspace script launcher and kept by the worker with the terminal,
+ * so a later daemon can prove which terminal it launched for a service. Terminal creation from
+ * clients and agents never passes it. Optional in both directions: an older worker drops it
+ * (its terminals stay unproven) and an older daemon ignores it, so the protocol version is
+ * unchanged.
+ */
+export interface TerminalScriptLaunch {
+  kind: "workspace-script";
+  workspaceId: string;
+  scriptName: string;
+  port: number;
+  /** The route hostname's inputs at launch, so a re-link keeps the same address. */
+  projectSlug: string;
+  branchName: string | null;
+  /** sha256 of the script's paseo.json entry at launch. */
+  scriptConfig: string;
+  /** Random per launch; the daemon's record of running services names it. */
+  nonce: string;
+}
+
 export interface WorkerCreateTerminalOptions {
   id?: string;
   cwd: string;
@@ -36,6 +57,7 @@ export interface WorkerCreateTerminalOptions {
   // letting the worker reuse whatever it inherited at launch.
   baseEnv?: Record<string, string>;
   paseoCliPath?: string | null;
+  vorteoLaunch?: TerminalScriptLaunch;
 }
 
 // Bumped when a request, response or event changes shape. The frozen envelope never changes
@@ -81,6 +103,8 @@ export interface WorkerListedTerminal {
   state: WorkerTerminalState;
   activityToken: string | null;
   replayPreamble: string;
+  /** Absent from workers that predate it. */
+  vorteoLaunch?: TerminalScriptLaunch | null;
 }
 
 export interface WorkerKillAndWaitOptions {

@@ -24,6 +24,14 @@ interface PendingWorkspaceServicePortPlanToken {
   isReleased: boolean;
 }
 
+export class ServicePortTakenError extends Error {
+  readonly port: number;
+  constructor(port: number) {
+    super(`Port ${port} is already reserved by another service`);
+    this.port = port;
+  }
+}
+
 class WorkspaceServicePortPlanReleasedError extends Error {
   constructor(workspaceId: string) {
     super(`Workspace service port plan was released while being created for '${workspaceId}'`);
@@ -79,6 +87,33 @@ export function requirePlannedWorkspaceServicePort(
     throw new Error(`Service '${scriptName}' is missing from workspace service port plan`);
   }
   return port;
+}
+
+/**
+ * Records the port of a service that survived a daemon replacement, so no other service is
+ * planned onto it. A fixed port from paseo.json is planned only; an allocated one is also
+ * reserved against other workspaces.
+ */
+export function adoptWorkspaceServicePort(options: {
+  workspaceId: string;
+  scriptName: string;
+  port: number;
+  fixed: boolean;
+}): void {
+  const owner = dynamicPortOwners.get(options.port);
+  const plan = workspaceServicePortPlans.get(options.workspaceId) ?? new Map<string, number>();
+  const plannedForOther = Array.from(plan).some(
+    ([scriptName, port]) => port === options.port && scriptName !== options.scriptName,
+  );
+  if (
+    (owner !== undefined && owner !== toServiceOwner(options.workspaceId, options.scriptName)) ||
+    plannedForOther
+  ) {
+    throw new ServicePortTakenError(options.port);
+  }
+  plan.set(options.scriptName, options.port);
+  workspaceServicePortPlans.set(options.workspaceId, plan);
+  if (!options.fixed) reserveDynamicPort(options);
 }
 
 export function releaseWorkspaceServicePortPlan(workspaceId: string): void {
