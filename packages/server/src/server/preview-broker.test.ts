@@ -78,7 +78,7 @@ describe("preview restart admission", () => {
     expect(
       admitPreviewRestart({ ...allowed, restarter: { ...restarter, atCapacity: () => true } })
         ?.code,
-    ).toBe("busy");
+    ).toBe("capacity");
   });
 });
 

@@ -5664,7 +5664,11 @@ export const WorkspaceScriptRestartPreviewResponseMessageSchema = z.object({
     workspaceId: z.string(),
     scriptName: z.string(),
     accepted: z.boolean(),
-    /** Why it was refused, such as "owner_app_only", "needs_review" or "busy". */
+    /**
+     * Why it was refused, such as "owner_app_only", "needs_review", "busy" (this preview is
+     * already starting or stopping) or "capacity" (the session's share or the daemon's limit
+     * is in use). Clients show the error text for a code they do not know.
+     */
     refusalCode: z.string().nullable().optional(),
     error: z.string().nullable(),
   }),

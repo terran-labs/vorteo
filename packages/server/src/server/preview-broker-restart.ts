@@ -239,7 +239,8 @@ export interface PreviewRestartRefusal {
     | "workspace_unavailable"
     | "no_reservation"
     | "needs_review"
-    | "busy";
+    | "busy"
+    | "capacity";
   message: string;
 }
 
@@ -286,7 +287,8 @@ export function admitPreviewRestart(input: {
     return { code: "busy", message: "A restart is already running" };
   }
   if (input.restarter.atCapacity(input.requester)) {
-    return { code: "busy", message: "Too many preview restarts are running" };
+    // Its own code, so the app can say the limit is reached rather than "this one is starting".
+    return { code: "capacity", message: "Too many preview restarts are running" };
   }
   return null;
 }
