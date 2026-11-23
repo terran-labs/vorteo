@@ -29,6 +29,7 @@ import { expect, test, vi } from "vitest";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import {
   createInstallationRestartExecutor,
+  hostServiceCommands,
   createInstallationRegistrationAdmission,
   validateHostStartup,
 } from "./daemon.js";
@@ -2607,7 +2608,13 @@ test("Host publication uses the verified candidate migration rules after replace
       detail: "Prepared",
       update,
     });
-    const restart = vi.fn(async () => "Replacement worker 2 is ready");
+    // Stands in for the executor: reports terminals kept whenever it is asked to keep them.
+    const restart = vi.fn(
+      async (_target: string, options?: Parameters<RestartExecutor["restart"]>[1]) => {
+        if (options?.keepTerminals) options.onTerminals?.({ terminals: "kept" });
+        return "Replacement worker 2 is ready";
+      },
+    );
 
     const stale = job();
     await expect(updates.install(stale, restart, undefined, async () => "1.0.0")).rejects.toThrow(
@@ -2655,7 +2662,7 @@ test("Host publication uses the verified candidate migration rules after replace
       updates.install(job(), restart, undefined, async () => "1.0.1"),
     ).resolves.toContain("Installed source");
     expect(await readFile(path.join(root, "published"), "utf8")).toBe("yes");
-    expect(restart).toHaveBeenLastCalledWith("host", { keepTerminals: false });
+    expect(restart.mock.lastCall?.[1]?.keepTerminals).toBe(false);
 
     // Keep terminals (#587) only when both the candidate and the previous release, the
     // one a failed readiness check falls back to, re-link surviving services.
@@ -2677,20 +2684,19 @@ test("Host publication uses the verified candidate migration rules after replace
       const receipt = JSON.parse(
         await readFile(path.join(root, installed.id, "activation.json"), "utf8"),
       );
-      return { result, receipt, options: restart.mock.lastCall?.[1] };
+      return { result, receipt, keep: restart.mock.lastCall?.[1]?.keepTerminals };
     };
     const kept = await installWith(true, true);
-    expect(kept.options).toEqual({ keepTerminals: true });
-    expect(kept.receipt).toMatchObject({ status: "succeeded", keepTerminals: true });
+    expect(kept.keep).toBe(true);
+    expect(kept.receipt).toMatchObject({ status: "succeeded", terminals: "kept" });
     // A rollback to a release without the re-link closes terminals as before.
     for (const [candidate, previousRelinks] of [
       [false, true],
       [true, false],
     ]) {
       const closed = await installWith(candidate, previousRelinks);
-      expect(closed.options).toEqual({ keepTerminals: false });
-      expect(closed.receipt).toMatchObject({ keepTerminals: false });
-      expect(closed.result).toContain("Terminals were closed");
+      expect(closed.keep).toBe(false);
+      expect(closed.receipt).toMatchObject({ status: "succeeded", terminals: "not-attempted" });
     }
   } finally {
     await hostReleaseRetentionIdle();
@@ -2751,6 +2757,99 @@ test("a keep-terminals Host replacement falls back to the old replacement and sa
     await rm(release, { recursive: true, force: true });
   }
 });
+
+test("the Host executor keeps terminals only through the checked shutdown and a plain kickstart", async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "keep-terminals-executor-")));
+  const entrypoint = path.join(root, "validator.mjs");
+  await writeFile(entrypoint, "process.exit(0);");
+  const launchd = restartTestConfig(root, entrypoint);
+  const { launchdService: _service, ...hostWithoutLaunchd } =
+    launchd.host as typeof launchd.host & {
+      launchdService: string;
+    };
+  const systemd = {
+    ...launchd,
+    host: { ...hostWithoutLaunchd, systemdService: { unit: "vorteo-test.service" } },
+  } as unknown as InstallationConfig;
+  const service = "gui/501/local.vorteo.test.host";
+
+  let pid = 100;
+  let probeFails = false;
+  let capable = true;
+  let events: string[] = [];
+  const spies = [
+    vi.spyOn(DaemonClient.prototype, "connect").mockResolvedValue(),
+    vi.spyOn(DaemonClient.prototype, "close").mockResolvedValue(),
+    vi.spyOn(DaemonClient.prototype, "getDaemonStatus").mockImplementation(async () => {
+      if (probeFails) {
+        probeFails = false;
+        throw new Error("Daemon readiness probe did not answer in time");
+      }
+      return { pid } as Awaited<ReturnType<DaemonClient["getDaemonStatus"]>>;
+    }),
+    vi.spyOn(DaemonClient.prototype, "getLastServerInfoMessage").mockImplementation(() => {
+      events.push("capability checked");
+      return { features: { terminalsSurviveRestart: capable } } as ReturnType<
+        DaemonClient["getLastServerInfoMessage"]
+      >;
+    }),
+    vi.spyOn(DaemonClient.prototype, "shutdownServer").mockImplementation(async (options) => {
+      events.push(`shutdown keepTerminals=${String(options?.keepTerminals)}`);
+      pid = 200;
+      return {} as Awaited<ReturnType<DaemonClient["shutdownServer"]>>;
+    }),
+    vi.spyOn(hostServiceCommands, "run").mockImplementation(async (file, args) => {
+      events.push([file, ...args].join(" "));
+      // A replacing command starts a new worker; a plain kickstart finds it already running.
+      if (args.includes("-k") || args.includes("restart")) pid = 200;
+      return { stdout: "", stderr: "" };
+    }),
+  ];
+  const run = async (config: InstallationConfig, keepTerminals: boolean) => {
+    pid = 100;
+    events = [];
+    const outcomes: unknown[] = [];
+    await createInstallationRestartExecutor(config).restart("host", {
+      keepTerminals,
+      onTerminals: (outcome) => outcomes.push(outcome),
+    });
+    return { events, outcomes };
+  };
+  try {
+    expect(await run(launchd, true)).toEqual({
+      events: [
+        "capability checked",
+        "shutdown keepTerminals=true",
+        `/bin/launchctl kickstart ${service}`,
+      ],
+      outcomes: [{ terminals: "kept" }],
+    });
+    expect(await run(launchd, false)).toEqual({
+      events: [`/bin/launchctl kickstart -k ${service}`],
+      outcomes: [],
+    });
+    capable = false;
+    const refused = await run(launchd, true);
+    capable = true;
+    expect(refused.events).toEqual([
+      "capability checked",
+      `/bin/launchctl kickstart -k ${service}`,
+    ]);
+    expect(refused.outcomes).toMatchObject([{ terminals: "replaced" }]);
+    // Without the old worker's pid the exiting daemon could pass for its replacement.
+    probeFails = true;
+    const unknown = await run(launchd, true);
+    expect(unknown.events).toEqual([`/bin/launchctl kickstart -k ${service}`]);
+    expect(unknown.outcomes).toMatchObject([{ terminals: "not-attempted" }]);
+    // systemd stops the detached worker with the unit, so Linux never claims to keep them.
+    const linux = await run(systemd, true);
+    expect(linux.events).toEqual(["/usr/bin/systemctl --user restart vorteo-test.service"]);
+    expect(linux.outcomes).toMatchObject([{ terminals: "not-attempted" }]);
+  } finally {
+    for (const spy of spies) spy.mockRestore();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);
 
 test("source builds fail before activation, uncertain dispatch retains selection, and publication follows readiness", async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "source-activation-")));

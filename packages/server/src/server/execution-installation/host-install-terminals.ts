@@ -64,11 +64,6 @@ export async function installMayKeepTerminals(
   );
 }
 
-/** The receipt's terminal sentence: the restart's own report when it was asked to keep them. */
-export function installTerminalsSentence(keepTerminals: boolean, restartDetail: string): string {
-  return keepTerminals ? restartDetail : describeTerminalOutcome(null);
-}
-
 /** The effects a keep-terminals replacement needs; daemon.ts supplies the real ones. */
 export interface KeepTerminalsReplacement {
   /**
@@ -88,9 +83,16 @@ export interface KeepTerminalsReplacement {
   now?: () => number;
 }
 
+/** Recorded in the install receipt as `terminals` and `terminalsReason`. */
 export type KeepTerminalsOutcome =
   | { terminals: "kept" }
-  | { terminals: "replaced"; reason: string; requestSent: boolean };
+  /** Tried, did not complete; replaced the old way. */
+  | { terminals: "replaced"; reason: string; requestSent: boolean }
+  /** Not tried; replaced the old way, which closes terminals. */
+  | { terminals: "not-attempted"; reason: string };
+
+export const NOT_RELINKING_RELEASE =
+  "the candidate or the previous release does not re-link surviving services";
 
 /**
  * Stop the daemon keeping its terminals, then start the service. If the request fails,
@@ -128,9 +130,8 @@ export async function replaceHostKeepingTerminals(
 }
 
 /** One sentence for the install receipt. */
-export function describeTerminalOutcome(outcome: KeepTerminalsOutcome | null): string {
-  if (outcome === null)
-    return "Terminals were closed: the candidate or the previous release does not re-link surviving services.";
+export function describeTerminalOutcome(outcome: KeepTerminalsOutcome): string {
+  if (outcome.terminals === "not-attempted") return `Terminals were closed: ${outcome.reason}.`;
   if (outcome.terminals === "kept")
     return "Terminals were kept for the new daemon, which re-links surviving services.";
   return `The keep-terminals shutdown did not complete (${outcome.reason}), so the service was replaced the old way, which closes terminals unless the daemon had already begun keeping them.`;

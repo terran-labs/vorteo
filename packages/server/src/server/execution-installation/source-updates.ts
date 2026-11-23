@@ -1,4 +1,9 @@
-import { installMayKeepTerminals, installTerminalsSentence } from "./host-install-terminals.js";
+import {
+  describeTerminalOutcome,
+  installMayKeepTerminals,
+  NOT_RELINKING_RELEASE,
+  type KeepTerminalsOutcome,
+} from "./host-install-terminals.js";
 import { inspectStandingSourceProvenance } from "./maintenance/source-provenance.js";
 import {
   assertBootstrapPathsProtected,
@@ -828,9 +833,17 @@ export class InstallationSourceUpdates {
     // Read from the releases' own files, before the selection moves (#587).
     const keepTerminals = await installMayKeepTerminals(prepared.release, previous);
     this.selectRelease(prepared.release);
-    let restartDetail: string;
+    let terminals: KeepTerminalsOutcome = {
+      terminals: "not-attempted",
+      reason: NOT_RELINKING_RELEASE,
+    };
     try {
-      restartDetail = await restart("host", { keepTerminals });
+      await restart("host", {
+        keepTerminals,
+        onTerminals: (outcome) => {
+          terminals = outcome;
+        },
+      });
     } catch (error) {
       // A failed reply is not proof that the supervisor refused dispatch. Moving
       // the selector now can race a replacement already starting this candidate.
@@ -841,15 +854,13 @@ export class InstallationSourceUpdates {
       );
     }
     await assertLoadedHostRelease(prepared.release, loadedHostVersion);
-    const terminals = installTerminalsSentence(keepTerminals, restartDetail);
     const ready = {
       previous,
       candidate: prepared.release,
       exported: prepared.exported,
       update,
       status: "daemon-ready",
-      keepTerminals,
-      restart: terminals,
+      ...terminalReceipt(terminals),
     };
     try {
       writeLifecycleReceipt(activationFile, ready);
@@ -896,8 +907,7 @@ export class InstallationSourceUpdates {
       candidate: prepared.release,
       update,
       status: "succeeded",
-      keepTerminals,
-      restart: terminals,
+      ...terminalReceipt(terminals),
     });
     // Cleanup runs after this result, outside the readiness deadline: a first prune of a
     // large backlog once took longer than the whole install window.
@@ -905,7 +915,7 @@ export class InstallationSourceUpdates {
       (record) => this.retainHostReleases(previous, record),
       path.join(work, "retention.json"),
     );
-    return `Installed source ${update.sourceCommit}. Host replacement identity and readiness verified; interface published. ${terminals} Previous release retained at ${previous}. ${cleanupSentence(hostReleaseCleanupMode(this.config))}${commandMessage}`;
+    return `Installed source ${update.sourceCommit}. Host replacement identity and readiness verified; interface published. ${describeTerminalOutcome(terminals)} Previous release retained at ${previous}. ${cleanupSentence(hostReleaseCleanupMode(this.config))}${commandMessage}`;
   }
 
   /**
@@ -1092,4 +1102,12 @@ function releaseServerVersion(release: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** What happened to terminals, recorded in the activation receipt (#587). */
+function terminalReceipt(outcome: KeepTerminalsOutcome): Record<string, string> {
+  return {
+    terminals: outcome.terminals,
+    ...(outcome.terminals === "kept" ? {} : { terminalsReason: outcome.reason }),
+  };
 }

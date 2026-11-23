@@ -93,7 +93,7 @@ These restarts keep terminals:
 - crash restarts;
 - worker restarts: `restart_server`, Dev installs, Host installs that wait for idle, held restarts;
 - `daemon stop --keep-terminals`;
-- a Host source update with immediate replacement, once the installation coordinator carries the change. The coordinator keeps terminals only when both the candidate and the previous release re-link. It sends the shutdown RPC with `keepTerminals`, then starts the service again, and falls back to `kickstart -k` and says so in its receipt ([execution installation](execution-installation.md#reviewed-source-updates)).
+- a Host source update with immediate replacement on a launchd (macOS) Host, once the installation coordinator carries the change. The coordinator keeps terminals only when both the candidate and the previous release re-link and the running daemon answered before the restart. A systemd Host still closes them, because the unit's default `KillMode` stops the detached terminal worker with the unit. It sends the shutdown RPC with `keepTerminals`, then starts the service again, and falls back to `kickstart -k` and says so in its receipt ([execution installation](execution-installation.md#reviewed-source-updates)).
 
 These close them:
 

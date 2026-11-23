@@ -1,6 +1,6 @@
 ### Features
 
-- A Host source update now keeps managed previews running. The coordinator asks the Host daemon to shut down keeping its terminals, instead of replacing its service with a signal that closes them, and the new daemon re-links each preview before it listens. It does this only when both the new release and the one it would fall back to re-link surviving services; otherwise, and whenever the request fails, the install replaces the service as before and says so in its receipt (#587).
+- A Host source update on a macOS Host now keeps managed previews running. The coordinator asks the Host daemon to shut down keeping its terminals, instead of replacing its service with a signal that closes them, and the new daemon re-links each preview before it listens. It does this only when both the new release and the one it would fall back to re-link surviving services; otherwise, when the running daemon did not answer before the restart, on a Linux Host, and whenever the request fails, the install replaces the service as before and records why in its receipt (#587).
 
 ## Maintenance review
 
