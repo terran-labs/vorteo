@@ -79,6 +79,14 @@ test("agents update and withdraw open questions but cannot reopen answered ones"
   expect(() =>
     answerQuestion(withdrawn, { questionId: id, answer: "Yes", answeredBy: "owner", now: "x" }),
   ).toThrow("withdrew");
+  // A daemon-built question (a lead launch confirmation) can be withdrawn but never reworded.
+  const daemonAsked: AgentQuestion[] = [{ ...asked()[0]!, askedBy: "daemon:lead-launch" }];
+  expect(() =>
+    mutateQuestions(daemonAsked, { operation: "update", id, why: "Changed" }, context),
+  ).toThrow("cannot be revised");
+  expect(mutateQuestions(daemonAsked, { operation: "withdraw", id }, context)[0]?.status).toBe(
+    "withdrawn",
+  );
 });
 
 test("owner answers once; the same answer is idempotent and a different one conflicts", () => {

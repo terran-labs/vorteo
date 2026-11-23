@@ -293,6 +293,7 @@ import { resolveGitProcessPolicy } from "../utils/git-process-scheduler.js";
 import { resolveFirstAgentPromptTitle } from "./agent/create-agent-title.js";
 import {
   createAgentCommand,
+  startConfirmedLeadLaunch,
   type CreateAgentCommandDependencies,
 } from "./agent/create-agent/create.js";
 import { archiveAgentCommand, cancelAgentRunCommand } from "./agent/lifecycle-command.js";
@@ -1593,6 +1594,11 @@ export async function createPaseoDaemon(
   };
   const createAgent = (input: Parameters<typeof createAgentCommand>[1]) =>
     createAgentCommand(createAgentCommandDependencies, input);
+  // Owner-confirmed lead launches (#360) start through the same create path, which re-checks
+  // the claimed record and the binding before registering the thread.
+  agentManager.setLeadLauncher((confirmed, record) =>
+    startConfirmedLeadLaunch(createAgentCommandDependencies, confirmed, record),
+  );
   const archiveWorkspaceByIdExternal = (workspaceId: string, requestId: string) =>
     archiveByScope(
       {

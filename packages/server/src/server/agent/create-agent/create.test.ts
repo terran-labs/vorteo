@@ -35,7 +35,19 @@ import { inventorySkills } from "../../orchestration-skills/internal/inventory.j
 
 import type { AgentSessionConfig } from "../agent-sdk-types.js";
 
-import { createAgentCommand, launchCodexHome } from "./create.js";
+import {
+  createAgentCommand,
+  launchCodexHome,
+  leadLaunchCreateInput,
+  prepareLeadLaunch,
+  startConfirmedLeadLaunch,
+} from "./create.js";
+import {
+  LEAD_LAUNCH_ID_LABEL,
+  leadLaunchQuestion,
+  type LeadLaunchRecord,
+} from "../lead-launch/model.js";
+import { randomUUID } from "node:crypto";
 
 import { QuotaReserveAdmissionError } from "../quota-reserve/admission.js";
 
@@ -1647,3 +1659,171 @@ test.each([undefined, "selected-workspace"])(
     }
   },
 );
+
+test("a lead on another preset starts once, only on the owner's choice, with the confirmed values", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "lead-launch-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const agentManager = new AgentManager({
+    clients: { one: createTestAgentClient("one") },
+    registry: storage,
+    logger,
+  });
+  const delivered: string[] = [];
+  agentManager.setMessageQueueControl({
+    pause: vi.fn(),
+    wake: vi.fn(),
+    acceptedHistory: async () => [],
+    recordProviderMessageId: vi.fn(),
+    reconcileHistory: vi.fn(),
+    suppressHistoryRestoration: vi.fn(),
+    queueRestartContinuation: vi.fn(),
+    queueQuestionAnswer: async (_agentId: string, _questionId: string, text: string) => {
+      delivered.push(text);
+    },
+  } as unknown as Parameters<AgentManager["setMessageQueueControl"]>[0]);
+  try {
+    const worker = { id: "worker", name: "Worker", provider: "one", model: "gpt-5.4" };
+    const profiles = [
+      { id: "lead", name: "Lead", provider: "one", model: "gpt-5.4", thinkingOptionId: "high" },
+    ];
+    const supervisor = await agentManager.createAgent(
+      {
+        provider: "one",
+        cwd: workdir,
+        profileLaunch: {
+          profile: { id: "team", name: "Team", provider: "one", workerProfileId: worker.id },
+          worker,
+        },
+      },
+      undefined,
+      { workspaceId: "ws-team", owner: { kind: "user" } },
+    );
+    const dependencies = {
+      agentManager,
+      agentStorage: storage,
+      logger,
+      providerSnapshotManager: createProviderSnapshotManagerStub().manager,
+      getAgentProfiles: () => profiles,
+    };
+    agentManager.setLeadLauncher((confirmed, record) =>
+      startConfirmedLeadLaunch(dependencies, confirmed, record),
+    );
+    const request = async (): Promise<LeadLaunchRecord> => {
+      const id = randomUUID();
+      const prompt = "Lead the new workspace";
+      const binding = await prepareLeadLaunch(
+        dependencies,
+        leadLaunchCreateInput({
+          callerAgentId: supervisor.id,
+          launchId: id,
+          profileId: "lead",
+          provider: "one",
+          title: "Lead",
+          initialPrompt: prompt,
+          cwd: workdir,
+          workspaceId: "ws-lead",
+          leadLaunch: { phase: "prepare" },
+        }),
+      );
+      const record: LeadLaunchRecord = {
+        id,
+        callerAgentId: supervisor.id,
+        requestedAt: new Date().toISOString(),
+        title: "Lead",
+        reason: "Needs a stronger model",
+        initialPrompt: prompt,
+        options: [{ optionId: "requested", profileId: "lead", label: "Start on Lead", binding }],
+        status: "pending",
+      };
+      await agentManager.requestLeadLaunch(
+        supervisor.id,
+        record,
+        leadLaunchQuestion({
+          record,
+          callerTitle: "Coordinator",
+          workerBinding: null,
+          workspaceLabel: "lead",
+          now: record.requestedAt,
+        }),
+      );
+      return record;
+    };
+    const leads = () =>
+      agentManager.listAgents().filter((agent) => agent.labels[LEAD_LAUNCH_ID_LABEL]);
+    const answer = (questionId: string, optionIds?: string[], text = "Start on Lead") =>
+      agentManager.answerQuestion(supervisor.id, {
+        questionId,
+        answer: text,
+        answeredBy: "browser:owner",
+        ...(optionIds ? { optionIds, source: "option" as const } : {}),
+      });
+
+    // create_agent still refuses the other preset and points to the confirmed route.
+    await expect(
+      createAgentCommand(dependencies, {
+        kind: "mcp",
+        provider: "one",
+        profileId: "lead",
+        callerAgentId: supervisor.id,
+        title: "Lead",
+        background: true,
+        notifyOnFinish: false,
+      }),
+    ).rejects.toThrow("request_lead_launch");
+
+    // Asking starts nothing, and the launch path refuses a record the owner has not claimed.
+    const first = await request();
+    expect(leads()).toEqual([]);
+    await expect(
+      startConfirmedLeadLaunch(
+        dependencies,
+        { launchId: first.id, callerAgentId: supervisor.id, option: first.options[0]! },
+        first,
+      ),
+    ).rejects.toThrow("not been confirmed");
+    // Only a listed option counts; free text is never interpreted as consent.
+    await expect(answer(first.id, ["alternative-9"])).rejects.toThrow();
+    await expect(answer(first.id, undefined, "sure, go ahead")).rejects.toThrow();
+    expect(leads()).toEqual([]);
+
+    await answer(first.id, ["requested"]);
+    await answer(first.id, ["requested"]);
+    expect(leads()).toHaveLength(1);
+    const lead = leads()[0]!;
+    expect(lead.config).toMatchObject({
+      provider: "one",
+      model: "gpt-5.4",
+      thinkingOptionId: "high",
+    });
+    expect(lead.config.profileLaunch?.profile.id).toBe("lead");
+    expect(lead.labels[PARENT_AGENT_ID_LABEL]).toBeUndefined();
+    expect(lead.workspaceId).toBe("ws-lead");
+    expect(await agentManager.readLeadLaunch(supervisor.id, first.id)).toMatchObject({
+      status: "launched",
+      launchedAgentId: lead.id,
+      approvedBy: "browser:owner",
+    });
+    expect(delivered.at(-1)).toContain(lead.id);
+
+    // A preset edited after the owner saw it no longer matches, so nothing starts.
+    const second = await request();
+    profiles[0] = { ...profiles[0]!, thinkingOptionId: "low" };
+    await answer(second.id, ["requested"]);
+    expect(leads()).toHaveLength(1);
+    expect(await agentManager.readLeadLaunch(supervisor.id, second.id)).toMatchObject({
+      status: "failed",
+      failureCode: "lead-binding-changed",
+    });
+
+    // Withdrawing cancels the launch for good.
+    const third = await request();
+    await agentManager.mutateQuestions(supervisor.id, { operation: "withdraw", id: third.id });
+    await expect(answer(third.id, ["requested"])).rejects.toThrow("withdrew");
+    expect(await agentManager.readLeadLaunch(supervisor.id, third.id)).toMatchObject({
+      status: "cancelled",
+    });
+    expect(leads()).toHaveLength(1);
+  } finally {
+    await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
+  }
+});

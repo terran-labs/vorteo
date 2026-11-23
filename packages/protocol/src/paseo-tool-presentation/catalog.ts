@@ -150,6 +150,16 @@ export const PASEO_TOOL_CATALOG = {
   update_thread_goal: { label: "Update thread goal", completedLabel: "Updated thread goal" },
   pause_goal: { label: "Pause goal", completedLabel: "Paused goal" },
   // Agents
+  request_lead_launch: {
+    label: "Request lead launch",
+    completedLabel: "Asked the owner to confirm a lead launch",
+    context: field("title", "initialPrompt"),
+    detail: {
+      promptField: "initialPrompt",
+      inputOrder: ["workspaceId", "profileId", "provider", "title", "reason"],
+      outputFields: ["status", "questionId"],
+    },
+  },
   create_agent: {
     label: "Create agent",
     completedLabel: "Created agent",
