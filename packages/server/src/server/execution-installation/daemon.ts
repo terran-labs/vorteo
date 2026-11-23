@@ -51,7 +51,11 @@ import type {
 } from "@getpaseo/protocol/execution-installation";
 import { hostLaunchdService, type InstallationConfig } from "./config.js";
 import type { RestartExecutor } from "./restarts.js";
-import { describeTerminalOutcome, replaceHostKeepingTerminals } from "./host-install-terminals.js";
+import {
+  describeTerminalOutcome,
+  replaceHostKeepingTerminals,
+  type KeepTerminalsOutcome,
+} from "./host-install-terminals.js";
 import type { CoordinatorBootstrapPreparation } from "@getpaseo/protocol/coordinator-bootstrap";
 import { coordinatorAutomaticAuthority, signCoordinatorSubmission } from "./daemon-automation.js";
 import {
@@ -60,6 +64,11 @@ import {
 } from "./coordinator-bootstrap.js";
 
 const execFileAsync = promisify(execFile);
+
+/** Runs the Host service manager's commands; tests replace `run` to see the exact argv. */
+export const hostServiceCommands = {
+  run: (file: string, args: string[]) => execFileAsync(file, args, { timeout: 15_000 }),
+};
 
 // Status includes provider availability probes, which can exceed three seconds.
 const DAEMON_RESPONSE_TIMEOUT_MS = 30_000;
@@ -438,15 +447,17 @@ export function createInstallationRestartExecutor(
   async function replaceHostService(): Promise<void> {
     // Restart the installation's own Host service: launchd on macOS, a systemd user unit on Linux.
     if ("launchdService" in config.host)
-      await execFileAsync("/bin/launchctl", ["kickstart", "-k", hostLaunchdService(config)], {
-        timeout: 15_000,
-      });
+      await hostServiceCommands.run("/bin/launchctl", [
+        "kickstart",
+        "-k",
+        hostLaunchdService(config),
+      ]);
     else
-      await execFileAsync(
-        "/usr/bin/systemctl",
-        ["--user", "restart", config.host.systemdService.unit],
-        { timeout: 15_000 },
-      );
+      await hostServiceCommands.run("/usr/bin/systemctl", [
+        "--user",
+        "restart",
+        config.host.systemdService.unit,
+      ]);
   }
 
   /**
@@ -454,7 +465,22 @@ export function createInstallationRestartExecutor(
    * services (#587): stop the daemon over its shutdown RPC keeping terminals, then start
    * the service. Falls back to replaceHostService() and says so. Returns the receipt sentence.
    */
-  async function replaceHostKeepingTerminalsOrFallBack(previousPid: number | null) {
+  async function replaceHostKeepingTerminalsOrFallBack(
+    previousPid: number | null,
+  ): Promise<KeepTerminalsOutcome> {
+    const notAttempted = async (reason: string): Promise<KeepTerminalsOutcome> => {
+      await replaceHostService();
+      return { terminals: "not-attempted", reason };
+    };
+    // systemd's default KillMode stops every process in the unit's cgroup when the
+    // supervisor exits, the detached terminal worker included. Keep only under launchd.
+    if (!("launchdService" in config.host))
+      return notAttempted("keeping terminals is supported only for a launchd Host service");
+    // Without the old worker's pid, "stopped" and the replacement wait cannot tell the
+    // exiting daemon from the new one.
+    if (previousPid === null)
+      return notAttempted("the running Host daemon did not answer before the restart");
+    const service = hostLaunchdService(config);
     const outcome = await replaceHostKeepingTerminals({
       async shutdownKeepingTerminals() {
         const client = await connectInstallationDaemon(config, "host");
@@ -474,18 +500,9 @@ export function createInstallationRestartExecutor(
           () => true,
         ),
       async start() {
-        // Never -k or restart here: either would SIGTERM a supervisor that is already
-        // running the candidate, and SIGTERM closes the terminals just kept.
-        if ("launchdService" in config.host)
-          await execFileAsync("/bin/launchctl", ["kickstart", hostLaunchdService(config)], {
-            timeout: 15_000,
-          });
-        else
-          await execFileAsync(
-            "/usr/bin/systemctl",
-            ["--user", "start", config.host.systemdService.unit],
-            { timeout: 15_000 },
-          );
+        // Never -k here: it would SIGTERM a supervisor launchd already relaunched on the
+        // candidate, and SIGTERM closes the terminals just kept.
+        await hostServiceCommands.run("/bin/launchctl", ["kickstart", service]);
       },
       replace: replaceHostService,
       // The supervisor force-kills a worker that has not exited 10 s after its request.
@@ -493,13 +510,13 @@ export function createInstallationRestartExecutor(
     });
     if (outcome.terminals === "replaced")
       logger?.warn({ reason: outcome.reason }, "Keep-terminals Host replacement fell back");
-    return describeTerminalOutcome(outcome);
+    return outcome;
   }
 
   async function restart(
     target: RestartJob["target"],
     whenIdle = false,
-    options: { keepTerminals?: boolean } = {},
+    options: Parameters<RestartExecutor["restart"]>[1] = {},
   ): Promise<string | null> {
     assertReady(target);
     const kind = target === "host" ? "host" : "container";
@@ -533,9 +550,10 @@ export function createInstallationRestartExecutor(
         await client.close();
       }
     } else if (target === "host") {
-      if (options.keepTerminals) {
-        const terminals = await replaceHostKeepingTerminalsOrFallBack(previousPid);
-        return `${await waitForReplacement(target, kind, previousPid)} ${terminals}`;
+      if (options?.keepTerminals) {
+        const outcome = await replaceHostKeepingTerminalsOrFallBack(previousPid);
+        options.onTerminals?.(outcome);
+        return `${await waitForReplacement(target, kind, previousPid)} ${describeTerminalOutcome(outcome)}`;
       }
       await replaceHostService();
     } else {
