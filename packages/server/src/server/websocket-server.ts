@@ -2418,7 +2418,7 @@ export class VoiceAssistantWebSocketServer {
         // COMPAT(previewRestart): added in Vorteo 2026-11, remove gate after 2027-05-23.
         // Restart accepts only password-admitted sessions, so a daemon without a password
         // has no session that could use it.
-        ...(this.passwordHash ? { previewRestart: true } : {}),
+        ...(this.passwordHash ? { previewRestart: true, previewStop: true } : {}),
         workspaceSetupObservation: true,
         workspaceSortTimes: true,
         // COMPAT(providersSnapshot): keep optional until all clients rely on snapshot flow.
