@@ -123,9 +123,22 @@ export class PreviewBrokerRestarter {
     const key = previewServiceKey(workspaceId, scriptName);
     if (this.inFlight(workspaceId, scriptName)) throw new Error("A restart is already running");
     if (this.atCapacity(requester)) throw new Error("Too many preview restarts are running");
-    const id = await this.request(mode, workspaceId, scriptName);
+    // Reserve the slot before any await, so concurrent submits see it: checking first and
+    // recording after the inbox write let N simultaneous requests all pass the limits.
+    const previous = this.outcomes.get(key);
+    this.outcomes.set(key, { status: "starting", error: null, at: this.now() / 1000 });
     this.requesters.set(key, requester);
-    this.record(key, workspaceId, { status: "starting", error: null });
+    let id: string;
+    try {
+      id = await this.request(mode, workspaceId, scriptName);
+    } catch (error) {
+      // Nothing reached the broker: give the slot back and keep any earlier outcome.
+      this.requesters.delete(key);
+      if (previous) this.outcomes.set(key, previous);
+      else this.outcomes.delete(key);
+      throw error;
+    }
+    this.deps.onChange(workspaceId);
     void this.follow(key, workspaceId, scriptName, id).catch((error: unknown) => {
       this.deps.logger.warn(
         { err: error, workspaceId, scriptName },

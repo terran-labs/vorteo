@@ -130,6 +130,58 @@ describe("preview broker restarter", () => {
   });
 });
 
+describe("preview restart limits under concurrency", () => {
+  function restarterFor(directory: string) {
+    return new PreviewBrokerRestarter({
+      channel: directory,
+      onChange: () => {},
+      logger: pino({ level: "silent" }),
+      pollMs: 5,
+    });
+  }
+  async function finishAll(directory: string) {
+    // Answer every request so no follow keeps polling after the test.
+    for (const file of readdirSync(join(directory, "inbox"))) {
+      const { id } = JSON.parse(readFileSync(join(directory, "inbox", file), "utf8"));
+      writeFileSync(join(directory, "receipts", `${id}.json`), '{"status":"ready"}');
+    }
+  }
+
+  test("concurrent submits cannot exceed a session's share or start one preview twice", async () => {
+    const directory = makeChannel();
+    const restarter = restarterFor(directory);
+    const results = await Promise.allSettled(
+      ["web", "api", "ui", "web"].map((service) =>
+        restarter.submit("wks_a", service, "start", "session-a"),
+      ),
+    );
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(2);
+    expect(readdirSync(join(directory, "inbox"))).toHaveLength(2);
+
+    const second = makeChannel();
+    const other = restarterFor(second);
+    const duplicates = await Promise.allSettled([
+      other.submit("wks_a", "web", "start", "session-a"),
+      other.submit("wks_a", "web", "start", "session-b"),
+    ]);
+    expect(duplicates.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(readdirSync(join(second, "inbox"))).toHaveLength(1);
+    await finishAll(directory);
+    await finishAll(second);
+    await vi.waitFor(() => expect(restarter.atCapacity("session-a")).toBe(false));
+    await vi.waitFor(() => expect(other.inFlight("wks_a", "web")).toBe(false));
+  });
+
+  test("a failed inbox write gives its slot back", async () => {
+    const directory = makeChannel();
+    rmSync(join(directory, "inbox"), { recursive: true });
+    const restarter = restarterFor(directory);
+    await expect(restarter.submit("wks_a", "web", "start", "session-a")).rejects.toThrow();
+    expect(restarter.inFlight("wks_a", "web")).toBe(false);
+    expect(restarter.outcome("wks_a", "web")).toBeNull();
+  });
+});
+
 describe("preview state projection", () => {
   test("a forged or unknown broker entry cannot add a cause or a link", () => {
     // In Dev the status file is agent-writable; only known codes and plain text pass.
