@@ -95,6 +95,12 @@ export async function switchProfiles(
   try {
     const agents = await fetchAllAgents(client, { filter: { includeArchived: true } });
     const candidates = await selectCandidates(client, agents, id, options);
+    // The agent whose shell runs this command, so the daemon can apply its preset fence (#360).
+    // PASEO_AGENT_ID names an agent on the daemon that launched the shell, so it counts only
+    // when this daemon lists it.
+    const envAgentId = process.env.PASEO_AGENT_ID?.trim();
+    const callerAgentId =
+      envAgentId && agents.some((entry) => entry.id === envAgentId) ? envAgentId : undefined;
     const results: AgentProfileSwitchResult[] = [];
     for (const agent of candidates) {
       try {
@@ -103,6 +109,7 @@ export async function switchProfiles(
           profileId: options.profile,
           explanation: options.reason.trim(),
           dryRun: options.dryRun ?? false,
+          ...(callerAgentId ? { callerAgentId } : {}),
           sourceScope: {
             provider: agent.provider,
             cwd: agent.cwd,

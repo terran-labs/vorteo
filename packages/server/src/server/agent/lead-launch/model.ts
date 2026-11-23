@@ -19,6 +19,21 @@ export const LEAD_LAUNCH_ASKED_BY = "daemon:lead-launch";
 export const LEAD_LAUNCH_REQUESTED_BY_LABEL = "paseo.lead-requested-by";
 export const LEAD_LAUNCH_ID_LABEL = "paseo.lead-launch-id";
 export const DECLINE_OPTION_ID = "decline";
+/** An unanswered confirmation closes after this long (owner decision D4). */
+export const LEAD_LAUNCH_TTL_MS = 24 * 60 * 60_000;
+/** Who closed an expired card. Recorded as the question's answeredBy; never an owner. */
+export const LEAD_LAUNCH_EXPIRY_ACTOR = "daemon:lead-launch-expiry";
+/** The plain line an expired card shows as its outcome. */
+export const LEAD_LAUNCH_EXPIRED_ANSWER =
+  "Expired: no choice within 24 hours, so nothing was started.";
+
+/**
+ * Expiry is stored as `cancelled` with failure code `expired`, not a new status, so a daemon
+ * rolled back to #584 still reads the record.
+ */
+export function leadLaunchExpired(record: LeadLaunchRecord, now: number): boolean {
+  return record.status === "pending" && Date.parse(record.requestedAt) + LEAD_LAUNCH_TTL_MS <= now;
+}
 
 /** Everything a launch is bound to. Two launches with the same binding start the same thread. */
 export const LeadLaunchBindingSchema = z.object({
@@ -367,7 +382,9 @@ export function leadLaunchOutcomeText(record: LeadLaunchRecord | undefined): str
     case "failed":
       return `The confirmed launch failed (${record.failureCode ?? "error"}). Nothing was started. Ask again with request_lead_launch if it is still needed.`;
     case "cancelled":
-      return "This launch was cancelled. Nothing was started.";
+      return record.failureCode === "expired"
+        ? `Your request_lead_launch for "${record.title}" expired after 24 hours without a choice from the owner. Nothing was started. Ask again with request_lead_launch if it is still needed.`
+        : "This launch was cancelled. Nothing was started.";
     case "interrupted":
       return "The daemon stopped before this launch finished, so it was not started. Ask again with request_lead_launch if it is still needed.";
     default:

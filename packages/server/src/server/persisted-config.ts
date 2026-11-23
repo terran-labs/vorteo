@@ -309,6 +309,8 @@ export const PersistedConfigSchema = z
         sharedProviderPreferences: SharedProviderPreferencesSchema.optional(),
         // Loose so a later policy version never stops this daemon from starting.
         accountQuotaPolicy: AccountQuotaPolicyWireSchema.optional(),
+        // Loose for the same reason: an unknown future shape must not stop the daemon starting.
+        presetFence: z.object({ mode: z.string() }).passthrough().optional(),
         cors: z
           .object({
             allowedOrigins: z.array(z.string()).optional(),

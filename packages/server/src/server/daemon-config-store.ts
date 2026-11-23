@@ -43,6 +43,7 @@ import { ProviderOverrideSchema } from "./agent/provider-launch-config.js";
 import {
   MutableDaemonConfigSchema,
   MutableDaemonConfigPatchSchema,
+  PresetFencePolicySchema,
   DaemonOriginAdmissionInputSchema,
   type DaemonOriginAdmissionState,
 } from "@getpaseo/protocol/messages";
@@ -111,6 +112,8 @@ interface SupportedMutableConfigPatch {
   features?: SpeechSettingsPatch;
   /** Replaces the stored policy whole; null clears it. */
   accountQuotaPolicy?: AccountQuotaPolicy | null;
+  /** Replaces the preset fence policy whole; null clears it (report-only). */
+  presetFence?: MutableDaemonConfig["presetFence"] | null;
 }
 
 function replacementProviderPreferences(patch: SupportedMutableConfigPatch) {
@@ -347,6 +350,7 @@ const RELOADABLE_PATHS = [
   "daemon.agentProfiles",
   "daemon.sharedProviderPreferences",
   "daemon.accountQuotaPolicy",
+  "daemon.presetFence",
   "app.baseUrl",
   "agents.idleRuntimeCleanup",
   "agents.blockedWorkReview",
@@ -384,6 +388,7 @@ const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["daemon.agentProfiles", "agentProfiles"],
   ["daemon.sharedProviderPreferences", "sharedProviderPreferences"],
   ["daemon.accountQuotaPolicy", "accountQuotaPolicy"],
+  ["daemon.presetFence", "presetFence"],
   ["app.baseUrl", "app.baseUrl"],
   ["agents.idleRuntimeCleanup", "idleRuntimeCleanup"],
   ["agents.blockedWorkReview", "blockedWorkReview"],
@@ -531,16 +536,30 @@ function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMut
       : {}),
     ...pickPluginPatch(patch),
     ...pickAccountQuotaPolicyPatch(patch),
+    ...pickPresetFencePatch(patch),
   };
+}
+
+/** The preset fence policy is parsed strictly before anything is merged; null clears it. */
+function pickPresetFencePatch(patch: MutableDaemonConfigPatch): SupportedMutableConfigPatch {
+  const value = patch.presetFence;
+  if (value === undefined) return {};
+  return { presetFence: value === null ? null : PresetFencePolicySchema.parse(value) };
 }
 
 /** A stored policy is replaced whole, never merged; null removes it. */
 function replaceAccountQuotaPolicy(
-  target: { accountQuotaPolicy?: MutableDaemonConfig["accountQuotaPolicy"] },
-  patch: Pick<SupportedMutableConfigPatch, "accountQuotaPolicy">,
+  target: {
+    accountQuotaPolicy?: MutableDaemonConfig["accountQuotaPolicy"];
+    presetFence?: MutableDaemonConfig["presetFence"];
+  },
+  patch: Pick<SupportedMutableConfigPatch, "accountQuotaPolicy" | "presetFence">,
 ): void {
   if (patch.accountQuotaPolicy === null) delete target.accountQuotaPolicy;
   else if (patch.accountQuotaPolicy) target.accountQuotaPolicy = patch.accountQuotaPolicy;
+  // The preset fence policy is also replaced whole, never merged.
+  if (patch.presetFence === null) delete target.presetFence;
+  else if (patch.presetFence) target.presetFence = patch.presetFence;
 }
 
 /**
@@ -1642,7 +1661,8 @@ function mergeMutableDaemonPatch(
   if (patch.agentProfiles !== undefined) next.agentProfiles = patch.agentProfiles;
   if (patch.sharedProviderPreferences !== undefined)
     next.sharedProviderPreferences = patch.sharedProviderPreferences;
-  replaceAccountQuotaPolicy(next, patch);
+  // The persisted schema keeps presetFence loose so a newer shape never stops startup.
+  replaceAccountQuotaPolicy(next as Parameters<typeof replaceAccountQuotaPolicy>[0], patch);
   return Object.keys(next).length > 0 ? next : undefined;
 }
 

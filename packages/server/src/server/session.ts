@@ -182,7 +182,13 @@ import type {
   ManagedAgent,
 } from "./agent/agent-manager.js";
 import { createAgentCommand } from "./agent/create-agent/create.js";
-import { checkPresetFence } from "./agent/lead-launch/fence.js";
+import {
+  assertNoReservedLabels,
+  canWritePresetFence,
+  checkPresetFence,
+  type PresetFencePath,
+  type PresetFenceRequest,
+} from "./agent/lead-launch/fence.js";
 import { switchAgentProfileCommand } from "./agent/profile-switch/command.js";
 import { normalizeClientMessageId } from "./client-message-id.js";
 import { createAgentForMessage, AgentCreationRequestError } from "./agent/create-agent/requests.js";
@@ -3659,12 +3665,7 @@ export class Session {
       case "daemon.update.request":
         return this.daemonSession.handleUpdateRequest(msg);
       case "set_daemon_config_request":
-        return this.daemonConfigStore.patchFromClient(msg.config).then((config) => {
-          return this.emit({
-            type: "set_daemon_config_response",
-            payload: { requestId: msg.requestId, config },
-          });
-        });
+        return this.setDaemonConfig(msg);
       case "read_project_config_request":
         return this.projectConfigSession.handleReadProjectConfigRequest(msg);
       case "write_project_config_request":
@@ -5673,6 +5674,12 @@ export class Session {
     const logFields = { agentId, requestId, provider: msg.provider, profileId: msg.profileId };
     this.sessionLogger.info(logFields, "session: agent.profile.switch.request");
     try {
+      if (msg.callerAgentId && !msg.dryRun)
+        await this.sessionPresetFence("session_switch_agent_profile", msg.callerAgentId, {
+          kind: "change",
+          targetAgentId: agentId,
+          settings: true,
+        });
       const actorId = this.actorPrincipalId();
       const sourceScope = msg.sourceScope;
       const actorLabel =
@@ -5940,7 +5947,7 @@ export class Session {
         createdWorktree,
         workspacePromptTitle,
       });
-      await this.checkSessionPresetFence(msg.callerAgentId, resolvedIntent);
+      await this.checkSessionPresetFence(msg.callerAgentId, resolvedIntent, msg.labels);
       const resolvedCwd = resolve(resolvedIntent.config.cwd);
       if (!(await this.filesystem.isDirectory(resolvedCwd))) {
         throw new Error(`Working directory does not exist or is not a directory: ${resolvedCwd}`);
@@ -6035,21 +6042,68 @@ export class Session {
   private checkSessionPresetFence(
     callerAgentId: string | undefined,
     resolved: { config: { profileId?: string }; intent: { parentAgentId: string | null } },
+    labels: Record<string, string> | undefined,
+  ): Promise<void> {
+    if (callerAgentId) assertNoReservedLabels(labels);
+    return this.sessionPresetFence("session_create_agent", callerAgentId, {
+      kind: "launch",
+      profileId: resolved.config.profileId ?? null,
+      detached: !resolved.intent.parentAgentId,
+    });
+  }
+
+  /**
+   * The preset fence for session requests that name their calling agent. The CLI names it from
+   * PASEO_AGENT_ID, so a request without one is treated as the owner's (#525).
+   */
+  private sessionPresetFence(
+    path: PresetFencePath,
+    callerAgentId: string | undefined,
+    request: PresetFenceRequest,
   ): Promise<void> {
     return checkPresetFence(
       {
         logger: this.sessionLogger,
         getAgent: (id) => this.agentManager.getAgent(id),
         getStored: (id) => this.agentStorage.get(id),
+        serverId: this.serverId,
+        policy: () => this.daemonConfigStore.get().presetFence,
       },
-      "session_create_agent",
+      path,
       callerAgentId,
-      {
-        kind: "launch",
-        profileId: resolved.config.profileId ?? null,
-        detached: !resolved.intent.parentAgentId,
-      },
+      request,
     );
+  }
+
+  /**
+   * Only an owner app session may change the preset fence setting, and every change is logged
+   * with who made it and the values before and after. Other settings are unaffected.
+   */
+  private async setDaemonConfig(
+    msg: Extract<SessionInboundMessage, { type: "set_daemon_config_request" }>,
+  ): Promise<void> {
+    const before = this.daemonConfigStore.get().presetFence ?? null;
+    const writer = `${this.clientType ?? "unknown"}:${this.clientId}`;
+    const touchesFence =
+      Object.hasOwn(msg.config, "presetFence") &&
+      JSON.stringify(msg.config.presetFence ?? null) !== JSON.stringify(before);
+    if (touchesFence && !canWritePresetFence(this.clientType)) {
+      this.sessionLogger.warn(
+        { code: "preset_fence_setting", writer, before, requested: msg.config.presetFence ?? null },
+        "Preset fence setting change refused",
+      );
+      throw new Error("Only the owner's app can change the preset fence setting.");
+    }
+    const config = await this.daemonConfigStore.patchFromClient(msg.config);
+    if (touchesFence)
+      this.sessionLogger.info(
+        { code: "preset_fence_setting", writer, before, after: config.presetFence ?? null },
+        "Preset fence setting changed",
+      );
+    this.emit({
+      type: "set_daemon_config_response",
+      payload: { requestId: msg.requestId, config },
+    });
   }
 
   private async resolveSessionCreateAgentIntent(input: {

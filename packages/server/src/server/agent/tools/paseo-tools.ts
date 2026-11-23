@@ -72,6 +72,7 @@ import {
   type LeadLaunchRecord,
 } from "../lead-launch/model.js";
 import {
+  assertNoReservedLabels,
   checkPresetFence,
   type PresetFencePath,
   type PresetFenceRequest,
@@ -755,13 +756,15 @@ function createToolCatalog(
       ),
     );
 
-  // Preset fence (#360): report-only until slice C; see lead-launch/fence.ts.
+  // Preset fence (#360): the presetFence setting decides report or enforce; see lead-launch/fence.ts.
   const presetFence = (path: PresetFencePath, request: PresetFenceRequest) =>
     checkPresetFence(
       {
         logger: childLogger,
         getAgent: (id) => agentManager.getAgent(id),
         getStored: (id) => agentStorage.get(id),
+        serverId: options.serverId,
+        policy: () => daemonConfigStore?.get().presetFence,
       },
       path,
       callerAgentId,
@@ -775,6 +778,7 @@ function createToolCatalog(
     input: Record<string, unknown>,
   ): Promise<void> => {
     if (name !== "create_agent" || destination === options.serverId) return;
+    if (callerAgentId) assertNoReservedLabels(input.labels as Record<string, unknown> | undefined);
     await presetFence("remote_create_agent", {
       kind: "launch",
       profileId: typeof input.profileId === "string" ? input.profileId : null,
@@ -2082,6 +2086,7 @@ function createToolCatalog(
           : (resolvedArgs.parsedArgs.notifyOnFinish ?? false);
       const notifyOnFinish = resolveNotifyOnFinish();
       assertAgentCanSetFeatures(parsedArgs.settings?.features);
+      if (callerAgentId) assertNoReservedLabels(parsedArgs.labels);
       const selectedProvider = resolveRequiredProviderModel(parsedArgs.provider).provider;
       const inheritedConfig = resolveInheritedProviderConfig(selectedProvider);
       const { snapshot, initialPromptStarted } = await createAgentCommand(
@@ -2307,6 +2312,7 @@ function createToolCatalog(
       ...(options.ensureWorkspaceForCreate
         ? { ensureWorkspaceForCreate: options.ensureWorkspaceForCreate }
         : {}),
+      ...(options.serverId ? { serverId: options.serverId } : {}),
     };
   }
 
@@ -2690,7 +2696,7 @@ function createToolCatalog(
         await presetFence("send_agent_prompt", {
           kind: "change",
           targetAgentId: agentId,
-          settings: true,
+          mode: true,
         });
       const notifying = Boolean(callerAgentId && notifyOnFinish);
       const notification =
@@ -3051,10 +3057,15 @@ function createToolCatalog(
     },
     async ({ agentId, name, labels, settings }) => {
       assertAgentCanSetFeatures(settings?.features);
+      if (callerAgentId) assertNoReservedLabels(labels);
       await presetFence("update_agent", {
         kind: "change",
         targetAgentId: agentId,
-        settings: Object.values(settings ?? {}).some((value) => value !== undefined),
+        settings:
+          settings?.model !== undefined ||
+          settings?.thinkingOptionId !== undefined ||
+          settings?.features !== undefined,
+        mode: settings?.modeId !== undefined,
         labels: labels ?? null,
       });
       const ceiling = ceilingReport("update_agent");
@@ -4020,7 +4031,7 @@ function createToolCatalog(
       await presetFence("set_agent_mode", {
         kind: "change",
         targetAgentId: agentId,
-        settings: true,
+        mode: true,
       });
       const ceiling = ceilingReport("set_agent_mode");
       const result = await setAgentModeCommand({ agentManager }, { agentId, modeId });

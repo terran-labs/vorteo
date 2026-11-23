@@ -497,6 +497,7 @@ export interface PaseoDaemonConfig {
   agentProfiles?: AgentProfile[];
   sharedProviderPreferences?: MutableDaemonConfig["sharedProviderPreferences"];
   accountQuotaPolicy?: MutableDaemonConfig["accountQuotaPolicy"];
+  presetFence?: MutableDaemonConfig["presetFence"];
   installationResourceBindings?: MutableDaemonConfig["installationResourceBindings"];
   installationProjectPolicies?: MutableDaemonConfig["installationProjectPolicies"];
   primaryConnection?: MutableDaemonConfig["primaryConnection"];
@@ -686,6 +687,7 @@ function createInitialMutableDaemonConfig(config: ResolvedDaemonSettings): Mutab
     skills: { selection: config.skillSelection },
     sharedProviderPreferences: config.sharedProviderPreferences,
     accountQuotaPolicy: config.accountQuotaPolicy,
+    presetFence: config.presetFence,
     installationResourceBindings: config.installationResourceBindings,
     installationProjectPolicies: config.installationProjectPolicies,
     primaryConnection: config.primaryConnection,
@@ -1599,6 +1601,7 @@ export async function createPaseoDaemon(
   agentManager.setLeadLauncher((confirmed, record) =>
     startConfirmedLeadLaunch(createAgentCommandDependencies, confirmed, record),
   );
+  agentManager.startLeadLaunchExpiry();
   const archiveWorkspaceByIdExternal = (workspaceId: string, requestId: string) =>
     archiveByScope(
       {
