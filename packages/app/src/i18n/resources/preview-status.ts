@@ -98,10 +98,25 @@ const en = {
   short: {
     notResponding: "Not responding",
   },
+  // One or two words over a Previews gallery tile, at most 14 characters. The tile's full
+  // sentence is the badge's accessibility label.
+  badge: {
+    starting: "Starting",
+    stopping: "Stopping",
+    notResponding: "Not responding",
+    stopped: "Stopped",
+    unavailable: "Unavailable",
+    needsRepair: "Needs repair",
+    didntStart: "Didn't start",
+    didntStop: "Didn't stop",
+    linkWithdrawn: "Link withdrawn",
+    notCurrent: "Not current",
+  },
   actions: {
     start: "Start",
     restart: "Restart",
     retry: "Try again",
+    stop: "Stop",
   },
   confirmRestart: {
     title: "Restart this preview?",

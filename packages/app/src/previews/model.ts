@@ -105,6 +105,50 @@ export function annotationLocation(annotation: PreviewAnnotation): string {
   return selection.tag ? `<${selection.tag}> element` : "Element";
 }
 
+// ---- Live links and their managed previews ------------------------------------------
+
+/** The least of a workspace script that matching reads. */
+export interface LiveLinkScript {
+  scriptName: string;
+  type?: "script" | "service";
+  preview?: { origin?: string | null } | undefined;
+}
+
+export interface LiveLinkMatch<S extends LiveLinkScript> {
+  workspaceId: string;
+  script: S;
+}
+
+/**
+ * The one managed preview a live link belongs to, by exact origin equality with the broker's
+ * reserved origin, never a prefix or host-only comparison. A link whose origin more than one
+ * service claims, anywhere on this host, matches nothing, so a forged or stale reservation can
+ * cost a badge but never show the wrong preview's state or act on it.
+ */
+export function matchLivePreview<S extends LiveLinkScript>(
+  liveUrl: string | null | undefined,
+  workspaces: Iterable<{ workspaceId: string; scripts: readonly S[] }>,
+): LiveLinkMatch<S> | null {
+  if (!liveUrl) return null;
+  let origin: string;
+  try {
+    const url = new URL(liveUrl);
+    if (url.protocol !== "https:") return null;
+    origin = url.origin;
+  } catch {
+    return null;
+  }
+  let found: LiveLinkMatch<S> | null = null;
+  for (const workspace of workspaces) {
+    for (const script of workspace.scripts) {
+      if (script.type !== "service" || script.preview?.origin !== origin) continue;
+      if (found) return null;
+      found = { workspaceId: workspace.workspaceId, script };
+    }
+  }
+  return found;
+}
+
 // ---- Daemon HTTP routes ----------------------------------------------------------------
 
 function route(base: string, path: string): string {

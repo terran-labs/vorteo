@@ -280,3 +280,69 @@ export function describePreview(
   if (!described || !preview.stale || unavailable) return described;
   return { ...described, line: staleLine(preview, checked, stoppedAt, t, lifecycle) };
 }
+
+/** A gallery tile's one-word state; the full sentence is its accessibility label. */
+export type PreviewBadgeKey =
+  | "starting"
+  | "stopping"
+  | "notResponding"
+  | "stopped"
+  | "unavailable"
+  | "needsRepair"
+  | "didntStart"
+  | "didntStop"
+  | "linkWithdrawn"
+  | "notCurrent";
+
+export interface PreviewBadge {
+  key: PreviewBadgeKey;
+  /** An old broker report: the badge says what was last known, in a dimmed style. */
+  dimmed: boolean;
+}
+
+function restartBadge(
+  restart: NonNullable<WorkspaceScriptPreview["restart"]>,
+): PreviewBadgeKey | null {
+  const stop = restart.mode === "stop";
+  if (restart.status === "starting") return "starting";
+  if (restart.status === "stopping") return "stopping";
+  if (restart.status === "failed") return stop ? "didntStop" : "didntStart";
+  if (restart.status === "unconfirmed") return stop ? "stopping" : "starting";
+  return null;
+}
+
+function stateBadge(
+  preview: WorkspaceScriptPreview,
+  lifecycle: PreviewServerLifecycle | undefined,
+): PreviewBadgeKey | null {
+  if (preview.needsReview) return "needsRepair";
+  switch (preview.state) {
+    case "ready":
+      // A running preview shows today's view, but an old report must not read as current.
+      return preview.stale ? "notCurrent" : null;
+    case "starting":
+      return "starting";
+    case "not_responding":
+      return "notResponding";
+    case "stopped":
+      if (lifecycle === "running") return "linkWithdrawn";
+      return preview.stopReason === "workspace_unavailable" ? "unavailable" : "stopped";
+    default:
+      return null;
+  }
+}
+
+/**
+ * The badge for a gallery tile, from the same rules as describePreview: the outcome first,
+ * then repair, then the state. Null for a ready preview or a state this app does not know.
+ */
+export function previewBadge(
+  preview: WorkspaceScriptPreview,
+  lifecycle?: PreviewServerLifecycle,
+): PreviewBadge | null {
+  const restart = currentRestart(preview, lifecycle);
+  const key = (restart ? restartBadge(restart) : null) ?? stateBadge(preview, lifecycle);
+  if (!key) return null;
+  // Why a preview cannot start does not go stale, as in describePreview.
+  return { key, dimmed: Boolean(preview.stale) && key !== "unavailable" };
+}
