@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import pino from "pino";
@@ -222,7 +222,8 @@ describe("surviving workspace script terminals", () => {
 
     async function workspacesAfter(damage: (file: string) => void): Promise<SurvivorWorkspaces> {
       const file = path.join(home, "workspaces.json");
-      rmSync(file, { force: true });
+      // A previous case may have left a directory in place of the file.
+      rmSync(file, { recursive: true, force: true });
       const writer = new FileBackedWorkspaceRegistry(file, logger);
       await writer.upsert(
         createPersistedWorkspaceRecord({
@@ -247,7 +248,15 @@ describe("surviving workspace script terminals", () => {
           "one invalid record",
           (file) => writeFileSync(file, JSON.stringify([{ workspaceId: "ws-1" }])),
         ],
-        ["unreadable", (file) => chmodSync(file, 0o000)],
+        // A directory fails the read with EISDIR on every platform. chmod 0o000 does not:
+        // Windows only sets the read-only flag, and root can still read the file.
+        [
+          "unreadable",
+          (file) => {
+            rmSync(file);
+            mkdirSync(file);
+          },
+        ],
         ["missing", (file) => rmSync(file)],
       ];
       for (const [label, damage] of damages) {
