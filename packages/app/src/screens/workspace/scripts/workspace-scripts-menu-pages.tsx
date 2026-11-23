@@ -392,7 +392,7 @@ function RunningScriptPage({
       </DropdownMenuItem>
       <DropdownMenuItem
         leading={STOP_ICON}
-        disabled={actions.isStopPending}
+        disabled={actions.isStopPending || actions.isPreviewPending}
         closeOnSelect={false}
         onSelect={handleStop}
         testID={`workspace-script-${scriptName}-stop`}

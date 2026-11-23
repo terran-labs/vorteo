@@ -14,6 +14,7 @@ const en = {
   line: {
     ready: "Preview is running.",
     starting: "Starting the preview.",
+    stopping: "Stopping the preview.",
     notResponding: {
       today: "Running, but not responding. Last checked at {{time}}.",
       yesterday: "Running, but not responding. Last checked yesterday at {{time}}.",
@@ -97,7 +98,8 @@ const en = {
     cancel: "Cancel",
   },
   refusals: {
-    busy: "A preview is already starting. Try again in a minute.",
+    busy: "This preview is already starting or stopping. Try again in a minute.",
+    capacity: "Several previews are starting or stopping. Try again in a minute.",
     archived: "Can't start: this workspace is archived.",
     needsReview: "Can't start until the Builds thread repairs this preview's link.",
     ownerAppOnly:

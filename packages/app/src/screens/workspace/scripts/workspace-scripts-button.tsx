@@ -377,7 +377,7 @@ function ScriptRow({
         scriptName: script.scriptName,
       })}
       testID={`workspace-scripts-stop-${script.scriptName}`}
-      disabled={actions.isStopPending}
+      disabled={actions.isStopPending || actions.isPreviewPending}
       icon="stop"
       onPress={handleStop}
       tooltipLabel={t("workspace.scripts.actions.stop")}

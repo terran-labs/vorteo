@@ -85,6 +85,16 @@ describe("describePreview", () => {
       },
       { line: "previewStatus.line.unconfirmed", action: "retry" },
     ],
+    [
+      "a stop in flight shows on a running preview until the broker reports it stopped",
+      { state: "ready", restart: { status: "stopping", at: at(-1) } },
+      { line: "previewStatus.line.stopping", action: null },
+    ],
+    [
+      "a stopped preview no longer shows its finished stop",
+      { state: "stopped", stoppedAt: at(-1), restart: { status: "stopping", at: at(-2) } },
+      { line: "previewStatus.line.stopped.today", action: "start" },
+    ],
     ["a state this app does not know shows nothing", { state: "paused" }, null],
   ])("%s", (_name, preview, expected) => {
     expect(describeKey(preview)).toEqual(expected);

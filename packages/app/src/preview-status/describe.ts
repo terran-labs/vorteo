@@ -112,7 +112,10 @@ function currentRestart(
   preview: WorkspaceScriptPreview,
 ): NonNullable<WorkspaceScriptPreview["restart"]> | null {
   const restart = preview.restart;
-  if (!restart || preview.state === "ready") return null;
+  if (!restart) return null;
+  // A stop in flight shows until the broker reports the preview stopped.
+  if (restart.status === "stopping") return preview.state === "stopped" ? null : restart;
+  if (preview.state === "ready") return null;
   if (restart.status === "starting") return restart;
   const checked = preview.checkedAt ? Date.parse(preview.checkedAt) : Number.NaN;
   const at = Date.parse(restart.at);
@@ -126,6 +129,9 @@ function restartDescription(
 ): PreviewDescription | null {
   if (restart.status === "starting") {
     return { line: t("previewStatus.line.starting"), action: null, confirm: false };
+  }
+  if (restart.status === "stopping") {
+    return { line: t("previewStatus.line.stopping"), action: null, confirm: false };
   }
   if (restart.status === "failed") {
     // Receipts are agent-writable in Dev: show only short plain text from them.
