@@ -1,5 +1,5 @@
 import { useCallback, useMemo, type ReactElement } from "react";
-import { View } from "react-native";
+import { Text, View } from "react-native";
 import { Copy, Eye, Play, RotateCw, Square, SquareTerminal } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
@@ -17,6 +17,7 @@ import type {
   WorkspaceScriptLinkTarget,
 } from "@/utils/workspace-script-links";
 import { ExitCodeBadge, routeLabelKey, ScriptIcon } from "./script-marks";
+import type { PreviewDescription } from "@/preview-status/describe";
 import {
   previewBlocksStart,
   previewStartLabelKey,
@@ -202,11 +203,7 @@ function RunningScriptRow({
 }): ReactElement {
   const { t } = useTranslation();
   const preview = usePreviewDescription(script, actions.isManagedPreview(script));
-  // A preview that needs a restart says so in the list, not only on its own page.
-  const value =
-    preview?.action === "restart"
-      ? t("previewStatus.short.notResponding")
-      : t("workspace.scripts.states.running");
+  const value = t(runningRowValueKey(script, preview));
   const leading = useMemo(() => <ScriptIcon script={script} size={ROW_ICON_SIZE} />, [script]);
   return (
     <DropdownMenuSubTrigger
@@ -217,6 +214,57 @@ function RunningScriptRow({
     >
       {script.scriptName}
     </DropdownMenuSubTrigger>
+  );
+}
+
+/**
+ * What a running script's row says beside its name. A preview that needs a restart says so in
+ * the list, and an old report never reads as current.
+ */
+function runningRowValueKey(
+  script: WorkspaceScript,
+  preview: PreviewDescription | null,
+):
+  | "previewStatus.short.notResponding"
+  | "previewStatus.short.lastKnownRunning"
+  | "previewStatus.short.lastKnownNotResponding"
+  | "workspace.scripts.states.running" {
+  if (!preview) return "workspace.scripts.states.running";
+  const needsRestart = preview.action === "restart";
+  if (script.preview?.stale) {
+    return needsRestart
+      ? "previewStatus.short.lastKnownNotResponding"
+      : "previewStatus.short.lastKnownRunning";
+  }
+  return needsRestart ? "previewStatus.short.notResponding" : "workspace.scripts.states.running";
+}
+
+/**
+ * A preview that cannot start: no press, but its sentence, often the only way to fix it, is
+ * shown at full contrast. A disabled menu item would dim the whole row.
+ */
+function BlockedPreviewRow({
+  script,
+  line,
+}: {
+  script: WorkspaceScript;
+  line: string;
+}): ReactElement {
+  return (
+    <View
+      style={styles.blockedRow}
+      accessibilityRole="text"
+      accessibilityLabel={`${script.scriptName}. ${line}`}
+      testID={`workspace-scripts-row-${script.scriptName}`}
+    >
+      <ScriptIcon script={script} size={ROW_ICON_SIZE} />
+      <View style={styles.blockedContent}>
+        <Text style={styles.blockedName} numberOfLines={1}>
+          {script.scriptName}
+        </Text>
+        <Text style={styles.blockedLine}>{line}</Text>
+      </View>
+    </View>
   );
 }
 
@@ -232,13 +280,16 @@ function StoppedScriptRow({
   const handleSelect = useCallback(() => start(script.scriptName), [start, script.scriptName]);
   const exitCode = script.exitCode ?? null;
   const leading = useMemo(() => <ScriptIcon script={script} size={ROW_ICON_SIZE} />, [script]);
-  const preview = usePreviewDescription(script, actions.isManagedPreview(script));
+  const managed = actions.isManagedPreview(script);
+  const preview = usePreviewDescription(script, managed);
   // A preview that cannot start shows no play mark.
   const blocked = previewBlocksStart(script, preview);
+  // A preview's state line carries its meaning; an exit code would suggest a clean exit.
+  const showExitCode = exitCode !== null && !managed;
   const trailing = useMemo(
     () => (
       <View style={styles.trailing}>
-        {exitCode === null ? null : <ExitCodeBadge code={exitCode} />}
+        {showExitCode ? <ExitCodeBadge code={exitCode} /> : null}
         {blocked ? null : (
           <ThemedPlay
             size={TRAILING_ICON_SIZE}
@@ -248,8 +299,9 @@ function StoppedScriptRow({
         )}
       </View>
     ),
-    [exitCode, blocked],
+    [exitCode, blocked, showExitCode],
   );
+  if (blocked && preview) return <BlockedPreviewRow script={script} line={preview.line} />;
   return (
     <DropdownMenuItem
       leading={leading}
@@ -416,12 +468,13 @@ function StoppedScriptPage({
   const { t } = useTranslation();
   const { start } = actions;
   const handleRun = useCallback(() => start(script.scriptName), [start, script.scriptName]);
-  const exitCode = script.exitCode ?? null;
+  const managed = actions.isManagedPreview(script);
+  const exitCode = managed ? null : (script.exitCode ?? null);
   const trailing = useMemo(
     () => (exitCode === null ? null : <ExitCodeBadge code={exitCode} />),
     [exitCode],
   );
-  const preview = usePreviewDescription(script, actions.isManagedPreview(script));
+  const preview = usePreviewDescription(script, managed);
   return (
     <DropdownMenuItem
       leading={RUN_ICON}
@@ -438,6 +491,27 @@ function StoppedScriptPage({
 }
 
 const styles = StyleSheet.create((theme) => ({
+  blockedRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    marginHorizontal: theme.spacing[1],
+    paddingHorizontal: theme.spacing[2],
+    paddingVertical: theme.spacing[1],
+  },
+  blockedContent: {
+    flex: 1,
+    minWidth: 0,
+  },
+  blockedName: {
+    fontSize: theme.fontSize.base,
+    color: theme.colors.foregroundMuted,
+  },
+  blockedLine: {
+    marginTop: 2,
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foreground,
+  },
   trailing: {
     flexDirection: "row",
     alignItems: "center",

@@ -84,6 +84,8 @@ const en = {
   /** The short state a compact list shows beside a running preview's name. */
   short: {
     notResponding: "Not responding",
+    lastKnownRunning: "Last known: running",
+    lastKnownNotResponding: "Last known: not responding",
   },
   actions: {
     start: "Start",

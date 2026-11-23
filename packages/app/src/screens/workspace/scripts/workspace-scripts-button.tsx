@@ -314,7 +314,8 @@ function ScriptRow({
   const { selected: selectedLink, targets: linkTargets } = actions.resolveLinks(script);
   const liveTerminalId =
     script.terminalId && liveTerminalIdSet.has(script.terminalId) ? script.terminalId : null;
-  const showExitBadge = !isRunning && exitCode !== null;
+  // A preview's state line carries its meaning; an exit code would suggest a clean exit.
+  const showExitBadge = !isRunning && exitCode !== null && !actions.isManagedPreview(script);
   const { start, stop, restart } = actions;
   const closeMenu = useDropdownMenuClose();
 
