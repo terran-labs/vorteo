@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -52,6 +60,35 @@ test("native helper selects the pinned daemon and retains a shell-safe wrapper",
     );
     assert.notEqual(refused.status, 0);
     assert.match(refused.stderr, /Invalid preview identity/);
+
+    // A bare status reads the broker's published state without a CLI call or request.
+    rmSync(calls);
+    mkdirSync(join(channel, "inbox"));
+    const checkedAt = Date.now() / 1000 - 5;
+    writeFileSync(
+      join(channel, "preview-status.json"),
+      JSON.stringify({
+        version: 1,
+        checkedAt,
+        services: [
+          { workspaceId: "wks_native", service: "web", status: "ready", desired: "running" },
+          { workspaceId: "wks_other", service: "web", status: "failed", desired: "stopped" },
+        ],
+      }),
+    );
+    const status = spawnSync(process.execPath, [entry, "status", "--workspace", "wks_native"], {
+      env: { ...process.env, HOME: home },
+      encoding: "utf8",
+    });
+    assert.equal(status.status, 0, status.stderr);
+    const shown = JSON.parse(status.stdout);
+    assert.deepEqual(
+      shown.services.map((service) => service.workspaceId),
+      ["wks_native"],
+    );
+    assert.ok(shown.ageSeconds >= 5);
+    assert.equal(existsSync(calls), false);
+    assert.deepEqual(readdirSync(join(channel, "inbox")), []);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

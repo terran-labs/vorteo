@@ -34,6 +34,13 @@ export async function brokerClient(argv) {
     throw Error("HTTPS broker is disabled by the administrator");
   if (!["start", "restart", "stop", "status", "list"].includes(operation))
     throw Error("Use start, restart, stop, status or list");
+  if (operation === "status" && (!args.length || args[0].startsWith("--"))) {
+    const published = publishedStatus(args);
+    if (published) {
+      console.log(JSON.stringify(published, null, 2));
+      return true;
+    }
+  }
   const { name, workspace, preferredPort, workspaces } = select(operation, args);
   if (operation === "list") {
     console.log(JSON.stringify(cli(["script", "ls", "--workspace", workspace]), null, 2));
@@ -72,6 +79,24 @@ export async function brokerClient(argv) {
   if (result.status === "failed") process.exitCode = 1;
   return true;
 }
+// The broker writes every reservation's state on each run. Reading it answers a bare
+// status at once; asking the broker per reservation took a broker run each, serially.
+// Returns null for an older broker without the file, or a --cwd selection.
+function publishedStatus(args) {
+  if (args.length && (args.length !== 2 || args[0] !== "--workspace")) return null;
+  const file = join(channel, "preview-status.json");
+  if (!existsSync(file)) return null;
+  const published = JSON.parse(readFileSync(file, "utf8"));
+  const services = published.services.filter(
+    (service) => !args.length || service.workspaceId === args[1],
+  );
+  return {
+    checkedAt: new Date(published.checkedAt * 1000).toISOString(),
+    ageSeconds: Math.round(Date.now() / 1000 - published.checkedAt),
+    services,
+  };
+}
+
 function replace(path, text) {
   const temp = path + "." + randomUUID() + ".tmp";
   writeFileSync(temp, text, { mode: statSync(path).mode & 0o777, flag: "wx" });

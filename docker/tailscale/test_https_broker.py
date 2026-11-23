@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import socket
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -12,7 +13,7 @@ import time
 import unittest
 from unittest.mock import patch
 import uuid
-from https_broker import Broker, ListenerLost, Runtime, NativeRuntime, _libproc_socket_types, atomic, loopback_listener_port, safe_read, validate
+from https_broker import Broker, ListenerLost, Runtime, NativeRuntime, RESTART_ATTRIBUTION_SECONDS, STATUS_FIELDS, STATUS_FILE, _libproc_socket_types, atomic, loopback_listener_port, safe_read, validate
 
 
 class NativeWorkspacePolicyTests(unittest.TestCase):
@@ -639,6 +640,8 @@ class Fake:
         self.fail_verify = False
         self.daemon = 'boot:100:1'
     def daemon_identity(self): return self.daemon
+    daemon_started = 0.0
+    def daemon_worker(self): return {'identity': self.daemon, 'startedAt': self.daemon_started}
     def preflight(self): pass
     def registered_ports(self): return {33487,39000}
     def current(self, w, s):
@@ -918,6 +921,45 @@ class Tests(unittest.TestCase):
     def test_recovery_adopts_same_process_without_new_mapping(self):
         self.b.handle(self.request());Broker(self.c,self.runtime).reconcile()
         self.assertEqual(self.runtime.sets,1);self.assertEqual(self.runtime.starts,0)
+
+    def test_stop_reason_is_recorded_only_when_it_can_be_shown(self):
+        def stop_service_and_check(daemon=None, started_after_verify=None):
+            entry = self.b.ledger['entries']['wks_test.preview']
+            if daemon:
+                self.runtime.daemon = daemon
+                self.runtime.daemon_started = entry['verifiedAt'] + started_after_verify
+            self.runtime.entry['lifecycle'] = 'stopped'
+            self.b.reconcile()
+            return self.b.ledger['entries']['wks_test.preview']
+        self.b.handle(self.request())
+        self.assertEqual(stop_service_and_check()['stopReason'], 'exited')
+        self.b.handle(self.request())
+        restarted = stop_service_and_check('boot:200:2', 5)
+        self.assertEqual(restarted['stopReason'], 'daemon_restart')
+        self.assertEqual(restarted['restartedAt'], self.runtime.daemon_started)
+        # A restart long after the last check cannot be tied to the stop.
+        self.b.handle(self.request())
+        unexplained = stop_service_and_check('boot:300:3', RESTART_ATTRIBUTION_SECONDS + 1)
+        self.assertNotIn('stopReason', unexplained)
+        self.assertNotIn('restartedAt', unexplained)
+        self.assertEqual(unexplained['desired'], 'stopped')
+        self.b.handle(self.request())
+        self.b.handle(self.request('stop'))
+        self.assertEqual(self.b.ledger['entries']['wks_test.preview']['stopReason'], 'stopped')
+
+    def test_status_file_publishes_only_listed_fields(self):
+        self.b.handle(self.request())
+        self.b.publish_status()
+        path = Path(self.c['channel']) / STATUS_FILE
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
+        published = json.loads(path.read_text())
+        [service] = published['services']
+        self.assertLessEqual(set(service), set(STATUS_FIELDS))
+        self.assertEqual((service['status'], service['frontend']), ('ready', 44444))
+        entry = self.b.ledger['entries']['wks_test.preview']
+        for private in ('cwd', 'terminal', 'listener', 'fingerprint', 'daemonWorker', 'url'):
+            self.assertNotIn(private, service)
+        self.assertNotIn(entry['cwd'], path.read_text())
 
     def test_opted_in_preview_recovers_after_daemon_restart(self):
         self.c['restoreAfterRestart'] = True
