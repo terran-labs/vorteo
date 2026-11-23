@@ -320,19 +320,40 @@ async function gatherDecisions(input: {
     });
   }
   const workspaces = await input.readWorkspaces();
-  const scripts = new Map<string, SurvivorScript | null>();
-  const branches = new Map<string, string | null>();
+  // Read concurrently: each branch read may take its full second, and the caller's deadline
+  // is all-or-nothing, so reading one after another let three slow checkouts re-link nothing.
+  const scriptReads = new Map<string, Promise<SurvivorScript | null>>();
+  const branchReads: Promise<[string, string | null]>[] = [];
   if (workspaces.known) {
     for (const { launch, terminal, service } of proven) {
       const workspace = workspaces.byId.get(launch.workspaceId);
       if (!workspace || workspace.archived) continue;
-      if (!scripts.has(scriptKey(launch))) {
-        scripts.set(scriptKey(launch), await input.readScript(workspace.cwd, launch.scriptName));
+      if (!scriptReads.has(scriptKey(launch))) {
+        scriptReads.set(scriptKey(launch), input.readScript(workspace.cwd, launch.scriptName));
       }
-      branches.set(service.terminalId, await readBranchWithin(input.readBranch, terminal.cwd));
+      branchReads.push(
+        readBranchWithin(input.readBranch, terminal.cwd).then((branch) => [
+          service.terminalId,
+          branch,
+        ]),
+      );
     }
   }
-  return decideSurvivors({ services, terminals: input.terminals, workspaces, scripts, branches });
+  const [scriptEntries, branchEntries] = await Promise.all([
+    Promise.all(
+      [...scriptReads].map(
+        async ([key, read]) => [key, await read] as [string, SurvivorScript | null],
+      ),
+    ),
+    Promise.all(branchReads),
+  ]);
+  return decideSurvivors({
+    services,
+    terminals: input.terminals,
+    workspaces,
+    scripts: new Map(scriptEntries),
+    branches: new Map(branchEntries),
+  });
 }
 
 /**
