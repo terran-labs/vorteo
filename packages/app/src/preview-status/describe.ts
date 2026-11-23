@@ -1,8 +1,14 @@
 import type { TFunction } from "i18next";
 import type { WorkspaceScriptPreview } from "@getpaseo/protocol/messages";
 
-/** What the owner can do about a preview from the app, if anything. */
-export type PreviewAction = "start" | "restart" | "retry";
+/**
+ * What the owner can do about a preview from the app, if anything. "stop" is the running row's
+ * own Stop control, named here so the rule says which control the line points to.
+ */
+export type PreviewAction = "start" | "restart" | "retry" | "stop";
+
+/** The daemon's own view of the script's server, which the broker's state can lag. */
+export type PreviewServerLifecycle = "running" | "stopped";
 
 export interface PreviewDescription {
   /** One plain sentence: what happened and, where it helps, what to do. */
@@ -107,20 +113,49 @@ function stoppedLine(
 /**
  * A restart's outcome describes the preview only until the broker reports something newer: a
  * preview that is ready, or one the broker checked after the outcome, shows the broker's state.
+ * A stop's outcome instead gives way once the preview and its server have both stopped, since
+ * a failed stop matters most while the preview still runs.
  */
 function currentRestart(
   preview: WorkspaceScriptPreview,
+  lifecycle: PreviewServerLifecycle | undefined,
 ): NonNullable<WorkspaceScriptPreview["restart"]> | null {
   const restart = preview.restart;
   if (!restart) return null;
   // A stop in flight shows until the broker reports the preview stopped.
   if (restart.status === "stopping") return preview.state === "stopped" ? null : restart;
-  if (preview.state === "ready") return null;
-  if (restart.status === "starting") return restart;
   const checked = preview.checkedAt ? Date.parse(preview.checkedAt) : Number.NaN;
   const at = Date.parse(restart.at);
-  if (!Number.isNaN(checked) && !Number.isNaN(at) && checked > at) return null;
-  return restart;
+  const checkedSince = !Number.isNaN(checked) && !Number.isNaN(at) && checked > at;
+  if (restart.mode === "stop") {
+    if (checkedSince || (preview.state === "stopped" && lifecycle !== "running")) return null;
+    return restart;
+  }
+  if (preview.state === "ready") return null;
+  if (restart.status === "starting") return restart;
+  return checkedSince ? null : restart;
+}
+
+function stopOutcomeDescription(
+  restart: NonNullable<WorkspaceScriptPreview["restart"]>,
+  t: TFunction,
+): PreviewDescription | null {
+  // The running row's own Stop is how the owner tries again.
+  if (restart.status === "failed") {
+    if (restart.error && PLAIN_TEXT.test(restart.error)) {
+      return {
+        line: t("previewStatus.line.stopFailed", { error: restart.error }),
+        action: "stop",
+        confirm: false,
+        truncate: true,
+      };
+    }
+    return { line: t("previewStatus.line.stopFailedNoDetail"), action: "stop", confirm: false };
+  }
+  if (restart.status === "unconfirmed") {
+    return { line: t("previewStatus.line.stopUnconfirmed"), action: "stop", confirm: false };
+  }
+  return null;
 }
 
 function restartDescription(
@@ -133,6 +168,8 @@ function restartDescription(
   if (restart.status === "stopping") {
     return { line: t("previewStatus.line.stopping"), action: null, confirm: false };
   }
+  // An older daemon names no mode; its outcomes come only from starts and restarts.
+  if (restart.mode === "stop") return stopOutcomeDescription(restart, t);
   if (restart.status === "failed") {
     // Receipts are agent-writable in Dev: show only short plain text from them.
     if (restart.error && PLAIN_TEXT.test(restart.error)) {
@@ -172,7 +209,13 @@ function describeState(
   stoppedAt: PreviewTime | null,
   restartedAt: PreviewTime | null,
   t: TFunction,
+  lifecycle: PreviewServerLifecycle | undefined,
 ): PreviewDescription | null {
+  // The broker withdrew the link but the daemon still runs the server, for example after a
+  // stop that could not find it. Saying "Stopped" would be false; Stop ends the server.
+  if (preview.state === "stopped" && lifecycle === "running") {
+    return { line: t("previewStatus.line.linkWithdrawn"), action: "stop", confirm: false };
+  }
   switch (preview.state) {
     case "ready":
       return { line: t("previewStatus.line.ready"), action: null, confirm: false };
@@ -210,8 +253,10 @@ export function describePreview(
   now: Date,
   locale: string,
   t: TFunction,
+  /** The script's own lifecycle, when known, so a withdrawn link never reads as stopped. */
+  lifecycle?: PreviewServerLifecycle,
 ): PreviewDescription | null {
-  const restart = currentRestart(preview);
+  const restart = currentRestart(preview, lifecycle);
   const fromRestart = restart ? restartDescription(restart, t) : null;
   if (fromRestart) return fromRestart;
   if (preview.needsReview) {
@@ -220,7 +265,7 @@ export function describePreview(
   const checked = formatPreviewTime(preview.checkedAt, now, locale);
   const stoppedAt = formatPreviewTime(preview.stoppedAt, now, locale);
   const restartedAt = formatPreviewTime(preview.restartedAt, now, locale);
-  const described = describeState(preview, checked, stoppedAt, restartedAt, t);
+  const described = describeState(preview, checked, stoppedAt, restartedAt, t, lifecycle);
   // Why a preview cannot start does not go stale: an archived workspace stays archived.
   const unavailable = preview.state === "stopped" && preview.stopReason === "workspace_unavailable";
   if (!described || !preview.stale || unavailable) return described;

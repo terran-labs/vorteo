@@ -215,9 +215,8 @@ export function useWorkspaceScriptActions({
     [scripts, isManagedPreview],
   );
 
-  // GAP (#586): restart outcomes do not yet say which mode they belong to, so a failed or
-  // unconfirmed stop would read as "Couldn't start". Do not merge this routing until the
-  // daemon reports an outcome's mode or uses distinct stop statuses.
+  // A reserved preview stops through the broker, so the stop is recorded as one and its
+  // outcome names mode "stop". Older daemons without previewStop keep the terminal stop.
   const stop = useCallback(
     (scriptName: string) => {
       if (previewStopSupported && managedScript(scriptName)) {

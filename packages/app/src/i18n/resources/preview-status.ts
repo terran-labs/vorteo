@@ -53,6 +53,10 @@ const en = {
     restartFailed: "Couldn't start: {{error}}",
     restartFailedNoDetail: "Couldn't start the preview.",
     unconfirmed: "Couldn't confirm the start yet. Try again if it doesn't come up.",
+    stopFailed: "Couldn't stop: {{error}}",
+    stopFailedNoDetail: "Couldn't stop the preview.",
+    stopUnconfirmed: "Couldn't confirm the stop yet. Try again if it keeps running.",
+    linkWithdrawn: "Link withdrawn, but the server is still running.",
   },
   // Stale states say only what is known: the last state and when it was checked.
   stale: {

@@ -12,7 +12,7 @@ export function usePreviewDescription(
 ): PreviewDescription | null {
   const { t, i18n } = useTranslation();
   if (!isManagedPreview || !script.preview) return null;
-  return describePreview(script.preview, new Date(), i18n.language, t);
+  return describePreview(script.preview, new Date(), i18n.language, t, script.lifecycle);
 }
 
 /** A managed preview that is starting, unavailable or waiting for repair offers no start. */
@@ -43,6 +43,8 @@ export function runningPreviewListLabel(
   | { valueKey: "previewStatus.short.notResponding" | "workspace.scripts.states.running" }
   | { description: string } {
   if (preview && script.preview?.stale) return { description: preview.line };
+  // A withdrawn link on a running server is not plainly "Running": say so under the name.
+  if (preview && script.preview?.state === "stopped") return { description: preview.line };
   if (preview && script.preview?.state === "not_responding") {
     return { valueKey: "previewStatus.short.notResponding" };
   }
