@@ -40,6 +40,11 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** Same rule as the daemon's status error: short plain sentences, so no link or markup. */
 const PLAIN_TEXT = /^[A-Za-z0-9 ;:,.'()_-]{1,160}$/;
 
+/** A broker message ends the owner's sentence, so it gets a full stop when it has none. */
+function asSentence(message: string): string {
+  return /[.!?]$/.test(message) ? message : `${message}.`;
+}
+
 function startOfDay(date: Date): number {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
 }
@@ -147,7 +152,7 @@ function stopOutcomeDescription(
   if (restart.status === "failed") {
     if (restart.error && PLAIN_TEXT.test(restart.error)) {
       return {
-        line: t("previewStatus.line.stopFailed", { error: restart.error }),
+        line: t("previewStatus.line.stopFailed", { error: asSentence(restart.error) }),
         action: "stop",
         confirm: false,
         truncate: true,
@@ -188,7 +193,7 @@ function restartDescription(
     // Receipts are agent-writable in Dev: show only short plain text from them.
     if (restart.error && PLAIN_TEXT.test(restart.error)) {
       return {
-        line: t("previewStatus.line.restartFailed", { error: restart.error }),
+        line: t("previewStatus.line.restartFailed", { error: asSentence(restart.error) }),
         action: "retry",
         confirm: false,
         truncate: true,

@@ -2,7 +2,7 @@ import type { TFunction } from "i18next";
 import type { WorkspaceScriptPreview } from "@getpaseo/protocol/messages";
 import { describe, expect, it } from "vitest";
 import { describePreview, previewBadge } from "./describe";
-import { runningPreviewListLabel } from "./use-preview-description";
+import { previewRequestInFlight, runningPreviewListLabel } from "./use-preview-description";
 
 // Keys, not copy: the wording is the owner's to change. These pin the truthfulness rules.
 const t = ((key: string) => key) as unknown as TFunction;
@@ -280,5 +280,60 @@ describe("previewBadge", () => {
     const badge = previewBadge(preview, lifecycle);
     expect(badge && badge.key).toBe(key);
     if (badge) expect(badge.dimmed).toBe(dimmed);
+  });
+});
+
+describe("previewRequestInFlight", () => {
+  it.each<[string, WorkspaceScriptPreview | undefined, boolean]>([
+    [
+      "a start the broker is still working on",
+      { state: "starting", restart: { status: "starting", at: at(-1) } },
+      true,
+    ],
+    [
+      "a stop the broker is still working on",
+      { state: "ready", restart: { status: "stopping", at: at(-1), mode: "stop" } },
+      true,
+    ],
+    [
+      "a finished, failed stop",
+      { state: "ready", restart: { status: "failed", at: at(-1), mode: "stop" } },
+      false,
+    ],
+    ["no request", { state: "ready" }, false],
+    ["not a managed preview", undefined, false],
+  ])("%s", (_name, preview, expected) => {
+    // Stop and Restart stay disabled while any request for the preview is in flight.
+    expect(previewRequestInFlight(preview)).toBe(expected);
+  });
+});
+
+describe("broker messages end as sentences", () => {
+  it.each([
+    ["No", "No."],
+    ["Done.", "Done."],
+    ["Refused, try later", "Refused, try later."],
+  ])("%s", (error, expected) => {
+    const params: Record<string, unknown>[] = [];
+    const recording = ((key: string, options?: Record<string, unknown>) => {
+      if (options) params.push(options);
+      return key;
+    }) as unknown as TFunction;
+    for (const mode of ["start", "stop"]) {
+      params.length = 0;
+      // A failed start shows on a stopped preview, a failed stop on a running one.
+      const stop = mode === "stop";
+      describePreview(
+        {
+          state: stop ? "ready" : "stopped",
+          restart: { status: "failed", error, at: at(-1), mode },
+        },
+        now,
+        "en-US",
+        recording,
+        stop ? "running" : "stopped",
+      );
+      expect(params[0]?.error).toBe(expected);
+    }
   });
 });
