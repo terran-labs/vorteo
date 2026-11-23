@@ -184,7 +184,7 @@ function ScriptsPage({
     <>
       {scripts.map((script) =>
         script.lifecycle === "running" ? (
-          <RunningScriptRow key={script.scriptName} script={script} />
+          <RunningScriptRow key={script.scriptName} script={script} actions={actions} />
         ) : (
           <StoppedScriptRow key={script.scriptName} script={script} actions={actions} />
         ),
@@ -193,13 +193,25 @@ function ScriptsPage({
   );
 }
 
-function RunningScriptRow({ script }: { script: WorkspaceScript }): ReactElement {
+function RunningScriptRow({
+  script,
+  actions,
+}: {
+  script: WorkspaceScript;
+  actions: WorkspaceScriptActions;
+}): ReactElement {
   const { t } = useTranslation();
+  const preview = usePreviewDescription(script, actions.isManagedPreview(script));
+  // A preview that needs a restart says so in the list, not only on its own page.
+  const value =
+    preview?.action === "restart"
+      ? t("previewStatus.short.notResponding")
+      : t("workspace.scripts.states.running");
   const leading = useMemo(() => <ScriptIcon script={script} size={ROW_ICON_SIZE} />, [script]);
   return (
     <DropdownMenuSubTrigger
       id={scriptPageId(script.scriptName)}
-      value={t("workspace.scripts.states.running")}
+      value={value}
       leading={leading}
       testID={`workspace-scripts-row-${script.scriptName}`}
     >
@@ -221,25 +233,30 @@ function StoppedScriptRow({
   const exitCode = script.exitCode ?? null;
   const leading = useMemo(() => <ScriptIcon script={script} size={ROW_ICON_SIZE} />, [script]);
   const preview = usePreviewDescription(script, actions.isManagedPreview(script));
+  // A preview that cannot start shows no play mark.
+  const blocked = previewBlocksStart(script, preview);
   const trailing = useMemo(
     () => (
       <View style={styles.trailing}>
         {exitCode === null ? null : <ExitCodeBadge code={exitCode} />}
-        <ThemedPlay
-          size={TRAILING_ICON_SIZE}
-          uniProps={mutedColorMapping}
-          {...playFillTransparent}
-        />
+        {blocked ? null : (
+          <ThemedPlay
+            size={TRAILING_ICON_SIZE}
+            uniProps={mutedColorMapping}
+            {...playFillTransparent}
+          />
+        )}
       </View>
     ),
-    [exitCode],
+    [exitCode, blocked],
   );
   return (
     <DropdownMenuItem
       leading={leading}
       trailing={trailing}
       description={preview?.line}
-      disabled={actions.isStartPending || previewBlocksStart(script, preview)}
+      descriptionFull={preview ? !preview.truncate : false}
+      disabled={actions.isStartPending || blocked}
       onSelect={handleSelect}
       testID={`workspace-scripts-row-${script.scriptName}`}
     >
@@ -326,8 +343,9 @@ function RunningScriptPage({
       ) : null}
       <DropdownMenuItem
         leading={RESTART_ICON}
-        disabled={actions.isStopPending}
+        disabled={actions.isStopPending || actions.isPreviewPending}
         description={preview?.line}
+        descriptionFull={preview ? !preview.truncate : false}
         onSelect={handleRestart}
         testID={`workspace-script-${scriptName}-restart`}
       >
@@ -409,6 +427,7 @@ function StoppedScriptPage({
       leading={RUN_ICON}
       trailing={trailing}
       description={preview?.line}
+      descriptionFull={preview ? !preview.truncate : false}
       disabled={actions.isStartPending || previewBlocksStart(script, preview)}
       onSelect={handleRun}
       testID={`workspace-script-${script.scriptName}-run`}

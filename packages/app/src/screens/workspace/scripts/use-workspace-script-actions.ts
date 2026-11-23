@@ -4,7 +4,7 @@ import { useMutation } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type { WorkspaceDescriptor } from "@/stores/session-store";
 import { useSessionStore } from "@/stores/session-store";
-import { useHostRuntimeSnapshot } from "@/runtime/host-runtime";
+import { useHostRuntimeSnapshot, useHosts } from "@/runtime/host-runtime";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { useToast } from "@/contexts/toast-context";
 import {
@@ -36,6 +36,8 @@ export interface WorkspaceScriptActions {
   selectRoute: (kind: WorkspaceScriptLinkKind) => void;
   resolveLinks: (script: WorkspaceScript) => WorkspaceScriptLinks;
   isStartPending: boolean;
+  /** A preview start or restart request is in flight; Restart waits for it. */
+  isPreviewPending: boolean;
   isStopPending: boolean;
 }
 
@@ -74,6 +76,8 @@ export function useWorkspaceScriptActions({
   const previewRestartSupported = useSessionStore(
     (state) => state.sessions[serverId]?.serverInfo?.features?.previewRestart === true,
   );
+  // Named by the host's own label, so the refusal is true for Host and Dev workspaces alike.
+  const hostLabel = useHosts().find((host) => host.serverId === serverId)?.label ?? null;
   const isManagedPreview = useCallback(
     (script: WorkspaceScript) =>
       previewRestartSupported && script.type === "service" && script.preview !== undefined,
@@ -102,15 +106,16 @@ export function useWorkspaceScriptActions({
   const previewRefusal = (code: string | null | undefined, error: string | null): string => {
     switch (code) {
       case "busy":
-        return error?.startsWith("Too many")
-          ? t("previewStatus.refusals.capacity")
-          : t("previewStatus.refusals.busy");
+        // One code covers this preview and the global limit, so one message covers both.
+        return t("previewStatus.refusals.busy");
       case "workspace_unavailable":
         return t("previewStatus.refusals.archived");
       case "needs_review":
         return t("previewStatus.refusals.needsReview");
       case "owner_app_only":
-        return t("previewStatus.refusals.ownerAppOnly");
+        return hostLabel
+          ? t("previewStatus.refusals.ownerAppOnly", { host: hostLabel })
+          : t("previewStatus.refusals.ownerAppOnlyUnnamed");
       case "broker_unavailable":
       case "no_reservation":
         return t("previewStatus.refusals.unavailable");
@@ -265,6 +270,7 @@ export function useWorkspaceScriptActions({
       selectRoute,
       resolveLinks,
       isStartPending: startScriptMutation.isPending || previewMutation.isPending,
+      isPreviewPending: previewMutation.isPending,
       isStopPending: stopScriptMutation.isPending,
     }),
     [

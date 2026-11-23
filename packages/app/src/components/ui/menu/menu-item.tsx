@@ -224,6 +224,8 @@ function resolveItemLabel(input: {
 
 export interface MenuItemProps {
   description?: string;
+  /** Show the whole description instead of cutting it at two lines. */
+  descriptionFull?: boolean;
   onSelect?: () => void;
   disabled?: boolean;
   muted?: boolean;
@@ -257,6 +259,7 @@ export interface MenuItemProps {
 export function MenuItem({
   children,
   description,
+  descriptionFull,
   onSelect,
   disabled,
   muted = false,
@@ -355,9 +358,7 @@ export function MenuItem({
           {label}
         </Text>
         {description && !isPending && !isSuccess ? (
-          <Text numberOfLines={2} style={styles.itemDescription}>
-            {description}
-          </Text>
+          <MenuItemDescription text={description} full={descriptionFull === true} />
         ) : null}
       </View>
       {trailingContent ? <View style={styles.trailingSlot}>{trailingContent}</View> : null}
@@ -528,3 +529,12 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
   },
 }));
+
+function MenuItemDescription({ text, full }: { text: string; full: boolean }) {
+  // numberOfLines 0 lets the text take as many lines as it needs.
+  return (
+    <Text numberOfLines={full ? 0 : 2} style={styles.itemDescription}>
+      {text}
+    </Text>
+  );
+}

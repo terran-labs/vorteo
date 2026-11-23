@@ -416,7 +416,7 @@ function ScriptRow({
               scriptName: script.scriptName,
             })}
             testID={`workspace-scripts-restart-${script.scriptName}`}
-            disabled={actions.isStopPending}
+            disabled={actions.isStopPending || actions.isPreviewPending}
             icon="restart"
             onPress={handleRestart}
             tooltipLabel={
@@ -426,7 +426,9 @@ function ScriptRow({
         ) : null}
         {hideStart ? null : lifecycleAction}
       </View>
-      {preview ? <PreviewStatusLine line={preview.line} /> : null}
+      {preview ? (
+        <PreviewStatusLine line={preview.line} truncate={preview.truncate ?? false} />
+      ) : null}
       {selectedLink ? (
         <View style={styles.hostList}>
           <ServiceLinkRow
@@ -442,12 +444,22 @@ function ScriptRow({
   );
 }
 
-/** The preview's state in one or two lines; a longer message expands in place when tapped. */
-function PreviewStatusLine({ line }: { line: string }): ReactElement {
+/**
+ * The preview's state. Fixed sentences always show whole; a broker's message is cut at two
+ * lines and expands in place when tapped.
+ */
+function PreviewStatusLine({ line, truncate }: { line: string; truncate: boolean }): ReactElement {
   const [expanded, setExpanded] = useState(false);
   const toggle = useCallback(() => setExpanded((value) => !value), []);
+  const accessibilityState = useMemo(() => ({ expanded }), [expanded]);
+  if (!truncate) return <Text style={styles.previewLine}>{line}</Text>;
   return (
-    <Pressable accessibilityRole="text" accessibilityLabel={line} onPress={toggle}>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={line}
+      accessibilityState={accessibilityState}
+      onPress={toggle}
+    >
       <Text style={styles.previewLine} numberOfLines={expanded ? undefined : 2}>
         {line}
       </Text>
