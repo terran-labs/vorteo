@@ -198,6 +198,22 @@ describe("runningPreviewListLabel", () => {
       description: "previewStatus.line.linkWithdrawn",
     });
   });
+  it.each<[string, WorkspaceScriptPreview]>([
+    [
+      "a stop in flight",
+      { state: "ready", restart: { status: "stopping", at: at(-1), mode: "stop" } },
+    ],
+    ["a failed stop", { state: "ready", restart: { status: "failed", at: at(-1), mode: "stop" } }],
+    [
+      "an unconfirmed stop",
+      { state: "ready", restart: { status: "unconfirmed", at: at(-1), mode: "stop" } },
+    ],
+  ])("%s puts its line under the name, never a plain running label", (_name, preview) => {
+    const description = describePreview(preview, now, "en-US", t, "running");
+    expect(runningPreviewListLabel({ ...script, preview }, description)).toEqual({
+      description: description?.line,
+    });
+  });
   it("an old report puts its last known line under the name, not beside it", () => {
     const preview: WorkspaceScriptPreview = { state: "ready", stale: true, checkedAt: at(-30) };
     const description = describePreview(preview, now, "en-US", t);
