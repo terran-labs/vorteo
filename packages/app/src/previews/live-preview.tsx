@@ -82,14 +82,16 @@ export function LivePreviewBadge({ live }: { live: LivePreview }) {
   if (!badge) return null;
   return (
     <View
-      style={[styles.badge, badge.dimmed && styles.dimmed]}
+      style={styles.badge}
       accessible
       accessibilityLabel={live.description.line}
       testID="preview-live-badge"
     >
       <StatusBadge
         label={t(`previewStatus.badge.${badge.key}`)}
-        variant={BADGE_VARIANTS[badge.key]}
+        // An old report drops the state's colour rather than its contrast: a faded badge was
+        // unreadable on phones in the light theme.
+        variant={badge.dimmed ? "muted" : BADGE_VARIANTS[badge.key]}
         size="xs"
       />
     </View>
@@ -147,7 +149,6 @@ export function LivePreviewStatus({ serverId, live }: { serverId: string; live: 
 
 const styles = StyleSheet.create((theme) => ({
   badge: { position: "absolute", left: theme.spacing[1], top: theme.spacing[1] },
-  dimmed: { opacity: 0.6 },
   status: {
     flexDirection: "row",
     flexWrap: "wrap",
