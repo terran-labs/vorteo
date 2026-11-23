@@ -863,12 +863,18 @@ export class Session {
     this.routed = routed;
   }
   /**
-   * Set by the WebSocket server, never from the hello: non-null only when the latest hello arrived
-   * on a host-link channel. The producer server is what the opener claimed (#525).
+   * Per socket, set by the WebSocket server and never from the hello: present only for a socket
+   * that is a host-link channel. Kept per socket for the reason credentialFor is (#590): a
+   * session can hold a host-link socket and an ordinary one at once. The producer server is what
+   * the opener claimed (#525).
    */
-  private hostLink: { producerServerId: string | null } | null = null;
-  setHostLink(link: { producerServerId: string | null } | null): void {
-    this.hostLink = link;
+  private readonly sourceHostLinks = new WeakMap<object, { producerServerId: string | null }>();
+  setSourceHostLink(source: object, link: { producerServerId: string | null } | null): void {
+    if (link) this.sourceHostLinks.set(source, link);
+    else this.sourceHostLinks.delete(source);
+  }
+  hostLinkFor(source: object | undefined): { producerServerId: string | null } | null {
+    return source ? (this.sourceHostLinks.get(source) ?? null) : null;
   }
   readonly delivery = new SessionDelivery(
     (source, message) => {
@@ -2946,7 +2952,7 @@ export class Session {
       this.dispatchAgentObservationMessage(msg, source) ??
       this.dispatchHubExecutionMessage(msg) ??
       this.dispatchCreationMessage(msg, source) ??
-      this.dispatchAgentLifecycleMessage(msg) ??
+      this.dispatchAgentLifecycleMessage(msg, source) ??
       this.dispatchAgentConfigMessage(msg) ??
       this.dispatchCheckoutMessage(msg) ??
       this.dispatchWorkspaceLifecycleMessage(msg) ??
@@ -3562,7 +3568,10 @@ export class Session {
     }
   }
 
-  private dispatchAgentLifecycleMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+  private dispatchAgentLifecycleMessage(
+    msg: SessionInboundMessage,
+    source?: object,
+  ): Promise<void> | undefined {
     switch (msg.type) {
       case "fetch_agents_request":
         return this.handleFetchAgents(msg);
@@ -3589,7 +3598,7 @@ export class Session {
       case "wait_for_finish_request":
         return this.handleWaitForFinish(msg.agentId, msg.requestId, msg.timeoutMs);
       case "create_agent_request":
-        return this.handleCreateAgentRequest(msg);
+        return this.handleCreateAgentRequest(msg, source);
       case "resume_agent_request":
         return this.handleResumeAgentRequest(msg);
       case "import_agent_request":
@@ -5524,6 +5533,7 @@ export class Session {
   private createRequestedAgent(
     request: AgentCreateRequest,
     observer?: (snapshot: CreationSnapshot) => void,
+    source?: object,
   ): Promise<CreationSnapshot> {
     const { requestId, type: _type, subscribe: _subscribe, idempotencyKey, ...intent } = request;
     return this.creationService.create(
@@ -5546,6 +5556,8 @@ export class Session {
               { ...request, type: "create_agent_request" },
               id,
               onReady,
+              undefined,
+              source,
             );
           } catch (error) {
             throw new WorktreeRequestError(toWorktreeWireError(error));
@@ -5570,6 +5582,7 @@ export class Session {
       const creation = await this.createRequestedAgent(
         request,
         progress ? (snapshot) => progress.emit(this.creationUpdate(snapshot)) : undefined,
+        source,
       );
       this.emitForSource(
         {
@@ -5811,7 +5824,10 @@ export class Session {
     }
   }
 
-  private async handleCreateAgentRequest(msg: CreateAgentRequestMessage): Promise<void> {
+  private async handleCreateAgentRequest(
+    msg: CreateAgentRequestMessage,
+    source?: object,
+  ): Promise<void> {
     try {
       this.assertMayRequestToolAccess(msg.config);
       let agent: AgentSnapshotPayload;
@@ -5819,7 +5835,11 @@ export class Session {
         if (msg.initialPrompt !== undefined) {
           throw new Error("Idempotent creation requires sending the initial prompt separately");
         }
-        const creation = await this.createRequestedAgent({ ...msg, type: "agent.create.request" });
+        const creation = await this.createRequestedAgent(
+          { ...msg, type: "agent.create.request" },
+          undefined,
+          source,
+        );
         if (creation.error || !creation.agent)
           throw new SessionRequestError(
             creation.errorCode ?? "unknown",
@@ -5846,6 +5866,7 @@ export class Session {
                 undefined,
                 undefined,
                 recordCreated,
+                source,
               );
               return created.agent.id;
             },
@@ -5858,7 +5879,7 @@ export class Session {
           }
           agent = existing;
         } else {
-          ({ agent } = await this.createSessionAgent(msg));
+          ({ agent } = await this.createSessionAgent(msg, undefined, undefined, undefined, source));
         }
       }
       this.emit({
@@ -5925,6 +5946,8 @@ export class Session {
     agentId?: string,
     onAgentReady?: (agent: AgentSnapshotPayload) => Promise<void>,
     recordCreated?: (agentId: string) => Promise<void>,
+    /** The socket that sent the request; host-link admission is decided from it alone. */
+    source?: object,
   ): Promise<CreatedAgent> {
     const {
       config,
@@ -5939,6 +5962,7 @@ export class Session {
       env,
     } = msg;
     this.assertMayRequestToolAccess(config);
+    const forwardedGovernance = this.admitForwardedGovernance(msg, source);
     this.sessionLogger.info(
       { cwd: config.cwd, provider: config.provider, worktreeName },
       `Creating agent in ${config.cwd} (${config.provider})${
@@ -5997,7 +6021,6 @@ export class Session {
         workspacePromptTitle,
       });
       await this.checkSessionPresetFence(msg.callerAgentId, resolvedIntent, msg.labels);
-      const forwardedGovernance = this.admitForwardedGovernance(msg, resolvedIntent.intent.labels);
       const resolvedCwd = resolve(resolvedIntent.config.cwd);
       if (!(await this.filesystem.isDirectory(resolvedCwd))) {
         throw new Error(`Working directory does not exist or is not a directory: ${resolvedCwd}`);
@@ -6027,17 +6050,8 @@ export class Session {
           onCreated: async ({ agentId: registeredAgentId }) => {
             createdAgentId = registeredAgentId;
             // Before the first prompt, so the thread's first launch is already governed.
-            if (
-              forwardedGovernance &&
-              !(await this.agentStorage.recordForwardedGovernance(
-                registeredAgentId,
-                forwardedGovernance,
-              ))
-            )
-              this.sessionLogger.warn(
-                { code: "forwarded_governance", agentId: registeredAgentId },
-                "Forwarded governance not recorded",
-              );
+            if (forwardedGovernance)
+              await this.recordForwardedGovernance(registeredAgentId, forwardedGovernance);
             await recordCreated?.(registeredAgentId);
             if (initialPrompt && !msg.callerAgentId && !msg.origin) {
               await this.ownerEvidence.record({
@@ -6106,13 +6120,13 @@ export class Session {
    */
   private admitForwardedGovernance(
     msg: CreateAgentRequestMessage,
-    labels: Record<string, string>,
+    source: object | undefined,
   ): ForwardedGovernance | null {
     const decision = admitForwardedGovernance({
       governance: msg.forwardedGovernance,
-      hostLink: this.hostLink,
+      hostLink: this.hostLinkFor(source),
       callerAgentId: msg.callerAgentId,
-      labels,
+      labels: msg.labels,
       serverId: this.serverId,
     });
     if (decision && "refused" in decision)
@@ -6126,6 +6140,28 @@ export class Session {
         "Forwarded governance ignored",
       );
     return decision && "admitted" in decision ? decision.admitted : null;
+  }
+
+  /**
+   * Stores admitted governance on the new thread. It only feeds the fence log, so a storage
+   * failure is logged and never fails the create it describes.
+   */
+  private async recordForwardedGovernance(
+    agentId: string,
+    governance: ForwardedGovernance,
+  ): Promise<void> {
+    try {
+      if (await this.agentStorage.recordForwardedGovernance(agentId, governance)) return;
+      this.sessionLogger.warn(
+        { code: "forwarded_governance", agentId },
+        "Forwarded governance not recorded",
+      );
+    } catch (error) {
+      this.sessionLogger.warn(
+        { code: "forwarded_governance", agentId, err: error },
+        "Forwarded governance not recorded",
+      );
+    }
   }
 
   /** An agent creating through the CLI is held to its worker preset like create_agent (#360). */

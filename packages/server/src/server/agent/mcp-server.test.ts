@@ -51,6 +51,7 @@ import {
 } from "./mcp-server.js";
 
 import { AgentManager, type ManagedAgent } from "./agent-manager.js";
+import { createHostResolver } from "./host-operations/index.js";
 import {
   admitForwardedGovernance,
   checkPresetFence,
@@ -6471,6 +6472,49 @@ describe("preset fence (#360)", () => {
       kind: "unknown",
       why: "parent-remote",
     });
+  });
+
+  it("forwards governance only to a destination that advertises it (C2)", async () => {
+    const governance = {
+      supervisorAgentId: "host-coordinator",
+      serverId: "srv_host",
+      workerProfileId: worker.id,
+    };
+    const forwardedTo = async (features: Record<string, boolean>) => {
+      const createAgent = vi.fn(async () => ({ id: "dev-thread", provider: "codex" }));
+      const client = {
+        getLastServerInfoMessage: () => ({ features }),
+        fetchWorkspaces: async () => ({
+          entries: [{ id: "ws-dev", workspaceDirectory: "/dev/work" }],
+        }),
+        createAgent,
+      };
+      const resolver = createHostResolver({
+        serverId: "srv_host",
+        callerAgentId: "host-worker",
+        local: {} as never,
+        governance: async () => governance,
+        hosts: () => ({
+          directory: async () => ({}) as never,
+          use: async (_serverId, action) => action(client as never),
+        }),
+      });
+      await resolver.use("srv_dev", (host) =>
+        host.createAgent(
+          {
+            provider: "codex/gpt-5.4",
+            title: "Dev thread",
+            initialPrompt: "Work",
+            workspaceId: "ws-dev",
+          },
+          {} as never,
+        ),
+      );
+      return (createAgent.mock.calls[0] as unknown as [{ forwardedGovernance?: unknown }])[0]
+        .forwardedGovernance;
+    };
+    expect(await forwardedTo({ forwardedGovernance: true })).toEqual(governance);
+    expect(await forwardedTo({})).toBeUndefined();
   });
 
   it("admits forwarded governance only from a host link that names the parent's other server (C2)", () => {

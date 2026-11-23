@@ -2187,7 +2187,7 @@ export class VoiceAssistantWebSocketServer {
     });
     connection.permissionCeiling = message.sessionPermissions;
     connection.session.setRouted(message.routed === true);
-    connection.session.setHostLink(hostLinkOf(ws, message));
+    connection.session.setSourceHostLink(ws, hostLinkOf(ws, message));
     this.assignHostSource(connection, message, admitted.principalId, pluginId);
     this.sessions.set(ws, connection);
     if (connection.lifecycle === "reconnectable") {
@@ -2320,7 +2320,7 @@ export class VoiceAssistantWebSocketServer {
     // Per socket: sockets already on the session keep the kind their own hello proved.
     existing.session.setSourceCredential(ws, pending.admission!.credential ?? null);
     existing.session.setRouted(message.routed === true);
-    existing.session.setHostLink(hostLinkOf(ws, message));
+    existing.session.setSourceHostLink(ws, hostLinkOf(ws, message));
     this.assignHostSource(existing, message, pending.admission!.principalId);
     const newAppVersion = message.appVersion ?? null;
     if (newAppVersion && newAppVersion !== existing.appVersion) {
