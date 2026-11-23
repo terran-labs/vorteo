@@ -34,6 +34,11 @@ export interface IdleReleaseOptions {
   now?: () => number;
 }
 
+/** First wait for an agent whose release made no progress: long enough to stop a per-minute loop. */
+export const RELEASE_BACKOFF_MIN_MS = 5 * 60_000;
+/** Longest wait, doubling from the minimum, so a returning agent still releases within the hour. */
+export const RELEASE_BACKOFF_MAX_MS = 60 * 60_000;
+
 export interface IdleRelease {
   /** One pass: the ids whose sessions were released. Empty when no upgrade is pending. */
   runOnce(): Promise<string[]>;
@@ -76,14 +81,58 @@ export function startHostedIdleRelease(options: IdleReleaseOptions): IdleRelease
   // Agents already reported as keeping background work during this pending upgrade, so a watcher
   // that runs for hours logs once instead of every pass.
   const retained = new Set<string>();
+  // Agents this release closed, keyed by id, with the activity time they had when released. One
+  // that is eligible again without newer activity was reopened by something other than its owner
+  // (a queue check, a watcher), so releasing it again makes no progress: it waits, doubling.
+  const backoffs = new Map<
+    string,
+    { activityAt: number; delayMs: number; retryAt: number | null }
+  >();
+
+  /** True when this pass should skip the agent; starts or extends its backoff when it returns. */
+  function backingOff(agent: ReleasableAgent, at: number): boolean {
+    const entry = backoffs.get(agent.id);
+    if (!entry) return false;
+    if (agent.updatedAt.getTime() > entry.activityAt) {
+      backoffs.delete(agent.id);
+      if (entry.delayMs > 0)
+        options.logger.info({ agentId: agent.id }, "Idle release backoff reset by new activity");
+      return false;
+    }
+    if (entry.retryAt === null) {
+      entry.delayMs = entry.delayMs
+        ? Math.min(entry.delayMs * 2, RELEASE_BACKOFF_MAX_MS)
+        : RELEASE_BACKOFF_MIN_MS;
+      entry.retryAt = at + entry.delayMs;
+      options.logger.info(
+        { agentId: agent.id, delayMs: entry.delayMs },
+        "Idle release backing off: the agent reopened without new activity",
+      );
+      return true;
+    }
+    return at < entry.retryAt;
+  }
+
+  function recordAttempt(agent: ReleasableAgent): void {
+    const entry = backoffs.get(agent.id);
+    backoffs.set(agent.id, {
+      activityAt: agent.updatedAt.getTime(),
+      delayMs: entry?.delayMs ?? 0,
+      retryAt: null,
+    });
+  }
 
   async function runOnce(): Promise<string[]> {
     if (!(await options.connector.upgradePending?.())) {
       retained.clear();
+      // Backoffs belong to one pending upgrade; the next upgrade releases every agent afresh.
+      backoffs.clear();
       return [];
     }
     const released: string[] = [];
-    for (const agent of selectIdleHostedAgents(options.manager.listAgents(), now(), idleMs)) {
+    const at = now();
+    for (const agent of selectIdleHostedAgents(options.manager.listAgents(), at, idleMs)) {
+      if (backingOff(agent, at)) continue;
       // Expected while a background shell, monitor or subagent runs, so it is not a warning.
       // The host repeats this check before it admits the close; checking here first keeps the
       // refusal quiet.
@@ -98,6 +147,8 @@ export function startHostedIdleRelease(options: IdleReleaseOptions): IdleRelease
         continue;
       }
       retained.delete(agent.id);
+      // A failed close, such as a stale provider session, backs off the same way as a reopen.
+      recordAttempt(agent);
       try {
         await options.manager.closeAgent(agent.id, { onlyIfIdle: true });
         released.push(agent.id);

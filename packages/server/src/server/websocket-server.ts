@@ -1387,6 +1387,7 @@ export class VoiceAssistantWebSocketServer {
         agentManager: this.agentManager,
         agentStorage: this.agentStorage,
         logger: this.logger,
+        providerSnapshotManager: this.providerSnapshotManager,
       }),
     );
   }
