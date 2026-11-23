@@ -82,7 +82,8 @@ type TimedKey =
   | "stale.running"
   | "stale.starting"
   | "stale.notResponding"
-  | "stale.stopped";
+  | "stale.stopped"
+  | "stale.linkWithdrawn";
 
 function timed(t: TFunction, key: TimedKey, at: PreviewTime): string {
   return t(`previewStatus.${key}.${at.form}`, { time: at.time, day: at.day, date: at.date });
@@ -193,7 +194,15 @@ function staleLine(
   checked: PreviewTime | null,
   stoppedAt: PreviewTime | null,
   t: TFunction,
+  lifecycle: PreviewServerLifecycle | undefined,
 ): string {
+  // The daemon knows the server runs now; only the broker's view of the link is old. One line
+  // states both, so a stale "stopped" never sits beside a running row.
+  if (preview.state === "stopped" && lifecycle === "running") {
+    return checked
+      ? timed(t, "stale.linkWithdrawn", checked)
+      : t("previewStatus.stale.linkWithdrawnUnchecked");
+  }
   if (preview.state === "stopped") {
     return stoppedAt ? timed(t, "stale.stopped", stoppedAt) : t("previewStatus.stale.unchecked");
   }
@@ -269,5 +278,5 @@ export function describePreview(
   // Why a preview cannot start does not go stale: an archived workspace stays archived.
   const unavailable = preview.state === "stopped" && preview.stopReason === "workspace_unavailable";
   if (!described || !preview.stale || unavailable) return described;
-  return { ...described, line: staleLine(preview, checked, stoppedAt, t) };
+  return { ...described, line: staleLine(preview, checked, stoppedAt, t, lifecycle) };
 }

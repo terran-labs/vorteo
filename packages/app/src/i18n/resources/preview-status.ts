@@ -60,6 +60,14 @@ const en = {
   },
   // Stale states say only what is known: the last state and when it was checked.
   stale: {
+    // The script's live lifecycle and an old broker report disagree: state both knowns.
+    linkWithdrawn: {
+      today: "Server is running. Link last known withdrawn, checked at {{time}}.",
+      yesterday: "Server is running. Link last known withdrawn, checked yesterday at {{time}}.",
+      weekday: "Server is running. Link last known withdrawn, checked on {{day}} at {{time}}.",
+      date: "Server is running. Link last known withdrawn, checked on {{date}} at {{time}}.",
+    },
+    linkWithdrawnUnchecked: "Server is running. Link last known withdrawn.",
     running: {
       today: "Last known: running, checked at {{time}}. Not checked since.",
       yesterday: "Last known: running, checked yesterday at {{time}}. Not checked since.",

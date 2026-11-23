@@ -149,6 +149,18 @@ describe("describePreview", () => {
       { line: "previewStatus.line.linkWithdrawn", action: "stop" },
       "running",
     ],
+    [
+      "a stale withdrawn link on a running server states both knowns in one line",
+      { state: "stopped", stale: true, stoppedAt: at(-30), checkedAt: at(-20) },
+      { line: "previewStatus.stale.linkWithdrawn.today", action: "stop" },
+      "running",
+    ],
+    [
+      "a stale withdrawn link with no check time still says the server is running",
+      { state: "stopped", stale: true, stoppedAt: at(-30) },
+      { line: "previewStatus.stale.linkWithdrawnUnchecked", action: "stop" },
+      "running",
+    ],
     ["a state this app does not know shows nothing", { state: "paused" }, null],
   ])("%s", (_name, preview, expected, lifecycle) => {
     expect(describeKey(preview, lifecycle)).toEqual(expected);
