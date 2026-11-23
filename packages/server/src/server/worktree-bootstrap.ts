@@ -1,6 +1,8 @@
 import type { Logger } from "pino";
 import type { TerminalManager } from "../terminal/terminal-manager.js";
+import { randomBytes } from "node:crypto";
 import type { TerminalSession } from "../terminal/terminal.js";
+import type { TerminalScriptLaunch } from "../terminal/terminal-worker-protocol.js";
 import {
   getScriptConfigs,
   getWorktreeTerminalSpecs,
@@ -15,10 +17,7 @@ import {
 } from "../utils/worktree.js";
 import type { ServiceProxySubsystem } from "./service-proxy.js";
 import { allocateWorkspaceServicePort } from "./workspace-service-port-allocator.js";
-import type {
-  ScriptRuntimeEntry,
-  WorkspaceScriptRuntimeStore,
-} from "./workspace-script-runtime-store.js";
+import type { WorkspaceScriptRuntimeStore } from "./workspace-script-runtime-store.js";
 import type { ToolCallDetail } from "./agent/agent-sdk-types.js";
 import {
   assertNoServiceEnvNameCollisions,
@@ -498,6 +497,7 @@ async function acquireWorkspaceScriptTerminal(params: {
   workspaceId: string;
   scriptName: string;
   env: Record<string, string> | undefined;
+  launch: TerminalScriptLaunch | null;
 }): Promise<{ terminal: TerminalSession; reusableTerminal: TerminalSession | null }> {
   const {
     serviceScript,
@@ -520,6 +520,7 @@ async function acquireWorkspaceScriptTerminal(params: {
       name: scriptName,
       title: scriptName,
       env,
+      ...(params.launch ? { vorteoLaunch: params.launch } : {}),
     }));
   return { terminal, reusableTerminal };
 }
@@ -594,21 +595,24 @@ function watchScriptTerminal(input: {
   return dispose;
 }
 
-/** What a replacement daemon needs to re-link a service; plain scripts (no port) have none. */
-function survivingServiceDetails(input: {
+/**
+ * The marker the terminal worker keeps with a service's terminal, so a later daemon can prove
+ * it launched it. Plain scripts (no port) get none and never survive a daemon.
+ */
+function serviceLaunchMarker(input: {
+  workspaceId: string;
+  scriptName: string;
   port: number | null;
-  projectSlug: string;
-  branchName: string | null;
   config: unknown;
-}): Pick<ScriptRuntimeEntry, "service"> {
-  if (input.port === null) return {};
+}): TerminalScriptLaunch | null {
+  if (input.port === null) return null;
   return {
-    service: {
-      port: input.port,
-      projectSlug: input.projectSlug,
-      branchName: input.branchName,
-      scriptConfig: hashScriptConfig(input.config),
-    },
+    kind: "workspace-script",
+    workspaceId: input.workspaceId,
+    scriptName: input.scriptName,
+    port: input.port,
+    scriptConfig: hashScriptConfig(input.config),
+    nonce: randomBytes(24).toString("base64url"),
   };
 }
 
@@ -638,39 +642,36 @@ export function restoreSurvivingService(input: {
   onLifecycleChanged: () => void;
 }): void {
   const { decision, runtimeStore } = input;
-  const { service, terminal } = decision;
+  const { launch, terminal, workspace } = decision;
+  // The port comes from the worker's marker, never the record; one another service holds is
+  // refused here and the survivor stays unlinked.
   adoptWorkspaceServicePort({
-    workspaceId: service.workspaceId,
-    scriptName: service.scriptName,
-    port: service.port,
+    workspaceId: launch.workspaceId,
+    scriptName: launch.scriptName,
+    port: launch.port,
     fixed: decision.fixedPort !== null,
   });
   const route = input.serviceProxy.registerWorkspaceService({
-    port: service.port,
-    workspaceId: service.workspaceId,
-    projectSlug: service.projectSlug,
-    branchName: service.branchName,
-    scriptName: service.scriptName,
+    port: launch.port,
+    workspaceId: launch.workspaceId,
+    projectSlug: workspace.projectSlug,
+    branchName: workspace.branchName,
+    scriptName: launch.scriptName,
     publicBaseUrl: input.serviceProxyPublicBaseUrl,
   });
   runtimeStore.set({
-    workspaceId: service.workspaceId,
-    scriptName: service.scriptName,
+    workspaceId: launch.workspaceId,
+    scriptName: launch.scriptName,
     type: "service",
     lifecycle: "running",
     terminalId: terminal.id,
     exitCode: null,
-    service: {
-      port: service.port,
-      projectSlug: service.projectSlug,
-      branchName: service.branchName,
-      scriptConfig: service.scriptConfig,
-    },
+    service: { launchNonce: launch.nonce },
   });
   watchScriptTerminal({
     terminal,
-    workspaceId: service.workspaceId,
-    scriptName: service.scriptName,
+    workspaceId: launch.workspaceId,
+    scriptName: launch.scriptName,
     scriptType: "service",
     hostname: route.hostname,
     serviceProxy: input.serviceProxy,
@@ -746,6 +747,7 @@ export async function spawnWorkspaceScript(
       routeRegistered = true;
     }
 
+    const launch = serviceLaunchMarker({ workspaceId, scriptName, port, config });
     const { terminal, reusableTerminal } = await acquireWorkspaceScriptTerminal({
       serviceScript,
       existingRuntimeEntry,
@@ -754,6 +756,7 @@ export async function spawnWorkspaceScript(
       workspaceId,
       scriptName,
       env,
+      launch,
     });
 
     runtimeStore.set({
@@ -763,7 +766,7 @@ export async function spawnWorkspaceScript(
       lifecycle: "running",
       terminalId: terminal.id,
       exitCode: null,
-      ...survivingServiceDetails({ port, projectSlug, branchName, config }),
+      ...(launch ? { service: { launchNonce: launch.nonce } } : {}),
     });
     runtimeRegistered = true;
 

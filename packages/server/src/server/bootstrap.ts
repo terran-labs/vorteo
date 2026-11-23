@@ -264,8 +264,10 @@ import type {
 import { type PersistedConfig } from "./persisted-config.js";
 import { createServiceProxySubsystem, type ServiceProxySubsystem } from "./service-proxy.js";
 import { releaseWorkspaceServicePortPlan } from "./workspace-service-port-registry.js";
+import { deriveProjectServiceSlug, deriveProjectSlug } from "./workspace-git-metadata.js";
 import {
   createSurvivingServicesWriter,
+  readSurvivorWorkspaces,
   relinkWorkspaceScripts,
   SURVIVING_SERVICES_FILE,
   type SurvivingService,
@@ -1407,10 +1409,14 @@ export async function createPaseoDaemon(
     await relinkWorkspaceScripts({
       recordPath,
       terminals: terminalManager,
-      lookupWorkspace: async (workspaceId) => {
-        const workspace = await archiveWorkspaceRegistry.get(workspaceId);
-        return workspace ? { cwd: workspace.cwd, archived: workspace.archivedAt !== null } : null;
-      },
+      readWorkspaces: () =>
+        readSurvivorWorkspaces({
+          registry: archiveWorkspaceRegistry,
+          projectSlugOf: async (projectId, cwd) => {
+            const project = await projectRegistry.get(projectId);
+            return project ? deriveProjectServiceSlug(project) : deriveProjectSlug(cwd, null);
+          },
+        }),
       readScript: readSurvivorScript,
       restore: (decision) =>
         restoreSurvivingService({
@@ -1419,7 +1425,7 @@ export async function createPaseoDaemon(
           serviceProxyPublicBaseUrl,
           runtimeStore: scriptRuntimeStore,
           logger,
-          onLifecycleChanged: () => void emitScriptStatus(decision.service.workspaceId),
+          onLifecycleChanged: () => void emitScriptStatus(decision.launch.workspaceId),
         }),
       stopTerminal: (terminalId) => terminalManager.killTerminalAndWait(terminalId),
       deadlineMs: SURVIVING_SERVICES_RELINK_DEADLINE_MS,
@@ -1431,10 +1437,9 @@ export async function createPaseoDaemon(
     scriptRuntimeStore.persistRunningServices((running) => {
       const services: SurvivingService[] = [];
       for (const entry of running) {
-        const terminal = terminalManager.getTerminal(entry.terminalId);
         const worker = terminalManager.workerIdentityOf(entry.terminalId);
-        if (!terminal || !worker) continue;
-        services.push({ ...entry, cwd: terminal.cwd, worker });
+        if (!worker) continue;
+        services.push({ terminalId: entry.terminalId, launchNonce: entry.launchNonce, worker });
       }
       writeRecord(services);
     });

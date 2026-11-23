@@ -277,6 +277,10 @@ export function createTerminalWorkerPool(
       await Promise.all(members().map((member) => member.manager.detach()));
     },
 
+    scriptLaunchOf(terminalId) {
+      return ownerOf(terminalId)?.scriptLaunchOf(terminalId) ?? null;
+    },
+
     workerIdentityOf(terminalId) {
       for (const member of members()) {
         if (member.manager.getTerminal(terminalId)) {

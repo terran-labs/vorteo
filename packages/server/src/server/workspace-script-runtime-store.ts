@@ -5,8 +5,8 @@ export interface ScriptRuntimeEntry {
   lifecycle: "running" | "stopped";
   terminalId: string;
   exitCode: number | null;
-  // What a replacement daemon needs to re-link a running service whose terminal it adopts.
-  // Only the launcher and the re-link set it; plain scripts never survive a daemon.
+  // Set for a service launched with a marker, so a replacement daemon may re-link it. Only the
+  // launcher and the re-link set it; plain scripts never survive a daemon.
   service?: SurvivingServiceDetails;
   // The owner asked to stop it. It stays running until its terminal exits, but it is out of
   // the durable record, so a daemon replaced mid-stop never brings it back.
@@ -14,11 +14,8 @@ export interface ScriptRuntimeEntry {
 }
 
 export interface SurvivingServiceDetails {
-  port: number;
-  projectSlug: string;
-  branchName: string | null;
-  // sha256 of the script's paseo.json entry when it started.
-  scriptConfig: string;
+  // The nonce of the launch marker the terminal worker holds for this service's terminal.
+  launchNonce: string;
 }
 
 export type RunningService = Pick<ScriptRuntimeEntry, "workspaceId" | "scriptName" | "terminalId"> &

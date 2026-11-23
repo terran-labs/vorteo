@@ -1061,6 +1061,12 @@ class Broker:
         if recovery.get('daemon') != daemon:
             recovery = {'daemon': daemon, 'attempts': 0, 'retryAt': 0}
         if current['lifecycle'] == 'running':
+            # A daemon that re-linked a surviving service reports the very terminal and
+            # backend this broker last verified; activate() still requires the same
+            # listener process before the link counts as ready again.
+            survived = bool(entry.get('terminal')) and (current.get('terminalId'), current.get('port')) == (entry['terminal'], entry.get('backend'))
+            if survived:
+                return
             if not recovery.get('terminal') or current.get('terminalId') != recovery['terminal']:
                 raise ProcessChanged('Unrecognized service after daemon restart; explicit start required')
             return

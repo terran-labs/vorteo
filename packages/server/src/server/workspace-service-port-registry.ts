@@ -24,6 +24,14 @@ interface PendingWorkspaceServicePortPlanToken {
   isReleased: boolean;
 }
 
+export class ServicePortTakenError extends Error {
+  readonly port: number;
+  constructor(port: number) {
+    super(`Port ${port} is already reserved by another service`);
+    this.port = port;
+  }
+}
+
 class WorkspaceServicePortPlanReleasedError extends Error {
   constructor(workspaceId: string) {
     super(`Workspace service port plan was released while being created for '${workspaceId}'`);
@@ -92,7 +100,17 @@ export function adoptWorkspaceServicePort(options: {
   port: number;
   fixed: boolean;
 }): void {
+  const owner = dynamicPortOwners.get(options.port);
   const plan = workspaceServicePortPlans.get(options.workspaceId) ?? new Map<string, number>();
+  const plannedForOther = Array.from(plan).some(
+    ([scriptName, port]) => port === options.port && scriptName !== options.scriptName,
+  );
+  if (
+    (owner !== undefined && owner !== toServiceOwner(options.workspaceId, options.scriptName)) ||
+    plannedForOther
+  ) {
+    throw new ServicePortTakenError(options.port);
+  }
   plan.set(options.scriptName, options.port);
   workspaceServicePortPlans.set(options.workspaceId, plan);
   if (!options.fixed) reserveDynamicPort(options);
