@@ -2318,6 +2318,7 @@ export class VoiceAssistantWebSocketServer {
     existing.permissionCeiling = message.sessionPermissions;
     existing.session.setPermissions(pending.admission!.permissions);
     existing.session.setAgentGrants(pending.admission!.agentGrants);
+    existing.session.setAdmissionCredential(pending.admission!.credential);
     existing.session.setRouted(message.routed === true);
     this.assignHostSource(existing, message, pending.admission!.principalId);
     const newAppVersion = message.appVersion ?? null;

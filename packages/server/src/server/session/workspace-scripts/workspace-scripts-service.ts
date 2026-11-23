@@ -23,9 +23,9 @@ import type {
 } from "../../worktree-bootstrap.js";
 import {
   buildWorkspaceScriptPayloads,
+  loadManagedPreviewContext,
   readPaseoConfigForProjection,
 } from "../../script-status-projection.js";
-import { readPreviewBrokerStatus } from "../../preview-broker-status.js";
 import { deriveProjectServiceSlug, deriveProjectSlug } from "../../workspace-git-metadata.js";
 import type { PaseoServicePortAllocation } from "@getpaseo/protocol/paseo-config-schema";
 
@@ -128,7 +128,7 @@ export function createWorkspaceScriptsService(deps: {
       serviceProxyPublicBaseUrl,
       gitMetadata: resolveGitMetadata(workspace, project),
       resolveHealth: resolveScriptHealth ?? undefined,
-      brokerStatus: await readPreviewBrokerStatus(),
+      managedPreviews: await loadManagedPreviewContext(workspace.workspaceId),
     });
   }
 

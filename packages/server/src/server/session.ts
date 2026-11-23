@@ -883,7 +883,7 @@ export class Session {
   private readonly authorization: SessionAuthorization;
   private readonly ownerEvidence: TaskOwnerEvidenceStore;
   private readonly principalId: string | null | undefined;
-  readonly admissionCredential: SessionCredentialKind | null | undefined;
+  private admissionCredentialKind: SessionCredentialKind | null | undefined;
   private readonly clientType: SessionOptions["clientType"];
   private appVersion: string | null;
   private clientCapabilities: ReadonlySet<ClientCapability>;
@@ -1085,7 +1085,7 @@ export class Session {
     this.servicePrincipals = options.servicePrincipals ?? null;
     this.principalLabel = options.principalLabel;
     this.principalId = options.principalId;
-    this.admissionCredential = options.admissionCredential;
+    this.admissionCredentialKind = options.admissionCredential;
     this.clientType = options.clientType;
     this.ownerEvidence = new TaskOwnerEvidenceStore(paseoHome);
 
@@ -2570,6 +2570,19 @@ export class Session {
 
   public allowsOutbound(message: SessionOutboundMessage): boolean {
     return this.authorization.allowsOutbound(message);
+  }
+
+  /** How the most recent connection to this session was admitted. */
+  get admissionCredential(): SessionCredentialKind | null | undefined {
+    return this.admissionCredentialKind;
+  }
+
+  /**
+   * Replaced on every resume, like permissions and grants: a reconnect proves only what
+   * its own admission proved, never what the session's first connection proved.
+   */
+  public setAdmissionCredential(credential: SessionCredentialKind | null | undefined): void {
+    this.admissionCredentialKind = credential;
   }
 
   public setPermissions(permissions: readonly DaemonPermission[]): void {
@@ -9449,7 +9462,7 @@ export class Session {
         restarter,
         brokerAvailable: (await restarter?.available()) ?? false,
         workspace: (await this.workspaceRegistry.get(workspaceId)) ?? null,
-        hasReservation: readWorkspacePreviewOrigin(workspaceId, scriptName) !== null,
+        hasReservation: (await readWorkspacePreviewOrigin(workspaceId, scriptName)) !== null,
         broker:
           (await readPreviewBrokerStatus())?.services.get(
             previewServiceKey(workspaceId, scriptName),

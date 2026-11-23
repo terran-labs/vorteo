@@ -1,7 +1,8 @@
-import { readWorkspacePreviewOrigin } from "./workspace-preview-origin.js";
+import { readWorkspacePreviewOrigins } from "./workspace-preview-origin.js";
 import {
   previewServiceKey,
   projectWorkspaceScriptPreview,
+  previewBrokerIsStale,
   readPreviewBrokerStatus,
   type PreviewBrokerStatus,
 } from "./preview-broker-status.js";
@@ -39,8 +40,25 @@ interface BuildWorkspaceScriptPayloadsOptions {
     currentBranch: string | null;
   };
   resolveHealth?: (hostname: string) => ScriptHealthState | null;
-  /** The broker's published status; callers read it with readPreviewBrokerStatus(). */
-  brokerStatus?: PreviewBrokerStatus | null;
+  /** Managed preview data, read asynchronously by loadManagedPreviewContext(). */
+  managedPreviews?: ManagedPreviewContext;
+}
+
+export interface ManagedPreviewContext {
+  brokerStatus: PreviewBrokerStatus | null;
+  /** The broker's reserved HTTPS origin for each service of the workspace. */
+  origins: ReadonlyMap<string, string>;
+}
+
+/** Reads, without blocking, what the synchronous projection needs about previews. */
+export async function loadManagedPreviewContext(
+  workspaceId: string,
+): Promise<ManagedPreviewContext> {
+  const [brokerStatus, origins] = await Promise.all([
+    readPreviewBrokerStatus(),
+    readWorkspacePreviewOrigins(workspaceId),
+  ]);
+  return { brokerStatus, origins };
 }
 
 export async function readPaseoConfigForProjection(
@@ -266,7 +284,7 @@ export function buildWorkspaceScriptPayloads(
     payloads.push(buildOrphanRuntimePayload(runtimeEntry, serviceState, ctx));
   }
 
-  applyManagedPreviews(payloads, workspaceId, options.brokerStatus ?? null);
+  if (options.managedPreviews) applyManagedPreviews(payloads, workspaceId, options.managedPreviews);
   return sortPayloads(payloads);
 }
 
@@ -274,24 +292,24 @@ export function buildWorkspaceScriptPayloads(
 function applyManagedPreviews(
   payloads: WorkspaceScriptPayload[],
   workspaceId: string,
-  broker: PreviewBrokerStatus | null,
+  { brokerStatus: broker, origins }: ManagedPreviewContext,
 ): void {
   const restarter = previewBrokerRestarter();
+  const stale = broker ? previewBrokerIsStale(broker, Date.now() / 1000) : false;
   for (const payload of payloads) {
     if (payload.type !== "service") continue;
     const entry = broker?.services.get(previewServiceKey(workspaceId, payload.scriptName));
     if (broker && entry) {
       payload.preview = projectWorkspaceScriptPreview({
         broker: entry,
-        publishedAt: broker.publishedAt,
+        stale,
         lifecycle: payload.lifecycle,
         health: payload.health,
         restart: restarter?.outcome(workspaceId, payload.scriptName) ?? null,
-        nowSeconds: Date.now() / 1000,
       });
     }
     if (payload.lifecycle !== "running") continue;
-    const origin = readWorkspacePreviewOrigin(workspaceId, payload.scriptName);
+    const origin = origins.get(payload.scriptName);
     if (origin) {
       // publicProxyUrl means reachable beyond localhost, including private tailnets.
       payload.publicProxyUrl = origin;
@@ -353,7 +371,7 @@ export function createScriptStatusEmitter({
         runtimeStore,
         daemonPort: resolvedDaemonPort,
         serviceProxyPublicBaseUrl,
-        brokerStatus: await readPreviewBrokerStatus(),
+        managedPreviews: await loadManagedPreviewContext(workspaceId),
         resolveHealth: (hostname) =>
           scriptHealthByHostname
             ? (scriptHealthByHostname.get(hostname) ?? null)

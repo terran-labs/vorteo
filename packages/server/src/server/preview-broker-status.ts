@@ -1,7 +1,7 @@
-import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { readBoundedRegularFile } from "./bounded-file-read.js";
 import type { WorkspaceScriptPreview } from "@getpaseo/protocol/messages";
 
 /**
@@ -11,8 +11,22 @@ import type { WorkspaceScriptPreview } from "@getpaseo/protocol/messages";
  */
 export const PREVIEW_CHANNEL_DIRECTORY = join(homedir(), ".local/share/paseo-preview/https");
 
-/** Older than this, a running preview's state is not current. */
+/**
+ * Broker state is stale when the broker has not published for this long, or its
+ * reconcile pass has visited no entry for this long. Staleness is judged for the broker
+ * as a whole, not per entry: reconcile is round-robin with a 20-second budget per run,
+ * so a long pass over many slow entries can leave one unvisited for minutes while the
+ * broker is working normally, and flagging it would call healthy previews stale.
+ */
 const STALE_AFTER_SECONDS = 60;
+
+export function previewBrokerIsStale(
+  status: Pick<PreviewBrokerStatus, "publishedAt" | "lastVisitAt" | "services">,
+  nowSeconds: number,
+): boolean {
+  if (nowSeconds - status.publishedAt > STALE_AFTER_SECONDS) return true;
+  return status.services.size > 0 && nowSeconds - status.lastVisitAt > STALE_AFTER_SECONDS;
+}
 const STOP_REASONS = new Set([
   "stopped",
   "exited",
@@ -51,6 +65,8 @@ export type PreviewBrokerService = z.infer<typeof brokerServiceSchema>;
 export interface PreviewBrokerStatus {
   /** The broker finished a run; says nothing about whether entries were rechecked. */
   publishedAt: number;
+  /** The newest visit to any entry: whether the broker's reconcile pass is moving. */
+  lastVisitAt: number;
   services: Map<string, PreviewBrokerService>;
 }
 
@@ -59,32 +75,35 @@ export function previewServiceKey(workspaceId: string, service: string): string 
 }
 
 let cached: { file: string; stamp: string; status: PreviewBrokerStatus | null } | null = null;
+const inFlight = new Map<string, Promise<PreviewBrokerStatus | null>>();
 
 /**
  * The broker's published state from `preview-status.json`, or null when no broker
- * publishes it (not installed, or older than #586) or the file is unreadable. Cached
- * by modification time and size, so callers may read it on every projection.
+ * publishes it (not installed, or older than #586) or the file is unusable. Concurrent
+ * callers share one read, and the file is read with readBoundedRegularFile, so a FIFO,
+ * a link or an endless file planted in an agent-writable channel cannot block the
+ * daemon's file system thread pool or grow its memory.
  */
-export async function readPreviewBrokerStatus(
+export function readPreviewBrokerStatus(
   file = join(PREVIEW_CHANNEL_DIRECTORY, "preview-status.json"),
 ): Promise<PreviewBrokerStatus | null> {
-  let stamp: string;
-  try {
-    const info = await stat(file);
-    if (info.size > MAX_STATUS_BYTES) return null;
-    stamp = `${info.mtimeMs}:${info.size}`;
-  } catch {
-    return null;
-  }
-  if (cached?.file === file && cached.stamp === stamp) return cached.status;
-  let status: PreviewBrokerStatus | null = null;
-  try {
-    status = parsePreviewBrokerStatus(JSON.parse(await readFile(file, "utf8")));
-  } catch {
-    status = null;
-  }
-  cached = { file, stamp, status };
-  return status;
+  const pending = inFlight.get(file);
+  if (pending) return pending;
+  const read = (async () => {
+    const result = await readBoundedRegularFile(file, MAX_STATUS_BYTES);
+    if (!result) return null;
+    if (cached?.file === file && cached.stamp === result.stamp) return cached.status;
+    let status: PreviewBrokerStatus | null;
+    try {
+      status = parsePreviewBrokerStatus(JSON.parse(result.text));
+    } catch {
+      status = null;
+    }
+    cached = { file, stamp: result.stamp, status };
+    return status;
+  })().finally(() => inFlight.delete(file));
+  inFlight.set(file, read);
+  return read;
 }
 
 function parsePreviewBrokerStatus(json: unknown): PreviewBrokerStatus | null {
@@ -98,7 +117,9 @@ function parsePreviewBrokerStatus(json: unknown): PreviewBrokerStatus | null {
       services.set(previewServiceKey(entry.data.workspaceId, entry.data.service), entry.data);
     }
   }
-  return { publishedAt: parsed.data.publishedAt, services };
+  let lastVisitAt = 0;
+  for (const entry of services.values()) lastVisitAt = Math.max(lastVisitAt, entry.checkedAt ?? 0);
+  return { publishedAt: parsed.data.publishedAt, lastVisitAt, services };
 }
 
 export interface PreviewRestartOutcome {
@@ -119,11 +140,11 @@ const iso = (value: number | undefined): string | null =>
  */
 interface PreviewProjectionInput {
   broker: PreviewBrokerService;
-  publishedAt: number;
+  /** From previewBrokerIsStale(). */
+  stale: boolean;
   lifecycle: "running" | "stopped";
   health: "healthy" | "unhealthy" | null;
   restart: PreviewRestartOutcome | null;
-  nowSeconds: number;
 }
 
 function previewState(input: PreviewProjectionInput): string {
@@ -172,18 +193,14 @@ export function projectWorkspaceScriptPreview(
   const { broker } = input;
   const state = previewState(input);
   const wantsRunning = broker.desired === "running";
-  // A stopped preview needs no recheck; a running one is current only while the broker
-  // runs and has visited this entry recently. checkedAt marks a visit, not a success.
-  const stale =
-    input.nowSeconds - input.publishedAt > STALE_AFTER_SECONDS ||
-    (wantsRunning && input.nowSeconds - (broker.checkedAt ?? 0) > STALE_AFTER_SECONDS);
   const showError =
     Boolean(broker.error) && state !== "ready" && PLAIN_ERROR.test(broker.error ?? "");
   return {
     state,
     ...(state === "stopped" && !wantsRunning ? stopDetails(broker) : {}),
     checkedAt: iso(broker.checkedAt),
-    stale,
+    // checkedAt marks the entry's last visit, not a successful check.
+    stale: input.stale,
     ...(broker.needsReview ? { needsReview: true } : {}),
     ...(showError ? { error: broker.error } : {}),
     ...restartDetails(input.restart),
@@ -207,13 +224,11 @@ export function watchPreviewBrokerStatus(options: {
     const status = await read();
     const next = new Map<string, string>();
     if (status) {
-      const now = nowSeconds();
-      const stale = now - status.publishedAt > STALE_AFTER_SECONDS;
+      const stale = previewBrokerIsStale(status, nowSeconds());
       for (const entry of status.services.values()) {
-        const entryStale = stale || now - (entry.checkedAt ?? 0) > STALE_AFTER_SECONDS;
         // checkedAt moves every cycle; only what the owner would see changes the digest.
         const { checkedAt: _checkedAt, ...shown } = entry;
-        const digest = `${next.get(entry.workspaceId) ?? ""}|${JSON.stringify(shown)}:${entryStale}`;
+        const digest = `${next.get(entry.workspaceId) ?? ""}|${JSON.stringify(shown)}:${stale}`;
         next.set(entry.workspaceId, digest);
       }
     }

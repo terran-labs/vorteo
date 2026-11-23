@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { access, readFile, rename, writeFile } from "node:fs/promises";
+import { access, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type pino from "pino";
 import type { SessionCredentialKind } from "./authorization/index.js";
+import { readBoundedRegularFile } from "./bounded-file-read.js";
 import {
   PREVIEW_CHANNEL_DIRECTORY,
   previewServiceKey,
@@ -18,6 +19,13 @@ const RECEIPT_WAIT_MS = 90_000;
 const PENDING_FOLLOW_MS = 60_000;
 const POLL_MS = 500;
 const STATUS_INTERVAL_MS = 2_000;
+/**
+ * Restarts in flight across all previews. Each can add about 30 status requests while it
+ * follows its receipt, against a broker that handles 16 requests per run, so a few
+ * concurrent restarts must not crowd out agents' own preview requests.
+ */
+const MAX_CONCURRENT_RESTARTS = 3;
+const MAX_RECEIPT_BYTES = 16 * 1024;
 /** A failed outcome stays visible this long unless a newer restart replaces it. */
 const OUTCOME_TTL_MS = 10 * 60_000;
 
@@ -84,6 +92,12 @@ export class PreviewBrokerRestarter {
     return this.outcome(workspaceId, scriptName)?.status === "starting";
   }
 
+  atCapacity(): boolean {
+    let running = 0;
+    for (const outcome of this.outcomes.values()) if (outcome.status === "starting") running += 1;
+    return running >= MAX_CONCURRENT_RESTARTS;
+  }
+
   /**
    * Submits the request and returns once it is in the inbox; the outcome follows
    * through `onChange`. Throws when the names are invalid or the inbox write fails.
@@ -94,6 +108,7 @@ export class PreviewBrokerRestarter {
     }
     const key = previewServiceKey(workspaceId, scriptName);
     if (this.inFlight(workspaceId, scriptName)) throw new Error("A restart is already running");
+    if (this.atCapacity()) throw new Error("Too many preview restarts are running");
     const id = await this.request(mode, workspaceId, scriptName);
     this.record(key, workspaceId, { status: "starting", error: null });
     void this.follow(key, workspaceId, scriptName, id).catch((error: unknown) => {
@@ -133,11 +148,16 @@ export class PreviewBrokerRestarter {
     const deadline = this.now() + RECEIPT_WAIT_MS;
     const path = join(this.channel, "receipts", `${id}.json`);
     while (this.now() < deadline) {
-      try {
-        return JSON.parse(await readFile(path, "utf8")) as BrokerReceipt;
-      } catch {
-        await delay(this.deps.pollMs ?? POLL_MS);
+      // In Dev the receipts folder is agent-writable: a planted FIFO or device reads as absent.
+      const file = await readBoundedRegularFile(path, MAX_RECEIPT_BYTES);
+      if (file) {
+        try {
+          return JSON.parse(file.text) as BrokerReceipt;
+        } catch {
+          // A receipt being written, or not one: keep waiting until the deadline.
+        }
       }
+      await delay(this.deps.pollMs ?? POLL_MS);
     }
     return null;
   }
@@ -185,14 +205,20 @@ export interface PreviewRestartRefusal {
 }
 
 /**
- * Who may restart a preview from the app. Only a session that proved the daemon password
- * qualifies: the local credential file is readable by every process of the daemon's OS
- * user, agents included, and service, hub and plugin sessions are not the owner's app.
- * Agents restart previews through the broker helper instead.
+ * Who may restart a preview from the app: only a session admitted with the daemon
+ * password, re-checked on every resume. This keeps out agents' CLI shells (the local
+ * credential), service, hub and plugin sessions, and in Dev the container's agents.
+ *
+ * It is NOT proof of the owner. On the Host the daemon's password file is readable by its
+ * OS user, so Host agents can learn it, and every session the Host routes to Dev arrives
+ * as "password" because the Host connects to Dev with Dev's password. That is enough here
+ * only because this request grants nothing an agent cannot already do through the broker
+ * helper. Do not reuse this check for a more powerful request before #525 binds caller
+ * identity to authenticated authority.
  */
 export function admitPreviewRestart(input: {
   credential: SessionCredentialKind | null;
-  restarter: Pick<PreviewBrokerRestarter, "inFlight"> | null;
+  restarter: Pick<PreviewBrokerRestarter, "inFlight" | "atCapacity"> | null;
   brokerAvailable: boolean;
   workspace: { archivedAt: string | null } | null;
   hasReservation: boolean;
@@ -217,6 +243,9 @@ export function admitPreviewRestart(input: {
   }
   if (input.restarter.inFlight(input.workspaceId, input.scriptName)) {
     return { code: "busy", message: "A restart is already running" };
+  }
+  if (input.restarter.atCapacity()) {
+    return { code: "busy", message: "Too many preview restarts are running" };
   }
   return null;
 }

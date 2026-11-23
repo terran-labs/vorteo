@@ -1,11 +1,22 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { admitPreviewRestart, PreviewBrokerRestarter } from "./preview-broker-restart.js";
 import {
+  previewBrokerIsStale,
   projectWorkspaceScriptPreview,
+  readPreviewBrokerStatus,
   type PreviewBrokerService,
 } from "./preview-broker-status.js";
 
@@ -30,7 +41,7 @@ function makeChannel(): string {
 }
 
 describe("preview restart admission", () => {
-  const restarter = { inFlight: () => false };
+  const restarter = { inFlight: () => false, atCapacity: () => false };
   const allowed = {
     credential: "password" as const,
     restarter,
@@ -59,6 +70,14 @@ describe("preview restart admission", () => {
     expect(admitPreviewRestart({ ...allowed, brokerAvailable: false })?.code).toBe(
       "broker_unavailable",
     );
+    // One restart per preview, and a few in all, so restarts cannot flood the broker.
+    expect(
+      admitPreviewRestart({ ...allowed, restarter: { ...restarter, inFlight: () => true } })?.code,
+    ).toBe("busy");
+    expect(
+      admitPreviewRestart({ ...allowed, restarter: { ...restarter, atCapacity: () => true } })
+        ?.code,
+    ).toBe("busy");
   });
 });
 
@@ -107,14 +126,48 @@ describe("preview state projection", () => {
         stopReason: "owner_asked",
         error: "Open https://example.test to fix this",
       },
-      publishedAt: 2_000,
+      stale: false,
       lifecycle: "stopped",
       health: null,
       restart: null,
-      nowSeconds: 2_010,
     });
     expect(preview.state).toBe("stopped");
     expect(preview.stopReason).toBeUndefined();
     expect(preview.error).toBeUndefined();
+  });
+});
+
+describe("preview broker status file", () => {
+  const status = (services: unknown[]) =>
+    JSON.stringify({ version: 1, publishedAt: Date.now() / 1000, services });
+
+  test("a planted FIFO, link or oversized file reads as absent without blocking", async () => {
+    const directory = makeChannel();
+    const fifo = join(directory, "fifo.json");
+    execFileSync("mkfifo", [fifo]);
+    const link = join(directory, "link.json");
+    symlinkSync("/dev/zero", link);
+    const large = join(directory, "large.json");
+    writeFileSync(large, status([{ workspaceId: "wks_a", service: "x".repeat(300_000) }]));
+    // Each would have hung on open, read forever or loaded the whole file before.
+    for (const file of [fifo, link, large]) {
+      await expect(readPreviewBrokerStatus(file)).resolves.toBeNull();
+    }
+  });
+
+  test("stale follows the broker, not one entry left behind by a long round-robin pass", async () => {
+    const directory = makeChannel();
+    const file = join(directory, "preview-status.json");
+    const now = Date.now() / 1000;
+    writeFileSync(
+      file,
+      status([
+        { workspaceId: "wks_a", service: "web", desired: "running", checkedAt: now - 600 },
+        { workspaceId: "wks_a", service: "api", desired: "running", checkedAt: now - 5 },
+      ]),
+    );
+    const read = await readPreviewBrokerStatus(file);
+    expect(read && previewBrokerIsStale(read, now)).toBe(false);
+    expect(read && previewBrokerIsStale(read, now + 120)).toBe(true);
   });
 });
