@@ -140,6 +140,13 @@ const en = {
   },
 } as const;
 
+/**
+ * Top-level sections that every locale shows in English on purpose until the owner approves
+ * their wording. The translation coverage test leaves them out of its fallback count; remove a
+ * section from this list when its translations land.
+ */
+export const PROVISIONAL_ENGLISH_NAMESPACES = ["previewStatus"] as const;
+
 export const previewStatus = {
   en,
   ar: en,

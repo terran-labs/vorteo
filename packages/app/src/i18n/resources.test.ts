@@ -10,6 +10,7 @@ import { ko } from "./resources/ko";
 import { ptBR } from "./resources/pt-BR";
 import { ru } from "./resources/ru";
 import { zhCN } from "./resources/zh-CN";
+import { PROVISIONAL_ENGLISH_NAMESPACES } from "./resources/preview-status";
 
 function flattenKeys(value: unknown, prefix = ""): string[] {
   if (typeof value !== "object" || value === null) {
@@ -62,8 +63,13 @@ function flattenStrings(value: unknown, prefix = ""): Record<string, string> {
 function countMatchingEnglishStrings(resource: unknown): number {
   const englishStrings = flattenStrings(en);
   const localeStrings = flattenStrings(resource);
-  return Object.entries(englishStrings).filter(([key, value]) => localeStrings[key] === value)
-    .length;
+  // Vorteo: sections deliberately in English everywhere until the owner approves their
+  // wording are not untranslated fallbacks.
+  const provisional = (key: string) =>
+    PROVISIONAL_ENGLISH_NAMESPACES.some((namespace) => key.startsWith(`${namespace}.`));
+  return Object.entries(englishStrings).filter(
+    ([key, value]) => !provisional(key) && localeStrings[key] === value,
+  ).length;
 }
 
 function findInterpolationMismatches(resource: unknown): string[] {
