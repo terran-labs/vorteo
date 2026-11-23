@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import type { WorkspaceDescriptor } from "@/stores/session-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useHostRuntimeSnapshot } from "@/runtime/host-runtime";
+import { confirmDialog } from "@/utils/confirm-dialog";
 import { useToast } from "@/contexts/toast-context";
 import {
   resolveWorkspaceScriptLink,
@@ -24,8 +25,13 @@ export interface WorkspaceScriptLinks {
 export interface WorkspaceScriptActions {
   start: (scriptName: string) => void;
   stop: (scriptName: string) => void;
-  /** Stops the script, then starts it again once the daemon reports it stopped. */
+  /**
+   * Stops the script, then starts it again once the daemon reports it stopped. A managed
+   * preview restarts through the preview broker instead, after asking, so its link stays.
+   */
   restart: (scriptName: string) => void;
+  /** Whether this script's Run and Restart go through the preview broker. */
+  isManagedPreview: (script: WorkspaceScript) => boolean;
   copyUrl: (target: WorkspaceScriptLinkTarget) => void;
   selectRoute: (kind: WorkspaceScriptLinkKind) => void;
   resolveLinks: (script: WorkspaceScript) => WorkspaceScriptLinks;
@@ -65,6 +71,54 @@ export function useWorkspaceScriptActions({
     (state) => state.setPreferredRoute,
   );
   const pendingRestartRef = useRef<Set<string>>(new Set());
+  const previewRestartSupported = useSessionStore(
+    (state) => state.sessions[serverId]?.serverInfo?.features?.previewRestart === true,
+  );
+  const isManagedPreview = useCallback(
+    (script: WorkspaceScript) =>
+      previewRestartSupported && script.type === "service" && script.preview !== undefined,
+    [previewRestartSupported],
+  );
+
+  // A reserved preview starts through the broker, so the link stays the same and the broker
+  // records the start; a plain start would bring the server up with its link still withdrawn.
+  const previewMutation = useMutation({
+    mutationFn: async (input: { scriptName: string; mode: "start" | "restart" }) => {
+      if (!client) throw new Error(t("common.errors.daemonClientUnavailable"));
+      const result = await client.restartWorkspaceScriptPreview(
+        workspaceId,
+        input.scriptName,
+        input.mode,
+      );
+      if (!result.accepted) throw new Error(previewRefusal(result.refusalCode, result.error));
+      return result;
+    },
+    onError: (error) => {
+      toast.show(error instanceof Error ? error.message : t("previewStatus.refusals.failed"), {
+        variant: "error",
+      });
+    },
+  });
+  const previewRefusal = (code: string | null | undefined, error: string | null): string => {
+    switch (code) {
+      case "busy":
+        return error?.startsWith("Too many")
+          ? t("previewStatus.refusals.capacity")
+          : t("previewStatus.refusals.busy");
+      case "workspace_unavailable":
+        return t("previewStatus.refusals.archived");
+      case "needs_review":
+        return t("previewStatus.refusals.needsReview");
+      case "owner_app_only":
+        return t("previewStatus.refusals.ownerAppOnly");
+      case "broker_unavailable":
+      case "no_reservation":
+        return t("previewStatus.refusals.unavailable");
+      default:
+        return error ?? t("previewStatus.refusals.failed");
+    }
+  };
+  const startPreview = previewMutation.mutate;
 
   const startScriptMutation = useMutation({
     mutationFn: async (scriptName: string) => {
@@ -135,12 +189,47 @@ export function useWorkspaceScriptActions({
     }
   }, [scripts, startScript]);
 
-  const restart = useCallback(
+  const restartPlain = useCallback(
     (scriptName: string) => {
       pendingRestartRef.current.add(scriptName);
       stopScript(scriptName);
     },
     [stopScript],
+  );
+
+  const managedScript = useCallback(
+    (scriptName: string) => {
+      const script = scripts.find((entry) => entry.scriptName === scriptName);
+      return script && isManagedPreview(script) ? script : null;
+    },
+    [scripts, isManagedPreview],
+  );
+
+  const start = useCallback(
+    (scriptName: string) => {
+      if (managedScript(scriptName)) startPreview({ scriptName, mode: "start" });
+      else startScript(scriptName);
+    },
+    [managedScript, startPreview, startScript],
+  );
+
+  const restart = useCallback(
+    (scriptName: string) => {
+      if (!managedScript(scriptName)) {
+        restartPlain(scriptName);
+        return;
+      }
+      void (async () => {
+        const confirmed = await confirmDialog({
+          title: t("previewStatus.confirmRestart.title"),
+          message: t("previewStatus.confirmRestart.message"),
+          confirmLabel: t("previewStatus.confirmRestart.confirm"),
+          cancelLabel: t("previewStatus.confirmRestart.cancel"),
+        });
+        if (confirmed) startPreview({ scriptName, mode: "restart" });
+      })();
+    },
+    [managedScript, restartPlain, startPreview, t],
   );
 
   const copyUrl = useCallback(
@@ -168,23 +257,26 @@ export function useWorkspaceScriptActions({
 
   return useMemo(
     () => ({
-      start: startScript,
+      start,
       stop: stopScript,
       restart,
+      isManagedPreview,
       copyUrl,
       selectRoute,
       resolveLinks,
-      isStartPending: startScriptMutation.isPending,
+      isStartPending: startScriptMutation.isPending || previewMutation.isPending,
       isStopPending: stopScriptMutation.isPending,
     }),
     [
-      startScript,
+      start,
       stopScript,
       restart,
+      isManagedPreview,
       copyUrl,
       selectRoute,
       resolveLinks,
       startScriptMutation.isPending,
+      previewMutation.isPending,
       stopScriptMutation.isPending,
     ],
   );

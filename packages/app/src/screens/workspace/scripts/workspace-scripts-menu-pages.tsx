@@ -17,6 +17,11 @@ import type {
   WorkspaceScriptLinkTarget,
 } from "@/utils/workspace-script-links";
 import { ExitCodeBadge, routeLabelKey, ScriptIcon } from "./script-marks";
+import {
+  previewBlocksStart,
+  previewStartLabelKey,
+  usePreviewDescription,
+} from "@/preview-status/use-preview-description";
 import { scriptToneColorMapping, summarizeScripts, type ScriptsSummary } from "./script-status";
 import {
   useWorkspaceScriptActions,
@@ -215,6 +220,7 @@ function StoppedScriptRow({
   const handleSelect = useCallback(() => start(script.scriptName), [start, script.scriptName]);
   const exitCode = script.exitCode ?? null;
   const leading = useMemo(() => <ScriptIcon script={script} size={ROW_ICON_SIZE} />, [script]);
+  const preview = usePreviewDescription(script, actions.isManagedPreview(script));
   const trailing = useMemo(
     () => (
       <View style={styles.trailing}>
@@ -232,7 +238,8 @@ function StoppedScriptRow({
     <DropdownMenuItem
       leading={leading}
       trailing={trailing}
-      disabled={actions.isStartPending}
+      description={preview?.line}
+      disabled={actions.isStartPending || previewBlocksStart(script, preview)}
       onSelect={handleSelect}
       testID={`workspace-scripts-row-${script.scriptName}`}
     >
@@ -272,6 +279,7 @@ function RunningScriptPage({
   const { scriptName } = script;
   const { selected, targets } = actions.resolveLinks(script);
   const { stop, restart, copyUrl, selectRoute } = actions;
+  const preview = usePreviewDescription(script, actions.isManagedPreview(script));
 
   const handleOpenService = useCallback(() => {
     if (!selected) return;
@@ -319,10 +327,11 @@ function RunningScriptPage({
       <DropdownMenuItem
         leading={RESTART_ICON}
         disabled={actions.isStopPending}
+        description={preview?.line}
         onSelect={handleRestart}
         testID={`workspace-script-${scriptName}-restart`}
       >
-        {t("workspace.scripts.actions.restart")}
+        {preview ? t("previewStatus.actions.restart") : t("workspace.scripts.actions.restart")}
       </DropdownMenuItem>
       <DropdownMenuItem
         leading={STOP_ICON}
@@ -394,15 +403,17 @@ function StoppedScriptPage({
     () => (exitCode === null ? null : <ExitCodeBadge code={exitCode} />),
     [exitCode],
   );
+  const preview = usePreviewDescription(script, actions.isManagedPreview(script));
   return (
     <DropdownMenuItem
       leading={RUN_ICON}
       trailing={trailing}
-      disabled={actions.isStartPending}
+      description={preview?.line}
+      disabled={actions.isStartPending || previewBlocksStart(script, preview)}
       onSelect={handleRun}
       testID={`workspace-script-${script.scriptName}-run`}
     >
-      {t("workspace.scripts.actions.run")}
+      {preview ? t(previewStartLabelKey(preview)) : t("workspace.scripts.actions.run")}
     </DropdownMenuItem>
   );
 }

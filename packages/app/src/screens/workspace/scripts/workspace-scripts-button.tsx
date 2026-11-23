@@ -1,4 +1,4 @@
-import { useCallback, useMemo, type ReactElement } from "react";
+import { useCallback, useMemo, useState, type ReactElement } from "react";
 import type { GestureResponderEvent } from "react-native";
 import { Pressable, Text, View } from "react-native";
 import {
@@ -35,6 +35,11 @@ import { isWeb } from "@/constants/platform";
 import { extraMutedIconColorMapping } from "@/components/ui/icon-color";
 import { ExitCodeBadge, routeLabelKey, ScriptIcon } from "./script-marks";
 import { scriptToneColorMapping } from "./script-status";
+import {
+  previewBlocksStart,
+  previewStartLabelKey,
+  usePreviewDescription,
+} from "@/preview-status/use-preview-description";
 import {
   useWorkspaceScriptActions,
   type WorkspaceScriptActions,
@@ -304,6 +309,8 @@ function ScriptRow({
   const { t } = useTranslation();
   const isRunning = script.lifecycle === "running";
   const exitCode = script.exitCode ?? null;
+  const preview = usePreviewDescription(script, actions.isManagedPreview(script));
+  const hideStart = previewBlocksStart(script, preview);
   const { selected: selectedLink, targets: linkTargets } = actions.resolveLinks(script);
   const liveTerminalId =
     script.terminalId && liveTerminalIdSet.has(script.terminalId) ? script.terminalId : null;
@@ -383,7 +390,7 @@ function ScriptRow({
       disabled={actions.isStartPending}
       icon="start"
       onPress={handleRun}
-      tooltipLabel={t("workspace.scripts.actions.run")}
+      tooltipLabel={preview ? t(previewStartLabelKey(preview)) : t("workspace.scripts.actions.run")}
     />
   );
 
@@ -412,11 +419,14 @@ function ScriptRow({
             disabled={actions.isStopPending}
             icon="restart"
             onPress={handleRestart}
-            tooltipLabel={t("workspace.scripts.actions.restart")}
+            tooltipLabel={
+              preview ? t("previewStatus.actions.restart") : t("workspace.scripts.actions.restart")
+            }
           />
         ) : null}
-        {lifecycleAction}
+        {hideStart ? null : lifecycleAction}
       </View>
+      {preview ? <PreviewStatusLine line={preview.line} /> : null}
       {selectedLink ? (
         <View style={styles.hostList}>
           <ServiceLinkRow
@@ -429,6 +439,19 @@ function ScriptRow({
         </View>
       ) : null}
     </View>
+  );
+}
+
+/** The preview's state in one or two lines; a longer message expands in place when tapped. */
+function PreviewStatusLine({ line }: { line: string }): ReactElement {
+  const [expanded, setExpanded] = useState(false);
+  const toggle = useCallback(() => setExpanded((value) => !value), []);
+  return (
+    <Pressable accessibilityRole="text" accessibilityLabel={line} onPress={toggle}>
+      <Text style={styles.previewLine} numberOfLines={expanded ? undefined : 2}>
+        {line}
+      </Text>
+    </Pressable>
   );
 }
 
@@ -664,6 +687,13 @@ const styles = StyleSheet.create((theme) => ({
   hostList: {
     marginTop: 2,
     paddingHorizontal: theme.spacing[3],
+  },
+  previewLine: {
+    marginTop: 2,
+    paddingHorizontal: theme.spacing[3],
+    fontSize: theme.fontSize.sm,
+    lineHeight: 16,
+    color: theme.colors.foregroundMuted,
   },
   hostRow: {
     flexDirection: "row",
