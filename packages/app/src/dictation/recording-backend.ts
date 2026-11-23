@@ -74,5 +74,9 @@ export function createDeviceDictationRecordingBackend(): DictationRecordingBacke
     async claim() {
       return () => undefined;
     },
+    // No other instance exists to hold a recording.
+    async heldByOthers() {
+      return new Set<string>();
+    },
   };
 }

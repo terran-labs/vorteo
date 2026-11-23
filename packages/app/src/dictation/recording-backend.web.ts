@@ -98,13 +98,32 @@ export function createIndexedDbDictationRecordingBackend(
  * thread is never offered a recording the first is writing, retrying or discarding. The lock is
  * dropped automatically when the tab closes or crashes.
  */
+const LOCK_PREFIX = "vorteo-dictation-recording:";
+
+/**
+ * Recording ids whose Web Lock is held, by any tab, found with locks.query() so listing never
+ * takes or waits for a lock. The caller excludes its own recordings separately.
+ */
+export function createWebLockHeldQuery(locks: LockManager): () => Promise<Set<string>> {
+  return async () => {
+    const snapshot = await locks.query();
+    const held = new Set<string>();
+    for (const lock of snapshot.held ?? []) {
+      if (lock.name?.startsWith(LOCK_PREFIX)) {
+        held.add(lock.name.slice(LOCK_PREFIX.length));
+      }
+    }
+    return held;
+  };
+}
+
 export function createWebLockClaim(
   locks: LockManager,
 ): (id: string) => Promise<DictationRecordingClaimRelease | null> {
   return (id) =>
     new Promise((resolve, reject) => {
       locks
-        .request(`vorteo-dictation-recording:${id}`, { ifAvailable: true }, (lock) => {
+        .request(`${LOCK_PREFIX}${id}`, { ifAvailable: true }, (lock) => {
           if (!lock) {
             resolve(null);
             return undefined;
@@ -124,5 +143,7 @@ export function createDeviceDictationRecordingBackend(): DictationRecordingBacke
   const backend = createIndexedDbDictationRecordingBackend(indexedDB, IDBKeyRange);
   const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
   // Without Web Locks (Safari before 15.4) the store falls back to the updated-at heartbeat.
-  return locks ? { ...backend, claim: createWebLockClaim(locks) } : backend;
+  return locks
+    ? { ...backend, claim: createWebLockClaim(locks), heldByOthers: createWebLockHeldQuery(locks) }
+    : backend;
 }

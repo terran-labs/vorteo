@@ -39,6 +39,7 @@ import * as Haptics from "expo-haptics";
 import { useDictation } from "@/hooks/use-dictation";
 import type { DictationRecordingPersistence } from "@/dictation/recording-store";
 import type { SaveAudioState } from "@/hooks/use-dictation.shared";
+import { useUnsentRecordingsEntry } from "@/dictation/unsent-recordings-entry";
 import { hasFinePointer } from "@/hooks/use-fine-pointer";
 import { DictationOverlay } from "@/components/dictation-controls";
 import { RealtimeVoiceOverlay } from "@/components/realtime-voice-overlay";
@@ -583,6 +584,15 @@ function MessageInputAutoFocus({
   return null;
 }
 
+/** The composer can take an unsent recording: not recording, sending or showing a failure. */
+function computeIsDictationIdle(
+  status: string,
+  isDictating: boolean,
+  isProcessing: boolean,
+): boolean {
+  return status === "idle" && !isDictating && !isProcessing;
+}
+
 /**
  * The notice under a failed dictation says where its audio really is, so it never claims the
  * recording is safe when device storage failed.
@@ -590,10 +600,12 @@ function MessageInputAutoFocus({
 function resolveDictationPersistenceNotice(
   persistence: DictationRecordingPersistence | null,
   saveAudioState: SaveAudioState,
+  mayBeTruncated: boolean,
   t: (key: string) => string,
 ): string | undefined {
   if (saveAudioState === "preparing") return t("message.dictation.preparingAudio");
   if (saveAudioState === "ready") return t("message.dictation.audioReady");
+  if (mayBeTruncated) return t("message.dictation.truncatedNotice");
   if (!persistence) return undefined;
   // While the last writes are still landing, say nothing rather than claim either way.
   if (persistence === "saving") return undefined;
@@ -630,6 +642,7 @@ function MessageInputOverlay({
   onSaveFailedRecording,
   isSavingAudio,
   dictationPersistenceNotice,
+  otherUnsentAction,
   onRealtimeVoiceStop,
 }: {
   showDictationOverlay: boolean;
@@ -657,6 +670,7 @@ function MessageInputOverlay({
   onSaveFailedRecording: () => void;
   isSavingAudio: boolean;
   dictationPersistenceNotice: string | undefined;
+  otherUnsentAction: { label: string; onPress: () => void } | null;
   onRealtimeVoiceStop: () => void;
 }) {
   if (showDictationOverlay) {
@@ -677,6 +691,7 @@ function MessageInputOverlay({
         onSave={dictationStatus === "failed" ? onSaveFailedRecording : undefined}
         isSavingAudio={isSavingAudio}
         persistenceNotice={dictationPersistenceNotice}
+        otherUnsentAction={dictationStatus === "failed" ? otherUnsentAction : null}
       />
     );
   }
@@ -1737,6 +1752,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       saveFailedRecording,
       recordingPersistence,
       saveAudioState,
+      recordingMayBeTruncated,
+      adoptUnsentRecording,
     } = useDictation({
       client,
       onTranscript: handleDictationTranscript,
@@ -1751,8 +1768,15 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const dictationPersistenceNotice = resolveDictationPersistenceNotice(
       recordingPersistence,
       saveAudioState,
+      recordingMayBeTruncated,
       t,
     );
+    const unsentRecordings = useUnsentRecordingsEntry({
+      isComposerIdle: computeIsDictationIdle(dictationStatus, isDictating, isDictationProcessing),
+      isFullscreen,
+      adoptUnsentRecording,
+      onError: handleDictationError,
+    });
 
     const handleSaveFailedRecording = useCallback(() => {
       // Called straight from the press, so the web share sheet keeps the user's gesture.
@@ -2587,6 +2611,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
             onSaveFailedRecording={handleSaveFailedRecording}
             isSavingAudio={saveAudioState === "preparing"}
             dictationPersistenceNotice={dictationPersistenceNotice}
+            otherUnsentAction={unsentRecordings.overlayAction}
             onRealtimeVoiceStop={handleRealtimeVoiceStop}
           />
         </View>
@@ -2612,6 +2637,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         handleSaveFailedRecording,
         saveAudioState,
         dictationPersistenceNotice,
+        unsentRecordings.overlayAction,
         handleRealtimeVoiceStop,
       ],
     );
@@ -2648,6 +2674,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           fullscreen={isFullscreen}
           surface={
             <>
+              {unsentRecordings.composerNotice}
               {isFullscreen ? null : dictationPlacement.top}
               {textSurface}
             </>
@@ -2671,6 +2698,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           fullscreenControls={fullscreenControls}
           overlay={voiceOverlay}
         />
+        {unsentRecordings.sheet}
       </View>
     );
   },
