@@ -77,6 +77,13 @@ export async function readWorkspacePreviewOrigins(
     const origin = await readWorkspacePreviewOrigin(workspaceId, service, directory);
     if (origin) origins.set(service, origin);
   }
+  // The broker gives each reservation its own port, so two services naming one origin means
+  // a forged or stale file. A link must never match the wrong preview: drop every claimant.
+  const claims = new Map<string, number>();
+  for (const origin of origins.values()) claims.set(origin, (claims.get(origin) ?? 0) + 1);
+  for (const [service, origin] of origins) {
+    if ((claims.get(origin) ?? 0) > 1) origins.delete(service);
+  }
   return origins;
 }
 

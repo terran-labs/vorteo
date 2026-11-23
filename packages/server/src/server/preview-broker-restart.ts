@@ -9,8 +9,11 @@ import {
   PREVIEW_CHANNEL_DIRECTORY,
   previewServiceKey,
   type PreviewBrokerService,
+  type PreviewRestartMode,
   type PreviewRestartOutcome,
 } from "./preview-broker-status.js";
+
+export type { PreviewRestartMode };
 
 // The broker's request contract, as in docker/tailscale/preview-broker-client.mjs.
 const WORKSPACE_ID = /^wks_[a-zA-Z0-9_-]{1,80}$/;
@@ -36,8 +39,6 @@ interface BrokerReceipt {
   error?: string;
   message?: string;
 }
-
-export type PreviewRestartMode = "start" | "restart" | "stop";
 
 /** A request still waiting on the broker; it holds a concurrency slot. */
 function inFlightStatus(status: PreviewRestartOutcome["status"] | undefined): boolean {
@@ -101,11 +102,15 @@ export class PreviewBrokerRestarter {
     return inFlightStatus(this.outcome(workspaceId, scriptName)?.status);
   }
 
+  /**
+   * Whether the start slots are full. Only starts count: a stop is one cheap broker request,
+   * already limited to one per preview, and is never held behind queued starts.
+   */
   atCapacity(requester: string): boolean {
     let running = 0;
     let mine = 0;
     for (const [key, outcome] of this.outcomes) {
-      if (!inFlightStatus(outcome.status)) continue;
+      if (outcome.status !== "starting") continue;
       running += 1;
       if (this.requesters.get(key) === requester) mine += 1;
     }
@@ -127,13 +132,16 @@ export class PreviewBrokerRestarter {
     }
     const key = previewServiceKey(workspaceId, scriptName);
     if (this.inFlight(workspaceId, scriptName)) throw new Error("A restart is already running");
-    if (this.atCapacity(requester)) throw new Error("Too many preview restarts are running");
+    if (mode !== "stop" && this.atCapacity(requester)) {
+      throw new Error("Too many preview restarts are running");
+    }
     // Reserve the slot before any await, so concurrent submits see it: checking first and
     // recording after the inbox write let N simultaneous requests all pass the limits.
     const previous = this.outcomes.get(key);
     this.outcomes.set(key, {
       // A stop goes through the broker too, so it records as an explicit stop.
       status: mode === "stop" ? "stopping" : "starting",
+      mode,
       error: null,
       at: this.now() / 1000,
     });
@@ -149,12 +157,12 @@ export class PreviewBrokerRestarter {
       throw error;
     }
     this.deps.onChange(workspaceId);
-    void this.follow(key, workspaceId, scriptName, id).catch((error: unknown) => {
+    void this.follow(key, workspaceId, scriptName, mode, id).catch((error: unknown) => {
       this.deps.logger.warn(
         { err: error, workspaceId, scriptName },
         "Preview restart follow failed",
       );
-      this.record(key, workspaceId, { status: "unconfirmed", error: null });
+      this.record(key, workspaceId, { status: "unconfirmed", mode, error: null });
     });
   }
 
@@ -201,7 +209,13 @@ export class PreviewBrokerRestarter {
     return null;
   }
 
-  private async follow(key: string, workspaceId: string, service: string, id: string) {
+  private async follow(
+    key: string,
+    workspaceId: string,
+    service: string,
+    mode: PreviewRestartMode,
+    id: string,
+  ) {
     let result = await this.receipt(id);
     const deadline = this.now() + PENDING_FOLLOW_MS;
     // Same rule as the helper: re-ask with a new request while the broker says pending.
@@ -213,10 +227,10 @@ export class PreviewBrokerRestarter {
       this.record(key, workspaceId, null);
     } else if (result?.status === "failed") {
       const error = typeof result.error === "string" ? result.error.slice(0, 300) : null;
-      this.record(key, workspaceId, { status: "failed", error });
+      this.record(key, workspaceId, { status: "failed", mode, error });
     } else {
       // No receipt, or still pending: the request may yet finish. Never replay it.
-      this.record(key, workspaceId, { status: "unconfirmed", error: null });
+      this.record(key, workspaceId, { status: "unconfirmed", mode, error: null });
     }
   }
 }
@@ -267,26 +281,33 @@ export function admitPreviewRestart(input: {
   scriptName: string;
   /** The requesting session, for its share of the restart slots. */
   requester: string;
+  /** Absent means a start, as on the wire. */
+  mode?: PreviewRestartMode;
 }): PreviewRestartRefusal | null {
+  // Stopping is always safe, so review, an archived workspace and queued starts never refuse
+  // it here. The broker records the stop and withdraws the link before it looks the workspace
+  // up, and reports any part it cannot finish as the outcome. A stop keeps the password gate,
+  // the reservation check and the one-request-per-preview rule.
+  const stop = input.mode === "stop";
   if (input.credential !== "password") {
     return { code: "owner_app_only", message: "Only the owner's app can restart a preview here" };
   }
   if (!input.restarter || !input.brokerAvailable || !input.broker) {
     return { code: "broker_unavailable", message: "The preview broker is not available" };
   }
-  if (!input.workspace || input.workspace.archivedAt) {
+  if (!input.workspace || (input.workspace.archivedAt && !stop)) {
     return { code: "workspace_unavailable", message: "The workspace is archived or missing" };
   }
   if (!input.hasReservation) {
     return { code: "no_reservation", message: "This service has no managed preview link" };
   }
-  if (input.broker.needsReview) {
+  if (input.broker.needsReview && !stop) {
     return { code: "needs_review", message: "This preview needs administrator review" };
   }
   if (input.restarter.inFlight(input.workspaceId, input.scriptName)) {
     return { code: "busy", message: "A restart is already running" };
   }
-  if (input.restarter.atCapacity(input.requester)) {
+  if (!stop && input.restarter.atCapacity(input.requester)) {
     // Its own code, so the app can say the limit is reached rather than "this one is starting".
     return { code: "capacity", message: "Too many preview restarts are running" };
   }

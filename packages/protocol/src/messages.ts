@@ -4960,6 +4960,8 @@ export const WorkspaceScriptHealthSchema = z.enum(["healthy", "unhealthy"]);
  * - stopReason: "stopped", "exited", "daemon_restart", "config_changed",
  *   "process_changed" or "workspace_unavailable"; absent when the cause is unknown
  * - restart.status: "starting", "stopping", "failed" or "unconfirmed"
+ * - restart.mode: "start", "restart" or "stop", the request the outcome belongs to, so a
+ *   failed stop is not shown as a failed start; absent from older daemons
  * Times are ISO 8601. `stale` means the broker has not reported for over a minute.
  */
 export const WorkspaceScriptPreviewSchema = z.object({
@@ -4978,6 +4980,7 @@ export const WorkspaceScriptPreviewSchema = z.object({
       status: z.string(),
       error: z.string().nullable().optional(),
       at: z.string(),
+      mode: z.string().optional(),
     })
     .nullable()
     .optional(),
