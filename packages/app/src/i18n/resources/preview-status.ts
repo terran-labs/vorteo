@@ -110,6 +110,7 @@ const en = {
     didntStart: "Didn't start",
     didntStop: "Didn't stop",
     linkWithdrawn: "Link withdrawn",
+    unconfirmed: "Unconfirmed",
     notCurrent: "Not current",
   },
   actions: {

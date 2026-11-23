@@ -72,6 +72,7 @@ const BADGE_VARIANTS: Record<PreviewBadgeKey, StatusBadgeVariant> = {
   didntStart: "error",
   didntStop: "error",
   linkWithdrawn: "warning",
+  unconfirmed: "warning",
   notCurrent: "muted",
 };
 

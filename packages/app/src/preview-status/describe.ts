@@ -310,6 +310,7 @@ export type PreviewBadgeKey =
   | "didntStart"
   | "didntStop"
   | "linkWithdrawn"
+  | "unconfirmed"
   | "notCurrent";
 
 export interface PreviewBadge {
@@ -325,7 +326,8 @@ function restartBadge(
   if (restart.status === "starting") return "starting";
   if (restart.status === "stopping") return "stopping";
   if (restart.status === "failed") return stop ? "didntStop" : "didntStart";
-  if (restart.status === "unconfirmed") return stop ? "stopping" : "starting";
+  // Unknown either way: "Starting" or "Stopping" would claim what nobody confirmed.
+  if (restart.status === "unconfirmed") return "unconfirmed";
   return null;
 }
 

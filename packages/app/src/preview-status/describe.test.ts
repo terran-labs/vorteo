@@ -260,7 +260,7 @@ describe("previewBadge", () => {
       "an unconfirmed start",
       { state: "stopped", restart: { status: "unconfirmed", at: at(-1) } },
       "stopped",
-      "starting",
+      "unconfirmed",
     ],
     [
       "a failed stop",
@@ -275,6 +275,12 @@ describe("previewBadge", () => {
       "stopping",
     ],
     ["a withdrawn link on a running server", { state: "stopped" }, "running", "linkWithdrawn"],
+    [
+      "an unconfirmed stop claims nothing either",
+      { state: "ready", restart: { status: "unconfirmed", at: at(-1), mode: "stop" } },
+      "running",
+      "unconfirmed",
+    ],
     ["a state this app does not know", { state: "paused" }, "running", null],
   ])("%s", (_name, preview, lifecycle, key, dimmed = false) => {
     const badge = previewBadge(preview, lifecycle);
