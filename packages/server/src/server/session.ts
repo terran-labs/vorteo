@@ -88,6 +88,7 @@ import {
   type WorkspaceScriptListRequest,
   type WorkspaceScriptStartRequest,
   type WorkspaceScriptStopRequest,
+  type WorkspaceScriptRestartPreviewRequest,
   type CloseItemsRequest,
   type DirectorySuggestionsRequest,
   type ProjectPlacementPayload,
@@ -345,7 +346,14 @@ import {
 } from "./worktree-session.js";
 import { archiveByScope, type ActiveWorkspaceRef } from "./workspace-archive-service.js";
 import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
-import { SessionAuthorization, type DaemonPermission } from "./authorization/index.js";
+import { readWorkspacePreviewOrigin } from "./workspace-preview-origin.js";
+import { previewServiceKey, readPreviewBrokerStatus } from "./preview-broker-status.js";
+import { admitPreviewRestart, previewBrokerRestarter } from "./preview-broker-restart.js";
+import {
+  SessionAuthorization,
+  type DaemonPermission,
+  type SessionCredentialKind,
+} from "./authorization/index.js";
 import { TaskOwnerEvidenceStore } from "./authorization/task-owner-evidence.js";
 
 function resolveWorkspaceSetupRuntime(
@@ -559,6 +567,8 @@ export interface SessionOptions {
   clientId: string;
   /** From authenticated transport admission, never client request data. */
   principalId?: string | null;
+  /** How transport admission authenticated this session; never client request data. */
+  admissionCredential?: SessionCredentialKind | null;
   /** Self-declared in hello; distinguishes owner interfaces from bridges and tools. */
   clientType?: "mobile" | "browser" | "cli" | "mcp" | "hub";
   permissions: readonly DaemonPermission[];
@@ -873,6 +883,7 @@ export class Session {
   private readonly authorization: SessionAuthorization;
   private readonly ownerEvidence: TaskOwnerEvidenceStore;
   private readonly principalId: string | null | undefined;
+  readonly admissionCredential: SessionCredentialKind | null | undefined;
   private readonly clientType: SessionOptions["clientType"];
   private appVersion: string | null;
   private clientCapabilities: ReadonlySet<ClientCapability>;
@@ -1074,6 +1085,7 @@ export class Session {
     this.servicePrincipals = options.servicePrincipals ?? null;
     this.principalLabel = options.principalLabel;
     this.principalId = options.principalId;
+    this.admissionCredential = options.admissionCredential;
     this.clientType = options.clientType;
     this.ownerEvidence = new TaskOwnerEvidenceStore(paseoHome);
 
@@ -3984,6 +3996,8 @@ export class Session {
         return this.handleWorkspaceScriptStartRequest(msg);
       case "workspace.script.stop.request":
         return this.handleWorkspaceScriptStopRequest(msg);
+      case "workspace.script.restart_preview.request":
+        return this.handleWorkspaceScriptRestartPreviewRequest(msg);
       default:
         return this.terminalController.dispatch(msg, this.delivery);
     }
@@ -9416,6 +9430,45 @@ export class Session {
           error: error instanceof Error ? error.message : "Failed to stop workspace script",
         },
       });
+    }
+  }
+
+  private async handleWorkspaceScriptRestartPreviewRequest(
+    request: WorkspaceScriptRestartPreviewRequest,
+  ): Promise<void> {
+    const { requestId, workspaceId, scriptName } = request;
+    const respond = (accepted: boolean, refusalCode: string | null, error: string | null) =>
+      this.emit({
+        type: "workspace.script.restart_preview.response",
+        payload: { requestId, workspaceId, scriptName, accepted, refusalCode, error },
+      });
+    try {
+      const restarter = previewBrokerRestarter();
+      const refusal = admitPreviewRestart({
+        credential: this.admissionCredential ?? null,
+        restarter,
+        brokerAvailable: (await restarter?.available()) ?? false,
+        workspace: (await this.workspaceRegistry.get(workspaceId)) ?? null,
+        hasReservation: readWorkspacePreviewOrigin(workspaceId, scriptName) !== null,
+        broker:
+          (await readPreviewBrokerStatus())?.services.get(
+            previewServiceKey(workspaceId, scriptName),
+          ) ?? null,
+        workspaceId,
+        scriptName,
+      });
+      if (refusal || !restarter) {
+        respond(false, refusal?.code ?? "broker_unavailable", refusal?.message ?? null);
+        return;
+      }
+      await restarter.submit(workspaceId, scriptName, request.mode ?? "start");
+      respond(true, null, null);
+    } catch (error) {
+      respond(
+        false,
+        null,
+        error instanceof Error ? error.message : "Failed to restart the preview",
+      );
     }
   }
 

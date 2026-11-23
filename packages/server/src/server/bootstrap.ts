@@ -266,6 +266,8 @@ import { createServiceProxySubsystem, type ServiceProxySubsystem } from "./servi
 import { releaseWorkspaceServicePortPlan } from "./workspace-service-port-registry.js";
 import { ScriptHealthMonitor } from "./script-health-monitor.js";
 import { createScriptStatusEmitter } from "./script-status-projection.js";
+import { installPreviewBrokerRestarter, PreviewBrokerRestarter } from "./preview-broker-restart.js";
+import { watchPreviewBrokerStatus } from "./preview-broker-status.js";
 import { WorkspaceScriptRuntimeStore } from "./workspace-script-runtime-store.js";
 import { createWorkspaceScriptsService } from "./session/workspace-scripts/workspace-scripts-service.js";
 import { assertWorkspaceAutomationAllowedForWorkspace } from "./workspace-automation-gate.js";
@@ -896,21 +898,34 @@ export async function createPaseoDaemon(
   });
   let wsServer: VoiceAssistantWebSocketServer | null = null;
   let serviceProxyListenTarget: ListenTarget | null = null;
+  const emitScriptStatus = createScriptStatusEmitter({
+    sessions: () =>
+      wsServer?.listSessions().map((session) => ({
+        emit: (message) => session.emitServerMessage(message),
+      })) ?? [],
+    serviceProxy,
+    runtimeStore: scriptRuntimeStore,
+    daemonPort: () => (boundListenTarget?.type === "tcp" ? boundListenTarget.port : null),
+    resolveWorkspaceDirectory: async (workspaceId) =>
+      (await workspaceRegistry?.get(workspaceId))?.cwd ?? null,
+    logger,
+    serviceProxyPublicBaseUrl,
+    resolveHealth: (hostname) => scriptHealthMonitor.getHealthForHostname(hostname),
+  });
   const scriptHealthMonitor = new ScriptHealthMonitor({
     serviceProxy,
-    onChange: createScriptStatusEmitter({
-      sessions: () =>
-        wsServer?.listSessions().map((session) => ({
-          emit: (message) => session.emitServerMessage(message),
-        })) ?? [],
-      serviceProxy,
-      runtimeStore: scriptRuntimeStore,
-      daemonPort: () => (boundListenTarget?.type === "tcp" ? boundListenTarget.port : null),
-      resolveWorkspaceDirectory: async (workspaceId) =>
-        (await workspaceRegistry?.get(workspaceId))?.cwd ?? null,
+    onChange: emitScriptStatus,
+  });
+  // Managed preview state reaches clients when the broker reports a change or a
+  // restart this daemon submitted moves on, not only when a health probe changes.
+  installPreviewBrokerRestarter(
+    new PreviewBrokerRestarter({
       logger,
-      serviceProxyPublicBaseUrl,
+      onChange: (workspaceId) => void emitScriptStatus(workspaceId),
     }),
+  );
+  const stopPreviewBrokerWatch = watchPreviewBrokerStatus({
+    onWorkspaceChanged: (workspaceId) => void emitScriptStatus(workspaceId),
   });
   const handleBranchChange = createBranchChangeRouteHandler({
     serviceProxy,
@@ -2639,6 +2654,8 @@ export async function createPaseoDaemon(
     unsubscribePluginProviders();
     workspaceReconciliation.dispose();
     scriptHealthMonitor.stop();
+    stopPreviewBrokerWatch();
+    installPreviewBrokerRestarter(null);
     step("quota reserve polling");
     await quotaReservePolling.stop();
     await providerUsageService.stopHistorySampling();

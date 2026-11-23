@@ -28,23 +28,30 @@ export async function resolveSessionAdmission(input: {
             agentGrants: admission.grants,
             principalLabel: admission.label,
             expiresAt: admission.expiresAt,
+            credential: "service",
           },
         }
       : { rejection: "incorrect_password" };
   }
   if (!passwordHash) {
-    return { admission: { principalId: "owner", permissions: OWNER_PERMISSIONS } };
+    return {
+      admission: { principalId: "owner", permissions: OWNER_PERMISSIONS, credential: "open" },
+    };
   }
   if (!credential) {
     return { rejection: "password_required" };
   }
   if (credential.kind === "localCredential") {
     if (localCredential && matchesLocalCredential(localCredential, credential.token)) {
-      return { admission: { principalId: "owner", permissions: OWNER_PERMISSIONS } };
+      return {
+        admission: { principalId: "owner", permissions: OWNER_PERMISSIONS, credential: "local" },
+      };
     }
     return { rejection: "incorrect_password" };
   }
   return (await compare(credential.password, passwordHash))
-    ? { admission: { principalId: "owner", permissions: OWNER_PERMISSIONS } }
+    ? {
+        admission: { principalId: "owner", permissions: OWNER_PERMISSIONS, credential: "password" },
+      }
     : { rejection: "incorrect_password" };
 }
