@@ -613,10 +613,13 @@ export function WorkspaceScriptsButton({
               ) : null}
             </View>
           </DropdownMenuTrigger>
+          {/* Scrolls within the window: a long list of scripts, or previews with a status line
+              each, otherwise runs past the bottom, leaving rows the owner cannot reach. */}
           <DropdownMenuContent
             align="end"
             minWidth={200}
             maxWidth={280}
+            scrollable
             testID="workspace-scripts-menu"
           >
             {scriptRows}
