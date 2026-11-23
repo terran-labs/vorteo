@@ -1,5 +1,8 @@
 import { factoryProjectConfigure, factoryProjectEnable } from "@getpaseo/server/factory-project";
 
+/** The `rpc_error` code, and log code, of a refused owner-only Factory write. */
+export const FACTORY_OWNER_ONLY_CODE = "factory_owner_only";
+
 /**
  * `factory.project.configure` fields that decide what Factory launches: a role's own launch
  * (`provider`, `profileId`, which sets the Foreman's preset among others), the three stage presets

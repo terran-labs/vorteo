@@ -6886,16 +6886,26 @@ test("a CLI or other non-app client cannot write daemon-only labels (#360)", asy
   );
 });
 
-// One row per owner-only Factory writer, plus the calls role threads still make through the CLI.
+// Every owner-only Factory field, refused from the CLI and accepted from the app, plus the calls
+// role threads still make through the CLI.
+const FACTORY_OWNER_ONLY_WRITES = [
+  ["factory.project.enable", { adopt: { "factory-intake": "agent-1" } }],
+  ["factory.project.configure", { role: "factory-intake", provider: "claude" }],
+  ["factory.project.configure", { role: "factory-intake", profileId: "strong" }],
+  ["factory.project.configure", { plannerProfileId: "strong" }],
+  ["factory.project.configure", { workerProfileId: "strong" }],
+  ["factory.project.configure", { reviewerProfileId: "strong" }],
+  ["factory.project.configure", { issueAgents: "host" }],
+] as const;
 test.each([
-  ["cli", "factory.project.enable", { adopt: { "factory-intake": "agent-1" } }, false],
-  ["cli", "factory.project.configure", { role: "factory-intake", profileId: "strong" }, false],
-  ["cli", "factory.project.configure", { workerProfileId: "strong" }, false],
+  ...FACTORY_OWNER_ONLY_WRITES.map(([method, fields]) => ["cli", method, fields, false] as const),
+  ...FACTORY_OWNER_ONLY_WRITES.map(
+    ([method, fields]) => ["browser", method, fields, true] as const,
+  ),
+  ["mobile", "factory.project.enable", { adopt: { "factory-intake": "agent-1" } }, true],
   ["cli", "factory.project.enable", { repository: "acme/app" }, true],
   ["cli", "factory.project.configure", { planning: false }, true],
   ["cli", "factory.project.status.set", { role: "factory-intake", line: "Idle" }, true],
-  ["browser", "factory.project.configure", { workerProfileId: "strong" }, true],
-  ["mobile", "factory.project.enable", { adopt: { "factory-intake": "agent-1" } }, true],
 ] as const)(
   "a %s client calling %s with %j reaches the Factory: %s (#360)",
   async (clientType, method, fields, allowed) => {
@@ -6913,8 +6923,13 @@ test.each([
       input: { projectId: "prj_app", ...fields },
     });
     expect(invokePluginRpc).toHaveBeenCalledTimes(allowed ? 1 : 0);
-    expect(messages.map((message) => message.type)).toContain(
-      allowed ? "plugin.rpc.invoke.response" : "rpc_error",
-    );
+    const errors = messages.filter((message) => message.type === "rpc_error");
+    if (allowed) {
+      expect(errors).toEqual([]);
+      return;
+    }
+    // A typed refusal the caller can act on, not a generic handler failure or an error activity.
+    expect(errors.map((message) => message.payload.code)).toEqual(["factory_owner_only"]);
+    expect(messages.some((message) => message.type === "activity_log")).toBe(false);
   },
 );
