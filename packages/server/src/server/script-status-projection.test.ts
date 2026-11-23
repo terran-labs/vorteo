@@ -84,8 +84,15 @@ async function loadConfig(repoRoot: string): Promise<PaseoConfig | null> {
 
 describe("script-status-projection", () => {
   it("projects broker URLs only for running services and preserves the local route", async () => {
+    const now = Date.now() / 1000;
     const managedPreviews = {
-      brokerStatus: null,
+      brokerStatus: {
+        publishedAt: now,
+        lastVisitAt: now,
+        services: new Map([
+          ["workspace.web", { workspaceId: "workspace", service: "web", desired: "stopped" }],
+        ]),
+      },
       origins: new Map([["web", "https://preview.example.ts.net:32780"]]),
     };
     const runtimeStore = new WorkspaceScriptRuntimeStore();
@@ -117,7 +124,10 @@ describe("script-status-projection", () => {
       terminalId: null,
       exitCode: 0,
     });
-    expect((await buildPayloads(input))[0].publicProxyUrl).toBeNull();
+    const stopped = (await buildPayloads(input))[0];
+    expect(stopped.publicProxyUrl).toBeNull();
+    // A stopped preview still names its reserved origin, so a gallery link can find it.
+    expect(stopped.preview?.origin).toBe("https://preview.example.ts.net:32780");
   });
 
   it("defaults omitted workspace script terminal ids to null", () => {

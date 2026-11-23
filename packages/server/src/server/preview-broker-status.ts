@@ -123,7 +123,8 @@ function parsePreviewBrokerStatus(json: unknown): PreviewBrokerStatus | null {
 }
 
 export interface PreviewRestartOutcome {
-  status: "starting" | "failed" | "unconfirmed";
+  /** "starting" and "stopping" are in flight; the rest are finished. */
+  status: "starting" | "stopping" | "failed" | "unconfirmed";
   error: string | null;
   at: number;
 }
