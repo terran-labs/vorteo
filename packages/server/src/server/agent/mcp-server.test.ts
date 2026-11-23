@@ -6316,7 +6316,8 @@ describe("update_agent MCP tool", () => {
 });
 
 describe("preset fence (#360)", () => {
-  const worker = { id: "worker-preset", name: "Worker", provider: "codex", model: "gpt-5.4" };
+  const workerPreset = { id: "worker-preset", name: "Worker", provider: "codex", model: "gpt-5.4" };
+  const worker = workerPreset;
   const supervisor = {
     id: "supervisor",
     labels: {},
@@ -6360,6 +6361,27 @@ describe("preset fence (#360)", () => {
     ];
     for (const [target, request, reason] of cases)
       expect(presetFenceReason(supervisor, target, request)).toBe(reason);
+    // The supervisor's worker is held to the same preset (the worker hop, #360 review B1).
+    const workerThread = agents.child!;
+    expect(
+      presetFenceReason(
+        workerThread,
+        null,
+        { kind: "launch", profileId: "other-preset" },
+        supervisor,
+      ),
+    ).toBe("preset-required");
+    expect(
+      presetFenceReason(
+        workerThread,
+        null,
+        { kind: "launch", profileId: workerPreset.id },
+        supervisor,
+      ),
+    ).toBeNull();
+    expect(
+      presetFenceReason(workerThread, null, { kind: "launch", profileId: "other-preset" }),
+    ).toBeNull();
     expect(presetFenceReason(agents.other!, null, { kind: "launch", profileId: "x" })).toBeNull();
   });
 

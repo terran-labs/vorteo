@@ -7,8 +7,10 @@ import { LEAD_LAUNCH_ID_LABEL, LEAD_LAUNCH_REQUESTED_BY_LABEL } from "./model.js
 /**
  * The preset fence (#360, slice B). A coordinator launched with a worker preset may start or
  * reshape threads only on that preset, or exactly as the owner confirmed through
- * request_lead_launch. MCP `create_agent` already refuses; every other agent-initiated path
- * checks here.
+ * request_lead_launch. The same holds for every thread beneath it: a worker preset never has a
+ * worker of its own, so without this a coordinator could ask its worker to launch any preset.
+ * MCP `create_agent` from the coordinator itself already refuses; every other agent-initiated
+ * path checks here.
  *
  * Report-only for now: a would-refuse decision is logged and the operation proceeds, so current
  * flows can be measured before they break. Slice C sets PRESET_FENCE_ENFORCED after Builds
@@ -19,6 +21,7 @@ export const PRESET_FENCE_MESSAGE = "Preset fence would refuse";
 const PRESET_FENCE_CODE = "preset_fence";
 
 export type PresetFencePath =
+  | "create_agent"
   | "remote_create_agent"
   | "session_create_agent"
   | "update_agent"
@@ -54,13 +57,38 @@ export type PresetFenceRequest =
       labels?: Record<string, string> | null;
     };
 
-/** Why the fence would refuse, or null. Pure, so the case table can cover every path. */
+/** Parent links followed upward; deeper chains are treated as ungoverned and not walked. */
+const MAX_SUPERVISOR_DEPTH = 8;
+
+/**
+ * The nearest thread, starting with the caller and following parent labels, whose launch carries
+ * a worker preset. Confirmed leads have no parent label, so they answer to their own preset.
+ */
+export function governingSupervisor(
+  caller: FenceAgent,
+  getAgent: (agentId: string) => FenceAgent | null | undefined,
+): FenceAgent | null {
+  let current: FenceAgent | null | undefined = caller;
+  for (let depth = 0; current && depth <= MAX_SUPERVISOR_DEPTH; depth += 1) {
+    if (current.config.profileLaunch?.worker) return current;
+    const parentId: string | undefined = current.labels[PARENT_AGENT_ID_LABEL];
+    current = parentId ? getAgent(parentId) : null;
+  }
+  return null;
+}
+
+/**
+ * Why the fence would refuse, or null. Pure, so the case table can cover every path. Launches by
+ * the supervisor or any thread beneath it must use the supervisor's worker preset and stay
+ * attached, which keeps a builder's reviewer subagent on that preset allowed.
+ */
 export function presetFenceReason(
   caller: FenceAgent,
   target: FenceAgent | null,
   request: PresetFenceRequest,
+  supervisor: FenceAgent | null = caller.config.profileLaunch?.worker ? caller : null,
 ): string | null {
-  const worker = caller.config.profileLaunch?.worker;
+  const worker = supervisor?.config.profileLaunch?.worker;
   if (!worker) return null;
   if (request.kind === "launch") {
     if (request.profileId !== worker.id) return "preset-required";
@@ -95,7 +123,8 @@ export function checkPresetFence(
     if (!caller) return;
     const target =
       request.kind === "change" ? (dependencies.getAgent(request.targetAgentId) ?? null) : null;
-    reason = presetFenceReason(caller, target, request);
+    const supervisor = governingSupervisor(caller, dependencies.getAgent);
+    reason = presetFenceReason(caller, target, request, supervisor);
     if (!reason) return;
     fields = {
       code: PRESET_FENCE_CODE,
@@ -103,7 +132,8 @@ export function checkPresetFence(
       reason,
       enforced: PRESET_FENCE_ENFORCED,
       callerAgentId: caller.id,
-      workerProfileId: caller.config.profileLaunch?.worker?.id ?? null,
+      ...(supervisor && supervisor.id !== caller.id ? { supervisorAgentId: supervisor.id } : {}),
+      workerProfileId: supervisor?.config.profileLaunch?.worker?.id ?? null,
       ...(request.kind === "launch"
         ? { requestedProfileId: request.profileId ?? null, detached: request.detached ?? false }
         : { targetAgentId: request.targetAgentId }),

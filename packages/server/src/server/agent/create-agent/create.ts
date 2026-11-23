@@ -51,6 +51,7 @@ import { normalizeClientMessageId, resolveClientMessageId } from "../../client-m
 import { resolveRequiredProviderModel, type ResolvedProviderModel } from "../mcp-shared.js";
 import { resolveCreateAgentIntent } from "./intent.js";
 import { ProfileLaunchError, resolveProfileLaunch } from "./profile.js";
+import { checkPresetFence } from "../lead-launch/fence.js";
 import {
   LEAD_LAUNCH_ID_LABEL,
   LEAD_LAUNCH_REQUESTED_BY_LABEL,
@@ -383,6 +384,7 @@ async function admitAndCreateAgent(
 ) {
   if (input.kind === "mcp" && input.leadLaunch?.phase === "prepare")
     throw new Error("A lead launch preview never creates a thread.");
+  fenceInheritedWorkerLaunch(dependencies, input);
   const admitted = await admitAgent(dependencies, input);
   if (input.kind === "mcp" && input.leadLaunch?.phase === "launch") {
     await assertConfirmedLeadLaunch(
@@ -513,9 +515,28 @@ async function assertConfirmedLeadLaunch(
     );
   if (!sameBinding(resolvedBinding(input, resolved), stored.binding))
     throw new WorkerLaunchRefusal(
-      "The preset or account changed after the owner confirmed this launch. Ask again.",
+      "The preset or its settings changed after the owner confirmed this launch, so nothing was started. Ask again with request_lead_launch.",
       "lead-binding-changed",
     );
+}
+
+/**
+ * A caller beneath a supervisor with a worker preset has no worker preset of its own, so the
+ * refusal in resolveMcpProfileInput does not reach it. The preset fence reports it instead
+ * (#360, log-only until slice C). The supervisor's own launches are refused there and skipped here.
+ */
+function fenceInheritedWorkerLaunch(
+  dependencies: CreateAgentCommandDependencies,
+  input: CreateAgentCommandInput,
+): void {
+  if (input.kind !== "mcp" || !input.callerAgentId || input.leadLaunch) return;
+  if (dependencies.agentManager.getAgent(input.callerAgentId)?.config.profileLaunch?.worker) return;
+  checkPresetFence(
+    { logger: dependencies.logger, getAgent: (id) => dependencies.agentManager.getAgent(id) },
+    "create_agent",
+    input.callerAgentId,
+    { kind: "launch", profileId: input.profileId ?? null, detached: input.detached ?? false },
+  );
 }
 
 /** Admission, preset resolution and policy, without registering the agent. */

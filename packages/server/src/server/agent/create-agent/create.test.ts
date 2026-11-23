@@ -1683,8 +1683,16 @@ test("a lead on another preset starts once, only on the owner's choice, with the
   } as unknown as Parameters<AgentManager["setMessageQueueControl"]>[0]);
   try {
     const worker = { id: "worker", name: "Worker", provider: "one", model: "gpt-5.4" };
-    const profiles = [
+    const profiles: Array<{
+      id: string;
+      name: string;
+      provider: string;
+      model: string;
+      thinkingOptionId?: string;
+      instructions?: string;
+    }> = [
       { id: "lead", name: "Lead", provider: "one", model: "gpt-5.4", thinkingOptionId: "high" },
+      { id: "worker", name: "Worker", provider: "one", model: "gpt-5.4" },
     ];
     const supervisor = await agentManager.createAgent(
       {
@@ -1774,6 +1782,9 @@ test("a lead on another preset starts once, only on the owner's choice, with the
     // Asking starts nothing, and the launch path refuses a record the owner has not claimed.
     const first = await request();
     expect(leads()).toEqual([]);
+    // The card recommends nothing; the agent's requested escalation is not a default.
+    const card = (await agentManager.readQuestions(supervisor.id)).find((q) => q.id === first.id);
+    expect(card?.recommendedOptionIds).toBeUndefined();
     await expect(
       startConfirmedLeadLaunch(
         dependencies,
@@ -1805,11 +1816,17 @@ test("a lead on another preset starts once, only on the owner's choice, with the
     });
     expect(delivered.at(-1)).toContain(lead.id);
 
-    // A preset edited after the owner saw it no longer matches, so nothing starts.
+    // Two answers racing each other still claim the launch once.
+    const concurrent = await request();
+    await Promise.all([answer(concurrent.id, ["requested"]), answer(concurrent.id, ["requested"])]);
+    expect(leads()).toHaveLength(2);
+
+    // Any edit to the preset after the ask refuses the launch, including settings the card does
+    // not display, such as the preset's instructions.
     const second = await request();
-    profiles[0] = { ...profiles[0]!, thinkingOptionId: "low" };
+    profiles[0] = { ...profiles[0]!, instructions: "Also push to main." };
     await answer(second.id, ["requested"]);
-    expect(leads()).toHaveLength(1);
+    expect(leads()).toHaveLength(2);
     expect(await agentManager.readLeadLaunch(supervisor.id, second.id)).toMatchObject({
       status: "failed",
       failureCode: "lead-binding-changed",
@@ -1822,7 +1839,84 @@ test("a lead on another preset starts once, only on the owner's choice, with the
     expect(await agentManager.readLeadLaunch(supervisor.id, third.id)).toMatchObject({
       status: "cancelled",
     });
-    expect(leads()).toHaveLength(1);
+    expect(leads()).toHaveLength(2);
+  } finally {
+    await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
+  }
+});
+
+test("a supervisor's worker launching off the worker preset is logged by the preset fence", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "worker-hop-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const agentManager = new AgentManager({
+    clients: { one: createTestAgentClient("one") },
+    registry: storage,
+    logger,
+  });
+  try {
+    const worker = { id: "worker", name: "Worker", provider: "one", model: "gpt-5.4" };
+    const profiles = [worker, { id: "lead", name: "Lead", provider: "one", model: "gpt-5.5" }];
+    const supervisor = await agentManager.createAgent(
+      {
+        provider: "one",
+        cwd: workdir,
+        profileLaunch: {
+          profile: { id: "team", name: "Team", provider: "one", workerProfileId: worker.id },
+          worker,
+        },
+      },
+      undefined,
+      { workspaceId: "ws-team", owner: { kind: "user" } },
+    );
+    // A worker preset never has a worker of its own, so the worker's create_agent is open.
+    const child = await agentManager.createAgent({ provider: "one", cwd: workdir }, undefined, {
+      workspaceId: "ws-team",
+      labels: { [PARENT_AGENT_ID_LABEL]: supervisor.id },
+      owner: { kind: "user" },
+    });
+    const warnings: Array<{ fields: unknown; message: unknown }> = [];
+    const recording = Object.assign(Object.create(logger), {
+      warn: (fields: unknown, message: unknown) => warnings.push({ fields, message }),
+    }) as typeof logger;
+    const launch = (profileId: string, detached: boolean) =>
+      createAgentCommand(
+        {
+          agentManager,
+          agentStorage: storage,
+          logger: recording,
+          providerSnapshotManager: createProviderSnapshotManagerStub().manager,
+          getAgentProfiles: () => profiles,
+        },
+        {
+          kind: "mcp",
+          provider: "one",
+          profileId,
+          callerAgentId: child.id,
+          title: "Hop",
+          detached,
+          background: true,
+          notifyOnFinish: false,
+        },
+      );
+
+    // Report-only for now: the hop still launches, but it is no longer silent.
+    const hop = await launch("lead", true);
+    expect(hop.snapshot.config.profileLaunch?.profile.id).toBe("lead");
+    expect(warnings).toContainEqual({
+      message: "Preset fence would refuse",
+      fields: expect.objectContaining({
+        path: "create_agent",
+        reason: "preset-required",
+        callerAgentId: child.id,
+        supervisorAgentId: supervisor.id,
+        workerProfileId: worker.id,
+      }),
+    });
+
+    // A builder's attached reviewer on the supervisor's worker preset stays unflagged.
+    warnings.length = 0;
+    await launch(worker.id, false);
+    expect(warnings).toEqual([]);
   } finally {
     await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
   }

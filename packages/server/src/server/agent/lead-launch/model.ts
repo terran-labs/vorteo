@@ -32,8 +32,14 @@ export const LeadLaunchBindingSchema = z.object({
   workspaceId: z.string(),
   title: z.string().nullable(),
   promptDigest: z.string(),
-  /** The preset's resolved instructions, so an edited preset no longer matches. */
-  instructionsDigest: z.string(),
+  /** The worker preset the lead itself must use, or null when it may launch any preset. */
+  workerPresetId: z.string().nullable(),
+  /**
+   * Digest of the whole resolved launch configuration: instructions, tool access and policy, MCP
+   * servers, provider options, skills, quota reserve and the lead's own worker preset included.
+   * Any preset edit between the ask and the click changes it.
+   */
+  configDigest: z.string(),
 });
 export type LeadLaunchBinding = z.infer<typeof LeadLaunchBindingSchema>;
 
@@ -101,10 +107,31 @@ export function promptDigest(prompt: string): string {
   return createHash("sha256").update(prompt.trim()).digest("hex");
 }
 
-function digest(text: string | undefined): string {
-  return createHash("sha256")
-    .update(text ?? "")
-    .digest("hex");
+/** JSON with object keys sorted at every level, so equal values always serialize the same. */
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, entry: unknown) =>
+    entry && typeof entry === "object" && !Array.isArray(entry)
+      ? Object.fromEntries(
+          Object.entries(entry as Record<string, unknown>).sort(([left], [right]) =>
+            left.localeCompare(right),
+          ),
+        )
+      : entry,
+  );
+}
+
+/**
+ * The resolved configuration's digest. Only two fields are timestamps of the resolution itself
+ * and differ between the ask and the click without any edit: the skill snapshot's `capturedAt`
+ * and the quota reserve state's `changedAt`. They are excluded; everything else is bound.
+ */
+export function launchConfigDigest(config: AgentSessionConfig): string {
+  const stable = structuredClone(config) as unknown as Record<string, unknown>;
+  const skills = stable.skillSnapshot as Record<string, unknown> | undefined;
+  if (skills) delete skills.capturedAt;
+  const reserve = stable.quotaReserve as { state?: Record<string, unknown> } | undefined;
+  if (reserve?.state) delete reserve.state.changedAt;
+  return createHash("sha256").update(canonicalJson(stable)).digest("hex");
 }
 
 function sortedRecord(value: Record<string, unknown> | undefined): Record<string, unknown> {
@@ -131,12 +158,13 @@ export function launchBinding(params: {
     workspaceId: params.workspaceId,
     title: config.title ?? null,
     promptDigest: promptDigest(params.prompt),
-    instructionsDigest: digest(config.systemPrompt),
+    workerPresetId: config.profileLaunch?.worker?.id ?? null,
+    configDigest: launchConfigDigest(config),
   };
 }
 
 function canonical(binding: LeadLaunchBinding): string {
-  return JSON.stringify({ ...binding, featureValues: sortedRecord(binding.featureValues) });
+  return canonicalJson(binding);
 }
 
 export function sameBinding(left: LeadLaunchBinding, right: LeadLaunchBinding): boolean {
@@ -165,17 +193,19 @@ function differences(binding: LeadLaunchBinding, worker: LeadLaunchBinding | nul
   return lines;
 }
 
+/** What the lead may do, in plain words. */
 function describe(binding: LeadLaunchBinding): string {
   const features = Object.entries(binding.featureValues)
     .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
     .join(", ");
   return [
-    `preset ${binding.profileId ?? "none"}`,
-    `account ${binding.provider}`,
-    `model ${binding.model ?? "default"}`,
-    `thinking ${binding.thinkingOptionId ?? "default"}`,
-    `permission mode ${binding.modeId ?? "default"}`,
+    `Preset ${binding.profileId ?? "none"} on account ${binding.provider}`,
+    `model ${binding.model ?? "default"}, thinking ${binding.thinkingOptionId ?? "default"}`,
+    `permission mode ${binding.modeId ?? "provider default"}`,
     `features ${features || "none"}`,
+    binding.workerPresetId
+      ? `may start its own workers only on preset ${binding.workerPresetId}`
+      : "may start other agents on any preset",
   ].join("; ");
 }
 
@@ -183,9 +213,14 @@ function clip(text: string, limit: number): string {
   return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
 }
 
+/** Agent text on one line, so it cannot imitate the daemon's own lines on the card. */
+function oneLine(text: string, limit: number): string {
+  return clip(text.replace(/\s+/g, " ").trim(), limit);
+}
+
 /**
- * The daemon-built confirmation. Every word the owner reads, except the quoted reason, comes from
- * the stored record. There is no defaultAppliesAfter and no Other answer.
+ * The daemon-built confirmation. Every word the owner reads, except the quoted agent text, comes
+ * from the stored record. There is no defaultAppliesAfter, no recommendation and no Other answer.
  */
 export function leadLaunchQuestion(params: {
   record: LeadLaunchRecord;
@@ -198,21 +233,23 @@ export function leadLaunchQuestion(params: {
   const requested = record.options[0]!;
   const changed = differences(requested.binding, params.workerBinding);
   const why = [
-    `${params.callerTitle} (${record.callerAgentId}) asks to start a lead thread that is not its worker preset. Nothing starts until you choose.`,
+    `${oneLine(params.callerTitle, 80)} (${record.callerAgentId}) asks to start a lead thread that is not its worker preset. Nothing starts until you choose; no option is recommended.`,
     `Requested: ${describe(requested.binding)}.`,
     changed.length ? `Differs from the worker preset: ${changed.join("; ")}.` : "",
-    `The agent's reason, in its own words: "${clip(record.reason, 400)}"`,
+    `The agent's reason, in its own words: "${oneLine(record.reason, 400)}"`,
+    `The lead's first task, in the agent's words (excerpt): "${oneLine(record.initialPrompt, 500)}"`,
   ]
     .filter(Boolean)
     .join("\n");
   return {
     id: record.id,
     question: clip(
-      `Start "${record.title}" in ${params.workspaceLabel} on ${requested.binding.profileId ?? requested.binding.provider}?`,
+      `Start "${oneLine(record.title, 60)}" in ${params.workspaceLabel} on ${requested.binding.profileId ?? requested.binding.provider}?`,
       500,
     ),
     why: clip(why, 2000),
-    recommendedDefault: requested.label,
+    // The card recommends nothing: the agent's requested escalation is not a default.
+    recommendedDefault: "No recommendation. Choose one of the options.",
     input: {
       kind: "choice",
       allowOther: false,
@@ -225,7 +262,6 @@ export function leadLaunchQuestion(params: {
         { id: DECLINE_OPTION_ID, label: "Don't start" },
       ],
     },
-    recommendedOptionIds: [requested.optionId],
     askedAt: params.now,
     askedBy: LEAD_LAUNCH_ASKED_BY,
     status: "open",
