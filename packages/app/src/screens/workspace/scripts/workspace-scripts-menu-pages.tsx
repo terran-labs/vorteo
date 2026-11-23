@@ -19,6 +19,7 @@ import type {
 import { ExitCodeBadge, routeLabelKey, ScriptIcon } from "./script-marks";
 import {
   previewBlocksStart,
+  previewRequestInFlight,
   previewStartLabelKey,
   runningPreviewListLabel,
   usePreviewDescription,
@@ -336,6 +337,9 @@ function RunningScriptPage({
   const { selected, targets } = actions.resolveLinks(script);
   const { stop, restart, copyUrl, selectRoute } = actions;
   const preview = usePreviewDescription(script, actions.isManagedPreview(script));
+  // Disabled while any request for this preview is pending, here or still with the broker.
+  const stopOrRestartBlocked =
+    actions.isStopPending || actions.isPreviewPending || previewRequestInFlight(script.preview);
 
   const handleOpenService = useCallback(() => {
     if (!selected) return;
@@ -382,7 +386,7 @@ function RunningScriptPage({
       ) : null}
       <DropdownMenuItem
         leading={RESTART_ICON}
-        disabled={actions.isStopPending || actions.isPreviewPending}
+        disabled={stopOrRestartBlocked}
         description={preview?.line}
         descriptionFull={preview ? !preview.truncate : false}
         onSelect={handleRestart}
@@ -392,7 +396,7 @@ function RunningScriptPage({
       </DropdownMenuItem>
       <DropdownMenuItem
         leading={STOP_ICON}
-        disabled={actions.isStopPending}
+        disabled={stopOrRestartBlocked}
         closeOnSelect={false}
         onSelect={handleStop}
         testID={`workspace-script-${scriptName}-stop`}

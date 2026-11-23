@@ -76,6 +76,10 @@ export function useWorkspaceScriptActions({
   const previewRestartSupported = useSessionStore(
     (state) => state.sessions[serverId]?.serverInfo?.features?.previewRestart === true,
   );
+  // A daemon that can stop previews through the broker records an owner's stop as a stop.
+  const previewStopSupported = useSessionStore(
+    (state) => state.sessions[serverId]?.serverInfo?.features?.previewStop === true,
+  );
   // Named by the host's own label, so the refusal is true for Host and Dev workspaces alike.
   const hostLabel = useHosts().find((host) => host.serverId === serverId)?.label ?? null;
   const isManagedPreview = useCallback(
@@ -87,7 +91,7 @@ export function useWorkspaceScriptActions({
   // A reserved preview starts through the broker, so the link stays the same and the broker
   // records the start; a plain start would bring the server up with its link still withdrawn.
   const previewMutation = useMutation({
-    mutationFn: async (input: { scriptName: string; mode: "start" | "restart" }) => {
+    mutationFn: async (input: { scriptName: string; mode: "start" | "restart" | "stop" }) => {
       if (!client) throw new Error(t("common.errors.daemonClientUnavailable"));
       const result = await client.restartWorkspaceScriptPreview(
         workspaceId,
@@ -106,8 +110,9 @@ export function useWorkspaceScriptActions({
   const previewRefusal = (code: string | null | undefined, error: string | null): string => {
     switch (code) {
       case "busy":
-        // One code covers this preview and the global limit, so one message covers both.
         return t("previewStatus.refusals.busy");
+      case "capacity":
+        return t("previewStatus.refusals.capacity");
       case "workspace_unavailable":
         return t("previewStatus.refusals.archived");
       case "needs_review":
@@ -210,6 +215,19 @@ export function useWorkspaceScriptActions({
     [scripts, isManagedPreview],
   );
 
+  // A reserved preview stops through the broker, so the stop is recorded as one and its
+  // outcome names mode "stop". Older daemons without previewStop keep the terminal stop.
+  const stop = useCallback(
+    (scriptName: string) => {
+      if (previewStopSupported && managedScript(scriptName)) {
+        startPreview({ scriptName, mode: "stop" });
+      } else {
+        stopScript(scriptName);
+      }
+    },
+    [previewStopSupported, managedScript, startPreview, stopScript],
+  );
+
   const start = useCallback(
     (scriptName: string) => {
       if (managedScript(scriptName)) startPreview({ scriptName, mode: "start" });
@@ -263,7 +281,7 @@ export function useWorkspaceScriptActions({
   return useMemo(
     () => ({
       start,
-      stop: stopScript,
+      stop,
       restart,
       isManagedPreview,
       copyUrl,
@@ -275,7 +293,7 @@ export function useWorkspaceScriptActions({
     }),
     [
       start,
-      stopScript,
+      stop,
       restart,
       isManagedPreview,
       copyUrl,

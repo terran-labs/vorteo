@@ -14,6 +14,7 @@ const en = {
   line: {
     ready: "Preview is running.",
     starting: "Starting the preview.",
+    stopping: "Stopping the preview.",
     notResponding: {
       today: "Running, but not responding. Last checked at {{time}}.",
       yesterday: "Running, but not responding. Last checked yesterday at {{time}}.",
@@ -52,9 +53,21 @@ const en = {
     restartFailed: "Couldn't start: {{error}}",
     restartFailedNoDetail: "Couldn't start the preview.",
     unconfirmed: "Couldn't confirm the start yet. Try again if it doesn't come up.",
+    stopFailed: "Couldn't stop: {{error}}",
+    stopFailedNoDetail: "Couldn't stop the preview.",
+    stopUnconfirmed: "Couldn't confirm the stop yet. Try again if it keeps running.",
+    linkWithdrawn: "Link withdrawn, but the server is still running.",
   },
   // Stale states say only what is known: the last state and when it was checked.
   stale: {
+    // The script's live lifecycle and an old broker report disagree: state both knowns.
+    linkWithdrawn: {
+      today: "Server is running. Link last known withdrawn, checked at {{time}}.",
+      yesterday: "Server is running. Link last known withdrawn, checked yesterday at {{time}}.",
+      weekday: "Server is running. Link last known withdrawn, checked on {{day}} at {{time}}.",
+      date: "Server is running. Link last known withdrawn, checked on {{date}} at {{time}}.",
+    },
+    linkWithdrawnUnchecked: "Server is running. Link last known withdrawn.",
     running: {
       today: "Last known: running, checked at {{time}}. Not checked since.",
       yesterday: "Last known: running, checked yesterday at {{time}}. Not checked since.",
@@ -97,7 +110,8 @@ const en = {
     cancel: "Cancel",
   },
   refusals: {
-    busy: "A preview is already starting. Try again in a minute.",
+    busy: "This preview is already starting or stopping. Try again in a minute.",
+    capacity: "Several previews are starting or stopping. Try again in a minute.",
     archived: "Can't start: this workspace is archived.",
     needsReview: "Can't start until the Builds thread repairs this preview's link.",
     ownerAppOnly:
