@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-test("native helper selects the pinned daemon and retains a shell-safe wrapper", () => {
+test("native helper selects the pinned daemon and retains a shell-safe wrapper", async () => {
   const home = mkdtempSync(join(tmpdir(), "native-preview-helper-"));
   try {
     const channel = join(home, ".local/share/paseo-preview/https");
@@ -69,7 +69,7 @@ test("native helper selects the pinned daemon and retains a shell-safe wrapper",
       join(channel, "preview-status.json"),
       JSON.stringify({
         version: 1,
-        checkedAt,
+        publishedAt: checkedAt,
         services: [
           { workspaceId: "wks_native", service: "web", status: "ready", desired: "running" },
           { workspaceId: "wks_other", service: "web", status: "failed", desired: "stopped" },
@@ -82,6 +82,10 @@ test("native helper selects the pinned daemon and retains a shell-safe wrapper",
     });
     assert.equal(status.status, 0, status.stderr);
     const shown = JSON.parse(status.stdout);
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    const { printPublishedStatus } = await import(`./preview-broker-client.mjs?home=${Date.now()}`);
+    process.env.HOME = previousHome;
     assert.deepEqual(
       shown.services.map((service) => service.workspaceId),
       ["wks_native"],
@@ -89,6 +93,12 @@ test("native helper selects the pinned daemon and retains a shell-safe wrapper",
     assert.ok(shown.ageSeconds >= 5);
     assert.equal(existsSync(calls), false);
     assert.deepEqual(readdirSync(join(channel, "inbox")), []);
+
+    // A truncated or unknown-version file falls back to asking the broker, never a crash.
+    for (const bad of ['{"version":1,"services":[', '{"version":2}']) {
+      writeFileSync(join(channel, "preview-status.json"), bad);
+      assert.equal(printPublishedStatus(["status"]), false);
+    }
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

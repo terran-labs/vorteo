@@ -937,23 +937,32 @@ class Tests(unittest.TestCase):
         restarted = stop_service_and_check('boot:200:2', 5)
         self.assertEqual(restarted['stopReason'], 'daemon_restart')
         self.assertEqual(restarted['restartedAt'], self.runtime.daemon_started)
-        # A restart long after the last check cannot be tied to the stop.
-        self.b.handle(self.request())
-        unexplained = stop_service_and_check('boot:300:3', RESTART_ATTRIBUTION_SECONDS + 1)
-        self.assertNotIn('stopReason', unexplained)
-        self.assertNotIn('restartedAt', unexplained)
-        self.assertEqual(unexplained['desired'], 'stopped')
+        # A stop that may have happened up to a minute before an unrelated restart, or
+        # just beyond one broker cycle, cannot be tied to the restart.
+        for gap in (60, RESTART_ATTRIBUTION_SECONDS + 1):
+            self.b.handle(self.request())
+            unexplained = stop_service_and_check(f'boot:{300 + gap}:3', gap)
+            self.assertNotIn('stopReason', unexplained)
+            self.assertNotIn('restartedAt', unexplained)
+            self.assertEqual(unexplained['desired'], 'stopped')
         self.b.handle(self.request())
         self.b.handle(self.request('stop'))
         self.assertEqual(self.b.ledger['entries']['wks_test.preview']['stopReason'], 'stopped')
 
     def test_status_file_publishes_only_listed_fields(self):
         self.b.handle(self.request())
+        self.b.reconcile()
+        # A library error can echo its input; only fixed broker text or a type name leaves.
+        self.b.ledger['entries']['legacy.preview'] = {'workspaceId': 'wks_old', 'service': 'web', 'frontend': 44445,
+            'desired': 'stopped', 'status': 'failed', 'error': "invalid literal for int() with base 10: '/Users/x'"}
         self.b.publish_status()
         path = Path(self.c['channel']) / STATUS_FILE
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
         published = json.loads(path.read_text())
-        [service] = published['services']
+        service, legacy = published['services']
+        self.assertEqual(legacy['error'], 'Error')
+        self.assertIn('publishedAt', published)
+        self.assertIn('checkedAt', service)
         self.assertLessEqual(set(service), set(STATUS_FIELDS))
         self.assertEqual((service['status'], service['frontend']), ('ready', 44444))
         entry = self.b.ledger['entries']['wks_test.preview']

@@ -26,14 +26,21 @@ SERVICE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$')
 # verification, whichever comes first. Every other failure withdraws at once.
 TIMEOUT_MISS_LIMIT = 3
 TIMEOUT_GRACE_SECONDS = 90
-# A stopped service is attributed to a daemon restart only when the broker verified
-# it under the previous daemon at most this many seconds before the new daemon
-# started. A longer gap leaves room for an unrelated exit, so no cause is recorded.
-RESTART_ATTRIBUTION_SECONDS = 120
+# Both installers run the broker every BROKER_INTERVAL_SECONDS (launchd StartInterval),
+# and each run spends at most RECONCILE_SECONDS rechecking entries.
+BROKER_INTERVAL_SECONDS = 10
+RECONCILE_SECONDS = 20
+# A stopped service is attributed to a daemon restart only when the new daemon worker
+# started within one broker cycle of the last verification under the old one. While the
+# broker keeps its cadence, an exit earlier than that would have been seen and recorded
+# as 'exited' first. A longer gap leaves room for an unrelated exit: no cause is recorded.
+RESTART_ATTRIBUTION_SECONDS = BROKER_INTERVAL_SECONDS + RECONCILE_SECONDS
 # Owner-readable preview state for the daemon and helper, at the pinned channel root.
 STATUS_FILE = 'preview-status.json'
 STATUS_FIELDS = ('workspaceId', 'service', 'frontend', 'desired', 'status', 'stopReason',
-                 'stoppedAt', 'restartedAt', 'verifiedAt', 'needsReview', 'error')
+                 'stoppedAt', 'restartedAt', 'verifiedAt', 'checkedAt', 'needsReview', 'error')
+UNVERIFIED_MESSAGE = re.compile(r'Checks timed out \(\d+ of \d+\); route kept but unverified')
+IDENTIFIER = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,63}')
 
 
 def digest(value):
@@ -297,6 +304,31 @@ def loopback_listener_port(info, size):
             or bytes(address.insi_laddr.ina_46.i46a_addr4) != bytes([127, 0, 0, 1])):
         return None
     return socket.ntohs(address.insi_lport & 0xffff), bool(socket_info.soi_options & 0x0200)  # SO_REUSEPORT
+
+
+def _broker_messages():
+    """Every fixed message this module raises or records. Computed from the source so a
+    new message is covered without a list to maintain; f-strings never match."""
+    names = 'ValueError|ServiceGone|ConfigChanged|ProcessChanged|WorkspaceUnavailable|RecoveryPending|ListenerLost'
+    source = Path(__file__).read_text()
+    found = set(re.findall(r"\b(?:" + names + r")\('([^'{}\\]+)'\)", source))
+    found.update(re.findall(r"entry\['error'\] = '([^'{}\\]+)'", source))
+    found.add('Checks timed out; route withdrawn until a check succeeds')
+    return frozenset(found)
+
+
+BROKER_MESSAGES = _broker_messages()
+
+
+def public_error(message):
+    """An error fit to publish: a fixed broker message, the timeout count, or a type name.
+
+    Older ledgers may still hold str() of a library error, which can echo its input."""
+    if not isinstance(message, str):
+        return 'Error'
+    if message in BROKER_MESSAGES or UNVERIFIED_MESSAGE.fullmatch(message) or IDENTIFIER.fullmatch(message):
+        return message
+    return 'Error'
 
 
 class Runtime:
@@ -1154,18 +1186,21 @@ class Broker:
     def publish_status(self):
         """Write every reservation's state for the daemon and helper to read.
 
-        Only STATUS_FIELDS leave the ledger: names, ports, states, times and the
-        broker's own error text, which receipts in this channel already carry. No
-        paths, terminals, listeners, fingerprints or command lines."""
+        Only STATUS_FIELDS leave the ledger: names, ports, states, times and an error
+        that is one of this module's fixed messages or an exception type name. No paths,
+        terminals, listeners, fingerprints, URLs or command lines."""
         services = []
-        for entry in list(self.ledger['entries'].values())[:32]:
+        # Every reservation, uncapped: the ledger holds at most 32 (reserve() refuses more).
+        for entry in self.ledger['entries'].values():
             if 'frontend' not in entry:
                 continue
             item = {field: entry[field] for field in STATUS_FIELDS if field in entry}
-            if isinstance(item.get('error'), str):
-                item['error'] = ''.join(c for c in item['error'] if c.isprintable())[:300]
+            if 'error' in item:
+                item['error'] = public_error(item['error'])
             services.append(item)
-        atomic(self.channel / STATUS_FILE, {'version': 1, 'checkedAt': time.time(), 'services': services}, mode=0o644)
+        # publishedAt says the broker is running; each entry's checkedAt says when that
+        # entry was last rechecked, which a run that spends its deadline on requests skips.
+        atomic(self.channel / STATUS_FILE, {'version': 1, 'publishedAt': time.time(), 'services': services}, mode=0o644)
 
     def settle_failure(self, entry, error):
         """Apply one rule to a failed check of a route, for reconcile() and status.
@@ -1189,9 +1224,10 @@ class Broker:
             self.record_stop_cause(entry, error)
         if timed_out:
             message = 'Checks timed out; route withdrawn until a check succeeds'
-        elif isinstance(error, (ValueError, RecoveryPending, ListenerLost)):
+        elif isinstance(error, (ValueError, RecoveryPending, ListenerLost)) and str(error) in BROKER_MESSAGES:
             message = str(error)
         else:
+            # Library errors can echo their input, such as a path or parsed text.
             message = type(error).__name__
         # Keep 'failed' after timeouts: the rebind refuses while any entry is 'pending'.
         entry.update(status='pending' if isinstance(error, RecoveryPending) else 'failed', error=message)
@@ -1243,7 +1279,7 @@ class Broker:
         return True
 
     def reconcile(self):
-        deadline = time.monotonic() + 20
+        deadline = time.monotonic() + RECONCILE_SECONDS
         entries = list(self.ledger['entries'].values())[:32]
         if not entries:
             return
@@ -1256,6 +1292,7 @@ class Broker:
                 break
             entry = entries[(cursor + index) % len(entries)]
             self.ledger['reconcileCursor'] = (cursor + index + 1) % len(entries)
+            entry['checkedAt'] = time.time()
             self.save()
             if not entry.get('backend'):
                 continue

@@ -89,16 +89,26 @@ export function printPublishedStatus(argv) {
 // Returns null for an older broker without the file, or a --cwd selection.
 function publishedStatus(args) {
   if (args.length && (args.length !== 2 || args[0] !== "--workspace")) return null;
-  const file = join(channel, "preview-status.json");
-  if (!existsSync(file)) return null;
-  const published = JSON.parse(readFileSync(file, "utf8"));
-  const services = published.services.filter(
-    (service) => !args.length || service.workspaceId === args[1],
-  );
+  let published;
+  try {
+    published = JSON.parse(readFileSync(join(channel, "preview-status.json"), "utf8"));
+  } catch {
+    return null; // Missing, unreadable or truncated: ask the broker instead.
+  }
+  if (
+    published?.version !== 1 ||
+    !Array.isArray(published.services) ||
+    typeof published.publishedAt !== "number"
+  )
+    return null;
   return {
-    checkedAt: new Date(published.checkedAt * 1000).toISOString(),
-    ageSeconds: Math.round(Date.now() / 1000 - published.checkedAt),
-    services,
+    // A summary, not a live check: never share a URL from it.
+    note: "As of each entry's checkedAt. For a verified URL to share, run: status SERVICE --workspace ID",
+    publishedAt: new Date(published.publishedAt * 1000).toISOString(),
+    ageSeconds: Math.round(Date.now() / 1000 - published.publishedAt),
+    services: published.services.filter(
+      (service) => !args.length || service?.workspaceId === args[1],
+    ),
   };
 }
 
