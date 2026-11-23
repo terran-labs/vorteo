@@ -75,6 +75,20 @@ Desktop app updates and version-mismatch restarts stop the daemon with "keep ter
 
 On Windows every desktop stop closes terminals. In the desktop app the worker runs as `Paseo.exe` with `ELECTRON_RUN_AS_NODE`, and a surviving one would lock the install folder the NSIS update replaces. Restarts, crashes and npm self-updates keep terminals on Windows too.
 
+## Workspace services across a restart
+
+A workspace service (a `paseo.json` script of type `service`, which is how managed previews run) lives in a terminal, so it survives every restart that keeps terminals. Its script state does not: which script a terminal runs, its port and its proxy route live in daemon memory. So the daemon writes `$PASEO_HOME/workspace-script-terminals.json` (owner-only) whenever a service starts or stops, and the next daemon re-links what it finds there before it listens (`workspace-script-relink.ts`).
+
+- **Proof.** A recorded service is re-linked or stopped only when its terminal id is an adopted terminal of the same worker, matched by pid and birth time verified at adoption, and the terminal still has the workspace id, name and directory the launcher gave it. Name, port or directory alone never prove it, so an agent's or the owner's own terminal is never touched.
+- **Re-link** needs the workspace to be active at the same directory and the script's `paseo.json` entry to be unchanged (a sha256 of it is recorded). It restores the runtime entry, the port reservation, the proxy route (and with it the health probe) and the exit watch.
+- **Stop.** A proven service whose workspace is archived or gone is killed, as archiving kills every terminal in it.
+- **Everything else is left running and logged:** an unproven terminal, a changed or removed script, a workspace at another directory. It shows as stopped and keeps its port until someone closes the terminal.
+- **Owner stops.** Stop takes the service out of the record before it kills the terminal, so a daemon replaced mid-stop never brings it back.
+- **Bounded.** Startup waits at most 3 seconds for the lookups. Past that, or if a lookup fails, nothing is re-linked or stopped and the daemon starts as before. A service whose route cannot be restored is left running unlinked; the others are still re-linked.
+- **Untrusted record.** It is read like the preview broker's files: `lstat` first, regular file only, at most 256 KiB, schema-checked, and ignored whole when anything is wrong. On a Host it sits outside every guest-writable mount. In Dev the home is agent-writable, so a forged record can re-link only a terminal that already carries that script's workspace, name and directory, and stop one only in a workspace that is archived or gone.
+
+Which restarts keep terminals is unchanged: crash restarts, worker restarts (`restart_server`, Dev installs, Host installs that wait for idle, held restarts) and `daemon stop --keep-terminals`. A Host install that replaces the supervisor sends SIGTERM and still closes them, so its previews still stop (issue #587 tracks that change).
+
 ## Known limits
 
 - On macOS `ps` has no session id, so a HUP-ignoring child of a shell that had already exited before cleanup started (re-parented to launchd) is not found. Linux reaches it through the session; a program that `exec`s keeps its entry on every OS.

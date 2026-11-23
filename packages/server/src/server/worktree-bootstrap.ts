@@ -15,7 +15,10 @@ import {
 } from "../utils/worktree.js";
 import type { ServiceProxySubsystem } from "./service-proxy.js";
 import { allocateWorkspaceServicePort } from "./workspace-service-port-allocator.js";
-import type { WorkspaceScriptRuntimeStore } from "./workspace-script-runtime-store.js";
+import type {
+  ScriptRuntimeEntry,
+  WorkspaceScriptRuntimeStore,
+} from "./workspace-script-runtime-store.js";
 import type { ToolCallDetail } from "./agent/agent-sdk-types.js";
 import {
   assertNoServiceEnvNameCollisions,
@@ -23,10 +26,16 @@ import {
   type WorkspaceServicePeer,
 } from "./workspace-service-env.js";
 import {
+  adoptWorkspaceServicePort,
   ensureWorkspaceServicePortPlan,
   requirePlannedWorkspaceServicePort,
   refreshWorkspaceServicePort,
 } from "./workspace-service-port-registry.js";
+import {
+  hashScriptConfig,
+  type SurvivorDecision,
+  type SurvivorScript,
+} from "./workspace-script-relink.js";
 import type { PaseoServicePortAllocation } from "@getpaseo/protocol/paseo-config-schema";
 
 const MAX_WORKTREE_SETUP_COMMAND_OUTPUT_BYTES = 64 * 1024;
@@ -515,6 +524,162 @@ async function acquireWorkspaceScriptTerminal(params: {
   return { terminal, reusableTerminal };
 }
 
+/**
+ * Keeps a script's runtime entry in step with its terminal: an exit (or, for a plain script, a
+ * finished command) marks it stopped and a service's route is withdrawn. Returns the unsubscribe.
+ */
+function watchScriptTerminal(input: {
+  terminal: TerminalSession;
+  workspaceId: string;
+  scriptName: string;
+  scriptType: "script" | "service";
+  hostname: string | null;
+  serviceProxy: Pick<ServiceProxySubsystem, "removeWorkspaceService">;
+  runtimeStore: WorkspaceScriptRuntimeStore;
+  logger?: Logger;
+  onLifecycleChanged?: () => void;
+}): () => void {
+  const { terminal, workspaceId, scriptName, scriptType, hostname, runtimeStore } = input;
+  let unsubscribeExit: (() => void) | null = null;
+  let unsubscribeCommandFinished: (() => void) | null = null;
+  const dispose = () => {
+    unsubscribeExit?.();
+    unsubscribeCommandFinished?.();
+    unsubscribeExit = null;
+    unsubscribeCommandFinished = null;
+  };
+
+  const stopRuntimeIfCurrent = (stop: { exitCode: number | null; removeRoute: boolean }) => {
+    const current = runtimeStore.get({ workspaceId, scriptName });
+    if (current?.terminalId !== terminal.id || current.lifecycle !== "running") {
+      return;
+    }
+
+    dispose();
+
+    if (stop.removeRoute && hostname) {
+      input.serviceProxy.removeWorkspaceService({ workspaceId, scriptName });
+    }
+    runtimeStore.set({
+      workspaceId,
+      scriptName,
+      type: scriptType,
+      lifecycle: "stopped",
+      terminalId: terminal.id,
+      exitCode: stop.exitCode,
+    });
+    input.onLifecycleChanged?.();
+    input.logger?.info(
+      {
+        scriptName,
+        hostname,
+        exitCode: stop.exitCode,
+        terminalId: terminal.id,
+      },
+      "Stopped worktree script",
+    );
+  };
+
+  unsubscribeExit = terminal.onExit((info) => {
+    stopRuntimeIfCurrent({
+      exitCode: info.exitCode,
+      removeRoute: true,
+    });
+  });
+  if (scriptType === "script") {
+    unsubscribeCommandFinished = terminal.onCommandFinished((info) => {
+      stopRuntimeIfCurrent({ exitCode: info.exitCode, removeRoute: false });
+    });
+  }
+  return dispose;
+}
+
+/** What a replacement daemon needs to re-link a service; plain scripts (no port) have none. */
+function survivingServiceDetails(input: {
+  port: number | null;
+  projectSlug: string;
+  branchName: string | null;
+  config: unknown;
+}): Pick<ScriptRuntimeEntry, "service"> {
+  if (input.port === null) return {};
+  return {
+    service: {
+      port: input.port,
+      projectSlug: input.projectSlug,
+      branchName: input.branchName,
+      scriptConfig: hashScriptConfig(input.config),
+    },
+  };
+}
+
+/** The script as configured now, for comparing with the one a surviving service started from. */
+export async function readSurvivorScript(
+  cwd: string,
+  scriptName: string,
+): Promise<SurvivorScript | null> {
+  const configResult = await readPaseoConfig(cwd);
+  if (!configResult.ok) return null;
+  const config = getScriptConfigs(configResult.config).get(scriptName);
+  if (!config || !isServiceScript(config)) return null;
+  return { scriptConfig: hashScriptConfig(config), fixedPort: config.port ?? null };
+}
+
+/**
+ * Re-links a service whose terminal survived a daemon replacement and was proven to be the one
+ * launched for it: the port stays reserved, its route and health come back and its exit is
+ * watched again, exactly as if this daemon had started it.
+ */
+export function restoreSurvivingService(input: {
+  decision: Extract<SurvivorDecision, { action: "relink" }>;
+  serviceProxy: ServiceProxySubsystem;
+  serviceProxyPublicBaseUrl: string | null;
+  runtimeStore: WorkspaceScriptRuntimeStore;
+  logger: Logger;
+  onLifecycleChanged: () => void;
+}): void {
+  const { decision, runtimeStore } = input;
+  const { service, terminal } = decision;
+  adoptWorkspaceServicePort({
+    workspaceId: service.workspaceId,
+    scriptName: service.scriptName,
+    port: service.port,
+    fixed: decision.fixedPort !== null,
+  });
+  const route = input.serviceProxy.registerWorkspaceService({
+    port: service.port,
+    workspaceId: service.workspaceId,
+    projectSlug: service.projectSlug,
+    branchName: service.branchName,
+    scriptName: service.scriptName,
+    publicBaseUrl: input.serviceProxyPublicBaseUrl,
+  });
+  runtimeStore.set({
+    workspaceId: service.workspaceId,
+    scriptName: service.scriptName,
+    type: "service",
+    lifecycle: "running",
+    terminalId: terminal.id,
+    exitCode: null,
+    service: {
+      port: service.port,
+      projectSlug: service.projectSlug,
+      branchName: service.branchName,
+      scriptConfig: service.scriptConfig,
+    },
+  });
+  watchScriptTerminal({
+    terminal,
+    workspaceId: service.workspaceId,
+    scriptName: service.scriptName,
+    scriptType: "service",
+    hostname: route.hostname,
+    serviceProxy: input.serviceProxy,
+    runtimeStore,
+    logger: input.logger,
+    onLifecycleChanged: input.onLifecycleChanged,
+  });
+}
+
 export async function spawnWorkspaceScript(
   options: SpawnWorkspaceScriptOptions,
 ): Promise<WorktreeScriptResult> {
@@ -598,58 +763,21 @@ export async function spawnWorkspaceScript(
       lifecycle: "running",
       terminalId: terminal.id,
       exitCode: null,
+      ...survivingServiceDetails({ port, projectSlug, branchName, config }),
     });
     runtimeRegistered = true;
 
-    const stopRuntimeIfCurrent = (input: { exitCode: number | null; removeRoute: boolean }) => {
-      const current = runtimeStore.get({ workspaceId, scriptName });
-      if (current?.terminalId !== terminal.id || current.lifecycle !== "running") {
-        return;
-      }
-
-      disposeLifecycleListeners?.();
-      disposeLifecycleListeners = null;
-
-      if (input.removeRoute && hostname) {
-        serviceProxy.removeWorkspaceService({ workspaceId, scriptName });
-      }
-      runtimeStore.set({
-        workspaceId,
-        scriptName,
-        type: scriptType,
-        lifecycle: "stopped",
-        terminalId: terminal.id,
-        exitCode: input.exitCode,
-      });
-      onLifecycleChanged?.();
-      logger?.info(
-        {
-          scriptName,
-          hostname,
-          exitCode: input.exitCode,
-          terminalId: terminal.id,
-        },
-        "Stopped worktree script",
-      );
-    };
-
-    const unsubscribeExit = terminal.onExit((info) => {
-      stopRuntimeIfCurrent({
-        exitCode: info.exitCode,
-        removeRoute: true,
-      });
+    disposeLifecycleListeners = watchScriptTerminal({
+      terminal,
+      workspaceId,
+      scriptName,
+      scriptType,
+      hostname,
+      serviceProxy,
+      runtimeStore,
+      logger,
+      onLifecycleChanged,
     });
-
-    let unsubscribeCommandFinished: (() => void) | null = null;
-    if (!serviceScript) {
-      unsubscribeCommandFinished = terminal.onCommandFinished((info) => {
-        stopRuntimeIfCurrent({ exitCode: info.exitCode, removeRoute: false });
-      });
-    }
-    disposeLifecycleListeners = () => {
-      unsubscribeExit();
-      unsubscribeCommandFinished?.();
-    };
 
     if (!reusableTerminal) {
       await waitForTerminalBootstrapReadiness(terminal);

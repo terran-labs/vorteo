@@ -81,6 +81,23 @@ export function requirePlannedWorkspaceServicePort(
   return port;
 }
 
+/**
+ * Records the port of a service that survived a daemon replacement, so no other service is
+ * planned onto it. A fixed port from paseo.json is planned only; an allocated one is also
+ * reserved against other workspaces.
+ */
+export function adoptWorkspaceServicePort(options: {
+  workspaceId: string;
+  scriptName: string;
+  port: number;
+  fixed: boolean;
+}): void {
+  const plan = workspaceServicePortPlans.get(options.workspaceId) ?? new Map<string, number>();
+  plan.set(options.scriptName, options.port);
+  workspaceServicePortPlans.set(options.workspaceId, plan);
+  if (!options.fixed) reserveDynamicPort(options);
+}
+
 export function releaseWorkspaceServicePortPlan(workspaceId: string): void {
   const pendingToken = pendingWorkspaceServicePortPlanTokens.get(workspaceId);
   if (pendingToken) pendingToken.isReleased = true;

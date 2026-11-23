@@ -37,6 +37,7 @@ import {
   NoTerminalWorkerAvailableError,
   TerminalWorkerIncompatibleError,
   type TerminalWorkerPoolMember,
+  type TerminalWorkerService,
 } from "./terminal-worker-pool.js";
 import { pruneTerminalWorkerRuntimes } from "./terminal-worker-runtime.js";
 import type {
@@ -1019,7 +1020,7 @@ interface LiveWorkerRecord {
  */
 export async function startWorkerTerminalManager(
   options: StartWorkerTerminalManagerOptions,
-): Promise<DaemonTerminalManager> {
+): Promise<TerminalWorkerService> {
   const logger = options.logger.child({ module: "terminal-worker" });
   const inspector = createTerminalWorkerProcessInspector();
   const log = (message: string, fields?: Record<string, unknown>) => logger.info(fields, message);
@@ -1194,6 +1195,7 @@ export async function startWorkerTerminalManager(
     return {
       manager,
       workerPid: record.pid,
+      workerStartedAt: record.identity.startedAt,
       exited,
       ready: async () => {
         await recovery;
