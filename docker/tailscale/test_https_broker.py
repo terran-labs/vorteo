@@ -13,7 +13,7 @@ import time
 import unittest
 from unittest.mock import patch
 import uuid
-from https_broker import Broker, ListenerLost, Runtime, NativeRuntime, WorkspaceUnavailable, public_error, RESTART_ATTRIBUTION_SECONDS, STATUS_FIELDS, STATUS_FILE, _libproc_socket_types, atomic, loopback_listener_port, safe_read, validate
+from https_broker import Broker, DELAYED_MESSAGE, ListenerLost, PROBE_ONLY_SECONDS, Runtime, TIMED_OUT_MESSAGE, NativeRuntime, WorkspaceUnavailable, public_error, RESTART_ATTRIBUTION_SECONDS, STATUS_FIELDS, STATUS_FILE, _libproc_socket_types, atomic, loopback_listener_port, safe_read, validate
 
 
 class NativeWorkspacePolicyTests(unittest.TestCase):
@@ -689,6 +689,12 @@ class Fake:
         if state == 'error': raise OSError('Unexpected socket_fdinfo layout')
         return True
     def in_process_check_agrees(self, port, listener): return self.agrees
+    # The direct loopback connect during a timeout grace: 'yes', 'refused' or 'error'.
+    accepts = 'yes'
+    def backend_accepts(self, port):
+        if self.accepts == 'refused': raise ListenerLost('Backend port refused a direct connection')
+        if self.accepts == 'error': raise OSError('timed out')
+        return True
 
 
 class Tests(unittest.TestCase):
@@ -753,14 +759,19 @@ class Tests(unittest.TestCase):
         container = lambda rt: (setattr(rt, 'listener_unchanged', lambda e: Runtime.listener_unchanged(rt, e)),
                                 setattr(rt, 'in_process_check_agrees', lambda p, l: Runtime.in_process_check_agrees(rt, p, l)))
         steps = {
-            'ok': lambda b, rt: (setattr(rt, 'backend_ready', lambda p: None), setattr(rt, 'listener_state', 'same')),
+            'ok': lambda b, rt: (setattr(rt, 'backend_ready', lambda p: None), setattr(rt, 'listener_state', 'same'), setattr(rt, 'accepts', 'yes')),
             'timeout': timing_out('same'),
             'refused': lambda b, rt: setattr(rt, 'backend_ready', refused),
             'terminal': timing_out('terminal'),  # a live process now claims another terminal
             'exited': timing_out('exited'),
             'closed': timing_out('closed'),  # alive, same identity, no longer listening
             'unevaluable': timing_out('error'),
-            'stale': lambda b, rt: (setattr(rt, 'backend_ready', timeout), ledger_entry(b).update(verifiedAt=time.time() - 91)),
+            # Same process still listed as listening, but the port refuses a connection.
+            'port refuses': lambda b, rt: (timing_out('same')(b, rt), setattr(rt, 'accepts', 'refused')),
+            'connect unknown': lambda b, rt: (timing_out('same')(b, rt), setattr(rt, 'accepts', 'error')),
+            # Sustained load: checks keep timing out for nine of the ten minutes.
+            'later': lambda b, rt: (timing_out('same')(b, rt), ledger_entry(b).update(verifiedAt=time.time() - PROBE_ONLY_SECONDS + 60)),
+            'stale': lambda b, rt: (setattr(rt, 'backend_ready', timeout), ledger_entry(b).update(verifiedAt=time.time() - PROBE_ONLY_SECONDS - 1)),
             'clock back': lambda b, rt: (setattr(rt, 'backend_ready', timeout), ledger_entry(b).update(verifiedAt=time.time() + 60)),
             'disagreeing ok': lambda b, rt: (setattr(rt, 'backend_ready', lambda p: None), setattr(rt, 'agrees', False)),
             'stop': lambda b, rt: b.handle(self.request('stop')),
@@ -768,22 +779,28 @@ class Tests(unittest.TestCase):
         # setup, steps, then (route published, ledger status, desired, misses)
         cases = [
             (None, ['timeout'], (True, 'unverified', 'running', 1)),
-            (None, ['timeout'] * 3, (False, 'failed', 'running', None)),
-            (None, ['timeout'] * 3 + ['ok'], (True, 'ready', 'running', None)),
-            (None, ['stale'], (False, 'failed', 'running', None)),
-            (None, ['clock back'], (False, 'failed', 'running', None)),
+            # Sustained timeouts with a healthy listener keep the route (#358).
+            (None, ['timeout'] * 6, (True, 'unverified', 'running', 6)),
+            (None, ['timeout'] * 3 + ['later'], (True, 'unverified', 'running', 4)),
+            (None, ['timeout'] * 6 + ['ok'], (True, 'ready', 'running', None)),
+            # Past the bound the probe alone no longer keeps it; a clean check republishes.
+            (None, ['timeout', 'stale'], (False, 'withdrawn', 'running', None)),
+            (None, ['timeout', 'stale', 'ok'], (True, 'ready', 'running', None)),
+            (None, ['clock back'], (False, 'withdrawn', 'running', None)),
             (None, ['timeout', 'timeout', 'ok', 'timeout', 'timeout'], (True, 'unverified', 'running', 2)),
             (None, ['timeout', 'terminal'], (False, 'failed', 'stopped', None)),
             (None, ['timeout', 'refused'], (False, 'failed', 'running', None)),
-            # A process that exits or closes its port withdraws at once but keeps the
-            # running intent, so the next clean check republishes it.
-            (None, ['timeout', 'exited'], (False, 'failed', 'running', None)),
-            (None, ['timeout', 'closed'], (False, 'failed', 'running', None)),
+            # A process that exits, is replaced or stops accepting withdraws at once but
+            # keeps the running intent, so the next clean check republishes it.
+            (None, ['timeout'] * 4 + ['exited'], (False, 'failed', 'running', None)),
+            (None, ['timeout'] * 4 + ['closed'], (False, 'failed', 'running', None)),
+            (None, ['timeout'] * 4 + ['port refuses'], (False, 'failed', 'running', None)),
             (None, ['timeout', 'closed', 'ok'], (True, 'ready', 'running', None)),
-            (None, ['unevaluable'], (False, 'failed', 'running', None)),
-            (None, ['disagreeing ok', 'timeout'], (False, 'failed', 'running', None)),
-            (container, ['timeout'], (False, 'failed', 'running', None)),
-            (None, ['timeout', 'stop'], (False, 'stopped', 'stopped', None)),
+            (None, ['unevaluable'], (False, 'withdrawn', 'running', None)),
+            (None, ['connect unknown'], (False, 'withdrawn', 'running', None)),
+            (None, ['disagreeing ok', 'timeout'], (False, 'withdrawn', 'running', None)),
+            (container, ['timeout'], (False, 'withdrawn', 'running', None)),
+            (None, ['timeout'] * 4 + ['stop'], (False, 'stopped', 'stopped', None)),
         ]
         for driver in ('reconcile', 'status'):
             for setup, sequence, expected in cases:
@@ -803,13 +820,34 @@ class Tests(unittest.TestCase):
                             if step not in ('ok', 'disagreeing ok'): self.assertNotIn('url', result)
                     entry = safe_read(broker.ledger_path)['entries']['wks_test.preview']
                     self.assertEqual(('44444' in runtime.config['TCP'], entry['status'], entry['desired'], entry.get('misses')), expected)
-                    if expected[1] == 'unverified': self.assertIn('unverified', entry['error'])
+                    if expected[1] == 'unverified': self.assertEqual(entry['error'], DELAYED_MESSAGE)
                     if not expected[0]: self.assertNotIn('url', entry)
                     if expected[1] == 'stopped': self.assertNotIn('error', entry)
-                    lost = {'exited': 'Backend listener process exited', 'closed': 'Backend listener no longer holds its loopback port'}
+                    lost = {'exited': 'Backend listener process exited', 'closed': 'Backend listener no longer holds its loopback port',
+                            'port refuses': 'Backend port refused a direct connection'}
                     if sequence[-1] in lost: self.assertEqual(entry['error'], lost[sequence[-1]])
-                    if not expected[0] and sequence[-1] in ('timeout', 'stale', 'clock back', 'unevaluable'):
-                        self.assertIn('timed out', entry['error'])
+                    if expected[1] == 'withdrawn': self.assertEqual(entry['error'], TIMED_OUT_MESSAGE)
+
+    def test_direct_probe_connects_and_curl_timeouts_count_as_timeouts(self):
+        # The real probe: a listening loopback port accepts; a closed one is evidence.
+        runtime = Runtime({'docker': '/usr/bin/false', 'context': 'none'})
+        with socket.socket() as server:
+            server.bind(('127.0.0.1', 0)); server.listen(1)
+            port = server.getsockname()[1]
+            self.assertIs(runtime.backend_accepts(port), True)
+        with self.assertRaises(ListenerLost):
+            runtime.backend_accepts(port)
+        # curl's own --max-time (exit 28) is a check that did not finish, not a failure.
+        def run(args, **kw): raise subprocess.CalledProcessError(kw.get('code', 28), args)
+        with patch('subprocess.run', side_effect=lambda args, **kw: run(args)):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                runtime.command(['/usr/bin/curl', '--max-time', '3', 'http://127.0.0.1:1/'])
+        with patch('subprocess.run', side_effect=subprocess.CalledProcessError(7, ['/usr/bin/curl'])):
+            with self.assertRaises(subprocess.CalledProcessError):
+                runtime.command(['/usr/bin/curl', 'http://127.0.0.1:1/'])
+        with patch('subprocess.run', side_effect=subprocess.CalledProcessError(28, ['/usr/sbin/lsof'])):
+            with self.assertRaises(subprocess.CalledProcessError):
+                runtime.command(['/usr/sbin/lsof'])
 
     def test_restart_recovery_survives_a_timed_out_identity_check(self):
         # restore-after-restart on; the daemon restart kills the service, and the
