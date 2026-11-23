@@ -51,8 +51,9 @@ test.beforeAll(async () => {
           result.updatedFontSize = getComputedStyle(nextNode).fontSize;
           nextNode.remove();
           pendingRef(null);
-          await Promise.resolve();
-          await Promise.resolve();
+          // Read the sheet as the next painted frame sees it. Removal and the rebuild that
+          // drops the rule both run in microtasks, so their exact count is not the contract.
+          await new Promise((resolve) => requestAnimationFrame(resolve));
           result.rulesAfterUnmount = document.getElementById('unistyles-web').textContent;
           return result;
         };
