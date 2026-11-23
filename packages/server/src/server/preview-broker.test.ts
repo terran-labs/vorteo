@@ -233,11 +233,13 @@ describe("preview restart limits under concurrency", () => {
   test("a stop is accepted while starts fill every slot", async () => {
     const directory = makeChannel();
     const restarter = restarterFor(directory);
+    // A stop in flight takes none of the session's two start slots.
+    await restarter.submit("wks_a", "ui", "stop", "session-a");
     await restarter.submit("wks_a", "web", "start", "session-a");
     await restarter.submit("wks_a", "api", "start", "session-a");
     expect(restarter.atCapacity("session-a")).toBe(true);
-    await restarter.submit("wks_a", "ui", "stop", "session-a");
-    expect(restarter.outcome("wks_a", "ui")?.status).toBe("stopping");
+    await restarter.submit("wks_a", "db", "stop", "session-a");
+    expect(restarter.outcome("wks_a", "db")?.status).toBe("stopping");
     await finishAll(directory);
     await vi.waitFor(() => expect(restarter.atCapacity("session-a")).toBe(false));
   });

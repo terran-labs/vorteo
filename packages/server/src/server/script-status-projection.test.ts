@@ -94,6 +94,7 @@ describe("script-status-projection", () => {
         ]),
       },
       origins: new Map([["web", "https://preview.example.ts.net:32780"]]),
+      matchableOrigins: new Set(["https://preview.example.ts.net:32780"]),
     };
     const runtimeStore = new WorkspaceScriptRuntimeStore();
     runtimeStore.set({
@@ -116,6 +117,15 @@ describe("script-status-projection", () => {
     expect(running.publicProxyUrl).toBe("https://preview.example.ts.net:32780");
     expect(running.proxyUrl).toBe(running.publicProxyUrl);
     expect(running.localProxyUrl).toBe("http://web--repo.localhost:6767");
+    // A duplicated origin costs only the gallery match, never the preview's working link.
+    const duplicated = (
+      await buildPayloads({
+        ...input,
+        managedPreviews: { ...managedPreviews, matchableOrigins: new Set<string>() },
+      })
+    )[0];
+    expect(duplicated.publicProxyUrl).toBe("https://preview.example.ts.net:32780");
+    expect(duplicated.preview?.origin).toBeUndefined();
     runtimeStore.set({
       workspaceId: "workspace",
       scriptName: "web",

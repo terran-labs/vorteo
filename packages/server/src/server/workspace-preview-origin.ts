@@ -66,44 +66,47 @@ export async function readWorkspacePreviewOrigin(
 interface ClaimIndex {
   builtAt: number;
   directoryMtimeMs: number;
-  /** How many (workspace, service) reservations name each origin; null when over the cap. */
-  claims: Map<string, number> | null;
+  /** Every valid reservation as [workspaceId, origin]; null when it cannot be trusted. */
+  claims: Array<[string, string]> | null;
 }
 
 const claimIndexes = new Map<string, { index?: ClaimIndex; building?: Promise<ClaimIndex> }>();
+
+const missing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "ENOENT";
 
 async function buildClaimIndex(directory: string, directoryMtimeMs: number): Promise<ClaimIndex> {
   const builtAt = Date.now();
   let names: string[];
   try {
     names = (await readdir(directory)).filter((entry) => entry.endsWith(".json")).sort();
-  } catch {
-    return { builtAt, directoryMtimeMs, claims: new Map() };
+  } catch (error) {
+    // No directory holds no reservations; any other failure could hide a forged claim.
+    return { builtAt, directoryMtimeMs, claims: missing(error) ? [] : null };
   }
   // Past the cap a forged claim could hide unread, so no origin is trusted at all.
   if (names.length > MAX_INDEXED_RESERVATIONS) return { builtAt, directoryMtimeMs, claims: null };
-  const claims = new Map<string, number>();
+  const claims: Array<[string, string]> = [];
   for (const name of names) {
     const parts = name.slice(0, -".json".length).split(".");
     if (parts.length !== 2) continue;
     const origin = await readWorkspacePreviewOrigin(parts[0], parts[1], directory);
-    if (origin) claims.set(origin, (claims.get(origin) ?? 0) + 1);
+    if (origin) claims.push([parts[0], origin]);
   }
   return { builtAt, directoryMtimeMs, claims };
 }
 
 /**
- * Who claims each origin across every workspace. Built at most once per status poll, or
- * sooner when a file is added, renamed or removed, with one read shared by every caller: at
- * most 128 bounded reads of 4 KiB each per build. A file rewritten in place, which leaves
- * the directory's time unchanged, is seen within one poll.
+ * Every workspace's reservations, built at most once per status poll, or sooner when a file
+ * is added, renamed or removed, with one read shared by every caller: at most 128 bounded
+ * reads of 4 KiB each per build. A file rewritten in place leaves the directory's time
+ * alone, so callers read their own workspace fresh and take only other workspaces from here.
  */
-async function originClaims(directory: string): Promise<Map<string, number> | null> {
+async function claimIndex(directory: string): Promise<Array<[string, string]> | null> {
   let directoryMtimeMs: number;
   try {
     directoryMtimeMs = (await stat(directory)).mtimeMs;
-  } catch {
-    return new Map();
+  } catch (error) {
+    return missing(error) ? [] : null;
   }
   const cached = claimIndexes.get(directory) ?? {};
   claimIndexes.set(directory, cached);
@@ -120,6 +123,38 @@ async function originClaims(directory: string): Promise<Map<string, number> | nu
   });
   cached.index = await cached.building;
   return cached.index.claims;
+}
+
+/**
+ * The origins of one workspace that exactly one reservation claims, so a gallery link can be
+ * matched to a single preview. The broker gives each reservation its own port, so two claims
+ * mean a forged or stale file, and every claimant loses the match.
+ *
+ * `own` must be this workspace's reservations read fresh. Other workspaces come from the
+ * cached index, so a rewrite in place elsewhere is counted from its previous value for up
+ * to one poll. That cannot produce two matches: the rewriter's own request reads its file
+ * fresh and counts the other side's unchanged claim, so it loses the origin. Only files
+ * that are all rewritten inside one window, each of which an agent could equally forge for
+ * good, can briefly match one origin twice.
+ *
+ * This decides matching only. A running preview's working link still comes from its own
+ * file, so a forged duplicate costs the owner the gallery badge, never the link.
+ */
+export async function matchablePreviewOrigins(
+  workspaceId: string,
+  own: ReadonlyMap<string, string>,
+  directory = ORIGINS_DIRECTORY,
+): Promise<Set<string>> {
+  const claims = await claimIndex(directory);
+  const matchable = new Set<string>();
+  if (!claims) return matchable;
+  const counts = new Map<string, number>();
+  for (const origin of own.values()) counts.set(origin, (counts.get(origin) ?? 0) + 1);
+  for (const [claimant, origin] of claims) {
+    if (claimant !== workspaceId) counts.set(origin, (counts.get(origin) ?? 0) + 1);
+  }
+  for (const origin of own.values()) if (counts.get(origin) === 1) matchable.add(origin);
+  return matchable;
 }
 
 /** Every reservation of one workspace, by service, for a synchronous projection. */
@@ -142,17 +177,6 @@ export async function readWorkspacePreviewOrigins(
     const service = name.slice(prefix.length, -".json".length);
     const origin = await readWorkspacePreviewOrigin(workspaceId, service, directory);
     if (origin) origins.set(service, origin);
-  }
-  // The broker gives each reservation its own port, so two reservations naming one origin,
-  // in this workspace or any other, mean a forged or stale file. A link must never match the
-  // wrong preview, so every claimant loses the origin.
-  const local = new Map<string, number>();
-  for (const origin of origins.values()) local.set(origin, (local.get(origin) ?? 0) + 1);
-  const claims = await originClaims(directory);
-  for (const [service, origin] of origins) {
-    if (!claims || (local.get(origin) ?? 0) > 1 || (claims.get(origin) ?? 0) > 1) {
-      origins.delete(service);
-    }
   }
   return origins;
 }
