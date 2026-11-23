@@ -34,6 +34,17 @@ SERVICE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$')
 # check that succeeds. Every other failure, and any change the probe finds, withdraws
 # at once.
 PROBE_ONLY_SECONDS = 600
+# A daemon restart leaves the CLI unable to connect for a few seconds: about 5.5 s for a
+# Host replacement on Nov 22, plus up to 3 s of re-linking surviving services before the
+# new daemon listens (#587). A Host install that keeps terminals adds the old daemon's
+# graceful stop (its worker is force-killed after 10 s) and launchd's 5 s relaunch
+# throttle. The same direct probe keeps the route through that gap for at most this
+# long from the first check that found the daemon down. Afterwards the full check must
+# find the same listener again, so a preview that did not survive is withdrawn on the
+# first cycle after the daemon is back.
+DAEMON_GAP_SECONDS = 60
+DAEMON_GAP_MESSAGE = 'Daemon is restarting; route kept while its listener answers'
+DAEMON_DOWN_MESSAGE = 'Daemon unreachable; route withdrawn until a check succeeds'
 DELAYED_MESSAGE = 'Checks are delayed; route kept while its listener answers'
 TIMED_OUT_MESSAGE = 'Checks timed out; route withdrawn until a check succeeds'
 # Both installers run the broker every BROKER_INTERVAL_SECONDS (launchd StartInterval),
@@ -162,6 +173,11 @@ def validate(request, now):
 
 class RecoveryPending(RuntimeError):
     """Recovery can be retried without discarding the owner's running intent."""
+
+
+class DaemonUnavailable(subprocess.SubprocessError):
+    """The daemon's CLI could not connect, and the daemon's own loopback port refuses or its
+    pid file is gone: it is restarting or stopped. Says nothing about the service."""
 
 
 class ListenerLost(RuntimeError):
@@ -330,7 +346,7 @@ def _broker_messages(path=None):
         return frozenset()
     found = set(re.findall(r"\b(?:" + names + r")\('([^'{}\\]+)'\)", source))
     found.update(re.findall(r"entry\['error'\] = '([^'{}\\]+)'", source))
-    found.update((TIMED_OUT_MESSAGE, DELAYED_MESSAGE))
+    found.update((TIMED_OUT_MESSAGE, DELAYED_MESSAGE, DAEMON_GAP_MESSAGE, DAEMON_DOWN_MESSAGE))
     return frozenset(found)
 
 
@@ -665,7 +681,13 @@ class NativeRuntime(Runtime):
         self.c = config
 
     def cli(self, args):
-        value = json.loads(self.command([*self.c['cliCommand'], '--home', self.c['daemonHome'], *args, '--json'], timeout=20))
+        try:
+            output = self.command([*self.c['cliCommand'], '--home', self.c['daemonHome'], *args, '--json'], timeout=20)
+        except subprocess.CalledProcessError:
+            if self.daemon_unreachable():
+                raise DaemonUnavailable('Daemon unreachable') from None
+            raise
+        value = json.loads(output)
         if isinstance(value, dict) and 'error' in value:
             raise ValueError('Native daemon CLI refused the preview operation')
         return value
@@ -753,6 +775,28 @@ class NativeRuntime(Runtime):
         if safe_read(lock_path) != lock or self.process_identity(owner['pid']) != owner:
             raise ValueError('Native daemon changed during identity verification')
         return f"{worker['pid']}:{worker['birth']}"
+
+    def daemon_unreachable(self):
+        """Whether the native daemon is down, read in process without a subprocess.
+
+        True only on evidence: its pid file is gone, or its pinned loopback port refuses a
+        connection. Anything that cannot be read answers False, the old behavior."""
+        try:
+            lock = safe_read(Path(self.c['daemonHome']) / 'paseo.pid')
+        except FileNotFoundError:
+            return True
+        except (OSError, ValueError):
+            return False
+        match = re.fullmatch(r'127\.0\.0\.1:([0-9]+)', lock.get('listen', '') if isinstance(lock, dict) else '')
+        if not match:
+            return False
+        try:
+            with socket.create_connection(('127.0.0.1', int(match[1])), timeout=1):
+                return False
+        except ConnectionRefusedError:
+            return True
+        except OSError:
+            return False
 
     def daemon_worker(self):
         """The serving daemon worker and its start time, to explain a stop.
@@ -1064,7 +1108,7 @@ class Broker:
                 self.remove_then_raise(entry, RecoveryPending('Daemon changed during verification'))
             entry['daemon'] = daemon
             entry.pop('recovery', None)
-        for stale in ('error', 'misses', 'removalPending', 'needsReview', 'stopReason', 'restartedAt'):
+        for stale in ('error', 'misses', 'removalPending', 'needsReview', 'stopReason', 'restartedAt', 'daemonGapSince'):
             entry.pop(stale, None)
         if 'daemonWorker' not in entry:
             # Recorded once per start: any later daemon change makes the next check
@@ -1281,12 +1325,14 @@ class Broker:
         except Exception:
             pass  # A recheck that cannot answer grants no grace.
         # A stopped entry only retries its removal; it has no route to recover.
-        timed_out = isinstance(error, subprocess.TimeoutExpired) and entry.get('desired') == 'running'
+        timed_out = isinstance(error, (subprocess.TimeoutExpired, DaemonUnavailable)) and entry.get('desired') == 'running'
         # Fail closed on process/config changes. Never revive a stopped service.
         if isinstance(error, ValueError):
             entry.update(desired='stopped', stoppedAt=time.time())
             self.record_stop_cause(entry, error)
-        if timed_out:
+        if timed_out and isinstance(error, DaemonUnavailable):
+            message = DAEMON_DOWN_MESSAGE
+        elif timed_out:
             message = TIMED_OUT_MESSAGE
         elif isinstance(error, (ValueError, RecoveryPending, ListenerLost)) and str(error) in BROKER_MESSAGES:
             message = str(error)
@@ -1298,7 +1344,7 @@ class Broker:
         # not because the service stopped or failed to start; it keeps its running intent.
         status = 'pending' if isinstance(error, RecoveryPending) else 'withdrawn' if timed_out else 'failed'
         entry.update(status=status, error=message)
-        for stale in ('url', 'misses'):
+        for stale in ('url', 'misses', 'daemonGapSince'):
             entry.pop(stale, None)
         try:
             self.remove(entry)
@@ -1335,10 +1381,18 @@ class Broker:
         raises on positive evidence of a change, which settle_failure() withdraws at once.
         The miss count only reports how many checks were delayed; it no longer withdraws,
         because a status request and the reconcile cycle each count one."""
-        if not isinstance(error, subprocess.TimeoutExpired):
+        gap = isinstance(error, DaemonUnavailable)
+        if not gap and not isinstance(error, subprocess.TimeoutExpired):
             return False
         if entry.get('desired') != 'running' or entry.get('status') not in ('ready', 'unverified'):
             return False
+        if gap:
+            since = entry.get('daemonGapSince')
+            now = time.time()
+            if type(since) not in (int, float):
+                since = now
+            if not 0 <= now - since < DAEMON_GAP_SECONDS:
+                return False
         verified = entry.get('verifiedAt')
         if type(verified) not in (int, float) or not 0 <= time.time() - verified < PROBE_ONLY_SECONDS:
             return False
@@ -1346,7 +1400,12 @@ class Broker:
             return False
         if not self.runtime.listener_unchanged(entry) or self.runtime.backend_accepts(entry['backend']) is not True:
             return False
-        entry.update(status='unverified', misses=entry.get('misses', 0) + 1, error=DELAYED_MESSAGE)
+        if gap:
+            entry.update(status='unverified', misses=entry.get('misses', 0) + 1,
+                         daemonGapSince=since, error=DAEMON_GAP_MESSAGE)
+        else:
+            entry.pop('daemonGapSince', None)
+            entry.update(status='unverified', misses=entry.get('misses', 0) + 1, error=DELAYED_MESSAGE)
         self.save()
         return True
 
