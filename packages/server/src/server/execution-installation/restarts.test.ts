@@ -17,6 +17,10 @@ import {
 } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { InstallationSourceUpdates } from "./source-updates.js";
+import {
+  releaseRelinksSurvivingServices,
+  replaceHostKeepingTerminals,
+} from "./host-install-terminals.js";
 import { hostReleaseRetentionIdle } from "./host-release-retention.js";
 import { digestBootstrapArtifact } from "./coordinator-bootstrap-artifact.js";
 import { tmpdir } from "node:os";
@@ -2515,6 +2519,15 @@ test("interruption outcome requires the exact installed candidate and published 
 
 // 2026-10-21: an idle Host restart replaced only the worker, which reloaded the
 // old supervisor's build (vorteo.726) while the install reported 729 installed.
+/** Compiled re-link evidence, as releaseRelinksSurvivingServices() reads it. */
+const RELINK_EVIDENCE: [string, string][] = [
+  [
+    "packages/server/dist/server/server/workspace-script-relink.js",
+    'logger.info(fields, "Re-linked a workspace service that survived the daemon");',
+  ],
+  ["packages/server/dist/server/server/bootstrap.js", "await relinkWorkspaceScripts({"],
+];
+
 test("Host publication uses the verified candidate migration rules after replacement readiness", async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "source-version-")));
   try {
@@ -2564,6 +2577,9 @@ test("Host publication uses the verified candidate migration rules after replace
       await fs.mkdir(path.join(release, 'scripts'), {recursive:true});
       await fs.writeFile(path.join(release, 'scripts/publish-instance-web.mjs'), ${JSON.stringify(publisher)});
       await fs.writeFile(path.join(release, 'scripts/web-icon-migration.mjs'), ${JSON.stringify(migration)});
+      if (await fs.access(path.join(input.work, '..', 'relink-candidate')).then(() => true, () => false))
+        for (const [file, text] of ${JSON.stringify(RELINK_EVIDENCE)})
+          await fs.mkdir(path.dirname(path.join(release, file)), {recursive:true}).then(() => fs.writeFile(path.join(release, file), text));
       await fs.writeFile(input.resultFile, JSON.stringify({release,exported}));`,
     );
     await writeFile(
@@ -2639,9 +2655,100 @@ test("Host publication uses the verified candidate migration rules after replace
       updates.install(job(), restart, undefined, async () => "1.0.1"),
     ).resolves.toContain("Installed source");
     expect(await readFile(path.join(root, "published"), "utf8")).toBe("yes");
+    expect(restart).toHaveBeenLastCalledWith("host", { keepTerminals: false });
+
+    // Keep terminals (#587) only when both the candidate and the previous release, the
+    // one a failed readiness check falls back to, re-link surviving services.
+    const installWith = async (candidate: boolean, previousRelinks: boolean) => {
+      await rm(link);
+      await symlink(previous, link);
+      for (const [file, text] of RELINK_EVIDENCE) {
+        await rm(path.join(previous, file), { force: true });
+        if (previousRelinks) {
+          await mkdir(path.dirname(path.join(previous, file)), { recursive: true });
+          await writeFile(path.join(previous, file), text);
+        }
+      }
+      await (candidate
+        ? writeFile(path.join(root, "relink-candidate"), "")
+        : rm(path.join(root, "relink-candidate"), { force: true }));
+      const installed = job();
+      const result = await updates.install(installed, restart, undefined, async () => "1.0.1");
+      const receipt = JSON.parse(
+        await readFile(path.join(root, installed.id, "activation.json"), "utf8"),
+      );
+      return { result, receipt, options: restart.mock.lastCall?.[1] };
+    };
+    const kept = await installWith(true, true);
+    expect(kept.options).toEqual({ keepTerminals: true });
+    expect(kept.receipt).toMatchObject({ status: "succeeded", keepTerminals: true });
+    // A rollback to a release without the re-link closes terminals as before.
+    for (const [candidate, previousRelinks] of [
+      [false, true],
+      [true, false],
+    ]) {
+      const closed = await installWith(candidate, previousRelinks);
+      expect(closed.options).toEqual({ keepTerminals: false });
+      expect(closed.receipt).toMatchObject({ keepTerminals: false });
+      expect(closed.result).toContain("Terminals were closed");
+    }
   } finally {
     await hostReleaseRetentionIdle();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a keep-terminals Host replacement falls back to the old replacement and says so", async () => {
+  type Step = "refused" | "never stops" | "stops";
+  const run = async (step: Step) => {
+    const calls: string[] = [];
+    let now = 0;
+    const outcome = await replaceHostKeepingTerminals({
+      async shutdownKeepingTerminals() {
+        calls.push("shutdown");
+        if (step === "refused") throw new Error("Host daemon cannot keep terminals");
+      },
+      stopped: async () => step === "stops",
+      start: async () => void calls.push("start"),
+      replace: async () => void calls.push("replace"),
+      stopDeadlineMs: 30_000,
+      pollMs: 0,
+      now: () => (now += 10_000),
+    });
+    return { outcome, calls };
+  };
+  expect(await run("stops")).toEqual({
+    outcome: { terminals: "kept" },
+    calls: ["shutdown", "start"],
+  });
+  // A refused, failed or timed-out request still completes the install the old way.
+  expect(await run("refused")).toEqual({
+    outcome: {
+      terminals: "replaced",
+      reason: "Host daemon cannot keep terminals",
+      requestSent: true,
+    },
+    calls: ["shutdown", "replace"],
+  });
+  const stuck = await run("never stops");
+  expect(stuck.calls).toEqual(["shutdown", "replace"]);
+  expect(stuck.outcome).toMatchObject({ terminals: "replaced" });
+
+  // The gate reads regular files only: a linked evidence file proves nothing.
+  const release = await realpath(await mkdtemp(path.join(tmpdir(), "relink-gate-")));
+  try {
+    for (const [file, text] of RELINK_EVIDENCE) {
+      await mkdir(path.dirname(path.join(release, file)), { recursive: true });
+      await writeFile(path.join(release, file), text);
+    }
+    expect(await releaseRelinksSurvivingServices(release)).toBe(true);
+    const [[file, text]] = RELINK_EVIDENCE;
+    await writeFile(path.join(release, "elsewhere.js"), text);
+    await rm(path.join(release, file));
+    await symlink(path.join(release, "elsewhere.js"), path.join(release, file));
+    expect(await releaseRelinksSurvivingServices(release)).toBe(false);
+  } finally {
+    await rm(release, { recursive: true, force: true });
   }
 });
 

@@ -1,3 +1,4 @@
+import { installMayKeepTerminals, installTerminalsSentence } from "./host-install-terminals.js";
 import { inspectStandingSourceProvenance } from "./maintenance/source-provenance.js";
 import {
   assertBootstrapPathsProtected,
@@ -822,9 +823,14 @@ export class InstallationSourceUpdates {
       update,
       status: "activating",
     });
+    // Keep terminals only if whichever release starts next re-links the services that
+    // survive: the candidate, or the previous one a failed readiness check falls back to.
+    // Read from the releases' own files, before the selection moves (#587).
+    const keepTerminals = await installMayKeepTerminals(prepared.release, previous);
     this.selectRelease(prepared.release);
+    let restartDetail: string;
     try {
-      await restart("host");
+      restartDetail = await restart("host", { keepTerminals });
     } catch (error) {
       // A failed reply is not proof that the supervisor refused dispatch. Moving
       // the selector now can race a replacement already starting this candidate.
@@ -835,12 +841,15 @@ export class InstallationSourceUpdates {
       );
     }
     await assertLoadedHostRelease(prepared.release, loadedHostVersion);
+    const terminals = installTerminalsSentence(keepTerminals, restartDetail);
     const ready = {
       previous,
       candidate: prepared.release,
       exported: prepared.exported,
       update,
       status: "daemon-ready",
+      keepTerminals,
+      restart: terminals,
     };
     try {
       writeLifecycleReceipt(activationFile, ready);
@@ -887,6 +896,8 @@ export class InstallationSourceUpdates {
       candidate: prepared.release,
       update,
       status: "succeeded",
+      keepTerminals,
+      restart: terminals,
     });
     // Cleanup runs after this result, outside the readiness deadline: a first prune of a
     // large backlog once took longer than the whole install window.
@@ -894,7 +905,7 @@ export class InstallationSourceUpdates {
       (record) => this.retainHostReleases(previous, record),
       path.join(work, "retention.json"),
     );
-    return `Installed source ${update.sourceCommit}. Host replacement identity and readiness verified; interface published. Previous release retained at ${previous}. ${cleanupSentence(hostReleaseCleanupMode(this.config))}${commandMessage}`;
+    return `Installed source ${update.sourceCommit}. Host replacement identity and readiness verified; interface published. ${terminals} Previous release retained at ${previous}. ${cleanupSentence(hostReleaseCleanupMode(this.config))}${commandMessage}`;
   }
 
   /**

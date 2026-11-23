@@ -282,6 +282,8 @@ export async function relinkWorkspaceScripts(input: {
       // One service's route or port conflict must not keep the others, or the daemon, down.
       try {
         input.restore(decision);
+        // The coordinator reads this exact message in a release to decide whether a Host
+        // install may keep terminals; see execution-installation/host-install-terminals.ts.
         logger.info(fields, "Re-linked a workspace service that survived the daemon");
       } catch (error) {
         logger.warn({ ...fields, err: error }, "Cannot re-link a surviving workspace service");

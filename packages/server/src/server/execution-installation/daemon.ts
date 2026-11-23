@@ -39,7 +39,10 @@ import {
 } from "./boot-entry-switch.js";
 import { WebSocket } from "ws";
 import type { Logger } from "pino";
-import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import {
+  DaemonClient,
+  requireTerminalKeepCapability,
+} from "@getpaseo/client/internal/daemon-client";
 import type {
   BootEntrySwitchConfiguration,
   RestartImpact,
@@ -48,6 +51,7 @@ import type {
 } from "@getpaseo/protocol/execution-installation";
 import { hostLaunchdService, type InstallationConfig } from "./config.js";
 import type { RestartExecutor } from "./restarts.js";
+import { describeTerminalOutcome, replaceHostKeepingTerminals } from "./host-install-terminals.js";
 import type { CoordinatorBootstrapPreparation } from "@getpaseo/protocol/coordinator-bootstrap";
 import { coordinatorAutomaticAuthority, signCoordinatorSubmission } from "./daemon-automation.js";
 import {
@@ -430,7 +434,73 @@ export function createInstallationRestartExecutor(
     return reportRestartTimeout(config, target);
   }
 
-  async function restart(target: RestartJob["target"], whenIdle = false): Promise<string | null> {
+  /** Today's Host replacement. SIGTERM closes every terminal. */
+  async function replaceHostService(): Promise<void> {
+    // Restart the installation's own Host service: launchd on macOS, a systemd user unit on Linux.
+    if ("launchdService" in config.host)
+      await execFileAsync("/bin/launchctl", ["kickstart", "-k", hostLaunchdService(config)], {
+        timeout: 15_000,
+      });
+    else
+      await execFileAsync(
+        "/usr/bin/systemctl",
+        ["--user", "restart", config.host.systemdService.unit],
+        { timeout: 15_000 },
+      );
+  }
+
+  /**
+   * A Host source update whose candidate and previous releases both re-link surviving
+   * services (#587): stop the daemon over its shutdown RPC keeping terminals, then start
+   * the service. Falls back to replaceHostService() and says so. Returns the receipt sentence.
+   */
+  async function replaceHostKeepingTerminalsOrFallBack(previousPid: number | null) {
+    const outcome = await replaceHostKeepingTerminals({
+      async shutdownKeepingTerminals() {
+        const client = await connectInstallationDaemon(config, "host");
+        try {
+          // An older daemon drops keepTerminals and closes them; refuse before sending.
+          requireTerminalKeepCapability(client, "the Host daemon");
+          assertReady("host");
+          await client.shutdownServer({ keepTerminals: true, timeout: 5000 });
+        } finally {
+          await client.close().catch(() => {});
+        }
+      },
+      // Not answering, or answering as another worker, both mean the old one is gone.
+      stopped: () =>
+        probeDaemonPid("host").then(
+          (pid) => pid !== previousPid,
+          () => true,
+        ),
+      async start() {
+        // Never -k or restart here: either would SIGTERM a supervisor that is already
+        // running the candidate, and SIGTERM closes the terminals just kept.
+        if ("launchdService" in config.host)
+          await execFileAsync("/bin/launchctl", ["kickstart", hostLaunchdService(config)], {
+            timeout: 15_000,
+          });
+        else
+          await execFileAsync(
+            "/usr/bin/systemctl",
+            ["--user", "start", config.host.systemdService.unit],
+            { timeout: 15_000 },
+          );
+      },
+      replace: replaceHostService,
+      // The supervisor force-kills a worker that has not exited 10 s after its request.
+      stopDeadlineMs: 30_000,
+    });
+    if (outcome.terminals === "replaced")
+      logger?.warn({ reason: outcome.reason }, "Keep-terminals Host replacement fell back");
+    return describeTerminalOutcome(outcome);
+  }
+
+  async function restart(
+    target: RestartJob["target"],
+    whenIdle = false,
+    options: { keepTerminals?: boolean } = {},
+  ): Promise<string | null> {
     assertReady(target);
     const kind = target === "host" ? "host" : "container";
     let previousPid: number | null = null;
@@ -463,17 +533,11 @@ export function createInstallationRestartExecutor(
         await client.close();
       }
     } else if (target === "host") {
-      // Restart the installation's own Host service: launchd on macOS, a systemd user unit on Linux.
-      if ("launchdService" in config.host)
-        await execFileAsync("/bin/launchctl", ["kickstart", "-k", hostLaunchdService(config)], {
-          timeout: 15_000,
-        });
-      else
-        await execFileAsync(
-          "/usr/bin/systemctl",
-          ["--user", "restart", config.host.systemdService.unit],
-          { timeout: 15_000 },
-        );
+      if (options.keepTerminals) {
+        const terminals = await replaceHostKeepingTerminalsOrFallBack(previousPid);
+        return `${await waitForReplacement(target, kind, previousPid)} ${terminals}`;
+      }
+      await replaceHostService();
     } else {
       const client = await connectInstallationDaemon(config, kind);
       try {
@@ -817,9 +881,9 @@ export function createInstallationRestartExecutor(
         await client.close();
       }
     },
-    async restart(target) {
+    async restart(target, options) {
       if (target === "host") await validateHostStartup(config);
-      const detail = await restart(target);
+      const detail = await restart(target, false, options);
       if (detail === null) throw new Error("Restart was not dispatched");
       return detail;
     },
