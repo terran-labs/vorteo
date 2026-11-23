@@ -56,6 +56,7 @@ Replace `preview` with the configured script name. Repeating `start` adopts the 
 ## 3. Verify, then share
 
 - Only a `ready` result from `start`, `restart` or a named `status SCRIPT --workspace ID` carries a verified URL. A bare `status` is a fast summary of every reservation as of each entry's `checkedAt`, with no URL; never share a link from it. `pending` means wait and run the named `status` again. A timeout is not permission to kill listeners, restart the daemon or try another directory.
+- A daemon restart or Host install can keep a running preview: it stays at the same address and the new daemon re-links it. If its status briefly reads `unverified`, with "Checks are delayed" or "Daemon is restarting", the link is still up; wait for `ready` instead of restarting it. An owner's stop, an uninstall and a reboot close previews; start them again.
 - Open the returned `https://` URL and confirm the app actually rendered: a browser snapshot or screenshot showing real content, not just an HTTP 200. Check that HMR or the WebSocket connects when the app needs it.
 - Share exactly the `https://…ts.net:PORT/` origin the broker returned, plus any app path.
 
