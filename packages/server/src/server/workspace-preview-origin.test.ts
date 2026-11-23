@@ -44,18 +44,21 @@ describe("workspace preview origins", async () => {
     reserve(origin);
     expect(await readWorkspacePreviewOrigin("workspace", "web", directory)).toBeNull();
   });
-  it("drops an origin that two services of the workspace claim", async () => {
-    // In Dev an agent can write a reservation naming another service's origin; neither matches.
-    const write = (service: string, origin: string) =>
+  it("drops an origin that two previews claim, in one workspace or across workspaces", async () => {
+    // In Dev an agent can write a reservation naming another preview's origin; neither matches.
+    const write = (workspaceId: string, service: string, origin: string) =>
       writeFileSync(
-        join(directory, `workspace.${service}.json`),
-        JSON.stringify({ origin, workspaceId: "workspace", service }),
+        join(directory, `${workspaceId}.${service}.json`),
+        JSON.stringify({ origin, workspaceId, service }),
       );
-    write("web", "https://preview.example.ts.net:32780");
-    write("api", "https://preview.example.ts.net:32780");
-    write("ui", "https://preview.example.ts.net:32781");
-    const origins = await readWorkspacePreviewOrigins("workspace", directory);
-    expect([...origins.keys()]).toEqual(["ui"]);
+    write("workspace", "web", "https://preview.example.ts.net:32780");
+    write("workspace", "api", "https://preview.example.ts.net:32780");
+    write("workspace", "ui", "https://preview.example.ts.net:32781");
+    write("other", "api", "https://preview.example.ts.net:32782");
+    write("forger", "web", "https://preview.example.ts.net:32782");
+    expect([...(await readWorkspacePreviewOrigins("workspace", directory)).keys()]).toEqual(["ui"]);
+    expect((await readWorkspacePreviewOrigins("other", directory)).size).toBe(0);
+    expect((await readWorkspacePreviewOrigins("forger", directory)).size).toBe(0);
   });
   it("omits missing or malformed reservations and rejects path traversal", async () => {
     expect(await readWorkspacePreviewOrigin("workspace", "web", directory)).toBeNull();
