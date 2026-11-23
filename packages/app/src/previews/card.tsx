@@ -21,6 +21,7 @@ import {
   type PreviewScope,
   type PreviewSort,
 } from "./model";
+import { LivePreviewBadge, useLivePreview } from "./live-preview";
 import { ApprovedMark, PreviewThumb } from "./parts";
 import { PREVIEW_TILE_HOVER_GROUP, TileRating } from "./tile-rating";
 import {
@@ -138,6 +139,7 @@ function PreviewsContent({
               {lineages.map((lineage) => (
                 <PreviewTile
                   key={lineage.lineage}
+                  serverId={serverId}
                   lineage={lineage}
                   httpBase={httpBase}
                   showAgent={scope === "all"}
@@ -156,19 +158,27 @@ function PreviewsContent({
         </View>
       ) : null}
       {zoomed ? (
-        <PreviewZoom lineage={zoomed} httpBase={httpBase} actions={actions} onClose={closeZoom} />
+        <PreviewZoom
+          serverId={serverId}
+          lineage={zoomed}
+          httpBase={httpBase}
+          actions={actions}
+          onClose={closeZoom}
+        />
       ) : null}
     </TaskCard>
   );
 }
 
 function PreviewTile({
+  serverId,
   lineage,
   httpBase,
   showAgent,
   actions,
   onOpen,
 }: {
+  serverId: string;
   lineage: PreviewLineage;
   httpBase: string | null;
   showAgent: boolean;
@@ -176,6 +186,7 @@ function PreviewTile({
   onOpen: (lineage: string) => void;
 }) {
   const version = lineage.newest;
+  const live = useLivePreview(serverId, version);
   const open = useCallback(() => onOpen(lineage.lineage), [lineage.lineage, onOpen]);
   const rate = useCallback(
     (rating: number | null) => actions.act({ kind: "rate", versionId: version.id, rating }),
@@ -200,6 +211,7 @@ function PreviewTile({
         >
           <PreviewThumb version={version} httpBase={httpBase} />
         </PressHighlight>
+        {live ? <LivePreviewBadge live={live} /> : null}
         {/* A sibling of the thumbnail button, not a child, so rating never opens the preview. */}
         <TileRating
           rating={version.rating}

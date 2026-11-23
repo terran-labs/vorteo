@@ -1,7 +1,7 @@
 import type { TFunction } from "i18next";
 import type { WorkspaceScriptPreview } from "@getpaseo/protocol/messages";
 import { describe, expect, it } from "vitest";
-import { describePreview } from "./describe";
+import { describePreview, previewBadge } from "./describe";
 import { previewRequestInFlight, runningPreviewListLabel } from "./use-preview-description";
 
 // Keys, not copy: the wording is the owner's to change. These pin the truthfulness rules.
@@ -220,6 +220,71 @@ describe("runningPreviewListLabel", () => {
     expect(runningPreviewListLabel({ ...script, preview }, description)).toEqual({
       description: "previewStatus.stale.running.today",
     });
+  });
+});
+
+describe("previewBadge", () => {
+  it.each<[string, WorkspaceScriptPreview, ("running" | "stopped") | undefined, string | null]>([
+    ["a ready preview has no badge", { state: "ready" }, "running", null],
+    ["a stopped preview", { state: "stopped", stoppedAt: at(-5) }, "stopped", "stopped"],
+    // An old report never reads as current: its badge says only "Last known", in words.
+    ["a stale ready preview", { state: "ready", stale: true }, "running", "lastKnown"],
+    ["a stale stopped preview", { state: "stopped", stale: true }, "stopped", "lastKnown"],
+    ["a stale starting preview", { state: "starting", stale: true }, "stopped", "lastKnown"],
+    [
+      "a stale preview not responding",
+      { state: "not_responding", stale: true },
+      "running",
+      "lastKnown",
+    ],
+    ["a stale withdrawn link", { state: "stopped", stale: true }, "running", "lastKnown"],
+    [
+      "an archived workspace does not go stale",
+      { state: "stopped", stale: true, stopReason: "workspace_unavailable" },
+      "stopped",
+      "unavailable",
+    ],
+    [
+      "the daemon's own outcome stays current beside a stale report",
+      { state: "ready", stale: true, restart: { status: "failed", at: at(-1), mode: "stop" } },
+      "running",
+      "didntStop",
+    ],
+    ["a link that needs repair", { state: "stopped", needsReview: true }, "stopped", "needsRepair"],
+    [
+      "a failed start",
+      { state: "stopped", restart: { status: "failed", at: at(-1) } },
+      "stopped",
+      "didntStart",
+    ],
+    [
+      "an unconfirmed start",
+      { state: "stopped", restart: { status: "unconfirmed", at: at(-1) } },
+      "stopped",
+      "unconfirmed",
+    ],
+    [
+      "a failed stop",
+      { state: "ready", restart: { status: "failed", at: at(-1), mode: "stop" } },
+      "running",
+      "didntStop",
+    ],
+    [
+      "a stop in flight",
+      { state: "ready", restart: { status: "stopping", at: at(-1) } },
+      "running",
+      "stopping",
+    ],
+    ["a withdrawn link on a running server", { state: "stopped" }, "running", "linkWithdrawn"],
+    [
+      "an unconfirmed stop claims nothing either",
+      { state: "ready", restart: { status: "unconfirmed", at: at(-1), mode: "stop" } },
+      "running",
+      "unconfirmed",
+    ],
+    ["a state this app does not know", { state: "paused" }, "running", null],
+  ])("%s", (_name, preview, lifecycle, key) => {
+    expect(previewBadge(preview, lifecycle)?.key ?? null).toBe(key);
   });
 });
 

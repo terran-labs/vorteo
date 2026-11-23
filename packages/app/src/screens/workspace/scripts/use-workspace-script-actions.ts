@@ -38,7 +38,11 @@ export interface WorkspaceScriptActions {
   isStartPending: boolean;
   /** A preview start or restart request is in flight; Restart waits for it. */
   isPreviewPending: boolean;
+  /** Whether this preview's own start, restart or stop request is still being sent. */
+  isPreviewPendingFor: (scriptName: string) => boolean;
   isStopPending: boolean;
+  /** Whether this script's own terminal stop is still being sent. */
+  isStopPendingFor: (scriptName: string) => boolean;
 }
 
 export interface UseWorkspaceScriptActionsInput {
@@ -77,9 +81,12 @@ export function useWorkspaceScriptActions({
     (state) => state.sessions[serverId]?.serverInfo?.features?.previewRestart === true,
   );
   // A daemon that can stop previews through the broker records an owner's stop as a stop.
-  const previewStopSupported = useSessionStore(
-    (state) => state.sessions[serverId]?.serverInfo?.features?.previewStop === true,
-  );
+  // It must also name each outcome's mode: one with previewStop alone reports a failed stop
+  // like a failed start, so the app keeps the terminal stop there.
+  const previewStopSupported = useSessionStore((state) => {
+    const features = state.sessions[serverId]?.serverInfo?.features;
+    return features?.previewStop === true && features?.previewStopOutcome === true;
+  });
   // Named by the host's own label, so the refusal is true for Host and Dev workspaces alike.
   const hostLabel = useHosts().find((host) => host.serverId === serverId)?.label ?? null;
   const isManagedPreview = useCallback(
@@ -289,7 +296,12 @@ export function useWorkspaceScriptActions({
       resolveLinks,
       isStartPending: startScriptMutation.isPending || previewMutation.isPending,
       isPreviewPending: previewMutation.isPending,
+      // Keyed by preview, so one request does not disable every row's Stop and Restart.
+      isPreviewPendingFor: (scriptName: string) =>
+        previewMutation.isPending && previewMutation.variables?.scriptName === scriptName,
       isStopPending: stopScriptMutation.isPending,
+      isStopPendingFor: (scriptName: string) =>
+        stopScriptMutation.isPending && stopScriptMutation.variables === scriptName,
     }),
     [
       start,
@@ -301,7 +313,9 @@ export function useWorkspaceScriptActions({
       resolveLinks,
       startScriptMutation.isPending,
       previewMutation.isPending,
+      previewMutation.variables,
       stopScriptMutation.isPending,
+      stopScriptMutation.variables,
     ],
   );
 }
