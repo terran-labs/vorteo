@@ -79,9 +79,12 @@ export function useWorkspaceScriptActions({
     (state) => state.sessions[serverId]?.serverInfo?.features?.previewRestart === true,
   );
   // A daemon that can stop previews through the broker records an owner's stop as a stop.
-  const previewStopSupported = useSessionStore(
-    (state) => state.sessions[serverId]?.serverInfo?.features?.previewStop === true,
-  );
+  // It must also name each outcome's mode: one with previewStop alone reports a failed stop
+  // like a failed start, so the app keeps the terminal stop there.
+  const previewStopSupported = useSessionStore((state) => {
+    const features = state.sessions[serverId]?.serverInfo?.features;
+    return features?.previewStop === true && features?.previewStopOutcome === true;
+  });
   // Named by the host's own label, so the refusal is true for Host and Dev workspaces alike.
   const hostLabel = useHosts().find((host) => host.serverId === serverId)?.label ?? null;
   const isManagedPreview = useCallback(

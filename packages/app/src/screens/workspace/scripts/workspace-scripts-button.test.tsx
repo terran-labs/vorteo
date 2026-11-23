@@ -22,6 +22,8 @@ const {
   routePreferenceByServerIdMock,
   routePreferenceListenersMock,
   setPreferredRouteMock,
+  featuresMock,
+  restartPreviewMock,
 } = vi.hoisted(() => {
   const hoistedTheme = {
     opacity: { 50: 0.5 },
@@ -53,6 +55,8 @@ const {
   return {
     theme: hoistedTheme,
     startWorkspaceScriptMock: vi.fn(async () => ({ terminalId: "terminal-script-1" })),
+    featuresMock: {} as Record<string, boolean>,
+    restartPreviewMock: vi.fn(async () => ({ accepted: true, refusalCode: null, error: null })),
     killTerminalMock: vi.fn(async () => ({
       terminalId: "terminal-script-1",
       success: true,
@@ -124,7 +128,9 @@ vi.mock("@/stores/session-store", () => ({
           client: {
             startWorkspaceScript: startWorkspaceScriptMock,
             killTerminal: killTerminalMock,
+            restartWorkspaceScriptPreview: restartPreviewMock,
           },
+          serverInfo: { features: featuresMock },
         },
       },
     }),
@@ -233,6 +239,7 @@ function script(
     health: input.health ?? null,
     exitCode: input.exitCode ?? null,
     terminalId: input.terminalId ?? null,
+    ...(input.preview ? { preview: input.preview } : {}),
   };
 }
 
@@ -553,6 +560,40 @@ describe("WorkspaceScriptsButton", () => {
     await act(async () => {});
 
     expect(killTerminalMock).toHaveBeenCalledWith("terminal-script-1");
+  });
+
+  it.each([
+    ["a daemon whose outcomes do not name their mode", { previewStop: true }, false],
+    [
+      "a daemon whose outcomes name their mode",
+      { previewStop: true, previewStopOutcome: true },
+      true,
+    ],
+  ])("stops a managed preview through the broker only on %s", async (_name, features, broker) => {
+    // A daemon with previewStop alone reports a failed stop like a failed start.
+    Object.assign(featuresMock, { previewRestart: true, ...features });
+    restartPreviewMock.mockClear();
+    current = renderScripts([
+      script({
+        scriptName: "dev",
+        type: "service",
+        lifecycle: "running",
+        terminalId: "terminal-script-1",
+        preview: { state: "ready" },
+      }),
+    ]);
+    fireEvent.click(
+      requireRow("dev").querySelector('[data-testid="workspace-scripts-stop-dev"]') as HTMLElement,
+    );
+    await act(async () => {});
+    for (const key of Object.keys(featuresMock)) delete featuresMock[key];
+    if (broker) {
+      expect(restartPreviewMock).toHaveBeenCalledWith(expect.any(String), "dev", "stop");
+      expect(killTerminalMock).not.toHaveBeenCalled();
+    } else {
+      expect(restartPreviewMock).not.toHaveBeenCalled();
+      expect(killTerminalMock).toHaveBeenCalledWith("terminal-script-1");
+    }
   });
 
   it("uses icon-only actions with view and fixed-position lifecycle controls", async () => {
