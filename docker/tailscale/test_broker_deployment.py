@@ -1,5 +1,6 @@
 """Consumer replacement keeps channel trust separate and refuses partial replay."""
 import json
+import re
 import os
 from pathlib import Path
 import tempfile
@@ -661,6 +662,22 @@ class NativeDeploymentTests(unittest.TestCase):
         self.assertEqual(worker.observe()['kind'], 'unresolved')
         self.write(receipt_path, original)
         self.assertEqual(worker.observe()['kind'], 'committed')
+
+
+
+class BrokerCadenceTests(unittest.TestCase):
+    def test_installers_run_the_broker_at_the_interval_its_attribution_window_assumes(self):
+        from https_broker import BROKER_INTERVAL_SECONDS
+        here = Path(__file__).resolve().parent
+        for installer in ('install-https-broker.py', 'install-native-https-broker.py'):
+            intervals = re.findall(r"'StartInterval': (\d+)", (here / installer).read_text(encoding='utf-8'))
+            self.assertEqual([int(value) for value in intervals], [BROKER_INTERVAL_SECONDS], installer)
+
+    def test_unreadable_source_yields_no_publishable_messages(self):
+        import https_broker
+        self.assertEqual(https_broker._broker_messages(Path(__file__).parent / 'missing-source.py'), frozenset())
+        self.assertIn('Managed service stopped; explicit start required', https_broker.BROKER_MESSAGES)
+        self.assertEqual(https_broker.public_error("invalid literal for int() with base 10: '/x'"), 'Error')
 
 
 if __name__ == '__main__':

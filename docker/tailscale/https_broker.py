@@ -306,11 +306,17 @@ def loopback_listener_port(info, size):
     return socket.ntohs(address.insi_lport & 0xffff), bool(socket_info.soi_options & 0x0200)  # SO_REUSEPORT
 
 
-def _broker_messages():
+def _broker_messages(path=None):
     """Every fixed message this module raises or records. Computed from the source so a
-    new message is covered without a list to maintain; f-strings never match."""
+    new message is covered without a list to maintain; f-strings never match.
+
+    A source that cannot be read yields an empty set, so the broker still imports and
+    every error publishes as its exception type name, the safe direction."""
     names = 'ValueError|ServiceGone|ConfigChanged|ProcessChanged|WorkspaceUnavailable|RecoveryPending|ListenerLost'
-    source = Path(__file__).read_text()
+    try:
+        source = Path(path or __file__).read_text(encoding='utf-8')
+    except (OSError, ValueError):
+        return frozenset()
     found = set(re.findall(r"\b(?:" + names + r")\('([^'{}\\]+)'\)", source))
     found.update(re.findall(r"entry\['error'\] = '([^'{}\\]+)'", source))
     found.add('Checks timed out; route withdrawn until a check succeeds')
