@@ -4749,6 +4749,11 @@ export const ServerInfoStatusPayloadSchema = z
         // workspace.script.restart_preview.request accepts mode "stop", and script payloads
         // carry `preview.origin`.
         previewStop: z.boolean().optional(),
+        // COMPAT(previewStopOutcome): added in Vorteo 2026-11, remove gate after 2027-05-23.
+        // Every `preview.restart` outcome names its `mode`, so a client can word a failed or
+        // unconfirmed stop as a stop. Clients send broker stops only with this capability:
+        // a daemon with `previewStop` alone reports a failed stop like a failed start.
+        previewStopOutcome: z.boolean().optional(),
       })
       .optional(),
   })
