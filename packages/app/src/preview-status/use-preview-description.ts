@@ -29,3 +29,22 @@ export function previewStartLabelKey(
 ): "previewStatus.actions.retry" | "previewStatus.actions.start" {
   return preview.action === "retry" ? "previewStatus.actions.retry" : "previewStatus.actions.start";
 }
+
+/**
+ * What a running preview's compact list row shows. Its state comes from the broker, not from
+ * the action: a newer failed or unconfirmed restart offers "try again", but the preview is
+ * still not responding. An old report shows its full "Last known" line under the name
+ * instead, so a long label never squeezes the name.
+ */
+export function runningPreviewListLabel(
+  script: WorkspaceScriptPayload,
+  preview: PreviewDescription | null,
+):
+  | { valueKey: "previewStatus.short.notResponding" | "workspace.scripts.states.running" }
+  | { description: string } {
+  if (preview && script.preview?.stale) return { description: preview.line };
+  if (preview && script.preview?.state === "not_responding") {
+    return { valueKey: "previewStatus.short.notResponding" };
+  }
+  return { valueKey: "workspace.scripts.states.running" };
+}

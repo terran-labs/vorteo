@@ -51,7 +51,7 @@ const en = {
       "Its link was changed outside Vorteo, so it can't start. Ask the Builds thread to repair this preview's link.",
     restartFailed: "Couldn't start: {{error}}",
     restartFailedNoDetail: "Couldn't start the preview.",
-    unconfirmed: "Still starting. This can take a few minutes.",
+    unconfirmed: "Couldn't confirm the start yet. Try again if it doesn't come up.",
   },
   // Stale states say only what is known: the last state and when it was checked.
   stale: {
@@ -84,8 +84,6 @@ const en = {
   /** The short state a compact list shows beside a running preview's name. */
   short: {
     notResponding: "Not responding",
-    lastKnownRunning: "Last known: running",
-    lastKnownNotResponding: "Last known: not responding",
   },
   actions: {
     start: "Start",
@@ -99,7 +97,7 @@ const en = {
     cancel: "Cancel",
   },
   refusals: {
-    busy: "Already starting. Try again in a minute.",
+    busy: "A preview is already starting. Try again in a minute.",
     archived: "Can't start: this workspace is archived.",
     needsReview: "Can't start until the Builds thread repairs this preview's link.",
     ownerAppOnly:

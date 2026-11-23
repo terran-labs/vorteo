@@ -215,6 +215,8 @@ export function describePreview(
   const stoppedAt = formatPreviewTime(preview.stoppedAt, now, locale);
   const restartedAt = formatPreviewTime(preview.restartedAt, now, locale);
   const described = describeState(preview, checked, stoppedAt, restartedAt, t);
-  if (!described || !preview.stale) return described;
+  // Why a preview cannot start does not go stale: an archived workspace stays archived.
+  const unavailable = preview.state === "stopped" && preview.stopReason === "workspace_unavailable";
+  if (!described || !preview.stale || unavailable) return described;
   return { ...described, line: staleLine(preview, checked, stoppedAt, t) };
 }

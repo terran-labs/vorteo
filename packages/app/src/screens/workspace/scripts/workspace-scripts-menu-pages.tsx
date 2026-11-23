@@ -17,10 +17,10 @@ import type {
   WorkspaceScriptLinkTarget,
 } from "@/utils/workspace-script-links";
 import { ExitCodeBadge, routeLabelKey, ScriptIcon } from "./script-marks";
-import type { PreviewDescription } from "@/preview-status/describe";
 import {
   previewBlocksStart,
   previewStartLabelKey,
+  runningPreviewListLabel,
   usePreviewDescription,
 } from "@/preview-status/use-preview-description";
 import { scriptToneColorMapping, summarizeScripts, type ScriptsSummary } from "./script-status";
@@ -203,12 +203,13 @@ function RunningScriptRow({
 }): ReactElement {
   const { t } = useTranslation();
   const preview = usePreviewDescription(script, actions.isManagedPreview(script));
-  const value = t(runningRowValueKey(script, preview));
+  const label = runningPreviewListLabel(script, preview);
   const leading = useMemo(() => <ScriptIcon script={script} size={ROW_ICON_SIZE} />, [script]);
   return (
     <DropdownMenuSubTrigger
       id={scriptPageId(script.scriptName)}
-      value={value}
+      value={"valueKey" in label ? t(label.valueKey) : undefined}
+      description={"description" in label ? label.description : undefined}
       leading={leading}
       testID={`workspace-scripts-row-${script.scriptName}`}
     >
@@ -217,27 +218,8 @@ function RunningScriptRow({
   );
 }
 
-/**
- * What a running script's row says beside its name. A preview that needs a restart says so in
- * the list, and an old report never reads as current.
- */
-function runningRowValueKey(
-  script: WorkspaceScript,
-  preview: PreviewDescription | null,
-):
-  | "previewStatus.short.notResponding"
-  | "previewStatus.short.lastKnownRunning"
-  | "previewStatus.short.lastKnownNotResponding"
-  | "workspace.scripts.states.running" {
-  if (!preview) return "workspace.scripts.states.running";
-  const needsRestart = preview.action === "restart";
-  if (script.preview?.stale) {
-    return needsRestart
-      ? "previewStatus.short.lastKnownNotResponding"
-      : "previewStatus.short.lastKnownRunning";
-  }
-  return needsRestart ? "previewStatus.short.notResponding" : "workspace.scripts.states.running";
-}
+const BLOCKED_STATE = { disabled: true } as const;
+const BLOCKED_DATASET = { menuItem: "true", menuDisabled: "true" } as const;
 
 /**
  * A preview that cannot start: no press, but its sentence, often the only way to fix it, is
@@ -253,8 +235,13 @@ function BlockedPreviewRow({
   return (
     <View
       style={styles.blockedRow}
-      accessibilityRole="text"
+      // Read like a disabled menu item, with the whole sentence; the menu's arrow keys skip
+      // disabled items, as they do for every disabled item.
+      accessible
+      accessibilityRole="menuitem"
+      accessibilityState={BLOCKED_STATE}
       accessibilityLabel={`${script.scriptName}. ${line}`}
+      dataSet={BLOCKED_DATASET}
       testID={`workspace-scripts-row-${script.scriptName}`}
     >
       <ScriptIcon script={script} size={ROW_ICON_SIZE} />
