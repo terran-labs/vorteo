@@ -1,4 +1,12 @@
-import { readWorkspacePreviewOrigin } from "./workspace-preview-origin.js";
+import { readWorkspacePreviewOrigins } from "./workspace-preview-origin.js";
+import {
+  previewServiceKey,
+  projectWorkspaceScriptPreview,
+  previewBrokerIsStale,
+  readPreviewBrokerStatus,
+  type PreviewBrokerStatus,
+} from "./preview-broker-status.js";
+import { previewBrokerRestarter } from "./preview-broker-restart.js";
 import type { Logger } from "pino";
 import type {
   ScriptStatusUpdateMessage,
@@ -32,6 +40,25 @@ interface BuildWorkspaceScriptPayloadsOptions {
     currentBranch: string | null;
   };
   resolveHealth?: (hostname: string) => ScriptHealthState | null;
+  /** Managed preview data, read asynchronously by loadManagedPreviewContext(). */
+  managedPreviews?: ManagedPreviewContext;
+}
+
+export interface ManagedPreviewContext {
+  brokerStatus: PreviewBrokerStatus | null;
+  /** The broker's reserved HTTPS origin for each service of the workspace. */
+  origins: ReadonlyMap<string, string>;
+}
+
+/** Reads, without blocking, what the synchronous projection needs about previews. */
+export async function loadManagedPreviewContext(
+  workspaceId: string,
+): Promise<ManagedPreviewContext> {
+  const [brokerStatus, origins] = await Promise.all([
+    readPreviewBrokerStatus(),
+    readWorkspacePreviewOrigins(workspaceId),
+  ]);
+  return { brokerStatus, origins };
 }
 
 export async function readPaseoConfigForProjection(
@@ -257,16 +284,38 @@ export function buildWorkspaceScriptPayloads(
     payloads.push(buildOrphanRuntimePayload(runtimeEntry, serviceState, ctx));
   }
 
+  if (options.managedPreviews) applyManagedPreviews(payloads, workspaceId, options.managedPreviews);
+  return sortPayloads(payloads);
+}
+
+/** Adds broker state to reserved services and the broker origin to running ones. */
+function applyManagedPreviews(
+  payloads: WorkspaceScriptPayload[],
+  workspaceId: string,
+  { brokerStatus: broker, origins }: ManagedPreviewContext,
+): void {
+  const restarter = previewBrokerRestarter();
+  const stale = broker ? previewBrokerIsStale(broker, Date.now() / 1000) : false;
   for (const payload of payloads) {
-    if (payload.type !== "service" || payload.lifecycle !== "running") continue;
-    const origin = readWorkspacePreviewOrigin(workspaceId, payload.scriptName);
+    if (payload.type !== "service") continue;
+    const entry = broker?.services.get(previewServiceKey(workspaceId, payload.scriptName));
+    if (broker && entry) {
+      payload.preview = projectWorkspaceScriptPreview({
+        broker: entry,
+        stale,
+        lifecycle: payload.lifecycle,
+        health: payload.health,
+        restart: restarter?.outcome(workspaceId, payload.scriptName) ?? null,
+      });
+    }
+    if (payload.lifecycle !== "running") continue;
+    const origin = origins.get(payload.scriptName);
     if (origin) {
       // publicProxyUrl means reachable beyond localhost, including private tailnets.
       payload.publicProxyUrl = origin;
       payload.proxyUrl = origin;
     }
   }
-  return sortPayloads(payloads);
 }
 
 function buildScriptStatusUpdateMessage(params: {
@@ -290,6 +339,7 @@ export function createScriptStatusEmitter({
   serviceProxyPublicBaseUrl,
   resolveWorkspaceDirectory,
   logger,
+  resolveHealth,
 }: {
   sessions: () => SessionEmitter[];
   serviceProxy: ServiceProxySubsystem;
@@ -298,7 +348,9 @@ export function createScriptStatusEmitter({
   serviceProxyPublicBaseUrl?: string | null;
   resolveWorkspaceDirectory: (workspaceId: string) => string | null | Promise<string | null>;
   logger: Logger;
-}): (workspaceId: string, scripts: ScriptHealthEntry[]) => Promise<void> {
+  /** Health for an emit that did not come from a probe, such as a preview change. */
+  resolveHealth?: (hostname: string) => ScriptHealthState | null;
+}): (workspaceId: string, scripts?: ScriptHealthEntry[]) => Promise<void> {
   return async (workspaceId, scripts) => {
     try {
       const workspaceDirectory = await resolveWorkspaceDirectory(workspaceId);
@@ -307,9 +359,9 @@ export function createScriptStatusEmitter({
       }
 
       const resolvedDaemonPort = resolveDaemonPort(daemonPort);
-      const scriptHealthByHostname = new Map(
-        scripts.map((script) => [script.hostname, script.health] as const),
-      );
+      const scriptHealthByHostname = scripts
+        ? new Map(scripts.map((script) => [script.hostname, script.health] as const))
+        : null;
 
       const projected = buildWorkspaceScriptPayloads({
         workspaceId,
@@ -319,7 +371,11 @@ export function createScriptStatusEmitter({
         runtimeStore,
         daemonPort: resolvedDaemonPort,
         serviceProxyPublicBaseUrl,
-        resolveHealth: (hostname) => scriptHealthByHostname.get(hostname) ?? null,
+        managedPreviews: await loadManagedPreviewContext(workspaceId),
+        resolveHealth: (hostname) =>
+          scriptHealthByHostname
+            ? (scriptHealthByHostname.get(hostname) ?? null)
+            : (resolveHealth?.(hostname) ?? null),
       });
 
       const message = buildScriptStatusUpdateMessage({

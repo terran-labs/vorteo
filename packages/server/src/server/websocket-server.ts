@@ -139,7 +139,11 @@ import type { SecurityMode } from "@getpaseo/relay/e2ee";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import type { DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
 import { DirectorySyncService } from "./directory-sync/index.js";
-import { OWNER_PERMISSIONS, type DaemonPermission } from "./authorization/index.js";
+import {
+  OWNER_PERMISSIONS,
+  type DaemonPermission,
+  type SessionCredentialKind,
+} from "./authorization/index.js";
 import {
   ServicePrincipalError,
   ServicePrincipalStore,
@@ -172,6 +176,7 @@ export interface ExternalSocketMetadata {
 export interface SessionAdmission {
   principalId: string;
   permissions: readonly DaemonPermission[];
+  credential?: SessionCredentialKind;
   /** Resource-scoped agent authority held by a service principal. */
   agentGrants?: readonly AgentGrant[];
   principalLabel?: string;
@@ -1181,7 +1186,9 @@ export class VoiceAssistantWebSocketServer {
         request,
         undefined,
         false,
-        hasHeaderCredential ? OWNER_SESSION_ADMISSION : null,
+        hasHeaderCredential
+          ? { ...OWNER_SESSION_ADMISSION, credential: password ? "password" : "open" }
+          : null,
       );
     } finally {
       ws.resume();
@@ -1268,7 +1275,10 @@ export class VoiceAssistantWebSocketServer {
     this.pluginSocketIds.set(ws, pluginId);
     this.pluginSocketCleanup.set(ws, resolve);
     try {
-      await this.attachSocket(ws, undefined, undefined, true, OWNER_SESSION_ADMISSION);
+      await this.attachSocket(ws, undefined, undefined, true, {
+        ...OWNER_SESSION_ADMISSION,
+        credential: "plugin",
+      });
     } catch (error) {
       this.pluginSocketIds.delete(ws);
       this.finishPluginSocketCleanup(ws);
@@ -1921,6 +1931,7 @@ export class VoiceAssistantWebSocketServer {
       agentGrants: admission.agentGrants,
       principalLabel: admission.principalLabel,
     });
+    session.setSourceCredential(ws, admission.credential ?? null);
 
     const base: SessionConnectionBase = {
       session,
@@ -2305,6 +2316,8 @@ export class VoiceAssistantWebSocketServer {
     existing.permissionCeiling = message.sessionPermissions;
     existing.session.setPermissions(pending.admission!.permissions);
     existing.session.setAgentGrants(pending.admission!.agentGrants);
+    // Per socket: sockets already on the session keep the kind their own hello proved.
+    existing.session.setSourceCredential(ws, pending.admission!.credential ?? null);
     existing.session.setRouted(message.routed === true);
     this.assignHostSource(existing, message, pending.admission!.principalId);
     const newAppVersion = message.appVersion ?? null;
@@ -2400,6 +2413,12 @@ export class VoiceAssistantWebSocketServer {
         workspaceSetupRun: true,
         // COMPAT(localProjectConfig): added in Vorteo 2026-10, remove gate after 2027-04-22.
         localProjectConfig: true,
+        // COMPAT(previewStatus): added in Vorteo 2026-11, remove gate after 2027-05-23.
+        previewStatus: true,
+        // COMPAT(previewRestart): added in Vorteo 2026-11, remove gate after 2027-05-23.
+        // Restart accepts only password-admitted sessions, so a daemon without a password
+        // has no session that could use it.
+        ...(this.passwordHash ? { previewRestart: true } : {}),
         workspaceSetupObservation: true,
         workspaceSortTimes: true,
         // COMPAT(providersSnapshot): keep optional until all clients rely on snapshot flow.
@@ -3137,6 +3156,10 @@ export class VoiceAssistantWebSocketServer {
           this.attachSocket(socket, undefined, undefined, false, {
             principalId: connection.principalId,
             permissions,
+            // A routed session proves no more than the connection that carries it.
+            ...(connection.session.credentialFor(ws)
+              ? { credential: connection.session.credentialFor(ws)! }
+              : {}),
           }),
       });
       this.hostLinks.set(ws, link);

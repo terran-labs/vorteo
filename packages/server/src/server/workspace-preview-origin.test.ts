@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readWorkspacePreviewOrigin } from "./workspace-preview-origin.js";
 
-describe("workspace preview origins", () => {
+describe("workspace preview origins", async () => {
   let directory: string;
   beforeEach(() => {
     directory = mkdtempSync(join(tmpdir(), "preview-origin-"));
@@ -18,17 +18,17 @@ describe("workspace preview origins", () => {
       JSON.stringify({ origin, workspaceId, service }),
     );
   }
-  it("returns the exact broker HTTPS reservation, including its port", () => {
+  it("returns the exact broker HTTPS reservation, including its port", async () => {
     reserve("https://preview.example.ts.net:32780");
-    expect(readWorkspacePreviewOrigin("workspace", "web", directory)).toBe(
+    expect(await readWorkspacePreviewOrigin("workspace", "web", directory)).toBe(
       "https://preview.example.ts.net:32780",
     );
   });
-  it("does not borrow another workspace or service reservation", () => {
+  it("does not borrow another workspace or service reservation", async () => {
     reserve("https://preview.example.ts.net:32780", "other");
-    expect(readWorkspacePreviewOrigin("workspace", "web", directory)).toBeNull();
+    expect(await readWorkspacePreviewOrigin("workspace", "web", directory)).toBeNull();
     reserve("https://preview.example.ts.net:32780", "workspace", "other");
-    expect(readWorkspacePreviewOrigin("workspace", "web", directory)).toBeNull();
+    expect(await readWorkspacePreviewOrigin("workspace", "web", directory)).toBeNull();
   });
   it.each([
     "http://preview.example.ts.net:32780",
@@ -37,14 +37,14 @@ describe("workspace preview origins", () => {
     "https://user:secret@preview.example.ts.net",
     "https://preview.example.ts.net/path",
     "javascript:alert(1)",
-  ])("rejects an invalid broker origin: %s", (origin) => {
+  ])("rejects an invalid broker origin: %s", async (origin) => {
     reserve(origin);
-    expect(readWorkspacePreviewOrigin("workspace", "web", directory)).toBeNull();
+    expect(await readWorkspacePreviewOrigin("workspace", "web", directory)).toBeNull();
   });
-  it("omits missing or malformed reservations and rejects path traversal", () => {
-    expect(readWorkspacePreviewOrigin("workspace", "web", directory)).toBeNull();
+  it("omits missing or malformed reservations and rejects path traversal", async () => {
+    expect(await readWorkspacePreviewOrigin("workspace", "web", directory)).toBeNull();
     writeFileSync(join(directory, "workspace.web.json"), "{");
-    expect(readWorkspacePreviewOrigin("workspace", "web", directory)).toBeNull();
-    expect(readWorkspacePreviewOrigin("../workspace", "web", directory)).toBeNull();
+    expect(await readWorkspacePreviewOrigin("workspace", "web", directory)).toBeNull();
+    expect(await readWorkspacePreviewOrigin("../workspace", "web", directory)).toBeNull();
   });
 });

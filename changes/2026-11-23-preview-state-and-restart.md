@@ -1,0 +1,10 @@
+### Maintenance
+
+- Workspace script status carries an optional `preview` state for services the preview broker has reserved: ready, not responding, starting or stopped, with the broker's recorded cause and times and whether the state is stale. The daemon re-sends script status when the broker's published state changes (#586).
+- New `workspace.script.restart_preview.request`, gated by `previewRestart`, starts or restarts a managed preview through the broker so its link stays the same. Only sessions that signed in with the daemon password may use it; the local credential, service, plugin and password-less sessions are refused. The client SDK adds `restartWorkspaceScriptPreview`. The app does not use it yet (#586).
+- Sessions record how they were admitted (password, local credential, service, plugin or no password configured), from transport admission only, per socket, so a socket that resumes the owner app's session keeps its own weaker kind.
+- The broker's reservation, status and receipt files are read with bounded, non-blocking reads that refuse links and anything but a regular file, so a FIFO or device planted in Dev's agent-writable channel cannot stall the daemon. The reservation lookup is no longer synchronous.
+
+## Maintenance review
+
+Revised after review: restart slots are reserved before the inbox write so the limits hold under concurrency; resume replaces the admission kind, hostile channel files cannot block or bloat the daemon, restarts are capped at three in flight, staleness is judged for the broker as a whole, and the docs state what the password check does not prove. Updated the private workspace previews entry with the daemon's preview state and the owner-only restart request. In Dev the broker channel is agent-writable, so the daemon shows only known stop codes and plain error text from it and never grants anything from it. Needs a Host daemon restart, and Dev for Dev previews; wire fields are optional and capability-gated. README overview and onboarding are unchanged. Source only; not installed.

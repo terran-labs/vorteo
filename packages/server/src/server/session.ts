@@ -88,6 +88,7 @@ import {
   type WorkspaceScriptListRequest,
   type WorkspaceScriptStartRequest,
   type WorkspaceScriptStopRequest,
+  type WorkspaceScriptRestartPreviewRequest,
   type CloseItemsRequest,
   type DirectorySuggestionsRequest,
   type ProjectPlacementPayload,
@@ -357,7 +358,14 @@ import {
 } from "./worktree-session.js";
 import { archiveByScope, type ActiveWorkspaceRef } from "./workspace-archive-service.js";
 import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
-import { SessionAuthorization, type DaemonPermission } from "./authorization/index.js";
+import { readWorkspacePreviewOrigin } from "./workspace-preview-origin.js";
+import { previewServiceKey, readPreviewBrokerStatus } from "./preview-broker-status.js";
+import { admitPreviewRestart, previewBrokerRestarter } from "./preview-broker-restart.js";
+import {
+  SessionAuthorization,
+  type DaemonPermission,
+  type SessionCredentialKind,
+} from "./authorization/index.js";
 import { TaskOwnerEvidenceStore } from "./authorization/task-owner-evidence.js";
 
 function resolveWorkspaceSetupRuntime(
@@ -885,6 +893,8 @@ export class Session {
   private readonly authorization: SessionAuthorization;
   private readonly ownerEvidence: TaskOwnerEvidenceStore;
   private readonly principalId: string | null | undefined;
+  /** How each socket's own transport admission authenticated it; never request data. */
+  private readonly sourceCredentials = new WeakMap<object, SessionCredentialKind | null>();
   private readonly clientType: SessionOptions["clientType"];
   private appVersion: string | null;
   private clientCapabilities: ReadonlySet<ClientCapability>;
@@ -2572,6 +2582,20 @@ export class Session {
     return this.authorization.allowsOutbound(message);
   }
 
+  /**
+   * How the socket that sent a request was admitted. Kept per socket because a session can
+   * hold several sockets at once: a resume adds one without closing the others, so a
+   * session-wide value would let an agent's socket borrow the owner app's next password
+   * hello. Unknown sources, such as internal calls, have none.
+   */
+  credentialFor(source: object | undefined): SessionCredentialKind | null {
+    return source ? (this.sourceCredentials.get(source) ?? null) : null;
+  }
+
+  public setSourceCredential(source: object, credential: SessionCredentialKind | null): void {
+    this.sourceCredentials.set(source, credential);
+  }
+
   public setPermissions(permissions: readonly DaemonPermission[]): void {
     this.authorization.replacePermissions(permissions);
     this.connectedHostSession?.revoke();
@@ -2923,7 +2947,7 @@ export class Session {
       this.dispatchPluginDirectoryMessage(msg) ??
       this.dispatchPluginMessage(msg) ??
       this.dispatchPluginRpcMessage(msg) ??
-      this.dispatchHostServiceMessage(msg) ??
+      this.dispatchHostServiceMessage(msg, source) ??
       this.dispatchMiscMessage(msg);
     if (promise) await promise;
   }
@@ -2969,9 +2993,12 @@ export class Session {
     );
   }
 
-  private dispatchHostServiceMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+  private dispatchHostServiceMessage(
+    msg: SessionInboundMessage,
+    source?: object,
+  ): Promise<void> | undefined {
     return (
-      this.dispatchTerminalMessage(msg) ??
+      this.dispatchTerminalMessage(msg, source) ??
       this.dispatchScheduleMessage(msg) ??
       this.dispatchServicePrincipalMessage(msg) ??
       this.speechModelsSession.dispatch(msg)
@@ -3981,7 +4008,10 @@ export class Session {
     }
   }
 
-  private dispatchTerminalMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+  private dispatchTerminalMessage(
+    msg: SessionInboundMessage,
+    source?: object,
+  ): Promise<void> | undefined {
     switch (msg.type) {
       case "start_workspace_script_request":
         return this.handleStartWorkspaceScriptRequest(msg);
@@ -3991,6 +4021,8 @@ export class Session {
         return this.handleWorkspaceScriptStartRequest(msg);
       case "workspace.script.stop.request":
         return this.handleWorkspaceScriptStopRequest(msg);
+      case "workspace.script.restart_preview.request":
+        return this.handleWorkspaceScriptRestartPreviewRequest(msg, source);
       default:
         return this.terminalController.dispatch(msg, this.delivery);
     }
@@ -9489,6 +9521,47 @@ export class Session {
           error: error instanceof Error ? error.message : "Failed to stop workspace script",
         },
       });
+    }
+  }
+
+  private async handleWorkspaceScriptRestartPreviewRequest(
+    request: WorkspaceScriptRestartPreviewRequest,
+    source?: object,
+  ): Promise<void> {
+    const { requestId, workspaceId, scriptName } = request;
+    const respond = (accepted: boolean, refusalCode: string | null, error: string | null) =>
+      this.emit({
+        type: "workspace.script.restart_preview.response",
+        payload: { requestId, workspaceId, scriptName, accepted, refusalCode, error },
+      });
+    try {
+      const restarter = previewBrokerRestarter();
+      const refusal = admitPreviewRestart({
+        credential: this.credentialFor(source),
+        restarter,
+        brokerAvailable: (await restarter?.available()) ?? false,
+        workspace: (await this.workspaceRegistry.get(workspaceId)) ?? null,
+        hasReservation: (await readWorkspacePreviewOrigin(workspaceId, scriptName)) !== null,
+        broker:
+          (await readPreviewBrokerStatus())?.services.get(
+            previewServiceKey(workspaceId, scriptName),
+          ) ?? null,
+        workspaceId,
+        scriptName,
+        requester: this.getSessionId(),
+      });
+      if (refusal || !restarter) {
+        respond(false, refusal?.code ?? "broker_unavailable", refusal?.message ?? null);
+        return;
+      }
+      await restarter.submit(workspaceId, scriptName, request.mode ?? "start", this.getSessionId());
+      respond(true, null, null);
+    } catch (error) {
+      respond(
+        false,
+        null,
+        error instanceof Error ? error.message : "Failed to restart the preview",
+      );
     }
   }
 
