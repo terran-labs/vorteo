@@ -198,7 +198,11 @@ import {
   type PresetFenceRequest,
 } from "./agent/lead-launch/fence.js";
 import { switchAgentProfileCommand } from "./agent/profile-switch/command.js";
-import { FACTORY_OWNER_ONLY_CODE, factoryOwnerOnlyFields } from "./factory/project/owner-writes.js";
+import {
+  FACTORY_OWNER_ONLY_CODE,
+  FactoryRefusal,
+  factoryOwnerOnlyFields,
+} from "./factory/project/owner-writes.js";
 import { normalizeClientMessageId } from "./client-message-id.js";
 import { createAgentForMessage, AgentCreationRequestError } from "./agent/create-agent/requests.js";
 import { resolveCreateAgentIntent, type CreateAgentIntent } from "./agent/create-agent/intent.js";
@@ -3189,9 +3193,22 @@ export class Session {
     if (msg.type === "plugin.rpc.invoke.request") {
       if (!this.pluginRuntime) throw new Error("Plugin service is unavailable");
       if (this.refuseFactoryOwnerWrite(msg)) return Promise.resolve();
-      return this.pluginRuntime
-        .invokePluginRpc(msg.pluginId, msg.method, msg.input)
-        .then((output) => this.replyPluginRpc(msg, output));
+      return this.pluginRuntime.invokePluginRpc(msg.pluginId, msg.method, msg.input).then(
+        (output) => this.replyPluginRpc(msg, output),
+        (error: unknown) => {
+          // A coded Factory refusal is an answer, not a failure: the service logged it once.
+          if (msg.pluginId !== "factory" || !(error instanceof FactoryRefusal)) throw error;
+          this.emit({
+            type: "rpc_error",
+            payload: {
+              requestId: msg.requestId,
+              requestType: msg.type,
+              error: error.message,
+              code: error.code,
+            },
+          });
+        },
+      );
     }
     if (msg.type === "plugin.rpc.subscribe.request") return this.subscribePluginRpc(msg);
     return undefined;

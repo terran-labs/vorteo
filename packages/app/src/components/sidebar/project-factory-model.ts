@@ -46,6 +46,47 @@ export function factoryModelConfiguration(
   return { projectId, [field]: profileId };
 }
 
+/** Where the Foreman starts issue agents. Absent on daemons too old to report it. */
+export type FactoryIssueAgents = NonNullable<ProjectFactoryState["workers"]["issueAgents"]>;
+
+/**
+ * Moves issue agents to `next`. Moving them to this host runs the project's code here, so the
+ * owner confirms that first; a declined confirmation changes nothing. Resolves to the new state,
+ * or null when nothing was sent.
+ */
+export async function chooseFactoryIssueAgents(input: {
+  projectId: string;
+  current: FactoryIssueAgents;
+  next: FactoryIssueAgents;
+  confirmHost: () => Promise<boolean>;
+  invoke: (method: string, input: unknown) => Promise<unknown>;
+}): Promise<unknown> {
+  if (input.next === input.current) return null;
+  if (input.next === "host" && !(await input.confirmHost())) return null;
+  return input.invoke("factory.project.configure", {
+    projectId: input.projectId,
+    issueAgents: input.next,
+  });
+}
+
+/**
+ * Whether the owner may make this thread the project's Foreman (#360). Offered only where the
+ * daemon accepts the adoption: the thread wears this project's Foreman label, is not archived,
+ * and no Foreman is recorded, which is what a lost Factory state file leaves behind. Enable then
+ * refuses to create a second Foreman until the owner adopts the labelled one or archives it.
+ */
+export function canMakeFactoryForeman(input: {
+  projectId: string;
+  labels: Readonly<Record<string, string>> | undefined;
+  archived: boolean;
+  factory: Pick<ProjectFactoryState, "state" | "roles"> | undefined;
+}): boolean {
+  const { factory } = input;
+  if (!factory || factory.state === "unavailable" || input.archived) return false;
+  if (input.labels?.["vorteo.factory-role"] !== `${input.projectId}:factory-intake`) return false;
+  return !factory.roles.find((role) => role.role === "factory-intake")?.agentId;
+}
+
 /** The installation prefix the daemon gives per-project Factory members. */
 const PROJECT_FACTORY_INSTALLATION_PREFIX = "project-factory:";
 

@@ -1,3 +1,4 @@
+import { FactoryRefusal } from "./factory/project/owner-writes.js";
 import {
   createWorkspaceRuntimeStore,
   type WorkspaceRuntimeStore,
@@ -6933,3 +6934,24 @@ test.each([
     expect(messages.some((message) => message.type === "activity_log")).toBe(false);
   },
 );
+
+test("a coded Factory refusal reaches the app as its code, not a failure (#360)", async () => {
+  const messages: SessionOutboundMessage[] = [];
+  const invokePluginRpc = vi.fn(async () => {
+    throw new FactoryRefusal("Adopt the labelled Foreman", "factory_foreman_unadopted");
+  });
+  const pluginRuntime = { invokePluginRpc } as unknown as NonNullable<
+    SessionOptions["pluginRuntime"]
+  >;
+  const session = createSessionForTest({ clientType: "browser", messages, pluginRuntime });
+  await session.handleMessage({
+    type: "plugin.rpc.invoke.request",
+    requestId: "factory",
+    pluginId: "factory",
+    method: "factory.project.enable",
+    input: { projectId: "prj_app", repository: "acme/app" },
+  });
+  const errors = messages.filter((message) => message.type === "rpc_error");
+  expect(errors.map((message) => message.payload.code)).toEqual(["factory_foreman_unadopted"]);
+  expect(messages.some((message) => message.type === "activity_log")).toBe(false);
+});
