@@ -1104,6 +1104,38 @@ class Tests(unittest.TestCase):
         self.b.handle(self.request('stop'))
         self.assertEqual(self.b.ledger['entries']['wks_test.preview']['stopReason'], 'stopped')
 
+    def test_restart_cause_counts_every_time_the_service_was_seen_alive(self):
+        # Nov 23, 6:35 PM: a restart that closed a preview's terminal in the middle of a
+        # check read as process_changed, and one whose last full verification was 30.19 s
+        # old read as no cause. Both previews were seen alive just before the restart.
+        def entry(): return self.b.ledger['entries']['wks_test.preview']
+        def restart_now():
+            self.runtime.daemon = f'boot:{len(self.runtime.daemon)}:9'
+            self.runtime.daemon_started = time.time()
+            self.runtime.entry['lifecycle'] = 'stopped'
+        def age(seconds):
+            for field in ('verifiedAt', 'aliveAt'): entry()[field] -= seconds
+        # Stopped mid-check: a stop whose cause is decided, not a changed process.
+        self.b.handle(self.request()); age(100)
+        self.runtime.verify = lambda url: restart_now()
+        self.b.reconcile()
+        self.assertEqual((entry()['desired'], entry().get('stopReason')), ('stopped', 'daemon_restart'))
+        del self.runtime.verify
+        # Seen alive only by the direct probe, while the daemon was down for the restart.
+        self.b.handle(self.request()); age(100)
+        self.runtime.daemon_down = True
+        self.b.reconcile()
+        self.assertEqual(entry()['status'], 'unverified')
+        self.runtime.daemon_down = False
+        restart_now()
+        self.b.reconcile()
+        self.assertEqual(entry().get('stopReason'), 'daemon_restart')
+        # Not seen alive within the window: still no cause.
+        self.b.handle(self.request()); age(RESTART_ATTRIBUTION_SECONDS + 1)
+        restart_now()
+        self.b.reconcile()
+        self.assertNotIn('stopReason', entry())
+
     def test_status_file_publishes_only_listed_fields(self):
         self.b.handle(self.request())
         self.b.reconcile()

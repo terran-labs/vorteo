@@ -1075,6 +1075,10 @@ class Broker:
             raise ValueError('Backend allocation conflicts with control plane or frontend')
         if entry.get('terminal') and (entry['terminal'] != current['terminalId'] or entry.get('backend') != port):
             raise ProcessChanged('Service process identity changed; explicit start required')
+        if entry.get('terminal'):
+            # The daemon still reports the recorded service running: evidence for
+            # service_gone_cause even if this check then fails.
+            entry['aliveAt'] = time.time()
         entry.update(backend=port, terminal=current['terminalId'])
         self.save()
         self.runtime.backend_ready(port)
@@ -1105,7 +1109,11 @@ class Broker:
         url = f'https://{address}/'
         self.runtime.verify(url)
         again = self.runtime.current(entry['workspaceId'], entry['service'])
-        if (again['fingerprint'], again.get('terminalId'), again.get('port'), again.get('lifecycle')) != (entry['fingerprint'], entry['terminal'], port, 'running'):
+        if again.get('lifecycle') != 'running':
+            # Stopped mid-check, as when a daemon restart closes its terminal: a stop whose
+            # cause service_gone_cause decides, not a changed process.
+            raise ServiceGone('Managed service stopped; explicit start required')
+        if (again['fingerprint'], again.get('terminalId'), again.get('port')) != (entry['fingerprint'], entry['terminal'], port):
             raise ProcessChanged('Service changed during verification')
         if daemon is not None:
             if self.runtime.daemon_identity() != daemon:
@@ -1122,7 +1130,8 @@ class Broker:
                 entry['daemonWorker'] = worker
         # Only a full verification opens a timeout grace window. A remembered
         # "ready" from an earlier run never does once this time is too old.
-        entry.update(status='ready', url=url, verifiedAt=time.time(), inProcessCheckAgreed=agreed)
+        now = time.time()
+        entry.update(status='ready', url=url, verifiedAt=now, aliveAt=now, inProcessCheckAgreed=agreed)
         self.save()
         return {'status': 'ready', 'url': url, 'frontendPort': entry['frontend'], 'backendPort': port}
 
@@ -1211,7 +1220,7 @@ class Broker:
             # stopPending stays until the daemon has stopped the process; reconcile()
             # repeats it if this request cannot reach the daemon.
             entry.update(desired='stopped', status='stopped', stoppedAt=now, stopReason='stopped', stopPending=True)
-            for stale in ('url', 'misses', 'error', 'restartedAt', 'daemonWorker'):
+            for stale in ('url', 'misses', 'error', 'restartedAt', 'daemonWorker', 'aliveAt'):
                 entry.pop(stale, None)
             self.save()
             if entry.get('backend'):
@@ -1244,7 +1253,7 @@ class Broker:
             self.runtime.lifecycle('stop', current)
             current = self.runtime.current(r['workspaceId'], r['service'])
         entry.update(desired='running', status='pending', fingerprint=current['fingerprint'])
-        for stale in ('recovery', 'misses', 'stopReason', 'restartedAt', 'daemonWorker', 'stopPending'):
+        for stale in ('recovery', 'misses', 'stopReason', 'restartedAt', 'daemonWorker', 'stopPending', 'aliveAt'):
             entry.pop(stale, None)
         self.save()
         # This is startup configuration, not a verified browser link.
@@ -1288,6 +1297,11 @@ class Broker:
         verified = entry.get('verifiedAt')
         if not before or type(verified) not in (int, float):
             return None
+        # The last time the broker saw this service alive: a full verification, the daemon
+        # reporting it running in its recorded terminal, or a passing direct probe.
+        alive = entry.get('aliveAt')
+        if type(alive) in (int, float) and alive > verified:
+            verified = alive
         now = self.observed_daemon_worker()
         if not now:
             return None
@@ -1434,6 +1448,8 @@ class Broker:
             return False
         if not self.runtime.listener_unchanged(entry) or self.runtime.backend_accepts(entry['backend']) is not True:
             return False
+        # The probe just proved the recorded listener alive.
+        entry['aliveAt'] = time.time()
         if gap:
             entry.update(status='unverified', misses=entry.get('misses', 0) + 1,
                          daemonGapSince=since, error=DAEMON_GAP_MESSAGE)
