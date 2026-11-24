@@ -161,6 +161,31 @@ describe("describePreview", () => {
       { line: "previewStatus.stale.linkWithdrawnUnchecked", action: "stop" },
       "running",
     ],
+    [
+      // #616: the link is up and the server answers, so Restart would stop a working preview.
+      "a reachable preview whose checks are delayed offers no restart",
+      { state: "not_responding", linkCheck: "unverified", checkedAt: at(-1) },
+      { line: "previewStatus.line.checksDelayed", action: null },
+      "running",
+    ],
+    [
+      "a link withdrawn after delayed checks offers restart if it does not come back",
+      { state: "not_responding", linkCheck: "withdrawn", checkedAt: at(-1) },
+      { line: "previewStatus.line.checksWithdrawn", action: "restart" },
+      "running",
+    ],
+    [
+      "a stale report of delayed checks says only what was last known",
+      { state: "not_responding", linkCheck: "unverified", stale: true, checkedAt: at(-20) },
+      { line: "previewStatus.stale.checksDelayed.today", action: null },
+      "running",
+    ],
+    [
+      "a link check this app does not know reads as not responding",
+      { state: "not_responding", linkCheck: "paused", checkedAt: at(-1) },
+      { line: "previewStatus.line.notResponding.today", action: "restart" },
+      "running",
+    ],
     ["a state this app does not know shows nothing", { state: "paused" }, null],
   ])("%s", (_name, preview, expected, lifecycle) => {
     expect(describeKey(preview, lifecycle)).toEqual(expected);
@@ -189,6 +214,13 @@ describe("runningPreviewListLabel", () => {
     expect(description?.action).toBe("retry");
     expect(runningPreviewListLabel({ ...script, preview }, description)).toEqual({
       valueKey: "previewStatus.short.notResponding",
+    });
+  });
+  it("a reachable preview with delayed checks is not labeled not responding", () => {
+    const preview: WorkspaceScriptPreview = { state: "not_responding", linkCheck: "unverified" };
+    const description = describePreview(preview, now, "en-US", t, "running");
+    expect(runningPreviewListLabel({ ...script, preview }, description)).toEqual({
+      valueKey: "previewStatus.short.checksDelayed",
     });
   });
   it("a withdrawn link puts its line under the name, never a plain running label", () => {
@@ -281,6 +313,18 @@ describe("previewBadge", () => {
       { state: "ready", restart: { status: "unconfirmed", at: at(-1), mode: "stop" } },
       "running",
       "unconfirmed",
+    ],
+    [
+      "a reachable preview with delayed checks is unconfirmed",
+      { state: "not_responding", linkCheck: "unverified" },
+      "running",
+      "unconfirmed",
+    ],
+    [
+      "a link withdrawn after delayed checks",
+      { state: "not_responding", linkCheck: "withdrawn" },
+      "running",
+      "linkWithdrawn",
     ],
     ["a state this app does not know", { state: "paused" }, "running", null],
   ])("%s", (_name, preview, lifecycle, key) => {

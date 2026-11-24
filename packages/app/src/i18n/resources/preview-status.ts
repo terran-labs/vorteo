@@ -13,6 +13,10 @@ const en = {
   // order it freely: today, yesterday, a weekday this week, or a date. A time in the future
   // (clock skew) uses the date form, never "today".
   line: {
+    // The broker's own link checks (#616), so no time: its check time marks a visit, not a pass.
+    checksDelayed: "Running. Its checks are delayed. The link stays up.",
+    checksWithdrawn:
+      "Link withdrawn because its checks could not finish. It comes back by itself when one does. If it stays down, restart the preview.",
     ready: "Preview is running.",
     starting: "Starting the preview.",
     stopping: "Stopping the preview.",
@@ -75,6 +79,20 @@ const en = {
       weekday: "Last known: running, checked on {{day}} at {{time}}. Not checked since.",
       date: "Last known: running, checked on {{date}} at {{time}}. Not checked since.",
     },
+    checksDelayed: {
+      today: "Last known: running with delayed checks, checked at {{time}}. Not checked since.",
+      yesterday:
+        "Last known: running with delayed checks, checked yesterday at {{time}}. Not checked since.",
+      weekday:
+        "Last known: running with delayed checks, checked on {{day}} at {{time}}. Not checked since.",
+      date: "Last known: running with delayed checks, checked on {{date}} at {{time}}. Not checked since.",
+    },
+    checksWithdrawn: {
+      today: "Last known: link withdrawn, checked at {{time}}. Not checked since.",
+      yesterday: "Last known: link withdrawn, checked yesterday at {{time}}. Not checked since.",
+      weekday: "Last known: link withdrawn, checked on {{day}} at {{time}}. Not checked since.",
+      date: "Last known: link withdrawn, checked on {{date}} at {{time}}. Not checked since.",
+    },
     starting: {
       today: "Last known: starting, checked at {{time}}. Not checked since.",
       yesterday: "Last known: starting, checked yesterday at {{time}}. Not checked since.",
@@ -97,6 +115,8 @@ const en = {
   },
   /** The short state a compact list shows beside a running preview's name. */
   short: {
+    checksDelayed: "Unconfirmed",
+    checksWithdrawn: "Link withdrawn",
     notResponding: "Not responding",
   },
   // One or two words over a Previews gallery tile, at most 14 characters. The tile's full
@@ -147,6 +167,9 @@ type PreviewStatusStrings = WidenStrings<typeof en>;
 
 const es: PreviewStatusStrings = {
   line: {
+    checksDelayed: "En ejecución. Sus comprobaciones van con retraso. El enlace sigue activo.",
+    checksWithdrawn:
+      "Enlace retirado porque sus comprobaciones no pudieron terminar. Volverá por sí solo cuando una termine. Si no vuelve, reinicia la vista previa.",
     ready: "La vista previa está en ejecución.",
     starting: "Iniciando la vista previa.",
     stopping: "Deteniendo la vista previa.",
@@ -215,6 +238,24 @@ const es: PreviewStatusStrings = {
         "Último estado conocido: en ejecución, comprobado el {{day}} a las {{time}}. Sin comprobar desde entonces.",
       date: "Último estado conocido: en ejecución, comprobado el {{date}} a las {{time}}. Sin comprobar desde entonces.",
     },
+    checksDelayed: {
+      today:
+        "Último estado conocido: en ejecución con comprobaciones retrasadas, comprobado a las {{time}}. Sin comprobar desde entonces.",
+      yesterday:
+        "Último estado conocido: en ejecución con comprobaciones retrasadas, comprobado ayer a las {{time}}. Sin comprobar desde entonces.",
+      weekday:
+        "Último estado conocido: en ejecución con comprobaciones retrasadas, comprobado el {{day}} a las {{time}}. Sin comprobar desde entonces.",
+      date: "Último estado conocido: en ejecución con comprobaciones retrasadas, comprobado el {{date}} a las {{time}}. Sin comprobar desde entonces.",
+    },
+    checksWithdrawn: {
+      today:
+        "Último estado conocido: enlace retirado, comprobado a las {{time}}. Sin comprobar desde entonces.",
+      yesterday:
+        "Último estado conocido: enlace retirado, comprobado ayer a las {{time}}. Sin comprobar desde entonces.",
+      weekday:
+        "Último estado conocido: enlace retirado, comprobado el {{day}} a las {{time}}. Sin comprobar desde entonces.",
+      date: "Último estado conocido: enlace retirado, comprobado el {{date}} a las {{time}}. Sin comprobar desde entonces.",
+    },
     starting: {
       today:
         "Último estado conocido: iniciándose, comprobado a las {{time}}. Sin comprobar desde entonces.",
@@ -244,6 +285,8 @@ const es: PreviewStatusStrings = {
     unchecked: "El último estado conocido no está actualizado.",
   },
   short: {
+    checksDelayed: "Sin confirmar",
+    checksWithdrawn: "Enlace retirado",
     notResponding: "No responde",
   },
   badge: {
@@ -289,6 +332,9 @@ const es: PreviewStatusStrings = {
 
 const fr: PreviewStatusStrings = {
   line: {
+    checksDelayed: "En cours d’exécution. Ses vérifications sont retardées. Le lien reste actif.",
+    checksWithdrawn:
+      "Lien retiré, car ses vérifications n’ont pas pu aboutir. Il revient de lui-même dès qu’une vérification aboutit. S’il ne revient pas, redémarrez l’aperçu.",
     ready: "L’aperçu est en cours d’exécution.",
     starting: "Démarrage de l’aperçu.",
     stopping: "Arrêt de l’aperçu.",
@@ -356,6 +402,21 @@ const fr: PreviewStatusStrings = {
         "Dernier état connu : en cours d’exécution, vérifié {{day}} à {{time}}. Pas vérifié depuis.",
       date: "Dernier état connu : en cours d’exécution, vérifié le {{date}} à {{time}}. Pas vérifié depuis.",
     },
+    checksDelayed: {
+      today:
+        "Dernier état connu : en cours d’exécution avec vérifications retardées, vérifié à {{time}}. Pas vérifié depuis.",
+      yesterday:
+        "Dernier état connu : en cours d’exécution avec vérifications retardées, vérifié hier à {{time}}. Pas vérifié depuis.",
+      weekday:
+        "Dernier état connu : en cours d’exécution avec vérifications retardées, vérifié {{day}} à {{time}}. Pas vérifié depuis.",
+      date: "Dernier état connu : en cours d’exécution avec vérifications retardées, vérifié le {{date}} à {{time}}. Pas vérifié depuis.",
+    },
+    checksWithdrawn: {
+      today: "Dernier état connu : lien retiré, vérifié à {{time}}. Pas vérifié depuis.",
+      yesterday: "Dernier état connu : lien retiré, vérifié hier à {{time}}. Pas vérifié depuis.",
+      weekday: "Dernier état connu : lien retiré, vérifié {{day}} à {{time}}. Pas vérifié depuis.",
+      date: "Dernier état connu : lien retiré, vérifié le {{date}} à {{time}}. Pas vérifié depuis.",
+    },
     starting: {
       today: "Dernier état connu : en démarrage, vérifié à {{time}}. Pas vérifié depuis.",
       yesterday: "Dernier état connu : en démarrage, vérifié hier à {{time}}. Pas vérifié depuis.",
@@ -378,6 +439,8 @@ const fr: PreviewStatusStrings = {
     unchecked: "Le dernier état connu n’est pas à jour.",
   },
   short: {
+    checksDelayed: "Non confirmé",
+    checksWithdrawn: "Lien retiré",
     notResponding: "Ne répond pas",
   },
   badge: {
@@ -424,6 +487,9 @@ const fr: PreviewStatusStrings = {
 
 const ja: PreviewStatusStrings = {
   line: {
+    checksDelayed: "実行中です。確認が遅れています。リンクは有効なままです。",
+    checksWithdrawn:
+      "確認を完了できなかったため、リンクを取り下げました。確認が完了すると自動的に戻ります。戻らない場合は、プレビューを再起動してください。",
     ready: "プレビューは実行中です。",
     starting: "プレビューを起動しています。",
     stopping: "プレビューを停止しています。",
@@ -487,6 +553,22 @@ const ja: PreviewStatusStrings = {
       weekday: "最後の既知の状態: 実行中（{{day}}の {{time}} に確認）。以降は確認されていません。",
       date: "最後の既知の状態: 実行中（{{date}}の {{time}} に確認）。以降は確認されていません。",
     },
+    checksDelayed: {
+      today: "最後の既知の状態: 実行中・確認遅延（{{time}} に確認）。以降は確認されていません。",
+      yesterday:
+        "最後の既知の状態: 実行中・確認遅延（昨日の {{time}} に確認）。以降は確認されていません。",
+      weekday:
+        "最後の既知の状態: 実行中・確認遅延（{{day}}の {{time}} に確認）。以降は確認されていません。",
+      date: "最後の既知の状態: 実行中・確認遅延（{{date}}の {{time}} に確認）。以降は確認されていません。",
+    },
+    checksWithdrawn: {
+      today: "最後の既知の状態: リンク取り下げ済み（{{time}} に確認）。以降は確認されていません。",
+      yesterday:
+        "最後の既知の状態: リンク取り下げ済み（昨日の {{time}} に確認）。以降は確認されていません。",
+      weekday:
+        "最後の既知の状態: リンク取り下げ済み（{{day}}の {{time}} に確認）。以降は確認されていません。",
+      date: "最後の既知の状態: リンク取り下げ済み（{{date}}の {{time}} に確認）。以降は確認されていません。",
+    },
     starting: {
       today: "最後の既知の状態: 起動中（{{time}} に確認）。以降は確認されていません。",
       yesterday: "最後の既知の状態: 起動中（昨日の {{time}} に確認）。以降は確認されていません。",
@@ -509,6 +591,8 @@ const ja: PreviewStatusStrings = {
     unchecked: "最後の既知の状態は最新ではありません。",
   },
   short: {
+    checksDelayed: "未確認",
+    checksWithdrawn: "リンク取り下げ",
     notResponding: "応答なし",
   },
   badge: {
@@ -552,6 +636,9 @@ const ja: PreviewStatusStrings = {
 
 const ko: PreviewStatusStrings = {
   line: {
+    checksDelayed: "실행 중입니다. 확인이 지연되고 있습니다. 링크는 계속 유지됩니다.",
+    checksWithdrawn:
+      "확인을 완료하지 못해 링크를 회수했습니다. 확인이 완료되면 자동으로 돌아옵니다. 돌아오지 않으면 미리보기를 다시 시작하세요.",
     ready: "미리보기가 실행 중입니다.",
     starting: "미리보기를 시작하는 중입니다.",
     stopping: "미리보기를 중지하는 중입니다.",
@@ -616,6 +703,23 @@ const ko: PreviewStatusStrings = {
         "마지막으로 확인된 상태: 실행 중, {{day}} {{time}}에 확인. 이후 확인되지 않았습니다.",
       date: "마지막으로 확인된 상태: 실행 중, {{date}} {{time}}에 확인. 이후 확인되지 않았습니다.",
     },
+    checksDelayed: {
+      today:
+        "마지막으로 확인된 상태: 실행 중(확인 지연), {{time}}에 확인. 이후 확인되지 않았습니다.",
+      yesterday:
+        "마지막으로 확인된 상태: 실행 중(확인 지연), 어제 {{time}}에 확인. 이후 확인되지 않았습니다.",
+      weekday:
+        "마지막으로 확인된 상태: 실행 중(확인 지연), {{day}} {{time}}에 확인. 이후 확인되지 않았습니다.",
+      date: "마지막으로 확인된 상태: 실행 중(확인 지연), {{date}} {{time}}에 확인. 이후 확인되지 않았습니다.",
+    },
+    checksWithdrawn: {
+      today: "마지막으로 확인된 상태: 링크 회수됨, {{time}}에 확인. 이후 확인되지 않았습니다.",
+      yesterday:
+        "마지막으로 확인된 상태: 링크 회수됨, 어제 {{time}}에 확인. 이후 확인되지 않았습니다.",
+      weekday:
+        "마지막으로 확인된 상태: 링크 회수됨, {{day}} {{time}}에 확인. 이후 확인되지 않았습니다.",
+      date: "마지막으로 확인된 상태: 링크 회수됨, {{date}} {{time}}에 확인. 이후 확인되지 않았습니다.",
+    },
     starting: {
       today: "마지막으로 확인된 상태: 시작 중, {{time}}에 확인. 이후 확인되지 않았습니다.",
       yesterday: "마지막으로 확인된 상태: 시작 중, 어제 {{time}}에 확인. 이후 확인되지 않았습니다.",
@@ -640,6 +744,8 @@ const ko: PreviewStatusStrings = {
     unchecked: "마지막으로 확인된 상태는 최신이 아닙니다.",
   },
   short: {
+    checksDelayed: "확인 안 됨",
+    checksWithdrawn: "링크 회수됨",
     notResponding: "응답 없음",
   },
   badge: {
@@ -683,6 +789,9 @@ const ko: PreviewStatusStrings = {
 
 const ptBR: PreviewStatusStrings = {
   line: {
+    checksDelayed: "Em execução. As verificações estão atrasadas. O link continua ativo.",
+    checksWithdrawn:
+      "Link retirado porque as verificações não puderam terminar. Ele volta sozinho quando uma terminar. Se não voltar, reinicie a prévia.",
     ready: "A prévia está em execução.",
     starting: "Iniciando a prévia.",
     stopping: "Parando a prévia.",
@@ -751,6 +860,24 @@ const ptBR: PreviewStatusStrings = {
         "Último estado conhecido: em execução, verificado {{day}}, às {{time}}. Não verificado desde então.",
       date: "Último estado conhecido: em execução, verificado em {{date}}, às {{time}}. Não verificado desde então.",
     },
+    checksDelayed: {
+      today:
+        "Último estado conhecido: em execução com verificações atrasadas, verificado às {{time}}. Não verificado desde então.",
+      yesterday:
+        "Último estado conhecido: em execução com verificações atrasadas, verificado ontem às {{time}}. Não verificado desde então.",
+      weekday:
+        "Último estado conhecido: em execução com verificações atrasadas, verificado {{day}}, às {{time}}. Não verificado desde então.",
+      date: "Último estado conhecido: em execução com verificações atrasadas, verificado em {{date}}, às {{time}}. Não verificado desde então.",
+    },
+    checksWithdrawn: {
+      today:
+        "Último estado conhecido: link retirado, verificado às {{time}}. Não verificado desde então.",
+      yesterday:
+        "Último estado conhecido: link retirado, verificado ontem às {{time}}. Não verificado desde então.",
+      weekday:
+        "Último estado conhecido: link retirado, verificado {{day}}, às {{time}}. Não verificado desde então.",
+      date: "Último estado conhecido: link retirado, verificado em {{date}}, às {{time}}. Não verificado desde então.",
+    },
     starting: {
       today:
         "Último estado conhecido: iniciando, verificado às {{time}}. Não verificado desde então.",
@@ -778,6 +905,8 @@ const ptBR: PreviewStatusStrings = {
     unchecked: "O último estado conhecido não está atualizado.",
   },
   short: {
+    checksDelayed: "Não confirmado",
+    checksWithdrawn: "Link retirado",
     notResponding: "Sem resposta",
   },
   badge: {
@@ -822,6 +951,9 @@ const ptBR: PreviewStatusStrings = {
 
 const ru: PreviewStatusStrings = {
   line: {
+    checksDelayed: "Работает. Проверки задерживаются. Ссылка остаётся доступной.",
+    checksWithdrawn:
+      "Ссылка отозвана, потому что проверки не удалось завершить. Она вернётся сама, когда проверка пройдёт. Если этого не случится, перезапустите предпросмотр.",
     ready: "Предпросмотр запущен.",
     starting: "Предпросмотр запускается.",
     stopping: "Предпросмотр останавливается.",
@@ -889,6 +1021,24 @@ const ru: PreviewStatusStrings = {
         "Последнее известное состояние: запущен, проверено: {{day}}, {{time}}. С тех пор не проверялось.",
       date: "Последнее известное состояние: запущен, проверено: {{date}}, {{time}}. С тех пор не проверялось.",
     },
+    checksDelayed: {
+      today:
+        "Последнее известное состояние: запущен с задержкой проверок, проверено в {{time}}. С тех пор не проверялось.",
+      yesterday:
+        "Последнее известное состояние: запущен с задержкой проверок, проверено вчера в {{time}}. С тех пор не проверялось.",
+      weekday:
+        "Последнее известное состояние: запущен с задержкой проверок, проверено: {{day}}, {{time}}. С тех пор не проверялось.",
+      date: "Последнее известное состояние: запущен с задержкой проверок, проверено: {{date}}, {{time}}. С тех пор не проверялось.",
+    },
+    checksWithdrawn: {
+      today:
+        "Последнее известное состояние: ссылка отозвана, проверено в {{time}}. С тех пор не проверялось.",
+      yesterday:
+        "Последнее известное состояние: ссылка отозвана, проверено вчера в {{time}}. С тех пор не проверялось.",
+      weekday:
+        "Последнее известное состояние: ссылка отозвана, проверено: {{day}}, {{time}}. С тех пор не проверялось.",
+      date: "Последнее известное состояние: ссылка отозвана, проверено: {{date}}, {{time}}. С тех пор не проверялось.",
+    },
     starting: {
       today:
         "Последнее известное состояние: запускается, проверено в {{time}}. С тех пор не проверялось.",
@@ -918,6 +1068,8 @@ const ru: PreviewStatusStrings = {
     unchecked: "Последнее известное состояние устарело.",
   },
   short: {
+    checksDelayed: "Не подтверждено",
+    checksWithdrawn: "Ссылка отозвана",
     notResponding: "Не отвечает",
   },
   badge: {
@@ -962,6 +1114,9 @@ const ru: PreviewStatusStrings = {
 
 const zhCN: PreviewStatusStrings = {
   line: {
+    checksDelayed: "正在运行。检查有所延迟。链接保持可用。",
+    checksWithdrawn:
+      "由于检查无法完成，链接已撤回。检查完成后会自动恢复。如果没有恢复，请重启预览。",
     ready: "预览正在运行。",
     starting: "正在启动预览。",
     stopping: "正在停止预览。",
@@ -1021,6 +1176,18 @@ const zhCN: PreviewStatusStrings = {
       weekday: "最后已知状态：运行中，检查于{{day}} {{time}}。此后未再检查。",
       date: "最后已知状态：运行中，检查于 {{date}} {{time}}。此后未再检查。",
     },
+    checksDelayed: {
+      today: "最后已知状态：运行中（检查延迟），检查于 {{time}}。此后未再检查。",
+      yesterday: "最后已知状态：运行中（检查延迟），检查于昨天 {{time}}。此后未再检查。",
+      weekday: "最后已知状态：运行中（检查延迟），检查于{{day}} {{time}}。此后未再检查。",
+      date: "最后已知状态：运行中（检查延迟），检查于 {{date}} {{time}}。此后未再检查。",
+    },
+    checksWithdrawn: {
+      today: "最后已知状态：链接已撤回，检查于 {{time}}。此后未再检查。",
+      yesterday: "最后已知状态：链接已撤回，检查于昨天 {{time}}。此后未再检查。",
+      weekday: "最后已知状态：链接已撤回，检查于{{day}} {{time}}。此后未再检查。",
+      date: "最后已知状态：链接已撤回，检查于 {{date}} {{time}}。此后未再检查。",
+    },
     starting: {
       today: "最后已知状态：启动中，检查于 {{time}}。此后未再检查。",
       yesterday: "最后已知状态：启动中，检查于昨天 {{time}}。此后未再检查。",
@@ -1042,6 +1209,8 @@ const zhCN: PreviewStatusStrings = {
     unchecked: "最后已知状态不是最新的。",
   },
   short: {
+    checksDelayed: "未确认",
+    checksWithdrawn: "链接已撤回",
     notResponding: "无响应",
   },
   badge: {
@@ -1084,6 +1253,9 @@ const zhCN: PreviewStatusStrings = {
 
 const ar: PreviewStatusStrings = {
   line: {
+    checksDelayed: "قيد التشغيل. عمليات التحقق متأخرة. يبقى الرابط متاحًا.",
+    checksWithdrawn:
+      "سُحب الرابط لأن عمليات التحقق لم تكتمل. سيعود تلقائيًا عند اكتمال إحداها. إذا لم يعد، فأعد تشغيل المعاينة.",
     ready: "المعاينة قيد التشغيل.",
     starting: "جارٍ بدء المعاينة.",
     stopping: "جارٍ إيقاف المعاينة.",
@@ -1146,6 +1318,22 @@ const ar: PreviewStatusStrings = {
         "آخر حالة معروفة: قيد التشغيل، وفُحصت يوم {{day}} الساعة {{time}}. لم تُفحص منذ ذلك الحين.",
       date: "آخر حالة معروفة: قيد التشغيل، وفُحصت في {{date}} الساعة {{time}}. لم تُفحص منذ ذلك الحين.",
     },
+    checksDelayed: {
+      today:
+        "آخر حالة معروفة: قيد التشغيل مع تأخر عمليات التحقق، وفُحصت الساعة {{time}}. لم تُفحص منذ ذلك الحين.",
+      yesterday:
+        "آخر حالة معروفة: قيد التشغيل مع تأخر عمليات التحقق، وفُحصت أمس الساعة {{time}}. لم تُفحص منذ ذلك الحين.",
+      weekday:
+        "آخر حالة معروفة: قيد التشغيل مع تأخر عمليات التحقق، وفُحصت يوم {{day}} الساعة {{time}}. لم تُفحص منذ ذلك الحين.",
+      date: "آخر حالة معروفة: قيد التشغيل مع تأخر عمليات التحقق، وفُحصت في {{date}} الساعة {{time}}. لم تُفحص منذ ذلك الحين.",
+    },
+    checksWithdrawn: {
+      today: "آخر حالة معروفة: الرابط مسحوب، وفُحصت الساعة {{time}}. لم تُفحص منذ ذلك الحين.",
+      yesterday: "آخر حالة معروفة: الرابط مسحوب، وفُحصت أمس الساعة {{time}}. لم تُفحص منذ ذلك الحين.",
+      weekday:
+        "آخر حالة معروفة: الرابط مسحوب، وفُحصت يوم {{day}} الساعة {{time}}. لم تُفحص منذ ذلك الحين.",
+      date: "آخر حالة معروفة: الرابط مسحوب، وفُحصت في {{date}} الساعة {{time}}. لم تُفحص منذ ذلك الحين.",
+    },
     starting: {
       today: "آخر حالة معروفة: قيد البدء، وفُحصت الساعة {{time}}. لم تُفحص منذ ذلك الحين.",
       yesterday: "آخر حالة معروفة: قيد البدء، وفُحصت أمس الساعة {{time}}. لم تُفحص منذ ذلك الحين.",
@@ -1169,6 +1357,8 @@ const ar: PreviewStatusStrings = {
     unchecked: "آخر حالة معروفة ليست محدّثة.",
   },
   short: {
+    checksDelayed: "غير مؤكد",
+    checksWithdrawn: "الرابط مسحوب",
     notResponding: "لا تستجيب",
   },
   badge: {

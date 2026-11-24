@@ -255,6 +255,29 @@ describe("preview restart limits under concurrency", () => {
 });
 
 describe("preview state projection", () => {
+  test.each([
+    ["unverified", "healthy", "unverified"],
+    ["unverified", null, "unverified"],
+    // The daemon's own probe failing means the server is not answering, whatever the broker says.
+    ["unverified", "unhealthy", undefined],
+    ["withdrawn", "healthy", "withdrawn"],
+    ["failed", "healthy", undefined],
+  ] as const)(
+    "a running preview the broker marks %s with health %s keeps not_responding and linkCheck %s",
+    (status, health, expected) => {
+      const preview = projectWorkspaceScriptPreview({
+        broker: { ...broker, desired: "running", status },
+        stale: false,
+        lifecycle: "running",
+        health,
+        restart: null,
+      });
+      // Older apps read only the state, so they keep today's "not responding".
+      expect(preview.state).toBe("not_responding");
+      expect(preview.linkCheck).toBe(expected);
+    },
+  );
+
   test("a forged or unknown broker entry cannot add a cause or a link", () => {
     // In Dev the status file is agent-writable; only known codes and plain text pass.
     const preview = projectWorkspaceScriptPreview({
