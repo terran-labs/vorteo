@@ -88,7 +88,27 @@ A workspace service (a `paseo.json` script of type `service`, which is how manag
 - **Bounded.** Startup waits at most 3 seconds. Past that, or if a lookup fails, nothing is re-linked or stopped and the daemon starts as before. A service whose route cannot be restored is left unlinked; the others are still re-linked.
 - **Untrusted input.** The record is read like the preview broker's files: `lstat` first, regular file only, at most 256 KiB, schema-checked, ignored whole when anything is wrong. The marker is schema-checked too. In Dev the home is agent-writable, so a forged record can only name a launch the worker itself proves. An agent that reads the worker's secret from its record can already type into every shell, which is outside what the daemon can defend.
 
-Which restarts keep terminals is unchanged: crash restarts, worker restarts (`restart_server`, Dev installs, Host installs that wait for idle, held restarts) and `daemon stop --keep-terminals`. A Host install that replaces the supervisor sends SIGTERM and still closes them, so its previews still stop (issue #587 tracks that change).
+These restarts keep terminals:
+
+- crash restarts;
+- worker restarts: `restart_server`, Dev installs, Host installs that wait for idle, held restarts;
+- `daemon stop --keep-terminals`;
+- a Host source update with immediate replacement on a launchd (macOS) Host, once the installation coordinator carries the change. The coordinator sends the shutdown RPC with `keepTerminals`, then starts the service again with `kickstart`. It does this only when both the candidate and the previous release re-link and the running daemon answered before the restart; otherwise it falls back to `kickstart -k` and says so in its receipt ([execution installation](execution-installation.md#reviewed-source-updates)). A systemd Host still closes terminals, because the unit's default `KillMode` stops the detached terminal worker with the unit.
+
+These close them:
+
+- an owner's `daemon stop` without `--keep-terminals`;
+- `--force`;
+- a kill restart;
+- uninstall;
+- a plain Host restart, a recovery restart, the one-command installer and `upgrade.mjs`, all of which send SIGTERM;
+- a reboot.
+
+A service's own Stop always kills its terminal.
+
+**The supervisor must carry the flag.** A worker restart keeps terminals only if the running supervisor forwards `keepTerminals` to the worker's graceful shutdown. A supervisor started before that support sends the shutdown without it. The worker then closes its terminals on every restart until that supervisor is replaced. Check its `Restart requested` log line: current supervisors write `keepTerminals` on it.
+
+**Worker code reaches a long-lived worker only through a protocol bump.** Installs no longer replace the terminal worker, so it can outlive many releases. A change to worker behavior, such as a new launch marker field, reaches a running worker only when it exits on its own (no controller and no terminals), or when `TERMINAL_WORKER_PROTOCOL_VERSION` is bumped. A bumped daemon adopts the old worker to drain, so its terminals keep running, and starts new terminals in a new worker.
 
 ## Known limits
 
