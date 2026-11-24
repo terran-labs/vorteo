@@ -616,7 +616,7 @@ export function createInstallationServer(
     installUpdate: (job, options) =>
       forTarget(job.target).install(
         job,
-        async (target) => {
+        async (target, restartOptions) => {
           assertUpdateReadiness(target);
           if (job.standingInterruption) {
             if (!executor.restartHeld)
@@ -624,7 +624,9 @@ export function createInstallationServer(
             return executor.restartHeld(job);
           }
           // An owner approve, or an owner-delegated automatic update, replaces the service.
-          if (!job.whenIdle || options.serviceRestart) return executor.restart(target);
+          // Held and idle restarts already keep terminals; only this one is asked to.
+          if (!job.whenIdle || options.serviceRestart)
+            return executor.restart(target, restartOptions);
           if (!executor.restartWhenIdle)
             throw new RestartRequestError("Safe update admission is unavailable");
           const detail = await executor.restartWhenIdle(target);

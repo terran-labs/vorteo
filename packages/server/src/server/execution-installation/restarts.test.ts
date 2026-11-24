@@ -17,6 +17,10 @@ import {
 } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { InstallationSourceUpdates } from "./source-updates.js";
+import {
+  releaseRelinksSurvivingServices,
+  replaceHostKeepingTerminals,
+} from "./host-install-terminals.js";
 import { hostReleaseRetentionIdle } from "./host-release-retention.js";
 import { digestBootstrapArtifact } from "./coordinator-bootstrap-artifact.js";
 import { tmpdir } from "node:os";
@@ -25,6 +29,7 @@ import { expect, test, vi } from "vitest";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import {
   createInstallationRestartExecutor,
+  hostServiceCommands,
   createInstallationRegistrationAdmission,
   validateHostStartup,
 } from "./daemon.js";
@@ -2515,6 +2520,15 @@ test("interruption outcome requires the exact installed candidate and published 
 
 // 2026-10-21: an idle Host restart replaced only the worker, which reloaded the
 // old supervisor's build (vorteo.726) while the install reported 729 installed.
+/** Compiled re-link evidence, as releaseRelinksSurvivingServices() reads it. */
+const RELINK_EVIDENCE: [string, string][] = [
+  [
+    "packages/server/dist/server/server/workspace-script-relink.js",
+    'logger.info(fields, "Re-linked a workspace service that survived the daemon");',
+  ],
+  ["packages/server/dist/server/server/bootstrap.js", "await relinkWorkspaceScripts({"],
+];
+
 test("Host publication uses the verified candidate migration rules after replacement readiness", async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "source-version-")));
   try {
@@ -2564,6 +2578,9 @@ test("Host publication uses the verified candidate migration rules after replace
       await fs.mkdir(path.join(release, 'scripts'), {recursive:true});
       await fs.writeFile(path.join(release, 'scripts/publish-instance-web.mjs'), ${JSON.stringify(publisher)});
       await fs.writeFile(path.join(release, 'scripts/web-icon-migration.mjs'), ${JSON.stringify(migration)});
+      if (await fs.access(path.join(input.work, '..', 'relink-candidate')).then(() => true, () => false))
+        for (const [file, text] of ${JSON.stringify(RELINK_EVIDENCE)})
+          await fs.mkdir(path.dirname(path.join(release, file)), {recursive:true}).then(() => fs.writeFile(path.join(release, file), text));
       await fs.writeFile(input.resultFile, JSON.stringify({release,exported}));`,
     );
     await writeFile(
@@ -2591,7 +2608,13 @@ test("Host publication uses the verified candidate migration rules after replace
       detail: "Prepared",
       update,
     });
-    const restart = vi.fn(async () => "Replacement worker 2 is ready");
+    // Stands in for the executor: reports terminals kept whenever it is asked to keep them.
+    const restart = vi.fn(
+      async (_target: string, options?: Parameters<RestartExecutor["restart"]>[1]) => {
+        if (options?.keepTerminals) options.onTerminals?.({ terminals: "kept" });
+        return "Replacement worker 2 is ready";
+      },
+    );
 
     const stale = job();
     await expect(updates.install(stale, restart, undefined, async () => "1.0.0")).rejects.toThrow(
@@ -2639,11 +2662,194 @@ test("Host publication uses the verified candidate migration rules after replace
       updates.install(job(), restart, undefined, async () => "1.0.1"),
     ).resolves.toContain("Installed source");
     expect(await readFile(path.join(root, "published"), "utf8")).toBe("yes");
+    expect(restart.mock.lastCall?.[1]?.keepTerminals).toBe(false);
+
+    // Keep terminals (#587) only when both the candidate and the previous release, the
+    // one a failed readiness check falls back to, re-link surviving services.
+    const installWith = async (candidate: boolean, previousRelinks: boolean) => {
+      await rm(link);
+      await symlink(previous, link);
+      for (const [file, text] of RELINK_EVIDENCE) {
+        await rm(path.join(previous, file), { force: true });
+        if (previousRelinks) {
+          await mkdir(path.dirname(path.join(previous, file)), { recursive: true });
+          await writeFile(path.join(previous, file), text);
+        }
+      }
+      await (candidate
+        ? writeFile(path.join(root, "relink-candidate"), "")
+        : rm(path.join(root, "relink-candidate"), { force: true }));
+      const installed = job();
+      const result = await updates.install(installed, restart, undefined, async () => "1.0.1");
+      const receipt = JSON.parse(
+        await readFile(path.join(root, installed.id, "activation.json"), "utf8"),
+      );
+      return { result, receipt, keep: restart.mock.lastCall?.[1]?.keepTerminals };
+    };
+    const kept = await installWith(true, true);
+    expect(kept.keep).toBe(true);
+    expect(kept.receipt).toMatchObject({ status: "succeeded", terminals: "kept" });
+    // A rollback to a release without the re-link closes terminals as before.
+    for (const [candidate, previousRelinks] of [
+      [false, true],
+      [true, false],
+    ]) {
+      const closed = await installWith(candidate, previousRelinks);
+      expect(closed.keep).toBe(false);
+      expect(closed.receipt).toMatchObject({ status: "succeeded", terminals: "not-attempted" });
+    }
   } finally {
     await hostReleaseRetentionIdle();
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a keep-terminals Host replacement falls back to the old replacement and says so", async () => {
+  type Step = "refused" | "never stops" | "stops";
+  const run = async (step: Step) => {
+    const calls: string[] = [];
+    let now = 0;
+    const outcome = await replaceHostKeepingTerminals({
+      async shutdownKeepingTerminals() {
+        calls.push("shutdown");
+        if (step === "refused") throw new Error("Host daemon cannot keep terminals");
+      },
+      stopped: async () => step === "stops",
+      start: async () => void calls.push("start"),
+      replace: async () => void calls.push("replace"),
+      stopDeadlineMs: 30_000,
+      pollMs: 0,
+      now: () => (now += 10_000),
+    });
+    return { outcome, calls };
+  };
+  expect(await run("stops")).toEqual({
+    outcome: { terminals: "kept" },
+    calls: ["shutdown", "start"],
+  });
+  // A refused, failed or timed-out request still completes the install the old way.
+  expect(await run("refused")).toEqual({
+    outcome: {
+      terminals: "replaced",
+      reason: "Host daemon cannot keep terminals",
+      requestSent: true,
+    },
+    calls: ["shutdown", "replace"],
+  });
+  const stuck = await run("never stops");
+  expect(stuck.calls).toEqual(["shutdown", "replace"]);
+  expect(stuck.outcome).toMatchObject({ terminals: "replaced" });
+
+  // The gate reads regular files only: a linked evidence file proves nothing.
+  const release = await realpath(await mkdtemp(path.join(tmpdir(), "relink-gate-")));
+  try {
+    for (const [file, text] of RELINK_EVIDENCE) {
+      await mkdir(path.dirname(path.join(release, file)), { recursive: true });
+      await writeFile(path.join(release, file), text);
+    }
+    expect(await releaseRelinksSurvivingServices(release)).toBe(true);
+    const [[file, text]] = RELINK_EVIDENCE;
+    await writeFile(path.join(release, "elsewhere.js"), text);
+    await rm(path.join(release, file));
+    await symlink(path.join(release, "elsewhere.js"), path.join(release, file));
+    expect(await releaseRelinksSurvivingServices(release)).toBe(false);
+  } finally {
+    await rm(release, { recursive: true, force: true });
+  }
+});
+
+test("the Host executor keeps terminals only through the checked shutdown and a plain kickstart", async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "keep-terminals-executor-")));
+  const entrypoint = path.join(root, "validator.mjs");
+  await writeFile(entrypoint, "process.exit(0);");
+  const launchd = restartTestConfig(root, entrypoint);
+  const { launchdService: _service, ...hostWithoutLaunchd } =
+    launchd.host as typeof launchd.host & {
+      launchdService: string;
+    };
+  const systemd = {
+    ...launchd,
+    host: { ...hostWithoutLaunchd, systemdService: { unit: "vorteo-test.service" } },
+  } as unknown as InstallationConfig;
+  const service = "gui/501/local.vorteo.test.host";
+
+  let pid = 100;
+  let probeFails = false;
+  let capable = true;
+  let events: string[] = [];
+  const spies = [
+    vi.spyOn(DaemonClient.prototype, "connect").mockResolvedValue(),
+    vi.spyOn(DaemonClient.prototype, "close").mockResolvedValue(),
+    vi.spyOn(DaemonClient.prototype, "getDaemonStatus").mockImplementation(async () => {
+      if (probeFails) {
+        probeFails = false;
+        throw new Error("Daemon readiness probe did not answer in time");
+      }
+      return { pid } as Awaited<ReturnType<DaemonClient["getDaemonStatus"]>>;
+    }),
+    vi.spyOn(DaemonClient.prototype, "getLastServerInfoMessage").mockImplementation(() => {
+      events.push("capability checked");
+      return { features: { terminalsSurviveRestart: capable } } as ReturnType<
+        DaemonClient["getLastServerInfoMessage"]
+      >;
+    }),
+    vi.spyOn(DaemonClient.prototype, "shutdownServer").mockImplementation(async (options) => {
+      events.push(`shutdown keepTerminals=${String(options?.keepTerminals)}`);
+      pid = 200;
+      return {} as Awaited<ReturnType<DaemonClient["shutdownServer"]>>;
+    }),
+    vi.spyOn(hostServiceCommands, "run").mockImplementation(async (file, args) => {
+      events.push([file, ...args].join(" "));
+      // A replacing command starts a new worker; a plain kickstart finds it already running.
+      if (args.includes("-k") || args.includes("restart")) pid = 200;
+      return { stdout: "", stderr: "" };
+    }),
+  ];
+  const run = async (config: InstallationConfig, keepTerminals: boolean) => {
+    pid = 100;
+    events = [];
+    const outcomes: unknown[] = [];
+    await createInstallationRestartExecutor(config).restart("host", {
+      keepTerminals,
+      onTerminals: (outcome) => outcomes.push(outcome),
+    });
+    return { events, outcomes };
+  };
+  try {
+    expect(await run(launchd, true)).toEqual({
+      events: [
+        "capability checked",
+        "shutdown keepTerminals=true",
+        `/bin/launchctl kickstart ${service}`,
+      ],
+      outcomes: [{ terminals: "kept" }],
+    });
+    expect(await run(launchd, false)).toEqual({
+      events: [`/bin/launchctl kickstart -k ${service}`],
+      outcomes: [],
+    });
+    capable = false;
+    const refused = await run(launchd, true);
+    capable = true;
+    expect(refused.events).toEqual([
+      "capability checked",
+      `/bin/launchctl kickstart -k ${service}`,
+    ]);
+    expect(refused.outcomes).toMatchObject([{ terminals: "replaced" }]);
+    // Without the old worker's pid the exiting daemon could pass for its replacement.
+    probeFails = true;
+    const unknown = await run(launchd, true);
+    expect(unknown.events).toEqual([`/bin/launchctl kickstart -k ${service}`]);
+    expect(unknown.outcomes).toMatchObject([{ terminals: "not-attempted" }]);
+    // systemd stops the detached worker with the unit, so Linux never claims to keep them.
+    const linux = await run(systemd, true);
+    expect(linux.events).toEqual(["/usr/bin/systemctl --user restart vorteo-test.service"]);
+    expect(linux.outcomes).toMatchObject([{ terminals: "not-attempted" }]);
+  } finally {
+    for (const spy of spies) spy.mockRestore();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);
 
 test("source builds fail before activation, uncertain dispatch retains selection, and publication follows readiness", async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "source-activation-")));
