@@ -22,37 +22,56 @@ vi.mock("./project-factory", () => ({ openFactoryDialog: vi.fn() }));
 vi.mock("@/plugins/registry", () => ({
   useInstalledPlugins: () => [{ id: "factory", serverId: "host", invoke: fixture.invoke }],
 }));
-const sessionState = vi.hoisted(() => ({
-  sessions: {
-    host: {
-      agents: new Map<string, unknown>([
-        [
-          "agent",
-          {
-            workspaceId: "workspace",
-            cwd: "/repo",
-            labels: { "vorteo.factory-role": "project:factory-intake" },
-          },
-        ],
-        ["foreign-agent", { workspaceId: "foreign-workspace", cwd: "/other", labels: {} }],
-      ]),
-      workspaces: new Map([
-        ["workspace", { projectId: "project" }],
-        ["foreign-workspace", { projectId: "foreign-project" }],
-      ]),
+// A session store with real subscription semantics. Each build stores freshly parsed labels, as
+// every agent update does, so a selection holding the labels record changes on every update.
+const sessionStore = vi.hoisted(() => {
+  const listeners = new Set<() => void>();
+  const build = (title = "Foreman") => ({
+    sessions: {
+      host: {
+        agents: new Map<string, unknown>([
+          [
+            "agent",
+            {
+              workspaceId: "workspace",
+              cwd: "/repo",
+              title,
+              labels: { "vorteo.factory-role": "project:factory-intake", note: title },
+            },
+          ],
+          ["foreign-agent", { workspaceId: "foreign-workspace", cwd: "/other", labels: {} }],
+        ]),
+        workspaces: new Map([
+          ["workspace", { projectId: "project" }],
+          ["foreign-workspace", { projectId: "foreign-project" }],
+        ]),
+      },
     },
-  },
-}));
-// The real store hook's semantics: React reads the selection through useSyncExternalStore, so a
-// selector that builds a new value on every call loops React, as it did in the browser (#625).
+  });
+  let state = build();
+  return {
+    get: () => state,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    /** An agent update that changes only its title and an unrelated label. */
+    update: (title: string) => {
+      state = build(title);
+      for (const listener of listeners) listener();
+    },
+    reset: () => {
+      state = build();
+    },
+  };
+});
+// The real store hook reads the selection through useSyncExternalStore, so a selector that builds
+// a new value on every call loops React, as it did in the browser (#625).
 vi.mock("@/stores/session-store", async () => {
   const { useSyncExternalStore } = await import("react");
   return {
     useSessionStore: (select: (state: unknown) => unknown) =>
-      useSyncExternalStore(
-        () => () => {},
-        () => select(sessionState),
-      ),
+      useSyncExternalStore(sessionStore.subscribe, () => select(sessionStore.get())),
   };
 });
 vi.mock("@/contexts/toast-context", () => ({
@@ -60,6 +79,7 @@ vi.mock("@/contexts/toast-context", () => ({
 }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 beforeEach(() => {
+  sessionStore.reset();
   fixture.state = "on";
   fixture.read.mockClear();
   fixture.invoke.mockReset();
@@ -99,12 +119,22 @@ it("routes a thread opened from another workspace to its own project", async () 
 });
 
 it("renders Make this thread the Foreman against real store semantics (#360)", () => {
-  // A thread tab mounts this hook; a selector returning a fresh object crashed every chat.
+  // A thread tab mounts this hook: a selection rebuilt on every call crashed every chat, and one
+  // holding the labels record re-rendered every tab on every agent update.
   const client = new QueryClient();
   const wrapper = ({ children }: { children: ReactNode }) =>
     createElement(QueryClientProvider, { client }, children);
-  const hook = renderHook(() => useMakeFactoryForeman("host", "workspace", "agent"), { wrapper });
+  let renders = 0;
+  const hook = renderHook(
+    () => {
+      renders += 1;
+      return useMakeFactoryForeman("host", "workspace", "agent");
+    },
+    { wrapper },
+  );
   expect(hook.result.current).toBeTypeOf("function");
-  hook.rerender();
+  const settled = renders;
+  act(() => sessionStore.update("Renamed"));
+  expect(renders).toBe(settled);
   expect(hook.result.current).toBeTypeOf("function");
 });

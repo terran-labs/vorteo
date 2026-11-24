@@ -17,8 +17,9 @@ export function useMakeFactoryForeman(
   workspaceId: string,
   agentId: string | null,
 ) {
-  // useShallow keeps the selected record stable between renders: a fresh object on every call
-  // makes the store snapshot change each render and loops React (the #625 browser suite failure).
+  // Select primitives only, compared with useShallow. A fresh object on every call changes the
+  // store snapshot each render and loops React (the #625 browser suite failure), and the labels
+  // record is parsed anew on every agent update, so it would re-render each tab on every update.
   const thread = useSessionStore(
     useShallow((state) => {
       const session = state.sessions[serverId];
@@ -27,15 +28,14 @@ export function useMakeFactoryForeman(
       return {
         projectId: session?.workspaces.get(agent.workspaceId ?? workspaceId)?.projectId ?? "",
         cwd: agent.cwd,
-        labels: agent.labels,
+        factoryRole: agent.labels["vorteo.factory-role"] ?? null,
         archived: Boolean(agent.archivedAt),
       };
     }),
   );
   const projectId = thread?.projectId ?? "";
   // Read Factory state only for a thread wearing this project's Foreman label.
-  const labelled =
-    !!projectId && thread?.labels["vorteo.factory-role"] === `${projectId}:factory-intake`;
+  const labelled = !!projectId && thread?.factoryRole === `${projectId}:factory-intake`;
   const factory = useProjectFactory(serverId, projectId, labelled && !!agentId, {
     refetchInterval: false,
   });
@@ -46,7 +46,7 @@ export function useMakeFactoryForeman(
     !!projectId &&
     canMakeFactoryForeman({
       projectId,
-      labels: thread.labels,
+      labels: thread.factoryRole ? { "vorteo.factory-role": thread.factoryRole } : undefined,
       archived: thread.archived,
       factory: factory.data,
     });
