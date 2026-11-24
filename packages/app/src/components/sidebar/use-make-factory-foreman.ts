@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useShallow } from "zustand/shallow";
 import { useSessionStore } from "@/stores/session-store";
 import { useInstalledPlugins } from "@/plugins/registry";
 import { useProjectFactory } from "./factory-instructions";
@@ -16,17 +17,21 @@ export function useMakeFactoryForeman(
   workspaceId: string,
   agentId: string | null,
 ) {
-  const thread = useSessionStore((state) => {
-    const session = state.sessions[serverId];
-    const agent = session?.agents.get(agentId ?? "");
-    if (!agent) return null;
-    return {
-      projectId: session?.workspaces.get(agent.workspaceId ?? workspaceId)?.projectId ?? "",
-      cwd: agent.cwd,
-      labels: agent.labels,
-      archived: Boolean(agent.archivedAt),
-    };
-  });
+  // useShallow keeps the selected record stable between renders: a fresh object on every call
+  // makes the store snapshot change each render and loops React (the #625 browser suite failure).
+  const thread = useSessionStore(
+    useShallow((state) => {
+      const session = state.sessions[serverId];
+      const agent = session?.agents.get(agentId ?? "");
+      if (!agent) return null;
+      return {
+        projectId: session?.workspaces.get(agent.workspaceId ?? workspaceId)?.projectId ?? "",
+        cwd: agent.cwd,
+        labels: agent.labels,
+        archived: Boolean(agent.archivedAt),
+      };
+    }),
+  );
   const projectId = thread?.projectId ?? "";
   // Read Factory state only for a thread wearing this project's Foreman label.
   const labelled =
