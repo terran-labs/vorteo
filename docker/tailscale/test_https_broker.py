@@ -297,6 +297,14 @@ class NativeWorkspacePolicyTests(unittest.TestCase):
             recheck.listener_unchanged(recorded)
 
     @unittest.skipUnless(sys.platform == 'darwin', 'macOS process ownership probe')
+    def test_native_daemon_worker_alive_needs_the_same_birth(self):
+        runtime = NativeRuntime({})
+        me = runtime.process_identity(os.getpid())
+        self.assertIs(runtime.daemon_worker_alive(f"{os.getpid()}:{me['birth']}"), True)
+        self.assertIs(runtime.daemon_worker_alive(f"{os.getpid()}:1:2"), False)  # pid reused
+        self.assertIs(runtime.daemon_worker_alive('unreadable'), True)  # cannot tell: keep it
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS process ownership probe')
     def test_real_native_listener_identity(self):
         # Disposable HTTP fixture only; never start or stop an installed daemon.
         runtime = NativeRuntime({})
@@ -646,6 +654,7 @@ class Fake:
     def daemon_identity(self): return self.daemon
     daemon_started = 0.0
     def daemon_worker(self): return {'identity': self.daemon, 'startedAt': self.daemon_started}
+    def daemon_worker_alive(self, identity): return identity == self.daemon
     def preflight(self): pass
     def registered_ports(self): return {33487,39000}
     # 'archived': start policy refuses the workspace; 'missing': the daemon no longer knows it.
@@ -1103,6 +1112,120 @@ class Tests(unittest.TestCase):
         self.b.handle(self.request())
         self.b.handle(self.request('stop'))
         self.assertEqual(self.b.ledger['entries']['wks_test.preview']['stopReason'], 'stopped')
+
+    def test_restart_cause_counts_every_time_the_service_was_seen_alive(self):
+        # Nov 23, 6:35 PM: a restart that closed a preview's terminal in the middle of a
+        # check read as process_changed, and one whose last full verification was 30.19 s
+        # old read as no cause. Both previews were seen alive just before the restart.
+        def entry(): return self.b.ledger['entries']['wks_test.preview']
+        def restart_now():
+            self.runtime.daemon = f'boot:{uuid.uuid4().int % 10**9}:9'
+            self.runtime.daemon_started = time.time()
+            self.runtime.entry['lifecycle'] = 'stopped'
+        def age(seconds):
+            for field in ('verifiedAt', 'aliveAt'): entry()[field] -= seconds
+        # Stopped mid-check: a stop whose cause is decided, not a changed process.
+        self.b.handle(self.request()); age(100)
+        self.runtime.verify = lambda url: restart_now()
+        self.b.reconcile()
+        self.assertEqual((entry()['desired'], entry().get('stopReason')), ('stopped', 'daemon_restart'))
+        del self.runtime.verify
+        # Seen alive only by the direct probe, while the daemon was down for the restart.
+        self.b.handle(self.request()); age(100)
+        self.runtime.daemon_down = True
+        self.b.reconcile()
+        self.assertEqual(entry()['status'], 'unverified')
+        self.runtime.daemon_down = False
+        restart_now()
+        self.b.reconcile()
+        self.assertEqual(entry().get('stopReason'), 'daemon_restart')
+        # Not seen alive within the window: still no cause.
+        self.b.handle(self.request()); age(RESTART_ATTRIBUTION_SECONDS + 1)
+        restart_now()
+        self.b.reconcile()
+        self.assertNotIn('stopReason', entry())
+        # A probe that fails proves nothing alive: the listener is gone (or refuses) while
+        # the daemon is down, so the restart that follows is not named.
+        for failure in (('listener_state', 'exited'), ('accepts', 'refused')):
+            self.b.handle(self.request()); age(RESTART_ATTRIBUTION_SECONDS + 1)
+            self.runtime.daemon_down = True
+            setattr(self.runtime, *failure)
+            self.b.reconcile()
+            self.runtime.daemon_down = False
+            self.runtime.listener_state, self.runtime.accepts = 'same', 'yes'
+            restart_now()
+            self.b.reconcile()
+            self.assertNotIn('stopReason', entry())
+
+    def test_serving_worker_is_read_once_per_run(self):
+        # Two previews survive one restart; the reconcile run reads the serving worker
+        # once for both. A restart between them in the same run kills the second, which
+        # still reads daemon_restart, not the first one's worker.
+        def two_previews():
+            runtime = Fake(); broker = Broker(self.c, runtime)
+            broker.ledger = {'entries': {}, 'requests': {}}
+            broker.handle(self.request())
+            second = copy.deepcopy(broker.ledger['entries']['wks_test.preview'])
+            second.update(service='second', frontend=44445)
+            broker.ledger['entries']['wks_test.second'] = second
+            base = runtime.current
+            runtime.current = lambda w, s: base(w, 'preview') if s == 'second' else base(w, s)
+            reads = []
+            real = runtime.daemon_worker
+            runtime.daemon_worker = lambda: (reads.append(runtime.daemon), real())[1]
+            runtime.daemon, runtime.daemon_started = 'boot:500:2', time.time()
+            return runtime, broker, reads
+        runtime, broker, reads = two_previews()
+        broker.reconcile()
+        self.assertEqual(len(reads), 1)
+        self.assertEqual({e['daemonWorker']['identity'] for e in broker.ledger['entries'].values()}, {'boot:500:2'})
+        # A restart between the two entries of one run.
+        runtime, broker, reads = two_previews()
+        calls = []
+        checked = runtime.current
+        def current(w, s):
+            calls.append(s)
+            if len(calls) == 3:  # the second entry's first read: restart and kill it
+                runtime.daemon, runtime.daemon_started = 'boot:600:3', time.time()
+                runtime.entry['lifecycle'] = 'stopped'
+            return checked(w, s)
+        runtime.current = current
+        broker.reconcile()
+        self.assertNotEqual(calls[0], calls[2])
+        entries = {e['service']: e for e in broker.ledger['entries'].values()}
+        survivor, killed = entries[calls[0]], entries[calls[2]]
+        self.assertEqual((survivor['status'], survivor['daemonWorker']['identity']), ('ready', 'boot:500:2'))
+        self.assertEqual((killed.get('stopReason'), killed['daemonWorker']['identity']), ('daemon_restart', 'boot:100:1'))
+
+    def test_preview_that_survived_a_restart_records_its_own_exit(self):
+        def entry(): return self.b.ledger['entries']['wks_test.preview']
+        def restart(survives):
+            self.runtime.daemon = f'boot:{uuid.uuid4().int % 10**9}:7'
+            self.runtime.daemon_started = time.time()
+            if not survives: self.runtime.entry['lifecycle'] = 'stopped'
+        # Survived and re-linked: the next check records the new worker, so a later
+        # exit of the preview itself reads exited, not no cause.
+        self.b.handle(self.request())
+        restart(survives=True)
+        self.b.reconcile()
+        self.assertEqual(entry()['daemonWorker']['identity'], self.runtime.daemon)
+        self.runtime.entry['lifecycle'] = 'stopped'
+        self.b.reconcile()
+        self.assertEqual(entry().get('stopReason'), 'exited')
+        # A restart that kills the preview still reads daemon_restart, including one that
+        # lands right after a check succeeded, before the next one.
+        self.b.handle(self.request())
+        fired = []
+        real = self.runtime.daemon_worker
+        def worker_then_restart():
+            if not fired: fired.append(1); restart(survives=False)
+            return real()
+        self.runtime.daemon_worker = worker_then_restart
+        self.b.reconcile()
+        del self.runtime.daemon_worker
+        if not fired: restart(survives=False)
+        self.b.reconcile()
+        self.assertEqual(entry().get('stopReason'), 'daemon_restart')
 
     def test_status_file_publishes_only_listed_fields(self):
         self.b.handle(self.request())
