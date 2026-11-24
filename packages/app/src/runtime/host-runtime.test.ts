@@ -41,7 +41,7 @@ import { subscriptionFixture } from "./subscription-fixture";
 import { readDesktopManagedLocalCredential } from "@/desktop/daemon/local-credential";
 import type { HostConfirmationRequest } from "./host-confirmation";
 
-it("declares the app when probing a host through another host (#360)", async () => {
+it("declares the app on ordinary connections and when probing through another host (#360)", async () => {
   // A probe can become the active connection, and the daemon admits owner-only writes (Factory
   // roles and presets, the preset fence setting) only from clients that declare the app.
   const declared: unknown[] = [];
@@ -59,7 +59,16 @@ it("declares the app when probing a host through another host (#360)", async () 
       timeoutMs: 1_000,
     });
     await probed.client.close();
-    expect(declared).toEqual(["mobile"]);
+    // Every ordinary connection spreads one shared base; pin it through a direct connection.
+    const direct = deps.createClient({
+      host: { serverId: "srv_direct" } as HostProfile,
+      connection: { id: "direct", type: "directTcp", endpoint: "127.0.0.1:6767" } as HostConnection,
+      clientId: "client-direct",
+      runtimeGeneration: 1,
+    });
+    declared.push((direct as unknown as { config: { clientType?: string } }).config.clientType);
+    await direct.close();
+    expect(declared).toEqual(["mobile", "mobile"]);
   } finally {
     connect.mockRestore();
   }
