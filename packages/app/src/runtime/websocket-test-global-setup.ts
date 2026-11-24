@@ -171,8 +171,15 @@ export default async function setup(project: VitestProject): Promise<() => Promi
     for (const client of clients) {
       client.destroy();
     }
+    for (const held of heldResponses) held.destroy();
+    heldResponses.clear();
+    // Vitest tears global setup down before it closes Chromium, and Node stops timing out a
+    // half-sent request once close() starts. close() alone waited for every socket Chromium
+    // still held (a held script, a preconnect), while Chromium closes only after this returns:
+    // the run then sat silent until the CI job limit. Close them rather than wait.
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
+      server.closeAllConnections();
     });
   };
 }
