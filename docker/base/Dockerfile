@@ -102,7 +102,7 @@ RUN set -eux; \
 
 # Fork and downstream images can add one agent package without copying this
 # Dockerfile or baking provider credentials into an image layer.
-ARG PASEO_EXTRA_NPM_PACKAGE="@openai/codex@0.153.4"
+ARG PASEO_EXTRA_NPM_PACKAGE="@openai/codex@0.167.2"
 ARG PASEO_CLAUDE_PACKAGE="@anthropic-ai/claude-code@2.1.246"
 ARG PASEO_PI_PACKAGE="@earendil-works/pi-coding-agent@0.84.4"
 RUN set -eux; \
