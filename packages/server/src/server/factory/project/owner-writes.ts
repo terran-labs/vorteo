@@ -43,3 +43,21 @@ export function factoryOwnerOnlyFields(method: string, input: unknown): string[]
     return OWNER_ONLY_CONFIGURE_FIELDS.filter((field) => fields[field] !== undefined);
   return [];
 }
+
+/**
+ * A Factory refusal the owner's app can act on: the session answers it as an `rpc_error` with
+ * this code (the optional `code` field already carries free-form codes, so older clients only see
+ * the message), logged once at warn rather than as a failure.
+ */
+export class FactoryRefusal extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+  ) {
+    super(message);
+    this.name = "FactoryRefusal";
+  }
+}
+
+/** Enable found a live thread wearing the Foreman's label while no Foreman is recorded. */
+export const FACTORY_FOREMAN_UNADOPTED_CODE = "factory_foreman_unadopted";

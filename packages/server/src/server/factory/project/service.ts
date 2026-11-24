@@ -110,6 +110,7 @@ import {
   type IssueAgentHosts,
 } from "./issue-agent-host.js";
 import { queueDeadline, readIssueQueue, type DevQueueAgents } from "./queue.js";
+import { FACTORY_FOREMAN_UNADOPTED_CODE, FactoryRefusal } from "./owner-writes.js";
 import {
   FACTORY_HOME_LABELS,
   type FactoryHomeAnswer,
@@ -459,6 +460,7 @@ export class ProjectFactoryService {
     return this.serialize(async () => {
       const record = await this.requireActiveProject(request.projectId);
       await this.validateAdoption(request.projectId, request.adopt ?? {});
+      await this.refuseUnadoptedForeman(request.projectId, request.adopt ?? {});
       let previous: ProjectState | undefined;
       await this.store.mutate((file) => {
         const other = Object.entries(file.projects).find(
@@ -1251,6 +1253,34 @@ export class ProjectFactoryService {
   }
 
   /** Binds or creates one role. Returns its workspace ID when its membership was set. */
+  /**
+   * With no Foreman recorded, a live thread wearing the Foreman's label means the state file was
+   * lost while that Foreman still runs. Creating another would leave two Foremen with one label,
+   * and only the daemon or the owner may name the Foreman (#360, O7), so enable stops before
+   * changing anything and asks the owner to adopt that thread from the app or archive it.
+   */
+  private async refuseUnadoptedForeman(
+    projectId: string,
+    adopt: Partial<Record<ProjectFactoryRoleId, string>>,
+  ): Promise<void> {
+    if (adopt["factory-intake"]) return;
+    if ((await this.readProject(projectId))?.roles["factory-intake"]?.agentId) return;
+    const label = roleLabelValue(projectId, "factory-intake");
+    const labelled = (await this.input.agentStorage.list()).find(
+      (agent) => agent.labels?.[PROJECT_FACTORY_ROLE_LABEL] === label && !agent.archivedAt,
+    );
+    if (!labelled) return;
+    const title = labelled.title?.trim();
+    this.logger.warn(
+      { projectId, role: "factory-intake", agentId: labelled.id },
+      "Factory refused to create a second Foreman",
+    );
+    throw new FactoryRefusal(
+      `${title ? `The thread "${title}"` : "A thread"} is already labelled as this project's Foreman. Open it and choose Make this thread the Foreman, or archive it, then turn on Factory again.`,
+      FACTORY_FOREMAN_UNADOPTED_CODE,
+    );
+  }
+
   /**
    * A role's agent recovered by its role label when the state file lost it. Never the Foreman:
    * its role record is what the Factory stage rule trusts (#360, decision O7), so only the

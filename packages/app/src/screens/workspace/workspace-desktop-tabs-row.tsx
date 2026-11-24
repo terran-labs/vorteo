@@ -1,4 +1,5 @@
 import { useSendToFactory } from "@/components/sidebar/use-send-to-factory";
+import { useMakeFactoryForeman } from "@/components/sidebar/use-make-factory-foreman";
 import { CONTROL_HEIGHTS } from "@/components/ui/control-geometry";
 import { useResponsiveSidebar } from "@/hooks/use-responsive-sidebar";
 import { useWorkspace } from "@/stores/session-store-hooks";
@@ -1543,6 +1544,13 @@ function ResolvedDesktopTabChip({
     workspaceId,
     item.tab.target.kind === "agent" ? item.tab.target.agentId : null,
   );
+  const makeForeman = useMakeFactoryForeman(
+    item.tab.target.kind === "agent"
+      ? (item.tab.target.environment?.serverId ?? serverId)
+      : serverId,
+    workspaceId,
+    item.tab.target.kind === "agent" ? item.tab.target.agentId : null,
+  );
   const { t } = useTranslation();
   const presentation = item.presentation;
   const resolvedTab = useMemo(
@@ -1550,6 +1558,7 @@ function ResolvedDesktopTabChip({
       buildWorkspaceDesktopTabActions({
         tab: item.tab,
         onSendToFactory: sendToFactory,
+        onMakeForeman: makeForeman,
         index,
         tabCount,
         onCopyResumeCommand,
@@ -1566,6 +1575,7 @@ function ResolvedDesktopTabChip({
       }),
     [
       sendToFactory,
+      makeForeman,
       index,
       item.tab,
       onCloseOtherTabs,
