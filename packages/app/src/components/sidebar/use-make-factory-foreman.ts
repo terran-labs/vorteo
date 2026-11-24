@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useShallow } from "zustand/shallow";
 import { useSessionStore } from "@/stores/session-store";
 import { useInstalledPlugins } from "@/plugins/registry";
 import { useProjectFactory } from "./factory-instructions";
@@ -16,21 +17,25 @@ export function useMakeFactoryForeman(
   workspaceId: string,
   agentId: string | null,
 ) {
-  const thread = useSessionStore((state) => {
-    const session = state.sessions[serverId];
-    const agent = session?.agents.get(agentId ?? "");
-    if (!agent) return null;
-    return {
-      projectId: session?.workspaces.get(agent.workspaceId ?? workspaceId)?.projectId ?? "",
-      cwd: agent.cwd,
-      labels: agent.labels,
-      archived: Boolean(agent.archivedAt),
-    };
-  });
+  // Select primitives only, compared with useShallow. A fresh object on every call changes the
+  // store snapshot each render and loops React (the #625 browser suite failure), and the labels
+  // record is parsed anew on every agent update, so it would re-render each tab on every update.
+  const thread = useSessionStore(
+    useShallow((state) => {
+      const session = state.sessions[serverId];
+      const agent = session?.agents.get(agentId ?? "");
+      if (!agent) return null;
+      return {
+        projectId: session?.workspaces.get(agent.workspaceId ?? workspaceId)?.projectId ?? "",
+        cwd: agent.cwd,
+        factoryRole: agent.labels["vorteo.factory-role"] ?? null,
+        archived: Boolean(agent.archivedAt),
+      };
+    }),
+  );
   const projectId = thread?.projectId ?? "";
   // Read Factory state only for a thread wearing this project's Foreman label.
-  const labelled =
-    !!projectId && thread?.labels["vorteo.factory-role"] === `${projectId}:factory-intake`;
+  const labelled = !!projectId && thread?.factoryRole === `${projectId}:factory-intake`;
   const factory = useProjectFactory(serverId, projectId, labelled && !!agentId, {
     refetchInterval: false,
   });
@@ -41,7 +46,7 @@ export function useMakeFactoryForeman(
     !!projectId &&
     canMakeFactoryForeman({
       projectId,
-      labels: thread.labels,
+      labels: thread.factoryRole ? { "vorteo.factory-role": thread.factoryRole } : undefined,
       archived: thread.archived,
       factory: factory.data,
     });
