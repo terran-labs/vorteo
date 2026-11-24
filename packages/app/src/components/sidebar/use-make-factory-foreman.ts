@@ -28,7 +28,10 @@ export function useMakeFactoryForeman(
     };
   });
   const projectId = thread?.projectId ?? "";
-  const factory = useProjectFactory(serverId, projectId, !!projectId && !!agentId, {
+  // Read Factory state only for a thread wearing this project's Foreman label.
+  const labelled =
+    !!projectId && thread?.labels["vorteo.factory-role"] === `${projectId}:factory-intake`;
+  const factory = useProjectFactory(serverId, projectId, labelled && !!agentId, {
     refetchInterval: false,
   });
   const plugin = useInstalledPlugins().find((p) => p.id === "factory" && p.serverId === serverId);

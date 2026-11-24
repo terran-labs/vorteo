@@ -514,6 +514,19 @@ describe("enable", () => {
     );
   });
 
+  test("an archived thread wearing the Foreman label does not block a new Foreman (#360)", async () => {
+    const first = await enable();
+    rmSync(projectFactoryStatePath(home));
+    const foreman = first.roles.find((role) => role.role === "factory-intake")?.agentId;
+    agents.records.get(foreman!)!.archivedAt = T0;
+
+    const recovered = await enable(service());
+    expect(agents.created).toBe(6);
+    expect(recovered.roles.find((role) => role.role === "factory-intake")?.agentId).not.toBe(
+      foreman,
+    );
+  });
+
   test("adopt binds an existing agent and its workspace without creating one", async () => {
     await addWorkspace("wks_existing");
     agents.add({ id: "agent-existing", workspaceId: "wks_existing" });
@@ -2471,7 +2484,7 @@ describe("one Factory home per installation", () => {
   }
 
   test("Dev refuses a repository the Host runs, names the Host and keeps nothing", async () => {
-    const { start, reachable } = installation();
+    const { start, reachable, devAgents } = installation();
     const host = start("host");
     const dev = start("container");
     const enabled = await enable(host);
@@ -2481,6 +2494,7 @@ describe("one Factory home per installation", () => {
     await expect(enable(dev)).rejects.toThrow("runs in the Host environment");
     expect((await dev.list()).projects).toEqual([]);
     expect(agents.created).toBe(created);
+    expect(devAgents.created).toBe(0);
 
     // Neither environment claims a home it cannot confirm with the other.
     await host.invoke("factory.project.disable", { projectId: PROJECT });
