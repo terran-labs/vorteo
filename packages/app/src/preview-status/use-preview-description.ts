@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import type { WorkspaceScriptPayload } from "@getpaseo/protocol/messages";
-import { describePreview, type PreviewDescription } from "./describe";
+import { describePreview, previewLinkCheck, type PreviewDescription } from "./describe";
 
 /**
  * What to show for a script's managed preview, or null when it has none or the daemon cannot
@@ -40,7 +40,13 @@ export function runningPreviewListLabel(
   script: WorkspaceScriptPayload,
   preview: PreviewDescription | null,
 ):
-  | { valueKey: "previewStatus.short.notResponding" | "workspace.scripts.states.running" }
+  | {
+      valueKey:
+        | "previewStatus.short.notResponding"
+        | "previewStatus.short.checksDelayed"
+        | "previewStatus.short.checksWithdrawn"
+        | "workspace.scripts.states.running";
+    }
   | { description: string } {
   if (preview && script.preview?.stale) return { description: preview.line };
   // A withdrawn link on a running server is not plainly "Running": say so under the name.
@@ -48,6 +54,9 @@ export function runningPreviewListLabel(
   // A stop in flight or one that failed is news about this running row: show it whole.
   if (preview?.stop) return { description: preview.line };
   if (preview && script.preview?.state === "not_responding") {
+    const linkCheck = previewLinkCheck(script.preview);
+    if (linkCheck === "delayed") return { valueKey: "previewStatus.short.checksDelayed" };
+    if (linkCheck === "withdrawn") return { valueKey: "previewStatus.short.checksWithdrawn" };
     return { valueKey: "previewStatus.short.notResponding" };
   }
   return { valueKey: "workspace.scripts.states.running" };
