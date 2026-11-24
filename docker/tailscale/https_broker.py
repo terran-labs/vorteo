@@ -614,6 +614,10 @@ process.stdout.write(found[0].value);
         # never attributed to a restart. The owner sees the stop time with no cause.
         return None
 
+    def daemon_worker_alive(self, identity):
+        """Whether the recorded daemon worker still runs; True when it cannot be told."""
+        return True
+
     def lifecycle(self, operation, entry):
         return self.cli(['script', operation, entry['service'], '--workspace', entry['workspaceId']])
 
@@ -800,6 +804,16 @@ class NativeRuntime(Runtime):
         except ConnectionRefusedError:
             return True
         except OSError:
+            return False
+
+    def daemon_worker_alive(self, identity):
+        """Whether the recorded daemon worker still runs, in process: same pid and birth."""
+        pid, _, birth = str(identity).partition(':')
+        if not pid.isdigit():
+            return True  # Cannot tell: keep the recorded worker.
+        try:
+            return self.process_identity(int(pid))['birth'] == birth
+        except ValueError:
             return False
 
     def daemon_worker(self):
@@ -1063,6 +1077,13 @@ class Broker:
 
     def activate(self, entry):
         daemon = self.runtime.daemon_identity() if self.c.get('restoreAfterRestart') else None
+        # A preview that survived a daemon restart (#607) now runs under the new worker.
+        # Read it before this check, so a restart during the check is never taken for
+        # the worker the service ran under; it is recorded only if this check succeeds.
+        recorded = entry.get('daemonWorker')
+        serving = None
+        if recorded and not self.runtime.daemon_worker_alive(recorded.get('identity')):
+            serving = self.observed_daemon_worker()
         current = self.runtime.current(entry['workspaceId'], entry['service'])
         if current['cwd'] != entry['cwd'] or current['fingerprint'] != entry['fingerprint']:
             raise ConfigChanged('Service configuration identity changed')
@@ -1123,11 +1144,13 @@ class Broker:
         for stale in ('error', 'misses', 'removalPending', 'needsReview', 'stopReason', 'restartedAt', 'daemonGapSince'):
             entry.pop(stale, None)
         if 'daemonWorker' not in entry:
-            # Recorded once per start: any later daemon change makes the next check
-            # fail with ServiceGone, so this is the daemon the preview last ran under.
+            # Recorded at start, and again after a restart the preview survived: the
+            # daemon it last ran under, so a later stop reads exited or daemon_restart.
             worker = self.observed_daemon_worker()
             if worker:
                 entry['daemonWorker'] = worker
+        elif serving:
+            entry['daemonWorker'] = serving
         # Only a full verification opens a timeout grace window. A remembered
         # "ready" from an earlier run never does once this time is too old.
         now = time.time()

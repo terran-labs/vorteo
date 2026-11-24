@@ -297,6 +297,14 @@ class NativeWorkspacePolicyTests(unittest.TestCase):
             recheck.listener_unchanged(recorded)
 
     @unittest.skipUnless(sys.platform == 'darwin', 'macOS process ownership probe')
+    def test_native_daemon_worker_alive_needs_the_same_birth(self):
+        runtime = NativeRuntime({})
+        me = runtime.process_identity(os.getpid())
+        self.assertIs(runtime.daemon_worker_alive(f"{os.getpid()}:{me['birth']}"), True)
+        self.assertIs(runtime.daemon_worker_alive(f"{os.getpid()}:1:2"), False)  # pid reused
+        self.assertIs(runtime.daemon_worker_alive('unreadable'), True)  # cannot tell: keep it
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS process ownership probe')
     def test_real_native_listener_identity(self):
         # Disposable HTTP fixture only; never start or stop an installed daemon.
         runtime = NativeRuntime({})
@@ -646,6 +654,7 @@ class Fake:
     def daemon_identity(self): return self.daemon
     daemon_started = 0.0
     def daemon_worker(self): return {'identity': self.daemon, 'startedAt': self.daemon_started}
+    def daemon_worker_alive(self, identity): return identity == self.daemon
     def preflight(self): pass
     def registered_ports(self): return {33487,39000}
     # 'archived': start policy refuses the workspace; 'missing': the daemon no longer knows it.
@@ -1110,7 +1119,7 @@ class Tests(unittest.TestCase):
         # old read as no cause. Both previews were seen alive just before the restart.
         def entry(): return self.b.ledger['entries']['wks_test.preview']
         def restart_now():
-            self.runtime.daemon = f'boot:{len(self.runtime.daemon)}:9'
+            self.runtime.daemon = f'boot:{uuid.uuid4().int % 10**9}:9'
             self.runtime.daemon_started = time.time()
             self.runtime.entry['lifecycle'] = 'stopped'
         def age(seconds):
@@ -1135,6 +1144,48 @@ class Tests(unittest.TestCase):
         restart_now()
         self.b.reconcile()
         self.assertNotIn('stopReason', entry())
+        # A probe that fails proves nothing alive: the listener is gone (or refuses) while
+        # the daemon is down, so the restart that follows is not named.
+        for failure in (('listener_state', 'exited'), ('accepts', 'refused')):
+            self.b.handle(self.request()); age(RESTART_ATTRIBUTION_SECONDS + 1)
+            self.runtime.daemon_down = True
+            setattr(self.runtime, *failure)
+            self.b.reconcile()
+            self.runtime.daemon_down = False
+            self.runtime.listener_state, self.runtime.accepts = 'same', 'yes'
+            restart_now()
+            self.b.reconcile()
+            self.assertNotIn('stopReason', entry())
+
+    def test_preview_that_survived_a_restart_records_its_own_exit(self):
+        def entry(): return self.b.ledger['entries']['wks_test.preview']
+        def restart(survives):
+            self.runtime.daemon = f'boot:{uuid.uuid4().int % 10**9}:7'
+            self.runtime.daemon_started = time.time()
+            if not survives: self.runtime.entry['lifecycle'] = 'stopped'
+        # Survived and re-linked: the next check records the new worker, so a later
+        # exit of the preview itself reads exited, not no cause.
+        self.b.handle(self.request())
+        restart(survives=True)
+        self.b.reconcile()
+        self.assertEqual(entry()['daemonWorker']['identity'], self.runtime.daemon)
+        self.runtime.entry['lifecycle'] = 'stopped'
+        self.b.reconcile()
+        self.assertEqual(entry().get('stopReason'), 'exited')
+        # A restart that kills the preview still reads daemon_restart, including one that
+        # lands right after a check succeeded, before the next one.
+        self.b.handle(self.request())
+        fired = []
+        real = self.runtime.daemon_worker
+        def worker_then_restart():
+            if not fired: fired.append(1); restart(survives=False)
+            return real()
+        self.runtime.daemon_worker = worker_then_restart
+        self.b.reconcile()
+        del self.runtime.daemon_worker
+        if not fired: restart(survives=False)
+        self.b.reconcile()
+        self.assertEqual(entry().get('stopReason'), 'daemon_restart')
 
     def test_status_file_publishes_only_listed_fields(self):
         self.b.handle(self.request())
