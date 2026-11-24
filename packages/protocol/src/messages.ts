@@ -4985,6 +4985,11 @@ export const WorkspaceScriptHealthSchema = z.enum(["healthy", "unhealthy"]);
  * - restart.status: "starting", "stopping", "failed" or "unconfirmed"
  * - restart.mode: "start", "restart" or "stop", the request the outcome belongs to, so a
  *   failed stop is not shown as a failed start; absent from older daemons
+ * - linkCheck: "unverified" or "withdrawn", only beside state "not_responding" when the
+ *   broker says its link, not the server, is the cause. "unverified": the link stays up while
+ *   the broker's checks time out but the listener answers. "withdrawn": the broker pulled the
+ *   link after its checks kept timing out and republishes it on the next good check. Absent
+ *   from older daemons, so an older app keeps showing "not responding".
  * Times are ISO 8601. `stale` means the broker has not reported for over a minute.
  */
 export const WorkspaceScriptPreviewSchema = z.object({
@@ -4998,6 +5003,7 @@ export const WorkspaceScriptPreviewSchema = z.object({
   stale: z.boolean().optional(),
   needsReview: z.boolean().optional(),
   error: z.string().nullable().optional(),
+  linkCheck: z.string().optional(),
   restart: z
     .object({
       status: z.string(),
