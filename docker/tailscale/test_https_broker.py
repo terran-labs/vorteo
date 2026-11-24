@@ -1157,6 +1157,46 @@ class Tests(unittest.TestCase):
             self.b.reconcile()
             self.assertNotIn('stopReason', entry())
 
+    def test_serving_worker_is_read_once_per_run(self):
+        # Two previews survive one restart; the reconcile run reads the serving worker
+        # once for both. A restart between them in the same run kills the second, which
+        # still reads daemon_restart, not the first one's worker.
+        def two_previews():
+            runtime = Fake(); broker = Broker(self.c, runtime)
+            broker.ledger = {'entries': {}, 'requests': {}}
+            broker.handle(self.request())
+            second = copy.deepcopy(broker.ledger['entries']['wks_test.preview'])
+            second.update(service='second', frontend=44445)
+            broker.ledger['entries']['wks_test.second'] = second
+            base = runtime.current
+            runtime.current = lambda w, s: base(w, 'preview') if s == 'second' else base(w, s)
+            reads = []
+            real = runtime.daemon_worker
+            runtime.daemon_worker = lambda: (reads.append(runtime.daemon), real())[1]
+            runtime.daemon, runtime.daemon_started = 'boot:500:2', time.time()
+            return runtime, broker, reads
+        runtime, broker, reads = two_previews()
+        broker.reconcile()
+        self.assertEqual(len(reads), 1)
+        self.assertEqual({e['daemonWorker']['identity'] for e in broker.ledger['entries'].values()}, {'boot:500:2'})
+        # A restart between the two entries of one run.
+        runtime, broker, reads = two_previews()
+        calls = []
+        checked = runtime.current
+        def current(w, s):
+            calls.append(s)
+            if len(calls) == 3:  # the second entry's first read: restart and kill it
+                runtime.daemon, runtime.daemon_started = 'boot:600:3', time.time()
+                runtime.entry['lifecycle'] = 'stopped'
+            return checked(w, s)
+        runtime.current = current
+        broker.reconcile()
+        self.assertNotEqual(calls[0], calls[2])
+        entries = {e['service']: e for e in broker.ledger['entries'].values()}
+        survivor, killed = entries[calls[0]], entries[calls[2]]
+        self.assertEqual((survivor['status'], survivor['daemonWorker']['identity']), ('ready', 'boot:500:2'))
+        self.assertEqual((killed.get('stopReason'), killed['daemonWorker']['identity']), ('daemon_restart', 'boot:100:1'))
+
     def test_preview_that_survived_a_restart_records_its_own_exit(self):
         def entry(): return self.b.ledger['entries']['wks_test.preview']
         def restart(survives):

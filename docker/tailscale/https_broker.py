@@ -1012,6 +1012,8 @@ def runtime_for(config):
 class Broker:
     def __init__(self, config, runtime=None, reload_config=None):
         self.c = config
+        # Per-run memo for serving_worker(); None outside reconcile().
+        self.serving_cache = None
         self.root = Path(config['deployment'])
         self.runtime = runtime or runtime_for(config)
         self.reload_config = reload_config
@@ -1083,7 +1085,7 @@ class Broker:
         recorded = entry.get('daemonWorker')
         serving = None
         if recorded and not self.runtime.daemon_worker_alive(recorded.get('identity')):
-            serving = self.observed_daemon_worker()
+            serving = self.serving_worker()
         current = self.runtime.current(entry['workspaceId'], entry['service'])
         if current['cwd'] != entry['cwd'] or current['fingerprint'] != entry['fingerprint']:
             raise ConfigChanged('Service configuration identity changed')
@@ -1297,6 +1299,21 @@ class Broker:
             self.save()
             return {'status': 'pending', 'message': 'Backend or HTTPS is not ready; inspect status', 'frontendPort': entry['frontend']}
 
+    def serving_worker(self):
+        """The serving daemon worker, read at most once per reconcile run.
+
+        After a restart every surviving entry needs it, and each read runs lsof; under
+        load one read per entry could use up the run's budget. A restart later in the
+        run leaves this value stale, never wrong in the dangerous direction: an entry
+        records it only after its own check succeeds, so a service the later restart
+        killed keeps its previous worker and still reads daemon_restart."""
+        cache = self.serving_cache
+        if cache is None:
+            return self.observed_daemon_worker()
+        if 'worker' not in cache:
+            cache['worker'] = self.observed_daemon_worker()
+        return cache['worker']
+
     def observed_daemon_worker(self):
         try:
             return self.runtime.daemon_worker()
@@ -1484,6 +1501,13 @@ class Broker:
         return True
 
     def reconcile(self):
+        self.serving_cache = {}
+        try:
+            self.reconcile_entries()
+        finally:
+            self.serving_cache = None
+
+    def reconcile_entries(self):
         deadline = time.monotonic() + RECONCILE_SECONDS
         entries = list(self.ledger['entries'].values())[:32]
         if not entries:
