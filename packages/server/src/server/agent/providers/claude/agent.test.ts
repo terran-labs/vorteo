@@ -13,6 +13,9 @@ import * as executableUtils from "../../../../executable-resolution/executable-r
 import { buildAgentAttentionNotificationPayload } from "@getpaseo/protocol/agent-attention-notification";
 import {
   ClaudeAgentClient,
+  CLAUDE_DANGEROUS_REMOVAL_DESCRIPTION,
+  describeClaudePermissionReason,
+  flattenPromptText,
   readClaudeCompactionSummaries,
   convertClaudeHistoryEntry,
   normalizeClaudeAskUserQuestionRequestInput,
@@ -737,6 +740,32 @@ describe("ClaudeAgentSession features", () => {
     });
     return { queryFactory, queryMock, launches };
   }
+
+  // #659 review: agent-controlled reason, path and title text is flattened and capped on the card.
+  test("flattens and caps the worded permission reason", () => {
+    const longPath = `/tmp/${"a".repeat(400)}`;
+    const removal = describeClaudePermissionReason({
+      decisionReason: `Dangerous rm operation on statically-unresolvable target: ${longPath}\n/etc`,
+    });
+    expect(removal).toMatch(
+      /^Claude Code's safety check stopped this command .* Path: \/tmp\/a+…$/,
+    );
+    expect(removal).not.toContain("\n");
+    expect(removal!.length).toBeLessThan(CLAUDE_DANGEROUS_REMOVAL_DESCRIPTION.length + 220);
+    const other = describeClaudePermissionReason({
+      decisionReason: `Line one\n\n  line two ${"b".repeat(400)}`,
+    });
+    expect(other).toMatch(/^Line one line two b+…$/);
+    expect(other!.length).toBe(300);
+    expect(
+      describeClaudePermissionReason({
+        decisionReason: "A permission rule denies a command in this shell -c script",
+      }),
+    ).toBe("One of your permission rules denies a command inside this script.");
+    expect(flattenPromptText(`Claude wants to\nrun ${"c".repeat(400)}`, 300)).toMatch(
+      /^Claude wants to run c+…$/,
+    );
+  });
 
   // #659: the SDK's options for Claude Code's dangerous-removal prompt, as measured with
   // claude.exe 2.1.321 in Bypass mode. The card must say why it asks, not only the command.

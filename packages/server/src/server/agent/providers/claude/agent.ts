@@ -1299,18 +1299,33 @@ function resolvePermissionKind(
 // permissions.
 // Claude Code's dangerous-removal safety check, which prompts even in Bypass mode, gives its
 // reason in these forms (claude.exe 2.1.321, measured through the SDK's canUseTool options; no
-// structured field names the check). Used only to word the card: anything else shows the SDK's
-// own reason.
-const CLAUDE_DANGEROUS_REMOVAL_REASON =
-  /^(?:Dangerous rm operation\b|This shell -c script runs rm and could not be checked$|A permission rule denies a command in this shell -c script$)/;
-const CLAUDE_REASON_TARGET = /\btarget: ([^\n]+)$/;
+// structured field names the check). This loose match only words the card. Never use it to
+// decide a permission: a decision needs its own fully anchored, per-phrasing match.
+const CLAUDE_DANGEROUS_REMOVAL_DISPLAY_REASON =
+  /^(?:Dangerous rm operation\b|This shell -c script runs rm and could not be checked$)/;
+const CLAUDE_SHELL_SCRIPT_DENY_REASON =
+  /^A permission rule denies a command in this shell -c script$/;
+const CLAUDE_REASON_TARGET = /\btarget: ([\s\S]+)$/;
 // eslint-disable-next-line no-control-regex -- the CLI's reason may carry ANSI escapes
 const ANSI_ESCAPE = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+const MAX_REASON_LENGTH = 300;
+const MAX_PATH_LENGTH = 200;
 
 export const CLAUDE_DANGEROUS_REMOVAL_DESCRIPTION =
   "Claude Code's safety check stopped this command because it could not rule out that it deletes files. Bypass mode does not skip this check.";
 export const CLAUDE_ASK_RULE_DESCRIPTION =
   "One of your permission rules asks before this command runs.";
+export const CLAUDE_SHELL_SCRIPT_DENY_DESCRIPTION =
+  "One of your permission rules denies a command inside this script.";
+
+/**
+ * Agent-controlled text for the card: escapes removed, every whitespace run one space, and at
+ * most `max` characters with an ellipsis.
+ */
+export function flattenPromptText(text: string, max: number): string {
+  const flat = text.replace(ANSI_ESCAPE, "").replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
+}
 
 /** The owner-readable reason a Claude tool permission prompt appeared, or undefined. */
 export function describeClaudePermissionReason(options: {
@@ -1319,13 +1334,17 @@ export function describeClaudePermissionReason(options: {
   matchedAskRule?: unknown;
 }): string | undefined {
   if (options.matchedAskRule) return CLAUDE_ASK_RULE_DESCRIPTION;
-  // The CLI's reason may carry ANSI escapes; they are removed for display only.
   const reason = options.decisionReason?.replace(ANSI_ESCAPE, "").trim();
   if (!reason) return undefined;
-  if (!CLAUDE_DANGEROUS_REMOVAL_REASON.test(reason)) return reason;
-  const target = options.blockedPath ?? CLAUDE_REASON_TARGET.exec(reason)?.[1]?.trim();
-  return target
-    ? `${CLAUDE_DANGEROUS_REMOVAL_DESCRIPTION} Path: ${target}`
+  if (CLAUDE_SHELL_SCRIPT_DENY_REASON.test(reason)) return CLAUDE_SHELL_SCRIPT_DENY_DESCRIPTION;
+  if (!CLAUDE_DANGEROUS_REMOVAL_DISPLAY_REASON.test(reason)) {
+    return flattenPromptText(reason, MAX_REASON_LENGTH);
+  }
+  // The path comes from the agent's command, so it is flattened and capped like the reason.
+  const target = options.blockedPath ?? CLAUDE_REASON_TARGET.exec(reason)?.[1];
+  const shown = target ? flattenPromptText(target, MAX_PATH_LENGTH) : "";
+  return shown
+    ? `${CLAUDE_DANGEROUS_REMOVAL_DESCRIPTION} Path: ${shown}`
     : CLAUDE_DANGEROUS_REMOVAL_DESCRIPTION;
 }
 
@@ -6025,7 +6044,9 @@ class ClaudeAgentSession implements AgentSession {
       name: toolName,
       kind,
       ...buildClaudeQuestionPermissionSummary(toolName, input),
-      ...(kind === "tool" && options.title ? { title: options.title } : {}),
+      ...(kind === "tool" && options.title
+        ? { title: flattenPromptText(options.title, MAX_REASON_LENGTH) }
+        : {}),
       ...(reason ? { description: reason } : {}),
       input: requestInput,
       detail: toolDetail,

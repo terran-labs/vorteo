@@ -1,6 +1,6 @@
 ### Fixes
 
-- A Claude tool permission card now says why it appeared and which mode the thread is in. When Claude Code's dangerous-removal safety check stops a command, even in Bypass mode, the card reads "Claude Code's safety check stopped this command because it could not rule out that it deletes files. Bypass mode does not skip this check." with the path it names. A prompt forced by one of the owner's own ask rules says so; any other prompt shows Claude Code's own reason. "This thread is in Bypass mode." (or the thread's mode) appears beside it (#659).
+- A Claude tool permission card now says why it appeared and which mode the thread is in. When Claude Code's dangerous-removal safety check stops a command, even in Bypass mode, the card reads "Claude Code's safety check stopped this command because it could not rule out that it deletes files. Bypass mode does not skip this check." with the path it names. A prompt forced by one of the owner's own ask rules says so, and a permission rule that denies a command inside a shell -c script says that; any other prompt shows Claude Code's own reason. Reason, path and title text is flattened to one line and capped. "This thread is in Bypass mode." (or the thread's mode) appears beside it (#659).
 
 ## Maintenance review
 
