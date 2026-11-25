@@ -14,4 +14,4 @@
 
 ## Maintenance review
 
-Updates the legacy Codex adoption entry: owners can now start it, and the control's draft wording is English in every language until approved. Documents the owner routes in [providers](../docs/providers.md#adopting-a-legacy-codex-account) and their detection in [protocol compatibility](../docs/protocol-compatibility.md#claude-sign-in-upgrade). The dialog's layout on desktop and compact widths and a live adoption on an installation are unverified. README overview and onboarding are unchanged. Not published.
+Updates the legacy Codex adoption entry: owners can now start it, and the control's draft wording is English in every language until approved. Documents the owner routes in [providers](../docs/providers.md#adopting-a-legacy-codex-account) and their detection in [protocol compatibility](../docs/protocol-compatibility.md#claude-sign-in-upgrade). The section was rendered in each state at a compact width in a browser test run for review only, not committed; the full dialog at desktop width and a live adoption on an installation are unverified. README overview and onboarding are unchanged. Not published.

@@ -116,7 +116,10 @@ function sectionModel(
     // A failed record already states the coordinator's reason.
     text: (status !== "failed" ? notice : null) ?? adoptionStatus(t, entry),
     adoptText: entry.eligible ? adoptLabel(t, status) : null,
-    canUnadopt: UNADOPTABLE.has(status ?? ""),
+    // A failure before Dev acknowledged any copy left Dev untouched: nothing to stop.
+    canUnadopt:
+      UNADOPTABLE.has(status ?? "") &&
+      !(status === "failed" && (entry.adoption?.projectedAt ?? null) === null),
     // Un-adopt stays available while Dev has not yet confirmed a projection.
     unadoptDisabled: pending || status === "unadopting",
     unavailable: !entry.eligible && (status === undefined || status === "unadopted"),

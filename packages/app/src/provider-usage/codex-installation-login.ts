@@ -79,6 +79,7 @@ export async function codexAccountUsesInstallationSignIn(
 const AdoptionSchema = z.object({
   status: z.string(),
   error: z.string().nullable(),
+  projectedAt: z.number().nullable().optional(),
   restored: z.object({ mayNeedSignIn: z.boolean() }).nullable(),
   restoreSkipped: z.boolean().optional(),
   copyDeleteBlocked: z.string().optional(),
