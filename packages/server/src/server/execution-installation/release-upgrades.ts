@@ -396,7 +396,13 @@ abstract class UpgradePipeline<Ports extends UpgradePorts = UpgradePorts> {
       return project(
         this.save(record, { restart: "now", detail: "The owner chose to install now." }),
       );
-    if (decision === "acknowledge" && automatic(record) && !upgradeIsActive(record))
+    // The owner dismisses a finished automatic upgrade's notice, or any failed upgrade from
+    // System Health (#639). Agents never reach this route: release upgrades are owner-only.
+    if (
+      decision === "acknowledge" &&
+      (automatic(record) || record.status === "failed") &&
+      !upgradeIsActive(record)
+    )
       return project(this.save(record, { acknowledgedAt: now }));
     if (decision === "reject" && record.status === "pending")
       return project(this.save(record, { status: "rejected", detail: "Rejected by the owner." }));

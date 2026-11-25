@@ -55,6 +55,11 @@ import {
   InstructionRequestQuerySchema,
   type InstructionRequestQuery,
 } from "@getpaseo/protocol/instruction-requests";
+import {
+  HealthDismissalsSchema,
+  type HealthDismissalQueue,
+  type HealthDismissals,
+} from "@getpaseo/protocol/health-dismissals";
 
 import {
   AgentActionReceiptsSchema,
@@ -219,6 +224,7 @@ export class InstallationClient {
   private password: string | null = null;
   private helperRetryAt = 0;
   private instructionRetryAt = 0;
+  private dismissalRetryAt = 0;
   private daemonAutomationSupported = false;
   private servicePermissionsSupported = false;
   private maintenanceStatusSupported = false;
@@ -461,6 +467,30 @@ export class InstallationClient {
       }
       throw error;
     }
+  }
+
+  /**
+   * The owner's dismissals of failed maintenance records, or null on a coordinator without the
+   * routes, where the interface offers no Dismiss (issue #639).
+   */
+  async listHealthDismissals(): Promise<HealthDismissals | null> {
+    const now = this.ports.now ?? Date.now;
+    if (now() < this.dismissalRetryAt) return null;
+    try {
+      return HealthDismissalsSchema.parse(await this.request("health-dismissals/query", {}));
+    } catch (error) {
+      // COMPAT(healthDismissals): coordinators before #639 have no dismissal routes. Remove once
+      // every coordinator in use serves them.
+      if (error instanceof InstallationRouteUnavailable) {
+        this.dismissalRetryAt = now() + 60_000;
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  async dismissHealthFailure(queue: HealthDismissalQueue, id: string): Promise<HealthDismissals> {
+    return HealthDismissalsSchema.parse(await this.request("health-dismissals", { queue, id }));
   }
 
   async decideInstructionRequest(

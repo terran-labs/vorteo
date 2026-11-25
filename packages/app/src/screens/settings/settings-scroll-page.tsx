@@ -222,14 +222,21 @@ const PRIMARY_CONTROL =
 const FOCUSABLE =
   'button, input, select, textarea, a[href], [role="switch"], [role="button"], [role="radio"], [tabindex="0"]';
 
-function firstEnabledControl(root: HTMLElement): HTMLElement | null {
-  const controls = root.querySelectorAll<HTMLElement>(FOCUSABLE);
-  for (const control of controls) {
+// A failed record's Dismiss is the action a Health Fix is for, so it wins over Details.
+const PREFERRED_CONTROL =
+  '[data-testid^="health-dismiss-"], [data-testid="installation-upgrade-acknowledge"]';
+
+function firstEnabled(root: HTMLElement, selector: string): HTMLElement | null {
+  for (const control of root.querySelectorAll<HTMLElement>(selector)) {
     if (control.getAttribute("aria-disabled") === "true" || control.hasAttribute("disabled"))
       continue;
     return control;
   }
   return null;
+}
+
+function firstEnabledControl(root: HTMLElement): HTMLElement | null {
+  return firstEnabled(root, PREFERRED_CONTROL) ?? firstEnabled(root, FOCUSABLE);
 }
 
 /**

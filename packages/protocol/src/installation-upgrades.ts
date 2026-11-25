@@ -301,6 +301,11 @@ export const UpgradeStatusSchema = z.object({
   /** Present on coordinators with update policies; its presence gates the policy routes. */
   policy: UpdatePolicySchema.optional(),
   check: UpdateCheckSchema.optional(),
+  /**
+   * The coordinator accepts `acknowledge` for any failed upgrade, not only automatic ones, so
+   * System Health can offer Dismiss on each failure. Older coordinators omit it.
+   */
+  acknowledgesFailures: z.literal(true).optional(),
 });
 export type UpgradeStatus = z.infer<typeof UpgradeStatusSchema>;
 
@@ -311,7 +316,8 @@ export type UpgradeRequest = z.infer<typeof UpgradeRequestSchema>;
 /**
  * POST /api/installation/owner/upgrades/:id/decision. `approve` restarts at once, and on an
  * upgrade waiting for current work it stops waiting; `approve-after-work` waits for current work
- * first; `acknowledge` dismisses the notice of a finished automatic upgrade. Send the last two
+ * first; `acknowledge` dismisses the notice of a finished automatic upgrade, or any failed upgrade on a
+ * coordinator that reports `acknowledgesFailures`. Send the last two
  * only when the status has `policy`.
  */
 export const UpgradeDecisionSchema = z.strictObject({

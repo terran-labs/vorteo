@@ -16,6 +16,19 @@ export interface MaintenanceServiceQueueProps {
   busy: boolean;
   onRefresh(): void;
   onCancel(job: MaintenanceServiceView): void;
+  /**
+   * Dismiss for failures that still count on System Health, on coordinators that record the
+   * owner's dismissals (issue #639). Absent elsewhere.
+   */
+  dismissal?: HealthDismissalControls | null;
+}
+
+export interface HealthDismissalControls {
+  /** Failures System Health still counts. */
+  counted: ReadonlySet<string>;
+  /** Failures the owner dismissed; they stay listed. */
+  dismissed: ReadonlySet<string>;
+  onDismiss(job: MaintenanceServiceView): void;
 }
 
 /** These are durable request receipts, not current service health observations. */
@@ -26,6 +39,7 @@ export function MaintenanceServiceQueue({
   busy,
   onRefresh,
   onCancel,
+  dismissal = null,
 }: MaintenanceServiceQueueProps) {
   // Nothing to show until requests exist; status refreshes on its own.
   if (!error && (!status || (status.available && status.jobs.length === 0))) return null;
@@ -61,6 +75,7 @@ export function MaintenanceServiceQueue({
           job={job}
           disabled={busy || Boolean(error)}
           onCancel={onCancel}
+          dismissal={dismissal}
         />
       ))}
     </View>
@@ -70,12 +85,16 @@ function MaintenanceRequestRow({
   job,
   disabled,
   onCancel,
+  dismissal,
 }: {
   job: MaintenanceServiceView;
   disabled: boolean;
   onCancel(job: MaintenanceServiceView): void;
+  dismissal: HealthDismissalControls | null;
 }) {
   const cancel = useCallback(() => onCancel(job), [onCancel, job]);
+  const dismiss = useCallback(() => dismissal?.onDismiss(job), [dismissal, job]);
+  const dismissed = job.status === "failed" && Boolean(dismissal?.dismissed.has(job.id));
   const target =
     job.target === "maintenance-controller" ? "Maintenance controller" : "Recovery launcher";
   return (
@@ -84,7 +103,11 @@ function MaintenanceRequestRow({
         <Text style={settingsStyles.rowTitle}>{target}</Text>
         {/* A polite live region, so a status change while the page is open is announced. */}
         <View accessibilityLiveRegion="polite" aria-live="polite">
-          <StatusBadge label={labels[job.status]} variant={variants[job.status]} />
+          {dismissed ? (
+            <StatusBadge label={DISMISSED_LABEL} variant="muted" />
+          ) : (
+            <StatusBadge label={labels[job.status]} variant={variants[job.status]} />
+          )}
         </View>
       </View>
       <Text style={styles.hint}>{job.reason}</Text>
@@ -97,6 +120,19 @@ function MaintenanceRequestRow({
       ) : null}
       {job.observedAt ? (
         <Text style={styles.hint}>Last checked {new Date(job.observedAt).toLocaleString()}</Text>
+      ) : null}
+      {dismissal?.counted.has(job.id) && job.status === "failed" ? (
+        <View style={styles.actions}>
+          <Button
+            variant="outline"
+            disabled={disabled}
+            onPress={dismiss}
+            accessibilityLabel="Dismiss failed service maintenance request"
+            testID={`health-dismiss-${job.id}`}
+          >
+            Dismiss
+          </Button>
+        </View>
       ) : null}
       {job.cancelable ? (
         <View style={styles.actions}>
@@ -113,6 +149,8 @@ function MaintenanceRequestRow({
     </View>
   );
 }
+// A badge, not a settings row.
+const DISMISSED_LABEL = "Dismissed";
 const variants = {
   pending: "warning",
   approved: "warning",
