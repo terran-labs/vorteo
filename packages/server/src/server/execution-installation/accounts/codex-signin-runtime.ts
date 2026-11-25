@@ -28,12 +28,8 @@ import {
   codexRefusalReason,
   type CodexSignInProjectionDelivery,
 } from "./codex-signin-delivery.js";
-import {
-  codexHostRefreshFingerprint,
-  createCodexHostCli,
-  readCodexHostGrant,
-  type CodexHostCli,
-} from "./codex-signin-host.js";
+import { createCodexHostCli, readCodexHostGrant, type CodexHostCli } from "./codex-signin-host.js";
+import { codexSessionCheck } from "./codex-signin-identity.js";
 import { CodexSignInRefresher } from "./codex-signin-refresher.js";
 import { HostRefreshSkipped, type HostRefreshPolicy } from "./host-owned-refresher.js";
 
@@ -68,7 +64,6 @@ interface RuntimeOverrides {
   daemonFeatures?: (kind: "host" | "container") => Promise<DaemonFeatures | undefined>;
   cli?: CodexHostCli;
   readGrant?: typeof readCodexHostGrant;
-  hostFingerprint?: typeof codexHostRefreshFingerprint;
   fetch?: typeof fetch;
   now?: () => number;
   /** Dev's usage read for one provider ID. Injected by tests. */
@@ -444,11 +439,14 @@ export function createCodexSignInRuntime(
         !adoption.admitsHostIdentity(delivery.definitionId, delivery.access)
       )
         throw new CodexSignInDeliveryError();
-      // Withdrawals replace nothing, so only an access delivery asks.
-      const sameGrant =
-        adopted && delivery.access !== null
-          ? await adoption.sameGrant(delivery.definitionId)
-          : undefined;
+      // Withdrawals replace nothing. A Dev that can hold its sessions gets the Host sign-in's
+      // login session under a nonce new for this delivery; without it, Dev always holds.
+      const sessionCheck =
+        adopted &&
+        delivery.access !== null &&
+        (await devFeatures())?.codexLegacySessionHold === true
+          ? codexSessionCheck(delivery.access.idToken)
+          : null;
       const body = adopted
         ? {
             ...delivery,
@@ -457,7 +455,7 @@ export function createCodexSignInRuntime(
               keepLocalSignIn:
                 adopted.copyForgottenAt === null &&
                 codexAdoptionRetention(config, delivery.definitionId).mode !== "none",
-              ...(sameGrant === undefined ? {} : { sameGrant }),
+              ...(sessionCheck ? { sessionCheck } : {}),
             },
           }
         : delivery;
@@ -497,7 +495,6 @@ export function createCodexSignInRuntime(
     },
     pinByPath: async () => (await daemonFeatures("container"))?.codexLegacyPinByPath === true,
     sessionHold: async () => (await devFeatures())?.codexLegacySessionHold === true,
-    hostFingerprint: overrides.hostFingerprint ?? codexHostRefreshFingerprint,
     hostHome: (definitionId, hostProviderId, revision) =>
       bindingHome({
         installationId: config.public.installationId,

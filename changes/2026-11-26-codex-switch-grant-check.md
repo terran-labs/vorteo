@@ -5,4 +5,4 @@
 
 ## Maintenance review
 
-Server side of #658: the `fingerprint` legacy operation, busy titles on `sessions`, the `adoption.sameGrant` delivery flag, the in-write lease across every provider sharing the home, the narrow Host refresh-token fingerprint reader, and the coordinator's check in place of the loaded-session rule at the first switch, a paused first projection's resume and an unsettled confirmation. The providers guide, protocol notes and the adopted legacy Codex inventory entry are updated. README overview and onboarding are unchanged. Not published.
+Server side of #658: the `session-check` legacy operation with busy titles, `adoption.sessionCheck` on the projection delivery, the in-write lease across every provider sharing the home, and the coordinator's check in place of the loaded-session rule at the first switch, a paused first projection's resume and an unsettled confirmation. The providers guide, protocol notes and the adopted legacy Codex inventory entry are updated. README overview and onboarding are unchanged. Not published.

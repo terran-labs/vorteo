@@ -35,7 +35,7 @@ import type { CodexRefreshLeases } from "./codex-signin-lease.js";
 import {
   forgetLegacyCodexSignIn,
   inspectLegacyCodexHome,
-  legacyRefreshFingerprint,
+  legacyOtherSession,
   pinCodexHome,
   restoreLegacyCodexSignIn,
   sharesCodexHome,
@@ -429,12 +429,8 @@ export function mountCodexSignInConsumer(app: Express, options: ConsumerOptions)
           definitionId: delivery.definitionId,
           journalDefinition: previousDefinition,
           keepLocalSignIn: delivery.adoption?.keepLocalSignIn === true,
-          // Only a coordinator that found the grants different skips the hold; unknown counts
-          // as the same grant.
-          hold:
-            delivery.adoption?.sameGrant === false
-              ? null
-              : () => holdHome(delivery.providerId, pinCodexHome(home)),
+          hold: () => holdHome(delivery.providerId, pinCodexHome(home)),
+          sessionCheck: delivery.adoption?.sessionCheck,
         }),
     });
     consumers.set(key, consumer);
@@ -532,25 +528,16 @@ export function mountCodexSignInConsumer(app: Express, options: ConsumerOptions)
           res.json({ target, signIn });
           return;
         }
-        // The checks a pin makes, so neither answer describes a home that could not be adopted.
-        if (
-          request.operation === "fingerprint" ||
-          (request.operation === "sessions" && request.titles)
-        ) {
+        // The checks a pin makes, so the answer never describes a home that could not be adopted.
+        if (request.operation === "session-check") {
           if (excluded) throw new CodexSignInDeliveryError();
           const target = pinCodexHome(home);
           if (sharesCodexHome(target, otherHomes(request.providerId)))
             throw new CodexSignInDeliveryError();
-          res.json(
-            request.operation === "fingerprint"
-              ? {
-                  fingerprint: legacyRefreshFingerprint(
-                    target.realpath,
-                    Buffer.from(request.nonce, "base64url"),
-                  ),
-                }
-              : busyOnHome(request.providerId, target),
-          );
+          res.json({
+            different: legacyOtherSession(target.realpath, request.sessionCheck),
+            ...busyOnHome(request.providerId, target),
+          });
           return;
         }
         if (request.operation === "sessions") {

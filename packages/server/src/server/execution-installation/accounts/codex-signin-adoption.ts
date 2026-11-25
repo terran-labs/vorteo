@@ -1,12 +1,10 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
 import type { CodexAdoptionRetention, InstallationConfig } from "../config.js";
 import type { InstallationSettingsService } from "../settings/service.js";
 import {
-  CodexLegacyBusyResponseSchema,
-  CodexLegacyFingerprintResponseSchema,
   CodexLegacyInspectResponseSchema,
+  CodexLegacySessionCheckResponseSchema,
   CodexLegacySessionsResponseSchema,
   type CodexLegacyBusy,
   CodexLegacyTargetSchema,
@@ -15,7 +13,7 @@ import {
   type CodexLegacyTarget,
 } from "./codex-signin-delivery.js";
 import { verifyCodexHostSession, type CodexHostGrant } from "./codex-signin-host.js";
-import { codexSignInKeyDigest } from "./codex-signin-identity.js";
+import { codexSessionCheck, codexSignInKeyDigest } from "./codex-signin-identity.js";
 import type { CodexSignInRefresher } from "./codex-signin-refresher.js";
 
 /**
@@ -401,8 +399,6 @@ export interface CodexAdoptionDeps {
   pinByPath(): Promise<boolean>;
   /** Whether Dev advertises `codexLegacySessionHold`. Throws when Dev is unreachable. */
   sessionHold(): Promise<boolean>;
-  /** The Host grant's refresh token fingerprint under `nonce`; see codexHostRefreshFingerprint. */
-  hostFingerprint(codexHome: string, nonce: Buffer): Buffer | null;
   /** The Host binding's exact CODEX_HOME through the legacy binding route. */
   hostHome(definitionId: string, hostProviderId: string, revision: number): Promise<string>;
   /** Dev's legacy route. Throws CodexSignInRefused when Dev answers with a refusal. */
@@ -627,33 +623,13 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
   }
 
   /**
-   * Whether Dev's `auth.json` holds the Host's own refresh grant. Each comparison uses a new
-   * random nonce; only equal or different is kept, never the nonce, the fingerprints or a token.
-   * Without a refresh sign-in on Dev, the grants differ.
-   */
-  async function sameGrant(record: CodexAdoptionRecord): Promise<boolean> {
-    const nonce = randomBytes(32);
-    const { fingerprint } = CodexLegacyFingerprintResponseSchema.parse(
-      await deps.dev({
-        ...scope(record),
-        operation: "fingerprint",
-        nonce: nonce.toString("base64url"),
-      }),
-    );
-    if (fingerprint === null) return false;
-    const revision = deps.settings.snapshot().revision;
-    const home = await deps.hostHome(record.definitionId, record.hostProviderId, revision);
-    const hostMac = deps.hostFingerprint(home, nonce);
-    return hostMac !== null && timingSafeEqual(Buffer.from(fingerprint, "hex"), hostMac);
-  }
-
-  /**
-   * Why Dev's use of the account stops the Host's sign-in from being written there, or null.
-   * The rule stands in for one risk: Dev holding a copy of the Host's grant, which a Dev refresh
-   * would rotate. A Dev with `codexLegacySessionHold` is asked directly: with a different grant
-   * nothing on Dev can touch the Host's, so nothing waits; with the same grant, a thread that
-   * starts or runs a turn waits, and the owner is told which. An older Dev keeps refusing while
-   * any session on the account is loaded.
+   * Why Dev's use of the account stops the Host's sign-in from being written there, or null, as
+   * an early refusal the owner can act on. The rule stands in for one risk: Dev holding a copy,
+   * current or stale, of the Host's grant, which a Dev refresh would rotate or reuse. A Dev with
+   * `codexLegacySessionHold` is asked with the Host's login-session fingerprints under a new
+   * nonce: a sign-in from another login session, or none, never waits; otherwise a thread that
+   * starts or runs a turn waits, and the owner is told which. Dev decides again inside the write.
+   * An older Dev keeps refusing while any session on the account is loaded.
    */
   async function devUse(record: CodexAdoptionRecord): Promise<AdoptionRefused | null> {
     if (!(await deps.sessionHold())) {
@@ -662,11 +638,18 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
       );
       return active ? new AdoptionRefused(ACTIVE_DEV_SESSION) : null;
     }
-    if (!(await sameGrant(record))) return null;
-    const busy = CodexLegacyBusyResponseSchema.parse(
-      await deps.dev({ ...scope(record), operation: "sessions", titles: true }),
+    const revision = deps.settings.snapshot().revision;
+    const home = await deps.hostHome(record.definitionId, record.hostProviderId, revision);
+    const sessionCheck = codexSessionCheck(deps.readGrant(home)?.idToken);
+    const answer = CodexLegacySessionCheckResponseSchema.parse(
+      await deps.dev({
+        ...scope(record),
+        operation: "session-check",
+        ...(sessionCheck ? { sessionCheck } : {}),
+      }),
     );
-    return busy.active ? new SameGrantBusy(sameGrantBusyMessage(busy)) : null;
+    if (answer.different || !answer.active) return null;
+    return new SameGrantBusy(sameGrantBusyMessage(answer));
   }
 
   /**
@@ -1120,17 +1103,6 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
           reason: unreadableFor(definition.id, "adopt") ?? eligibility(definition.id).reason,
           record: records.find((item) => item.definitionId === definition.id) ?? null,
         }));
-    },
-
-    /**
-     * For a delivery: false only when Dev's refresh token was just found different from the
-     * Host's, so Dev need not hold its sessions while it writes; true when the same or unknown;
-     * undefined for a Dev without `codexLegacySessionHold`, which must not receive the flag.
-     */
-    async sameGrant(definitionId: string): Promise<boolean | undefined> {
-      const record = find(definitionId);
-      if (!record || !(await deps.sessionHold())) return undefined;
-      return sameGrant(record).catch(() => true);
     },
 
     /** Whether the refresher may project into this definition's legacy Dev home. */

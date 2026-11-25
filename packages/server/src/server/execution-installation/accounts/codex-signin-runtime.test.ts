@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHmac, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
@@ -22,6 +22,7 @@ import {
   UNREADABLE_RECORD,
 } from "./codex-signin-adoption.js";
 import { writeClaudeSetupFile } from "./claude-setup-file.js";
+import { codexOtherSession } from "./codex-signin-identity.js";
 import { adoptionView, mountCodexSignInRoutes } from "./codex-signin-routes.js";
 import {
   codexProjectionDigest,
@@ -246,12 +247,8 @@ it("refuses unlinked accounts instead of consolidating them by label", async () 
 });
 
 const DAY = 86_400_000;
-/** The Host grant's refresh token; a Dev holding the same one holds a copy of the Host's grant. */
-const HOST_REFRESH = "synthetic-host-refresh";
-function fingerprint(nonce: Buffer, token: string) {
-  return createHmac("sha256", nonce).update(token).digest("hex");
-}
-
+/** The Host sign-in's login session; a Dev token with these claims is a copy of that sign-in. */
+const HOST_SESSION = { sid: "host-session", auth_time: 1_700_000_000 };
 /**
  * The record shape the first adoption release (72c38491) reads strictly, copied here on
  * purpose: a field this release adds to `adoption.json` itself fails it, and a rolled-back
@@ -312,10 +309,19 @@ const InstalledJournalSchema = z.array(
 );
 const FULL_SUPPORT = { ...SUPPORTED, codexAccountAdoption: true };
 
-/** Unsigned synthetic JWT carrying the email Codex shows. */
-function idToken(email: string, person = "person-1") {
+/** Unsigned synthetic JWT carrying the email Codex shows and its login session's claims. */
+function idToken(
+  email: string,
+  person = "person-1",
+  session: { sid?: string; auth_time?: number } = HOST_SESSION,
+) {
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  const claims = { email, "https://api.openai.com/auth": { chatgpt_user_id: person } };
+  const claims = {
+    email,
+    sub: person,
+    ...session,
+    "https://api.openai.com/auth": { chatgpt_user_id: person },
+  };
   return `${encode({ alg: "none" })}.${encode(claims)}.synthetic`;
 }
 
@@ -387,11 +393,14 @@ function legacyHarness(
     signIn: "projection" as "projection" | "none" | "other",
     /** Dev advertises `codexLegacySessionHold`. */
     sessionHold: false,
-    /** The refresh token in Dev's own auth.json, or null without a refresh sign-in. */
-    refreshToken: "synthetic-dev-refresh" as string | null,
+    /** The ID token of Dev's own refresh sign-in, or null without one. Another login by default. */
+    signedIn: idToken("owner@example.com", "person-1", {
+      sid: "dev-session",
+      auth_time: 1_600_000_000,
+    }) as string | null,
     /** A thread on the account starts or runs a turn, with these titles. */
     busy: [] as string[],
-    /** Every nonce Dev was asked to fingerprint with. */
+    /** Every nonce the coordinator sent Dev, by session check or delivery. */
     nonces: [] as string[],
     targets: {
       "codex-primary": { realpath: "/home/paseo/codex-primary", dev: "41", ino: "1001" },
@@ -417,21 +426,15 @@ function legacyHarness(
     if (!dev.online) throw new TypeError("fetch failed");
     if (route === "legacy") {
       if (body.operation === "pin") return Response.json({ target: dev.targets[body.providerId] });
-      if (body.operation === "fingerprint") {
-        dev.nonces.push(body.nonce);
+      if (body.operation === "session-check") {
+        if (body.sessionCheck) dev.nonces.push(body.sessionCheck.nonce);
         return Response.json({
-          fingerprint:
-            dev.refreshToken === null
-              ? null
-              : fingerprint(Buffer.from(body.nonce, "base64url"), dev.refreshToken),
-        });
-      }
-      if (body.operation === "sessions" && body.titles)
-        return Response.json({
+          different: dev.signedIn === null || codexOtherSession(dev.signedIn, body.sessionCheck),
           active: dev.busy.length > 0,
           titles: dev.busy.slice(0, 3),
           more: Math.max(0, dev.busy.length - 3),
         });
+      }
       if (body.operation === "sessions") return Response.json({ active: dev.active });
       if (body.operation === "inspect")
         return Response.json({ target: dev.targets[body.providerId], signIn: dev.signIn });
@@ -444,6 +447,7 @@ function legacyHarness(
     if (dev.refusal)
       return Response.json({ error: "pending", reason: dev.refusal }, { status: 409 });
     deliveries.push(body);
+    if (body.adoption?.sessionCheck) dev.nonces.push(body.adoption.sessionCheck.nonce);
     const { access, adoption: _adoption, ...slot } = body;
     return Response.json({
       ...slot,
@@ -497,7 +501,6 @@ function legacyHarness(
         : FULL_SUPPORT,
     cli: cli as unknown as CodexHostCli,
     readGrant: () => grant,
-    hostFingerprint: (_home, nonce) => Buffer.from(fingerprint(nonce, HOST_REFRESH), "hex"),
     fetch: fetchFake as unknown as typeof fetch,
     now: () => now,
     devUsage: async () => ({ ...usage, authRecovery: false }),
@@ -597,7 +600,7 @@ it("fails closed with nothing written when the Host, Dev or a daemon is not read
     error: "A Dev session is using this account. Stop it, then try again.",
   });
   expect(busy.legacyCalls("pin")).toEqual([]);
-  expect(busy.legacyCalls("fingerprint")).toEqual([]);
+  expect(busy.legacyCalls("session-check")).toEqual([]);
   expect(busy.deliveries).toEqual([]);
 
   const outdated = legacyHarness({ devFeatures: SUPPORTED });
@@ -609,7 +612,7 @@ it("fails closed with nothing written when the Host, Dev or a daemon is not read
   }
 });
 
-it("switches whatever runs on Dev when Dev's grant is not the Host's, comparing with fresh nonces", async () => {
+it("switches whatever runs on Dev when Dev's sign-in is another login, with fresh nonces", async () => {
   for (const running of ["loaded", "busy"]) {
     const h = legacyHarness();
     h.dev.sessionHold = true;
@@ -619,19 +622,47 @@ it("switches whatever runs on Dev when Dev's grant is not the Host's, comparing 
     await h.runtime.reconcile();
     expect(h.runtime.adoption("one")?.status).toBe("adopted");
     expect(h.legacyCalls("sessions")).toEqual([]);
-    // Each delivery says the grants differ, so Dev writes without holding its sessions.
-    expect(h.deliveries[0]).toMatchObject({ adoption: { sameGrant: false } });
-    // Every comparison used its own nonce.
+    // Each delivery carries the Host login's fingerprints, which Dev checks inside the write.
+    expect(h.deliveries[0]).toMatchObject({
+      adoption: {
+        sessionCheck: {
+          nonce: expect.any(String),
+          sid: expect.any(String),
+          authTime: expect.any(String),
+        },
+      },
+    });
+    // Every comparison and delivery used its own nonce.
     expect(h.dev.nonces.length).toBeGreaterThan(1);
     expect(new Set(h.dev.nonces).size).toBe(h.dev.nonces.length);
     expect(h.journal()).not.toMatch(new RegExp(h.dev.nonces.join("|")));
   }
 });
 
-it("refuses while Dev runs a thread on the Host's own grant and names it only in the reply", async () => {
+it("refuses while Dev runs a thread on what may be the Host's own sign-in, naming it only in the reply", async () => {
+  // Not shown to be another login: Dev's token says so, or a claim is missing on either side.
+  const session = (claims: { sid?: string; auth_time?: number }) =>
+    idToken("owner@example.com", "person-1", claims);
+  for (const [name, devToken, hostToken] of [
+    ["same login, perhaps a stale copy", session(HOST_SESSION), null],
+    [
+      "same authentication time, other session ID",
+      session({ ...HOST_SESSION, sid: "renewed" }),
+      null,
+    ],
+    ["no session claims on Dev", session({}), null],
+    ["no session claims on the Host", session({ sid: "dev", auth_time: 1 }), session({})],
+  ] as const) {
+    const h = legacyHarness();
+    h.dev.sessionHold = true;
+    h.dev.signedIn = devToken;
+    if (hostToken) h.setGrant({ idToken: hostToken });
+    h.dev.busy = ["Hourly heartbeat"];
+    await expect(h.runtime.adopt("one"), name).rejects.toThrow('running: "Hourly heartbeat".');
+  }
   const h = legacyHarness();
   h.dev.sessionHold = true;
-  h.dev.refreshToken = HOST_REFRESH;
+  h.dev.signedIn = idToken("owner@example.com");
   h.dev.busy = ["Hourly heartbeat", "Fix the build", "Review", "Docs"];
   await expect(h.runtime.adopt("one")).rejects.toThrow(
     'Dev is using the same sign-in as the Host on this account, and a Dev thread is running: "Hourly heartbeat", "Fix the build", "Review" and 1 more. Try again when it has finished.',
@@ -639,11 +670,13 @@ it("refuses while Dev runs a thread on the Host's own grant and names it only in
   expect(h.runtime.adoption("one")).toMatchObject({ status: "failed", error: SAME_GRANT_BUSY });
   expect(h.journal()).not.toContain("Hourly heartbeat");
   expect(h.deliveries).toEqual([]);
-  // Loaded but idle on the same grant: Dev holds its sessions inside the write instead.
+  // Loaded but idle: Dev decides inside the write, holding its sessions there.
   h.dev.busy = [];
   h.dev.active = true;
   await h.runtime.adopt("one");
-  expect(h.deliveries[0]).toMatchObject({ adoption: { sameGrant: true } });
+  expect(h.deliveries[0]).toMatchObject({
+    adoption: { sessionCheck: { nonce: expect.any(String) } },
+  });
 });
 
 it("keeps an offline Dev pending, adopts one account at a time and never shares a home", async () => {

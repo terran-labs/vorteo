@@ -15,12 +15,13 @@ import { isTrustedCredentialsFile, replaceAtomically } from "./claude-oauth-cred
 import { readClaudeSetupFile, writeClaudeSetupFile } from "./claude-setup-file.js";
 import { CODEX_SIGNIN_STATE_DIRECTORY } from "./codex-signin-auth-file.js";
 import {
-  codexRefreshFingerprint,
+  codexOtherSession,
   codexSignInKeyDigest,
   sameCodexSignIn,
 } from "./codex-signin-identity.js";
 import {
   CodexSignInDeliveryError,
+  type CodexSessionCheck,
   type CodexAccessProjection,
   type CodexLegacyTarget,
 } from "./codex-signin-delivery.js";
@@ -270,12 +271,18 @@ function takeOverLocalSignIn(
   home: string,
   current: string,
   access: CodexAccessProjection,
-  options: { keepLocalSignIn: boolean; hold: (() => () => void) | null },
+  options: {
+    keepLocalSignIn: boolean;
+    hold: () => () => void;
+    sessionCheck: CodexSessionCheck | undefined;
+  },
 ): (() => void) | null {
   const local = localSignIn(current);
   if (!local || !sameCodexSignIn(local, access))
     throw new HostProjectionRefusal("existing_sign_in");
-  const release = options.hold?.() ?? null;
+  // Decided here, in the write, from the file being replaced: only a sign-in shown to be from
+  // another login session than the Host's is replaced without the hold.
+  const release = codexOtherSession(local.idToken, options.sessionCheck) ? null : options.hold();
   try {
     // Each adoption keeps the latest sign-in Dev made, which un-adopt restores.
     if (options.keepLocalSignIn) {
@@ -308,7 +315,9 @@ export function writeLegacyCodexProjection(
      * Holds every provider sharing the home while a refresh sign-in that may be a copy of the
      * Host's grant is replaced, and returns its release. Throws while any of them is busy.
      */
-    hold: (() => () => void) | null;
+    hold: () => () => void;
+    /** The Host's login-session fingerprints; absent means hold. */
+    sessionCheck: CodexSessionCheck | undefined;
   },
 ): HostProjectionStoreResult {
   stateDirectory(home);
@@ -350,16 +359,14 @@ export function writeLegacyCodexProjection(
 }
 
 /**
- * The fingerprint of the refresh token in a legacy home's `auth.json` under the coordinator's
- * single-use nonce, as hex, or null when it holds no refresh sign-in: no file, an API key, or a
- * projection, whose refresh token is empty. Nothing is kept.
+ * Whether the home holds nothing that can renew the Host's grant: no refresh sign-in (no file,
+ * an API key, or a projection, whose refresh token is empty), or one from another login session
+ * by the coordinator's check. Nothing is kept.
  */
-export function legacyRefreshFingerprint(home: string, nonce: Buffer): string | null {
+export function legacyOtherSession(home: string, check: CodexSessionCheck | undefined): boolean {
   const current = readCurrent(join(home, AUTH_FILE));
   const local = current === null ? null : localSignIn(current);
-  if (!local) return null;
-  const parsed = LocalSignInSchema.parse(local.value);
-  return codexRefreshFingerprint(nonce, parsed.tokens.refresh_token).toString("hex");
+  return local === null || codexOtherSession(local.idToken, check);
 }
 
 /** What a legacy home's `auth.json` holds, for resuming a paused adoption. */

@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
@@ -25,7 +25,7 @@ import { createCodexAccount } from "../../../services/provider-login/create-acco
 import { mountCodexSignInConsumer } from "./codex-signin-consumer.js";
 import { codexProjectionDigest } from "./codex-signin-delivery.js";
 import { CodexRefreshLeases } from "./codex-signin-lease.js";
-import { codexSignInKeyDigest } from "./codex-signin-identity.js";
+import { codexSessionCheck, codexSignInKeyDigest } from "./codex-signin-identity.js";
 
 const PASSWORD = "synthetic-password";
 const cleanups: Array<() => Promise<void>> = [];
@@ -44,6 +44,18 @@ const personToken = (person: string) => {
   return `${encode({ alg: "none" })}.${encode(claims)}.synthetic`;
 };
 const ID_TOKEN = personToken("person-1");
+/** The Host sign-in's login session claims, top-level in its ID token. */
+const HOST_SESSION = { sid: "host-session", auth_time: 1_700_000_000 };
+const sessionToken = (session: { sid?: string; auth_time?: number }) => {
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const claims = {
+    sub: "person-1",
+    ...session,
+    "https://api.openai.com/auth": { chatgpt_user_id: "person-1" },
+  };
+  return `${encode({ alg: "none" })}.${encode(claims)}.synthetic`;
+};
+const HOST_TOKEN = sessionToken(HOST_SESSION);
 const access = (accessToken: string, accountId: string | null = "workspace-1") => ({
   accessToken,
   idToken: ID_TOKEN,
@@ -663,54 +675,61 @@ it("withdraws only its projection, restores the saved sign-in untested and honou
   expect(existsSync(copyB)).toBe(false);
 });
 
-it("fingerprints Dev's grant per nonce, names busy threads plainly and holds them while writing", async () => {
+it("checks Dev's login session inside the write, names busy threads plainly and holds them", async () => {
   const f = await legacyFixture();
   const target = await f.pin();
-  const nonce = () => randomBytes(32).toString("base64url");
-  const fingerprintOf = async (value: string) =>
-    (await f.legacy("fingerprint", { nonce: value })).body.fingerprint as string | null;
-  expect(await fingerprintOf(nonce())).toBeNull();
-  f.write(localSignIn("workspace-1"));
-  const first = nonce();
-  const once = await fingerprintOf(first);
-  expect(once).toBe(
-    createHmac("sha256", Buffer.from(first, "base64url"))
-      .update("synthetic-local-refresh")
-      .digest("hex"),
-  );
-  // The same token under a new nonce gives a different answer; Dev keeps nothing between.
-  expect(await fingerprintOf(nonce())).not.toBe(once);
-  expect(await fingerprintOf(first)).toBe(once);
+  const check = () => codexSessionCheck(HOST_TOKEN)!;
+  const sessionCheck = async (value = check()) =>
+    (await f.legacy("session-check", { sessionCheck: value })).body;
+  // No refresh sign-in on Dev: nothing there can renew the Host's grant.
+  expect(await sessionCheck()).toMatchObject({ different: true, active: false });
 
-  // Busy threads' titles, plain and capped: three, then how many more.
+  // A copy of the Host's login, with busy threads' titles plain and capped: three, then more.
+  f.write(localSignIn("workspace-1", "synthetic-dev-stale", HOST_TOKEN));
   f.inUse.add("codex-primary");
   f.titles.set("codex-primary", ["Line\nbreak\u0007 title", "x".repeat(200), "", "four", "five"]);
-  expect((await f.legacy("sessions", { titles: true })).body).toEqual({
+  expect(await sessionCheck()).toEqual({
+    different: false,
     active: true,
     titles: ["Line break title", "x".repeat(80), "Untitled thread"],
     more: 2,
   });
 
-  // While busy, a sign-in that may be the Host's own is not replaced; the hold is released.
-  const slot = { generation: 1, rotation: 1 };
-  const held = await f.project(target, slot, access("synthetic-a"));
-  expect(held.status).toBe(409);
-  expect(JSON.parse(f.readAuth()).tokens.refresh_token).toBe("synthetic-local-refresh");
-  f.inUse.delete("codex-primary");
-  expect((await f.project(target, slot, access("synthetic-a"))).status).toBe(200);
-  // A grant the coordinator found different is replaced even while a thread runs.
-  f.write(localSignIn("workspace-1", "synthetic-dev-renewed"));
-  f.inUse.add("codex-primary");
-  const different = await f.project(
-    target,
-    { generation: 1, rotation: 2 },
-    access("synthetic-b"),
-    true,
-    undefined,
-    { sameGrant: false },
+  // While a thread runs, only a sign-in shown to be another login is replaced.
+  let rotation = 0;
+  const project = (sessionCheckValue?: unknown) =>
+    f.project(
+      target,
+      { generation: 1, rotation: ++rotation },
+      access(`synthetic-${rotation}`),
+      true,
+      undefined,
+      sessionCheckValue ? { sessionCheck: sessionCheckValue } : {},
+    );
+  for (const [name, token, held] of [
+    ["stale copy: same login, another refresh token", HOST_TOKEN, true],
+    [
+      "same authentication time, other session ID",
+      sessionToken({ ...HOST_SESSION, sid: "renewed" }),
+      true,
+    ],
+    ["no session ID or authentication time", ID_TOKEN, true],
+    ["another login", sessionToken({ sid: "dev-session", auth_time: 1 }), false],
+  ] as const) {
+    f.write(localSignIn("workspace-1", "synthetic-dev-stale", token));
+    expect((await project(check())).status, name).toBe(held ? 409 : 200);
+  }
+  // Its own projection is replaced with no check and no hold.
+  expect((await project()).status).toBe(200);
+  // Without the Host's fingerprints, another login is held too.
+  f.write(
+    localSignIn("workspace-1", "synthetic-dev-other", sessionToken({ sid: "d", auth_time: 1 })),
   );
-  expect(different.status).toBe(200);
-  expect(JSON.parse(f.readAuth()).tokens.access_token).toBe("synthetic-b");
+  expect((await project()).status).toBe(409);
+  expect(JSON.parse(f.readAuth()).tokens.refresh_token).toBe("synthetic-dev-other");
+  // Once nothing runs the hold is granted, so none was left behind.
+  f.inUse.delete("codex-primary");
+  expect((await project()).status).toBe(200);
 });
 
 it("leases a Host account unless a session starts or runs a turn on it, for at most 30 s", async () => {
