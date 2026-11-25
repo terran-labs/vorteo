@@ -380,6 +380,37 @@ function InstallationSession({ model }: { model: InstallationPanelModel }) {
   return null;
 }
 
+/** A restart's badge; a failure the owner dismissed reads Dismissed in history. */
+function restartBadge(job: RestartJob, historical: boolean, dismissed: boolean) {
+  return dismissed
+    ? { label: DISMISSED_BADGE, variant: "muted" as const }
+    : restartStatus(job, historical);
+}
+
+/** Dismiss for the failed restart that still counts on System Health. */
+function RestartDismiss({
+  job,
+  model,
+  busy,
+  dismissible,
+}: {
+  job: RestartJob;
+  model: InstallationPanelModel;
+  busy: boolean;
+  dismissible: boolean;
+}) {
+  if (!dismissible) return null;
+  return (
+    <DismissFailureButton
+      model={model}
+      busy={busy}
+      queue="restart"
+      id={job.id}
+      noun="restart request"
+    />
+  );
+}
+
 function restartStatus(job: RestartJob, historical = false) {
   if (job.delegatedTo && !historical)
     return { label: `Being handled by ${job.delegatedTo}`, variant: "muted" as const };
@@ -439,6 +470,7 @@ function CoordinatorMaintenanceReviews() {
 function InstallationHistory({
   anchorHost,
   anchored,
+  dismissal,
   history,
   model,
   busy,
@@ -450,6 +482,7 @@ function InstallationHistory({
   anchorHost: HealthCardHost;
   /** A failed restart's Fix lands here when no restart is active. */
   anchored: boolean;
+  dismissal: RestartDismissal | null;
   history: RestartJob[];
   model: InstallationPanelModel;
   busy: boolean;
@@ -491,6 +524,10 @@ function InstallationHistory({
                   busy={busy}
                   historical
                   linked={job.id === requestId}
+                  dismissible={dismissal?.dismissibleId === job.id}
+                  dismissed={
+                    job.status === "failed" && Boolean(dismissal?.dismissedIds.has(job.id))
+                  }
                 />
               ))}
             </HistoryGroup>
@@ -595,6 +632,33 @@ function InstallationActionStatus({
   );
 }
 
+interface RestartDismissal {
+  /** The failed restart that is the latest for this environment and still counts. */
+  dismissibleId: string | null;
+  dismissedIds: ReadonlySet<string>;
+}
+
+/**
+ * A failed restart counts on System Health while it is the latest for its environment, so that
+ * one offers Dismiss. `state.jobs` already holds only this environment's restarts.
+ */
+function useRestartDismissal(
+  state: ReturnType<InstallationPanelModel["getState"]>,
+): RestartDismissal | null {
+  const dismissals = state.healthDismissals;
+  const jobs = state.jobs;
+  return useMemo(() => {
+    if (!dismissals) return null;
+    const dismissedIds = new Set(
+      dismissals.dismissals.filter((entry) => entry.queue === "restart").map((entry) => entry.id),
+    );
+    const latest = jobs.toSorted((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    const dismissibleId =
+      latest?.status === "failed" && !dismissedIds.has(latest.id) ? latest.id : null;
+    return { dismissibleId, dismissedIds };
+  }, [dismissals, jobs]);
+}
+
 /** Dismiss for failed service maintenance requests that still count on System Health. */
 function useServiceDismissal(
   model: InstallationPanelModel,
@@ -671,6 +735,7 @@ function InstallationSystemDetailsBody({
   }, [selectedHistoryId]);
   const restartsInHistory = active.length === 0;
   const serviceDismissal = useServiceDismissal(model, state);
+  const restartDismissal = useRestartDismissal(state);
   useRevealRestartHistory(target, restartsInHistory, setHistoryVisible);
   const missingRequest =
     requestId &&
@@ -777,6 +842,7 @@ function InstallationSystemDetailsBody({
             <InstallationHistory
               anchorHost={target}
               anchored={restartsInHistory}
+              dismissal={restartDismissal}
               history={visibleHistory}
               model={model}
               busy={state.busy}
@@ -1234,6 +1300,8 @@ export function RestartRequest({
   historical = false,
   linked = false,
   showActions = true,
+  dismissible = false,
+  dismissed = false,
 }: {
   job: RestartJob;
   model: InstallationPanelModel;
@@ -1241,8 +1309,12 @@ export function RestartRequest({
   historical?: boolean;
   linked?: boolean;
   showActions?: boolean;
+  /** The failure still counts on System Health and the coordinator records dismissals. */
+  dismissible?: boolean;
+  /** The owner dismissed this failure; it stays in history. */
+  dismissed?: boolean;
 }) {
-  const status = restartStatus(job, historical);
+  const status = restartBadge(job, historical, dismissed);
   const summary = restartRepairGuidance(job) ?? restartRequestSummary(job);
   const source = Boolean(job.update || job.sourceBatch);
   useEffect(() => {
@@ -1277,6 +1349,7 @@ export function RestartRequest({
             {job.detail}
           </Text>
         ) : null}
+        <RestartDismiss job={job} model={model} busy={busy} dismissible={dismissible} />
         <RestartDetails job={job} />
         {showActions ? (
           <RestartActions job={job} model={model} busy={busy} historical={historical} />
@@ -1325,7 +1398,7 @@ function FailedRequestNote({
   dismissQueue,
   noun,
 }: {
-  job: { id: string; status: string; detail: string; acknowledgedAt?: string };
+  job: { id: string; status: string; stage?: string; detail: string; acknowledgedAt?: string };
   superseded: boolean;
   model: InstallationPanelModel;
   busy: boolean;
@@ -1333,12 +1406,10 @@ function FailedRequestNote({
   /** Names the record for the Dismiss button's accessibility label. */
   noun: string;
 }) {
-  const size = useVortonTouch() ? "md" : "sm";
-  const dismiss = useCallback(() => {
-    if (dismissQueue) void model.dismissHealthFailure(dismissQueue, job.id);
-  }, [dismissQueue, job.id, model]);
   if (job.status !== "failed") return null;
   if (superseded) return <Text style={styles.text}>A later request succeeded.</Text>;
+  // A record that needs recovery is recovered, not dismissed; the coordinator refuses it too.
+  const dismissible = dismissQueue && !job.acknowledgedAt && job.stage !== "recovery_required";
   return (
     <>
       {job.detail ? (
@@ -1346,21 +1417,50 @@ function FailedRequestNote({
           {job.detail}
         </Text>
       ) : null}
-      {dismissQueue && !job.acknowledgedAt ? (
-        <ActionFooter style={styles.actions}>
-          <RestartActionButton
-            testID={`health-dismiss-${job.id}`}
-            size={size}
-            variant="outline"
-            disabledReason={busy ? "Another installation action is running" : null}
-            onPress={dismiss}
-            accessibilityLabel={`Dismiss failed ${noun}`}
-          >
-            Dismiss
-          </RestartActionButton>
-        </ActionFooter>
+      {dismissible ? (
+        <DismissFailureButton
+          model={model}
+          busy={busy}
+          queue={dismissQueue}
+          id={job.id}
+          noun={noun}
+        />
       ) : null}
     </>
+  );
+}
+
+/** Dismisses one failed record from System Health; the record stays in its history. */
+function DismissFailureButton({
+  model,
+  busy,
+  queue,
+  id,
+  noun,
+}: {
+  model: InstallationPanelModel;
+  busy: boolean;
+  queue: HealthDismissalQueue;
+  id: string;
+  noun: string;
+}) {
+  const size = useVortonTouch() ? "md" : "sm";
+  const dismiss = useCallback(() => {
+    void model.dismissHealthFailure(queue, id);
+  }, [id, model, queue]);
+  return (
+    <ActionFooter style={styles.actions}>
+      <RestartActionButton
+        testID={`health-dismiss-${id}`}
+        size={size}
+        variant="outline"
+        disabledReason={busy ? "Another installation action is running" : null}
+        onPress={dismiss}
+        accessibilityLabel={`Dismiss failed ${noun}`}
+      >
+        Dismiss
+      </RestartActionButton>
+    </ActionFooter>
   );
 }
 

@@ -39,7 +39,7 @@ export class HealthDismissalError extends Error {
 export type HealthRecordLookup = (
   queue: HealthDismissalQueue,
   id: string,
-) => { status: string } | undefined;
+) => { status: string; stage?: string } | undefined;
 
 interface StoreOptions {
   lookup: HealthRecordLookup;
@@ -65,14 +65,21 @@ export class HealthDismissalStore {
     private readonly options: Required<StoreOptions>,
   ) {}
 
-  /** Reads the store, setting aside an unreadable one so the coordinator still starts. */
+  /**
+   * Reads the store. It never rejects: the file is optional, so a missing, unreadable or damaged
+   * one starts empty, meaning nothing is dismissed, and the coordinator still starts. A damaged
+   * file is set aside for inspection.
+   */
   static async open(directory: string, options: StoreOptions): Promise<HealthDismissalStore> {
     const resolved = { now: () => new Date(), warn: () => {}, ...options };
     const file = path.join(directory, FILE_NAME);
     let dismissals: HealthDismissal[] = [];
     const text = await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return null;
-      throw error;
+      if (error.code !== "ENOENT")
+        resolved.warn(
+          `Health dismissal store could not be read (${error.code ?? "error"}); starting empty`,
+        );
+      return null;
     });
     if (text !== null) {
       try {
@@ -101,19 +108,26 @@ export class HealthDismissalStore {
       throw new HealthDismissalError(
         `Only a failed record can be dismissed; this one is ${record.status}`,
       );
+    // A record that needs recovery still has work for the owner; it is recovered, not dismissed.
+    if (record.stage === "recovery_required")
+      throw new HealthDismissalError("This record needs recovery, so it cannot be dismissed");
     const known = this.dismissals.some(
       (entry) => entry.queue === request.queue && entry.id === request.id,
     );
     if (!known) {
-      this.dismissals = [
-        ...this.dismissals,
-        { ...request, dismissedAt: this.options.now().toISOString() },
-      ].slice(-MAX_RETAINED);
+      const entry = { ...request, dismissedAt: this.options.now().toISOString() };
+      this.dismissals = [...this.dismissals, entry].slice(-MAX_RETAINED);
       const snapshot = `${JSON.stringify({ version: 1, dismissals: this.dismissals }, null, 2)}\n`;
       const write = this.writing.then(() => writePrivateFileAtomic(this.file, snapshot));
       // A failed write must not wedge later ones; the caller still sees this one fail.
       this.writing = write.catch(() => {});
-      await write;
+      try {
+        await write;
+      } catch (error) {
+        // Unsaved, so not dismissed: the list must match what a restart would read.
+        this.dismissals = this.dismissals.filter((item) => item !== entry);
+        throw error;
+      }
     }
     return this.list();
   }

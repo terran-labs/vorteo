@@ -248,6 +248,21 @@ it.each([
     ["broker"],
   ],
   [
+    "latest failed restart the owner dismissed",
+    {
+      jobs: [job("r1", "failed", "2026-11-14T00:00:00Z")],
+      healthDismissals: { dismissals: [{ queue: "restart", id: "r1", dismissedAt: "2" }] },
+    },
+    [],
+    [],
+  ],
+  [
+    "latest failed restart",
+    { jobs: [job("r1", "failed", "2026-11-14T00:00:00Z")] },
+    [],
+    ["restarts"],
+  ],
+  [
     "dismissed session host failure",
     { sessionHost: { jobs: [host("failed", "1", { acknowledgedAt: "2" })], status: null } },
     [],

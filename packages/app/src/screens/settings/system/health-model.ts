@@ -87,6 +87,7 @@ function currentInstructionRequests(state: InstallationSystemState): ReviewableJ
 const QUEUES: readonly QueueDefinition[] = [
   {
     id: "restarts",
+    dismissalQueue: "restart",
     noun: "restart request",
     jobs: currentSystemRestarts,
     targetKey: byTarget as TargetKey<ReviewableJob>,

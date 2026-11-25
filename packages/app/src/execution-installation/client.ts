@@ -479,7 +479,8 @@ export class InstallationClient {
     try {
       return HealthDismissalsSchema.parse(await this.request("health-dismissals/query", {}));
     } catch (error) {
-      // COMPAT(healthDismissals): coordinators before #639 have no dismissal routes.
+      // COMPAT(healthDismissals): coordinators before #639 have no dismissal routes. Remove once
+      // every coordinator in use serves them.
       if (error instanceof InstallationRouteUnavailable) {
         this.dismissalRetryAt = now() + 60_000;
         return null;

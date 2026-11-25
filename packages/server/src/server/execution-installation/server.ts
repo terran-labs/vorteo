@@ -2503,13 +2503,14 @@ export function createInstallationServer(
   // the write as owner-only, so no agent door or maintenance grant reaches it.
   const dismissibleRecords: Record<
     HealthDismissalQueue,
-    () => readonly { id: string; status: string }[]
+    () => readonly { id: string; status: string; stage?: string }[]
   > = {
     "preview-broker": () => [...restarts.listBrokers(), ...restarts.listBrokerDeployments()],
     "preview-monitor": () => restarts.listMonitors(),
     "native-helper": () => restarts.listHelpers(),
     "session-host": () => restarts.listSessionHosts(),
     "maintenance-service": () => restarts.listServices(),
+    restart: () => restarts.list(),
   };
   const healthDismissals = HealthDismissalStore.open(config.stateDir, {
     lookup: (queue, id) => dismissibleRecords[queue]().find((record) => record.id === id),

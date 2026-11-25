@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -13,9 +13,10 @@ afterEach(() => {
 test("dismisses failed records once, keeps them across a restart and refuses anything else", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "health-dismissals-"));
   roots.push(root);
-  const records: Record<string, { status: string }> = {
+  const records: Record<string, { status: string; stage?: string }> = {
     failed: { status: "failed" },
     running: { status: "running" },
+    stuck: { status: "failed", stage: "recovery_required" },
   };
   const lookup = (_queue: string, id: string) => records[id];
   const now = () => new Date("2026-11-24T00:00:00.000Z");
@@ -26,8 +27,45 @@ test("dismisses failed records once, keeps them across a restart and refuses any
     "Only a failed",
   );
   await expect(store.dismiss({ queue: "session-host", id: "missing" })).rejects.toThrow("Unknown");
-  await expect(store.dismiss({ queue: "restart", id: "failed" })).rejects.toThrow();
+  await expect(store.dismiss({ queue: "session-host", id: "stuck" })).rejects.toThrow(
+    "needs recovery",
+  );
+  await expect(store.dismiss({ queue: "unknown-queue", id: "failed" })).rejects.toThrow();
   expect((await HealthDismissalStore.open(root, { lookup, now })).list()).toEqual({
     dismissals: [{ queue: "session-host", id: "failed", dismissedAt: "2026-11-24T00:00:00.000Z" }],
   });
+});
+
+// The file is optional: a damaged or unreadable one must never stop the coordinator.
+test("starts empty on a damaged or unreadable store and forgets a dismissal it could not save", async () => {
+  const lookup = () => ({ status: "failed" });
+  const warnings: string[] = [];
+  const warn = (message: string) => warnings.push(message);
+  const damaged = mkdtempSync(path.join(tmpdir(), "health-dismissals-"));
+  roots.push(damaged);
+  writeFileSync(path.join(damaged, "health-dismissals.json"), "not json");
+  expect((await HealthDismissalStore.open(damaged, { lookup, warn })).list().dismissals).toEqual(
+    [],
+  );
+  expect(
+    readdirSync(damaged).some((name) => name.startsWith("health-dismissals.json.unreadable-")),
+  ).toBe(true);
+  const unreadable = mkdtempSync(path.join(tmpdir(), "health-dismissals-"));
+  roots.push(unreadable);
+  mkdirSync(path.join(unreadable, "health-dismissals.json"));
+  expect((await HealthDismissalStore.open(unreadable, { lookup, warn })).list().dismissals).toEqual(
+    [],
+  );
+  expect(warnings).toHaveLength(2);
+  if (process.platform === "win32") return;
+  const readOnly = mkdtempSync(path.join(tmpdir(), "health-dismissals-"));
+  roots.push(readOnly);
+  const store = await HealthDismissalStore.open(readOnly, { lookup, warn });
+  chmodSync(readOnly, 0o500);
+  try {
+    await expect(store.dismiss({ queue: "restart", id: "failed" })).rejects.toThrow();
+    expect(store.list().dismissals).toEqual([]);
+  } finally {
+    chmodSync(readOnly, 0o700);
+  }
 });

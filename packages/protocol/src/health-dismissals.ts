@@ -19,6 +19,7 @@ export const HealthDismissalQueueSchema = z.enum([
   "native-helper",
   "session-host",
   "maintenance-service",
+  "restart",
 ]);
 export type HealthDismissalQueue = z.infer<typeof HealthDismissalQueueSchema>;
 

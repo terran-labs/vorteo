@@ -139,6 +139,8 @@ export function upgradeCanBeDismissed(
 ): boolean {
   if (upgradeIsActive(upgrade)) return false;
   if (upgrade.automatic === true) return true;
+  // COMPAT(acknowledgesFailures): coordinators before #639 acknowledge only automatic upgrades.
+  // Remove once every coordinator in use reports the flag.
   return upgrade.status === "failed" && status?.acknowledgesFailures === true;
 }
 
