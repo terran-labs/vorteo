@@ -194,6 +194,18 @@ test("production monitor review preserves exact evidence and manual gates at 390
       ] as const) {
         current = { ...reviewJob, status, stage };
         await act(() => model.refresh());
+        // Approved and running requests no longer wait on the owner: they fold into In
+        // progress (#656). Open it to review them; pending and recovery stay open.
+        const inProgress = container.querySelector<HTMLElement>(
+          '[data-testid="system-in-progress-host-toggle"]',
+        );
+        if (
+          inProgress &&
+          !container.querySelector('[data-testid="system-in-progress-host-content"]')
+        )
+          await act(async () => {
+            inProgress.click();
+          });
         const details = page.getByRole("button", {
           name: "Details",
           exact: true,
