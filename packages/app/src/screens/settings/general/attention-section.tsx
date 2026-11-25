@@ -141,12 +141,13 @@ export function SystemHealthSection({ onFix }: { onFix: (target: SettingsJumpTar
       return;
     }
     // Locked rows only know public counts, such as which card, not which environment. Wait for
-    // the unlocked rows, then follow the row for the same card, or drop the Fix when nothing
-    // there needs the owner any more.
+    // the unlocked rows, which load after access unlocks, then follow the row for the same card.
+    // When none appears, the timer below drops the Fix: nothing there needs the owner any more.
     if (!installation.unlocked) return;
     const current = installationItems.find((item) => item.card === awaitingUnlock.card);
+    if (!current) return;
     setAwaitingUnlock(null);
-    if (current) openFix(installationHealthRows([current])[0], onFix);
+    openFix(installationHealthRows([current])[0], onFix);
   }, [awaitingUnlock, installation.unlocked, installationItems, locked, onFix, unlockOpen]);
   // A Fix still waiting for the unlocked rows after this long is dropped, not replayed later.
   useEffect(() => {

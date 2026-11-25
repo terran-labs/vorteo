@@ -242,12 +242,13 @@ it("asks to unlock before a Fix whose card needs owner access, and drops it on c
   state.owner = "unlocked";
   act(() => state.dialog.onClose());
   expect(onFix).not.toHaveBeenCalled();
+  // Access reports unlocked before the queues load; the Fix keeps waiting for its row.
+  const empty = { unlocked: true, jobs: [], pendingJobs: [], helperJobs: [], monitorJobs: [] };
+  state.system = { ...empty, brokerJobs: [] };
+  view.rerender(withClient(<SystemHealthSection onFix={onFix} />));
+  expect(onFix).not.toHaveBeenCalled();
   state.system = {
-    unlocked: true,
-    jobs: [],
-    pendingJobs: [],
-    helperJobs: [],
-    monitorJobs: [],
+    ...empty,
     brokerJobs: [{ status: "failed", target: "preview-broker", createdAt: "2026-11-14T00:00:00Z" }],
   };
   view.rerender(withClient(<SystemHealthSection onFix={onFix} />));

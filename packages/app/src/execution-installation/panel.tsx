@@ -1250,6 +1250,10 @@ export function RestartRequest({
   );
 }
 
+// Status badges inside request cards, not settings rows.
+const SUPERSEDED_BADGE = "Superseded";
+const STALE_BADGE = "Stale";
+
 /** A request's status, or "Superseded" for a failure a later success replaced. */
 function RequestStatusBadge({
   job,
@@ -1262,7 +1266,7 @@ function RequestStatusBadge({
 }) {
   if (job.stage === "recovery_required")
     return <StatusBadge label={recoveryLabel} variant="warning" />;
-  if (superseded) return <StatusBadge label="Superseded" variant="muted" />;
+  if (superseded) return <StatusBadge label={SUPERSEDED_BADGE} variant="muted" />;
   return <StatusBadge label={job.status} variant={job.status === "failed" ? "warning" : "muted"} />;
 }
 
@@ -1705,7 +1709,7 @@ function InstructionRequestReview({
           label={fromDev ? "From Dev (untrusted)" : "From Host"}
           variant={fromDev ? "error" : "muted"}
         />
-        {stale ? <StatusBadge label="Stale" variant="muted" /> : null}
+        {stale ? <StatusBadge label={STALE_BADGE} variant="muted" /> : null}
       </View>
       {stale ? (
         <Text style={styles.text} testID={`instruction-${request.id}-stale`}>
