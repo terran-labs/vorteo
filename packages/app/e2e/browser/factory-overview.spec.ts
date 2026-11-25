@@ -47,9 +47,10 @@ async function savedStageProfile(projectId: string, field: StageField): Promise<
 /** Chooses the E2E mock profile in an open profile picker, desktop popover or phone sheet. */
 async function chooseMockProfile(page: Page): Promise<void> {
   const account = page.getByTestId("preset-account-mock").filter({ visible: true }).first();
-  if (!(await account.isVisible())) {
-    await page.getByTestId("preset-section-account").filter({ visible: true }).first().click();
-  }
+  // The phone sheet folds the account list into a section; the desktop popover lists it.
+  const section = page.getByTestId("preset-section-account").filter({ visible: true }).first();
+  await expect(account.or(section)).toBeVisible();
+  if (!(await account.isVisible())) await section.click();
   await account.click();
   await page
     .locator('[data-testid^="preset-row-"]')
@@ -95,9 +96,13 @@ test("per-project Factory Overview opens on desktop and compact", async ({ page 
     await expect(page.getByTestId("factory-settings-open")).toHaveCount(0);
 
     // All Factories never shows sample data.
-    await page.goto(`/h/${getServerId()}/factory`);
-    await expect(page.getByTestId("factory-overview")).toBeVisible();
-    await expect(page.getByTestId("factory-sample-notice")).toHaveCount(0);
+    await page.getByTestId("factory-scope-selector").filter({ visible: true }).first().click();
+    await page.getByRole("menuitem", { name: "All Factories" }).click();
+    await expect(page).toHaveURL(new RegExp(`/h/${getServerId()}/factory$`));
+    await expect(page.getByTestId("factory-all-controls").filter({ visible: true })).toBeVisible();
+    await expect(page.getByTestId("factory-sample-notice").filter({ visible: true })).toHaveCount(
+      0,
+    );
   } finally {
     await client.patchDaemonConfig({ pluginsEnabled: previous.config.pluginsEnabled });
     await client.close();
