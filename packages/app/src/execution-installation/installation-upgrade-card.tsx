@@ -548,9 +548,11 @@ function DecisionButton({
 export function UpgradeAcknowledgeButton({
   client,
   upgrade,
+  accessibilityLabel,
 }: {
   client: InstallationClient;
   upgrade: InstallationUpgrade;
+  accessibilityLabel?: string;
 }) {
   const controlSize = useVortonTouch() ? "md" : "sm";
   const { decide } = useInstallationUpgradeActions(client);
@@ -567,6 +569,7 @@ export function UpgradeAcknowledgeButton({
           onPress={dismiss}
           loading={decide.isPending}
           disabled={decide.isPending}
+          accessibilityLabel={accessibilityLabel}
           testID="installation-upgrade-acknowledge"
         >
           Dismiss
