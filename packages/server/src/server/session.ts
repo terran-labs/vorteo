@@ -4,6 +4,7 @@ import type { AgentQuestion } from "@getpaseo/protocol/agent-questions";
 import type { UsageLimitHold } from "@getpaseo/protocol/usage-limit";
 import type { SidebarStateStore } from "./sidebar-state/store.js";
 import type { HeldRestart } from "@getpaseo/protocol/messages";
+import { previewAutomaticPrimary } from "./system-project/launch-selection.js";
 import type { MaintenanceRestartBridge } from "./maintenance-restart-channel.js";
 import {
   handleBootstrapReview,
@@ -1290,6 +1291,12 @@ export class Session {
         listProviderAvailability: () => this.agentManager.listProviderAvailability(),
         listDraftFeatures: (config) => this.agentManager.listDraftFeatures(config),
         listRunningWorkerCounts: () => this.agentManager.listRunningWorkerCounts(),
+        previewAutomaticPrimary: (usage) =>
+          previewAutomaticPrimary({
+            providers: providerSnapshotManager,
+            usage,
+            settings: daemonConfigStore.get(),
+          }),
       },
       providerSnapshotManager,
       providerUsageService,

@@ -304,6 +304,7 @@ export const PersistedConfigSchema = z
         primaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
         installationPrimaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
         installationPrimaryConnectionSupported: z.boolean().optional(),
+        installationPrimaryConnectionAutomatic: z.boolean().optional(),
         timeZone: DaemonTimeZoneSchema.optional(),
         agentProfiles: z.array(AgentProfileSchema).optional(),
         sharedProviderPreferences: SharedProviderPreferencesSchema.optional(),

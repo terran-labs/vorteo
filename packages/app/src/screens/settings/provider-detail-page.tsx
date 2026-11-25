@@ -1,5 +1,6 @@
 import { useRetainedUsage } from "@/components/settings/use-retained-usage";
 import { useToast } from "@/contexts/toast-context";
+import { useTranslation } from "react-i18next";
 import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 /**
  * One provider's details, expanded in place under its row in Accounts &
@@ -381,6 +382,7 @@ function ConnectionsSection({
       onKeys={keysFromList}
       secrets={secrets.byDefinition.get(primaryDefinition(account, environments).id)}
       primary={primary.loaded ? isPrimaryConnection(primary.primary, account.definitions) : null}
+      automaticSupported={primary.automatic.supported}
       onMakePrimary={makePrimary}
     />
   );
@@ -541,6 +543,7 @@ function ConnectionRow({
   onKeys,
   secrets,
   primary,
+  automaticSupported,
   onMakePrimary,
 }: {
   account: ProviderAccount;
@@ -555,6 +558,8 @@ function ConnectionRow({
   secrets: ProviderSecretsStatus | undefined;
   /** Whether this is the primary connection; null where the setting is unavailable. */
   primary: boolean | null;
+  /** Clearing the primary connection leaves system threads on Automatic. */
+  automaticSupported: boolean;
   onMakePrimary(account: ProviderAccount, name: string): void;
 }) {
   const isCompact = useIsCompactFormFactor();
@@ -577,7 +582,11 @@ function ConnectionRow({
   );
   const toggle = useCallback(
     async (enabled: boolean) => {
-      if (!enabled && primary === true && !(await confirmDisablePrimary(name, confirmDialog)))
+      if (
+        !enabled &&
+        primary === true &&
+        !(await confirmDisablePrimary(name, confirmDialog, automaticSupported))
+      )
         return;
       const ids = new Set(account.definitions.map((entry) => entry.id));
       save({
@@ -589,7 +598,7 @@ function ConnectionRow({
         },
       });
     },
-    [account, snapshot, save, primary, name],
+    [account, snapshot, save, primary, name, automaticSupported],
   );
   const summary = usageSummary(connection.windows);
   // Errors, undelivered keys and pending sign-ins ask something of the owner, so they always show.
@@ -1148,6 +1157,7 @@ function EnvironmentAccessSheet({
           />
         ))}
       </View>
+      <AutomaticEligibilityRow account={account} snapshot={snapshot} busy={busy} save={save} />
       {/* Removing a connection from one environment, or restoring it there, is rare repair work. */}
       <SettingsAdvancedGroup testID="provider-manage-advanced">
         <View style={settingsStyles.card}>
@@ -1162,6 +1172,65 @@ function EnvironmentAccessSheet({
         </View>
       </SettingsAdvancedGroup>
     </AdaptiveModalSheet>
+  );
+}
+
+/**
+ * The owner's switch for whether Automatic may run system threads on this connection. Off is
+ * stored on every definition of the connection; on removes the key, since absent means it may.
+ */
+function AutomaticEligibilityRow({
+  account,
+  snapshot,
+  busy,
+  save,
+}: {
+  account: ProviderAccount;
+  snapshot: InstallationSettingsSnapshot & { settings: InstallationSettings };
+  busy: boolean;
+  save(update: InstallationSettingsUpdate): void;
+}) {
+  const { t } = useTranslation();
+  const { automatic } = usePrimaryConnection();
+  const eligible = account.definitions.every((entry) => entry.policy.automaticPrimary !== false);
+  const toggle = useCallback(
+    (value: boolean) => {
+      const ids = new Set(account.definitions.map((entry) => entry.id));
+      save({
+        expectedRevision: snapshot.revision,
+        settings: {
+          providerDefinitions: snapshot.settings.providerDefinitions?.map((entry) => {
+            if (!ids.has(entry.id)) return entry;
+            const { automaticPrimary: _previous, ...policy } = entry.policy;
+            return { ...entry, policy: value ? policy : { ...policy, automaticPrimary: false } };
+          }),
+        },
+      });
+    },
+    [account.definitions, snapshot, save],
+  );
+  if (!automatic.supported) return null;
+  return (
+    <View style={settingsStyles.card}>
+      <View
+        style={[settingsStyles.row, styles.connection]}
+        testID={`provider-automatic-eligible-${account.id}`}
+      >
+        <View style={styles.connectionHeading}>
+          <View style={settingsStyles.rowContent}>
+            <Text style={settingsStyles.rowTitle}>{t("automaticPrimary.eligible")}</Text>
+          </View>
+          <View style={styles.controls}>
+            <Switch
+              value={eligible}
+              onValueChange={toggle}
+              disabled={busy}
+              accessibilityLabel={t("automaticPrimary.eligible")}
+            />
+          </View>
+        </View>
+      </View>
+    </View>
   );
 }
 

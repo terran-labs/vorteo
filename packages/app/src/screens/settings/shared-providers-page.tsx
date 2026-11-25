@@ -43,10 +43,13 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Switch } from "@/components/ui/switch";
 import {
+  confirmAutomaticPrimary,
   confirmDisablePrimary,
   isPrimaryConnection,
   usePrimaryConnection,
 } from "@/execution-installation/primary-connection";
+import { useToast } from "@/contexts/toast-context";
+import { toErrorMessage } from "@/utils/error-messages";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { isWeb } from "@/constants/platform";
 import { useInstallationSettings } from "@/execution-installation/settings";
@@ -90,6 +93,7 @@ function ProviderFamilyCard({
   dragHandleProps,
   showDrag = false,
   primary = false,
+  automaticSupported = false,
   firstConnection = null,
   onMove,
   canMoveUp = false,
@@ -97,6 +101,8 @@ function ProviderFamilyCard({
 }: {
   /** The family holds the installation's primary connection. */
   primary?: boolean;
+  /** Clearing the primary connection leaves system threads on Automatic. */
+  automaticSupported?: boolean;
   family: ProviderFamily;
   snapshot: InstallationSettingsSnapshot;
   busy: boolean;
@@ -117,7 +123,12 @@ function ProviderFamilyCard({
   const { t } = useTranslation();
   const toggle = useCallback(
     async (enabled: boolean) => {
-      if (!enabled && primary && !(await confirmDisablePrimary(family.name, confirmDialog))) return;
+      if (
+        !enabled &&
+        primary &&
+        !(await confirmDisablePrimary(family.name, confirmDialog, automaticSupported))
+      )
+        return;
       save({
         expectedRevision: snapshot.revision,
         settings: {
@@ -129,7 +140,7 @@ function ProviderFamilyCard({
         },
       });
     },
-    [save, snapshot, family.id, family.name, primary],
+    [save, snapshot, family.id, family.name, primary, automaticSupported],
   );
   const toggleExpanded = useCallback(
     () => onToggleExpanded(family.id),
@@ -474,6 +485,73 @@ export function SharedProvidersPage() {
   return <ProviderCatalog data={snapshot} environments={environments} save={save} />;
 }
 
+/** The connection's name for display: its label, else its provider type. */
+function connectionName(definition: InstallationProvider): string {
+  return definition.policy.label ?? definition.providerType;
+}
+
+/**
+ * What runs system threads: Automatic and the account it picks now, or the chosen connection
+ * with a way back to Automatic. Shown once the Host and coordinator support Automatic.
+ */
+function PrimaryConnectionRow({ definitions }: { definitions: readonly InstallationProvider[] }) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const { supported, primary, automatic, choose } = usePrimaryConnection();
+  const [saving, setSaving] = useState(false);
+  const switchToAutomatic = useCallback(async () => {
+    setSaving(true);
+    try {
+      await confirmAutomaticPrimary({
+        copy: {
+          title: t("automaticPrimary.confirmTitle"),
+          message: t("automaticPrimary.confirmMessage"),
+          confirmLabel: t("automaticPrimary.use"),
+          saved: t("automaticPrimary.saved"),
+        },
+        confirm: confirmDialog,
+        choose,
+        toast,
+        describeError: toErrorMessage,
+      });
+    } finally {
+      setSaving(false);
+    }
+  }, [choose, t, toast]);
+  if (!supported || !automatic.supported) return null;
+  const chosen = primary
+    ? definitions.find((definition) => definition.id === primary.providerId)
+    : undefined;
+  let status: string | null = null;
+  if (primary) status = chosen ? connectionName(chosen) : null;
+  else if (automatic.current)
+    status = t("automaticPrimary.current", { account: automatic.current.label });
+  else if (automatic.current === null) status = t("automaticPrimary.none");
+  return (
+    <View style={styles.primaryRow} testID="shared-providers-primary">
+      <View style={styles.content}>
+        <Text style={settingsStyles.rowTitle}>{t("automaticPrimary.title")}</Text>
+        {status ? (
+          <Text style={settingsStyles.rowHint} testID="shared-providers-primary-status">
+            {status}
+          </Text>
+        ) : null}
+      </View>
+      {primary ? (
+        <Button
+          variant="outline"
+          size="sm"
+          onPress={switchToAutomatic}
+          disabled={saving}
+          testID="shared-providers-use-automatic"
+        >
+          {t("automaticPrimary.use")}
+        </Button>
+      ) : null}
+    </View>
+  );
+}
+
 function ProviderCatalog({
   data,
   environments,
@@ -487,7 +565,7 @@ function ProviderCatalog({
   const [useDev, setUseDev] = useState(false);
   const reportActionError = useReportActionError();
   const change = useMutation({ mutationFn: save, onError: reportActionError });
-  const { primary } = usePrimaryConnection();
+  const { primary, automatic } = usePrimaryConnection();
   const [showAvailable, setShowAvailable] = useState(false);
   const toggleAvailable = useCallback(() => setShowAvailable((value) => !value), []);
   // One provider open at a time; a provider address opens with it expanded.
@@ -616,6 +694,7 @@ function ProviderCatalog({
         expanded={item.id === expanded}
         onToggleExpanded={toggleExpanded}
         primary={item.accounts.some((account) => isPrimaryConnection(primary, account.definitions))}
+        automaticSupported={automatic.supported}
         firstConnection={awaitingFirstConnection(item, signInSources)}
         onMove={move}
         {...movePosition(item)}
@@ -623,7 +702,17 @@ function ProviderCatalog({
         dragHandleProps={dragHandleProps}
       />
     ),
-    [data, change, expanded, toggleExpanded, primary, signInSources, move, movePosition],
+    [
+      data,
+      change,
+      expanded,
+      toggleExpanded,
+      primary,
+      automatic.supported,
+      signInSources,
+      move,
+      movePosition,
+    ],
   );
   const availableFamilies = useMemo(
     () => families.filter((family) => providerFamilyGroup(family) === "available"),
@@ -673,6 +762,7 @@ function ProviderCatalog({
           Add provider
         </Button>
       </View>
+      <PrimaryConnectionRow definitions={definitions} />
       {[true, false].map((enabled) => (
         <DraggableList
           key={String(enabled)}
@@ -885,6 +975,13 @@ function ReconnectAllControl({ connections }: { connections: readonly PendingSig
 
 const styles = StyleSheet.create((theme) => ({
   item: { marginBottom: theme.spacing[2] },
+  primaryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    marginBottom: theme.spacing[3],
+    marginLeft: theme.spacing[1],
+  },
   toolbar: {
     flexDirection: "row",
     flexWrap: "wrap",

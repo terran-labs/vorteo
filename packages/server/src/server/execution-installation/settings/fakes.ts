@@ -12,7 +12,12 @@ import {
   type AgentSkillsSaveResult,
 } from "@getpaseo/protocol/messages";
 import type { InstallationSettingsSnapshot } from "@getpaseo/protocol/installation-settings";
-import type { SettingsBackup, SettingsEnvironment, SettingsJournal } from "./service.js";
+import type {
+  ProviderReadiness,
+  SettingsBackup,
+  SettingsEnvironment,
+  SettingsJournal,
+} from "./service.js";
 
 export class SettingsEnvironmentFake implements SettingsEnvironment {
   installationInstructions = "";
@@ -118,16 +123,15 @@ export class SettingsEnvironmentFake implements SettingsEnvironment {
   pendingProviders: string[] = [];
   /** Local provider ids whose settled usage reading cannot confirm a sign in. */
   unconfirmedProviders: string[] = [];
-  async readProviderReadiness(): Promise<{
-    usable: string[];
-    pending: string[];
-    unconfirmed: string[];
-  }> {
+  /** Whether the daemon treats an unchosen primary connection as Automatic. */
+  automaticPrimary = false;
+  async readProviderReadiness(): Promise<ProviderReadiness> {
     if (this.offline || this.usableProviders === null) throw new Error("environment offline");
     return {
       usable: [...this.usableProviders],
       pending: [...this.pendingProviders],
       unconfirmed: [...this.unconfirmedProviders],
+      automatic: this.automaticPrimary,
     };
   }
 

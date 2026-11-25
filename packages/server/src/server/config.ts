@@ -561,6 +561,9 @@ function resolveProfileLists(persisted: ReturnType<typeof loadPersistedConfig>) 
     installationPrimaryConnection: persisted.daemon?.installationPrimaryConnection ?? null,
     installationPrimaryConnectionSupported:
       persisted.daemon?.installationPrimaryConnectionSupported,
+    // Present even when unset: the coordinator reads the key as support for Automatic.
+    installationPrimaryConnectionAutomatic:
+      persisted.daemon?.installationPrimaryConnectionAutomatic ?? false,
     // Present even when unset: the coordinator reads the key as support for the time zone.
     timeZone: persisted.daemon?.timeZone ?? { override: null, reported: null },
   };
@@ -619,6 +622,7 @@ export type ResolvedDaemonSettings = Pick<
   | "primaryConnection"
   | "installationPrimaryConnection"
   | "installationPrimaryConnectionSupported"
+  | "installationPrimaryConnectionAutomatic"
   | "timeZone"
   | "skillSelection"
   | "pluginsEnabled"
