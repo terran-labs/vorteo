@@ -641,6 +641,21 @@ it("withdraws only its projection, restores the saved sign-in untested and honou
   symlinkSync(elsewhere, join(f.home, ".vorteo-signin"));
   expect((await f.legacy("forget-copy", { target })).status).toBe(409);
   expect(existsSync(join(elsewhere, "local-sign-in.json"))).toBe(true);
+  // A folder whose state another account now owns holds that account's copy: left alone.
+  const g = await legacyFixture();
+  const second = g.scope("codex-secondary", `account/${ACCOUNT_2}`);
+  writeFileSync(join(g.homeB, "auth.json"), JSON.stringify(local), { mode: 0o600 });
+  const targetB = await g.pin(second);
+  const slot = { generation: 1, rotation: 1 };
+  expect((await g.project(targetB, slot, access("synthetic"), true, second)).status).toBe(200);
+  const copyB = join(g.homeB, ".vorteo-signin", "local-sign-in.json");
+  expect(existsSync(copyB)).toBe(true);
+  expect((await g.legacy("forget-copy", { target: targetB })).body).toEqual({ forgotten: true });
+  expect(existsSync(copyB)).toBe(true);
+  expect((await g.legacy("forget-copy", { target: targetB }, second)).body).toEqual({
+    forgotten: true,
+  });
+  expect(existsSync(copyB)).toBe(false);
 });
 
 it("leases a Host account unless a session starts or runs a turn on it, for at most 30 s", async () => {

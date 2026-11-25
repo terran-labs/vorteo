@@ -56,10 +56,17 @@ type StoredTarget = z.infer<typeof StoredTargetSchema>;
 const CopySchema = z.looseObject({
   target: StoredTargetSchema,
   savedSince: Counter,
-  /** The person first projected into this folder, whose sign-in its copy saved. */
+  /**
+   * The person first projected into this folder, whose sign-in its copy saved. Kept in the
+   * sidecar, never in `adoption.json`; see AdoptionExtraSchema.
+   */
   person: Digest.optional(),
 });
 type SavedCopy = z.infer<typeof CopySchema>;
+
+/** The states a record pauses from when Dev refuses a changed folder; it resumes only to one. */
+const ParkedFromSchema = z.enum(["projecting", "adopted", "unadopting"]);
+type ParkedFrom = z.infer<typeof ParkedFromSchema>;
 
 /**
  * Secret-free: identifiers, a directory pin and times. No account ID, email or token. Read
@@ -120,12 +127,80 @@ const AdoptionRecordSchema = z.looseObject({
   /**
    * Why a record waits for the owner: `target_changed` or `identity_changed`. A string, so a
    * reason a newer coordinator adds keeps the record readable. Only a changed folder resumes by
-   * itself; see resumable().
+   * itself; see resumesTo(). Sidecar only.
    */
   parkedReason: z.string().max(64).optional(),
+  /** The status a folder change paused, the only one it may resume to. Sidecar only. */
+  parkedFrom: ParkedFromSchema.optional(),
   error: z.string().max(300).nullable(),
 });
 export type CodexAdoptionRecord = z.infer<typeof AdoptionRecordSchema>;
+
+/**
+ * Facts this coordinator keeps beside `adoption.json`, in `adoption-extra.json` keyed by
+ * definition ID, so every record in `adoption.json` stays in the shape the first adoption
+ * release reads strictly and a rolled-back coordinator still reads it. A missing or unreadable
+ * entry means no extra facts: nothing resumes by itself, and restores check the copy's own
+ * contents.
+ */
+const AdoptionExtraSchema = z.looseObject({
+  /** The record these parked facts were written with; they apply to no other. */
+  startedAt: Counter,
+  status: z.string().max(64),
+  parkedReason: z.string().max(64).optional(),
+  parkedFrom: z.string().max(64).optional(),
+  /** Each copy's person, matched by real path and clock. */
+  persons: z
+    .array(z.looseObject({ realpath: z.string(), savedSince: Counter, person: Digest }))
+    .max(MAX_COPIES)
+    .optional(),
+});
+type AdoptionExtra = z.infer<typeof AdoptionExtraSchema>;
+const AdoptionExtrasSchema = z.record(z.string(), z.unknown());
+
+/** The record without its sidecar facts, as `adoption.json` keeps it. */
+function storedShape(record: CodexAdoptionRecord): unknown {
+  const { parkedReason: _reason, parkedFrom: _from, copies, ...rest } = record;
+  if (!copies) return rest;
+  return { ...rest, copies: copies.map(({ person: _person, ...copy }) => copy) };
+}
+
+function extraOf(record: CodexAdoptionRecord): AdoptionExtra | null {
+  const persons = (record.copies ?? []).flatMap((copy) =>
+    copy.person
+      ? [{ realpath: copy.target.realpath, savedSince: copy.savedSince, person: copy.person }]
+      : [],
+  );
+  if (record.parkedReason === undefined && record.parkedFrom === undefined && !persons.length)
+    return null;
+  return {
+    startedAt: record.startedAt,
+    status: record.status,
+    ...(record.parkedReason !== undefined ? { parkedReason: record.parkedReason } : {}),
+    ...(record.parkedFrom !== undefined ? { parkedFrom: record.parkedFrom } : {}),
+    ...(persons.length ? { persons } : {}),
+  };
+}
+
+/** The record with its sidecar facts. Anything inline in `adoption.json` is ignored. */
+function withExtra(record: CodexAdoptionRecord, raw: unknown): CodexAdoptionRecord {
+  const { parkedReason: _reason, parkedFrom: _from, copies, ...rest } = record;
+  const extra = AdoptionExtraSchema.safeParse(raw).data;
+  const current = extra?.startedAt === record.startedAt && extra.status === record.status;
+  const parkedFrom = ParkedFromSchema.safeParse(extra?.parkedFrom).data;
+  const withPersons = copies?.map(({ person: _person, ...copy }) => {
+    const found = extra?.persons?.find(
+      (item) => item.realpath === copy.target.realpath && item.savedSince === copy.savedSince,
+    );
+    return Object.assign(copy, found ? { person: found.person } : {});
+  });
+  return {
+    ...rest,
+    ...(withPersons ? { copies: withPersons } : {}),
+    ...(current && extra.parkedReason !== undefined ? { parkedReason: extra.parkedReason } : {}),
+    ...(current && parkedFrom ? { parkedFrom } : {}),
+  };
+}
 
 /** Just enough of a record that does not parse to keep honouring it. */
 const RecordOwnerSchema = z.object({ definitionId: z.string().min(1) });
@@ -226,19 +301,24 @@ export class CodexAdoptionBusy extends CodexAdoptionRefusal {
 export const UNREADABLE_RECORD =
   "This account's saved switch record could not be read, so nothing is changed. Update Vorteo, or ask for help if this stays.";
 
-export class CodexAdoptionUnreadable extends CodexAdoptionRefusal {
-  constructor() {
-    super(UNREADABLE_RECORD);
-  }
-}
+export const OTHER_UNREADABLE_RECORD =
+  "Another account's saved switch record could not be read, so nothing is changed. Update Vorteo, or ask for help if this stays.";
+
+/** Carries UNREADABLE_RECORD or OTHER_UNREADABLE_RECORD. */
+export class CodexAdoptionUnreadable extends CodexAdoptionRefusal {}
 
 /** A step that cannot succeed as things stand. Its message is the plain reason shown later. */
 class AdoptionRefused extends Error {}
 
-/** The stored records, unvalidated: adoption reads them one by one. read() may throw. */
+/**
+ * The stored records and their sidecar, unvalidated: adoption reads them one by one. The reads
+ * may throw.
+ */
 export interface CodexAdoptionJournal {
   read(): unknown;
   write(records: unknown[]): void;
+  readExtra(): unknown;
+  writeExtra(extras: Record<string, unknown>): void;
 }
 
 /** What the coordinator needs from Dev's usage read for an adopted binding. */
@@ -311,11 +391,13 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
         unreadable: [{ raw, definitionId: null, realpath: null }],
         intact: false,
       };
+    const extras = readExtras();
     const records: CodexAdoptionRecord[] = [];
     const unreadable: UnreadableRecord[] = [];
     for (const item of raw) {
       const parsed = AdoptionRecordSchema.safeParse(item);
-      if (parsed.success) records.push(parsed.data);
+      if (parsed.success)
+        records.push(withExtra(parsed.data, extras[parsed.data.definitionId] ?? null));
       else
         unreadable.push({
           raw: item,
@@ -326,32 +408,54 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
     return { records, unreadable, intact: true };
   }
 
+  /** Every sidecar entry, unvalidated. An unreadable sidecar holds no facts. */
+  function readExtras(): Record<string, unknown> {
+    try {
+      return AdoptionExtrasSchema.safeParse(deps.journal.readExtra()).data ?? {};
+    } catch {
+      return {};
+    }
+  }
+
   function find(definitionId: string): CodexAdoptionRecord | undefined {
     return load().records.find((item) => item.definitionId === definitionId);
   }
 
+  /**
+   * The sidecar first: a crash before `adoption.json` is written leaves facts whose record no
+   * longer matches, which are ignored.
+   */
   function save(record: CodexAdoptionRecord): CodexAdoptionRecord {
     const journal = load();
-    if (!journal.intact) throw new CodexAdoptionUnreadable();
+    if (!journal.intact) throw new CodexAdoptionUnreadable(UNREADABLE_RECORD);
+    const { [record.definitionId]: _previous, ...extras } = readExtras();
+    const extra = extraOf(record);
+    deps.journal.writeExtra(extra ? { ...extras, [record.definitionId]: extra } : extras);
     deps.journal.write([
       ...journal.unreadable.map((item) => item.raw),
-      ...journal.records.filter((item) => item.definitionId !== record.definitionId),
-      record,
+      ...journal.records
+        .filter((item) => item.definitionId !== record.definitionId)
+        .map(storedShape),
+      storedShape(record),
     ]);
     return record;
   }
 
   /**
-   * Whether an unreadable record stops this definition: its own, or one whose folder is unknown,
-   * which could be any folder. Un-adopt checks only the definition's own record.
+   * The fixed reason an unreadable record stops this definition, or null: its own record, the
+   * whole file, or another record whose folder is unknown and so could be any folder. Un-adopt
+   * checks only the definition's own record and the whole file.
    */
-  function unreadableFor(definitionId: string, operation: "adopt" | "unadopt"): boolean {
+  function unreadableFor(
+    definitionId: string,
+    operation: "adopt" | "unadopt",
+  ): typeof UNREADABLE_RECORD | typeof OTHER_UNREADABLE_RECORD | null {
     const journal = load();
-    if (!journal.intact) return true;
-    return journal.unreadable.some(
-      (item) =>
-        item.definitionId === definitionId || (operation === "adopt" && item.realpath === null),
-    );
+    if (!journal.intact) return UNREADABLE_RECORD;
+    if (journal.unreadable.some((item) => item.definitionId === definitionId))
+      return UNREADABLE_RECORD;
+    const unknownFolder = journal.unreadable.some((item) => item.realpath === null);
+    return operation === "adopt" && unknownFolder ? OTHER_UNREADABLE_RECORD : null;
   }
 
   function selected(definitionId: string) {
@@ -459,8 +563,15 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
     }
   }
 
-  /** Verify the Host, then Dev's session state and home, then start projecting. */
-  async function start(record: CodexAdoptionRecord): Promise<CodexAdoptionRecord> {
+  /**
+   * Verify the Host, then Dev's session state and home, then start projecting. `confirmedFolder` is
+   * the folder the owner confirmed after a folder change whose projection Dev already held; only
+   * Dev's session check is skipped, and only while the pin still finds that folder.
+   */
+  async function start(
+    record: CodexAdoptionRecord,
+    confirmedFolder?: string,
+  ): Promise<CodexAdoptionRecord> {
     const check = eligibility(record.definitionId);
     if (check.reason) throw new AdoptionRefused(check.reason);
     if (!(await deps.supported()))
@@ -479,15 +590,18 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
         pendingIdentityDigest: hostIdentityDigest,
       });
     const pinning = save({ ...record, status: "pinning", hostIdentityDigest });
-    const sessions = z
-      .strictObject({ active: z.boolean() })
-      .parse(
-        await devRequest(
-          { ...scope(pinning), operation: "sessions" },
-          "Dev did not accept this account's setup. Refresh and try again.",
-        ),
-      );
-    if (sessions.active) throw new AdoptionRefused(ACTIVE_DEV_SESSION);
+    async function assertDevIdle() {
+      const sessions = z
+        .strictObject({ active: z.boolean() })
+        .parse(
+          await devRequest(
+            { ...scope(pinning), operation: "sessions" },
+            "Dev did not accept this account's setup. Refresh and try again.",
+          ),
+        );
+      if (sessions.active) throw new AdoptionRefused(ACTIVE_DEV_SESSION);
+    }
+    if (confirmedFolder === undefined) await assertDevIdle();
     const { target } = z
       .strictObject({ target: CodexLegacyTargetSchema })
       .parse(
@@ -500,6 +614,7 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
       throw new AdoptionRefused(
         "Another account already uses this account's Dev folder. Nothing was changed.",
       );
+    if (confirmedFolder !== undefined && target.realpath !== confirmedFolder) await assertDevIdle();
     const copies = withCopy(pinning.copies, {
       target,
       savedSince: deps.now(),
@@ -735,30 +850,70 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
   }
 
   /**
-   * Whether a record waiting for the owner may resume by itself: only after Dev refused a
-   * changed folder. A different person never resumes without the owner, whatever else holds.
+   * Whether a record waits only because Dev refused a changed folder. A different person never
+   * counts, whatever else holds.
    */
-  function resumable(record: CodexAdoptionRecord): boolean {
+  function folderChange(record: CodexAdoptionRecord): boolean {
     if (record.target === null || record.pendingIdentityDigest || record.error === IDENTITY_CHANGED)
       return false;
     // COMPAT(codexLegacyPinByPath): added after 26.11.2100, remove after 2027-05-25. The first
-    // adoption release parked a changed folder with this exact text and no reason.
+    // adoption release parked a changed folder with this exact text and no reason. It counts
+    // for the owner's confirmation only, never for resuming by itself.
     const legacyFolderChange = record.parkedReason === undefined && record.error === TARGET_CHANGED;
     return record.parkedReason === "target_changed" || legacyFolderChange;
+  }
+
+  /**
+   * The status a record may resume to by itself: the one Dev's folder refusal paused, recorded
+   * in the sidecar by this coordinator. A record without it, parked by the first adoption
+   * release or with its sidecar missing, cannot tell a paused undo from a paused adoption and
+   * waits for the owner.
+   */
+  function resumesTo(record: CodexAdoptionRecord): ParkedFrom | null {
+    if (record.parkedReason !== "target_changed" || !folderChange(record)) return null;
+    return record.parkedFrom ?? null;
+  }
+
+  /**
+   * The folder the owner may confirm without Dev's session check: a record paused for a changed
+   * folder after Dev acknowledged a projection, on a Dev that pins by path, whose folder at the
+   * same real path holds this account's projection or nothing. Dev sessions there already run on
+   * an access-only copy with no refresh token, so there is no Dev refresh to race. Null when
+   * any of that does not hold; Dev being unreachable counts as not holding.
+   */
+  async function settledFolder(previous: CodexAdoptionRecord | undefined) {
+    if (
+      previous?.status !== "needs-owner-confirmation" ||
+      previous.projectedAt === null ||
+      previous.target === null ||
+      !folderChange(previous)
+    )
+      return undefined;
+    try {
+      if (!(await deps.pinByPath())) return undefined;
+      const inspection = CodexLegacyInspectResponseSchema.parse(
+        await deps.dev({ ...scope(previous), operation: "inspect" }),
+      );
+      const same = inspection.target.realpath === previous.target.realpath;
+      return same && inspection.signIn !== "other" ? inspection.target.realpath : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /** In-memory: when a paused record may next try to resume. */
   const resumeRetryAt = new Map<string, number>();
 
   /**
-   * Resumes a record Dev paused for a changed folder, once a Dev that identifies folders by real
-   * path pins the same path again, with every check the pin makes. Dev's idle check is skipped
-   * only when Dev had already acknowledged the projection and the folder holds that projection
-   * or nothing; otherwise a Dev session on the account keeps the record waiting.
+   * Resumes a record Dev paused for a changed folder, back to the status it paused, once a Dev
+   * that identifies folders by real path pins the same path again, with every check the pin
+   * makes. A paused undo continues the undo without Dev's idle check, which an undo never needs.
+   * A paused adoption skips it only when Dev had acknowledged the projection and the folder holds
+   * that projection or nothing; otherwise a Dev session on the account keeps the record waiting.
    */
   async function resume(record: CodexAdoptionRecord): Promise<CodexAdoptionRecord> {
-    if (!resumable(record) || (resumeRetryAt.get(record.definitionId) ?? 0) > deps.now())
-      return record;
+    const to = resumesTo(record);
+    if (to === null || (resumeRetryAt.get(record.definitionId) ?? 0) > deps.now()) return record;
     resumeRetryAt.set(record.definitionId, deps.now() + RESUME_RETRY_MS);
     if (!(await deps.pinByPath()) || eligibility(record.definitionId).reason) return record;
     const inspection = CodexLegacyInspectResponseSchema.parse(
@@ -769,7 +924,7 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
       sharesDirectory(record.definitionId, inspection.target)
     )
       return record;
-    const settled = record.projectedAt !== null && inspection.signIn !== "other";
+    const settled = to === "unadopting" || (to === "adopted" && inspection.signIn !== "other");
     if (!settled) {
       const sessions = z
         .strictObject({ active: z.boolean() })
@@ -779,14 +934,18 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
     resumeRetryAt.delete(record.definitionId);
     return save({
       ...record,
-      status: record.projectedAt === null ? "projecting" : "adopted",
+      status: to,
       target: { ...record.target, ...inspection.target },
       parkedReason: undefined,
+      parkedFrom: undefined,
       error: null,
     });
   }
 
-  async function advanceRecord(record: CodexAdoptionRecord): Promise<CodexAdoptionRecord> {
+  async function advanceRecord(
+    record: CodexAdoptionRecord,
+    settled?: string,
+  ): Promise<CodexAdoptionRecord> {
     const watched =
       record.status === "projecting" ||
       record.status === "adopted" ||
@@ -796,7 +955,7 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
       await deps.refresher.retire(record.definitionId);
       return save({ ...record, status: "cancelled", error: null });
     }
-    if (record.status === "verifying-host") return start(record);
+    if (record.status === "verifying-host") return start(record, settled);
     // A restart between Host verification and the pin repeats both.
     if (record.status === "pinning") return start(record);
     if (record.status === "projecting") return advanceProjecting(record);
@@ -811,9 +970,9 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
   }
 
   /** Runs one step. A refusal fails the record; anything else leaves it to retry. */
-  async function step(record: CodexAdoptionRecord): Promise<CodexAdoptionRecord> {
+  async function step(record: CodexAdoptionRecord, settled?: string): Promise<CodexAdoptionRecord> {
     try {
-      return await advanceRecord(record);
+      return await advanceRecord(record, settled);
     } catch (error) {
       if (!(error instanceof AdoptionRefused)) return find(record.definitionId) ?? record;
       const current = find(record.definitionId) ?? record;
@@ -845,9 +1004,7 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
         .map((definition) => ({
           definitionId: definition.id,
           // Retention cannot run on a record it cannot read, so the owner is told.
-          reason: unreadableFor(definition.id, "adopt")
-            ? UNREADABLE_RECORD
-            : eligibility(definition.id).reason,
+          reason: unreadableFor(definition.id, "adopt") ?? eligibility(definition.id).reason,
           record: records.find((item) => item.definitionId === definition.id) ?? null,
         }));
     },
@@ -861,7 +1018,8 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
     /** Owner selection only. Starts one adoption; a second waits for the first to finish. */
     adopt(definitionId: string): Promise<CodexAdoptionRecord> {
       return serialized(async () => {
-        if (unreadableFor(definitionId, "adopt")) throw new CodexAdoptionUnreadable();
+        const unreadable = unreadableFor(definitionId, "adopt");
+        if (unreadable) throw new CodexAdoptionUnreadable(unreadable);
         const { records } = load();
         if (
           records.some((item) => item.definitionId !== definitionId && IN_PROGRESS.has(item.status))
@@ -879,12 +1037,14 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
             status: "failed",
             error: check.reason,
           });
+        // Judged on the paused record before it is replaced; only this confirmation uses it.
+        const settled = await settledFolder(previous);
         const record = save({
           ...fresh(definitionId, check.binding),
           ...carried,
           status: "verifying-host",
         });
-        const next = await step(record);
+        const next = await step(record, settled);
         if (next.status === "projecting") await deps.refresher.reconcile();
         return find(definitionId) ?? next;
       });
@@ -893,7 +1053,8 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
     /** Owner only. Never signs the Host out. */
     unadopt(definitionId: string): Promise<CodexAdoptionRecord> {
       return serialized(async () => {
-        if (unreadableFor(definitionId, "unadopt")) throw new CodexAdoptionUnreadable();
+        const unreadable = unreadableFor(definitionId, "unadopt");
+        if (unreadable) throw new CodexAdoptionUnreadable(unreadable);
         const record = find(definitionId);
         if (!record || record.status === "unadopted") throw new CodexSignInDeliveryError();
         if (
@@ -941,6 +1102,7 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
           status: "needs-owner-confirmation",
           error: TARGET_CHANGED,
           parkedReason: "target_changed",
+          parkedFrom: ParkedFromSchema.parse(record.status),
         });
       // An adopted home stays pending; only a first projection fails the adoption.
       else if (reason === "existing_sign_in" && record.status === "projecting")

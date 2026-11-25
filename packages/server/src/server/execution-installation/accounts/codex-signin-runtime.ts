@@ -97,6 +97,8 @@ export function createCodexSignInRuntime(
   const configuration = structuredClone(config);
   const file = join(config.stateDir, "codex-signin", "state.json");
   const adoptionFile = join(config.stateDir, "codex-signin", "adoption.json");
+  /** Facts the first adoption release's strict reader would refuse; see codex-signin-adoption.ts. */
+  const adoptionExtraFile = join(config.stateDir, "codex-signin", "adoption-extra.json");
   const cli = overrides.cli ?? createCodexHostCli();
   const readGrant = overrides.readGrant ?? readCodexHostGrant;
   const request = overrides.fetch ?? fetch;
@@ -149,6 +151,9 @@ export function createCodexSignInRuntime(
   const journal = {
     read: () => readClaudeSetupFile(adoptionFile) ?? [],
     write: (records: unknown[]) => writeClaudeSetupFile(adoptionFile, records),
+    readExtra: () => readClaudeSetupFile(adoptionExtraFile) ?? {},
+    writeExtra: (extras: Record<string, unknown>) =>
+      writeClaudeSetupFile(adoptionExtraFile, extras),
   };
 
   /**
