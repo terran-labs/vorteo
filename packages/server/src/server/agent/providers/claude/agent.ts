@@ -1297,6 +1297,38 @@ function resolvePermissionKind(
 // whole question object, so the notification reads as JSON. Summarize the first
 // question the same way the OMP and Pi providers do for their ask_user
 // permissions.
+// Claude Code's dangerous-removal safety check, which prompts even in Bypass mode, gives its
+// reason in these forms (claude.exe 2.1.321, measured through the SDK's canUseTool options; no
+// structured field names the check). Used only to word the card: anything else shows the SDK's
+// own reason.
+const CLAUDE_DANGEROUS_REMOVAL_REASON =
+  /^(?:Dangerous rm operation\b|This shell -c script runs rm and could not be checked$|A permission rule denies a command in this shell -c script$)/;
+const CLAUDE_REASON_TARGET = /\btarget: ([^\n]+)$/;
+// eslint-disable-next-line no-control-regex -- the CLI's reason may carry ANSI escapes
+const ANSI_ESCAPE = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+
+export const CLAUDE_DANGEROUS_REMOVAL_DESCRIPTION =
+  "Claude Code's safety check stopped this command because it could not rule out that it deletes files. Bypass mode does not skip this check.";
+export const CLAUDE_ASK_RULE_DESCRIPTION =
+  "One of your permission rules asks before this command runs.";
+
+/** The owner-readable reason a Claude tool permission prompt appeared, or undefined. */
+export function describeClaudePermissionReason(options: {
+  decisionReason?: string;
+  blockedPath?: string;
+  matchedAskRule?: unknown;
+}): string | undefined {
+  if (options.matchedAskRule) return CLAUDE_ASK_RULE_DESCRIPTION;
+  // The CLI's reason may carry ANSI escapes; they are removed for display only.
+  const reason = options.decisionReason?.replace(ANSI_ESCAPE, "").trim();
+  if (!reason) return undefined;
+  if (!CLAUDE_DANGEROUS_REMOVAL_REASON.test(reason)) return reason;
+  const target = options.blockedPath ?? CLAUDE_REASON_TARGET.exec(reason)?.[1]?.trim();
+  return target
+    ? `${CLAUDE_DANGEROUS_REMOVAL_DESCRIPTION} Path: ${target}`
+    : CLAUDE_DANGEROUS_REMOVAL_DESCRIPTION;
+}
+
 function buildClaudeQuestionPermissionSummary(
   toolName: string,
   input: AgentMetadata,
@@ -5964,6 +5996,19 @@ class ClaudeAgentSession implements AgentSession {
     if (toolName === "ExitPlanMode" && typeof input.plan === "string") {
       metadata.planText = input.plan;
     }
+    // Why the prompt appeared, kept for the record. The card shows the worded reason below.
+    if (options.decisionReason) metadata.decisionReason = options.decisionReason;
+    if (options.blockedPath) metadata.blockedPath = options.blockedPath;
+    if (options.matchedAskRule) metadata.matchedAskRule = { ...options.matchedAskRule };
+    this.logger.debug(
+      {
+        requestId,
+        toolName,
+        optionKeys: Object.keys(options).filter((key) => key !== "signal"),
+      },
+      "Claude permission request options",
+    );
+    const reason = kind === "tool" ? describeClaudePermissionReason(options) : undefined;
     const toolDetail =
       kind === "tool"
         ? mapClaudeRunningToolCall({
@@ -5980,6 +6025,8 @@ class ClaudeAgentSession implements AgentSession {
       name: toolName,
       kind,
       ...buildClaudeQuestionPermissionSummary(toolName, input),
+      ...(kind === "tool" && options.title ? { title: options.title } : {}),
+      ...(reason ? { description: reason } : {}),
       input: requestInput,
       detail: toolDetail,
       suggestions: options.suggestions?.map((suggestion) => ({

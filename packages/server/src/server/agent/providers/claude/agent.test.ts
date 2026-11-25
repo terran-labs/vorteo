@@ -738,6 +738,54 @@ describe("ClaudeAgentSession features", () => {
     return { queryFactory, queryMock, launches };
   }
 
+  // #659: the SDK's options for Claude Code's dangerous-removal prompt, as measured with
+  // claude.exe 2.1.321 in Bypass mode. The card must say why it asks, not only the command.
+  test("words the reason a dangerous-removal prompt appeared", async () => {
+    const { queryFactory } = createQueryMock();
+    const session = await new ClaudeAgentClient({
+      logger,
+      queryFactory,
+      resolveBinary: async () => "/test/claude/bin",
+    }).createSession({ provider: "claude", cwd: process.cwd(), modeId: "bypassPermissions" });
+    const events: AgentStreamEvent[] = [];
+    const unsubscribe = session.subscribe((event) => events.push(event));
+
+    try {
+      await session.startTurn("run the tool");
+      const canUseTool = queryFactory.mock.calls[0]?.[0].options.canUseTool;
+      if (!canUseTool) throw new Error("Expected canUseTool callback");
+      const decisionReason =
+        "Dangerous rm operation on statically-unresolvable target: /private/tmp/probe/x/*";
+      void canUseTool(
+        "Bash",
+        { command: "mkdir -p /tmp/probe/x && cd /tmp/probe/x && rm -rf *" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-dangerous-removal",
+          requestId: "request-dangerous-removal",
+          decisionReason,
+          displayName: "Bash",
+          description: "Create probe directory and clear its contents",
+          suggestions: [],
+        },
+      );
+
+      const requested = events.find(
+        (event): event is Extract<AgentStreamEvent, { type: "permission_requested" }> =>
+          event.type === "permission_requested",
+      );
+      expect(requested?.request).toMatchObject({
+        kind: "tool",
+        description:
+          "Claude Code's safety check stopped this command because it could not rule out that it deletes files. Bypass mode does not skip this check. Path: /private/tmp/probe/x/*",
+        metadata: { decisionReason },
+      });
+    } finally {
+      unsubscribe();
+      await session.close();
+    }
+  });
+
   test("publishes a resolution when the SDK aborts a permission callback", async () => {
     const { queryFactory } = createQueryMock();
     const session = await new ClaudeAgentClient({

@@ -556,6 +556,7 @@ export const en = {
       accept: "Accept",
       implement: "Implement",
       question: "How would you like to proceed?",
+      mode: "This thread is in {{mode}} mode.",
       proposedPlan: "Proposed plan",
     },
   },
