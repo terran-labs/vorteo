@@ -588,7 +588,7 @@ export class AgentStorage {
   async mutateQuestions(
     agentId: string,
     mutation: QuestionMutation,
-    position: { askedSeq?: number } = {},
+    position: { askedSeq?: number; askedEpoch?: string } = {},
   ): Promise<AgentQuestion[]> {
     await this.load();
     let committed: AgentQuestion[] | null = null;

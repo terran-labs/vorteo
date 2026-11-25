@@ -73,8 +73,11 @@ import type {
 } from "@getpaseo/protocol/agent-types";
 import type { AgentScreenAgent } from "@/hooks/use-agent-screen-state-machine";
 import { useSessionStore } from "@/stores/session-store";
-import { useConversationTarget } from "@/open-questions/conversation-target";
-import { useJumpToPosition } from "./use-jump-to-position";
+import {
+  useConversationTarget,
+  useConversationTargetStore,
+} from "@/open-questions/conversation-target";
+import { useJumpToPosition, type JumpOutcome } from "./use-jump-to-position";
 import { useRevealedText } from "@/hooks/use-revealed-text";
 import { useFileExplorerActions } from "@/hooks/use-file-explorer-actions";
 import { useLoadOlderAgentHistory } from "@/hooks/use-load-older-agent-history";
@@ -796,18 +799,33 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
 
     // "Open" outside the thread lands where the question or approval was asked (#660).
     const conversationTarget = useConversationTarget(resolvedServerId, agentId);
-    const conversationTargetKindRef = useRef<"question" | "permission">("question");
-    const handleConversationTargetMissing = useCallback(() => {
-      toast?.show(
-        t(
-          conversationTargetKindRef.current === "permission"
-            ? "agentStream.permission.approvalNotFound"
-            : "agentStream.permission.questionNotFound",
-        ),
-        { testID: "conversation-target-not-found" },
-      );
-    }, [t, toast]);
-    const jumpToPosition = useJumpToPosition({
+    const conversationTargetRef = useRef(conversationTarget);
+    conversationTargetRef.current = conversationTarget;
+    const handledConversationTargetRef = useRef<number | null>(null);
+    const showConversationTargetMissing = useCallback(
+      (kind: "question" | "permission") => {
+        toast?.show(
+          t(
+            kind === "permission"
+              ? "agentStream.permission.approvalNotFound"
+              : "agentStream.permission.questionNotFound",
+          ),
+          { testID: "conversation-target-not-found" },
+        );
+      },
+      [t, toast],
+    );
+    // Each jump ends once: the target is consumed, so a remount does not jump again.
+    const handleJumpOutcome = useCallback(
+      (outcome: JumpOutcome) => {
+        const target = conversationTargetRef.current;
+        if (!target || handledConversationTargetRef.current !== target.requestId) return;
+        if (outcome === "missing") showConversationTargetMissing(target.kind);
+        useConversationTargetStore.getState().clear(target.requestId);
+      },
+      [showConversationTargetMissing],
+    );
+    const { jump: jumpToPosition, cancel: cancelJump } = useJumpToPosition({
       agentId,
       serverId: resolvedServerId,
       timelineEpoch,
@@ -816,18 +834,35 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       viewportRef,
       mountedHistoryMessageIds,
       revealLoadedMessage: revealOutlineMessage,
-      onMissing: handleConversationTargetMissing,
+      onOutcome: handleJumpOutcome,
       onError: handleTimelineHistoryLoadError,
     });
-    const handledConversationTargetRef = useRef<number | null>(null);
     useEffect(() => {
       if (!conversationTarget || timelineEpoch === null) return;
       if (handledConversationTargetRef.current === conversationTarget.requestId) return;
       handledConversationTargetRef.current = conversationTarget.requestId;
-      conversationTargetKindRef.current = conversationTarget.kind;
-      if (conversationTarget.seq === null) handleConversationTargetMissing();
-      else jumpToPosition(conversationTarget.seq);
-    }, [conversationTarget, handleConversationTargetMissing, jumpToPosition, timelineEpoch]);
+      if (conversationTarget.seq === null) handleJumpOutcome("missing");
+      else jumpToPosition({ epoch: conversationTarget.epoch, seq: conversationTarget.seq });
+    }, [conversationTarget, handleJumpOutcome, jumpToPosition, timelineEpoch]);
+    useEffect(() => {
+      if (!conversationTarget) cancelJump();
+    }, [cancelJump, conversationTarget]);
+    // A target still unconsumed when it expires, for example because the timeline never loaded,
+    // is reported rather than dropped silently.
+    useEffect(() => {
+      if (!conversationTarget) return;
+      const { requestId, kind } = conversationTarget;
+      const timer = setTimeout(
+        () => {
+          const current = useConversationTargetStore.getState().target;
+          if (current?.requestId !== requestId) return;
+          showConversationTargetMissing(kind);
+          useConversationTargetStore.getState().clear(requestId);
+        },
+        Math.max(0, conversationTarget.expiresAt - Date.now()),
+      );
+      return () => clearTimeout(timer);
+    }, [conversationTarget, showConversationTargetMissing]);
 
     useImperativeHandle(
       ref,

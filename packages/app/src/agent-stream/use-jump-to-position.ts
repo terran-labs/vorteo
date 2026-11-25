@@ -4,42 +4,31 @@ import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { planTimelinePromptJump } from "@/timeline/timeline-sync-plan";
 import type { StreamItem } from "@/types/stream";
 import type { StreamViewportHandle } from "./strategy";
+import { fetchedWindowCovers, findLoaded } from "./jump-position";
 
 const NO_ITEMS: StreamItem[] = [];
-const MISSING_GRACE_MS = 2_000;
+
+/** A recorded timeline position. A null epoch means none was recorded, so it cannot be found. */
+export interface JumpTarget {
+  epoch: string | null;
+  seq: number;
+}
+
+export type JumpOutcome = "scrolled" | "missing" | "cancelled";
 
 interface PendingJump {
   requestId: number;
   seq: number;
-  fetchSettled: boolean;
-  hasScrolled: boolean;
 }
 
-/**
- * The loaded item at the target position, or the nearest one before it. Null when the loaded
- * window starts after the target, which means older history must be fetched first.
- */
-export function findItemAtOrBefore(
-  items: readonly StreamItem[],
-  epoch: string | null,
-  seq: number,
-): StreamItem | null {
-  let best: StreamItem | null = null;
-  let bestSeq = -1;
-  for (const item of items) {
-    const cursor = item.timelineCursor;
-    if (!cursor || cursor.epoch !== epoch || cursor.seq > seq) continue;
-    if (cursor.seq > bestSeq) {
-      best = item;
-      bestSeq = cursor.seq;
-    }
-  }
-  return best;
-}
+// What a reader does to take over the scroll; any of them cancels a jump still loading.
+const USER_SCROLL_EVENTS = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
 
 /**
  * Scrolls the conversation to a recorded timeline position, loading older history when needed.
- * Calls `onMissing` when the position cannot be found, rather than leaving the latest message.
+ * Reports one outcome per jump: scrolled, missing (the position is not in this timeline), or
+ * cancelled (the reader scrolled first). A fetched window that covers the position waits for its
+ * items to render, however long that takes; only the fetch result decides that it is missing.
  */
 export function useJumpToPosition(input: {
   agentId: string;
@@ -50,9 +39,9 @@ export function useJumpToPosition(input: {
   viewportRef: RefObject<StreamViewportHandle | null>;
   mountedHistoryMessageIds?: ReadonlySet<string>;
   revealLoadedMessage?: (messageId: string) => boolean;
-  onMissing: () => void;
+  onOutcome: (outcome: JumpOutcome) => void;
   onError: () => void;
-}): (seq: number) => void {
+}): { jump: (target: JumpTarget) => void; cancel: () => void } {
   const {
     agentId,
     serverId,
@@ -63,75 +52,90 @@ export function useJumpToPosition(input: {
     revealLoadedMessage,
   } = input;
   const head = input.head ?? NO_ITEMS;
-  const [pending, setPending] = useState<PendingJump | null>(null);
+  const [pending, setPendingState] = useState<PendingJump | null>(null);
+  // Mirrors `pending` synchronously, so each jump reports exactly one outcome.
+  const pendingRef = useRef<PendingJump | null>(null);
   const nextRequestIdRef = useRef(0);
-  const onMissing = useStableEvent(input.onMissing);
+  const onOutcome = useStableEvent(input.onOutcome);
   const onError = useStableEvent(input.onError);
 
-  useEffect(() => setPending(null), [agentId, serverId, timelineEpoch]);
+  const setPending = useStableEvent((next: PendingJump | null) => {
+    pendingRef.current = next;
+    setPendingState(next);
+  });
+  const settle = useStableEvent((requestId: number, outcome: JumpOutcome) => {
+    if (pendingRef.current?.requestId !== requestId) return;
+    setPending(null);
+    onOutcome(outcome);
+  });
+
+  useEffect(() => setPending(null), [agentId, serverId, timelineEpoch, setPending]);
+
+  // The reader takes over: a jump still loading must not pull them back afterwards.
+  useEffect(() => {
+    if (pending === null || typeof window === "undefined" || !window.addEventListener) return;
+    const cancel = () => settle(pending.requestId, "cancelled");
+    for (const name of USER_SCROLL_EVENTS) {
+      window.addEventListener(name, cancel, { capture: true, passive: true });
+    }
+    return () => {
+      for (const name of USER_SCROLL_EVENTS) {
+        window.removeEventListener(name, cancel, { capture: true });
+      }
+    };
+  }, [pending, settle]);
 
   useEffect(() => {
-    if (pending === null || pending.hasScrolled) return;
-    const target =
-      findItemAtOrBefore(tail, timelineEpoch, pending.seq) ??
-      findItemAtOrBefore(head, timelineEpoch, pending.seq);
-    if (target) {
-      const isMounted =
-        mountedHistoryMessageIds === undefined ||
-        mountedHistoryMessageIds.has(target.id) ||
-        head.includes(target);
-      if (!isMounted) {
-        revealLoadedMessage?.(target.id);
-        return;
-      }
-      viewportRef.current?.scrollToMessage?.(target.id);
-      setPending((current) =>
-        current?.requestId === pending.requestId ? { ...current, hasScrolled: true } : current,
-      );
+    if (pending === null) return;
+    const target = findLoaded(tail, head, timelineEpoch, pending.seq);
+    if (!target) return;
+    const isMounted =
+      mountedHistoryMessageIds === undefined ||
+      mountedHistoryMessageIds.has(target.id) ||
+      head.includes(target);
+    if (!isMounted) {
+      revealLoadedMessage?.(target.id);
       return;
     }
-    if (!pending.fetchSettled) return;
-    // A fetched window can settle a moment before its items render; items arriving re-run this
-    // effect and cancel the report.
-    const timer = setTimeout(() => {
-      setPending((current) => (current?.requestId === pending.requestId ? null : current));
-      onMissing();
-    }, MISSING_GRACE_MS);
-    return () => clearTimeout(timer);
+    viewportRef.current?.scrollToMessage?.(target.id);
+    settle(pending.requestId, "scrolled");
   }, [
     head,
     mountedHistoryMessageIds,
-    onMissing,
     pending,
     revealLoadedMessage,
+    settle,
     tail,
     timelineEpoch,
     viewportRef,
   ]);
 
-  return useStableEvent((seq: number) => {
+  // Drops a pending jump without an outcome, once its target has gone.
+  const cancel = useStableEvent(() => setPending(null));
+  const jump = useStableEvent((target: JumpTarget) => {
     const requestId = ++nextRequestIdRef.current;
-    if (timelineEpoch === null) {
-      onMissing();
+    const epoch = target.epoch;
+    // A position from another epoch names an unrelated item in this one; never match it.
+    if (timelineEpoch === null || epoch === null || epoch !== timelineEpoch) {
+      setPending(null);
+      onOutcome("missing");
       return;
     }
-    const loaded =
-      findItemAtOrBefore(tail, timelineEpoch, seq) ?? findItemAtOrBefore(head, timelineEpoch, seq);
-    if (loaded) {
-      setPending({ requestId, seq, fetchSettled: true, hasScrolled: false });
-      return;
-    }
-    setPending({ requestId, seq, fetchSettled: false, hasScrolled: false });
+    const seq = target.seq;
+    setPending({ requestId, seq });
+    if (findLoaded(tail, head, epoch, seq)) return;
     void getHostRuntimeStore()
-      .fetchAgentTimeline(serverId, agentId, planTimelinePromptJump({ epoch: timelineEpoch, seq }))
+      .fetchAgentTimeline(serverId, agentId, planTimelinePromptJump({ epoch, seq }))
+      .then((page) => {
+        // A covering window keeps the jump pending until its items render.
+        if (!fetchedWindowCovers(page, { epoch, seq })) settle(requestId, "missing");
+        return undefined;
+      })
       .catch((error: unknown) => {
         console.warn("Failed to load the conversation around a question", error);
+        settle(requestId, "cancelled");
         onError();
-      })
-      .finally(() => {
-        setPending((current) =>
-          current?.requestId === requestId ? { ...current, fetchSettled: true } : current,
-        );
       });
   });
+  return { jump, cancel };
 }
