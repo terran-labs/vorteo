@@ -1336,22 +1336,30 @@ function InstallationServiceRequests({
       {waiting ? (
         <>
           {records.broker("decided").map((job) => (
-            <DecidedLine key={job.id} label="Preview broker request" job={job} />
+            <DecidedLine key={job.id} label={DECIDED_LABELS.broker} job={job} />
           ))}
           {records.monitor("decided").map((job) => (
-            <DecidedLine key={job.id} label="Preview monitor request" job={job} />
+            <DecidedLine key={job.id} label={DECIDED_LABELS.monitor} job={job} />
           ))}
           {records.helper("decided").map((job) => (
-            <DecidedLine key={job.id} label="Native helper request" job={job} />
+            <DecidedLine key={job.id} label={DECIDED_LABELS.helper} job={job} />
           ))}
           {sessionHostJobs(state, "decided").map((job) => (
-            <DecidedLine key={job.id} label="Session host request" job={job} />
+            <DecidedLine key={job.id} label={DECIDED_LABELS.sessionHost} job={job} />
           ))}
         </>
       ) : null}
     </>
   );
 }
+
+// Names of decided requests: one-line notes, not settings rows.
+const DECIDED_LABELS = {
+  broker: "Preview broker request",
+  monitor: "Preview monitor request",
+  helper: "Native helper request",
+  sessionHost: "Session host request",
+} as const;
 
 const DECIDED_STATUS: Record<string, string> = {
   pending: "Waiting",
