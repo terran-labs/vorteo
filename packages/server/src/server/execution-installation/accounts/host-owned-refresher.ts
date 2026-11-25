@@ -413,13 +413,18 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     now: number,
     recovery: boolean,
   ): Promise<P | null | undefined> {
-    const due = this.isDue(next, now) || (recovery && next.refreshFailures === 0);
+    const scheduled = this.isDue(next, now);
+    // Recovery re-reads the Host and re-delivers even while refreshes fail, so a Dev copy that
+    // was overwritten is repaired. Only scheduled work, inside the retry budget, may then
+    // refresh; recovery alone never spends a retry.
+    const due = scheduled || recovery;
+    const allowRefresh = scheduled || next.refreshFailures === 0;
     // Preserve the previous deadline even if this read immediately discovers a renewed grant.
     if (next.expiresAt !== null && now >= next.expiresAt) next.missedExpiry = next.expiresAt;
     let desired: P | null | undefined;
     if (due) {
       try {
-        desired = await this.readHost(next.definitionId, next, now);
+        desired = await this.readHost(next.definitionId, next, now, allowRefresh);
       } catch {
         this.recordFailure(next, now, "storage_unreadable");
         next.checkedAt = now;
@@ -437,6 +442,7 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     definitionId: string,
     next: HostRefreshRecord,
     now: number,
+    allowRefresh = true,
   ): Promise<P | null> {
     let grant = await this.ports.grant(definitionId);
     // A newer Host token (a Host agent refreshed it, or the owner signed in) clears failures.
@@ -460,7 +466,7 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
       delete next.refreshRetry;
     }
     if (grant === null) this.recordFailure(next, now, "grant_missing");
-    if (this.shouldRefresh(next, grant, now))
+    if (allowRefresh && this.shouldRefresh(next, grant, now))
       grant = await this.refreshHost(definitionId, grant, next, now);
     next.checkedAt = now;
     next.expiresAt = grant?.expiresAt ?? null;

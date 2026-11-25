@@ -61,6 +61,11 @@ const AdoptionRecordSchema = z.strictObject({
   fallback: z.literal("host-sign-in"),
   /** After un-adopt: the restored local sign-in was not tested and may need a new sign-in. */
   restored: z.strictObject({ copyAgeMs: Counter, mayNeedSignIn: z.literal(true) }).nullable(),
+  /**
+   * Un-adopted from a cancelled, failed or confirmation-pending record: nothing was withdrawn or
+   * put back, so whatever is in Dev's home stays as it is. The app says so plainly.
+   */
+  restoreSkipped: z.literal(true).optional(),
   error: z.string().max(300).nullable(),
 });
 export type CodexAdoptionRecord = z.infer<typeof AdoptionRecordSchema>;
@@ -78,6 +83,25 @@ const DELIVERING: ReadonlySet<CodexAdoptionStatus> = new Set([
   "adopted",
   "unadopting",
 ]);
+/** States after a projection may have been written, so a saved copy may exist. */
+const HELD_COPY: ReadonlySet<CodexAdoptionStatus> = new Set([
+  "projecting",
+  "adopted",
+  "failed",
+  "cancelled",
+  "needs-owner-confirmation",
+  "unadopting",
+  "unadopted",
+]);
+/** Records the tick no longer steps, though retention still applies to them. */
+const OUTSIDE_DELIVERY: ReadonlySet<CodexAdoptionStatus> = new Set([
+  "failed",
+  "unadopted",
+  "cancelled",
+]);
+/** Retention retries for records outside delivery wait this long after a failed attempt. */
+const RETENTION_RETRY_MS = 60 * 60_000;
+
 /** Records that hold a Dev home; two of them may never share one directory. */
 const HOLDING: ReadonlySet<CodexAdoptionStatus> = new Set([
   "pinning",
@@ -366,12 +390,24 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
     return next;
   }
 
-  /** `days` deletes the saved sign-in at the earlier of proven + provenDays and the cap. */
+  /**
+   * `days` deletes the saved sign-in at the earlier of proven + provenDays and the cap, in every
+   * state: also after a cancel, a failure, a changed home or an un-adopt that put nothing back.
+   * The cap counts from the first acknowledged projection, or from the start when none was
+   * acknowledged, because a copy can be saved before that acknowledgement.
+   */
   async function applyRetention(record: CodexAdoptionRecord): Promise<CodexAdoptionRecord> {
     const rule = deps.retention(record.definitionId);
-    if (rule.mode !== "days" || record.copyForgottenAt !== null || record.projectedAt === null)
+    // A restore already removed the copy; without a target or a projection none was saved.
+    if (
+      rule.mode !== "days" ||
+      record.copyForgottenAt !== null ||
+      record.restored !== null ||
+      record.target === null ||
+      (record.projectedAt === null && !HELD_COPY.has(record.status))
+    )
       return record;
-    const cap = record.projectedAt + rule.capDays * DAY_MS;
+    const cap = (record.projectedAt ?? record.startedAt) + rule.capDays * DAY_MS;
     const proven =
       record.provenAt === null
         ? Number.POSITIVE_INFINITY
@@ -379,6 +415,19 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
     if (deps.now() < Math.min(cap, proven)) return record;
     await deps.dev({ ...scope(record), operation: "forget-copy", target: record.target });
     return save({ ...record, copyForgottenAt: deps.now() });
+  }
+
+  /** In-memory: when retention may next try a record that is no longer delivering. */
+  const retentionRetryAt = new Map<string, number>();
+  async function retainOutsideDelivery(record: CodexAdoptionRecord): Promise<void> {
+    if ((retentionRetryAt.get(record.definitionId) ?? 0) > deps.now()) return;
+    try {
+      await applyRetention(record);
+      retentionRetryAt.delete(record.definitionId);
+    } catch {
+      // Dev offline, or the pinned directory is gone or changed: try again later.
+      retentionRetryAt.set(record.definitionId, deps.now() + RETENTION_RETRY_MS);
+    }
   }
 
   /** Withdraws the projection without any Host sign-out, then puts Dev's saved sign-in back. */
@@ -486,13 +535,16 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
       return serialized(async () => {
         const record = find(definitionId);
         if (!record || record.status === "unadopted") throw new CodexSignInDeliveryError();
-        if (record.status === "cancelled" || record.status === "failed") {
+        if (
+          record.status === "cancelled" ||
+          record.status === "failed" ||
+          record.status === "needs-owner-confirmation" ||
+          record.target === null
+        ) {
+          // Nothing is withdrawn or restored from here: the binding moved, the home changed, or
+          // nothing was delivered. The record says so, and retention still applies to any copy.
           await deps.refresher.retire(definitionId);
-          return save({ ...record, status: "unadopted" });
-        }
-        if (record.status === "needs-owner-confirmation" || record.target === null) {
-          await deps.refresher.retire(definitionId);
-          return save({ ...record, status: "unadopted" });
+          return save({ ...record, status: "unadopted", restoreSkipped: true });
         }
         return step(save({ ...record, status: "unadopting", error: null }));
       });
@@ -506,11 +558,14 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
             // A first projection Dev refused fails the record inside the refresher's own
             // delivery, where it cannot retire it. Retire it here so it stops delivering.
             await deps.refresher.retire(record.definitionId).catch(() => {});
+          }
+          if (OUTSIDE_DELIVERY.has(record.status)) {
+            await retainOutsideDelivery(record);
             continue;
           }
-          if (record.status === "unadopted") continue;
-          if (record.status === "cancelled") continue;
-          await step(record);
+          const next = await step(record);
+          // Waiting for the owner still watches for a rebind; its copy keeps its retention.
+          if (next.status === "needs-owner-confirmation") await retainOutsideDelivery(next);
         }
       });
     },

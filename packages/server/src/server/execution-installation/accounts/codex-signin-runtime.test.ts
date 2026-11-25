@@ -695,6 +695,63 @@ it("deletes the saved sign-in only when retention ends", async () => {
   expect(none.deliveries[0]).toMatchObject({ adoption: { keepLocalSignIn: false } });
 });
 
+it("keeps retention and says plainly what un-adopt left after an adoption stopped", async () => {
+  // A manual rebind cancels the adoption; the saved copy still goes at the 30-day cap.
+  const h = legacyHarness();
+  await adopted(h);
+  h.rebindDev("one", "codex-elsewhere");
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")?.status).toBe("cancelled");
+  h.advance(30 * DAY);
+  await h.runtime.reconcile();
+  expect(h.legacyCalls("forget-copy")).toHaveLength(1);
+  expect(h.runtime.adoption("one")?.copyForgottenAt).toBe(h.now());
+  // Un-adopting from there withdraws and restores nothing, and the record says so.
+  await expect(h.runtime.unadopt("one")).resolves.toMatchObject({
+    status: "unadopted",
+    restored: null,
+    restoreSkipped: true,
+  });
+  expect(h.legacyCalls("restore")).toEqual([]);
+
+  // Waiting for the owner after a changed home: Dev offline delays retention, then it runs.
+  const moved = legacyHarness();
+  await adopted(moved);
+  moved.dev.refusal = "target_changed";
+  await moved.runtime.reconcile();
+  moved.dev.refusal = null;
+  expect(moved.runtime.adoption("one")?.status).toBe("needs-owner-confirmation");
+  moved.dev.online = false;
+  moved.advance(30 * DAY);
+  await moved.runtime.reconcile();
+  expect(moved.runtime.adoption("one")?.copyForgottenAt).toBeNull();
+  const attempts = moved.legacyCalls("forget-copy").length;
+  moved.dev.online = true;
+  await moved.runtime.reconcile();
+  // A failed attempt waits an hour rather than retrying every tick.
+  expect(moved.legacyCalls("forget-copy")).toHaveLength(attempts);
+  moved.advance(60 * 60_000);
+  await moved.runtime.reconcile();
+  expect(moved.legacyCalls("forget-copy")).toHaveLength(attempts + 1);
+  expect(moved.runtime.adoption("one")?.copyForgottenAt).toBe(moved.now());
+});
+
+it("re-sends the projection while Host refreshes fail, without spending a retry", async () => {
+  const h = legacyHarness();
+  await adopted(h);
+  h.refresh.mockRejectedValueOnce(new Error("synthetic refresh failure"));
+  h.setGrant({ expiresAt: h.now() + 20 * 60_000 });
+  h.advance(6 * 60_000);
+  await h.runtime.reconcile();
+  expect(h.refresh).toHaveBeenCalledTimes(1);
+  // Within the retry wait, the next tick still re-sends the current projection to Dev.
+  const delivered = h.deliveries.length;
+  h.advance(30_000);
+  await h.runtime.reconcile();
+  expect(h.deliveries.length).toBeGreaterThan(delivered);
+  expect(h.refresh).toHaveBeenCalledTimes(1);
+});
+
 it("exposes adoption to no route: the owner's routes and Dev's routes cannot start it", async () => {
   const h = legacyHarness();
   const app = express();
