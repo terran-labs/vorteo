@@ -598,6 +598,46 @@ it("keeps the first backup's 30-day cap and the person check through a failed re
   await h.runtime.reconcile();
   expect(h.legacyCalls("forget-copy")).toHaveLength(1);
   expect(h.legacyCalls("forget-copy")[0]!.body.target).toEqual(firstTarget);
+  // The person Dev's home holds coming back is never called a different person.
+  h.setGrant({ idToken: idToken("d@example.com", "person-4"), expiresAt: h.now() + 9 * DAY });
+  h.advance(10 * 60_000);
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")?.status).toBe("needs-owner-confirmation");
+  h.setGrant({ idToken: idToken("c@example.com", "person-3") });
+  await h.runtime.adopt("one");
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")?.status).toBe("adopted");
+});
+
+it("deletes each folder's backup at its own cap after a re-switch into another folder", async () => {
+  const h = legacyHarness();
+  await adopted(h);
+  // Dev's connection for the account moves to another folder, which has its own sign-in.
+  h.dev.targets["codex-elsewhere"] = {
+    realpath: "/home/paseo/codex-elsewhere",
+    dev: "41",
+    ino: "1003",
+  };
+  h.rebindDev("one", "codex-elsewhere");
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")?.status).toBe("cancelled");
+  h.advance(10 * DAY);
+  h.setGrant({ expiresAt: h.now() + 40 * DAY });
+  await h.runtime.adopt("one");
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")?.status).toBe("adopted");
+  // The first folder's copy goes 30 days after its first projection, the second's 30 after its.
+  h.advance(20 * DAY);
+  await h.runtime.reconcile();
+  expect(h.legacyCalls("forget-copy").map((item) => item.body.target)).toEqual([
+    h.dev.targets["codex-primary"],
+  ]);
+  h.advance(10 * DAY);
+  await h.runtime.reconcile();
+  expect(h.legacyCalls("forget-copy").map((item) => item.body.target)).toEqual([
+    h.dev.targets["codex-primary"],
+    h.dev.targets["codex-elsewhere"],
+  ]);
 });
 
 it("stops delivering on a manual rebind or a changed Dev home", async () => {

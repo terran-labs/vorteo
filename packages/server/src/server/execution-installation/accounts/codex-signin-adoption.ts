@@ -72,15 +72,20 @@ const AdoptionRecordSchema = z.strictObject({
    * Every projection must match it; a different person waits for the owner. Never raw IDs.
    */
   /**
-   * The earliest time Dev may have saved a copy that still exists, carried across re-confirmed
-   * adoptions so the retention cap stays absolute. Absent means projectedAt, then startedAt.
+   * Every pinned Dev directory this account was projected into whose saved copy may still exist,
+   * each with its own clock. Carried across records, so a re-switch into another directory, a
+   * failed retry or a refusal never drops one, and each copy is deleted at its own cap.
    */
-  copySavedSince: Counter.nullable().optional(),
-  /**
-   * Where that copy lives: the pinned Dev directory of the record that saved it, carried with
-   * copySavedSince so retention can delete it even while this record has no target yet.
-   */
-  copyTarget: CodexLegacyTargetSchema.nullable().optional(),
+  copies: z
+    .array(z.strictObject({ target: CodexLegacyTargetSchema, savedSince: Counter }))
+    .max(8)
+    .optional(),
+  /** The person whose projection Dev's home holds, from the record that last projected. */
+  heldIdentityDigest: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .nullable()
+    .optional(),
   /**
    * The person this record must find on the Host, carried from an earlier record whose Dev home
    * may still hold that person's projection. A different person waits for the owner.
@@ -120,22 +125,27 @@ const DELIVERING: ReadonlySet<CodexAdoptionStatus> = new Set([
   "adopted",
   "unadopting",
 ]);
-/** States after a projection may have been written, so a saved copy may exist. */
-const HELD_COPY: ReadonlySet<CodexAdoptionStatus> = new Set([
-  "projecting",
-  "adopted",
-  "failed",
-  "cancelled",
-  "needs-owner-confirmation",
-  "unadopting",
-  "unadopted",
-]);
 /** Records the tick no longer steps, though retention still applies to them. */
 const OUTSIDE_DELIVERY: ReadonlySet<CodexAdoptionStatus> = new Set([
   "failed",
   "unadopted",
   "cancelled",
 ]);
+function sameTarget(a: CodexLegacyTarget, b: CodexLegacyTarget): boolean {
+  return a.realpath === b.realpath && a.dev === b.dev && a.ino === b.ino;
+}
+
+/** Adds a directory's copy once; an existing entry keeps its earlier clock. */
+function withCopy(
+  copies: Array<{ target: CodexLegacyTarget; savedSince: number }> | undefined,
+  target: CodexLegacyTarget,
+  now: number,
+) {
+  const list = copies ?? [];
+  if (list.some((item) => sameTarget(item.target, target))) return list;
+  return [...list, { target, savedSince: now }].slice(-8);
+}
+
 /** Retention retries for records outside delivery wait this long after a failed attempt. */
 const RETENTION_RETRY_MS = 60 * 60_000;
 
@@ -346,7 +356,10 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
       throw new AdoptionRefused("Update the Host and Dev to the latest version, then try again.");
     const hostIdentityDigest = (await verifyHost(record, check.revision)).digest;
     // A person other than the one Dev's home may still hold needs the owner's explicit say.
-    if (record.expectedIdentityDigest && record.expectedIdentityDigest !== hostIdentityDigest)
+    const accepted = [record.expectedIdentityDigest, record.heldIdentityDigest].filter(
+      (digest): digest is string => Boolean(digest),
+    );
+    if (accepted.length > 0 && !accepted.includes(hostIdentityDigest))
       return save({
         ...record,
         status: "needs-owner-confirmation",
@@ -378,7 +391,13 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
     // Read once more: the Host file may have changed while Dev answered.
     const { identity, digest } = await verifyHost(pinning, deps.settings.snapshot().revision);
     if (digest !== hostIdentityDigest) throw new AdoptionRefused(IDENTITY_CHANGED);
-    const projecting = save({ ...pinning, status: "projecting", target });
+    const projecting = save({
+      ...pinning,
+      status: "projecting",
+      target,
+      copies: withCopy(pinning.copies, target, deps.now()),
+      heldIdentityDigest: hostIdentityDigest,
+    });
     await deps.refresher.connected(record.definitionId, identity);
     return projecting;
   }
@@ -452,69 +471,68 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
   }
 
   /**
-   * What a new record inherits from the one it replaces. A backup that was neither restored nor
-   * deleted keeps its clock and its directory, whatever happened in between, so the cap stays
-   * absolute. The person Dev's home may still hold is expected again, unless the owner's
-   * confirmation just accepted a different one; a restore gave Dev its own sign-in back, which
-   * the writer checks by itself.
+   * What a new record inherits from the one it replaces. Every copy that may still be on Dev
+   * keeps its directory and its clock, whatever happened in between, so each cap stays
+   * absolute. The person Dev's home holds, and the person the owner last accepted, are both
+   * accepted again; the owner's confirmation from the different-person warning accepts the
+   * person it named. A restore gave Dev its own sign-in back, which the writer checks by itself.
    */
   function carriedFacts(previous: CodexAdoptionRecord | undefined) {
-    if (!previous || previous.restored !== null) return {};
-    const copyTarget = previous.copyTarget ?? previous.target;
-    const copy =
-      previous.copyForgottenAt === null && copyTarget !== null && HELD_COPY.has(previous.status)
-        ? {
-            copySavedSince: previous.copySavedSince ?? previous.projectedAt ?? previous.startedAt,
-            copyTarget,
-          }
-        : {};
-    const accepted =
+    if (!previous) return {};
+    const copies = previous.copies ?? [];
+    const kept = copies.length > 0 ? { copies } : {};
+    if (previous.restored !== null) return kept;
+    const held = previous.heldIdentityDigest ?? null;
+    const confirmed =
       previous.status === "needs-owner-confirmation" && previous.error === IDENTITY_CHANGED
         ? previous.pendingIdentityDigest
         : undefined;
-    const expectedIdentityDigest =
-      accepted ?? previous.hostIdentityDigest ?? previous.expectedIdentityDigest ?? null;
-    return { ...copy, ...(expectedIdentityDigest ? { expectedIdentityDigest } : {}) };
+    const expected = confirmed ?? previous.expectedIdentityDigest ?? held;
+    return {
+      ...kept,
+      ...(expected ? { expectedIdentityDigest: expected } : {}),
+      ...(held ? { heldIdentityDigest: held } : {}),
+    };
   }
 
   /**
-   * `days` deletes the saved sign-in at the earlier of proven + provenDays and the cap, in every
-   * state: also after a cancel, a failure, a changed home or an un-adopt that put nothing back.
-   * The cap counts from the first acknowledged projection, or from the start when none was
-   * acknowledged, because a copy can be saved before that acknowledgement.
+   * `days` deletes each saved copy at the earlier of proven + provenDays and its own cap, in
+   * every state: also after a cancel, a failure, a changed home or an un-adopt that put nothing
+   * back. Each cap counts from when that directory was first projected into.
    */
   async function applyRetention(record: CodexAdoptionRecord): Promise<CodexAdoptionRecord> {
     const rule = deps.retention(record.definitionId);
-    // A restore already removed the copy; without a target or a projection none was saved.
-    if (
-      rule.mode !== "days" ||
-      record.copyForgottenAt !== null ||
-      record.restored !== null ||
-      (record.copyTarget ?? record.target) === null ||
-      (record.projectedAt === null && !HELD_COPY.has(record.status))
-    )
-      return record;
-    const copyTarget = (record.copyTarget ?? record.target)!;
-    const cap =
-      (record.copySavedSince ?? record.projectedAt ?? record.startedAt) + rule.capDays * DAY_MS;
+    if (rule.mode !== "days" || (record.copies ?? []).length === 0) return record;
     const proven =
       record.provenAt === null
         ? Number.POSITIVE_INFINITY
         : record.provenAt + rule.provenDays * DAY_MS;
-    if (deps.now() < Math.min(cap, proven)) return record;
-    try {
-      await deps.dev({ ...scope(record), operation: "forget-copy", target: copyTarget });
-    } catch (error) {
-      // Past the cap the owner is told, rather than the copy outliving it silently.
-      const reason =
-        error instanceof CodexSignInRefused
-          ? "Dev's folder for this account changed or moved."
-          : "Dev could not be reached. It is tried again every hour.";
-      if (deps.now() >= cap && record.copyDeleteBlocked !== reason)
-        save({ ...record, copyDeleteBlocked: reason });
-      throw error;
+    let next = record;
+    for (const copy of record.copies ?? []) {
+      const cap = copy.savedSince + rule.capDays * DAY_MS;
+      if (deps.now() < Math.min(cap, proven)) continue;
+      try {
+        await deps.dev({ ...scope(next), operation: "forget-copy", target: copy.target });
+      } catch (error) {
+        // Past the cap the owner is told, rather than the copy outliving it silently.
+        const reason =
+          error instanceof CodexSignInRefused
+            ? "Dev's folder for this account changed or moved."
+            : "Dev could not be reached. It is tried again every hour.";
+        if (deps.now() >= cap && next.copyDeleteBlocked !== reason)
+          save({ ...next, copyDeleteBlocked: reason });
+        throw error;
+      }
+      const current = next.target !== null && sameTarget(next.target, copy.target);
+      next = save({
+        ...next,
+        copies: (next.copies ?? []).filter((item) => !sameTarget(item.target, copy.target)),
+        copyDeleteBlocked: null,
+        // The active home's copy is gone, so later projections there save none.
+        ...(current ? { copyForgottenAt: deps.now() } : {}),
+      });
     }
-    return save({ ...record, copyForgottenAt: deps.now(), copyDeleteBlocked: null });
+    return next;
   }
 
   /** In-memory: when retention may next try a record that is no longer delivering. */
@@ -558,7 +576,18 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
         error ??= "Dev's folder for this account changed, so its earlier sign-in was not put back.";
       }
     }
-    return save({ ...record, status: error ? "failed" : "unadopted", restored, error });
+    // A restore consumed this home's copy; copies in other directories keep their clocks.
+    const copies =
+      delivering && error === record.error
+        ? (record.copies ?? []).filter((item) => !sameTarget(item.target, record.target!))
+        : record.copies;
+    return save({
+      ...record,
+      status: error ? "failed" : "unadopted",
+      restored,
+      error,
+      ...(copies ? { copies } : {}),
+    });
   }
 
   async function advanceRecord(record: CodexAdoptionRecord): Promise<CodexAdoptionRecord> {

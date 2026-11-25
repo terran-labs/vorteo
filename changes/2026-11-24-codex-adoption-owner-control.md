@@ -9,7 +9,8 @@
 - A Host re-sign-in as a different person, from the app or a shell, no longer reaches an adopted Dev account. Setup records a one-way digest of the verified workspace and person, every copy sent to Dev must match it, and a mismatch waits for the owner to confirm, which checks Dev's sessions and folder again.
 - When a switch fails because of the Host's own sign-in for that account (signed out, cannot renew, not a ChatGPT sign-in, or no named user), the section offers "Sign in on the Host". It opens that account's Host device-code sign-in, already started, from either environment's dialog. After a successful sign-in the section reads the account again and offers Try again, which still asks for confirmation.
 - Confirming an adoption again no longer restarts the 30-day limit on Dev's saved sign-in, also when the confirmation fails and is retried, and the message about a different person says that stopping later still puts back the original Dev sign-in.
-- A change of Host person can only go through on the different-person confirmation, also after a failed retry.
+- A change of Host person can only go through on the different-person confirmation, also after a failed retry, and the original person signing back in is not treated as a different one.
+- Each Dev folder an account was switched into keeps its own backup clock, so a backup saved in a second folder after a re-switch is also deleted at its 30-day cap.
 - A failure inside the adoption section renders nothing and is logged, so the Codex sign-in panel always keeps working.
 - When the saved sign-in on Dev cannot be deleted after the 30-day cap, the account says so with the reason.
 - Recovery reads that fail while Host refreshes are failing no longer count as failures, so they cannot push the next scheduled refresh further out. This applies to Claude accounts too.
