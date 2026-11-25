@@ -272,6 +272,8 @@ test("the session host card requests, reviews and decides exact plans at 390px",
       expect(decisions).toEqual([{ job, decision: "approve" }]);
       // Approved, it no longer waits on the owner and folds into In progress (#656). Open it:
       // waiting for dispatch, there is no second approval and cancellation is still possible.
+      // The owner's own decision stays in view as one line, so the tap visibly did something.
+      expect(byTestId(`decided-${job.id}`)).not.toBeNull();
       await press("system-in-progress-host-toggle");
       expect(disabled(`session-host-${job.id}-approve`)).toBe(true);
       expect(disabled(`session-host-${job.id}-cancel`)).toBe(false);

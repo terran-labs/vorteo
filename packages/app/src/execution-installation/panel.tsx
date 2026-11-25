@@ -827,12 +827,15 @@ function groupRestarts(state: PanelState, dismissal: RestartDismissal | null) {
   const latest = latestRestart(state.jobs);
   const countedFailedId =
     latest?.status === "failed" && !dismissal?.dismissedIds.has(latest.id) ? latest.id : null;
+  const decided = new Set(state.decidedIds);
   const stateOf = (job: RestartJob): OwnerState =>
     job.status === "pending" && !pendingIds.has(job.id)
       ? "history"
       : restartOwnerState(job, job.id === countedFailedId);
-  const pick = (only: OwnerState) => state.jobs.filter((job) => stateOf(job) === only).toReversed();
+  const pick = (only: ShownState) =>
+    state.jobs.filter((job) => inShown(stateOf(job), decided.has(job.id), only)).toReversed();
   return {
+    decidedRestarts: pick("decided"),
     waitingRestarts: pick("waiting"),
     progressRestarts: pick("in-progress"),
     history: pick("history"),
@@ -859,6 +862,7 @@ function WaitingItems({
   state,
   target,
   restarts,
+  decidedRestarts,
   requestId,
   restartDismissal,
   serviceDismissal,
@@ -867,6 +871,8 @@ function WaitingItems({
   state: PanelState;
   target: HealthCardHost;
   restarts: RestartJob[];
+  /** Restarts the owner decided in this visit, shown as one line until it ends. */
+  decidedRestarts: RestartJob[];
   requestId: string | null;
   restartDismissal: RestartDismissal | null;
   serviceDismissal: HealthDismissalControls | null;
@@ -902,6 +908,14 @@ function WaitingItems({
           ))}
         </View>
       ) : null}
+      {decidedRestarts.map((job) => (
+        <DecidedLine
+          key={job.id}
+          label={restartTargetLabel(job)}
+          job={job}
+          status={restartStatus(job).label}
+        />
+      ))}
     </>
   );
 }
@@ -1075,7 +1089,10 @@ function InstallationSystemDetailsBody({
   const [historyVisible, setHistoryVisible] = useState(false);
   const [sharingVisible, setSharingVisible] = useState(false);
   const restartDismissal = useRestartDismissal(state);
-  const { waitingRestarts, progressRestarts, history } = groupRestarts(state, restartDismissal);
+  const { decidedRestarts, waitingRestarts, progressRestarts, history } = groupRestarts(
+    state,
+    restartDismissal,
+  );
   const selectedHistory = history.find((job) => job.id === requestId);
   const selectedHistoryId = selectedHistory?.id;
   const visibleHistory = selectedHistory
@@ -1119,6 +1136,7 @@ function InstallationSystemDetailsBody({
               state={state}
               target={target}
               restarts={waitingRestarts}
+              decidedRestarts={decidedRestarts}
               requestId={requestId}
               restartDismissal={restartDismissal}
               serviceDismissal={serviceDismissal}
@@ -1201,6 +1219,17 @@ function firstNeedingReview<T extends { id: string; status: string; target?: str
   return recordsNeedingReview(jobs, byTarget)[0]?.id ?? jobs[0]?.id;
 }
 
+/**
+ * Where a record shows. "decided" lists, in addition, requests the owner decided during this
+ * visit that no longer wait on them: one line each in the open area, so a tap on Approve
+ * visibly did something (#656). Their full card, with any Cancel, stays in its section.
+ */
+type ShownState = OwnerState | "decided";
+
+function inShown(base: OwnerState, decided: boolean, only: ShownState): boolean {
+  return only === "decided" ? decided && base !== "waiting" : base === only;
+}
+
 /** Records that still count on System Health, after the owner's dismissals. */
 function countedIds<T extends { id: string; status: string; target?: string }>(
   jobs: readonly T[],
@@ -1215,12 +1244,15 @@ function classifyServiceRecords(state: ReturnType<InstallationPanelModel["getSta
   const broker = withDismissals(state.brokerJobs, dismissals, "preview-broker");
   const monitor = withDismissals(state.monitorJobs, dismissals, "preview-monitor");
   const helper = withDismissals(state.helperJobs, dismissals, "native-helper");
+  const decided = new Set(state.decidedIds);
   const split = <T extends { id: string; status: string; stage?: string; target?: string }>(
     jobs: readonly T[],
   ) => {
     const counted = countedIds(jobs);
-    return (only: OwnerState) =>
-      jobs.filter((job) => jobOwnerState(job, counted.has(job.id)) === only);
+    return (only: ShownState) =>
+      jobs.filter((job) =>
+        inShown(jobOwnerState(job, counted.has(job.id)), decided.has(job.id), only),
+      );
   };
   return {
     all: { broker, monitor, helper },
@@ -1301,7 +1333,58 @@ function InstallationServiceRequests({
       ))}
       <SessionHostCard model={model} state={state} only={only} />
       <InstructionRequestsCard model={model} state={state} only={only} />
+      {waiting ? (
+        <>
+          {records.broker("decided").map((job) => (
+            <DecidedLine key={job.id} label="Preview broker request" job={job} />
+          ))}
+          {records.monitor("decided").map((job) => (
+            <DecidedLine key={job.id} label="Preview monitor request" job={job} />
+          ))}
+          {records.helper("decided").map((job) => (
+            <DecidedLine key={job.id} label="Native helper request" job={job} />
+          ))}
+          {sessionHostJobs(state, "decided").map((job) => (
+            <DecidedLine key={job.id} label="Session host request" job={job} />
+          ))}
+        </>
+      ) : null}
     </>
+  );
+}
+
+const DECIDED_STATUS: Record<string, string> = {
+  pending: "Waiting",
+  approved: "Approved",
+  running: "Running",
+  succeeded: "Done",
+  failed: "Failed",
+  rejected: "Rejected",
+  cancelled: "Cancelled",
+};
+
+/**
+ * A request the owner decided during this visit, in one line: what it is and where it stands,
+ * with its result once it finishes. It stays until the visit ends (#656).
+ */
+function DecidedLine({
+  label,
+  job,
+  status,
+}: {
+  label: string;
+  job: { id: string; status: string; detail?: string };
+  /** Overrides the plain status word, such as a restart's own status label. */
+  status?: string;
+}) {
+  const finished = !["pending", "approved", "running"].includes(job.status);
+  return (
+    <View style={[styles.cardBody, settingsStyles.rowBorder]} testID={`decided-${job.id}`}>
+      <Text style={settingsStyles.rowTitle}>
+        {`${label}: ${status ?? DECIDED_STATUS[job.status] ?? job.status}`}
+      </Text>
+      {finished && job.detail ? <Text style={styles.text}>{job.detail}</Text> : null}
+    </View>
   );
 }
 
@@ -2554,14 +2637,15 @@ function CustomDomainCard({
 /** Session host jobs in one owner state, newest first, with the owner's dismissals applied. */
 function sessionHostJobs(
   state: ReturnType<InstallationPanelModel["getState"]>,
-  only: OwnerState,
+  only: ShownState,
 ): SessionHostJob[] {
   const overview = state.sessionHost;
   if (!overview) return [];
   const jobs = withDismissals(overview.jobs, state.healthDismissals, "session-host");
   const counted = new Set(recordsNeedingReview(jobs, byTargetAndOperation).map((job) => job.id));
+  const decided = new Set(state.decidedIds);
   return jobs
-    .filter((job) => jobOwnerState(job, counted.has(job.id)) === only)
+    .filter((job) => inShown(jobOwnerState(job, counted.has(job.id)), decided.has(job.id), only))
     .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
