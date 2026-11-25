@@ -561,6 +561,11 @@ it("refuses a Host re-sign-in as another person until the owner confirms it", as
   expect(h.legacyCalls("sessions").length).toBe(sessions + 1);
   expect(h.runtime.adoption("one")?.status).toBe("adopted");
   expect(h.deliveries.at(-1)).toMatchObject({ access: { accessToken: "synthetic-other-person" } });
+  // Confirming does not restart the 30-day cap on the copy saved at the first projection.
+  expect(h.legacyCalls("forget-copy")).toEqual([]);
+  h.advance(30 * DAY - 5 * 60_000);
+  await h.runtime.reconcile();
+  expect(h.legacyCalls("forget-copy")).toHaveLength(1);
 });
 
 it("stops delivering on a manual rebind or a changed Dev home", async () => {

@@ -38,6 +38,7 @@ import { isWeb } from "@/constants/platform";
 import { useSessionStore } from "@/stores/session-store";
 import { useRefreshAfterSignIn } from "./refresh-after-sign-in";
 import { CodexAdoptionSection } from "./codex-adoption";
+import { OptionalSectionBoundary } from "./optional-section-boundary";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { useTranslation } from "react-i18next";
@@ -116,7 +117,10 @@ function LoginPanelContent(props: LoginPanelProps) {
   return (
     <View style={styles.body}>
       <AccountLoginContent {...props} />
-      <CodexAdoptionSection serverId={serverId} providerId={providerId} />
+      {/* A failure in the adoption section must never take the Codex sign-in panel down. */}
+      <OptionalSectionBoundary name="CodexAdoption">
+        <CodexAdoptionSection serverId={serverId} providerId={providerId} />
+      </OptionalSectionBoundary>
     </View>
   );
 }

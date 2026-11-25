@@ -71,6 +71,11 @@ const AdoptionRecordSchema = z.strictObject({
    * SHA-256 of the workspace and person the Host was signed in as when the owner set this up.
    * Every projection must match it; a different person waits for the owner. Never raw IDs.
    */
+  /**
+   * The earliest time Dev may have saved a copy that still exists, carried across re-confirmed
+   * adoptions so the retention cap stays absolute. Absent means projectedAt, then startedAt.
+   */
+  copySavedSince: Counter.nullable().optional(),
   /** Past the retention cap, the plain reason the saved copy on Dev could not be deleted. */
   copyDeleteBlocked: z.string().max(300).nullable().optional(),
   hostIdentityDigest: z
@@ -124,7 +129,7 @@ const HOLDING: ReadonlySet<CodexAdoptionStatus> = new Set([
 ]);
 
 export const IDENTITY_CHANGED =
-  "The Host is now signed in as a different person than when this was set up. Confirm to use the new sign-in on Dev, or sign the Host in again as the original account.";
+  "The Host is now signed in as a different person than when this was set up. Confirm to use the new sign-in on Dev, or sign the Host in again as the original account. If you confirm, stopping later still puts back the original Dev sign-in.";
 
 export const ACTIVE_DEV_SESSION = "A Dev session is using this account. Stop it, then try again.";
 
@@ -435,7 +440,8 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
       (record.projectedAt === null && !HELD_COPY.has(record.status))
     )
       return record;
-    const cap = (record.projectedAt ?? record.startedAt) + rule.capDays * DAY_MS;
+    const cap =
+      (record.copySavedSince ?? record.projectedAt ?? record.startedAt) + rule.capDays * DAY_MS;
     const proven =
       record.provenAt === null
         ? Number.POSITIVE_INFINITY
@@ -586,7 +592,20 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
             status: "failed",
             error: check.reason,
           });
-        const record = save({ ...fresh(definitionId, check.binding), status: "verifying-host" });
+        // A copy an earlier record saved may still be on Dev: its cap keeps counting from then.
+        const copySavedSince =
+          previous &&
+          previous.target !== null &&
+          previous.restored === null &&
+          previous.copyForgottenAt === null &&
+          HELD_COPY.has(previous.status)
+            ? (previous.copySavedSince ?? previous.projectedAt ?? previous.startedAt)
+            : null;
+        const record = save({
+          ...fresh(definitionId, check.binding),
+          status: "verifying-host",
+          copySavedSince,
+        });
         const next = await step(record);
         if (next.status === "projecting") await deps.refresher.reconcile();
         return find(definitionId) ?? next;
