@@ -742,6 +742,59 @@ describe("ClaudeAgentSession features", () => {
   }
 
   // #659 review: agent-controlled reason, path and title text is flattened and capped on the card.
+  // #659: each family of Claude Code's dangerous-removal reason (claude.exe 2.1.321). A check
+  // that could not tell the target gets the "could not rule out" sentence; a known dangerous
+  // target is never softened and keeps Claude Code's own words and path.
+  const UNRESOLVED =
+    "Claude Code's safety check stopped this command because it could not rule out that it deletes files. Bypass mode does not skip this check.";
+  const KNOWN =
+    "Claude Code's safety check stopped this command because it would remove a dangerous target. Bypass mode does not skip this check.";
+  test.each([
+    [
+      "Dangerous rm operation on statically-unresolvable target: /tmp/x/*",
+      `${UNRESOLVED} Path: /tmp/x/*`,
+    ],
+    [
+      "Dangerous rmdir operation on statically-unresolvable target: command substitution output",
+      `${UNRESOLVED} Path: command substitution output`,
+    ],
+    [
+      "Dangerous rm operation not ruled out \u2014 the shell may read this command differently than it was parsed",
+      UNRESOLVED,
+    ],
+    [
+      "Dangerous rm operation not ruled out \u2014 too many command substitutions to analyze (12)",
+      UNRESOLVED,
+    ],
+    ["This shell -c script runs rm and could not be checked", UNRESOLVED],
+    [
+      "Dangerous rm operation on critical path: /etc",
+      `${KNOWN} Dangerous rm operation on critical path: /etc`,
+    ],
+    [
+      "Dangerous rm operation on working directory or its ancestor: /Users/vtn",
+      `${KNOWN} Dangerous rm operation on working directory or its ancestor: /Users/vtn`,
+    ],
+    [
+      "Dangerous rmdir operation on possibly-empty variable path: $DIR/build (use a literal path: when the expansion is empty this removes /build)",
+      `${KNOWN} Dangerous rmdir operation on possibly-empty variable path: $DIR/build (use a literal path: when the expansion is empty this removes /build)`,
+    ],
+    [
+      "Dangerous rm operation on drive root: \\",
+      `${KNOWN} Dangerous rm operation on drive root: \\`,
+    ],
+    [
+      "Dangerous rm operation on mounted drive path: /Volumes/Backup",
+      `${KNOWN} Dangerous rm operation on mounted drive path: /Volumes/Backup`,
+    ],
+    [
+      "Dangerous rm operation on a Windows path this check cannot place: C:x",
+      `${KNOWN} Dangerous rm operation on a Windows path this check cannot place: C:x`,
+    ],
+  ])("words the removal reason %s", (decisionReason, expected) => {
+    expect(describeClaudePermissionReason({ decisionReason })).toBe(expected);
+  });
+
   test("flattens and caps the worded permission reason", () => {
     const longPath = `/tmp/${"a".repeat(400)}`;
     const removal = describeClaudePermissionReason({

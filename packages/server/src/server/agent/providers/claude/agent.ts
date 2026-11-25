@@ -1301,8 +1301,14 @@ function resolvePermissionKind(
 // reason in these forms (claude.exe 2.1.321, measured through the SDK's canUseTool options; no
 // structured field names the check). This loose match only words the card. Never use it to
 // decide a permission: a decision needs its own fully anchored, per-phrasing match.
-const CLAUDE_DANGEROUS_REMOVAL_DISPLAY_REASON =
-  /^(?:Dangerous rm operation\b|This shell -c script runs rm and could not be checked$)/;
+// The check could not tell what the removal targets: an unresolvable target, a command it
+// could not fully analyse, or a shell -c script it could not read.
+const CLAUDE_REMOVAL_UNRESOLVED_DISPLAY_REASON =
+  /^(?:Dangerous (?:rm|rmdir) operation (?:on statically-unresolvable target: |not ruled out \u2014 )|This shell -c script runs rm and could not be checked$)/;
+// The check knows the target and it is dangerous: a critical path, the working directory or an
+// ancestor, a variable that may be empty, a drive root, a mounted drive or an unplaceable path.
+const CLAUDE_REMOVAL_KNOWN_TARGET_DISPLAY_REASON =
+  /^Dangerous (?:rm|rmdir) operation on (?:critical path|working directory or its ancestor|possibly-empty variable path|drive root|mounted drive path|a Windows path this check cannot place)\b/;
 const CLAUDE_SHELL_SCRIPT_DENY_REASON =
   /^A permission rule denies a command in this shell -c script$/;
 const CLAUDE_REASON_TARGET = /\btarget: ([\s\S]+)$/;
@@ -1313,6 +1319,8 @@ const MAX_PATH_LENGTH = 200;
 
 export const CLAUDE_DANGEROUS_REMOVAL_DESCRIPTION =
   "Claude Code's safety check stopped this command because it could not rule out that it deletes files. Bypass mode does not skip this check.";
+export const CLAUDE_KNOWN_REMOVAL_DESCRIPTION =
+  "Claude Code's safety check stopped this command because it would remove a dangerous target. Bypass mode does not skip this check.";
 export const CLAUDE_ASK_RULE_DESCRIPTION =
   "One of your permission rules asks before this command runs.";
 export const CLAUDE_SHELL_SCRIPT_DENY_DESCRIPTION =
@@ -1337,7 +1345,11 @@ export function describeClaudePermissionReason(options: {
   const reason = options.decisionReason?.replace(ANSI_ESCAPE, "").trim();
   if (!reason) return undefined;
   if (CLAUDE_SHELL_SCRIPT_DENY_REASON.test(reason)) return CLAUDE_SHELL_SCRIPT_DENY_DESCRIPTION;
-  if (!CLAUDE_DANGEROUS_REMOVAL_DISPLAY_REASON.test(reason)) {
+  // A known dangerous target is never softened: Claude Code's own words, path included.
+  if (CLAUDE_REMOVAL_KNOWN_TARGET_DISPLAY_REASON.test(reason)) {
+    return `${CLAUDE_KNOWN_REMOVAL_DESCRIPTION} ${flattenPromptText(reason, MAX_REASON_LENGTH)}`;
+  }
+  if (!CLAUDE_REMOVAL_UNRESOLVED_DISPLAY_REASON.test(reason)) {
     return flattenPromptText(reason, MAX_REASON_LENGTH);
   }
   // The path comes from the agent's command, so it is flattened and capped like the reason.
