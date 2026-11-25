@@ -5,6 +5,7 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -24,6 +25,7 @@ import { createCodexAccount } from "../../../services/provider-login/create-acco
 import { mountCodexSignInConsumer } from "./codex-signin-consumer.js";
 import { codexProjectionDigest } from "./codex-signin-delivery.js";
 import { CodexRefreshLeases } from "./codex-signin-lease.js";
+import { codexSignInKeyDigest } from "./codex-signin-identity.js";
 
 const PASSWORD = "synthetic-password";
 const cleanups: Array<() => Promise<void>> = [];
@@ -399,6 +401,7 @@ async function legacyFixture(
     store,
     inUse,
     authFile,
+    scope,
     legacy,
     exclude: () => {
       excluded = true;
@@ -539,15 +542,31 @@ it("replaces only a same-account sign-in or its own projection in a legacy home"
   }
 });
 
-it("refuses a legacy home that changed or that another binding now points at", async () => {
+it("knows a legacy home by its path and refuses another account's or a shared one", async () => {
   const f = await legacyFixture();
   const target = await f.pin();
-  // Replaced by a different directory at the same path: pending until the owner confirms.
-  renameSync(f.home, `${f.home}-moved`);
-  mkdirSync(f.home, { mode: 0o700 });
-  const moved = await f.project(target, { generation: 1, rotation: 1 }, access("synthetic-a"));
-  expect(moved).toMatchObject({ status: 409, body: { reason: "target_changed" } });
-  expect(existsSync(f.authFile)).toBe(false);
+  // The inode changes at the same path, as on Dev's virtiofs mount: delivery continues.
+  const drifted = { ...target, ino: String(BigInt(target.ino) + 1n) };
+  const first = await f.project(drifted, { generation: 1, rotation: 1 }, access("synthetic-a"));
+  expect(first.status).toBe(200);
+  expect((await f.legacy("inspect")).body).toEqual({ target, signIn: "projection" });
+  // Another adopted account's folder moved to this path holds a projection written for that
+  // account: it is not replaced, apart from its own delivery journal refusing the scope.
+  const r = await legacyFixture();
+  const second = r.scope("codex-secondary", `account/${ACCOUNT_2}`);
+  const targetB = await r.pin(second);
+  const slot = { generation: 1, rotation: 1 };
+  expect((await r.project(targetB, slot, access("synthetic-b"), true, second)).status).toBe(200);
+  renameSync(r.home, `${r.home}-moved`);
+  renameSync(r.homeB, r.home);
+  rmSync(join(r.home, ".vorteo-signin", "projection.json"));
+  const renamed = { realpath: r.home };
+  const foreign = await r.project(renamed, slot, access("synthetic-a"));
+  expect(foreign).toMatchObject({ status: 409, body: { reason: "existing_sign_in" } });
+  expect(JSON.parse(r.readAuth()).tokens.access_token).toBe("synthetic-b");
+  // Unless it holds a sign-in of the same person, as any home may.
+  r.write(localSignIn("workspace-1"));
+  expect((await r.project(renamed, slot, access("synthetic-a"))).status).toBe(200);
   // Substitution: another account's binding is redirected to the adopted home.
   const g = await legacyFixture();
   const pinned = await g.pin();
@@ -582,6 +601,20 @@ it("withdraws only its projection, restores the saved sign-in untested and honou
   expect(existsSync(f.copy())).toBe(false);
   expect((await f.project(target, { generation: 4, rotation: 0 }, null)).status).toBe(200);
   expect((await f.legacy("restore", { target })).body).toEqual({ restored: false });
+  // A saved sign-in is put back only for a person the coordinator names.
+  f.write(local);
+  expect(
+    (await f.project(target, { generation: 4, rotation: 1 }, access("synthetic"))).status,
+  ).toBe(200);
+  expect((await f.project(target, { generation: 4, rotation: 2 }, null)).status).toBe(200);
+  const someoneElse = codexSignInKeyDigest("workspace-1", personToken("person-2"))!;
+  expect((await f.legacy("restore", { target, persons: [someoneElse] })).status).toBe(409);
+  expect(existsSync(f.authFile)).toBe(false);
+  const owner = codexSignInKeyDigest("workspace-1", ID_TOKEN)!;
+  expect((await f.legacy("restore", { target, persons: [owner] })).body).toMatchObject({
+    restored: true,
+  });
+  rmSync(f.authFile);
   // With retention `none`, nothing is saved at all.
   f.write(local);
   expect(
@@ -596,11 +629,33 @@ it("withdraws only its projection, restores the saved sign-in untested and honou
   ).toBe(200);
   expect(existsSync(f.copy())).toBe(true);
   f.store.replaceProviderEnv("codex-primary", { CODEX_HOME: f.homeB });
-  const wrong = { ...target, ino: String(BigInt(target.ino) + 1n) };
-  expect((await f.legacy("forget-copy", { target: wrong })).status).toBe(409);
-  expect(existsSync(f.copy())).toBe(true);
-  expect((await f.legacy("forget-copy", { target })).body).toEqual({ forgotten: true });
+  // Found by its real path even after the folder's inode drifted, so the entry never sticks.
+  const drifted = { ...target, ino: String(BigInt(target.ino) + 1n) };
+  expect((await f.legacy("forget-copy", { target: drifted })).body).toEqual({ forgotten: true });
   expect(existsSync(f.copy())).toBe(false);
+  // A state folder that is a symbolic link refuses, and nothing it points at is deleted.
+  const elsewhere = join(f.root, "elsewhere");
+  mkdirSync(elsewhere, { mode: 0o700 });
+  writeFileSync(join(elsewhere, "local-sign-in.json"), "{}", { mode: 0o600 });
+  rmSync(join(f.home, ".vorteo-signin"), { recursive: true });
+  symlinkSync(elsewhere, join(f.home, ".vorteo-signin"));
+  expect((await f.legacy("forget-copy", { target })).status).toBe(409);
+  expect(existsSync(join(elsewhere, "local-sign-in.json"))).toBe(true);
+  // A folder whose state another account now owns holds that account's copy: left alone.
+  const g = await legacyFixture();
+  const second = g.scope("codex-secondary", `account/${ACCOUNT_2}`);
+  writeFileSync(join(g.homeB, "auth.json"), JSON.stringify(local), { mode: 0o600 });
+  const targetB = await g.pin(second);
+  const slot = { generation: 1, rotation: 1 };
+  expect((await g.project(targetB, slot, access("synthetic"), true, second)).status).toBe(200);
+  const copyB = join(g.homeB, ".vorteo-signin", "local-sign-in.json");
+  expect(existsSync(copyB)).toBe(true);
+  expect((await g.legacy("forget-copy", { target: targetB })).body).toEqual({ forgotten: true });
+  expect(existsSync(copyB)).toBe(true);
+  expect((await g.legacy("forget-copy", { target: targetB }, second)).body).toEqual({
+    forgotten: true,
+  });
+  expect(existsSync(copyB)).toBe(false);
 });
 
 it("leases a Host account unless a session starts or runs a turn on it, for at most 30 s", async () => {

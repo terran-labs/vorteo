@@ -1,8 +1,8 @@
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { isDeepStrictEqual } from "node:util";
 import type { ErrorRequestHandler, Express, Response } from "express";
+import type { Logger } from "pino";
 import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
 import { ProviderOverrideSchema } from "@getpaseo/protocol/provider-config";
 import type { DaemonConfigStore } from "../../daemon-config-store.js";
@@ -32,10 +32,12 @@ import {
 import type { CodexRefreshLeases } from "./codex-signin-lease.js";
 import {
   forgetLegacyCodexSignIn,
+  inspectLegacyCodexHome,
   pinCodexHome,
   restoreLegacyCodexSignIn,
   sharesCodexHome,
   writeLegacyCodexProjection,
+  type PinnedCodexHome,
 } from "./codex-signin-legacy-home.js";
 import { HostProjectionRefusal } from "./host-owned-projection.js";
 
@@ -49,6 +51,7 @@ interface ConsumerOptions {
   providerInUse?(providerId: string): boolean;
   /** The daemon's environment, for the CODEX_HOME a provider without its own inherits. Tests. */
   daemonEnv?: NodeJS.ProcessEnv;
+  logger?: Logger;
 }
 
 const MANAGED_PROVIDER_ID =
@@ -210,7 +213,7 @@ export function mountCodexSignInConsumer(app: Express, options: ConsumerOptions)
 
   /**
    * The directory a `forget-copy` request may clear: a legacy Codex definition of this
-   * installation, and a directory that still pins exactly to the recorded target. The current
+   * installation, and a directory that still pins at the recorded real path. The current
    * binding and other providers do not matter, because only the backup file is removed.
    */
   async function authorizeForget(
@@ -231,15 +234,42 @@ export function mountCodexSignInConsumer(app: Express, options: ConsumerOptions)
       definition.accountSetup !== undefined
     )
       throw new CodexSignInDeliveryError();
-    let current: CodexLegacyTarget;
+    let current: PinnedCodexHome;
     try {
       current = pinCodexHome(request.target.realpath);
     } catch {
       throw new HostProjectionRefusal("target_changed");
     }
-    if (!isDeepStrictEqual(current, request.target))
-      throw new HostProjectionRefusal("target_changed");
+    if (!samePinnedHome(current, request.target)) throw new HostProjectionRefusal("target_changed");
     return current.realpath;
+  }
+
+  /** The last device and inode seen at each adopted path, so each change is logged once. */
+  const observed = new Map<string, string>();
+
+  /**
+   * Whether a fresh pin is still the adopted home. Its real path is its identity: on a virtiofs
+   * mount the device and inode change without any change to the directory. A change is logged,
+   * so drift stays visible; the path and numbers are the only details.
+   */
+  function samePinnedHome(current: PinnedCodexHome, target: CodexLegacyTarget): boolean {
+    if (current.realpath !== target.realpath) return false;
+    const seen = `${current.dev}:${current.ino}`;
+    const drifted =
+      target.dev !== undefined &&
+      target.ino !== undefined &&
+      (target.dev !== current.dev || target.ino !== current.ino);
+    if (drifted && observed.get(current.realpath) !== seen)
+      options.logger?.warn(
+        {
+          path: current.realpath,
+          pinned: { dev: target.dev, ino: target.ino },
+          current: { dev: current.dev, ino: current.ino },
+        },
+        "Adopted Codex home's device or inode changed at the same path",
+      );
+    observed.set(current.realpath, seen);
+    return true;
   }
 
   /**
@@ -259,7 +289,7 @@ export function mountCodexSignInConsumer(app: Express, options: ConsumerOptions)
   function homeInUse(providerId: string, home: string): boolean {
     if (!options.providerInUse) throw new CodexSignInDeliveryError();
     if (options.providerInUse(providerId)) return true;
-    let target: CodexLegacyTarget;
+    let target: PinnedCodexHome;
     try {
       target = pinCodexHome(home);
     } catch {
@@ -274,17 +304,23 @@ export function mountCodexSignInConsumer(app: Express, options: ConsumerOptions)
     );
   }
 
-  /** The adopted home, only while it is still exactly the directory the owner adopted. */
+  /** The adopted home, only while it is still the directory the owner adopted and unshared. */
   function pinnedHome(providerId: string, home: string, target: CodexLegacyTarget): string {
-    let current: CodexLegacyTarget;
+    let current: PinnedCodexHome;
     try {
       current = pinCodexHome(home);
     } catch {
       throw new HostProjectionRefusal("target_changed");
     }
-    if (!isDeepStrictEqual(current, target) || sharesCodexHome(current, otherHomes(providerId)))
+    if (!samePinnedHome(current, target) || sharesCodexHome(current, otherHomes(providerId)))
       throw new HostProjectionRefusal("target_changed");
     return current.realpath;
+  }
+
+  /** The definition a home's delivery journal names, or null without a readable journal. */
+  function journalDefinition(home: string): string | null {
+    const value = readClaudeSetupFile(join(home, CODEX_SIGNIN_STATE_DIRECTORY, "projection.json"));
+    return CodexSignInProjectionReceiptSchema.safeParse(value).data?.definitionId ?? null;
   }
 
   function consumerFor(providerId: string, home: string): CodexSignInProjectionService {
@@ -313,6 +349,8 @@ export function mountCodexSignInConsumer(app: Express, options: ConsumerOptions)
     const existing = consumers.get(key);
     if (existing) return existing;
     const journal = join(home, CODEX_SIGNIN_STATE_DIRECTORY, "projection.json");
+    // The journal as it was before the delivery being applied; the service reads it once each.
+    let previousDefinition: string | null = null;
     const consumer = new CodexSignInProjectionService({
       authorize: async (value) => {
         if (!value.adoption) throw new CodexSignInDeliveryError();
@@ -323,11 +361,15 @@ export function mountCodexSignInConsumer(app: Express, options: ConsumerOptions)
       },
       read: () => {
         const value = readClaudeSetupFile(journal);
-        return value === null ? null : CodexSignInProjectionReceiptSchema.parse(value);
+        const receipt = value === null ? null : CodexSignInProjectionReceiptSchema.parse(value);
+        previousDefinition = receipt?.definitionId ?? null;
+        return receipt;
       },
       persist: (receipt) => writeClaudeSetupFile(journal, receipt),
       store: async (access, delivery) =>
         writeLegacyCodexProjection(home, access, {
+          definitionId: delivery.definitionId,
+          journalDefinition: previousDefinition,
           keepLocalSignIn: delivery.adoption?.keepLocalSignIn === true,
         }),
     });
@@ -405,17 +447,25 @@ export function mountCodexSignInConsumer(app: Express, options: ConsumerOptions)
           // Retention holds in every adoption state, also after a rebind or a changed home, so
           // the saved copy is found by the pinned directory's identity, not by today's binding.
           // Deleting this coordinator-owned backup cannot affect any sign-in in use.
-          forgetLegacyCodexSignIn(await authorizeForget(request));
+          forgetLegacyCodexSignIn(await authorizeForget(request), request.definitionId);
           res.json({ forgotten: true });
           return;
         }
         const { excluded, home } = await authorizeLegacy(request);
-        if (request.operation === "pin") {
+        if (request.operation === "pin" || request.operation === "inspect") {
           if (excluded) throw new CodexSignInDeliveryError();
           const target = pinCodexHome(home);
           if (sharesCodexHome(target, otherHomes(request.providerId)))
             throw new CodexSignInDeliveryError();
-          res.json({ target });
+          if (request.operation === "pin") {
+            res.json({ target });
+            return;
+          }
+          const signIn = inspectLegacyCodexHome(target.realpath, {
+            definitionId: request.definitionId,
+            journalDefinition: journalDefinition(target.realpath),
+          });
+          res.json({ target, signIn });
           return;
         }
         if (request.operation === "sessions") {
@@ -424,7 +474,12 @@ export function mountCodexSignInConsumer(app: Express, options: ConsumerOptions)
         }
         // Restore acts on Dev's own saved sign-in, also in an excluded binding.
         const pinned = pinnedHome(request.providerId, home, request.target);
-        res.json(restoreLegacyCodexSignIn(pinned, Date.now()));
+        res.json(
+          restoreLegacyCodexSignIn(pinned, Date.now(), {
+            definitionId: request.definitionId,
+            persons: request.persons,
+          }),
+        );
       } catch (error) {
         refuse(res, error);
       }
