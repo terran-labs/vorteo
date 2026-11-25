@@ -277,7 +277,15 @@ const ACCOUNT_2 = randomUUID();
 const LEGACY_ID = `account/${ACCOUNT_1}`;
 
 /** A legacy Dev binding with its own CODEX_HOME, as before the installation managed Codex. */
-async function legacyFixture(options: { otherHome?: (home: string) => string } = {}) {
+async function legacyFixture(
+  options: {
+    otherHome?: (home: string) => string;
+    /** The Dev daemon's own environment, which providers without CODEX_HOME inherit. */
+    daemonEnv?: (home: string) => NodeJS.ProcessEnv;
+    /** Providers that inherit a CODEX_HOME through `extends` instead of setting their own. */
+    inheriting?: Record<string, string>;
+  } = {},
+) {
   const root = realpathSync(await temporary("codex-legacy-"));
   const paseoHome = join(root, "paseo");
   const home = join(root, "codex-primary");
@@ -305,6 +313,12 @@ async function legacyFixture(options: { otherHome?: (home: string) => string } =
         "Codex 2",
         options.otherHome ? options.otherHome(home) : homeB,
         ACCOUNT_2,
+      ),
+      ...Object.fromEntries(
+        Object.entries(options.inheriting ?? {}).map(([id, parent]) => [
+          id,
+          { extends: parent, label: id },
+        ]),
       ),
     },
     sharedProviderPreferences: {
@@ -349,6 +363,8 @@ async function legacyFixture(options: { otherHome?: (home: string) => string } =
     paseoHome,
     store,
     providerInUse: (id) => inUse.has(id),
+    // Codex's default home lies outside the fixture unless a case puts it on the adopted home.
+    daemonEnv: options.daemonEnv?.(home) ?? { HOME: join(root, "daemon-home") },
     codexRefreshLeases: new CodexRefreshLeases({
       activity: (id) => (inUse.has(id) ? "busy" : "none"),
     }),
@@ -438,6 +454,21 @@ it("pins an adopted legacy home only through real, unshared directories", async 
   // Two bindings that resolve to one directory are refused.
   const shared = await legacyFixture({ otherHome: (home) => home });
   expect((await shared.legacy("pin")).status).toBe(409);
+  // The built-in provider and any provider without its own CODEX_HOME use the daemon's
+  // CODEX_HOME, or ~/.codex: when that is the adopted home, it is shared too.
+  for (const daemonEnv of [
+    (home: string) => ({ CODEX_HOME: home }),
+    (home: string) => ({ HOME: join(home, ".."), CODEX_HOME: "" }),
+  ]) {
+    const implicit = await legacyFixture({ daemonEnv });
+    if (!daemonEnv(implicit.home).CODEX_HOME)
+      renameSync(implicit.home, join(implicit.root, ".codex"));
+    const adopted = daemonEnv(implicit.home).CODEX_HOME
+      ? implicit.home
+      : join(implicit.root, ".codex");
+    implicit.store.replaceProviderEnv("codex-primary", { CODEX_HOME: adopted });
+    expect((await implicit.legacy("pin")).status).toBe(409);
+  }
   // Excluded on Dev: nothing is pinned.
   const excluded = await legacyFixture();
   excluded.exclude();
@@ -449,6 +480,15 @@ it("reports whether a Dev session uses the legacy binding", async () => {
   expect((await f.legacy("sessions")).body).toEqual({ active: false });
   f.inUse.add("codex-primary");
   expect((await f.legacy("sessions")).body).toEqual({ active: true });
+  // A session on a provider that inherits the adopted home through `extends` uses it too.
+  const inherited = await legacyFixture({ inheriting: { "codex-alias": "codex-primary" } });
+  expect((await inherited.legacy("sessions")).body).toEqual({ active: false });
+  inherited.inUse.add("codex-alias");
+  expect((await inherited.legacy("sessions")).body).toEqual({ active: true });
+  // So does one on the built-in provider when the daemon's CODEX_HOME is the adopted home.
+  const builtIn = await legacyFixture({ daemonEnv: (home) => ({ CODEX_HOME: home }) });
+  builtIn.inUse.add("codex");
+  expect((await builtIn.legacy("sessions")).body).toEqual({ active: true });
 });
 
 it("replaces only a same-account sign-in or its own projection in a legacy home", async () => {

@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises";
+import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { ErrorRequestHandler, Express, Response } from "express";
@@ -6,6 +7,7 @@ import type { InstallationProvider } from "@getpaseo/protocol/installation-provi
 import { ProviderOverrideSchema } from "@getpaseo/protocol/provider-config";
 import type { DaemonConfigStore } from "../../daemon-config-store.js";
 import { createCodexAccount } from "../../../services/provider-login/create-account.js";
+import { launchCodexHome } from "../../agent/create-agent/create.js";
 import { readClaudeSetupFile, writeClaudeSetupFile } from "./claude-setup-file.js";
 import { secureAccountHome } from "./claude-setup-consumer.js";
 import {
@@ -45,6 +47,8 @@ interface ConsumerOptions {
   codexRefreshLeases?: CodexRefreshLeases;
   /** Whether an agent session, or one being started, uses this provider ID. */
   providerInUse?(providerId: string): boolean;
+  /** The daemon's environment, for the CODEX_HOME a provider without its own inherits. Tests. */
+  daemonEnv?: NodeJS.ProcessEnv;
 }
 
 const MANAGED_PROVIDER_ID =
@@ -169,13 +173,71 @@ export function mountCodexSignInConsumer(app: Express, options: ConsumerOptions)
     return { excluded, home };
   }
 
-  /** Every other configured CODEX_HOME, to refuse two bindings that share one directory. */
-  function otherHomes(providerId: string): string[] {
-    return Object.entries(options.store.get().providers).flatMap(([id, provider]) => {
-      const parsed = ProviderOverrideSchema.safeParse(provider);
-      const home = parsed.success ? parsed.data.env?.CODEX_HOME : undefined;
-      return id !== providerId && parsed.success && !parsed.data.removed && home ? [home] : [];
+  /** The built-in provider an `extends` chain ends at, or null for a cycle. */
+  function rootProvider(providers: Record<string, unknown>, providerId: string): string | null {
+    const visited = new Set<string>();
+    let current = providerId;
+    while (!visited.has(current)) {
+      visited.add(current);
+      const parsed = ProviderOverrideSchema.safeParse(providers[current]);
+      const next = parsed.success ? parsed.data.extends : undefined;
+      if (!next) return current;
+      current = next;
+    }
+    return null;
+  }
+
+  /**
+   * Every Codex provider ID on this daemon, the built-in `codex` included, with the CODEX_HOME
+   * its sessions launch with: its own, the nearest one along its `extends` chain, the daemon's
+   * CODEX_HOME, or Codex's default `~/.codex`, the same resolution a launch uses.
+   */
+  function codexLaunchHomes(): Array<{ providerId: string; home: string }> {
+    const providers = options.store.get().providers ?? {};
+    const env = options.daemonEnv ?? process.env;
+    const fallback = join(env.HOME || homedir(), ".codex");
+    return [...new Set(["codex", ...Object.keys(providers)])].flatMap((providerId) => {
+      const configured = providers[providerId];
+      if (configured !== undefined) {
+        const parsed = ProviderOverrideSchema.safeParse(configured);
+        if (!parsed.success || parsed.data.removed) return [];
+      }
+      if (rootProvider(providers, providerId) !== "codex") return [];
+      const home = launchCodexHome("codex", { providers }, providerId, env) || fallback;
+      return [{ providerId, home }];
     });
+  }
+
+  /**
+   * Every other Codex provider's launch home, to refuse two bindings that share one directory.
+   * This includes homes a provider only inherits, such as the built-in provider's `~/.codex`.
+   */
+  function otherHomes(providerId: string): string[] {
+    return codexLaunchHomes().flatMap((item) =>
+      item.providerId === providerId ? [] : [item.home],
+    );
+  }
+
+  /**
+   * Whether any session uses the adopted home: on the binding itself, or on any other Codex
+   * provider ID whose launch home is the same directory.
+   */
+  function homeInUse(providerId: string, home: string): boolean {
+    if (!options.providerInUse) throw new CodexSignInDeliveryError();
+    if (options.providerInUse(providerId)) return true;
+    let target: CodexLegacyTarget;
+    try {
+      target = pinCodexHome(home);
+    } catch {
+      // An unpinnable home cannot be adopted; count it as busy rather than guess.
+      return true;
+    }
+    return codexLaunchHomes().some(
+      (item) =>
+        item.providerId !== providerId &&
+        sharesCodexHome(target, [item.home]) &&
+        options.providerInUse!(item.providerId),
+    );
   }
 
   /** The adopted home, only while it is still exactly the directory the owner adopted. */
@@ -315,8 +377,7 @@ export function mountCodexSignInConsumer(app: Express, options: ConsumerOptions)
           return;
         }
         if (request.operation === "sessions") {
-          if (!options.providerInUse) throw new CodexSignInDeliveryError();
-          res.json({ active: options.providerInUse(request.providerId) });
+          res.json({ active: homeInUse(request.providerId, home) });
           return;
         }
         // Restore and retention act on Dev's own saved sign-in, also in an excluded binding.
