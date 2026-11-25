@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -57,15 +57,10 @@ test("starts empty on a damaged or unreadable store and forgets a dismissal it c
     [],
   );
   expect(warnings).toHaveLength(2);
-  if (process.platform === "win32") return;
-  const readOnly = mkdtempSync(path.join(tmpdir(), "health-dismissals-"));
-  roots.push(readOnly);
-  const store = await HealthDismissalStore.open(readOnly, { lookup, warn });
-  chmodSync(readOnly, 0o500);
-  try {
-    await expect(store.dismiss({ queue: "restart", id: "failed" })).rejects.toThrow();
-    expect(store.list().dismissals).toEqual([]);
-  } finally {
-    chmodSync(readOnly, 0o700);
-  }
+  // A store whose directory is a regular file cannot save anything.
+  const blocked = path.join(damaged, "not-a-directory");
+  writeFileSync(blocked, "");
+  const store = await HealthDismissalStore.open(blocked, { lookup, warn });
+  await expect(store.dismiss({ queue: "restart", id: "failed" })).rejects.toThrow();
+  expect(store.list().dismissals).toEqual([]);
 });
