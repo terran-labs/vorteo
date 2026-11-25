@@ -7,4 +7,4 @@
 
 ## Maintenance review
 
-Issue #638, stacked on #641. Interface only: new routes for the Sample Factory and Factory settings, no daemon or wire changes. The remembered Sample choice is no longer read. The Factory overview browser spec now covers the Sample Factory scope, All Factories without sample data, and changing a stage model in settings and changing it back. Updated the Factory Overview inventory entry; README overview and onboarding are unchanged.
+Issue #638, stacked on #641. Interface only: new routes for the Sample Factory and Factory settings, no daemon or wire changes. The remembered Sample choice is no longer read. The Factory overview browser spec now covers the Sample Factory scope, All Factories without sample data, and changing a stage model in settings and changing it back, in a desktop-height window because the 520-pixel profile picker does not fit below the Plan row in a 720-pixel one. Updated the Factory Overview inventory entry; README overview and onboarding are unchanged.

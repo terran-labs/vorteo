@@ -93,6 +93,8 @@ test("a Factory's settings change a stage model and change it back", async ({ pa
   await seedPausedFactory(workspace.projectId);
   try {
     await client.patchDaemonConfig({ pluginsEnabled: true });
+    // The profile picker is 520 pixels tall; a desktop-height window fits it below the Plan row.
+    await page.setViewportSize({ width: 1280, height: 1000 });
     await page.goto(`/h/${getServerId()}/factory/${workspace.projectId}`);
     await page.getByTestId("factory-settings-open").filter({ visible: true }).first().click();
     await expect(page).toHaveURL(
@@ -102,6 +104,7 @@ test("a Factory's settings change a stage model and change it back", async ({ pa
     const plan = stages.getByTestId("preset-controls").first();
 
     await plan.getByTestId("agent-preset-selector").click();
+    await page.getByTestId("preset-account-mock").click();
     await page
       .locator('[data-testid^="preset-row-"]')
       .filter({ hasText: "E2E mock" })
