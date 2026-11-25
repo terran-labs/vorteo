@@ -52,6 +52,18 @@ export function useCodexAdoption(serverId: string | null, providerId: string) {
   return query;
 }
 
+/** States in which the Host's sign-in already reaches, or is reaching, Dev. */
+const USING_HOST = new Set(["projecting", "adopted"]);
+
+/**
+ * Whether this account can switch to the Host's sign-in now, which then is the dialog's one
+ * primary action and Dev's own sign-in a quiet alternative below it.
+ */
+export function useCodexSwitchOffered(serverId: string | null, providerId: string): boolean {
+  const entry = useCodexAdoption(serverId, providerId).data;
+  return Boolean(entry?.eligible) && !USING_HOST.has(entry?.adoption?.status ?? "");
+}
+
 /** Whether a Codex account row should offer its connection dialog for adoption. */
 export function useCodexAdoptionOffered(serverId: string | null, providerId: string): boolean {
   return Boolean(useCodexAdoption(serverId, providerId).data);
@@ -119,9 +131,14 @@ function sectionModel(
   const status = entry.adoption?.status;
   return {
     busy: pending || MOVING.has(status ?? ""),
-    // A failed record already states the coordinator's reason.
-    text: (status !== "failed" ? notice : null) ?? adoptionStatus(t, entry),
+    // A failed record already states the coordinator's reason; a reply that says more, such as
+    // the Dev threads that are running, is shown instead.
+    text:
+      (status !== "failed" || notice !== entry.adoption?.error ? notice : null) ??
+      adoptionStatus(t, entry),
     adoptText: entry.eligible ? adoptLabel(t, entry.adoption) : null,
+    // While the account can switch, switching is the dialog's one primary action.
+    primary: entry.eligible && !USING_HOST.has(status ?? ""),
     // A failure before Dev acknowledged any copy left Dev untouched: nothing to stop.
     canUnadopt:
       UNADOPTABLE.has(status ?? "") &&
@@ -287,6 +304,7 @@ export function CodexAdoptionSection({
       ) : null}
       <SectionActions
         adoptText={adoptText}
+        primary={model.primary}
         busy={busy}
         canUnadopt={canUnadopt}
         unadoptDisabled={unadoptDisabled}
@@ -300,6 +318,7 @@ export function CodexAdoptionSection({
 /** The section's footer: stop on the leading side, switch or retry on the trailing side. */
 function SectionActions({
   adoptText,
+  primary,
   busy,
   canUnadopt,
   unadoptDisabled,
@@ -307,6 +326,8 @@ function SectionActions({
   onUnadopt,
 }: {
   adoptText: string | null;
+  /** The dialog's one primary action, while the account can switch. */
+  primary: boolean;
   busy: boolean;
   canUnadopt: boolean;
   unadoptDisabled: boolean;
@@ -332,7 +353,7 @@ function SectionActions({
       ) : null}
       {adoptText ? (
         <Button
-          variant="outline"
+          variant={primary ? "default" : "outline"}
           onPress={onAdopt}
           disabled={busy}
           focusableWhenDisabled

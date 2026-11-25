@@ -19,6 +19,8 @@ export interface InstallationAccountConsumerOptions {
   providerSessionActivity(providerId: string): "busy" | "loaded" | "none";
   /** Whether an agent session, or one being started, uses this provider ID. */
   providerInUse(providerId: string): boolean;
+  /** Raw titles of the sessions on this provider that start or run a turn. */
+  providerBusyTitles(providerId: string): string[];
   logger: Logger;
 }
 
