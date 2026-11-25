@@ -3,6 +3,7 @@ import type { InstallationProvider } from "@getpaseo/protocol/installation-provi
 import type { CodexAdoptionRetention, InstallationConfig } from "../config.js";
 import type { InstallationSettingsService } from "../settings/service.js";
 import {
+  CodexLegacyInspectResponseSchema,
   CodexLegacyTargetSchema,
   CodexSignInDeliveryError,
   CodexSignInRefused,
@@ -23,7 +24,10 @@ import type { CodexSignInRefresher } from "./codex-signin-refresher.js";
  */
 
 const Counter = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const Digest = z.string().regex(/^[a-f0-9]{64}$/);
 const DAY_MS = 24 * 60 * 60_000;
+/** Saved copies one account may have on Dev at once, each in its own folder. */
+const MAX_COPIES = 8;
 
 export const CodexAdoptionStatusSchema = z.enum([
   "verifying-host",
@@ -38,15 +42,38 @@ export const CodexAdoptionStatusSchema = z.enum([
 ]);
 export type CodexAdoptionStatus = z.infer<typeof CodexAdoptionStatusSchema>;
 
-/** Secret-free: identifiers, a directory pin and times. No account ID, email or token. */
-const AdoptionRecordSchema = z.strictObject({
+/**
+ * A pinned Dev home as stored. Its real path is its identity; the device and inode Dev reported
+ * are kept for older Dev daemons, which still compare them.
+ */
+const StoredTargetSchema = z.looseObject({
+  realpath: CodexLegacyTargetSchema.shape.realpath,
+  dev: CodexLegacyTargetSchema.shape.dev,
+  ino: CodexLegacyTargetSchema.shape.ino,
+});
+type StoredTarget = z.infer<typeof StoredTargetSchema>;
+
+const CopySchema = z.looseObject({
+  target: StoredTargetSchema,
+  savedSince: Counter,
+  /** The person first projected into this folder, whose sign-in its copy saved. */
+  person: Digest.optional(),
+});
+type SavedCopy = z.infer<typeof CopySchema>;
+
+/**
+ * Secret-free: identifiers, a directory pin and times. No account ID, email or token. Read
+ * leniently and written back whole: fields from a newer coordinator survive a downgrade and
+ * upgrade, and every field added after the first release is optional.
+ */
+const AdoptionRecordSchema = z.looseObject({
   definitionId: z.string().min(1),
   status: CodexAdoptionStatusSchema,
   devServerId: z.string().min(1),
   /** Dev's binding as it is in settings. A different binding later cancels the adoption. */
   devProviderId: z.string().min(1),
   hostProviderId: z.string().min(1),
-  target: CodexLegacyTargetSchema.nullable(),
+  target: StoredTargetSchema.nullable(),
   startedAt: Counter,
   /** First projection Dev acknowledged. Retention's cap counts from here. */
   projectedAt: Counter.nullable(),
@@ -61,57 +88,62 @@ const AdoptionRecordSchema = z.strictObject({
   /** If the Host later needs sign-in, the installation's Host sign-in repairs Dev as well. */
   fallback: z.literal("host-sign-in"),
   /** After un-adopt: the restored local sign-in was not tested and may need a new sign-in. */
-  restored: z.strictObject({ copyAgeMs: Counter, mayNeedSignIn: z.literal(true) }).nullable(),
+  restored: z.looseObject({ copyAgeMs: Counter, mayNeedSignIn: z.literal(true) }).nullable(),
   /**
    * Un-adopted from a cancelled, failed or confirmation-pending record: nothing was withdrawn or
    * put back, so whatever is in Dev's home stays as it is. The app says so plainly.
    */
   restoreSkipped: z.literal(true).optional(),
   /**
-   * SHA-256 of the workspace and person the Host was signed in as when the owner set this up.
-   * Every projection must match it; a different person waits for the owner. Never raw IDs.
-   */
-  /**
    * Every pinned Dev directory this account was projected into whose saved copy may still exist,
-   * each with its own clock. Carried across records, so a re-switch into another directory, a
-   * failed retry or a refusal never drops one, and each copy is deleted at its own cap.
+   * one per real path, each with its own clock. Carried across records, so a re-switch into
+   * another directory, a failed retry or a refusal never drops one, and each copy is deleted at
+   * its own cap.
    */
-  copies: z
-    .array(z.strictObject({ target: CodexLegacyTargetSchema, savedSince: Counter }))
-    .max(8)
-    .optional(),
-  /** The person whose projection Dev's home holds, from the record that last projected. */
-  heldIdentityDigest: z
-    .string()
-    .regex(/^[a-f0-9]{64}$/)
-    .nullable()
-    .optional(),
+  copies: z.array(CopySchema).max(MAX_COPIES).optional(),
+  /** The person whose projection Dev's home holds, from Dev's first acknowledgement of it. */
+  heldIdentityDigest: Digest.nullable().optional(),
   /**
    * The person this record must find on the Host, carried from an earlier record whose Dev home
    * may still hold that person's projection. A different person waits for the owner.
    */
-  expectedIdentityDigest: z
-    .string()
-    .regex(/^[a-f0-9]{64}$/)
-    .nullable()
-    .optional(),
+  expectedIdentityDigest: Digest.nullable().optional(),
   /** The different person found on the Host, which the owner's confirmation accepts. */
-  pendingIdentityDigest: z
-    .string()
-    .regex(/^[a-f0-9]{64}$/)
-    .nullable()
-    .optional(),
+  pendingIdentityDigest: Digest.nullable().optional(),
   /** Past the retention cap, the plain reason the saved copy on Dev could not be deleted. */
   copyDeleteBlocked: z.string().max(300).nullable().optional(),
-  hostIdentityDigest: z
-    .string()
-    .regex(/^[a-f0-9]{64}$/)
-    .nullable()
-    .optional(),
+  /**
+   * SHA-256 of the workspace and person the Host was signed in as when the owner set this up.
+   * Every projection must match it; a different person waits for the owner. Never raw IDs.
+   */
+  hostIdentityDigest: Digest.nullable().optional(),
+  /**
+   * Why a record waits for the owner: `target_changed` or `identity_changed`. A string, so a
+   * reason a newer coordinator adds keeps the record readable. Only a changed folder resumes by
+   * itself; see resumable().
+   */
+  parkedReason: z.string().max(64).optional(),
   error: z.string().max(300).nullable(),
 });
 export type CodexAdoptionRecord = z.infer<typeof AdoptionRecordSchema>;
-export const CodexAdoptionJournalSchema = z.array(AdoptionRecordSchema);
+
+/** Just enough of a record that does not parse to keep honouring it. */
+const RecordOwnerSchema = z.object({ definitionId: z.string().min(1) });
+const RecordFolderSchema = z.object({ target: z.object({ realpath: z.string().startsWith("/") }) });
+
+/** A stored record this coordinator cannot read: kept verbatim and never delivered to. */
+interface UnreadableRecord {
+  raw: unknown;
+  definitionId: string | null;
+  realpath: string | null;
+}
+
+interface LoadedJournal {
+  records: CodexAdoptionRecord[];
+  unreadable: UnreadableRecord[];
+  /** False when the file itself is unreadable, so nothing may be written over it. */
+  intact: boolean;
+}
 
 const IN_PROGRESS: ReadonlySet<CodexAdoptionStatus> = new Set([
   "verifying-host",
@@ -131,23 +163,36 @@ const OUTSIDE_DELIVERY: ReadonlySet<CodexAdoptionStatus> = new Set([
   "unadopted",
   "cancelled",
 ]);
-function sameTarget(a: CodexLegacyTarget, b: CodexLegacyTarget): boolean {
-  return a.realpath === b.realpath && a.dev === b.dev && a.ino === b.ino;
+/** The same folder: a real path. Device and inode taken at different times can drift apart. */
+function sameTarget(a: StoredTarget, b: StoredTarget): boolean {
+  return a.realpath === b.realpath;
 }
 
-/** Adds a directory's copy once; an existing entry keeps its earlier clock. */
+/** The target as Dev's strict schema accepts it, without fields only this record keeps. */
+export function wireTarget(target: StoredTarget): CodexLegacyTarget {
+  return { realpath: target.realpath, dev: target.dev, ino: target.ino };
+}
+
+/**
+ * Adds a folder's copy once. Entries for the same real path merge and keep the earliest clock,
+ * so a recreated or drifted folder never restarts it.
+ */
 function withCopy(
-  copies: Array<{ target: CodexLegacyTarget; savedSince: number }> | undefined,
-  target: CodexLegacyTarget,
-  now: number,
-) {
+  copies: SavedCopy[] | undefined,
+  copy: { target: StoredTarget; savedSince: number; person: string },
+): SavedCopy[] {
   const list = copies ?? [];
-  if (list.some((item) => sameTarget(item.target, target))) return list;
-  return [...list, { target, savedSince: now }].slice(-8);
+  const same = list.filter((item) => sameTarget(item.target, copy.target));
+  if (same.length === 0) return [...list, copy];
+  const savedSince = Math.min(...same.map((item) => item.savedSince));
+  const others = list.filter((item) => !sameTarget(item.target, copy.target));
+  return [...others, { ...same[0]!, savedSince }];
 }
 
 /** Retention retries for records outside delivery wait this long after a failed attempt. */
 const RETENTION_RETRY_MS = 60 * 60_000;
+/** A paused record that could not resume tries again after this long. */
+const RESUME_RETRY_MS = 5 * 60_000;
 
 /** Records that hold a Dev home; two of them may never share one directory. */
 const HOLDING: ReadonlySet<CodexAdoptionStatus> = new Set([
@@ -163,18 +208,37 @@ export const IDENTITY_CHANGED =
 
 export const ACTIVE_DEV_SESSION = "A Dev session is using this account. Stop it, then try again.";
 
-export class CodexAdoptionBusy extends Error {
+/** Set by refused(); an earlier release parked with this same text and no reason. */
+const TARGET_CHANGED = "Dev's folder for this account changed. Confirm to try again.";
+
+export const TOO_MANY_FOLDERS =
+  "This account has sign-in backups in other Dev folders that have not been deleted yet. Try again once they are; each is deleted within 30 days.";
+
+/** A refusal whose fixed text the owner's routes pass on as it is. */
+export class CodexAdoptionRefusal extends Error {}
+
+export class CodexAdoptionBusy extends CodexAdoptionRefusal {
   constructor() {
     super("Another Codex account is switching to the Host's sign-in. Wait for it to finish.");
+  }
+}
+
+export const UNREADABLE_RECORD =
+  "This account's saved switch record could not be read, so nothing is changed. Update Vorteo, or ask for help if this stays.";
+
+export class CodexAdoptionUnreadable extends CodexAdoptionRefusal {
+  constructor() {
+    super(UNREADABLE_RECORD);
   }
 }
 
 /** A step that cannot succeed as things stand. Its message is the plain reason shown later. */
 class AdoptionRefused extends Error {}
 
+/** The stored records, unvalidated: adoption reads them one by one. read() may throw. */
 export interface CodexAdoptionJournal {
-  read(): CodexAdoptionRecord[];
-  write(records: CodexAdoptionRecord[]): void;
+  read(): unknown;
+  write(records: unknown[]): void;
 }
 
 /** What the coordinator needs from Dev's usage read for an adopted binding. */
@@ -194,6 +258,8 @@ export interface CodexAdoptionDeps {
   >;
   /** Throws when a daemon is unreachable; false when one lacks a required capability. */
   supported(): Promise<boolean>;
+  /** Whether Dev advertises `codexLegacyPinByPath`. Throws when Dev is unreachable. */
+  pinByPath(): Promise<boolean>;
   /** The Host binding's exact CODEX_HOME through the legacy binding route. */
   hostHome(definitionId: string, hostProviderId: string, revision: number): Promise<string>;
   /** Dev's legacy route. Throws CodexSignInRefused when Dev answers with a refusal. */
@@ -231,16 +297,61 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
     return task;
   }
 
+  /** Parses record by record, so one unreadable record never stops the others. Never throws. */
+  function load(): LoadedJournal {
+    let raw: unknown;
+    try {
+      raw = deps.journal.read();
+    } catch {
+      raw = undefined;
+    }
+    if (!Array.isArray(raw))
+      return {
+        records: [],
+        unreadable: [{ raw, definitionId: null, realpath: null }],
+        intact: false,
+      };
+    const records: CodexAdoptionRecord[] = [];
+    const unreadable: UnreadableRecord[] = [];
+    for (const item of raw) {
+      const parsed = AdoptionRecordSchema.safeParse(item);
+      if (parsed.success) records.push(parsed.data);
+      else
+        unreadable.push({
+          raw: item,
+          definitionId: RecordOwnerSchema.safeParse(item).data?.definitionId ?? null,
+          realpath: RecordFolderSchema.safeParse(item).data?.target.realpath ?? null,
+        });
+    }
+    return { records, unreadable, intact: true };
+  }
+
   function find(definitionId: string): CodexAdoptionRecord | undefined {
-    return deps.journal.read().find((item) => item.definitionId === definitionId);
+    return load().records.find((item) => item.definitionId === definitionId);
   }
 
   function save(record: CodexAdoptionRecord): CodexAdoptionRecord {
+    const journal = load();
+    if (!journal.intact) throw new CodexAdoptionUnreadable();
     deps.journal.write([
-      ...deps.journal.read().filter((item) => item.definitionId !== record.definitionId),
+      ...journal.unreadable.map((item) => item.raw),
+      ...journal.records.filter((item) => item.definitionId !== record.definitionId),
       record,
     ]);
     return record;
+  }
+
+  /**
+   * Whether an unreadable record stops this definition: its own, or one whose folder is unknown,
+   * which could be any folder. Un-adopt checks only the definition's own record.
+   */
+  function unreadableFor(definitionId: string, operation: "adopt" | "unadopt"): boolean {
+    const journal = load();
+    if (!journal.intact) return true;
+    return journal.unreadable.some(
+      (item) =>
+        item.definitionId === definitionId || (operation === "adopt" && item.realpath === null),
+    );
   }
 
   function selected(definitionId: string) {
@@ -364,6 +475,7 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
         ...record,
         status: "needs-owner-confirmation",
         error: IDENTITY_CHANGED,
+        parkedReason: "identity_changed",
         pendingIdentityDigest: hostIdentityDigest,
       });
     const pinning = save({ ...record, status: "pinning", hostIdentityDigest });
@@ -388,31 +500,40 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
       throw new AdoptionRefused(
         "Another account already uses this account's Dev folder. Nothing was changed.",
       );
+    const copies = withCopy(pinning.copies, {
+      target,
+      savedSince: deps.now(),
+      person: hostIdentityDigest,
+    });
+    if (copies.length > MAX_COPIES) throw new AdoptionRefused(TOO_MANY_FOLDERS);
     // Read once more: the Host file may have changed while Dev answered.
     const { identity, digest } = await verifyHost(pinning, deps.settings.snapshot().revision);
     if (digest !== hostIdentityDigest) throw new AdoptionRefused(IDENTITY_CHANGED);
-    const projecting = save({
-      ...pinning,
-      status: "projecting",
-      target,
-      copies: withCopy(pinning.copies, target, deps.now()),
-      heldIdentityDigest: hostIdentityDigest,
-    });
+    // The person Dev's home holds changes only once Dev acknowledges the projection.
+    const projecting = save({ ...pinning, status: "projecting", target, copies });
     await deps.refresher.connected(record.definitionId, identity);
     return projecting;
   }
 
-  function sharesDirectory(definitionId: string, target: CodexLegacyTarget): boolean {
-    return deps.journal
-      .read()
-      .some(
-        (other) =>
-          other.definitionId !== definitionId &&
-          HOLDING.has(other.status) &&
-          other.target !== null &&
-          (other.target.realpath === target.realpath ||
-            (other.target.dev === target.dev && other.target.ino === target.ino)),
-      );
+  /**
+   * Whether another record holds this folder, by real path: device and inode stored at different
+   * times can match by chance on virtiofs. An unreadable record counts whatever its state.
+   */
+  function sharesDirectory(definitionId: string, target: StoredTarget): boolean {
+    const journal = load();
+    const held = journal.records.some(
+      (other) =>
+        other.definitionId !== definitionId &&
+        HOLDING.has(other.status) &&
+        other.target !== null &&
+        sameTarget(other.target, target),
+    );
+    return (
+      held ||
+      journal.unreadable.some(
+        (other) => other.definitionId !== definitionId && other.realpath === target.realpath,
+      )
+    );
   }
 
   /** Whether settings still bind the account exactly as it was adopted. */
@@ -445,6 +566,7 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
       status: "adopted",
       projectedAt: deps.now(),
       projectedExpiresAt: status.expiresAt,
+      heldIdentityDigest: record.hostIdentityDigest ?? record.heldIdentityDigest,
     });
   }
 
@@ -475,13 +597,15 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
    * keeps its directory and its clock, whatever happened in between, so each cap stays
    * absolute. The person Dev's home holds, and the person the owner last accepted, are both
    * accepted again; the owner's confirmation from the different-person warning accepts the
-   * person it named. A restore gave Dev its own sign-in back, which the writer checks by itself.
+   * person it named. A restore gave Dev its own sign-in back, which the writer checks by itself,
+   * and an undo that withdrew the projection and restored nothing left no one's projection.
    */
   function carriedFacts(previous: CodexAdoptionRecord | undefined) {
     if (!previous) return {};
     const copies = previous.copies ?? [];
     const kept = copies.length > 0 ? { copies } : {};
-    if (previous.restored !== null) return kept;
+    const withdrawn = previous.status === "unadopted" && previous.restoreSkipped !== true;
+    if (previous.restored !== null || withdrawn) return kept;
     const held = previous.heldIdentityDigest ?? null;
     const confirmed =
       previous.status === "needs-owner-confirmation" && previous.error === IDENTITY_CHANGED
@@ -512,7 +636,11 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
       const cap = copy.savedSince + rule.capDays * DAY_MS;
       if (deps.now() < Math.min(cap, proven)) continue;
       try {
-        await deps.dev({ ...scope(next), operation: "forget-copy", target: copy.target });
+        await deps.dev({
+          ...scope(next),
+          operation: "forget-copy",
+          target: wireTarget(copy.target),
+        });
       } catch (error) {
         // Past the cap the owner is told, rather than the copy outliving it silently.
         const reason =
@@ -563,13 +691,26 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
     let restored: CodexAdoptionRecord["restored"] = null;
     let error = record.error;
     if (delivering) {
+      const target = record.target!;
+      // Dev restores only a sign-in of a person this account has had: the one first projected
+      // into this folder, whose sign-in its copy saved, or one the owner accepted since.
+      const copy = (record.copies ?? []).find((item) => sameTarget(item.target, target));
+      const persons = [copy?.person, record.heldIdentityDigest, record.expectedIdentityDigest];
+      const named = [...new Set(persons.filter((item): item is string => Boolean(item)))];
       try {
         const result = z
           .discriminatedUnion("restored", [
             z.strictObject({ restored: z.literal(false) }),
             z.strictObject({ restored: z.literal(true), copyAgeMs: Counter }),
           ])
-          .parse(await deps.dev({ ...scope(record), operation: "restore", target: record.target }));
+          .parse(
+            await deps.dev({
+              ...scope(record),
+              operation: "restore",
+              target: wireTarget(target),
+              ...((await deps.pinByPath()) ? { persons: named } : {}),
+            }),
+          );
         if (result.restored) restored = { copyAgeMs: result.copyAgeMs, mayNeedSignIn: true };
       } catch (failure) {
         if (!(failure instanceof CodexSignInRefused)) throw failure;
@@ -588,6 +729,60 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
       restored,
       error,
       ...(copies ? { copies } : {}),
+      // The binding moved while stopping, so nothing was withdrawn or put back.
+      ...(delivering ? {} : { restoreSkipped: true as const }),
+    });
+  }
+
+  /**
+   * Whether a record waiting for the owner may resume by itself: only after Dev refused a
+   * changed folder. A different person never resumes without the owner, whatever else holds.
+   */
+  function resumable(record: CodexAdoptionRecord): boolean {
+    if (record.target === null || record.pendingIdentityDigest || record.error === IDENTITY_CHANGED)
+      return false;
+    // COMPAT(codexLegacyPinByPath): added after 26.11.2100, remove after 2027-05-25. The first
+    // adoption release parked a changed folder with this exact text and no reason.
+    const legacyFolderChange = record.parkedReason === undefined && record.error === TARGET_CHANGED;
+    return record.parkedReason === "target_changed" || legacyFolderChange;
+  }
+
+  /** In-memory: when a paused record may next try to resume. */
+  const resumeRetryAt = new Map<string, number>();
+
+  /**
+   * Resumes a record Dev paused for a changed folder, once a Dev that identifies folders by real
+   * path pins the same path again, with every check the pin makes. Dev's idle check is skipped
+   * only when Dev had already acknowledged the projection and the folder holds that projection
+   * or nothing; otherwise a Dev session on the account keeps the record waiting.
+   */
+  async function resume(record: CodexAdoptionRecord): Promise<CodexAdoptionRecord> {
+    if (!resumable(record) || (resumeRetryAt.get(record.definitionId) ?? 0) > deps.now())
+      return record;
+    resumeRetryAt.set(record.definitionId, deps.now() + RESUME_RETRY_MS);
+    if (!(await deps.pinByPath()) || eligibility(record.definitionId).reason) return record;
+    const inspection = CodexLegacyInspectResponseSchema.parse(
+      await deps.dev({ ...scope(record), operation: "inspect" }),
+    );
+    if (
+      inspection.target.realpath !== record.target!.realpath ||
+      sharesDirectory(record.definitionId, inspection.target)
+    )
+      return record;
+    const settled = record.projectedAt !== null && inspection.signIn !== "other";
+    if (!settled) {
+      const sessions = z
+        .strictObject({ active: z.boolean() })
+        .parse(await deps.dev({ ...scope(record), operation: "sessions" }));
+      if (sessions.active) return record;
+    }
+    resumeRetryAt.delete(record.definitionId);
+    return save({
+      ...record,
+      status: record.projectedAt === null ? "projecting" : "adopted",
+      target: { ...record.target, ...inspection.target },
+      parkedReason: undefined,
+      error: null,
     });
   }
 
@@ -606,6 +801,7 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
     if (record.status === "pinning") return start(record);
     if (record.status === "projecting") return advanceProjecting(record);
     if (record.status === "unadopting") return advanceUnadopting(record);
+    if (record.status === "needs-owner-confirmation") return resume(record);
     if (record.status !== "adopted") return record;
     // Codex saves its own refresh under a lock this writer does not take, so each reconcile
     // re-sends the current projection; Dev replaces a newer local sign-in of the same account.
@@ -638,7 +834,7 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
       reason: string | null;
       record: CodexAdoptionRecord | null;
     }> {
-      const records = deps.journal.read();
+      const { records } = load();
       return (deps.settings.snapshot().settings?.providerDefinitions ?? [])
         .filter(
           (definition) =>
@@ -648,7 +844,10 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
         )
         .map((definition) => ({
           definitionId: definition.id,
-          reason: eligibility(definition.id).reason,
+          // Retention cannot run on a record it cannot read, so the owner is told.
+          reason: unreadableFor(definition.id, "adopt")
+            ? UNREADABLE_RECORD
+            : eligibility(definition.id).reason,
           record: records.find((item) => item.definitionId === definition.id) ?? null,
         }));
     },
@@ -662,7 +861,8 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
     /** Owner selection only. Starts one adoption; a second waits for the first to finish. */
     adopt(definitionId: string): Promise<CodexAdoptionRecord> {
       return serialized(async () => {
-        const records = deps.journal.read();
+        if (unreadableFor(definitionId, "adopt")) throw new CodexAdoptionUnreadable();
+        const { records } = load();
         if (
           records.some((item) => item.definitionId !== definitionId && IN_PROGRESS.has(item.status))
         )
@@ -693,6 +893,7 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
     /** Owner only. Never signs the Host out. */
     unadopt(definitionId: string): Promise<CodexAdoptionRecord> {
       return serialized(async () => {
+        if (unreadableFor(definitionId, "unadopt")) throw new CodexAdoptionUnreadable();
         const record = find(definitionId);
         if (!record || record.status === "unadopted") throw new CodexSignInDeliveryError();
         if (
@@ -713,7 +914,7 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
     /** The 30-second tick: one step for each record that is not finished. */
     reconcile(): Promise<void> {
       return serialized(async () => {
-        for (const record of deps.journal.read()) {
+        for (const record of load().records) {
           if (record.status === "failed") {
             // A first projection Dev refused fails the record inside the refresher's own
             // delivery, where it cannot retire it. Retire it here so it stops delivering.
@@ -738,7 +939,8 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
         save({
           ...record,
           status: "needs-owner-confirmation",
-          error: "Dev's folder for this account changed. Confirm to try again.",
+          error: TARGET_CHANGED,
+          parkedReason: "target_changed",
         });
       // An adopted home stays pending; only a first projection fails the adoption.
       else if (reason === "existing_sign_in" && record.status === "projecting")
@@ -767,6 +969,7 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
           ...record,
           status: "needs-owner-confirmation",
           error: IDENTITY_CHANGED,
+          parkedReason: "identity_changed",
           pendingIdentityDigest: digest,
         });
       return false;

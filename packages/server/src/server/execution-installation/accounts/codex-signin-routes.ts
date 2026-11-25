@@ -1,6 +1,6 @@
 import type { ErrorRequestHandler, Express, Response } from "express";
 import { z } from "zod";
-import { CodexAdoptionBusy, type CodexAdoptionRecord } from "./codex-signin-adoption.js";
+import { CodexAdoptionRefusal, type CodexAdoptionRecord } from "./codex-signin-adoption.js";
 import { HOST_SIGN_IN_REASONS } from "./codex-signin-host.js";
 import type { CodexSignInRuntime } from "./codex-signin-runtime.js";
 
@@ -102,10 +102,10 @@ export function mountCodexSignInRoutes(app: Express, runtime: CodexSignInRuntime
               : await runtime.unadopt(definitionId),
           );
         } catch (error) {
-          // Only the busy refusal's fixed text is passed on; nothing else reaches logs or replies.
-          res
-            .status(error instanceof z.ZodError ? 400 : 409)
-            .json({ error: error instanceof CodexAdoptionBusy ? error.message : ADOPTION_FAILURE });
+          // Only a refusal's fixed text is passed on; nothing else reaches logs or replies.
+          res.status(error instanceof z.ZodError ? 400 : 409).json({
+            error: error instanceof CodexAdoptionRefusal ? error.message : ADOPTION_FAILURE,
+          });
         }
       })();
     });

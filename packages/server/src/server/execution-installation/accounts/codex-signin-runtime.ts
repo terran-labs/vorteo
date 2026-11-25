@@ -11,8 +11,8 @@ import { connectInstallationDaemon, createInstallationRegistrationAdmission } fr
 import type { InstallationSettingsService } from "../settings/service.js";
 import { readClaudeSetupFile, writeClaudeSetupFile } from "./claude-setup-file.js";
 import {
-  CodexAdoptionJournalSchema,
   createCodexAdoption,
+  wireTarget,
   type DevUsageObservation,
 } from "./codex-signin-adoption.js";
 import {
@@ -54,6 +54,7 @@ interface DaemonFeatures {
   installationSettingsAuthority?: boolean;
   codexInstallationSignIn?: boolean;
   codexAccountAdoption?: boolean;
+  codexLegacyPinByPath?: boolean;
 }
 
 interface RuntimeOverrides {
@@ -146,8 +147,8 @@ export function createCodexSignInRuntime(
   }
 
   const journal = {
-    read: () => CodexAdoptionJournalSchema.parse(readClaudeSetupFile(adoptionFile) ?? []),
-    write: (records: unknown) => writeClaudeSetupFile(adoptionFile, records),
+    read: () => readClaudeSetupFile(adoptionFile) ?? [],
+    write: (records: unknown[]) => writeClaudeSetupFile(adoptionFile, records),
   };
 
   /**
@@ -422,7 +423,7 @@ export function createCodexSignInRuntime(
         ? {
             ...delivery,
             adoption: {
-              target: adopted.target!,
+              target: wireTarget(adopted.target!),
               keepLocalSignIn:
                 adopted.copyForgottenAt === null &&
                 codexAdoptionRetention(config, delivery.definitionId).mode !== "none",
@@ -463,6 +464,7 @@ export function createCodexSignInRuntime(
       }
       return true;
     },
+    pinByPath: async () => (await daemonFeatures("container"))?.codexLegacyPinByPath === true,
     hostHome: (definitionId, hostProviderId, revision) =>
       bindingHome({
         installationId: config.public.installationId,

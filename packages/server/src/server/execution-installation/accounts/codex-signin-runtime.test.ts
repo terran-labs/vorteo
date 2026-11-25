@@ -11,7 +11,8 @@ import express from "express";
 import type { DaemonConfigStore } from "../../daemon-config-store.js";
 import { createCodexSignInRuntime } from "./codex-signin-runtime.js";
 import { mountCodexSignInConsumer } from "./codex-signin-consumer.js";
-import { IDENTITY_CHANGED } from "./codex-signin-adoption.js";
+import { IDENTITY_CHANGED, TOO_MANY_FOLDERS, UNREADABLE_RECORD } from "./codex-signin-adoption.js";
+import { writeClaudeSetupFile } from "./claude-setup-file.js";
 import { mountCodexSignInRoutes } from "./codex-signin-routes.js";
 import {
   codexProjectionDigest,
@@ -307,6 +308,10 @@ function legacyHarness(
     refusal: null as string | null,
     /** Dev's restore answer: a copy put back, or nothing (none saved, or auth.json already there). */
     restoreFound: true,
+    /** Dev advertises `codexLegacyPinByPath`. */
+    pinByPath: false,
+    /** What Dev's inspect finds in the adopted home's auth.json. */
+    signIn: "projection" as "projection" | "none" | "other",
     targets: {
       "codex-primary": { realpath: "/home/paseo/codex-primary", dev: "41", ino: "1001" },
       "codex-secondary": { realpath: "/home/paseo/codex-secondary", dev: "41", ino: "1002" },
@@ -332,6 +337,8 @@ function legacyHarness(
     if (route === "legacy") {
       if (body.operation === "sessions") return Response.json({ active: dev.active });
       if (body.operation === "pin") return Response.json({ target: dev.targets[body.providerId] });
+      if (body.operation === "inspect")
+        return Response.json({ target: dev.targets[body.providerId], signIn: dev.signIn });
       if (body.operation === "restore")
         return Response.json(
           dev.restoreFound ? { restored: true, copyAgeMs: 5_000 } : { restored: false },
@@ -385,7 +392,9 @@ function legacyHarness(
   const usage = { status: "available" as const, fetchedAt: null as string | null };
   const runtime = createCodexSignInRuntime(config, settings, undefined, {
     daemonFeatures: async (kind) =>
-      kind === "container" ? (options.devFeatures ?? FULL_SUPPORT) : FULL_SUPPORT,
+      kind === "container"
+        ? { ...(options.devFeatures ?? FULL_SUPPORT), codexLegacyPinByPath: dev.pinByPath }
+        : FULL_SUPPORT,
     cli: cli as unknown as CodexHostCli,
     readGrant: () => grant,
     fetch: fetchFake as unknown as typeof fetch,
@@ -422,6 +431,8 @@ function legacyHarness(
       revision += 1;
     },
     journal: () => readFileSync(join(stateDir, "codex-signin", "adoption.json"), "utf8"),
+    writeJournal: (records: unknown[]) =>
+      writeClaudeSetupFile(join(stateDir, "codex-signin", "adoption.json"), records),
   };
 }
 
@@ -524,7 +535,11 @@ it("un-adopts without signing the Host out and lets an exclusion win mid-adoptio
   await adopted(kept);
   await kept.runtime.unadopt("one");
   expect(kept.runtime.adoption("one")?.copies).toEqual([
-    { target: kept.dev.targets["codex-primary"], savedSince: expect.any(Number) },
+    {
+      target: kept.dev.targets["codex-primary"],
+      savedSince: expect.any(Number),
+      person: expect.any(String),
+    },
   ]);
   expect(h.cli.logout).not.toHaveBeenCalled();
   expect(h.settings.update).not.toHaveBeenCalled();
@@ -700,6 +715,121 @@ it("stops delivering on a manual rebind or a changed Dev home", async () => {
   expect(moved.requests.slice(before)).toEqual([]);
 });
 
+const RESUME_WAIT = 5 * 60_000;
+
+it("resumes an adoption paused for a changed folder only on a Dev that pins by path", async () => {
+  const h = legacyHarness();
+  await adopted(h);
+  const sessions = h.legacyCalls("sessions").length;
+  h.dev.refusal = "target_changed";
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")).toMatchObject({
+    status: "needs-owner-confirmation",
+    parkedReason: "target_changed",
+  });
+  h.dev.refusal = null;
+  // The folder's inode changed at the same path, as on Dev's virtiofs mount.
+  h.dev.targets["codex-primary"] = { ...h.dev.targets["codex-primary"]!, ino: "2001" };
+  // A Dev without codexLegacyPinByPath keeps the earlier rule: only the owner resumes it.
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")?.status).toBe("needs-owner-confirmation");
+  expect(h.legacyCalls("inspect")).toEqual([]);
+  h.dev.pinByPath = true;
+  h.advance(RESUME_WAIT);
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")).toMatchObject({
+    status: "adopted",
+    error: null,
+    target: h.dev.targets["codex-primary"],
+  });
+  // Dev had acknowledged the projection and the folder still holds it: no idle check.
+  expect(h.legacyCalls("sessions")).toHaveLength(sessions);
+
+  // A different person on the Host never resumes without the owner.
+  h.setGrant({
+    idToken: idToken("someone@example.com", "person-2"),
+    accessToken: "synthetic-other-person",
+    expiresAt: h.now() + 9 * DAY,
+  });
+  h.advance(10 * 60_000);
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")).toMatchObject({
+    status: "needs-owner-confirmation",
+    error: IDENTITY_CHANGED,
+  });
+  const inspections = h.legacyCalls("inspect").length;
+  h.advance(RESUME_WAIT);
+  await h.runtime.reconcile();
+  expect(h.legacyCalls("inspect")).toHaveLength(inspections);
+  expect(h.runtime.adoption("one")?.status).toBe("needs-owner-confirmation");
+  expect(h.deliveries.some((item) => JSON.stringify(item).includes("synthetic-other-person"))).toBe(
+    false,
+  );
+});
+
+it("resumes a first projection Dev paused only once no Dev session uses the account", async () => {
+  const h = legacyHarness();
+  h.dev.pinByPath = true;
+  h.dev.refusal = "target_changed";
+  await expect(h.runtime.adopt("one")).resolves.toMatchObject({
+    status: "needs-owner-confirmation",
+    projectedAt: null,
+  });
+  h.dev.refusal = null;
+  h.dev.active = true;
+  const sessions = h.legacyCalls("sessions").length;
+  await h.runtime.reconcile();
+  expect(h.legacyCalls("sessions")).toHaveLength(sessions + 1);
+  expect(h.runtime.adoption("one")?.status).toBe("needs-owner-confirmation");
+  h.dev.active = false;
+  h.advance(RESUME_WAIT);
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")?.status).toBe("projecting");
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")?.status).toBe("adopted");
+});
+
+it("reads a record from the installed release with an unknown field and keeps that field", async () => {
+  const h = legacyHarness();
+  await adopted(h);
+  // As the first adoption release stored a folder change: no reason, no person on the copy.
+  const [record] = JSON.parse(h.journal()) as Array<Record<string, unknown>>;
+  const copies = record!.copies as Array<Record<string, unknown>>;
+  const installed = {
+    ...record,
+    status: "needs-owner-confirmation",
+    error: "Dev's folder for this account changed. Confirm to try again.",
+    copies: copies.map(({ person: _person, ...copy }) => copy),
+    fromNewerRelease: { kept: true },
+  };
+  h.writeJournal([installed]);
+  h.dev.pinByPath = true;
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")).toMatchObject({ status: "adopted", error: null });
+  expect(JSON.parse(h.journal())[0]).toMatchObject({ fromNewerRelease: { kept: true } });
+});
+
+it("keeps a record it cannot read, changes nothing for its account and still guards its folder", async () => {
+  const h = legacyHarness();
+  const unreadable = {
+    definitionId: "one",
+    status: "from-a-newer-release",
+    target: { realpath: h.dev.targets["codex-primary"]!.realpath },
+  };
+  h.writeJournal([unreadable]);
+  await expect(h.runtime.adopt("one")).rejects.toThrow(UNREADABLE_RECORD);
+  await expect(h.runtime.unadopt("one")).rejects.toThrow(UNREADABLE_RECORD);
+  expect(h.runtime.adoptions()[0]).toMatchObject({ reason: UNREADABLE_RECORD, record: null });
+  await h.runtime.reconcile();
+  h.dev.targets["codex-secondary"] = { ...h.dev.targets["codex-primary"]! };
+  await expect(h.runtime.adopt("two")).resolves.toMatchObject({
+    status: "failed",
+    error: "Another account already uses this account's Dev folder. Nothing was changed.",
+  });
+  expect(JSON.parse(h.journal())).toContainEqual(unreadable);
+  expect(h.deliveries).toEqual([]);
+});
+
 it("refreshes under a Host lease, leaving a loaded session the last ten minutes", async () => {
   const h = legacyHarness();
   await adopted(h);
@@ -864,6 +994,44 @@ it("keeps retention and says plainly what un-adopt left after an adoption stoppe
   expect(moved.runtime.adoption("one")).toMatchObject({
     copyForgottenAt: moved.now(),
     copyDeleteBlocked: null,
+  });
+});
+
+it("keeps one backup clock per folder path, even after the folder is recreated", async () => {
+  const h = legacyHarness();
+  await adopted(h);
+  const firstSaved = h.runtime.adoption("one")!.copies![0]!.savedSince;
+  h.advance(10 * DAY);
+  h.setGrant({ expiresAt: h.now() + 40 * DAY });
+  // The folder is recreated at the same path with its backup copied across: a new inode, which
+  // an older Dev refuses, and the owner confirms again.
+  h.dev.targets["codex-primary"] = { ...h.dev.targets["codex-primary"]!, ino: "3001" };
+  h.dev.refusal = "target_changed";
+  await h.runtime.reconcile();
+  h.dev.refusal = null;
+  await h.runtime.adopt("one");
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")?.status).toBe("adopted");
+  expect(h.runtime.adoption("one")?.copies).toEqual([
+    expect.objectContaining({ savedSince: firstSaved }),
+  ]);
+  h.advance(20 * DAY);
+  await h.runtime.reconcile();
+  expect(h.legacyCalls("forget-copy")).toHaveLength(1);
+  expect(h.runtime.adoption("one")?.copies).toEqual([]);
+
+  // A ninth folder is refused rather than dropping an older backup's clock.
+  const full = legacyHarness();
+  await adopted(full);
+  const [record] = JSON.parse(full.journal()) as Array<Record<string, unknown>>;
+  const elsewhere = Array.from({ length: 8 }, (_, index) => ({
+    target: { realpath: `/home/paseo/codex-old-${index}`, dev: "41", ino: String(4000 + index) },
+    savedSince: full.now(),
+  }));
+  full.writeJournal([{ ...record, status: "unadopted", copies: elsewhere }]);
+  await expect(full.runtime.adopt("one")).resolves.toMatchObject({
+    status: "failed",
+    error: TOO_MANY_FOLDERS,
   });
 });
 
