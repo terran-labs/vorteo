@@ -471,7 +471,9 @@ export class InstallationPanelModel {
     try {
       this.publish({ healthDismissals: await this.client.dismissHealthFailure(queue, id) });
     } catch (error) {
-      this.publish({ error: failureMessage(error, "Dismiss failed. Refresh and try again.") });
+      this.publish({
+        error: failureMessage(error, "Could not dismiss this. Refresh and try again."),
+      });
     } finally {
       this.publish({ busy: false });
     }
