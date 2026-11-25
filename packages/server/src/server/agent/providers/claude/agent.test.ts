@@ -778,6 +778,7 @@ describe("ClaudeAgentSession features", () => {
     }).createSession({ provider: "claude", cwd: process.cwd(), modeId: "bypassPermissions" });
     const events: AgentStreamEvent[] = [];
     const unsubscribe = session.subscribe((event) => events.push(event));
+    let permission: Promise<unknown> = Promise.resolve();
 
     try {
       await session.startTurn("run the tool");
@@ -785,7 +786,8 @@ describe("ClaudeAgentSession features", () => {
       if (!canUseTool) throw new Error("Expected canUseTool callback");
       const decisionReason =
         "Dangerous rm operation on statically-unresolvable target: /private/tmp/probe/x/*";
-      void canUseTool(
+      // Closing the session rejects the unanswered request; the test only reads the event.
+      permission = canUseTool(
         "Bash",
         { command: "mkdir -p /tmp/probe/x && cd /tmp/probe/x && rm -rf *" },
         {
@@ -797,7 +799,7 @@ describe("ClaudeAgentSession features", () => {
           description: "Create probe directory and clear its contents",
           suggestions: [],
         },
-      );
+      ).catch(() => undefined);
 
       const requested = events.find(
         (event): event is Extract<AgentStreamEvent, { type: "permission_requested" }> =>
@@ -812,6 +814,7 @@ describe("ClaudeAgentSession features", () => {
     } finally {
       unsubscribe();
       await session.close();
+      await permission;
     }
   });
 

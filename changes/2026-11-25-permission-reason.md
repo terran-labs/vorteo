@@ -4,4 +4,4 @@
 
 ## Maintenance review
 
-Issue #659, part A. The Claude provider keeps the SDK's decision reason, blocked path and matched ask rule in the permission request's metadata, passes the SDK's prompt title through, and logs which option keys arrived at debug level. No wire change: title, description and metadata were already optional on permission requests. One case in the Claude provider tests covers the measured dangerous-removal options. No inventory entry changes; README overview and onboarding are unchanged.
+Issue #659, part A. The Claude provider keeps the SDK's decision reason, blocked path and matched ask rule in the permission request's metadata, passes the SDK's prompt title through, and logs which option keys arrived at debug level. No wire change: title, description and metadata were already optional on permission requests. Two cases in the Claude provider tests cover the measured dangerous-removal options and the flattening and capping; the first awaits the request the session's close rejects, so it leaves no unhandled rejection. No inventory entry changes; README overview and onboarding are unchanged.
