@@ -42,6 +42,11 @@ const LEASE_MARGIN_MS = 5_000;
  * keeps clear of that with a margin, and refreshes earlier, from 30 minutes before expiry.
  */
 const NATIVE_REFRESH_WINDOW_MS = 10 * 60_000;
+/**
+ * Codex refreshes proactively when a request finds the access token within five minutes of
+ * expiry, so with this little left the coordinator never starts Codex outside a lease.
+ */
+const UNLEASED_START_FLOOR_MS = 6 * 60_000;
 
 interface DaemonFeatures {
   installationSettingsAuthority?: boolean;
@@ -274,14 +279,19 @@ export function createCodexSignInRuntime(
   /**
    * The Host's own Codex sessions are its normal refresh writer, and Codex does not lock the
    * network refresh across processes. A loaded Codex refreshes only while a request runs inside
-   * the token's last five minutes, after rereading `auth.json`. The coordinator starts Codex
-   * first, so its startup holds no lease; then takes a lease, which the Host refuses while a
-   * session on the account starts or runs a turn; leaves the last ten minutes to a loaded
-   * session; and stops the refresh before the lease ends. Otherwise it projects what is there.
+   * the token's last five minutes, after rereading `auth.json`. The coordinator reads `auth.json`
+   * first. With more than six minutes left it starts Codex before the lease, so a slow startup
+   * holds no lease. With six minutes or less left, or no readable expiry, any request to the
+   * starting Codex could refresh proactively, so it starts Codex only under the lease, bounded
+   * by the lease's time. Then it takes a lease, which the Host refuses while a session on the
+   * account starts or runs a turn; leaves the last ten minutes to a loaded session; and stops
+   * the refresh before the lease ends.
    */
   async function leasedRefresh(definitionId: string): Promise<void> {
     const binding = await hostBinding(definitionId);
-    const session = await cli.openRefresh(binding.codexHome);
+    const before = readGrant(binding.codexHome)?.expiresAt ?? null;
+    const startUnderLease = before === null || before - now() <= UNLEASED_START_FLOOR_MS;
+    let session = startUnderLease ? null : await cli.openRefresh(binding.codexHome);
     let leaseId: string | null = null;
     try {
       let lease;
@@ -300,12 +310,22 @@ export function createCodexSignInRuntime(
       const expiresAt = readGrant(binding.codexHome)?.expiresAt ?? null;
       if (lease.loaded && (expiresAt === null || expiresAt - now() < NATIVE_REFRESH_WINDOW_MS))
         throw new HostRefreshSkipped("native_session");
+      if (!session) {
+        const startBudget = lease.expiresAt - now() - LEASE_MARGIN_MS;
+        if (startBudget <= 0) throw new HostRefreshSkipped("lease_expired");
+        try {
+          session = await cli.openRefresh(binding.codexHome, { startTimeoutMs: startBudget });
+        } catch {
+          // Startup failed or outran the lease; the process is already ended.
+          throw new HostRefreshSkipped("lease_expired");
+        }
+      }
       const remaining = lease.expiresAt - now() - LEASE_MARGIN_MS;
       if (remaining <= 0 || (await session.refresh(remaining)) === "timed-out")
         throw new HostRefreshSkipped("lease_expired");
     } finally {
       // Ending the process first means nothing can still be refreshing once the lease is gone.
-      await session.close().catch(() => {});
+      await session?.close().catch(() => {});
       if (leaseId)
         await post("host", CODEX_SIGNIN_LEASE_ROUTE, {
           ...binding.request,

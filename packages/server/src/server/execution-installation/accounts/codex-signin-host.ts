@@ -215,10 +215,10 @@ export function createCodexHostCli(options: HostCliOptions = {}) {
       return child as ChildProcessWithoutNullStreams;
     });
 
-  async function open(codexHome: string): Promise<CodexAppServerClient> {
+  async function open(codexHome: string, startTimeoutMs = 15_000): Promise<CodexAppServerClient> {
     const client = new CodexAppServerClient(await spawnAppServer(codexHome), logger);
     try {
-      await client.request("initialize", INITIALIZE_PARAMS, 15_000);
+      await client.request("initialize", INITIALIZE_PARAMS, startTimeoutMs);
       client.notify("initialized", {});
       return client;
     } catch (error) {
@@ -246,8 +246,11 @@ export function createCodexHostCli(options: HostCliOptions = {}) {
      * under its own storage rules; success is judged by re-reading the grant. `close` ends the
      * process, which also aborts a refresh that ran out of time.
      */
-    async openRefresh(codexHome: string): Promise<CodexHostRefreshSession> {
-      const client = await open(codexHome);
+    async openRefresh(
+      codexHome: string,
+      start: { startTimeoutMs?: number } = {},
+    ): Promise<CodexHostRefreshSession> {
+      const client = await open(codexHome, start.startTimeoutMs);
       return {
         async refresh(timeoutMs: number) {
           let timer: ReturnType<typeof setTimeout> | undefined;

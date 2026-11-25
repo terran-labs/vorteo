@@ -557,14 +557,54 @@ it("refreshes under a Host lease, leaving a loaded session the last ten minutes"
   await h.runtime.reconcile();
   expect(h.refresh).toHaveBeenCalledTimes(1);
   expect(h.order.slice(0, 4)).toEqual(["open", "acquire", "close", "release"]);
-  // A starting session or a running turn refuses the lease.
+  // A starting session or a running turn refuses the lease. Under six minutes are left by
+  // now, so Codex is not even started.
   h.order.length = 0;
   h.dev.leaseGranted = false;
   h.dev.loaded = false;
   h.advance(61_000);
   await h.runtime.reconcile();
   expect(h.refresh).toHaveBeenCalledTimes(1);
-  expect(h.order.slice(0, 3)).toEqual(["open", "acquire", "close"]);
+  expect(h.order).toContain("acquire");
+  expect(h.order).not.toContain("open");
+  expect(h.runtime.read("one").connection.refresh?.outcome).not.toBe("failed");
+});
+
+it("starts Codex only under the lease when six minutes or less remain", async () => {
+  const h = legacyHarness();
+  await adopted(h);
+  // Any request to a starting Codex could refresh proactively now, so nothing starts unleased.
+  h.setGrant({ expiresAt: h.now() + 5 * 60_000 });
+  h.advance(61_000);
+  await h.runtime.reconcile();
+  expect(h.order).toEqual(["acquire", "open", "refresh", "close", "release"]);
+  expect(h.cli.openRefresh).toHaveBeenLastCalledWith(expect.any(String), {
+    startTimeoutMs: 25_000,
+  });
+  // With a loaded Host session, that session refreshes and the coordinator starts nothing.
+  h.order.length = 0;
+  h.dev.loaded = true;
+  h.setGrant({ expiresAt: h.now() + 5 * 60_000 });
+  h.advance(61_000);
+  await h.runtime.reconcile();
+  expect(h.order).toContain("release");
+  expect(h.order).not.toContain("open");
+  // Refused lease: nothing starts at all.
+  h.order.length = 0;
+  h.dev.loaded = false;
+  h.dev.leaseGranted = false;
+  h.advance(61_000);
+  await h.runtime.reconcile();
+  expect(h.order).toContain("acquire");
+  expect(h.order).not.toContain("open");
+  // A startup that outruns the lease is ended before the lease is released.
+  h.order.length = 0;
+  h.dev.leaseGranted = true;
+  h.dev.startupMs = 40_000;
+  h.advance(61_000);
+  await h.runtime.reconcile();
+  expect(h.order.slice(0, 4)).toEqual(["acquire", "open", "close", "release"]);
+  expect(h.order).not.toContain("refresh");
   expect(h.runtime.read("one").connection.refresh?.outcome).not.toBe("failed");
 });
 
