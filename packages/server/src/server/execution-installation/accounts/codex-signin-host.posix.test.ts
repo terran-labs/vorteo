@@ -128,7 +128,10 @@ it("signs the Host account out with its own CODEX_HOME", async () => {
 it("verifies an adoption from the Host file alone and refuses a token near expiry", async () => {
   const directory = await home();
   const now = EXP * 1000 - 31 * 60_000;
-  const idToken = jwt({ "https://api.openai.com/profile": { email: "owner@example.com" } });
+  const idToken = jwt({
+    "https://api.openai.com/profile": { email: "owner@example.com" },
+    "https://api.openai.com/auth": { chatgpt_user_id: "person-1" },
+  });
   writeAuth(directory, { ...auth, tokens: { ...auth.tokens, id_token: idToken } });
   expect(verifyCodexHostSession(readCodexHostGrant(directory), now)).toEqual({
     verified: true,
@@ -145,6 +148,13 @@ it("verifies an adoption from the Host file alone and refuses a token near expir
     verified: false,
   });
   expect(verifyCodexHostSession(null, now)).toMatchObject({ verified: false });
+  // A workspace with no named person cannot be told apart from a teammate's sign-in.
+  const noPerson = await home();
+  const anonymous = jwt({ "https://api.openai.com/profile": { email: "owner@example.com" } });
+  writeAuth(noPerson, { ...auth, tokens: { ...auth.tokens, id_token: anonymous } });
+  expect(verifyCodexHostSession(readCodexHostGrant(noPerson), now)).toMatchObject({
+    verified: false,
+  });
 });
 
 it("ends the Host Codex process when a refresh outruns its time", async () => {

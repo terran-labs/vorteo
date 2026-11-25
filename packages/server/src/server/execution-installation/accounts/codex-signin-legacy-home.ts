@@ -14,6 +14,7 @@ import { z } from "zod";
 import { isTrustedCredentialsFile, replaceAtomically } from "./claude-oauth-credentials-file.js";
 import { readClaudeSetupFile, writeClaudeSetupFile } from "./claude-setup-file.js";
 import { CODEX_SIGNIN_STATE_DIRECTORY } from "./codex-signin-auth-file.js";
+import { sameCodexSignIn } from "./codex-signin-identity.js";
 import {
   CodexSignInDeliveryError,
   type CodexAccessProjection,
@@ -37,7 +38,11 @@ const WrittenSchema = z.strictObject({
   digests: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(2),
 });
 const LocalSignInSchema = z.object({
-  tokens: z.object({ refresh_token: z.string().min(1), account_id: z.string().nullish() }),
+  tokens: z.object({
+    refresh_token: z.string().min(1),
+    account_id: z.string().nullish(),
+    id_token: z.string().nullish(),
+  }),
 });
 
 function code(error: unknown): string | undefined {
@@ -123,8 +128,10 @@ function readWritten(home: string): string[] {
   return parsed.data.digests;
 }
 
-/** A refresh sign-in made in this environment, with its ChatGPT account. */
-function localSignIn(contents: string): { accountId: string | null; value: unknown } | null {
+/** A refresh sign-in made in this environment, with its ChatGPT workspace and ID token. */
+function localSignIn(
+  contents: string,
+): { accountId: string | null; idToken: string | null; value: unknown } | null {
   let value: unknown;
   try {
     value = JSON.parse(contents);
@@ -132,7 +139,9 @@ function localSignIn(contents: string): { accountId: string | null; value: unkno
     return null;
   }
   const parsed = LocalSignInSchema.safeParse(value);
-  return parsed.success ? { accountId: parsed.data.tokens.account_id ?? null, value } : null;
+  if (!parsed.success) return null;
+  const { account_id, id_token } = parsed.data.tokens;
+  return { accountId: account_id ?? null, idToken: id_token ?? null, value };
 }
 
 function projectionContents(access: CodexAccessProjection): string {
@@ -156,7 +165,7 @@ function projectionContents(access: CodexAccessProjection): string {
 
 /**
  * Writes or withdraws the projection in an adopted legacy home. It replaces only a refresh
- * sign-in of the Host's own ChatGPT account, or a projection it wrote itself, recognised by the
+ * sign-in of the same person in the Host's ChatGPT workspace, or a projection it wrote itself, recognised by the
  * digest of the bytes it wrote. An API-key login, a file with an empty refresh token it did not
  * write, another account and anything unparseable refuse and stay untouched. A withdrawal
  * removes only its own projection.
@@ -184,7 +193,7 @@ export function writeLegacyCodexProjection(
   let replacedLocally = false;
   if (current !== null && !ours) {
     const local = localSignIn(current);
-    if (!local || !access.accountId || local.accountId !== access.accountId)
+    if (!local || !sameCodexSignIn(local, access))
       throw new HostProjectionRefusal("existing_sign_in");
     // Each adoption keeps the latest sign-in Dev made, which un-adopt restores.
     if (options.keepLocalSignIn)

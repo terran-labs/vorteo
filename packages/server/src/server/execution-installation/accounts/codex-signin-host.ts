@@ -15,6 +15,7 @@ import { CodexLoginSession } from "../../agent/providers/codex/login.js";
 import { execCommand, spawnProcess } from "../../../utils/spawn.js";
 import { isTrustedCredentialsFile } from "./claude-oauth-credentials-file.js";
 import type { CodexAccessProjection } from "./codex-signin-delivery.js";
+import { codexIdTokenPerson, jwtClaims } from "./codex-signin-identity.js";
 import type { HostRefreshIdentity } from "./host-owned-refresher.js";
 
 /**
@@ -58,18 +59,6 @@ const AuthFileSchema = z.object({
     .nullish(),
   last_refresh: z.string().nullish(),
 });
-
-/** The claims of an unverified JWT. Only used for scheduling and display. */
-function jwtClaims(token: string): Record<string, unknown> | null {
-  const payload = token.split(".")[1];
-  if (!payload) return null;
-  try {
-    const claims: unknown = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    return claims && typeof claims === "object" ? (claims as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
-}
 
 /** The `exp` claim of an unverified JWT, in milliseconds. Only used for scheduling. */
 export function jwtExpiry(token: string): number | null {
@@ -155,6 +144,9 @@ export function verifyCodexHostSession(
     return { verified: false, reason: "The Host Codex sign-in cannot renew itself." };
   if (!grant.accountId)
     return { verified: false, reason: "The Host Codex sign-in has no ChatGPT account." };
+  // The workspace alone is shared by every member of a Team workspace; Dev compares the person.
+  if (!codexIdTokenPerson(grant.idToken))
+    return { verified: false, reason: "The Host Codex sign-in does not name its ChatGPT user." };
   if (grant.expiresAt === null || grant.expiresAt - now <= CODEX_ADOPTION_MIN_REMAINING_MS)
     return { verified: false, reason: "Host session needs a refresh first." };
   return {

@@ -224,7 +224,8 @@ const FULL_SUPPORT = { ...SUPPORTED, codexAccountAdoption: true };
 /** Unsigned synthetic JWT carrying the email Codex shows. */
 function idToken(email: string) {
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  return `${encode({ alg: "none" })}.${encode({ email })}.synthetic`;
+  const claims = { email, "https://api.openai.com/auth": { chatgpt_user_id: "person-1" } };
+  return `${encode({ alg: "none" })}.${encode(claims)}.synthetic`;
 }
 
 /**

@@ -35,9 +35,16 @@ async function temporary(prefix: string) {
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
   return directory;
 }
+/** Unsigned synthetic ID token naming a person, the way Codex's auth claims do. */
+const personToken = (person: string) => {
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const claims = { "https://api.openai.com/auth": { chatgpt_user_id: person } };
+  return `${encode({ alg: "none" })}.${encode(claims)}.synthetic`;
+};
+const ID_TOKEN = personToken("person-1");
 const access = (accessToken: string, accountId: string | null = "workspace-1") => ({
   accessToken,
-  idToken: "synthetic-id-token",
+  idToken: ID_TOKEN,
   accountId,
   expiresAt: 2_000_000_000_000,
   lastRefresh: "2026-10-20T00:00:00.000Z",
@@ -143,7 +150,11 @@ async function fixture(serverId = "dev") {
 }
 
 /** A sign-in made directly in this environment, before the installation connection. */
-async function signInLocally(f: Awaited<ReturnType<typeof fixture>>, accountId: string) {
+async function signInLocally(
+  f: Awaited<ReturnType<typeof fixture>>,
+  accountId: string,
+  idToken = ID_TOKEN,
+) {
   await createCodexAccount({
     paseoHome: f.paseoHome,
     store: f.store,
@@ -153,7 +164,7 @@ async function signInLocally(f: Awaited<ReturnType<typeof fixture>>, accountId: 
   mkdirSync(f.home, { recursive: true, mode: 0o700 });
   const local = {
     tokens: {
-      id_token: "local-id",
+      id_token: idToken,
       access_token: "local-access",
       refresh_token: "local-refresh",
       account_id: accountId,
@@ -174,7 +185,7 @@ it("writes access-only Codex sign-ins in order, with an empty refresh token", as
     auth_mode: "chatgpt",
     OPENAI_API_KEY: null,
     tokens: {
-      id_token: "synthetic-id-token",
+      id_token: ID_TOKEN,
       access_token: "synthetic-access-a",
       refresh_token: "",
       account_id: "workspace-1",
@@ -230,6 +241,13 @@ it("refuses to replace a local sign-in of a different or unverifiable account", 
   expect((await f.project(1, 1, access("synthetic-access"))).status).toBe(409);
   expect((await f.project(1, 1, access("synthetic-access", null))).status).toBe(409);
   expect(f.readAuth()).toEqual(local);
+  // Another person in the same Team workspace, or a sign-in that names no person, is refused.
+  for (const idToken of [personToken("person-2"), "opaque-id-token"]) {
+    const other = await signInLocally(f, "workspace-1", idToken);
+    expect((await f.project(1, 1, access("synthetic-access"))).status).toBe(409);
+    expect(f.readAuth()).toEqual(other);
+  }
+  await signInLocally(f, "workspace-other");
   // A withdrawal never removes a sign-in made in this environment.
   expect((await f.project(1, 2, null)).status).toBe(200);
   expect(f.readAuth()).toEqual(local);
@@ -389,9 +407,13 @@ async function legacyFixture(options: { otherHome?: (home: string) => string } =
   };
 }
 
-const localSignIn = (accountId: string, refreshToken = "synthetic-local-refresh") => ({
+const localSignIn = (
+  accountId: string,
+  refreshToken = "synthetic-local-refresh",
+  idToken = ID_TOKEN,
+) => ({
   tokens: {
-    id_token: "local-id",
+    id_token: idToken,
     access_token: "local-access",
     refresh_token: refreshToken,
     account_id: accountId,
@@ -461,6 +483,8 @@ it("replaces only a same-account sign-in or its own projection in a legacy home"
   };
   for (const unknown of [
     localSignIn("workspace-other"),
+    // Same Team workspace, another person: the workspace ID alone would have matched.
+    localSignIn("workspace-1", "synthetic-local-refresh", personToken("person-2")),
     { OPENAI_API_KEY: "synthetic-api-key", tokens: null },
     foreignProjection,
   ]) {
