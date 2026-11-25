@@ -1158,7 +1158,9 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             );
 
           case "notification":
-            return <Notification level={item.level} message={item.message} />;
+            return (
+              <Notification level={item.level} message={item.message} details={item.details} />
+            );
 
           case "todo_list":
             return <TodoListCard items={item.items} activity={item.activity} />;
