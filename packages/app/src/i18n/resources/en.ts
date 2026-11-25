@@ -3901,6 +3901,10 @@ export const en = {
       confirm: "Confirm and try again",
       unadopt: "Stop using the Host's sign-in",
     },
+    devOnly: {
+      text: "Or sign in on Dev only, without the Host.",
+      action: "Sign in on Dev",
+    },
     unadoptNote: "Stopping never signs the Host out.",
     copyDeleteBlocked: "The saved sign-in on Dev could not be deleted. {{reason}}",
     adoptConfirm: {
