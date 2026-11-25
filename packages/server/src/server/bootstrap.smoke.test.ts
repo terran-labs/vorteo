@@ -93,6 +93,23 @@ describe("paseo daemon bootstrap", () => {
     }
   });
 
+  test("a client can read the hourly dashboard collected before it connected", async () => {
+    const handle = await createTestPaseoDaemon();
+    const client = new DaemonClient({ url: `ws://127.0.0.1:${handle.port}/ws` });
+    try {
+      await client.connect();
+      await vi.waitFor(async () => {
+        const report = await client.getDashboardMetrics();
+        expect(report.error).toBeNull();
+        expect(report.samples).toHaveLength(1);
+        expect(report.samples[0]?.values.workspaces).toEqual(expect.any(Number));
+      });
+    } finally {
+      await client.close();
+      await handle.close();
+    }
+  });
+
   test("keeps timeline activity in memory and removes obsolete timeline files at startup", async () => {
     const paseoHomeRoot = await mkdtemp(path.join(os.tmpdir(), "paseo-timeline-cleanup-"));
     const paseoHome = path.join(paseoHomeRoot, ".paseo");

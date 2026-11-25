@@ -6676,6 +6676,20 @@ export class DaemonClient {
     });
   }
 
+  async getDashboardMetrics(): Promise<{
+    samples: import("@getpaseo/protocol/messages").DashboardSample[];
+    error: string | null;
+    requestId: string;
+  }> {
+    if (!this.lastServerInfoMessage?.features?.dashboardMetrics) {
+      throw new Error("The host does not support dashboard metrics yet.");
+    }
+    return this.sendCorrelatedSessionRequest({
+      message: { type: "dashboard.get_metrics.request" },
+      responseType: "dashboard.get_metrics.response",
+    });
+  }
+
   async getDaemonStatus(options?: DaemonStatusOptions): Promise<DaemonStatusPayload> {
     if (!this.lastServerInfoMessage) throw new DaemonConnectionError("Transport not connected");
     if (this.lastServerInfoMessage?.features?.daemonStatusRpc !== true) {
