@@ -6,11 +6,13 @@
 // npm's attestations endpoint sometimes answers with a non-JSON body, which npm reports as
 // FETCH_ERROR "invalid json response body" before verifying anything (#646). That fault, and
 // other network errors fetching from the registry, are retried up to three attempts with a
-// short backoff. npm caches attestation responses for a year, and CI restores ~/.npm between
-// runs, so a bad body once cached would fail every retry: each retry uses a fresh, empty npm
-// cache and fetches from the registry again. A failed verification is never retried: npm reports it as an invalid or
+// short backoff. A failed verification is never retried: npm reports it as an invalid or
 // missing signature or attestation, and the step fails on that first report. Any other failure
 // also fails at once. See docs/development.md#dependency-signature-audit.
+//
+// Every attempt audits with a fresh, empty npm cache. npm caches attestation responses for a
+// year and CI restores ~/.npm between runs, so a cached bad body would fail every attempt, and a
+// restored cache is not something a signature check should trust.
 import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -78,7 +80,7 @@ export async function runAuditWithRetry({
   log = (line) => console.error(line),
 }) {
   for (let attempt = 1; ; attempt++) {
-    const { output, exitCode } = await runAttempt({ attempt, freshCache: attempt > 1 });
+    const { output, exitCode } = await runAttempt();
     const outcome = classifyAuditAttempt(output, exitCode);
     if (outcome === "passed") return 0;
     if (outcome === "failed") return exitCode === 0 ? 1 : exitCode;
@@ -95,18 +97,19 @@ export async function runAuditWithRetry({
 }
 
 /**
- * One audit run, with its output passed through to the CI log and captured for the decision.
- * A fresh cache keeps a cached bad response from deciding the retry.
+ * One audit attempt in a fresh, empty npm cache, removed afterwards, so every attestation and
+ * signature is fetched from the registry.
  */
-async function spawnAudit({ freshCache }) {
-  const cache = freshCache ? await mkdtemp(path.join(tmpdir(), "npm-audit-cache-")) : null;
+export async function auditInFreshCache(run = runAudit) {
+  const cache = await mkdtemp(path.join(tmpdir(), "npm-audit-cache-"));
   try {
-    return await runAudit(cache ? ["--cache", cache] : []);
+    return await run(["--cache", cache]);
   } finally {
-    if (cache) await rm(cache, { recursive: true, force: true });
+    await rm(cache, { recursive: true, force: true });
   }
 }
 
+/** Runs the audit, passing its output through to the CI log and capturing it for the decision. */
 function runAudit(extraArgs) {
   return new Promise((resolve, reject) => {
     const [command, ...args] = AUDIT_COMMAND;
@@ -126,5 +129,5 @@ function runAudit(extraArgs) {
 }
 
 if (isMainModule(import.meta.url)) {
-  process.exitCode = await runAuditWithRetry({ runAttempt: spawnAudit });
+  process.exitCode = await runAuditWithRetry({ runAttempt: () => auditInFreshCache() });
 }

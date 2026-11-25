@@ -1,6 +1,6 @@
 ### Fixes
 
-- CI's dependency signature audit no longer fails a pull request when npm's attestations endpoint briefly answers with a non-JSON body. The `lint` job runs the same pinned `npm@11.19.1 audit signatures` through a small script that retries only a registry fetch or parse error, up to three attempts with a 5 and 15 second backoff. npm caches attestation responses for a year and CI restores the npm cache between runs, so each retry uses a fresh, empty npm cache and fetches from the registry again. A package that fails verification still fails the step on the first report, and any other error fails at once (#646).
+- CI's dependency signature audit no longer fails a pull request when npm's attestations endpoint briefly answers with a non-JSON body. The `lint` job runs the same pinned `npm@11.19.1 audit signatures` through a small script that retries only a registry fetch or parse error, up to three attempts with a 5 and 15 second backoff. Every attempt audits with a fresh, empty npm cache, so it fetches from the registry: npm caches attestation responses for a year and CI restores the npm cache between runs. A package that fails verification still fails the step on the first report, and any other error fails at once (#646).
 
 ## Maintenance review
 

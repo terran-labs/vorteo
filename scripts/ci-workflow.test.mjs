@@ -1,12 +1,20 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { relative as relativePath } from "node:path";
 import test from "node:test";
 import { isVersionOnlyChange } from "./ci-neutralize-version-bumps.mjs";
-import { AUDIT_COMMAND, runAuditWithRetry } from "./npm-audit-signatures.mjs";
+import { AUDIT_COMMAND, auditInFreshCache, runAuditWithRetry } from "./npm-audit-signatures.mjs";
 import { runInNewContext } from "node:vm";
 
 const repoRoot = new URL("../", import.meta.url);
@@ -1233,10 +1241,8 @@ test("dependency signature audit retries only a transient registry fetch error",
     let calls = 0;
     const waits = [];
     const exitCode = await runAuditWithRetry({
-      runAttempt: async ({ attempt, freshCache }) => {
+      runAttempt: async () => {
         calls++;
-        // Only a retry bypasses the npm cache, which may hold the bad response.
-        assert.equal(freshCache, attempt > 1);
         return queue.shift();
       },
       wait: async (ms) => waits.push(ms),
@@ -1269,6 +1275,19 @@ test("dependency signature audit retries only a transient registry fetch error",
     ]),
     { exitCode: 1, calls: 1, waits: [] },
   );
+  // Every attempt audits in its own empty npm cache, removed afterwards: a restored ~/.npm may
+  // hold the bad body, and a signature check should not trust it.
+  const caches = [];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await auditInFreshCache(async (args) => {
+      assert.equal(args[0], "--cache");
+      assert.deepEqual(readdirSync(args[1]), []);
+      caches.push(args[1]);
+      return { output: AUDIT_PASS, exitCode: 0 };
+    });
+  }
+  assert.notEqual(caches[0], caches[1]);
+  assert.ok(caches.every((cache) => !existsSync(cache)));
   // A fault that persists fails after three attempts.
   assert.deepEqual(await audit([fault, fault, fault, fault]), {
     exitCode: 1,
