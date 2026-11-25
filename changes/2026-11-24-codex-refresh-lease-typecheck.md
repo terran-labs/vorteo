@@ -1,7 +1,7 @@
 ### Maintenance
 
-- Fixed the server build for the Host Codex refresh lease from the previous change: the lease and the agent manager each refer to the other at startup, which the `tsc` build could not infer, so the lease now has an explicit type. No behavior change (#563).
+- Moved the Host Codex refresh lease from the previous change out of the generic server bootstrap: the installation account consumers now create it from a provider-neutral session activity callback and return a neutral start hold to the agent manager. The bootstrap names no provider again, as its architecture test requires, and the circular type inference that broke the `tsc` server build is gone. No behavior change (#563).
 
 ## Maintenance review
 
-Type annotation only in the daemon bootstrap; no inventory entry changes. README overview and onboarding are unchanged. Not published.
+Wiring only, in the daemon bootstrap and the account consumer module; no inventory entry changes. README overview and onboarding are unchanged. Not published.
