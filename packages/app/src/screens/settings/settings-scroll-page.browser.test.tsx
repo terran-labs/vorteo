@@ -106,11 +106,16 @@ it.each([1280, 390])(
       for (const nonce of [1, 2, 3]) {
         act(() => root.render(<Harness nonce={nonce} />));
         await new Promise((resolve) => setTimeout(resolve, 2500));
-        // The page fills the top of the viewport, so the heading's viewport top is its landing.
-        const heading = document.querySelector<HTMLElement>('[data-testid="health-heading"]')!;
-        const top = heading.getBoundingClientRect().top;
-        expect(top, `click ${nonce}`).toBeGreaterThanOrEqual(0);
-        expect(top, `click ${nonce}`).toBeLessThanOrEqual(40);
+        // The heading is fully in view at the top, and the section above it has scrolled away.
+        const heading = document
+          .querySelector<HTMLElement>('[data-testid="health-heading"]')!
+          .getBoundingClientRect();
+        const previous = document
+          .getElementById("settings-section-title-general")
+          ?.getBoundingClientRect();
+        expect(heading.top, `click ${nonce}`).toBeGreaterThanOrEqual(0);
+        expect(heading.bottom, `click ${nonce}`).toBeLessThanOrEqual(window.innerHeight / 4);
+        expect(previous?.bottom ?? 0, `click ${nonce}`).toBeLessThanOrEqual(0);
       }
     } finally {
       act(() => root.unmount());

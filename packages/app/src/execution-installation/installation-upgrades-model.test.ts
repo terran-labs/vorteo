@@ -136,30 +136,58 @@ describe("safety snapshots", () => {
 });
 
 describe("release upgrades", () => {
-  // #639: a failure the installation has already moved past no longer asks for the owner.
+  // #639: a forward failure the installation has moved past no longer asks for the owner. A
+  // failure to the installed release itself, or an owner-requested one that may be a rollback,
+  // still does.
   it.each([
-    ["an older release than the installed one", "release-26.11.600-beta", "release-26.11.2400", 0],
-    ["the installed release itself", "release-26.11.2400", "release-26.11.2400", 0],
     [
-      "the beta of the installed stable release",
-      "release-26.11.2400-beta",
+      "update check, older than installed",
+      "release-26.11.600-beta",
       "release-26.11.2400",
+      "update-check",
       0,
     ],
-    ["a newer release than the installed one", "release-26.12.100", "release-26.11.2400", 1],
     [
-      "the stable release after an installed beta",
+      "update check, the installed release itself",
       "release-26.11.2400",
-      "release-26.11.2400-beta",
+      "release-26.11.2400",
+      "update-check",
       1,
     ],
-  ])("a failed upgrade to %s", (_name, target, installed, open) => {
-    const failed = upgrade("failed", "2026-11-06T00:00:00.000Z", target);
+    [
+      "update check, beta of the installed stable",
+      "release-26.11.2400-beta",
+      "release-26.11.2400",
+      "update-check",
+      0,
+    ],
+    [
+      "update check, newer than installed",
+      "release-26.12.100",
+      "release-26.11.2400",
+      "update-check",
+      1,
+    ],
+    [
+      "owner request to an older release (a rollback)",
+      "release-26.11.600",
+      "release-26.11.2400",
+      "owner",
+      1,
+    ],
+  ])("a failed upgrade (%s)", (_name, target, installed, origin, open) => {
+    const failed = {
+      ...upgrade("failed", "2026-11-06T00:00:00.000Z", target),
+      origin,
+    } as InstallationUpgrade;
     expect(upgradesStillOpen(upgrades([failed], installed))).toHaveLength(open);
   });
 
   it("measures a source update ahead of a release from that release", () => {
-    const failed = upgrade("failed", "2026-11-06T00:00:00.000Z", "release-26.11.600-beta");
+    const failed = {
+      ...upgrade("failed", "2026-11-06T00:00:00.000Z", "release-26.11.600-beta"),
+      automatic: true,
+    };
     const status = upgrades([failed], null);
     status.current = {
       sourceCommit: "c".repeat(40),

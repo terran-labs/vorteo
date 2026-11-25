@@ -504,25 +504,38 @@ export function SettingsScrollPage({
       let lastTop = node.scrollTop;
       let lastHeight = node.scrollHeight;
       let quietSince = started;
+      // Null while the jump's own animated scroll runs. Afterwards, the last position this hold
+      // set: any other move, such as a scrollbar drag or momentum after a gesture, is the reader's.
+      let ownTop: number | null = null;
       const tick = () => {
+        if (Date.now() - started >= LANDING_HOLD_MS) {
+          releaseLanding();
+          return;
+        }
         const offset = targetOffset(target);
         const moving = node.scrollTop !== lastTop;
+        const layoutChanged = node.scrollHeight !== lastHeight;
         lastTop = node.scrollTop;
-        if (node.scrollHeight !== lastHeight) {
-          lastHeight = node.scrollHeight;
-          quietSince = Date.now();
+        lastHeight = node.scrollHeight;
+        if (layoutChanged) quietSince = Date.now();
+        if (ownTop === null) {
+          if (moving) return;
+          ownTop = node.scrollTop;
+        } else if (Math.abs(node.scrollTop - ownTop) > 1 && !layoutChanged) {
+          // Browser scroll anchoring moves the position only with a layout change.
+          releaseLanding();
+          return;
         }
-        if (offset && !moving) {
+        if (offset) {
           const wanted = Math.max(0, Math.min(offset.y, node.scrollHeight - node.clientHeight));
           if (Math.abs(node.scrollTop - wanted) > 2) {
             scrollTo(wanted, false);
-            lastTop = node.scrollTop;
             quietSince = Date.now();
           }
         }
-        const now = Date.now();
-        const settled = !moving && now - quietSince >= LANDING_QUIET_MS;
-        if (settled || now - started >= LANDING_HOLD_MS) releaseLanding();
+        ownTop = node.scrollTop;
+        lastTop = node.scrollTop;
+        if (Date.now() - quietSince >= LANDING_QUIET_MS) releaseLanding();
       };
       const timer = setInterval(tick, LANDING_TICK_MS);
       // The reader takes over with any gesture, key or focus change of their own; the jump's
