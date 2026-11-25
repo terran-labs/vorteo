@@ -1,7 +1,7 @@
 import { ExecutionEnvironmentIcon } from "@/execution-installation/environment-icon";
 import { EnvironmentPresetMenu } from "./environment-preset-menu";
 import { AccountDisconnectedIcon } from "@/provider-usage/reconnect-control";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { AgentProfile } from "@getpaseo/protocol/messages";
 import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import { Text, View } from "react-native";
@@ -71,10 +71,30 @@ interface PresetControlsProps {
   openRequested?: boolean;
   onOpenRequestHandled?: () => void;
   /**
-   * Where the desktop picker opens. Above suits the composer at the bottom of the screen; a
-   * control near the top of a page opens below, where the picker can flip if there is no room.
+   * Where the desktop picker opens. Above suits the composer at the bottom of the screen. "fit"
+   * suits a control anywhere on a page: the picker opens on the side with room for it and, when
+   * neither side has, takes the larger one at that height, so its Activate button stays visible.
    */
-  desktopPlacement?: ComboboxDesktopPlacement;
+  desktopPlacement?: ComboboxDesktopPlacement | "fit";
+}
+
+const PICKER_HEIGHT = 520;
+// The combobox's collision padding and offset, so a fitted picker never touches the window edge.
+const PICKER_MARGIN = 16;
+// Below this the picker's columns stop being usable, so it keeps this height and the page scrolls.
+const PICKER_MIN_HEIGHT = 280;
+
+/** The side and height a picker anchored at `top`..`bottom` fits in a window `windowHeight` tall. */
+export function fitPresetPicker(input: { top: number; bottom: number; windowHeight: number }): {
+  placement: ComboboxDesktopPlacement;
+  height: number;
+} {
+  const below = input.windowHeight - input.bottom - PICKER_MARGIN;
+  const above = input.top - PICKER_MARGIN;
+  if (below >= PICKER_HEIGHT) return { placement: "bottom-start", height: PICKER_HEIGHT };
+  if (above >= PICKER_HEIGHT) return { placement: "top-start", height: PICKER_HEIGHT };
+  const placement = below >= above ? "bottom-start" : "top-start";
+  return { placement, height: Math.max(PICKER_MIN_HEIGHT, Math.max(below, above)) };
 }
 export function activePresetPicker(input: {
   enabled?: boolean;
@@ -97,6 +117,34 @@ function selectedReasoning(input: {
     model: input.currentModel ?? input.definition?.model,
     thinkingOptionId: input.currentThinkingOptionId ?? input.definition?.thinkingOptionId,
   });
+}
+
+/** Opens the picker, first fitting it to the window when the placement is "fit". */
+function usePickerFit(
+  desktopPlacement: ComboboxDesktopPlacement | "fit",
+  anchorRef: RefObject<View | null>,
+  setOpen: (open: boolean) => void,
+) {
+  const { height: windowHeight } = useWindowDimensions();
+  const [fitted, setFitted] = useState<ReturnType<typeof fitPresetPicker> | null>(null);
+  const show = useCallback(() => {
+    const anchor = anchorRef.current;
+    if (desktopPlacement !== "fit" || !anchor) {
+      setOpen(true);
+      return;
+    }
+    anchor.measureInWindow((_x, y, _width, height) => {
+      setFitted(fitPresetPicker({ top: y, bottom: y + height, windowHeight }));
+      setOpen(true);
+    });
+  }, [anchorRef, desktopPlacement, setOpen, windowHeight]);
+  if (desktopPlacement !== "fit")
+    return { show, placement: desktopPlacement, height: PICKER_HEIGHT };
+  return {
+    show,
+    placement: fitted?.placement ?? ("bottom-start" as const),
+    height: fitted?.height ?? PICKER_HEIGHT,
+  };
 }
 
 export function PresetControls({
@@ -200,9 +248,8 @@ export function PresetControls({
       resetCounts,
       reasoningLabel: reasoning?.label,
     });
-  const show = useCallback(() => {
-    setOpen(true);
-  }, [setOpen]);
+  const fit = usePickerFit(desktopPlacement, anchorRef, setOpen);
+  const show = fit.show;
   const select = useCallback(
     (
       id: string,
@@ -271,9 +318,9 @@ export function PresetControls({
         anchorRef={anchorRef}
         title=""
         mobileSnapPoints={PROFILE_SNAP_POINTS}
-        desktopPlacement={desktopPlacement}
+        desktopPlacement={fit.placement}
         desktopMinWidth={Math.min(1040, width - 32)}
-        desktopFixedHeight={520}
+        desktopFixedHeight={fit.height}
         desktopPreventInitialFlash
         desktopLockWidth
         desktopChildrenScrollEnabled={false}

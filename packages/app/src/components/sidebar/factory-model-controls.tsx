@@ -227,7 +227,7 @@ function ModelPicker({
         profiles={picker}
         selectedProfileId={selected ?? undefined}
         disabled={pending}
-        desktopPlacement="bottom-start"
+        desktopPlacement="fit"
       />
       <Button variant="secondary" disabled={pending || !selected} onPress={clear}>
         {t("projectFactory.defaultModel")}

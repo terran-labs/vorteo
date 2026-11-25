@@ -1,5 +1,6 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { Page } from "@playwright/test";
 import { expect, test } from "../support/fixtures";
 import { connectNewWorkspaceDaemonClient } from "../support/helpers/new-workspace";
 import { getServerId } from "../support/helpers/server-id";
@@ -34,11 +35,31 @@ async function seedPausedFactory(projectId: string): Promise<void> {
   );
 }
 
-async function savedPlannerProfile(projectId: string): Promise<unknown> {
+type StageField = "plannerProfileId" | "workerProfileId" | "reviewerProfileId";
+
+async function savedStageProfile(projectId: string, field: StageField): Promise<unknown> {
   const state = JSON.parse(await readFile(factoryStateFile(), "utf8")) as {
-    projects: Record<string, { workers: { plannerProfileId?: unknown } }>;
+    projects: Record<string, { workers: Partial<Record<StageField, unknown>> }>;
   };
-  return state.projects[projectId]?.workers.plannerProfileId ?? null;
+  return state.projects[projectId]?.workers[field] ?? null;
+}
+
+/** Chooses the E2E mock profile in an open profile picker, desktop popover or phone sheet. */
+async function chooseMockProfile(page: Page): Promise<void> {
+  const account = page.getByTestId("preset-account-mock").filter({ visible: true }).first();
+  if (!(await account.isVisible())) {
+    await page.getByTestId("preset-section-account").filter({ visible: true }).first().click();
+  }
+  await account.click();
+  await page
+    .locator('[data-testid^="preset-row-"]')
+    .filter({ hasText: "E2E mock", visible: true })
+    .first()
+    .click();
+  const use = page.getByTestId("preset-use-profile").filter({ visible: true }).first();
+  // The owner must be able to reach Activate without scrolling the page under the picker.
+  await expect(use).toBeInViewport({ ratio: 1 });
+  await use.click();
 }
 
 test("per-project Factory Overview opens on desktop and compact", async ({ page }, testInfo) => {
@@ -84,38 +105,39 @@ test("per-project Factory Overview opens on desktop and compact", async ({ page 
   }
 });
 
-// The owner's check from #360: change a stage model in the Factory's settings and change it back.
-test("a Factory's settings change a stage model and change it back", async ({ page }) => {
+// The owner's check from #360: change each stage model in the Factory's settings and change it
+// back, in a short desktop window and on a phone.
+test("a Factory's settings change each stage model and change it back", async ({ page }) => {
+  test.setTimeout(240_000);
   const { seedWorkspace } = await import("../support/helpers/seed-client");
   const workspace = await seedWorkspace({ repoPrefix: "factory-settings-" });
   const client = await connectNewWorkspaceDaemonClient({ ownProjects: false });
   const previous = await client.getDaemonConfig();
   await seedPausedFactory(workspace.projectId);
+  const stagesInOrder: StageField[] = ["plannerProfileId", "workerProfileId", "reviewerProfileId"];
   try {
     await client.patchDaemonConfig({ pluginsEnabled: true });
-    // The profile picker is 520 pixels tall; a desktop-height window fits it below the Plan row.
-    await page.setViewportSize({ width: 1280, height: 1000 });
-    await page.goto(`/h/${getServerId()}/factory/${workspace.projectId}`);
-    await page.getByTestId("factory-settings-open").filter({ visible: true }).first().click();
-    await expect(page).toHaveURL(
-      new RegExp(`/h/${getServerId()}/factory/${workspace.projectId}/settings$`),
-    );
-    const stages = page.getByTestId("factory-issue-stages").filter({ visible: true }).first();
-    const plan = stages.getByTestId("preset-controls").first();
-
-    await plan.getByTestId("agent-preset-selector").click();
-    await page.getByTestId("preset-account-mock").click();
-    await page
-      .locator('[data-testid^="preset-row-"]')
-      .filter({ hasText: "E2E mock" })
-      .first()
-      .click();
-    await page.getByTestId("preset-use-profile").click();
-    await expect.poll(() => savedPlannerProfile(workspace.projectId)).not.toBeNull();
-    await expect(stages.getByText("E2E mock").first()).toBeVisible();
-
-    await stages.getByRole("button", { name: "Default", exact: true }).first().click();
-    await expect.poll(() => savedPlannerProfile(workspace.projectId)).toBeNull();
+    for (const viewport of [
+      { width: 1280, height: 720 },
+      { width: 390, height: 844 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.goto(`/h/${getServerId()}/factory/${workspace.projectId}`);
+      await page.getByTestId("factory-settings-open").filter({ visible: true }).first().click();
+      await expect(page).toHaveURL(
+        new RegExp(`/h/${getServerId()}/factory/${workspace.projectId}/settings$`),
+      );
+      const stages = page.getByTestId("factory-issue-stages").filter({ visible: true }).first();
+      for (const [index, field] of stagesInOrder.entries()) {
+        const picker = stages.getByTestId("preset-controls").nth(index);
+        await picker.scrollIntoViewIfNeeded();
+        await picker.getByTestId("agent-preset-selector").click();
+        await chooseMockProfile(page);
+        await expect.poll(() => savedStageProfile(workspace.projectId, field)).not.toBeNull();
+        await stages.getByRole("button", { name: "Default", exact: true }).nth(index).click();
+        await expect.poll(() => savedStageProfile(workspace.projectId, field)).toBeNull();
+      }
+    }
     await expect(page.getByText("factory_owner_only")).toHaveCount(0);
   } finally {
     await rm(factoryStateFile(), { force: true });
