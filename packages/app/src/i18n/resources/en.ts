@@ -557,6 +557,8 @@ export const en = {
       implement: "Implement",
       question: "How would you like to proceed?",
       proposedPlan: "Proposed plan",
+      questionNotFound: "Couldn't find where this question was asked in the conversation.",
+      approvalNotFound: "Couldn't find where this approval was requested in the conversation.",
     },
   },
   agentPanel: {

@@ -73,6 +73,8 @@ import type {
 } from "@getpaseo/protocol/agent-types";
 import type { AgentScreenAgent } from "@/hooks/use-agent-screen-state-machine";
 import { useSessionStore } from "@/stores/session-store";
+import { useConversationTarget } from "@/open-questions/conversation-target";
+import { useJumpToPosition } from "./use-jump-to-position";
 import { useRevealedText } from "@/hooks/use-revealed-text";
 import { useFileExplorerActions } from "@/hooks/use-file-explorer-actions";
 import { useLoadOlderAgentHistory } from "@/hooks/use-load-older-agent-history";
@@ -791,6 +793,41 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       mountedHistoryMessageIds,
       revealLoadedMessage: revealOutlineMessage,
     });
+
+    // "Open" outside the thread lands where the question or approval was asked (#660).
+    const conversationTarget = useConversationTarget(resolvedServerId, agentId);
+    const conversationTargetKindRef = useRef<"question" | "permission">("question");
+    const handleConversationTargetMissing = useCallback(() => {
+      toast?.show(
+        t(
+          conversationTargetKindRef.current === "permission"
+            ? "agentStream.permission.approvalNotFound"
+            : "agentStream.permission.questionNotFound",
+        ),
+        { testID: "conversation-target-not-found" },
+      );
+    }, [t, toast]);
+    const jumpToPosition = useJumpToPosition({
+      agentId,
+      serverId: resolvedServerId,
+      timelineEpoch,
+      tail: effectiveStreamItems,
+      head: effectiveStreamHead,
+      viewportRef,
+      mountedHistoryMessageIds,
+      revealLoadedMessage: revealOutlineMessage,
+      onMissing: handleConversationTargetMissing,
+      onError: handleTimelineHistoryLoadError,
+    });
+    const handledConversationTargetRef = useRef<number | null>(null);
+    useEffect(() => {
+      if (!conversationTarget || timelineEpoch === null) return;
+      if (handledConversationTargetRef.current === conversationTarget.requestId) return;
+      handledConversationTargetRef.current = conversationTarget.requestId;
+      conversationTargetKindRef.current = conversationTarget.kind;
+      if (conversationTarget.seq === null) handleConversationTargetMissing();
+      else jumpToPosition(conversationTarget.seq);
+    }, [conversationTarget, handleConversationTargetMissing, jumpToPosition, timelineEpoch]);
 
     useImperativeHandle(
       ref,

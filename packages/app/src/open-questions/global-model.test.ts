@@ -150,3 +150,34 @@ test("counts an installation update that waits for the owner, but not one in pro
   expect(globalOpenQuestionCount([], { kind: "notice", upgrade })).toBe(1);
   expect(globalOpenQuestionCount(threads, { kind: "progress", upgrade })).toBe(1);
 });
+
+// #660: "Open" in the global card lands on the question it belongs to, not the latest message.
+test("opening a question targets that question and where it was asked", async () => {
+  const { openConversationTarget, useConversationTargetStore } =
+    await import("./conversation-target");
+  const navigations: unknown[] = [];
+  const navigate = (input: unknown) => navigations.push(input);
+  const first = openConversationTarget(
+    { serverId: "host", agentId: "lead", kind: "question", id: "q-1", seq: 40 },
+    navigate,
+  );
+  const second = openConversationTarget(
+    { serverId: "host", agentId: "lead", kind: "question", id: "q-2", seq: 72 },
+    navigate,
+  );
+  expect(navigations).toEqual([
+    { serverId: "host", agentId: "lead" },
+    { serverId: "host", agentId: "lead" },
+  ]);
+  // Each question carries its own id and position; the latest open wins.
+  expect(useConversationTargetStore.getState().target).toEqual({
+    serverId: "host",
+    agentId: "lead",
+    kind: "question",
+    id: "q-2",
+    seq: 72,
+    requestId: second.requestId,
+  });
+  expect(second.requestId).not.toBe(first.requestId);
+  useConversationTargetStore.getState().clear(second.requestId);
+});

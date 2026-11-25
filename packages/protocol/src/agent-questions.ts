@@ -75,6 +75,9 @@ export const AgentQuestionSchema = z.object({
   input: QuestionInputSchema.optional(),
   recommendedOptionIds: z.array(z.string()).max(12).optional(),
   askedAt: z.string().datetime(),
+  // COMPAT(agentQuestionAskedSeq): added November 2026; the thread's latest timeline position when
+  // the question was asked, so a client can show where it was asked. Absent on older questions.
+  askedSeq: z.number().int().nonnegative().optional(),
   askedBy: z.string(),
   status: AgentQuestionStatusSchema,
   answer: z.string().optional(),

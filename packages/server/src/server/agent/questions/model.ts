@@ -32,6 +32,8 @@ interface AskContext {
   askedBy: string;
   now: string;
   taskIds: ReadonlySet<string>;
+  /** The thread's latest timeline position, recorded on a new question. */
+  askedSeq?: number;
 }
 
 /** What the owner's client sends. Option fields come only from clients that render typed inputs. */
@@ -241,6 +243,7 @@ export function mutateQuestions(
         ? { recommendedOptionIds: mutation.recommendedOptionIds }
         : {}),
       askedAt: context.now,
+      ...(context.askedSeq !== undefined ? { askedSeq: context.askedSeq } : {}),
       askedBy: context.askedBy,
       status: "open",
     };

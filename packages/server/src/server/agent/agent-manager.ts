@@ -6433,7 +6433,13 @@ export class AgentManager {
     mutation: import("@getpaseo/protocol/agent-questions").QuestionMutation,
   ): Promise<import("@getpaseo/protocol/agent-questions").AgentQuestion[]> {
     const agent = this.requireAgent(agentId);
-    const questions = await this.requireRegistry().mutateQuestions(agentId, mutation);
+    // Where the question was asked, so the owner's client can open the conversation there.
+    const askedSeq = this.timelineStore.has(agentId)
+      ? (this.timelineStore.getLatestSeq(agentId) ?? undefined)
+      : undefined;
+    const questions = await this.requireRegistry().mutateQuestions(agentId, mutation, {
+      askedSeq,
+    });
     agent.questions = questions;
     this.emitState(agent, { persist: false });
     return structuredClone(questions);
