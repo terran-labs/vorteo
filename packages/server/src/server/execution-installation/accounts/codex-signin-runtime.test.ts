@@ -543,6 +543,28 @@ it("stops delivering on a manual rebind or a changed Dev home", async () => {
   expect(h.deliveries).toHaveLength(delivered);
   expect(h.legacyCalls("restore")).toEqual([]);
 
+  // A first projection Dev refuses fails the adoption and stops delivering entirely.
+  const refused = legacyHarness();
+  refused.dev.refusal = "existing_sign_in";
+  await refused.runtime.adopt("one");
+  await refused.runtime.reconcile();
+  expect(refused.runtime.adoption("one")?.status).toBe("failed");
+  refused.dev.refusal = null;
+  await refused.runtime.reconcile();
+  const settled = refused.deliveries.length;
+  // Once a refresh comes due, a refresher left running would fail on the retired policy.
+  refused.setGrant({ expiresAt: refused.now() + 20 * 60_000 });
+  refused.advance(10 * 60_000);
+  await refused.runtime.reconcile();
+  expect(refused.deliveries).toHaveLength(settled);
+  const records = JSON.parse(
+    readFileSync(join(refused.stateDir, "codex-signin", "state.json"), "utf8"),
+  ) as Array<{ definitionId: string; signedIn: boolean; failureReason?: string }>;
+  const record = records.find((item) => item.definitionId === "one");
+  expect(record).toMatchObject({ signedIn: false });
+  expect(record?.failureReason).toBeUndefined();
+  expect(refused.cli.logout).not.toHaveBeenCalled();
+
   const moved = legacyHarness();
   await adopted(moved);
   moved.dev.refusal = "target_changed";
@@ -640,7 +662,8 @@ it("never holds a lease through a slow startup and aborts a refresh that outruns
 });
 
 it("deletes the saved sign-in only when retention ends", async () => {
-  const h = legacyHarness({ retention: { mode: "days", provenDays: 7, capDays: 30 } });
+  // The owner's rule is the default: 7 days after proven, 30 days at most.
+  const h = legacyHarness();
   await adopted(h);
   // Not proven: the 30-day cap decides.
   h.advance(29 * DAY);
@@ -651,7 +674,7 @@ it("deletes the saved sign-in only when retention ends", async () => {
   expect(h.legacyCalls("forget-copy")).toHaveLength(1);
 
   // Proven: a Host refresh Dev acknowledged, then a clean Dev usage read, starts 7 days.
-  const proven = legacyHarness({ retention: { mode: "days", provenDays: 7, capDays: 30 } });
+  const proven = legacyHarness();
   await adopted(proven);
   proven.setGrant({ accessToken: "synthetic-renewed", expiresAt: proven.now() + 20 * DAY });
   proven.advance(6 * 60_000);

@@ -198,7 +198,8 @@ export const InstallationConfigSchema = z.strictObject({
   codexHostRefresh: z.boolean().optional(),
   /**
    * How long Dev keeps the local Codex sign-in an adoption replaced, so un-adopt can restore it.
-   * Absent means `until-unadopt`. See `codexAdoptionRetention`.
+   * Absent means 7 days after the adoption is proven, and 30 days at most. See
+   * `codexAdoptionRetention`.
    */
   codexAdoptionRetention: CodexAdoptionRetentionSchema.extend({
     /** For another person's account, for example `none`. */
@@ -305,7 +306,18 @@ export function remoteAccess(config: Pick<InstallationConfig, "access">): "tails
 
 export type CodexAdoptionRetention = z.infer<typeof CodexAdoptionRetentionSchema>;
 
-/** The rule for one adopted definition; the owner decides, so the default keeps everything. */
+/**
+ * The owner's rule (2026-11-24): delete Dev's saved sign-in 7 days after the adoption is proven,
+ * and 30 days after the first projection regardless. It applies to every adopted account unless
+ * the installation configuration sets another rule.
+ */
+export const DEFAULT_CODEX_ADOPTION_RETENTION: CodexAdoptionRetention = {
+  mode: "days",
+  provenDays: 7,
+  capDays: 30,
+};
+
+/** The rule for one adopted definition: its override, the installation's rule, or the default. */
 export function codexAdoptionRetention(
   config: Pick<InstallationConfig, "codexAdoptionRetention">,
   definitionId: string,
@@ -313,7 +325,7 @@ export function codexAdoptionRetention(
   const configured = config.codexAdoptionRetention;
   const override = configured?.definitions?.[definitionId];
   if (override) return override;
-  if (!configured) return { mode: "until-unadopt", provenDays: 0, capDays: 0 };
+  if (!configured) return DEFAULT_CODEX_ADOPTION_RETENTION;
   return { mode: configured.mode, provenDays: configured.provenDays, capDays: configured.capDays };
 }
 

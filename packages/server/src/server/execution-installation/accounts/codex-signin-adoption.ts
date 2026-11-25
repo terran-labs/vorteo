@@ -502,7 +502,13 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
     reconcile(): Promise<void> {
       return serialized(async () => {
         for (const record of deps.journal.read()) {
-          if (record.status === "failed" || record.status === "unadopted") continue;
+          if (record.status === "failed") {
+            // A first projection Dev refused fails the record inside the refresher's own
+            // delivery, where it cannot retire it. Retire it here so it stops delivering.
+            await deps.refresher.retire(record.definitionId).catch(() => {});
+            continue;
+          }
+          if (record.status === "unadopted") continue;
           if (record.status === "cancelled") continue;
           await step(record);
         }
