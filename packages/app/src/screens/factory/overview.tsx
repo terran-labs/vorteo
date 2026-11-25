@@ -131,7 +131,7 @@ function ProjectOverview({ serverId, projectId }: Target) {
   const { plugin, availability } = useFactoryPlugin(serverId);
   const scope = useMemo(() => ({ kind: "project" as const, projectId }), [projectId]);
   const name = useProjectNames()(serverId, projectId);
-  const loading = !factory.data && !factory.error && availability !== "offline";
+  const loading = !factory.data && !factory.error;
   const showsUnavailable = availability === "unavailable" || availability === "offline";
   const live = factory.data && factory.data.state !== "off" && plugin;
   const actions = useMemo(

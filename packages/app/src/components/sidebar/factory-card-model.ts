@@ -16,12 +16,13 @@ export function factoryCardKey(serverId: string, projectId: string): string {
 
 /**
  * Which Factory overview a pathname shows: `/h/<server>/factory` is All Factories (projectId
- * null) and `/h/<server>/factory/<project>` is one project's. Anything else is null.
+ * null) and `/h/<server>/factory/<project>` is one project's, as is its `/settings` page.
+ * Anything else is null.
  */
 export function factoryOverviewPathTarget(
   pathname: string | null | undefined,
 ): { serverId: string; projectId: string | null } | null {
-  const match = /^\/h\/([^/]+)\/factory(?:\/([^/]+))?\/?$/.exec(pathname ?? "");
+  const match = /^\/h\/([^/]+)\/factory(?:\/([^/]+)(?:\/settings)?)?\/?$/.exec(pathname ?? "");
   if (!match) return null;
   try {
     return {

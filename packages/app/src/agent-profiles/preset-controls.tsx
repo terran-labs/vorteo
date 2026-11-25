@@ -9,7 +9,7 @@ import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
-import { Combobox } from "@/components/ui/combobox";
+import { Combobox, type ComboboxDesktopPlacement } from "@/components/ui/combobox";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { usePresetData } from "./use-preset-data";
 import type { AgentProfilePicker } from "./internal/use-agent-profile-picker";
@@ -70,6 +70,11 @@ interface PresetControlsProps {
   /** Opens the picker on behalf of an action outside the composer. */
   openRequested?: boolean;
   onOpenRequestHandled?: () => void;
+  /**
+   * Where the desktop picker opens. Above suits the composer at the bottom of the screen; a
+   * control near the top of a page opens below, where the picker can flip if there is no room.
+   */
+  desktopPlacement?: ComboboxDesktopPlacement;
 }
 export function activePresetPicker(input: {
   enabled?: boolean;
@@ -107,6 +112,7 @@ export function PresetControls({
   disabled,
   openRequested = false,
   onOpenRequestHandled,
+  desktopPlacement = "top-start",
 }: PresetControlsProps) {
   const [openedHere, setOpenedHere] = useState(false);
   const open = openedHere || openRequested;
@@ -265,7 +271,7 @@ export function PresetControls({
         anchorRef={anchorRef}
         title=""
         mobileSnapPoints={PROFILE_SNAP_POINTS}
-        desktopPlacement="top-start"
+        desktopPlacement={desktopPlacement}
         desktopMinWidth={Math.min(1040, width - 32)}
         desktopFixedHeight={520}
         desktopPreventInitialFlash
