@@ -124,9 +124,44 @@ export function failedUpgradesNeedingReview(
   status: UpgradeStatus | null | undefined,
 ): InstallationUpgrade[] {
   if (!status) return [];
-  return recordsNeedingReview(newestUpgrades(status), upgradeTarget).filter(
-    (upgrade) => upgrade.status === "failed",
-  );
+  return recordsNeedingReview(
+    newestUpgrades({ ...status, upgrades: upgradesStillOpen(status) }),
+    upgradeTarget,
+  ).filter((upgrade) => upgrade.status === "failed");
+}
+
+const RELEASE_PARTS = /^release-(\d+)\.(\d+)\.(\d+)(-beta)?$/;
+
+/**
+ * Orders two release tags by calendar version; a beta sorts just before the stable release of
+ * the same version. Null when either tag is not a release tag.
+ */
+export function compareReleases(left: string, right: string): number | null {
+  const a = RELEASE_PARTS.exec(left);
+  const b = RELEASE_PARTS.exec(right);
+  if (!a || !b) return null;
+  for (const index of [1, 2, 3]) {
+    const difference = Number(a[index]) - Number(b[index]);
+    if (difference) return difference;
+  }
+  return (a[4] ? 0 : 1) - (b[4] ? 0 : 1);
+}
+
+/**
+ * The status's upgrades without failures the installation has already moved past: one whose
+ * target release is at or below the installed release, however that release was installed
+ * (a later upgrade, a source update or a reinstall). The failure stays in the journal.
+ */
+export function upgradesStillOpen(status: UpgradeStatus | null | undefined): InstallationUpgrade[] {
+  if (!status) return [];
+  // A source update ahead of a release reports that release in `aheadOf`, and is past it.
+  const installed = status.current?.release ?? status.current?.aheadOf ?? null;
+  if (!installed) return status.upgrades;
+  return status.upgrades.filter((upgrade) => {
+    if (upgrade.status !== "failed" || !upgrade.release) return true;
+    const order = compareReleases(upgrade.release, installed);
+    return order === null || order > 0;
+  });
 }
 
 /**

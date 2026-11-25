@@ -1,6 +1,7 @@
 import { toErrorMessage } from "@/utils/error-messages";
 import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { useAgentActionReceipts, useInstallationUpgradeStatus } from "./use-installation-upgrades";
+import { upgradesStillOpen } from "./installation-upgrades-model";
 import type { AgentActionReceipt } from "@getpaseo/protocol/installation-upgrades";
 import { systemHealthItems } from "@/screens/settings/system/health-model";
 import { useHealthExtrasCount } from "@/screens/settings/system/health-extras";
@@ -2882,7 +2883,7 @@ function SystemAttentionNoticeBody({
   // The Health list's rows: the installation rows read here, plus the provider, primary
   // connection and update rows the list last published. No provider query runs from here.
   const extras = useHealthExtrasCount();
-  const count = systemHealthItems(state, upgrades.data?.upgrades).length + extras;
+  const count = systemHealthItems(state, upgradesStillOpen(upgrades.data)).length + extras;
   if (!count) return null;
   const label = `System needs attention (${count})`;
   if (rail)

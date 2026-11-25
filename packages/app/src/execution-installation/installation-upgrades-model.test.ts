@@ -25,6 +25,7 @@ import {
   upgradeApprovalText,
   upgradeOffer,
   upgradeStepRows,
+  upgradesStillOpen,
 } from "./installation-upgrades-model";
 import { coordinatorSettingsView } from "./coordinator-settings-model";
 
@@ -135,6 +136,40 @@ describe("safety snapshots", () => {
 });
 
 describe("release upgrades", () => {
+  // #639: a failure the installation has already moved past no longer asks for the owner.
+  it.each([
+    ["an older release than the installed one", "release-26.11.600-beta", "release-26.11.2400", 0],
+    ["the installed release itself", "release-26.11.2400", "release-26.11.2400", 0],
+    [
+      "the beta of the installed stable release",
+      "release-26.11.2400-beta",
+      "release-26.11.2400",
+      0,
+    ],
+    ["a newer release than the installed one", "release-26.12.100", "release-26.11.2400", 1],
+    [
+      "the stable release after an installed beta",
+      "release-26.11.2400",
+      "release-26.11.2400-beta",
+      1,
+    ],
+  ])("a failed upgrade to %s", (_name, target, installed, open) => {
+    const failed = upgrade("failed", "2026-11-06T00:00:00.000Z", target);
+    expect(upgradesStillOpen(upgrades([failed], installed))).toHaveLength(open);
+  });
+
+  it("measures a source update ahead of a release from that release", () => {
+    const failed = upgrade("failed", "2026-11-06T00:00:00.000Z", "release-26.11.600-beta");
+    const status = upgrades([failed], null);
+    status.current = {
+      sourceCommit: "c".repeat(40),
+      release: null,
+      aheadOf: "release-26.11.600-beta",
+    };
+    expect(upgradesStillOpen(status)).toHaveLength(0);
+    expect(upgradesStillOpen(upgrades([failed], null))).toHaveLength(1);
+  });
+
   it("finds the active and the latest finished upgrade", () => {
     const failed = upgrade("failed", "2026-10-29T00:00:00.000Z");
     const pending = upgrade("pending", "2026-10-30T00:00:00.000Z");
