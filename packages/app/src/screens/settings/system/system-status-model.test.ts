@@ -125,6 +125,10 @@ it("collapses service headlines without creating a ready row", () => {
   expect(deriveSystemServices(ready)).toBe(null);
   expect(deriveSystemServices({ ...ready, activation: "recovery-required" })).toBe("attention");
   expect(deriveSystemServices({ ...ready, activation: "pending" })).toBe("updating");
+  // #639: optional unattended maintenance that the owner left off is not a problem.
+  expect(
+    deriveSystemServices({ ...ready, authority: "not-enrolled", activation: "not-enrolled" }),
+  ).toBe(null);
 });
 
 it.each(["approved", "running"] as const)(
