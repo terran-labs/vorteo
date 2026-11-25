@@ -2,7 +2,7 @@ import type { AgentQuestion } from "@getpaseo/protocol/agent-questions";
 import { useMutation } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, ListTodo } from "lucide-react-native";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { useConversationTarget } from "./conversation-target";
+import { useConversationHighlight } from "./conversation-target";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useShallow } from "zustand/shallow";
@@ -74,7 +74,7 @@ function OpenQuestionsContent({
   const [expanded, setExpanded] = useCardDisclosure("questions");
   const toggle = useCallback(() => setExpanded((value) => !value), [setExpanded]);
   // "Open" in the global card lands here with its question expanded and highlighted (#660).
-  const target = useConversationTarget(serverId, agentId);
+  const target = useConversationHighlight(serverId, agentId);
   const focusedId = target?.kind === "question" ? target.id : null;
   useEffect(() => {
     if (focusedId) setExpanded(true);

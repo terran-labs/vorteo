@@ -78,6 +78,9 @@ export const AgentQuestionSchema = z.object({
   // COMPAT(agentQuestionAskedSeq): added November 2026; the thread's latest timeline position when
   // the question was asked, so a client can show where it was asked. Absent on older questions.
   askedSeq: z.number().int().nonnegative().optional(),
+  // COMPAT(agentQuestionAskedSeq): the timeline epoch askedSeq belongs to. A position from another
+  // epoch names an unrelated item, so clients treat a mismatch as not found.
+  askedEpoch: z.string().optional(),
   askedBy: z.string(),
   status: AgentQuestionStatusSchema,
   answer: z.string().optional(),

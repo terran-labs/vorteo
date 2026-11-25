@@ -173,6 +173,7 @@ function ThreadQuestionGroup({
           kind: "question",
           id: question.id,
           seq: question.askedSeq ?? null,
+          epoch: question.askedEpoch ?? null,
         },
         navigateToAgent,
       );

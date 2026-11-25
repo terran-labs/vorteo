@@ -626,6 +626,15 @@ export interface CreateAgentOptions {
   createdByAgentId?: string | null;
 }
 
+/**
+ * The thread's creator, fixed at creation (#659). Agents create threads through create_agent,
+ * whose parent label at this point is always the authenticated caller (forced, and stripped for
+ * detached threads); a label edited later never moves it. Undefined when nobody created it.
+ */
+function creatorAtCreation(options: CreateAgentOptions): string | undefined {
+  return options.createdByAgentId ?? getParentAgentIdFromLabels(options.labels) ?? undefined;
+}
+
 export interface AgentManagerOptions {
   getSharedProviderConfig?: () => MutableDaemonConfig;
   installationSettingsReader?: InstallationSettingsReader;
@@ -3375,6 +3384,14 @@ export class AgentManager {
     return sessions.length > 0 ? "loaded" : "none";
   }
 
+  /** Titles of the sessions on this provider that start or run a turn; empty when untitled. */
+  providerBusyTitles(provider: AgentProvider): string[] {
+    return Array.from(this.agents.values())
+      .filter((agent) => agent.provider === provider)
+      .filter((agent) => isAgentBusy(agent.lifecycle) || this.runs.hasRun(agent.id))
+      .map((agent) => this.registry?.getLoadedRecord(agent.id)?.title ?? agent.config.title ?? "");
+  }
+
   isProviderInUse(provider: AgentProvider): boolean {
     // A registering session can already own credentials before entering agents.
     // Its final provider is not indexed yet, so defer deletion until registration settles.
@@ -3961,7 +3978,7 @@ export class AgentManager {
       initialTitle: options.initialTitle,
       workspaceId: options.workspaceId,
       owner: options.owner,
-      createdByAgentId: options.createdByAgentId ?? null,
+      createdByAgentId: creatorAtCreation(options),
       launchEnv: options.env ? { ...options.env } : undefined,
       historyPrimed: true,
     });
@@ -6443,11 +6460,15 @@ export class AgentManager {
   ): Promise<import("@getpaseo/protocol/agent-questions").AgentQuestion[]> {
     const agent = this.requireAgent(agentId);
     // Where the question was asked, so the owner's client can open the conversation there.
-    const askedSeq = this.timelineStore.has(agentId)
+    // A sequence number means something only within its epoch, so both are recorded.
+    const hasTimeline = this.timelineStore.has(agentId);
+    const askedSeq = hasTimeline
       ? (this.timelineStore.getLatestSeq(agentId) ?? undefined)
       : undefined;
+    const askedEpoch = hasTimeline ? this.timelineStore.getEpoch(agentId) : undefined;
     const questions = await this.requireRegistry().mutateQuestions(agentId, mutation, {
       askedSeq,
+      askedEpoch,
     });
     agent.questions = questions;
     this.emitState(agent, { persist: false });
@@ -9274,14 +9295,21 @@ export class AgentManager {
     event: Extract<AgentStreamEvent, { type: "permission_requested" }>,
   ): void {
     const hadPendingPermissions = agent.pendingPermissions.size > 0;
-    // Where the request was made, so "Open thread" outside the thread lands on it (#659).
-    const askedSeq = this.timelineStore.has(agent.id)
-      ? this.timelineStore.getLatestSeq(agent.id)
-      : null;
+    // Where the request was made, so "Open thread" outside the thread lands on it (#659). A
+    // position means something only within its timeline epoch, so both are recorded.
+    const hasTimeline = this.timelineStore.has(agent.id);
+    const askedSeq = hasTimeline ? this.timelineStore.getLatestSeq(agent.id) : null;
     const request =
       askedSeq === null
         ? event.request
-        : { ...event.request, metadata: { ...event.request.metadata, askedSeq } };
+        : {
+            ...event.request,
+            metadata: {
+              ...event.request.metadata,
+              askedSeq,
+              askedEpoch: this.timelineStore.getEpoch(agent.id),
+            },
+          };
     agent.pendingPermissions.set(request.id, request);
     this.refreshSessionPersistence(agent);
     if (!hadPendingPermissions && !agent.internal) {

@@ -1,3 +1,5 @@
+import type { StreamItem } from "@/types/stream";
+import { fetchedWindowCovers, findItemAtOrBefore } from "@/agent-stream/jump-position";
 import type { AgentQuestion } from "@getpaseo/protocol/agent-questions";
 import { expect, test } from "vitest";
 import {
@@ -159,11 +161,11 @@ test("opening a question targets that question and where it was asked", async ()
   const navigations: unknown[] = [];
   const navigate = (input: unknown) => navigations.push(input);
   const first = openConversationTarget(
-    { serverId: "host", agentId: "lead", kind: "question", id: "q-1", seq: 40 },
+    { serverId: "host", agentId: "lead", kind: "question", id: "q-1", seq: 40, epoch: "e1" },
     navigate,
   );
   const second = openConversationTarget(
-    { serverId: "host", agentId: "lead", kind: "question", id: "q-2", seq: 72 },
+    { serverId: "host", agentId: "lead", kind: "question", id: "q-2", seq: 72, epoch: "e1" },
     navigate,
   );
   expect(navigations).toEqual([
@@ -177,7 +179,9 @@ test("opening a question targets that question and where it was asked", async ()
     kind: "question",
     id: "q-2",
     seq: 72,
+    epoch: "e1",
     requestId: second.requestId,
+    expiresAt: second.expiresAt,
   });
   expect(second.requestId).not.toBe(first.requestId);
   useConversationTargetStore.getState().clear(second.requestId);
@@ -247,4 +251,33 @@ test.each([
   expect(approvals.length === 1).toBe(expected);
   // A host that does not record creators shows no approvals at all, as before.
   expect(collectThreadApprovals([host("host", agents as never)])).toEqual([]);
+});
+
+// #660 review: a position means something only in its own timeline epoch, and only where the
+// loaded items around it are contiguous. Anything else must fetch or report "not found".
+test("a jump never matches another epoch or lands across an unloaded gap", () => {
+  const item = (id: string, epoch: string, seq: number) =>
+    ({ id, timelineCursor: { epoch, seq } }) as unknown as StreamItem;
+  // The timeline was rebuilt: the same sequence number now names an unrelated item.
+  const rebuilt = [item("other", "e2", 40), item("later", "e2", 50)];
+  expect(findItemAtOrBefore(rebuilt, "e1", 42, true)).toBeNull();
+  expect(
+    fetchedWindowCovers({ epoch: "e2", entries: [{ seqStart: 1 }] }, { epoch: "e1", seq: 42 }),
+  ).toBe(false);
+  // Older history ends at 30 and the live tail starts at 60: 42 sits in the gap, so fetch.
+  const head = [item("old", "e1", 20), item("older-end", "e1", 30)];
+  expect(findItemAtOrBefore(head, "e1", 42)).toBeNull();
+  const tail = [item("live", "e1", 60)];
+  expect(findItemAtOrBefore(tail, "e1", 42, true)).toBeNull();
+  // A fetched window around 42 covers it; one that starts after it does not.
+  expect(
+    fetchedWindowCovers({ epoch: "e1", entries: [{ seqStart: 35 }] }, { epoch: "e1", seq: 42 }),
+  ).toBe(true);
+  expect(
+    fetchedWindowCovers({ epoch: "e1", entries: [{ seqStart: 43 }] }, { epoch: "e1", seq: 42 }),
+  ).toBe(false);
+  // Contiguous: the item ending at or just before 42, with the range reaching past it.
+  expect(
+    findItemAtOrBefore([...head, item("asked", "e1", 41), item("next", "e1", 45)], "e1", 42)?.id,
+  ).toBe("asked");
 });

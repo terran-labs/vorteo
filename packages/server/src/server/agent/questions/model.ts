@@ -34,6 +34,8 @@ interface AskContext {
   taskIds: ReadonlySet<string>;
   /** The thread's latest timeline position, recorded on a new question. */
   askedSeq?: number;
+  /** The timeline epoch that position belongs to. */
+  askedEpoch?: string;
 }
 
 /** What the owner's client sends. Option fields come only from clients that render typed inputs. */
@@ -243,7 +245,9 @@ export function mutateQuestions(
         ? { recommendedOptionIds: mutation.recommendedOptionIds }
         : {}),
       askedAt: context.now,
-      ...(context.askedSeq !== undefined ? { askedSeq: context.askedSeq } : {}),
+      ...(context.askedSeq !== undefined && context.askedEpoch !== undefined
+        ? { askedSeq: context.askedSeq, askedEpoch: context.askedEpoch }
+        : {}),
       askedBy: context.askedBy,
       status: "open",
     };

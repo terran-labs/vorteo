@@ -71,7 +71,6 @@ import {
   type QuotaReserveConfig,
 } from "@getpaseo/protocol/quota-reserve";
 import { UsageLimitHoldSchema } from "@getpaseo/protocol/usage-limit";
-import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 import { AgentOwnerSchema, daemonExecutionKey, type DaemonAgentOwner } from "./agent-owner.js";
 
 const SERIALIZABLE_CONFIG_SCHEMA = z
@@ -200,7 +199,8 @@ const STORED_AGENT_SCHEMA = z.object({
   internal: z.boolean().optional(),
   archivedAt: z.string().nullable().optional(),
   owner: AgentOwnerSchema.optional(),
-  // The creating agent, set by the daemon. Absent only on records written before it existed.
+  // The creating agent, set by the daemon at creation. Absent for a thread nobody created and
+  // for threads created before it existed; their approvals go to the owner.
   createdByAgentId: z.string().nullable().optional(),
 });
 
@@ -591,7 +591,7 @@ export class AgentStorage {
   async mutateQuestions(
     agentId: string,
     mutation: QuestionMutation,
-    position: { askedSeq?: number } = {},
+    position: { askedSeq?: number; askedEpoch?: string } = {},
   ): Promise<AgentQuestion[]> {
     await this.load();
     let committed: AgentQuestion[] | null = null;
@@ -1229,7 +1229,6 @@ export class AgentStorage {
     try {
       const records = await this.scanDisk();
       this.loaded = true;
-      await this.writeStampedCreators(records);
       return records;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -1296,31 +1295,11 @@ export class AgentStorage {
     return records;
   }
 
-  private readonly creatorsStampedOnLoad = new Set<string>();
-
-  private async writeStampedCreators(records: readonly StoredAgentRecord[]): Promise<void> {
-    for (const record of records) {
-      if (!this.creatorsStampedOnLoad.delete(record.id)) continue;
-      try {
-        await this.writeRecord(record);
-      } catch (error) {
-        this.logger.warn({ err: error, agentId: record.id }, "Failed to save a stamped creator");
-      }
-    }
-  }
-
   private async readRecordFile(filePath: string): Promise<StoredAgentRecord | null> {
     try {
       const content = await fs.readFile(filePath, "utf8");
       const parsed = JSON.parse(content);
-      const record = parseStoredAgentRecord(parsed);
-      // A record from before the creator was recorded takes it once from its parent label as it
-      // is now, and is written back at once, so a label changed later never moves it.
-      if (record.createdByAgentId === undefined) {
-        record.createdByAgentId = getParentAgentIdFromLabels(record.labels);
-        this.creatorsStampedOnLoad.add(record.id);
-      }
-      return await this.attachJournal(record);
+      return await this.attachJournal(parseStoredAgentRecord(parsed));
     } catch (error) {
       this.logger.error({ err: error, filePath }, "Skipping invalid agent record");
       return null;

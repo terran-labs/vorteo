@@ -269,6 +269,7 @@ export const es: TranslationResources = {
       proposedPlan: "Plan propuesto",
       questionNotFound: "No se encontró dónde se hizo esta pregunta en la conversación.",
       approvalNotFound: "No se encontró dónde se pidió esta aprobación en la conversación.",
+      mode: "Este hilo está en modo {{mode}}.",
     },
   },
   agentPanel: {

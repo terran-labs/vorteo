@@ -224,7 +224,7 @@ describe("AgentStorage", () => {
     expect((await reopened.get(agent.id))?.forwardedGovernance).toEqual(governance);
   });
 
-  test("the creator is recorded once, ignores labels, and older records take it from their label once (#659)", async () => {
+  test("the creator is recorded once, ignores labels, and older records take none (#659)", async () => {
     const worker = createManagedAgent({ id: "worker", persistence: null });
     worker.labels = {};
     worker.createdByAgentId = "lead";
@@ -235,22 +235,13 @@ describe("AgentStorage", () => {
     await storage.upsert({ ...(await storage.get(worker.id))!, createdByAgentId: "other" });
     expect((await storage.get(worker.id))?.createdByAgentId).toBe("lead");
 
-    // A record written before the field existed takes it from its parent label at load, once.
+    // A record written before the field existed takes no creator from its label: its approvals
+    // go to the owner, which can always answer them.
     const legacy = createManagedAgent({ id: "legacy", persistence: null });
     legacy.labels = { "paseo.parent-agent-id": "old-lead" };
     await storage.applySnapshot(legacy);
-    const file = (await fs.readdir(storagePath, { recursive: true })).find((name) =>
-      String(name).endsWith("legacy.json"),
-    );
-    const filePath = path.join(storagePath, String(file));
-    const { createdByAgentId: _absent, ...older } = JSON.parse(await fs.readFile(filePath, "utf8"));
-    await fs.writeFile(filePath, JSON.stringify(older));
-    const reopened = new AgentStorage(storagePath, logger);
-    expect((await reopened.get("legacy"))?.createdByAgentId).toBe("old-lead");
-    // A label changed after the upgrade does not move it.
-    await reopened.upsert({ ...(await reopened.get("legacy"))!, labels: {} });
     expect((await new AgentStorage(storagePath, logger).get("legacy"))?.createdByAgentId).toBe(
-      "old-lead",
+      undefined,
     );
   });
 

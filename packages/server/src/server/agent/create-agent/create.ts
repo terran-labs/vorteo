@@ -919,8 +919,6 @@ async function resolveMcpCreateAgent(
       ...(Object.keys(intent.labels).length > 0 ? { labels: intent.labels } : {}),
       workspaceId: intent.workspaceId,
       owner: input.owner,
-      // The authenticated caller, never a label: who may answer this thread's prompts.
-      createdByAgentId: intent.parentAgentId,
       env: input.env,
     },
     prompt: trimmedPrompt ? trimmedPrompt : undefined,

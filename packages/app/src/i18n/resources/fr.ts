@@ -269,6 +269,7 @@ export const fr: TranslationResources = {
       questionNotFound: "Impossible de trouver où cette question a été posée dans la conversation.",
       approvalNotFound:
         "Impossible de trouver où cette approbation a été demandée dans la conversation.",
+      mode: "Ce fil est en mode {{mode}}.",
     },
   },
   agentPanel: {

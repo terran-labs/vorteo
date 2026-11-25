@@ -61,6 +61,26 @@ export class CodexRefreshLeases {
     return { leaseId: lease.leaseId, expiresAt: lease.expiresAt, loaded: activity === "loaded" };
   }
 
+  /**
+   * Leases every provider, all or none, and returns their release; null when any of them is
+   * busy or already leased, after releasing the ones it took.
+   */
+  acquireAll(providerIds: readonly string[]): (() => void) | null {
+    const held: Array<{ providerId: string; leaseId: string }> = [];
+    const release = () => {
+      for (const item of held.splice(0)) this.end(item.providerId, item.leaseId);
+    };
+    for (const providerId of providerIds) {
+      const lease = this.acquire(providerId);
+      if (!lease) {
+        release();
+        return null;
+      }
+      held.push({ providerId, leaseId: lease.leaseId });
+    }
+    return release;
+  }
+
   release(providerId: string, leaseId: string): void {
     this.end(providerId, leaseId);
   }

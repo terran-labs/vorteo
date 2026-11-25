@@ -61,6 +61,7 @@ export function ApprovalItem({
   const openThread = useCallback(() => {
     onBeforeNavigate?.();
     const askedSeq = request.metadata?.askedSeq;
+    const askedEpoch = request.metadata?.askedEpoch;
     openConversationTarget(
       {
         serverId: approval.serverId,
@@ -68,10 +69,13 @@ export function ApprovalItem({
         kind: "permission",
         id: request.id,
         seq: typeof askedSeq === "number" ? askedSeq : null,
+        epoch: typeof askedEpoch === "string" ? askedEpoch : null,
       },
       navigateToAgent,
     );
   }, [approval.agentId, approval.serverId, onBeforeNavigate, request.id, request.metadata]);
+  // What Vorteo's own scan found that deletes, when it found something (#659, part B).
+  const deleteFinding = request.metadata?.deleteFinding;
   // A long single line is cut off too, so every command is expanded once before Accept.
   const canAccept = seenFull;
   return (
@@ -89,6 +93,11 @@ export function ApprovalItem({
         </Text>
       ) : null}
       {request.description ? <Text style={styles.reason}>{request.description}</Text> : null}
+      {typeof deleteFinding === "string" ? (
+        <Text style={styles.deletes} testID={`global-approval-deletes-${request.id}`}>
+          {`Deletes: ${deleteFinding}`}
+        </Text>
+      ) : null}
       {expanded ? (
         <ScrollView
           style={styles.commandScroll}
@@ -180,5 +189,10 @@ const styles = StyleSheet.create((theme) => ({
   },
   commandScroll: { maxHeight: 240 },
   error: { color: theme.colors.statusDanger, fontSize: theme.fontSize.base },
+  deletes: {
+    color: theme.colors.statusDanger,
+    fontSize: theme.fontSize.base,
+    fontWeight: theme.fontWeight.medium,
+  },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: theme.spacing[2] },
 }));
