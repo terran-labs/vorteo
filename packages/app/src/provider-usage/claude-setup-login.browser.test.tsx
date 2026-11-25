@@ -25,6 +25,11 @@ vi.mock("@/utils/open-external-url", () => ({ openExternalUrl: vi.fn() }));
 vi.mock("@/utils/confirm-dialog", () => ({ confirmDialog: vi.fn() }));
 // Post-sign-in refresh talks to live daemons; the panel's rendering is what these tests cover.
 vi.mock("./refresh-after-sign-in", () => ({ useRefreshAfterSignIn: () => undefined }));
+// Adoption of legacy Codex accounts has its own coverage; these cases test the sign-in panel.
+vi.mock("./codex-adoption", () => ({
+  CodexAdoptionSection: () => null,
+  useCodexAdoptionOffered: () => false,
+}));
 vi.mock("./use-provider-login", () => ({
   useProviderLogin: vi.fn(),
   useSharedInstallationSignIn: vi.fn(),
