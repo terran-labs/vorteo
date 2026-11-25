@@ -588,6 +588,19 @@ it("withdraws only its projection, restores the saved sign-in untested and honou
     (await f.project(target, { generation: 5, rotation: 1 }, access("synthetic"), false)).status,
   ).toBe(200);
   expect(existsSync(f.copy())).toBe(false);
+
+  // Retention still finds the copy by the pinned directory after the binding moved away.
+  f.write(local);
+  expect(
+    (await f.project(target, { generation: 6, rotation: 1 }, access("synthetic"))).status,
+  ).toBe(200);
+  expect(existsSync(f.copy())).toBe(true);
+  f.store.replaceProviderEnv("codex-primary", { CODEX_HOME: f.homeB });
+  const wrong = { ...target, ino: String(BigInt(target.ino) + 1n) };
+  expect((await f.legacy("forget-copy", { target: wrong })).status).toBe(409);
+  expect(existsSync(f.copy())).toBe(true);
+  expect((await f.legacy("forget-copy", { target })).body).toEqual({ forgotten: true });
+  expect(existsSync(f.copy())).toBe(false);
 });
 
 it("leases a Host account unless a session starts or runs a turn on it, for at most 30 s", async () => {

@@ -209,6 +209,40 @@ export function mountCodexSignInConsumer(app: Express, options: ConsumerOptions)
   }
 
   /**
+   * The directory a `forget-copy` request may clear: a legacy Codex definition of this
+   * installation, and a directory that still pins exactly to the recorded target. The current
+   * binding and other providers do not matter, because only the backup file is removed.
+   */
+  async function authorizeForget(
+    request: LegacyScope & { target: CodexLegacyTarget },
+  ): Promise<string> {
+    const authority = await options.store.readInstallationSettingsAuthority();
+    const definition = authority?.settings.providerDefinitions?.find(
+      (item) => item.id === request.definitionId,
+    );
+    if (
+      !authority ||
+      !definition ||
+      authority.installationId !== request.installationId ||
+      authority.serverId !== request.serverId ||
+      authority.revision !== request.policyRevision ||
+      definition.providerType !== "codex" ||
+      definition.accountId === undefined ||
+      definition.accountSetup !== undefined
+    )
+      throw new CodexSignInDeliveryError();
+    let current: CodexLegacyTarget;
+    try {
+      current = pinCodexHome(request.target.realpath);
+    } catch {
+      throw new HostProjectionRefusal("target_changed");
+    }
+    if (!isDeepStrictEqual(current, request.target))
+      throw new HostProjectionRefusal("target_changed");
+    return current.realpath;
+  }
+
+  /**
    * Every other Codex provider's launch home, to refuse two bindings that share one directory.
    * This includes homes a provider only inherits, such as the built-in provider's `~/.codex`.
    */
@@ -367,6 +401,14 @@ export function mountCodexSignInConsumer(app: Express, options: ConsumerOptions)
           return;
         }
         const request = parsed.data;
+        if (request.operation === "forget-copy") {
+          // Retention holds in every adoption state, also after a rebind or a changed home, so
+          // the saved copy is found by the pinned directory's identity, not by today's binding.
+          // Deleting this coordinator-owned backup cannot affect any sign-in in use.
+          forgetLegacyCodexSignIn(await authorizeForget(request));
+          res.json({ forgotten: true });
+          return;
+        }
         const { excluded, home } = await authorizeLegacy(request);
         if (request.operation === "pin") {
           if (excluded) throw new CodexSignInDeliveryError();
@@ -380,14 +422,9 @@ export function mountCodexSignInConsumer(app: Express, options: ConsumerOptions)
           res.json({ active: homeInUse(request.providerId, home) });
           return;
         }
-        // Restore and retention act on Dev's own saved sign-in, also in an excluded binding.
+        // Restore acts on Dev's own saved sign-in, also in an excluded binding.
         const pinned = pinnedHome(request.providerId, home, request.target);
-        if (request.operation === "restore") {
-          res.json(restoreLegacyCodexSignIn(pinned, Date.now()));
-          return;
-        }
-        forgetLegacyCodexSignIn(pinned);
-        res.json({ forgotten: true });
+        res.json(restoreLegacyCodexSignIn(pinned, Date.now()));
       } catch (error) {
         refuse(res, error);
       }

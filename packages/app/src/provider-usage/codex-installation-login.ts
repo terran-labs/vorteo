@@ -1,11 +1,14 @@
 import { z } from "zod";
 import { ProviderLoginStateSchema } from "@getpaseo/protocol/provider-login";
+import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
 import {
   InstallationRequestFailed,
+  InstallationRouteUnavailable,
   OwnerAccessExpired,
   requestInstallationOwner,
 } from "@/execution-installation/client";
 import { requestInstallationSettings } from "@/execution-installation/settings";
+import { readExecutionInstallation } from "@/execution-installation/policy";
 import type { ClaudeSetupConnectionSchema } from "./claude-setup-login";
 
 const EnvironmentStatusSchema = z.strictObject({
@@ -23,13 +26,23 @@ const ReadSchema = z.object({
   }),
 });
 
-/** Resolve the exact shared binding, never an account label or a cached native sign-in. */
+/** A Codex definition from before the installation managed Codex. */
+function isLegacyCodex(item: InstallationProvider): boolean {
+  return (
+    item.providerType === "codex" && item.accountId !== undefined && item.accountSetup === undefined
+  );
+}
+
+/**
+ * Resolve the exact shared binding, never an account label or a cached native sign-in. A legacy
+ * account qualifies only once it is adopted; the coordinator refuses it otherwise.
+ */
 async function codexDefinition(serverId: string, providerId: string) {
   const snapshot = await requestInstallationSettings();
   const definitions = snapshot.settings?.providerDefinitions?.filter(
     (item) =>
       item.providerType === "codex" &&
-      item.accountSetup?.provider === "codex" &&
+      (item.accountSetup?.provider === "codex" || isLegacyCodex(item)) &&
       !item.removed &&
       item.bindings[serverId] === providerId,
   );
@@ -54,7 +67,82 @@ export async function codexAccountUsesInstallationSignIn(
     (item) =>
       item.providerType === "codex" && !item.removed && item.bindings[serverId] === providerId,
   );
-  return bound.length === 0 || bound.some((item) => item.accountSetup?.provider === "codex");
+  if (bound.length === 0 || bound.some((item) => item.accountSetup?.provider === "codex"))
+    return true;
+  // An adopted legacy account signs in on the Host too, which repairs Dev as well.
+  const legacy = bound.find(isLegacyCodex);
+  if (!legacy) return false;
+  const adoption = (await codexAdoptions())?.find((item) => item.definitionId === legacy.id);
+  return adoption?.adoption?.status === "adopted" || adoption?.adoption?.status === "projecting";
+}
+
+// Parsed leniently, as the sign-in read is, so newer coordinators can add fields and states.
+const AdoptionSchema = z.object({
+  status: z.string(),
+  error: z.string().nullable(),
+  projectedAt: z.number().nullable().optional(),
+  restored: z.object({ mayNeedSignIn: z.boolean() }).nullable(),
+  restoreSkipped: z.boolean().optional(),
+  copyDeleteBlocked: z.string().optional(),
+  hostSignInNeeded: z.boolean().optional(),
+});
+const AdoptionsSchema = z.object({
+  definitions: z.array(
+    z.object({
+      definitionId: z.string(),
+      eligible: z.boolean(),
+      reason: z.string().nullable(),
+      adoption: AdoptionSchema.nullable(),
+    }),
+  ),
+});
+export type CodexAdoption = z.infer<typeof AdoptionSchema>;
+
+/**
+ * Every legacy Codex account the coordinator could adopt, or null when the coordinator has no
+ * adoption routes: an older coordinator, or one without Host-owned Codex sign-in. This is the
+ * one place that detects support; everything downstream reads this shape.
+ */
+async function codexAdoptions() {
+  try {
+    return AdoptionsSchema.parse(await requestInstallationOwner("codex/signin/adoptions", "", {}))
+      .definitions;
+  } catch (error) {
+    if (error instanceof InstallationRouteUnavailable) return null;
+    throw error;
+  }
+}
+
+/** The legacy account bound to this provider, with whether it can be adopted, or null. */
+export async function codexAdoptionRead(serverId: string, providerId: string) {
+  const snapshot = await requestInstallationSettings();
+  const legacy = (snapshot.settings?.providerDefinitions ?? []).filter(
+    (item) => isLegacyCodex(item) && !item.removed && item.bindings[serverId] === providerId,
+  );
+  if (legacy.length !== 1) return null;
+  const entries = await codexAdoptions();
+  const entry = entries?.find((item) => item.definitionId === legacy[0]!.id);
+  if (!entry) return null;
+  // Where this account's Host sign-in runs, for a failure that a Host sign-in repairs.
+  const hostServerId =
+    readExecutionInstallation()?.environments.find((environment) => environment.kind === "host")
+      ?.serverId ?? null;
+  const hostProviderId = hostServerId ? legacy[0]!.bindings[hostServerId] : undefined;
+  return {
+    ...entry,
+    host:
+      hostServerId && hostProviderId
+        ? { serverId: hostServerId, providerId: hostProviderId }
+        : null,
+  };
+}
+
+/** Adopts or un-adopts one legacy account. A refusal throws with the coordinator's reason. */
+export async function codexAdoptionRequest(
+  definitionId: string,
+  operation: "adopt" | "unadopt",
+): Promise<void> {
+  await requestInstallationOwner(`codex/signin/${operation}`, "", { definitionId });
 }
 
 /**

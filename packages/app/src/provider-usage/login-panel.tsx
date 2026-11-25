@@ -37,6 +37,8 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
 import { useSessionStore } from "@/stores/session-store";
 import { useRefreshAfterSignIn } from "./refresh-after-sign-in";
+import { CodexAdoptionSection } from "./codex-adoption";
+import { OptionalSectionBoundary } from "./optional-section-boundary";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { useTranslation } from "react-i18next";
@@ -62,6 +64,10 @@ interface LoginPanelProps {
    * field can point at it for errors. Generated when omitted.
    */
   statusId?: string;
+  /** Starts a sign-in as soon as the panel can, for a control that already asked for one. */
+  startOnOpen?: boolean;
+  /** Leaves out the Codex adoption section, for a panel shown inside that section. */
+  withoutAdoption?: boolean;
 }
 
 export function ProviderLoginPanel(props: LoginPanelProps) {
@@ -110,7 +116,17 @@ function LoginPanelContent(props: LoginPanelProps) {
         installation, use Add connection in Accounts &amp; profiles.
       </Text>
     );
-  return <AccountLoginContent {...props} />;
+  if (provider !== "codex" || props.withoutAdoption) return <AccountLoginContent {...props} />;
+  // A legacy Codex account can adopt the Host's sign-in; the section hides itself otherwise.
+  return (
+    <View style={styles.body}>
+      <AccountLoginContent {...props} />
+      {/* A failure in the adoption section must never take the Codex sign-in panel down. */}
+      <OptionalSectionBoundary name="CodexAdoption">
+        <CodexAdoptionSection serverId={serverId} providerId={providerId} />
+      </OptionalSectionBoundary>
+    </View>
+  );
 }
 
 type Login = ReturnType<typeof useProviderLogin>;
@@ -130,6 +146,7 @@ interface LayoutProps {
   statusId?: string;
   serverId: string | null;
   providerId: string;
+  startOnOpen?: boolean;
 }
 
 function AccountLoginContent({
@@ -140,6 +157,7 @@ function AccountLoginContent({
   onOutcome,
   focusSignIn,
   statusId,
+  startOnOpen,
 }: LoginPanelProps) {
   const login = useProviderLogin(serverId, providerId, provider);
   const upgradeAvailable = useClaudeSignInUpgradeAvailable(serverId, providerId);
@@ -155,6 +173,7 @@ function AccountLoginContent({
     statusId,
     serverId,
     providerId,
+    startOnOpen,
   };
   if (login.sharedClaude && (upgradeAvailable || upgradeEngaged))
     return <UpgradeableLogin {...layout} />;
@@ -185,6 +204,7 @@ function LoginLayout({
   statusId: statusIdProp,
   serverId,
   providerId,
+  startOnOpen,
 }: LayoutProps) {
   const generatedStatusId = `${useId()}-status`;
   const statusId = statusIdProp ?? generatedStatusId;
@@ -220,6 +240,21 @@ function LoginLayout({
   );
   const submitting = useCallback(() => setRequested("submit"), []);
   const startConnect = useCallback(() => act("start", login.start), [act, login.start]);
+  // A control that already asked for this sign-in starts it once the state is known.
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    if (!startOnOpen || autoStarted.current || !login.connected || login.busy) return;
+    const status = login.state?.status;
+    if (
+      status !== "idle" &&
+      status !== "failed" &&
+      status !== "cancelled" &&
+      status !== "succeeded"
+    )
+      return;
+    autoStarted.current = true;
+    startConnect();
+  }, [startOnOpen, login.connected, login.busy, login.state?.status, startConnect]);
   const cancel = useCallback(() => act("cancel", current.cancel), [act, current.cancel]);
   const { t } = useTranslation();
   // Codex signs the Host out with `codex logout`, which revokes the grant for every environment.

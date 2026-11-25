@@ -6,6 +6,8 @@ export const es: TranslationResources = {
   previewStatus: previewStatus.es,
   projectFactory: en.projectFactory,
   vorteoSetup: en.vorteoSetup,
+  // Draft English until the wording is approved, then translated.
+  codexAdoption: en.codexAdoption,
   paneFind: {
     connectionFailure:
       "No se pudo buscar en este chat. Comprueba la conexión con el host y vuelve a intentarlo.",

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 
 /** The claims of an unverified JWT. Only used for scheduling, display and same-person checks. */
@@ -33,6 +34,20 @@ export function codexIdTokenPerson(idToken: string | null | undefined): string |
   const user = claims.data["https://api.openai.com/auth"]?.chatgpt_user_id;
   if (user) return `chatgpt_user_id:${user}`;
   return claims.data.sub ? `sub:${claims.data.sub}` : null;
+}
+
+/**
+ * A one-way digest of the ChatGPT workspace and person a sign-in names, so a record can tell
+ * later whether the Host is still signed in as the same person without keeping either ID.
+ * Null when either is missing.
+ */
+export function codexSignInKeyDigest(
+  accountId: string | null,
+  idToken: string | null | undefined,
+): string | null {
+  const person = codexIdTokenPerson(idToken);
+  if (!accountId || !person) return null;
+  return createHash("sha256").update(`${accountId}\n${person}`).digest("hex");
 }
 
 /**

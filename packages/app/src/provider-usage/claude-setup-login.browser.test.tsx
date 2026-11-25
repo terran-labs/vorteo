@@ -5,6 +5,7 @@ import { page, userEvent } from "vitest/browser";
 import type { ProviderLoginState } from "@getpaseo/protocol/provider-login";
 import { ProviderLoginPanel } from "./login-panel";
 import { confirmDialog } from "@/utils/confirm-dialog";
+import { CodexAdoptionSection } from "./codex-adoption";
 import {
   useClaudeSignInUpgradeAvailable,
   useProviderLogin,
@@ -25,6 +26,11 @@ vi.mock("@/utils/open-external-url", () => ({ openExternalUrl: vi.fn() }));
 vi.mock("@/utils/confirm-dialog", () => ({ confirmDialog: vi.fn() }));
 // Post-sign-in refresh talks to live daemons; the panel's rendering is what these tests cover.
 vi.mock("./refresh-after-sign-in", () => ({ useRefreshAfterSignIn: () => undefined }));
+// Adoption of legacy Codex accounts has its own coverage; these cases test the sign-in panel.
+vi.mock("./codex-adoption", () => ({
+  CodexAdoptionSection: vi.fn(() => null),
+  useCodexAdoptionOffered: () => false,
+}));
 vi.mock("./use-provider-login", () => ({
   useProviderLogin: vi.fn(),
   useSharedInstallationSignIn: vi.fn(),
@@ -115,6 +121,10 @@ test("a shared Codex account connects once and shows Dev synchronization", async
   const signOut = vi.fn();
   // Opened from Dev, whose daemon session is not loaded here: the coordinator handles it.
   vi.mocked(useSharedInstallationSignIn).mockReturnValue(true);
+  // The adoption section failing to render never takes the sign-in panel down.
+  vi.mocked(CodexAdoptionSection).mockImplementation(() => {
+    throw new Error("synthetic adoption section failure");
+  });
   vi.mocked(useProviderLogin).mockReturnValue({
     state: { status: "idle" },
     shared: true,
