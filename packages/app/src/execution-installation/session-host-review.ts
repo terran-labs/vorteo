@@ -3,7 +3,7 @@ import type {
   SessionHostOperation,
   SessionHostStatus,
 } from "@getpaseo/protocol/session-host-maintenance";
-import { byTarget, recordsNeedingReview } from "./failure-review";
+import { byTargetAndOperation, recordsNeedingReview } from "./failure-review";
 
 /** The owner query result: every job the coordinator retains and what it observes now. */
 export interface SessionHostOverview {
@@ -45,7 +45,7 @@ export function isActiveSessionHostJob(job: Pick<SessionHostJob, "status">): boo
 export function visibleSessionHostJobs(jobs: readonly SessionHostJob[]): SessionHostJob[] {
   const newestFirst = jobs.toSorted((left, right) => right.createdAt.localeCompare(left.createdAt));
   const active = newestFirst.filter(isActiveSessionHostJob);
-  const failures = recordsNeedingReview(newestFirst, byTarget).filter(
+  const failures = recordsNeedingReview(newestFirst, byTargetAndOperation).filter(
     (job) => !isActiveSessionHostJob(job),
   );
   const finished = newestFirst.find((job) => !isActiveSessionHostJob(job));

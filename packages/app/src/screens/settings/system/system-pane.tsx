@@ -28,7 +28,7 @@ import { HostRestartControls } from "./host-restart-controls";
 import { useSystemAdapter } from "./use-system-adapter";
 import type { SystemAction } from "./system-status-model";
 import { currentSystemRestarts, type SystemTarget } from "./system-adapter-model";
-import { useHealthCardRevealFor } from "@/execution-installation/health-cards";
+import { useOnHealthCardReveal } from "@/execution-installation/health-cards";
 type Adapter = ReturnType<typeof useSystemAdapter>;
 const snaps = ["90%"];
 const fullStatusHeader = { title: "Full status" };
@@ -67,11 +67,15 @@ function RestartMenu({
     else if (linkedFinishedId) setVisible(false);
   }, [linkedActiveId, linkedFinishedId]);
   // A Health row's Fix for a restart waiting on the owner opens this sheet, where it is approved.
-  const reveal = useHealthCardRevealFor(target);
+  // Consumed on delivery: with no restart to show, nothing opens now or later.
   const hasJobs = jobs.length > 0;
-  useEffect(() => {
-    if (reveal?.card === "restarts" && hasJobs) setVisible(true);
-  }, [reveal, hasJobs]);
+  const reveal = useCallback(
+    (card: string) => {
+      if (card === "restarts" && hasJobs) setVisible(true);
+    },
+    [hasJobs],
+  );
+  useOnHealthCardReveal(target, reveal);
   return (
     <>
       <DropdownMenu>

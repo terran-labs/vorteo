@@ -4,9 +4,9 @@ import {
   useInstallationUpgradeActions,
 } from "@/execution-installation/use-installation-upgrades";
 import { supportsUpdatePolicy } from "@/execution-installation/installation-upgrades-model";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Text, View } from "react-native";
-import { useHealthCardRevealFor } from "@/execution-installation/health-cards";
+import { useOnHealthCardReveal } from "@/execution-installation/health-cards";
 import { StyleSheet } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
 import { SelectField } from "@/components/ui/select-field";
@@ -36,10 +36,8 @@ export function SystemUpdatesRow() {
   const [expanded, setExpanded] = useState(false);
   const toggle = useCallback(() => setExpanded((value) => !value), []);
   // The Health row for failed upgrades opens these Details, where each failure can be dismissed.
-  const reveal = useHealthCardRevealFor("updates");
-  useEffect(() => {
-    if (reveal) setExpanded(true);
-  }, [reveal]);
+  const expand = useCallback(() => setExpanded(true), []);
+  useOnHealthCardReveal("updates", expand);
   const changeChannel = useCallback(
     (value: string) => {
       if (value === "stable" || value === "beta")

@@ -1,4 +1,4 @@
-import { useRef, useSyncExternalStore } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 
 /**
  * Where a System Health row's Fix lands. The request cards live inside collapsed sections:
@@ -24,7 +24,15 @@ export interface HealthCardReveal {
   card: HealthCard;
   host: HealthCardHost;
   nonce: number;
+  issuedAt: number;
 }
+
+/**
+ * A section that mounts because a reveal expanded its parent, such as Host's Details body, still
+ * acts on that reveal when it arrives within this window. Older reveals belong to an earlier
+ * visit and are ignored.
+ */
+const MOUNT_WINDOW_MS = 3000;
 
 /** DOM id of a card, unique per section because Host and Dev Details can both be open. */
 export function healthCardAnchorId(host: HealthCardHost, card: HealthCard): string {
@@ -38,7 +46,7 @@ const listeners = new Set<() => void>();
 /** Asks the section holding `card` to expand. Each call is a new request, even for one card. */
 export function revealHealthCard(card: HealthCard, host: HealthCardHost): void {
   nonce += 1;
-  current = { card, host, nonce };
+  current = { card, host, nonce, issuedAt: Date.now() };
   for (const listener of listeners) listener();
 }
 
@@ -51,19 +59,34 @@ function snapshot(): HealthCardReveal | null {
   return current;
 }
 
-/** The latest reveal request, for sections that expand to show a card. */
-export function useHealthCardReveal(): HealthCardReveal | null {
+function useHealthCardReveal(): HealthCardReveal | null {
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
 
 /**
- * The latest reveal aimed at one section, or null. A reveal issued before the section mounted
- * belongs to an earlier visit, so a reopened page does not expand on its own.
+ * Calls `onReveal` once for each new reveal aimed at `host`. A reveal is consumed when it is
+ * delivered, so a Fix whose card was not there to open never fires later, for example when an
+ * unrelated restart request arrives afterwards.
  */
-export function useHealthCardRevealFor(host: HealthCardHost): HealthCardReveal | null {
-  const mountedAfter = useRef(nonce);
+export function useOnHealthCardReveal(
+  host: HealthCardHost,
+  onReveal: (card: HealthCard) => void,
+): void {
+  const handled = useRef<number | null>(null);
+  if (handled.current === null) {
+    const recent = current && Date.now() - current.issuedAt < MOUNT_WINDOW_MS;
+    handled.current = recent ? current!.nonce - 1 : nonce;
+  }
+  const latest = useRef(onReveal);
+  useEffect(() => {
+    latest.current = onReveal;
+  });
   const reveal = useHealthCardReveal();
-  return reveal?.host === host && reveal.nonce > mountedAfter.current ? reveal : null;
+  useEffect(() => {
+    if (!reveal || reveal.nonce <= (handled.current ?? 0)) return;
+    handled.current = reveal.nonce;
+    if (reveal.host === host) latest.current(reveal.card);
+  }, [reveal, host]);
 }
 
 /**

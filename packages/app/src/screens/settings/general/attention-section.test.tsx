@@ -236,10 +236,21 @@ it("asks to unlock before a Fix whose card needs owner access, and drops it on c
   act(() => state.dialog.onClose());
   expect(state.dialog.visible).toBe(false);
   expect(onFix).not.toHaveBeenCalled();
-  // Unlocking closes the dialog and finishes the Fix that asked for it.
+  // Unlocking closes the dialog. The Fix waits for the unlocked rows, then follows the row for
+  // the same card there, not the locked one.
   fix();
   state.owner = "unlocked";
   act(() => state.dialog.onClose());
+  expect(onFix).not.toHaveBeenCalled();
+  state.system = {
+    unlocked: true,
+    jobs: [],
+    pendingJobs: [],
+    helperJobs: [],
+    monitorJobs: [],
+    brokerJobs: [{ status: "failed", target: "preview-broker", createdAt: "2026-11-14T00:00:00Z" }],
+  };
+  view.rerender(withClient(<SystemHealthSection onFix={onFix} />));
   expect(onFix).toHaveBeenCalledTimes(1);
   expect(onFix.mock.calls[0][0]).toMatchObject({
     pane: "system.overview",

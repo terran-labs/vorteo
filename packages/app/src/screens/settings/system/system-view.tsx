@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge, type StatusBadgeVariant } from "@/components/ui/status-badge";
 import { isWeb } from "@/constants/platform";
 import { settingsStyles } from "@/styles/settings";
-import { useHealthCardRevealFor } from "@/execution-installation/health-cards";
+import { useOnHealthCardReveal } from "@/execution-installation/health-cards";
 import type { SystemAction, SystemStatus } from "./system-status-model";
 
 const labels: Record<SystemStatus, string> = {
@@ -50,10 +50,8 @@ function EnvironmentRow({ row, first }: { row: SystemEnvironmentRow; first: bool
     if (row.detailsRequestId) setExpanded(true);
   }, [row.detailsRequestId]);
   // A Health row's Fix opens the card it names, which lives in these Details.
-  const reveal = useHealthCardRevealFor(row.name === "Dev" ? "container-daemon" : "host");
-  useEffect(() => {
-    if (reveal) setExpanded(true);
-  }, [reveal]);
+  const expand = useCallback(() => setExpanded(true), []);
+  useOnHealthCardReveal(row.name === "Dev" ? "container-daemon" : "host", expand);
   const toggle = useCallback(() => setExpanded((current) => !current), []);
   const act = useCallback(() => {
     if (row.action) row.onAction(row.action);

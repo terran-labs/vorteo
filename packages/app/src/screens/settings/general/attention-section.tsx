@@ -15,9 +15,14 @@ import { SYSTEM_HEALTH_ANCHOR_ID, type SettingsJumpTarget } from "../settings-ju
 import { systemHealthItems } from "../system/health-model";
 import { publishHealthExtras, useHealthListMounted } from "../system/health-extras";
 import { useQueryClient } from "@tanstack/react-query";
-import { useSystemHealthRows, type AttentionItem } from "../system/system-health-rows";
+import {
+  installationHealthRows,
+  useSystemHealthRows,
+  type AttentionItem,
+} from "../system/system-health-rows";
 
 const NO_SUBSCRIPTION = () => () => {};
+const UNLOCK_REPLAY_MS = 10_000;
 const NO_STATE = () => null;
 
 /** What the installation reports as needing the owner, from the same state the button reads. */
@@ -29,7 +34,10 @@ function useInstallationItems() {
     model?.getState ?? NO_STATE,
   );
   const upgrades = useInstallationUpgradeStatus(useInstallationOwnerClient());
-  return systemHealthItems(state, upgrades.data?.upgrades);
+  return {
+    items: systemHealthItems(state, upgrades.data?.upgrades),
+    unlocked: state?.unlocked === true,
+  };
 }
 
 /** Says what a locked installation hides, with the Unlock that reveals it. Not a problem row. */
@@ -123,13 +131,29 @@ export function SystemHealthSection({ onFix }: { onFix: (target: SettingsJumpTar
     [locked, onFix],
   );
   const closeUnlock = useCallback(() => setUnlockOpen(false), []);
+  const installation = useInstallationItems();
+  const installationItems = installation.items;
   useEffect(() => {
     if (unlockOpen || !awaitingUnlock) return;
     // The dialog closes itself once access unlocks; any other close is a cancel.
-    if (!locked) openFix(awaitingUnlock, onFix);
+    if (locked) {
+      setAwaitingUnlock(null);
+      return;
+    }
+    // Locked rows only know public counts, such as which card, not which environment. Wait for
+    // the unlocked rows, then follow the row for the same card, or drop the Fix when nothing
+    // there needs the owner any more.
+    if (!installation.unlocked) return;
+    const current = installationItems.find((item) => item.card === awaitingUnlock.card);
     setAwaitingUnlock(null);
-  }, [awaitingUnlock, locked, onFix, unlockOpen]);
-  const installationItems = useInstallationItems();
+    if (current) openFix(installationHealthRows([current])[0], onFix);
+  }, [awaitingUnlock, installation.unlocked, installationItems, locked, onFix, unlockOpen]);
+  // A Fix still waiting for the unlocked rows after this long is dropped, not replayed later.
+  useEffect(() => {
+    if (!awaitingUnlock || unlockOpen) return;
+    const timer = setTimeout(() => setAwaitingUnlock(null), UNLOCK_REPLAY_MS);
+    return () => clearTimeout(timer);
+  }, [awaitingUnlock, unlockOpen]);
   const items = useSystemHealthRows({ installationItems, locked });
   // Hand the sidebar button the rows it cannot compute without the settings queries.
   const extraIds = items

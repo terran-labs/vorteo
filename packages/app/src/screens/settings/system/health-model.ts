@@ -1,6 +1,7 @@
 import type { InstallationUpgrade } from "@getpaseo/protocol/installation-upgrades";
 import {
   byTarget,
+  byTargetAndOperation,
   instructionRequestIsStale,
   recordsNeedingReview,
   upgradeTarget,
@@ -59,8 +60,8 @@ interface QueueDefinition {
   noun: string;
   jobs: (state: InstallationSystemState) => readonly ReviewableJob[];
   /**
-   * Which records replace each other. Restarts, broker, monitor, helper, service and session
-   * host jobs are keyed by the service they act on; instruction requests have no target, so a
+   * Which records replace each other. Restarts, broker, monitor, helper and service jobs are
+   * keyed by the service they act on, session host jobs by service and operation; instruction requests have no target, so a
    * pending one counts until it is decided or goes stale.
    */
   targetKey: TargetKey<ReviewableJob>;
@@ -124,7 +125,7 @@ const QUEUES: readonly QueueDefinition[] = [
     id: "session-host",
     noun: "session host request",
     jobs: (state) => state.sessionHost?.jobs ?? [],
-    targetKey: byTarget as TargetKey<ReviewableJob>,
+    targetKey: byTargetAndOperation as TargetKey<ReviewableJob>,
     card: "session-host",
     pane: "system.overview",
   },

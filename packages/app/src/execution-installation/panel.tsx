@@ -44,9 +44,15 @@ import {
 import type { SessionHostJob } from "@getpaseo/protocol/session-host-maintenance";
 import type { InstructionRequestQuery } from "@getpaseo/protocol/instruction-requests";
 import { diffInstructionLines } from "./instruction-diff";
-import { healthCardAnchorProps, useHealthCardRevealFor, type HealthCardHost } from "./health-cards";
+import {
+  healthCardAnchorProps,
+  useOnHealthCardReveal,
+  type HealthCard,
+  type HealthCardHost,
+} from "./health-cards";
 import {
   byTarget,
+  byTargetAndOperation,
   instructionRequestIsStale,
   isSupersededFailure,
   recordsNeedingReview,
@@ -593,10 +599,13 @@ function useRevealRestartHistory(
   restartsInHistory: boolean,
   show: (visible: boolean) => void,
 ) {
-  const reveal = useHealthCardRevealFor(target);
-  useEffect(() => {
-    if (reveal?.card === "restarts" && restartsInHistory) show(true);
-  }, [reveal, restartsInHistory, show]);
+  const reveal = useCallback(
+    (card: HealthCard) => {
+      if (card === "restarts" && restartsInHistory) show(true);
+    },
+    [restartsInHistory, show],
+  );
+  useOnHealthCardReveal(target, reveal);
 }
 
 function InstallationSystemDetailsBody({
@@ -1970,7 +1979,9 @@ function SessionHostCard({
   const review = { busy: state.busy, unlocked: state.unlocked };
   const shownJobs = visibleSessionHostJobs(overview.jobs);
   // Fix lands on the request that needs the owner, or on the card when none does.
-  const anchorJob = recordsNeedingReview(shownJobs, byTarget)[0]?.id;
+  const anchorJob = recordsNeedingReview(overview.jobs, byTargetAndOperation).find((job) =>
+    shownJobs.includes(job),
+  )?.id;
   return (
     <>
       <View
@@ -2060,7 +2071,7 @@ function SessionHostCard({
           model={model}
           busy={state.busy}
           anchored={job.id === anchorJob}
-          superseded={isSupersededFailure(job, overview.jobs, byTarget)}
+          superseded={isSupersededFailure(job, overview.jobs, byTargetAndOperation)}
         />
       ))}
     </>

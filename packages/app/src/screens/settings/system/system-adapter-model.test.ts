@@ -197,6 +197,35 @@ it.each([
     ["broker"],
   ],
   [
+    "failed session host install, then a successful restart",
+    {
+      sessionHost: {
+        jobs: [
+          host("failed", "2026-11-14T00:00:00Z", { operation: "session-host-install" }),
+          host("succeeded", "2026-11-14T00:00:00.500Z", { operation: "session-host-restart" }),
+        ],
+        status: null,
+      },
+    },
+    [],
+    ["session-host"],
+  ],
+  [
+    // As strings, "…00.500Z" sorts before "…00Z"; parsed, it is half a second later.
+    "failed session host install, then a successful install half a second later",
+    {
+      sessionHost: {
+        jobs: [
+          host("failed", "2026-11-14T00:00:00Z", { operation: "session-host-install" }),
+          host("succeeded", "2026-11-14T00:00:00.500Z", { operation: "session-host-install" }),
+        ],
+        status: null,
+      },
+    },
+    [],
+    [],
+  ],
+  [
     "dismissed session host failure",
     { sessionHost: { jobs: [host("failed", "1", { acknowledgedAt: "2" })], status: null } },
     [],
