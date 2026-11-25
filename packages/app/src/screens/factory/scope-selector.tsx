@@ -14,27 +14,48 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { mutedIconColorMapping } from "@/components/ui/icon-button-chrome";
 import { useAllFactories, useProjectNames } from "./overview-sources";
-import { allFactoriesOverviewRoute, projectFactoryOverviewRoute } from "./routes";
+import {
+  allFactoriesOverviewRoute,
+  projectFactoryOverviewRoute,
+  sampleFactoryOverviewRoute,
+} from "./routes";
 import type { FactoryScopeEntry } from "./all-factories-model";
 
 const ThemedChevronDown = withUnistyles(ChevronDown);
 
+/** What the overview shows: every Factory, one live Factory, or the Sample Factory. */
+export type FactoryScope =
+  | { kind: "all" }
+  | { kind: "project"; projectId: string }
+  | { kind: "sample" };
+
 /** One route-backed scope selector for the board, reports and operating controls. */
 export function FactoryScopeSelector({
   serverId,
-  projectId,
+  scope,
 }: {
   serverId: string;
-  projectId: string | null;
+  scope: FactoryScope;
 }) {
   const { t } = useTranslation();
   const focused = useIsFocused();
   const { entries } = useAllFactories(focused);
+  const projectId = scope.kind === "project" ? scope.projectId : null;
   const name = useProjectNames()(serverId, projectId ?? "");
   const allLabel = t("projectFactory.scope.allTitle");
-  const title = projectId ? (name ?? t("projectFactory.overview")) : allLabel;
+  const sampleLabel = t("projectFactory.scope.sample");
+  const titles = {
+    all: allLabel,
+    sample: sampleLabel,
+    project: name ?? t("projectFactory.overview"),
+  };
+  const title = titles[scope.kind];
   const openAll = useCallback(
     () => router.navigate(allFactoriesOverviewRoute(serverId)),
+    [serverId],
+  );
+  const openSample = useCallback(
+    () => router.navigate(sampleFactoryOverviewRoute(serverId)),
     [serverId],
   );
   return (
@@ -49,7 +70,7 @@ export function FactoryScopeSelector({
         <ThemedChevronDown size={16} uniProps={mutedIconColorMapping} />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start">
-        <DropdownMenuItem selected={projectId === null} onSelect={openAll}>
+        <DropdownMenuItem selected={scope.kind === "all"} onSelect={openAll}>
           {allLabel}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
@@ -60,6 +81,14 @@ export function FactoryScopeSelector({
             selected={entry.serverId === serverId && entry.projectId === projectId}
           />
         ))}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          selected={scope.kind === "sample"}
+          onSelect={openSample}
+          testID="factory-scope-sample"
+        >
+          {sampleLabel}
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );

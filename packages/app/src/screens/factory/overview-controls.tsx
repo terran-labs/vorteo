@@ -1,6 +1,5 @@
 import { useCallback, useState, type ReactNode } from "react";
 import { Text, View } from "react-native";
-import { ChevronDown, ChevronRight } from "lucide-react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
@@ -23,6 +22,8 @@ export interface FactoryControls {
   resume: () => void;
   setPlanning: (value: boolean) => void;
   pending: boolean;
+  /** Every control is off, as on the Sample Factory. */
+  disabled?: boolean;
   error: Error | null;
 }
 
@@ -62,6 +63,7 @@ export function FactoryRunControls({ serverId, projectId, state, controls }: Con
   const drain = state.drain ?? null;
   const held = projectResume(drain) === "hidden";
   const { resume } = controls;
+  const off = controls.pending || controls.disabled === true;
   // Decided from a fresh read: a project another process now holds is not resumed.
   const resumeProject = useCallback(() => {
     if (!plugin) return;
@@ -81,12 +83,12 @@ export function FactoryRunControls({ serverId, projectId, state, controls }: Con
       <StatusBadge label={label} variant={stateVariant(state)} />
       {held && drain ? <Text style={styles.text}>{drain.reason}</Text> : null}
       {state.state === "on" ? (
-        <Button onPress={controls.pause} disabled={controls.pending}>
+        <Button onPress={controls.pause} disabled={off}>
           {t("projectFactory.pauseMenu")}
         </Button>
       ) : null}
       {state.state === "paused" && !held ? (
-        <Button onPress={resumeProject} disabled={controls.pending}>
+        <Button onPress={resumeProject} disabled={off}>
           {t("projectFactory.resumeMenu")}
         </Button>
       ) : null}
@@ -101,7 +103,7 @@ export function FactoryRunControls({ serverId, projectId, state, controls }: Con
           <Switch
             value={state.workers.planning}
             onValueChange={controls.setPlanning}
-            disabled={controls.pending}
+            disabled={off}
             accessibilityLabel={t("projectFactory.planning")}
           />
         </View>
@@ -149,7 +151,11 @@ function FactoryHomeRow({ home }: { home: NonNullable<ProjectFactoryState["home"
 }
 
 /** Stage models, every role and role assignment, folded into one card of collapsible rows. */
-export function FactoryModelsAndRoles({ serverId, projectId, state }: ControlTarget) {
+export function FactoryModelsAndRoles({
+  serverId,
+  projectId,
+  state,
+}: Omit<ControlTarget, "controls">) {
   const { t } = useTranslation();
   const assignments = factoryRoleAssignments(state);
   return (
@@ -158,6 +164,8 @@ export function FactoryModelsAndRoles({ serverId, projectId, state }: ControlTar
       <SettingsCollapsibleRow
         label={t("projectFactory.issueStages")}
         summary={t("projectFactory.controls.stageSummary")}
+        defaultExpanded
+        testID="factory-issue-stages"
       >
         <View style={styles.nested}>
           <Text style={styles.hint}>{t("projectFactory.nextIssue")}</Text>
@@ -254,7 +262,7 @@ function RoleRow({
   );
 }
 
-/** One line of controls with the rest behind a "Models & roles" disclosure. */
+/** One line of run controls; stage and role settings live on the Factory's settings page. */
 export function FactoryControlStrip({
   extra,
   ...target
@@ -262,32 +270,16 @@ export function FactoryControlStrip({
   /** Installation-wide controls, set apart at the end of the line. */
   extra?: ReactNode;
 }) {
-  const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
-  const toggle = useCallback(() => setOpen((value) => !value), []);
   return (
     <View style={styles.strip} testID="factory-control-strip">
       <View style={styles.stripRow}>
         <FactoryRunControls {...target} />
-        <Button
-          variant="ghost"
-          onPress={toggle}
-          leftIcon={open ? ChevronDown : ChevronRight}
-          accessibilityState={open ? EXPANDED : COLLAPSED}
-          testID="factory-models-and-roles-toggle"
-        >
-          {t("projectFactory.controls.modelsAndRoles")}
-        </Button>
         {extra ? <View style={styles.extra}>{extra}</View> : null}
       </View>
       <FactoryControlNotes {...target} />
-      {open ? <FactoryModelsAndRoles {...target} /> : null}
     </View>
   );
 }
-
-const EXPANDED = { expanded: true };
-const COLLAPSED = { expanded: false };
 
 const styles = StyleSheet.create((theme) => ({
   text: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.base },
