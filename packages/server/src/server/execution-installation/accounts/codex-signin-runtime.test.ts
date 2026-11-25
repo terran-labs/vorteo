@@ -873,6 +873,15 @@ it("starts adoption only from the owner's routes, never from Dev's", async () =>
       },
     });
     expect((await post(`${owner}/read`, { definitionId: "two" })).status).toBe(200);
+    // A failure a Host sign-in repairs is flagged, so the app can offer that sign-in beside it.
+    h.dev.active = false;
+    h.setGrant({ hasRefreshToken: false });
+    const renew = await post(`${owner}/adopt`, { definitionId: "two" });
+    expect(renew).toMatchObject({
+      status: 409,
+      body: { adoption: { status: "failed", hostSignInNeeded: true } },
+    });
+    expect(renew.body.error).toMatch(/Sign in on the Host, then try again\.$/);
     expect((await post(`${owner}/unadopt`, { definitionId: "missing" })).status).toBe(409);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));

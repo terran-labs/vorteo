@@ -126,6 +126,22 @@ export function codexAccessProjection(grant: CodexHostGrant | null): CodexAccess
 /** Adoption needs this much access token lifetime left, so it never has to refresh. */
 export const CODEX_ADOPTION_MIN_REMAINING_MS = 30 * 60_000;
 
+/** Reasons a Host sign-in on that account repairs; the app offers it beside them. */
+export const HOST_NOT_SIGNED_IN =
+  "The Host is not signed in to this account. Sign in on the Host, then try again.";
+export const HOST_CANNOT_RENEW =
+  "The Host's sign-in for this account cannot renew itself. Sign in on the Host, then try again.";
+export const HOST_NOT_CHATGPT =
+  "The Host's sign-in for this account is not a ChatGPT sign-in. Sign in on the Host, then try again.";
+export const HOST_NO_PERSON =
+  "The Host's sign-in for this account does not say which ChatGPT user it belongs to. Sign in on the Host, then try again.";
+export const HOST_SIGN_IN_REASONS: ReadonlySet<string> = new Set([
+  HOST_NOT_SIGNED_IN,
+  HOST_CANNOT_RENEW,
+  HOST_NOT_CHATGPT,
+  HOST_NO_PERSON,
+]);
+
 export type CodexHostSessionCheck =
   | { verified: true; identity: HostRefreshIdentity }
   | { verified: false; reason: string };
@@ -142,26 +158,23 @@ export function verifyCodexHostSession(
   if (!grant)
     return {
       verified: false,
-      reason: "The Host is not signed in to this account. Sign it in on the Host, then try again.",
+      reason: HOST_NOT_SIGNED_IN,
     };
   if (!grant.hasRefreshToken)
     return {
       verified: false,
-      reason:
-        "The Host's sign-in for this account cannot renew itself. Sign it in again on the Host, then try again.",
+      reason: HOST_CANNOT_RENEW,
     };
   if (!grant.accountId)
     return {
       verified: false,
-      reason:
-        "The Host's sign-in for this account is not a ChatGPT sign-in. Sign in with ChatGPT on the Host, then try again.",
+      reason: HOST_NOT_CHATGPT,
     };
   // The workspace alone is shared by every member of a Team workspace; Dev compares the person.
   if (!codexIdTokenPerson(grant.idToken))
     return {
       verified: false,
-      reason:
-        "The Host's sign-in for this account does not say which ChatGPT user it belongs to. Sign it in again on the Host, then try again.",
+      reason: HOST_NO_PERSON,
     };
   if (grant.expiresAt === null || grant.expiresAt - now <= CODEX_ADOPTION_MIN_REMAINING_MS)
     return {

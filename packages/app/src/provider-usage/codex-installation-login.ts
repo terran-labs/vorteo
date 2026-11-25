@@ -8,6 +8,7 @@ import {
   requestInstallationOwner,
 } from "@/execution-installation/client";
 import { requestInstallationSettings } from "@/execution-installation/settings";
+import { readExecutionInstallation } from "@/execution-installation/policy";
 import type { ClaudeSetupConnectionSchema } from "./claude-setup-login";
 
 const EnvironmentStatusSchema = z.strictObject({
@@ -83,6 +84,7 @@ const AdoptionSchema = z.object({
   restored: z.object({ mayNeedSignIn: z.boolean() }).nullable(),
   restoreSkipped: z.boolean().optional(),
   copyDeleteBlocked: z.string().optional(),
+  hostSignInNeeded: z.boolean().optional(),
 });
 const AdoptionsSchema = z.object({
   definitions: z.array(
@@ -119,7 +121,20 @@ export async function codexAdoptionRead(serverId: string, providerId: string) {
   );
   if (legacy.length !== 1) return null;
   const entries = await codexAdoptions();
-  return entries?.find((item) => item.definitionId === legacy[0]!.id) ?? null;
+  const entry = entries?.find((item) => item.definitionId === legacy[0]!.id);
+  if (!entry) return null;
+  // Where this account's Host sign-in runs, for a failure that a Host sign-in repairs.
+  const hostServerId =
+    readExecutionInstallation()?.environments.find((environment) => environment.kind === "host")
+      ?.serverId ?? null;
+  const hostProviderId = hostServerId ? legacy[0]!.bindings[hostServerId] : undefined;
+  return {
+    ...entry,
+    host:
+      hostServerId && hostProviderId
+        ? { serverId: hostServerId, providerId: hostProviderId }
+        : null,
+  };
 }
 
 /** Adopts or un-adopts one legacy account. A refusal throws with the coordinator's reason. */

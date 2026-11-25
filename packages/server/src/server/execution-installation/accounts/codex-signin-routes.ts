@@ -1,6 +1,7 @@
 import type { ErrorRequestHandler, Express, Response } from "express";
 import { z } from "zod";
 import { CodexAdoptionBusy, type CodexAdoptionRecord } from "./codex-signin-adoption.js";
+import { HOST_SIGN_IN_REASONS } from "./codex-signin-host.js";
 import type { CodexSignInRuntime } from "./codex-signin-runtime.js";
 
 const Definition = z.strictObject({ definitionId: z.string().min(1).max(512) });
@@ -26,6 +27,10 @@ function adoptionView(record: CodexAdoptionRecord) {
     restored: record.restored,
     ...(record.restoreSkipped ? { restoreSkipped: true as const } : {}),
     ...(record.copyDeleteBlocked ? { copyDeleteBlocked: record.copyDeleteBlocked } : {}),
+    // A failure a Host sign-in repairs; the app offers "Sign in on the Host" beside it.
+    ...(record.status === "failed" && record.error && HOST_SIGN_IN_REASONS.has(record.error)
+      ? { hostSignInNeeded: true as const }
+      : {}),
   };
 }
 

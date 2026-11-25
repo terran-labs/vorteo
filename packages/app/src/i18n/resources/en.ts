@@ -3890,10 +3890,12 @@ export const en = {
       signedOut:
         "Dev had no saved sign-in to put back. Use the Host's sign-in again to reconnect Dev.",
       requestFailed: "Could not reach the installation. Try again.",
+      hostSignedIn: "The Host is signed in. Try again to use its sign-in on Dev.",
     },
     actions: {
       adopt: "Use the Host's sign-in",
       retry: "Try again",
+      hostSignIn: "Sign in on the Host",
       confirm: "Confirm and try again",
       unadopt: "Stop using the Host's sign-in",
     },

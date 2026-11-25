@@ -16,6 +16,7 @@ import {
   type CodexAdoption,
 } from "./codex-installation-login";
 import { useOwnerAllowed } from "./use-provider-login";
+import { ProviderLoginPanel } from "./login-panel";
 
 /** States the coordinator moves through by itself; the control polls while one lasts. */
 const MOVING = new Set(["verifying-host", "pinning", "projecting", "unadopting"]);
@@ -126,6 +127,55 @@ function sectionModel(
   };
 }
 
+/** After the Host signs in, the failure it repaired is stale until the owner tries again. */
+function hostSignInText(t: Translate, signedIn: boolean): string | null {
+  return signedIn ? t("codexAdoption.status.hostSignedIn") : null;
+}
+
+/**
+ * Beside a failure that a Host sign-in repairs: a button that opens this account's own Host
+ * sign-in, already started, so the instruction works from the Host's or Dev's dialog alike.
+ */
+function HostSignIn({
+  host,
+  state,
+  onOpen,
+  onSignedIn,
+}: {
+  host: { serverId: string; providerId: string } | null;
+  state: "closed" | "open" | "signed-in";
+  onOpen(): void;
+  onSignedIn(): void;
+}) {
+  const { t } = useTranslation();
+  const reportOutcome = useCallback(
+    (outcome: "connected" | "failed" | null) => {
+      if (outcome === "connected") onSignedIn();
+    },
+    [onSignedIn],
+  );
+  if (!host || state === "signed-in") return null;
+  if (state === "open")
+    return (
+      <ProviderLoginPanel
+        serverId={host.serverId}
+        providerId={host.providerId}
+        name="Host"
+        provider="codex"
+        withoutAdoption
+        startOnOpen
+        onOutcome={reportOutcome}
+      />
+    );
+  return (
+    <View style={styles.hostSignIn}>
+      <Button variant="outline" onPress={onOpen} testID="codex-adoption-host-sign-in">
+        {t("codexAdoption.actions.hostSignIn")}
+      </Button>
+    </View>
+  );
+}
+
 /**
  * Adopting a legacy Codex account: Dev keeps its connection, home and history and receives the
  * Host's sign-in. Shown only for a legacy account on a coordinator with the adoption routes.
@@ -141,6 +191,8 @@ export function CodexAdoptionSection({
   const query = useCodexAdoption(serverId, providerId);
   const cache = useQueryClient();
   const [notice, setNotice] = useState<string | null>(null);
+  // The Host sign-in the section offers beside a failure it repairs: open, then signed in.
+  const [hostSignIn, setHostSignIn] = useState<"closed" | "open" | "signed-in">("closed");
   const entry = query.data ?? null;
   const status = entry?.adoption?.status;
   // Whether the panel signs in through the Host follows the adoption's state.
@@ -151,7 +203,10 @@ export function CodexAdoptionSection({
     gcTime: 0,
     mutationFn: (operation: "adopt" | "unadopt") =>
       codexAdoptionRequest(entry!.definitionId, operation),
-    onMutate: () => setNotice(null),
+    onMutate: () => {
+      setNotice(null);
+      setHostSignIn("closed");
+    },
     onError: (error) =>
       setNotice(
         error instanceof InstallationRequestFailed && error.status === 409
@@ -161,6 +216,12 @@ export function CodexAdoptionSection({
     onSettled: () => void query.refetch(),
   });
   const { mutate } = action;
+  const openHostSignIn = useCallback(() => setHostSignIn("open"), []);
+  const { refetch } = query;
+  const hostSignedIn = useCallback(() => {
+    setHostSignIn("signed-in");
+    void refetch();
+  }, [refetch]);
   // Every switch replaces a working Dev sign-in, so it asks first, as un-adopt does.
   const adopt = useCallback(async () => {
     const opener =
@@ -187,12 +248,10 @@ export function CodexAdoptionSection({
 
   if (query.isLoading) return <Text style={styles.muted}>{t("codexAdoption.checking")}</Text>;
   if (!entry) return null;
-  const { busy, text, adoptText, canUnadopt, unadoptDisabled, unavailable } = sectionModel(
-    t,
-    entry,
-    notice,
-    action.isPending,
-  );
+  const model = sectionModel(t, entry, notice, action.isPending);
+  const { busy, adoptText, canUnadopt, unadoptDisabled, unavailable } = model;
+  const hostSignInNeeded = entry.adoption?.hostSignInNeeded === true && entry.host !== null;
+  const text = hostSignInText(t, hostSignInNeeded && hostSignIn === "signed-in") ?? model.text;
   return (
     <View style={styles.section} testID="codex-adoption">
       <Text style={styles.title}>{t("codexAdoption.title")}</Text>
@@ -206,6 +265,12 @@ export function CodexAdoptionSection({
           {t("codexAdoption.unavailable", { reason: entry.reason ?? "" })}
         </Text>
       ) : null}
+      <HostSignIn
+        host={hostSignInNeeded ? entry.host : null}
+        state={hostSignIn}
+        onOpen={openHostSignIn}
+        onSignedIn={hostSignedIn}
+      />
       {adoptText && !busy ? (
         <Text style={styles.muted}>{t("codexAdoption.description")}</Text>
       ) : null}
@@ -215,35 +280,63 @@ export function CodexAdoptionSection({
           {t("codexAdoption.copyDeleteBlocked", { reason: entry.adoption.copyDeleteBlocked })}
         </Text>
       ) : null}
-      {adoptText || canUnadopt ? (
-        <ActionFooter style={styles.actions}>
-          {canUnadopt ? (
-            <ActionFooterLeading>
-              <Button
-                variant="outline"
-                onPress={unadopt}
-                disabled={unadoptDisabled}
-                focusableWhenDisabled
-                testID="codex-adoption-unadopt"
-              >
-                {t("codexAdoption.actions.unadopt")}
-              </Button>
-            </ActionFooterLeading>
-          ) : null}
-          {adoptText ? (
-            <Button
-              variant="outline"
-              onPress={adopt}
-              disabled={busy}
-              focusableWhenDisabled
-              testID="codex-adoption-adopt"
-            >
-              {adoptText}
-            </Button>
-          ) : null}
-        </ActionFooter>
-      ) : null}
+      <SectionActions
+        adoptText={adoptText}
+        busy={busy}
+        canUnadopt={canUnadopt}
+        unadoptDisabled={unadoptDisabled}
+        onAdopt={adopt}
+        onUnadopt={unadopt}
+      />
     </View>
+  );
+}
+
+/** The section's footer: stop on the leading side, switch or retry on the trailing side. */
+function SectionActions({
+  adoptText,
+  busy,
+  canUnadopt,
+  unadoptDisabled,
+  onAdopt,
+  onUnadopt,
+}: {
+  adoptText: string | null;
+  busy: boolean;
+  canUnadopt: boolean;
+  unadoptDisabled: boolean;
+  onAdopt(): void;
+  onUnadopt(): void;
+}) {
+  const { t } = useTranslation();
+  if (!adoptText && !canUnadopt) return null;
+  return (
+    <ActionFooter style={styles.actions}>
+      {canUnadopt ? (
+        <ActionFooterLeading>
+          <Button
+            variant="outline"
+            onPress={onUnadopt}
+            disabled={unadoptDisabled}
+            focusableWhenDisabled
+            testID="codex-adoption-unadopt"
+          >
+            {t("codexAdoption.actions.unadopt")}
+          </Button>
+        </ActionFooterLeading>
+      ) : null}
+      {adoptText ? (
+        <Button
+          variant="outline"
+          onPress={onAdopt}
+          disabled={busy}
+          focusableWhenDisabled
+          testID="codex-adoption-adopt"
+        >
+          {adoptText}
+        </Button>
+      ) : null}
+    </ActionFooter>
   );
 }
 
@@ -257,4 +350,5 @@ const styles = StyleSheet.create((theme) => ({
   text: { color: theme.colors.foreground, fontSize: theme.fontSize.base },
   muted: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.base },
   actions: { paddingTop: 0 },
+  hostSignIn: { alignItems: "flex-start" },
 }));
