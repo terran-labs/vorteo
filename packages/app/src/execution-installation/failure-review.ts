@@ -82,3 +82,27 @@ export function instructionRequestIsStale(
 ): boolean {
   return request.status === "pending" && request.baseRevision !== currentRevision;
 }
+
+/**
+ * Records with the owner's dismissal applied as `acknowledgedAt`, so the counting rule above
+ * treats them like any other dismissed record. Dismissals live beside the records because the
+ * job schemas are strict (issue #639).
+ */
+export function withDismissals<T extends { id: string }>(
+  records: readonly T[],
+  dismissals:
+    | { dismissals: readonly { queue: string; id: string; dismissedAt: string }[] }
+    | null
+    | undefined,
+  queue: string | undefined,
+): (T & { acknowledgedAt?: string })[] {
+  if (!dismissals || !queue) return [...records];
+  const dismissedAt = new Map(
+    dismissals.dismissals
+      .filter((entry) => entry.queue === queue)
+      .map((entry) => [entry.id, entry.dismissedAt]),
+  );
+  return records.map((record) =>
+    dismissedAt.has(record.id) ? { ...record, acknowledgedAt: dismissedAt.get(record.id) } : record,
+  );
+}

@@ -22,7 +22,7 @@ import {
   brokerReviewSummary,
   type BrokerAction,
 } from "./preview-broker-review";
-import { MaintenanceServiceQueue } from "./maintenance-service-queue";
+import { MaintenanceServiceQueue, type HealthDismissalControls } from "./maintenance-service-queue";
 import { MaintenanceDashboard } from "./maintenance-dashboard";
 import { RecoveryBookmark } from "./recovery-bookmark";
 import { MaintenanceProvisioning } from "./maintenance-provisioning";
@@ -56,7 +56,9 @@ import {
   instructionRequestIsStale,
   isSupersededFailure,
   recordsNeedingReview,
+  withDismissals,
 } from "./failure-review";
+import type { HealthDismissalQueue } from "@getpaseo/protocol/health-dismissals";
 import {
   sessionHostActionDisabledReason,
   sessionHostOperationTitle,
@@ -593,6 +595,28 @@ function InstallationActionStatus({
   );
 }
 
+/** Dismiss for failed service maintenance requests that still count on System Health. */
+function useServiceDismissal(
+  model: InstallationPanelModel,
+  state: ReturnType<InstallationPanelModel["getState"]>,
+): HealthDismissalControls | null {
+  const dismissals = state.healthDismissals;
+  const jobs = state.serviceQueue?.jobs;
+  const onDismiss = useCallback(
+    (job: { id: string }) => void model.dismissHealthFailure("maintenance-service", job.id),
+    [model],
+  );
+  return useMemo(() => {
+    if (!dismissals || !jobs) return null;
+    const records = withDismissals(jobs, dismissals, "maintenance-service");
+    return {
+      counted: new Set(recordsNeedingReview(records, byTarget).map((job) => job.id)),
+      dismissed: new Set(records.filter((job) => job.acknowledgedAt).map((job) => job.id)),
+      onDismiss,
+    };
+  }, [dismissals, jobs, onDismiss]);
+}
+
 /** A failed restart's Fix lands in History, which has to be open to show it. */
 function useRevealRestartHistory(
   target: HealthCardHost,
@@ -646,6 +670,7 @@ function InstallationSystemDetailsBody({
     if (selectedHistoryId) setHistoryVisible(true);
   }, [selectedHistoryId]);
   const restartsInHistory = active.length === 0;
+  const serviceDismissal = useServiceDismissal(model, state);
   useRevealRestartHistory(target, restartsInHistory, setHistoryVisible);
   const missingRequest =
     requestId &&
@@ -696,6 +721,7 @@ function InstallationSystemDetailsBody({
                 busy={state.busy}
                 onRefresh={model.refreshServiceQueue}
                 onCancel={model.cancelMaintenanceService}
+                dismissal={serviceDismissal}
               />
             </View>
             {target === "host" ? <InstallationServiceRequests model={model} state={state} /> : null}
@@ -783,39 +809,49 @@ function InstallationServiceRequests({
   model: InstallationPanelModel;
   state: ReturnType<InstallationPanelModel["getState"]>;
 }) {
-  const brokerAnchor = firstNeedingReview(state.brokerJobs);
-  const monitorAnchor = firstNeedingReview(state.monitorJobs);
-  const helperAnchor = firstNeedingReview(state.helperJobs);
+  // The owner's dismissals apply before anything is counted, anchored or marked superseded.
+  const dismissals = state.healthDismissals;
+  const brokerJobs = withDismissals(state.brokerJobs, dismissals, "preview-broker");
+  const monitorJobs = withDismissals(state.monitorJobs, dismissals, "preview-monitor");
+  const helperJobs = withDismissals(state.helperJobs, dismissals, "native-helper");
+  const brokerAnchor = firstNeedingReview(brokerJobs);
+  const monitorAnchor = firstNeedingReview(monitorJobs);
+  const helperAnchor = firstNeedingReview(helperJobs);
+  // Older coordinators have no dismissal routes, so they get no Dismiss.
+  const dismissible = dismissals !== null;
   return (
     <>
-      {state.brokerJobs.map((job) => (
+      {brokerJobs.map((job) => (
         <BrokerRequest
           key={`${job.id}:${job.revision}`}
           job={job}
           model={model}
           busy={state.busy}
           anchored={job.id === brokerAnchor}
-          superseded={isSupersededFailure(job, state.brokerJobs, byTarget)}
+          superseded={isSupersededFailure(job, brokerJobs, byTarget)}
+          dismissQueue={dismissible ? "preview-broker" : null}
         />
       ))}
-      {state.monitorJobs.map((job) => (
+      {monitorJobs.map((job) => (
         <MonitorRequest
           key={`${job.id}:${job.revision}`}
           job={job}
           model={model}
           busy={state.busy}
           anchored={job.id === monitorAnchor}
-          superseded={isSupersededFailure(job, state.monitorJobs, byTarget)}
+          superseded={isSupersededFailure(job, monitorJobs, byTarget)}
+          dismissQueue={dismissible ? "preview-monitor" : null}
         />
       ))}
-      {state.helperJobs.map((job) => (
+      {helperJobs.map((job) => (
         <HelperRequest
           key={`${job.id}:${job.revision}`}
           job={job}
           model={model}
           busy={state.busy}
           anchored={job.id === helperAnchor}
-          superseded={isSupersededFailure(job, state.helperJobs, byTarget)}
+          superseded={isSupersededFailure(job, helperJobs, byTarget)}
+          dismissQueue={dismissible ? "native-helper" : null}
         />
       ))}
       <SessionHostCard model={model} state={state} />
@@ -1252,6 +1288,7 @@ export function RestartRequest({
 
 // Status badges inside request cards, not settings rows.
 const SUPERSEDED_BADGE = "Superseded";
+const DISMISSED_BADGE = "Dismissed";
 const STALE_BADGE = "Stale";
 
 /** A request's status, or "Superseded" for a failure a later success replaced. */
@@ -1260,34 +1297,71 @@ function RequestStatusBadge({
   superseded,
   recoveryLabel,
 }: {
-  job: { status: string; stage?: string };
+  job: { status: string; stage?: string; acknowledgedAt?: string };
   superseded: boolean;
   recoveryLabel: string;
 }) {
   if (job.stage === "recovery_required")
     return <StatusBadge label={recoveryLabel} variant="warning" />;
   if (superseded) return <StatusBadge label={SUPERSEDED_BADGE} variant="muted" />;
+  if (job.status === "failed" && job.acknowledgedAt)
+    return <StatusBadge label={DISMISSED_BADGE} variant="muted" />;
   return <StatusBadge label={job.status} variant={job.status === "failed" ? "warning" : "muted"} />;
 }
 
+/** Where a failed record's Dismiss is recorded, or null where the coordinator has none. */
+type DismissQueue = HealthDismissalQueue | null;
+
 /**
  * Why a failed request failed, shown on the card so the owner can judge it without opening
- * Details. A superseded failure says it no longer needs them.
+ * Details, with Dismiss when the failure still counts on System Health. A superseded failure
+ * says it no longer needs them; a dismissed one keeps its detail in history.
  */
 function FailedRequestNote({
   job,
   superseded,
+  model,
+  busy,
+  dismissQueue,
+  noun,
 }: {
-  job: { status: string; detail: string; acknowledgedAt?: string };
+  job: { id: string; status: string; detail: string; acknowledgedAt?: string };
   superseded: boolean;
+  model: InstallationPanelModel;
+  busy: boolean;
+  dismissQueue: DismissQueue;
+  /** Names the record for the Dismiss button's accessibility label. */
+  noun: string;
 }) {
+  const size = useVortonTouch() ? "md" : "sm";
+  const dismiss = useCallback(() => {
+    if (dismissQueue) void model.dismissHealthFailure(dismissQueue, job.id);
+  }, [dismissQueue, job.id, model]);
   if (job.status !== "failed") return null;
   if (superseded) return <Text style={styles.text}>A later request succeeded.</Text>;
-  return job.detail ? (
-    <Text selectable style={styles.error}>
-      {job.detail}
-    </Text>
-  ) : null;
+  return (
+    <>
+      {job.detail ? (
+        <Text selectable style={styles.error}>
+          {job.detail}
+        </Text>
+      ) : null}
+      {dismissQueue && !job.acknowledgedAt ? (
+        <ActionFooter style={styles.actions}>
+          <RestartActionButton
+            testID={`health-dismiss-${job.id}`}
+            size={size}
+            variant="outline"
+            disabledReason={busy ? "Another installation action is running" : null}
+            onPress={dismiss}
+            accessibilityLabel={`Dismiss failed ${noun}`}
+          >
+            Dismiss
+          </RestartActionButton>
+        </ActionFooter>
+      ) : null}
+    </>
+  );
 }
 
 function BrokerRequest({
@@ -1296,6 +1370,7 @@ function BrokerRequest({
   busy,
   anchored = false,
   superseded = false,
+  dismissQueue = null,
 }: {
   job: BrokerReviewJob;
   model: InstallationPanelModel;
@@ -1304,6 +1379,7 @@ function BrokerRequest({
   anchored?: boolean;
   /** Failed, then replaced by a later success on the same target. */
   superseded?: boolean;
+  dismissQueue?: DismissQueue;
 }) {
   const [expanded, setExpanded] = useState(false);
   const size = useVortonTouch() ? "md" : "sm";
@@ -1322,7 +1398,14 @@ function BrokerRequest({
         </Text>
         <RequestStatusBadge job={job} superseded={superseded} recoveryLabel="Needs inspection" />
       </View>
-      <FailedRequestNote job={job} superseded={superseded} />
+      <FailedRequestNote
+        job={job}
+        superseded={superseded}
+        model={model}
+        busy={busy}
+        dismissQueue={dismissQueue}
+        noun="preview broker request"
+      />
       <Text style={styles.text}>{brokerReviewSummary(job)}</Text>
       <Text style={styles.text}>{job.reason}</Text>
       <Button
@@ -1425,6 +1508,7 @@ function MonitorRequest({
   busy,
   anchored = false,
   superseded = false,
+  dismissQueue = null,
 }: {
   job: PreviewMonitorJob;
   model: InstallationPanelModel;
@@ -1433,6 +1517,7 @@ function MonitorRequest({
   anchored?: boolean;
   /** Failed, then replaced by a later success on the same target. */
   superseded?: boolean;
+  dismissQueue?: DismissQueue;
 }) {
   const [expanded, setExpanded] = useState(false);
   const size = useVortonTouch() ? "md" : "sm";
@@ -1447,7 +1532,14 @@ function MonitorRequest({
         <Text style={settingsStyles.rowTitle}>Dev preview monitor</Text>
         <RequestStatusBadge job={job} superseded={superseded} recoveryLabel="Needs inspection" />
       </View>
-      <FailedRequestNote job={job} superseded={superseded} />
+      <FailedRequestNote
+        job={job}
+        superseded={superseded}
+        model={model}
+        busy={busy}
+        dismissQueue={dismissQueue}
+        noun="preview monitor request"
+      />
       <Text style={styles.text}>{monitorReviewSummary(job)}</Text>
       <Text style={styles.text}>{job.reason}</Text>
       <Button variant="ghost" size={size} onPress={toggle} {...disclosureProps(expanded)}>
@@ -1513,6 +1605,7 @@ function HelperRequest({
   busy,
   anchored = false,
   superseded = false,
+  dismissQueue = null,
 }: {
   job: NativeHelperJob;
   model: InstallationPanelModel;
@@ -1521,6 +1614,7 @@ function HelperRequest({
   anchored?: boolean;
   /** Failed, then replaced by a later success on the same target. */
   superseded?: boolean;
+  dismissQueue?: DismissQueue;
 }) {
   const [expanded, setExpanded] = useState(false);
   const controlSize = useVortonTouch() ? "md" : "sm";
@@ -1538,7 +1632,14 @@ function HelperRequest({
         <Text style={settingsStyles.rowTitle}>Native helper</Text>
         <RequestStatusBadge job={job} superseded={superseded} recoveryLabel="Needs recovery" />
       </View>
-      <FailedRequestNote job={job} superseded={superseded} />
+      <FailedRequestNote
+        job={job}
+        superseded={superseded}
+        model={model}
+        busy={busy}
+        dismissQueue={dismissQueue}
+        noun="native helper request"
+      />
       <Text style={styles.text}>{helperReviewSummary(job)}</Text>
       <Button variant="ghost" size={controlSize} onPress={toggle} {...disclosureProps(expanded)}>
         Details
@@ -1981,9 +2082,10 @@ function SessionHostCard({
   );
   if (!overview) return null;
   const review = { busy: state.busy, unlocked: state.unlocked };
-  const shownJobs = visibleSessionHostJobs(overview.jobs);
+  const jobs = withDismissals(overview.jobs, state.healthDismissals, "session-host");
+  const shownJobs = visibleSessionHostJobs(jobs);
   // Fix lands on the request that needs the owner, or on the card when none does.
-  const anchorJob = recordsNeedingReview(overview.jobs, byTargetAndOperation).find((job) =>
+  const anchorJob = recordsNeedingReview(jobs, byTargetAndOperation).find((job) =>
     shownJobs.includes(job),
   )?.id;
   return (
@@ -2075,7 +2177,8 @@ function SessionHostCard({
           model={model}
           busy={state.busy}
           anchored={job.id === anchorJob}
-          superseded={isSupersededFailure(job, overview.jobs, byTargetAndOperation)}
+          superseded={isSupersededFailure(job, jobs, byTargetAndOperation)}
+          dismissQueue={state.healthDismissals ? "session-host" : null}
         />
       ))}
     </>
@@ -2093,12 +2196,14 @@ function SessionHostRequest({
   busy,
   anchored = false,
   superseded = false,
+  dismissQueue = null,
 }: {
   job: SessionHostJob;
   model: InstallationPanelModel;
   busy: boolean;
   anchored?: boolean;
   superseded?: boolean;
+  dismissQueue?: DismissQueue;
 }) {
   const [expanded, setExpanded] = useState(false);
   const size = useVortonTouch() ? "md" : "sm";
@@ -2115,7 +2220,14 @@ function SessionHostRequest({
         <Text style={settingsStyles.rowTitle}>{sessionHostOperationTitle(job.operation)}</Text>
         <RequestStatusBadge job={job} superseded={superseded} recoveryLabel="Needs recovery" />
       </View>
-      <FailedRequestNote job={job} superseded={superseded} />
+      <FailedRequestNote
+        job={job}
+        superseded={superseded}
+        model={model}
+        busy={busy}
+        dismissQueue={dismissQueue}
+        noun="session host request"
+      />
       <Text style={styles.text}>{sessionHostReviewSummary(job)}</Text>
       <Text style={styles.text}>{job.reason}</Text>
       {reviewing ? null : (

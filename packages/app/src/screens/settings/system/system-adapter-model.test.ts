@@ -226,6 +226,28 @@ it.each([
     [],
   ],
   [
+    "broker failure the owner dismissed on the coordinator",
+    {
+      brokerJobs: [broker("failed", "1")],
+      healthDismissals: {
+        dismissals: [{ queue: "preview-broker", id: "failed-1", dismissedAt: "2" }],
+      },
+    },
+    [],
+    [],
+  ],
+  [
+    "a dismissal recorded for another queue does not hide a broker failure",
+    {
+      brokerJobs: [broker("failed", "1")],
+      healthDismissals: {
+        dismissals: [{ queue: "session-host", id: "failed-1", dismissedAt: "2" }],
+      },
+    },
+    [],
+    ["broker"],
+  ],
+  [
     "dismissed session host failure",
     { sessionHost: { jobs: [host("failed", "1", { acknowledgedAt: "2" })], status: null } },
     [],

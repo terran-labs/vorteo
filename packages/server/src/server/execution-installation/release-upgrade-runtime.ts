@@ -1349,6 +1349,8 @@ export function createReleaseUpgradeRuntime(input: {
         container: managedDev(config),
         upgrades: upgrades?.list() ?? [],
         ...(updates ? { policy: updates.policy(), check: updates.lastCheck() } : {}),
+        // Issue #639: `acknowledge` also dismisses a failed upgrade that was not automatic.
+        acknowledgesFailures: true,
       };
     },
   };

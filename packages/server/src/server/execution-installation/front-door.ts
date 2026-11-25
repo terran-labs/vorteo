@@ -75,6 +75,11 @@ export const OWNER_ROUTE_FRONT_DOORS: Readonly<Record<string, FrontDoor>> = {
   "/api/installation/owner/broker-deployments/observe": { agent: "broker-deployment-status" },
 
   // Agents request them; OWNER_ONLY_OPERATIONS keeps their approval with the owner.
+  // Dismissing a failure removes it from the owner's Health count; agents must never hide one.
+  "/api/installation/owner/health-dismissals": {
+    excluded: "health-dismissal",
+    why: "Clears a failed record from the owner's Health list: agents never hide failures from the owner.",
+  },
   "/api/installation/owner/instruction-requests/decision": {
     excluded: "instruction-requests",
     why: "Agents request it with request-instructions; only the owner approves it (owner decision 2026-11-07).",

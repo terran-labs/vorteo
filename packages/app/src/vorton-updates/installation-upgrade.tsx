@@ -85,7 +85,12 @@ export function InstallationUpgradeSection({ update }: { update: VortonUpdate | 
           testID="installation-upgrade-failures"
         >
           {failures.map((upgrade) => (
-            <FailedUpgrade key={upgrade.id} client={client} upgrade={upgrade} />
+            <FailedUpgrade
+              key={upgrade.id}
+              client={client}
+              upgrade={upgrade}
+              status={status.data}
+            />
           ))}
         </View>
       ) : null}
@@ -120,9 +125,11 @@ export function InstallationUpgradeSection({ update }: { update: VortonUpdate | 
 function FailedUpgrade({
   client,
   upgrade,
+  status,
 }: {
   client: InstallationClient;
   upgrade: InstallationUpgrade;
+  status: UpgradeStatus | null | undefined;
 }) {
   return (
     <View style={styles.failure} testID={`installation-upgrade-failure-${upgrade.id}`}>
@@ -132,7 +139,7 @@ function FailedUpgrade({
       <Text selectable style={styles.hint}>
         {`${formatTimeAgo(new Date(upgrade.createdAt))}: ${upgradeFailureDetail(upgrade)}`}
       </Text>
-      {upgradeCanBeDismissed(upgrade) ? (
+      {upgradeCanBeDismissed(upgrade, status) ? (
         <UpgradeAcknowledgeButton
           client={client}
           upgrade={upgrade}
