@@ -410,6 +410,13 @@ it.each(["unsupported", "no audio"])("disposes plugins when %s", async (reason) 
   expect(h.disposals()).toBe(1);
 });
 
+it("keeps the catalog loading until the host reports whether it supports plugins (#637)", () => {
+  const h = harness();
+  h.sync({ supported: null, connected: false });
+  expect(h.registry.getCatalogStatus("host")).toBe("loading");
+  expect(h.evaluations()).toBe(0);
+});
+
 it("refreshes settings on a replayed subscription snapshot without reinstalling", async () => {
   const h = await connected();
   const plugin = h.installed();
