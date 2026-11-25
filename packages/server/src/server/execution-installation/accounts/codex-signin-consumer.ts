@@ -227,6 +227,7 @@ export function mountCodexSignInConsumer(app: Express, options: ConsumerOptions)
       authority.serverId !== request.serverId ||
       authority.revision !== request.policyRevision ||
       definition.providerType !== "codex" ||
+      definition.accountId === undefined ||
       definition.accountSetup !== undefined
     )
       throw new CodexSignInDeliveryError();

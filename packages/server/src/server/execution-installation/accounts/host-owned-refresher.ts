@@ -418,6 +418,8 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     // was overwritten is repaired. Only scheduled work, inside the retry budget, may then
     // refresh; recovery alone never spends a retry.
     const due = scheduled || recovery;
+    // A recovery-only read while refreshes fail neither refreshes nor counts a failure, so
+    // repeated recovery calls cannot push the scheduled retry further out.
     const allowRefresh = scheduled || next.refreshFailures === 0;
     // Preserve the previous deadline even if this read immediately discovers a renewed grant.
     if (next.expiresAt !== null && now >= next.expiresAt) next.missedExpiry = next.expiresAt;
@@ -426,7 +428,7 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
       try {
         desired = await this.readHost(next.definitionId, next, now, allowRefresh);
       } catch {
-        this.recordFailure(next, now, "storage_unreadable");
+        if (allowRefresh) this.recordFailure(next, now, "storage_unreadable");
         next.checkedAt = now;
       }
     }
@@ -465,7 +467,7 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
       } else delete next.failureReason;
       delete next.refreshRetry;
     }
-    if (grant === null) this.recordFailure(next, now, "grant_missing");
+    if (grant === null && allowRefresh) this.recordFailure(next, now, "grant_missing");
     if (allowRefresh && this.shouldRefresh(next, grant, now))
       grant = await this.refreshHost(definitionId, grant, next, now);
     next.checkedAt = now;

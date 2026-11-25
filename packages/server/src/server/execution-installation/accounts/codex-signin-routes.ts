@@ -8,7 +8,7 @@ const Attempt = Definition.extend({ attemptId: z.string().uuid() });
 const Empty = z.strictObject({});
 
 const SIGN_IN_FAILURE = "Codex sign-in could not complete. Refresh and try again.";
-const ADOPTION_FAILURE = "Codex account adoption could not complete. Refresh and try again.";
+const ADOPTION_FAILURE = "Could not finish switching this account. Refresh and try again.";
 
 /**
  * What the owner's app sees of an adoption: its state, plain reason and times. Never the account
@@ -25,6 +25,7 @@ function adoptionView(record: CodexAdoptionRecord) {
     copyForgottenAt: record.copyForgottenAt,
     restored: record.restored,
     ...(record.restoreSkipped ? { restoreSkipped: true as const } : {}),
+    ...(record.copyDeleteBlocked ? { copyDeleteBlocked: record.copyDeleteBlocked } : {}),
   };
 }
 

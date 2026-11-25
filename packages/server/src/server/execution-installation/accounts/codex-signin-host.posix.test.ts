@@ -140,7 +140,7 @@ it("verifies an adoption from the Host file alone and refuses a token near expir
   // Starting Codex here could refresh, so a nearly expired token waits for a Host session.
   expect(verifyCodexHostSession(readCodexHostGrant(directory), now + 2 * 60_000)).toEqual({
     verified: false,
-    reason: "Host session needs a refresh first.",
+    reason: "The Host's sign-in for this account is about to renew. Try again in a few minutes.",
   });
   const withoutRefresh = await home();
   writeAuth(withoutRefresh, { ...auth, tokens: { ...auth.tokens, refresh_token: "" } });

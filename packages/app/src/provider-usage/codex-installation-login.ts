@@ -81,6 +81,7 @@ const AdoptionSchema = z.object({
   error: z.string().nullable(),
   restored: z.object({ mayNeedSignIn: z.boolean() }).nullable(),
   restoreSkipped: z.boolean().optional(),
+  copyDeleteBlocked: z.string().optional(),
 });
 const AdoptionsSchema = z.object({
   definitions: z.array(

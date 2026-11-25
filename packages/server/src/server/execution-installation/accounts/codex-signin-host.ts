@@ -139,16 +139,35 @@ export function verifyCodexHostSession(
   grant: CodexHostGrant | null,
   now: number,
 ): CodexHostSessionCheck {
-  if (!grant) return { verified: false, reason: "The Host is not signed in to Codex." };
+  if (!grant)
+    return {
+      verified: false,
+      reason: "The Host is not signed in to this account. Sign it in on the Host, then try again.",
+    };
   if (!grant.hasRefreshToken)
-    return { verified: false, reason: "The Host Codex sign-in cannot renew itself." };
+    return {
+      verified: false,
+      reason:
+        "The Host's sign-in for this account cannot renew itself. Sign it in again on the Host, then try again.",
+    };
   if (!grant.accountId)
-    return { verified: false, reason: "The Host Codex sign-in has no ChatGPT account." };
+    return {
+      verified: false,
+      reason:
+        "The Host's sign-in for this account is not a ChatGPT sign-in. Sign in with ChatGPT on the Host, then try again.",
+    };
   // The workspace alone is shared by every member of a Team workspace; Dev compares the person.
   if (!codexIdTokenPerson(grant.idToken))
-    return { verified: false, reason: "The Host Codex sign-in does not name its ChatGPT user." };
+    return {
+      verified: false,
+      reason:
+        "The Host's sign-in for this account does not say which ChatGPT user it belongs to. Sign it in again on the Host, then try again.",
+    };
   if (grant.expiresAt === null || grant.expiresAt - now <= CODEX_ADOPTION_MIN_REMAINING_MS)
-    return { verified: false, reason: "Host session needs a refresh first." };
+    return {
+      verified: false,
+      reason: "The Host's sign-in for this account is about to renew. Try again in a few minutes.",
+    };
   return {
     verified: true,
     identity: { email: idTokenEmail(grant.idToken), orgId: grant.accountId },

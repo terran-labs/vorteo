@@ -158,7 +158,18 @@ export function CodexAdoptionSection({
     onSettled: () => void query.refetch(),
   });
   const { mutate } = action;
-  const adopt = useCallback(() => mutate("adopt"), [mutate]);
+  // Every switch replaces a working Dev sign-in, so it asks first, as un-adopt does.
+  const adopt = useCallback(async () => {
+    const opener =
+      isWeb && document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const confirmed = await confirmDialog({
+      title: t("codexAdoption.adoptConfirm.title"),
+      message: t("codexAdoption.adoptConfirm.message"),
+      confirmLabel: t("codexAdoption.adoptConfirm.confirm"),
+    });
+    if (opener?.isConnected) opener.focus();
+    if (confirmed) mutate("adopt");
+  }, [mutate, t]);
   const unadopt = useCallback(async () => {
     const opener =
       isWeb && document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -196,6 +207,11 @@ export function CodexAdoptionSection({
         <Text style={styles.muted}>{t("codexAdoption.description")}</Text>
       ) : null}
       {canUnadopt ? <Text style={styles.muted}>{t("codexAdoption.unadoptNote")}</Text> : null}
+      {entry.adoption?.copyDeleteBlocked ? (
+        <Text style={styles.text}>
+          {t("codexAdoption.copyDeleteBlocked", { reason: entry.adoption.copyDeleteBlocked })}
+        </Text>
+      ) : null}
       {adoptText || canUnadopt ? (
         <ActionFooter style={styles.actions}>
           {canUnadopt ? (

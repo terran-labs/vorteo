@@ -11,6 +11,7 @@ import express from "express";
 import type { DaemonConfigStore } from "../../daemon-config-store.js";
 import { createCodexSignInRuntime } from "./codex-signin-runtime.js";
 import { mountCodexSignInConsumer } from "./codex-signin-consumer.js";
+import { IDENTITY_CHANGED } from "./codex-signin-adoption.js";
 import { mountCodexSignInRoutes } from "./codex-signin-routes.js";
 import {
   codexProjectionDigest,
@@ -238,9 +239,9 @@ const DAY = 86_400_000;
 const FULL_SUPPORT = { ...SUPPORTED, codexAccountAdoption: true };
 
 /** Unsigned synthetic JWT carrying the email Codex shows. */
-function idToken(email: string) {
+function idToken(email: string, person = "person-1") {
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  const claims = { email, "https://api.openai.com/auth": { chatgpt_user_id: "person-1" } };
+  const claims = { email, "https://api.openai.com/auth": { chatgpt_user_id: person } };
   return `${encode({ alg: "none" })}.${encode(claims)}.synthetic`;
 }
 
@@ -461,7 +462,7 @@ it("fails closed with nothing written when the Host, Dev or a daemon is not read
   expiring.setGrant({ expiresAt: expiring.now() + 20 * 60_000 });
   await expect(expiring.runtime.adopt("one")).resolves.toMatchObject({
     status: "failed",
-    error: "Host session needs a refresh first.",
+    error: "The Host's sign-in for this account is about to renew. Try again in a few minutes.",
   });
   expect(expiring.requests.filter((item) => item.route !== "binding")).toEqual([]);
 
@@ -487,7 +488,7 @@ it("keeps an offline Dev pending, adopts one account at a time and never shares 
   const h = legacyHarness();
   h.dev.online = false;
   await expect(h.runtime.adopt("one")).resolves.toMatchObject({ status: "pinning" });
-  await expect(h.runtime.adopt("two")).rejects.toThrow("Another Codex account is being adopted");
+  await expect(h.runtime.adopt("two")).rejects.toThrow("Another Codex account is switching");
   h.dev.online = true;
   await h.runtime.reconcile();
   await h.runtime.reconcile();
@@ -496,7 +497,7 @@ it("keeps an offline Dev pending, adopts one account at a time and never shares 
   h.dev.targets["codex-secondary"] = { ...h.dev.targets["codex-primary"]! };
   await expect(h.runtime.adopt("two")).resolves.toMatchObject({
     status: "failed",
-    error: "Another adopted account uses the same Dev home.",
+    error: "Another account already uses this account's Dev folder. Nothing was changed.",
   });
   expect(h.deliveries.every((item) => item.providerId === "codex-primary")).toBe(true);
 });
@@ -525,10 +526,41 @@ it("un-adopts without signing the Host out and lets an exclusion win mid-adoptio
   await excluded.runtime.reconcile();
   expect(excluded.runtime.adoption("one")).toMatchObject({
     status: "failed",
-    error: "This account was turned off for Dev during adoption.",
+    error: "This account was turned off for Dev while switching, so the switch was undone.",
   });
   expect(excluded.deliveries.at(-1)).toMatchObject({ access: null });
   expect(excluded.cli.logout).not.toHaveBeenCalled();
+});
+
+it("refuses a Host re-sign-in as another person until the owner confirms it", async () => {
+  const h = legacyHarness();
+  await adopted(h);
+  expect(h.journal()).not.toContain("person-1");
+  // The Host is signed in again, through the app or a shell, as someone else.
+  const other = idToken("someone@example.com", "person-2");
+  h.setGrant({
+    idToken: other,
+    accessToken: "synthetic-other-person",
+    expiresAt: h.now() + 9 * DAY,
+  });
+  h.advance(10 * 60_000);
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")).toMatchObject({
+    status: "needs-owner-confirmation",
+    error: IDENTITY_CHANGED,
+  });
+  expect(h.deliveries.some((item) => JSON.stringify(item).includes("synthetic-other-person"))).toBe(
+    false,
+  );
+  // Only the owner's confirmation lets the new person through, after the idle and pin checks.
+  const pins = h.legacyCalls("pin").length;
+  const sessions = h.legacyCalls("sessions").length;
+  await h.runtime.adopt("one");
+  await h.runtime.reconcile();
+  expect(h.legacyCalls("pin").length).toBe(pins + 1);
+  expect(h.legacyCalls("sessions").length).toBe(sessions + 1);
+  expect(h.runtime.adoption("one")?.status).toBe("adopted");
+  expect(h.deliveries.at(-1)).toMatchObject({ access: { accessToken: "synthetic-other-person" } });
 });
 
 it("stops delivering on a manual rebind or a changed Dev home", async () => {
@@ -730,10 +762,17 @@ it("keeps retention and says plainly what un-adopt left after an adoption stoppe
   await moved.runtime.reconcile();
   // A failed attempt waits an hour rather than retrying every tick.
   expect(moved.legacyCalls("forget-copy")).toHaveLength(attempts);
+  // Past the cap, a deletion that keeps failing is reported, not left silent.
+  expect(moved.runtime.adoption("one")?.copyDeleteBlocked).toBe(
+    "Dev could not be reached. It is tried again every hour.",
+  );
   moved.advance(60 * 60_000);
   await moved.runtime.reconcile();
   expect(moved.legacyCalls("forget-copy")).toHaveLength(attempts + 1);
-  expect(moved.runtime.adoption("one")?.copyForgottenAt).toBe(moved.now());
+  expect(moved.runtime.adoption("one")).toMatchObject({
+    copyForgottenAt: moved.now(),
+    copyDeleteBlocked: null,
+  });
 });
 
 it("re-sends the projection while Host refreshes fail, without spending a retry", async () => {
@@ -805,7 +844,9 @@ it("starts adoption only from the owner's routes, never from Dev's", async () =>
     // One at a time, with the plain reason.
     expect(await post(`${owner}/adopt`, { definitionId: "two" })).toEqual({
       status: 409,
-      body: { error: "Another Codex account is being adopted. Wait for it to finish." },
+      body: {
+        error: "Another Codex account is switching to the Host's sign-in. Wait for it to finish.",
+      },
     });
     h.dev.online = true;
     await h.runtime.reconcile();

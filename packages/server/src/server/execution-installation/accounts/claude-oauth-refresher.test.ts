@@ -330,6 +330,11 @@ it("records a failed refresh and retries it after a minute", async () => {
   h.advance(57 * MINUTE);
   await refresher.reconcile();
   expect(refresher.status("one").refresh).toMatchObject({ outcome: "failed" });
+  // Recovery calls that cannot read the Host meanwhile do not push the retry further out.
+  h.setReadable(false);
+  await refresher.recover("one");
+  await refresher.recover("one");
+  h.setReadable(true);
   h.advance(30_000);
   await refresher.reconcile();
   expect(h.refresh).toHaveBeenCalledTimes(1);

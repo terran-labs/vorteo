@@ -410,6 +410,14 @@ export function createCodexSignInRuntime(
       // Withdrawal remains available while ordinary Dev work is fenced.
       if (delivery.access !== null) assertReady("container-daemon");
       const adopted = definition(delivery.definitionId).adopted;
+      // A Host re-sign-in, from the app or a shell, can name another person. Refused before it
+      // leaves the coordinator; the owner confirms the new person explicitly.
+      if (
+        adopted &&
+        delivery.access !== null &&
+        !adoption.admitsHostIdentity(delivery.definitionId, delivery.access)
+      )
+        throw new CodexSignInDeliveryError();
       const body = adopted
         ? {
             ...delivery,
