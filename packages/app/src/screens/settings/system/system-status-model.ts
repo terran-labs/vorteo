@@ -5,6 +5,7 @@ import type { InstallationUpgrade } from "@getpaseo/protocol/installation-upgrad
 import type { MaintenanceServiceQueueStatus } from "@getpaseo/protocol/maintenance-service-status";
 import type { HostRuntimeSnapshot } from "@/runtime/host-runtime";
 import { maintenanceHeadline } from "@/execution-installation/maintenance-dashboard-model";
+import { isSupersededFailure, upgradeTarget } from "@/execution-installation/failure-review";
 
 export type SystemStatus = "healthy" | "updating" | "attention";
 export interface SystemAction {
@@ -13,6 +14,24 @@ export interface SystemAction {
   id?: string;
   mode?: "finish-current-turns";
 }
+type UpgradeSummary = Pick<
+  InstallationUpgrade,
+  "id" | "status" | "release" | "automatic" | "acknowledgedAt"
+> & { createdAt?: string };
+
+/** An automatic upgrade that failed and still needs the owner: not dismissed, not superseded. */
+function failedAutomaticUpgrade(
+  upgrades: readonly UpgradeSummary[] = [],
+): UpgradeSummary | undefined {
+  return upgrades.find(
+    (entry) =>
+      entry.status === "failed" &&
+      entry.automatic &&
+      !entry.acknowledgedAt &&
+      !isSupersededFailure(entry, upgrades, upgradeTarget),
+  );
+}
+
 export interface SystemEnvironmentInput {
   target: "host" | "container-daemon";
   connection: Pick<HostRuntimeSnapshot, "connectionStatus" | "lastError">;
@@ -28,10 +47,7 @@ export interface SystemEnvironmentInput {
     | "engineRecoveryPlanSha256"
     | "impact"
   >[];
-  upgrades?: readonly Pick<
-    InstallationUpgrade,
-    "id" | "status" | "release" | "automatic" | "acknowledgedAt"
-  >[];
+  upgrades?: readonly UpgradeSummary[];
   serviceQueue?: Pick<MaintenanceServiceQueueStatus, "jobs">;
   /** Public counts are installation-wide and cannot safely be attributed to one target. */
   locked?: boolean;
@@ -75,9 +91,7 @@ export function deriveSystemEnvironment(input: SystemEnvironmentInput): {
     jobs.some((job) => job.status === "pending" || job.status === "failed") ||
     Boolean(upgrade) ||
     Boolean(live?.server.state === "failed") ||
-    upgrades.some(
-      (entry) => entry.status === "failed" && entry.automatic && !entry.acknowledgedAt,
-    ) ||
+    Boolean(failedAutomaticUpgrade(upgrades)) ||
     Boolean(counts?.requested) ||
     (Boolean(input.availableVersion) && !activeWork);
   const updating =
@@ -145,9 +159,7 @@ function attentionReason(input: SystemEnvironmentInput): string | undefined {
   );
   if (failed)
     return `The latest restart failed. ${failed.reason || "Open Details to review its result."}`;
-  const upgrade = input.upgrades?.find(
-    (job) => job.status === "failed" && job.automatic && !job.acknowledgedAt,
-  );
+  const upgrade = failedAutomaticUpgrade(input.upgrades);
   if (upgrade)
     return `The automatic update to ${upgrade.release} failed. Open Details to review its result.`;
   if (input.liveDev?.mode === "live" && input.liveDev.server.state === "failed")

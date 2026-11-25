@@ -6,7 +6,7 @@ import {
 import { supportsUpdatePolicy } from "@/execution-installation/installation-upgrades-model";
 import { useCallback, useMemo, useState } from "react";
 import { Text, View } from "react-native";
-import { ScrollView } from "@/components/ui/scroll-view";
+import { useOnHealthCardReveal } from "@/execution-installation/health-cards";
 import { StyleSheet } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
 import { SelectField } from "@/components/ui/select-field";
@@ -35,6 +35,9 @@ export function SystemUpdatesRow() {
   const toast = useToast();
   const [expanded, setExpanded] = useState(false);
   const toggle = useCallback(() => setExpanded((value) => !value), []);
+  // The Health row for failed upgrades opens these Details, where each failure can be dismissed.
+  const expand = useCallback(() => setExpanded(true), []);
+  useOnHealthCardReveal("updates", expand);
   const changeChannel = useCallback(
     (value: string) => {
       if (value === "stable" || value === "beta")
@@ -99,7 +102,8 @@ export function SystemUpdatesRow() {
         </Button>
       </View>
       {expanded ? (
-        <ScrollView style={styles.details} contentContainerStyle={styles.body}>
+        // Grows with the page, so a jump to a card inside lands on it instead of a nested scroll.
+        <View style={styles.body}>
           {!policy ? (
             <SelectField
               label="Release channel"
@@ -123,7 +127,7 @@ export function SystemUpdatesRow() {
             </>
           ) : null}
           <VortonUpdatesSection />
-        </ScrollView>
+        </View>
       ) : null}
     </View>
   );
@@ -159,6 +163,5 @@ const styles = StyleSheet.create((theme) => ({
   },
   description: { flexGrow: 1, flexShrink: 1, flexBasis: 240, gap: theme.spacing[0.5] },
   status: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm, lineHeight: 20 },
-  details: { height: 500 },
   body: { padding: theme.spacing[4], gap: theme.spacing[3] },
 }));

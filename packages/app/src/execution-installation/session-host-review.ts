@@ -3,6 +3,7 @@ import type {
   SessionHostOperation,
   SessionHostStatus,
 } from "@getpaseo/protocol/session-host-maintenance";
+import { byTargetAndOperation, recordsNeedingReview } from "./failure-review";
 
 /** The owner query result: every job the coordinator retains and what it observes now. */
 export interface SessionHostOverview {
@@ -37,12 +38,19 @@ export function isActiveSessionHostJob(job: Pick<SessionHostJob, "status">): boo
   return job.status === "pending" || job.status === "approved" || job.status === "running";
 }
 
-/** Active jobs first, newest first, then the most recent finished job so its result stays visible. */
+/**
+ * Active jobs first, newest first, then failures that still need the owner, then the most recent
+ * finished job so its result stays visible. A failure the Health list counts is always shown.
+ */
 export function visibleSessionHostJobs(jobs: readonly SessionHostJob[]): SessionHostJob[] {
   const newestFirst = jobs.toSorted((left, right) => right.createdAt.localeCompare(left.createdAt));
   const active = newestFirst.filter(isActiveSessionHostJob);
+  const failures = recordsNeedingReview(newestFirst, byTargetAndOperation).filter(
+    (job) => !isActiveSessionHostJob(job),
+  );
   const finished = newestFirst.find((job) => !isActiveSessionHostJob(job));
-  return finished ? [...active, finished] : active;
+  const shown = [...active, ...failures];
+  return finished && !shown.includes(finished) ? [...shown, finished] : shown;
 }
 
 export function sessionHostActionDisabledReason(

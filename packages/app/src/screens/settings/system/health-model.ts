@@ -1,4 +1,14 @@
 import type { InstallationUpgrade } from "@getpaseo/protocol/installation-upgrades";
+import {
+  byTarget,
+  byTargetAndOperation,
+  instructionRequestIsStale,
+  recordsNeedingReview,
+  upgradeTarget,
+  type ReviewableRecord,
+  type TargetKey,
+} from "@/execution-installation/failure-review";
+import type { HealthCard, HealthCardHost } from "@/execution-installation/health-cards";
 import { currentSystemRestarts, type InstallationSystemState } from "./system-adapter-model";
 
 /**
@@ -15,16 +25,17 @@ export interface SystemHealthItem {
   settingId?: string;
   /** Pane the Fix button jumps to when no single row owns the fix. */
   pane: string;
+  /** The request card Fix opens, expanding the section that holds it. Wins over settingId. */
+  card?: HealthCard;
+  /** The collapsed section holding `card`. */
+  cardHost?: HealthCardHost;
+  /** The card renders only with owner access, so Fix asks to unlock first. */
+  needsUnlock?: boolean;
+  /** The card opens as a sheet, such as restart approvals, so Fix does not scroll the page. */
+  cardInSheet?: boolean;
 }
 
-interface ReviewableJob {
-  status: string;
-  stage?: string;
-}
-
-function requiresReview(job: ReviewableJob): boolean {
-  return ["pending", "failed"].includes(job.status) || job.stage === "recovery_required";
-}
+type ReviewableJob = ReviewableRecord;
 
 function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
@@ -48,8 +59,25 @@ interface QueueDefinition {
   id: string;
   noun: string;
   jobs: (state: InstallationSystemState) => readonly ReviewableJob[];
-  settingId?: string;
+  /**
+   * Which records replace each other. Restarts, broker, monitor, helper and service jobs are
+   * keyed by the service they act on, session host jobs by service and operation; instruction requests have no target, so a
+   * pending one counts until it is decided or goes stale.
+   */
+  targetKey: TargetKey<ReviewableJob>;
+  card: HealthCard;
   pane: string;
+}
+
+const noTarget = () => null;
+
+/** Pending requests written against the current instructions. Stale ones cannot be applied. */
+function currentInstructionRequests(state: InstallationSystemState): ReviewableJob[] {
+  const overview = state.instructionRequests;
+  if (!overview) return [];
+  return overview.requests.filter(
+    (request) => !instructionRequestIsStale(request, overview.revision),
+  );
 }
 
 const QUEUES: readonly QueueDefinition[] = [
@@ -57,58 +85,89 @@ const QUEUES: readonly QueueDefinition[] = [
     id: "restarts",
     noun: "restart request",
     jobs: currentSystemRestarts,
-    settingId: "maintenance.installation.restarts",
-    pane: "maintenance.installation",
+    targetKey: byTarget as TargetKey<ReviewableJob>,
+    card: "restarts",
+    pane: "system.overview",
   },
   {
     id: "helper",
     noun: "native helper request",
     jobs: (state) => state.helperJobs,
+    targetKey: byTarget as TargetKey<ReviewableJob>,
+    card: "helper",
     pane: "system.overview",
   },
   {
     id: "broker",
     noun: "preview broker request",
     jobs: (state) => state.brokerJobs,
+    targetKey: byTarget as TargetKey<ReviewableJob>,
+    card: "broker",
     pane: "system.overview",
   },
   {
     id: "monitor",
     noun: "preview monitor request",
     jobs: (state) => state.monitorJobs,
+    targetKey: byTarget as TargetKey<ReviewableJob>,
+    card: "monitor",
     pane: "system.overview",
   },
   {
     id: "services",
     noun: "service maintenance request",
     jobs: (state) => state.serviceQueue?.jobs ?? [],
+    targetKey: byTarget as TargetKey<ReviewableJob>,
+    card: "services",
     pane: "system.overview",
   },
   {
     id: "session-host",
     noun: "session host request",
     jobs: (state) => state.sessionHost?.jobs ?? [],
-    settingId: "maintenance.installation.sessionHost",
-    pane: "maintenance.installation",
+    targetKey: byTargetAndOperation as TargetKey<ReviewableJob>,
+    card: "session-host",
+    pane: "system.overview",
   },
   {
     id: "instructions",
     noun: "agent instruction change",
-    jobs: (state) => state.instructionRequests?.requests ?? [],
-    settingId: "maintenance.installation.instructions",
-    pane: "maintenance.installation",
+    jobs: currentInstructionRequests,
+    targetKey: noTarget,
+    card: "instructions",
+    pane: "system.overview",
   },
 ];
 
+/** Restarts open on the environment they target; every other card lives in Host's Details. */
+function queueCardHost(queue: QueueDefinition, jobs: readonly ReviewableJob[]): HealthCardHost {
+  if (queue.id !== "restarts") return "host";
+  // An approval to give wins over a failure to read.
+  const job = jobs.find((entry) => entry.status !== "failed") ?? jobs[0];
+  const target = (job as { target?: string } | undefined)?.target;
+  return target === "container-daemon" ? "container-daemon" : "host";
+}
+
+/** Pending upgrades, and failed ones the owner has not dismissed and no later upgrade replaced. */
+export function upgradesNeedingReview(
+  upgrades: readonly InstallationUpgrade[],
+): InstallationUpgrade[] {
+  return recordsNeedingReview(upgrades, upgradeTarget);
+}
+
 type PublicSummary = NonNullable<InstallationSystemState["restartSummary"]>;
 
-const PUBLIC_SERVICES: ReadonlyArray<{ key: keyof PublicSummary; label: string }> = [
-  { key: "serviceMaintenance", label: "Service maintenance" },
-  { key: "nativeHelper", label: "Native helper" },
-  { key: "previewBroker", label: "Preview broker" },
-  { key: "previewBrokerDeployment", label: "Preview broker deployment" },
-  { key: "previewMonitor", label: "Preview monitor" },
-  { key: "sessionHost", label: "Session host" },
+const PUBLIC_SERVICES: ReadonlyArray<{
+  key: keyof PublicSummary;
+  label: string;
+  card: HealthCard;
+}> = [
+  { key: "serviceMaintenance", label: "Service maintenance", card: "services" },
+  { key: "nativeHelper", label: "Native helper", card: "helper" },
+  { key: "previewBroker", label: "Preview broker", card: "broker" },
+  { key: "previewBrokerDeployment", label: "Preview broker deployment", card: "broker" },
+  { key: "previewMonitor", label: "Preview monitor", card: "monitor" },
+  { key: "sessionHost", label: "Session host", card: "session-host" },
 ];
 
 /** While locked only the public summary counts are known, so the rows say so. */
@@ -121,10 +180,13 @@ function lockedItems(summary: PublicSummary | null | undefined): SystemHealthIte
       label: plural(summary.requested, "restart request"),
       status: "Waiting for approval. Unlock to review.",
       count: summary.requested,
-      settingId: "maintenance.installation.restarts",
-      pane: "maintenance.installation",
+      pane: "system.overview",
+      card: "restarts",
+      cardHost: "host",
+      needsUnlock: true,
+      cardInSheet: true,
     });
-  for (const { key, label } of PUBLIC_SERVICES) {
+  for (const { key, label, card } of PUBLIC_SERVICES) {
     const service = summary[key] as Record<string, unknown> | null | undefined;
     if (!service || typeof service !== "object") continue;
     const number = (field: string) =>
@@ -145,6 +207,9 @@ function lockedItems(summary: PublicSummary | null | undefined): SystemHealthIte
       status: `${parts.join(", ")}. Unlock to review.`,
       count,
       pane: "system.overview",
+      card,
+      cardHost: "host",
+      needsUnlock: true,
     });
   }
   return items;
@@ -163,28 +228,32 @@ export function systemHealthItems(
   if (!state.unlocked) return lockedItems(state.restartSummary);
   const items: SystemHealthItem[] = [];
   for (const queue of QUEUES) {
-    const jobs = queue.jobs(state).filter(requiresReview);
+    const jobs = recordsNeedingReview(queue.jobs(state), queue.targetKey);
     if (!jobs.length) continue;
     items.push({
       id: queue.id,
       label: plural(jobs.length, queue.noun),
       status: jobStatus(jobs),
       count: jobs.length,
-      settingId: queue.settingId,
       pane: queue.pane,
+      card: queue.card,
+      cardHost: queueCardHost(queue, jobs),
+      needsUnlock: true,
+      // Restart approvals live in the environment's Restart sheet; a failed one is in History.
+      cardInSheet: queue.id === "restarts" && jobs.some((job) => job.status !== "failed"),
     });
   }
-  const unacknowledged = upgrades.filter(
-    (upgrade) => !upgrade.acknowledgedAt && requiresReview(upgrade),
-  );
+  const unacknowledged = upgradesNeedingReview(upgrades);
   if (unacknowledged.length)
     items.push({
       id: "upgrades",
       label: plural(unacknowledged.length, "Vorteo upgrade"),
       status: jobStatus(unacknowledged),
       count: unacknowledged.length,
-      settingId: "maintenance.updates.vorteo",
       pane: "system.overview",
+      card: "upgrades",
+      cardHost: "updates",
+      needsUnlock: true,
     });
   for (const service of state.enrollmentStatus?.services ?? []) {
     if (service.readiness !== "blocked") continue;
@@ -194,6 +263,9 @@ export function systemHealthItems(
       status: service.reason || "Blocked",
       count: 1,
       pane: "system.overview",
+      card: "dashboard",
+      cardHost: "host",
+      needsUnlock: true,
     });
   }
   if (state.enrollmentStatus?.activation === "recovery-required")
@@ -203,6 +275,9 @@ export function systemHealthItems(
       status: "Needs recovery",
       count: 1,
       pane: "system.overview",
+      card: "dashboard",
+      cardHost: "host",
+      needsUnlock: true,
     });
   if (state.liveDev?.mode === "live" && state.liveDev.server.state === "failed")
     items.push({
