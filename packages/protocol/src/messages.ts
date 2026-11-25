@@ -4575,6 +4575,8 @@ export const ServerInfoStatusPayloadSchema = z
         codexInstallationSignIn: z.boolean().optional(),
         // COMPAT(codexAccountAdoption): added after v26.11.2100. Host refresh lease and adoption of legacy Codex accounts.
         codexAccountAdoption: z.boolean().optional(),
+        // COMPAT(codexLegacyPinByPath): added after v26.11.2100. Dev identifies an adopted legacy Codex home by real path and serves its inspect operation.
+        codexLegacyPinByPath: z.boolean().optional(),
         // COMPAT(providerSecretDelivery): receives coordinator-held provider API keys and tokens.
         providerSecretDelivery: z.boolean().optional(),
         // COMPAT(speechSecretDelivery): shared Voice keys and endpoint delivery.

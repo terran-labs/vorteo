@@ -1,4 +1,5 @@
 import type { Express } from "express";
+import type { Logger } from "pino";
 import type { DaemonConfigStore } from "../../daemon-config-store.js";
 import { mountClaudeOAuthConsumer } from "./claude-oauth-consumer.js";
 import { mountClaudeSetupConsumer } from "./claude-setup-consumer.js";
@@ -18,6 +19,7 @@ export interface InstallationAccountConsumerOptions {
   providerSessionActivity(providerId: string): "busy" | "loaded" | "none";
   /** Whether an agent session, or one being started, uses this provider ID. */
   providerInUse(providerId: string): boolean;
+  logger: Logger;
 }
 
 /** What agent sessions need from the account consumers: a wait before a provider starts. */
