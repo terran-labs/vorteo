@@ -2571,6 +2571,8 @@ export class VoiceAssistantWebSocketServer {
         codexAccountAdoption: true,
         // COMPAT(codexLegacyPinByPath): added after v26.11.2100, remove gate after 2027-05-25.
         codexLegacyPinByPath: true,
+        // COMPAT(codexLegacySessionHold): added after v26.11.2100, remove gate after 2027-05-26.
+        codexLegacySessionHold: true,
         providerSecretDelivery: true,
         speechSecretDelivery: true,
         providerCredentialRemoval: true,

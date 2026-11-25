@@ -263,6 +263,7 @@ export const ar: TranslationResources = {
       implement: "ينفذ",
       question: "كيف تريد المتابعة؟",
       proposedPlan: "الخطة المقترحة",
+      mode: "هذا الموضوع في وضع {{mode}}.",
     },
   },
   agentPanel: {

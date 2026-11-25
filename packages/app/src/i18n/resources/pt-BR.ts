@@ -265,6 +265,7 @@ export const ptBR: TranslationResources = {
       implement: "Implementar",
       question: "Como você quer prosseguir?",
       proposedPlan: "Plano proposto",
+      mode: "Esta conversa está no modo {{mode}}.",
     },
   },
   agentPanel: {

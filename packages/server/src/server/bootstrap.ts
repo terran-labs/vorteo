@@ -1062,6 +1062,7 @@ export async function createPaseoDaemon(
     paseoHome: config.paseoHome,
     store: daemonConfigStore,
     providerSessionActivity: (providerId) => agentManager.providerSessionActivity(providerId),
+    providerBusyTitles: (providerId) => agentManager.providerBusyTitles(providerId),
     providerInUse,
     logger,
     onApplied: (providerId) => {
