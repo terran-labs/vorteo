@@ -1233,8 +1233,10 @@ test("dependency signature audit retries only a transient registry fetch error",
     let calls = 0;
     const waits = [];
     const exitCode = await runAuditWithRetry({
-      runAttempt: async () => {
+      runAttempt: async ({ attempt, freshCache }) => {
         calls++;
+        // Only a retry bypasses the npm cache, which may hold the bad response.
+        assert.equal(freshCache, attempt > 1);
         return queue.shift();
       },
       wait: async (ms) => waits.push(ms),

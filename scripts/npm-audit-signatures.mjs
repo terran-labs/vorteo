@@ -6,10 +6,15 @@
 // npm's attestations endpoint sometimes answers with a non-JSON body, which npm reports as
 // FETCH_ERROR "invalid json response body" before verifying anything (#646). That fault, and
 // other network errors fetching from the registry, are retried up to three attempts with a
-// short backoff. A failed verification is never retried: npm reports it as an invalid or
+// short backoff. npm caches attestation responses for a year, and CI restores ~/.npm between
+// runs, so a bad body once cached would fail every retry: each retry uses a fresh, empty npm
+// cache and fetches from the registry again. A failed verification is never retried: npm reports it as an invalid or
 // missing signature or attestation, and the step fails on that first report. Any other failure
 // also fails at once. See docs/development.md#dependency-signature-audit.
 import { spawn } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { isMainModule } from "./is-main-module.mjs";
 
@@ -73,7 +78,7 @@ export async function runAuditWithRetry({
   log = (line) => console.error(line),
 }) {
   for (let attempt = 1; ; attempt++) {
-    const { output, exitCode } = await runAttempt();
+    const { output, exitCode } = await runAttempt({ attempt, freshCache: attempt > 1 });
     const outcome = classifyAuditAttempt(output, exitCode);
     if (outcome === "passed") return 0;
     if (outcome === "failed") return exitCode === 0 ? 1 : exitCode;
@@ -89,11 +94,23 @@ export async function runAuditWithRetry({
   }
 }
 
-/** One audit run, with its output passed through to the CI log and captured for the decision. */
-function spawnAudit() {
+/**
+ * One audit run, with its output passed through to the CI log and captured for the decision.
+ * A fresh cache keeps a cached bad response from deciding the retry.
+ */
+async function spawnAudit({ freshCache }) {
+  const cache = freshCache ? await mkdtemp(path.join(tmpdir(), "npm-audit-cache-")) : null;
+  try {
+    return await runAudit(cache ? ["--cache", cache] : []);
+  } finally {
+    if (cache) await rm(cache, { recursive: true, force: true });
+  }
+}
+
+function runAudit(extraArgs) {
   return new Promise((resolve, reject) => {
     const [command, ...args] = AUDIT_COMMAND;
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, [...args, ...extraArgs], { stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     child.stdout.on("data", (chunk) => {
       process.stdout.write(chunk);
