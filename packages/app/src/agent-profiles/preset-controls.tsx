@@ -72,8 +72,9 @@ interface PresetControlsProps {
   onOpenRequestHandled?: () => void;
   /**
    * Where the desktop picker opens. Above suits the composer at the bottom of the screen. "fit"
-   * suits a control anywhere on a page: the picker opens on the side with room for it and, when
-   * neither side has, takes the larger one at that height, so its Activate button stays visible.
+   * suits a control anywhere on a page: the picker opens on the side with room for all of it, or
+   * else on the larger side, shortened to that side's space. Its detail list then scrolls inside
+   * the picker while the Activate button stays in the window.
    */
   desktopPlacement?: ComboboxDesktopPlacement | "fit";
 }
@@ -81,9 +82,6 @@ interface PresetControlsProps {
 const PICKER_HEIGHT = 520;
 // The combobox's collision padding and offset, so a fitted picker never touches the window edge.
 const PICKER_MARGIN = 16;
-// Below this the picker's columns stop being usable, so it keeps this height and the page scrolls.
-const PICKER_MIN_HEIGHT = 280;
-
 /** The side and height a picker anchored at `top`..`bottom` fits in a window `windowHeight` tall. */
 export function fitPresetPicker(input: { top: number; bottom: number; windowHeight: number }): {
   placement: ComboboxDesktopPlacement;
@@ -93,8 +91,9 @@ export function fitPresetPicker(input: { top: number; bottom: number; windowHeig
   const above = input.top - PICKER_MARGIN;
   if (below >= PICKER_HEIGHT) return { placement: "bottom-start", height: PICKER_HEIGHT };
   if (above >= PICKER_HEIGHT) return { placement: "top-start", height: PICKER_HEIGHT };
+  // The picker is portaled, so it never scrolls with the page: it must fit the side it opens on.
   const placement = below >= above ? "bottom-start" : "top-start";
-  return { placement, height: Math.max(PICKER_MIN_HEIGHT, Math.max(below, above)) };
+  return { placement, height: Math.max(below, above) };
 }
 export function activePresetPicker(input: {
   enabled?: boolean;
