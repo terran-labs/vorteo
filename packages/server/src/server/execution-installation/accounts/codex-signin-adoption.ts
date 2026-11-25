@@ -1,0 +1,543 @@
+import { z } from "zod";
+import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
+import type { CodexAdoptionRetention, InstallationConfig } from "../config.js";
+import type { InstallationSettingsService } from "../settings/service.js";
+import {
+  CodexLegacyTargetSchema,
+  CodexSignInDeliveryError,
+  CodexSignInRefused,
+  type CodexLegacyTarget,
+} from "./codex-signin-delivery.js";
+import { verifyCodexHostSession, type CodexHostGrant } from "./codex-signin-host.js";
+import type { CodexSignInRefresher } from "./codex-signin-refresher.js";
+
+/**
+ * Adoption in place of a legacy Codex definition (an `accountId`, no `accountSetup`) whose Host
+ * binding is already a managed Host account. Dev keeps its legacy binding, CODEX_HOME and thread
+ * history; the coordinator projects the Host's access-only grant into that home's `auth.json`.
+ * Nothing in shared settings changes, so "adopted" exists only in this coordinator record.
+ *
+ * Only the owner starts an adoption, one at a time. Every step fails closed before anything is
+ * written, and nothing here ever signs the Host out.
+ */
+
+const Counter = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const DAY_MS = 24 * 60 * 60_000;
+
+export const CodexAdoptionStatusSchema = z.enum([
+  "verifying-host",
+  "pinning",
+  "projecting",
+  "adopted",
+  "failed",
+  "cancelled",
+  "needs-owner-confirmation",
+  "unadopting",
+  "unadopted",
+]);
+export type CodexAdoptionStatus = z.infer<typeof CodexAdoptionStatusSchema>;
+
+/** Secret-free: identifiers, a directory pin and times. No account ID, email or token. */
+const AdoptionRecordSchema = z.strictObject({
+  definitionId: z.string().min(1),
+  status: CodexAdoptionStatusSchema,
+  devServerId: z.string().min(1),
+  /** Dev's binding as it is in settings. A different binding later cancels the adoption. */
+  devProviderId: z.string().min(1),
+  hostProviderId: z.string().min(1),
+  target: CodexLegacyTargetSchema.nullable(),
+  startedAt: Counter,
+  /** First projection Dev acknowledged. Retention's cap counts from here. */
+  projectedAt: Counter.nullable(),
+  /** Host access expiry at projectedAt; a later acknowledged expiry means a Host refresh. */
+  projectedExpiresAt: Counter.nullable(),
+  renewedAt: Counter.nullable(),
+  /** A Dev usage read without a sign-in rejection after the first Host refresh. */
+  provenAt: Counter.nullable(),
+  copyForgottenAt: Counter.nullable(),
+  /** Last time Dev had written its own sign-in over the projection and it was replaced. */
+  replacedLocallyAt: Counter.nullable(),
+  /** If the Host later needs sign-in, the installation's Host sign-in repairs Dev as well. */
+  fallback: z.literal("host-sign-in"),
+  /** After un-adopt: the restored local sign-in was not tested and may need a new sign-in. */
+  restored: z.strictObject({ copyAgeMs: Counter, mayNeedSignIn: z.literal(true) }).nullable(),
+  error: z.string().max(300).nullable(),
+});
+export type CodexAdoptionRecord = z.infer<typeof AdoptionRecordSchema>;
+export const CodexAdoptionJournalSchema = z.array(AdoptionRecordSchema);
+
+const IN_PROGRESS: ReadonlySet<CodexAdoptionStatus> = new Set([
+  "verifying-host",
+  "pinning",
+  "projecting",
+  "unadopting",
+]);
+/** The refresher projects into the legacy home only in these states. */
+const DELIVERING: ReadonlySet<CodexAdoptionStatus> = new Set([
+  "projecting",
+  "adopted",
+  "unadopting",
+]);
+/** Records that hold a Dev home; two of them may never share one directory. */
+const HOLDING: ReadonlySet<CodexAdoptionStatus> = new Set([
+  "pinning",
+  "projecting",
+  "adopted",
+  "needs-owner-confirmation",
+  "unadopting",
+]);
+
+export const ACTIVE_DEV_SESSION = "A Dev session is using this account. Stop it, then try again.";
+
+export class CodexAdoptionBusy extends Error {
+  constructor() {
+    super("Another Codex account is being adopted. Wait for it to finish.");
+  }
+}
+
+/** A step that cannot succeed as things stand. Its message is the plain reason shown later. */
+class AdoptionRefused extends Error {}
+
+export interface CodexAdoptionJournal {
+  read(): CodexAdoptionRecord[];
+  write(records: CodexAdoptionRecord[]): void;
+}
+
+/** What the coordinator needs from Dev's usage read for an adopted binding. */
+export interface DevUsageObservation {
+  status: "available" | "unavailable" | "error";
+  fetchedAt: string | null;
+  authRecovery: boolean;
+}
+
+export interface CodexAdoptionDeps {
+  config: Pick<InstallationConfig, "public">;
+  settings: Pick<InstallationSettingsService, "snapshot">;
+  journal: CodexAdoptionJournal;
+  refresher: Pick<
+    CodexSignInRefresher,
+    "connected" | "signedOut" | "retire" | "withdrawn" | "reconcile" | "recover" | "status"
+  >;
+  /** Throws when a daemon is unreachable; false when one lacks a required capability. */
+  supported(): Promise<boolean>;
+  /** The Host binding's exact CODEX_HOME through the legacy binding route. */
+  hostHome(definitionId: string, hostProviderId: string, revision: number): Promise<string>;
+  /** Dev's legacy route. Throws CodexSignInRefused when Dev answers with a refusal. */
+  dev(body: Record<string, unknown>): Promise<unknown>;
+  /** Reads the Host file only. Adoption never starts Codex. */
+  readGrant(codexHome: string): CodexHostGrant | null;
+  devUsage(providerId: string): Promise<DevUsageObservation | null>;
+  retention(definitionId: string): CodexAdoptionRetention;
+  now(): number;
+}
+
+const MANAGED_PROVIDER_ID =
+  /^codex-account-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** The Dev binding and policy facts adoption depends on, from current settings. */
+function legacyFacts(definition: InstallationProvider | undefined, devServerId: string) {
+  return {
+    devProviderId: definition?.bindings[devServerId],
+    legacy:
+      definition !== undefined &&
+      definition.providerType === "codex" &&
+      definition.accountSetup === undefined &&
+      definition.removed !== true,
+  };
+}
+
+export function createCodexAdoption(deps: CodexAdoptionDeps) {
+  const host = deps.config.public.environments.find((item) => item.kind === "host")!;
+  const containers = deps.config.public.environments.filter((item) => item.kind === "container");
+  let queue: Promise<unknown> = Promise.resolve();
+
+  function serialized<T>(operation: () => Promise<T>): Promise<T> {
+    const task = queue.then(operation);
+    queue = task.catch(() => undefined);
+    return task;
+  }
+
+  function find(definitionId: string): CodexAdoptionRecord | undefined {
+    return deps.journal.read().find((item) => item.definitionId === definitionId);
+  }
+
+  function save(record: CodexAdoptionRecord): CodexAdoptionRecord {
+    deps.journal.write([
+      ...deps.journal.read().filter((item) => item.definitionId !== record.definitionId),
+      record,
+    ]);
+    return record;
+  }
+
+  function selected(definitionId: string) {
+    const snapshot = deps.settings.snapshot();
+    const definition = snapshot.settings?.providerDefinitions?.find(
+      (item) => item.id === definitionId,
+    );
+    return { snapshot, definition };
+  }
+
+  function excludedOnDev(definition: InstallationProvider, devServerId: string): boolean {
+    const exclusions = deps.settings.snapshot().settings?.resourceExclusions[devServerId];
+    return (
+      definition.removed === true ||
+      definition.policy.enabled === false ||
+      exclusions?.providerIds?.includes(definition.id) === true
+    );
+  }
+
+  /** The bindings adoption keeps, or the plain reason the definition does not qualify. */
+  function eligibility(definitionId: string) {
+    const { snapshot, definition } = selected(definitionId);
+    if (!definition || definition.providerType !== "codex") throw new CodexSignInDeliveryError();
+    const dev = containers.length === 1 ? containers[0]! : null;
+    const hostProviderId = definition.bindings[host.serverId];
+    const devProviderId = dev ? definition.bindings[dev.serverId] : undefined;
+    const binding = {
+      devServerId: dev?.serverId ?? "",
+      devProviderId: devProviderId ?? "",
+      hostProviderId: hostProviderId ?? "",
+    };
+    let reason: string | null = null;
+    if (snapshot.conflicts) reason = "Shared settings have conflicts to resolve first.";
+    else if (definition.removed) reason = "This account was removed.";
+    else if (definition.accountSetup)
+      reason = "This account already signs in through the installation.";
+    else if (!definition.accountId) reason = "This account has no installation account record.";
+    else if (!hostProviderId || !MANAGED_PROVIDER_ID.test(hostProviderId))
+      reason = "The Host does not keep this account in an installation-managed home.";
+    else if (!dev) reason = "This installation has no Dev environment.";
+    else if (!devProviderId) reason = "Dev has no connection for this account.";
+    else if (excludedOnDev(definition, dev.serverId)) reason = "This account is off for Dev.";
+    return { binding, reason, revision: snapshot.revision };
+  }
+
+  function fresh(definitionId: string, binding: ReturnType<typeof eligibility>["binding"]) {
+    return {
+      definitionId,
+      ...binding,
+      target: null,
+      startedAt: deps.now(),
+      projectedAt: null,
+      projectedExpiresAt: null,
+      renewedAt: null,
+      provenAt: null,
+      copyForgottenAt: null,
+      replacedLocallyAt: null,
+      fallback: "host-sign-in" as const,
+      restored: null,
+      error: null,
+    };
+  }
+
+  /** The Host account's sign-in, judged from its file alone. */
+  async function verifyHost(record: CodexAdoptionRecord, revision: number) {
+    let home: string;
+    try {
+      home = await deps.hostHome(record.definitionId, record.hostProviderId, revision);
+    } catch (error) {
+      if (error instanceof CodexSignInRefused)
+        throw new AdoptionRefused("The Host's connection for this account does not match it.");
+      throw error;
+    }
+    const check = verifyCodexHostSession(deps.readGrant(home), deps.now());
+    if (!check.verified) throw new AdoptionRefused(check.reason);
+    return check.identity;
+  }
+
+  function scope(record: CodexAdoptionRecord) {
+    return {
+      installationId: deps.config.public.installationId,
+      serverId: record.devServerId,
+      definitionId: record.definitionId,
+      providerId: record.devProviderId,
+      policyRevision: deps.settings.snapshot().revision,
+    };
+  }
+
+  async function devRequest(body: Record<string, unknown>, refusal: string) {
+    try {
+      return await deps.dev(body);
+    } catch (error) {
+      if (error instanceof CodexSignInRefused) throw new AdoptionRefused(refusal);
+      throw error;
+    }
+  }
+
+  /** Verify the Host, then Dev's session state and home, then start projecting. */
+  async function start(record: CodexAdoptionRecord): Promise<CodexAdoptionRecord> {
+    const check = eligibility(record.definitionId);
+    if (check.reason) throw new AdoptionRefused(check.reason);
+    if (!(await deps.supported()))
+      throw new AdoptionRefused("Update the Host and Dev before adopting this account.");
+    await verifyHost(record, check.revision);
+    const pinning = save({ ...record, status: "pinning" });
+    const sessions = z
+      .strictObject({ active: z.boolean() })
+      .parse(
+        await devRequest(
+          { ...scope(pinning), operation: "sessions" },
+          "Dev refused this account's connection.",
+        ),
+      );
+    if (sessions.active) throw new AdoptionRefused(ACTIVE_DEV_SESSION);
+    const { target } = z
+      .strictObject({ target: CodexLegacyTargetSchema })
+      .parse(
+        await devRequest(
+          { ...scope(pinning), operation: "pin" },
+          "Dev's home for this account cannot be adopted.",
+        ),
+      );
+    if (sharesDirectory(record.definitionId, target))
+      throw new AdoptionRefused("Another adopted account uses the same Dev home.");
+    // Read once more: the Host file may have changed while Dev answered.
+    const identity = await verifyHost(pinning, deps.settings.snapshot().revision);
+    const projecting = save({ ...pinning, status: "projecting", target });
+    await deps.refresher.connected(record.definitionId, identity);
+    return projecting;
+  }
+
+  function sharesDirectory(definitionId: string, target: CodexLegacyTarget): boolean {
+    return deps.journal
+      .read()
+      .some(
+        (other) =>
+          other.definitionId !== definitionId &&
+          HOLDING.has(other.status) &&
+          other.target !== null &&
+          (other.target.realpath === target.realpath ||
+            (other.target.dev === target.dev && other.target.ino === target.ino)),
+      );
+  }
+
+  /** Whether settings still bind the account exactly as it was adopted. */
+  function stillBound(record: CodexAdoptionRecord): boolean {
+    const { definition } = selected(record.definitionId);
+    const facts = legacyFacts(definition, record.devServerId);
+    return (
+      facts.legacy &&
+      facts.devProviderId === record.devProviderId &&
+      definition?.bindings[host.serverId] === record.hostProviderId
+    );
+  }
+
+  async function advanceProjecting(record: CodexAdoptionRecord): Promise<CodexAdoptionRecord> {
+    const { definition } = selected(record.definitionId);
+    if (definition && excludedOnDev(definition, record.devServerId))
+      return save({
+        ...record,
+        status: "unadopting",
+        error: "This account was turned off for Dev during adoption.",
+      });
+    const status = deps.refresher.status(record.definitionId);
+    const ready =
+      status.signedIn &&
+      status.environments.length > 0 &&
+      status.environments.every((environment) => environment.status === "ready");
+    if (!ready) return record;
+    return save({
+      ...record,
+      status: "adopted",
+      projectedAt: deps.now(),
+      projectedExpiresAt: status.expiresAt,
+    });
+  }
+
+  /** Records the first Host refresh Dev acknowledged, then Dev's own usage read after it. */
+  async function trackProof(record: CodexAdoptionRecord): Promise<CodexAdoptionRecord> {
+    if (record.provenAt !== null) return record;
+    const status = deps.refresher.status(record.definitionId);
+    const ready = status.environments.every((environment) => environment.status === "ready");
+    let next = record;
+    if (
+      next.renewedAt === null &&
+      ready &&
+      status.expiresAt !== null &&
+      next.projectedExpiresAt !== null &&
+      status.expiresAt > next.projectedExpiresAt
+    )
+      next = save({ ...next, renewedAt: deps.now() });
+    if (next.renewedAt === null) return next;
+    const usage = await deps.devUsage(next.devProviderId);
+    const readAt = usage?.fetchedAt ? Date.parse(usage.fetchedAt) : Number.NaN;
+    if (usage?.status === "available" && !usage.authRecovery && readAt > next.renewedAt)
+      return save({ ...next, provenAt: deps.now() });
+    return next;
+  }
+
+  /** `days` deletes the saved sign-in at the earlier of proven + provenDays and the cap. */
+  async function applyRetention(record: CodexAdoptionRecord): Promise<CodexAdoptionRecord> {
+    const rule = deps.retention(record.definitionId);
+    if (rule.mode !== "days" || record.copyForgottenAt !== null || record.projectedAt === null)
+      return record;
+    const cap = record.projectedAt + rule.capDays * DAY_MS;
+    const proven =
+      record.provenAt === null
+        ? Number.POSITIVE_INFINITY
+        : record.provenAt + rule.provenDays * DAY_MS;
+    if (deps.now() < Math.min(cap, proven)) return record;
+    await deps.dev({ ...scope(record), operation: "forget-copy", target: record.target });
+    return save({ ...record, copyForgottenAt: deps.now() });
+  }
+
+  /** Withdraws the projection without any Host sign-out, then puts Dev's saved sign-in back. */
+  async function advanceUnadopting(record: CodexAdoptionRecord): Promise<CodexAdoptionRecord> {
+    const status = deps.refresher.status(record.definitionId);
+    const delivering = record.target !== null && stillBound(record);
+    if (status.signedIn) {
+      if (delivering) await deps.refresher.signedOut(record.definitionId);
+      else await deps.refresher.retire(record.definitionId);
+    }
+    if (delivering) {
+      await deps.refresher.reconcile();
+      if (!deps.refresher.withdrawn(record.definitionId)) return record;
+    }
+    let restored: CodexAdoptionRecord["restored"] = null;
+    let error = record.error;
+    if (delivering) {
+      try {
+        const result = z
+          .discriminatedUnion("restored", [
+            z.strictObject({ restored: z.literal(false) }),
+            z.strictObject({ restored: z.literal(true), copyAgeMs: Counter }),
+          ])
+          .parse(await deps.dev({ ...scope(record), operation: "restore", target: record.target }));
+        if (result.restored) restored = { copyAgeMs: result.copyAgeMs, mayNeedSignIn: true };
+      } catch (failure) {
+        if (!(failure instanceof CodexSignInRefused)) throw failure;
+        error ??= "Dev's home changed, so its saved sign-in was not restored.";
+      }
+    }
+    return save({ ...record, status: error ? "failed" : "unadopted", restored, error });
+  }
+
+  async function advanceRecord(record: CodexAdoptionRecord): Promise<CodexAdoptionRecord> {
+    const watched =
+      record.status === "projecting" ||
+      record.status === "adopted" ||
+      record.status === "needs-owner-confirmation";
+    // Rebinding Dev by hand ends the adoption. Nothing in the home is touched.
+    if (watched && !stillBound(record)) {
+      await deps.refresher.retire(record.definitionId);
+      return save({ ...record, status: "cancelled", error: null });
+    }
+    if (record.status === "verifying-host") return start(record);
+    // A restart between Host verification and the pin repeats both.
+    if (record.status === "pinning") return start(record);
+    if (record.status === "projecting") return advanceProjecting(record);
+    if (record.status === "unadopting") return advanceUnadopting(record);
+    if (record.status !== "adopted") return record;
+    // Codex saves its own refresh under a lock this writer does not take, so each reconcile
+    // re-sends the current projection; Dev replaces a newer local sign-in of the same account.
+    await deps.refresher.recover(record.definitionId).catch(() => {});
+    const proven = await trackProof(find(record.definitionId) ?? record);
+    return applyRetention(proven);
+  }
+
+  /** Runs one step. A refusal fails the record; anything else leaves it to retry. */
+  async function step(record: CodexAdoptionRecord): Promise<CodexAdoptionRecord> {
+    try {
+      return await advanceRecord(record);
+    } catch (error) {
+      if (!(error instanceof AdoptionRefused)) return find(record.definitionId) ?? record;
+      const current = find(record.definitionId) ?? record;
+      // Before the first projection nothing was written; a failure changes nothing else.
+      return save({ ...current, status: "failed", error: error.message });
+    }
+  }
+
+  return {
+    record: find,
+
+    /** Whether the refresher may project into this definition's legacy Dev home. */
+    delivering(definitionId: string): CodexAdoptionRecord | null {
+      const record = find(definitionId);
+      return record && DELIVERING.has(record.status) && record.target ? record : null;
+    },
+
+    /** Owner selection only. Starts one adoption; a second waits for the first to finish. */
+    adopt(definitionId: string): Promise<CodexAdoptionRecord> {
+      return serialized(async () => {
+        const records = deps.journal.read();
+        if (
+          records.some((item) => item.definitionId !== definitionId && IN_PROGRESS.has(item.status))
+        )
+          throw new CodexAdoptionBusy();
+        const previous = records.find((item) => item.definitionId === definitionId);
+        if (previous && (IN_PROGRESS.has(previous.status) || previous.status === "adopted"))
+          return previous;
+        const check = eligibility(definitionId);
+        if (check.reason)
+          return save({
+            ...fresh(definitionId, check.binding),
+            status: "failed",
+            error: check.reason,
+          });
+        const record = save({ ...fresh(definitionId, check.binding), status: "verifying-host" });
+        const next = await step(record);
+        if (next.status === "projecting") await deps.refresher.reconcile();
+        return find(definitionId) ?? next;
+      });
+    },
+
+    /** Owner only. Never signs the Host out. */
+    unadopt(definitionId: string): Promise<CodexAdoptionRecord> {
+      return serialized(async () => {
+        const record = find(definitionId);
+        if (!record || record.status === "unadopted") throw new CodexSignInDeliveryError();
+        if (record.status === "cancelled" || record.status === "failed") {
+          await deps.refresher.retire(definitionId);
+          return save({ ...record, status: "unadopted" });
+        }
+        if (record.status === "needs-owner-confirmation" || record.target === null) {
+          await deps.refresher.retire(definitionId);
+          return save({ ...record, status: "unadopted" });
+        }
+        return step(save({ ...record, status: "unadopting", error: null }));
+      });
+    },
+
+    /** The 30-second tick: one step for each record that is not finished. */
+    reconcile(): Promise<void> {
+      return serialized(async () => {
+        for (const record of deps.journal.read()) {
+          if (record.status === "failed") {
+            // A first projection Dev refused fails the record inside the refresher's own
+            // delivery, where it cannot retire it. Retire it here so it stops delivering.
+            await deps.refresher.retire(record.definitionId).catch(() => {});
+            continue;
+          }
+          if (record.status === "unadopted") continue;
+          if (record.status === "cancelled") continue;
+          await step(record);
+        }
+      });
+    },
+
+    /** Dev refused a delivery: its home changed, or it holds a sign-in that cannot be replaced. */
+    refused(definitionId: string, reason: CodexSignInRefused["reason"]): void {
+      const record = find(definitionId);
+      if (!record || !DELIVERING.has(record.status)) return;
+      if (reason === "target_changed")
+        save({
+          ...record,
+          status: "needs-owner-confirmation",
+          error: "Dev's home for this account changed. Confirm the account again.",
+        });
+      // An adopted home stays pending; only a first projection fails the adoption.
+      else if (reason === "existing_sign_in" && record.status === "projecting")
+        save({
+          ...record,
+          status: "failed",
+          error: "Dev holds another sign-in in this account's home. Nothing was changed.",
+        });
+    },
+
+    replacedLocally(definitionId: string): void {
+      const record = find(definitionId);
+      if (record) save({ ...record, replacedLocallyAt: deps.now() });
+    },
+  };
+}
+export type CodexAdoption = ReturnType<typeof createCodexAdoption>;

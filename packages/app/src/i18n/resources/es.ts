@@ -2326,6 +2326,13 @@ export const es: TranslationResources = {
     },
   },
   providerUsage: {
+    codexSignOut: {
+      action: "Cerrar sesión en todos los entornos",
+      title: "¿Cerrar la sesión de Codex en todos los entornos?",
+      message:
+        "Esto cierra la sesión de esta cuenta de ChatGPT en el Host y revoca su inicio de sesión, así que Host y Dev la pierden hasta que vuelvas a conectarte.",
+      confirm: "Cerrar sesión en todos",
+    },
     checkUsage: "Consultar uso",
     checkUsageHint: "Se aplica a {{host}} en todos los dispositivos",
     off: "El uso está desactivado en {{host}}.",

@@ -1054,9 +1054,13 @@ export async function createPaseoDaemon(
   );
 
   app.use(express.json());
-  mountInstallationAccountConsumers(app, {
+  // Called only for requests after startup, once the agent manager exists.
+  const providerInUse = (providerId: string) => agentManager.isProviderInUse(providerId);
+  const accountSessionHooks = mountInstallationAccountConsumers(app, {
     paseoHome: config.paseoHome,
     store: daemonConfigStore,
+    providerSessionActivity: (providerId) => agentManager.providerSessionActivity(providerId),
+    providerInUse,
     onApplied: (providerId) => {
       void providerSnapshotManager
         .refreshSettingsSnapshot({ providers: [providerId] })
@@ -1288,6 +1292,7 @@ export async function createPaseoDaemon(
     mcpAuthToken: agentMcpAuthToken,
     resolvePaseoToolPolicy: (provider) =>
       resolvePaseoToolPolicy(provider, daemonConfigStore.get().providers),
+    holdProviderStart: (provider) => accountSessionHooks.holdProviderStart(provider),
     logger,
   });
   const syncPluginProviders = () => {

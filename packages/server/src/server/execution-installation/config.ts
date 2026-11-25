@@ -142,6 +142,18 @@ export const InstallationDeploymentSchema = z.strictObject({
 });
 export type InstallationDeployment = z.infer<typeof InstallationDeploymentSchema>;
 
+/**
+ * `until-unadopt` keeps the saved sign-in until un-adopt restores it. `days` deletes it at the
+ * earlier of `provenDays` after the account is proven on Dev (a Host refresh delivered and
+ * acknowledged, then a Dev usage read without a sign-in rejection) and `capDays` after the first
+ * projection. `none` saves nothing, so un-adopt leaves the home signed out.
+ */
+const CodexAdoptionRetentionSchema = z.strictObject({
+  mode: z.enum(["until-unadopt", "days", "none"]),
+  provenDays: z.number().int().nonnegative().max(3650),
+  capDays: z.number().int().nonnegative().max(3650),
+});
+
 export const InstallationConfigSchema = z.strictObject({
   public: ExecutionInstallationSchema,
   /** Only an explicitly reviewed private configuration enables operational sampling. */
@@ -184,6 +196,15 @@ export const InstallationConfigSchema = z.strictObject({
   claudeCoordinatorRefresh: z.boolean().optional(),
   /** Off by default. Shared Codex accounts sign in once on the Host and reach Dev; `true` opts in. */
   codexHostRefresh: z.boolean().optional(),
+  /**
+   * How long Dev keeps the local Codex sign-in an adoption replaced, so un-adopt can restore it.
+   * Absent means 7 days after the adoption is proven, and 30 days at most. See
+   * `codexAdoptionRetention`.
+   */
+  codexAdoptionRetention: CodexAdoptionRetentionSchema.extend({
+    /** For another person's account, for example `none`. */
+    definitions: z.record(z.string().min(1), CodexAdoptionRetentionSchema).optional(),
+  }).optional(),
   /** Reviewed record that the coordinator launcher sets `VORTEO_RELEASE_SEALS=enabled`.
    * Changes only through the `releaseSeals` coordinator setting, together with the launcher. */
   releaseSeals: z.literal("enabled").optional(),
@@ -281,6 +302,31 @@ export function daemonTargets(
 
 export function remoteAccess(config: Pick<InstallationConfig, "access">): "tailscale" | "none" {
   return config.access?.remote ?? "tailscale";
+}
+
+export type CodexAdoptionRetention = z.infer<typeof CodexAdoptionRetentionSchema>;
+
+/**
+ * The owner's rule (2026-11-24): delete Dev's saved sign-in 7 days after the adoption is proven,
+ * and 30 days after the first projection regardless. It applies to every adopted account unless
+ * the installation configuration sets another rule.
+ */
+export const DEFAULT_CODEX_ADOPTION_RETENTION: CodexAdoptionRetention = {
+  mode: "days",
+  provenDays: 7,
+  capDays: 30,
+};
+
+/** The rule for one adopted definition: its override, the installation's rule, or the default. */
+export function codexAdoptionRetention(
+  config: Pick<InstallationConfig, "codexAdoptionRetention">,
+  definitionId: string,
+): CodexAdoptionRetention {
+  const configured = config.codexAdoptionRetention;
+  const override = configured?.definitions?.[definitionId];
+  if (override) return override;
+  if (!configured) return DEFAULT_CODEX_ADOPTION_RETENTION;
+  return { mode: configured.mode, provenDays: configured.provenDays, capDays: configured.capDays };
 }
 
 /** Same rule as Claude: only an explicit `codexHostRefresh: true` enables it. */

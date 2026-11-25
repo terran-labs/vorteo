@@ -7,7 +7,11 @@ import type { InstallationProvider } from "@getpaseo/protocol/installation-provi
 import type { InstallationConfig } from "../config.js";
 import type { InstallationSettingsService } from "../settings/service.js";
 import type { ProviderLoginSession } from "../../../services/provider-login/session.js";
+import express from "express";
+import type { DaemonConfigStore } from "../../daemon-config-store.js";
 import { createCodexSignInRuntime } from "./codex-signin-runtime.js";
+import { mountCodexSignInConsumer } from "./codex-signin-consumer.js";
+import { mountCodexSignInRoutes } from "./codex-signin-routes.js";
 import {
   codexProjectionDigest,
   type CodexSignInProjectionDelivery,
@@ -100,7 +104,10 @@ function harness(
     dispose: async () => {},
   };
   const cli = {
-    refresh: vi.fn(async () => {}),
+    openRefresh: vi.fn(async () => ({
+      refresh: async () => "done" as const,
+      close: async () => {},
+    })),
     logout: vi.fn(async () => {}),
     identity: vi.fn(async () => ({ email: "owner@example.com", orgId: "workspace-1" })),
     loginSession: vi.fn(async () => session),
@@ -187,6 +194,22 @@ it("signs in once on the Host, reaches Dev without a second sign-in and signs ou
   });
 });
 
+it("keeps refreshing a managed account without a lease on a Host from before the lease", async () => {
+  const h = harness();
+  // Near expiry from the start, so the first Host read after sign-in refreshes.
+  h.readGrant.mockReturnValue({ ...h.readGrant(), expiresAt: Date.now() + 10 * 60_000 });
+  await h.runtime.start("one");
+  await until(() => h.runtime.read("one").login.status === "waiting");
+  h.complete(true);
+  await until(() => h.deliveries.length === 1);
+  // The Host advertises no codexAccountAdoption, so it has no lease route to ask.
+  await h.runtime.reconcile();
+  expect(h.cli.openRefresh).toHaveBeenCalledWith(h.codexHome);
+  expect(h.authorizations.some((item) => item.includes("/signin/lease"))).toBe(false);
+  await until(() => h.runtime.read("one").connection.refresh !== null);
+  expect(h.runtime.read("one").connection.refresh?.outcome).not.toBe("failed");
+});
+
 it("reports a failed Host sign-out but still withdraws Dev", async () => {
   const h = harness();
   await h.runtime.start("one");
@@ -209,4 +232,506 @@ it("refuses unlinked accounts instead of consolidating them by label", async () 
   await expect(mixed.runtime.start("one")).rejects.toThrow();
   expect(mixed.settings.update).not.toHaveBeenCalled();
   expect(mixed.cli.loginSession).not.toHaveBeenCalled();
+});
+
+const DAY = 86_400_000;
+const FULL_SUPPORT = { ...SUPPORTED, codexAccountAdoption: true };
+
+/** Unsigned synthetic JWT carrying the email Codex shows. */
+function idToken(email: string) {
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const claims = { email, "https://api.openai.com/auth": { chatgpt_user_id: "person-1" } };
+  return `${encode({ alg: "none" })}.${encode(claims)}.synthetic`;
+}
+
+/**
+ * Legacy Codex definitions: an `accountId`, no `accountSetup`, a managed Host binding and the
+ * Dev binding each had before the installation managed Codex.
+ */
+function legacyHarness(
+  options: {
+    retention?: InstallationConfig["codexAdoptionRetention"];
+    devFeatures?: Record<string, boolean>;
+  } = {},
+) {
+  const stateDir = mkdtempSync(join(tmpdir(), "codex-adoption-"));
+  directories.push(stateDir);
+  let now = 2_000_000_000_000;
+  const config = {
+    stateDir,
+    public: {
+      installationId: randomUUID(),
+      environments: [
+        { serverId: "host", kind: "host" },
+        { serverId: "dev", kind: "container" },
+      ],
+    },
+    host: { endpoint: "127.0.0.1:1", password: "synthetic-host-password" },
+    container: { endpoint: "127.0.0.1:2", password: "synthetic-dev-password" },
+    ...(options.retention ? { codexAdoptionRetention: options.retention } : {}),
+  } as unknown as InstallationConfig;
+  const legacy = (id: string, dev: string): InstallationProvider => ({
+    id,
+    providerType: "codex",
+    accountId: randomUUID(),
+    bindings: { host: `codex-account-${randomUUID()}`, dev },
+    policy: { enabled: true, label: id },
+  });
+  let definitions = [legacy("one", "codex-primary"), legacy("two", "codex-secondary")];
+  let excluded: string[] = [];
+  let revision = 1;
+  const snapshot = () => ({
+    revision,
+    settings: {
+      providerDefinitions: definitions,
+      resourceExclusions: excluded.length
+        ? { dev: { providerIds: excluded, terminalProfileIds: [], metadataProviderIds: [] } }
+        : {},
+    },
+  });
+  const settings = {
+    snapshot,
+    update: vi.fn(async () => snapshot()),
+    reconcile: vi.fn(async () => snapshot()),
+  } as unknown as InstallationSettingsService;
+  const dev = {
+    online: true,
+    active: false,
+    leaseGranted: true,
+    /** An idle Host session on the account is loaded. */
+    loaded: false,
+    refreshOutcome: "done" as "done" | "timed-out",
+    /** Startup time of the Host Codex process. */
+    startupMs: 0,
+    refusal: null as string | null,
+    targets: {
+      "codex-primary": { realpath: "/home/paseo/codex-primary", dev: "41", ino: "1001" },
+      "codex-secondary": { realpath: "/home/paseo/codex-secondary", dev: "41", ino: "1002" },
+    } as Record<string, { realpath: string; dev: string; ino: string }>,
+  };
+  const requests: Array<{ route: string; body: Record<string, unknown> }> = [];
+  const deliveries: Array<CodexSignInProjectionDelivery & { adoption?: unknown }> = [];
+  const fetchFake = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    const route = new URL(String(url)).pathname.split("/").at(-1)!;
+    const body = JSON.parse(String(init?.body));
+    requests.push({ route, body });
+    if (route === "binding")
+      return Response.json({ providerId: body.providerId, codexHome: `/host/${body.providerId}` });
+    if (route === "lease") {
+      order.push(body.operation);
+      return Response.json(
+        body.operation === "acquire" && dev.leaseGranted
+          ? { granted: true, leaseId: randomUUID(), expiresAt: now + 30_000, loaded: dev.loaded }
+          : { granted: false },
+      );
+    }
+    if (!dev.online) throw new TypeError("fetch failed");
+    if (route === "legacy") {
+      if (body.operation === "sessions") return Response.json({ active: dev.active });
+      if (body.operation === "pin") return Response.json({ target: dev.targets[body.providerId] });
+      if (body.operation === "restore") return Response.json({ restored: true, copyAgeMs: 5_000 });
+      return Response.json({ forgotten: true });
+    }
+    if (dev.refusal)
+      return Response.json({ error: "pending", reason: dev.refusal }, { status: 409 });
+    deliveries.push(body);
+    const { access, adoption: _adoption, ...slot } = body;
+    return Response.json({
+      ...slot,
+      digest: codexProjectionDigest(access),
+      phase: "applied",
+      active: access !== null,
+    });
+  });
+  const order: string[] = [];
+  // The official Host Codex renews its own grant when the refresh completes.
+  const refresh = vi.fn(async (_timeoutMs: number) => {
+    order.push("refresh");
+    if (dev.refreshOutcome === "done")
+      grant = { ...grant, accessToken: "synthetic-renewed", expiresAt: now + 10 * DAY };
+    return dev.refreshOutcome;
+  });
+  const cli = {
+    openRefresh: vi.fn(async () => {
+      order.push("open");
+      now += dev.startupMs;
+      return {
+        refresh,
+        close: async () => {
+          order.push("close");
+        },
+      };
+    }),
+    logout: vi.fn(async () => {}),
+    identity: vi.fn(async () => null),
+    loginSession: vi.fn(async () => {
+      throw new Error("not used");
+    }),
+  };
+  let grant: CodexHostGrant = {
+    accessToken: "synthetic-access-token",
+    idToken: idToken("owner@example.com"),
+    accountId: "workspace-1",
+    hasRefreshToken: true,
+    expiresAt: now + 10 * DAY,
+    lastRefresh: new Date(now).toISOString(),
+  };
+  const usage = { status: "available" as const, fetchedAt: null as string | null };
+  const runtime = createCodexSignInRuntime(config, settings, undefined, {
+    daemonFeatures: async (kind) =>
+      kind === "container" ? (options.devFeatures ?? FULL_SUPPORT) : FULL_SUPPORT,
+    cli: cli as unknown as CodexHostCli,
+    readGrant: () => grant,
+    fetch: fetchFake as unknown as typeof fetch,
+    now: () => now,
+    devUsage: async () => ({ ...usage, authRecovery: false }),
+  });
+  return {
+    runtime,
+    settings,
+    cli,
+    refresh,
+    order,
+    dev,
+    requests,
+    deliveries,
+    usage,
+    stateDir,
+    legacyCalls: (operation: string) =>
+      requests.filter((item) => item.route === "legacy" && item.body.operation === operation),
+    advance: (ms: number) => {
+      now += ms;
+    },
+    now: () => now,
+    setGrant: (value: Partial<CodexHostGrant>) => {
+      grant = { ...grant, ...value };
+    },
+    exclude: (id: string) => {
+      excluded = [id];
+      revision += 1;
+    },
+    rebindDev: (id: string, providerId: string) => {
+      const changed = definitions.find((item) => item.id === id)!;
+      changed.bindings = { ...changed.bindings, dev: providerId };
+      revision += 1;
+    },
+    journal: () => readFileSync(join(stateDir, "codex-signin", "adoption.json"), "utf8"),
+  };
+}
+
+async function adopted(h: ReturnType<typeof legacyHarness>, id = "one") {
+  await h.runtime.adopt(id);
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption(id)?.status).toBe("adopted");
+}
+
+it("adopts a legacy account in place from the Host file alone and starts no Codex", async () => {
+  const h = legacyHarness();
+  // Nothing is adopted without the owner's selection.
+  await h.runtime.reconcile();
+  expect(h.deliveries).toEqual([]);
+  expect(h.runtime.adoption("one")).toBeNull();
+
+  await expect(h.runtime.adopt("one")).resolves.toMatchObject({ status: "projecting" });
+  expect(h.deliveries[0]).toMatchObject({
+    serverId: "dev",
+    providerId: "codex-primary",
+    access: { accessToken: "synthetic-access-token" },
+    adoption: { target: h.dev.targets["codex-primary"], keepLocalSignIn: true },
+  });
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")).toMatchObject({
+    status: "adopted",
+    devProviderId: "codex-primary",
+    fallback: "host-sign-in",
+  });
+  // The binding, the definition and the Host sign-in stay as they were.
+  expect(h.settings.update).not.toHaveBeenCalled();
+  for (const operation of [h.cli.openRefresh, h.cli.identity, h.cli.logout, h.cli.loginSession])
+    expect(operation).not.toHaveBeenCalled();
+  expect(h.journal()).not.toMatch(/synthetic-access|owner@example.com|workspace-1/);
+  expect(h.runtime.read("one").connection).toMatchObject({
+    identity: { email: "owner@example.com", orgId: "workspace-1" },
+    environments: [{ serverId: "dev", status: "ready" }],
+  });
+});
+
+it("fails closed with nothing written when the Host, Dev or a daemon is not ready", async () => {
+  const expiring = legacyHarness();
+  expiring.setGrant({ expiresAt: expiring.now() + 20 * 60_000 });
+  await expect(expiring.runtime.adopt("one")).resolves.toMatchObject({
+    status: "failed",
+    error: "Host session needs a refresh first.",
+  });
+  expect(expiring.requests.filter((item) => item.route !== "binding")).toEqual([]);
+
+  const busy = legacyHarness();
+  busy.dev.active = true;
+  await expect(busy.runtime.adopt("one")).resolves.toMatchObject({
+    status: "failed",
+    error: "A Dev session is using this account. Stop it, then try again.",
+  });
+  expect(busy.legacyCalls("pin")).toEqual([]);
+  expect(busy.deliveries).toEqual([]);
+
+  const outdated = legacyHarness({ devFeatures: SUPPORTED });
+  await expect(outdated.runtime.adopt("one")).resolves.toMatchObject({ status: "failed" });
+  expect(outdated.requests).toEqual([]);
+  for (const h of [expiring, busy, outdated]) {
+    expect(h.settings.update).not.toHaveBeenCalled();
+    expect(h.cli.openRefresh).not.toHaveBeenCalled();
+  }
+});
+
+it("keeps an offline Dev pending, adopts one account at a time and never shares a home", async () => {
+  const h = legacyHarness();
+  h.dev.online = false;
+  await expect(h.runtime.adopt("one")).resolves.toMatchObject({ status: "pinning" });
+  await expect(h.runtime.adopt("two")).rejects.toThrow("Another Codex account is being adopted");
+  h.dev.online = true;
+  await h.runtime.reconcile();
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")?.status).toBe("adopted");
+  // A second binding that resolves to the adopted directory is refused.
+  h.dev.targets["codex-secondary"] = { ...h.dev.targets["codex-primary"]! };
+  await expect(h.runtime.adopt("two")).resolves.toMatchObject({
+    status: "failed",
+    error: "Another adopted account uses the same Dev home.",
+  });
+  expect(h.deliveries.every((item) => item.providerId === "codex-primary")).toBe(true);
+});
+
+it("un-adopts without signing the Host out and lets an exclusion win mid-adoption", async () => {
+  const h = legacyHarness();
+  await adopted(h);
+  await expect(h.runtime.unadopt("one")).resolves.toMatchObject({
+    status: "unadopted",
+    restored: { copyAgeMs: 5_000, mayNeedSignIn: true },
+  });
+  expect(h.deliveries.at(-1)).toMatchObject({ providerId: "codex-primary", access: null });
+  expect(h.legacyCalls("restore")).toHaveLength(1);
+  expect(h.cli.logout).not.toHaveBeenCalled();
+  expect(h.settings.update).not.toHaveBeenCalled();
+  const delivered = h.deliveries.length;
+  await h.runtime.reconcile();
+  expect(h.deliveries).toHaveLength(delivered);
+
+  const excluded = legacyHarness();
+  excluded.dev.refusal = "pending";
+  await excluded.runtime.adopt("one");
+  excluded.exclude("one");
+  excluded.dev.refusal = null;
+  await excluded.runtime.reconcile();
+  await excluded.runtime.reconcile();
+  expect(excluded.runtime.adoption("one")).toMatchObject({
+    status: "failed",
+    error: "This account was turned off for Dev during adoption.",
+  });
+  expect(excluded.deliveries.at(-1)).toMatchObject({ access: null });
+  expect(excluded.cli.logout).not.toHaveBeenCalled();
+});
+
+it("stops delivering on a manual rebind or a changed Dev home", async () => {
+  const h = legacyHarness();
+  await adopted(h);
+  h.rebindDev("one", "codex-elsewhere");
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")?.status).toBe("cancelled");
+  const delivered = h.deliveries.length;
+  h.advance(10 * 60_000);
+  await h.runtime.reconcile();
+  expect(h.deliveries).toHaveLength(delivered);
+  expect(h.legacyCalls("restore")).toEqual([]);
+
+  // A first projection Dev refuses fails the adoption and stops delivering entirely.
+  const refused = legacyHarness();
+  refused.dev.refusal = "existing_sign_in";
+  await refused.runtime.adopt("one");
+  await refused.runtime.reconcile();
+  expect(refused.runtime.adoption("one")?.status).toBe("failed");
+  refused.dev.refusal = null;
+  await refused.runtime.reconcile();
+  const settled = refused.deliveries.length;
+  // Once a refresh comes due, a refresher left running would fail on the retired policy.
+  refused.setGrant({ expiresAt: refused.now() + 20 * 60_000 });
+  refused.advance(10 * 60_000);
+  await refused.runtime.reconcile();
+  expect(refused.deliveries).toHaveLength(settled);
+  const records = JSON.parse(
+    readFileSync(join(refused.stateDir, "codex-signin", "state.json"), "utf8"),
+  ) as Array<{ definitionId: string; signedIn: boolean; failureReason?: string }>;
+  const record = records.find((item) => item.definitionId === "one");
+  expect(record).toMatchObject({ signedIn: false });
+  expect(record?.failureReason).toBeUndefined();
+  expect(refused.cli.logout).not.toHaveBeenCalled();
+
+  const moved = legacyHarness();
+  await adopted(moved);
+  moved.dev.refusal = "target_changed";
+  await moved.runtime.reconcile();
+  expect(moved.runtime.adoption("one")?.status).toBe("needs-owner-confirmation");
+  moved.dev.refusal = null;
+  const before = moved.requests.length;
+  await moved.runtime.reconcile();
+  expect(moved.requests.slice(before)).toEqual([]);
+});
+
+it("refreshes under a Host lease, leaving a loaded session the last ten minutes", async () => {
+  const h = legacyHarness();
+  await adopted(h);
+  // An idle loaded Host session does not block a refresh 20 minutes before expiry.
+  h.dev.loaded = true;
+  h.setGrant({ expiresAt: h.now() + 20 * 60_000 });
+  h.advance(6 * 60_000);
+  await h.runtime.reconcile();
+  expect(h.refresh).toHaveBeenCalledTimes(1);
+  // Startup ran before the lease, and the process ended before its release.
+  expect(h.order).toEqual(["open", "acquire", "refresh", "close", "release"]);
+  expect(h.refresh.mock.calls[0]![0]).toBe(25_000);
+  // Within ten minutes of expiry the loaded session refreshes by itself.
+  h.order.length = 0;
+  h.setGrant({ expiresAt: h.now() + 8 * 60_000 });
+  h.advance(61_000);
+  await h.runtime.reconcile();
+  expect(h.refresh).toHaveBeenCalledTimes(1);
+  expect(h.order.slice(0, 4)).toEqual(["open", "acquire", "close", "release"]);
+  // A starting session or a running turn refuses the lease. Under six minutes are left by
+  // now, so Codex is not even started.
+  h.order.length = 0;
+  h.dev.leaseGranted = false;
+  h.dev.loaded = false;
+  h.advance(61_000);
+  await h.runtime.reconcile();
+  expect(h.refresh).toHaveBeenCalledTimes(1);
+  expect(h.order).toContain("acquire");
+  expect(h.order).not.toContain("open");
+  expect(h.runtime.read("one").connection.refresh?.outcome).not.toBe("failed");
+});
+
+it("starts Codex only under the lease when six minutes or less remain", async () => {
+  const h = legacyHarness();
+  await adopted(h);
+  // Any request to a starting Codex could refresh proactively now, so nothing starts unleased.
+  h.setGrant({ expiresAt: h.now() + 5 * 60_000 });
+  h.advance(61_000);
+  await h.runtime.reconcile();
+  expect(h.order).toEqual(["acquire", "open", "refresh", "close", "release"]);
+  expect(h.cli.openRefresh).toHaveBeenLastCalledWith(expect.any(String), {
+    startTimeoutMs: 25_000,
+  });
+  // With a loaded Host session, that session refreshes and the coordinator starts nothing.
+  h.order.length = 0;
+  h.dev.loaded = true;
+  h.setGrant({ expiresAt: h.now() + 5 * 60_000 });
+  h.advance(61_000);
+  await h.runtime.reconcile();
+  expect(h.order).toContain("release");
+  expect(h.order).not.toContain("open");
+  // Refused lease: nothing starts at all.
+  h.order.length = 0;
+  h.dev.loaded = false;
+  h.dev.leaseGranted = false;
+  h.advance(61_000);
+  await h.runtime.reconcile();
+  expect(h.order).toContain("acquire");
+  expect(h.order).not.toContain("open");
+  // A startup that outruns the lease is ended before the lease is released.
+  h.order.length = 0;
+  h.dev.leaseGranted = true;
+  h.dev.startupMs = 40_000;
+  h.advance(61_000);
+  await h.runtime.reconcile();
+  expect(h.order.slice(0, 4)).toEqual(["acquire", "open", "close", "release"]);
+  expect(h.order).not.toContain("refresh");
+  expect(h.runtime.read("one").connection.refresh?.outcome).not.toBe("failed");
+});
+
+it("never holds a lease through a slow startup and aborts a refresh that outruns it", async () => {
+  const h = legacyHarness();
+  await adopted(h);
+  h.dev.startupMs = 40_000;
+  h.dev.refreshOutcome = "timed-out";
+  h.setGrant({ expiresAt: h.now() + 20 * 60_000 });
+  h.advance(6 * 60_000);
+  await h.runtime.reconcile();
+  // The 40-second startup came before the lease, so the refresh still gets 25 seconds.
+  expect(h.order.slice(0, 5)).toEqual(["open", "acquire", "refresh", "close", "release"]);
+  expect(h.refresh.mock.calls[0]![0]).toBe(25_000);
+  // Running out of lease is a skipped refresh, not a failure.
+  expect(h.runtime.read("one").connection.refresh).toBeNull();
+});
+
+it("deletes the saved sign-in only when retention ends", async () => {
+  // The owner's rule is the default: 7 days after proven, 30 days at most.
+  const h = legacyHarness();
+  await adopted(h);
+  // Not proven: the 30-day cap decides.
+  h.advance(29 * DAY);
+  await h.runtime.reconcile();
+  expect(h.legacyCalls("forget-copy")).toEqual([]);
+  h.advance(DAY);
+  await h.runtime.reconcile();
+  expect(h.legacyCalls("forget-copy")).toHaveLength(1);
+
+  // Proven: a Host refresh Dev acknowledged, then a clean Dev usage read, starts 7 days.
+  const proven = legacyHarness();
+  await adopted(proven);
+  proven.setGrant({ accessToken: "synthetic-renewed", expiresAt: proven.now() + 20 * DAY });
+  proven.advance(6 * 60_000);
+  await proven.runtime.reconcile();
+  proven.usage.fetchedAt = new Date(proven.now() + 1).toISOString();
+  proven.advance(60_000);
+  await proven.runtime.reconcile();
+  expect(proven.runtime.adoption("one")?.provenAt).toBe(proven.now());
+  proven.advance(7 * DAY - 1);
+  await proven.runtime.reconcile();
+  expect(proven.legacyCalls("forget-copy")).toEqual([]);
+  proven.advance(1);
+  await proven.runtime.reconcile();
+  expect(proven.legacyCalls("forget-copy")).toHaveLength(1);
+
+  const none = legacyHarness({ retention: { mode: "none", provenDays: 0, capDays: 0 } });
+  await none.runtime.adopt("one");
+  expect(none.deliveries[0]).toMatchObject({ adoption: { keepLocalSignIn: false } });
+});
+
+it("exposes adoption to no route: the owner's routes and Dev's routes cannot start it", async () => {
+  const h = legacyHarness();
+  const app = express();
+  app.use(express.json());
+  mountCodexSignInRoutes(app, h.runtime);
+  mountCodexSignInConsumer(app, {
+    paseoHome: h.stateDir,
+    store: {} as unknown as DaemonConfigStore,
+  });
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("listener unavailable");
+    for (const route of [
+      "/api/installation/owner/codex/signin/adopt",
+      "/api/installation/owner/codex/signin/unadopt",
+      "/api/installation/codex/signin/adopt",
+    ]) {
+      const response = await fetch(`http://127.0.0.1:${address.port}${route}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ definitionId: "one" }),
+      });
+      expect(response.status).toBe(404);
+    }
+    const forged = await fetch(
+      `http://127.0.0.1:${address.port}/api/installation/codex/signin/legacy`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operation: "adopt", definitionId: "one" }),
+      },
+    );
+    expect(forged.status).toBe(400);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+  expect(h.runtime.adoption("one")).toBeNull();
 });

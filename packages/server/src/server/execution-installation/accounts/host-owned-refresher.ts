@@ -122,6 +122,12 @@ export type HostRefreshEvent =
       failure?: string;
     }
   | {
+      /** The refresh port declined to refresh; not a failure. */
+      kind: "refreshSkipped";
+      definitionId: string;
+      reason: HostRefreshSkipped["reason"];
+    }
+  | {
       /** A signed-in account's Host grant is gone or erased. Emitted once per loss. */
       kind: "signInLost";
       definitionId: string;
@@ -133,6 +139,16 @@ export type HostRefreshEvent =
       expiresAt: number;
       lastRefresh: "refreshed" | "unchanged" | "failed" | null;
     };
+
+/**
+ * Thrown by a refresh port that declined to refresh, for example because a Host session may be
+ * renewing the same grant. It is not a failure: the refresher reads and projects what is there.
+ */
+export class HostRefreshSkipped extends Error {
+  constructor(readonly reason: "lease_unavailable" | "native_session" | "lease_expired") {
+    super("The Host refresh was skipped.");
+  }
+}
 
 export interface HostRefresherPorts<G extends HostGrant, P> {
   installationId: string;
@@ -146,7 +162,7 @@ export interface HostRefresherPorts<G extends HostGrant, P> {
   policy(definitionId: string): HostRefreshPolicy;
   /** The Host account's grant, read from its own CLI storage. Throws when the Host is unreachable. */
   grant(definitionId: string): Promise<G | null>;
-  /** Asks the official Host CLI to refresh under its own locks. */
+  /** Asks the official Host CLI to refresh under its own locks. May throw HostRefreshSkipped. */
   refresh(definitionId: string): Promise<void>;
   deliver(delivery: HostProjectionDelivery<P>): Promise<HostProjectionReceipt>;
   now(): number;
@@ -272,6 +288,38 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
         digest: this.adapter.digest(null),
       });
     });
+  }
+
+  /**
+   * Ends the current generation without asking policy or delivering anything, for an account
+   * whose policy no longer exists. The generation still advances, so a later sign-in is newer
+   * than anything a consumer already holds.
+   */
+  retire(definitionId: string): Promise<void> {
+    return this.enqueue(definitionId, async () => {
+      const previous = this.records.find((item) => item.definitionId === definitionId);
+      if (!previous?.signedIn) return;
+      const policy = {
+        revision: previous.policyRevision,
+        removed: true,
+        targets: previous.targets,
+      };
+      this.replace(definitionId, policy, {
+        signedIn: false,
+        identity: previous.identity,
+        digest: this.adapter.digest(null),
+      });
+    });
+  }
+
+  /** Whether every target acknowledged the withdrawal of a signed-out account. */
+  withdrawn(definitionId: string): boolean {
+    const record = this.records.find((item) => item.definitionId === definitionId);
+    return (
+      record !== undefined &&
+      !record.signedIn &&
+      record.targets.every((target) => target.appliedRotation === record.rotation)
+    );
   }
 
   reconcile(): Promise<void> {
@@ -436,6 +484,10 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     try {
       await this.ports.refresh(definitionId);
     } catch (error) {
+      if (error instanceof HostRefreshSkipped) {
+        this.emit({ kind: "refreshSkipped", definitionId, reason: error.reason });
+        return grant;
+      }
       // The CLI can save a rotated token before the model request fails or times out.
       failed = true;
       failure = failureCategory(error);

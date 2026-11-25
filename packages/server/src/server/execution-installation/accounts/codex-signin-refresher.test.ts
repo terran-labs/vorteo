@@ -6,7 +6,7 @@ import {
   type CodexSignInProjectionReceipt,
 } from "./codex-signin-delivery.js";
 import type { CodexHostGrant } from "./codex-signin-host.js";
-import type { HostRefreshPolicy } from "./host-owned-refresher.js";
+import { HostRefreshSkipped, type HostRefreshPolicy } from "./host-owned-refresher.js";
 
 const INSTALLATION = "00000000-0000-4000-8000-000000000000";
 const MINUTE = 60_000;
@@ -134,6 +134,33 @@ it("refreshes on the Host inside the expiry lead and delivers the rotation to De
     access: { accessToken: "synthetic-access-2" },
   });
   expect(refresher.status("one").refresh).toMatchObject({ outcome: "refreshed" });
+});
+
+it("projects what the Host wrote when no lease is free, then refreshes once one is", async () => {
+  const h = harness();
+  h.setGrant({ ...h.grant()!, expiresAt: 1_000_000_000_000 + 60 * MINUTE });
+  const refresher = h.create();
+  await refresher.connected("one", null);
+  await refresher.reconcile();
+  // A Host session uses the account: the coordinator does not refresh and records no failure.
+  h.refresh.mockRejectedValueOnce(new HostRefreshSkipped());
+  h.advance(31 * MINUTE);
+  await refresher.reconcile();
+  expect(refresher.status("one")).toMatchObject({
+    refresh: null,
+    environments: [{ serverId: "dev", status: "ready" }],
+  });
+  h.advance(30_000);
+  await refresher.reconcile();
+  expect(h.refresh).toHaveBeenCalledTimes(2);
+  expect(h.deliveries.at(-1)).toMatchObject({ access: { accessToken: "synthetic-access-2" } });
+  // Retiring an account whose policy is gone delivers nothing and keeps generations rising.
+  const delivered = h.deliveries.length;
+  await refresher.retire("one");
+  expect(h.deliveries).toHaveLength(delivered);
+  await refresher.connected("one", null);
+  await refresher.reconcile();
+  expect(h.deliveries.at(-1)).toMatchObject({ generation: 3 });
 });
 
 it("refreshes a day before Codex itself would consider the sign-in stale", async () => {
