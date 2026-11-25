@@ -32,6 +32,8 @@ import { useOnHealthCardReveal } from "@/execution-installation/health-cards";
 type Adapter = ReturnType<typeof useSystemAdapter>;
 const snaps = ["90%"];
 const fullStatusHeader = { title: "Full status" };
+const EXPANDED = { expanded: true };
+const COLLAPSED = { expanded: false };
 
 function RestartMenu({
   adapter,
@@ -125,11 +127,11 @@ function EnvironmentDetails({
   requestId?: string | null;
 }) {
   const [fullStatus, setFullStatus] = useState(false);
+  const [diagnostics, setDiagnostics] = useState(false);
   const openStatus = useCallback(() => setFullStatus(true), []);
   const closeStatus = useCallback(() => setFullStatus(false), []);
   const snapshot = useHostRuntimeSnapshot(serverId);
   const info = useSessionStore((store) => store.sessions[serverId]?.serverInfo);
-  const local = useIsLocalDaemon(serverId);
   const client = snapshot?.client;
   const status = useFetchQuery({
     dataShape: "value",
@@ -152,28 +154,71 @@ function EnvironmentDetails({
       toast.error(toErrorMessage(status.error)),
     );
   }, [serverId, status.error, toast]);
+  const toggleDiagnostics = useCallback(() => setDiagnostics((value) => !value), []);
   return (
     <View style={styles.detailsBody}>
       <Text style={settingsStyles.rowTitle}>{label} details</Text>
-      <Text
-        selectable
-        style={settingsStyles.rowHint}
-      >{`Transport: ${snapshot?.activeConnection?.display ?? "Unknown"}`}</Text>
+      {/* Diagnostics wait on no one, so they stay folded until asked for (#656). */}
+      <Button
+        variant="ghost"
+        onPress={toggleDiagnostics}
+        accessibilityState={diagnostics ? EXPANDED : COLLAPSED}
+        testID={`system-diagnostics-${target}`}
+      >
+        Diagnostics
+      </Button>
+      {diagnostics ? (
+        <EnvironmentDiagnostics
+          serverId={serverId}
+          sourceCommit={sourceCommit}
+          status={status.data}
+          fullStatus={fullStatus}
+          openStatus={openStatus}
+          closeStatus={closeStatus}
+        />
+      ) : null}
+      <InstallationSystemDetails target={target} requestId={requestId} />
+      <ServiceAccessSection serverId={serverId} />
+      <InstallationConnectionCheck embedded />
+    </View>
+  );
+}
+/** Transport, version, process and commits for one environment, folded until asked for. */
+function EnvironmentDiagnostics({
+  serverId,
+  sourceCommit,
+  status,
+  fullStatus,
+  openStatus,
+  closeStatus,
+}: {
+  serverId: string;
+  sourceCommit?: string | null;
+  status: { pid?: number } | undefined;
+  fullStatus: boolean;
+  openStatus: () => void;
+  closeStatus: () => void;
+}) {
+  const snapshot = useHostRuntimeSnapshot(serverId);
+  const info = useSessionStore((store) => store.sessions[serverId]?.serverInfo);
+  const local = useIsLocalDaemon(serverId);
+  const endpoint = snapshot?.activeConnection?.endpoint;
+  return (
+    <View style={styles.diagnostics}>
       <Text selectable style={settingsStyles.rowHint}>
-        {snapshot?.activeConnection?.endpoint ?? ""}
+        {`Transport: ${snapshot?.activeConnection?.display ?? "Unknown"}${
+          endpoint ? ` (${endpoint})` : ""
+        }`}
       </Text>
       <Text
         selectable
         style={settingsStyles.rowHint}
       >{`Version: ${info?.version ?? "Unknown"}`}</Text>
-      <Text
-        selectable
-        style={settingsStyles.rowHint}
-      >{`PID: ${status.data?.pid ?? "Unknown"}`}</Text>
-      <Text
-        selectable
-        style={settingsStyles.rowHint}
-      >{`Commit: ${sourceCommit ?? "Unknown"}`}</Text>
+      <Text selectable style={settingsStyles.rowHint}>{`PID: ${status?.pid ?? "Unknown"}`}</Text>
+      {/* No commit is reported for Dev without unattended maintenance; say nothing then. */}
+      {sourceCommit ? (
+        <Text selectable style={settingsStyles.rowHint}>{`Commit: ${sourceCommit}`}</Text>
+      ) : null}
       <Text
         selectable
         style={settingsStyles.rowHint}
@@ -182,23 +227,31 @@ function EnvironmentDetails({
         <LocalDaemonSection />
       ) : (
         <>
-          <Button variant="outline" onPress={openStatus} disabled={!status.data}>
+          <Button variant="outline" onPress={openStatus} disabled={!status}>
             Full status
           </Button>
           <SettingsStatusLine message="Logs are available on the computer running this environment." />
           <AdaptiveModalSheet visible={fullStatus} header={fullStatusHeader} onClose={closeStatus}>
             <Text selectable style={settingsStyles.rowHint}>
-              {JSON.stringify(status.data, null, 2)}
+              {JSON.stringify(status, null, 2)}
             </Text>
           </AdaptiveModalSheet>
         </>
       )}
-      <InstallationSystemDetails target={target} requestId={requestId} />
-      <ServiceAccessSection serverId={serverId} />
-      <InstallationConnectionCheck embedded />
     </View>
   );
 }
+
+/** Host's installed commit: from unattended maintenance, or from the upgrade status. */
+function hostSourceCommit(adapter: Adapter): string | undefined {
+  return (
+    adapter.state?.enrollmentStatus?.services.find((service) => service.target === "host")
+      ?.selectedSource ??
+    adapter.upgrades?.data?.current?.sourceCommit ??
+    undefined
+  );
+}
+
 /** Catalog entry point. An explicit serverId selects the standalone Host when no installation exists. */
 export function SystemPane({
   serverId,
@@ -260,11 +313,7 @@ export function SystemPane({
                   requestId={linkedTarget === "host" ? restartRequestId : null}
                   target="host"
                   label="Host"
-                  sourceCommit={
-                    adapter.state?.enrollmentStatus?.services.find(
-                      (service) => service.target === "host",
-                    )?.selectedSource
-                  }
+                  sourceCommit={hostSourceCommit(adapter)}
                 />
               ),
             },
@@ -334,4 +383,5 @@ export function SystemPane({
 }
 const styles = StyleSheet.create((theme) => ({
   detailsBody: { padding: theme.spacing[4], gap: theme.spacing[3] },
+  diagnostics: { gap: theme.spacing[2] },
 }));

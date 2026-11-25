@@ -5,6 +5,7 @@ import type { InstallationUpgrade } from "@getpaseo/protocol/installation-upgrad
 import type { MaintenanceServiceQueueStatus } from "@getpaseo/protocol/maintenance-service-status";
 import type { HostRuntimeSnapshot } from "@/runtime/host-runtime";
 import { maintenanceHeadline } from "@/execution-installation/maintenance-dashboard-model";
+import { restartOwnerState, restartProgressLine } from "@/execution-installation/owner-waiting";
 import { isSupersededFailure, upgradeTarget } from "@/execution-installation/failure-review";
 
 export type SystemStatus = "healthy" | "updating" | "attention";
@@ -46,6 +47,13 @@ export interface SystemEnvironmentInput {
     | "supervisorPlanSha256"
     | "engineRecoveryPlanSha256"
     | "impact"
+    | "delegatedTo"
+    | "delegationOverdue"
+    | "automaticApproval"
+    | "automaticDispatchAfter"
+    | "holdDeadlineExceeded"
+    | "update"
+    | "sourceBatch"
   >[];
   upgrades?: readonly UpgradeSummary[];
   serviceQueue?: Pick<MaintenanceServiceQueueStatus, "jobs">;
@@ -67,7 +75,12 @@ export function deriveSystemEnvironment(input: SystemEnvironmentInput): {
     ? []
     : (input.restartJobs ?? []).filter((job) => job.target === input.target);
   const upgrades = input.locked ? [] : (input.upgrades ?? []);
-  const waiting = jobs.find((job) => job.status === "pending");
+  // Only a restart that waits on the owner asks for approval; one another agent or the
+  // installation's policy will approve shows a plain line instead (#656).
+  const waiting = jobs.find(
+    (job) => job.status === "pending" && restartOwnerState(job) === "waiting",
+  );
+  const handled = jobs.find((job) => job.status === "pending" && job !== waiting);
   const recovery =
     waiting?.target === "container-daemon" &&
     Boolean(
@@ -88,7 +101,8 @@ export function deriveSystemEnvironment(input: SystemEnvironmentInput): {
     enrollment?.services.some(
       (service) => service.target === input.target && service.readiness === "blocked",
     ) ||
-    jobs.some((job) => job.status === "pending" || job.status === "failed") ||
+    Boolean(waiting) ||
+    jobs.some((job) => job.status === "failed") ||
     Boolean(upgrade) ||
     Boolean(live?.server.state === "failed") ||
     Boolean(failedAutomaticUpgrade(upgrades)) ||
@@ -125,11 +139,20 @@ export function deriveSystemEnvironment(input: SystemEnvironmentInput): {
   if (attention) status = "attention";
   const reason =
     waiting?.reason ||
-    activeJob?.reason ||
+    (handled ? handledLine(handled) : undefined) ||
+    (activeJob ? (restartProgressLine(activeJob) ?? activeJob.reason) : undefined) ||
     (upgrade ? `Update to ${upgrade.release}` : undefined) ||
     live?.server.detail ||
     (status === "attention" ? attentionReason(input) : undefined);
   return { status, action, ...(reason ? { reason } : {}) };
+}
+
+/** A pending restart the owner need not approve, in one plain line without its reason. */
+function handledLine(
+  job: Parameters<typeof restartProgressLine>[0] & { delegatedTo?: string },
+): string | undefined {
+  if (job.delegatedTo) return `Being handled by ${job.delegatedTo}`;
+  return restartProgressLine(job) ?? undefined;
 }
 
 /** Hidden when ready; maintenance authority and service health remain separate. */
