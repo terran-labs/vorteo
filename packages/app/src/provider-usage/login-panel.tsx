@@ -37,6 +37,7 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
 import { useSessionStore } from "@/stores/session-store";
 import { useRefreshAfterSignIn } from "./refresh-after-sign-in";
+import { CodexAdoptionSection } from "./codex-adoption";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { useTranslation } from "react-i18next";
@@ -110,7 +111,14 @@ function LoginPanelContent(props: LoginPanelProps) {
         installation, use Add connection in Accounts &amp; profiles.
       </Text>
     );
-  return <AccountLoginContent {...props} />;
+  if (provider !== "codex") return <AccountLoginContent {...props} />;
+  // A legacy Codex account can adopt the Host's sign-in; the section hides itself otherwise.
+  return (
+    <View style={styles.body}>
+      <AccountLoginContent {...props} />
+      <CodexAdoptionSection serverId={serverId} providerId={providerId} />
+    </View>
+  );
 }
 
 type Login = ReturnType<typeof useProviderLogin>;

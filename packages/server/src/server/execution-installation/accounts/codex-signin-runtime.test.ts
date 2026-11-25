@@ -752,7 +752,7 @@ it("re-sends the projection while Host refreshes fail, without spending a retry"
   expect(h.refresh).toHaveBeenCalledTimes(1);
 });
 
-it("exposes adoption to no route: the owner's routes and Dev's routes cannot start it", async () => {
+it("starts adoption only from the owner's routes, never from Dev's", async () => {
   const h = legacyHarness();
   const app = express();
   app.use(express.json());
@@ -766,29 +766,69 @@ it("exposes adoption to no route: the owner's routes and Dev's routes cannot sta
   try {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("listener unavailable");
-    for (const route of [
-      "/api/installation/owner/codex/signin/adopt",
-      "/api/installation/owner/codex/signin/unadopt",
-      "/api/installation/codex/signin/adopt",
-    ]) {
+    const post = async (route: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${address.port}${route}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ definitionId: "one" }),
+        body: JSON.stringify(body),
       });
-      expect(response.status).toBe(404);
-    }
-    const forged = await fetch(
-      `http://127.0.0.1:${address.port}/api/installation/codex/signin/legacy`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ operation: "adopt", definitionId: "one" }),
-      },
-    );
+      const text = await response.text();
+      // No account ID, email, token, provider ID or Dev path reaches the app from adoption.
+      if (/adopt/.test(route))
+        expect(text).not.toMatch(/synthetic|owner@example|workspace-1|codex-|home\/paseo/);
+      const json = response.headers.get("content-type")?.includes("json");
+      return { status: response.status, body: json ? JSON.parse(text) : null };
+    };
+    // Dev's daemon routes still cannot start one.
+    expect(
+      (await post("/api/installation/codex/signin/adopt", { definitionId: "one" })).status,
+    ).toBe(404);
+    const forged = await post("/api/installation/codex/signin/legacy", {
+      operation: "adopt",
+      definitionId: "one",
+    });
     expect(forged.status).toBe(400);
+    expect(h.runtime.adoption("one")).toBeNull();
+
+    const owner = "/api/installation/owner/codex/signin";
+    expect((await post(`${owner}/adoptions`, {})).body).toEqual({
+      definitions: [
+        { definitionId: "one", eligible: true, reason: null, adoption: null },
+        { definitionId: "two", eligible: true, reason: null, adoption: null },
+      ],
+    });
+    h.dev.online = false;
+    expect(await post(`${owner}/adopt`, { definitionId: "one" })).toMatchObject({
+      status: 200,
+      body: { adoption: { status: "pinning", error: null } },
+    });
+    // One at a time, with the plain reason.
+    expect(await post(`${owner}/adopt`, { definitionId: "two" })).toEqual({
+      status: 409,
+      body: { error: "Another Codex account is being adopted. Wait for it to finish." },
+    });
+    h.dev.online = true;
+    await h.runtime.reconcile();
+    await h.runtime.reconcile();
+    // The panel keeps reading an adopted account, and still does after the adoption ends.
+    expect((await post(`${owner}/read`, { definitionId: "one" })).status).toBe(200);
+    expect(await post(`${owner}/unadopt`, { definitionId: "one" })).toMatchObject({
+      status: 200,
+      body: { adoption: { status: "unadopted", restored: { mayNeedSignIn: true } } },
+    });
+    expect(h.cli.logout).not.toHaveBeenCalled();
+    expect((await post(`${owner}/read`, { definitionId: "one" })).status).toBe(200);
+    h.dev.active = true;
+    expect(await post(`${owner}/adopt`, { definitionId: "two" })).toMatchObject({
+      status: 409,
+      body: {
+        error: "A Dev session is using this account. Stop it, then try again.",
+        adoption: { status: "failed" },
+      },
+    });
+    expect((await post(`${owner}/read`, { definitionId: "two" })).status).toBe(200);
+    expect((await post(`${owner}/unadopt`, { definitionId: "missing" })).status).toBe(409);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
-  expect(h.runtime.adoption("one")).toBeNull();
 });

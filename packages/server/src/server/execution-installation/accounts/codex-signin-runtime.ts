@@ -179,6 +179,27 @@ export function createCodexSignInRuntime(
     return { snapshot, selected, adopted, providerId: adopted.hostProviderId };
   }
 
+  /**
+   * What the sign-in panel may read. A legacy definition stays readable in every adoption state,
+   * because its record can fail, cancel or end while the panel polls; its status then reports no
+   * delivery. Only reads relax this: everything that signs in, refreshes or delivers still goes
+   * through definition().
+   */
+  function readable(definitionId: string): void {
+    try {
+      definition(definitionId);
+    } catch (error) {
+      const selected = settings
+        .snapshot()
+        .settings?.providerDefinitions?.find((item) => item.id === definitionId);
+      const legacy =
+        selected?.providerType === "codex" &&
+        selected.accountId !== undefined &&
+        selected.accountSetup === undefined;
+      if (!legacy || !adoption.record(definitionId)) throw error;
+    }
+  }
+
   function excludedOn(
     selected: ReturnType<typeof definition>["selected"],
     serverId: string,
@@ -501,7 +522,7 @@ export function createCodexSignInRuntime(
 
   return {
     read: (definitionId: string) => {
-      definition(definitionId);
+      readable(definitionId);
       return { login: login.read(definitionId), connection: refresher.status(definitionId) };
     },
     start: async (definitionId: string) => {
@@ -528,11 +549,13 @@ export function createCodexSignInRuntime(
       await refresher.reconcile();
       return warning;
     },
-    /** Owner selection of a legacy account. Not reachable from any route yet. */
+    /** Owner selection of a legacy account, from the owner route only. */
     adopt: (definitionId: string) => adoption.adopt(definitionId),
-    /** Withdraws an adoption without signing the Host out. Not reachable from any route yet. */
+    /** Withdraws an adoption without signing the Host out. Owner route only. */
     unadopt: (definitionId: string) => adoption.unadopt(definitionId),
     adoption: (definitionId: string) => adoption.record(definitionId) ?? null,
+    /** Every legacy Codex definition, whether it can be adopted, and its record. */
+    adoptions: () => adoption.legacy(),
     reconcile: async () => {
       try {
         await adoption.reconcile();

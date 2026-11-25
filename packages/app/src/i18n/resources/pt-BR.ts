@@ -6,6 +6,8 @@ export const ptBR: TranslationResources = {
   previewStatus: previewStatus["pt-BR"],
   projectFactory: en.projectFactory,
   vorteoSetup: en.vorteoSetup,
+  // Draft English until the wording is approved, then translated.
+  codexAdoption: en.codexAdoption,
   paneFind: {
     connectionFailure:
       "Não foi possível pesquisar nesta conversa. Verifique a conexão com o host e tente novamente.",

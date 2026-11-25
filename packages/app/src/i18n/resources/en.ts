@@ -3864,6 +3864,43 @@ export const en = {
       },
     },
   },
+  // DRAFT wording for adopting a legacy Codex account; awaiting approval.
+  codexAdoption: {
+    title: "Use the Host's sign-in on Dev",
+    description:
+      "Dev keeps this account's history and settings and uses the Host's sign-in instead of its own. The Host keeps it renewed.",
+    unavailable: "This account cannot use the Host's sign-in yet: {{reason}}",
+    checking: "Checking this account...",
+    status: {
+      inProgress: "Checking the Host and Dev...",
+      pending: "Synchronization pending. Waiting for Dev to confirm.",
+      adopted: "Dev uses the Host's sign-in for this account.",
+      failed: "Could not adopt this account: {{reason}}",
+      failedUnknown: "Could not adopt this account.",
+      needsConfirmation: "Needs your confirmation: {{reason}}",
+      cancelled:
+        "Adoption stopped because this account's Dev connection changed. Dev's home was left as it was.",
+      unadopting: "Stopping...",
+      unadopted: "Dev no longer uses the Host's sign-in.",
+      restored: "Dev's earlier sign-in was put back. It may need sign-in.",
+      restoreSkipped: "Dev's earlier sign-in was not put back. Sign in on Dev if it needs it.",
+      signedOut: "Dev had no saved sign-in to put back, so it needs sign-in.",
+      requestFailed: "Could not reach the installation. Try again.",
+    },
+    actions: {
+      adopt: "Use the Host's sign-in",
+      retry: "Try again",
+      confirm: "Confirm and adopt again",
+      unadopt: "Stop using the Host's sign-in",
+    },
+    unadoptNote: "Stopping never signs the Host out.",
+    unadoptConfirm: {
+      title: "Stop using the Host's sign-in on Dev?",
+      message:
+        "This never signs the Host out. Dev stops receiving the Host's sign-in, and its earlier sign-in is put back if one was saved.",
+      confirm: "Stop using it",
+    },
+  },
   vorteoSetup: {
     title: "Set up Vorteo",
     reopen: "Show setup again",

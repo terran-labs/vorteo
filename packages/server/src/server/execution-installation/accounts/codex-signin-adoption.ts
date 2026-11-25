@@ -499,6 +499,30 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
   return {
     record: find,
 
+    /**
+     * Every legacy Codex definition (an `accountId`, no `accountSetup`), with the plain reason it
+     * cannot be adopted as things stand, or null, and its adoption record. For the owner's list.
+     */
+    legacy(): Array<{
+      definitionId: string;
+      reason: string | null;
+      record: CodexAdoptionRecord | null;
+    }> {
+      const records = deps.journal.read();
+      return (deps.settings.snapshot().settings?.providerDefinitions ?? [])
+        .filter(
+          (definition) =>
+            definition.providerType === "codex" &&
+            definition.accountId !== undefined &&
+            definition.accountSetup === undefined,
+        )
+        .map((definition) => ({
+          definitionId: definition.id,
+          reason: eligibility(definition.id).reason,
+          record: records.find((item) => item.definitionId === definition.id) ?? null,
+        }));
+    },
+
     /** Whether the refresher may project into this definition's legacy Dev home. */
     delivering(definitionId: string): CodexAdoptionRecord | null {
       const record = find(definitionId);

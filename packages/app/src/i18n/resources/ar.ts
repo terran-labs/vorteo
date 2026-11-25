@@ -6,6 +6,8 @@ export const ar: TranslationResources = {
   previewStatus: previewStatus.ar,
   projectFactory: en.projectFactory,
   vorteoSetup: en.vorteoSetup,
+  // Draft English until the wording is approved, then translated.
+  codexAdoption: en.codexAdoption,
   paneFind: {
     connectionFailure: "تعذر البحث في هذه المحادثة. تحقق من الاتصال بالمضيف وأعد المحاولة.",
     historyChangedFailure: "تغيّرت المحادثة أثناء البحث. أعد البحث.",

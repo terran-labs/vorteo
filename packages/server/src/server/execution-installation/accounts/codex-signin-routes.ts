@@ -1,13 +1,45 @@
-import type { ErrorRequestHandler, Express } from "express";
+import type { ErrorRequestHandler, Express, Response } from "express";
 import { z } from "zod";
+import { CodexAdoptionBusy, type CodexAdoptionRecord } from "./codex-signin-adoption.js";
 import type { CodexSignInRuntime } from "./codex-signin-runtime.js";
 
 const Definition = z.strictObject({ definitionId: z.string().min(1).max(512) });
 const Attempt = Definition.extend({ attemptId: z.string().uuid() });
+const Empty = z.strictObject({});
+
+const SIGN_IN_FAILURE = "Codex sign-in could not complete. Refresh and try again.";
+const ADOPTION_FAILURE = "Codex account adoption could not complete. Refresh and try again.";
+
+/**
+ * What the owner's app sees of an adoption: its state, plain reason and times. Never the account
+ * ID, email, token, provider IDs or Dev's pinned directory.
+ */
+function adoptionView(record: CodexAdoptionRecord) {
+  return {
+    status: record.status,
+    error: record.error,
+    startedAt: record.startedAt,
+    projectedAt: record.projectedAt,
+    renewedAt: record.renewedAt,
+    provenAt: record.provenAt,
+    copyForgottenAt: record.copyForgottenAt,
+    restored: record.restored,
+    ...(record.restoreSkipped ? { restoreSkipped: true as const } : {}),
+  };
+}
+
+/** A failed record answers 409 with its plain reason, beside the record itself. */
+function sendAdoption(res: Response, record: CodexAdoptionRecord): void {
+  const adoption = adoptionView(record);
+  if (record.status === "failed")
+    res.status(409).json({ error: record.error ?? ADOPTION_FAILURE, adoption });
+  else res.json({ adoption });
+}
 
 /**
  * Must be mounted after the installation owner Origin/session gate. Codex signs in with a device
- * code, so there is no code submission route.
+ * code, so there is no code submission route. Adoption of a legacy account is reachable only
+ * here, never from a daemon route, tool or CLI.
  */
 export function mountCodexSignInRoutes(app: Express, runtime: CodexSignInRuntime): void {
   const root = "/api/installation/owner/codex/signin";
@@ -34,9 +66,40 @@ export function mountCodexSignInRoutes(app: Express, runtime: CodexSignInRuntime
           }
         } catch {
           // Token-bearing exceptions never enter HTTP logs.
+          res.status(409).json({ error: SIGN_IN_FAILURE });
+        }
+      })();
+    });
+  }
+  for (const operation of ["adoptions", "adopt", "unadopt"] as const) {
+    app.post(`${root}/${operation}`, (req, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      void (async () => {
+        try {
+          if (operation === "adoptions") {
+            Empty.parse(req.body ?? {});
+            res.json({
+              definitions: runtime.adoptions().map((item) => ({
+                definitionId: item.definitionId,
+                eligible: item.reason === null,
+                reason: item.reason,
+                adoption: item.record ? adoptionView(item.record) : null,
+              })),
+            });
+            return;
+          }
+          const { definitionId } = Definition.parse(req.body);
+          sendAdoption(
+            res,
+            operation === "adopt"
+              ? await runtime.adopt(definitionId)
+              : await runtime.unadopt(definitionId),
+          );
+        } catch (error) {
+          // Only the busy refusal's fixed text is passed on; nothing else reaches logs or replies.
           res
-            .status(409)
-            .json({ error: "Codex sign-in could not complete. Refresh and try again." });
+            .status(error instanceof z.ZodError ? 400 : 409)
+            .json({ error: error instanceof CodexAdoptionBusy ? error.message : ADOPTION_FAILURE });
         }
       })();
     });

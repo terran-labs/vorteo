@@ -3,6 +3,7 @@ import { claudeProviderConnectsToInstallation } from "./claude-setup-login";
 import { ProviderLoginPanel, StatusLine, type ConnectionOutcome } from "./login-panel";
 import type { ConnectionStatus } from "./claude-connection-status";
 import { useClaudeAccountNeedsSignIn, useSharedInstallationSignIn } from "./use-provider-login";
+import { useCodexAdoptionOffered } from "./codex-adoption";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Text, View, type GestureResponderEvent } from "react-native";
 import { AlertTriangle } from "lucide-react-native";
@@ -290,7 +291,14 @@ function useConnectionAction(
   const { entries } = useProvidersSnapshot(serverId);
   const claude = accountProviderKind(providerId, config?.providers) === "claude";
   // Installation accounts always offer their connection panel, which shows Dev synchronization.
-  const shared = useSharedInstallationSignIn(serverId, claude ? "claude" : "codex", providerId);
+  const installationSignIn = useSharedInstallationSignIn(
+    serverId,
+    claude ? "claude" : "codex",
+    providerId,
+  );
+  // A legacy Codex account the coordinator could adopt offers the panel that adopts it.
+  const adoptable = useCodexAdoptionOffered(claude ? null : serverId, providerId);
+  const shared = installationSignIn || adoptable;
   // The coordinator knows when a named Claude account's Host grant is gone, even while its last
   // usage reading still looks fine.
   const coordinatorNeedsSignIn = useClaudeAccountNeedsSignIn(claude ? serverId : null, providerId);

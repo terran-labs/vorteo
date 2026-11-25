@@ -6,6 +6,8 @@ export const ru: TranslationResources = {
   previewStatus: previewStatus.ru,
   projectFactory: en.projectFactory,
   vorteoSetup: en.vorteoSetup,
+  // Draft English until the wording is approved, then translated.
+  codexAdoption: en.codexAdoption,
   paneFind: {
     connectionFailure:
       "Не удалось выполнить поиск в чате. Проверьте подключение к хосту и повторите попытку.",
