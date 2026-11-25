@@ -10,6 +10,7 @@ import {
   deferBootstrapReview,
 } from "./execution-installation/coordinator-bootstrap-launch.js";
 import { mountInstallationAccountConsumers } from "./execution-installation/accounts/consumers.js";
+import { CodexRefreshLeases } from "./execution-installation/accounts/codex-signin-lease.js";
 import { ScheduleStore } from "./schedule/store.js";
 import {
   assertSystemThreadArchiveAllowed,
@@ -1054,9 +1055,14 @@ export async function createPaseoDaemon(
   );
 
   app.use(express.json());
+  // Called only for requests after startup, once the agent manager exists.
+  const providerInUse = (providerId: string) => agentManager.isProviderInUse(providerId);
+  const codexRefreshLeases = new CodexRefreshLeases({ inUse: providerInUse });
   mountInstallationAccountConsumers(app, {
     paseoHome: config.paseoHome,
     store: daemonConfigStore,
+    codexRefreshLeases,
+    providerInUse,
     onApplied: (providerId) => {
       void providerSnapshotManager
         .refreshSettingsSnapshot({ providers: [providerId] })
@@ -1288,6 +1294,7 @@ export async function createPaseoDaemon(
     mcpAuthToken: agentMcpAuthToken,
     resolvePaseoToolPolicy: (provider) =>
       resolvePaseoToolPolicy(provider, daemonConfigStore.get().providers),
+    holdProviderStart: (provider) => codexRefreshLeases.hold(provider),
     logger,
   });
   const syncPluginProviders = () => {

@@ -2286,6 +2286,13 @@ export const ko: TranslationResources = {
     },
   },
   providerUsage: {
+    codexSignOut: {
+      action: "모든 환경에서 로그아웃",
+      title: "모든 환경에서 Codex에서 로그아웃할까요?",
+      message:
+        "Host에서 이 ChatGPT 계정을 로그아웃하고 로그인을 취소합니다. 다시 연결할 때까지 Host와 Dev 모두 사용할 수 없습니다.",
+      confirm: "모두 로그아웃",
+    },
     checkUsage: "사용량 확인",
     checkUsageHint: "모든 기기에서 {{host}}에 적용",
     off: "{{host}}의 사용량 확인이 꺼져 있습니다.",

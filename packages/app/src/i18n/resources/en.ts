@@ -2709,6 +2709,13 @@ export const en = {
     },
   },
   providerUsage: {
+    codexSignOut: {
+      action: "Sign out on every environment",
+      title: "Sign out of Codex on every environment?",
+      message:
+        "This signs the Host out of this ChatGPT account and revokes its sign-in, so Host and Dev both lose it until you connect again.",
+      confirm: "Sign out everywhere",
+    },
     checkUsage: "Check usage",
     checkUsageHint: "Applies to {{host}} on every device",
     off: "Usage is off on {{host}}.",

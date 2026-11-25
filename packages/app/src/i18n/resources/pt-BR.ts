@@ -2307,6 +2307,13 @@ export const ptBR: TranslationResources = {
     },
   },
   providerUsage: {
+    codexSignOut: {
+      action: "Sair em todos os ambientes",
+      title: "Sair do Codex em todos os ambientes?",
+      message:
+        "Isso desconecta o Host desta conta do ChatGPT e revoga o login, então Host e Dev perdem o acesso até você conectar de novo.",
+      confirm: "Sair em todos",
+    },
     checkUsage: "Consultar uso",
     checkUsageHint: "Aplica-se a {{host}} em todos os dispositivos",
     off: "O uso está desativado em {{host}}.",

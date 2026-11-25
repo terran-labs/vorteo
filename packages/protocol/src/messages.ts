@@ -4573,6 +4573,8 @@ export const ServerInfoStatusPayloadSchema = z
         claudeSignInUpgrade: z.boolean().optional(),
         // COMPAT(codexInstallationSignIn): receives Host-owned Codex sign-in projections.
         codexInstallationSignIn: z.boolean().optional(),
+        // COMPAT(codexAccountAdoption): added after v26.11.2100. Host refresh lease and adoption of legacy Codex accounts.
+        codexAccountAdoption: z.boolean().optional(),
         // COMPAT(providerSecretDelivery): receives coordinator-held provider API keys and tokens.
         providerSecretDelivery: z.boolean().optional(),
         // COMPAT(speechSecretDelivery): shared Voice keys and endpoint delivery.

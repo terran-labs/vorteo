@@ -112,6 +112,7 @@ test("shared success shows pending delivery and allows renewal or installation-w
 
 test("a shared Codex account connects once and shows Dev synchronization", async () => {
   const start = vi.fn();
+  const signOut = vi.fn();
   // Opened from Dev, whose daemon session is not loaded here: the coordinator handles it.
   vi.mocked(useSharedInstallationSignIn).mockReturnValue(true);
   vi.mocked(useProviderLogin).mockReturnValue({
@@ -130,7 +131,7 @@ test("a shared Codex account connects once and shows Dev synchronization", async
     actionFailed: false,
     refreshing: false,
     start,
-    signOut: vi.fn(),
+    signOut,
     cancel: vi.fn(),
     submitCode: vi.fn(),
     refresh: vi.fn(),
@@ -149,6 +150,15 @@ test("a shared Codex account connects once and shows Dev synchronization", async
   expect(start).toHaveBeenCalledOnce();
   expect(vi.mocked(useProviderLogin)).toHaveBeenCalledWith("dev", "codex-one", "codex");
   expect(vi.mocked(useSharedInstallationSignIn)).toHaveBeenCalledWith("dev", "codex", "codex-one");
+  // Signing out runs `codex logout` on the Host, which revokes it everywhere: it always asks.
+  vi.mocked(confirmDialog).mockResolvedValueOnce(false);
+  await page.getByTestId("provider-login-sign-out").click();
+  await expect.poll(() => vi.mocked(confirmDialog).mock.calls.length).toBe(1);
+  expect(vi.mocked(confirmDialog).mock.calls[0]![0]).toMatchObject({ destructive: true });
+  expect(signOut).not.toHaveBeenCalled();
+  vi.mocked(confirmDialog).mockResolvedValueOnce(true);
+  await page.getByTestId("provider-login-sign-out").click();
+  await expect.poll(() => signOut.mock.calls.length).toBe(1);
 });
 
 type Login = ReturnType<typeof useProviderLogin>;

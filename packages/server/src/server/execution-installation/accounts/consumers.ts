@@ -3,6 +3,7 @@ import type { DaemonConfigStore } from "../../daemon-config-store.js";
 import { mountClaudeOAuthConsumer } from "./claude-oauth-consumer.js";
 import { mountClaudeSetupConsumer } from "./claude-setup-consumer.js";
 import { mountCodexSignInConsumer } from "./codex-signin-consumer.js";
+import type { CodexRefreshLeases } from "./codex-signin-lease.js";
 import { mountProviderSecretsConsumer } from "./provider-secrets-consumer.js";
 
 export interface InstallationAccountConsumerOptions {
@@ -10,6 +11,9 @@ export interface InstallationAccountConsumerOptions {
   store: DaemonConfigStore;
   /** Called with the provider whose installation account credentials changed. */
   onApplied(providerId: string): void;
+  codexRefreshLeases: CodexRefreshLeases;
+  /** Whether an agent session, or one being started, uses this provider ID. */
+  providerInUse(providerId: string): boolean;
 }
 
 /**

@@ -70,29 +70,53 @@ export function projectionReceiptMatches(
   );
 }
 
-export interface HostProjectionPorts<P> {
-  /** Fresh authority policy must still target this binding and permit this operation. */
-  authorize(delivery: HostProjectionDelivery<P>): Promise<void>;
-  read(): HostProjectionReceipt | null;
-  persist(receipt: HostProjectionReceipt): void;
-  store(access: P | null): Promise<void>;
+/** A refusal the coordinator acts on, identified by a fixed code. Carries no other detail. */
+export class HostProjectionRefusal extends Error {
+  constructor(readonly reason: "target_changed" | "existing_sign_in") {
+    super("The projection was refused.");
+  }
 }
 
-export interface HostProjectionFormat<P> {
-  schema: z.ZodType<HostProjectionDelivery<P>>;
+/** What a store reports beyond success. Never part of the persisted journal. */
+export interface HostProjectionStoreResult {
+  /** It replaced a sign-in this environment wrote since the previous delivery. */
+  replacedLocally: boolean;
+}
+
+export type HostProjectionResult = HostProjectionReceipt & { replacedLocally?: true };
+
+export interface HostProjectionPorts<
+  P,
+  D extends HostProjectionDelivery<P> = HostProjectionDelivery<P>,
+> {
+  /** Fresh authority policy must still target this binding and permit this operation. */
+  authorize(delivery: D): Promise<void>;
+  read(): HostProjectionReceipt | null;
+  persist(receipt: HostProjectionReceipt): void;
+  store(access: P | null, delivery: D): Promise<HostProjectionStoreResult | void>;
+}
+
+export interface HostProjectionFormat<
+  P,
+  D extends HostProjectionDelivery<P> = HostProjectionDelivery<P>,
+> {
+  schema: z.ZodType<D>;
   digest(access: P | null): string;
   error(): Error;
 }
 
 /** One serialized writer per Dev binding. Its journal holds digests, never tokens. */
-export class HostProjectionService<P> {
+export class HostProjectionService<
+  P,
+  D extends HostProjectionDelivery<P> = HostProjectionDelivery<P>,
+> {
   private queue: Promise<void> = Promise.resolve();
   constructor(
-    private readonly ports: HostProjectionPorts<P>,
-    private readonly format: HostProjectionFormat<P>,
+    private readonly ports: HostProjectionPorts<P, D>,
+    private readonly format: HostProjectionFormat<P, D>,
   ) {}
 
-  apply(input: unknown): Promise<HostProjectionReceipt> {
+  apply(input: unknown): Promise<HostProjectionResult> {
     const parsed = this.format.schema.safeParse(input);
     if (!parsed.success) return Promise.reject(this.format.error());
     const task = this.queue.then(() => this.deliver(parsed.data));
@@ -103,10 +127,19 @@ export class HostProjectionService<P> {
     return task;
   }
 
-  private async deliver(delivery: HostProjectionDelivery<P>): Promise<HostProjectionReceipt> {
+  private async deliver(delivery: D): Promise<HostProjectionResult> {
     try {
       await this.ports.authorize(delivery);
-      const { access, ...slot } = delivery;
+      const { access } = delivery;
+      const slot = {
+        installationId: delivery.installationId,
+        serverId: delivery.serverId,
+        definitionId: delivery.definitionId,
+        providerId: delivery.providerId,
+        policyRevision: delivery.policyRevision,
+        generation: delivery.generation,
+        rotation: delivery.rotation,
+      };
       const digest = this.format.digest(access);
       const previous = this.ports.read();
       if (previous) {
@@ -129,13 +162,14 @@ export class HostProjectionService<P> {
       };
       this.ports.persist(pending);
       // Rewriting an applied slot is idempotent and repairs a file removed by a local logout.
-      await this.ports.store(access);
+      const stored = await this.ports.store(access, delivery);
       // A newly excluded binding cannot receive a successful applied receipt.
       await this.ports.authorize(delivery);
       const applied: HostProjectionReceipt = { ...pending, phase: "applied" };
       this.ports.persist(applied);
-      return applied;
-    } catch {
+      return stored?.replacedLocally ? { ...applied, replacedLocally: true } : applied;
+    } catch (error) {
+      if (error instanceof HostProjectionRefusal) throw error;
       throw this.format.error();
     }
   }

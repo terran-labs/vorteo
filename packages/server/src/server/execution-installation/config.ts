@@ -142,6 +142,18 @@ export const InstallationDeploymentSchema = z.strictObject({
 });
 export type InstallationDeployment = z.infer<typeof InstallationDeploymentSchema>;
 
+/**
+ * `until-unadopt` keeps the saved sign-in until un-adopt restores it. `days` deletes it at the
+ * earlier of `provenDays` after the account is proven on Dev (a Host refresh delivered and
+ * acknowledged, then a Dev usage read without a sign-in rejection) and `capDays` after the first
+ * projection. `none` saves nothing, so un-adopt leaves the home signed out.
+ */
+const CodexAdoptionRetentionSchema = z.strictObject({
+  mode: z.enum(["until-unadopt", "days", "none"]),
+  provenDays: z.number().int().nonnegative().max(3650),
+  capDays: z.number().int().nonnegative().max(3650),
+});
+
 export const InstallationConfigSchema = z.strictObject({
   public: ExecutionInstallationSchema,
   /** Only an explicitly reviewed private configuration enables operational sampling. */
@@ -184,6 +196,14 @@ export const InstallationConfigSchema = z.strictObject({
   claudeCoordinatorRefresh: z.boolean().optional(),
   /** Off by default. Shared Codex accounts sign in once on the Host and reach Dev; `true` opts in. */
   codexHostRefresh: z.boolean().optional(),
+  /**
+   * How long Dev keeps the local Codex sign-in an adoption replaced, so un-adopt can restore it.
+   * Absent means `until-unadopt`. See `codexAdoptionRetention`.
+   */
+  codexAdoptionRetention: CodexAdoptionRetentionSchema.extend({
+    /** For another person's account, for example `none`. */
+    definitions: z.record(z.string().min(1), CodexAdoptionRetentionSchema).optional(),
+  }).optional(),
   /** Reviewed record that the coordinator launcher sets `VORTEO_RELEASE_SEALS=enabled`.
    * Changes only through the `releaseSeals` coordinator setting, together with the launcher. */
   releaseSeals: z.literal("enabled").optional(),
@@ -281,6 +301,20 @@ export function daemonTargets(
 
 export function remoteAccess(config: Pick<InstallationConfig, "access">): "tailscale" | "none" {
   return config.access?.remote ?? "tailscale";
+}
+
+export type CodexAdoptionRetention = z.infer<typeof CodexAdoptionRetentionSchema>;
+
+/** The rule for one adopted definition; the owner decides, so the default keeps everything. */
+export function codexAdoptionRetention(
+  config: Pick<InstallationConfig, "codexAdoptionRetention">,
+  definitionId: string,
+): CodexAdoptionRetention {
+  const configured = config.codexAdoptionRetention;
+  const override = configured?.definitions?.[definitionId];
+  if (override) return override;
+  if (!configured) return { mode: "until-unadopt", provenDays: 0, capDays: 0 };
+  return { mode: configured.mode, provenDays: configured.provenDays, capDays: configured.capDays };
 }
 
 /** Same rule as Claude: only an explicit `codexHostRefresh: true` enables it. */

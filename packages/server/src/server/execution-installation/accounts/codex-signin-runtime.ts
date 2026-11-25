@@ -1,5 +1,5 @@
 import pino from "pino";
-import { requireEnvironmentDaemon } from "../config.js";
+import { codexAdoptionRetention, requireEnvironmentDaemon } from "../config.js";
 import { isDeepStrictEqual } from "node:util";
 import { join } from "node:path";
 import {
@@ -11,23 +11,37 @@ import { connectInstallationDaemon, createInstallationRegistrationAdmission } fr
 import type { InstallationSettingsService } from "../settings/service.js";
 import { readClaudeSetupFile, writeClaudeSetupFile } from "./claude-setup-file.js";
 import {
+  CodexAdoptionJournalSchema,
+  createCodexAdoption,
+  type DevUsageObservation,
+} from "./codex-signin-adoption.js";
+import {
   CODEX_SIGNIN_BINDING_ROUTE,
+  CODEX_SIGNIN_LEASE_ROUTE,
+  CODEX_SIGNIN_LEGACY_ROUTE,
   CODEX_SIGNIN_PROJECTION_ROUTE,
   CodexSignInBindingResponseSchema,
   CodexSignInDeliveryError,
+  CodexSignInLeaseResponseSchema,
   CodexSignInProjectionReceiptSchema,
+  CodexSignInRefused,
+  codexRefusalReason,
   type CodexSignInProjectionDelivery,
 } from "./codex-signin-delivery.js";
 import { createCodexHostCli, readCodexHostGrant, type CodexHostCli } from "./codex-signin-host.js";
 import { CodexSignInRefresher } from "./codex-signin-refresher.js";
-import type { HostRefreshPolicy } from "./host-owned-refresher.js";
+import { HostRefreshSkipped, type HostRefreshPolicy } from "./host-owned-refresher.js";
 
 // Sign-in start failures surface a short message in the interface; the cause goes to the log.
 const logger = pino({ name: "vorteo-installation" });
 
+/** A coordinator refresh must finish inside the Host's 30-second lease. */
+const LEASED_REFRESH_TIMEOUT_MS = 25_000;
+
 interface DaemonFeatures {
   installationSettingsAuthority?: boolean;
   codexInstallationSignIn?: boolean;
+  codexAccountAdoption?: boolean;
 }
 
 interface RuntimeOverrides {
@@ -37,13 +51,28 @@ interface RuntimeOverrides {
   readGrant?: typeof readCodexHostGrant;
   fetch?: typeof fetch;
   now?: () => number;
+  /** Dev's usage read for one provider ID. Injected by tests. */
+  devUsage?: (providerId: string) => Promise<DevUsageObservation | null>;
+}
+
+interface HostBinding {
+  request: {
+    installationId: string;
+    serverId: string;
+    definitionId: string;
+    providerId: string;
+    policyRevision: number;
+    legacy?: true;
+  };
+  codexHome: string;
 }
 
 /**
  * Owner-only coordinator service that connects a shared Codex account once for the whole
  * installation. Created only when the installation config sets `codexHostRefresh: true`. It
  * stores no token: the Host account's own CODEX_HOME holds the grant, the official Host Codex is
- * its only refresh writer, and every Dev binding receives access-only projections.
+ * its only refresh writer, and every Dev binding receives access-only projections. A legacy
+ * definition the owner adopted keeps its Dev binding and home; see codex-signin-adoption.ts.
  */
 export function createCodexSignInRuntime(
   config: InstallationConfig,
@@ -54,9 +83,11 @@ export function createCodexSignInRuntime(
   const assertReady = createInstallationRegistrationAdmission(config, assertRegistrationReadiness);
   const configuration = structuredClone(config);
   const file = join(config.stateDir, "codex-signin", "state.json");
+  const adoptionFile = join(config.stateDir, "codex-signin", "adoption.json");
   const cli = overrides.cli ?? createCodexHostCli();
   const readGrant = overrides.readGrant ?? readCodexHostGrant;
   const request = overrides.fetch ?? fetch;
+  const now = overrides.now ?? Date.now;
   const host = config.public.environments.find((environment) => environment.kind === "host");
   if (!host) throw new CodexSignInDeliveryError();
   const daemonFeatures =
@@ -65,6 +96,25 @@ export function createCodexSignInRuntime(
       const client = await connectInstallationDaemon(config, kind);
       try {
         return client.getLastServerInfoMessage()?.features;
+      } finally {
+        await client.close();
+      }
+    });
+  const devUsage =
+    overrides.devUsage ??
+    (async (providerId: string): Promise<DevUsageObservation | null> => {
+      const client = await connectInstallationDaemon(config, "container");
+      try {
+        const usage = (await client.listProviderUsage()).providers.find(
+          (item) => item.providerId === providerId,
+        );
+        return usage
+          ? {
+              status: usage.status,
+              fetchedAt: usage.fetchedAt ?? null,
+              authRecovery: usage.authRecovery !== undefined,
+            }
+          : null;
       } finally {
         await client.close();
       }
@@ -83,28 +133,70 @@ export function createCodexSignInRuntime(
     }
   }
 
-  /** Only accounts created for the installation qualify; unlinked accounts need verification. */
+  const journal = {
+    read: () => CodexAdoptionJournalSchema.parse(readClaudeSetupFile(adoptionFile) ?? []),
+    write: (records: unknown) => writeClaudeSetupFile(adoptionFile, records),
+  };
+
+  /**
+   * An account created for the installation, or a legacy one the owner adopted. Unlinked
+   * accounts need verification first.
+   */
   function definition(definitionId: string) {
     const snapshot = settings.snapshot();
     const selected = snapshot.settings?.providerDefinitions?.find(
       (item) => item.id === definitionId,
     );
+    if (!selected || selected.providerType !== "codex" || snapshot.conflicts)
+      throw new CodexSignInDeliveryError();
+    if (selected.accountSetup?.provider === "codex")
+      return {
+        snapshot,
+        selected,
+        adopted: null,
+        providerId: `codex-account-${selected.accountSetup.creationId}`,
+      };
+    const adopted = adoption.delivering(definitionId);
     if (
-      !selected ||
-      selected.providerType !== "codex" ||
-      selected.accountSetup?.provider !== "codex" ||
-      snapshot.conflicts
+      !adopted ||
+      selected.accountSetup !== undefined ||
+      selected.bindings[host!.serverId] !== adopted.hostProviderId ||
+      selected.bindings[adopted.devServerId] !== adopted.devProviderId
     )
       throw new CodexSignInDeliveryError();
-    return {
-      snapshot,
-      selected,
-      providerId: `codex-account-${selected.accountSetup.creationId}`,
-    };
+    return { snapshot, selected, adopted, providerId: adopted.hostProviderId };
   }
+
+  function excludedOn(
+    selected: ReturnType<typeof definition>["selected"],
+    serverId: string,
+  ): boolean {
+    return (
+      selected.removed === true ||
+      selected.policy.enabled === false ||
+      Boolean(
+        settings
+          .snapshot()
+          .settings?.resourceExclusions[serverId]?.providerIds?.includes(selected.id),
+      )
+    );
+  }
+
   function policy(definitionId: string): HostRefreshPolicy {
-    const { snapshot, selected } = definition(definitionId);
+    const { snapshot, selected, adopted } = definition(definitionId);
     const removed = selected.removed === true;
+    if (adopted)
+      return {
+        revision: snapshot.revision,
+        removed,
+        targets: [
+          {
+            serverId: adopted.devServerId,
+            providerId: adopted.devProviderId,
+            excluded: excludedOn(selected, adopted.devServerId),
+          },
+        ],
+      };
     return {
       revision: snapshot.revision,
       removed,
@@ -114,54 +206,93 @@ export function createCodexSignInRuntime(
         .map((environment) => ({
           serverId: environment.serverId,
           providerId: selected.bindings[environment.serverId]!,
-          excluded:
-            removed ||
-            selected.policy.enabled === false ||
-            Boolean(
-              snapshot.settings?.resourceExclusions[environment.serverId]?.providerIds?.includes(
-                selected.id,
-              ),
-            ),
+          excluded: excludedOn(selected, environment.serverId),
         })),
     };
   }
 
-  async function post(target: "host" | "container", route: string, body: unknown) {
+  async function send(target: "host" | "container", route: string, body: unknown) {
     if (!isDeepStrictEqual(config, configuration)) throw new CodexSignInDeliveryError();
     // Host-only installations have no Dev; requireEnvironmentDaemon refuses that target plainly.
     const daemon = requireEnvironmentDaemon(config, target);
     // Explicit loopback endpoints are validated by installation config, never supplied by clients.
-    const response = await request(`http://${daemon.endpoint}${route}`, {
+    return request(`http://${daemon.endpoint}${route}`, {
       method: "POST",
       redirect: "error",
       signal: AbortSignal.timeout(10_000),
       headers: { Authorization: `Bearer ${daemon.password}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+  }
+
+  /** A 409 is the daemon's answer, kept distinct from an unreachable daemon. */
+  async function post(target: "host" | "container", route: string, body: unknown) {
+    const response = await send(target, route, body);
+    if (response.status === 409)
+      throw new CodexSignInRefused(codexRefusalReason(await response.json().catch(() => null)));
     if (!response.ok) throw new CodexSignInDeliveryError();
     return response.json();
   }
 
-  /** The Host binding's exact CODEX_HOME, cached per policy revision. */
-  const homes = new Map<string, { revision: number; codexHome: string }>();
-  async function hostCodexHome(definitionId: string): Promise<string> {
-    const { snapshot, selected, providerId } = definition(definitionId);
-    const cached = homes.get(definitionId);
-    if (cached?.revision === snapshot.revision) return cached.codexHome;
-    if (selected.bindings[host!.serverId] !== providerId) throw new CodexSignInDeliveryError();
+  async function bindingHome(requestBody: HostBinding["request"]): Promise<string> {
     assertReady("host");
     const binding = CodexSignInBindingResponseSchema.parse(
-      await post("host", CODEX_SIGNIN_BINDING_ROUTE, {
-        installationId: config.public.installationId,
-        serverId: host!.serverId,
-        definitionId,
-        providerId,
-        policyRevision: snapshot.revision,
-      }),
+      await post("host", CODEX_SIGNIN_BINDING_ROUTE, requestBody),
     );
-    if (binding.providerId !== providerId) throw new CodexSignInDeliveryError();
-    homes.set(definitionId, { revision: snapshot.revision, codexHome: binding.codexHome });
+    if (binding.providerId !== requestBody.providerId) throw new CodexSignInDeliveryError();
     return binding.codexHome;
+  }
+
+  /** The Host binding's exact CODEX_HOME, cached per policy revision. */
+  const homes = new Map<string, { revision: number; binding: HostBinding }>();
+  async function hostBinding(definitionId: string): Promise<HostBinding> {
+    const { snapshot, selected, providerId, adopted } = definition(definitionId);
+    const cached = homes.get(definitionId);
+    if (cached?.revision === snapshot.revision) return cached.binding;
+    if (selected.bindings[host!.serverId] !== providerId) throw new CodexSignInDeliveryError();
+    const requestBody: HostBinding["request"] = {
+      installationId: config.public.installationId,
+      serverId: host!.serverId,
+      definitionId,
+      providerId,
+      policyRevision: snapshot.revision,
+      ...(adopted ? { legacy: true as const } : {}),
+    };
+    const binding = { request: requestBody, codexHome: await bindingHome(requestBody) };
+    homes.set(definitionId, { revision: snapshot.revision, binding });
+    return binding;
+  }
+  async function hostCodexHome(definitionId: string): Promise<string> {
+    return (await hostBinding(definitionId)).codexHome;
+  }
+
+  /**
+   * The Host's own Codex sessions are its normal refresh writer, and Codex does not lock the
+   * network refresh across processes. The coordinator refreshes only under a Host lease, which
+   * the Host grants only while no session uses the account; otherwise it projects what is there.
+   */
+  async function leasedRefresh(definitionId: string): Promise<void> {
+    const binding = await hostBinding(definitionId);
+    let lease;
+    try {
+      lease = CodexSignInLeaseResponseSchema.parse(
+        await post("host", CODEX_SIGNIN_LEASE_ROUTE, { ...binding.request, operation: "acquire" }),
+      );
+    } catch {
+      throw new HostRefreshSkipped();
+    }
+    if (!lease.granted) throw new HostRefreshSkipped();
+    try {
+      await cli.refresh(binding.codexHome, LEASED_REFRESH_TIMEOUT_MS);
+    } finally {
+      await post("host", CODEX_SIGNIN_LEASE_ROUTE, {
+        ...binding.request,
+        operation: "release",
+        leaseId: lease.leaseId,
+      }).catch(() => {
+        // The Host ends the lease by itself.
+      });
+    }
   }
 
   const refresher = new CodexSignInRefresher({
@@ -170,7 +301,7 @@ export function createCodexSignInRuntime(
     persist: (state) => writeClaudeSetupFile(file, state),
     policy,
     grant: async (definitionId) => readGrant(await hostCodexHome(definitionId)),
-    refresh: async (definitionId) => cli.refresh(await hostCodexHome(definitionId)),
+    refresh: leasedRefresh,
     deliver: async (delivery: CodexSignInProjectionDelivery) => {
       const environment = config.public.environments.find(
         (item) => item.serverId === delivery.serverId,
@@ -178,11 +309,66 @@ export function createCodexSignInRuntime(
       if (environment?.kind !== "container") throw new CodexSignInDeliveryError();
       // Withdrawal remains available while ordinary Dev work is fenced.
       if (delivery.access !== null) assertReady("container-daemon");
-      return CodexSignInProjectionReceiptSchema.parse(
-        await post("container", CODEX_SIGNIN_PROJECTION_ROUTE, delivery),
-      );
+      const adopted = definition(delivery.definitionId).adopted;
+      const body = adopted
+        ? {
+            ...delivery,
+            adoption: {
+              target: adopted.target!,
+              keepLocalSignIn:
+                adopted.copyForgottenAt === null &&
+                codexAdoptionRetention(config, delivery.definitionId).mode !== "none",
+            },
+          }
+        : delivery;
+      let receipt;
+      try {
+        receipt = CodexSignInProjectionReceiptSchema.parse(
+          await post("container", CODEX_SIGNIN_PROJECTION_ROUTE, body),
+        );
+      } catch (error) {
+        if (adopted && error instanceof CodexSignInRefused && error.reason)
+          adoption.refused(delivery.definitionId, error.reason);
+        throw error;
+      }
+      if (adopted && receipt.replacedLocally) adoption.replacedLocally(delivery.definitionId);
+      return receipt;
     },
-    now: overrides.now ?? Date.now,
+    now,
+  });
+
+  const adoption = createCodexAdoption({
+    config,
+    settings,
+    journal,
+    refresher,
+    supported: async () => {
+      for (const environment of config.public.environments) {
+        assertReady(environment.kind === "host" ? "host" : "container-daemon");
+        const features = await daemonFeatures(environment.kind);
+        if (
+          features?.installationSettingsAuthority !== true ||
+          features.codexInstallationSignIn !== true ||
+          features.codexAccountAdoption !== true
+        )
+          return false;
+      }
+      return true;
+    },
+    hostHome: (definitionId, hostProviderId, revision) =>
+      bindingHome({
+        installationId: config.public.installationId,
+        serverId: host.serverId,
+        definitionId,
+        providerId: hostProviderId,
+        policyRevision: revision,
+        legacy: true,
+      }),
+    dev: (body) => post("container", CODEX_SIGNIN_LEGACY_ROUTE, body),
+    readGrant,
+    devUsage,
+    retention: (definitionId) => codexAdoptionRetention(config, definitionId),
+    now,
   });
 
   const login = new ProviderLoginService({
@@ -203,10 +389,17 @@ export function createCodexSignInRuntime(
     },
   });
 
-  /** Bind the shared account on every environment before the Host reports its home. */
+  /**
+   * Bind the shared account on every environment before the Host reports its home. An adopted
+   * legacy account keeps its bindings; signing in again on the Host repairs Dev as well.
+   */
   async function prepare(definitionId: string) {
-    const { snapshot, selected, providerId } = definition(definitionId);
+    const { snapshot, selected, providerId, adopted } = definition(definitionId);
     if (selected.removed) throw new CodexSignInDeliveryError();
+    if (adopted) {
+      await assertSupported();
+      return;
+    }
     // A binding to any other provider ID is an unlinked account that needs verification first.
     if (Object.values(selected.bindings).some((bound) => bound !== providerId))
       throw new CodexSignInDeliveryError();
@@ -237,7 +430,10 @@ export function createCodexSignInRuntime(
       return login.start(definitionId);
     },
     cancel: (definitionId: string, attemptId: string) => login.cancel(definitionId, attemptId),
-    /** Signs the Host account out with its own Codex, then withdraws Dev. Returns a warning. */
+    /**
+     * Signs the Host account out with its own Codex, which revokes the grant for every
+     * environment, then withdraws Dev. Returns a warning. Un-adopt never comes through here.
+     */
     signOut: async (definitionId: string): Promise<string | null> => {
       definition(definitionId);
       const current = login.read(definitionId);
@@ -253,7 +449,18 @@ export function createCodexSignInRuntime(
       await refresher.reconcile();
       return warning;
     },
-    reconcile: () => refresher.reconcile(),
+    /** Owner selection of a legacy account. Not reachable from any route yet. */
+    adopt: (definitionId: string) => adoption.adopt(definitionId),
+    /** Withdraws an adoption without signing the Host out. Not reachable from any route yet. */
+    unadopt: (definitionId: string) => adoption.unadopt(definitionId),
+    adoption: (definitionId: string) => adoption.record(definitionId) ?? null,
+    reconcile: async () => {
+      try {
+        await adoption.reconcile();
+      } finally {
+        await refresher.reconcile();
+      }
+    },
     dispose: () => login.dispose(),
   };
 }

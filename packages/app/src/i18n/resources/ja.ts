@@ -2300,6 +2300,13 @@ export const ja: TranslationResources = {
     },
   },
   providerUsage: {
+    codexSignOut: {
+      action: "すべての環境でサインアウト",
+      title: "すべての環境で Codex からサインアウトしますか？",
+      message:
+        "Host をこの ChatGPT アカウントからサインアウトし、サインインを取り消します。再度接続するまで Host と Dev の両方で使えなくなります。",
+      confirm: "すべてでサインアウト",
+    },
     checkUsage: "使用状況を確認",
     checkUsageHint: "すべてのデバイスで {{host}} に適用",
     off: "{{host}} の使用状況確認はオフです。",

@@ -2313,6 +2313,13 @@ export const ru: TranslationResources = {
     },
   },
   providerUsage: {
+    codexSignOut: {
+      action: "Выйти во всех средах",
+      title: "Выйти из Codex во всех средах?",
+      message:
+        "Host выйдет из этого аккаунта ChatGPT, и вход будет отозван: Host и Dev потеряют доступ, пока вы не подключитесь снова.",
+      confirm: "Выйти везде",
+    },
     checkUsage: "Проверять использование",
     checkUsageHint: "Применяется к {{host}} на всех устройствах",
     off: "Проверка использования отключена на {{host}}.",

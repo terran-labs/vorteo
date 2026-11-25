@@ -39,6 +39,7 @@ import { useSessionStore } from "@/stores/session-store";
 import { useRefreshAfterSignIn } from "./refresh-after-sign-in";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { confirmDialog } from "@/utils/confirm-dialog";
+import { useTranslation } from "react-i18next";
 import type { Theme } from "@/styles/theme";
 
 /** What a connect dialog achieved, reported when it closes. */
@@ -220,19 +221,33 @@ function LoginLayout({
   const submitting = useCallback(() => setRequested("submit"), []);
   const startConnect = useCallback(() => act("start", login.start), [act, login.start]);
   const cancel = useCallback(() => act("cancel", current.cancel), [act, current.cancel]);
+  const { t } = useTranslation();
+  // Codex signs the Host out with `codex logout`, which revokes the grant for every environment.
+  const codexSignOut = provider === "codex";
   const signOut = useCallback(async () => {
-    // The browser confirmation takes focus; give it back to Disconnect afterwards.
+    // The browser confirmation takes focus; give it back to the sign-out button afterwards.
     const opener =
       isWeb && document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const confirmed = await confirmDialog({
-      title: `Disconnect ${label}?`,
-      message: "Every environment in this installation loses this sign-in until you connect again.",
-      confirmLabel: "Disconnect",
-      destructive: true,
-    });
+    const confirmed = await confirmDialog(
+      codexSignOut
+        ? {
+            title: t("providerUsage.codexSignOut.title"),
+            message: t("providerUsage.codexSignOut.message"),
+            confirmLabel: t("providerUsage.codexSignOut.confirm"),
+            destructive: true,
+          }
+        : {
+            title: `Disconnect ${label}?`,
+            message:
+              "Every environment in this installation loses this sign-in until you connect again.",
+            confirmLabel: "Disconnect",
+            destructive: true,
+          },
+    );
     if (opener?.isConnected) opener.focus();
     if (confirmed) act("sign-out", login.signOut);
-  }, [act, label, login.signOut]);
+  }, [act, codexSignOut, label, login.signOut, t]);
+  const signOutLabel = codexSignOut ? t("providerUsage.codexSignOut.action") : "Disconnect";
   const upgradeStart = upgrade?.start;
   const startUpgrade = useCallback(
     () => upgradeStart && act("start", upgradeStart),
@@ -289,6 +304,7 @@ function LoginLayout({
               onStartConnect={startConnect}
               onStartUpgrade={startUpgrade}
               onSignOut={signOut}
+              signOutLabel={signOutLabel}
               focusSignIn={focusSignIn}
             />
           )}
@@ -773,6 +789,7 @@ function IdleActions({
   onStartConnect,
   onStartUpgrade,
   onSignOut,
+  signOutLabel,
   focusSignIn,
 }: {
   login: Login;
@@ -784,6 +801,7 @@ function IdleActions({
   onStartConnect(): void;
   onStartUpgrade(): void;
   onSignOut(): void;
+  signOutLabel: string;
   focusSignIn?: boolean;
 }) {
   // A finished upgrade has nothing left to do here.
@@ -796,8 +814,14 @@ function IdleActions({
     <>
       {disconnect ? (
         <ActionFooterLeading>
-          <Button variant="outline" onPress={onSignOut} disabled={disabled} focusableWhenDisabled>
-            Disconnect
+          <Button
+            variant="outline"
+            onPress={onSignOut}
+            disabled={disabled}
+            focusableWhenDisabled
+            testID="provider-login-sign-out"
+          >
+            {signOutLabel}
           </Button>
         </ActionFooterLeading>
       ) : null}

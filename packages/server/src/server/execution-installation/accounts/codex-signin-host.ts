@@ -59,18 +59,34 @@ const AuthFileSchema = z.object({
   last_refresh: z.string().nullish(),
 });
 
-/** The `exp` claim of an unverified JWT, in milliseconds. Only used for scheduling. */
-export function jwtExpiry(token: string): number | null {
+/** The claims of an unverified JWT. Only used for scheduling and display. */
+function jwtClaims(token: string): Record<string, unknown> | null {
   const payload = token.split(".")[1];
   if (!payload) return null;
   try {
     const claims: unknown = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    const exp =
-      claims && typeof claims === "object" ? (claims as Record<string, unknown>).exp : undefined;
-    return typeof exp === "number" && Number.isSafeInteger(exp) && exp > 0 ? exp * 1000 : null;
+    return claims && typeof claims === "object" ? (claims as Record<string, unknown>) : null;
   } catch {
     return null;
   }
+}
+
+/** The `exp` claim of an unverified JWT, in milliseconds. Only used for scheduling. */
+export function jwtExpiry(token: string): number | null {
+  const exp = jwtClaims(token)?.exp;
+  return typeof exp === "number" && Number.isSafeInteger(exp) && exp > 0 ? exp * 1000 : null;
+}
+
+const EmailClaimsSchema = z.object({
+  email: z.string().optional(),
+  "https://api.openai.com/profile": z.object({ email: z.string().optional() }).optional(),
+});
+
+/** The signed-in email Codex itself shows, read from the ID token without starting Codex. */
+function idTokenEmail(idToken: string): string | null {
+  const claims = EmailClaimsSchema.safeParse(jwtClaims(idToken));
+  if (!claims.success) return null;
+  return claims.data.email ?? claims.data["https://api.openai.com/profile"]?.email ?? null;
 }
 
 function toGrant(value: unknown): CodexHostGrant | null {
@@ -115,6 +131,35 @@ export function codexAccessProjection(grant: CodexHostGrant | null): CodexAccess
     accountId: grant.accountId,
     expiresAt: grant.expiresAt,
     lastRefresh: grant.lastRefresh,
+  };
+}
+
+/** Adoption needs this much access token lifetime left, so it never has to refresh. */
+export const CODEX_ADOPTION_MIN_REMAINING_MS = 30 * 60_000;
+
+export type CodexHostSessionCheck =
+  | { verified: true; identity: HostRefreshIdentity }
+  | { verified: false; reason: string };
+
+/**
+ * Whether the Host account's own `auth.json` holds a usable ChatGPT sign-in, judged from the file
+ * alone. Starting Codex is not an option here: even `account/read` with `refreshToken: false`
+ * refreshes proactively when the access token is within five minutes of expiry (Codex 0.167.2).
+ */
+export function verifyCodexHostSession(
+  grant: CodexHostGrant | null,
+  now: number,
+): CodexHostSessionCheck {
+  if (!grant) return { verified: false, reason: "The Host is not signed in to Codex." };
+  if (!grant.hasRefreshToken)
+    return { verified: false, reason: "The Host Codex sign-in cannot renew itself." };
+  if (!grant.accountId)
+    return { verified: false, reason: "The Host Codex sign-in has no ChatGPT account." };
+  if (grant.expiresAt === null || grant.expiresAt - now <= CODEX_ADOPTION_MIN_REMAINING_MS)
+    return { verified: false, reason: "Host session needs a refresh first." };
+  return {
+    verified: true,
+    identity: { email: idTokenEmail(grant.idToken), orgId: grant.accountId },
   };
 }
 
@@ -207,9 +252,9 @@ export function createCodexHostCli(options: HostCliOptions = {}) {
      * Asks the official Host Codex to refresh its own grant and save it under its own storage
      * rules. Success is judged by re-reading the grant, not by this request's result.
      */
-    refresh: (codexHome: string): Promise<void> =>
+    refresh: (codexHome: string, timeoutMs = 60_000): Promise<void> =>
       withClient(codexHome, async (client) => {
-        await client.request("account/read", { refreshToken: true }, 60_000);
+        await client.request("account/read", { refreshToken: true }, timeoutMs);
       }),
     /** `codex logout` removes the Host grant and asks OpenAI to revoke it. */
     async logout(codexHome: string): Promise<void> {

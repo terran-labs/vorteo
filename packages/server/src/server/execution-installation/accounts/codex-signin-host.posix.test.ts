@@ -10,6 +10,7 @@ import {
   jwtExpiry,
   needsCodexHostRefresh,
   readCodexHostGrant,
+  verifyCodexHostSession,
 } from "./codex-signin-host.js";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -121,4 +122,26 @@ it("signs the Host account out with its own CODEX_HOME", async () => {
       envOverlay: expect.objectContaining({ CODEX_HOME: "/host/codex-accounts/codex-account-x" }),
     }),
   );
+});
+
+it("verifies an adoption from the Host file alone and refuses a token near expiry", async () => {
+  const directory = await home();
+  const now = EXP * 1000 - 31 * 60_000;
+  const idToken = jwt({ "https://api.openai.com/profile": { email: "owner@example.com" } });
+  writeAuth(directory, { ...auth, tokens: { ...auth.tokens, id_token: idToken } });
+  expect(verifyCodexHostSession(readCodexHostGrant(directory), now)).toEqual({
+    verified: true,
+    identity: { email: "owner@example.com", orgId: "workspace-1" },
+  });
+  // Starting Codex here could refresh, so a nearly expired token waits for a Host session.
+  expect(verifyCodexHostSession(readCodexHostGrant(directory), now + 2 * 60_000)).toEqual({
+    verified: false,
+    reason: "Host session needs a refresh first.",
+  });
+  const withoutRefresh = await home();
+  writeAuth(withoutRefresh, { ...auth, tokens: { ...auth.tokens, refresh_token: "" } });
+  expect(verifyCodexHostSession(readCodexHostGrant(withoutRefresh), now)).toMatchObject({
+    verified: false,
+  });
+  expect(verifyCodexHostSession(null, now)).toMatchObject({ verified: false });
 });
