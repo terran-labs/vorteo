@@ -265,6 +265,8 @@ export const ru: TranslationResources = {
       implement: "Реализовать",
       question: "Как бы вы хотели продолжить?",
       proposedPlan: "Предлагаемый план",
+      questionNotFound: "Не удалось найти, где в разговоре был задан этот вопрос.",
+      approvalNotFound: "Не удалось найти, где в разговоре был запрошен этот доступ.",
       mode: "Эта ветка в режиме {{mode}}.",
     },
   },

@@ -263,6 +263,8 @@ export const ko: TranslationResources = {
       implement: "구현",
       question: "어떻게 진행할까요?",
       proposedPlan: "제안된 계획",
+      questionNotFound: "대화에서 이 질문을 한 위치를 찾지 못했습니다.",
+      approvalNotFound: "대화에서 이 승인을 요청한 위치를 찾지 못했습니다.",
       mode: "이 스레드는 {{mode}} 모드입니다.",
     },
   },

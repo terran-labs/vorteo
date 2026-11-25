@@ -262,6 +262,8 @@ export const ar: TranslationResources = {
       implement: "ينفذ",
       question: "كيف تريد المتابعة؟",
       proposedPlan: "الخطة المقترحة",
+      questionNotFound: "تعذر العثور على موضع طرح هذا السؤال في المحادثة.",
+      approvalNotFound: "تعذر العثور على موضع طلب هذه الموافقة في المحادثة.",
       mode: "هذا الموضوع في وضع {{mode}}.",
     },
   },
