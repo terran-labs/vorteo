@@ -4577,6 +4577,8 @@ export const ServerInfoStatusPayloadSchema = z
         codexAccountAdoption: z.boolean().optional(),
         // COMPAT(codexLegacyPinByPath): added after v26.11.2100. Dev identifies an adopted legacy Codex home by real path and serves its inspect operation.
         codexLegacyPinByPath: z.boolean().optional(),
+        // COMPAT(codexLegacySessionHold): added after v26.11.2100. Dev compares refresh-token fingerprints, names busy threads and holds sessions while it replaces a sign-in that may be the Host's.
+        codexLegacySessionHold: z.boolean().optional(),
         // COMPAT(providerSecretDelivery): receives coordinator-held provider API keys and tokens.
         providerSecretDelivery: z.boolean().optional(),
         // COMPAT(speechSecretDelivery): shared Voice keys and endpoint delivery.

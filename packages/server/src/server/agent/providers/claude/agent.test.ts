@@ -13,6 +13,9 @@ import * as executableUtils from "../../../../executable-resolution/executable-r
 import { buildAgentAttentionNotificationPayload } from "@getpaseo/protocol/agent-attention-notification";
 import {
   ClaudeAgentClient,
+  CLAUDE_DANGEROUS_REMOVAL_DESCRIPTION,
+  describeClaudePermissionReason,
+  flattenPromptText,
   readClaudeCompactionSummaries,
   convertClaudeHistoryEntry,
   normalizeClaudeAskUserQuestionRequestInput,
@@ -737,6 +740,83 @@ describe("ClaudeAgentSession features", () => {
     });
     return { queryFactory, queryMock, launches };
   }
+
+  // #659 review: agent-controlled reason, path and title text is flattened and capped on the card.
+  test("flattens and caps the worded permission reason", () => {
+    const longPath = `/tmp/${"a".repeat(400)}`;
+    const removal = describeClaudePermissionReason({
+      decisionReason: `Dangerous rm operation on statically-unresolvable target: ${longPath}\n/etc`,
+    });
+    expect(removal).toMatch(
+      /^Claude Code's safety check stopped this command .* Path: \/tmp\/a+…$/,
+    );
+    expect(removal).not.toContain("\n");
+    expect(removal!.length).toBeLessThan(CLAUDE_DANGEROUS_REMOVAL_DESCRIPTION.length + 220);
+    const other = describeClaudePermissionReason({
+      decisionReason: `Line one\n\n  line two ${"b".repeat(400)}`,
+    });
+    expect(other).toMatch(/^Line one line two b+…$/);
+    expect(other!.length).toBe(300);
+    expect(
+      describeClaudePermissionReason({
+        decisionReason: "A permission rule denies a command in this shell -c script",
+      }),
+    ).toBe("One of your permission rules denies a command inside this script.");
+    expect(flattenPromptText(`Claude wants to\nrun ${"c".repeat(400)}`, 300)).toMatch(
+      /^Claude wants to run c+…$/,
+    );
+  });
+
+  // #659: the SDK's options for Claude Code's dangerous-removal prompt, as measured with
+  // claude.exe 2.1.321 in Bypass mode. The card must say why it asks, not only the command.
+  test("words the reason a dangerous-removal prompt appeared", async () => {
+    const { queryFactory } = createQueryMock();
+    const session = await new ClaudeAgentClient({
+      logger,
+      queryFactory,
+      resolveBinary: async () => "/test/claude/bin",
+    }).createSession({ provider: "claude", cwd: process.cwd(), modeId: "bypassPermissions" });
+    const events: AgentStreamEvent[] = [];
+    const unsubscribe = session.subscribe((event) => events.push(event));
+    let permission: Promise<unknown> = Promise.resolve();
+
+    try {
+      await session.startTurn("run the tool");
+      const canUseTool = queryFactory.mock.calls[0]?.[0].options.canUseTool;
+      if (!canUseTool) throw new Error("Expected canUseTool callback");
+      const decisionReason =
+        "Dangerous rm operation on statically-unresolvable target: /private/tmp/probe/x/*";
+      // Closing the session rejects the unanswered request; the test only reads the event.
+      permission = canUseTool(
+        "Bash",
+        { command: "mkdir -p /tmp/probe/x && cd /tmp/probe/x && rm -rf *" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-dangerous-removal",
+          requestId: "request-dangerous-removal",
+          decisionReason,
+          displayName: "Bash",
+          description: "Create probe directory and clear its contents",
+          suggestions: [],
+        },
+      ).catch(() => undefined);
+
+      const requested = events.find(
+        (event): event is Extract<AgentStreamEvent, { type: "permission_requested" }> =>
+          event.type === "permission_requested",
+      );
+      expect(requested?.request).toMatchObject({
+        kind: "tool",
+        description:
+          "Claude Code's safety check stopped this command because it could not rule out that it deletes files. Bypass mode does not skip this check. Path: /private/tmp/probe/x/*",
+        metadata: { decisionReason },
+      });
+    } finally {
+      unsubscribe();
+      await session.close();
+      await permission;
+    }
+  });
 
   test("publishes a resolution when the SDK aborts a permission callback", async () => {
     const { queryFactory } = createQueryMock();

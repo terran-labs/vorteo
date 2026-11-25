@@ -252,6 +252,7 @@ function BottomOverlayInset({ height }: { height: number }) {
 function renderPendingPermissionsNode(input: {
   pendingPermissions: PendingPermission[];
   client: DaemonClient | null;
+  serverId: string;
 }): ReactNode {
   if (input.pendingPermissions.length === 0) {
     return null;
@@ -259,7 +260,12 @@ function renderPendingPermissionsNode(input: {
   return (
     <>
       {input.pendingPermissions.map((permission) => (
-        <PermissionRequestCard key={permission.key} permission={permission} client={input.client} />
+        <PermissionRequestCard
+          key={permission.key}
+          permission={permission}
+          client={input.client}
+          serverId={input.serverId}
+        />
       ))}
     </>
   );
@@ -1290,8 +1296,9 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         renderPendingPermissionsNode({
           pendingPermissions: pendingPermissionItems,
           client,
+          serverId: resolvedServerId,
         }),
-      [client, pendingPermissionItems],
+      [client, pendingPermissionItems, resolvedServerId],
     );
     const pendingQuestionsNode = useMemo(
       () =>
@@ -1300,8 +1307,9 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             (item) => item.request.kind === "question",
           ),
           client,
+          serverId: resolvedServerId,
         }),
-      [client, pendingPermissionItems],
+      [client, pendingPermissionItems, resolvedServerId],
     );
     const pendingActionPermissionsNode = useMemo(
       () =>
@@ -1310,8 +1318,9 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             (item) => item.request.kind !== "question",
           ),
           client,
+          serverId: resolvedServerId,
         }),
-      [client, pendingPermissionItems],
+      [client, pendingPermissionItems, resolvedServerId],
     );
     const turnFooterNode = useMemo(
       () =>
@@ -1886,11 +1895,22 @@ function PermissionActionButton({
 function PermissionRequestCard({
   permission,
   client,
+  serverId,
 }: {
   permission: PendingPermission;
   client: DaemonClient | null;
+  serverId: string;
 }) {
   const { t } = useTranslation();
+  // The thread's permission mode, beside the reason: a prompt in Bypass mode is the exception.
+  const modeLabel = useSessionStore((state) => {
+    const agent = state.sessions[serverId]?.agents.get(permission.agentId);
+    if (!agent?.currentModeId) return null;
+    return (
+      agent.availableModes.find((mode) => mode.id === agent.currentModeId)?.label ??
+      agent.currentModeId
+    );
+  });
   const isMobile = useIsCompactFormFactor();
 
   const { request } = permission;
@@ -2090,6 +2110,11 @@ function PermissionRequestCard({
       </TaskCardHeader>
 
       {description ? <Text style={permissionStyles.description}>{description}</Text> : null}
+      {request.kind === "tool" && modeLabel ? (
+        <Text style={permissionStyles.description} testID="permission-request-mode">
+          {t("agentStream.permission.mode", { mode: modeLabel })}
+        </Text>
+      ) : null}
 
       {planMarkdown ? (
         <PlanCard

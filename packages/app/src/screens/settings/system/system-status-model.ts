@@ -138,7 +138,10 @@ export function deriveSystemServices(
 ): SystemStatus | null {
   const headline = maintenanceHeadline(enrollment);
   if (headline.label === "Ready") return null;
-  return headline.variant === "error" || headline.variant === "muted" ? "attention" : "updating";
+  // Muted states (not activated, paused, revoked) are the owner's own choice to leave optional
+  // unattended maintenance off. That is not a problem, so it carries no status at all (#639).
+  if (headline.variant === "muted") return null;
+  return headline.variant === "error" ? "attention" : "updating";
 }
 
 /** Reasons use the same evidence as the badge without exposing protected target details. */

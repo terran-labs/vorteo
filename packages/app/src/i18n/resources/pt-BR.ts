@@ -267,6 +267,7 @@ export const ptBR: TranslationResources = {
       questionNotFound: "Não foi possível encontrar onde esta pergunta foi feita na conversa.",
       approvalNotFound:
         "Não foi possível encontrar onde esta aprovação foi solicitada na conversa.",
+      mode: "Esta conversa está no modo {{mode}}.",
     },
   },
   agentPanel: {
