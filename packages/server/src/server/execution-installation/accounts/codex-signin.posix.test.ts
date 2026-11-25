@@ -95,7 +95,7 @@ async function fixture(serverId = "dev") {
   mountCodexSignInConsumer(app, {
     paseoHome,
     store,
-    codexRefreshLeases: new CodexRefreshLeases({ inUse: () => false }),
+    codexRefreshLeases: new CodexRefreshLeases({ activity: () => "none" }),
   });
   const server: Server = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve) => server.once("listening", resolve));
@@ -331,7 +331,9 @@ async function legacyFixture(options: { otherHome?: (home: string) => string } =
     paseoHome,
     store,
     providerInUse: (id) => inUse.has(id),
-    codexRefreshLeases: new CodexRefreshLeases({ inUse: (id) => inUse.has(id) }),
+    codexRefreshLeases: new CodexRefreshLeases({
+      activity: (id) => (inUse.has(id) ? "busy" : "none"),
+    }),
   });
   const server: Server = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve) => server.once("listening", resolve));
@@ -524,7 +526,7 @@ it("withdraws only its projection, restores the saved sign-in untested and honou
   expect(existsSync(f.copy())).toBe(false);
 });
 
-it("leases a Host account for one refresh only while no session uses it, for at most 30 s", async () => {
+it("leases a Host account unless a session starts or runs a turn on it, for at most 30 s", async () => {
   const f = await fixture("host");
   await createCodexAccount({
     paseoHome: f.paseoHome,
@@ -535,17 +537,22 @@ it("leases a Host account for one refresh only while no session uses it, for at 
   const lease = (operation: string, extra: Record<string, unknown> = {}) =>
     f.post("/api/installation/codex/signin/lease", { ...f.scope, operation, ...extra });
   const granted = await lease("acquire");
-  expect(granted.body).toMatchObject({ granted: true });
+  expect(granted.body).toMatchObject({ granted: true, loaded: false });
   expect((await lease("acquire")).body).toEqual({ granted: false });
   await lease("release", { leaseId: granted.body.leaseId });
   expect((await lease("acquire")).body).toMatchObject({ granted: true });
 
   vi.useFakeTimers();
   try {
-    const sessions = new Set(["codex-busy"]);
-    const leases = new CodexRefreshLeases({ inUse: (id) => sessions.has(id) });
-    // A Host session on the account: no lease, so the coordinator does not refresh.
+    const activity: Record<string, "busy" | "loaded"> = {
+      "codex-busy": "busy",
+      "codex-loaded": "loaded",
+    };
+    const leases = new CodexRefreshLeases({ activity: (id) => activity[id] ?? "none" });
+    // A session starting or running a turn: no lease, so the coordinator does not refresh.
     expect(leases.acquire("codex-busy")).toBeNull();
+    // An idle loaded session does not block; the coordinator learns it is there.
+    expect(leases.acquire("codex-loaded")).toMatchObject({ loaded: true });
     expect(leases.hold("codex-idle")).toBeUndefined();
     expect(leases.acquire("codex-idle")).not.toBeNull();
     // A session start waits for the lease, and never past its 30-second bound.

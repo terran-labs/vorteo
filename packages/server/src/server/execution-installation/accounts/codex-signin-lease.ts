@@ -6,26 +6,32 @@ export const CODEX_REFRESH_LEASE_MS = 30_000;
 export interface CodexRefreshLease {
   leaseId: string;
   expiresAt: number;
+  /** A session on the account is loaded but idle. */
+  loaded: boolean;
 }
 
-interface HeldLease extends CodexRefreshLease {
+interface HeldLease {
+  leaseId: string;
+  expiresAt: number;
   timer: ReturnType<typeof setTimeout>;
   released: Promise<void>;
   release(): void;
 }
 
 interface LeaseOptions {
-  /** Whether an agent session, or one being registered, uses this provider ID. */
-  inUse(providerId: string): boolean;
+  /** `busy` while a session on this provider starts or runs a turn; `loaded` while one is idle. */
+  activity(providerId: string): "busy" | "loaded" | "none";
   now?: () => number;
 }
 
 /**
  * Host daemon side of the coordinator's Codex refresh. The Host's own Codex sessions are the
- * normal refresh writer, and Codex does not lock the network refresh across processes. The
- * coordinator therefore refreshes an account only while it holds a lease, which the daemon grants
- * only when no session uses that account. While it is held, new sessions on that account wait,
- * at most until the lease ends by itself.
+ * normal refresh writer, and Codex does not lock the network refresh across processes. A loaded
+ * Codex refreshes only while one of its requests runs inside the token's last five minutes, and
+ * it rereads `auth.json` first. The daemon therefore grants a lease unless a session on the
+ * account is starting or running a turn, and reports whether an idle one is loaded so the
+ * coordinator can leave the last minutes to it. While a lease is held, new sessions on that
+ * account wait, at most until the lease ends by itself. Turns on loaded sessions are not held.
  */
 export class CodexRefreshLeases {
   private readonly leases = new Map<string, HeldLease>();
@@ -36,7 +42,9 @@ export class CodexRefreshLeases {
   }
 
   acquire(providerId: string): CodexRefreshLease | null {
-    if (this.leases.has(providerId) || this.options.inUse(providerId)) return null;
+    if (this.leases.has(providerId)) return null;
+    const activity = this.options.activity(providerId);
+    if (activity === "busy") return null;
     let release = () => {};
     const released = new Promise<void>((resolve) => {
       release = resolve;
@@ -50,7 +58,7 @@ export class CodexRefreshLeases {
     };
     lease.timer.unref?.();
     this.leases.set(providerId, lease);
-    return { leaseId: lease.leaseId, expiresAt: lease.expiresAt };
+    return { leaseId: lease.leaseId, expiresAt: lease.expiresAt, loaded: activity === "loaded" };
   }
 
   release(providerId: string, leaseId: string): void {

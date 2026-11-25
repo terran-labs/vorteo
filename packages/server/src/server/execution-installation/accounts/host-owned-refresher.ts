@@ -122,6 +122,12 @@ export type HostRefreshEvent =
       failure?: string;
     }
   | {
+      /** The refresh port declined to refresh; not a failure. */
+      kind: "refreshSkipped";
+      definitionId: string;
+      reason: HostRefreshSkipped["reason"];
+    }
+  | {
       /** A signed-in account's Host grant is gone or erased. Emitted once per loss. */
       kind: "signInLost";
       definitionId: string;
@@ -139,7 +145,7 @@ export type HostRefreshEvent =
  * renewing the same grant. It is not a failure: the refresher reads and projects what is there.
  */
 export class HostRefreshSkipped extends Error {
-  constructor() {
+  constructor(readonly reason: "lease_unavailable" | "native_session" | "lease_expired") {
     super("The Host refresh was skipped.");
   }
 }
@@ -478,7 +484,10 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     try {
       await this.ports.refresh(definitionId);
     } catch (error) {
-      if (error instanceof HostRefreshSkipped) return grant;
+      if (error instanceof HostRefreshSkipped) {
+        this.emit({ kind: "refreshSkipped", definitionId, reason: error.reason });
+        return grant;
+      }
       // The CLI can save a rotated token before the model request fails or times out.
       failed = true;
       failure = failureCategory(error);

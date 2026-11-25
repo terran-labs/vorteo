@@ -104,7 +104,10 @@ function harness(
     dispose: async () => {},
   };
   const cli = {
-    refresh: vi.fn(async () => {}),
+    openRefresh: vi.fn(async () => ({
+      refresh: async () => "done" as const,
+      close: async () => {},
+    })),
     logout: vi.fn(async () => {}),
     identity: vi.fn(async () => ({ email: "owner@example.com", orgId: "workspace-1" })),
     loginSession: vi.fn(async () => session),
@@ -278,6 +281,11 @@ function legacyHarness(
     online: true,
     active: false,
     leaseGranted: true,
+    /** An idle Host session on the account is loaded. */
+    loaded: false,
+    refreshOutcome: "done" as "done" | "timed-out",
+    /** Startup time of the Host Codex process. */
+    startupMs: 0,
     refusal: null as string | null,
     targets: {
       "codex-primary": { realpath: "/home/paseo/codex-primary", dev: "41", ino: "1001" },
@@ -292,12 +300,14 @@ function legacyHarness(
     requests.push({ route, body });
     if (route === "binding")
       return Response.json({ providerId: body.providerId, codexHome: `/host/${body.providerId}` });
-    if (route === "lease")
+    if (route === "lease") {
+      order.push(body.operation);
       return Response.json(
         body.operation === "acquire" && dev.leaseGranted
-          ? { granted: true, leaseId: randomUUID(), expiresAt: now + 30_000 }
+          ? { granted: true, leaseId: randomUUID(), expiresAt: now + 30_000, loaded: dev.loaded }
           : { granted: false },
       );
+    }
     if (!dev.online) throw new TypeError("fetch failed");
     if (route === "legacy") {
       if (body.operation === "sessions") return Response.json({ active: dev.active });
@@ -316,8 +326,25 @@ function legacyHarness(
       active: access !== null,
     });
   });
+  const order: string[] = [];
+  // The official Host Codex renews its own grant when the refresh completes.
+  const refresh = vi.fn(async (_timeoutMs: number) => {
+    order.push("refresh");
+    if (dev.refreshOutcome === "done")
+      grant = { ...grant, accessToken: "synthetic-renewed", expiresAt: now + 10 * DAY };
+    return dev.refreshOutcome;
+  });
   const cli = {
-    refresh: vi.fn(async () => {}),
+    openRefresh: vi.fn(async () => {
+      order.push("open");
+      now += dev.startupMs;
+      return {
+        refresh,
+        close: async () => {
+          order.push("close");
+        },
+      };
+    }),
     logout: vi.fn(async () => {}),
     identity: vi.fn(async () => null),
     loginSession: vi.fn(async () => {
@@ -346,6 +373,8 @@ function legacyHarness(
     runtime,
     settings,
     cli,
+    refresh,
+    order,
     dev,
     requests,
     deliveries,
@@ -401,7 +430,7 @@ it("adopts a legacy account in place from the Host file alone and starts no Code
   });
   // The binding, the definition and the Host sign-in stay as they were.
   expect(h.settings.update).not.toHaveBeenCalled();
-  for (const operation of [h.cli.refresh, h.cli.identity, h.cli.logout, h.cli.loginSession])
+  for (const operation of [h.cli.openRefresh, h.cli.identity, h.cli.logout, h.cli.loginSession])
     expect(operation).not.toHaveBeenCalled();
   expect(h.journal()).not.toMatch(/synthetic-access|owner@example.com|workspace-1/);
   expect(h.runtime.read("one").connection).toMatchObject({
@@ -433,7 +462,7 @@ it("fails closed with nothing written when the Host, Dev or a daemon is not read
   expect(outdated.requests).toEqual([]);
   for (const h of [expiring, busy, outdated]) {
     expect(h.settings.update).not.toHaveBeenCalled();
-    expect(h.cli.refresh).not.toHaveBeenCalled();
+    expect(h.cli.openRefresh).not.toHaveBeenCalled();
   }
 });
 
@@ -508,25 +537,54 @@ it("stops delivering on a manual rebind or a changed Dev home", async () => {
   expect(moved.requests.slice(before)).toEqual([]);
 });
 
-it("refreshes the Host only under a lease and deletes the saved sign-in when retention ends", async () => {
-  const h = legacyHarness({ retention: { mode: "days", provenDays: 7, capDays: 30 } });
+it("refreshes under a Host lease, leaving a loaded session the last ten minutes", async () => {
+  const h = legacyHarness();
   await adopted(h);
-  // Inside the refresh lead with a Host session running: no lease, so no coordinator refresh.
-  h.dev.leaseGranted = false;
+  // An idle loaded Host session does not block a refresh 20 minutes before expiry.
+  h.dev.loaded = true;
   h.setGrant({ expiresAt: h.now() + 20 * 60_000 });
   h.advance(6 * 60_000);
   await h.runtime.reconcile();
-  expect(h.cli.refresh).not.toHaveBeenCalled();
-  h.dev.leaseGranted = true;
-  h.advance(30_000);
+  expect(h.refresh).toHaveBeenCalledTimes(1);
+  // Startup ran before the lease, and the process ended before its release.
+  expect(h.order).toEqual(["open", "acquire", "refresh", "close", "release"]);
+  expect(h.refresh.mock.calls[0]![0]).toBe(25_000);
+  // Within ten minutes of expiry the loaded session refreshes by itself.
+  h.order.length = 0;
+  h.setGrant({ expiresAt: h.now() + 8 * 60_000 });
+  h.advance(61_000);
   await h.runtime.reconcile();
-  expect(h.cli.refresh).toHaveBeenCalledWith(
-    "/host/" + String(h.requests[0]!.body.providerId),
-    25_000,
-  );
-  expect(
-    h.requests.filter((item) => item.route === "lease").map((item) => item.body.operation),
-  ).toEqual(expect.arrayContaining(["acquire", "release"]));
+  expect(h.refresh).toHaveBeenCalledTimes(1);
+  expect(h.order.slice(0, 4)).toEqual(["open", "acquire", "close", "release"]);
+  // A starting session or a running turn refuses the lease.
+  h.order.length = 0;
+  h.dev.leaseGranted = false;
+  h.dev.loaded = false;
+  h.advance(61_000);
+  await h.runtime.reconcile();
+  expect(h.refresh).toHaveBeenCalledTimes(1);
+  expect(h.order.slice(0, 3)).toEqual(["open", "acquire", "close"]);
+  expect(h.runtime.read("one").connection.refresh?.outcome).not.toBe("failed");
+});
+
+it("never holds a lease through a slow startup and aborts a refresh that outruns it", async () => {
+  const h = legacyHarness();
+  await adopted(h);
+  h.dev.startupMs = 40_000;
+  h.dev.refreshOutcome = "timed-out";
+  h.setGrant({ expiresAt: h.now() + 20 * 60_000 });
+  h.advance(6 * 60_000);
+  await h.runtime.reconcile();
+  // The 40-second startup came before the lease, so the refresh still gets 25 seconds.
+  expect(h.order.slice(0, 5)).toEqual(["open", "acquire", "refresh", "close", "release"]);
+  expect(h.refresh.mock.calls[0]![0]).toBe(25_000);
+  // Running out of lease is a skipped refresh, not a failure.
+  expect(h.runtime.read("one").connection.refresh).toBeNull();
+});
+
+it("deletes the saved sign-in only when retention ends", async () => {
+  const h = legacyHarness({ retention: { mode: "days", provenDays: 7, capDays: 30 } });
+  await adopted(h);
   // Not proven: the 30-day cap decides.
   h.advance(29 * DAY);
   await h.runtime.reconcile();

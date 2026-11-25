@@ -1,3 +1,4 @@
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -144,4 +145,29 @@ it("verifies an adoption from the Host file alone and refuses a token near expir
     verified: false,
   });
   expect(verifyCodexHostSession(null, now)).toMatchObject({ verified: false });
+});
+
+it("ends the Host Codex process when a refresh outruns its time", async () => {
+  // A stand-in app-server that initializes and then never answers the refresh.
+  const script = [
+    'const lines = require("node:readline").createInterface({ input: process.stdin });',
+    'lines.on("line", (line) => {',
+    "  const message = JSON.parse(line);",
+    '  if (message.method === "initialize")',
+    '    process.stdout.write(JSON.stringify({ id: message.id, result: {} }) + "\\n");',
+    "});",
+  ].join("\n");
+  let child: ChildProcessWithoutNullStreams | undefined;
+  const cli = createCodexHostCli({
+    spawnAppServer: async () => {
+      child = spawn(process.execPath, ["-e", script], { stdio: ["pipe", "pipe", "pipe"] });
+      return child;
+    },
+  });
+  const session = await cli.openRefresh(await home());
+  const started = Date.now();
+  await expect(session.refresh(200)).resolves.toBe("timed-out");
+  expect(Date.now() - started).toBeLessThan(2_000);
+  await session.close();
+  expect(child!.exitCode !== null || child!.signalCode !== null).toBe(true);
 });

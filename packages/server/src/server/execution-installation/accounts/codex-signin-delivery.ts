@@ -57,12 +57,14 @@ export const CodexSignInLeaseRequestSchema = z.discriminatedUnion("operation", [
   }),
 ]);
 export type CodexSignInLeaseRequest = z.infer<typeof CodexSignInLeaseRequestSchema>;
-/** `granted: false` while a Host session uses the account or another lease is held. */
+/** `granted: false` while a Host session on the account starts or runs a turn, or another lease is held. */
 export const CodexSignInLeaseResponseSchema = z.discriminatedUnion("granted", [
   z.strictObject({
     granted: z.literal(true),
     leaseId: z.string().uuid(),
     expiresAt: z.number().int().positive(),
+    /** A Host session on the account is loaded but idle. */
+    loaded: z.boolean(),
   }),
   z.strictObject({ granted: z.literal(false) }),
 ]);

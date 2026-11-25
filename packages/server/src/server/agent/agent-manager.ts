@@ -3358,6 +3358,21 @@ export class AgentManager {
       .map((agent) => Object.assign({}, agent));
   }
 
+  /**
+   * For the coordinator's Codex refresh lease: `busy` while any session is being started, resumed,
+   * reloaded or switched, or a turn runs on this provider; `loaded` when a session on it is loaded
+   * but idle. Registrations do not yet name their final provider, so any one counts as busy.
+   */
+  providerSessionActivity(provider: AgentProvider): "busy" | "loaded" | "none" {
+    if (this.agentRegistrationTasks.size > 0) return "busy";
+    const sessions = Array.from(this.agents.values()).filter(
+      (agent) => agent.provider === provider,
+    );
+    if (sessions.some((agent) => isAgentBusy(agent.lifecycle) || this.runs.hasRun(agent.id)))
+      return "busy";
+    return sessions.length > 0 ? "loaded" : "none";
+  }
+
   isProviderInUse(provider: AgentProvider): boolean {
     // A registering session can already own credentials before entering agents.
     // Its final provider is not indexed yet, so defer deletion until registration settles.

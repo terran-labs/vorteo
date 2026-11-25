@@ -249,13 +249,31 @@ export function createCodexHostCli(options: HostCliOptions = {}) {
 
   return {
     /**
-     * Asks the official Host Codex to refresh its own grant and save it under its own storage
-     * rules. Success is judged by re-reading the grant, not by this request's result.
+     * Starts and initializes the official Host Codex for one account, so that its startup time
+     * is spent before any lease is taken. `refresh` asks it to refresh its own grant and save it
+     * under its own storage rules; success is judged by re-reading the grant. `close` ends the
+     * process, which also aborts a refresh that ran out of time.
      */
-    refresh: (codexHome: string, timeoutMs = 60_000): Promise<void> =>
-      withClient(codexHome, async (client) => {
-        await client.request("account/read", { refreshToken: true }, timeoutMs);
-      }),
+    async openRefresh(codexHome: string): Promise<CodexHostRefreshSession> {
+      const client = await open(codexHome);
+      return {
+        async refresh(timeoutMs: number) {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const deadline = new Promise<"timed-out">((resolve) => {
+            timer = setTimeout(() => resolve("timed-out"), timeoutMs);
+          });
+          const request = client
+            .request("account/read", { refreshToken: true }, timeoutMs + 1_000)
+            .then(() => "done" as const);
+          try {
+            return await Promise.race([request, deadline]);
+          } finally {
+            clearTimeout(timer);
+          }
+        },
+        close: () => client.dispose(),
+      };
+    },
     /** `codex logout` removes the Host grant and asks OpenAI to revoke it. */
     async logout(codexHome: string): Promise<void> {
       const launch = await resolveLaunch();
@@ -291,3 +309,9 @@ export function createCodexHostCli(options: HostCliOptions = {}) {
   };
 }
 export type CodexHostCli = ReturnType<typeof createCodexHostCli>;
+
+export interface CodexHostRefreshSession {
+  /** "timed-out" when the refresh did not answer in time; close the session to abort it. */
+  refresh(timeoutMs: number): Promise<"done" | "timed-out">;
+  close(): Promise<void>;
+}

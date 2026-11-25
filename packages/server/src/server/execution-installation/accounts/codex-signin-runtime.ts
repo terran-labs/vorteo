@@ -35,8 +35,13 @@ import { HostRefreshSkipped, type HostRefreshPolicy } from "./host-owned-refresh
 // Sign-in start failures surface a short message in the interface; the cause goes to the log.
 const logger = pino({ name: "vorteo-installation" });
 
-/** A coordinator refresh must finish inside the Host's 30-second lease. */
-const LEASED_REFRESH_TIMEOUT_MS = 25_000;
+/** A refresh stops this long before its Host lease ends. */
+const LEASE_MARGIN_MS = 5_000;
+/**
+ * A loaded Host Codex refreshes by itself inside the token's last five minutes. The coordinator
+ * keeps clear of that with a margin, and refreshes earlier, from 30 minutes before expiry.
+ */
+const NATIVE_REFRESH_WINDOW_MS = 10 * 60_000;
 
 interface DaemonFeatures {
   installationSettingsAuthority?: boolean;
@@ -268,30 +273,47 @@ export function createCodexSignInRuntime(
 
   /**
    * The Host's own Codex sessions are its normal refresh writer, and Codex does not lock the
-   * network refresh across processes. The coordinator refreshes only under a Host lease, which
-   * the Host grants only while no session uses the account; otherwise it projects what is there.
+   * network refresh across processes. A loaded Codex refreshes only while a request runs inside
+   * the token's last five minutes, after rereading `auth.json`. The coordinator starts Codex
+   * first, so its startup holds no lease; then takes a lease, which the Host refuses while a
+   * session on the account starts or runs a turn; leaves the last ten minutes to a loaded
+   * session; and stops the refresh before the lease ends. Otherwise it projects what is there.
    */
   async function leasedRefresh(definitionId: string): Promise<void> {
     const binding = await hostBinding(definitionId);
-    let lease;
+    const session = await cli.openRefresh(binding.codexHome);
+    let leaseId: string | null = null;
     try {
-      lease = CodexSignInLeaseResponseSchema.parse(
-        await post("host", CODEX_SIGNIN_LEASE_ROUTE, { ...binding.request, operation: "acquire" }),
-      );
-    } catch {
-      throw new HostRefreshSkipped();
-    }
-    if (!lease.granted) throw new HostRefreshSkipped();
-    try {
-      await cli.refresh(binding.codexHome, LEASED_REFRESH_TIMEOUT_MS);
+      let lease;
+      try {
+        lease = CodexSignInLeaseResponseSchema.parse(
+          await post("host", CODEX_SIGNIN_LEASE_ROUTE, {
+            ...binding.request,
+            operation: "acquire",
+          }),
+        );
+      } catch {
+        throw new HostRefreshSkipped("lease_unavailable");
+      }
+      if (!lease.granted) throw new HostRefreshSkipped("lease_unavailable");
+      leaseId = lease.leaseId;
+      const expiresAt = readGrant(binding.codexHome)?.expiresAt ?? null;
+      if (lease.loaded && (expiresAt === null || expiresAt - now() < NATIVE_REFRESH_WINDOW_MS))
+        throw new HostRefreshSkipped("native_session");
+      const remaining = lease.expiresAt - now() - LEASE_MARGIN_MS;
+      if (remaining <= 0 || (await session.refresh(remaining)) === "timed-out")
+        throw new HostRefreshSkipped("lease_expired");
     } finally {
-      await post("host", CODEX_SIGNIN_LEASE_ROUTE, {
-        ...binding.request,
-        operation: "release",
-        leaseId: lease.leaseId,
-      }).catch(() => {
-        // The Host ends the lease by itself.
-      });
+      // Ending the process first means nothing can still be refreshing once the lease is gone.
+      await session.close().catch(() => {});
+      if (leaseId)
+        await post("host", CODEX_SIGNIN_LEASE_ROUTE, {
+          ...binding.request,
+          operation: "release",
+          leaseId,
+        }).catch(() => {
+          // The Host ends the lease by itself.
+        });
     }
   }
 
@@ -302,6 +324,11 @@ export function createCodexSignInRuntime(
     policy,
     grant: async (definitionId) => readGrant(await hostCodexHome(definitionId)),
     refresh: leasedRefresh,
+    log: (event) =>
+      logger.info(
+        event,
+        event.kind === "refreshSkipped" ? "Codex sign-in refresh skipped" : "Codex sign-in refresh",
+      ),
     deliver: async (delivery: CodexSignInProjectionDelivery) => {
       const environment = config.public.environments.find(
         (item) => item.serverId === delivery.serverId,
