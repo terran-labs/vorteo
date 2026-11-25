@@ -106,3 +106,8 @@ export function withDismissals<T extends { id: string }>(
     dismissedAt.has(record.id) ? { ...record, acknowledgedAt: dismissedAt.get(record.id) } : record,
   );
 }
+
+/** The newest record by parsed time, so fractional and whole seconds order correctly. */
+export function latestRestart<T extends { createdAt: string }>(jobs: readonly T[]): T | undefined {
+  return jobs.toSorted((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+}

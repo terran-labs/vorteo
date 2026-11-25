@@ -45,6 +45,8 @@ interface StoreOptions {
   lookup: HealthRecordLookup;
   now?: () => Date;
   warn?: (message: string) => void;
+  /** Saves the store atomically; tests replace it to make one write fail. */
+  write?: (file: string, data: string) => Promise<void>;
 }
 
 /** Unreadable entries are dropped, not fatal: the worst case is a failure counting again. */
@@ -71,7 +73,12 @@ export class HealthDismissalStore {
    * file is set aside for inspection.
    */
   static async open(directory: string, options: StoreOptions): Promise<HealthDismissalStore> {
-    const resolved = { now: () => new Date(), warn: () => {}, ...options };
+    const resolved = {
+      now: () => new Date(),
+      warn: () => {},
+      write: writePrivateFileAtomic,
+      ...options,
+    };
     const file = path.join(directory, FILE_NAME);
     let dismissals: HealthDismissal[] = [];
     const text = await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => {
@@ -93,6 +100,21 @@ export class HealthDismissalStore {
       }
     }
     return new HealthDismissalStore(file, dismissals, resolved);
+  }
+
+  /** Saves the current list; a failed save takes `entry` back out, since it was not kept. */
+  private async save(entry: HealthDismissal): Promise<void> {
+    try {
+      await this.options.write(this.file, this.serialize());
+    } catch (error) {
+      // Unsaved, so not dismissed: the list must match what a restart would read.
+      this.dismissals = this.dismissals.filter((item) => item !== entry);
+      throw error;
+    }
+  }
+
+  private serialize(): string {
+    return `${JSON.stringify({ version: 1, dismissals: this.dismissals }, null, 2)}\n`;
   }
 
   list(): HealthDismissals {
@@ -117,17 +139,12 @@ export class HealthDismissalStore {
     if (!known) {
       const entry = { ...request, dismissedAt: this.options.now().toISOString() };
       this.dismissals = [...this.dismissals, entry].slice(-MAX_RETAINED);
-      const snapshot = `${JSON.stringify({ version: 1, dismissals: this.dismissals }, null, 2)}\n`;
-      const write = this.writing.then(() => writePrivateFileAtomic(this.file, snapshot));
+      // Each write serializes the list as it is when the write runs, after earlier writes have
+      // settled, so a dismissal whose own write failed never rides along in a later one.
+      const write = this.writing.then(() => this.save(entry));
       // A failed write must not wedge later ones; the caller still sees this one fail.
       this.writing = write.catch(() => {});
-      try {
-        await write;
-      } catch (error) {
-        // Unsaved, so not dismissed: the list must match what a restart would read.
-        this.dismissals = this.dismissals.filter((item) => item !== entry);
-        throw error;
-      }
+      await write;
     }
     return this.list();
   }

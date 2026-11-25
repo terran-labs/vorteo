@@ -255,12 +255,14 @@ it.each([
     },
     [],
     [],
+    "healthy",
   ],
   [
     "latest failed restart",
     { jobs: [job("r1", "failed", "2026-11-14T00:00:00Z")] },
     [],
     ["restarts"],
+    "attention",
   ],
   [
     "dismissed session host failure",
@@ -305,11 +307,19 @@ it.each([
     [],
     ["instructions"],
   ],
-])("Health counting: %s", (_name, fields, upgrades, rows) => {
-  const state = { ...empty, unlocked: true, ...fields } as unknown as InstallationSystemState;
-  expect(
-    systemHealthItems(state, upgrades as unknown as Parameters<typeof systemHealthItems>[1]).map(
-      (item) => item.id,
-    ),
-  ).toEqual(rows);
-});
+] as [string, object, object[], string[], string?][])(
+  "Health counting: %s",
+  (_name, fields, upgrades, rows, hostStatus) => {
+    const state = { ...empty, unlocked: true, ...fields } as unknown as InstallationSystemState;
+    expect(
+      systemHealthItems(state, upgrades as unknown as Parameters<typeof systemHealthItems>[1]).map(
+        (item) => item.id,
+      ),
+    ).toEqual(rows);
+    // The Host card reads the same restarts, so it agrees with the Health list and its badge.
+    if (hostStatus)
+      expect(systemEnvironmentState({ target: "host", snapshot, installation: state }).status).toBe(
+        hostStatus,
+      );
+  },
+);

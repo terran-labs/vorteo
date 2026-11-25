@@ -55,6 +55,7 @@ import {
   byTargetAndOperation,
   instructionRequestIsStale,
   isSupersededFailure,
+  latestRestart,
   recordsNeedingReview,
   withDismissals,
 } from "./failure-review";
@@ -652,7 +653,7 @@ function useRestartDismissal(
     const dismissedIds = new Set(
       dismissals.dismissals.filter((entry) => entry.queue === "restart").map((entry) => entry.id),
     );
-    const latest = jobs.toSorted((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    const latest = latestRestart(jobs);
     const dismissibleId =
       latest?.status === "failed" && !dismissedIds.has(latest.id) ? latest.id : null;
     return { dismissibleId, dismissedIds };

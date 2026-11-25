@@ -63,4 +63,21 @@ test("starts empty on a damaged or unreadable store and forgets a dismissal it c
   const store = await HealthDismissalStore.open(blocked, { lookup, warn });
   await expect(store.dismiss({ queue: "restart", id: "failed" })).rejects.toThrow();
   expect(store.list().dismissals).toEqual([]);
+  // A dismissal made while an earlier one's write is failing must not save the failed one.
+  const written: string[] = [];
+  let calls = 0;
+  const write = async (_file: string, data: string) => {
+    calls += 1;
+    if (calls === 1) throw new Error("disk full");
+    written.push(data);
+  };
+  const racing = await HealthDismissalStore.open(damaged, { lookup, warn, write });
+  const first = racing.dismiss({ queue: "restart", id: "a" });
+  const second = racing.dismiss({ queue: "restart", id: "b" });
+  await expect(first).rejects.toThrow("disk full");
+  await second;
+  expect(racing.list().dismissals.map((entry) => entry.id)).toEqual(["b"]);
+  expect(JSON.parse(written.at(-1)!).dismissals.map((entry: { id: string }) => entry.id)).toEqual([
+    "b",
+  ]);
 });
