@@ -4,4 +4,4 @@
 
 ## Maintenance review
 
-Issue #646, item 1. CI tooling only: `scripts/npm-audit-signatures.mjs` and the lint job's step. The CI workflow test covers a fetch fault that clears, a verification failure that is not retried, and a fault that outlasts three attempts. No inventory entry changes; README overview and onboarding are unchanged.
+Issue #646, item 1. CI tooling only: `scripts/npm-audit-signatures.mjs` and the lint job's step. The CI workflow test covers a fetch fault that clears, a verification failure and an unknown npm error code that are not retried, and a fault that outlasts three attempts. No inventory entry changes; README overview and onboarding are unchanged.

@@ -1256,6 +1256,17 @@ test("dependency signature audit retries only a transient registry fetch error",
     calls: 1,
     waits: [],
   });
+  // Any error npm reports that is not a registry fetch fault fails at once, with no retry.
+  assert.deepEqual(
+    await audit([
+      {
+        output: "npm error code EEXPIREDSIGNATUREKEY\nnpm error The registry key has expired\n",
+        exitCode: 1,
+      },
+      fault,
+    ]),
+    { exitCode: 1, calls: 1, waits: [] },
+  );
   // A fault that persists fails after three attempts.
   assert.deepEqual(await audit([fault, fault, fault, fault]), {
     exitCode: 1,
