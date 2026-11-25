@@ -1057,7 +1057,8 @@ export async function createPaseoDaemon(
   app.use(express.json());
   // Called only for requests after startup, once the agent manager exists.
   const providerInUse = (providerId: string) => agentManager.isProviderInUse(providerId);
-  const codexRefreshLeases = new CodexRefreshLeases({
+  // Annotated: its callback reads agentManager, whose options read this lease.
+  const codexRefreshLeases: CodexRefreshLeases = new CodexRefreshLeases({
     activity: (providerId) => agentManager.providerSessionActivity(providerId),
   });
   mountInstallationAccountConsumers(app, {
