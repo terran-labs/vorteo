@@ -576,9 +576,10 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
         error ??= "Dev's folder for this account changed, so its earlier sign-in was not put back.";
       }
     }
-    // A restore consumed this home's copy; copies in other directories keep their clocks.
+    // Only a restore consumed this home's copy. With nothing restored it may still be on Dev, for
+    // example when Dev's own renewal wrote auth.json first, so its entry and clock stay.
     const copies =
-      delivering && error === record.error
+      restored !== null
         ? (record.copies ?? []).filter((item) => !sameTarget(item.target, record.target!))
         : record.copies;
     return save({

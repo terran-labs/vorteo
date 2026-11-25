@@ -305,6 +305,8 @@ function legacyHarness(
     /** Startup time of the Host Codex process. */
     startupMs: 0,
     refusal: null as string | null,
+    /** Dev's restore answer: a copy put back, or nothing (none saved, or auth.json already there). */
+    restoreFound: true,
     targets: {
       "codex-primary": { realpath: "/home/paseo/codex-primary", dev: "41", ino: "1001" },
       "codex-secondary": { realpath: "/home/paseo/codex-secondary", dev: "41", ino: "1002" },
@@ -330,7 +332,10 @@ function legacyHarness(
     if (route === "legacy") {
       if (body.operation === "sessions") return Response.json({ active: dev.active });
       if (body.operation === "pin") return Response.json({ target: dev.targets[body.providerId] });
-      if (body.operation === "restore") return Response.json({ restored: true, copyAgeMs: 5_000 });
+      if (body.operation === "restore")
+        return Response.json(
+          dev.restoreFound ? { restored: true, copyAgeMs: 5_000 } : { restored: false },
+        );
       return Response.json({ forgotten: true });
     }
     if (dev.refusal)
@@ -511,6 +516,16 @@ it("un-adopts without signing the Host out and lets an exclusion win mid-adoptio
   });
   expect(h.deliveries.at(-1)).toMatchObject({ providerId: "codex-primary", access: null });
   expect(h.legacyCalls("restore")).toHaveLength(1);
+  // The restore consumed this folder's copy, so retention no longer tracks it. With nothing
+  // restored the copy may still be on Dev, and its entry stays for retention to delete.
+  expect(h.runtime.adoption("one")?.copies).toEqual([]);
+  const kept = legacyHarness();
+  kept.dev.restoreFound = false;
+  await adopted(kept);
+  await kept.runtime.unadopt("one");
+  expect(kept.runtime.adoption("one")?.copies).toEqual([
+    { target: kept.dev.targets["codex-primary"], savedSince: expect.any(Number) },
+  ]);
   expect(h.cli.logout).not.toHaveBeenCalled();
   expect(h.settings.update).not.toHaveBeenCalled();
   const delivered = h.deliveries.length;
