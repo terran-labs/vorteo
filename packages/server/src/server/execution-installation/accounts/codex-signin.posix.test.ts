@@ -25,7 +25,7 @@ import { createCodexAccount } from "../../../services/provider-login/create-acco
 import { mountCodexSignInConsumer } from "./codex-signin-consumer.js";
 import { codexProjectionDigest } from "./codex-signin-delivery.js";
 import { CodexRefreshLeases } from "./codex-signin-lease.js";
-import { codexSignInKeyDigest } from "./codex-signin-identity.js";
+import { codexSessionCheck, codexSignInKeyDigest } from "./codex-signin-identity.js";
 
 const PASSWORD = "synthetic-password";
 const cleanups: Array<() => Promise<void>> = [];
@@ -44,6 +44,18 @@ const personToken = (person: string) => {
   return `${encode({ alg: "none" })}.${encode(claims)}.synthetic`;
 };
 const ID_TOKEN = personToken("person-1");
+/** The Host sign-in's login session claims, top-level in its ID token. */
+const HOST_SESSION = { sid: "host-session", auth_time: 1_700_000_000 };
+const sessionToken = (session: { sid?: string; auth_time?: number }) => {
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const claims = {
+    sub: "person-1",
+    ...session,
+    "https://api.openai.com/auth": { chatgpt_user_id: "person-1" },
+  };
+  return `${encode({ alg: "none" })}.${encode(claims)}.synthetic`;
+};
+const HOST_TOKEN = sessionToken(HOST_SESSION);
 const access = (accessToken: string, accountId: string | null = "workspace-1") => ({
   accessToken,
   idToken: ID_TOKEN,
@@ -358,6 +370,7 @@ async function legacyFixture(
     installationSettingsReader: { read },
   });
   const inUse = new Set<string>();
+  const titles = new Map<string, string[]>();
   const app = express();
   app.use(createRequireBearerMiddleware({ password: await hashDaemonPassword(PASSWORD) }));
   app.use(express.json());
@@ -365,6 +378,8 @@ async function legacyFixture(
     paseoHome,
     store,
     providerInUse: (id) => inUse.has(id),
+    providerSessionActivity: (id) => (inUse.has(id) ? "busy" : "none"),
+    providerBusyTitles: (id) => titles.get(id) ?? [],
     // Codex's default home lies outside the fixture unless a case puts it on the adopted home.
     daemonEnv: options.daemonEnv?.(home) ?? { HOME: join(root, "daemon-home") },
     codexRefreshLeases: new CodexRefreshLeases({
@@ -400,6 +415,7 @@ async function legacyFixture(
     homeB,
     store,
     inUse,
+    titles,
     authFile,
     scope,
     legacy,
@@ -413,12 +429,13 @@ async function legacyFixture(
       value: unknown,
       keepLocalSignIn = true,
       at = scope(),
+      extra: Record<string, unknown> = {},
     ) =>
       post("/api/installation/codex/signin/projection", {
         ...at,
         ...slot,
         access: value,
-        adoption: { target, keepLocalSignIn },
+        adoption: { target, keepLocalSignIn, ...extra },
       }),
     write: (value: unknown) => writeFileSync(authFile, JSON.stringify(value), { mode: 0o600 }),
     readAuth: () => readFileSync(authFile, "utf8"),
@@ -658,6 +675,63 @@ it("withdraws only its projection, restores the saved sign-in untested and honou
   expect(existsSync(copyB)).toBe(false);
 });
 
+it("checks Dev's login session inside the write, names busy threads plainly and holds them", async () => {
+  const f = await legacyFixture();
+  const target = await f.pin();
+  const check = () => codexSessionCheck(HOST_TOKEN)!;
+  const sessionCheck = async (value = check()) =>
+    (await f.legacy("session-check", { sessionCheck: value })).body;
+  // No refresh sign-in on Dev: nothing there can renew the Host's grant.
+  expect(await sessionCheck()).toMatchObject({ different: true, active: false });
+
+  // A copy of the Host's login, with busy threads' titles plain and capped: three, then more.
+  f.write(localSignIn("workspace-1", "synthetic-dev-stale", HOST_TOKEN));
+  f.inUse.add("codex-primary");
+  f.titles.set("codex-primary", ["Line\nbreak\u0007 title", "x".repeat(200), "", "four", "five"]);
+  expect(await sessionCheck()).toEqual({
+    different: false,
+    active: true,
+    titles: ["Line break title", "x".repeat(80), "Untitled thread"],
+    more: 2,
+  });
+
+  // While a thread runs, only a sign-in shown to be another login is replaced.
+  let rotation = 0;
+  const project = (sessionCheckValue?: unknown) =>
+    f.project(
+      target,
+      { generation: 1, rotation: ++rotation },
+      access(`synthetic-${rotation}`),
+      true,
+      undefined,
+      sessionCheckValue ? { sessionCheck: sessionCheckValue } : {},
+    );
+  for (const [name, token, held] of [
+    ["stale copy: same login, another refresh token", HOST_TOKEN, true],
+    [
+      "same authentication time, other session ID",
+      sessionToken({ ...HOST_SESSION, sid: "renewed" }),
+      true,
+    ],
+    ["no session ID or authentication time", ID_TOKEN, true],
+    ["another login", sessionToken({ sid: "dev-session", auth_time: 1 }), false],
+  ] as const) {
+    f.write(localSignIn("workspace-1", "synthetic-dev-stale", token));
+    expect((await project(check())).status, name).toBe(held ? 409 : 200);
+  }
+  // Its own projection is replaced with no check and no hold.
+  expect((await project()).status).toBe(200);
+  // Without the Host's fingerprints, another login is held too.
+  f.write(
+    localSignIn("workspace-1", "synthetic-dev-other", sessionToken({ sid: "d", auth_time: 1 })),
+  );
+  expect((await project()).status).toBe(409);
+  expect(JSON.parse(f.readAuth()).tokens.refresh_token).toBe("synthetic-dev-other");
+  // Once nothing runs the hold is granted, so none was left behind.
+  f.inUse.delete("codex-primary");
+  expect((await project()).status).toBe(200);
+});
+
 it("leases a Host account unless a session starts or runs a turn on it, for at most 30 s", async () => {
   const f = await fixture("host");
   await createCodexAccount({
@@ -686,6 +760,12 @@ it("leases a Host account unless a session starts or runs a turn on it, for at m
     // An idle loaded session does not block; the coordinator learns it is there.
     expect(leases.acquire("codex-loaded")).toMatchObject({ loaded: true });
     expect(leases.hold("codex-idle")).toBeUndefined();
+    // All or none: one busy provider leaves none of the others held.
+    expect(leases.acquireAll(["codex-other", "codex-busy"])).toBeNull();
+    const both = leases.acquireAll(["codex-other", "codex-third"]);
+    expect(both).not.toBeNull();
+    both!();
+    expect(leases.hold("codex-other")).toBeUndefined();
     expect(leases.acquire("codex-idle")).not.toBeNull();
     // A session start waits for the lease, and never past its 30-second bound.
     let started = false;

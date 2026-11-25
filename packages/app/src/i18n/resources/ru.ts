@@ -265,6 +265,7 @@ export const ru: TranslationResources = {
       implement: "Реализовать",
       question: "Как бы вы хотели продолжить?",
       proposedPlan: "Предлагаемый план",
+      mode: "Эта ветка в режиме {{mode}}.",
     },
   },
   agentPanel: {

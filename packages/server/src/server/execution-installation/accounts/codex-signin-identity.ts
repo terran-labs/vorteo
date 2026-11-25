@@ -1,5 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
+import type { CodexSessionCheck } from "./codex-signin-delivery.js";
 
 /** The claims of an unverified JWT. Only used for scheduling, display and same-person checks. */
 export function jwtClaims(token: string): Record<string, unknown> | null {
@@ -48,6 +49,62 @@ export function codexSignInKeyDigest(
   const person = codexIdTokenPerson(idToken);
   if (!accountId || !person) return null;
   return createHash("sha256").update(`${accountId}\n${person}`).digest("hex");
+}
+
+const SessionClaimsSchema = z.object({
+  sub: z.string().min(1),
+  sid: z.string().min(1).optional(),
+  auth_time: z.union([z.number(), z.string().min(1)]).optional(),
+});
+
+/**
+ * Two keyed fingerprints of the login session an ID token belongs to, under a single-use nonce:
+ * the person (`sub`) with the session ID (`sid`), and the person with the authentication time
+ * (`auth_time`), each only when the token names it, all from top-level claims. A refresh is
+ * assumed to keep at least one of them, so a stale copy of a grant still matches. Null when the
+ * token names no person. Never store or log the nonce, the fingerprints or the claims.
+ */
+function sessionFingerprints(nonce: Buffer, idToken: string | null | undefined) {
+  const claims = SessionClaimsSchema.safeParse(jwtClaims(idToken ?? ""));
+  if (!claims.success) return null;
+  const { sub, sid, auth_time } = claims.data;
+  const mac = (value: string) => createHmac("sha256", nonce).update(`${sub}\n${value}`).digest();
+  return {
+    ...(sid === undefined ? {} : { sid: mac(sid) }),
+    ...(auth_time === undefined ? {} : { authTime: mac(String(auth_time)) }),
+  };
+}
+
+/** The Host's side: a fresh nonce and its fingerprints, or null without a person. */
+export function codexSessionCheck(idToken: string | null | undefined): CodexSessionCheck | null {
+  const nonce = randomBytes(32);
+  const prints = sessionFingerprints(nonce, idToken);
+  if (!prints) return null;
+  return {
+    nonce: nonce.toString("base64url"),
+    ...(prints.sid ? { sid: prints.sid.toString("hex") } : {}),
+    ...(prints.authTime ? { authTime: prints.authTime.toString("hex") } : {}),
+  };
+}
+
+/**
+ * Whether a sign-in certainly belongs to another login session than the Host's: only when both
+ * fingerprints are present on both sides and both differ. A missing claim or fingerprint on
+ * either side counts as the same session, so its holder is held. This assumes a renewal of one
+ * sign-in keeps its session ID or its authentication time.
+ */
+export function codexOtherSession(
+  idToken: string | null | undefined,
+  check: CodexSessionCheck | undefined,
+): boolean {
+  if (!check?.sid || !check.authTime) return false;
+  const prints = sessionFingerprints(Buffer.from(check.nonce, "base64url"), idToken);
+  if (!prints?.sid || !prints.authTime) return false;
+  const differs = (mine: Buffer, theirs: string) => {
+    const other = Buffer.from(theirs, "hex");
+    return other.length !== mine.length || !timingSafeEqual(mine, other);
+  };
+  return differs(prints.sid, check.sid) && differs(prints.authTime, check.authTime);
 }
 
 /**
