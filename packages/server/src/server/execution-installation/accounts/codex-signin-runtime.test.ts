@@ -194,6 +194,22 @@ it("signs in once on the Host, reaches Dev without a second sign-in and signs ou
   });
 });
 
+it("keeps refreshing a managed account without a lease on a Host from before the lease", async () => {
+  const h = harness();
+  // Near expiry from the start, so the first Host read after sign-in refreshes.
+  h.readGrant.mockReturnValue({ ...h.readGrant(), expiresAt: Date.now() + 10 * 60_000 });
+  await h.runtime.start("one");
+  await until(() => h.runtime.read("one").login.status === "waiting");
+  h.complete(true);
+  await until(() => h.deliveries.length === 1);
+  // The Host advertises no codexAccountAdoption, so it has no lease route to ask.
+  await h.runtime.reconcile();
+  expect(h.cli.openRefresh).toHaveBeenCalledWith(h.codexHome);
+  expect(h.authorizations.some((item) => item.includes("/signin/lease"))).toBe(false);
+  await until(() => h.runtime.read("one").connection.refresh !== null);
+  expect(h.runtime.read("one").connection.refresh?.outcome).not.toBe("failed");
+});
+
 it("reports a failed Host sign-out but still withdraws Dev", async () => {
   const h = harness();
   await h.runtime.start("one");

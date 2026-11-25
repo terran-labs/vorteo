@@ -47,6 +47,8 @@ const NATIVE_REFRESH_WINDOW_MS = 10 * 60_000;
  * expiry, so with this little left the coordinator never starts Codex outside a lease.
  */
 const UNLEASED_START_FLOOR_MS = 6 * 60_000;
+/** The refresh timeout an older Host without the lease route always had. */
+const UNLEASED_REFRESH_TIMEOUT_MS = 60_000;
 
 interface DaemonFeatures {
   installationSettingsAuthority?: boolean;
@@ -287,8 +289,7 @@ export function createCodexSignInRuntime(
    * account starts or runs a turn; leaves the last ten minutes to a loaded session; and stops
    * the refresh before the lease ends.
    */
-  async function leasedRefresh(definitionId: string): Promise<void> {
-    const binding = await hostBinding(definitionId);
+  async function leasedRefresh(binding: HostBinding): Promise<void> {
     const before = readGrant(binding.codexHome)?.expiresAt ?? null;
     const startUnderLease = before === null || before - now() <= UNLEASED_START_FLOOR_MS;
     let session = startUnderLease ? null : await cli.openRefresh(binding.codexHome);
@@ -337,13 +338,44 @@ export function createCodexSignInRuntime(
     }
   }
 
+  /** Every Host refresh the coordinator starts, leased where the Host supports it. */
+  async function hostRefresh(definitionId: string): Promise<void> {
+    const binding = await hostBinding(definitionId);
+    // COMPAT(codexRefreshLease): added after 26.11.2100, remove once the Host daemon floor
+    // advertises `codexAccountAdoption`. A Host daemon from before the lease advertises no
+    // `codexAccountAdoption` and has no lease route. Managed accounts keep the refresh they had
+    // before, without a lease, rather than stop renewing until the Host is updated. Adoption
+    // needs that capability, so an adopted account on such a Host fails visibly instead.
+    if ((await daemonFeatures("host"))?.codexAccountAdoption !== true) {
+      if (definition(definitionId).adopted) throw new CodexSignInDeliveryError();
+      logger.warn(
+        { definitionId },
+        "Host daemon has no Codex refresh lease; refreshing without one as before",
+      );
+      await unleasedRefresh(binding.codexHome);
+      return;
+    }
+    await leasedRefresh(binding);
+  }
+
+  /** The refresh before the lease existed: start, refresh within 60 seconds, end. */
+  async function unleasedRefresh(codexHome: string): Promise<void> {
+    const session = await cli.openRefresh(codexHome);
+    try {
+      if ((await session.refresh(UNLEASED_REFRESH_TIMEOUT_MS)) === "timed-out")
+        throw new CodexSignInDeliveryError();
+    } finally {
+      await session.close().catch(() => {});
+    }
+  }
+
   const refresher = new CodexSignInRefresher({
     installationId: config.public.installationId,
     read: () => readClaudeSetupFile(file) ?? [],
     persist: (state) => writeClaudeSetupFile(file, state),
     policy,
     grant: async (definitionId) => readGrant(await hostCodexHome(definitionId)),
-    refresh: leasedRefresh,
+    refresh: hostRefresh,
     log: (event) =>
       logger.info(
         event,
