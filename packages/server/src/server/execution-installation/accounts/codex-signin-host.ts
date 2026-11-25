@@ -15,7 +15,7 @@ import { CodexLoginSession } from "../../agent/providers/codex/login.js";
 import { execCommand, spawnProcess } from "../../../utils/spawn.js";
 import { isTrustedCredentialsFile } from "./claude-oauth-credentials-file.js";
 import type { CodexAccessProjection } from "./codex-signin-delivery.js";
-import { codexIdTokenPerson, jwtClaims } from "./codex-signin-identity.js";
+import { codexIdTokenPerson, codexRefreshFingerprint, jwtClaims } from "./codex-signin-identity.js";
 import type { HostRefreshIdentity } from "./host-owned-refresher.js";
 
 /**
@@ -104,6 +104,32 @@ export function readCodexHostGrant(codexHome: string): CodexHostGrant | null {
   try {
     if (!isTrustedCredentialsFile(fstatSync(descriptor))) return null;
     return toGrant(JSON.parse(readFileSync(descriptor, "utf8")));
+  } catch {
+    return null;
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+const RefreshTokenSchema = z.object({
+  tokens: z.object({ refresh_token: z.string().min(1) }),
+});
+
+/**
+ * The Host grant's refresh token fingerprint under `nonce`, read with the same checks as
+ * readCodexHostGrant, or null without a refresh token. The token never leaves this function.
+ */
+export function codexHostRefreshFingerprint(codexHome: string, nonce: Buffer): Buffer | null {
+  let descriptor: number;
+  try {
+    descriptor = openSync(join(codexHome, "auth.json"), constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch {
+    return null;
+  }
+  try {
+    if (!isTrustedCredentialsFile(fstatSync(descriptor))) return null;
+    const parsed = RefreshTokenSchema.safeParse(JSON.parse(readFileSync(descriptor, "utf8")));
+    return parsed.success ? codexRefreshFingerprint(nonce, parsed.data.tokens.refresh_token) : null;
   } catch {
     return null;
   } finally {

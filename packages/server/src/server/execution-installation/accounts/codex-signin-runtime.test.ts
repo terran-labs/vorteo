@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
@@ -16,6 +16,7 @@ import {
   ACTIVE_DEV_SESSION,
   IDENTITY_CHANGED,
   OTHER_UNREADABLE_RECORD,
+  SAME_GRANT_BUSY,
   STOPPING,
   TOO_MANY_FOLDERS,
   UNREADABLE_RECORD,
@@ -245,6 +246,11 @@ it("refuses unlinked accounts instead of consolidating them by label", async () 
 });
 
 const DAY = 86_400_000;
+/** The Host grant's refresh token; a Dev holding the same one holds a copy of the Host's grant. */
+const HOST_REFRESH = "synthetic-host-refresh";
+function fingerprint(nonce: Buffer, token: string) {
+  return createHmac("sha256", nonce).update(token).digest("hex");
+}
 
 /**
  * The record shape the first adoption release (72c38491) reads strictly, copied here on
@@ -379,6 +385,14 @@ function legacyHarness(
     pinByPath: false,
     /** What Dev's inspect finds in the adopted home's auth.json. */
     signIn: "projection" as "projection" | "none" | "other",
+    /** Dev advertises `codexLegacySessionHold`. */
+    sessionHold: false,
+    /** The refresh token in Dev's own auth.json, or null without a refresh sign-in. */
+    refreshToken: "synthetic-dev-refresh" as string | null,
+    /** A thread on the account starts or runs a turn, with these titles. */
+    busy: [] as string[],
+    /** Every nonce Dev was asked to fingerprint with. */
+    nonces: [] as string[],
     targets: {
       "codex-primary": { realpath: "/home/paseo/codex-primary", dev: "41", ino: "1001" },
       "codex-secondary": { realpath: "/home/paseo/codex-secondary", dev: "41", ino: "1002" },
@@ -402,8 +416,23 @@ function legacyHarness(
     }
     if (!dev.online) throw new TypeError("fetch failed");
     if (route === "legacy") {
-      if (body.operation === "sessions") return Response.json({ active: dev.active });
       if (body.operation === "pin") return Response.json({ target: dev.targets[body.providerId] });
+      if (body.operation === "fingerprint") {
+        dev.nonces.push(body.nonce);
+        return Response.json({
+          fingerprint:
+            dev.refreshToken === null
+              ? null
+              : fingerprint(Buffer.from(body.nonce, "base64url"), dev.refreshToken),
+        });
+      }
+      if (body.operation === "sessions" && body.titles)
+        return Response.json({
+          active: dev.busy.length > 0,
+          titles: dev.busy.slice(0, 3),
+          more: Math.max(0, dev.busy.length - 3),
+        });
+      if (body.operation === "sessions") return Response.json({ active: dev.active });
       if (body.operation === "inspect")
         return Response.json({ target: dev.targets[body.providerId], signIn: dev.signIn });
       if (body.operation === "restore")
@@ -460,10 +489,15 @@ function legacyHarness(
   const runtime = createCodexSignInRuntime(config, settings, undefined, {
     daemonFeatures: async (kind) =>
       kind === "container"
-        ? { ...(options.devFeatures ?? FULL_SUPPORT), codexLegacyPinByPath: dev.pinByPath }
+        ? {
+            ...(options.devFeatures ?? FULL_SUPPORT),
+            codexLegacyPinByPath: dev.pinByPath,
+            codexLegacySessionHold: dev.sessionHold,
+          }
         : FULL_SUPPORT,
     cli: cli as unknown as CodexHostCli,
     readGrant: () => grant,
+    hostFingerprint: (_home, nonce) => Buffer.from(fingerprint(nonce, HOST_REFRESH), "hex"),
     fetch: fetchFake as unknown as typeof fetch,
     now: () => now,
     devUsage: async () => ({ ...usage, authRecovery: false }),
@@ -555,6 +589,7 @@ it("fails closed with nothing written when the Host, Dev or a daemon is not read
   });
   expect(expiring.requests.filter((item) => item.route !== "binding")).toEqual([]);
 
+  // A Dev without codexLegacySessionHold keeps refusing while any session is loaded.
   const busy = legacyHarness();
   busy.dev.active = true;
   await expect(busy.runtime.adopt("one")).resolves.toMatchObject({
@@ -562,6 +597,7 @@ it("fails closed with nothing written when the Host, Dev or a daemon is not read
     error: "A Dev session is using this account. Stop it, then try again.",
   });
   expect(busy.legacyCalls("pin")).toEqual([]);
+  expect(busy.legacyCalls("fingerprint")).toEqual([]);
   expect(busy.deliveries).toEqual([]);
 
   const outdated = legacyHarness({ devFeatures: SUPPORTED });
@@ -571,6 +607,43 @@ it("fails closed with nothing written when the Host, Dev or a daemon is not read
     expect(h.settings.update).not.toHaveBeenCalled();
     expect(h.cli.openRefresh).not.toHaveBeenCalled();
   }
+});
+
+it("switches whatever runs on Dev when Dev's grant is not the Host's, comparing with fresh nonces", async () => {
+  for (const running of ["loaded", "busy"]) {
+    const h = legacyHarness();
+    h.dev.sessionHold = true;
+    h.dev.active = true;
+    if (running === "busy") h.dev.busy = ["Hourly heartbeat"];
+    await expect(h.runtime.adopt("one")).resolves.toMatchObject({ status: "projecting" });
+    await h.runtime.reconcile();
+    expect(h.runtime.adoption("one")?.status).toBe("adopted");
+    expect(h.legacyCalls("sessions")).toEqual([]);
+    // Each delivery says the grants differ, so Dev writes without holding its sessions.
+    expect(h.deliveries[0]).toMatchObject({ adoption: { sameGrant: false } });
+    // Every comparison used its own nonce.
+    expect(h.dev.nonces.length).toBeGreaterThan(1);
+    expect(new Set(h.dev.nonces).size).toBe(h.dev.nonces.length);
+    expect(h.journal()).not.toMatch(new RegExp(h.dev.nonces.join("|")));
+  }
+});
+
+it("refuses while Dev runs a thread on the Host's own grant and names it only in the reply", async () => {
+  const h = legacyHarness();
+  h.dev.sessionHold = true;
+  h.dev.refreshToken = HOST_REFRESH;
+  h.dev.busy = ["Hourly heartbeat", "Fix the build", "Review", "Docs"];
+  await expect(h.runtime.adopt("one")).rejects.toThrow(
+    'Dev is using the same sign-in as the Host on this account, and a Dev thread is running: "Hourly heartbeat", "Fix the build", "Review" and 1 more. Try again when it has finished.',
+  );
+  expect(h.runtime.adoption("one")).toMatchObject({ status: "failed", error: SAME_GRANT_BUSY });
+  expect(h.journal()).not.toContain("Hourly heartbeat");
+  expect(h.deliveries).toEqual([]);
+  // Loaded but idle on the same grant: Dev holds its sessions inside the write instead.
+  h.dev.busy = [];
+  h.dev.active = true;
+  await h.runtime.adopt("one");
+  expect(h.deliveries[0]).toMatchObject({ adoption: { sameGrant: true } });
 });
 
 it("keeps an offline Dev pending, adopts one account at a time and never shares a home", async () => {

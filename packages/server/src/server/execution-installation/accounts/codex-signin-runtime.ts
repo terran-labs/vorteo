@@ -28,7 +28,12 @@ import {
   codexRefusalReason,
   type CodexSignInProjectionDelivery,
 } from "./codex-signin-delivery.js";
-import { createCodexHostCli, readCodexHostGrant, type CodexHostCli } from "./codex-signin-host.js";
+import {
+  codexHostRefreshFingerprint,
+  createCodexHostCli,
+  readCodexHostGrant,
+  type CodexHostCli,
+} from "./codex-signin-host.js";
 import { CodexSignInRefresher } from "./codex-signin-refresher.js";
 import { HostRefreshSkipped, type HostRefreshPolicy } from "./host-owned-refresher.js";
 
@@ -55,6 +60,7 @@ interface DaemonFeatures {
   codexInstallationSignIn?: boolean;
   codexAccountAdoption?: boolean;
   codexLegacyPinByPath?: boolean;
+  codexLegacySessionHold?: boolean;
 }
 
 interface RuntimeOverrides {
@@ -62,6 +68,7 @@ interface RuntimeOverrides {
   daemonFeatures?: (kind: "host" | "container") => Promise<DaemonFeatures | undefined>;
   cli?: CodexHostCli;
   readGrant?: typeof readCodexHostGrant;
+  hostFingerprint?: typeof codexHostRefreshFingerprint;
   fetch?: typeof fetch;
   now?: () => number;
   /** Dev's usage read for one provider ID. Injected by tests. */
@@ -134,6 +141,19 @@ export function createCodexSignInRuntime(
         await client.close();
       }
     });
+
+  /**
+   * Dev's features, read at most once a minute: every adopted delivery asks, and a connection
+   * per delivery would be wasteful. A Dev rolled back within that minute refuses the new
+   * delivery field, which leaves the delivery pending until the next read.
+   */
+  let devFeatureRead: { at: number; features: DaemonFeatures | undefined } | null = null;
+  async function devFeatures(): Promise<DaemonFeatures | undefined> {
+    if (devFeatureRead && now() - devFeatureRead.at < 60_000) return devFeatureRead.features;
+    const features = await daemonFeatures("container");
+    devFeatureRead = { at: now(), features };
+    return features;
+  }
 
   /** Every daemon must know the binding and projection routes before the Host signs in. */
   async function assertSupported() {
@@ -424,6 +444,11 @@ export function createCodexSignInRuntime(
         !adoption.admitsHostIdentity(delivery.definitionId, delivery.access)
       )
         throw new CodexSignInDeliveryError();
+      // Withdrawals replace nothing, so only an access delivery asks.
+      const sameGrant =
+        adopted && delivery.access !== null
+          ? await adoption.sameGrant(delivery.definitionId)
+          : undefined;
       const body = adopted
         ? {
             ...delivery,
@@ -432,6 +457,7 @@ export function createCodexSignInRuntime(
               keepLocalSignIn:
                 adopted.copyForgottenAt === null &&
                 codexAdoptionRetention(config, delivery.definitionId).mode !== "none",
+              ...(sameGrant === undefined ? {} : { sameGrant }),
             },
           }
         : delivery;
@@ -470,6 +496,8 @@ export function createCodexSignInRuntime(
       return true;
     },
     pinByPath: async () => (await daemonFeatures("container"))?.codexLegacyPinByPath === true,
+    sessionHold: async () => (await devFeatures())?.codexLegacySessionHold === true,
+    hostFingerprint: overrides.hostFingerprint ?? codexHostRefreshFingerprint,
     hostHome: (definitionId, hostProviderId, revision) =>
       bindingHome({
         installationId: config.public.installationId,

@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
@@ -358,6 +358,7 @@ async function legacyFixture(
     installationSettingsReader: { read },
   });
   const inUse = new Set<string>();
+  const titles = new Map<string, string[]>();
   const app = express();
   app.use(createRequireBearerMiddleware({ password: await hashDaemonPassword(PASSWORD) }));
   app.use(express.json());
@@ -365,6 +366,8 @@ async function legacyFixture(
     paseoHome,
     store,
     providerInUse: (id) => inUse.has(id),
+    providerSessionActivity: (id) => (inUse.has(id) ? "busy" : "none"),
+    providerBusyTitles: (id) => titles.get(id) ?? [],
     // Codex's default home lies outside the fixture unless a case puts it on the adopted home.
     daemonEnv: options.daemonEnv?.(home) ?? { HOME: join(root, "daemon-home") },
     codexRefreshLeases: new CodexRefreshLeases({
@@ -400,6 +403,7 @@ async function legacyFixture(
     homeB,
     store,
     inUse,
+    titles,
     authFile,
     scope,
     legacy,
@@ -413,12 +417,13 @@ async function legacyFixture(
       value: unknown,
       keepLocalSignIn = true,
       at = scope(),
+      extra: Record<string, unknown> = {},
     ) =>
       post("/api/installation/codex/signin/projection", {
         ...at,
         ...slot,
         access: value,
-        adoption: { target, keepLocalSignIn },
+        adoption: { target, keepLocalSignIn, ...extra },
       }),
     write: (value: unknown) => writeFileSync(authFile, JSON.stringify(value), { mode: 0o600 }),
     readAuth: () => readFileSync(authFile, "utf8"),
@@ -658,6 +663,56 @@ it("withdraws only its projection, restores the saved sign-in untested and honou
   expect(existsSync(copyB)).toBe(false);
 });
 
+it("fingerprints Dev's grant per nonce, names busy threads plainly and holds them while writing", async () => {
+  const f = await legacyFixture();
+  const target = await f.pin();
+  const nonce = () => randomBytes(32).toString("base64url");
+  const fingerprintOf = async (value: string) =>
+    (await f.legacy("fingerprint", { nonce: value })).body.fingerprint as string | null;
+  expect(await fingerprintOf(nonce())).toBeNull();
+  f.write(localSignIn("workspace-1"));
+  const first = nonce();
+  const once = await fingerprintOf(first);
+  expect(once).toBe(
+    createHmac("sha256", Buffer.from(first, "base64url"))
+      .update("synthetic-local-refresh")
+      .digest("hex"),
+  );
+  // The same token under a new nonce gives a different answer; Dev keeps nothing between.
+  expect(await fingerprintOf(nonce())).not.toBe(once);
+  expect(await fingerprintOf(first)).toBe(once);
+
+  // Busy threads' titles, plain and capped: three, then how many more.
+  f.inUse.add("codex-primary");
+  f.titles.set("codex-primary", ["Line\nbreak\u0007 title", "x".repeat(200), "", "four", "five"]);
+  expect((await f.legacy("sessions", { titles: true })).body).toEqual({
+    active: true,
+    titles: ["Line break title", "x".repeat(80), "Untitled thread"],
+    more: 2,
+  });
+
+  // While busy, a sign-in that may be the Host's own is not replaced; the hold is released.
+  const slot = { generation: 1, rotation: 1 };
+  const held = await f.project(target, slot, access("synthetic-a"));
+  expect(held.status).toBe(409);
+  expect(JSON.parse(f.readAuth()).tokens.refresh_token).toBe("synthetic-local-refresh");
+  f.inUse.delete("codex-primary");
+  expect((await f.project(target, slot, access("synthetic-a"))).status).toBe(200);
+  // A grant the coordinator found different is replaced even while a thread runs.
+  f.write(localSignIn("workspace-1", "synthetic-dev-renewed"));
+  f.inUse.add("codex-primary");
+  const different = await f.project(
+    target,
+    { generation: 1, rotation: 2 },
+    access("synthetic-b"),
+    true,
+    undefined,
+    { sameGrant: false },
+  );
+  expect(different.status).toBe(200);
+  expect(JSON.parse(f.readAuth()).tokens.access_token).toBe("synthetic-b");
+});
+
 it("leases a Host account unless a session starts or runs a turn on it, for at most 30 s", async () => {
   const f = await fixture("host");
   await createCodexAccount({
@@ -686,6 +741,12 @@ it("leases a Host account unless a session starts or runs a turn on it, for at m
     // An idle loaded session does not block; the coordinator learns it is there.
     expect(leases.acquire("codex-loaded")).toMatchObject({ loaded: true });
     expect(leases.hold("codex-idle")).toBeUndefined();
+    // All or none: one busy provider leaves none of the others held.
+    expect(leases.acquireAll(["codex-other", "codex-busy"])).toBeNull();
+    const both = leases.acquireAll(["codex-other", "codex-third"]);
+    expect(both).not.toBeNull();
+    both!();
+    expect(leases.hold("codex-other")).toBeUndefined();
     expect(leases.acquire("codex-idle")).not.toBeNull();
     // A session start waits for the lease, and never past its 30-second bound.
     let started = false;

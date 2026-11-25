@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { z } from "zod";
 
 /** The claims of an unverified JWT. Only used for scheduling, display and same-person checks. */
@@ -48,6 +48,15 @@ export function codexSignInKeyDigest(
   const person = codexIdTokenPerson(idToken);
   if (!accountId || !person) return null;
   return createHash("sha256").update(`${accountId}\n${person}`).digest("hex");
+}
+
+/**
+ * HMAC-SHA256 of a refresh token under a single-use nonce, so the coordinator can tell whether
+ * Dev and the Host hold the same grant without either token leaving its environment. Never
+ * store or log the nonce, the result or its input.
+ */
+export function codexRefreshFingerprint(nonce: Buffer, refreshToken: string): Buffer {
+  return createHmac("sha256", nonce).update(refreshToken).digest();
 }
 
 /**

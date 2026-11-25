@@ -101,7 +101,22 @@ const PersonDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const CodexSignInLegacyRequestSchema = z.discriminatedUnion("operation", [
   ProjectionBindingRequestSchema.extend({ operation: z.literal("pin") }),
   /** Whether a Codex session runs, or is being started, on this provider ID. */
-  ProjectionBindingRequestSchema.extend({ operation: z.literal("sessions") }),
+  ProjectionBindingRequestSchema.extend({
+    operation: z.literal("sessions"),
+    /**
+     * Requires `codexLegacySessionHold`: answer whether a session on the home starts or runs a
+     * turn, with those threads' titles. Older daemons refuse the unknown field.
+     */
+    titles: z.literal(true).optional(),
+  }),
+  /**
+   * Requires `codexLegacySessionHold`: the HMAC-SHA256 of the refresh token in the home's
+   * `auth.json` under this single-use nonce, so the coordinator can compare it with the Host's.
+   */
+  ProjectionBindingRequestSchema.extend({
+    operation: z.literal("fingerprint"),
+    nonce: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  }),
   /** Puts the saved local sign-in back as `auth.json`, after the projection is withdrawn. */
   ProjectionBindingRequestSchema.extend({
     operation: z.literal("restore"),
@@ -135,6 +150,29 @@ export const CodexLegacyInspectResponseSchema = z.strictObject({
 });
 export type CodexLegacyInspection = z.infer<typeof CodexLegacyInspectResponseSchema>;
 export const CodexLegacySessionsResponseSchema = z.strictObject({ active: z.boolean() });
+/** Busy threads' titles, plain text: at most three, with how many more are busy. Never IDs. */
+export const CODEX_BUSY_TITLE_MAX = 80;
+export const CodexLegacyBusyResponseSchema = z.strictObject({
+  active: z.boolean(),
+  titles: z
+    .array(
+      z
+        .string()
+        .min(1)
+        .max(CODEX_BUSY_TITLE_MAX)
+        .regex(/^[^\p{Cc}\u2028\u2029]+$/u),
+    )
+    .max(3),
+  more: z.number().int().nonnegative(),
+});
+export type CodexLegacyBusy = z.infer<typeof CodexLegacyBusyResponseSchema>;
+/** Hex HMAC of Dev's refresh token, or null when the home holds no refresh sign-in. */
+export const CodexLegacyFingerprintResponseSchema = z.strictObject({
+  fingerprint: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .nullable(),
+});
 export const CodexLegacyRestoreResponseSchema = z.discriminatedUnion("restored", [
   z.strictObject({ restored: z.literal(false) }),
   z.strictObject({ restored: z.literal(true), copyAgeMs: z.number().int().nonnegative() }),
@@ -154,6 +192,12 @@ export const CodexSignInProjectionDeliverySchema = projectionDeliverySchema(
       target: CodexLegacyTargetSchema,
       /** Save the local sign-in this projection replaces, so un-adopt can restore it. */
       keepLocalSignIn: z.boolean(),
+      /**
+       * Requires `codexLegacySessionHold`: false only when the coordinator found Dev's refresh
+       * token different from the Host's. Otherwise Dev holds every session on the home while it
+       * replaces a refresh sign-in. Older daemons refuse the unknown field.
+       */
+      sameGrant: z.boolean().optional(),
     })
     .optional(),
 });
