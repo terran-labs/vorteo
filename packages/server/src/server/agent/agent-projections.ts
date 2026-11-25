@@ -119,6 +119,7 @@ export function toStoredAgentRecord(
       : null,
     internal: options?.internal,
     owner: agent.owner,
+    ...(agent.createdByAgentId !== undefined ? { createdByAgentId: agent.createdByAgentId } : {}),
   } satisfies StoredAgentRecord;
 }
 
@@ -197,6 +198,7 @@ export function toAgentPayload(
     labels: agent.labels,
     archivedAt: options?.archivedAt ?? null,
     ...(agent.internal ? { internal: true } : {}),
+    ...(agent.createdByAgentId !== undefined ? { createdByAgentId: agent.createdByAgentId } : {}),
   };
 
   const usage = sanitizeUsage(agent.lastUsage);
@@ -316,6 +318,7 @@ export function buildStoredAgentPayload(
     ...projectStoredAttention(record),
     archivedAt: record.archivedAt ?? null,
     ...(record.internal ? { internal: true } : {}),
+    ...(record.createdByAgentId !== undefined ? { createdByAgentId: record.createdByAgentId } : {}),
     labels: normalizeLabels(record.labels),
     ...(typeof record.lastError === "string" ? { lastError: record.lastError } : {}),
     ...storedUsagePayload(record.lastUsage),

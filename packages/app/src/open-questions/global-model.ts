@@ -1,4 +1,5 @@
 import type { AgentQuestion } from "@getpaseo/protocol/agent-questions";
+import type { AgentPermissionRequest } from "@getpaseo/protocol/agent-types";
 import type { Agent, WorkspaceDescriptor } from "@/stores/session-store";
 import type { TodoEntry } from "@/types/stream";
 import {
@@ -11,8 +12,21 @@ export interface QuestionHostInput {
   serverId: string;
   hostLabel: string;
   agents: Iterable<
-    Pick<Agent, "id" | "title" | "workspaceId" | "archivedAt" | "questions" | "tasks">
+    Pick<Agent, "id" | "title" | "workspaceId" | "archivedAt" | "questions" | "tasks"> &
+      Partial<
+        Pick<
+          Agent,
+          | "pendingPermissions"
+          | "createdByAgentId"
+          | "status"
+          | "currentModeId"
+          | "availableModes"
+          | "cwd"
+        >
+      >
   >;
+  /** The host records who created each thread (server_info.features.agentCreatedBy). */
+  approvalsSupported?: boolean;
   workspaces: ReadonlyMap<
     string,
     Pick<WorkspaceDescriptor, "name" | "title" | "projectDisplayName" | "projectCustomName">
@@ -71,9 +85,10 @@ export function collectThreadQuestions(hosts: readonly QuestionHostInput[]): Thr
 export function globalOpenQuestionCount(
   threads: readonly ThreadQuestions[],
   update: InstallationUpdateEntry | null = null,
+  approvals: readonly ThreadApproval[] = [],
 ): number {
   const questions = threads.reduce((total, thread) => total + thread.questions.length, 0);
-  return questions + (installationUpdateNeedsOwner(update) ? 1 : 0);
+  return questions + approvals.length + (installationUpdateNeedsOwner(update) ? 1 : 0);
 }
 
 function projectLabel(
@@ -102,4 +117,84 @@ function compareThreads(left: ThreadQuestions, right: ThreadQuestions): number {
   const blocked = blockedCount(right) - blockedCount(left);
   if (blocked !== 0) return blocked;
   return oldestAsk(left).localeCompare(oldestAsk(right));
+}
+
+/** A thread stopped on a tool approval that no supervising thread can answer. */
+export interface ThreadApproval {
+  key: string;
+  serverId: string;
+  agentId: string;
+  threadTitle: string;
+  projectLabel: string | null;
+  modeLabel: string | null;
+  cwd: string | null;
+  request: AgentPermissionRequest;
+}
+
+type RoutingAgent = Pick<Agent, "id" | "archivedAt"> &
+  Partial<Pick<Agent, "createdByAgentId" | "status" | "pendingPermissions">>;
+
+/**
+ * Whether a thread's approval is the owner's to answer. The creator is the one the daemon
+ * recorded, never a label. A creator that cannot answer (closed, archived, missing, or itself
+ * waiting on an approval) passes the question up its own creator chain; with no live ancestor
+ * left, the approval is the owner's.
+ */
+export function approvalBelongsToOwner(
+  agentId: string,
+  agents: ReadonlyMap<string, RoutingAgent>,
+): boolean {
+  const seen = new Set<string>([agentId]);
+  let creatorId = agents.get(agentId)?.createdByAgentId;
+  while (creatorId) {
+    if (seen.has(creatorId)) return true;
+    seen.add(creatorId);
+    const creator = agents.get(creatorId);
+    if (!creator) return true;
+    const canAnswer =
+      !creator.archivedAt &&
+      creator.status !== "closed" &&
+      (creator.pendingPermissions?.length ?? 0) === 0;
+    if (canAnswer) return false;
+    creatorId = creator.createdByAgentId;
+  }
+  return true;
+}
+
+/**
+ * Every pending tool approval the owner has to answer, across hosts. Only hosts that record
+ * creators take part; elsewhere approvals stay in their own threads, as before.
+ */
+export function collectThreadApprovals(hosts: readonly QuestionHostInput[]): ThreadApproval[] {
+  const approvals: ThreadApproval[] = [];
+  for (const host of hosts) {
+    if (!host.approvalsSupported) continue;
+    const agents = [...host.agents];
+    const byId = new Map(agents.map((agent) => [agent.id, agent]));
+    for (const agent of agents) {
+      if (agent.archivedAt || host.pendingArchive.has(agent.id)) continue;
+      const requests = (agent.pendingPermissions ?? []).filter(
+        (request) => request.kind === "tool",
+      );
+      if (requests.length === 0 || !approvalBelongsToOwner(agent.id, byId)) continue;
+      const workspace = agent.workspaceId ? host.workspaces.get(agent.workspaceId) : undefined;
+      const modeLabel = agent.currentModeId
+        ? (agent.availableModes?.find((mode) => mode.id === agent.currentModeId)?.label ??
+          agent.currentModeId)
+        : null;
+      for (const request of requests) {
+        approvals.push({
+          key: `${host.serverId}:${agent.id}:${request.id}`,
+          serverId: host.serverId,
+          agentId: agent.id,
+          threadTitle: agent.title?.trim() || "Untitled thread",
+          projectLabel: workspace ? projectLabel(workspace) : null,
+          modeLabel,
+          cwd: agent.cwd ?? null,
+          request,
+        });
+      }
+    }
+  }
+  return approvals;
 }

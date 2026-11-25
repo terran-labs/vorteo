@@ -1184,6 +1184,10 @@ export const AgentSnapshotPayloadSchema = z.object({
   // True when the agent's provider session runs in the durable session host, so its turn survives
   // a daemon restart. Optional on a non-strict schema: older daemons omit it, older clients ignore it.
   hosted: z.boolean().optional(),
+  // COMPAT(agentCreatedBy): added November 2026, advertised by server_info.features.agentCreatedBy.
+  // The agent that created this thread, recorded by the daemon at creation and never changed by
+  // labels; null means the owner or the daemon started it. Absent from older daemons.
+  createdByAgentId: z.string().nullable().optional(),
   id: z.string(),
   profile: z.object({ id: z.string(), name: z.string() }).optional(),
   quotaPausedAt: z.string().optional(),
@@ -4649,6 +4653,8 @@ export const ServerInfoStatusPayloadSchema = z
         agentQuestions: z.boolean().optional(),
         // COMPAT(agentQuestionInputs): added November 2026; send typed answer fields only when advertised.
         agentQuestionInputs: z.boolean().optional(),
+        // COMPAT(agentCreatedBy): added November 2026; agent snapshots carry createdByAgentId.
+        agentCreatedBy: z.boolean().optional(),
         // COMPAT(previews): added November 2026; gate the Previews gallery until the daemon floor includes it.
         previews: z.boolean().optional(),
         // COMPAT(projectedSubagentTimeline): added after v0.8.0, remove gates after 2027-03-14; retain wire field.

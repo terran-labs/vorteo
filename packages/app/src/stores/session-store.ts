@@ -79,6 +79,8 @@ export interface Agent {
   usageLimitHold?: import("@getpaseo/protocol/usage-limit").UsageLimitHold;
   /** The provider session runs in the durable session host, so a daemon restart will not cut it. */
   hosted?: boolean;
+  /** The agent that created this thread, recorded by the daemon; null for the owner's own. */
+  createdByAgentId?: string | null;
   serverId: string;
   id: string;
   provider: AgentProvider;

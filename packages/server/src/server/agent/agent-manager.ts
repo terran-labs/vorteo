@@ -623,6 +623,7 @@ export interface CreateAgentOptions {
   // undefined is an explicit decision: the agent never appears in the sidebar.
   workspaceId: string | undefined;
   owner?: AgentOwner;
+  createdByAgentId?: string | null;
 }
 
 export interface AgentManagerOptions {
@@ -805,6 +806,7 @@ interface ManagedAgentBase {
    */
   workspaceId?: string;
   owner?: AgentOwner;
+  createdByAgentId?: string | null;
   capabilities: AgentCapabilityFlags;
   config: AgentSessionConfig;
   /** Explicit launch overrides, before per-opening hooks and daemon-owned variables. */
@@ -3959,6 +3961,7 @@ export class AgentManager {
       initialTitle: options.initialTitle,
       workspaceId: options.workspaceId,
       owner: options.owner,
+      createdByAgentId: options.createdByAgentId ?? null,
       launchEnv: options.env ? { ...options.env } : undefined,
       historyPrimed: true,
     });
@@ -3991,6 +3994,7 @@ export class AgentManager {
       labels?: Record<string, string>;
       workspaceId?: string;
       owner?: AgentOwner;
+      createdByAgentId?: string | null;
       attention?: AttentionState;
       lastUsage?: AgentUsage;
     },
@@ -4054,6 +4058,7 @@ export class AgentManager {
       labels?: Record<string, string>;
       workspaceId?: string;
       owner?: AgentOwner;
+      createdByAgentId?: string | null;
       attention?: AttentionState;
       lastUsage?: AgentUsage;
     },
@@ -4339,6 +4344,7 @@ export class AgentManager {
         labels: existing.labels,
         workspaceId: existing.workspaceId,
         owner: existing.owner,
+        createdByAgentId: existing.createdByAgentId,
         launchEnv: existing.launchEnv,
         createdAt: existing.createdAt,
         updatedAt: existing.updatedAt,
@@ -4751,6 +4757,7 @@ export class AgentManager {
         labels: source.labels,
         workspaceId: source.workspaceId,
         owner: source.owner,
+        createdByAgentId: source.createdByAgentId,
         createdAt: source.createdAt,
         updatedAt: source.updatedAt,
         lastUserMessageAt: source.lastUserMessageAt,
@@ -4832,6 +4839,7 @@ export class AgentManager {
       internal: record.internal,
       workspaceId: record.workspaceId,
       owner: record.owner,
+      createdByAgentId: record.createdByAgentId,
       labels: record.labels,
       createdAt: new Date(record.createdAt),
       updatedAt: new Date(record.updatedAt),
@@ -5365,6 +5373,7 @@ export class AgentManager {
         cwd: record.cwd,
         workspaceId: record.workspaceId,
         owner: record.owner,
+        createdByAgentId: record.createdByAgentId,
         session: null,
         capabilities: STORED_AGENT_CAPABILITIES,
         config: buildStoredAgentConfig(record),
@@ -7923,6 +7932,7 @@ export class AgentManager {
       publishWhenReady?: boolean;
       workspaceId?: string;
       owner?: AgentOwner;
+      createdByAgentId?: string | null;
       launchEnv?: Record<string, string>;
     },
   ): Promise<ManagedAgent> {
@@ -8140,6 +8150,7 @@ export class AgentManager {
           persistence?: AgentPersistenceHandle;
           workspaceId?: string;
           owner?: AgentOwner;
+          createdByAgentId?: string | null;
           launchEnv?: Record<string, string>;
         }
       | undefined;
@@ -8157,6 +8168,7 @@ export class AgentManager {
       cwd: config.cwd,
       workspaceId: options?.workspaceId,
       owner: options?.owner,
+      createdByAgentId: options?.createdByAgentId,
       launchEnv: options?.launchEnv,
       session,
       capabilities: session.capabilities,
@@ -9262,7 +9274,15 @@ export class AgentManager {
     event: Extract<AgentStreamEvent, { type: "permission_requested" }>,
   ): void {
     const hadPendingPermissions = agent.pendingPermissions.size > 0;
-    agent.pendingPermissions.set(event.request.id, event.request);
+    // Where the request was made, so "Open thread" outside the thread lands on it (#659).
+    const askedSeq = this.timelineStore.has(agent.id)
+      ? this.timelineStore.getLatestSeq(agent.id)
+      : null;
+    const request =
+      askedSeq === null
+        ? event.request
+        : { ...event.request, metadata: { ...event.request.metadata, askedSeq } };
+    agent.pendingPermissions.set(request.id, request);
     this.refreshSessionPersistence(agent);
     if (!hadPendingPermissions && !agent.internal) {
       this.broadcastAgentAttention(agent, "permission");

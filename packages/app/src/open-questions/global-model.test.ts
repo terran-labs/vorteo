@@ -1,6 +1,7 @@
 import type { AgentQuestion } from "@getpaseo/protocol/agent-questions";
 import { expect, test } from "vitest";
 import {
+  collectThreadApprovals,
   collectThreadQuestions,
   globalOpenQuestionCount,
   type QuestionHostInput,
@@ -180,4 +181,70 @@ test("opening a question targets that question and where it was asked", async ()
   });
   expect(second.requestId).not.toBe(first.requestId);
   useConversationTargetStore.getState().clear(second.requestId);
+});
+
+// #659 part C: a pending approval reaches the owner's card when no supervising thread can answer
+// it. The creator is the daemon-recorded one; the parent label is ignored.
+test.each([
+  ["a thread the owner started", { createdByAgentId: null }, [], true],
+  ["a worker whose creator can answer", { createdByAgentId: "lead" }, [], false],
+  ["a worker that cleared its parent label", { createdByAgentId: "lead", labels: {} }, [], false],
+  ["a worker whose creator is archived", { createdByAgentId: "lead" }, ["archived"], true],
+  ["a worker whose creator is closed", { createdByAgentId: "lead" }, ["closed"], true],
+  ["a worker whose creator is missing", { createdByAgentId: "gone" }, [], true],
+  ["a worker whose creator is itself waiting", { createdByAgentId: "lead" }, ["waiting"], true],
+  [
+    "a worker whose waiting creator has a live creator",
+    { createdByAgentId: "lead" },
+    ["waiting", "lead-has-live-creator"],
+    false,
+  ],
+] as const)("an approval from %s reaches the owner: %s", (_label, worker, leadState, expected) => {
+  const pending = {
+    id: "perm-1",
+    provider: "claude",
+    name: "Bash",
+    kind: "tool",
+    input: { command: "rm -rf build" },
+  } as const;
+  const agents = [
+    {
+      id: "worker",
+      title: "Worker",
+      workspaceId: "w1",
+      archivedAt: null,
+      questions: [],
+      status: "running",
+      pendingPermissions: [pending],
+      ...worker,
+    },
+    {
+      id: "lead",
+      title: "Lead",
+      workspaceId: "w1",
+      archivedAt: (leadState as readonly string[]).includes("archived") ? new Date() : null,
+      questions: [],
+      status: (leadState as readonly string[]).includes("closed") ? "closed" : "running",
+      pendingPermissions: (leadState as readonly string[]).includes("waiting")
+        ? [{ ...pending, id: "perm-lead" }]
+        : [],
+      createdByAgentId: (leadState as readonly string[]).includes("lead-has-live-creator")
+        ? "root"
+        : null,
+    },
+    {
+      id: "root",
+      title: "Root",
+      workspaceId: "w1",
+      archivedAt: null,
+      questions: [],
+      status: "idle",
+    },
+  ];
+  const approvals = collectThreadApprovals([
+    { ...host("host", agents as never), approvalsSupported: true },
+  ]).filter((approval) => approval.agentId === "worker");
+  expect(approvals.length === 1).toBe(expected);
+  // A host that does not record creators shows no approvals at all, as before.
+  expect(collectThreadApprovals([host("host", agents as never)])).toEqual([]);
 });
