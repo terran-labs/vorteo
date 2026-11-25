@@ -4,4 +4,4 @@
 
 ## Maintenance review
 
-Updated the primary connection entry under Accounts and reusable workflows for Automatic: selection order, stickiness, the per-account switch, Providers and Health display, upgrade adoption and the capability gates for older coordinators, daemons and clients. The Factory worker accounts entry now names Automatic as a default launch source. README overview and onboarding are unchanged: the README does not describe the primary connection.
+Updated the primary connection entry under Accounts and reusable workflows for Automatic: selection order, stickiness, the per-account switch, Providers and Health display, upgrade adoption and the capability gates for older coordinators, daemons and clients. The Factory worker accounts entry now names Automatic as a default launch source. README overview and onboarding are unchanged: the README does not describe the primary connection. The published config JSON schema is regenerated for the two new optional fields.
