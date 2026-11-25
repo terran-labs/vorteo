@@ -220,6 +220,33 @@ interface LoadedJournal {
   intact: boolean;
 }
 
+/**
+ * Whether a record waits only because Dev refused a changed folder. A different person never
+ * counts, whatever else holds.
+ */
+function folderChange(record: CodexAdoptionRecord): boolean {
+  if (
+    record.status !== "needs-owner-confirmation" ||
+    record.target === null ||
+    record.pendingIdentityDigest ||
+    record.error === IDENTITY_CHANGED
+  )
+    return false;
+  // COMPAT(codexLegacyPinByPath): added after 26.11.2100, remove after 2027-05-25. The first
+  // adoption release parked a changed folder with this exact text and no reason. It counts for
+  // the owner's actions only, never for resuming by itself.
+  const legacyFolderChange = record.parkedReason === undefined && record.error === TARGET_CHANGED;
+  return record.parkedReason === "target_changed" || legacyFolderChange;
+}
+
+/**
+ * A folder change paused with no record of which way it was going: a switch or an undo. The
+ * owner then chooses explicitly between switching and stopping.
+ */
+export function adoptionDirectionUnknown(record: CodexAdoptionRecord): boolean {
+  return folderChange(record) && record.parkedFrom === undefined;
+}
+
 const IN_PROGRESS: ReadonlySet<CodexAdoptionStatus> = new Set([
   "verifying-host",
   "pinning",
@@ -283,6 +310,8 @@ export const IDENTITY_CHANGED =
 
 export const ACTIVE_DEV_SESSION = "A Dev session is using this account. Stop it, then try again.";
 
+export const STOPPING = "This account is being stopped. It finishes by itself in a few minutes.";
+
 /** Set by refused(); an earlier release parked with this same text and no reason. */
 const TARGET_CHANGED = "Dev's folder for this account changed. Confirm to try again.";
 
@@ -303,6 +332,13 @@ export const UNREADABLE_RECORD =
 
 export const OTHER_UNREADABLE_RECORD =
   "Another account's saved switch record could not be read, so nothing is changed. Update Vorteo, or ask for help if this stays.";
+
+/** An undo Dev paused for a changed folder finishes by itself; a switch would reverse it. */
+export class CodexAdoptionStopping extends CodexAdoptionRefusal {
+  constructor() {
+    super(STOPPING);
+  }
+}
 
 /** Carries UNREADABLE_RECORD or OTHER_UNREADABLE_RECORD. */
 export class CodexAdoptionUnreadable extends CodexAdoptionRefusal {}
@@ -850,17 +886,22 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
   }
 
   /**
-   * Whether a record waits only because Dev refused a changed folder. A different person never
-   * counts, whatever else holds.
+   * The folder an owner's stop can still withdraw from and restore into: a record paused for a
+   * changed folder, on a Dev that pins by path, whose folder pins again at the same real path,
+   * unshared, for an eligible account. Null otherwise, also when Dev cannot be reached.
    */
-  function folderChange(record: CodexAdoptionRecord): boolean {
-    if (record.target === null || record.pendingIdentityDigest || record.error === IDENTITY_CHANGED)
-      return false;
-    // COMPAT(codexLegacyPinByPath): added after 26.11.2100, remove after 2027-05-25. The first
-    // adoption release parked a changed folder with this exact text and no reason. It counts
-    // for the owner's confirmation only, never for resuming by itself.
-    const legacyFolderChange = record.parkedReason === undefined && record.error === TARGET_CHANGED;
-    return record.parkedReason === "target_changed" || legacyFolderChange;
+  async function stoppableFolder(record: CodexAdoptionRecord) {
+    if (!folderChange(record)) return null;
+    try {
+      if (!(await deps.pinByPath()) || eligibility(record.definitionId).reason) return null;
+      const { target } = CodexLegacyInspectResponseSchema.parse(
+        await deps.dev({ ...scope(record), operation: "inspect" }),
+      );
+      const same = target.realpath === record.target!.realpath;
+      return same && !sharesDirectory(record.definitionId, target) ? target : null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -1028,6 +1069,8 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
         const previous = records.find((item) => item.definitionId === definitionId);
         if (previous && (IN_PROGRESS.has(previous.status) || previous.status === "adopted"))
           return previous;
+        if (previous?.status === "needs-owner-confirmation" && previous.parkedFrom === "unadopting")
+          throw new CodexAdoptionStopping();
         const check = eligibility(definitionId);
         const carried = carriedFacts(previous);
         if (check.reason)
@@ -1057,14 +1100,28 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
         if (unreadable) throw new CodexAdoptionUnreadable(unreadable);
         const record = find(definitionId);
         if (!record || record.status === "unadopted") throw new CodexSignInDeliveryError();
+        // A folder change whose folder still pins at the same path is withdrawn and restored.
+        const folder = await stoppableFolder(record);
+        if (folder)
+          return step(
+            save({
+              ...record,
+              status: "unadopting",
+              target: { ...record.target, ...folder },
+              parkedReason: undefined,
+              parkedFrom: undefined,
+              error: null,
+            }),
+          );
         if (
           record.status === "cancelled" ||
           record.status === "failed" ||
           record.status === "needs-owner-confirmation" ||
           record.target === null
         ) {
-          // Nothing is withdrawn or restored from here: the binding moved, the home changed, or
-          // nothing was delivered. The record says so, and retention still applies to any copy.
+          // Nothing is withdrawn or restored from here: the binding moved, the home changed or no
+          // longer pins, Dev is older, another person is waiting, or nothing was delivered. The
+          // record says so, and retention still applies to any copy.
           await deps.refresher.retire(definitionId);
           return save({ ...record, status: "unadopted", restoreSkipped: true });
         }

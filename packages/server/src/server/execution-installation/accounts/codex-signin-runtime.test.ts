@@ -16,11 +16,12 @@ import {
   ACTIVE_DEV_SESSION,
   IDENTITY_CHANGED,
   OTHER_UNREADABLE_RECORD,
+  STOPPING,
   TOO_MANY_FOLDERS,
   UNREADABLE_RECORD,
 } from "./codex-signin-adoption.js";
 import { writeClaudeSetupFile } from "./claude-setup-file.js";
-import { mountCodexSignInRoutes } from "./codex-signin-routes.js";
+import { adoptionView, mountCodexSignInRoutes } from "./codex-signin-routes.js";
 import {
   codexProjectionDigest,
   type CodexSignInProjectionDelivery,
@@ -879,10 +880,21 @@ it("reads a record the installed release parked, keeps its unknown field and lea
   h.removeExtra();
   h.dev.pinByPath = true;
   await h.runtime.reconcile();
-  // It cannot tell a paused undo from a paused adoption, so only the owner resumes it.
+  // It cannot tell a paused undo from a paused adoption, so only the owner resumes it, and the
+  // owner is offered both directions.
   expect(h.runtime.adoption("one")?.status).toBe("needs-owner-confirmation");
   expect(h.legacyCalls("inspect")).toEqual([]);
   expect(JSON.parse(h.journal())[0]).toMatchObject({ fromNewerRelease: { kept: true } });
+  expect(adoptionView(h.runtime.adoption("one")!)).toMatchObject({ directionUnknown: true });
+  // Stopping withdraws the projection and puts Dev's saved sign-in back.
+  await h.runtime.unadopt("one");
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")).toMatchObject({
+    status: "unadopted",
+    restored: { mayNeedSignIn: true },
+  });
+  expect(h.legacyCalls("restore")).toHaveLength(1);
+  expect(h.deliveries.at(-1)).toMatchObject({ access: null });
 });
 
 it("continues a paused undo by itself and never turns it back into an adoption", async () => {
@@ -897,6 +909,9 @@ it("continues a paused undo by itself and never turns it back into an adoption",
   });
   // The facts a rolled-back coordinator would refuse stay out of adoption.json.
   expect(h.installedJournal()[0]?.status).toBe("needs-owner-confirmation");
+  expect(adoptionView(h.runtime.adoption("one")!).directionUnknown).toBeUndefined();
+  // Confirming would reverse the owner's undo; the undo finishes by itself.
+  await expect(h.runtime.adopt("one")).rejects.toThrow(STOPPING);
   h.dev.refusal = null;
   h.dev.pinByPath = true;
   await h.runtime.reconcile();

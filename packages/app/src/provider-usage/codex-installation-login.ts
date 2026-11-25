@@ -85,6 +85,8 @@ const AdoptionSchema = z.object({
   restoreSkipped: z.boolean().optional(),
   copyDeleteBlocked: z.string().optional(),
   hostSignInNeeded: z.boolean().optional(),
+  /** A paused folder change that may have been a switch or an undo; absent means known. */
+  directionUnknown: z.boolean().optional(),
 });
 const AdoptionsSchema = z.object({
   definitions: z.array(

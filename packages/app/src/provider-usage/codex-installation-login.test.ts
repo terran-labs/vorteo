@@ -139,10 +139,22 @@ test("an older coordinator hides adoption, and only an adopted legacy account si
       },
     ],
   });
-  request.mockResolvedValueOnce(listed("needs-owner-confirmation"));
+  request.mockResolvedValueOnce({
+    definitions: [
+      {
+        ...listed("needs-owner-confirmation").definitions[0],
+        adoption: {
+          status: "needs-owner-confirmation",
+          error: null,
+          restored: null,
+          directionUnknown: true,
+        },
+      },
+    ],
+  });
   await expect(codexAdoptionRead("dev", "codex-one")).resolves.toMatchObject({
     definitionId: "shared-codex",
-    adoption: { status: "needs-owner-confirmation" },
+    adoption: { status: "needs-owner-confirmation", directionUnknown: true },
   });
   request.mockResolvedValueOnce(listed("adopted"));
   expect(await codexAccountUsesInstallationSignIn("dev", "codex-one")).toBe(true);
