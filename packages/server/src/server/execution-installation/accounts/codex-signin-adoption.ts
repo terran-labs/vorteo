@@ -76,6 +76,26 @@ const AdoptionRecordSchema = z.strictObject({
    * adoptions so the retention cap stays absolute. Absent means projectedAt, then startedAt.
    */
   copySavedSince: Counter.nullable().optional(),
+  /**
+   * Where that copy lives: the pinned Dev directory of the record that saved it, carried with
+   * copySavedSince so retention can delete it even while this record has no target yet.
+   */
+  copyTarget: CodexLegacyTargetSchema.nullable().optional(),
+  /**
+   * The person this record must find on the Host, carried from an earlier record whose Dev home
+   * may still hold that person's projection. A different person waits for the owner.
+   */
+  expectedIdentityDigest: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .nullable()
+    .optional(),
+  /** The different person found on the Host, which the owner's confirmation accepts. */
+  pendingIdentityDigest: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .nullable()
+    .optional(),
   /** Past the retention cap, the plain reason the saved copy on Dev could not be deleted. */
   copyDeleteBlocked: z.string().max(300).nullable().optional(),
   hostIdentityDigest: z
@@ -325,6 +345,14 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
     if (!(await deps.supported()))
       throw new AdoptionRefused("Update the Host and Dev to the latest version, then try again.");
     const hostIdentityDigest = (await verifyHost(record, check.revision)).digest;
+    // A person other than the one Dev's home may still hold needs the owner's explicit say.
+    if (record.expectedIdentityDigest && record.expectedIdentityDigest !== hostIdentityDigest)
+      return save({
+        ...record,
+        status: "needs-owner-confirmation",
+        error: IDENTITY_CHANGED,
+        pendingIdentityDigest: hostIdentityDigest,
+      });
     const pinning = save({ ...record, status: "pinning", hostIdentityDigest });
     const sessions = z
       .strictObject({ active: z.boolean() })
@@ -424,6 +452,32 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
   }
 
   /**
+   * What a new record inherits from the one it replaces. A backup that was neither restored nor
+   * deleted keeps its clock and its directory, whatever happened in between, so the cap stays
+   * absolute. The person Dev's home may still hold is expected again, unless the owner's
+   * confirmation just accepted a different one; a restore gave Dev its own sign-in back, which
+   * the writer checks by itself.
+   */
+  function carriedFacts(previous: CodexAdoptionRecord | undefined) {
+    if (!previous || previous.restored !== null) return {};
+    const copyTarget = previous.copyTarget ?? previous.target;
+    const copy =
+      previous.copyForgottenAt === null && copyTarget !== null && HELD_COPY.has(previous.status)
+        ? {
+            copySavedSince: previous.copySavedSince ?? previous.projectedAt ?? previous.startedAt,
+            copyTarget,
+          }
+        : {};
+    const accepted =
+      previous.status === "needs-owner-confirmation" && previous.error === IDENTITY_CHANGED
+        ? previous.pendingIdentityDigest
+        : undefined;
+    const expectedIdentityDigest =
+      accepted ?? previous.hostIdentityDigest ?? previous.expectedIdentityDigest ?? null;
+    return { ...copy, ...(expectedIdentityDigest ? { expectedIdentityDigest } : {}) };
+  }
+
+  /**
    * `days` deletes the saved sign-in at the earlier of proven + provenDays and the cap, in every
    * state: also after a cancel, a failure, a changed home or an un-adopt that put nothing back.
    * The cap counts from the first acknowledged projection, or from the start when none was
@@ -436,10 +490,11 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
       rule.mode !== "days" ||
       record.copyForgottenAt !== null ||
       record.restored !== null ||
-      record.target === null ||
+      (record.copyTarget ?? record.target) === null ||
       (record.projectedAt === null && !HELD_COPY.has(record.status))
     )
       return record;
+    const copyTarget = (record.copyTarget ?? record.target)!;
     const cap =
       (record.copySavedSince ?? record.projectedAt ?? record.startedAt) + rule.capDays * DAY_MS;
     const proven =
@@ -448,7 +503,7 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
         : record.provenAt + rule.provenDays * DAY_MS;
     if (deps.now() < Math.min(cap, proven)) return record;
     try {
-      await deps.dev({ ...scope(record), operation: "forget-copy", target: record.target });
+      await deps.dev({ ...scope(record), operation: "forget-copy", target: copyTarget });
     } catch (error) {
       // Past the cap the owner is told, rather than the copy outliving it silently.
       const reason =
@@ -586,25 +641,18 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
         if (previous && (IN_PROGRESS.has(previous.status) || previous.status === "adopted"))
           return previous;
         const check = eligibility(definitionId);
+        const carried = carriedFacts(previous);
         if (check.reason)
           return save({
             ...fresh(definitionId, check.binding),
+            ...carried,
             status: "failed",
             error: check.reason,
           });
-        // A copy an earlier record saved may still be on Dev: its cap keeps counting from then.
-        const copySavedSince =
-          previous &&
-          previous.target !== null &&
-          previous.restored === null &&
-          previous.copyForgottenAt === null &&
-          HELD_COPY.has(previous.status)
-            ? (previous.copySavedSince ?? previous.projectedAt ?? previous.startedAt)
-            : null;
         const record = save({
           ...fresh(definitionId, check.binding),
+          ...carried,
           status: "verifying-host",
-          copySavedSince,
         });
         const next = await step(record);
         if (next.status === "projecting") await deps.refresher.reconcile();
@@ -685,7 +733,12 @@ export function createCodexAdoption(deps: CodexAdoptionDeps) {
       const digest = codexSignInKeyDigest(access.accountId, access.idToken);
       if (digest && record.hostIdentityDigest && digest === record.hostIdentityDigest) return true;
       if (record.status !== "unadopting")
-        save({ ...record, status: "needs-owner-confirmation", error: IDENTITY_CHANGED });
+        save({
+          ...record,
+          status: "needs-owner-confirmation",
+          error: IDENTITY_CHANGED,
+          pendingIdentityDigest: digest,
+        });
       return false;
     },
 

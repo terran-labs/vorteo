@@ -568,6 +568,38 @@ it("refuses a Host re-sign-in as another person until the owner confirms it", as
   expect(h.legacyCalls("forget-copy")).toHaveLength(1);
 });
 
+it("keeps the first backup's 30-day cap and the person check through a failed retry", async () => {
+  const h = legacyHarness();
+  await adopted(h);
+  const firstTarget = h.dev.targets["codex-primary"];
+  // The Host is signed in again as someone else; the owner confirms, but the Host sign-in
+  // cannot renew, so the confirmation fails before Dev's home is pinned again.
+  h.setGrant({ idToken: idToken("b@example.com", "person-2"), expiresAt: h.now() + 9 * DAY });
+  h.advance(10 * 60_000);
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")?.status).toBe("needs-owner-confirmation");
+  h.setGrant({ hasRefreshToken: false });
+  await h.runtime.adopt("one");
+  expect(h.runtime.adoption("one")).toMatchObject({ status: "failed", target: null });
+  // A different person again on the retry gets the different-person reason, not a generic one.
+  h.setGrant({ hasRefreshToken: true, idToken: idToken("c@example.com", "person-3") });
+  await h.runtime.adopt("one");
+  expect(h.runtime.adoption("one")).toMatchObject({
+    status: "needs-owner-confirmation",
+    error: IDENTITY_CHANGED,
+  });
+  // Confirming from that warning accepts this person explicitly, and the switch goes through.
+  await h.runtime.adopt("one");
+  await h.runtime.reconcile();
+  expect(h.runtime.adoption("one")?.status).toBe("adopted");
+  // The backup saved at the first projection still goes 30 days after it, in its own folder.
+  expect(h.legacyCalls("forget-copy")).toEqual([]);
+  h.advance(30 * DAY - 5 * 60_000);
+  await h.runtime.reconcile();
+  expect(h.legacyCalls("forget-copy")).toHaveLength(1);
+  expect(h.legacyCalls("forget-copy")[0]!.body.target).toEqual(firstTarget);
+});
+
 it("stops delivering on a manual rebind or a changed Dev home", async () => {
   const h = legacyHarness();
   await adopted(h);
