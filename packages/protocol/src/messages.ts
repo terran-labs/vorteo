@@ -709,6 +709,7 @@ const AgentCapabilityFlagsSchema: z.ZodType<AgentCapabilityFlags> = z
   .catchall(z.boolean());
 
 const AgentUsageSchema: z.ZodType<AgentUsage> = z.object({
+  sessionTokens: z.number().optional(),
   inputTokens: z.number().optional(),
   cachedInputTokens: z.number().optional(),
   outputTokens: z.number().optional(),

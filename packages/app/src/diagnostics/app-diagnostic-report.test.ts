@@ -82,6 +82,7 @@ describe("app diagnostics report", () => {
       ]),
       clientGeneration: 1,
       connectionEpoch: 1,
+      authorizationGeneration: 0,
     };
 
     const report = formatHostRuntimeSection({ host, snapshot });

@@ -3,14 +3,23 @@ import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { collectNewsletter } from "./dashboard-newsletter.js";
+import { readDashboardFactory } from "./dashboard-factory.js";
 
 const run = promisify(execFile);
-const repository = z.string().regex(/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i);
+const repositorySchema = z.string().regex(/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i);
 const configSchema = z.object({
-  repositories: z.array(repository).max(64).default([]),
-  factories: z.array(repository).max(32).default([]),
+  repositories: z.array(repositorySchema).max(64).default([]),
+  factories: z.array(repositorySchema).max(32).default([]),
   newsletter: z
-    .object({ listId: z.number().int().positive(), apiKeyFile: z.string().min(1) })
+    .object({
+      listId: z.number().int().positive(),
+      apiKeyFile: z.string().min(1),
+      sourceNames: z
+        .array(z.string().regex(/^[a-z0-9][a-z0-9.-]{0,119}$/i))
+        .max(64)
+        .optional(),
+    })
     .optional(),
   syn3h: z
     .object({ accountId: z.string().regex(/^[0-9a-f]{32}$/i), tokenFile: z.string().min(1) })
@@ -18,81 +27,37 @@ const configSchema = z.object({
 });
 type Sources = z.infer<typeof configSchema>;
 type Values = Record<string, number>;
-const factoryLabels =
-  'label:"factory:ready","factory:running","factory:blocked","factory:human-review"';
-const searchResult = z.object({
-  issueCount: z.number(),
-  nodes: z.array(z.object({ createdAt: z.string().datetime() })).optional(),
-});
-
-async function github(repo: string, factory: boolean, now: Date): Promise<Values> {
+async function github(repo: string, signal: AbortSignal): Promise<Values> {
   const [owner, name] = repo.split("/");
-  const base = "repo:" + repo + " is:issue " + factoryLabels;
-  const day = now.toISOString().slice(0, 10);
-  const search = (q: string, oldest = false) =>
-    "search(type:ISSUE,first:1,query:" +
-    JSON.stringify(base + " " + q) +
-    "){issueCount" +
-    (oldest ? " nodes{... on Issue{createdAt}}" : "") +
-    "}";
   const query =
     "query { repository(owner:" +
     JSON.stringify(owner) +
     ",name:" +
     JSON.stringify(name) +
-    "){releases{totalCount}}" +
-    (factory
-      ? " open:" +
-        search("is:open sort:created-asc", true) +
-        " closed:" +
-        search("is:closed closed:" + day) +
-        " arrivals:" +
-        search("created:" + day)
-      : "") +
-    "}";
+    "){releases{totalCount}}}";
   const { stdout } = await run(
     "gh",
     ["api", "--hostname", "github.com", "graphql", "-f", "query=" + query],
-    { timeout: 15_000, maxBuffer: 256_000 },
+    { timeout: 15_000, maxBuffer: 256_000, signal },
   );
   const data = z
     .object({
       data: z.object({
         repository: z.object({ releases: z.object({ totalCount: z.number() }) }),
-        open: searchResult.optional(),
-        closed: searchResult.optional(),
-        arrivals: searchResult.optional(),
       }),
     })
     .parse(JSON.parse(stdout)).data;
-  const result: Values = { ["releases:" + repo]: data.repository.releases.totalCount };
-  if (data.open && data.closed && data.arrivals) {
-    result["open:" + repo] = data.open.issueCount;
-    result["closed:" + repo] = data.closed.issueCount;
-    result["arrivals:" + repo] = data.arrivals.issueCount;
-    const oldest = data.open.nodes?.[0];
-    if (oldest)
-      result["oldest:" + repo] = Math.floor(
-        (now.getTime() - Date.parse(oldest.createdAt)) / 86_400_000,
-      );
-  }
-  return result;
+  return { ["releases:" + repo]: data.repository.releases.totalCount };
 }
 
-async function newsletter(settings: NonNullable<Sources["newsletter"]>): Promise<Values> {
-  const key = (await readFile(settings.apiKeyFile, "utf8")).trim();
-  const response = await fetch("https://api.brevo.com/v3/contacts/lists/" + settings.listId, {
-    headers: { "api-key": key },
-    signal: AbortSignal.timeout(10_000),
-    redirect: "error",
-  });
-  if (!response.ok) throw new Error("Brevo read failed");
-  const list = z.object({ totalSubscribers: z.number() }).parse(await response.json());
-  return { subscribers: list.totalSubscribers };
-}
-
-async function syn3h(settings: NonNullable<Sources["syn3h"]>, day: string): Promise<Values> {
-  const token = (await readFile(settings.tokenFile, "utf8")).trim();
+async function syn3h(input: {
+  settings: NonNullable<Sources["syn3h"]>;
+  day: string;
+  signal: AbortSignal;
+  unavailable: string[];
+}): Promise<Values> {
+  const { settings, day, signal } = input;
+  const token = (await readFile(settings.tokenFile, { encoding: "utf8", signal })).trim();
   const url =
     "https://api.cloudflare.com/client/v4/accounts/" + settings.accountId + "/analytics_engine/sql";
   const numeric = z
@@ -104,7 +69,7 @@ async function syn3h(settings: NonNullable<Sources["syn3h"]>, day: string): Prom
       method: "POST",
       headers: { Authorization: "Bearer " + token },
       body: sql,
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
       redirect: "error",
     });
     if (!response.ok) throw new Error("Syn3h read failed");
@@ -137,6 +102,10 @@ async function syn3h(settings: NonNullable<Sources["syn3h"]>, day: string): Prom
   const daySeven = new Date(Date.parse(day) - 7 * 86_400_000).toISOString().slice(0, 10);
   const active = new Set(players.map((row) => z.string().parse(row.aid)));
   const values: Values = {};
+  if (players.length >= 100000)
+    input.unavailable.push("Syn3h daily player and retention counts exceeded the query limit.");
+  else if (cohort.length >= 100000)
+    input.unavailable.push("Syn3h retention counts exceeded the first-seen query limit.");
   if (players.length < 100000) {
     values.synPlayers = active.size;
   }
@@ -178,37 +147,90 @@ export async function collectDashboardSources(
   home: string,
   now: Date,
   values: Values,
+  signal: AbortSignal,
+  projects: readonly { projectId: string; archivedAt: string | null }[] = [],
 ): Promise<string[]> {
-  let config: Sources;
+  let config: Sources = { repositories: [], factories: [] };
+  const unavailable: string[] = [];
   try {
     config = configSchema.parse(
-      JSON.parse(await readFile(path.join(home, "dashboard", "sources.json"), "utf8")),
+      JSON.parse(
+        await readFile(path.join(home, "dashboard", "sources.json"), { encoding: "utf8", signal }),
+      ),
     );
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT"
-      ? []
-      : ["Dashboard source configuration could not be read."];
+    signal.throwIfAborted();
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
+      unavailable.push("Dashboard source configuration could not be read.");
   }
-  const unavailable: string[] = [];
   async function read(label: string, load: () => Promise<Values>) {
+    if (signal.aborted) return;
     try {
       Object.assign(values, await load());
     } catch {
-      unavailable.push(label + " unavailable at this observation.");
+      if (!signal.aborted) unavailable.push(label + " unavailable at this observation.");
     }
   }
-  const integrations = [
-    config.newsletter && read("Newsletter", () => newsletter(config.newsletter!)),
-    config.syn3h && read("Syn3h", () => syn3h(config.syn3h!, now.toISOString().slice(0, 10))),
-  ];
-  const repos = [...new Set([...config.repositories, ...config.factories])];
-  for (let i = 0; i < repos.length; i += 3) {
-    await Promise.all(
-      repos
-        .slice(i, i + 3)
-        .map((repo) => read(repo, () => github(repo, config.factories.includes(repo), now))),
-    );
+  async function readRepositories() {
+    const repos = [...new Set([...config.repositories, ...config.factories])];
+    for (let i = 0; i < repos.length && !signal.aborted; i += 3) {
+      await Promise.all(
+        repos.slice(i, i + 3).map((repo) => read(repo, () => github(repo, signal))),
+      );
+    }
   }
-  await Promise.all(integrations);
+  const { newsletter: newsletterSettings, syn3h: syn3hSettings } = config;
+  const day = now.toISOString().slice(0, 10);
+  async function factories() {
+    const report = await readDashboardFactory({
+      paseoHome: home,
+      projects,
+      now,
+      since: new Date(day + "T00:00:00Z"),
+      queueMaxAgeMs: 3_600_000,
+      signal,
+    });
+    if (report.status === "unavailable") {
+      unavailable.push("Factory registry unavailable.");
+      return;
+    }
+    for (const project of report.projects) {
+      const { stages, repository } = project;
+      if (stages.status === "observed" && !stages.stale && !stages.partial) {
+        for (const [stage, count] of Object.entries(stages.counts))
+          values[`factory-${stage}:${repository}`] = count;
+      } else {
+        unavailable.push(
+          stages.status === "observed"
+            ? `${repository} Factory queue is stale or incomplete (observed ${stages.fetchedAt}).`
+            : `${repository} Factory queue unavailable.`,
+        );
+      }
+      const oldest = project.oldestOpenIssue;
+      if (oldest.status === "complete") values["oldestOpenDays:" + repository] = oldest.ageDays;
+      if (oldest.status === "unavailable")
+        unavailable.push(repository + " oldest open ticket age unavailable.");
+      const labels = {
+        qualifiedMerges: "Factory merges",
+        issueClosures: "Factory closures",
+        firstAdmissions: "First Factory label admissions",
+      };
+      for (const metric of ["qualifiedMerges", "issueClosures", "firstAdmissions"] as const) {
+        const history = project[metric];
+        if (history.status === "complete") values[metric + ":" + repository] = history.count;
+        else unavailable.push(repository + " " + labels[metric] + " unavailable.");
+      }
+    }
+  }
+  if (!newsletterSettings) unavailable.push("Newsletter read credentials are not configured.");
+  if (!syn3hSettings) unavailable.push("Syn3h read credentials are not configured.");
+  await Promise.all([
+    newsletterSettings && read("Newsletter", () => collectNewsletter(newsletterSettings, signal)),
+    syn3hSettings &&
+      read("Syn3h", () => syn3h({ settings: syn3hSettings, day, signal, unavailable })),
+    readRepositories(),
+    factories(),
+  ]);
+  signal.throwIfAborted();
   return unavailable;
 }

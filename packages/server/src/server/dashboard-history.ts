@@ -1,22 +1,45 @@
-import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "pino";
 import { z } from "zod";
 import { DashboardSampleSchema, type DashboardSample } from "@getpaseo/protocol/messages";
 import { writeJsonFileAtomic } from "./atomic-file.js";
-
 import { collectDashboardSources } from "./dashboard-sources.js";
 
 const HOUR = 3_600_000;
 const historyFile = (home: string) => path.join(home, "dashboard", "hourly.json");
 const historySchema = z.array(DashboardSampleSchema);
-export async function readDashboardHistory(home: string): Promise<DashboardSample[]> {
+async function readHistoryFile(home: string, signal?: AbortSignal): Promise<Buffer> {
   try {
-    return historySchema.parse(JSON.parse(await readFile(historyFile(home), "utf8")));
+    return await readFile(historyFile(home), { signal });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      return Buffer.from("[]");
     throw error;
   }
+}
+
+export async function readDashboardHistory(home: string): Promise<DashboardSample[]> {
+  const raw = await readHistoryFile(home);
+  return historySchema.parse(JSON.parse(raw.toString("utf8")));
+}
+
+function parseHistoryForCollection(raw: Buffer) {
+  let data: unknown;
+  try {
+    data = JSON.parse(raw.toString("utf8"));
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    return { samples: [], corrupt: true };
+  }
+  if (!Array.isArray(data)) return { samples: [], corrupt: true };
+  const samples: DashboardSample[] = [];
+  for (const row of data) {
+    const result = DashboardSampleSchema.safeParse(row);
+    if (result.success) samples.push(result.data);
+  }
+  return { samples, corrupt: samples.length !== data.length };
 }
 
 export function summarizeDashboard(
@@ -43,42 +66,65 @@ export function summarizeDashboard(
 
 export function createDashboardCollector(
   home: string,
-  collect: () => Promise<Record<string, number>>,
+  collect: (
+    signal: AbortSignal,
+    at: number,
+    lastRecordedAt?: string,
+  ) => Promise<Record<string, number>>,
   logger: Logger,
+  collectSources = collectDashboardSources,
 ) {
   let timer: ReturnType<typeof setInterval> | undefined;
   let running: Promise<void> | undefined;
-  const record = async () => {
-    const history = await readDashboardHistory(home);
+  let controller: AbortController | undefined;
+  async function record(signal: AbortSignal) {
+    const raw = await readHistoryFile(home, signal);
+    const { samples, corrupt } = parseHistoryForCollection(raw);
     const now = Date.now();
     // Restarts in the same bucket preserve its existing observation.
     const hour = Math.floor(now / HOUR);
-    if (history.some((sample) => Math.floor(Date.parse(sample.at) / HOUR) === hour)) return;
-    const values = await collect();
-    const unavailable = await collectDashboardSources(home, new Date(now), values);
-    const sample = { at: new Date(now).toISOString(), values, unavailable };
-    await writeJsonFileAtomic(historyFile(home), [
-      ...history.filter((point) => Date.parse(point.at) > now - 90 * 24 * HOUR),
-      sample,
-    ]);
-  };
-  const tick = () => {
-    running ??= record()
-      .catch((err) => logger.warn({ err }, "Dashboard collection failed"))
+    const recorded = samples.some((sample) => Math.floor(Date.parse(sample.at) / HOUR) === hour);
+    if (recorded && !corrupt) return;
+    const history = samples.filter((sample) => Date.parse(sample.at) > now - 90 * 24 * HOUR);
+    if (!recorded) {
+      signal.throwIfAborted();
+      const values = await collect(signal, now, history.at(-1)?.at);
+      signal.throwIfAborted();
+      const unavailable = await collectSources(home, new Date(now), values, signal);
+      history.push({ at: new Date(now).toISOString(), values, unavailable });
+    }
+    signal.throwIfAborted();
+    const file = historyFile(home);
+    if (corrupt) {
+      // Preserve the original before replacing it, including rows we could not decode.
+      const backup = `${file}.corrupt-${randomUUID()}`;
+      await writeFile(backup, raw, { flag: "wx", mode: 0o600 });
+      logger.warn({ backup }, "Preserved damaged dashboard history");
+    }
+    signal.throwIfAborted();
+    await writeJsonFileAtomic(file, history);
+  }
+  function tick(signal: AbortSignal) {
+    running ??= record(signal)
+      .catch((err: unknown) => {
+        if (!signal.aborted) logger.warn({ err }, "Dashboard collection failed");
+      })
       .finally(() => {
         running = undefined;
       });
-  };
+  }
   return {
     start() {
-      if (timer) return;
-      tick();
-      timer = setInterval(tick, HOUR);
+      if (timer || running) return;
+      controller = new AbortController();
+      tick(controller.signal);
+      timer = setInterval(tick, HOUR, controller.signal);
       timer.unref();
     },
     async stop() {
       clearInterval(timer);
       timer = undefined;
+      controller?.abort();
       await running;
     },
   };

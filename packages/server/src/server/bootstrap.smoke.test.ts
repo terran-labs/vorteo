@@ -14,6 +14,7 @@ import { WebSocket } from "ws";
 
 import { createPaseoDaemon, parseListenString, type PaseoDaemonConfig } from "./bootstrap.js";
 import { loadConfig } from "./config.js";
+import { readDashboardHistory } from "./dashboard-history.js";
 import {
   FileBackedProjectRegistry,
   FileBackedWorkspaceRegistry,
@@ -93,17 +94,32 @@ describe("paseo daemon bootstrap", () => {
     }
   });
 
-  test("a client can read the hourly dashboard collected before it connected", async () => {
-    const handle = await createTestPaseoDaemon();
+  test("collects local dashboard metrics before a client connects with an external source offline", async () => {
+    const paseoHomeRoot = await mkdtemp(path.join(os.tmpdir(), "paseo-dashboard-offline-"));
+    onTestFinished(() => rm(paseoHomeRoot, { recursive: true, force: true }));
+    const dashboardDir = path.join(paseoHomeRoot, ".paseo", "dashboard");
+    await mkdir(dashboardDir, { recursive: true });
+    await writeFile(
+      path.join(dashboardDir, "sources.json"),
+      JSON.stringify({
+        newsletter: { listId: 1, apiKeyFile: path.join(dashboardDir, "missing-key") },
+      }),
+    );
+    const handle = await createTestPaseoDaemon({ paseoHomeRoot });
     const client = new DaemonClient({ url: `ws://127.0.0.1:${handle.port}/ws` });
     try {
-      await client.connect();
       await vi.waitFor(async () => {
-        const report = await client.getDashboardMetrics();
-        expect(report.error).toBeNull();
-        expect(report.samples).toHaveLength(1);
-        expect(report.samples[0]?.values.workspaces).toEqual(expect.any(Number));
+        expect(await readDashboardHistory(handle.paseoHome)).toHaveLength(1);
       });
+      await client.connect();
+      const report = await client.getDashboardMetrics();
+      expect(report.error).toBeNull();
+      expect(report.samples).toHaveLength(1);
+      expect(report.samples[0]?.values.workspaces).toEqual(expect.any(Number));
+      expect(report.samples[0]?.values).not.toHaveProperty("newsletterEligible");
+      expect(report.samples[0]?.unavailable).toContain(
+        "Newsletter unavailable at this observation.",
+      );
     } finally {
       await client.close();
       await handle.close();

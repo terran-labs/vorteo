@@ -1147,34 +1147,41 @@ function finiteCount(value: unknown): number | undefined {
 }
 
 /** Codex reports no cost, so the session's cumulative tokens are priced for an estimate. */
-function estimateFromTotals(
+function usageFromSessionTotals(
   total: Record<string, unknown> | undefined,
   model: string | null | undefined,
 ) {
-  if (!total) return undefined;
+  if (!total) return {};
   const inputTokens = finiteCount(total.inputTokens ?? total.input_tokens);
   const outputTokens = finiteCount(total.outputTokens ?? total.output_tokens);
-  if (inputTokens === undefined || outputTokens === undefined) return undefined;
+  if (inputTokens === undefined || outputTokens === undefined) return {};
   const cachedInputTokens = finiteCount(total.cachedInputTokens ?? total.cached_input_tokens) ?? 0;
-  return estimateSessionCostUsd(model, { inputTokens, cachedInputTokens, outputTokens });
+  const estimatedCostUsd = estimateSessionCostUsd(model, {
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+  });
+  return {
+    sessionTokens: inputTokens + outputTokens,
+    ...(estimatedCostUsd !== undefined ? { estimatedCostUsd } : {}),
+  };
 }
 
 export function toAgentUsage(tokenUsage: unknown, model?: string | null): AgentUsage | undefined {
   const usage = toObjectRecord(tokenUsage);
   if (!usage) return undefined;
   const last = toObjectRecord(usage.last);
-  const estimatedCostUsd = estimateFromTotals(toObjectRecord(usage.total), model);
   const contextWindowMaxTokens = firstPositiveFiniteNumber(
     usage.model_context_window,
     usage.modelContextWindow,
   );
   const contextWindowUsedTokens = firstPositiveFiniteNumber(last?.total_tokens, last?.totalTokens);
   return {
+    ...usageFromSessionTotals(toObjectRecord(usage.total), model),
     inputTokens: typeof last?.inputTokens === "number" ? last.inputTokens : undefined,
     cachedInputTokens:
       typeof last?.cachedInputTokens === "number" ? last.cachedInputTokens : undefined,
     outputTokens: typeof last?.outputTokens === "number" ? last.outputTokens : undefined,
-    ...(estimatedCostUsd !== undefined ? { estimatedCostUsd } : {}),
     ...(contextWindowMaxTokens !== undefined ? { contextWindowMaxTokens } : {}),
     ...(contextWindowUsedTokens !== undefined ? { contextWindowUsedTokens } : {}),
   };

@@ -75,7 +75,6 @@ import { type GestureType } from "react-native-gesture-handler";
 import { WorkspaceRenameModal } from "@/components/workspace-rename-modal";
 import {
   ExternalLink,
-  LayoutDashboard,
   Settings,
   MoreVertical,
   Plus,
@@ -285,7 +284,6 @@ function treeRowItems<T>(rows: readonly SidebarTreeRow<T>[]): T[] {
 const WORKSPACE_STATUS_DOT_WIDTH = 14;
 // A project's direct children (workspaces, folders, Standing, Factory) sit one level in; the
 // workspaces inside Standing, Factory and project folders sit one level further per step.
-const ThemedDashboardIcon = withUnistyles(LayoutDashboard);
 const ThemedExternalLink = withUnistyles(ExternalLink);
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const ThemedPlus = withUnistyles(Plus);
@@ -3166,34 +3164,6 @@ function useProjectModeView(input: {
   };
 }
 
-function DashboardSidebarRow({
-  mainSidebar,
-  focused,
-  beforeNavigate,
-}: {
-  mainSidebar?: boolean;
-  focused: boolean;
-  beforeNavigate?: () => void;
-}) {
-  const selected = usePathname() === "/dashboard";
-  const navigate = useCallback(() => {
-    beforeNavigate?.();
-    router.navigate("/dashboard");
-  }, [beforeNavigate]);
-  if (!mainSidebar || focused) return null;
-  return (
-    <PressHighlight
-      accessibilityRole="link"
-      accessibilityLabel="Dashboard"
-      style={[styles.dashboardRow, selected && styles.projectRowPressed]}
-      onPress={navigate}
-    >
-      <ThemedDashboardIcon size={16} uniProps={foregroundMutedColorMapping} />
-      <Text style={styles.projectTitle}>Dashboard</Text>
-    </PressHighlight>
-  );
-}
-
 function ProjectModeListContent({
   onContentSizeChange,
   onScrolledChange,
@@ -3767,12 +3737,6 @@ function ProjectModeListContent({
   const content = (
     <>
       {listTopComponent}
-      {/* The main sidebar only; a single project's rail flyout has no global section. */}
-      <DashboardSidebarRow
-        mainSidebar={rootFolders}
-        focused={focus !== null}
-        beforeNavigate={onWorkspacePress}
-      />
       <AllFactoriesSection
         mainSidebar={rootFolders}
         focused={focus !== null}
@@ -3936,13 +3900,6 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "space-between",
     gap: theme.spacing[2],
     userSelect: "none",
-  },
-  dashboardRow: {
-    minHeight: 44,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[2],
-    paddingHorizontal: theme.spacing[4],
   },
   projectRowMain: {
     flex: 1,

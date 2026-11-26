@@ -455,6 +455,11 @@ describe("service principals", () => {
     try {
       await owner.connect();
       expect(owner.getLastServerInfoMessage()?.features?.servicePrincipals).toBe(true);
+      await vi.waitFor(async () => {
+        const dashboard = await owner.getDashboardMetrics();
+        expect(dashboard.error).toBeNull();
+        expect(dashboard.samples[0]?.values).toHaveProperty("workspaces", expect.any(Number));
+      });
       for (const permission of ["access.manage", "daemon.read", "workspace.write"] as const) {
         const refused = await owner.createServicePrincipal({
           label: "escalation",
@@ -484,6 +489,7 @@ describe("service principals", () => {
       await expect(service.fetchWorkspaces()).resolves.toBeDefined();
       await expect(service.fetchAgents()).resolves.toBeDefined();
       await expect(service.listProjects()).resolves.toBeDefined();
+      await expect(service.getDashboardMetrics()).rejects.toThrow(/not authorized/);
       // Daemon-wide read returns projected directory data and no single-agent reads.
       const owned = await owner.createAgent({ provider: "codex", cwd: daemonHandle.staticDir });
       const listed = await service.fetchAgents();
