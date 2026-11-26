@@ -634,6 +634,8 @@ without folder support. Patch merging and repair rules are in
 
 Stores binary attachment blobs keyed by attachment ID.
 
+Images attached by picking, pasting or dropping, and images added while editing a queued message, are reduced before any store saves them (`reduceImageForSending` in `packages/app/src/attachments/utils.ts`). A PNG, JPEG or WebP image whose long edge exceeds 2,576 px or whose file exceeds 3 MiB is scaled to fit 2,576 px, never upscaled, and scaled further until it fits 3 MiB, which stays under 5 MB once base64 encoded. PNG stays PNG when it has transparency, when transparency cannot be read (native), or once it fits; otherwise JPEG at quality 0.85 replaces it when smaller, and a JPEG stays JPEG. Images within both limits, other types such as GIF, file previews saved from bytes, and images already in a draft are stored as they are. A reduction that fails keeps the original. Web and desktop scale with the browser canvas; iOS and Android use `expo-image-manipulator`.
+
 ### AttachmentMetadata
 
 | Field         | Type      | Description                    |

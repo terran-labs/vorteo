@@ -1,3 +1,4 @@
+import { SessionHostFrameTooLargeError } from "../session-host/client.js";
 import { PARENT_SERVER_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import { PROJECT_FACTORY_ROLE_LABEL } from "../factory/project/roles.js";
 import {
@@ -10903,85 +10904,102 @@ test.each([
   },
 );
 
-test("streamAgent clears pending run when startTurn fails before a turn id exists", async () => {
-  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-start-turn-failure-"));
-  const storagePath = join(workdir, "agents");
-  const storage = new AgentStorage(storagePath, logger);
+const oversizedPrompt = new SessionHostFrameTooLargeError(37 * 1024 * 1024, 32 * 1024 * 1024);
 
-  class FailsOnceBeforeTurnSession extends TestAgentSession {
-    private attempt = 0;
+test.each([
+  {
+    failure: "a provider rejection records the attempt and a system error",
+    error: new Error("Invalid request: missing field `text`"),
+    timeline: [
+      {
+        type: "user_message",
+        text: "fail before turn id",
+        clientMessageId: "rejected-prompt",
+        messageId: "rejected-prompt",
+      },
+      { type: "assistant_message", text: "[System Error] Invalid request: missing field `text`" },
+    ],
+  },
+  {
+    // The composer or queue that submitted it keeps the attempt and shows the reason once.
+    failure: "a prompt refused for size before sending records nothing",
+    error: oversizedPrompt,
+    timeline: [],
+  },
+])(
+  "streamAgent clears pending run when startTurn fails before a turn id exists: $failure",
+  async ({ error, timeline }) => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-manager-start-turn-failure-"));
+    const storagePath = join(workdir, "agents");
+    const storage = new AgentStorage(storagePath, logger);
 
-    override async startTurn(): Promise<{ turnId: string }> {
-      this.attempt += 1;
-      if (this.attempt === 1) {
-        throw new Error("Invalid request: missing field `text`");
+    class FailsOnceBeforeTurnSession extends TestAgentSession {
+      private attempt = 0;
+
+      override async startTurn(): Promise<{ turnId: string }> {
+        this.attempt += 1;
+        if (this.attempt === 1) {
+          throw error;
+        }
+        return super.startTurn();
       }
-      return super.startTurn();
     }
-  }
 
-  class FailsOnceClient implements AgentClient {
-    readonly provider = "codex" as const;
-    readonly capabilities = TEST_CAPABILITIES;
-    readonly session = new FailsOnceBeforeTurnSession({
-      provider: "codex",
-      cwd: workdir,
+    class FailsOnceClient implements AgentClient {
+      readonly provider = "codex" as const;
+      readonly capabilities = TEST_CAPABILITIES;
+      readonly session = new FailsOnceBeforeTurnSession({
+        provider: "codex",
+        cwd: workdir,
+      });
+
+      async isAvailable(): Promise<boolean> {
+        return true;
+      }
+
+      async createSession(): Promise<AgentSession> {
+        return this.session;
+      }
+
+      async resumeSession(): Promise<AgentSession> {
+        return this.session;
+      }
+    }
+
+    const manager = new AgentManager({
+      clients: {
+        codex: new FailsOnceClient(),
+      },
+      registry: storage,
+      logger,
+      idFactory: () => "00000000-0000-4000-8000-000000000131",
     });
 
-    async isAvailable(): Promise<boolean> {
-      return true;
-    }
+    const agent = await manager.createAgent(
+      {
+        provider: "codex",
+        cwd: workdir,
+        title: "Start turn failure cleanup",
+      },
+      undefined,
+      { workspaceId: undefined },
+    );
 
-    async createSession(): Promise<AgentSession> {
-      return this.session;
-    }
+    await expect(
+      manager.runAgent(agent.id, "fail before turn id", {
+        clientMessageId: "rejected-prompt",
+      }),
+    ).rejects.toThrow(error.message);
+    expect(manager.getTimeline(agent.id)).toEqual(timeline);
 
-    async resumeSession(): Promise<AgentSession> {
-      return this.session;
-    }
-  }
-
-  const manager = new AgentManager({
-    clients: {
-      codex: new FailsOnceClient(),
-    },
-    registry: storage,
-    logger,
-    idFactory: () => "00000000-0000-4000-8000-000000000131",
-  });
-
-  const agent = await manager.createAgent(
-    {
-      provider: "codex",
-      cwd: workdir,
-      title: "Start turn failure cleanup",
-    },
-    undefined,
-    { workspaceId: undefined },
-  );
-
-  await expect(
-    manager.runAgent(agent.id, "fail before turn id", {
-      clientMessageId: "rejected-prompt",
-    }),
-  ).rejects.toThrow("Invalid request: missing field `text`");
-  expect(manager.getTimeline(agent.id)).toEqual([
-    {
-      type: "user_message",
-      text: "fail before turn id",
-      clientMessageId: "rejected-prompt",
-      messageId: "rejected-prompt",
-    },
-    { type: "assistant_message", text: "[System Error] Invalid request: missing field `text`" },
-  ]);
-
-  await expect(manager.runAgent(agent.id, "second turn")).resolves.toEqual(
-    expect.objectContaining({
-      sessionId: expect.any(String),
-      canceled: false,
-    }),
-  );
-});
+    await expect(manager.runAgent(agent.id, "second turn")).resolves.toEqual(
+      expect.objectContaining({
+        sessionId: expect.any(String),
+        canceled: false,
+      }),
+    );
+  },
+);
 
 test("acknowledged cancellation settles a pending run before it has a turn id", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-cancel-pending-start-"));
