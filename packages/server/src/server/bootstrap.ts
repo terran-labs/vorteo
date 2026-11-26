@@ -1,3 +1,6 @@
+import { createDashboardCollector, summarizeDashboard } from "./dashboard-history.js";
+import { collectDashboardSources } from "./dashboard-sources.js";
+import { createDashboardIntervalUsage } from "./dashboard-usage.js";
 import { loadPersistedConfig } from "./persisted-config.js";
 import { BlockedTaskReviewService } from "./agent/task-checklist/review-service.js";
 import { ChecklistWakeService } from "./agent/task-checklist/wake-service.js";
@@ -2098,6 +2101,24 @@ export async function createPaseoDaemon(
     if (optimizerAgent === null) optimizerAgent = startOptimizerSeeding(environment);
   };
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
+  const measureInterval = createDashboardIntervalUsage();
+  const dashboard = createDashboardCollector(
+    config.paseoHome,
+    async (_signal, at, lastRecordedAt) => {
+      const [projects, workspaces, agents] = await Promise.all([
+        projectRegistry.list(),
+        archiveWorkspaceRegistry.list(),
+        agentStorage.list(),
+      ]);
+      return {
+        ...summarizeDashboard(projects, workspaces, agents),
+        ...measureInterval(agents, at, lastRecordedAt),
+      };
+    },
+    logger,
+    async (home, now, values, signal) =>
+      collectDashboardSources(home, now, values, signal, await projectRegistry.list()),
+  );
   const persistedRecords = await agentStorage.list();
   logger.info(
     { elapsed: elapsed() },
@@ -2622,6 +2643,7 @@ export async function createPaseoDaemon(
       // model loading doesn't block the server from accepting connections.
       speechService.start();
       scriptHealthMonitor.start();
+      dashboard.start();
       blockedTaskReviews.start();
       usageLimitResumes.start();
       // After listening, so the first Optimizer agent never delays startup.
@@ -2718,6 +2740,7 @@ export async function createPaseoDaemon(
     // they serve has been closed, further down.
     unsubscribePluginProviders();
     workspaceReconciliation.dispose();
+    await dashboard.stop();
     scriptHealthMonitor.stop();
     stopPreviewBrokerWatch();
     installPreviewBrokerRestarter(null);

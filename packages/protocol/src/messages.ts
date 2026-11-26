@@ -709,6 +709,7 @@ const AgentCapabilityFlagsSchema: z.ZodType<AgentCapabilityFlags> = z
   .catchall(z.boolean());
 
 const AgentUsageSchema: z.ZodType<AgentUsage> = z.object({
+  sessionTokens: z.number().optional(),
   inputTokens: z.number().optional(),
   cachedInputTokens: z.number().optional(),
   outputTokens: z.number().optional(),
@@ -1857,6 +1858,27 @@ export const WaitForFinishRequestSchema = z.object({
   /** Accepts full ID, unique prefix, or exact full title (server resolves). */
   agentId: z.string(),
   timeoutMs: z.number().int().positive().optional(),
+});
+
+export const DashboardGetRequestSchema = z.object({
+  type: z.literal("dashboard.get_metrics.request"),
+  requestId: z.string(),
+});
+
+export const DashboardSampleSchema = z.object({
+  at: z.string().datetime(),
+  values: z.record(z.string(), z.number()),
+  unavailable: z.array(z.string()),
+});
+export type DashboardSample = z.infer<typeof DashboardSampleSchema>;
+
+export const DashboardGetResponseSchema = z.object({
+  type: z.literal("dashboard.get_metrics.response"),
+  payload: z.object({
+    requestId: z.string(),
+    samples: z.array(DashboardSampleSchema),
+    error: z.string().nullable(),
+  }),
 });
 
 export const DaemonGetStatusRequestSchema = z.object({
@@ -3984,6 +4006,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   SetVoiceModeMessageSchema,
   SendAgentMessageRequestSchema,
   WaitForFinishRequestSchema,
+  DashboardGetRequestSchema,
   DaemonGetStatusRequestSchema,
   DaemonGetPairingOfferRequestSchema,
   AccessServicePrincipalsListRequestSchema,
@@ -4452,6 +4475,7 @@ export const ServerInfoStatusPayloadSchema = z
         // floor is >= v0.2.0.
         forgeSearch: z.boolean().optional(),
         // COMPAT(daemonStatusRpc): added in v0.1.76, remove gate after 2026-11-18.
+        dashboardMetrics: z.boolean().optional(),
         daemonStatusRpc: z.boolean().optional(),
         // COMPAT(daemonConfigReload): added in v0.4.0, remove gate after 2027-02-14.
         daemonConfigReload: z.boolean().optional(),
@@ -8278,6 +8302,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   WorkspaceMarkUnreadResponseSchema,
   SendAgentMessageResponseMessageSchema,
   SetVoiceModeResponseMessageSchema,
+  DashboardGetResponseSchema,
   DaemonGetStatusResponseSchema,
   DaemonGetPairingOfferResponseSchema,
   AccessServicePrincipalsListResponseSchema,
