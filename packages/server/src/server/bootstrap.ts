@@ -603,6 +603,7 @@ export interface PaseoDaemon {
 }
 
 export interface PaseoDaemonDependencies {
+  collectDashboardSources?: typeof collectDashboardSources;
   createGovernedScheduleRuntime?: CreateGovernedScheduleRuntime;
   builtinPlugins?: BuiltinPluginLoader;
   hubRelationshipRemote?: HubRelationshipRemote;
@@ -2102,6 +2103,7 @@ export async function createPaseoDaemon(
   };
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
   const measureInterval = createDashboardIntervalUsage();
+  const readDashboardSources = dependencies.collectDashboardSources ?? collectDashboardSources;
   const dashboard = createDashboardCollector(
     config.paseoHome,
     async (_signal, at, lastRecordedAt) => {
@@ -2117,7 +2119,7 @@ export async function createPaseoDaemon(
     },
     logger,
     async (home, now, values, signal) =>
-      collectDashboardSources(home, now, values, signal, await projectRegistry.list()),
+      readDashboardSources(home, now, values, signal, await projectRegistry.list()),
   );
   const persistedRecords = await agentStorage.list();
   logger.info(
@@ -2386,7 +2388,9 @@ export async function createPaseoDaemon(
 
   logger.info({ elapsed: elapsed() }, "Bootstrap complete, ready to start listening");
 
+  let dashboardStopRequested = false;
   const start = async () => {
+    dashboardStopRequested = false;
     let mainStarted = false;
     try {
       localCredential = await writeLocalCredential(config.paseoHome);
@@ -2643,12 +2647,13 @@ export async function createPaseoDaemon(
       // model loading doesn't block the server from accepting connections.
       speechService.start();
       scriptHealthMonitor.start();
-      dashboard.start();
+      if (!dashboardStopRequested) dashboard.start();
       blockedTaskReviews.start();
       usageLimitResumes.start();
       // After listening, so the first Optimizer agent never delays startup.
       void systemSeeded.then(activateOptimizerAgent);
     } catch (error) {
+      await dashboard.stop();
       checklistMonitoring = false;
       checklistWakes.stop();
       blockedTaskReviews.stop();
@@ -2698,6 +2703,9 @@ export async function createPaseoDaemon(
 
   /** onStep names each awaited stage, so a stalled shutdown reports where it stopped. */
   const stop = async (options?: { onStep?: (step: string) => void; keepTerminals?: boolean }) => {
+    // A pending start can finish after shutdown has begun.
+    dashboardStopRequested = true;
+    const dashboardStopped = dashboard.stop();
     const step = options?.onStep ?? (() => {});
     optimizerAgent?.stop();
     projectFactoryService?.stop();
@@ -2713,7 +2721,12 @@ export async function createPaseoDaemon(
     agentManager.prepareForShutdown();
     // Revoke remote execution authority before asynchronous fork teardown.
     step("hub relationships");
-    await hubRelationships.stop();
+    try {
+      await hubRelationships.stop();
+    } finally {
+      step("dashboard sampling");
+      await dashboardStopped;
+    }
     step("schedules");
     await scheduleService.stop().catch(() => undefined);
     const governedFailures: unknown[] = [];
@@ -2740,7 +2753,6 @@ export async function createPaseoDaemon(
     // they serve has been closed, further down.
     unsubscribePluginProviders();
     workspaceReconciliation.dispose();
-    await dashboard.stop();
     scriptHealthMonitor.stop();
     stopPreviewBrokerWatch();
     installPreviewBrokerRestarter(null);
