@@ -903,6 +903,11 @@ export interface AgentSession {
    */
   isDurablyHosted?(): boolean;
   /**
+   * Throws before anything is sent when this prompt cannot be delivered, as when it would exceed
+   * the session host's frame limit. Callers check before they replace or steer a running turn.
+   */
+  assertPromptFits?(prompt: AgentPromptInput, options?: AgentRunOptions): void;
+  /**
    * Runtime-only: release this worker's attachment and leave the provider running, for worker
    * shutdown. A later close() does nothing; the next worker takes the session over.
    */

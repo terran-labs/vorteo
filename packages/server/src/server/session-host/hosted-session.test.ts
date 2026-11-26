@@ -21,7 +21,8 @@ import { createHostedAgentClient } from "./hosted-agent-client.js";
 import { HostedAgentSession, HostedSessionUnavailableError } from "./hosted-agent-session.js";
 import { rotateSessionHostToken, sessionHostPaths } from "./host-files.js";
 import { startSessionHost, type SessionHost, type SessionHostLimits } from "./host.js";
-import { connectSessionHost } from "./client.js";
+import { connectSessionHost, SessionHostFrameTooLargeError } from "./client.js";
+import { MAX_FRAME_BYTES } from "./protocol.js";
 import { createProviderSessionFactory } from "./provider-sessions.js";
 import { durableSessionsSettingsPath, readDurableSessionsSettings } from "./settings.js";
 
@@ -641,4 +642,9 @@ test("a steer result crosses the host, and an accepted steer is never reported a
   await expect(session.steerActiveTurn?.("more", steer)).rejects.toThrow(
     "The provider returned an invalid steerActiveTurn result.",
   );
+
+  // The manager asks first, so an oversized steer never falls back to replacing the turn.
+  const oversized = "x".repeat(MAX_FRAME_BYTES);
+  expect(() => session.assertPromptFits?.("more")).not.toThrow();
+  expect(() => session.assertPromptFits?.(oversized)).toThrow(SessionHostFrameTooLargeError);
 });

@@ -7,6 +7,7 @@ import pino from "pino";
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js";
 import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager.js";
+import { SessionHostFrameTooLargeError } from "../session-host/client.js";
 import { createAgentQueueDelivery } from "./agent-delivery.js";
 import type { QueueAttachmentStore } from "./attachments.js";
 import { MessageQueueStore, UNCONFIRMED_DELIVERY_REASON } from "./store.js";
@@ -227,7 +228,20 @@ it("delivers in order without clients and retains accepted content for timeline 
   }
 });
 
-it("does not retry provider ambiguity or advance to a dependent message", async () => {
+const oversized = new SessionHostFrameTooLargeError(37 * 1024 * 1024, 32 * 1024 * 1024);
+
+it.each([
+  {
+    outcome: "provider ambiguity",
+    error: new Error("Provider connection lost before acknowledgement"),
+    delivery: { status: "uncertain", reason: "Provider connection lost before acknowledgement" },
+  },
+  {
+    outcome: "a prompt refused for size before sending",
+    error: oversized,
+    delivery: { status: "failed", reason: oversized.message },
+  },
+])("does not retry $outcome or advance to a dependent message", async ({ error, delivery }) => {
   const root = await mkdtemp(join(tmpdir(), "paseo-delivery-uncertain-"));
   try {
     const store = new MessageQueueStore(root);
@@ -246,20 +260,19 @@ it("does not retry provider ambiguity or advance to a dependent message", async 
       start: () =>
         (async function* () {
           starts += 1;
-          yield await Promise.reject<AgentStreamEvent>(
-            new Error("Provider connection lost before acknowledgement"),
-          );
+          yield await Promise.reject<AgentStreamEvent>(error);
         })(),
       changed: () => {},
-      failed: (error) => {
-        throw error;
+      failed: (failure) => {
+        throw failure;
       },
     });
     await worker.wake("agent");
     await worker.wake("agent");
     expect(starts).toBe(1);
     const snapshot = await store.read("agent");
-    expect(snapshot.items.map((item) => item.delivery.status)).toEqual(["uncertain", "queued"]);
+    expect(snapshot.items[0]?.delivery).toMatchObject(delivery);
+    expect(snapshot.items[1]?.delivery.status).toBe("queued");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
