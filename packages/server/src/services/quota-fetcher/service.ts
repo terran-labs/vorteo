@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import type { ProviderUsage } from "../../server/messages.js";
 import { createProviderUsageFetchers } from "./manifest.js";
+import { invalidateAntigravityUsageCache } from "./providers/antigravity.js";
 import {
   ClaudeLimitObservations,
   type UsageLimitStop,
@@ -74,11 +75,14 @@ export class ProviderUsageService {
   /** Timestamp of each provider's last executed fetch, for fetchers with a minimum poll interval. */
   private readonly lastFetchedAt = new Map<string, number>();
 
-  invalidate(): void {
+  invalidate(providerId?: string): void {
     this.generation += 1;
     this.cached = null;
     this.inFlight = null;
-    this.lastFetchedAt.clear();
+    if (providerId !== undefined) {
+      this.lastFetchedAt.delete(providerId);
+      invalidateAntigravityUsageCache(providerId);
+    }
   }
 
   /**
@@ -86,7 +90,7 @@ export class ProviderUsageService {
    * Provider-specific parsing stays here so the daemon bootstrap remains provider-neutral.
    */
   recordUsageLimitStop(providerId: string, stop: UsageLimitStop): void {
-    if (this.claudeLimitObservations.record(providerId, stop)) this.invalidate();
+    if (this.claudeLimitObservations.record(providerId, stop)) this.invalidate(providerId);
   }
 
   constructor(options: ProviderUsageServiceOptions) {
@@ -139,12 +143,14 @@ export class ProviderUsageService {
   }
 
   /**
-   * `forceRefresh` bypasses the cache. A forced read from a client (a sign-in finishing, the
-   * Refresh button) also skips back-off; the background sampler's never does.
+   * `forceRefresh` bypasses the 2-minute list cache. A forced read from a client also skips
+   * back-off; the background sampler's never does. Only an explicit `userRefresh` bypasses a
+   * fetcher's `minPollIntervalMs` floor.
    */
   async listUsage(options?: {
     forceRefresh?: boolean;
     background?: boolean;
+    userRefresh?: boolean;
   }): Promise<ProviderUsageListResult> {
     const nowMs = this.now();
     if (
@@ -160,7 +166,8 @@ export class ProviderUsageService {
     }
 
     const respectBackoff = options?.background === true || options?.forceRefresh !== true;
-    const request = this.fetchFreshUsage(nowMs, respectBackoff);
+    const userRefresh = options?.userRefresh === true;
+    const request = this.fetchFreshUsage(nowMs, respectBackoff, userRefresh);
     this.inFlight = request;
     try {
       return await request;
@@ -174,22 +181,30 @@ export class ProviderUsageService {
   private async fetchFreshUsage(
     nowMs: number,
     respectBackoff: boolean,
+    userRefresh: boolean,
   ): Promise<ProviderUsageListResult> {
     const generation = this.generation;
     const fetchers = this.getFetchers();
     const settled = await Promise.allSettled(
       fetchers.map((fetcher) => {
         const previous = this.lastReading.get(fetcher.providerId);
-        if (respectBackoff && previous) {
-          const waiting = this.backoff.get(fetcher.providerId);
-          if (waiting && nowMs < waiting.retryAtMs) return null;
+        if (previous) {
+          if (respectBackoff) {
+            const waiting = this.backoff.get(fetcher.providerId);
+            if (waiting && nowMs < waiting.retryAtMs) return null;
+          }
           const minInterval = fetcher.minPollIntervalMs;
           const lastAt = this.lastFetchedAt.get(fetcher.providerId);
-          if (minInterval !== undefined && lastAt !== undefined && nowMs - lastAt < minInterval) {
+          if (
+            !userRefresh &&
+            minInterval !== undefined &&
+            lastAt !== undefined &&
+            nowMs - lastAt < minInterval
+          ) {
             return null;
           }
         }
-        return fetcher.fetchUsage();
+        return fetcher.fetchUsage({ userRefresh });
       }),
     );
     const fresh: ProviderUsage[] = [];

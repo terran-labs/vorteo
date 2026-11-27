@@ -196,6 +196,7 @@ interface ProbeOptions {
   timeoutMs?: number;
   maxOutputBytes?: number;
   cleanupProcessGroup?: boolean;
+  abortOnStderr?: RegExp;
 }
 export function probe(options: ProbeOptions): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -209,9 +210,17 @@ export function probe(options: ProbeOptions): Promise<string> {
     child.stdin.end();
     let stdout = "";
     let stderr = "";
+    let settled = false;
     const deadline = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      const trimmedStderr = stderr.trim();
       const termination = Promise.resolve(signalGroup(child, "SIGKILL"));
       void termination.then(() => {
+        if (options.abortOnStderr?.test(trimmedStderr)) {
+          reject(new AntigravityError(diagnostic(trimmedStderr), "PROBE_ERROR", 1, trimmedStderr));
+          return undefined;
+        }
         reject(new AntigravityError("Antigravity discovery timed out", "PROBE_TIMEOUT"));
         return undefined;
       }, reject);
@@ -222,13 +231,24 @@ export function probe(options: ProbeOptions): Promise<string> {
     });
     child.stderr.on("data", (chunk: Buffer) => {
       stderr = (stderr + chunk.toString()).slice(-8192);
+      if (!settled && options.abortOnStderr?.test(stderr)) {
+        settled = true;
+        clearTimeout(deadline);
+        cleanupGroupQuietly(child);
+        const trimmedStderr = stderr.trim();
+        reject(new AntigravityError(diagnostic(trimmedStderr), "PROBE_ERROR", 1, trimmedStderr));
+      }
     });
     child.on("error", (error: Error) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(deadline);
       reject(new AntigravityError(error.message, "SPAWN_ERROR"));
     });
     child.on("close", (code) => {
       if (options.cleanupProcessGroup) cleanupGroupQuietly(child);
+      if (settled) return;
+      settled = true;
       clearTimeout(deadline);
       if (code === 0) resolve(stdout);
       else {

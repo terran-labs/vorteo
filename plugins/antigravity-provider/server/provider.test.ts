@@ -884,5 +884,29 @@ describe("AntigravityUsage", () => {
       status: "error",
       error: "Antigravity usage check failed (exit code 1)",
     });
+
+    const unknownFlag = new AntigravityUsage();
+    const { account: unknownFlagAccount } = unknownFlag.remember({
+      command: process.execPath,
+      args: [fake],
+      env: { ANTIGRAVITY_APP_DATA_DIR: cwd, AGY_TEST_USAGE: "unknown-flag" },
+    });
+    expect(await unknownFlag.registration().fetch({ account: unknownFlagAccount })).toEqual({
+      status: "error",
+      error: "Antigravity usage check failed (exit code 2)",
+    });
+
+    const signedOutHang = new AntigravityUsage();
+    const { account: signedOutHangAccount } = signedOutHang.remember({
+      command: process.execPath,
+      args: [fake],
+      env: { ANTIGRAVITY_APP_DATA_DIR: cwd, AGY_TEST_USAGE: "signed-out-hang" },
+    });
+    const started = Date.now();
+    expect(await signedOutHang.registration().fetch({ account: signedOutHangAccount })).toEqual({
+      status: "unavailable",
+      problem: { kind: "rejected", status: 401, refreshedBy: "agy" },
+    });
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 });

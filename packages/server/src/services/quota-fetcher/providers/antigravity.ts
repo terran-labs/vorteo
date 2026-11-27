@@ -8,7 +8,7 @@ import {
 } from "../../../executable-resolution/executable-resolution.js";
 import type { ProviderUsage, ProviderUsageWindow } from "../../../server/messages.js";
 import { spawnProcess } from "../../../utils/spawn.js";
-import type { ProviderUsageFetcher } from "../provider.js";
+import type { ProviderUsageFetcher, ProviderUsageFetchOptions } from "../provider.js";
 import { ApiNumberSchema, toneFromUsedPct, unavailableUsage, windowFromUsedPct } from "../usage.js";
 
 const ANTIGRAVITY_USAGE_TIMEOUT_MS = 15_000;
@@ -22,6 +22,7 @@ const AUTH_ERROR_PATTERN =
   /\b(?:authentication\s+(?:required|failed|expired)|not\s+(?:logged|signed)\s+in(?:to\b)?|unauthenticated|please\s+(?:log|sign)\s+in|run\s+['`"]?agy['`"]?\s+to\s+(?:log|sign)\s+in|visit\s+the\s+url\s+to\s+log\s+in)\b/i;
 const NO_QUOTA_PATTERN =
   /\b(?:no\s+account\s+quota|has\s+no\s+account\s+quota|no\s+usage\s+quota)\b/i;
+const UNKNOWN_FLAG_PATTERN = /flag provided but not defined|unknown flag/i;
 
 const AntigravityQuotaBucketSchema = z.object({
   id: z.string().optional(),
@@ -80,6 +81,39 @@ export type AntigravityExecutableResolver = (
   env?: Record<string, string>,
 ) => Promise<string | null>;
 
+export interface AntigravityCachedReading {
+  providerId: string;
+  fetchedAtMs: number;
+  usage: ProviderUsage;
+}
+
+export interface AntigravityUsageCache {
+  readings: Map<string, AntigravityCachedReading>;
+  inFlight: Map<string, Promise<ProviderUsage>>;
+}
+
+export function createAntigravityUsageCache(): AntigravityUsageCache {
+  return {
+    readings: new Map(),
+    inFlight: new Map(),
+  };
+}
+
+const sharedAntigravityUsageCache = createAntigravityUsageCache();
+
+export function invalidateAntigravityUsageCache(
+  providerId?: string,
+  cache: AntigravityUsageCache = sharedAntigravityUsageCache,
+): void {
+  if (providerId === undefined) {
+    cache.readings.clear();
+    return;
+  }
+  for (const [key, entry] of cache.readings) {
+    if (entry.providerId === providerId) cache.readings.delete(key);
+  }
+}
+
 interface AntigravityQuotaProviderOptions {
   logger: Logger;
   providerId?: string;
@@ -90,6 +124,7 @@ interface AntigravityQuotaProviderOptions {
   timeoutMs?: number;
   maxOutputBytes?: number;
   minPollIntervalMs?: number;
+  cache?: AntigravityUsageCache;
   resolveExecutable?: AntigravityExecutableResolver;
   runCommand?: AntigravityCommandRunner;
   now?: () => number;
@@ -274,6 +309,24 @@ function nullLogPath(): string {
   return process.platform === "win32" ? "NUL" : "/dev/null";
 }
 
+function usageProbeEnv(env?: Record<string, string>): Record<string, string> {
+  // Suppresses interactive browser launch (`open <oauth-url>`) when agy is signed out.
+  if (env?.["SSH_CONNECTION"]) return env;
+  return { ...env, SSH_CONNECTION: "1 2 3 4" };
+}
+
+function buildCacheKey(
+  providerId: string,
+  command: string,
+  prefixArgs: readonly string[],
+  env?: Record<string, string>,
+): string {
+  const sortedEnv = env
+    ? Object.entries(env).sort(([left], [right]) => left.localeCompare(right))
+    : [];
+  return JSON.stringify([providerId, command, prefixArgs, sortedEnv]);
+}
+
 function defaultRunCommand(
   command: string,
   args: string[],
@@ -282,7 +335,7 @@ function defaultRunCommand(
   return new Promise((resolve, reject) => {
     const child = spawnProcess(command, args, {
       cwd: options.cwd,
-      envOverlay: options.env,
+      envOverlay: usageProbeEnv(options.env),
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -294,6 +347,10 @@ function defaultRunCommand(
       if (settled) return;
       settled = true;
       killProcessGroup(child.pid);
+      if (AUTH_ERROR_PATTERN.test(stderr)) {
+        resolve({ code: 1, stdout, stderr });
+        return;
+      }
       reject(new Error("Antigravity usage check timed out"));
     }, options.timeoutMs);
 
@@ -305,6 +362,13 @@ function defaultRunCommand(
     });
     child.stderr?.on("data", (chunk: Buffer) => {
       stderr = (stderr + chunk.toString("utf8")).slice(-8192);
+      // A signed-out agy waits 60s on its local OAuth callback server after printing the prompt.
+      if (!settled && AUTH_ERROR_PATTERN.test(stderr)) {
+        settled = true;
+        clearTimeout(timer);
+        killProcessGroup(child.pid);
+        resolve({ code: 1, stdout, stderr });
+      }
     });
     child.on("error", (error) => {
       if (settled) return;
@@ -335,6 +399,8 @@ export class AntigravityQuotaProvider implements ProviderUsageFetcher {
   private readonly cwd: string;
   private readonly timeoutMs: number;
   private readonly maxOutputBytes: number;
+  private readonly cache: AntigravityUsageCache;
+  private readonly cacheKey: string;
   private readonly resolveExecutable: AntigravityExecutableResolver;
   private readonly runCommand: AntigravityCommandRunner;
   private readonly now: () => number;
@@ -351,12 +417,53 @@ export class AntigravityQuotaProvider implements ProviderUsageFetcher {
     this.cwd = options.cwd ?? tmpdir();
     this.timeoutMs = options.timeoutMs ?? ANTIGRAVITY_USAGE_TIMEOUT_MS;
     this.maxOutputBytes = options.maxOutputBytes ?? ANTIGRAVITY_USAGE_MAX_OUTPUT_BYTES;
+    this.cache = options.cache ?? sharedAntigravityUsageCache;
+    this.cacheKey = buildCacheKey(this.providerId, this.command, this.prefixArgs, this.env);
     this.resolveExecutable = options.resolveExecutable ?? defaultResolveExecutable;
     this.runCommand = options.runCommand ?? defaultRunCommand;
     this.now = options.now ?? Date.now;
   }
 
-  async fetchUsage(): Promise<ProviderUsage> {
+  async fetchUsage(options?: ProviderUsageFetchOptions): Promise<ProviderUsage> {
+    const userRefresh = options?.userRefresh === true;
+    const nowMs = this.now();
+    if (!userRefresh) {
+      const cached = this.cache.readings.get(this.cacheKey);
+      if (cached && nowMs - cached.fetchedAtMs < this.minPollIntervalMs) {
+        return cached.usage;
+      }
+    }
+
+    const existing = this.cache.inFlight.get(this.cacheKey);
+    if (existing) return existing;
+
+    const request = this.executeAndCacheFetch();
+    this.cache.inFlight.set(this.cacheKey, request);
+    try {
+      return await request;
+    } finally {
+      if (this.cache.inFlight.get(this.cacheKey) === request) {
+        this.cache.inFlight.delete(this.cacheKey);
+      }
+    }
+  }
+
+  private async executeAndCacheFetch(): Promise<ProviderUsage> {
+    const usage = await this.executeFetch();
+    const recordedAtMs = this.now();
+    const stamped: ProviderUsage = {
+      ...usage,
+      fetchedAt: new Date(recordedAtMs).toISOString(),
+    };
+    this.cache.readings.set(this.cacheKey, {
+      providerId: this.providerId,
+      fetchedAtMs: recordedAtMs,
+      usage: stamped,
+    });
+    return stamped;
+  }
+
+  private async executeFetch(): Promise<ProviderUsage> {
     const resolved = await this.resolveExecutable(this.command, this.env);
     if (!resolved) return unavailableUsage(this);
 
@@ -376,11 +483,13 @@ export class AntigravityQuotaProvider implements ProviderUsageFetcher {
       maxOutputBytes: this.maxOutputBytes,
     });
 
-    // Exit code 2 indicates an account mode without quota (for example GEMINI_API_KEY).
-    if (result.code === 2) return unavailableUsage(this);
+    const detail = result.stderr.trim() || result.stdout.trim();
+    if (result.code === 2 && !UNKNOWN_FLAG_PATTERN.test(detail)) {
+      // Exit code 2 (without a flag error) indicates an account mode without quota (e.g. GEMINI_API_KEY).
+      return unavailableUsage(this);
+    }
 
     if (result.code !== 0) {
-      const detail = result.stderr.trim() || result.stdout.trim();
       if (isAntigravitySignedOutOrNoQuota(detail)) {
         return unavailableUsage(this);
       }

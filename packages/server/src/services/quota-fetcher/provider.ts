@@ -15,12 +15,17 @@ export interface ProviderUsageConfig {
 
 export type ProviderUsageConfigMap = Record<string, ProviderUsageConfig>;
 
+export interface ProviderUsageFetchOptions {
+  /** True only for an explicit user-triggered refresh from a client. */
+  userRefresh?: boolean;
+}
+
 export interface ProviderUsageFetcher {
   readonly providerId: string;
   readonly displayName: string;
-  /** Minimum wait between background samples; omitted means every sample runs. */
+  /** Minimum wait between non-user-initiated refreshes; omitted means every refresh runs. */
   readonly minPollIntervalMs?: number;
-  fetchUsage(): Promise<ProviderUsage>;
+  fetchUsage(options?: ProviderUsageFetchOptions): Promise<ProviderUsage>;
 }
 
 export interface ProviderUsageFetcherFactoryOptions {

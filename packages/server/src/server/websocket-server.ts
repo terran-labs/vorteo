@@ -966,7 +966,7 @@ export class VoiceAssistantWebSocketServer {
         return state.clients[providerId] ?? null;
       },
       onConnected: (providerId) => {
-        this.providerUsageService.invalidate();
+        this.providerUsageService.invalidate(providerId);
         void this.providerSnapshotManager
           .refreshSettingsSnapshot({ providers: [providerId] })
           .catch((error) => {

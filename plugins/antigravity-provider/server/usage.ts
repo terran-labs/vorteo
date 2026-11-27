@@ -19,9 +19,15 @@ const AUTH_ERROR_PATTERN =
   /\b(?:authentication\s+(?:required|failed|expired)|not\s+(?:logged|signed)\s+in(?:to\b)?|unauthenticated|please\s+(?:log|sign)\s+in|run\s+['`"]?agy['`"]?\s+to\s+(?:log|sign)\s+in|visit\s+the\s+url\s+to\s+log\s+in)\b/i;
 const NO_QUOTA_PATTERN =
   /\b(?:no\s+account\s+quota|has\s+no\s+account\s+quota|no\s+usage\s+quota)\b/i;
+const UNKNOWN_FLAG_PATTERN = /flag provided but not defined|unknown flag/i;
 
 function nullLogPath(): string {
   return process.platform === "win32" ? "NUL" : "/dev/null";
+}
+
+function usageLaunch(launch: ProviderLaunch): ProviderLaunch {
+  if (launch.env.SSH_CONNECTION) return launch;
+  return { ...launch, env: { ...launch.env, SSH_CONNECTION: "1 2 3 4" } };
 }
 
 const inputSchema = z.object({ account: z.string() }).strict();
@@ -225,17 +231,21 @@ export class AntigravityUsage {
         if (!launch) throw new Error("Antigravity login no longer exists");
         try {
           const stdout = await probe({
-            launch,
+            launch: usageLaunch(launch),
             args: ["--log-file", nullLogPath(), "-p", "/usage", "--output-format", "json"],
             cwd: tmpdir(),
             timeoutMs: USAGE_TIMEOUT_MS,
             cleanupProcessGroup: true,
+            abortOnStderr: AUTH_ERROR_PATTERN,
           });
           return parseUsageReport(stdout);
         } catch (error) {
           if (error instanceof AntigravityError) {
             const detail = error.stderr ?? error.message;
-            if (error.exitCode === 2 || NO_QUOTA_PATTERN.test(detail)) {
+            if (
+              (error.exitCode === 2 && !UNKNOWN_FLAG_PATTERN.test(detail)) ||
+              NO_QUOTA_PATTERN.test(detail)
+            ) {
               return unavailable({ kind: "no_quota", detail: "No usage quota reported" });
             }
             if (AUTH_ERROR_PATTERN.test(detail)) {

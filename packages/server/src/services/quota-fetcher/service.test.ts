@@ -9,6 +9,8 @@ import type { ProviderUsageFetcher } from "./provider.js";
 import {
   ANTIGRAVITY_MIN_POLL_INTERVAL_MS,
   AntigravityQuotaProvider,
+  createAntigravityUsageCache,
+  invalidateAntigravityUsageCache,
 } from "./providers/antigravity.js";
 import { ClaudeQuotaProvider } from "./providers/claude.js";
 import { CodexQuotaProvider } from "./providers/codex.js";
@@ -2232,6 +2234,10 @@ describe("KimiQuotaProvider usage windows", () => {
 });
 
 describe("AntigravityQuotaProvider", () => {
+  beforeEach(() => {
+    invalidateAntigravityUsageCache();
+  });
+
   const sampleOutput = JSON.stringify({
     conversation_id: "",
     status: "SUCCESS",
@@ -2357,6 +2363,7 @@ describe("AntigravityQuotaProvider", () => {
   it("stays unavailable when agy is missing, signed out, or has no account quota", async () => {
     const missing = new AntigravityQuotaProvider({
       logger: createLogger(),
+      cache: createAntigravityUsageCache(),
       resolveExecutable: async () => null,
       runCommand: vi.fn(),
     });
@@ -2367,6 +2374,7 @@ describe("AntigravityQuotaProvider", () => {
 
     const apiKey = new AntigravityQuotaProvider({
       logger: createLogger(),
+      cache: createAntigravityUsageCache(),
       resolveExecutable: async () => "/usr/bin/agy",
       runCommand: async () => ({
         code: 2,
@@ -2390,6 +2398,7 @@ describe("AntigravityQuotaProvider", () => {
     for (const stderr of [realSignedOut, "You are not logged into Antigravity."]) {
       const signedOut = new AntigravityQuotaProvider({
         logger: createLogger(),
+        cache: createAntigravityUsageCache(),
         resolveExecutable: async () => "/usr/bin/agy",
         runCommand: async () => ({ code: 1, stdout: "", stderr }),
       });
@@ -2400,19 +2409,21 @@ describe("AntigravityQuotaProvider", () => {
     }
   });
 
-  it("does not hide network failures mentioning login or api key and sanitizes error text", async () => {
-    for (const stderr of [
-      "network failure while refreshing login",
-      "dial tcp timeout while checking api key endpoint",
+  it("does not hide network failures or unknown-flag exits and sanitizes error text", async () => {
+    for (const { code, stderr } of [
+      { code: 1, stderr: "network failure while refreshing login" },
+      { code: 1, stderr: "dial tcp timeout while checking api key endpoint" },
+      { code: 2, stderr: "flag provided but not defined: -log-file" },
     ]) {
       const broken = new AntigravityQuotaProvider({
         logger: createLogger(),
+        cache: createAntigravityUsageCache(),
         resolveExecutable: async () => "/usr/bin/agy",
-        runCommand: async () => ({ code: 1, stdout: "", stderr }),
+        runCommand: async () => ({ code, stdout: "", stderr }),
       });
       await expect(broken.fetchUsage()).resolves.toMatchObject({
         status: "error",
-        error: "Antigravity usage check failed (exit code 1)",
+        error: `Antigravity usage check failed (exit code ${code})`,
       });
     }
 
@@ -2439,7 +2450,7 @@ describe("AntigravityQuotaProvider", () => {
     ]);
   });
 
-  it("enforces a 5-minute minimum interval across background samples", async () => {
+  it("enforces the 5-minute floor across quota-reserve forceRefresh calls and unrelated invalidations", async () => {
     let now = Date.parse("2026-11-27T21:00:00Z");
     const runCommand = vi.fn(async () => ({ code: 0, stdout: sampleOutput, stderr: "" }));
     const service = new ProviderUsageService({
@@ -2455,40 +2466,110 @@ describe("AntigravityQuotaProvider", () => {
       ],
     });
 
+    const first = await service.listUsage({ forceRefresh: true });
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    const firstReadingAt = findProvider(first, "antigravity").fetchedAt;
+    expect(firstReadingAt).toBe("2026-11-27T21:00:00.000Z");
+
+    // Repeated 30s quota-reserve style forceRefresh calls and background samples must not respawn.
+    now += 30_000;
+    const reserve = await service.listUsage({ forceRefresh: true });
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    expect(findProvider(reserve, "antigravity").fetchedAt).toBe(firstReadingAt);
+
+    now += 30_000;
     await service.sampleUsage();
     expect(runCommand).toHaveBeenCalledTimes(1);
 
-    // Another background sample 60 seconds later must reuse the cached reading without spawning.
-    now += 60_000;
-    const second = await service.sampleUsage();
+    // Invalidating another provider (or a generic reset invalidation) must not reset Antigravity.
+    service.invalidate("claude-account-1");
+    service.invalidate();
+    now += 30_000;
+    const afterOtherInvalidate = await service.listUsage({ forceRefresh: true });
     expect(runCommand).toHaveBeenCalledTimes(1);
-    expect(findProvider(second, "antigravity").status).toBe("available");
+    expect(findProvider(afterOtherInvalidate, "antigravity").fetchedAt).toBe(firstReadingAt);
 
-    // Once the 5-minute minimum interval elapses, background sampling runs again.
+    // Once 5 minutes elapse, the next poll spawns once more and stamps a newer fetchedAt.
     now += ANTIGRAVITY_MIN_POLL_INTERVAL_MS;
-    await service.sampleUsage();
+    const refreshed = await service.listUsage({ forceRefresh: true });
     expect(runCommand).toHaveBeenCalledTimes(2);
+    expect(findProvider(refreshed, "antigravity").fetchedAt).toBe(new Date(now).toISOString());
 
-    // An explicit non-background forceRefresh bypasses the interval.
+    // An explicit user-initiated refresh bypasses the floor immediately.
+    now += 10_000;
+    await service.listUsage({ forceRefresh: true, userRefresh: true });
+    expect(runCommand).toHaveBeenCalledTimes(3);
+
+    // Invalidating Antigravity itself also permits an immediate refresh.
+    service.invalidate("antigravity");
     now += 10_000;
     await service.listUsage({ forceRefresh: true });
-    expect(runCommand).toHaveBeenCalledTimes(3);
+    expect(runCommand).toHaveBeenCalledTimes(4);
   });
 
-  it("spawns from a neutral temp cwd, caps stdout, and terminates timed-out subprocesses", async () => {
+  it("shares one in-flight spawn across concurrent callers", async () => {
+    const cache = createAntigravityUsageCache();
+    let resolveRun: ((result: { code: number; stdout: string; stderr: string }) => void) | null =
+      null;
+    const runCommand = vi.fn(
+      () =>
+        new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+          resolveRun = resolve;
+        }),
+    );
+    const makeProvider = () =>
+      new AntigravityQuotaProvider({
+        logger: createLogger(),
+        cache,
+        resolveExecutable: async () => "/usr/bin/agy",
+        runCommand,
+      });
+
+    const first = makeProvider().fetchUsage();
+    const second = makeProvider().fetchUsage();
+    await vi.waitFor(() => expect(runCommand).toHaveBeenCalledTimes(1));
+    resolveRun?.({ code: 0, stdout: sampleOutput, stderr: "" });
+
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.status).toBe("available");
+    expect(b.status).toBe("available");
+    expect(runCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts signed-out prompts promptly, caps stdout, and terminates timed-out subprocesses", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agy-runner-test-"));
     const script = join(dir, "fake-agy.mjs");
     writeFileSync(
       script,
       [
         "if (process.env.MODE === 'hang') { setInterval(() => {}, 1000); }",
+        "else if (process.env.MODE === 'signed-out-hang') {",
+        "  process.stderr.write('Authentication required. Please visit the URL to log in:\\n');",
+        "  setInterval(() => {}, 1000);",
+        "}",
         "else if (process.env.MODE === 'oversized') { process.stdout.write('x'.repeat(2048)); }",
         "else { process.stdout.write(JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(2) })); }",
       ].join("\n"),
     );
     try {
+      const signedOutHang = new AntigravityQuotaProvider({
+        logger: createLogger(),
+        cache: createAntigravityUsageCache(),
+        command: [process.execPath, script],
+        env: { MODE: "signed-out-hang" },
+        timeoutMs: 5_000,
+        resolveExecutable: async (command) => command,
+      });
+      const started = Date.now();
+      await expect(signedOutHang.fetchUsage()).resolves.toMatchObject({
+        status: "unavailable",
+        error: null,
+      });
+      expect(Date.now() - started).toBeLessThan(2_000);
+
       const hanging = new AntigravityQuotaProvider({
         logger: createLogger(),
+        cache: createAntigravityUsageCache(),
         command: [process.execPath, script],
         env: { MODE: "hang" },
         timeoutMs: 150,
@@ -2498,6 +2579,7 @@ describe("AntigravityQuotaProvider", () => {
 
       const oversized = new AntigravityQuotaProvider({
         logger: createLogger(),
+        cache: createAntigravityUsageCache(),
         command: [process.execPath, script],
         env: { MODE: "oversized" },
         maxOutputBytes: 128,
