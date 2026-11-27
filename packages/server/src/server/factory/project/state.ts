@@ -94,6 +94,7 @@ const AssignmentStateSchema = z.object({
 export type AssignmentState = z.infer<typeof AssignmentStateSchema>;
 
 const ProjectStateSchema = z.object({
+  mode: z.enum(["lean", "crew"]).optional(),
   repository: z.string(),
   enabled: z.boolean(),
   paused: z.boolean(),

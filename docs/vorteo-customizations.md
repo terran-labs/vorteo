@@ -2917,7 +2917,7 @@ Sidebar integration review: shared state is integrated with the published Nova b
 
 ## Incomplete integrations
 
-- The lean Factory dispatcher and merge gate run against a simulated repository. Live runner and GitHub adapters still require verification on a development daemon.
+- The lean Factory dispatcher and merge gate run against a simulated repository. A development daemon has verified intake on a private GitHub issue. Live Builder, Reviewer and Lead execution still require verification.
 
 - **Linux Host adapters.** Inert source reads systemd user services through the pinned user manager and observes process identity through procfs. Linux Host provisioning, protocol support, launcher units, restarts, peer authentication, watchdog signal binding and recovery remain unimplemented. See the [Linux Host hardening](https://github.com/terran-labs/vorteo/issues/40).
 

@@ -267,6 +267,35 @@ const refusals: Array<[string, (evidence: OpenEvidence) => void]> = [
 ];
 
 describe("Lean Factory merge gate", () => {
+  it("accepts a fresh same-account Reviewer only with the recorded exclusion of alternatives", async () => {
+    const { open, gate } = fixture();
+    const reviewer = runner("reviewer", "first");
+    open.reviewer = reviewer;
+    open.verdict!.reviewer = reviewer;
+    open.reviewAccountSelection = {
+      mode: "same-account",
+      issue: 7,
+      headSha,
+      at: now,
+      builderAgentId: "lead",
+      builderAccount: "first",
+      builderAccountDefinition: "first",
+      reviewerAgentId: "reviewer",
+      reviewerAccount: "first",
+      reviewerAccountDefinition: "first",
+      daemonCreated: true,
+      clean: true,
+      nonChild: true,
+      freshSession: true,
+      candidates: [
+        { account: "first", accountDefinition: "first", reason: "selected" },
+        { account: "second", accountDefinition: "second", reason: "exhausted" },
+      ],
+    };
+    expect((await gate.evaluate(7)).ready).toBe(true);
+    open.reviewAccountSelection.candidates[1].reason = "unknown";
+    expect((await gate.evaluate(7)).ready).toBe(false);
+  });
   it.each(refusals)("refuses %s at evaluation and at execution", async (_name, change) => {
     const { gate, open, state } = fixture();
     const decision = await gate.evaluate(7);

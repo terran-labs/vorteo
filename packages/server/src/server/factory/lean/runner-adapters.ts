@@ -1,0 +1,360 @@
+import { execFile } from "node:child_process";
+import { realpath } from "node:fs/promises";
+import { promisify } from "node:util";
+
+import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
+import { projectFactoryClaimBranch } from "@getpaseo/server/factory-project";
+import type { Logger } from "pino";
+import { z } from "zod";
+
+import { AgentNotFoundError, ensureUnarchivedAgentLoaded } from "../../agent/agent-loading.js";
+import { WorkerLaunchRefusal, type AgentManager } from "../../agent/agent-manager.js";
+import { restoreStoredUsage } from "../../agent/agent-projections.js";
+import { formatSystemNotificationPrompt, startAgentRun } from "../../agent/agent-prompt.js";
+import type { AgentStorage } from "../../agent/agent-storage.js";
+import type { BoundCreateAgentCommand } from "../../agent/create-agent/create.js";
+import { ProviderQuotaExhaustedError } from "../../agent/quota-error.js";
+import type { WorkspaceRegistry } from "../../workspace-registry.js";
+import type { FactoryGitHub } from "../project/claims.js";
+import { createAccountTable, type LeanAccountDependencies } from "./accounts.js";
+import { createRunnerPort, runnerStatusFromAgent, type RunnerDependencies } from "./runners.js";
+import { LEAN_PROTOCOL_MAJOR, type RunnerOpenInput } from "./types.js";
+import { runnerTitle } from "./runner-workspaces.js";
+
+const execute = promisify(execFile);
+const shaPattern = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
+const remoteRef = z.object({
+  ref: z.string(),
+  object: z.object({ sha: z.string().regex(shaPattern) }),
+});
+
+interface WorkspaceBinding {
+  workspaceId: string;
+  /** Exact, authenticated PR head from the reconciler. Null for other roles. */
+  reviewHead: string | null;
+}
+
+export interface LocalRunnerDependencies extends LeanAccountDependencies {
+  installation: string;
+  /** Repository from the daemon's project record, never from issue or agent text. */
+  repository: string;
+  github: FactoryGitHub;
+  agentManager: AgentManager;
+  agentStorage: AgentStorage;
+  workspaces: Pick<WorkspaceRegistry, "get">;
+  createAgent: BoundCreateAgentCommand;
+  logger: Logger;
+  resolveWorkspace(input: RunnerOpenInput): Promise<WorkspaceBinding>;
+  requiredProviderTypes?: Partial<Record<RunnerOpenInput["role"], string>>;
+  deliveryCharter?: string;
+}
+
+export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(deps.repository)) {
+    throw new Error("Factory runners need an authenticated project repository.");
+  }
+  const accounts = createAccountTable({
+    ...deps,
+    async roleAccounts(role) {
+      const configured = await deps.roleAccounts(role);
+      const required = deps.requiredProviderTypes?.[role];
+      if (required && configured.providerType !== required) {
+        throw new Error(`${runnerTitle(role, null)} requires the configured ${required} provider.`);
+      }
+      return configured;
+    },
+  });
+  const { agentManager, agentStorage, logger } = deps;
+  const loader = { agentManager, agentStorage, logger };
+
+  async function authorizeIssue(input: RunnerOpenInput): Promise<string | null> {
+    if (input.projectId !== deps.projectId)
+      throw new Error("The runner belongs to another project.");
+    if (input.issue === null) {
+      if (input.role === "lead" || input.role === "reviewer") {
+        throw new Error("An issue runner needs a verified issue lease.");
+      }
+      return null;
+    }
+    if (!Number.isSafeInteger(input.issue) || input.issue < 1) {
+      throw new Error("The runner needs a valid issue number.");
+    }
+    const branch = projectFactoryClaimBranch(input.issue);
+    const ledger = await deps.state.read(deps.projectId);
+    const lease = ledger.leases[String(input.issue)];
+    if (
+      !lease ||
+      lease.issue !== input.issue ||
+      lease.branch !== branch ||
+      lease.installation !== deps.installation ||
+      lease.protocol !== LEAN_PROTOCOL_MAJOR ||
+      lease.released ||
+      !(Date.parse(lease.expiresAt) > deps.now().getTime())
+    ) {
+      throw new Error("Factory no longer holds a live lease for this issue.");
+    }
+    return branch;
+  }
+
+  async function activeWorkspace(workspaceId: string) {
+    const workspace = await deps.workspaces.get(workspaceId);
+    if (workspace?.projectId !== deps.projectId || workspace.archivedAt !== null) {
+      throw new Error("The runner needs an active workspace in this project.");
+    }
+    return workspace;
+  }
+
+  const createAgent: RunnerDependencies["createAgent"] = async (launch) => {
+    const { input, choice } = launch;
+    if (launch.serverId !== null || !choice.account) {
+      throw new Error("Choose an eligible local account before opening a runner.");
+    }
+    const provider = choice.account;
+    const branch = await authorizeIssue(input);
+    const binding = await deps.resolveWorkspace(input);
+    const workspace = await activeWorkspace(binding.workspaceId);
+    if (
+      input.worktree &&
+      (await realpath(input.worktree.path)) !== (await realpath(workspace.cwd))
+    ) {
+      throw new Error("The registered workspace differs from the requested worktree.");
+    }
+    const review = await verifyCheckout(
+      input,
+      workspace.cwd,
+      workspace.kind,
+      branch,
+      binding.reviewHead,
+    );
+    const identity = branch
+      ? `Factory issue #${input.issue}, claim branch ${branch}.`
+      : "Factory project operation.";
+    const initialPrompt = [
+      identity,
+      review ? `Review exactly ${review.headSha}.` : "",
+      launch.initialPrompt,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    let createdId: string | null = null;
+    try {
+      const result = await deps.createAgent({
+        kind: "mcp",
+        title: runnerTitle(input.role, input.issue),
+        workspaceId: workspace.workspaceId,
+        cwd: workspace.cwd,
+        provider,
+        ...(choice.profileId ? { profileId: choice.profileId } : {}),
+        config: { systemPrompt: launch.systemPrompt },
+        labels: launch.labels,
+        initialPrompt,
+        notifyOnFinish: false,
+        promptFailure: "return-error",
+        async onCreated({ agentId }) {
+          createdId = agentId;
+          const agent = agentManager.getAgent(agentId);
+          if (agent?.provider !== provider || agent.workspaceId !== workspace.workspaceId) {
+            throw new Error(
+              "The daemon resolved a different account or workspace for this runner.",
+            );
+          }
+          if (getParentAgentIdFromLabels(agent.labels)) {
+            throw new Error(
+              "A Factory runner must be a new daemon-created session with no parent.",
+            );
+          }
+          await authorizeIssue(input);
+        },
+      });
+      if (result.initialPromptError && !result.liveSnapshot.config.usageLimitHold) {
+        throw result.initialPromptError;
+      }
+      return { agentId: result.snapshot.id, ...(review ? { review } : {}) };
+    } catch (error) {
+      if (createdId) {
+        await agentManager.archiveAgent(createdId).catch((cleanup: unknown) => {
+          logger.warn(
+            { err: cleanup, agentId: createdId },
+            "Could not archive a refused Factory runner",
+          );
+        });
+      } else if (isLaunchQuota(error)) {
+        return { quota: { resetsAt: null } };
+      }
+      throw error;
+    }
+  };
+
+  const runners = createRunnerPort({
+    projectId: deps.projectId,
+    installation: deps.installation,
+    state: deps.state,
+    accounts,
+    now: deps.now,
+    deliveryCharter: deps.deliveryCharter,
+    async place(input) {
+      if (input.worktree?.serverId) {
+        return {
+          parked: {
+            kind: "dev-unavailable",
+            reason: "This Factory runner can only use local worktrees.",
+          },
+        };
+      }
+      return { serverId: null };
+    },
+    createAgent,
+    async subscribe({ agentId, serverId }, listener) {
+      requireLocal(serverId);
+      const stored = await agentStorage.get(agentId);
+      if (!stored || stored.archivedAt) return null;
+      const hold = stored.config?.usageLimitHold;
+      const held = hold && !hold.releasedAt;
+      if (!held) await ensureUnarchivedAgentLoaded(agentId, loader);
+      const stop = agentManager.subscribe(
+        (event) => {
+          if (event.type === "agent_state") listener(runnerStatusFromAgent(event.agent));
+          if (event.type === "agent_removed") listener({ kind: "detached" });
+        },
+        { agentId, includeInternal: true },
+      );
+      if (held && !agentManager.getAgent(agentId)) {
+        listener({ kind: "quota", resetsAt: hold.resetsAt ?? null, accountDefinition: null });
+      }
+      return stop;
+    },
+    async prompt(runner, message) {
+      requireLocal(runner.serverId);
+      const stored = await agentStorage.get(runner.agentId);
+      if (!stored || stored.archivedAt) return "gone";
+      const hold = stored.config?.usageLimitHold;
+      if (hold && !hold.releasedAt) return "busy";
+      try {
+        const agent = await ensureUnarchivedAgentLoaded(runner.agentId, loader);
+        const status = runnerStatusFromAgent(agent);
+        if (status.kind !== "idle" || agentManager.hasInFlightRun(agent.id)) return "busy";
+        await startAgentRun(
+          agentManager,
+          agent.id,
+          formatSystemNotificationPrompt(message),
+          logger,
+          {
+            runOptions: { origin: "agent" },
+          },
+        );
+        return "sent";
+      } catch (error) {
+        if (error instanceof AgentNotFoundError) return "gone";
+        throw error;
+      }
+    },
+    lastReply(runner) {
+      requireLocal(runner.serverId);
+      return agentManager.getLastAssistantMessage(runner.agentId);
+    },
+    async readUsage({ serverId, agentId }) {
+      requireLocal(serverId);
+      const live = agentManager.getAgent(agentId)?.lastUsage;
+      if (live) return live;
+      const stored = await agentStorage.get(agentId);
+      return stored ? (restoreStoredUsage(stored) ?? null) : null;
+    },
+    async archiveAgent({ serverId, agentId }) {
+      requireLocal(serverId);
+      const stored = await agentStorage.get(agentId);
+      if (!stored || stored.archivedAt) return;
+      await agentManager.archiveAgent(agentId);
+    },
+    async checkLeadBranch(runner, issue) {
+      requireLocal(runner.serverId);
+      const branch = projectFactoryClaimBranch(issue);
+      const record = await agentStorage.get(runner.agentId);
+      if (!record?.workspaceId) return "The lead's saved worktree is unavailable.";
+      try {
+        const workspace = await activeWorkspace(record.workspaceId);
+        const head = await readLeadHead(workspace.cwd, branch);
+        const response = await deps.github.rest(
+          "GET",
+          `repos/${deps.repository}/git/ref/heads/${branch}`,
+        );
+        const pushed = remoteRef.safeParse(response.body);
+        if (
+          response.status !== 200 ||
+          !pushed.success ||
+          pushed.data.ref !== `refs/heads/${branch}`
+        ) {
+          return `The remote claim branch ${branch} could not be verified.`;
+        }
+        return pushed.data.object.sha === head
+          ? null
+          : `Push the lead's current commit to ${branch} before closing it.`;
+      } catch (error) {
+        logger.warn(
+          {
+            agentId: runner.agentId,
+            issue,
+            err: error instanceof Error ? error.name : typeof error,
+          },
+          "Could not verify the Factory lead's branch",
+        );
+        return `The lead's worktree and remote claim branch ${branch} could not be verified.`;
+      }
+    },
+  });
+  return { runners, accounts };
+}
+
+function requireLocal(serverId: string | null): void {
+  if (serverId !== null) throw new Error("This Factory runtime cannot operate on a remote runner.");
+}
+
+function isLaunchQuota(error: unknown): boolean {
+  return (
+    error instanceof ProviderQuotaExhaustedError ||
+    (error instanceof WorkerLaunchRefusal && error.code === "quota-exhausted")
+  );
+}
+
+async function git(cwd: string, args: string[]): Promise<string> {
+  const result = await execute("git", args, { cwd, timeout: 5_000, maxBuffer: 1024 * 1024 });
+  return result.stdout.trim();
+}
+
+async function readLeadHead(cwd: string, branch: string): Promise<string> {
+  const active = await git(cwd, ["symbolic-ref", "--quiet", "HEAD"]);
+  if (active !== `refs/heads/${branch}`) throw new Error("The worktree is on a different branch.");
+  return git(cwd, ["rev-parse", "HEAD^{commit}"]);
+}
+
+async function verifyCheckout(
+  input: RunnerOpenInput,
+  cwd: string,
+  kind: string,
+  branch: string | null,
+  reviewHead: string | null,
+) {
+  if (!branch || (input.role !== "lead" && input.role !== "reviewer")) return null;
+  if (kind !== "worktree") throw new Error("Issue runners require a dedicated worktree.");
+  if (input.role === "lead") {
+    await readLeadHead(cwd, branch);
+    return null;
+  }
+  if (!reviewHead || !shaPattern.test(reviewHead)) {
+    throw new Error("The reviewer needs an authenticated pull request head.");
+  }
+  const [head, currentBranch, dirty] = await Promise.all([
+    git(cwd, ["rev-parse", "HEAD^{commit}"]),
+    git(cwd, ["branch", "--show-current"]),
+    git(cwd, ["status", "--porcelain", "--untracked-files=all"]),
+  ]);
+  if (head !== reviewHead || currentBranch || dirty) {
+    throw new Error("The reviewer needs a clean detached worktree at the exact pull request head.");
+  }
+  return {
+    headSha: reviewHead,
+    daemonCreated: true as const,
+    clean: true as const,
+    nonChild: true as const,
+    freshSession: true as const,
+  };
+}

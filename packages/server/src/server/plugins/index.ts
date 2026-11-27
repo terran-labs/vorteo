@@ -45,6 +45,7 @@ import {
 } from "./usage-sources/index.js";
 import type { PluginUsageSourceMetadata } from "./plugin-process-protocol.js";
 import { ProjectFactoryService } from "../factory/project/service.js";
+import { isLeanFactoryMethod, type LeanHandlers } from "../factory/lean/handlers.js";
 
 const BUILTIN_PROVIDER_ID_SET: ReadonlySet<string> = new Set(BUILTIN_PROVIDER_IDS);
 
@@ -90,6 +91,7 @@ interface PluginRuntimePort {
 interface PluginServiceDependencies {
   /** Startup-owned observer; plugin reload cannot create or replace its owner. */
   factoryProject?: () => Pick<ProjectFactoryService, "invoke"> | null;
+  factoryLean?: LeanHandlers;
   usageAgents?: AgentUsageLookup;
   /** Keeps each account's last good usage reading across daemon restarts. */
   usageSnapshotPath?: string;
@@ -746,7 +748,19 @@ export class PluginService {
     });
   }
 
-  async invokePluginRpc(pluginId: string, method: string, input: unknown): Promise<unknown> {
+  async invokePluginRpc(
+    pluginId: string,
+    method: string,
+    input: unknown,
+    caller?: Parameters<LeanHandlers["invokeSocket"]>[2],
+  ): Promise<unknown> {
+    if (pluginId === "factory" && isLeanFactoryMethod(method)) {
+      const lean = this.dependencies.factoryLean;
+      if (!lean || !this.isBuiltinPluginLoaded(pluginId)) {
+        throw new Error("Lean Factory is unavailable on this daemon.");
+      }
+      return lean.invokeSocket(method, input, caller);
+    }
     if (pluginId === "factory" && this.isBuiltinPluginLoaded(pluginId)) {
       if (ProjectFactoryService.supports(method)) {
         const projectFactory = this.dependencies.factoryProject?.();

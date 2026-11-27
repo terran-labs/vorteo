@@ -1,3 +1,4 @@
+import type { ReviewAccountSelection } from "./accounts.js";
 import type {
   Acceptance,
   AdmissionFacts,
@@ -17,6 +18,7 @@ interface MergePull extends PullRef {
 }
 
 interface OpenMergeEvidence {
+  reviewAccountSelection?: ReviewAccountSelection;
   kind: "open";
   pull: MergePull;
   trust: AdmissionFacts["trust"];
@@ -65,7 +67,7 @@ interface MergeCompletion extends MergeTarget {
 
 type ApprovalEvidence = Pick<
   OpenMergeEvidence,
-  "lead" | "reviewer" | "verdict" | "acceptance" | "acceptanceSession"
+  "lead" | "reviewer" | "verdict" | "acceptance" | "acceptanceSession" | "reviewAccountSelection"
 >;
 
 /** The daemon's immutable authorization for one exact submission target. */
@@ -144,17 +146,77 @@ function evaluateOpen(issue: number, here: string, evidence: OpenMergeEvidence):
   if (evidence.mergeable !== true) {
     return { ready: false, waitingOn: "Wait for GitHub to confirm the pull request is mergeable." };
   }
-  return evaluateApprovals(pull, evidence, lease.installation === here);
+  return evaluateApprovals(issue, pull, evidence, lease.installation === here);
 }
 
-function independentReview(lead: RunnerRef | null, reviewer: RunnerRef): boolean {
+function sameAccountReview(
+  issue: number,
+  head: string,
+  lead: RunnerRef,
+  reviewer: RunnerRef,
+  selection?: ReviewAccountSelection,
+): boolean {
+  if (
+    !selection ||
+    selection.mode !== "same-account" ||
+    selection.issue !== issue ||
+    selection.headSha !== head
+  )
+    return false;
+  if (
+    selection.builderAgentId !== lead.agentId ||
+    selection.reviewerAgentId !== reviewer.agentId ||
+    selection.builderAccountDefinition !== lead.accountDefinition ||
+    selection.reviewerAccountDefinition !== reviewer.accountDefinition ||
+    selection.builderAccount !== lead.account ||
+    selection.reviewerAccount !== reviewer.account
+  )
+    return false;
+  if (
+    !selection.daemonCreated ||
+    !selection.clean ||
+    !selection.nonChild ||
+    !selection.freshSession ||
+    !Number.isFinite(Date.parse(selection.at))
+  )
+    return false;
+  const chosen = selection.candidates.filter((candidate) => candidate.reason === "selected");
+  const exclusions = new Set([
+    "profile-bound",
+    "not-allowed",
+    "wrong-provider",
+    "unavailable-on-destination",
+    "parked",
+    "exhausted",
+  ]);
+  return (
+    chosen.length === 1 &&
+    chosen[0].accountDefinition === reviewer.accountDefinition &&
+    selection.candidates.every(
+      (candidate) =>
+        candidate === chosen[0] ||
+        exclusions.has(candidate.reason) ||
+        (candidate.reason === "builder-account" &&
+          candidate.accountDefinition === lead.accountDefinition),
+    )
+  );
+}
+
+function independentReview(
+  issue: number,
+  head: string,
+  lead: RunnerRef | null,
+  reviewer: RunnerRef,
+  selection?: ReviewAccountSelection,
+): boolean {
   return (
     lead?.role === "lead" &&
     reviewer.role === "reviewer" &&
     lead.agentId !== reviewer.agentId &&
     Boolean(lead.accountDefinition) &&
     Boolean(reviewer.accountDefinition) &&
-    lead.accountDefinition !== reviewer.accountDefinition
+    (lead.accountDefinition !== reviewer.accountDefinition ||
+      sameAccountReview(issue, head, lead, reviewer, selection))
   );
 }
 
@@ -172,6 +234,7 @@ function acceptedByForeman(headSha: string, evidence: ApprovalEvidence): Accepta
 }
 
 function evaluateApprovals(
+  issue: number,
   pull: PullRef,
   evidence: ApprovalEvidence,
   localLease: boolean,
@@ -182,19 +245,23 @@ function evaluateApprovals(
   }
   const localReview = localLease && verdict.source === "local-runner";
   const boundReviewer = reviewer?.agentId === verdict.reviewer.agentId;
-  if (!localReview || !reviewer || !boundReviewer || !independentReview(lead, reviewer)) {
+  if (
+    !localReview ||
+    !reviewer ||
+    !boundReviewer ||
+    !independentReview(issue, pull.headSha, lead, reviewer, evidence.reviewAccountSelection)
+  ) {
     return {
       ready: false,
       waitingOn:
-        "Get a review from a local Factory runner with a known account distinct from the lead's.",
+        "Get an independent local review and record account selection when the Reviewer shares the Builder's account.",
     };
   }
   const acceptance = acceptedByForeman(pull.headSha, evidence);
   if (!acceptance) {
     return {
       ready: false,
-      waitingOn:
-        "Get acceptance for the current head from a local Foreman session distinct from the lead and reviewer.",
+      waitingOn: "Get acceptance for the current commit from a separate Lead session.",
     };
   }
   const pr = { number: pull.number, headSha: pull.headSha, checks: pull.checks };
@@ -248,7 +315,11 @@ export function createMergeGate(deps: MergeGateDeps): RecoverableMergeGate {
       intent?.issue === target.issue &&
       intent.number === target.number &&
       intent.headSha === target.headSha;
-    if (!intent || !sameTarget || !evaluateApprovals(evidence.pull, intent.approval, true).ready) {
+    if (
+      !intent ||
+      !sameTarget ||
+      !evaluateApprovals(target.issue, evidence.pull, intent.approval, true).ready
+    ) {
       return inconsistent();
     }
     if (!(await deps.fenceMerge(epoch))) return { refused: laneUnavailable };
@@ -298,6 +369,9 @@ export function createMergeGate(deps: MergeGateDeps): RecoverableMergeGate {
             verdict: current.verdict,
             acceptance: current.acceptance,
             acceptanceSession: evidence.acceptanceSession,
+            ...(evidence.reviewAccountSelection
+              ? { reviewAccountSelection: evidence.reviewAccountSelection }
+              : {}),
           },
         },
         epoch,

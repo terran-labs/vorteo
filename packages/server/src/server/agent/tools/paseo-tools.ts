@@ -167,6 +167,7 @@ import { createJournalTools } from "../journal/tools.js";
 import { createChecklistTools } from "../task-checklist/tools.js";
 import { createQuestionTools } from "../questions/tools.js";
 import { createPreviewTools } from "../../previews/tools.js";
+import { isLeanFactoryMethod, type LeanHandlers } from "../../factory/lean/handlers.js";
 
 export interface PaseoToolHostDependencies {
   agentMessages?: () => AgentMessageDelivery;
@@ -222,6 +223,8 @@ export interface PaseoToolHostDependencies {
    * Used for cwd/mode inheritance when agents spawn child agents.
    */
   callerAgentId?: string;
+  /** Set only by the daemon's native catalog, never for the shared-token HTTP MCP route. */
+  factoryLean?: Pick<LeanHandlers, "invokeAgent">;
   /**
    * Optional resolver for session-bound speak handlers.
    * Used by hidden voice agents to narrate through daemon-managed TTS.
@@ -1637,6 +1640,30 @@ function createToolCatalog(
   }
 
   if (scope === "agent") {
+    const factoryLean = options.factoryLean;
+    if (factoryLean) {
+      registerTool(
+        "factory_lean_call",
+        {
+          title: "Call Lean Factory",
+          description:
+            "Read lean Factory status or activity, or decide an event assigned to this Lead session.",
+          inputSchema: {
+            method: z.string().refine(isLeanFactoryMethod),
+            input: z.record(z.string(), z.unknown()),
+          },
+        },
+        async ({ method, input }) => {
+          if (!callerAgentId)
+            throw new PaseoToolInputError("Factory calls require an agent session.");
+          const output = await factoryLean.invokeAgent(callerAgentId, method, input);
+          return {
+            content: [],
+            structuredContent: ensureValidJson(output as Record<string, unknown>),
+          };
+        },
+      );
+    }
     for (const tool of [
       ...createJournalTools(agentManager, callerAgentId),
       ...createChecklistTools(agentManager, callerAgentId),

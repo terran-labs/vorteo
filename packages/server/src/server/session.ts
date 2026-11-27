@@ -204,6 +204,7 @@ import {
   FactoryRefusal,
   factoryOwnerOnlyFields,
 } from "./factory/project/owner-writes.js";
+import { isLeanFactoryMethod, type LeanHandlers } from "./factory/lean/handlers.js";
 import { normalizeClientMessageId } from "./client-message-id.js";
 import { createAgentForMessage, AgentCreationRequestError } from "./agent/create-agent/requests.js";
 import { resolveCreateAgentIntent, type CreateAgentIntent } from "./agent/create-agent/intent.js";
@@ -674,7 +675,12 @@ export interface SessionOptions {
     subscribe(listener: (pluginId: string) => void): () => void;
     subscribeSettings?(listener: (pluginId: string, settingsId: string) => void): () => void;
     catalog(): Array<{ id: string; clientBundle: string; clientBundleHash?: string }>;
-    invokePluginRpc(pluginId: string, method: string, input: unknown): Promise<unknown>;
+    invokePluginRpc(
+      pluginId: string,
+      method: string,
+      input: unknown,
+      caller?: Parameters<LeanHandlers["invokeSocket"]>[2],
+    ): Promise<unknown>;
     subscribePluginRpc(
       pluginId: string,
       method: string,
@@ -2967,7 +2973,7 @@ export class Session {
       this.dispatchOrchestrationSkillsMessage(msg) ??
       this.dispatchPluginDirectoryMessage(msg) ??
       this.dispatchPluginMessage(msg) ??
-      this.dispatchPluginRpcMessage(msg) ??
+      this.dispatchPluginRpcMessage(msg, source) ??
       this.dispatchHostServiceMessage(msg, source) ??
       this.dispatchMiscMessage(msg);
     if (promise) await promise;
@@ -3192,11 +3198,21 @@ export class Session {
     return undefined;
   }
 
-  private dispatchPluginRpcMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+  private dispatchPluginRpcMessage(
+    msg: SessionInboundMessage,
+    source?: object,
+  ): Promise<void> | undefined {
     if (msg.type === "plugin.rpc.invoke.request") {
       if (!this.pluginRuntime) throw new Error("Plugin service is unavailable");
       if (this.refuseFactoryOwnerWrite(msg)) return Promise.resolve();
-      return this.pluginRuntime.invokePluginRpc(msg.pluginId, msg.method, msg.input).then(
+      const invoked =
+        msg.pluginId === "factory" && isLeanFactoryMethod(msg.method)
+          ? this.pluginRuntime.invokePluginRpc(msg.pluginId, msg.method, msg.input, {
+              principalId: this.principalId,
+              credential: this.credentialFor(source),
+            })
+          : this.pluginRuntime.invokePluginRpc(msg.pluginId, msg.method, msg.input);
+      return invoked.then(
         (output) => this.replyPluginRpc(msg, output),
         (error: unknown) => {
           // A coded Factory refusal is an answer, not a failure: the service logged it once.

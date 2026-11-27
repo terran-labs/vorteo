@@ -17,6 +17,8 @@ export interface LeanReconcilePorts {
   execute(action: Exclude<DispatchAction, { kind: "merge" }>): Promise<void>;
   recordMerge(issue: number, head: string, mergeSha: string): Promise<void>;
   now(): Date;
+  /** Shadow passes publish only the simulated actions to a separate activity sink. */
+  shadow?: { record(actions: readonly DispatchAction[]): Promise<void> };
 }
 
 /** Re-read facts after each action. A concurrent wake gets another pass after the current one. */
@@ -29,7 +31,12 @@ export function createLeanReconciler(ports: LeanReconcilePorts) {
       ports.context(),
     ]);
     const stages = deriveStages(facts, ledger, context.here);
-    for (const action of plan(stages, ledger, context)) {
+    const actions = plan(stages, ledger, context);
+    if (ports.shadow) {
+      await ports.shadow.record(actions);
+      return;
+    }
+    for (const action of actions) {
       if (action.kind === "merge") {
         const gate = await ports.mergeGate.evaluate(action.issue);
         if (

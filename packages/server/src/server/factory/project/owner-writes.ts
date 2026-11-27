@@ -11,6 +11,7 @@ export const FACTORY_OWNER_ONLY_CODE = "factory_owner_only";
  * only names whose launch the other fields set, and planning changes no preset or placement.
  */
 const OWNER_ONLY_CONFIGURE_FIELDS = [
+  "mode",
   "provider",
   "profileId",
   "plannerProfileId",
@@ -38,7 +39,8 @@ const OWNER_ONLY_CONFIGURE_FIELDS = [
 export function factoryOwnerOnlyFields(method: string, input: unknown): string[] {
   if (!input || typeof input !== "object") return [];
   const fields = input as Record<string, unknown>;
-  if (method === factoryProjectEnable.name) return fields.adopt !== undefined ? ["adopt"] : [];
+  if (method === factoryProjectEnable.name)
+    return ["adopt", "mode"].filter((field) => fields[field] !== undefined);
   if (method === factoryProjectConfigure.name)
     return OWNER_ONLY_CONFIGURE_FIELDS.filter((field) => fields[field] !== undefined);
   return [];

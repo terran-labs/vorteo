@@ -153,6 +153,7 @@ const GATED_ROLES: ReadonlySet<string> = new Set([
 export type PromptOutcome = "sent" | "busy";
 
 export interface ProjectFactoryServiceInput {
+  lean?: import("../lean/types.js").LeanModePort;
   paseoHome: string;
   serverId: string;
   projects: Pick<ProjectRegistry, "get">;
@@ -266,6 +267,12 @@ export class ProjectFactoryService {
     await this.serialize(async () => {
       const file = await this.store.read();
       for (const [projectId, project] of Object.entries(file.projects)) {
+        if (project.mode === "lean") {
+          const record = await this.input.projects.get(projectId);
+          if (record && !record.archivedAt && project.enabled && !project.paused)
+            await this.input.lean?.start(projectId);
+          continue;
+        }
         await this.reconcileOptimizerReview(projectId, project);
         if (!project.enabled) continue;
         const record = await this.input.projects.get(projectId);
@@ -464,6 +471,7 @@ export class ProjectFactoryService {
   }
 
   async enable(request: {
+    mode?: "lean" | "crew";
     projectId: string;
     repository: string;
     adopt?: Partial<Record<ProjectFactoryRoleId, string>>;
@@ -473,8 +481,16 @@ export class ProjectFactoryService {
       throw new ProjectFactoryError("Use a GitHub repository as owner/name, such as acme/app.");
     return this.serialize(async () => {
       const record = await this.requireActiveProject(request.projectId);
-      await this.validateAdoption(request.projectId, request.adopt ?? {});
-      await this.refuseUnadoptedForeman(request.projectId, request.adopt ?? {});
+      const existing = await this.readProject(request.projectId);
+      const mode = request.mode ?? existing?.mode ?? "crew";
+      if (existing?.enabled && mode !== (existing.mode ?? "crew"))
+        throw new ProjectFactoryError("Disable the Factory before switching its mode.");
+      if (mode === "lean" && !this.input.lean)
+        throw new ProjectFactoryError("Lean Factory is unavailable on this daemon.");
+      if (mode === "crew") {
+        await this.validateAdoption(request.projectId, request.adopt ?? {});
+        await this.refuseUnadoptedForeman(request.projectId, request.adopt ?? {});
+      }
       let previous: ProjectState | undefined;
       await this.store.mutate((file) => {
         const other = Object.entries(file.projects).find(
@@ -490,6 +506,7 @@ export class ProjectFactoryService {
         const current = file.projects[request.projectId];
         previous = current ? structuredClone(current) : undefined;
         file.projects[request.projectId] = {
+          ...(mode === "lean" ? { mode } : {}),
           repository: repository.data,
           workers: current?.workers ?? {
             plannerProfileId: null,
@@ -516,6 +533,10 @@ export class ProjectFactoryService {
         };
       });
       await this.claimHome(request.projectId, repository.data, previous);
+      if (mode === "lean") {
+        await this.input.lean!.start(request.projectId);
+        return this.describe(record, await this.readProject(request.projectId), null);
+      }
       const changed: string[] = [];
       for (const role of PROJECT_FACTORY_ROLES) {
         const workspaceId = await this.ensureRole(record, role, request.adopt?.[role.id]);
@@ -535,13 +556,16 @@ export class ProjectFactoryService {
   private setPaused(projectId: string, paused: boolean): Promise<ProjectFactoryState> {
     return this.serialize(async () => {
       const record = await this.requireActiveProject(projectId);
-      await this.mutateProject(projectId, (project) => {
+      const configured = await this.mutateProject(projectId, (project) => {
         if (!project.enabled) throw new ProjectFactoryError("Factory is off for this project.");
         project.paused = paused;
         // A manual pause or resume takes the project out of any pause_all drain.
         delete project.drain;
       });
-      if (paused) this.stopTimers(projectId);
+      if (configured.mode === "lean") {
+        if (paused) await this.input.lean?.stop(projectId, "pause");
+        else await this.input.lean?.start(projectId);
+      } else if (paused) this.stopTimers(projectId);
       else this.startTimers(projectId);
       return this.describe(record, await this.readProject(projectId), null);
     });
@@ -553,6 +577,7 @@ export class ProjectFactoryService {
       this.stopTimers(projectId);
       const project = await this.readProject(projectId);
       if (!project) return this.describe(record, undefined, null);
+      if (project.mode === "lean") await this.input.lean?.stop(projectId, "disable");
       const installationId = projectFactoryInstallationId(projectId);
       const changed: string[] = [];
       for (const role of Object.values(project.roles)) {
@@ -641,13 +666,14 @@ export class ProjectFactoryService {
       const pausedAt = this.now().toISOString();
       for (const entry of (await this.list()).projects) {
         if (entry.state === "on") {
-          await this.mutateProject(entry.projectId, (project) => {
+          const configured = await this.mutateProject(entry.projectId, (project) => {
             project.paused = true;
             project.drain = { id: `drain-${randomUUID()}`, reason, pausedAt };
             const foreman = project.roles["factory-intake"];
             if (foreman) foreman.status = null;
           });
-          this.stopTimers(entry.projectId);
+          if (configured.mode === "lean") await this.input.lean?.stop(entry.projectId, "pause");
+          else this.stopTimers(entry.projectId);
         }
         if (entry.state !== "unavailable") await this.sendDrainNotice(entry.projectId);
       }
@@ -658,7 +684,8 @@ export class ProjectFactoryService {
   private async sendDrainNotice(projectId: string): Promise<void> {
     const project = await this.readProject(projectId);
     const foreman = project?.roles["factory-intake"]?.agentId;
-    if (!project?.drain || project.drain.noticeSentAt || !foreman) return;
+    if (!project?.drain || project.mode === "lean" || project.drain.noticeSentAt || !foreman)
+      return;
     if (!(await this.notifyForeman(projectId, foreman, drainNotice(project.drain.id)))) return;
     await this.mutateProject(projectId, (current) => {
       if (current.drain) current.drain.noticeSentAt = this.now().toISOString();
@@ -691,7 +718,8 @@ export class ProjectFactoryService {
           if (resume) project.paused = false;
           delete project.drain;
         });
-        if (resume) this.startTimers(entry.projectId);
+        if (resume && drain.mode === "lean") await this.input.lean?.start(entry.projectId);
+        else if (resume) this.startTimers(entry.projectId);
         const foreman = drain.roles["factory-intake"]?.agentId;
         if (resume && foreman) await this.notifyForeman(entry.projectId, foreman, DRAIN_ENDED);
       }
@@ -700,6 +728,7 @@ export class ProjectFactoryService {
   }
 
   private configure(request: {
+    mode?: "lean" | "crew";
     projectId: string;
     role?: ProjectFactoryRoleId;
     provider?: string | null;
@@ -715,6 +744,11 @@ export class ProjectFactoryService {
       if (!request.role && (request.provider !== undefined || request.profileId !== undefined))
         throw new ProjectFactoryError("Name the role whose provider or profile you are setting.");
       const project = await this.mutateProject(request.projectId, (current) => {
+        if (request.mode && request.mode !== (current.mode ?? "crew")) {
+          if (current.enabled)
+            throw new ProjectFactoryError("Disable the Factory before switching its mode.");
+          current.mode = request.mode;
+        }
         if (request.plannerProfileId !== undefined)
           current.workers.plannerProfileId = request.plannerProfileId;
         if (request.planning !== undefined) current.workers.planning = request.planning;
@@ -883,7 +917,7 @@ export class ProjectFactoryService {
   async tick(projectId: string, roleId: ProjectFactoryRoleId): Promise<void> {
     await this.serialize(async () => {
       const project = await this.readProject(projectId);
-      if (!project?.enabled || project.paused) return;
+      if (!project?.enabled || project.paused || project.mode === "lean") return;
       const record = await this.input.projects.get(projectId);
       if (!record || record.archivedAt) return;
       if (roleId === "factory-mechanic") await this.reviewDrift(record);
@@ -1816,6 +1850,7 @@ export class ProjectFactoryService {
     const state = factoryState(project, unavailable);
     return {
       schemaVersion: 1,
+      ...(project?.mode ? { mode: project.mode } : {}),
       serverId: this.input.serverId,
       projectId: record.projectId,
       installation: this.installation(record.projectId),
@@ -1836,7 +1871,7 @@ export class ProjectFactoryService {
       drain: project?.drain
         ? { id: project.drain.id, reason: project.drain.reason, pausedAt: project.drain.pausedAt }
         : null,
-      roles: PROJECT_FACTORY_ROLES.map((role) => {
+      roles: (project?.mode === "lean" ? [] : PROJECT_FACTORY_ROLES).map((role) => {
         const roleState = project?.roles[role.id] ?? emptyRoleState();
         return {
           role: role.id,

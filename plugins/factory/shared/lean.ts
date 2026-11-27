@@ -126,6 +126,8 @@ export type ReleaseRecipeV1 = z.infer<typeof ReleaseRecipeV1Schema>;
  * live here.
  */
 export const FactoryConfigV1Schema = z.looseObject({
+  /** Matching paths require an independent security review. */
+  sensitivePaths: z.array(z.string().min(1)).optional(),
   schema: z.literal("vorteo-factory"),
   version: z.number().int().positive(),
   /** Absent means "crew". */
