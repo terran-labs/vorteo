@@ -199,6 +199,9 @@ const STORED_AGENT_SCHEMA = z.object({
   internal: z.boolean().optional(),
   archivedAt: z.string().nullable().optional(),
   owner: AgentOwnerSchema.optional(),
+  // The creating agent, set by the daemon at creation. Absent for a thread nobody created and
+  // for threads created before it existed; their approvals go to the owner.
+  createdByAgentId: z.string().nullable().optional(),
 });
 
 export type SerializableAgentConfig = Pick<
@@ -1501,6 +1504,9 @@ function preserveOwnedRecordFields({ record, existing, options }: OwnedRecordFie
     record.forwardedGovernance = existing?.forwardedGovernance;
   if (!options.checklistWakeWrite)
     record.checklistWakeGenerations = existing?.checklistWakeGenerations;
+  // The creator is recorded with the thread's first write and never changes afterwards (#659).
+  if (existing && existing.createdByAgentId !== undefined)
+    record.createdByAgentId = existing.createdByAgentId;
   if (!options.blockedReviewWrite && existing) {
     record.lastBlockedReviewAt = existing.lastBlockedReviewAt;
     record.blockedReviewCount = existing.blockedReviewCount;

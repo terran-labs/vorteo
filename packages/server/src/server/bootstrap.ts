@@ -2159,6 +2159,8 @@ export async function createPaseoDaemon(
     serverId,
     logger,
     waitForRestartHoldRelease: (signal) => agentManager.waitForRestartHoldRelease(signal),
+    // A creator that stops watching a child no longer counts as able to answer its approvals.
+    onWatchesChanged: (childAgentId) => agentManager.refreshCreatorWatch(childAgentId),
     messages: () => {
       if (!wsServer) throw new Error("Daemon is not accepting agent messages");
       return wsServer.agentMessages;
@@ -2193,6 +2195,10 @@ export async function createPaseoDaemon(
       },
     }),
   });
+
+  agentManager.setCreatorWatchProbe((creatorAgentId, childAgentId) =>
+    finishSubscriptions.isWatchedBy(creatorAgentId, childAgentId),
+  );
 
   const idleRuntimeCleanup = createIdleRuntimeCleanup({
     enabled: daemonConfigStore.get().idleRuntimeCleanup !== false,

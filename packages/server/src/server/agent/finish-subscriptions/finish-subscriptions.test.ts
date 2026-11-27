@@ -251,6 +251,9 @@ test("a quota-latched parent keeps the finish notification until the latch clear
   const state = await scenario();
   await state.service.register(intent);
   await until(() => state.observation.waits.length === 1);
+  // #659: a watching creator counts as told of the child's approvals until the outcome is captured.
+  expect(state.service.isWatchedBy("parent", "child")).toBe(true);
+  expect(state.service.isWatchedBy("someone-else", "child")).toBe(false);
   state.hold(true);
   state.observation.waits[0]!.result.resolve({
     ...outcome(),
@@ -262,6 +265,7 @@ test("a quota-latched parent keeps the finish notification until the latch clear
   // The outcome is captured, so the finished child's runtime may go; the caller stays protected.
   expect(state.service.hasPendingForChild("child")).toBe(false);
   expect(state.service.hasPendingForCaller("parent")).toBe(true);
+  expect(state.service.isWatchedBy("parent", "child")).toBe(false);
   // A restart while the outcome waits delivers that outcome, without observing the child again.
   await expect.poll(async () => (await state.store.list())[0]?.captured?.status).toBe("idle");
   // The stored copy keeps only what the notice formats.

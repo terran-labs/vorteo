@@ -6063,6 +6063,9 @@ class ClaudeAgentSession implements AgentSession {
     if (options.toolUseID) {
       metadata.toolUseId = options.toolUseID;
     }
+    // When it was asked, kept with the request: a hosted session outlives a daemon restart, and the
+    // owner escalation is timed from this (#659).
+    metadata.askedAt = new Date().toISOString();
     if (toolName === "ExitPlanMode" && typeof input.plan === "string") {
       metadata.planText = input.plan;
     }

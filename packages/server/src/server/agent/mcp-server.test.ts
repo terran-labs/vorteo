@@ -3598,6 +3598,8 @@ describe("create_agent MCP tool", () => {
           source: "voice",
         },
         workspaceId: "wks_voice",
+        // Vorteo (#659): the authenticated caller, recorded as the creator.
+        createdByAgentId: "voice-agent",
       },
     );
     await rm(baseDir, { recursive: true, force: true });
@@ -3852,6 +3854,8 @@ describe("create_agent MCP tool", () => {
           [PARENT_AGENT_ID_LABEL]: "parent-agent",
         },
         workspaceId: "wks_parent",
+        // Vorteo (#659): the authenticated caller, recorded as the creator.
+        createdByAgentId: "parent-agent",
       },
     );
   });
