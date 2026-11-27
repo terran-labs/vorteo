@@ -181,6 +181,7 @@ interface ProbeOptions {
   launch: ProviderLaunch;
   args: string[];
   cwd?: string;
+  timeoutMs?: number;
 }
 export function probe(options: ProbeOptions): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -190,6 +191,7 @@ export function probe(options: ProbeOptions): Promise<string> {
       stdio: "pipe",
       detached: process.platform !== "win32",
     });
+    child.stdin.end();
     let stdout = "";
     let stderr = "";
     const deadline = setTimeout(() => {
@@ -198,7 +200,7 @@ export function probe(options: ProbeOptions): Promise<string> {
         reject(new AntigravityError("Antigravity discovery timed out", "PROBE_TIMEOUT"));
         return undefined;
       }, reject);
-    }, 10_000);
+    }, options.timeoutMs ?? 10_000);
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString();
     });
@@ -217,6 +219,7 @@ export function probe(options: ProbeOptions): Promise<string> {
           new AntigravityError(
             diagnostic(stderr.trim() || `agy exited with code ${code}`),
             "PROBE_ERROR",
+            code,
           ),
         );
     });

@@ -3,6 +3,7 @@ import type {
   ProviderUsageFetcherFactoryOptions,
   ProviderUsageFetcherManifestEntry,
 } from "./provider.js";
+import { AntigravityQuotaProvider } from "./providers/antigravity.js";
 import { ClaudeQuotaProvider } from "./providers/claude.js";
 import { claudeSignInMode } from "../../server/agent/providers/claude/sign-in-mode.js";
 import { CodexQuotaProvider } from "./providers/codex.js";
@@ -54,75 +55,111 @@ export const PROVIDER_USAGE_FETCHERS: readonly ProviderUsageFetcherManifestEntry
     providerId: "minimax",
     create: (options) => new MiniMaxQuotaProvider({ logger: options.logger, fetch: options.fetch }),
   },
+  {
+    providerId: "antigravity",
+    create: (options) => new AntigravityQuotaProvider({ logger: options.logger }),
+  },
 ];
+
+type ConfiguredProvider = NonNullable<ProviderUsageFetcherFactoryOptions["providers"]>[string];
+
+function createClaudeFetcher(
+  providerId: string,
+  configured: ConfiguredProvider | undefined,
+  strictHome: boolean,
+  options: ProviderUsageFetcherFactoryOptions,
+): ProviderUsageFetcher | null {
+  if (configured?.enabled === false) return null;
+  const claudeHome = configured?.env?.CLAUDE_CONFIG_DIR;
+  return new ClaudeQuotaProvider({
+    logger: options.logger,
+    fetch: options.fetch,
+    providerId,
+    displayName: configured?.label ?? (providerId === "claude" ? undefined : providerId),
+    claudeHome,
+    strictClaudeHome: strictHome || claudeHome !== undefined,
+    signIn: claudeSignInMode(configured?.env),
+    limitObservations: options.claudeLimitObservations,
+  });
+}
+
+function createAntigravityFetcher(
+  providerId: string,
+  configured: ConfiguredProvider | undefined,
+  options: ProviderUsageFetcherFactoryOptions,
+): ProviderUsageFetcher | null {
+  if (configured?.enabled === false || configured?.removed === true) return null;
+  return new AntigravityQuotaProvider({
+    logger: options.logger,
+    providerId,
+    displayName: configured?.label ?? (providerId === "antigravity" ? "Antigravity" : providerId),
+    command: configured?.command,
+    env: configured?.env,
+  });
+}
+
+function createCodexFetcher(
+  providerId: string,
+  configured: ConfiguredProvider | undefined,
+  strictHome: boolean,
+  options: ProviderUsageFetcherFactoryOptions,
+): ProviderUsageFetcher | null {
+  if (configured?.enabled === false) return null;
+  const codexHome = configured?.env?.["CODEX_HOME"];
+  return new CodexQuotaProvider({
+    logger: options.logger,
+    fetch: options.fetch,
+    providerId,
+    displayName: configured?.label ?? (providerId === "codex" ? "Codex" : providerId),
+    codexHome,
+    strictCodexHome: strictHome || codexHome !== undefined,
+  });
+}
+
+function createBuiltinUsageFetcher(
+  entry: ProviderUsageFetcherManifestEntry,
+  options: ProviderUsageFetcherFactoryOptions,
+): ProviderUsageFetcher | null {
+  if (entry.providerId === "claude") {
+    return createClaudeFetcher("claude", options.providers?.claude, false, options);
+  }
+  if (entry.providerId === "antigravity") {
+    return createAntigravityFetcher("antigravity", options.providers?.["antigravity"], options);
+  }
+  if (entry.providerId === "codex") {
+    return createCodexFetcher("codex", options.providers?.["codex"], false, options);
+  }
+  return entry.create(options);
+}
+
+function createExtendedUsageFetcher(
+  providerId: string,
+  provider: ConfiguredProvider,
+  options: ProviderUsageFetcherFactoryOptions,
+): ProviderUsageFetcher | null {
+  if (providerId !== "claude" && provider.extends === "claude") {
+    return createClaudeFetcher(providerId, provider, true, options);
+  }
+  if (providerId !== "antigravity" && provider.extends === "antigravity") {
+    return createAntigravityFetcher(providerId, provider, options);
+  }
+  if (providerId !== "codex" && provider.extends === "codex") {
+    return createCodexFetcher(providerId, provider, true, options);
+  }
+  return null;
+}
 
 export function createProviderUsageFetchers(
   options: ProviderUsageFetcherFactoryOptions,
 ): ProviderUsageFetcher[] {
-  const configuredCodex = options.providers?.["codex"];
-  const fetchers = PROVIDER_USAGE_FETCHERS.flatMap((entry) => {
-    if (entry.providerId === "claude") {
-      const configured = options.providers?.claude;
-      if (configured?.enabled === false) return [];
-      const claudeHome = configured?.env?.CLAUDE_CONFIG_DIR;
-      return [
-        new ClaudeQuotaProvider({
-          logger: options.logger,
-          fetch: options.fetch,
-          claudeHome,
-          displayName: configured?.label,
-          strictClaudeHome: claudeHome !== undefined,
-          signIn: claudeSignInMode(configured?.env),
-          limitObservations: options.claudeLimitObservations,
-        }),
-      ];
-    }
-    if (entry.providerId !== "codex") return [entry.create(options)];
-    if (configuredCodex?.enabled === false) return [];
-    const codexHome = configuredCodex?.env?.["CODEX_HOME"];
-    return [
-      new CodexQuotaProvider({
-        logger: options.logger,
-        fetch: options.fetch,
-        providerId: "codex",
-        displayName: configuredCodex?.label ?? "Codex",
-        codexHome,
-        strictCodexHome: codexHome !== undefined,
-      }),
-    ];
-  });
-
-  for (const [providerId, provider] of Object.entries(options.providers ?? {})) {
-    if (providerId !== "claude" && provider.extends === "claude" && provider.enabled !== false) {
-      fetchers.push(
-        new ClaudeQuotaProvider({
-          logger: options.logger,
-          fetch: options.fetch,
-          providerId,
-          displayName: provider.label ?? providerId,
-          claudeHome: provider.env?.CLAUDE_CONFIG_DIR,
-          strictClaudeHome: true,
-          signIn: claudeSignInMode(provider.env),
-          limitObservations: options.claudeLimitObservations,
-        }),
-      );
-      continue;
-    }
-    if (providerId === "codex" || provider.extends !== "codex" || provider.enabled === false) {
-      continue;
-    }
-    const codexHome = provider.env?.["CODEX_HOME"];
-    fetchers.push(
-      new CodexQuotaProvider({
-        logger: options.logger,
-        fetch: options.fetch,
-        providerId,
-        displayName: provider.label ?? providerId,
-        codexHome,
-        strictCodexHome: true,
-      }),
-    );
+  const fetchers: ProviderUsageFetcher[] = [];
+  for (const entry of PROVIDER_USAGE_FETCHERS) {
+    const fetcher = createBuiltinUsageFetcher(entry, options);
+    if (fetcher) fetchers.push(fetcher);
   }
-
+  for (const [providerId, provider] of Object.entries(options.providers ?? {})) {
+    const fetcher = createExtendedUsageFetcher(providerId, provider, options);
+    if (fetcher) fetchers.push(fetcher);
+  }
   return fetchers;
 }

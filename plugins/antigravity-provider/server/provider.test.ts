@@ -15,6 +15,7 @@ import {
 } from "@getpaseo/plugin/server/provider";
 import { signalPlan } from "./internal/signals.js";
 import { createAntigravityProvider } from "./provider.js";
+import { AntigravityUsage } from "./usage.js";
 
 const temporary: string[] = [];
 const connections: ProviderConnection[] = [];
@@ -789,3 +790,62 @@ it.runIf(process.platform === "win32")(
     });
   },
 );
+
+describe("AntigravityUsage", () => {
+  it("discovers remembered launches and fetches quota windows via agy -p /usage", async () => {
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "antigravity-usage-test-"));
+    temporary.push(cwd);
+    const usage = new AntigravityUsage();
+    const withUsage = createAntigravityProvider(usage);
+    const env = { ANTIGRAVITY_APP_DATA_DIR: cwd };
+    const launch: ProviderLaunch = { command: process.execPath, args: [fake], env };
+
+    expect(await withUsage.status!({ launch })).toEqual({ available: true });
+    const source = usage.registration();
+    const accounts = await source.discover({ kind: "global" });
+    expect(accounts).toHaveLength(1);
+    expect(await source.discover({ kind: "session", provider: "antigravity", env })).toEqual(
+      accounts,
+    );
+
+    const report = await source.fetch(accounts[0]!.input);
+    expect(report).toMatchObject({
+      status: "available",
+      windows: [
+        expect.objectContaining({
+          id: "gemini-5h",
+          label: "5-hour",
+          shortLabel: "5h",
+          summary: true,
+          remainingPct: 85,
+          resetsAt: "2026-11-28T01:39:17.000Z",
+        }),
+        expect.objectContaining({
+          id: "gemini-weekly",
+          label: "Weekly",
+          shortLabel: "wk",
+          summary: true,
+          remainingPct: 92,
+          resetsAt: "2026-12-04T20:39:17.000Z",
+        }),
+      ],
+    });
+  });
+
+  it("reports no_quota when agy exits with code 2", async () => {
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "antigravity-usage-noquota-"));
+    temporary.push(cwd);
+    const usage = new AntigravityUsage();
+    const launch: ProviderLaunch = {
+      command: process.execPath,
+      args: [fake],
+      env: { ANTIGRAVITY_APP_DATA_DIR: cwd, AGY_TEST_USAGE: "no-quota" },
+    };
+    const { account } = usage.remember(launch);
+    const report = await usage.registration().fetch({ account });
+    expect(report).toEqual({
+      status: "unavailable",
+      problem: { kind: "no_quota", detail: "No usage quota reported" },
+    });
+  });
+});

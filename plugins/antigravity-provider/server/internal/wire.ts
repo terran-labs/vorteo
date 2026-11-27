@@ -71,6 +71,7 @@ export class AntigravityError extends Error {
   constructor(
     message: string,
     readonly code = "ANTIGRAVITY_ERROR",
+    readonly exitCode?: number | null,
   ) {
     super(message);
     this.name = "AntigravityError";

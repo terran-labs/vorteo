@@ -26,6 +26,45 @@ if (args.includes("models")) {
   process.stdout.write(fixture("models-api-key").join("\n") + "\n");
   process.exit(0);
 }
+if (args.includes("-p") && args.includes("/usage")) {
+  if (process.env.AGY_TEST_USAGE === "no-quota") {
+    process.stderr.write("No account quota for GEMINI_API_KEY\n");
+    process.exit(2);
+  }
+  process.stdout.write(
+    JSON.stringify({
+      conversation_id: "",
+      status: "SUCCESS",
+      command: {
+        name: "usage",
+        data: {
+          groups: [
+            {
+              name: "Gemini Models",
+              buckets: [
+                {
+                  id: "gemini-weekly",
+                  name: "Weekly Limit Remaining",
+                  window: "weekly",
+                  remaining_fraction: 0.92,
+                  reset_time: "2026-12-04T20:39:17Z",
+                },
+                {
+                  id: "gemini-5h",
+                  name: "Five Hour Limit Remaining",
+                  window: "5h",
+                  remaining_fraction: 0.85,
+                  reset_time: "2026-11-28T01:39:17Z",
+                },
+              ],
+            },
+          ],
+        },
+      },
+    }) + "\n",
+  );
+  process.exit(0);
+}
 if (process.env.AGY_TEST_STARTUP === "auth") {
   process.stderr.write(fixture("not-signed-in", "stderr").join("\n"));
   process.stdout.write(JSON.stringify(fixture("not-signed-in")[0]) + "\n");

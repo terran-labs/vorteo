@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderUsage } from "../../server/messages.js";
 import type { ProviderUsageFetcher } from "./provider.js";
+import { AntigravityQuotaProvider } from "./providers/antigravity.js";
 import { ClaudeQuotaProvider } from "./providers/claude.js";
 import { CodexQuotaProvider } from "./providers/codex.js";
 import { CopilotQuotaProvider } from "./providers/copilot.js";
@@ -486,6 +487,7 @@ describe("ProviderUsageService", () => {
         logger: createLogger(),
         claudeLimitObservations,
         getProviderConfigs: () => ({
+          antigravity: { enabled: false },
           claude: { enabled: false },
           codex: { enabled: false },
           "claude-two": {
@@ -2222,6 +2224,193 @@ describe("KimiQuotaProvider usage windows", () => {
     expect(usage.windows.map((window) => window.id)).toEqual([
       "coding_limit_300_time_unit_minute",
       "coding_limit_300_time_unit_minute_2",
+    ]);
+  });
+});
+
+describe("AntigravityQuotaProvider", () => {
+  const sampleOutput = JSON.stringify({
+    conversation_id: "",
+    status: "SUCCESS",
+    command: {
+      name: "usage",
+      data: {
+        groups: [
+          {
+            name: "Gemini Models",
+            buckets: [
+              {
+                id: "gemini-weekly",
+                name: "Weekly Limit Remaining",
+                window: "weekly",
+                remaining_fraction: 0.9,
+                reset_time: "2026-12-04T20:39:17Z",
+              },
+              {
+                id: "gemini-5h",
+                name: "Five Hour Limit Remaining",
+                window: "5h",
+                remaining_fraction: 0.25,
+                reset_time: "2026-11-28T01:39:17Z",
+              },
+            ],
+          },
+          {
+            name: "Claude and GPT models",
+            buckets: [
+              {
+                id: "3p-weekly",
+                name: "Weekly Limit Remaining",
+                window: "weekly",
+                remaining_fraction: 1,
+                reset_time: "1970-01-01T00:00:00Z",
+              },
+              {
+                id: "3p-5h",
+                name: "Five Hour Limit Remaining",
+                window: "5h",
+                remaining_fraction: 1,
+                reset_time: "1970-01-01T00:00:00Z",
+              },
+            ],
+          },
+        ],
+      },
+    },
+  });
+
+  it("parses grouped windows, normalizes epoch reset times, and honors command overrides", async () => {
+    const runCommand = vi.fn(async () => ({ code: 0, stdout: sampleOutput, stderr: "" }));
+    const provider = new AntigravityQuotaProvider({
+      logger: createLogger(),
+      command: ["/custom/agy", "--flag"],
+      env: { ANTIGRAVITY_APP_DATA_DIR: "/tmp/agy-test" },
+      resolveExecutable: async (command) => command,
+      runCommand,
+      now: () => Date.parse("2026-11-27T21:00:00Z"),
+    });
+
+    const usage = await provider.fetchUsage();
+
+    expect(runCommand).toHaveBeenCalledWith(
+      "/custom/agy",
+      ["--flag", "-p", "/usage", "--output-format", "json"],
+      { ANTIGRAVITY_APP_DATA_DIR: "/tmp/agy-test" },
+    );
+    expect(usage).toMatchObject({
+      providerId: "antigravity",
+      displayName: "Antigravity",
+      status: "available",
+      sourceLabel: "Antigravity CLI",
+      error: null,
+    });
+    expect(usage.windows).toEqual([
+      expect.objectContaining({
+        id: "gemini-5h",
+        label: "5-hour · Gemini",
+        usedPct: 75,
+        remainingPct: 25,
+        resetsAt: "2026-11-28T01:39:17.000Z",
+        tone: "warning",
+      }),
+      expect.objectContaining({
+        id: "gemini-weekly",
+        label: "Weekly · Gemini",
+        usedPct: 10,
+        remainingPct: 90,
+        resetsAt: "2026-12-04T20:39:17.000Z",
+        tone: "ok",
+      }),
+      expect.objectContaining({
+        id: "3p-5h",
+        label: "5-hour · Claude and GPT",
+        usedPct: 0,
+        remainingPct: 100,
+        resetsAt: null,
+        tone: "ok",
+      }),
+      expect.objectContaining({
+        id: "3p-weekly",
+        label: "Weekly · Claude and GPT",
+        usedPct: 0,
+        remainingPct: 100,
+        resetsAt: null,
+        tone: "ok",
+      }),
+    ]);
+  });
+
+  it("stays unavailable when agy is missing, signed out, or has no account quota", async () => {
+    const missing = new AntigravityQuotaProvider({
+      logger: createLogger(),
+      resolveExecutable: async () => null,
+      runCommand: vi.fn(),
+    });
+    await expect(missing.fetchUsage()).resolves.toMatchObject({
+      status: "unavailable",
+      error: null,
+    });
+
+    const apiKey = new AntigravityQuotaProvider({
+      logger: createLogger(),
+      resolveExecutable: async () => "/usr/bin/agy",
+      runCommand: async () => ({
+        code: 2,
+        stdout: "",
+        stderr: "No account quota for GEMINI_API_KEY",
+      }),
+    });
+    await expect(apiKey.fetchUsage()).resolves.toMatchObject({
+      status: "unavailable",
+      error: null,
+    });
+
+    const signedOut = new AntigravityQuotaProvider({
+      logger: createLogger(),
+      resolveExecutable: async () => "/usr/bin/agy",
+      runCommand: async () => ({
+        code: 1,
+        stdout: "",
+        stderr: "Error: authentication required. Run 'agy' to sign in.",
+      }),
+    });
+    await expect(signedOut.fetchUsage()).resolves.toMatchObject({
+      status: "unavailable",
+      error: null,
+    });
+  });
+
+  it("surfaces unexpected CLI failures and wires manifest filters cleanly", async () => {
+    const broken = new AntigravityQuotaProvider({
+      logger: createLogger(),
+      resolveExecutable: async () => "/usr/bin/agy",
+      runCommand: async () => ({ code: 1, stdout: "", stderr: "network unreachable" }),
+    });
+    await expect(broken.fetchUsage()).resolves.toMatchObject({
+      status: "error",
+      error: "network unreachable",
+    });
+
+    const disabled = createProviderUsageFetchers({
+      logger: createLogger(),
+      providers: { antigravity: { enabled: false } },
+    });
+    expect(disabled.some((fetcher) => fetcher.providerId === "antigravity")).toBe(false);
+
+    const enabled = createProviderUsageFetchers({
+      logger: createLogger(),
+      providers: {
+        antigravity: { label: "Antigravity Work", enabled: true },
+        "antigravity-personal": {
+          extends: "antigravity",
+          label: "Antigravity Personal",
+          enabled: true,
+        },
+      },
+    }).filter((fetcher) => fetcher.providerId.startsWith("antigravity"));
+    expect(enabled.map((fetcher) => [fetcher.providerId, fetcher.displayName])).toEqual([
+      ["antigravity", "Antigravity Work"],
+      ["antigravity-personal", "Antigravity Personal"],
     ]);
   });
 });

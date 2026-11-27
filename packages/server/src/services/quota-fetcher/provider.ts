@@ -7,8 +7,10 @@ export type ProviderApiFetch = typeof fetch;
 export interface ProviderUsageConfig {
   extends?: string;
   label?: string;
+  command?: string[];
   env?: Record<string, string>;
   enabled?: boolean;
+  removed?: boolean;
 }
 
 export type ProviderUsageConfigMap = Record<string, ProviderUsageConfig>;
