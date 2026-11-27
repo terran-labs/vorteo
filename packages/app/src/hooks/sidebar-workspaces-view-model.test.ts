@@ -7,7 +7,11 @@ import { describe, expect, it } from "vitest";
 import type { Agent, WorkspaceDescriptor } from "@/stores/session-store";
 import type { WorkspaceStructureProject } from "@/projects/workspace-structure";
 import { buildWorkspaceAgentActivityIndex } from "@/utils/workspace-agent-activity";
-import { factoryIssueRows, groupFactoryMembers } from "@/components/sidebar/factory-card-model";
+import {
+  factoryCardModels,
+  factoryIssueRows,
+  groupFactoryMembers,
+} from "@/components/sidebar/factory-card-model";
 import {
   appendMissingOrderKeys,
   applyStoredOrdering,
@@ -1836,6 +1840,18 @@ it("lists a Dev issue worker under the Host Factory its labels name, without the
   ]);
   expect(groups.factory).toEqual([issue]);
   expect(groups.work).toEqual([mixed]);
+  // Its Host Factory has no card on this client while Dev runs a Factory of its own: the worker
+  // stays visible on an unowned card, never on Dev's live Factory.
+  const cards = factoryCardModels({
+    members: [issue],
+    entries,
+    states: [{ serverId: "dev", projectId: "dev-vorteo", state: "on", roles: [] }],
+    plugins: [{ id: "factory", serverId: "dev", surfaces: [] }],
+  });
+  expect(cards.map((card) => [card.installationId, card.members])).toEqual([
+    ["project-factory:dev-vorteo", []],
+    [null, [issue]],
+  ]);
   // A membership no reported role claims, kept from an older Factory, is not crew.
   const stale = createSidebarWorkspaceEntry({
     serverId: "host",

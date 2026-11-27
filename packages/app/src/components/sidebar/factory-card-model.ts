@@ -286,12 +286,12 @@ export function factoryCardModels(input: {
     installationId: target.installationId,
     members: members.filter((member) => belongs(member, target.serverId, target.projectId)),
   }));
-  // An issue worker whose owning Factory has no card here, for example no overview on that host,
-  // stays visible on its own host's card instead of vanishing.
-  const orphan = (member: SidebarWorkspacePlacement) =>
-    owner(member) !== null && !cards.some((card) => card.members.includes(member));
+  // An issue worker whose owning Factory has no card here, for example no overview on that host.
+  const orphans = members.filter(
+    (member) => owner(member) !== null && !cards.some((card) => card.members.includes(member)),
+  );
   for (const member of members) {
-    if (owner(member) && !orphan(member)) continue;
+    if (owner(member)) continue;
     if (cards.some((card) => card.serverId === member.serverId)) continue;
     const projectId = entries.get(member.workspaceKey)?.projectId;
     if (!projectId) continue;
@@ -301,14 +301,29 @@ export function factoryCardModels(input: {
       projectId,
       installationId: null,
       members: members.filter(
-        (candidate) =>
-          candidate.serverId === member.serverId && (!owner(candidate) || orphan(candidate)),
+        (candidate) => candidate.serverId === member.serverId && !owner(candidate),
       ),
     });
   }
-  for (const member of members) {
-    if (orphan(member))
-      cards.find((card) => card.serverId === member.serverId)?.members.push(member);
+  // Orphans stay visible on a card that no live Factory owns: a fallback card on their host, or
+  // one of their own. Never another Factory's card, where a Runners row could open them as its own.
+  for (const member of orphans) {
+    let card = cards.find(
+      (candidate) => candidate.serverId === member.serverId && candidate.installationId === null,
+    );
+    const projectId = entries.get(member.workspaceKey)?.projectId;
+    if (!card && projectId) {
+      const key = factoryCardKey(member.serverId, projectId);
+      card = {
+        key: cards.some((candidate) => candidate.key === key) ? `${key}:unowned` : key,
+        serverId: member.serverId,
+        projectId,
+        installationId: null,
+        members: [],
+      };
+      cards.push(card);
+    }
+    card?.members.push(member);
   }
   return cards;
 }
