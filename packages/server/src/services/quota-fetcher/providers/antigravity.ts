@@ -1,9 +1,10 @@
+import { tmpdir } from "node:os";
 import { isAbsolute } from "node:path";
 import type { Logger } from "pino";
 import { z } from "zod";
 import {
   executableExists,
-  findExecutable,
+  findExecutableWithoutProbing,
 } from "../../../executable-resolution/executable-resolution.js";
 import type { ProviderUsage, ProviderUsageWindow } from "../../../server/messages.js";
 import { spawnProcess } from "../../../utils/spawn.js";
@@ -12,13 +13,15 @@ import { ApiNumberSchema, toneFromUsedPct, unavailableUsage, windowFromUsedPct }
 
 const ANTIGRAVITY_USAGE_TIMEOUT_MS = 15_000;
 const ANTIGRAVITY_USAGE_MAX_OUTPUT_BYTES = 1024 * 1024;
+export const ANTIGRAVITY_MIN_POLL_INTERVAL_MS = 5 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 const WEEK_MS = 7 * DAY_MS;
 
 const AUTH_ERROR_PATTERN =
-  /auth(?:entication)?\s*(?:required|failed|expired)|sign[\s.-]?in|log[\s.-]?in|unauthenticated|not signed in/i;
-const NO_QUOTA_PATTERN = /no account quota|gemini_api_key|api key/i;
+  /\b(?:authentication\s+(?:required|failed|expired)|not\s+(?:logged|signed)\s+in(?:to\b)?|unauthenticated|please\s+(?:log|sign)\s+in|run\s+['`"]?agy['`"]?\s+to\s+(?:log|sign)\s+in|visit\s+the\s+url\s+to\s+log\s+in)\b/i;
+const NO_QUOTA_PATTERN =
+  /\b(?:no\s+account\s+quota|has\s+no\s+account\s+quota|no\s+usage\s+quota)\b/i;
 
 const AntigravityQuotaBucketSchema = z.object({
   id: z.string().optional(),
@@ -59,10 +62,17 @@ export interface AntigravityCommandResult {
   stderr: string;
 }
 
+export interface AntigravityCommandOptions {
+  cwd: string;
+  env?: Record<string, string>;
+  timeoutMs: number;
+  maxOutputBytes: number;
+}
+
 export type AntigravityCommandRunner = (
   command: string,
   args: string[],
-  env?: Record<string, string>,
+  options: AntigravityCommandOptions,
 ) => Promise<AntigravityCommandResult>;
 
 export type AntigravityExecutableResolver = (
@@ -76,6 +86,10 @@ interface AntigravityQuotaProviderOptions {
   displayName?: string;
   command?: string[];
   env?: Record<string, string>;
+  cwd?: string;
+  timeoutMs?: number;
+  maxOutputBytes?: number;
+  minPollIntervalMs?: number;
   resolveExecutable?: AntigravityExecutableResolver;
   runCommand?: AntigravityCommandRunner;
   now?: () => number;
@@ -198,6 +212,10 @@ function parseGroupWindows(
   return windows;
 }
 
+export function isAntigravitySignedOutOrNoQuota(text: string): boolean {
+  return AUTH_ERROR_PATTERN.test(text) || NO_QUOTA_PATTERN.test(text);
+}
+
 export function parseAntigravityUsageOutput(stdout: string, now = Date.now()): ParsedUsageOutcome {
   let raw: unknown;
   try {
@@ -210,11 +228,11 @@ export function parseAntigravityUsageOutput(stdout: string, now = Date.now()): P
     return { kind: "error", error: "Unexpected Antigravity usage payload" };
   }
   if (parsed.data.status !== "SUCCESS") {
-    const message = parsed.data.error?.trim() || `Antigravity usage returned ${parsed.data.status}`;
-    if (AUTH_ERROR_PATTERN.test(message) || NO_QUOTA_PATTERN.test(message)) {
+    const rawError = parsed.data.error?.trim() ?? "";
+    if (rawError && isAntigravitySignedOutOrNoQuota(rawError)) {
       return { kind: "unavailable" };
     }
-    return { kind: "error", error: message };
+    return { kind: "error", error: `Antigravity usage returned ${parsed.data.status}` };
   }
 
   const groups = parsed.data.command?.data?.groups ?? [];
@@ -232,7 +250,11 @@ async function defaultResolveExecutable(
   command: string,
   env?: Record<string, string>,
 ): Promise<string | null> {
-  const found = await findExecutable(command, { env });
+  const pathOverride = env?.["PATH"] ?? env?.["Path"];
+  const found = await findExecutableWithoutProbing(command, {
+    ...(pathOverride !== undefined ? { path: pathOverride } : {}),
+    cwd: tmpdir(),
+  });
   if (found) return found;
   if (isAbsolute(command)) return executableExists(command);
   return null;
@@ -244,18 +266,23 @@ function killProcessGroup(pid: number | undefined): void {
     if (process.platform === "win32") process.kill(pid, "SIGKILL");
     else process.kill(-pid, "SIGKILL");
   } catch {
-    // Process already exited.
+    // Process group already exited.
   }
+}
+
+function nullLogPath(): string {
+  return process.platform === "win32" ? "NUL" : "/dev/null";
 }
 
 function defaultRunCommand(
   command: string,
   args: string[],
-  env?: Record<string, string>,
+  options: AntigravityCommandOptions,
 ): Promise<AntigravityCommandResult> {
   return new Promise((resolve, reject) => {
     const child = spawnProcess(command, args, {
-      envOverlay: env,
+      cwd: options.cwd,
+      envOverlay: options.env,
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -268,11 +295,12 @@ function defaultRunCommand(
       settled = true;
       killProcessGroup(child.pid);
       reject(new Error("Antigravity usage check timed out"));
-    }, ANTIGRAVITY_USAGE_TIMEOUT_MS);
+    }, options.timeoutMs);
 
     child.stdout?.on("data", (chunk: Buffer) => {
-      if (stdout.length < ANTIGRAVITY_USAGE_MAX_OUTPUT_BYTES) {
-        stdout += chunk.toString("utf8");
+      const remaining = options.maxOutputBytes - stdout.length;
+      if (remaining > 0) {
+        stdout += chunk.toString("utf8").slice(0, remaining);
       }
     });
     child.stderr?.on("data", (chunk: Buffer) => {
@@ -285,6 +313,8 @@ function defaultRunCommand(
       reject(error);
     });
     child.on("close", (code) => {
+      // Stop any lingering child processes (such as a language server) spawned by agy.
+      killProcessGroup(child.pid);
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -296,11 +326,15 @@ function defaultRunCommand(
 export class AntigravityQuotaProvider implements ProviderUsageFetcher {
   readonly providerId: string;
   readonly displayName: string;
+  readonly minPollIntervalMs: number;
 
   private readonly logger: Logger;
   private readonly command: string;
   private readonly prefixArgs: string[];
   private readonly env?: Record<string, string>;
+  private readonly cwd: string;
+  private readonly timeoutMs: number;
+  private readonly maxOutputBytes: number;
   private readonly resolveExecutable: AntigravityExecutableResolver;
   private readonly runCommand: AntigravityCommandRunner;
   private readonly now: () => number;
@@ -309,10 +343,14 @@ export class AntigravityQuotaProvider implements ProviderUsageFetcher {
     this.logger = options.logger;
     this.providerId = options.providerId ?? "antigravity";
     this.displayName = options.displayName ?? "Antigravity";
+    this.minPollIntervalMs = options.minPollIntervalMs ?? ANTIGRAVITY_MIN_POLL_INTERVAL_MS;
     const configuredCommand = options.command;
     this.command = configuredCommand?.[0] ?? "agy";
     this.prefixArgs = configuredCommand?.slice(1) ?? [];
     this.env = options.env;
+    this.cwd = options.cwd ?? tmpdir();
+    this.timeoutMs = options.timeoutMs ?? ANTIGRAVITY_USAGE_TIMEOUT_MS;
+    this.maxOutputBytes = options.maxOutputBytes ?? ANTIGRAVITY_USAGE_MAX_OUTPUT_BYTES;
     this.resolveExecutable = options.resolveExecutable ?? defaultResolveExecutable;
     this.runCommand = options.runCommand ?? defaultRunCommand;
     this.now = options.now ?? Date.now;
@@ -322,23 +360,38 @@ export class AntigravityQuotaProvider implements ProviderUsageFetcher {
     const resolved = await this.resolveExecutable(this.command, this.env);
     if (!resolved) return unavailableUsage(this);
 
-    const args = [...this.prefixArgs, "-p", "/usage", "--output-format", "json"];
-    const result = await this.runCommand(resolved, args, this.env);
+    const args = [
+      ...this.prefixArgs,
+      "--log-file",
+      nullLogPath(),
+      "-p",
+      "/usage",
+      "--output-format",
+      "json",
+    ];
+    const result = await this.runCommand(resolved, args, {
+      cwd: this.cwd,
+      env: this.env,
+      timeoutMs: this.timeoutMs,
+      maxOutputBytes: this.maxOutputBytes,
+    });
 
     // Exit code 2 indicates an account mode without quota (for example GEMINI_API_KEY).
     if (result.code === 2) return unavailableUsage(this);
 
     if (result.code !== 0) {
       const detail = result.stderr.trim() || result.stdout.trim();
-      if (AUTH_ERROR_PATTERN.test(detail) || NO_QUOTA_PATTERN.test(detail)) {
+      if (isAntigravitySignedOutOrNoQuota(detail)) {
         return unavailableUsage(this);
       }
-      const error = detail || `Antigravity CLI exited with code ${result.code ?? "unknown"}`;
       this.logger.debug(
         { providerId: this.providerId, code: result.code },
         "Antigravity usage fetch failed",
       );
-      return unavailableUsage({ ...this, error });
+      return unavailableUsage({
+        ...this,
+        error: `Antigravity usage check failed (exit code ${result.code ?? "unknown"})`,
+      });
     }
 
     const parsed = parseAntigravityUsageOutput(result.stdout, this.now());

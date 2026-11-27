@@ -848,4 +848,41 @@ describe("AntigravityUsage", () => {
       problem: { kind: "no_quota", detail: "No usage quota reported" },
     });
   });
+
+  it("classifies real signed-out agy output as rejected without hiding network errors", async () => {
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "antigravity-usage-auth-"));
+    temporary.push(cwd);
+    const signedOut = new AntigravityUsage();
+    const { account: signedOutAccount } = signedOut.remember({
+      command: process.execPath,
+      args: [fake],
+      env: { ANTIGRAVITY_APP_DATA_DIR: cwd, AGY_TEST_USAGE: "signed-out" },
+    });
+    expect(await signedOut.registration().fetch({ account: signedOutAccount })).toEqual({
+      status: "unavailable",
+      problem: { kind: "rejected", status: 401, refreshedBy: "agy" },
+    });
+
+    const notLoggedInto = new AntigravityUsage();
+    const { account: notLoggedIntoAccount } = notLoggedInto.remember({
+      command: process.execPath,
+      args: [fake],
+      env: { ANTIGRAVITY_APP_DATA_DIR: cwd, AGY_TEST_USAGE: "not-logged-into" },
+    });
+    expect(await notLoggedInto.registration().fetch({ account: notLoggedIntoAccount })).toEqual({
+      status: "unavailable",
+      problem: { kind: "rejected", status: 401, refreshedBy: "agy" },
+    });
+
+    const networkError = new AntigravityUsage();
+    const { account: networkErrorAccount } = networkError.remember({
+      command: process.execPath,
+      args: [fake],
+      env: { ANTIGRAVITY_APP_DATA_DIR: cwd, AGY_TEST_USAGE: "network-error" },
+    });
+    expect(await networkError.registration().fetch({ account: networkErrorAccount })).toEqual({
+      status: "error",
+      error: "Antigravity usage check failed (exit code 1)",
+    });
+  });
 });

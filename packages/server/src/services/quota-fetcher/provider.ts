@@ -18,6 +18,8 @@ export type ProviderUsageConfigMap = Record<string, ProviderUsageConfig>;
 export interface ProviderUsageFetcher {
   readonly providerId: string;
   readonly displayName: string;
+  /** Minimum wait between background samples; omitted means every sample runs. */
+  readonly minPollIntervalMs?: number;
   fetchUsage(): Promise<ProviderUsage>;
 }
 

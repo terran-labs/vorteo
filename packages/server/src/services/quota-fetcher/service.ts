@@ -69,13 +69,16 @@ export class ProviderUsageService {
   private readonly sampleIntervalMs: number;
   /** Per provider ID: how long to wait after a refusal or failure, and until when. */
   private readonly backoff = new Map<string, ProviderBackoff>();
-  /** Each provider's latest reading, served while it backs off. */
+  /** Each provider's latest reading, served while it backs off or waits for its minimum interval. */
   private readonly lastReading = new Map<string, ProviderUsage>();
+  /** Timestamp of each provider's last executed fetch, for fetchers with a minimum poll interval. */
+  private readonly lastFetchedAt = new Map<string, number>();
 
   invalidate(): void {
     this.generation += 1;
     this.cached = null;
     this.inFlight = null;
+    this.lastFetchedAt.clear();
   }
 
   /**
@@ -176,9 +179,16 @@ export class ProviderUsageService {
     const fetchers = this.getFetchers();
     const settled = await Promise.allSettled(
       fetchers.map((fetcher) => {
-        const waiting = respectBackoff ? this.backoff.get(fetcher.providerId) : undefined;
         const previous = this.lastReading.get(fetcher.providerId);
-        if (waiting && nowMs < waiting.retryAtMs && previous) return null;
+        if (respectBackoff && previous) {
+          const waiting = this.backoff.get(fetcher.providerId);
+          if (waiting && nowMs < waiting.retryAtMs) return null;
+          const minInterval = fetcher.minPollIntervalMs;
+          const lastAt = this.lastFetchedAt.get(fetcher.providerId);
+          if (minInterval !== undefined && lastAt !== undefined && nowMs - lastAt < minInterval) {
+            return null;
+          }
+        }
         return fetcher.fetchUsage();
       }),
     );
@@ -186,7 +196,7 @@ export class ProviderUsageService {
     const providers = settled.map((result, index) => {
       const fetcher = fetchers[index];
       if (result.status === "fulfilled" && result.value === null) {
-        // Backing off: show the last reading, and log nothing new for this minute.
+        // Backing off or within minPollIntervalMs: reuse the last reading and log nothing new.
         return this.lastReading.get(fetcher.providerId)!;
       }
       let usage: ProviderUsage;
@@ -205,6 +215,7 @@ export class ProviderUsageService {
         });
       }
       this.lastReading.set(fetcher.providerId, usage);
+      this.lastFetchedAt.set(fetcher.providerId, nowMs);
       if (this.updateBackoff(fetcher.providerId, usage, nowMs)) fresh.push(usage);
       return usage;
     });

@@ -1,4 +1,4 @@
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import type { UsageSourceRegistration } from "@getpaseo/plugin/server";
@@ -16,8 +16,13 @@ import { AntigravityError } from "./internal/wire.js";
 
 const USAGE_TIMEOUT_MS = 15_000;
 const AUTH_ERROR_PATTERN =
-  /auth(?:entication)?\s*(?:required|failed|expired)|sign[\s.-]?in|log[\s.-]?in|unauthenticated|not signed in/i;
-const NO_QUOTA_PATTERN = /no account quota|gemini_api_key|api key/i;
+  /\b(?:authentication\s+(?:required|failed|expired)|not\s+(?:logged|signed)\s+in(?:to\b)?|unauthenticated|please\s+(?:log|sign)\s+in|run\s+['`"]?agy['`"]?\s+to\s+(?:log|sign)\s+in|visit\s+the\s+url\s+to\s+log\s+in)\b/i;
+const NO_QUOTA_PATTERN =
+  /\b(?:no\s+account\s+quota|has\s+no\s+account\s+quota|no\s+usage\s+quota)\b/i;
+
+function nullLogPath(): string {
+  return process.platform === "win32" ? "NUL" : "/dev/null";
+}
 
 const inputSchema = z.object({ account: z.string() }).strict();
 
@@ -50,6 +55,7 @@ const usageResponseSchema = z.object({
 });
 
 type Bucket = z.infer<typeof bucketSchema>;
+type Group = z.infer<typeof groupSchema>;
 
 interface WindowSpec {
   label: string;
@@ -114,6 +120,40 @@ function uniqueId(candidate: string, taken: Set<string>): string {
   }
 }
 
+function parseGroupWindows(
+  group: Group,
+  groupIndex: number,
+  multipleGroups: boolean,
+  takenIds: Set<string>,
+): UsageWindow[] {
+  const groupLabel = normalizeGroupLabel(group.name);
+  const orderedBuckets = group.buckets
+    .map((bucket, index) => ({ bucket, index, spec: describeWindow(bucket) }))
+    .sort((left, right) => left.spec.order - right.spec.order || left.index - right.index);
+
+  const windows: UsageWindow[] = [];
+  for (const { bucket, spec } of orderedBuckets) {
+    if (typeof bucket.remaining_fraction !== "number") continue;
+    const clampedRemaining = Math.min(1, Math.max(0, bucket.remaining_fraction));
+    const usedPct = Math.round((1 - clampedRemaining) * 10_000) / 100;
+    const baseId = bucket.id?.trim() || `${groupIndex}_${spec.shortLabel || "quota"}`;
+    const id = uniqueId(baseId, takenIds);
+    const label = multipleGroups && groupLabel ? `${spec.label} \u00b7 ${groupLabel}` : spec.label;
+    windows.push(
+      windowFromUsedPct({
+        id,
+        label,
+        shortLabel: spec.shortLabel,
+        summary: groupIndex === 0,
+        utilizationPct: usedPct,
+        resetsAt: normalizeResetTime(bucket.reset_time),
+        tone: toneFromUsedPct(usedPct),
+      }),
+    );
+  }
+  return windows;
+}
+
 function parseUsageReport(stdout: string): UsageReport {
   let raw: unknown;
   try {
@@ -126,48 +166,22 @@ function parseUsageReport(stdout: string): UsageReport {
     return { status: "error", error: "Unexpected Antigravity usage payload" };
   }
   if (parsed.data.status !== "SUCCESS") {
-    const message = parsed.data.error?.trim() || `Antigravity usage returned ${parsed.data.status}`;
-    if (AUTH_ERROR_PATTERN.test(message)) {
+    const rawError = parsed.data.error?.trim() ?? "";
+    if (rawError && AUTH_ERROR_PATTERN.test(rawError)) {
       return unavailable({ kind: "rejected", status: 401, refreshedBy: "agy" });
     }
-    if (NO_QUOTA_PATTERN.test(message)) {
-      return unavailable({ kind: "no_quota", detail: message });
+    if (rawError && NO_QUOTA_PATTERN.test(rawError)) {
+      return unavailable({ kind: "no_quota", detail: "No usage quota reported" });
     }
-    return { status: "error", error: message };
+    return { status: "error", error: `Antigravity usage returned ${parsed.data.status}` };
   }
 
   const groups = parsed.data.command?.data?.groups ?? [];
   const multipleGroups = groups.length > 1;
   const takenIds = new Set<string>();
-  const windows: UsageWindow[] = [];
-
-  for (const [groupIndex, group] of groups.entries()) {
-    const groupLabel = normalizeGroupLabel(group.name);
-    const orderedBuckets = group.buckets
-      .map((bucket, index) => ({ bucket, index, spec: describeWindow(bucket) }))
-      .sort((left, right) => left.spec.order - right.spec.order || left.index - right.index);
-
-    for (const { bucket, spec } of orderedBuckets) {
-      if (typeof bucket.remaining_fraction !== "number") continue;
-      const clampedRemaining = Math.min(1, Math.max(0, bucket.remaining_fraction));
-      const usedPct = Math.round((1 - clampedRemaining) * 10_000) / 100;
-      const baseId = bucket.id?.trim() || `${groupIndex}_${spec.shortLabel || "quota"}`;
-      const id = uniqueId(baseId, takenIds);
-      const label =
-        multipleGroups && groupLabel ? `${spec.label} \u00b7 ${groupLabel}` : spec.label;
-      windows.push(
-        windowFromUsedPct({
-          id,
-          label,
-          shortLabel: spec.shortLabel,
-          summary: groupIndex === 0,
-          utilizationPct: usedPct,
-          resetsAt: normalizeResetTime(bucket.reset_time),
-          tone: toneFromUsedPct(usedPct),
-        }),
-      );
-    }
-  }
+  const windows = groups.flatMap((group, groupIndex) =>
+    parseGroupWindows(group, groupIndex, multipleGroups, takenIds),
+  );
 
   if (windows.length === 0) {
     return unavailable({ kind: "no_quota", detail: "No usage quota reported" });
@@ -212,22 +226,32 @@ export class AntigravityUsage {
         try {
           const stdout = await probe({
             launch,
-            args: ["-p", "/usage", "--output-format", "json"],
+            args: ["--log-file", nullLogPath(), "-p", "/usage", "--output-format", "json"],
+            cwd: tmpdir(),
             timeoutMs: USAGE_TIMEOUT_MS,
+            cleanupProcessGroup: true,
           });
           return parseUsageReport(stdout);
         } catch (error) {
           if (error instanceof AntigravityError) {
-            if (error.exitCode === 2 || NO_QUOTA_PATTERN.test(error.message)) {
+            const detail = error.stderr ?? error.message;
+            if (error.exitCode === 2 || NO_QUOTA_PATTERN.test(detail)) {
               return unavailable({ kind: "no_quota", detail: "No usage quota reported" });
             }
-            if (AUTH_ERROR_PATTERN.test(error.message)) {
+            if (AUTH_ERROR_PATTERN.test(detail)) {
               return unavailable({ kind: "rejected", status: 401, refreshedBy: "agy" });
             }
+            if (error.code === "PROBE_TIMEOUT") {
+              return { status: "error", error: "Antigravity usage check timed out" };
+            }
+            return {
+              status: "error",
+              error: `Antigravity usage check failed (exit code ${error.exitCode ?? "unknown"})`,
+            };
           }
           return {
             status: "error",
-            error: error instanceof Error ? error.message : String(error),
+            error: "Antigravity usage check failed",
           };
         }
       },

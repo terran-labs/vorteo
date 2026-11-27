@@ -31,6 +31,18 @@ if (args.includes("-p") && args.includes("/usage")) {
     process.stderr.write("No account quota for GEMINI_API_KEY\n");
     process.exit(2);
   }
+  if (process.env.AGY_TEST_USAGE === "signed-out") {
+    process.stderr.write(fixture("usage-signed-out", "stderr").join("\n") + "\n");
+    process.exit(1);
+  }
+  if (process.env.AGY_TEST_USAGE === "not-logged-into") {
+    process.stderr.write("You are not logged into Antigravity.\n");
+    process.exit(1);
+  }
+  if (process.env.AGY_TEST_USAGE === "network-error") {
+    process.stderr.write("network failure while refreshing login\n");
+    process.exit(1);
+  }
   process.stdout.write(
     JSON.stringify({
       conversation_id: "",
