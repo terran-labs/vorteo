@@ -1,0 +1,11 @@
+### Fixes
+
+- Factory issue workspaces, including those in Dev, now list under the Factory that owns their issue instead of in the project's ordinary list. A running issue's Runners row opens its workspace, and issue workspaces with nothing running sit in a folded Idle group, each row showing its issue number, title and workspace status. An issue with several workspaces, such as a respawned repair worker, lists all of them; its Runners row opens the newest (#683).
+- A Factory issue workspace whose worker finished no longer shows the green "finished, unread" dot, which read as running; it shows the neutral state. Green keeps its meaning everywhere else (#683).
+
+- The Idle group's menu offers "Archive finished issue workspaces" when an issue workspace's issue has closed and its pull request merged. After the owner confirms, each workspace is checked first: one with uncommitted or untracked files, commits ahead of its upstream, no upstream, a git state not yet read, or archive protection is skipped (#683).
+- Crew shows the roles the Factory reports, however many, plus the owner's Standing workspaces. A workspace kept from an older Factory that no role claims returns to the project's own list instead of showing as a crew chip (#683).
+
+## Maintenance review
+
+Interface only. A workspace counts as a Factory issue workspace when every unarchived agent in it carries `factory.issue`; its `factory.installation` label names the owning Factory, which may be on another host. The workspace agent activity index carries that marker, the sidebar entry exposes it, and the Factory grouping and cards route by it. Updated the "Factory sidebar sections" inventory entry. One case added to the existing sidebar view model test. The archive offer reuses the per-workspace git status and upstream counts and the archive block reason that manual archiving uses. An issue worker whose owning Factory has no card here gets a card for that Factory without an overview, never another Factory's card. The view model test also covers that case, two workspaces for one issue and an unclaimed Factory membership leaving the Factory once roles are known. Known limit: a workspace whose agents are all archived has no labels the app can see, so it stays in the ordinary list. README overview and onboarding are unchanged.
