@@ -305,25 +305,19 @@ export function factoryCardModels(input: {
       ),
     });
   }
-  // Orphans stay visible on a card that no live Factory owns: a fallback card on their host, or
-  // one of their own. Never another Factory's card, where a Runners row could open them as its own.
+  // An orphan keeps its own Factory: a card for its owner with no overview, keyed and read by the
+  // owner's server and project, so no other Factory's state, queue or Runners row touches it. The
+  // owner has no card here by definition, so this never duplicates one.
   for (const member of orphans) {
-    let card = cards.find(
-      (candidate) => candidate.serverId === member.serverId && candidate.installationId === null,
-    );
-    const projectId = entries.get(member.workspaceKey)?.projectId;
-    if (!card && projectId) {
-      const key = factoryCardKey(member.serverId, projectId);
-      card = {
-        key: cards.some((candidate) => candidate.key === key) ? `${key}:unowned` : key,
-        serverId: member.serverId,
-        projectId,
-        installationId: null,
-        members: [],
-      };
+    const issueOwner = owner(member);
+    if (!issueOwner) continue;
+    const key = factoryCardKey(issueOwner.serverId, issueOwner.projectId);
+    let card = cards.find((candidate) => candidate.key === key);
+    if (!card) {
+      card = { key, ...issueOwner, installationId: null, members: [] };
       cards.push(card);
     }
-    card?.members.push(member);
+    card.members.push(member);
   }
   return cards;
 }

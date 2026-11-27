@@ -1841,17 +1841,20 @@ it("lists a Dev issue worker under the Host Factory its labels name, without the
   expect(groups.factory).toEqual([issue]);
   expect(groups.work).toEqual([mixed]);
   // Its Host Factory has no card on this client while Dev runs a Factory of its own: the worker
-  // stays visible on an unowned card, never on Dev's live Factory.
+  // stays visible on a card for its own Factory, never on Dev's, and no two cards read the same
+  // Factory.
   const cards = factoryCardModels({
     members: [issue],
     entries,
     states: [{ serverId: "dev", projectId: "dev-vorteo", state: "on", roles: [] }],
     plugins: [{ id: "factory", serverId: "dev", surfaces: [] }],
   });
-  expect(cards.map((card) => [card.installationId, card.members])).toEqual([
-    ["project-factory:dev-vorteo", []],
-    [null, [issue]],
+  expect(cards.map((card) => [card.serverId, card.projectId, card.members])).toEqual([
+    ["dev", "dev-vorteo", []],
+    ["host", "vorteo", [issue]],
   ]);
+  const pairs = cards.map((card) => `${card.serverId}/${card.projectId}`);
+  expect(new Set(pairs).size).toBe(pairs.length);
   // A membership no reported role claims, kept from an older Factory, is not crew.
   const stale = createSidebarWorkspaceEntry({
     serverId: "host",
