@@ -11,6 +11,7 @@ import { createRoot, type Root } from "react-dom/client";
 import React from "react";
 import type { ReactElement } from "react";
 import { createProjectViewKey } from "@/projects/workspace-structure";
+import { resolveProjectMenuTarget } from "@/components/sidebar/project-host-target";
 
 vi.hoisted(() => {
   (globalThis as unknown as { __DEV__: boolean }).__DEV__ = false;
@@ -648,5 +649,22 @@ describe("sidebar group visibility", () => {
     expect(result.current.visibleItems).toEqual(items);
     act(() => result.current.toggleExpanded());
     expect(result.current.visibleItems).toHaveLength(20);
+  });
+});
+
+describe("sidebar project menu target", () => {
+  // Issue 682: a project Dev lists first must not target Dev while Dev is offline.
+  it("targets settings and the Factory entry at the online host when the first is offline", () => {
+    const target = resolveProjectMenuTarget({
+      hosts: [
+        { serverId: "dev", projectId: "prj_dev", iconWorkingDir: "/Users/me/dev/app" },
+        { serverId: "host", projectId: "prj_host", iconWorkingDir: "/Users/me/dev/app" },
+      ],
+      onlineServerIds: new Set(["host"]),
+      factoryServerIds: new Set(["dev", "host"]),
+      installationHostServerId: null,
+    });
+    expect(target.settingsTarget).toEqual({ serverId: "host", projectId: "prj_host" });
+    expect(target.factoryNotice).toEqual({ kind: "none" });
   });
 });

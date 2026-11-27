@@ -53,11 +53,19 @@ import {
   type ProjectScriptDraft,
 } from "@/utils/project-config-form";
 import {
-  getProjectHostEntry,
   getProjectSummaryForHostProject,
   type ProjectHostEntry,
   type ProjectSummary,
 } from "@/utils/projects";
+import {
+  formatEnvironmentList,
+  resolveProjectHostTarget,
+  type ProjectHostTargetResult,
+} from "@/components/sidebar/project-host-target";
+import {
+  installationHostServerId,
+  readExecutionInstallation,
+} from "@/execution-installation/policy";
 
 const SCRIPT_SERVICE_TYPE = "service";
 
@@ -113,22 +121,38 @@ export default function ProjectSettingsScreen({
     () => getProjectSummaryForHostProject(projects, serverId, projectId),
     [projectId, projects, serverId],
   );
-  const selectedHost = getProjectHostEntry(project, serverId, projectId);
-  const selectedSnapshot = useHostRuntimeSnapshot(serverId);
+  // The route names one host, but a project merged across environments can be edited on any
+  // online host that has its folder: keep the routed host when it qualifies, else prefer this
+  // installation's Host, so a paused Dev does not lock the project's settings.
+  const target = useMemo(
+    () =>
+      resolveProjectHostTarget(
+        (project?.hosts ?? []).map((entry) => ({
+          serverId: entry.serverId,
+          projectId: entry.projectId,
+          online: entry.isOnline,
+          rootPath: entry.repoRoot,
+          entry,
+        })),
+        [serverId, installationHostServerId(readExecutionInstallation())],
+      ),
+    [project, serverId],
+  );
+  const selectedHost = target.kind === "usable" ? target.host.entry : undefined;
+  const selectedServerId = selectedHost?.serverId ?? serverId;
+  const selectedSnapshot = useHostRuntimeSnapshot(selectedServerId);
   const isHostGone =
-    Boolean(serverId) &&
+    Boolean(selectedServerId) &&
     (selectedSnapshot?.connectionStatus === "offline" ||
       selectedSnapshot?.connectionStatus === "error");
 
-  const client = useHostRuntimeClient(serverId);
-  const canEdit =
-    selectedHost?.isOnline === true &&
-    selectedHost.serverId.trim().length > 0 &&
-    selectedHost.repoRoot.trim().length > 0;
+  const client = useHostRuntimeClient(selectedServerId);
 
-  if (!project || !selectedHost || !client || !canEdit) {
+  if (!project || !selectedHost || !client) {
     return (
       <NoEditableTarget
+        projectName={project?.projectName ?? null}
+        reason={target}
         onBackToProjects={onBackToProjects}
         showBackToProjects={showBackToProjects}
       />
@@ -148,17 +172,40 @@ export default function ProjectSettingsScreen({
 }
 
 function NoEditableTarget({
+  projectName,
+  reason,
   onBackToProjects,
   showBackToProjects,
 }: {
+  projectName?: string | null;
+  reason?: ProjectHostTargetResult<{
+    serverId: string;
+    projectId: string;
+    online: boolean;
+    rootPath: string;
+    entry: ProjectHostEntry;
+  }>;
   onBackToProjects: () => void;
   showBackToProjects: boolean;
 }) {
   const { t } = useTranslation();
+  // Say why nothing is editable when the project is known; otherwise keep the generic line.
+  let message = t("settings.project.noEditableTarget");
+  if (projectName && reason?.kind === "offline") {
+    const names = reason.offline.map((host) => host.entry.serverName || host.serverId);
+    message = t(
+      names.length > 1
+        ? "projectHostTarget.settingsOfflineMany"
+        : "projectHostTarget.settingsOfflineOne",
+      { project: projectName, environments: formatEnvironmentList(names, t) },
+    );
+  } else if (projectName && reason?.kind === "no_folder") {
+    message = t("projectHostTarget.settingsNoFolder", { project: projectName });
+  }
   return (
     <View style={styles.noTargetContainer}>
       {showBackToProjects ? <BackToProjectsButton onPress={onBackToProjects} /> : null}
-      <Text style={styles.noTargetText}>{t("settings.project.noEditableTarget")}</Text>
+      <Text style={styles.noTargetText}>{message}</Text>
       {showBackToProjects ? (
         <Button
           testID="project-settings-back-button"

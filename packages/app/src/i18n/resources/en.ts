@@ -1,6 +1,19 @@
 import { previewStatus } from "./preview-status";
 export const en = {
   previewStatus: previewStatus.en,
+  projectHostTarget: {
+    settingsOfflineOne:
+      "{{project}} can't be edited right now because {{environments}} is offline. Bring it back online, then open these settings again.",
+    settingsOfflineMany:
+      "{{project}} can't be edited right now because {{environments}} are offline. Bring one of them back online, then open these settings again.",
+    settingsNoFolder:
+      "{{project}} has no folder on any environment that is online, so its settings can't be edited here.",
+    factoryOfflineOne: "Factory unavailable: {{environments}} is offline",
+    factoryOfflineMany: "Factory unavailable: {{environments}} are offline",
+    factoryMissingPlugin: "Factory isn't available on {{environment}}.",
+    listPair: "{{first}} and {{last}}",
+    listMany: "{{rest}}, and {{last}}",
+  },
   projectFactory: {
     overview: "Factory Overview",
     projectHeading: "{{project}} Factory",
