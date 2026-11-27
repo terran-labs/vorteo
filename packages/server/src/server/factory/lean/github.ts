@@ -45,6 +45,8 @@ export interface LeanGitHubOptions<
   leaseTtlMs: number;
   mergeMethod?: "MERGE" | "SQUASH" | "REBASE";
   extraChecks?: readonly string[];
+  requiredChecks?: readonly string[];
+  scopeIssue?: number;
   /** Resolved from the trusted default branch, including the release recipe's file inputs. */
   releaseRecipeFiles(): Promise<readonly string[]>;
   reportProtectedChange(issue: number, paths: readonly string[]): Promise<void>;
@@ -244,6 +246,7 @@ function latestPlan(
     if (!section?.[1]) return null;
     const rows = section[1]
       .trim()
+      .split(/\r?\n[ \t]*\r?\n/u, 1)[0]
       .split(/\r?\n/)
       .filter((line) => line.trim());
     const files = rows.map((line) =>
@@ -289,6 +292,17 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
 
   async function get<T>(path: string, schema: z.ZodType<T>): Promise<T> {
     const response = await github.rest("GET", `${root}/${path}`);
+    if (
+      path.startsWith("rules/branches/") &&
+      response.status === 403 &&
+      typeof response.body === "object" &&
+      response.body &&
+      "message" in response.body &&
+      typeof response.body.message === "string" &&
+      /upgrade to github pro or make this repository public/i.test(response.body.message)
+    ) {
+      return schema.parse([]);
+    }
     if (response.status !== 200)
       throw new FactoryGitHubError(
         `GitHub refused a Factory repository read (HTTP ${response.status}).`,
@@ -475,9 +489,21 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
 
   async function checks(pull: PullDetail, repo: Repository): Promise<PullRef["checks"]> {
     const names = await requiredChecks(repo);
+    const configured = new Set(options.requiredChecks ?? []);
+    for (const check of configured) names.add(check);
     const extra = new Set(options.extraChecks ?? []);
     let cursor: string | null = null;
     let pending = false;
+    let observed = false;
+    function inspect(context: z.infer<typeof checkContext>): boolean {
+      const required = context.isRequired || configured.has(context.name);
+      if (required) names.delete(context.name);
+      if (!required && !extra.has(context.name)) return true;
+      observed = true;
+      const result = checkState(context);
+      if (required && result === "pending") pending = true;
+      return result !== "failing";
+    }
     for (;;) {
       const data: z.infer<typeof checkData> = await graph(
         checkQuery,
@@ -489,21 +515,14 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
         throw new FactoryGitHubError("GitHub returned checks for another commit.");
       const contexts = commit.statusCheckRollup?.contexts;
       if (!contexts) break;
-      for (const context of contexts.nodes) {
-        const required = context.isRequired;
-        if (required) names.delete(context.name);
-        if (!required && !extra.has(context.name)) continue;
-        const result = checkState(context);
-        if (result === "failing") return "failing";
-        if (required && result === "pending") pending = true;
-      }
+      if (!contexts.nodes.every(inspect)) return "failing";
       if (!contexts.pageInfo.hasNextPage) break;
       const next = contexts.pageInfo.endCursor;
       if (!next || next === cursor)
         throw new FactoryGitHubError("GitHub did not finish listing commit checks.");
       cursor = next;
     }
-    return pending || names.size ? "pending" : "passing";
+    return pending || names.size || !observed ? "pending" : "passing";
   }
 
   async function filePaths(pull: PullDetail): Promise<string[]> {
@@ -926,12 +945,20 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
     const [{ repository: repo, viewer }, trusted, ready] = await Promise.all([
       graph(repositoryQuery, scope, repositoryData),
       readTrustedAccounts(github, repository),
-      pages("issues?state=open&labels=factory%3Aready", issueSummary),
+      options.scopeIssue === undefined
+        ? pages("issues?state=open&labels=factory%3Aready", issueSummary)
+        : Promise.resolve([]),
     ]);
-    const issueNumbers = new Set([
-      ...ready.filter((entry) => entry.pull_request === undefined).map((entry) => entry.number),
-      ...trackedIssues,
-    ]);
+    const issueNumbers = new Set(
+      options.scopeIssue === undefined
+        ? [
+            ...ready
+              .filter((entry) => entry.pull_request === undefined)
+              .map((entry) => entry.number),
+            ...trackedIssues,
+          ]
+        : [options.scopeIssue],
+    );
     const snapshot: LeanGitHubFacts = {
       issues: [],
       pulls: [],

@@ -25,6 +25,7 @@ export interface AuthorizedRunnerStage {
   repository: string;
   branch: string;
   headSha: string;
+  issueTitle?: string;
 }
 
 export interface RunnerWorkspaceDependencies {
@@ -92,8 +93,8 @@ export function createRunnerWorkspaceResolver(deps: RunnerWorkspaceDependencies)
       await git(repository, ["worktree", "add", ...checkout, cwd, stage.headSha]);
     }
     await verifyWorktree({ cwd, repository, stage, lead });
+    const title = runnerTitle(stage.role, stage.issue, stage.issueTitle);
     if (!existing) {
-      const title = runnerTitle(stage.role, stage.issue);
       const now = deps.now().toISOString();
       const workspace = createPersistedWorkspaceRecord({
         workspaceId,
@@ -111,8 +112,20 @@ export function createRunnerWorkspaceResolver(deps: RunnerWorkspaceDependencies)
       });
       await deps.workspaces.upsert(workspace, { expectsInitialAgent: true });
       deps.onWorkspaceChanged?.(workspaceId);
+    } else {
+      await refreshTitle(existing, stage.issueTitle ? title : null);
     }
-    return { workspaceId, reviewHead: stage.role === "reviewer" ? stage.headSha : null };
+    return { workspaceId, reviewHead: stage.role === "reviewer" ? stage.headSha : null, title };
+  }
+
+  async function refreshTitle(
+    workspace: NonNullable<Awaited<ReturnType<WorkspaceRegistry["get"]>>>,
+    title: string | null,
+  ) {
+    if (title && workspace.title !== title) {
+      await deps.workspaces.upsert({ ...workspace, title, displayName: title });
+      deps.onWorkspaceChanged?.(workspace.workspaceId);
+    }
   }
 
   return (input) => {
@@ -125,7 +138,7 @@ export function createRunnerWorkspaceResolver(deps: RunnerWorkspaceDependencies)
   };
 }
 
-export function runnerTitle(role: RunnerRole, issue: number | null): string {
+export function runnerTitle(role: RunnerRole, issue: number | null, issueTitle?: string): string {
   const name = {
     "foreman-op": "Lead",
     lead: "Builder",
@@ -133,7 +146,9 @@ export function runnerTitle(role: RunnerRole, issue: number | null): string {
     delivery: "Delivery",
     mechanic: "Mechanic",
   }[role];
-  return issue === null ? `Factory ${name}` : `Factory ${name} for #${issue}`;
+  if (issue === null) return `Factory ${name}`;
+  const title = issueTitle?.replace(/\s+/g, " ").trim().slice(0, 240);
+  return title ? `#${issue} ${name}: ${title}` : `Factory ${name} for #${issue}`;
 }
 
 export function isRunnerRepository(repository: string): boolean {

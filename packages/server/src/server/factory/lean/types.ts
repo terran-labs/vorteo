@@ -699,7 +699,7 @@ export interface ActivityLog {
   }): Promise<{ entries: FactoryActivityEntry[]; nextBefore: string | null }>;
 }
 
-/** Ephemeral Foreman sessions; at most one per project at a time, events queued meanwhile. */
+/** Operational Lead sessions run independently per issue. */
 export interface OperationalSessions {
   open(input: {
     purpose: "judgment" | "acceptance" | "plan-acceptance";

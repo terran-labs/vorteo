@@ -196,6 +196,8 @@ import { switchAgentProfileCommand } from "./agent/profile-switch/command.js";
 import { ProjectFactoryService } from "./factory/project/service.js";
 import { createFactoryHomeClient } from "./execution-installation/factory-home.js";
 import { daemonFactoryAccounts } from "./factory/project/account-choice.js";
+import { createLeanBootstrap } from "./factory/lean/bootstrap.js";
+import { createLeanHandlers } from "./factory/lean/handlers.js";
 import { profileProvider, resolveDefaultLaunch } from "./system-project/launch-selection.js";
 import type { SessionHostConnector } from "./session-host/connector.js";
 import { bootstrapWorkspaceRegistries } from "./workspace-registry-bootstrap.js";
@@ -835,8 +837,11 @@ export async function createPaseoDaemon(
     logger,
   });
   let projectFactoryService: ProjectFactoryService | null = null;
+  let leanFactory: ReturnType<typeof createLeanBootstrap> | null = null;
+  const leanHandlers = createLeanHandlers((projectId) => leanFactory?.runtime(projectId) ?? null);
   const pluginRuntime: PluginService = new PluginService(logger, daemonConfigStore, daemonVersion, {
     factoryProject: () => projectFactoryService,
+    factoryLean: leanHandlers,
     usageAgents: {
       hasAgent: (id) => agentManager.getAgent(id) !== null,
       usageSession: (id) => agentManager.usageSession(id),
@@ -2014,6 +2019,67 @@ export async function createPaseoDaemon(
     if (!wsServer) throw new Error("Daemon is not accepting host operations");
     return wsServer.toolHosts();
   };
+  const factoryAccounts = daemonFactoryAccounts({
+    providers: providerSnapshotManager,
+    readUsage: (options) => providerUsageService.listUsage(options),
+    getSettings: () => daemonConfigStore.get(),
+    hosts: factoryHosts,
+    serverId,
+    readInstallationSettings: () => daemonConfigStore.readInstallationSettingsAuthority(),
+  });
+  leanFactory = createLeanBootstrap({
+    paseoHome: config.paseoHome,
+    serverId,
+    logger,
+    settings: () => daemonConfigStore.get(),
+    readAuthority: () => daemonConfigStore.readInstallationSettingsAuthority(),
+    factoryAccounts,
+    readUsage: (options) => providerUsageService.listUsage(options),
+    runner: { agentManager, agentStorage, createAgent, logger },
+    workspace: {
+      projects: projectRegistry,
+      workspaces: workspaceRegistry,
+      onWorkspaceChanged: (workspaceId) => void emitWorkspaceUpdatesExternal([workspaceId]),
+    },
+    operations: {
+      questions: {
+        readQuestions: (agentId) => agentManager.readQuestions(agentId),
+        async mutateQuestions(agentId, mutation) {
+          await ensureUnarchivedAgentLoaded(agentId, { agentManager, agentStorage, logger });
+          return agentManager.mutateQuestions(agentId, mutation);
+        },
+      },
+      push: {
+        async send(payload) {
+          if (config.pushNotificationSender) return config.pushNotificationSender.send(payload);
+          await wsServer?.sendPushNotification(payload);
+        },
+      },
+    },
+    async enqueue(runner, message, messageId) {
+      if (runner.serverId !== null) return false;
+      const stored = await agentStorage.get(runner.agentId);
+      if (!stored || stored.archivedAt) return false;
+      const agent = await ensureUnarchivedAgentLoaded(runner.agentId, {
+        agentManager,
+        agentStorage,
+        logger,
+      });
+      const rows = await agentManager.getTimelineRows(agent.id);
+      if (
+        rows.some(({ item }) => item.type === "user_message" && item.clientMessageId === messageId)
+      ) {
+        return true;
+      }
+      if (agentManager.hasInFlightRun(agent.id) || agent.pendingPermissions.size > 0) return false;
+      const hold = agent.config.usageLimitHold;
+      if (hold && !hold.releasedAt) return false;
+      await startAgentRun(agentManager, agent.id, formatSystemNotificationPrompt(message), logger, {
+        runOptions: { origin: "agent", clientMessageId: messageId },
+      });
+      return true;
+    },
+  });
   projectFactoryService = new ProjectFactoryService({
     paseoHome: config.paseoHome,
     serverId,
@@ -2021,6 +2087,7 @@ export async function createPaseoDaemon(
     projects: projectRegistry,
     workspaces: workspaceRegistry,
     agentStorage,
+    lean: leanFactory.mode,
     createAgent,
     createWorkspace: async (input) => {
       const workspace = await workspaceProvisioning.createWorkspaceForDirectory(
@@ -2064,14 +2131,7 @@ export async function createPaseoDaemon(
         refreshSupport: () => daemonConfigStore.refreshPrimaryConnectionSupport(),
       }),
     profileProvider: (profileId) => profileProvider(profileId, daemonConfigStore.get()),
-    accounts: daemonFactoryAccounts({
-      providers: providerSnapshotManager,
-      readUsage: (options) => providerUsageService.listUsage(options),
-      getSettings: () => daemonConfigStore.get(),
-      hosts: factoryHosts,
-      serverId,
-      readInstallationSettings: () => daemonConfigStore.readInstallationSettingsAuthority(),
-    }),
+    accounts: factoryAccounts,
     hosts: factoryHosts,
     schedules: scheduleService,
     onWorkspacesChanged: (workspaceIds) => void emitWorkspaceUpdatesExternal(workspaceIds),
@@ -2265,7 +2325,10 @@ export async function createPaseoDaemon(
     logger,
   });
   const createAgentToolCatalog = (runtime: PaseoToolRuntimeContext) =>
-    createPaseoToolCatalog(createAgentToolHostDependencies(runtime));
+    createPaseoToolCatalog({
+      ...createAgentToolHostDependencies(runtime),
+      factoryLean: leanHandlers,
+    });
   const setAgentProviderToolsEnabled = (enabled: boolean) => {
     agentProviderRuntime.setPaseoToolCatalog(
       enabled ? createPaseoAgentToolManifest(createAgentToolHostDependencies({})) : null,
@@ -2559,6 +2622,7 @@ export async function createPaseoDaemon(
             providerSnapshotManager.settlePluginProviders();
             restartRecovery.resumePending();
             await finishSubscriptions.start();
+            leanFactory?.activate();
             checklistMonitoring = true;
             checklistWakes.start();
             wsServer.beginAcceptingConnections();
@@ -2718,6 +2782,7 @@ export async function createPaseoDaemon(
     quotaPreflight.stop();
     // Close ingress before waiting for metadata processes or other teardown.
     wsServer?.prepareForShutdown();
+    await leanFactory?.shutdown();
     agentManager.prepareForShutdown();
     // Revoke remote execution authority before asynchronous fork teardown.
     step("hub relationships");

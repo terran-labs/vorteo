@@ -33,7 +33,21 @@ type Reason =
   | "avoided"
   | "unknown"
   | "stale"
-  | "exhausted";
+  | "exhausted"
+  | "below-floor"
+  | "pool-excluded"
+  | "policy-unresolved";
+
+export type RunnerAccountPolicy = (
+  input: Parameters<typeof rankAccounts>[0] & { role: RunnerRole; providerType: string },
+) => Promise<{
+  considered: {
+    provider: string;
+    verdict: Reason | "qualifies";
+    remainingPct: number | null;
+    resetsAt?: string | null;
+  }[];
+}>;
 
 interface CandidateEvidence {
   account: string;
@@ -90,6 +104,9 @@ export interface LeanAccountDependencies {
   /** Resolve local IDs via installation definitions, including aliases of the same account. */
   accountDefinitions(): Promise<ReadonlyMap<string, string>>;
   now(): Date;
+  /** Shared worker policy projected onto the accounts authorized for this role. */
+  accountPolicy?: RunnerAccountPolicy;
+  allowSameAccountReview?(): Promise<boolean>;
 }
 
 export function createAccountTable(deps: LeanAccountDependencies): LeanAccountTable {
@@ -133,14 +150,13 @@ export function createAccountTable(deps: LeanAccountDependencies): LeanAccountTa
     });
     applyAvoid(candidates, avoid);
     const available = candidates.filter((candidate) => candidate.reason === null);
-    const rank = rankAccounts({ candidates: available.map((item) => item.local), usage, nowMs });
+    const rankInput = { candidates: available.map((item) => item.local), usage, nowMs };
+    const rank: Awaited<ReturnType<RunnerAccountPolicy>> = deps.accountPolicy
+      ? await deps.accountPolicy({ ...rankInput, role, providerType })
+      : rankAccounts(rankInput);
     const verdicts = new Map(rank.considered.map((entry) => [entry.provider, entry]));
-    for (const candidate of available) {
-      const verdict = verdicts.get(candidate.local)?.verdict;
-      if (!verdict || verdict === "unknown" || (builder && !candidate.definition))
-        candidate.reason = "unknown";
-      else if (verdict === "stale" || verdict === "exhausted") candidate.reason = verdict;
-    }
+    for (const candidate of available)
+      applyVerdict(candidate, verdicts.get(candidate.local), builder);
 
     const ranked = available.filter((item) => item.reason === null);
     ranked.sort(
@@ -150,6 +166,13 @@ export function createAccountTable(deps: LeanAccountDependencies): LeanAccountTa
     );
     const chosen = preferredCandidate(candidates, ranked, builder);
     if (!chosen) return park(earliestReset(candidates, usage, nowMs));
+    if (
+      builder &&
+      chosen.definition === builder.accountDefinition &&
+      deps.allowSameAccountReview &&
+      !(await deps.allowSameAccountReview())
+    )
+      return park(null);
     const choice: Choice = {
       account: chosen.placed,
       accountDefinition: chosen.definition,
@@ -181,6 +204,20 @@ export function createAccountTable(deps: LeanAccountDependencies): LeanAccountTa
       });
     },
   };
+}
+
+function applyVerdict(
+  candidate: Candidate,
+  assessment: Awaited<ReturnType<RunnerAccountPolicy>>["considered"][number] | undefined,
+  builder: ReviewBuilder | null,
+): void {
+  const verdict = assessment?.verdict;
+  if (!verdict || verdict === "unknown" || (builder && !candidate.definition)) {
+    candidate.reason = "unknown";
+  } else if (verdict !== "qualifies") {
+    candidate.reason = verdict;
+  }
+  if (verdict === "below-floor") candidate.until = Date.parse(assessment?.resetsAt ?? "");
 }
 
 function candidateExclusion(input: {
@@ -265,7 +302,11 @@ function reviewDecision(
 function earliestReset(candidates: Candidate[], usage: UsageList, nowMs: number): string | null {
   let earliest = Infinity;
   for (const candidate of candidates) {
-    if (candidate.reason === "parked") earliest = Math.min(earliest, candidate.until);
+    if (
+      (candidate.reason === "parked" || candidate.reason === "below-floor") &&
+      candidate.until > nowMs
+    )
+      earliest = Math.min(earliest, candidate.until);
     if (candidate.reason === "exhausted") {
       earliest = Math.min(earliest, accountReset(usage, candidate.local, nowMs));
     }

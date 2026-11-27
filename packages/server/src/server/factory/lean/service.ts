@@ -19,6 +19,8 @@ export interface LeanReconcilePorts {
   now(): Date;
   /** Shadow passes publish only the simulated actions to a separate activity sink. */
   shadow?: { record(actions: readonly DispatchAction[]): Promise<void> };
+  /** Exercise real runners but hold irreversible merge and delivery actions for shadow review. */
+  shadowReview?: { record(action: DispatchAction): Promise<void> };
 }
 
 /** Re-read facts after each action. A concurrent wake gets another pass after the current one. */
@@ -37,6 +39,10 @@ export function createLeanReconciler(ports: LeanReconcilePorts) {
       return;
     }
     for (const action of actions) {
+      if (ports.shadowReview && (action.kind === "merge" || action.kind === "start-delivery")) {
+        await ports.shadowReview.record(action);
+        continue;
+      }
       if (action.kind === "merge") {
         const gate = await ports.mergeGate.evaluate(action.issue);
         if (

@@ -1,4 +1,6 @@
 import type { ReviewAccountSelection } from "./accounts.js";
+import type { CleanRebaseProof } from "./review-evidence.js";
+import { isDeepStrictEqual } from "node:util";
 import type {
   Acceptance,
   AdmissionFacts,
@@ -18,6 +20,8 @@ interface MergePull extends PullRef {
 }
 
 interface OpenMergeEvidence {
+  /** Produced by the daemon's Git object verifier, never by a runner. */
+  rebaseProof?: CleanRebaseProof;
   reviewAccountSelection?: ReviewAccountSelection;
   kind: "open";
   pull: MergePull;
@@ -67,7 +71,13 @@ interface MergeCompletion extends MergeTarget {
 
 type ApprovalEvidence = Pick<
   OpenMergeEvidence,
-  "lead" | "reviewer" | "verdict" | "acceptance" | "acceptanceSession" | "reviewAccountSelection"
+  | "lead"
+  | "reviewer"
+  | "verdict"
+  | "acceptance"
+  | "acceptanceSession"
+  | "reviewAccountSelection"
+  | "rebaseProof"
 >;
 
 /** The daemon's immutable authorization for one exact submission target. */
@@ -233,6 +243,31 @@ function acceptedByForeman(headSha: string, evidence: ApprovalEvidence): Accepta
   return acceptedHead && localSession && distinctSession ? acceptance : null;
 }
 
+function reviewedHead(issue: number, pull: PullRef, evidence: ApprovalEvidence): string {
+  const proof = evidence.rebaseProof;
+  if (
+    !proof ||
+    proof.current.issue !== issue ||
+    proof.current.pullNumber !== pull.number ||
+    proof.current.headSha !== pull.headSha ||
+    proof.current.checksHeadSha !== pull.headSha ||
+    proof.current.checks !== "passing" ||
+    proof.prior.issue !== issue ||
+    proof.prior.pullNumber !== pull.number
+  )
+    return pull.headSha;
+  const prior = proof.prior;
+  if (
+    !isDeepStrictEqual(prior.verdict, evidence.verdict) ||
+    !isDeepStrictEqual(prior.acceptance, evidence.acceptance) ||
+    prior.builder.agentId !== evidence.lead?.agentId ||
+    prior.reviewer.agentId !== evidence.reviewer?.agentId ||
+    prior.acceptanceSession.agentId !== evidence.acceptanceSession?.agentId
+  )
+    return pull.headSha;
+  return prior.headSha;
+}
+
 function evaluateApprovals(
   issue: number,
   pull: PullRef,
@@ -240,7 +275,8 @@ function evaluateApprovals(
   localLease: boolean,
 ): MergeEvaluation {
   const { lead, reviewer, verdict } = evidence;
-  if (!verdict || !verdict.approved || verdict.sha !== pull.headSha) {
+  const approvedHead = reviewedHead(issue, pull, evidence);
+  if (!verdict || !verdict.approved || verdict.sha !== approvedHead) {
     return { ready: false, waitingOn: "Get reviewer approval for the current head." };
   }
   const localReview = localLease && verdict.source === "local-runner";
@@ -249,7 +285,7 @@ function evaluateApprovals(
     !localReview ||
     !reviewer ||
     !boundReviewer ||
-    !independentReview(issue, pull.headSha, lead, reviewer, evidence.reviewAccountSelection)
+    !independentReview(issue, approvedHead, lead, reviewer, evidence.reviewAccountSelection)
   ) {
     return {
       ready: false,
@@ -257,7 +293,7 @@ function evaluateApprovals(
         "Get an independent local review and record account selection when the Reviewer shares the Builder's account.",
     };
   }
-  const acceptance = acceptedByForeman(pull.headSha, evidence);
+  const acceptance = acceptedByForeman(approvedHead, evidence);
   if (!acceptance) {
     return {
       ready: false,
@@ -369,6 +405,7 @@ export function createMergeGate(deps: MergeGateDeps): RecoverableMergeGate {
             verdict: current.verdict,
             acceptance: current.acceptance,
             acceptanceSession: evidence.acceptanceSession,
+            ...(evidence.rebaseProof ? { rebaseProof: evidence.rebaseProof } : {}),
             ...(evidence.reviewAccountSelection
               ? { reviewAccountSelection: evidence.reviewAccountSelection }
               : {}),

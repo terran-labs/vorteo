@@ -50,6 +50,7 @@ const laneHolders = z.union([
 ]);
 
 const gateRef = z.looseObject({
+  where: z.enum(["container", "host"]).optional(),
   name: z.string().min(1),
   /** A command the delivery runner runs, or */
   run: z.string().min(1).optional(),
@@ -126,6 +127,17 @@ export type ReleaseRecipeV1 = z.infer<typeof ReleaseRecipeV1Schema>;
  * live here.
  */
 export const FactoryConfigV1Schema = z.looseObject({
+  /** The primary records each configured command's exit status at the exact issue head. */
+  issueGates: z
+    .array(
+      z.looseObject({
+        argv: z.array(z.string().min(1)).min(1),
+        where: z.enum(["container", "host"]).optional(),
+        requiredOutput: z.string().min(1).optional(),
+      }),
+    )
+    .min(1)
+    .optional(),
   /** Matching paths require an independent security review. */
   sensitivePaths: z.array(z.string().min(1)).optional(),
   schema: z.literal("vorteo-factory"),
@@ -165,7 +177,7 @@ export const FactoryConfigV1Schema = z.looseObject({
     .optional(),
   acceptance: z
     .looseObject({
-      /** A plan acceptance session before the go. Default on. */
+      /** Enable plan judgment for explicit labels or changes requiring additional scrutiny. */
       plan: z.boolean().optional(),
       /** Send-backs per issue before the next result escalates to the owner. Default 2. */
       maxSendBacks: z.number().int().nonnegative().optional(),

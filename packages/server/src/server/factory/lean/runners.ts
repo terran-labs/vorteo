@@ -20,6 +20,7 @@ import type {
 type Record = LeanLedger["runners"][string] & {
   reviewAccountSelection?: ReviewAccountSelection;
   runMetrics?: RunnerMetrics;
+  quotaRecoveryPending?: true;
 };
 
 export interface RunnerMetrics {
@@ -36,12 +37,30 @@ type QuotaStop = Extract<RunnerStatus, { kind: "quota" }>;
 
 interface Launch {
   input: RunnerOpenInput;
+  identity?: LaunchIdentity;
   serverId: string | null;
   worktree: RunnerOpenInput["worktree"];
   choice: AccountChoice;
   labels: { [key: string]: string };
   systemPrompt: string;
   initialPrompt: string;
+}
+
+interface LaunchIdentity {
+  agentId: string;
+  seal(workspaceId: string, review?: ReviewLaunch): Promise<void>;
+}
+
+export interface PendingRunnerLaunch {
+  runner: RunnerRef;
+  issue: number | null;
+  workspaceId: string | null;
+  choice: SelectedChoice;
+  review?: ReviewLaunch;
+}
+
+interface LaunchLedger extends LeanLedger {
+  pendingRunnerLaunches?: { [agentId: string]: PendingRunnerLaunch };
 }
 
 interface ReviewLaunch {
@@ -80,12 +99,18 @@ export interface RunnerDependencies {
   /** Idempotent for already archived agents. Must preserve the workspace and worktree. */
   archiveAgent(target: Destination): Promise<void>;
   readUsage?(target: Destination): Promise<AgentUsage | null>;
+  discoverAgent?(
+    launch: PendingRunnerLaunch,
+  ): Promise<"missing" | "adopt" | "close" | "unverified">;
+  recoveryIssue?: number;
   /** Null means verified pushed. Return a refusal if verification fails or cannot be performed. */
   checkLeadBranch(runner: RunnerRef, issue: number): Promise<string | null>;
+  verifyQuotaRecovery?(runner: RunnerRef, issue: number | null): Promise<string | null>;
   deliveryCharter?: string;
 }
 
 export interface LeanRunnerPort extends RunnerPort {
+  dispose(): void;
   /** The caller supplies a continuation brief from the claim branch, plan and saved progress. */
   recover(runner: RunnerRef, status: QuotaStop, input: RunnerOpenInput): Promise<Recovery>;
 }
@@ -173,6 +198,7 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
   async function open(input: RunnerOpenInput): Promise<Open> {
     if (input.projectId !== deps.projectId)
       throw new Error("Runner belongs to a different project.");
+    await reconcileLaunches(input.issue);
     const ledger = await deps.state.read(deps.projectId);
     const previous = latest(ledger.runners, input);
     if (previous && previous.closedAt === null) return runnerRef(previous);
@@ -197,6 +223,7 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
       serverId: where.serverId,
       systemPrompt,
       builder,
+      attempt: (previous?.attempt ?? 0) + 1,
     });
     if ("parked" in launch) return launch;
     const { agentId, choice } = launch;
@@ -220,29 +247,32 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
     serverId: string | null;
     systemPrompt: string;
     builder: ReviewBuilder | null;
+    attempt: number;
   }): Promise<
     { agentId: string; choice: SelectedChoice; review?: ReviewLaunch } | { parked: ParkReason }
   > {
     const { input, serverId, systemPrompt, builder } = options;
-    const avoid = (input.avoidAccounts ?? []).filter(
-      (account) =>
-        !builder || (account !== builder.account && account !== builder.accountDefinition),
-    );
+    const avoid = withoutBuilder(input.avoidAccounts ?? [], builder);
     const rejectedAccounts = new Set<string>();
     const rejectedResets: string[] = [];
+    const choose = (): Promise<LaunchChoice> =>
+      builder && deps.accounts.chooseReviewer
+        ? deps.accounts.chooseReviewer({ serverId, avoid }, builder)
+        : deps.accounts.choose({ role: input.role, serverId, avoid });
     for (;;) {
-      const choice: LaunchChoice =
-        builder && deps.accounts.chooseReviewer
-          ? await deps.accounts.chooseReviewer({ serverId, avoid }, builder)
-          : await deps.accounts.choose({ role: input.role, serverId, avoid });
+      const choice = await choose();
       if ("parked" in choice) {
         const resets = [...rejectedResets, choice.parked.resetsAt].filter(
           (value): value is string => value !== null,
         );
         return { parked: { kind: "quota", ...choice.parked, resetsAt: resets.sort()[0] ?? null } };
       }
+      const identity = deps.discoverAgent
+        ? await reserveLaunch(input, serverId, choice, options.attempt)
+        : undefined;
       const launch = await deps.createAgent({
         input,
+        identity,
         serverId,
         worktree: input.worktree,
         choice,
@@ -256,6 +286,7 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
         initialPrompt: input.brief,
       });
       if ("quota" in launch) {
+        if (identity) await forgetLaunch(identity.agentId);
         const rejected = choice.accountDefinition ?? choice.account;
         const reset = Date.parse(launch.quota.resetsAt ?? "");
         if (reset > deps.now().getTime()) rejectedResets.push(new Date(reset).toISOString());
@@ -281,6 +312,9 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
         continue;
       }
 
+      if (identity && identity.agentId !== launch.agentId) {
+        throw new Error("Factory launch returned an agent outside its durable intent.");
+      }
       return { ...launch, choice };
     }
   }
@@ -308,10 +342,12 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
           },
         };
       }
-      await deps.state.mutate(deps.projectId, (state) => {
+      await deps.state.mutate(deps.projectId, (state: LaunchLedger) => {
         state.runners[runner.agentId] = record;
+        if (state.pendingRunnerLaunches) delete state.pendingRunnerLaunches[runner.agentId];
       });
     } catch (error) {
+      if (deps.discoverAgent) throw error;
       const failure = await deps.archiveAgent(runner).then(
         () => error,
         (cleanupError: unknown) =>
@@ -321,6 +357,69 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
           ),
       );
       throw failure;
+    }
+  }
+
+  async function reserveLaunch(
+    input: RunnerOpenInput,
+    serverId: string | null,
+    choice: SelectedChoice,
+    attempt: number,
+  ): Promise<LaunchIdentity> {
+    const agentId = await deps.state.mutate(deps.projectId, (state: LaunchLedger) => {
+      const id = launchAgentId(deps.installation, deps.projectId, state.revision, input);
+      const runner: RunnerRef = {
+        agentId: id,
+        serverId,
+        role: input.role,
+        account: choice.account,
+        accountDefinition: choice.accountDefinition,
+        providerType: choice.providerType,
+        attempt,
+        openedAt: deps.now().toISOString(),
+      };
+      state.pendingRunnerLaunches ??= {};
+      state.pendingRunnerLaunches[id] = { runner, issue: input.issue, choice, workspaceId: null };
+      return id;
+    });
+    return {
+      agentId,
+      async seal(workspaceId, review) {
+        await deps.state.mutate(deps.projectId, (state: LaunchLedger) => {
+          const intent = state.pendingRunnerLaunches?.[agentId];
+          if (!intent || intent.workspaceId !== null)
+            throw new Error("Factory launch lost its reservation.");
+          intent.workspaceId = workspaceId;
+          if (review) intent.review = review;
+        });
+      },
+    };
+  }
+
+  async function forgetLaunch(agentId: string): Promise<void> {
+    await deps.state.mutate(deps.projectId, (state: LaunchLedger) => {
+      if (state.pendingRunnerLaunches) delete state.pendingRunnerLaunches[agentId];
+    });
+  }
+
+  async function reconcileLaunches(issue: number | null | undefined): Promise<void> {
+    if (!deps.discoverAgent) return;
+    const ledger: LaunchLedger = await deps.state.read(deps.projectId);
+    for (const intent of Object.values(ledger.pendingRunnerLaunches ?? {})) {
+      if (issue !== undefined && intent.issue !== issue) continue;
+      const found = await deps.discoverAgent(intent);
+      if (found === "unverified") {
+        throw new Error(
+          "Factory found an agent that could not be matched to its saved launch intent.",
+        );
+      }
+      if (found === "adopt") {
+        await recordOpen(intent.runner, intent.issue, intent);
+        if (!(await attach(intent.runner))) publish(intent.runner, { kind: "detached" });
+      } else {
+        if (found === "close") await deps.archiveAgent(intent.runner);
+        await forgetLaunch(intent.runner.agentId);
+      }
     }
   }
 
@@ -336,13 +435,32 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
     return { ...runnerRef(lead), account: lead.account, accountDefinition: lead.accountDefinition };
   }
 
-  async function closeRecord(record: Record, why: string): ReturnType<RunnerPort["close"]> {
+  async function closeRecord(
+    record: Record,
+    why: string,
+    quota = false,
+  ): ReturnType<RunnerPort["close"]> {
     if (record.closedAt !== null) return { closed: true };
     const runner = runnerRef(record);
-    if (record.role === "lead" && record.issue !== null) {
+    if (record.quotaRecoveryPending) {
+      return archiveAndRecord(record, why);
+    }
+    if (quota && deps.verifyQuotaRecovery) {
+      const refusal = await deps.verifyQuotaRecovery(runner, record.issue);
+      if (refusal !== null) return { refused: refusal };
+      await deps.state.mutate(deps.projectId, (state) => {
+        const current: Record | undefined = state.runners[runner.agentId];
+        if (current) current.quotaRecoveryPending = true;
+      });
+    } else if (record.role === "lead" && record.issue !== null) {
       const refusal = await deps.checkLeadBranch(runner, record.issue);
       if (refusal !== null) return { refused: refusal };
     }
+    return archiveAndRecord(record, why);
+  }
+
+  async function archiveAndRecord(record: Record, why: string): Promise<{ closed: true }> {
+    const runner = runnerRef(record);
     const usage = deps.readUsage ? await deps.readUsage(runner) : null;
     await deps.archiveAgent(runner);
     detach(runner.agentId);
@@ -352,6 +470,7 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
         const finished = deps.now();
         current.closedAt = finished.toISOString();
         current.closeReason = why;
+        delete current.quotaRecoveryPending;
         current.runMetrics = {
           elapsedMs: Math.max(0, finished.getTime() - Date.parse(current.openedAt)),
           providerType: current.providerType,
@@ -364,7 +483,21 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
     return { closed: true };
   }
 
+  async function finishQuotaReplacements(ledger: LeanLedger): Promise<void> {
+    for (const raw of Object.values(ledger.runners)) {
+      const record: Record = raw;
+      if (deps.recoveryIssue !== undefined && record.issue !== deps.recoveryIssue) continue;
+      if (record.quotaRecoveryPending && record.closedAt === null) {
+        await archiveAndRecord(record, "The runner reached its provider usage limit.");
+      }
+    }
+  }
+
   return {
+    dispose() {
+      for (const agentId of subscriptions.keys()) detach(agentId);
+      listeners.clear();
+    },
     open: (input) => serialize(() => open(input)),
     async prompt(runner, text) {
       const ledger = await deps.state.read(deps.projectId);
@@ -382,6 +515,8 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
     },
     reattach(runners) {
       return serialize(async () => {
+        await reconcileLaunches(deps.recoveryIssue);
+        await finishQuotaReplacements(await deps.state.read(deps.projectId));
         const ledger = await deps.state.read(deps.projectId);
         const attached: RunnerRef[] = [];
         const gone: RunnerRef[] = [];
@@ -435,7 +570,11 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
             "The runner reached its provider usage limit.",
           );
         }
-        const closed = await closeRecord(record, "The runner reached its provider usage limit.");
+        const closed = await closeRecord(
+          record,
+          "The runner reached its provider usage limit.",
+          true,
+        );
         if ("refused" in closed) return closed;
         // Without a stable definition, keep this destination's local binding out of this retry.
         const avoid = [...(input.avoidAccounts ?? [])];
@@ -446,6 +585,26 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
   };
 }
 
+function launchAgentId(
+  installation: string,
+  projectId: string,
+  revision: number,
+  input: RunnerOpenInput,
+): string {
+  const bytes = createHash("sha256")
+    .update(JSON.stringify([installation, projectId, revision, input.issue, input.role]))
+    .digest("hex");
+  return `${bytes.slice(0, 8)}-${bytes.slice(8, 12)}-5${bytes.slice(13, 16)}-8${bytes.slice(17, 20)}-${bytes.slice(20, 32)}`;
+}
+
+function withoutBuilder(avoid: string[], builder: ReviewBuilder | null): string[] {
+  return builder
+    ? avoid.filter(
+        (account) => account !== builder.account && account !== builder.accountDefinition,
+      )
+    : [...avoid];
+}
+
 function runnerRef(record: Record): RunnerRef {
   const {
     issue: _issue,
@@ -453,7 +612,9 @@ function runnerRef(record: Record): RunnerRef {
     closeReason: _closeReason,
     reviewAccountSelection: _reviewAccountSelection,
     runMetrics: _runMetrics,
+    quotaRecoveryPending: _quotaRecoveryPending,
     ...runner
   } = record;
   return runner;
 }
+import { createHash } from "node:crypto";

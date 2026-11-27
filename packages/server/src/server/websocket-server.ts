@@ -666,6 +666,9 @@ export class VoiceAssistantWebSocketServer {
   private readonly daemonConfigStore: DaemonConfigStore;
   private readonly pushNotifications: PushNotifications;
   private readonly pushNotificationSender: PushNotificationSender;
+  sendPushNotification(payload: Parameters<PushNotificationSender["send"]>[0]): Promise<void> {
+    return this.pushNotificationSender.send(payload);
+  }
   private readonly mcpBaseUrl: string | null;
   private speech!: SpeechService | null;
   private terminalManager!: TerminalManager | null;
