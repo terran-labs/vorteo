@@ -44,8 +44,16 @@ function projectActiveTurn(agent: Agent): Pick<AgentSnapshotPayload, "activeTurn
 }
 
 /** The daemon-recorded creator, when the host reports one. */
-function creatorField(agent: { createdByAgentId?: string | null }) {
-  return agent.createdByAgentId !== undefined ? { createdByAgentId: agent.createdByAgentId } : {};
+function creatorField(agent: {
+  createdByAgentId?: string | null;
+  permissionWatchedByCreator?: boolean;
+}) {
+  return {
+    ...(agent.createdByAgentId !== undefined ? { createdByAgentId: agent.createdByAgentId } : {}),
+    ...(agent.permissionWatchedByCreator !== undefined
+      ? { permissionWatchedByCreator: agent.permissionWatchedByCreator }
+      : {}),
+  };
 }
 
 export function derivePendingPermissionKey(
@@ -148,6 +156,7 @@ export function normalizeAgentSnapshot(snapshot: AgentSnapshotPayload, serverId:
     usageLimitHold: snapshot.usageLimitHold,
     hosted: snapshot.hosted,
     createdByAgentId: snapshot.createdByAgentId,
+    permissionWatchedByCreator: snapshot.permissionWatchedByCreator,
     title: snapshot.title ?? null,
     cwd: snapshot.cwd,
     workspaceId: snapshot.workspaceId,

@@ -626,16 +626,12 @@ export interface CreateAgentOptions {
   createdByAgentId?: string | null;
 }
 
-/**
- * The thread's creator, fixed at creation (#659). Agents create threads through create_agent,
- * whose parent label at this point is always the authenticated caller (forced, and stripped for
- * detached threads); a label edited later never moves it. Undefined when nobody created it.
- */
-function creatorAtCreation(options: CreateAgentOptions): string | undefined {
-  return options.createdByAgentId ?? getParentAgentIdFromLabels(options.labels) ?? undefined;
-}
+/** How long an approval waits on a supervising thread before the owner sees it too (#659). */
+export const PERMISSION_OWNER_ESCALATION_MS = 3 * 60_000;
 
 export interface AgentManagerOptions {
+  /** Overrides PERMISSION_OWNER_ESCALATION_MS; for tests. */
+  permissionOwnerEscalationMs?: number;
   getSharedProviderConfig?: () => MutableDaemonConfig;
   installationSettingsReader?: InstallationSettingsReader;
   assertWorkspaceArchiveAllowed?: (workspaceId: string) => Promise<void>;
@@ -816,6 +812,8 @@ interface ManagedAgentBase {
   workspaceId?: string;
   owner?: AgentOwner;
   createdByAgentId?: string | null;
+  /** The creator holds a live finish subscription for this thread (#659); refreshed on emit. */
+  permissionWatchedByCreator?: boolean;
   capabilities: AgentCapabilityFlags;
   config: AgentSessionConfig;
   /** Explicit launch overrides, before per-opening hooks and daemon-owned variables. */
@@ -1145,6 +1143,8 @@ export interface RetiredInternalAgent {
 }
 
 export class AgentManager {
+  private creatorWatchProbe?: (creatorAgentId: string, childAgentId: string) => boolean;
+  private readonly permissionOwnerEscalationMs: number;
   private readonly pendingWorkerCreations = new Map<string, number>();
   private readonly pendingReserveWrites = new Map<string, number>();
   private readonly failedReserveWrites = new Set<string>();
@@ -1916,6 +1916,8 @@ export class AgentManager {
   private readonly assertThreadArchiveAllowed?: AgentManagerOptions["assertThreadArchiveAllowed"];
 
   constructor(options: AgentManagerOptions) {
+    this.permissionOwnerEscalationMs =
+      options.permissionOwnerEscalationMs ?? PERMISSION_OWNER_ESCALATION_MS;
     this.getSharedProviderConfig = options.getSharedProviderConfig;
     this.installationSettingsReader = options.installationSettingsReader;
     this.assertWorkspaceArchiveAllowed = options.assertWorkspaceArchiveAllowed;
@@ -3978,7 +3980,8 @@ export class AgentManager {
       initialTitle: options.initialTitle,
       workspaceId: options.workspaceId,
       owner: options.owner,
-      createdByAgentId: creatorAtCreation(options),
+      // The authenticated creating agent, passed by create_agent; never read from labels (#659).
+      createdByAgentId: options.createdByAgentId ?? undefined,
       launchEnv: options.env ? { ...options.env } : undefined,
       historyPrimed: true,
     });
@@ -9295,22 +9298,9 @@ export class AgentManager {
     event: Extract<AgentStreamEvent, { type: "permission_requested" }>,
   ): void {
     const hadPendingPermissions = agent.pendingPermissions.size > 0;
-    // Where the request was made, so "Open thread" outside the thread lands on it (#659). A
-    // position means something only within its timeline epoch, so both are recorded.
-    const hasTimeline = this.timelineStore.has(agent.id);
-    const askedSeq = hasTimeline ? this.timelineStore.getLatestSeq(agent.id) : null;
-    const request =
-      askedSeq === null
-        ? event.request
-        : {
-            ...event.request,
-            metadata: {
-              ...event.request.metadata,
-              askedSeq,
-              askedEpoch: this.timelineStore.getEpoch(agent.id),
-            },
-          };
+    const request = this.recordPermissionContext(agent, event.request);
     agent.pendingPermissions.set(request.id, request);
+    this.escalateUnansweredPermission(agent, request);
     this.refreshSessionPersistence(agent);
     if (!hadPendingPermissions && !agent.internal) {
       this.broadcastAgentAttention(agent, "permission");
@@ -9620,7 +9610,70 @@ export class AgentManager {
     return row;
   }
 
+  /**
+   * When and where a permission was requested (#659): the daemon's time, so a client never relies
+   * on its own clock, and the timeline position, so "Open thread" outside the thread lands on it.
+   * A position means something only within its timeline epoch, so both are recorded.
+   */
+  private recordPermissionContext(
+    agent: ManagedAgent,
+    request: AgentPermissionRequest,
+  ): AgentPermissionRequest {
+    const askedSeq = this.timelineStore.has(agent.id)
+      ? this.timelineStore.getLatestSeq(agent.id)
+      : null;
+    return {
+      ...request,
+      metadata: {
+        ...request.metadata,
+        askedAt: new Date().toISOString(),
+        ...(askedSeq === null
+          ? {}
+          : { askedSeq, askedEpoch: this.timelineStore.getEpoch(agent.id) }),
+      },
+    };
+  }
+
+  /**
+   * An approval still unanswered after PERMISSION_OWNER_ESCALATION_MS reaches the owner, whoever
+   * created the thread (#659): a supervising thread that was told may still never answer.
+   */
+  private escalateUnansweredPermission(agent: ManagedAgent, request: AgentPermissionRequest) {
+    const timer = setTimeout(() => {
+      if (agent.pendingPermissions.get(request.id) !== request) return;
+      agent.pendingPermissions.set(request.id, {
+        ...request,
+        metadata: { ...request.metadata, ownerEscalated: true },
+      });
+      this.emitState(agent, { persist: false });
+    }, this.permissionOwnerEscalationMs);
+    timer.unref?.();
+  }
+
+  /**
+   * Supplies whether a thread's creator still holds a live finish subscription for it, so it will
+   * be told of the thread's approvals (#659). Without a probe, no creator counts as watching.
+   */
+  setCreatorWatchProbe(probe: (creatorAgentId: string, childAgentId: string) => boolean): void {
+    this.creatorWatchProbe = probe;
+  }
+
+  /** Re-sends a thread's state after its creator started or stopped watching it. */
+  refreshCreatorWatch(childAgentId: string): void {
+    const agent = this.agents.get(childAgentId);
+    if (!agent || agent.internal || !agent.createdByAgentId) return;
+    const watched = this.isWatchedByCreator(agent);
+    if (watched === agent.permissionWatchedByCreator) return;
+    this.emitState(agent, { persist: false });
+  }
+
+  private isWatchedByCreator(agent: ManagedAgent): boolean {
+    const creator = agent.createdByAgentId;
+    return Boolean(creator && this.creatorWatchProbe?.(creator, agent.id));
+  }
+
   private emitState(agent: ManagedAgent, options?: { persist?: boolean }): void {
+    if (agent.createdByAgentId) agent.permissionWatchedByCreator = this.isWatchedByCreator(agent);
     // Keep attention as an edge-triggered unread signal, not a level signal.
     this.checkAndSetAttention(agent);
     if (options?.persist !== false) {

@@ -155,6 +155,16 @@ function projectActiveTurn(agent: ManagedAgent): AgentSnapshotPayload["activeTur
     : null;
 }
 
+/** Who created the thread and whether it still watches it (#659), when known. */
+function creatorFields(agent: ManagedAgent) {
+  return {
+    ...(agent.createdByAgentId !== undefined ? { createdByAgentId: agent.createdByAgentId } : {}),
+    ...(agent.createdByAgentId && agent.permissionWatchedByCreator !== undefined
+      ? { permissionWatchedByCreator: agent.permissionWatchedByCreator }
+      : {}),
+  };
+}
+
 export function toAgentPayload(
   agent: ManagedAgent,
   options?: ProjectionOptions,
@@ -198,7 +208,7 @@ export function toAgentPayload(
     labels: agent.labels,
     archivedAt: options?.archivedAt ?? null,
     ...(agent.internal ? { internal: true } : {}),
-    ...(agent.createdByAgentId !== undefined ? { createdByAgentId: agent.createdByAgentId } : {}),
+    ...creatorFields(agent),
   };
 
   const usage = sanitizeUsage(agent.lastUsage);

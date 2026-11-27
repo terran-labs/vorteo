@@ -1,7 +1,13 @@
 import { useMutation } from "@tanstack/react-query";
 import { ArrowUpRight } from "lucide-react-native";
-import { useCallback, useMemo, useState } from "react";
-import { Text, View } from "react-native";
+import { useCallback, useMemo, useRef, useState } from "react";
+import {
+  Text,
+  View,
+  type LayoutChangeEvent,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+} from "react-native";
 import { ScrollView } from "@/components/ui/scroll-view";
 import { StyleSheet } from "react-native-unistyles";
 import type { AgentPermissionResponse } from "@getpaseo/protocol/agent-types";
@@ -36,13 +42,39 @@ export function ApprovalItem({
   const { request } = approval;
   const client = useSessionStore((state) => state.sessions[approval.serverId]?.client ?? null);
   const command = useMemo(() => approvalCommand(request.input), [request.input]);
-  const firstLine = command.split("\n", 1)[0] ?? "";
+  const lines = useMemo(() => command.split("\n"), [command]);
+  const firstLine = lines[0] ?? "";
   const [expanded, setExpanded] = useState(false);
+  const toggle = useCallback(() => setExpanded((value) => !value), []);
+  // Accept waits until every line has been on screen: the whole command fit in the box, or the
+  // box was scrolled to its end. Expanding alone is not enough, since a long harmless prefix can
+  // push the end of the command below the box.
   const [seenFull, setSeenFull] = useState(false);
-  const toggle = useCallback(() => {
-    setExpanded((value) => !value);
-    setSeenFull(true);
+  const box = useRef({ viewport: 0, content: 0 });
+  const checkFits = useCallback(() => {
+    const { viewport, content } = box.current;
+    if (viewport > 0 && content > 0 && content <= viewport + 1) setSeenFull(true);
   }, []);
+  const onBoxLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      box.current.viewport = event.nativeEvent.layout.height;
+      checkFits();
+    },
+    [checkFits],
+  );
+  const onContentSize = useCallback(
+    (_width: number, height: number) => {
+      box.current.content = height;
+      checkFits();
+    },
+    [checkFits],
+  );
+  const onBoxScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, layoutMeasurement, contentSize } = event.nativeEvent;
+    if (contentOffset.y + layoutMeasurement.height >= contentSize.height - 2) setSeenFull(true);
+  }, []);
+  // Plan, mode and other approvals carry choices this card does not offer (#659).
+  const answerableHere = request.kind === "tool";
   const mutation = useMutation({
     mutationFn: async (response: AgentPermissionResponse) => {
       if (!client) throw new Error("This host is not connected.");
@@ -76,8 +108,8 @@ export function ApprovalItem({
   }, [approval.agentId, approval.serverId, onBeforeNavigate, request.id, request.metadata]);
   // What Vorteo's own scan found that deletes, when it found something (#659, part B).
   const deleteFinding = request.metadata?.deleteFinding;
-  // A long single line is cut off too, so every command is expanded once before Accept.
-  const canAccept = seenFull;
+  const canAccept = answerableHere && seenFull;
+  const lineCount = lines.length === 1 ? "1 line" : `${lines.length} lines`;
   return (
     <View
       style={[styles.item, taskCardStyles.proseInset, !first && taskCardStyles.separator]}
@@ -102,6 +134,10 @@ export function ApprovalItem({
         <ScrollView
           style={styles.commandScroll}
           edgeFade={false}
+          onLayout={onBoxLayout}
+          onContentSizeChange={onContentSize}
+          onScroll={onBoxScroll}
+          scrollEventThrottle={64}
           testID={`global-approval-command-${request.id}`}
         >
           <Text style={styles.command} selectable>
@@ -119,8 +155,16 @@ export function ApprovalItem({
         onPress={toggle}
         testID={`global-approval-expand-${request.id}`}
       >
-        {expanded ? "Hide full command" : "Show full command"}
+        {expanded ? `Hide full command (${lineCount})` : `Show full command (${lineCount})`}
       </Button>
+      {answerableHere ? null : (
+        <Text style={styles.muted}>
+          This kind of approval has choices only the thread shows. Open the thread to answer it.
+        </Text>
+      )}
+      {answerableHere && expanded && !seenFull ? (
+        <Text style={styles.muted}>Scroll to the end of the command to answer here.</Text>
+      ) : null}
       {isError ? (
         <Text style={styles.error} accessibilityRole="alert">
           The answer did not reach the thread. Try again, or open the thread.
@@ -148,15 +192,17 @@ export function ApprovalItem({
             Open thread
           </Button>
         )}
-        <Button
-          variant="secondary"
-          size="md"
-          onPress={deny}
-          disabled={isPending}
-          testID={`global-approval-deny-${request.id}`}
-        >
-          Deny
-        </Button>
+        {answerableHere ? (
+          <Button
+            variant="secondary"
+            size="md"
+            onPress={deny}
+            disabled={isPending}
+            testID={`global-approval-deny-${request.id}`}
+          >
+            Deny
+          </Button>
+        ) : null}
         {canAccept ? (
           <Button
             variant="ghost"

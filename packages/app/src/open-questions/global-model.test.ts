@@ -188,7 +188,19 @@ test("opening a question targets that question and where it was asked", async ()
 });
 
 // #659 part C: a pending approval reaches the owner's card when no supervising thread can answer
-// it. The creator is the daemon-recorded one; the parent label is ignored.
+// it. The creator is the daemon-recorded one; the parent label is ignored. A worker's creator is
+// watching it unless the case says otherwise.
+const ESCALATED = [
+  {
+    id: "perm-1",
+    provider: "claude",
+    name: "Bash",
+    kind: "tool",
+    input: { command: "ls" },
+    metadata: { ownerEscalated: true },
+  },
+];
+const PLAN = [{ id: "plan-1", provider: "claude", name: "ExitPlanMode", kind: "plan", input: {} }];
 test.each([
   ["a thread the owner started", { createdByAgentId: null }, [], true],
   ["a worker whose creator can answer", { createdByAgentId: "lead" }, [], false],
@@ -202,6 +214,26 @@ test.each([
     { createdByAgentId: "lead" },
     ["waiting", "lead-has-live-creator"],
     false,
+  ],
+  // A live creator that holds no finish subscription for the worker is never told.
+  [
+    "a worker whose live creator is not watching it",
+    { createdByAgentId: "lead", permissionWatchedByCreator: false },
+    [],
+    true,
+  ],
+  // Waiting past the daemon's bound reaches the owner whoever the creator is.
+  [
+    "a worker waiting too long on a watching creator",
+    { createdByAgentId: "lead", pendingPermissions: ESCALATED },
+    [],
+    true,
+  ],
+  [
+    "a plan approval from a thread nobody created",
+    { createdByAgentId: null, pendingPermissions: PLAN },
+    [],
+    true,
   ],
 ] as const)("an approval from %s reaches the owner: %s", (_label, worker, leadState, expected) => {
   const pending = {
@@ -220,6 +252,7 @@ test.each([
       questions: [],
       status: "running",
       pendingPermissions: [pending],
+      permissionWatchedByCreator: true,
       ...worker,
     },
     {
@@ -235,6 +268,9 @@ test.each([
       createdByAgentId: (leadState as readonly string[]).includes("lead-has-live-creator")
         ? "root"
         : null,
+      permissionWatchedByCreator: (leadState as readonly string[]).includes(
+        "lead-has-live-creator",
+      ),
     },
     {
       id: "root",

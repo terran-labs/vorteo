@@ -18,6 +18,7 @@ export interface QuestionHostInput {
           Agent,
           | "pendingPermissions"
           | "createdByAgentId"
+          | "permissionWatchedByCreator"
           | "status"
           | "currentModeId"
           | "availableModes"
@@ -132,37 +133,47 @@ export interface ThreadApproval {
 }
 
 type RoutingAgent = Pick<Agent, "id" | "archivedAt"> &
-  Partial<Pick<Agent, "createdByAgentId" | "status" | "pendingPermissions">>;
+  Partial<
+    Pick<Agent, "createdByAgentId" | "permissionWatchedByCreator" | "status" | "pendingPermissions">
+  >;
 
 /**
  * Whether a thread's approval is the owner's to answer. The creator is the one the daemon
- * recorded, never a label. A creator that cannot answer (closed, archived, missing, or itself
- * waiting on an approval) passes the question up its own creator chain; with no live ancestor
- * left, the approval is the owner's.
+ * recorded, never a label. A creator answers only if it will be told: it must still hold a finish
+ * subscription for the thread (the daemon's permissionWatchedByCreator), and it must be able to
+ * act (not closed, archived, missing, or itself waiting on an approval). Otherwise the question
+ * passes up the creator chain; with no such ancestor left, the approval is the owner's.
  */
 export function approvalBelongsToOwner(
   agentId: string,
   agents: ReadonlyMap<string, RoutingAgent>,
 ): boolean {
   const seen = new Set<string>([agentId]);
-  let creatorId = agents.get(agentId)?.createdByAgentId;
-  while (creatorId) {
+  let current = agents.get(agentId);
+  while (current?.createdByAgentId) {
+    const creatorId = current.createdByAgentId;
     if (seen.has(creatorId)) return true;
     seen.add(creatorId);
     const creator = agents.get(creatorId);
     if (!creator) return true;
     const canAnswer =
+      current.permissionWatchedByCreator === true &&
       !creator.archivedAt &&
       creator.status !== "closed" &&
       (creator.pendingPermissions?.length ?? 0) === 0;
     if (canAnswer) return false;
-    creatorId = creator.createdByAgentId;
+    current = creator;
   }
   return true;
 }
 
+/** An approval the daemon flagged as waiting too long for a supervising thread (#659). */
+function escalatedToOwner(request: AgentPermissionRequest): boolean {
+  return request.metadata?.ownerEscalated === true;
+}
+
 /**
- * Every pending tool approval the owner has to answer, across hosts. Only hosts that record
+ * Every pending approval the owner has to answer, across hosts: tool, plan, mode and other kinds. Only hosts that record
  * creators take part; elsewhere approvals stay in their own threads, as before.
  */
 export function collectThreadApprovals(hosts: readonly QuestionHostInput[]): ThreadApproval[] {
@@ -173,10 +184,14 @@ export function collectThreadApprovals(hosts: readonly QuestionHostInput[]): Thr
     const byId = new Map(agents.map((agent) => [agent.id, agent]));
     for (const agent of agents) {
       if (agent.archivedAt || host.pendingArchive.has(agent.id)) continue;
-      const requests = (agent.pendingPermissions ?? []).filter(
-        (request) => request.kind === "tool",
+      // Every kind except a question blocks the thread the same way; questions have their own card.
+      const blocking = (agent.pendingPermissions ?? []).filter(
+        (request) => request.kind !== "question",
       );
-      if (requests.length === 0 || !approvalBelongsToOwner(agent.id, byId)) continue;
+      if (blocking.length === 0) continue;
+      const ownersThread = approvalBelongsToOwner(agent.id, byId);
+      const requests = ownersThread ? blocking : blocking.filter(escalatedToOwner);
+      if (requests.length === 0) continue;
       const workspace = agent.workspaceId ? host.workspaces.get(agent.workspaceId) : undefined;
       const modeLabel = agent.currentModeId
         ? (agent.availableModes?.find((mode) => mode.id === agent.currentModeId)?.label ??

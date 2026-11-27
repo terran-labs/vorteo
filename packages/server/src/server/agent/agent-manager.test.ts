@@ -708,6 +708,28 @@ async function startAndSteerThroughManager(
   return { manager, agentId: agent.id, workdir };
 }
 
+// #659: approvals route on the recorded creator. Only create_agent's authenticated caller sets
+// it; a create without one (websocket or CLI) records none, whatever its labels say.
+test("a caller-less create with a parent label records no creator", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-creator-"));
+  const manager = new AgentManager({ clients: { codex: new TestAgentClient() }, logger });
+  try {
+    const labelled = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+      labels: { "paseo.parent-agent-id": "some-lead" },
+    });
+    expect(labelled.createdByAgentId).toBeUndefined();
+    const created = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+      createdByAgentId: "lead",
+    });
+    expect(created.createdByAgentId).toBe("lead");
+  } finally {
+    await manager.flush();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
 test("saved timeline can be read without loading or starting a provider", async () => {
   const store = new RecordingTimelineStore();
   await store.appendCommitted("saved-outbox", {
@@ -12293,6 +12315,7 @@ test("permission request notifies once without forcing unread attention state", 
     },
     registry: storage,
     logger,
+    permissionOwnerEscalationMs: 20,
     idFactory: () => "00000000-0000-4000-8000-000000000131",
     onAgentAttention: ({ reason }) => {
       attentionReasons.push(reason);
@@ -12306,7 +12329,11 @@ test("permission request notifies once without forcing unread attention state", 
       title: "Permission transition test",
     },
     undefined,
-    { workspaceId: undefined },
+    { workspaceId: undefined, createdByAgentId: "lead" },
+  );
+  let leadWatching = true;
+  manager.setCreatorWatchProbe(
+    (creator, child) => leadWatching && creator === "lead" && child === agent.id,
   );
 
   const stream = manager.streamAgent(agent.id, "permission flow");
@@ -12316,6 +12343,19 @@ test("permission request notifies once without forcing unread attention state", 
   const withPermissionPending = manager.getAgent(agent.id);
   expect(withPermissionPending?.pendingPermissions.size).toBe(1);
   expect(withPermissionPending?.attention).toEqual({ requiresAttention: false });
+  // #659: the daemon records when it was asked and whether the creator is watching, and flags an
+  // approval still unanswered after the bound for the owner.
+  const asked = withPermissionPending?.pendingPermissions.get("perm-1");
+  expect(asked?.metadata?.askedAt).toEqual(expect.any(String));
+  expect(asked?.metadata?.ownerEscalated).toBeUndefined();
+  expect(withPermissionPending?.permissionWatchedByCreator).toBe(true);
+  leadWatching = false;
+  manager.refreshCreatorWatch(agent.id);
+  expect(manager.getAgent(agent.id)?.permissionWatchedByCreator).toBe(false);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  expect(
+    manager.getAgent(agent.id)?.pendingPermissions.get("perm-1")?.metadata?.ownerEscalated,
+  ).toBe(true);
 
   // Release permission resolution and drain the rest of the stream
   releasePermissionResolution.resolve();

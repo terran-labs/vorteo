@@ -1186,8 +1186,11 @@ export const AgentSnapshotPayloadSchema = z.object({
   hosted: z.boolean().optional(),
   // COMPAT(agentCreatedBy): added November 2026, advertised by server_info.features.agentCreatedBy.
   // The agent that created this thread, recorded by the daemon at creation and never changed by
-  // labels; null means the owner or the daemon started it. Absent from older daemons.
+  // labels; absent or null means no agent created it. Absent from older daemons.
   createdByAgentId: z.string().nullable().optional(),
+  // COMPAT(agentCreatedBy): whether the creator still holds a finish subscription for this thread,
+  // so it will be told of its approvals. Absent or false means nobody is watching: the owner.
+  permissionWatchedByCreator: z.boolean().optional(),
   id: z.string(),
   profile: z.object({ id: z.string(), name: z.string() }).optional(),
   quotaPausedAt: z.string().optional(),
