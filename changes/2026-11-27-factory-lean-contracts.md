@@ -1,0 +1,7 @@
+### Maintenance
+
+- Added the lean Factory mode's frozen contracts: the daemon-side types and ports every lean workstream builds against, the `.github/vorteo-factory.json` configuration schema with its release recipe, release and activity records, and the `factory.lean.*` RPC definitions. Nothing serves or calls them yet, so behavior is unchanged.
+
+## Maintenance review
+
+Lean Factory W1 contracts. `packages/server/src/server/factory/lean/types.ts` holds stages, leases, runners, verdicts, acceptance, events, the ledger shape and every port (runners, accounts, capacity, leases, lanes, lane leases, presence, configuration, merge gate, delivery, watchdog, router, activity, operational sessions, acceptance, intent, alerts, release recipe, beta trigger, releases). `plugins/factory/shared/lean.ts` defines the configuration schema (loose objects so unknown keys survive), the release recipe, release events, presence, status and view outputs, and the RPCs, none registered. `plugins/factory/shared/project.ts` re-exports it and gains optional `mode` on project state and on the enable and configure inputs, which only daemons advertising `factoryLean` will accept. Output fields that will grow are strings for older clients. Behavior that depends on owner decisions 1, 3 and 7 is marked as held in the contracts. README overview and onboarding are unchanged. Not installed; no inventory feature changes until behavior ships.
