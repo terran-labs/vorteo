@@ -192,6 +192,7 @@ export interface CreateAgentCommandResult {
   initialPromptStarted: boolean;
   initialPromptError: unknown | null;
   accountChoiceReason?: string;
+  accountChoiceCode?: string;
   createdWorktree?: CreatePaseoWorktreeWorkflowResult;
 }
 
@@ -226,6 +227,7 @@ function resolveProviderModel(providerValue: string): ResolvedProviderModel {
 
 interface ResolvedCreateAgent {
   accountChoiceReason?: string;
+  accountChoiceCode?: string;
   config: AgentSessionConfig;
   createOptions: CreateAgentOptions;
   prompt?: AgentPromptInput;
@@ -436,6 +438,7 @@ export async function createAgentCommand(
     initialPromptStarted,
     initialPromptError,
     ...(resolved.accountChoiceReason ? { accountChoiceReason: resolved.accountChoiceReason } : {}),
+    ...(resolved.accountChoiceCode ? { accountChoiceCode: resolved.accountChoiceCode } : {}),
     ...(resolved.createdWorktree ? { createdWorktree: resolved.createdWorktree } : {}),
   };
 }
@@ -593,15 +596,12 @@ async function fenceInheritedWorkerLaunch(
   input: CreateAgentCommandInput,
 ): Promise<void> {
   if (input.kind !== "mcp" || !input.callerAgentId || input.leadLaunch) return;
-  const launch = dependencies.agentManager.getAgent(input.callerAgentId)?.config.profileLaunch;
-  if (launch?.worker && !launch.workers?.length) {
-    const stored = await dependencies.agentStorage.get(input.callerAgentId);
-    if (!stored?.workerGovernance) return;
-  }
   await checkPresetFence(
     {
       logger: dependencies.logger,
       getAgent: (id) => dependencies.agentManager.getAgent(id),
+      directLegacyPresetCheck: true,
+      getCached: (id) => dependencies.agentStorage.getLoadedRecord?.(id),
       getStored: (id) => dependencies.agentStorage.get(id),
       serverId: dependencies.serverId,
     },
@@ -895,6 +895,7 @@ function validateCurrentWorkerPreset(
 interface McpProfileInput {
   input: CreateAgentFromMcpInput & { provider: string };
   accountChoiceReason?: string;
+  accountChoiceCode?: string;
   workerGovernance?: WorkerGovernance;
 }
 
@@ -909,7 +910,7 @@ async function resolveMcpProfileInput(
   // assertConfirmedLeadLaunch. It resolves against every preset, not only the worker's.
   const confirmedLead = Boolean(caller && input.leadLaunch);
   const launch = confirmedLead ? undefined : caller?.config.profileLaunch;
-  if (caller && launch?.workers?.length)
+  if (caller && launch?.workers !== undefined)
     return await resolveTeamWorkerInput(dependencies, input, launch.workers, caller);
   if (!input.provider) throw new Error("provider/model is required outside worker team launches");
   let selected = { ...input, provider: input.provider };
@@ -1051,6 +1052,7 @@ async function resolveTeamWorkerInput(
       features: resolved.featureValues,
     },
     accountChoiceReason,
+    accountChoiceCode: choice.reason,
     workerGovernance: {
       supervisorAgentId: caller.id,
       serverId,
@@ -1064,10 +1066,8 @@ async function resolveMcpCreateAgent(
   dependencies: CreateAgentCommandDependencies,
   requestedInput: CreateAgentFromMcpInput,
 ): Promise<ResolvedCreateAgent> {
-  const { input, accountChoiceReason, workerGovernance } = await resolveMcpProfileInput(
-    dependencies,
-    requestedInput,
-  );
+  const { input, accountChoiceReason, accountChoiceCode, workerGovernance } =
+    await resolveMcpProfileInput(dependencies, requestedInput);
   const resolvedProviderModel = resolveProviderModel(input.provider);
   const provider = resolvedProviderModel.provider;
   const parentAgent = input.callerAgentId
@@ -1140,6 +1140,7 @@ async function resolveMcpCreateAgent(
     createdWorktree,
     promptFailure: input.promptFailure ?? "log",
     accountChoiceReason,
+    accountChoiceCode,
   };
 }
 

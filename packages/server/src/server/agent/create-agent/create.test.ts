@@ -999,8 +999,7 @@ test("team dispatch uses the chosen account and preserves the frozen worker sett
       notifyOnFinish: false,
     };
     const result = await createAgentCommand(dependencies, launch);
-    expect(result.accountChoiceReason).toContain("without a quota reading");
-    expect(result.accountChoiceReason).toContain("codex");
+    expect(result.accountChoiceCode).toBe("alternate-usage-unreadable");
     expect(result.snapshot.config).toMatchObject({
       provider: "backup",
       model: "frozen",
@@ -1021,6 +1020,14 @@ test("team dispatch uses the chosen account and preserves the frozen worker sett
     ).rejects.toMatchObject({
       code: "team-worker-launch",
     });
+    vi.spyOn(storage, "get").mockRejectedValueOnce(new Error("Storage unavailable"));
+    await expect(
+      createAgentCommand(dependencies, {
+        ...launch,
+        callerAgentId: result.snapshot.id,
+        provider: "codex/frozen",
+      }),
+    ).rejects.toMatchObject({ code: "worker-governance-unavailable" });
     await expect(
       createAgentCommand(dependencies, { ...launch, callerAgentId: undefined }),
     ).rejects.toThrow("provider/model is required");

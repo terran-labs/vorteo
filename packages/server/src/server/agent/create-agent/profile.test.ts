@@ -171,6 +171,14 @@ describe("profile launch", () => {
       [team.workerProfileIds[0], first.model],
       [team.workerProfileIds[1], second.model],
     ]);
+    const workflow = sharedConfig.sharedProviderPreferences!.providers.codex.workflows[0];
+    workflow.workerProfileIds = [];
+    workflow.workerProfileId = sharedProfileId("codex", first.id);
+    const disabled = resolveProfileLaunch(input, [], 1000, sharedConfig, "host", {
+      installationProfilesAdmitted: true,
+    });
+    expect(disabled.profileLaunch?.workers).toEqual([]);
+    expect(disabled.profileLaunch?.worker).toBeUndefined();
   });
 
   it("refuses missing profiles and recursive teams", () => {

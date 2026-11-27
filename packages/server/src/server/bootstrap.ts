@@ -1693,11 +1693,12 @@ export async function createPaseoDaemon(
   const createAgentCommandDependencies: CreateAgentCommandDependencies = {
     pickTeamWorkerAccount: async ({ worker, requestedProvider, avoidProvider }) => {
       const settings = daemonConfigStore.get();
-      const [ready, usage] = await Promise.all([
+      const [ready, usage, limits] = await Promise.all([
         providerSnapshotManager.listProviders({ wait: false }),
         providerUsageService
-          .listUsage({ forceRefresh: true })
+          .listUsage({ forceRefresh: false })
           .catch(() => ({ fetchedAt: "", providers: [] })),
+        agentManager.usageLimitsByProvider(),
       ]);
       return pickWorkerAccount({
         settings,
@@ -1708,6 +1709,7 @@ export async function createPaseoDaemon(
         providerType: resolveProviderType(worker.provider, settings.providers ?? {}),
         defaultProvider: worker.provider,
         avoidProvider,
+        usageLimitedUntilByProvider: Object.fromEntries(limits),
         priority: "normal",
         nowMs: Date.now(),
       });

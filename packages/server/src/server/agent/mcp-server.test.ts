@@ -6431,6 +6431,55 @@ describe("preset fence (#360)", () => {
     }
   });
 
+  it("refuses team launches on a governance read failure and keeps the legacy fence in report mode", async () => {
+    const empty = {
+      ...supervisor,
+      id: "empty-team",
+      config: {
+        ...supervisor.config,
+        profileLaunch: { ...supervisor.config.profileLaunch!, workers: [] },
+      },
+    };
+    const lookup = {
+      getAgent: (id: string) => (id === empty.id ? empty : agents[id]),
+      getStored: async () => {
+        throw new Error("Storage unavailable");
+      },
+      logger: createTestLogger(),
+    };
+    const launch = { kind: "launch" as const, profileId: worker.id };
+    await expect(checkPresetFence(lookup, "create_agent", empty.id, launch)).rejects.toMatchObject({
+      code: "worker-governance-unavailable",
+    });
+    await expect(
+      checkPresetFence(lookup, "create_agent", agents.child!.id, launch),
+    ).resolves.toBeUndefined();
+    const moved = thread("detached-team-worker", {});
+    const movedLookup = {
+      ...lookup,
+      getAgent: (id: string) => (id === moved.id ? moved : lookup.getAgent(id)),
+      getCached: (id: string) =>
+        id === moved.id
+          ? {
+              ...moved,
+              workerGovernance: {
+                supervisorAgentId: supervisor.id,
+                serverId: "host",
+                workerProfileId: worker.id,
+              },
+            }
+          : null,
+    };
+    await expect(
+      checkPresetFence(movedLookup, "create_agent", moved.id, launch),
+    ).rejects.toMatchObject({ code: "worker-governance-unavailable" });
+    for (const path of ["create_agent", "remote_create_agent", "session_create_agent"] as const) {
+      await expect(
+        checkPresetFence({ ...lookup, getStored: async () => null }, path, empty.id, launch),
+      ).rejects.toMatchObject({ code: "delegation-disabled" });
+    }
+  });
+
   it("decides each path for a supervisor's own threads and launches", () => {
     const cases: Array<[ManagedAgent | null, PresetFenceRequest, string | null]> = [
       [null, { kind: "launch", profileId: worker.id }, null],

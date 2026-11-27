@@ -765,6 +765,7 @@ function createToolCatalog(
       {
         logger: childLogger,
         getAgent: (id) => agentManager.getAgent(id),
+        getCached: (id) => agentStorage.getLoadedRecord?.(id),
         getStored: (id) => agentStorage.get(id),
         serverId: options.serverId,
       },
@@ -2116,6 +2117,7 @@ function createToolCatalog(
         availableModes: z.array(ProviderModeSchema),
         guidance: z.string().optional(),
         accountChoiceReason: z.string().optional(),
+        accountChoiceCode: z.string().optional(),
       },
     },
     async (args: unknown) => {
@@ -2135,9 +2137,8 @@ function createToolCatalog(
       const inheritedConfig = selectedProvider
         ? resolveInheritedProviderConfig(selectedProvider)
         : undefined;
-      const { snapshot, initialPromptStarted, accountChoiceReason } = await createAgentCommand(
-        createAgentDependencies(),
-        {
+      const { snapshot, initialPromptStarted, accountChoiceReason, accountChoiceCode } =
+        await createAgentCommand(createAgentDependencies(), {
           kind: "mcp",
           profileId: parsedArgs.profileId,
           provider: parsedArgs.provider,
@@ -2164,8 +2165,7 @@ function createToolCatalog(
           detached: resolvedArgs.detached,
           callerAgentId,
           callerContext,
-        },
-      );
+        });
 
       // Return immediately for async creation.
       const currentSnapshot = agentManager.getAgent(snapshot.id) ?? snapshot;
@@ -2186,8 +2186,9 @@ function createToolCatalog(
           ...(currentSnapshot.workspaceId ? { workspaceId: currentSnapshot.workspaceId } : {}),
           currentModeId: currentSnapshot.currentModeId,
           availableModes: currentSnapshot.availableModes,
-          ...(guidance ? { guidance } : {}),
+          guidance,
           ...(accountChoiceReason ? { accountChoiceReason } : {}),
+          ...(accountChoiceCode ? { accountChoiceCode } : {}),
         }),
       };
       return response;
@@ -2231,6 +2232,8 @@ function createToolCatalog(
           "Team workers cannot request lead launches. Ask your supervisor.",
         );
       const launch = caller.config.profileLaunch;
+      if (launch?.workers?.length === 0)
+        throw new PaseoToolInputError("This preset disables delegation.");
       const worker = launch?.workers?.[0] ?? launch?.worker;
       if (!worker)
         throw new PaseoToolInputError(
@@ -2399,7 +2402,7 @@ function createToolCatalog(
     }
     if (callerAgentId) {
       const assertProvider = (provider: string | undefined): void => {
-        if (!provider && !resolveCallerAgent()?.config.profileLaunch?.workers?.length) {
+        if (!provider && resolveCallerAgent()?.config.profileLaunch?.workers === undefined) {
           throw new PaseoToolInputError("provider/model is required outside worker team launches");
         }
       };

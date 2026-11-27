@@ -1,6 +1,10 @@
 import type { MutableDaemonConfig, ProviderUsage } from "@getpaseo/protocol/messages";
 import { describe, expect, it } from "vitest";
-import { pickWorkerAccount, type WorkerAccountPick } from "./worker-account.js";
+import {
+  pickWorkerAccount,
+  type WorkerAccountInput,
+  type WorkerAccountPick,
+} from "./worker-account.js";
 
 const now = "2026-11-27T18:00:00.000Z";
 const soon = "2026-11-27T19:00:00.000Z";
@@ -30,10 +34,39 @@ interface Case {
   readings: ProviderUsage[];
   settings?: MutableDaemonConfig;
   avoidProvider?: string;
+  usageLimitedUntilByProvider?: WorkerAccountInput["usageLimitedUntilByProvider"];
   result: WorkerAccountPick;
 }
 
 const cases: Case[] = [
+  {
+    title: "excludes a positively measured account when an alias has an active usage hold",
+    readings: [reading("codex", [[95]]), reading("backup", [[55]])],
+    settings: {
+      providers: {
+        codex: { env: { CODEX_HOME: "/tmp/worker-hold-account" } },
+        alias: { extends: "codex" },
+        backup: { extends: "codex", env: { CODEX_HOME: "/tmp/worker-hold-backup" } },
+      },
+    },
+    usageLimitedUntilByProvider: { alias: soon },
+    result: { provider: "backup", reason: "known-headroom", earliestResetAt: null },
+  },
+  {
+    title: "reports the earliest account release when holds and quota windows both block placement",
+    readings: [reading("codex", [[90], [10, nextDay]]), reading("backup", [[90]])],
+    settings: {
+      providers: { backup: { extends: "codex", env: { CODEX_HOME: "/tmp/worker-hold-backup" } } },
+    },
+    usageLimitedUntilByProvider: { codex: soon, backup: later },
+    result: { provider: null, reason: "quota-below-floor", earliestResetAt: later },
+  },
+  {
+    title: "allows placement after a usage hold expires",
+    readings: [reading("codex", [[95]])],
+    usageLimitedUntilByProvider: { codex: now },
+    result: { provider: "codex", reason: "known-headroom", earliestResetAt: null },
+  },
   {
     title: "picks the strongest worst window",
     readings: [reading("codex", [[95], [30]]), reading("backup", [[60], [55]])],
@@ -125,27 +158,31 @@ const cases: Case[] = [
 ];
 
 describe("quota-picked worker account", () => {
-  it.each(cases)("$title", async ({ readings, settings, avoidProvider, result }) => {
-    const providers = {
-      backup: { extends: "codex" },
-      ...settings?.providers,
-    };
-    const ready = [...Object.keys(providers), "codex"].map((provider) => ({
-      provider,
-      enabled: true,
-      status: "ready" as const,
-    }));
-    expect(
-      await pickWorkerAccount({
-        settings: { ...settings, providers },
-        ready,
-        usage: { fetchedAt: now, providers: readings },
-        providerType: "codex",
-        defaultProvider: "codex",
-        priority: "normal",
-        nowMs: Date.parse(now),
-        avoidProvider,
-      }),
-    ).toEqual(result);
-  });
+  it.each(cases)(
+    "$title",
+    async ({ readings, settings, avoidProvider, usageLimitedUntilByProvider, result }) => {
+      const providers = {
+        backup: { extends: "codex" },
+        ...settings?.providers,
+      };
+      const ready = [...Object.keys(providers), "codex"].map((provider) => ({
+        provider,
+        enabled: true,
+        status: "ready" as const,
+      }));
+      expect(
+        await pickWorkerAccount({
+          settings: { ...settings, providers },
+          ready,
+          usage: { fetchedAt: now, providers: readings },
+          providerType: "codex",
+          defaultProvider: "codex",
+          priority: "normal",
+          nowMs: Date.parse(now),
+          avoidProvider,
+          usageLimitedUntilByProvider,
+        }),
+      ).toEqual(result);
+    },
+  );
 });

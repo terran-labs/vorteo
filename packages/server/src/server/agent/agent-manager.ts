@@ -1560,19 +1560,26 @@ export class AgentManager {
    * is not known to be limited. A stop without a reset time counts for an hour.
    */
   async usageLimitedUntil(provider: AgentProvider): Promise<string | null> {
+    return (await this.usageLimitsByProvider(provider)).get(provider) ?? null;
+  }
+
+  /** Read the registry once when a placement decision compares multiple accounts. */
+  async usageLimitsByProvider(onlyProvider?: AgentProvider): Promise<ReadonlyMap<string, string>> {
     const now = this.now();
-    let until: string | null = null;
+    const limits = new Map<string, string>();
     for (const record of await this.requireRegistry().list()) {
-      if (record.provider !== provider || record.archivedAt) continue;
+      if ((onlyProvider !== undefined && record.provider !== onlyProvider) || record.archivedAt)
+        continue;
       const hold =
         this.agents.get(record.id)?.config.usageLimitHold ?? record.config?.usageLimitHold;
       if (!hold || hold.releasedAt) continue;
       const end =
         hold.resetsAt ??
         new Date(Date.parse(hold.stoppedAt) + USAGE_LIMIT_UNKNOWN_RESET_MS).toISOString();
-      if (Date.parse(end) > now && (!until || end > until)) until = end;
+      const until = limits.get(record.provider);
+      if (Date.parse(end) > now && (!until || end > until)) limits.set(record.provider, end);
     }
-    return until;
+    return limits;
   }
 
   /**

@@ -4,7 +4,7 @@ import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import type { UsageLimitHold } from "@getpaseo/protocol/usage-limit";
 import type { AgentProfile, ProviderUsage } from "@getpaseo/protocol/messages";
 import type { StoredAgentRecord } from "../agent-storage.js";
-import type { WorkerAccountPick } from "../account-pool/worker-account.js";
+import type { TeamWorkerAccountChoice } from "../create-agent/create.js";
 import { reopenWorkerAfterUsageLimit } from "./worker-recovery.js";
 import {
   CONTINUED_FROM_LABEL,
@@ -62,14 +62,21 @@ describe("supervisor usage-stop recovery", () => {
 
   function recoveryHarness(
     child: StoredAgentRecord,
-    choice: WorkerAccountPick = {
+    choice: TeamWorkerAccountChoice = {
       provider: "alternate",
       reason: "known-headroom",
       earliestResetAt: null,
     },
   ) {
     const dependencies: Parameters<typeof reopenWorkerAfterUsageLimit>[0] = {
-      agentStorage: { get: async (id) => (id === child.id ? child : supervisor) },
+      agentStorage: {
+        get: async (id) => {
+          if (id === child.id) return child;
+          if (id === supervisor.id) return supervisor;
+          if (id === "unrelated-supervisor") return { ...supervisor, id };
+          return null;
+        },
+      },
       pickTeamWorkerAccount: vi.fn(async () => choice),
       switchProfile: vi.fn(async (target, options) => {
         await options.validateScope?.({
@@ -108,6 +115,18 @@ describe("supervisor usage-stop recovery", () => {
     expect(dependencies.pickTeamWorkerAccount).toHaveBeenCalledWith(
       expect.objectContaining({ worker, avoidProvider: child.provider }),
     );
+  });
+
+  it("refuses another supervisor even when its roster contains the same worker profile", async () => {
+    const dependencies = recoveryHarness(workerRecord(governance));
+    expect(
+      await reopenWorkerAfterUsageLimit(dependencies, {
+        ...input,
+        supervisorId: "unrelated-supervisor",
+      }),
+    ).toEqual({ outcome: "refused", reason: "not-supervised-worker" });
+    expect(dependencies.pickTeamWorkerAccount).not.toHaveBeenCalled();
+    expect(dependencies.switchProfile).not.toHaveBeenCalled();
   });
 
   it.each([undefined, { ...governance, supervisorAgentId: "different-supervisor" }])(

@@ -7,6 +7,7 @@ import type {
   SharedProviderPreferences,
 } from "@getpaseo/protocol/messages";
 import {
+  canonicalProfileId,
   sharedWorkflowProfileId,
   isSharedWorkflowProfile,
   resolveProviderType,
@@ -413,6 +414,14 @@ export function consolidateProfileDefinitions(
     );
   for (const group of Object.values(preferences.providers)) {
     for (const profile of [group.defaults, ...group.workflows]) {
+      if (profile.workerProfileIds !== undefined) {
+        const members = profile.workerProfileIds.map((id) =>
+          canonicalProfileId(id, preferences, {}),
+        );
+        profile.workerProfileIds = [...new Set(members)];
+        profile.workerProfileId = profile.workerProfileIds[0] ?? "";
+        continue;
+      }
       const parts = profile.workerProfileId?.split("/");
       if (parts?.length !== 3 || !isSharedWorkflowProfile(profile.workerProfileId ?? "")) continue;
       const type = decodeURIComponent(parts[1]);

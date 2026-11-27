@@ -40,6 +40,8 @@ export interface FenceAgent {
  */
 export interface FenceLookup {
   getAgent: (agentId: string) => FenceAgent | null | undefined;
+  directLegacyPresetCheck?: boolean;
+  getCached?: (agentId: string) => FenceAgent | null | undefined;
   getStored?: (agentId: string) => Promise<FenceAgent | null | undefined>;
   /** This daemon's server ID, to tell a parent on another host from a missing one. */
   serverId?: string;
@@ -218,7 +220,7 @@ export async function governanceToForward(
 }
 
 function ownGovernance(caller: FenceAgent): FenceGovernance {
-  return caller.config?.profileLaunch?.worker || caller.config?.profileLaunch?.workers?.length
+  return caller.config?.profileLaunch?.worker || caller.config?.profileLaunch?.workers !== undefined
     ? { kind: "supervisor", supervisor: caller }
     : { kind: "none" };
 }
@@ -261,7 +263,7 @@ function teamChangeReason(
   request: Extract<PresetFenceRequest, { kind: "change" }>,
   supervisor: FenceAgent | null,
 ): string | null {
-  if (!supervisor?.config?.profileLaunch?.workers?.length) return null;
+  if (supervisor?.config?.profileLaunch?.workers === undefined) return null;
   if (request.labels && PARENT_SERVER_ID_LABEL in request.labels) return "governance-label";
   const workerChangingSelf = target?.id === caller.id && caller.id !== supervisor.id;
   const changingTeammate = target?.labels[PARENT_AGENT_ID_LABEL] === supervisor.id;
@@ -276,8 +278,9 @@ function launchReason(
   supervisor: FenceAgent | null,
 ): string | null {
   const launch = supervisor?.config?.profileLaunch;
-  if (launch?.workers?.length) {
+  if (launch?.workers !== undefined) {
     if (caller.id !== supervisor?.id) return "team-worker-launch";
+    if (!launch.workers.length) return "delegation-disabled";
     if (!launch.workers.some((worker) => worker.id === request.profileId)) return "preset-required";
     return request.detached ? "detached" : null;
   }
@@ -319,8 +322,8 @@ function shouldEnforce(
 }
 
 /**
- * Applies the fence for one agent-initiated operation. A failure to decide never throws or
- * replaces the operation's outcome; an enforced refusal throws before anything changes.
+ * Applies the fence for one agent-initiated operation. The legacy fence reports when it can.
+ * Team launches require a verifiable decision before dispatch.
  */
 export async function checkPresetFence(
   dependencies: FenceLookup & { logger: Logger },
@@ -333,6 +336,12 @@ export async function checkPresetFence(
   try {
     decision = await resolveFenceDecision(dependencies, path, callerAgentId, request);
   } catch {
+    if (request.kind === "launch" && hasKnownTeamGovernance(dependencies, callerAgentId)) {
+      throw new WorkerLaunchRefusal(
+        "Could not verify worker team authority. Retry after thread storage is available.",
+        "worker-governance-unavailable",
+      );
+    }
     return;
   }
   if (!decision) return;
@@ -349,6 +358,37 @@ export async function checkPresetFence(
       `${refusalText(reason, workerProfileId)} To start a thread on another preset, call request_lead_launch; the owner confirms it. Retrying this call will be refused again.`,
     reason,
   );
+}
+
+function hasKnownTeamGovernance(dependencies: FenceLookup, callerAgentId: string): boolean {
+  let id: string | undefined = callerAgentId;
+  for (let depth = 0; id && depth <= MAX_SUPERVISOR_DEPTH; depth += 1) {
+    const cached = lookupCachedFenceAgent(dependencies, id);
+    const agent: FenceAgent | null = dependencies.getAgent(id) ?? cached;
+    if (!agent) return false;
+    if (cached?.workerGovernance ?? agent.workerGovernance) return true;
+    if (agent.config?.profileLaunch?.workers !== undefined) return true;
+    id = agent.labels?.[PARENT_AGENT_ID_LABEL];
+  }
+  return false;
+}
+
+function lookupCachedFenceAgent(dependencies: FenceLookup, id: string): FenceAgent | null {
+  try {
+    return dependencies.getCached?.(id) ?? null;
+  } catch {
+    // Storage may not have initialized. The loaded ancestry can still identify a team.
+    return null;
+  }
+}
+
+function isLocalLegacySupervisor(
+  directLegacyPresetCheck: boolean | undefined,
+  team: boolean,
+  caller: FenceAgent,
+  supervisor: FenceAgent | null,
+): boolean {
+  return directLegacyPresetCheck === true && !team && supervisor?.id === caller.id;
 }
 
 interface FenceDecision {
@@ -371,7 +411,10 @@ async function resolveFenceDecision(
     request.kind === "change" ? await lookup(dependencies, request.targetAgentId) : null;
   const governance = await governingSupervisor(caller, dependencies);
   const supervisor = governance.kind === "supervisor" ? governance.supervisor : null;
-  const team = Boolean(supervisor?.config?.profileLaunch?.workers?.length);
+  const team = supervisor?.config?.profileLaunch?.workers !== undefined;
+  // Local legacy supervisor launches still use the original direct preset check.
+  if (isLocalLegacySupervisor(dependencies.directLegacyPresetCheck, team, caller, supervisor))
+    return null;
   // Team dispatch needs the local create command's frozen snapshot and account picker.
   const requiresLocalDispatch = team && request.kind === "launch" && path !== "create_agent";
   const reason =
@@ -415,6 +458,8 @@ function teamRefusalText(reason: string): string | undefined {
   switch (reason) {
     case "team-worker-launch":
       return "Team workers cannot launch agents. Ask your supervisor.";
+    case "delegation-disabled":
+      return "This preset disables delegation.";
     case "team-local-dispatch":
       return "Launch team workers through local create_agent.";
     case "governance-label":

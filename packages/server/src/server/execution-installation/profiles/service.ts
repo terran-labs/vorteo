@@ -264,6 +264,13 @@ export class InstallationProfiles {
           throw new ProfileSharingConflict([
             "Update every environment before changing a worker team.",
           ]);
+        if (profile.workerProfileIds !== undefined) {
+          // COMPAT(workerTeams): older daemons resolve the first member through the legacy slot.
+          // Empty strings also block inherited worker and account defaults after rollback.
+          profile.workerProfileId = profile.workerProfileIds[0] ?? "";
+          if (index > 0 && group.defaults.workerAccount) profile.workerAccount = "";
+          else delete profile.workerAccount;
+        }
         if (
           profile.workerAccount &&
           profile.workerAccount !== original?.workerAccount &&

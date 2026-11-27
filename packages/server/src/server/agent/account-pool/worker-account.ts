@@ -24,6 +24,8 @@ export interface WorkerAccountInput {
   nowMs: number;
   /** The account that just stopped, including its aliases on this daemon. */
   avoidProvider?: string;
+  /** Account stop expiries from the daemon's live and saved usage-limit holds. */
+  usageLimitedUntilByProvider?: Readonly<Record<string, string | null>>;
 }
 
 export type WorkerAccountPick =
@@ -45,8 +47,8 @@ export async function pickWorkerAccount(input: WorkerAccountInput): Promise<Work
   const policy = input.settings.accountQuotaPolicy;
   if (policy && !AccountQuotaPolicyV1Schema.safeParse(policy).success)
     return { provider: null, reason: "quota-policy-unresolved", earliestResetAt: null };
-  const ranked = candidates.map(({ provider, reference }) =>
-    assessAccount(input, provider, reference),
+  const ranked = candidates.map(({ provider, reference, heldUntil }) =>
+    assessAccount(input, provider, reference, heldUntil),
   );
   const best = ranked
     .filter((entry) => entry.kind === "above-floor")
@@ -87,7 +89,8 @@ async function eligibleWorkerAccounts(input: WorkerAccountInput) {
   const { settings, usage, avoidProvider } = input;
   const ready = input.ready.filter(({ enabled, status }) => enabled && status === "ready");
   const avoid = avoidProvider ? [avoidProvider] : [];
-  const homes = await resolveLaunchHomes(ready, settings, undefined, avoid);
+  const holds = activeUsageHolds(input);
+  const homes = await resolveLaunchHomes(ready, settings, undefined, [...avoid, ...holds.keys()]);
   const excluded = automaticPlacementExclusions(settings, homes, avoid);
   const { signedOut } = classifyProviders(ready, usage.providers);
   const signedOutIds = new Set(signedOut);
@@ -102,8 +105,24 @@ async function eligibleWorkerAccounts(input: WorkerAccountInput) {
     const reference = accountRef(provider);
     if (reference === stoppedRef) return [];
     if (Object.hasOwn(pool, reference) && pool[reference].pool === false) return [];
-    return [{ provider, reference }];
+    const home = homes.get(provider);
+    let heldUntil = 0;
+    for (const [heldProvider, reset] of holds) {
+      const sameReference = accountRef(heldProvider) === reference;
+      const sameHome = home != null && homes.get(heldProvider) === home;
+      if (sameReference || sameHome) heldUntil = Math.max(heldUntil, reset);
+    }
+    return [{ provider, reference, heldUntil }];
   });
+}
+
+function activeUsageHolds(input: WorkerAccountInput): Map<string, number> {
+  const holds = new Map<string, number>();
+  for (const [provider, until] of Object.entries(input.usageLimitedUntilByProvider ?? {})) {
+    const reset = Date.parse(until ?? "");
+    if (reset > input.nowMs) holds.set(provider, reset);
+  }
+  return holds;
 }
 
 type AccountAssessment =
@@ -115,6 +134,7 @@ function assessAccount(
   input: WorkerAccountInput,
   provider: string,
   reference: string,
+  heldUntil: number,
 ): AccountAssessment {
   const { usage, settings, nowMs, priority } = input;
   const floor = evaluateFloor({
@@ -124,6 +144,7 @@ function assessAccount(
     policy: settings.accountQuotaPolicy,
     usage,
     nowMs,
+    limitHold: heldUntil > 0,
   });
   if (floor.kind === "unresolved") return { kind: "unresolved", provider };
   if (floor.kind === "above-floor" && floor.remainingPct > floor.floorPct)
@@ -135,8 +156,9 @@ function assessAccount(
   if (floor.kind === "unmeasured" && !blocking.length) return { kind: "unmeasured", provider };
   // One account may have to wait for several windows. An unknown reset gives no deadline.
   const resets = blocking.map(({ resetsAt }) => Date.parse(resetsAt ?? ""));
-  const reset =
-    resets.length > 0 && resets.every((value) => value > nowMs) ? Math.max(...resets) : Infinity;
+  const allResetsKnown = resets.length > 0 && resets.every((value) => value > nowMs);
+  const windowReset = allResetsKnown ? Math.max(...resets) : 0;
+  const reset = Math.max(heldUntil, windowReset) || Infinity;
   return { kind: "below-floor", provider, reset };
 }
 

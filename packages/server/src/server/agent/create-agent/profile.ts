@@ -216,7 +216,7 @@ function resolveProfileWorkers({
   installationProfile,
 }: ProfileWorkerResolution): ProfileWorkers {
   const teamIds = profile.workerProfileIds;
-  if (teamIds?.length && !installationProfile) {
+  if (teamIds !== undefined && !installationProfile) {
     throw new ProfileLaunchError(
       profile.id,
       "Worker teams require an authenticated installation profile.",
@@ -270,6 +270,7 @@ function supervisionInstructions(
       "If no eligible account has quota, preserve progress and report the refusal."
     );
   }
+  if (workers) return "Delegation is disabled for this thread.";
   if (!worker) return "";
   return (
     tool +
