@@ -61,3 +61,9 @@ export class FactoryRefusal extends Error {
 
 /** Enable found a live thread wearing the Foreman's label while no Foreman is recorded. */
 export const FACTORY_FOREMAN_UNADOPTED_CODE = "factory_foreman_unadopted";
+
+/** Claim refused: no trusted account approved the issue's current text. */
+export const FACTORY_ISSUE_UNTRUSTED_CODE = "factory_issue_untrusted";
+
+/** Claim refused: the issue's pull request changes a file only the owner may change. */
+export const FACTORY_OWNER_ONLY_FILE_CODE = "factory_owner_only_file";

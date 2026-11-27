@@ -429,6 +429,8 @@ const claimSchema: OutputSchema<ProjectFactoryClaim> = {
       `Installation: ${value.installation}`,
       `Head: ${value.headSha ?? "none"}`,
       ...(value.marker ? ["", "Marker for the plan comment and PR body:", value.marker] : []),
+      ...(value.checkedHeadSha ? [`Checked pull request head: ${value.checkedHeadSha}`] : []),
+      ...(value.brief ? ["", "Issue brief for the lead and reviewer:", value.brief] : []),
     ].join("\n");
   },
 };

@@ -34,7 +34,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { realpathSync } from "node:fs";
 
-import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 
 import { join, resolve as resolvePath } from "node:path";
 
@@ -2994,6 +2994,249 @@ describe("create_agent MCP tool", () => {
     },
   );
 
+  it.each([
+    { name: "a folder inside the caller project's root", folder: "caller/sub", expected: "caller" },
+    { name: "a caller workspace outside its root", folder: "worktrees/task", expected: "caller" },
+    {
+      name: "the deepest project containing the folder",
+      folder: "other/inner/x",
+      expected: "inner",
+    },
+    { name: "a folder outside every project", folder: "outside", expected: "registered" },
+    {
+      name: "an explicit new project",
+      folder: "caller/sub",
+      newProject: true,
+      expected: "registered",
+    },
+    // The caller also owns a directory workspace on the parent folder, as Builds does on a
+    // Projects folder; it must not claim the folders beneath it.
+    { name: "a new repository beside the caller", folder: "newrepo", expected: "registered" },
+    {
+      name: "a new repository inside the caller's directory project",
+      folder: "caller/newrepo",
+      callerKind: "non_git" as const,
+      expected: "registered",
+    },
+    { name: "an explicit projectId", folder: "caller/sub", projectId: "other", expected: "other" },
+    // The Foreman creates issue workspaces on Dev by serverId; Dev's daemon decides ownership.
+    {
+      name: "a workspace on another host",
+      folder: "caller",
+      serverId: "srv_dev",
+      expected: "remote",
+    },
+    {
+      name: "a manual worktree of the caller's repository",
+      folder: "manual-wt",
+      expected: "caller",
+    },
+    {
+      name: "a registered repository nested in the caller",
+      folder: "caller/nested/src",
+      expected: "nested",
+    },
+    {
+      name: "an archived project's root",
+      folder: "archived",
+      expected: "refused",
+      error: "belongs to a project the owner archived",
+    },
+    {
+      name: "a new project on another host",
+      folder: "caller",
+      serverId: "srv_dev",
+      newProject: true,
+      expected: "refused",
+      error: "newProject is not supported when creating a workspace on another host",
+    },
+  ])("files a local workspace under $name", async (row) => {
+    const { folder, newProject, expected } = row;
+    const root = realpathSync(await mkdtemp(join(tmpdir(), "mcp-workspace-owner-")));
+    try {
+      for (const dir of [
+        "caller/sub",
+        "caller/newrepo",
+        "worktrees/task",
+        "other/inner/x",
+        "outside",
+        "newrepo",
+        "manual-wt",
+        "caller/nested/src",
+        "archived",
+      ]) {
+        await mkdir(join(root, dir), { recursive: true });
+      }
+      await symlink(join(root, "caller"), join(root, "alias"));
+      // Folder -> main repository root of its git checkout.
+      const gitRoots = new Map([
+        [join(root, "newrepo"), join(root, "newrepo")],
+        [join(root, "caller/newrepo"), join(root, "caller/newrepo")],
+        [join(root, "manual-wt"), join(root, "caller")],
+        [join(root, "caller/nested/src"), join(root, "caller/nested")],
+      ]);
+      const { agentManager, agentStorage, spies } = createTestDeps();
+      const project = (projectId: string, dir: string) =>
+        createPersistedProjectRecord({
+          projectId,
+          rootPath: join(root, dir),
+          kind: projectId === "caller" && "callerKind" in row ? row.callerKind : "git",
+          displayName: projectId,
+          createdAt: "2026-11-14T00:00:00.000Z",
+          updatedAt: "2026-11-14T00:00:00.000Z",
+        });
+      // "alias" reaches the caller's folders through a symlink at the same depth and is listed
+      // first, so every caller row also checks that the tie goes to the caller.
+      const projects = [project("alias", "alias"), project("caller", "caller")];
+      projects.push(project("other", "other"), project("inner", "other/inner"));
+      projects.push(project("nested", "caller/nested"));
+      const archivedProject = project("gone", "archived");
+      archivedProject.archivedAt = "2026-11-20T00:00:00.000Z";
+      projects.push(archivedProject);
+      const parent = createPersistedWorkspaceRecord({
+        workspaceId: "parent-workspace",
+        projectId: "caller",
+        cwd: join(root, "worktrees/task"),
+        kind: "worktree",
+        displayName: "Parent task",
+        createdAt: "2026-11-14T00:00:00.000Z",
+        updatedAt: "2026-11-14T00:00:00.000Z",
+      });
+      parent.projectMembership = { key: "caller-key", name: "Caller" };
+      const parentFolderWorkspace = createPersistedWorkspaceRecord({
+        workspaceId: "builds-workspace",
+        projectId: "caller",
+        cwd: root,
+        kind: "directory",
+        displayName: "Builds",
+        createdAt: "2026-11-14T00:00:00.000Z",
+        updatedAt: "2026-11-14T00:00:00.000Z",
+      });
+      const remoteCreates: unknown[] = [];
+      const remoteClient = {
+        getLastServerInfoMessage: () => ({ features: {} }),
+        createWorkspace: async (request: unknown) => {
+          remoteCreates.push(request);
+          return {
+            workspace: {
+              id: "dev-workspace",
+              projectId: "dev-project",
+              workspaceDirectory: join(root, folder),
+              workspaceKind: "directory",
+            },
+          };
+        },
+      };
+      spies.agentManager.getAgent.mockReturnValue(
+        createManagedAgent({
+          id: "parent-agent",
+          cwd: parent.cwd,
+          workspaceId: parent.workspaceId,
+        }),
+      );
+      const registered: string[] = [];
+      const received: Array<{ projectId?: string; membership?: unknown }> = [];
+      const server = await createAgentMcpServer({
+        agentManager,
+        agentStorage,
+        providerSnapshotManager: createOpenCodeManager().manager,
+        callerAgentId: "parent-agent",
+        projectRegistry: {
+          get: async (projectId) => projects.find((entry) => entry.projectId === projectId) ?? null,
+          list: async () => projects,
+        },
+        workspaceRegistry: {
+          get: async () => parent,
+          list: async () => [parent, parentFolderWorkspace],
+          upsert: async () => {},
+        },
+        workspaceGitService: {
+          getSnapshot: async (cwd: string) => ({
+            git: gitRoots.has(cwd)
+              ? { isGit: true, repoRoot: cwd, mainRepoRoot: gitRoots.get(cwd) }
+              : { isGit: false },
+          }),
+        } as never,
+        hosts: () => ({
+          directory: async () => ({}) as never,
+          use: async (_serverId: string, action: (client: never) => unknown) =>
+            action(remoteClient as never),
+        }),
+        registerProjectForDirectory: async (cwd) => {
+          registered.push(cwd);
+          return project("registered", folder);
+        },
+        createDirectoryWorkspace: async (cwd, _title, projectId, context) => {
+          received.push({ projectId, membership: context?.projectMembership });
+          return { ...parent, workspaceId: "child", kind: "directory", projectId: projectId!, cwd };
+        },
+        logger,
+      });
+
+      const create = invokeToolWithParsedInput(registeredTool(server, "create_workspace"), {
+        isolation: "local",
+        path: join(root, folder),
+        ...(newProject ? { newProject } : {}),
+        ...("projectId" in row ? { projectId: row.projectId } : {}),
+        ...("serverId" in row ? { serverId: row.serverId } : {}),
+      });
+      if (expected === "refused") {
+        await expect(create).rejects.toThrow("error" in row ? row.error : "");
+        expect([received, registered, remoteCreates]).toEqual([[], [], []]);
+        return;
+      }
+      await create;
+
+      if (expected === "remote") {
+        // Forwarded untouched: no local ownership decision, registration or workspace.
+        expect(received).toEqual([]);
+        expect(registered).toEqual([]);
+        expect(remoteCreates).toEqual([
+          expect.objectContaining({
+            source: { kind: "directory", path: join(root, folder), projectId: undefined },
+          }),
+        ]);
+        return;
+      }
+      // Only the caller's own folders keep its sidebar membership.
+      expect(received).toEqual([
+        {
+          projectId: expected,
+          membership: expected === "caller" ? parent.projectMembership : undefined,
+        },
+      ]);
+      expect(registered).toEqual(expected === "registered" ? [join(root, folder)] : []);
+    } finally {
+      await removeTempDir(root);
+    }
+  });
+
+  it("rejects newProject combined with projectId or worktree isolation", async () => {
+    const { agentManager, agentStorage } = createTestDeps();
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      logger,
+    });
+    const tool = registeredTool(server, "create_workspace");
+    await expect(
+      invokeToolWithParsedInput(tool, {
+        isolation: "local",
+        path: existingCwd,
+        newProject: true,
+        projectId: "explicit",
+      }),
+    ).rejects.toThrow("newProject cannot be combined with projectId");
+    await expect(
+      invokeToolWithParsedInput(tool, {
+        isolation: "worktree",
+        path: existingCwd,
+        newProject: true,
+      }),
+    ).rejects.toThrow("newProject requires isolation local");
+  });
+
   it("creates a worktree workspace from a project root without a path", async () => {
     const { agentManager, agentStorage } = createTestDeps();
     const project = createPersistedProjectRecord({
@@ -3599,6 +3842,8 @@ describe("create_agent MCP tool", () => {
           source: "voice",
         },
         workspaceId: "wks_voice",
+        // Vorteo (#659): the authenticated caller, recorded as the creator.
+        createdByAgentId: "voice-agent",
       },
     );
     await rm(baseDir, { recursive: true, force: true });
@@ -3853,6 +4098,8 @@ describe("create_agent MCP tool", () => {
           [PARENT_AGENT_ID_LABEL]: "parent-agent",
         },
         workspaceId: "wks_parent",
+        // Vorteo (#659): the authenticated caller, recorded as the creator.
+        createdByAgentId: "parent-agent",
       },
     );
   });

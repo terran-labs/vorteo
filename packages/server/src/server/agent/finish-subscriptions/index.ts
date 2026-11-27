@@ -56,6 +56,8 @@ interface Dependencies extends FinishObservation {
   retryDelayMs?: number;
   /** Resolves when a restart hold ends; a held delivery waits for it instead of retrying. */
   waitForRestartHoldRelease?(signal: AbortSignal): Promise<void>;
+  /** A watch on this child started, ended or captured its outcome (#659 approval routing). */
+  onWatchesChanged?(childAgentId: string): void;
 }
 export interface FinishRegistration {
   /** The prompt was accepted. Replaces preceding registrations for this pair. */
@@ -68,6 +70,11 @@ export interface FinishSubscriptions {
   /** Pending notification intent, including registration, recovery and unacknowledged delivery. */
   hasPendingForCaller(agentId: string): boolean;
   hasPendingForChild(agentId: string): boolean;
+  /**
+   * Whether this caller still holds a live watch on this child, so it will be told when the child
+   * needs permission. False while recovering: until then nobody is known to be watching.
+   */
+  isWatchedBy(callerAgentId: string, childAgentId: string): boolean;
   register(
     input: Omit<FinishSubscription, "id">,
     pendingDispatch?: boolean,
@@ -113,6 +120,7 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
     const group = watches.get(key(records[0]!)) ?? new Set<Watch>();
     group.add(watch);
     watches.set(key(records[0]!), group);
+    deps.onWatchesChanged?.(records[0]!.childAgentId);
     if (!pending) decide(true);
     watch.task = run(watch, group).catch((error) =>
       deps.logger.error({ err: error }, "Finish subscription failed"),
@@ -127,6 +135,7 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
     group.delete(watch);
     if (!group.size && watches.get(key(watch.records[0]!)) === group)
       watches.delete(key(watch.records[0]!));
+    deps.onWatchesChanged?.(watch.records[0]!.childAgentId);
   }
   async function remove(watch: Watch): Promise<void> {
     // Only IDs captured by this observer are eligible; newer registrations survive.
@@ -249,7 +258,10 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
     reason: FinishNotificationReason,
     result: FinishObservationResult,
   ): Promise<boolean> {
-    if (!isCheckpoint(reason)) watch.captured = true;
+    if (!isCheckpoint(reason) && !watch.captured) {
+      watch.captured = true;
+      deps.onWatchesChanged?.(record.childAgentId);
+    }
     // A latched caller would refuse the notification. The retry path keeps the captured outcome
     // and durable intent until the latch clears.
     if (await deps.callerIsHeld?.(record.callerAgentId)) {
@@ -399,6 +411,20 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
   }
 
   return {
+    isWatchedBy(callerAgentId, childAgentId) {
+      if (recovering) return false;
+      for (const group of watches.values()) {
+        for (const watch of group) {
+          if (watch.captured) continue;
+          const watched = watch.records.some(
+            (record) =>
+              record.callerAgentId === callerAgentId && record.childAgentId === childAgentId,
+          );
+          if (watched) return true;
+        }
+      }
+      return false;
+    },
     hasPendingForChild(agentId) {
       if (recovering) return true;
       for (const group of watches.values()) {
@@ -424,6 +450,8 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
         }
         for (const records of groups.values()) attach(records, false);
         recovering = false;
+        // Watches recovered while recovering read as unwatched; say they are watched now.
+        for (const records of groups.values()) deps.onWatchesChanged?.(records[0]!.childAgentId);
       }),
     register: (input, pendingDispatch = false) => {
       registering.set(input.callerAgentId, (registering.get(input.callerAgentId) ?? 0) + 1);

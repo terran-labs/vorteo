@@ -16,6 +16,37 @@ function hasProjectFactory(state: FactoryWorkspaceState): boolean {
   return state.state === "unavailable" && state.roles.some((role) => role.workspaceId !== null);
 }
 
+/**
+ * The Factory that owns an issue workspace: the one its agents' `factory.installation` label names
+ * (`<serverId>/<projectId>`), which may be on another host such as Dev, or else its own.
+ */
+export function factoryIssueOwner(
+  workspace: Pick<SidebarWorkspacePlacement, "serverId">,
+  entry: Pick<SidebarWorkspaceEntry, "factoryIssue" | "projectId"> | undefined,
+): { serverId: string; projectId: string } | null {
+  const issue = entry?.factoryIssue;
+  if (!issue) return null;
+  const [serverId, projectId, ...rest] = issue.installation?.split("/") ?? [];
+  if (serverId && projectId && rest.length === 0) return { serverId, projectId };
+  return entry.projectId ? { serverId: workspace.serverId, projectId: entry.projectId } : null;
+}
+
+/** An issue worker lists under the Factory that owns its issue, while that Factory runs. */
+function isActiveIssueMember(
+  workspace: SidebarWorkspacePlacement,
+  entry: SidebarWorkspaceEntry | undefined,
+  activeStates: readonly FactoryWorkspaceState[],
+): boolean {
+  const owner = factoryIssueOwner(workspace, entry);
+  return (
+    owner !== null &&
+    activeStates.some(
+      (candidate) =>
+        candidate.serverId === owner.serverId && candidate.projectId === owner.projectId,
+    )
+  );
+}
+
 export function splitStandingWorkspaces(
   workspaces: readonly SidebarWorkspacePlacement[],
   entries: ReadonlyMap<string, SidebarWorkspaceEntry>,
@@ -64,7 +95,16 @@ export function splitFactoryWorkspaces(
     const standingMember = projectHasFactory && entry?.standing;
     const systemMechanic =
       !state && projectHasFactory && entry?.systemMembership?.role === "optimization-runner";
-    if (roleMember || nativeMember || standingMember || systemMechanic) factory.push(workspace);
+    const issueMember = isActiveIssueMember(workspace, entry, activeStates);
+    // Once a Factory reports its roles, its state owns role identity: a membership no role
+    // claims, such as one kept from an older Factory, no longer makes a crew chip (#683).
+    // Standing workspaces still fold in, as the owner's own choice.
+    const rolesKnown = activeStates.length > 0;
+    const claimed = activeStates.some((candidate) =>
+      candidate.roles.some((role) => role.workspaceId === workspace.workspaceId),
+    );
+    const native = rolesKnown ? claimed : roleMember || nativeMember;
+    if (native || standingMember || systemMechanic || issueMember) factory.push(workspace);
     else remaining.push(workspace);
   }
   const roles = PROJECT_FACTORY_ROLE_IDS;
