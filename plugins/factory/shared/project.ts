@@ -482,6 +482,11 @@ export const ProjectFactoryClaimSchema = z.object({
    * in a marked block. Absent from daemons without intake trust.
    */
   brief: z.string().optional(),
+  /**
+   * The issue's open pull request head that the owner-only file check read. Merge only this
+   * commit, pinned with `gh pr merge --match-head-commit`. Absent without an open pull request.
+   */
+  checkedHeadSha: z.string().optional(),
 });
 export type ProjectFactoryClaim = z.infer<typeof ProjectFactoryClaimSchema>;
 

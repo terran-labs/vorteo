@@ -1150,13 +1150,17 @@ export class ProjectFactoryService {
       }
       if (!claim.marker) return claim;
       // Trust lists and role assignment change only through the owner, never a Factory merge.
-      const touched = await ownerOnlyChanges(github, project.repository, claim.branch);
+      const { touched, checkedHeadSha } = await ownerOnlyChanges(
+        github,
+        project.repository,
+        request.issue,
+      );
       if (touched.length)
         throw new FactoryRefusal(
           `The pull request for issue #${request.issue} changes ${touched.join(" and ")}, which only the owner may change. Label the issue factory:blocked and ask the owner to review and merge it.`,
           FACTORY_OWNER_ONLY_FILE_CODE,
         );
-      return { ...claim, brief };
+      return { ...claim, brief, ...(checkedHeadSha ? { checkedHeadSha } : {}) };
     });
   }
 

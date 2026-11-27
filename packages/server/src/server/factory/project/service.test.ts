@@ -117,7 +117,10 @@ class FakeGitHub implements FactoryGitHub {
   /** Issues whose GraphQL read answers with an errors array. */
   readonly issueErrors = new Set<number>();
   /** Open pull requests by head branch, and their changed files. */
-  readonly pulls = new Map<string, { number: number; body: string; updated_at: string }[]>();
+  readonly pulls = new Map<
+    string,
+    { number: number; body: string; updated_at: string; sha?: string; repo?: string }[]
+  >();
   readonly pullFiles = new Map<number, string[]>();
   delegates: string | null = null;
   readonly commitDates = new Map<string, string>();
@@ -145,8 +148,16 @@ class FakeGitHub implements FactoryGitHub {
     const comments = /^\/issues\/(\d+)\/comments/.exec(resource);
     if (comments) return ok(this.comments.get(Number(comments[1])) ?? []);
     if (resource.startsWith("/pulls?")) {
-      const head = decodeURIComponent(/head=([^&]+)/.exec(resource)?.[1] ?? "");
-      return ok(this.pulls.get(head.replace(/^[^:]+:/, "")) ?? []);
+      const head = /head=([^&]+)/.exec(resource)?.[1];
+      if (head) return ok(this.pulls.get(decodeURIComponent(head).replace(/^[^:]+:/, "")) ?? []);
+      return ok([...this.pulls.keys()].flatMap((ref) => this.pullHeads(ref)));
+    }
+    const pull = /^\/pulls\/(\d+)$/.exec(resource);
+    if (pull) {
+      const found = [...this.pulls.keys()]
+        .flatMap((ref) => this.pullHeads(ref))
+        .find((item) => item.number === Number(pull[1]));
+      return found ? ok(found) : missing;
     }
     if (resource.startsWith("/git/commits/"))
       return ok({ committer: { date: this.commitDates.get(resource.slice(13)) ?? T0 } });
@@ -155,6 +166,14 @@ class FakeGitHub implements FactoryGitHub {
         ? missing
         : ok({ content: Buffer.from(this.factoryJson).toString("base64"), encoding: "base64" });
     return null;
+  }
+
+  /** Pull requests from `ref` as GitHub lists them, heads included; forks name their repo. */
+  private pullHeads(ref: string) {
+    return (this.pulls.get(ref) ?? []).map((item) => ({
+      number: item.number,
+      head: { ref, sha: item.sha ?? "p".repeat(40), repo: { full_name: item.repo ?? REPO } },
+    }));
   }
 
   /** Organization memberships, pull request files, the approvers file and git refs. */
@@ -3167,12 +3186,26 @@ describe("intake trust on a public repository", () => {
     expect((await claim(factory, 31)).outcome).toBe("held");
 
     // A Factory pull request that changes who is trusted never merges through Factory.
-    github.pulls.set("factory/issue-31", [{ number: 77, body: "", updated_at: T0 }]);
+    const head = "d".repeat(40);
+    github.pulls.set("factory/issue-31", [{ number: 77, body: "", updated_at: T0, sha: head }]);
+    github.pullFiles.set(77, ["src/app.ts"]);
+    // The claim names the exact commit it checked, which is the only one the Foreman merges.
+    expect(await claim(factory, 31)).toMatchObject({ outcome: "held", checkedHeadSha: head });
     github.pullFiles.set(77, ["src/app.ts", ".github/delivery-approvers.json"]);
     await expect(claim(factory, 31)).rejects.toMatchObject({
       code: "factory_owner_only_file",
       message: expect.stringContaining(".github/delivery-approvers.json"),
     });
+    // So does an older-style branch the queue still counts as the issue's, but not a fork.
+    github.pulls.delete("factory/issue-31");
+    github.pulls.set("fork/factory-issue-31", [
+      { number: 79, body: "", updated_at: T0, repo: "stranger/app" },
+    ]);
+    github.pullFiles.set(79, [".github/factory.json"]);
+    expect((await claim(factory, 31)).outcome).toBe("held");
+    github.pulls.set("feat/factory-issue-31", [{ number: 78, body: "", updated_at: T0 }]);
+    github.pullFiles.set(78, [".github/factory.json"]);
+    await expect(claim(factory, 31)).rejects.toMatchObject({ code: "factory_owner_only_file" });
   });
 
   test("the queue ignores fork pull requests and outside reviews, and says why an issue waits", async () => {

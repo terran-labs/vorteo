@@ -438,33 +438,76 @@ async function activityTexts(
  */
 export const OWNER_ONLY_FILES = [".github/delivery-approvers.json", ".github/factory.json"];
 
-const pullNumbersSchema = z.array(z.object({ number: z.number() }));
+const pullHeadSchema = z.object({
+  number: z.number(),
+  head: z.object({
+    ref: z.string(),
+    sha: z.string(),
+    repo: z.object({ full_name: z.string() }).nullable(),
+  }),
+});
 const pullFilesSchema = z.array(
   z.object({ filename: z.string(), previous_filename: z.string().optional() }),
 );
 
-/** Owner-only files the open pull request from `branch` changes; fails closed on any read error. */
+export interface OwnerOnlyCheck {
+  /** Owner-only files the issue's open pull requests change. */
+  touched: string[];
+  /** The head commit of the issue's pull request that was checked; null without one. */
+  checkedHeadSha: string | null;
+}
+
+/**
+ * Checks every open same-repository pull request the queue treats as the issue's: the claim
+ * branch and the older `<prefix>/factory-issue-<n>` form. Each pull request's head is read
+ * again after its files, so the result names the exact commit checked; a push in between
+ * refuses. Fails closed on any read error.
+ */
 export async function ownerOnlyChanges(
   github: FactoryGitHub,
   repository: string,
-  branch: string,
-): Promise<string[]> {
-  const owner = repository.split("/")[0];
-  const pulls = pullNumbersSchema.parse(
-    expect(
-      await github.rest(
-        "GET",
-        `repos/${repository}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}`,
-      ),
-      [200],
-      `pull requests from ${branch}`,
-    ),
-  );
+  issue: number,
+): Promise<OwnerOnlyCheck> {
+  const branch = projectFactoryClaimBranch(issue);
+  const ours = (pull: z.infer<typeof pullHeadSchema>) =>
+    pull.head.repo?.full_name.toLowerCase() === repository.toLowerCase() &&
+    (pull.head.ref === branch || pull.head.ref.endsWith(`/factory-issue-${issue}`));
+  const pulls: z.infer<typeof pullHeadSchema>[] = [];
+  for (let page = 1; ; page++) {
+    const listed = z
+      .array(pullHeadSchema)
+      .parse(
+        expect(
+          await github.rest(
+            "GET",
+            `repos/${repository}/pulls?state=open&per_page=100&page=${page}`,
+          ),
+          [200],
+          "open pull requests",
+        ),
+      );
+    pulls.push(...listed.filter(ours));
+    if (listed.length < 100) break;
+  }
   const touched = new Set<string>();
-  for (const pull of pulls)
+  let checkedHeadSha: string | null = null;
+  for (const pull of pulls) {
     for (const name of await pullFileNames(github, repository, pull.number))
       if (OWNER_ONLY_FILES.includes(name)) touched.add(name);
-  return [...touched];
+    const after = pullHeadSchema.parse(
+      expect(
+        await github.rest("GET", `repos/${repository}/pulls/${pull.number}`),
+        [200],
+        `pull request #${pull.number}`,
+      ),
+    );
+    if (after.head.sha !== pull.head.sha)
+      throw new FactoryGitHubError(
+        `Pull request #${pull.number} moved while Factory checked it. Claim the issue again.`,
+      );
+    if (pull.head.ref === branch || checkedHeadSha === null) checkedHeadSha = pull.head.sha;
+  }
+  return { touched: [...touched], checkedHeadSha };
 }
 
 /** Every path a pull request adds, changes, removes or renames from. */
