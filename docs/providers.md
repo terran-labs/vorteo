@@ -174,6 +174,12 @@ This is the required contract for provider accounts on an installation.
 - Reconnect, sign-out and recovery run as one durable operation. A retry keeps the same account identity, and a stale result never restores a signed-out credential or undoes a later exclusion.
 - Existing unlinked accounts need identity verification before consolidation; matching labels do not prove two accounts are the same.
 
+## Automatic primary connection
+
+While no primary connection is chosen, each daemon starts system threads, such as the Optimizer and Factory, on Automatic's pick; [Vorteo customizations](vorteo-customizations.md) describes the selection order. Each connection's Environment access sheet has the switch "Automatic may use this account", stored as `policy.automaticPrimary: false` on its shared definitions. Only the owner changes it: agents queue settings changes only through the ordinary-settings action, which refuses provider definitions. Automatic also refuses any other provider entry whose Codex home or Claude config directory resolves, by real path, to the home of a switched-off account.
+
+The switch is a placement rule, not a security boundary. It decides where Automatic puts system threads. It does not stop an agent that can launch on any account directly, or one that can copy an account's credentials somewhere else.
+
 ## Shared provider keys for installations
 
 The installation coordinator keeps static provider secrets for each shared provider definition: API keys and tokens whose environment variable name ends in `_KEY`, `_TOKEN`, `_SECRET` or `_PASSWORD`. `CLAUDE_CODE_OAUTH_TOKEN` is excluded because Claude subscription sync owns it. Runtime locations such as `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and base URLs stay local. The canonical values live in the coordinator's private `provider-secrets/state.json`, mode 0600 in a 0700 directory, and are never logged.

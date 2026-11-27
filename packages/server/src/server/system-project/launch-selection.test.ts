@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import {
   MutableDaemonConfigSchema,
@@ -257,6 +260,41 @@ describe("resolveDefaultLaunch", () => {
     // Switching it back on makes the same account eligible.
     launch.set(automaticInstallation());
     expect(await resolveDefaultLaunch(launch.input)).toEqual({ provider: "codex" });
+  });
+
+  test("Automatic refuses another entry that launches with a switched-off account's home", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "automatic-homes-"));
+    try {
+      const codexHome = path.join(root, "codex-2");
+      const claudeHome = path.join(root, "claude-2");
+      mkdirSync(codexHome);
+      mkdirSync(claudeHome);
+      // The duplicates reach the same folders through a symlink, compared by real path.
+      symlinkSync(codexHome, path.join(root, "codex-link"));
+      symlinkSync(claudeHome, path.join(root, "claude-link"));
+      const providers = {
+        "codex-2": { extends: "codex", env: { CODEX_HOME: codexHome }, automaticPrimary: false },
+        "codex-copy": { extends: "codex", env: { CODEX_HOME: path.join(root, "codex-link") } },
+        "claude-2": {
+          extends: "claude",
+          env: { CLAUDE_CONFIG_DIR: claudeHome },
+          automaticPrimary: false,
+        },
+        "claude-copy": {
+          extends: "claude",
+          env: { CLAUDE_CONFIG_DIR: path.join(root, "claude-link") },
+        },
+        "codex-3": { extends: "codex", env: { CODEX_HOME: path.join(root, "codex-3") } },
+      };
+      const launch = launchInput(
+        automaticInstallation({ providers: providers as MutableDaemonConfig["providers"] }),
+        ["codex-copy", "claude-copy", "codex-3"],
+        [metered("codex-copy", 100), metered("claude-copy", 100), metered("codex-3", 10)],
+      );
+      expect(await resolveDefaultLaunch(launch.input)).toEqual({ provider: "codex-3" });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("an explicit choice is never overridden, and an unusable one waits instead of Automatic", async () => {

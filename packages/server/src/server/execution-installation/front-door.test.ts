@@ -4,7 +4,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import { createAgentActions } from "./agent-actions.js";
-import { ORDINARY_SETTINGS } from "./queued-agent-action-definitions.js";
+import {
+  ORDINARY_SETTINGS,
+  installationChangeDefinitions,
+} from "./queued-agent-action-definitions.js";
 import { OWNER_ONLY_OPERATIONS } from "./delegated-admission.js";
 import { OWNER_ROUTE_FRONT_DOORS } from "./front-door.js";
 
@@ -219,6 +222,65 @@ test("every owner route that changes something has an agent front door, an exclu
     "account-credentials",
     "health-dismissal",
   ]);
+});
+
+// #657: whether Automatic may run system threads on an account is the owner's placement rule.
+// Agents queue settings only through the ordinary-settings action, which refuses provider
+// definitions outright, so neither an agent nor the grant can switch an account back on.
+test("agents cannot queue a change to an account's Automatic switch", () => {
+  const settings = installationChangeDefinitions({} as never).find(
+    (definition) => definition.name === "installation-settings",
+  );
+  const definition = {
+    id: "account/5b8d3f2a-1c4e-4f6a-8b9d-2e7c0a1f3d22",
+    providerType: "codex",
+    accountId: "5b8d3f2a-1c4e-4f6a-8b9d-2e7c0a1f3d22",
+    bindings: { host: "codex-2" },
+    policy: { label: "Codex 3" },
+  };
+  const request = (policy: object) => ({
+    expectedRevision: 3,
+    settings: { providerDefinitions: [{ ...definition, policy }] },
+  });
+  expect(settings?.schema.safeParse(request({ label: "Codex 3" })).success).toBe(false);
+  expect(settings?.schema.safeParse(request({ automaticPrimary: true })).success).toBe(false);
+  expect(
+    settings?.schema.safeParse({ expectedRevision: 3, settings: { autoArchiveAfterMerge: true } })
+      .success,
+  ).toBe(true);
+});
+
+// #657, the disputed finding: even a request that pairs an allowed setting with provider
+// definitions turning an account's switch back on, approved as is, never reaches the writer.
+test("an approved settings request cannot carry an account's Automatic switch", async () => {
+  const written: unknown[] = [];
+  const settings = installationChangeDefinitions({
+    settings: {
+      snapshot: () => ({ revision: 3, settings: {} }),
+      update: async (update: unknown) => {
+        written.push(update);
+        return { revision: 4, settings: {} };
+      },
+    },
+  } as never).find((definition) => definition.name === "installation-settings")!;
+  const request = {
+    expectedRevision: 3,
+    settings: {
+      autoArchiveAfterMerge: true,
+      providerDefinitions: [
+        {
+          id: "account/5b8d3f2a-1c4e-4f6a-8b9d-2e7c0a1f3d22",
+          providerType: "codex",
+          accountId: "5b8d3f2a-1c4e-4f6a-8b9d-2e7c0a1f3d22",
+          bindings: { host: "codex-2" },
+          policy: { label: "Codex 3", automaticPrimary: true },
+        },
+      ],
+    },
+  };
+  // The request schema is strict, so applying it is refused and nothing is written.
+  await expect(settings.apply(request as never)).rejects.toThrow();
+  expect(written).toEqual([]);
 });
 
 test("an immediate agent action needs the full grant and leaves a receipt either way", async () => {

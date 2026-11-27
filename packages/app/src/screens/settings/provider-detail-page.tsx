@@ -1,6 +1,5 @@
 import { useRetainedUsage } from "@/components/settings/use-retained-usage";
 import { useToast } from "@/contexts/toast-context";
-import { useTranslation } from "react-i18next";
 import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 /**
  * One provider's details, expanded in place under its row in Accounts &
@@ -45,6 +44,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Switch } from "@/components/ui/switch";
+import { AutomaticEligibilityRow } from "./automatic-primary";
 import {
   canMakePrimary as offersMakePrimary,
   confirmDisablePrimary,
@@ -1172,65 +1172,6 @@ function EnvironmentAccessSheet({
         </View>
       </SettingsAdvancedGroup>
     </AdaptiveModalSheet>
-  );
-}
-
-/**
- * The owner's switch for whether Automatic may run system threads on this connection. Off is
- * stored on every definition of the connection; on removes the key, since absent means it may.
- */
-function AutomaticEligibilityRow({
-  account,
-  snapshot,
-  busy,
-  save,
-}: {
-  account: ProviderAccount;
-  snapshot: InstallationSettingsSnapshot & { settings: InstallationSettings };
-  busy: boolean;
-  save(update: InstallationSettingsUpdate): void;
-}) {
-  const { t } = useTranslation();
-  const { automatic } = usePrimaryConnection();
-  const eligible = account.definitions.every((entry) => entry.policy.automaticPrimary !== false);
-  const toggle = useCallback(
-    (value: boolean) => {
-      const ids = new Set(account.definitions.map((entry) => entry.id));
-      save({
-        expectedRevision: snapshot.revision,
-        settings: {
-          providerDefinitions: snapshot.settings.providerDefinitions?.map((entry) => {
-            if (!ids.has(entry.id)) return entry;
-            const { automaticPrimary: _previous, ...policy } = entry.policy;
-            return { ...entry, policy: value ? policy : { ...policy, automaticPrimary: false } };
-          }),
-        },
-      });
-    },
-    [account.definitions, snapshot, save],
-  );
-  if (!automatic.supported) return null;
-  return (
-    <View style={settingsStyles.card}>
-      <View
-        style={[settingsStyles.row, styles.connection]}
-        testID={`provider-automatic-eligible-${account.id}`}
-      >
-        <View style={styles.connectionHeading}>
-          <View style={settingsStyles.rowContent}>
-            <Text style={settingsStyles.rowTitle}>{t("automaticPrimary.eligible")}</Text>
-          </View>
-          <View style={styles.controls}>
-            <Switch
-              value={eligible}
-              onValueChange={toggle}
-              disabled={busy}
-              accessibilityLabel={t("automaticPrimary.eligible")}
-            />
-          </View>
-        </View>
-      </View>
-    </View>
   );
 }
 

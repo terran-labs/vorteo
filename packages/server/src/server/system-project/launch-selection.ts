@@ -4,9 +4,15 @@ import type {
   MutableDaemonConfig,
   ProviderUsage,
 } from "@getpaseo/protocol/messages";
+import { realpath } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { ProviderOverrideSchema } from "@getpaseo/protocol/provider-config";
 import { resolveProviderType, sharedProfileId } from "@getpaseo/protocol/provider-preferences";
 
 import type { ProviderSnapshotEntry } from "../agent/agent-sdk-types.js";
+import { launchCodexHome } from "../agent/create-agent/create.js";
+import { claudeConfigDir } from "../agent/providers/claude/project-dir.js";
 import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager.js";
 
 /** A provider and, when one applies, the profile a daemon-created agent launches with. */
@@ -187,25 +193,113 @@ function remainingQuota(reading: ProviderUsage | undefined): number | null {
   return remaining.length > 0 ? Math.min(...remaining) : null;
 }
 
+/** The nearest value of `key` in a provider's env along its `extends` chain. */
+function inheritedEnv(
+  settings: Pick<MutableDaemonConfig, "providers">,
+  providerId: string,
+  key: string,
+): string | undefined {
+  const visited = new Set<string>();
+  for (let current: string | undefined = providerId; current && !visited.has(current); ) {
+    visited.add(current);
+    const parsed = ProviderOverrideSchema.safeParse(settings.providers?.[current]);
+    if (!parsed.success) break;
+    const value = parsed.data.env?.[key];
+    if (value !== undefined) return value;
+    current = parsed.data.extends;
+  }
+  return undefined;
+}
+
+/**
+ * The credential home a provider launches with, as a real path: Codex's CODEX_HOME, resolved as
+ * a launch resolves it, or Claude's config directory, which the provider env sets the same way.
+ * Null for other provider types, which have no home to compare.
+ */
+function launchHomePath(
+  provider: string,
+  settings: MutableDaemonConfig,
+  env: NodeJS.ProcessEnv,
+): string | null {
+  const type = safeProviderType(provider, settings);
+  if (type === "codex")
+    return (
+      launchCodexHome("codex", settings, provider, env) || join(env.HOME || homedir(), ".codex")
+    );
+  if (type === "claude")
+    return inheritedEnv(settings, provider, "CLAUDE_CONFIG_DIR") || claudeConfigDir(env);
+  return null;
+}
+
+/** Real paths, resolved without blocking the daemon; a missing folder keeps its absolute path. */
+export type LaunchHomes = ReadonlyMap<string, string | null>;
+
+/**
+ * The real credential home of every provider that is switched off for Automatic, and of every
+ * ready provider, but only when some provider is switched off: otherwise nothing is compared.
+ */
+async function resolveLaunchHomes(
+  ready: readonly Pick<ProviderSnapshotEntry, "provider">[],
+  settings: MutableDaemonConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<LaunchHomes> {
+  const switchedOff = Object.entries(settings.providers ?? {})
+    .filter(([, provider]) => provider.automaticPrimary === false)
+    .map(([provider]) => provider);
+  if (switchedOff.length === 0) return new Map();
+  const providers = [...new Set([...switchedOff, ...ready.map((entry) => entry.provider)])];
+  const homes = await Promise.all(
+    providers.map(async (provider): Promise<[string, string | null]> => {
+      const home = launchHomePath(provider, settings, env);
+      if (home === null) return [provider, null];
+      try {
+        return [provider, await realpath(home)];
+      } catch {
+        return [provider, resolve(home)];
+      }
+    }),
+  );
+  return new Map(homes);
+}
+
 /**
  * The accounts Automatic may pick, best first. Candidates are ready, on (an account excluded
  * from this environment is projected as off), not switched off for Automatic, and confirmed by
- * their usage reading: a working sign in, or no reading at all. A reading that is unconfirmed,
- * failing or signed out, or a window with nothing left, never qualifies. Metered accounts come
- * first, most remaining quota first; then accounts without windows. Ties go to the
- * installation's default provider, then to provider order.
+ * their usage reading: a working sign in, or no reading at all. A provider that launches with
+ * the credential home of an account switched off is refused too, so a second entry for the same
+ * account cannot bring it back. A reading that is unconfirmed, failing or signed out, or a window
+ * with nothing left, never qualifies. Metered accounts come first, most remaining quota first;
+ * then accounts without windows. Ties go to the installation's default provider, then to
+ * provider order.
+ *
+ * "No reading" means the daemon has no usage fetcher for the provider: every fetcher adds an
+ * entry to each usage list, a failed read included. Neither the provider definition nor the
+ * snapshot says whether a provider is metered, so a list cached before an account was added can
+ * briefly treat it as unmetered.
+ *
+ * TODO(#657): apply accountQuotaPolicy floors here once something enforces them; a pick below
+ * its floor should stop being a candidate, like an exhausted window.
  */
 export function rankAutomaticCandidates(
   ready: readonly Pick<ProviderSnapshotEntry, "provider">[],
   usage: readonly ProviderUsage[],
   settings: MutableDaemonConfig,
+  homes: LaunchHomes,
 ): string[] {
   const groups = classifyProviders(ready, usage);
   const confirmed = new Set([...groups.signedIn, ...groups.unmetered]);
   const preferred = settings.sharedProviderPreferences?.defaultProvider;
+  const switchedOff = Object.entries(settings.providers ?? {}).filter(
+    ([, provider]) => provider.automaticPrimary === false,
+  );
+  const blockedHomes = new Set(switchedOff.flatMap(([provider]) => homes.get(provider) ?? []));
+  const eligible = (provider: string) => {
+    if (settings.providers?.[provider]?.automaticPrimary === false) return false;
+    const home = blockedHomes.size > 0 ? homes.get(provider) : null;
+    return home === null || home === undefined || !blockedHomes.has(home);
+  };
   const candidates = ready.flatMap(({ provider }, order) => {
-    if (!confirmed.has(provider) || settings.providers?.[provider]?.automaticPrimary === false)
-      return [];
+    if (!confirmed.has(provider) || !eligible(provider)) return [];
     const remaining = remainingQuota(usage.find((item) => item.providerId === provider));
     if (remaining !== null && remaining <= 0) return [];
     return [{ provider, remaining, order }];
@@ -243,8 +337,9 @@ export async function previewAutomaticPrimary(input: {
   if (!automaticPrimarySupported(input.settings)) return undefined;
   const entries = await input.providers.listProviders({ wait: false });
   const ready = entries.filter((entry) => entry.enabled && entry.status === "ready");
+  const homes = await resolveLaunchHomes(ready, input.settings);
   const pick = chooseAutomatic(
-    rankAutomaticCandidates(ready, input.usage, input.settings),
+    rankAutomaticCandidates(ready, input.usage, input.settings, homes),
     automaticPicks.get(input.providers),
   );
   if (pick === null) return null;
@@ -275,11 +370,12 @@ async function readUsableProviders(
     forceRefresh: options.refreshUsage?.(ready.map((entry) => entry.provider).join(",")) ?? false,
   });
   const settings = input.getSettings();
+  const homes = await resolveLaunchHomes(ready, settings);
   return {
     confirmed: usableProviders(ready, usage.providers, settings),
     possible: usableProviders(ready, usage.providers, settings, { includeUnconfirmed: true }),
     automatic: chooseAutomatic(
-      rankAutomaticCandidates(ready, usage.providers, settings),
+      rankAutomaticCandidates(ready, usage.providers, settings, homes),
       automaticPicks.get(input.providers),
     ),
   };
