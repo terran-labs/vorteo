@@ -9,6 +9,7 @@ import {
   QueueIdSchema as IdSchema,
   QueueSnapshotSchema as SnapshotSchema,
   QueueOperationSchema as OperationSchema,
+  QUEUE_EDIT_HOLD_EXPIRED_CODE,
   type QueueEditHoldOperation,
   type QueueOperation,
   type QueueSnapshot,
@@ -60,6 +61,7 @@ export class QueueStoreError extends Error {
       | "revision_conflict"
       | "missing"
       | "delivery_conflict"
+      | typeof QUEUE_EDIT_HOLD_EXPIRED_CODE
       | "full",
     message: string,
   ) {
@@ -114,10 +116,15 @@ export function activeEditHold(item: QueueItem, now: number): QueueItem["editHol
   return expiresAt > now && expiresAt <= now + EDIT_HOLD_MS ? hold : undefined;
 }
 
-/** When this holder first held the item; an unreadable or future time counts as now. */
+/**
+ * When this holder first held the item. The start survives a renewal gap or reload shorter than
+ * one hold period; a hold lapsed longer than that left the message free to deliver, so holding it
+ * again starts fresh. An unreadable or future time counts as now.
+ */
 function editHeldSince(item: QueueItem, holderId: string, now: number): number {
   const hold = item.editHold;
   if (hold?.holderId !== holderId || !hold.heldSince) return now;
+  if (!(Date.parse(hold.expiresAt) > now - EDIT_HOLD_MS)) return now;
   const since = Date.parse(hold.heldSince);
   return Number.isFinite(since) && since <= now ? since : now;
 }
@@ -652,10 +659,9 @@ export class MessageQueueStore {
         const held = activeEditHold(item, now);
         if (held && held.holderId !== operation.holderId)
           throw new QueueStoreError("delivery_conflict", EDIT_HELD_MESSAGE);
-        // The start survives this holder's lapsed holds, so renewing after gaps cannot reset it.
         const heldSince = editHeldSince(item, operation.holderId, now);
         if (now - heldSince >= EDIT_HOLD_MAX_MS)
-          throw new QueueStoreError("delivery_conflict", EDIT_HOLD_EXPIRED_MESSAGE);
+          throw new QueueStoreError(QUEUE_EDIT_HOLD_EXPIRED_CODE, EDIT_HOLD_EXPIRED_MESSAGE);
         item.editHold = {
           holderId: operation.holderId,
           heldSince: new Date(heldSince).toISOString(),

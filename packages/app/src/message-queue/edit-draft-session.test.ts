@@ -1,7 +1,11 @@
 import { expect, it } from "vitest";
-import type { QueueEditHoldOperation, QueueItem } from "@getpaseo/protocol/message-queue";
+import {
+  QUEUE_EDIT_HOLD_EXPIRED_CODE,
+  type QueueEditHoldOperation,
+  type QueueItem,
+} from "@getpaseo/protocol/message-queue";
 import type { QueueEditDraft, QueueEditDraftStorage } from "./edit-draft";
-import { QueueEditDraftSession } from "./edit-draft-session";
+import { QueueEditDraftSession, QueueEditHoldRefusedError } from "./edit-draft-session";
 
 const item: QueueItem = {
   id: "message",
@@ -93,11 +97,15 @@ it("refuses an empty edited message before creating a submission", async () => {
 it("holds the message on a capable daemon and leaves its release to the submitted edit", async () => {
   const f = fixture();
   const sent: QueueEditHoldOperation[] = [];
+  let refusal: Error | null = null;
   const session = new QueueEditDraftSession({
     ...f.port,
     editHold: {
       supported: () => true,
-      send: async (_host, _agent, operation) => void sent.push(operation),
+      send: async (_host, _agent, operation) => {
+        sent.push(operation);
+        if (refusal) throw refusal;
+      },
     },
   });
   const draft = await session.open("host", "agent", item);
@@ -128,4 +136,21 @@ it("holds the message on a capable daemon and leaves its release to the submitte
   await Promise.resolve();
   expect(renewals).toBeNull();
   expect(sent.map((operation) => operation.kind)).toEqual(["hold_edit"]);
+  // Refused at the daemon's maximum, the editor stops renewing so the message sends as written.
+  sent.length = 0;
+  refusal = new QueueEditHoldRefusedError(QUEUE_EDIT_HOLD_EXPIRED_CODE, "held too long");
+  const reported: unknown[] = [];
+  const scheduled: { renew?: () => void } = {};
+  session.keepHeld(
+    () => other,
+    (error) => reported.push(error),
+    (renew) => {
+      scheduled.renew = renew;
+      return () => undefined;
+    },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  scheduled.renew?.();
+  expect(sent).toHaveLength(1);
+  expect(reported).toEqual([refusal]);
 });

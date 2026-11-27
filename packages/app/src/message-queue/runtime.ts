@@ -5,6 +5,7 @@ import { queueAttachmentStore } from "./attachment-store";
 import { createOutboxStorage } from "./outbox-storage";
 import { notifyOutboxChange, watchOutboxChanges } from "./outbox-notifications";
 import { QueueOutbox } from "./outbox";
+import { QueueEditHoldRefusedError } from "./edit-draft-session";
 import { useSessionStore } from "@/stores/session-store";
 import { legacyImportOperationId } from "./legacy";
 import { toErrorMessage } from "@/utils/error-messages";
@@ -21,8 +22,8 @@ const watched = new Map<string, Map<string, number>>();
 
 export async function readSharedQueue(serverId: string, agentId: string): Promise<QueueSnapshot> {
   const result = await requireQueueClient(serverId).readMessageQueue(agentId);
-  if (result.error || !result.snapshot)
-    throw new Error(result.error?.message ?? "Queue state is unavailable.");
+  if (result.error) throw new QueueEditHoldRefusedError(result.error.code, result.error.message);
+  if (!result.snapshot) throw new Error("Queue state is unavailable.");
   applyQueueSnapshot(serverId, result.snapshot);
   return (
     queryClient.getQueryData<QueueSnapshot>(messageQueueKey(serverId, agentId)) ?? result.snapshot

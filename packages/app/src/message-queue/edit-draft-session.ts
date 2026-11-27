@@ -1,10 +1,25 @@
-import type { QueueEditHoldOperation, QueueItem } from "@getpaseo/protocol/message-queue";
+import {
+  QUEUE_EDIT_HOLD_EXPIRED_CODE,
+  type QueueEditHoldOperation,
+  type QueueItem,
+} from "@getpaseo/protocol/message-queue";
 import {
   type QueueEditDraft,
   type QueueEditDraftStorage,
   draftHasContent,
   validateDraftAttachments,
 } from "./edit-draft";
+
+/** A daemon refusal of a hold operation, as opposed to a transport failure. */
+export class QueueEditHoldRefusedError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "QueueEditHoldRefusedError";
+  }
+}
 
 export interface QueueEditDraftPort {
   storage: QueueEditDraftStorage;
@@ -85,7 +100,9 @@ export class QueueEditDraftSession {
 
   /**
    * Keeps the hold while an editor shows the draft: acquires now, then renews every 30 seconds,
-   * reporting a refusal once. Stopping only stops renewing. It never releases: the draft
+   * reporting a refusal once. After the daemon refuses renewal at its maximum hold, renewing
+   * stops until the editor opens again, so the abandoned edit sends as written. Stopping only
+   * stops renewing. It never releases: the draft
    * outlives its editor and tabs showing it share the holder, so only a discard releases, and
    * an editor that closed is covered by the daemon's expiry.
    */
@@ -98,13 +115,20 @@ export class QueueEditDraftSession {
     },
   ): () => void {
     let reported = false;
+    let capped = false;
     const renew = () => {
+      if (capped) return;
       void this.renew(current()).then(
         () => {
           reported = false;
           return;
         },
         (error: unknown) => {
+          if (
+            error instanceof QueueEditHoldRefusedError &&
+            error.code === QUEUE_EDIT_HOLD_EXPIRED_CODE
+          )
+            capped = true;
           if (!reported) report(error);
           reported = true;
         },

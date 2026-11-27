@@ -97,6 +97,12 @@ export const QueueChangeOperationSchema = z.discriminatedUnion("kind", [
 ]);
 // COMPAT(messageQueueEditHold): added 2026-11-27, remove gate after 2027-05-27. Send only to
 // daemons advertising features.messageQueueEditHold; older daemons reject these kinds.
+/**
+ * Queue mutation error code for a renewal refused because the holder has held the message for
+ * the daemon's maximum. COMPAT(messageQueueEditHold): added 2026-11-27 with the feature.
+ */
+export const QUEUE_EDIT_HOLD_EXPIRED_CODE = "edit_hold_expired";
+
 export const QueueEditHoldOperationSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("hold_edit"),

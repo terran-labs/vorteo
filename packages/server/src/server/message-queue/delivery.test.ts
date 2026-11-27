@@ -7,12 +7,14 @@ import pino from "pino";
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js";
 import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager.js";
+import { QUEUE_EDIT_HOLD_EXPIRED_CODE } from "@getpaseo/protocol/message-queue";
 import { SessionHostFrameTooLargeError } from "../session-host/client.js";
 import { createAgentQueueDelivery } from "./agent-delivery.js";
 import type { QueueAttachmentStore } from "./attachments.js";
 import {
   EDIT_HELD_MESSAGE,
   EDIT_HOLD_EXPIRED_MESSAGE,
+  EDIT_HOLD_MAX_MS,
   EDIT_HOLD_MS,
   MessageQueueStore,
   UNCONFIRMED_DELIVERY_REASON,
@@ -238,6 +240,7 @@ it.each([
   { ending: "the hold expires", delivered: ["held", "next"] },
   { ending: "the holder saves its edit", delivered: ["held, edited", "next"] },
   { ending: "renewals reach the 30 minute cap", delivered: ["held", "next"] },
+  { ending: "a long-lapsed hold is held again and expires", delivered: ["held", "next"] },
 ])(
   "holds a message open for editing, and the messages behind it, until $ending",
   async ({ ending, delivered }) => {
@@ -330,10 +333,22 @@ it.each([
           }
           now += 60_000;
           await expect(renew("renew-30")).rejects.toMatchObject({
-            code: "delivery_conflict",
+            code: QUEUE_EDIT_HOLD_EXPIRED_CODE,
             message: EDIT_HOLD_EXPIRED_MESSAGE,
           });
           expect(received).toEqual([]);
+        }
+        if (ending === "a long-lapsed hold is held again and expires") {
+          // Lapsed past a hold period the message was free to send, so the cap starts again.
+          now += EDIT_HOLD_MAX_MS;
+          const snapshot = await restarted.mutate("agent", {
+            kind: "hold_edit",
+            operationId: "hold-again",
+            messageId: "held",
+            expectedRevision: 0,
+            holderId: "editor",
+          });
+          expect(snapshot.items[0]?.editHold?.heldSince).toBe(new Date(now).toISOString());
         }
         now += EDIT_HOLD_MS;
         await vi.advanceTimersByTimeAsync(EDIT_HOLD_MS + 10);
