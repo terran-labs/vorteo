@@ -213,3 +213,22 @@ export function collectThreadApprovals(hosts: readonly QuestionHostInput[]): Thr
   }
   return approvals;
 }
+
+/**
+ * Above this many lines the card offers only Open thread: a fling can scroll a very long command
+ * to its end without anyone reading it.
+ */
+export const MAX_ACCEPT_LINES = 200;
+
+/**
+ * Shows characters that could make the text read differently from what runs: control characters
+ * (a carriage return can overprint a line) and format characters (bidirectional overrides,
+ * zero-width spaces), as visible escapes such as ⟨U+202E⟩. Newlines and tabs stay.
+ */
+export function visibleText(text: string): string {
+  return text.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, (char) =>
+    char === "\n" || char === "\t"
+      ? char
+      : `⟨U+${char.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}⟩`,
+  );
+}

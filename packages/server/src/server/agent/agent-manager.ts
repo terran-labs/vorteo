@@ -630,6 +630,20 @@ export interface CreateAgentOptions {
 /** How long an approval waits on a supervising thread before the owner sees it too (#659). */
 export const PERMISSION_OWNER_ESCALATION_MS = 3 * 60_000;
 
+/** The context this daemon records on a permission request (#659), carried across refreshes. */
+const PERMISSION_CONTEXT_KEYS = ["askedAt", "askedSeq", "askedEpoch", "ownerEscalated"] as const;
+
+function pickPermissionContext(
+  recorded: Record<string, unknown>,
+  current: AgentPermissionRequest["metadata"],
+): NonNullable<AgentPermissionRequest["metadata"]> {
+  const context: Record<string, unknown> = { ...current };
+  for (const key of PERMISSION_CONTEXT_KEYS) {
+    if (recorded[key] !== undefined) context[key] = recorded[key];
+  }
+  return context as NonNullable<AgentPermissionRequest["metadata"]>;
+}
+
 export interface AgentManagerOptions {
   /** Overrides PERMISSION_OWNER_ESCALATION_MS; for tests. */
   permissionOwnerEscalationMs?: number;
@@ -1146,6 +1160,7 @@ export interface RetiredInternalAgent {
 export class AgentManager {
   private creatorWatchProbe?: (creatorAgentId: string, childAgentId: string) => boolean;
   private readonly permissionOwnerEscalationMs: number;
+  private readonly escalationTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly pendingWorkerCreations = new Map<string, number>();
   private readonly pendingReserveWrites = new Map<string, number>();
   private readonly failedReserveWrites = new Set<string>();
@@ -8598,8 +8613,7 @@ export class AgentManager {
     }
 
     try {
-      const pending = agent.session.getPendingPermissions();
-      agent.pendingPermissions = new Map(pending.map((request) => [request.id, request]));
+      this.adoptPendingPermissions(agent, agent.session.getPendingPermissions());
     } catch {
       agent.pendingPermissions.clear();
     }
@@ -9322,7 +9336,7 @@ export class AgentManager {
     const hadPendingPermissions = agent.pendingPermissions.size > 0;
     const request = this.recordPermissionContext(agent, event.request);
     agent.pendingPermissions.set(request.id, request);
-    this.escalateUnansweredPermission(agent, request);
+    this.armPermissionEscalation(agent, request);
     this.refreshSessionPersistence(agent);
     if (!hadPendingPermissions && !agent.internal) {
       this.broadcastAgentAttention(agent, "permission");
@@ -9640,7 +9654,13 @@ export class AgentManager {
   private recordPermissionContext(
     agent: ManagedAgent,
     request: AgentPermissionRequest,
+    known?: AgentPermissionRequest,
   ): AgentPermissionRequest {
+    const recorded = { ...known?.metadata, ...request.metadata };
+    if (typeof recorded.askedAt === "string") {
+      // Already recorded, by this daemon or by the provider: keep it, never restart the clock.
+      return { ...request, metadata: pickPermissionContext(recorded, request.metadata) };
+    }
     const askedSeq = this.timelineStore.has(agent.id)
       ? this.timelineStore.getLatestSeq(agent.id)
       : null;
@@ -9657,19 +9677,61 @@ export class AgentManager {
   }
 
   /**
-   * An approval still unanswered after PERMISSION_OWNER_ESCALATION_MS reaches the owner, whoever
-   * created the thread (#659): a supervising thread that was told may still never answer.
+   * Replaces the pending approvals with the session's own list, keeping what this daemon recorded
+   * for each one by id (#659): when it was asked and where. Every approval, however it arrived,
+   * gets its escalation timer.
    */
-  private escalateUnansweredPermission(agent: ManagedAgent, request: AgentPermissionRequest) {
-    const timer = setTimeout(() => {
-      if (agent.pendingPermissions.get(request.id) !== request) return;
-      agent.pendingPermissions.set(request.id, {
+  private adoptPendingPermissions(
+    agent: ManagedAgent,
+    requests: readonly AgentPermissionRequest[],
+  ): void {
+    const previous = agent.pendingPermissions;
+    agent.pendingPermissions = new Map(
+      requests.map((request) => [
+        request.id,
+        this.recordPermissionContext(agent, request, previous.get(request.id)),
+      ]),
+    );
+    for (const request of agent.pendingPermissions.values()) {
+      this.armPermissionEscalation(agent, request);
+    }
+  }
+
+  /**
+   * An approval still unanswered PERMISSION_OWNER_ESCALATION_MS after its recorded askedAt reaches
+   * the owner, whoever created the thread (#659): a supervising thread that was told may still
+   * never answer. The flag is derived from askedAt on every emit; this timer only re-sends the
+   * thread's state when the bound passes. One timer per approval id.
+   */
+  private armPermissionEscalation(agent: ManagedAgent, request: AgentPermissionRequest): void {
+    const key = `${agent.id}:${request.id}`;
+    if (this.escalationTimers.has(key)) return;
+    const askedAt = Date.parse(String(request.metadata?.askedAt ?? ""));
+    if (Number.isNaN(askedAt)) return;
+    const remaining = askedAt + this.permissionOwnerEscalationMs - Date.now();
+    const timer = setTimeout(
+      () => {
+        this.escalationTimers.delete(key);
+        if (agent.pendingPermissions.has(request.id)) this.emitState(agent);
+      },
+      Math.max(0, remaining),
+    );
+    timer.unref?.();
+    this.escalationTimers.set(key, timer);
+  }
+
+  /** Marks approvals pending past the bound, from their recorded askedAt (#659). */
+  private markEscalatedPermissions(agent: ManagedAgent): void {
+    const now = Date.now();
+    for (const [id, request] of agent.pendingPermissions) {
+      if (request.metadata?.ownerEscalated === true) continue;
+      const askedAt = Date.parse(String(request.metadata?.askedAt ?? ""));
+      if (Number.isNaN(askedAt) || now - askedAt < this.permissionOwnerEscalationMs) continue;
+      agent.pendingPermissions.set(id, {
         ...request,
         metadata: { ...request.metadata, ownerEscalated: true },
       });
-      this.emitState(agent, { persist: false });
-    }, this.permissionOwnerEscalationMs);
-    timer.unref?.();
+    }
   }
 
   /**
@@ -9696,6 +9758,7 @@ export class AgentManager {
 
   private emitState(agent: ManagedAgent, options?: { persist?: boolean }): void {
     if (agent.createdByAgentId) agent.permissionWatchedByCreator = this.isWatchedByCreator(agent);
+    this.markEscalatedPermissions(agent);
     // Keep attention as an edge-triggered unread signal, not a level signal.
     this.checkAndSetAttention(agent);
     if (options?.persist !== false) {

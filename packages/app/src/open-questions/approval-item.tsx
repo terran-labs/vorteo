@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { useSessionStore } from "@/stores/session-store";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { openConversationTarget } from "./conversation-target";
-import type { ThreadApproval } from "./global-model";
+import { MAX_ACCEPT_LINES, visibleText, type ThreadApproval } from "./global-model";
 
 /** The command a tool approval would run, in full, or its input when it is not a shell command. */
 export function approvalCommand(input: Record<string, unknown> | undefined): string {
@@ -42,7 +42,10 @@ export function ApprovalItem({
   const { request } = approval;
   const client = useSessionStore((state) => state.sessions[approval.serverId]?.client ?? null);
   const command = useMemo(() => approvalCommand(request.input), [request.input]);
-  const lines = useMemo(() => command.split("\n"), [command]);
+  const shown = useMemo(() => visibleText(command), [command]);
+  const lines = useMemo(() => shown.split("\n"), [shown]);
+  const tooLong = lines.length > MAX_ACCEPT_LINES;
+  const escaped = shown !== command;
   const firstLine = lines[0] ?? "";
   const [expanded, setExpanded] = useState(false);
   const toggle = useCallback(() => setExpanded((value) => !value), []);
@@ -106,30 +109,14 @@ export function ApprovalItem({
       navigateToAgent,
     );
   }, [approval.agentId, approval.serverId, onBeforeNavigate, request.id, request.metadata]);
-  // What Vorteo's own scan found that deletes, when it found something (#659, part B).
-  const deleteFinding = request.metadata?.deleteFinding;
-  const canAccept = answerableHere && seenFull;
+  const canAccept = answerableHere && seenFull && !tooLong;
   const lineCount = lines.length === 1 ? "1 line" : `${lines.length} lines`;
   return (
     <View
       style={[styles.item, taskCardStyles.proseInset, !first && taskCardStyles.separator]}
       testID={`global-approval-${request.id}`}
     >
-      <Text style={styles.title}>{`${approval.threadTitle} is stopped until you answer.`}</Text>
-      {approval.modeLabel ? (
-        <Text style={styles.muted}>{`This thread is in ${approval.modeLabel} mode.`}</Text>
-      ) : null}
-      {approval.cwd ? (
-        <Text style={styles.muted} numberOfLines={1}>
-          {`Working directory: ${approval.cwd}`}
-        </Text>
-      ) : null}
-      {request.description ? <Text style={styles.reason}>{request.description}</Text> : null}
-      {typeof deleteFinding === "string" ? (
-        <Text style={styles.deletes} testID={`global-approval-deletes-${request.id}`}>
-          {`Deletes: ${deleteFinding}`}
-        </Text>
-      ) : null}
+      <ApprovalContext approval={approval} />
       {expanded ? (
         <ScrollView
           style={styles.commandScroll}
@@ -141,7 +128,7 @@ export function ApprovalItem({
           testID={`global-approval-command-${request.id}`}
         >
           <Text style={styles.command} selectable>
-            {command}
+            {shown}
           </Text>
         </ScrollView>
       ) : (
@@ -157,14 +144,12 @@ export function ApprovalItem({
       >
         {expanded ? `Hide full command (${lineCount})` : `Show full command (${lineCount})`}
       </Button>
-      {answerableHere ? null : (
-        <Text style={styles.muted}>
-          This kind of approval has choices only the thread shows. Open the thread to answer it.
-        </Text>
-      )}
-      {answerableHere && expanded && !seenFull ? (
-        <Text style={styles.muted}>Scroll to the end of the command to answer here.</Text>
-      ) : null}
+      <ApprovalNotices
+        escaped={escaped}
+        tooLong={tooLong}
+        answerableHere={answerableHere}
+        awaitingScroll={expanded && !seenFull}
+      />
       {isError ? (
         <Text style={styles.error} accessibilityRole="alert">
           The answer did not reach the thread. Try again, or open the thread.
@@ -216,6 +201,68 @@ export function ApprovalItem({
         ) : null}
       </View>
     </View>
+  );
+}
+
+/** Which thread is stopped, in what mode and where, and why it asks. */
+function ApprovalContext({ approval }: { approval: ThreadApproval }) {
+  // What Vorteo's own scan found that deletes, when it found something (#659, part B).
+  const deleteFinding = approval.request.metadata?.deleteFinding;
+  return (
+    <>
+      {/* The title is the agent's own: quoted and on one line, so it can't read as reassurance. */}
+      <Text style={styles.title} numberOfLines={1}>
+        {`Thread “${visibleText(approval.threadTitle)}” is stopped until you answer.`}
+      </Text>
+      {approval.modeLabel ? (
+        <Text style={styles.muted}>{`This thread is in ${approval.modeLabel} mode.`}</Text>
+      ) : null}
+      {approval.cwd ? (
+        <Text style={styles.muted} numberOfLines={1}>
+          {`Working directory: ${approval.cwd}`}
+        </Text>
+      ) : null}
+      {approval.request.description ? (
+        <Text style={styles.reason}>{approval.request.description}</Text>
+      ) : null}
+      {typeof deleteFinding === "string" ? (
+        <Text style={styles.deletes} testID={`global-approval-deletes-${approval.request.id}`}>
+          {`Deletes: ${deleteFinding}`}
+        </Text>
+      ) : null}
+    </>
+  );
+}
+
+/** Why Accept is not offered, or what to look at before using it. */
+function ApprovalNotices(props: {
+  escaped: boolean;
+  tooLong: boolean;
+  answerableHere: boolean;
+  awaitingScroll: boolean;
+}) {
+  const { escaped, tooLong, answerableHere, awaitingScroll } = props;
+  return (
+    <>
+      {escaped ? (
+        <Text style={styles.deletes}>
+          This command contains hidden or control characters, shown as ⟨U+…⟩.
+        </Text>
+      ) : null}
+      {answerableHere && tooLong ? (
+        <Text style={styles.muted}>
+          {`This command is longer than ${MAX_ACCEPT_LINES} lines. Open the thread to answer it.`}
+        </Text>
+      ) : null}
+      {answerableHere ? null : (
+        <Text style={styles.muted}>
+          This kind of approval has choices only the thread shows. Open the thread to answer it.
+        </Text>
+      )}
+      {answerableHere && awaitingScroll && !tooLong ? (
+        <Text style={styles.muted}>Scroll to the end of the command to answer here.</Text>
+      ) : null}
+    </>
   );
 }
 

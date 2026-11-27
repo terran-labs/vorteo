@@ -73,6 +73,7 @@ import type {
   AgentCreateSessionOptions,
   AgentFeature,
   AgentLaunchContext,
+  AgentPermissionRequest,
   AgentPromptInput,
   AgentProvider,
   AgentPersistenceHandle,
@@ -12382,6 +12383,74 @@ test("permission request notifies once without forcing unread attention state", 
   }
 
   expect(attentionReasons).toContain("permission");
+});
+
+// #659 second review: answering one approval refreshes the session's pending list. The other
+// approval must keep the time it was asked and still reach the owner after the bound.
+test("answering one approval keeps the other's escalation", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-escalation-"));
+  const pending = new Map<string, AgentPermissionRequest>();
+  class TwoPermissionSession extends TestAgentSession {
+    override async startTurn(): Promise<{ turnId: string }> {
+      const turnId = "turn-two";
+      setTimeout(() => {
+        this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
+        for (const id of ["perm-a", "perm-b"]) {
+          const request = { id, provider: this.provider, kind: "tool" as const, name: "Bash" };
+          pending.set(id, request);
+          this.pushEvent({
+            type: "permission_requested",
+            provider: this.provider,
+            request,
+            turnId,
+          });
+        }
+      }, 0);
+      return { turnId };
+    }
+    override getPendingPermissions() {
+      // The session's own objects, without anything the daemon recorded.
+      return [...pending.values()].map((request) => structuredClone(request));
+    }
+    override async respondToPermission(requestId: string): Promise<void> {
+      pending.delete(requestId);
+    }
+  }
+  const client = new (class extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new TwoPermissionSession(config);
+    }
+  })();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    logger,
+    permissionOwnerEscalationMs: 60,
+  });
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    const stream = manager.streamAgent(agent.id, "two at once");
+    void (async () => {
+      for await (const _event of stream) {
+      }
+    })();
+    await vi.waitFor(() => expect(manager.getAgent(agent.id)?.pendingPermissions.size).toBe(2));
+    const askedAt = manager.getAgent(agent.id)?.pendingPermissions.get("perm-b")?.metadata?.askedAt;
+    expect(askedAt).toEqual(expect.any(String));
+    await manager.respondToPermission(agent.id, "perm-a", { behavior: "allow" });
+    const remaining = manager.getAgent(agent.id)?.pendingPermissions;
+    expect([...(remaining?.keys() ?? [])]).toEqual(["perm-b"]);
+    expect(remaining?.get("perm-b")?.metadata?.askedAt).toBe(askedAt);
+    await vi.waitFor(() =>
+      expect(
+        manager.getAgent(agent.id)?.pendingPermissions.get("perm-b")?.metadata?.ownerEscalated,
+      ).toBe(true),
+    );
+  } finally {
+    await manager.flush();
+    rmSync(workdir, { recursive: true, force: true });
+  }
 });
 
 test("respondToPermission updates currentModeId after plan approval", async () => {

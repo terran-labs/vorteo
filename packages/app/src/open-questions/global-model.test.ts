@@ -3,6 +3,8 @@ import { fetchedWindowCovers, findItemAtOrBefore } from "@/agent-stream/jump-pos
 import type { AgentQuestion } from "@getpaseo/protocol/agent-questions";
 import { expect, test } from "vitest";
 import {
+  MAX_ACCEPT_LINES,
+  visibleText,
   collectThreadApprovals,
   collectThreadQuestions,
   globalOpenQuestionCount,
@@ -316,4 +318,19 @@ test("a jump never matches another epoch or lands across an unloaded gap", () =>
   expect(
     findItemAtOrBefore([...head, item("asked", "e1", 41), item("next", "e1", 45)], "e1", 42)?.id,
   ).toBe("asked");
+});
+
+// #659 second review: the card must not show a command differently from what runs.
+test.each([
+  [
+    "a bidirectional override",
+    "echo safe\u202E\u2066fr- mr\u2069",
+    "echo safe⟨U+202E⟩⟨U+2066⟩fr- mr⟨U+2069⟩",
+  ],
+  ["a zero-width space", "r\u200Bm -rf x", "r⟨U+200B⟩m -rf x"],
+  ["a carriage return", "ls\rrm -rf x", "ls⟨U+000D⟩rm -rf x"],
+  ["newlines and tabs", "ls\n\tpwd", "ls\n\tpwd"],
+])("%s shows as visible escapes", (_label, command, shown) => {
+  expect(visibleText(command)).toBe(shown);
+  expect(MAX_ACCEPT_LINES).toBe(200);
 });
