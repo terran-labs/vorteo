@@ -2,6 +2,7 @@ import {
   QUEUE_EDIT_HOLD_EXPIRED_CODE,
   type QueueEditHoldOperation,
   type QueueItem,
+  type QueueSnapshot,
 } from "@getpaseo/protocol/message-queue";
 import {
   type QueueEditDraft,
@@ -19,6 +20,16 @@ export class QueueEditHoldRefusedError extends Error {
     super(message);
     this.name = "QueueEditHoldRefusedError";
   }
+}
+
+/** The snapshot from a hold response, or its daemon refusal as a QueueEditHoldRefusedError. */
+export function editHoldSnapshot(result: {
+  snapshot: QueueSnapshot | null;
+  error: { code: string; message: string } | null;
+}): QueueSnapshot {
+  if (result.error) throw new QueueEditHoldRefusedError(result.error.code, result.error.message);
+  if (!result.snapshot) throw new Error("Queue state is unavailable.");
+  return result.snapshot;
 }
 
 export interface QueueEditDraftPort {

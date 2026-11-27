@@ -258,12 +258,20 @@ it.each([
           text: id,
           attachments: [],
         });
+      const { revision } = await store.read("agent");
       await store.mutate("agent", {
         kind: "hold_edit",
         operationId: "hold",
         messageId: "held",
         expectedRevision: 0,
         holderId: "editor",
+      });
+      // A hold leaves the queue revision alone, so another client's reorder still applies.
+      await store.mutate("agent", {
+        kind: "reorder",
+        operationId: "reorder",
+        messageIds: ["held", "next"],
+        expectedRevision: revision,
       });
       const received: string[] = [];
       const worker = new QueueDeliveryWorker(

@@ -97,6 +97,9 @@ export const EDIT_HOLD_MS = 2 * 60 * 1000;
 /** Shown when another editor holds the message, so its edit is never lost. */
 export const EDIT_HELD_MESSAGE = "This message is being edited in another window.";
 
+/** A backward daemon clock step this small leaves a fresh hold active. */
+const EDIT_HOLD_CLOCK_SLACK_MS = 10_000;
+
 /** Renewals stop this long after a holder first held the message, so an abandoned edit still sends. */
 export const EDIT_HOLD_MAX_MS = 30 * 60 * 1000;
 
@@ -113,7 +116,9 @@ export function activeEditHold(item: QueueItem, now: number): QueueItem["editHol
   const hold = item.editHold;
   if (!hold) return undefined;
   const expiresAt = Date.parse(hold.expiresAt);
-  return expiresAt > now && expiresAt <= now + EDIT_HOLD_MS ? hold : undefined;
+  return expiresAt > now && expiresAt <= now + EDIT_HOLD_MS + EDIT_HOLD_CLOCK_SLACK_MS
+    ? hold
+    : undefined;
 }
 
 /**
@@ -631,7 +636,9 @@ export class MessageQueueStore {
   /**
    * Holds keep no operation receipt and record no ingress evidence: they change no content,
    * renewing is idempotent, and a renewal every 30 seconds would otherwise grow both without bound.
-   * The item revision is unchanged, so the editor's eventual edit still matches it.
+   * Neither the item nor the snapshot revision changes: the editor's eventual edit still matches
+   * the item, and pause or reorder from another client is not refused while an editor is open.
+   * Clients accept a snapshot at an equal revision, so the new hold still reaches them.
    */
   private changeEditHold(
     agentId: string,
@@ -668,7 +675,6 @@ export class MessageQueueStore {
           expiresAt: new Date(now + EDIT_HOLD_MS).toISOString(),
         };
       }
-      record.snapshot.revision += 1;
       await this.commit(record);
       return record.snapshot;
     });

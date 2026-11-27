@@ -300,9 +300,11 @@ Daemons advertise `features.messageQueueEditHold` when `agent.queue.mutate.reque
 (`holderId`, `expiresAt`, optional `heldSince`). Clients send hold operations only to capable daemons; an older
 daemon's operation schema rejects them. Older clients ignore `editHold` and never hold, so
 their editing behaves as before, but their send now on a held item is refused. A hold changes
-the snapshot revision, not the item revision, so the holder's later edit still matches. Holds
+neither the item nor the snapshot revision, so the holder's later edit still matches and
+another client's pause or reorder is not refused; clients accept a snapshot at an equal
+revision, which is how a renewed hold reaches them. Holds
 keep no operation receipt and record no ingress evidence. An expired hold counts as absent, and
-so does one expiring more than two minutes ahead of the daemon's clock. The daemon refuses
+so does one expiring more than two minutes and ten seconds ahead of the daemon's clock. The daemon refuses
 renewal 30 minutes after `heldSince` with error code `edit_hold_expired`; `heldSince` carries
 over only when the holder's previous hold lapsed less than two minutes earlier. A client's clock decides only whether it shows "Being
 edited"; the daemon decides whether the message may be edited or sent now.

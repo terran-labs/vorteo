@@ -5,7 +5,7 @@ import {
   type QueueItem,
 } from "@getpaseo/protocol/message-queue";
 import type { QueueEditDraft, QueueEditDraftStorage } from "./edit-draft";
-import { QueueEditDraftSession, QueueEditHoldRefusedError } from "./edit-draft-session";
+import { QueueEditDraftSession, editHoldSnapshot } from "./edit-draft-session";
 
 const item: QueueItem = {
   id: "message",
@@ -97,14 +97,15 @@ it("refuses an empty edited message before creating a submission", async () => {
 it("holds the message on a capable daemon and leaves its release to the submitted edit", async () => {
   const f = fixture();
   const sent: QueueEditHoldOperation[] = [];
-  let refusal: Error | null = null;
+  let refusal: { code: string; message: string } | null = null;
   const session = new QueueEditDraftSession({
     ...f.port,
     editHold: {
       supported: () => true,
       send: async (_host, _agent, operation) => {
         sent.push(operation);
-        if (refusal) throw refusal;
+        // The runtime's send translates the daemon response through the same helper.
+        if (refusal) editHoldSnapshot({ snapshot: null, error: refusal });
       },
     },
   });
@@ -138,7 +139,7 @@ it("holds the message on a capable daemon and leaves its release to the submitte
   expect(sent.map((operation) => operation.kind)).toEqual(["hold_edit"]);
   // Refused at the daemon's maximum, the editor stops renewing so the message sends as written.
   sent.length = 0;
-  refusal = new QueueEditHoldRefusedError(QUEUE_EDIT_HOLD_EXPIRED_CODE, "held too long");
+  refusal = { code: QUEUE_EDIT_HOLD_EXPIRED_CODE, message: "held too long" };
   const reported: unknown[] = [];
   const scheduled: { renew?: () => void } = {};
   session.keepHeld(
@@ -152,5 +153,5 @@ it("holds the message on a capable daemon and leaves its release to the submitte
   await new Promise((resolve) => setTimeout(resolve, 0));
   scheduled.renew?.();
   expect(sent).toHaveLength(1);
-  expect(reported).toEqual([refusal]);
+  expect(reported).toEqual([expect.objectContaining(refusal)]);
 });
