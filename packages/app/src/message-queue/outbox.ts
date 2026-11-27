@@ -246,7 +246,7 @@ export class QueueOutbox {
     if (!record || edit?.kind !== "edit" || !isSupersededEdit(record))
       throw new Error("Only an edit that could not be applied can be sent as a new message.");
     const operationId = resendOperationId(edit.operationId);
-    const operation: QueueOperation = {
+    const operation: QueueChangeOperation = {
       kind: "enqueue",
       operationId,
       messageId: operationId,
