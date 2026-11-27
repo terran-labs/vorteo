@@ -3718,7 +3718,7 @@ export class Session {
           name: msg.name,
         }).then((account) => {
           // Usage and status now read the account's full sign-in instead of its setup token.
-          this.providerUsageService.invalidate();
+          this.providerUsageService.invalidate(account.providerId);
           void this.providerSnapshotManager
             .refreshSettingsSnapshot({ providers: [account.providerId] })
             .catch((error) => {

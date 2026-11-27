@@ -177,48 +177,91 @@ function signalGroup(
   return signalProcess({ platform: process.platform, pid: child.pid, signal });
 }
 
+const DEFAULT_PROBE_MAX_OUTPUT_BYTES = 1024 * 1024;
+
+function cleanupGroupQuietly(child: ChildProcessWithoutNullStreams): void {
+  if (!child.pid) return;
+  try {
+    if (process.platform === "win32") process.kill(child.pid, "SIGKILL");
+    else process.kill(-child.pid, "SIGKILL");
+  } catch {
+    // Process group already exited or cannot be signaled after close.
+  }
+}
+
 interface ProbeOptions {
   launch: ProviderLaunch;
   args: string[];
   cwd?: string;
+  timeoutMs?: number;
+  maxOutputBytes?: number;
+  cleanupProcessGroup?: boolean;
+  abortOnStderr?: RegExp;
 }
 export function probe(options: ProbeOptions): Promise<string> {
   return new Promise((resolve, reject) => {
+    const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_PROBE_MAX_OUTPUT_BYTES;
     const child = spawnProcess(options.launch.command, [...options.launch.args, ...options.args], {
       env: options.launch.env,
       cwd: options.cwd,
       stdio: "pipe",
       detached: process.platform !== "win32",
     });
+    child.stdin.end();
     let stdout = "";
     let stderr = "";
+    let settled = false;
     const deadline = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      const trimmedStderr = stderr.trim();
       const termination = Promise.resolve(signalGroup(child, "SIGKILL"));
       void termination.then(() => {
+        if (options.abortOnStderr?.test(trimmedStderr)) {
+          reject(new AntigravityError(diagnostic(trimmedStderr), "PROBE_ERROR", 1, trimmedStderr));
+          return undefined;
+        }
         reject(new AntigravityError("Antigravity discovery timed out", "PROBE_TIMEOUT"));
         return undefined;
       }, reject);
-    }, 10_000);
+    }, options.timeoutMs ?? 10_000);
     child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString();
+      const remaining = maxOutputBytes - stdout.length;
+      if (remaining > 0) stdout += chunk.toString().slice(0, remaining);
     });
     child.stderr.on("data", (chunk: Buffer) => {
       stderr = (stderr + chunk.toString()).slice(-8192);
+      if (!settled && options.abortOnStderr?.test(stderr)) {
+        settled = true;
+        clearTimeout(deadline);
+        cleanupGroupQuietly(child);
+        const trimmedStderr = stderr.trim();
+        reject(new AntigravityError(diagnostic(trimmedStderr), "PROBE_ERROR", 1, trimmedStderr));
+      }
     });
     child.on("error", (error: Error) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(deadline);
       reject(new AntigravityError(error.message, "SPAWN_ERROR"));
     });
     child.on("close", (code) => {
+      if (options.cleanupProcessGroup) cleanupGroupQuietly(child);
+      if (settled) return;
+      settled = true;
       clearTimeout(deadline);
       if (code === 0) resolve(stdout);
-      else
+      else {
+        const trimmedStderr = stderr.trim();
         reject(
           new AntigravityError(
-            diagnostic(stderr.trim() || `agy exited with code ${code}`),
+            diagnostic(trimmedStderr || `agy exited with code ${code}`),
             "PROBE_ERROR",
+            code,
+            trimmedStderr,
           ),
         );
+      }
     });
   });
 }
