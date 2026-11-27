@@ -216,11 +216,61 @@ const noSyncIo = {
   },
 };
 
+export const RELATIVE_JS_EXTENSION_MESSAGE =
+  "The app's Metro bundler cannot resolve a relative import that names a .js file for a .ts " +
+  "source. Drop the extension. Vitest resolves it anyway, so only a real bundle fails.";
+export const SHARED_RELATIVE_IMPORT_MESSAGE =
+  "Shared plugin files are loaded by both the app's Metro bundler, which cannot resolve " +
+  '"./x.js", and the daemon\'s Node runtime, which cannot resolve "./x". No form satisfies ' +
+  "both, so shared files import only packages. Publish a second shared file as its own module, " +
+  "as @getpaseo/server/factory-lean does.";
+
+const RELATIVE_JS = /^\.{1,2}\/.*\.(?:c|m)?jsx?$/;
+const RELATIVE = /^\.{1,2}\//;
+
+// Reports value imports and re-exports whose specifier matches `pattern`. Type-only imports are
+// erased before Metro or Node sees them, so both rules allow them.
+function importSpecifierRule(pattern, message) {
+  return {
+    create(context) {
+      function check(node, source, typeOnly) {
+        if (typeOnly || !source || typeof source.value !== "string") return;
+        if (pattern.test(source.value)) context.report({ node: source, message });
+      }
+      return {
+        ImportDeclaration(node) {
+          const typeOnly =
+            node.importKind === "type" ||
+            (node.specifiers.length > 0 &&
+              node.specifiers.every((item) => item.importKind === "type"));
+          check(node, node.source, typeOnly);
+        },
+        ExportNamedDeclaration(node) {
+          if (node.source) check(node, node.source, node.exportKind === "type");
+        },
+        ExportAllDeclaration(node) {
+          check(node, node.source, node.exportKind === "type");
+        },
+        ImportExpression(node) {
+          if (node.source.type === "Literal") check(node, node.source, false);
+        },
+      };
+    },
+  };
+}
+
+// App code Metro bundles: relative specifiers ending in .js, .mjs, .cjs or .jsx.
+const noRelativeJsExtension = importSpecifierRule(RELATIVE_JS, RELATIVE_JS_EXTENSION_MESSAGE);
+// plugins/*/shared: every relative value import or re-export.
+const noRelativeSharedImport = importSpecifierRule(RELATIVE, SHARED_RELATIVE_IMPORT_MESSAGE);
+
 export default {
   meta: { name: "paseo" },
   rules: {
     "no-raw-pressable": noRawPressable,
     "no-raw-scroller": noRawScroller,
     "no-sync-io": noSyncIo,
+    "no-relative-js-extension": noRelativeJsExtension,
+    "no-relative-shared-import": noRelativeSharedImport,
   },
 };
