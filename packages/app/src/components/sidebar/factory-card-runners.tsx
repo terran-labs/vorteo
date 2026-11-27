@@ -18,6 +18,9 @@ import { sidebarIndentStyle } from "./indent";
 import { isNative } from "@/constants/platform";
 import type { Theme } from "@/styles/theme";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
+import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
+import type { SidebarWorkspaceEntry } from "@/hooks/use-sidebar-workspaces-list";
+import { WorkspaceStatusIndicator } from "./sidebar-workspace-row-content";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { useVortonTouch } from "@/vorton-touch";
 import {
@@ -39,11 +42,14 @@ export function FactoryRunners({
   groupKey,
   serverId,
   runners,
+  workspaces,
   level,
   onBeforeNavigate,
 }: {
   /** The Runners group's collapse key. */
   groupKey: string;
+  /** Each issue's workspace, which its row opens instead of an agent. */
+  workspaces?: ReadonlyMap<number, SidebarWorkspaceEntry>;
   /** The host of issues that do not name their own. */
   serverId?: string;
   runners: readonly RunnerIssue[];
@@ -66,6 +72,7 @@ export function FactoryRunners({
           key={`${issue.serverId ?? serverId}:${issue.tag ?? ""}#${issue.number}`}
           serverId={issue.serverId ?? serverId ?? ""}
           issue={issue}
+          workspace={issue.tag ? undefined : workspaces?.get(issue.number)}
           level={level + 1}
           onBeforeNavigate={onBeforeNavigate}
         />
@@ -74,14 +81,99 @@ export function FactoryRunners({
   );
 }
 
+/**
+ * Issue workspaces with nothing running: blocked, waiting, or finished with their issue closed.
+ * Folded by default under its own group, each row opens its workspace and shows its real status.
+ */
+export function FactoryIdleWorkspaces({
+  groupKey,
+  workspaces,
+  level,
+  onBeforeNavigate,
+}: {
+  groupKey: string;
+  workspaces: readonly SidebarWorkspaceEntry[];
+  level: number;
+  onBeforeNavigate?: () => void;
+}) {
+  const { t } = useTranslation();
+  if (workspaces.length === 0) return null;
+  return (
+    <FactoryGroup
+      groupKey={groupKey}
+      title={t("sidebar.factoryCard.idle")}
+      count={workspaces.length}
+      level={level}
+      defaultCollapsed
+      testID="factory-card-idle"
+    >
+      {workspaces.map((workspace) => (
+        <IdleRow
+          key={workspace.workspaceKey}
+          workspace={workspace}
+          level={level + 1}
+          onBeforeNavigate={onBeforeNavigate}
+        />
+      ))}
+    </FactoryGroup>
+  );
+}
+
+const IdleRow = memo(function IdleRow({
+  workspace,
+  level,
+  onBeforeNavigate,
+}: {
+  workspace: SidebarWorkspaceEntry;
+  level: number;
+  onBeforeNavigate?: () => void;
+}) {
+  const { t } = useTranslation();
+  const touch = useVortonTouch() || isNative;
+  const number = workspace.factoryIssue?.issue ?? 0;
+  const open = useCallback(() => {
+    onBeforeNavigate?.();
+    navigateToWorkspace({ serverId: workspace.serverId, workspaceId: workspace.workspaceId });
+  }, [onBeforeNavigate, workspace.serverId, workspace.workspaceId]);
+  return (
+    <PressHighlight
+      accessibilityRole="button"
+      accessibilityLabel={t("sidebar.factoryCard.openRunner", { number, title: workspace.name })}
+      onPress={open}
+      style={[styles.row, sidebarIndentStyle(level), touch && styles.rowTouch, styles.rowHoverable]}
+      highlightStyle={styles.rowPressed}
+      testID={`factory-card-idle-${number}`}
+    >
+      <View style={styles.summary}>
+        <View style={styles.activity}>
+          <WorkspaceStatusIndicator
+            serverId={workspace.serverId}
+            workspaceId={workspace.workspaceId}
+            bucket={workspace.statusBucket}
+            workspaceKind={workspace.workspaceKind}
+            muted
+          />
+        </View>
+        <Text style={styles.number}>#{number}</Text>
+        <Text style={styles.idleTitle} numberOfLines={1}>
+          {workspace.name}
+        </Text>
+      </View>
+    </PressHighlight>
+  );
+});
+
 const RunnerRow = memo(function RunnerRow({
   serverId,
   issue,
+  workspace,
   level,
   onBeforeNavigate,
 }: {
   serverId: string;
   issue: RunnerIssue;
+  /** The issue's workspace, opened in preference to an agent. */
+  workspace?: SidebarWorkspaceEntry;
   level: number;
   onBeforeNavigate?: () => void;
 }) {
@@ -97,9 +189,11 @@ const RunnerRow = memo(function RunnerRow({
   const open = useCallback(() => {
     const agent = factoryRunnerAgent(issue);
     onBeforeNavigate?.();
-    if (agent) navigateToAgent({ serverId, agentId: agent.agentId });
+    if (workspace) {
+      navigateToWorkspace({ serverId: workspace.serverId, workspaceId: workspace.workspaceId });
+    } else if (agent) navigateToAgent({ serverId, agentId: agent.agentId });
     else void openExternalUrl(issue.url);
-  }, [issue, onBeforeNavigate, serverId]);
+  }, [issue, onBeforeNavigate, serverId, workspace]);
   return (
     <PressHighlight
       accessibilityRole="button"
@@ -233,6 +327,13 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     minWidth: 0,
     color: theme.colors.foreground,
+    fontSize: theme.fontSize.base,
+  },
+  // Nothing runs here, so the title takes the calm row color.
+  idleTitle: {
+    flex: 1,
+    minWidth: 0,
+    color: theme.colors.foregroundExtraMuted,
     fontSize: theme.fontSize.base,
   },
   // A compact project tag that gives way to the title.

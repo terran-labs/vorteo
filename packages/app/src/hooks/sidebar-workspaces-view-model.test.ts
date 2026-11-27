@@ -1796,3 +1796,43 @@ it("puts a legacy standing controller after per-project Factory members", () => 
     { serverId: "one", projectId: base.projectId, installationId: "project-factory:project" },
   ]);
 });
+
+it("lists a Dev issue worker under the Host Factory its labels name, without the unread green (#683)", () => {
+  const base = workspaceWithForge(undefined, "https://github.com/acme/repo/pull/42");
+  const worker = (id: string, workspaceId: string, labels: Record<string, string>) => ({
+    ...agent({ id, workspaceId, status: "closed" }),
+    requiresAttention: true,
+    attentionReason: "finished" as const,
+    labels,
+  });
+  const issueLabels = { "factory.issue": "345", "factory.installation": "host/vorteo" };
+  const agents = new Map([
+    ["a", worker("a", "ws-issue", issueLabels)],
+    // A workspace with any agent outside the issue stays ordinary.
+    ["b", worker("b", "ws-mixed", issueLabels)],
+    ["c", worker("c", "ws-mixed", {})],
+  ]);
+  const activity = buildWorkspaceAgentActivityIndex(agents);
+  const entry = (id: string) =>
+    createSidebarWorkspaceEntry({
+      serverId: "dev",
+      workspace: { ...base, id, projectId: "dev-vorteo", status: "attention" },
+      workspaceAgentActivity: activity,
+    });
+  const issue = entry("ws-issue");
+  const mixed = entry("ws-mixed");
+  expect(issue.factoryIssue).toEqual({ issue: 345, installation: "host/vorteo" });
+  expect(issue.statusBucket).toBe("done");
+  expect(mixed.factoryIssue).toBeUndefined();
+  expect(mixed.statusBucket).toBe("attention");
+  const entries = new Map([
+    [issue.workspaceKey, issue],
+    [mixed.workspaceKey, mixed],
+  ]);
+  const hostFactory = { serverId: "host", projectId: "vorteo", state: "on" as const, roles: [] };
+  const groups = splitFactoryWorkspaces([issue, mixed], entries, new Map([["host", true]]), [
+    hostFactory,
+  ]);
+  expect(groups.factory).toEqual([issue]);
+  expect(groups.work).toEqual([mixed]);
+});

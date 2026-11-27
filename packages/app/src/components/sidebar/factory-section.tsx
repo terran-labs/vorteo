@@ -43,7 +43,7 @@ import {
   factoryChips,
   splitForeman,
 } from "./factory-card-roles";
-import { FactoryRunners } from "./factory-card-runners";
+import { FactoryIdleWorkspaces, FactoryRunners } from "./factory-card-runners";
 import { FactoryStageBar, type StageBarIssue } from "./factory-card-stage-bar";
 import { useFactoryCardStore } from "./factory-card-store";
 import type { ProjectFactoryState } from "./factory-state";
@@ -102,11 +102,28 @@ export const FactorySection = memo(function FactorySection({
     () => card.members.flatMap((member) => entries.get(member.workspaceKey) ?? []),
     [card.members, entries],
   );
+  // Issue workers are not crew: running ones open from their Runners row, the rest list as Idle.
+  const { crewMembers, issueWorkspaces } = useMemo(() => {
+    const byIssue = new Map<number, SidebarWorkspaceEntry>();
+    const others: SidebarWorkspaceEntry[] = [];
+    for (const member of members) {
+      const issue = member.factoryIssue?.issue;
+      if (issue === undefined) others.push(member);
+      else if (!byIssue.has(issue)) byIssue.set(issue, member);
+    }
+    return { crewMembers: others, issueWorkspaces: byIssue };
+  }, [members]);
   const { foreman, crew } = useMemo(
-    () => splitForeman(factoryChips(state?.roles, members)),
-    [state?.roles, members],
+    () => splitForeman(factoryChips(state?.roles, crewMembers)),
+    [state?.roles, crewMembers],
   );
   const runners = useMemo(() => (issues ? factoryRunners(issues) : []), [issues]);
+  const idle = useMemo(() => {
+    const running = new Set(runners.map((issue) => issue.number));
+    return Array.from(issueWorkspaces.values()).filter(
+      (workspace) => !running.has(workspace.factoryIssue?.issue ?? 0),
+    );
+  }, [runners, issueWorkspaces]);
   const pill = useMemo(
     () =>
       state ? { pill: factoryStatePill(state), description: factoryStateReason(state, t) } : null,
@@ -151,6 +168,13 @@ export const FactorySection = memo(function FactorySection({
         groupKey={`factory-runners:${card.key}`}
         serverId={card.serverId}
         runners={runners}
+        workspaces={issueWorkspaces}
+        level={level + 1}
+        onBeforeNavigate={onWorkspacePress}
+      />
+      <FactoryIdleWorkspaces
+        groupKey={`factory-idle-open:${card.key}`}
+        workspaces={idle}
         level={level + 1}
         onBeforeNavigate={onWorkspacePress}
       />

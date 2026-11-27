@@ -5,7 +5,7 @@ import type {
   SidebarWorkspaceEntry,
   SidebarWorkspacePlacement,
 } from "@/hooks/sidebar-workspaces-view-model";
-import { factoryOverviewTargets } from "@/workspace/lifecycle/grouping";
+import { factoryIssueOwner, factoryOverviewTargets } from "@/workspace/lifecycle/grouping";
 import type { ProjectFactoryState } from "./factory-state";
 import { factoryOverviewRoute } from "./project-factory-model";
 
@@ -220,14 +220,24 @@ export function factoryCardModels(input: {
     new Set(plugins.filter((plugin) => plugin.id === "factory").map((plugin) => plugin.serverId)),
     states,
   ).filter((target) => factoryOverviewRoute(target, factoryPlugin(target.serverId)) !== null);
+  // Issue workers belong to the Factory their labels name, which may sit on another host.
+  const owner = (member: SidebarWorkspacePlacement) =>
+    factoryIssueOwner(member, entries.get(member.workspaceKey));
+  const belongs = (member: SidebarWorkspacePlacement, serverId: string, projectId: string) => {
+    const issueOwner = owner(member);
+    return issueOwner
+      ? issueOwner.serverId === serverId && issueOwner.projectId === projectId
+      : member.serverId === serverId;
+  };
   const cards: FactoryCardModel[] = targets.map((target) => ({
     key: factoryCardKey(target.serverId, target.projectId),
     serverId: target.serverId,
     projectId: target.projectId,
     installationId: target.installationId,
-    members: members.filter((member) => member.serverId === target.serverId),
+    members: members.filter((member) => belongs(member, target.serverId, target.projectId)),
   }));
   for (const member of members) {
+    if (owner(member)) continue;
     if (cards.some((card) => card.serverId === member.serverId)) continue;
     const projectId = entries.get(member.workspaceKey)?.projectId;
     if (!projectId) continue;
@@ -236,7 +246,9 @@ export function factoryCardModels(input: {
       serverId: member.serverId,
       projectId,
       installationId: null,
-      members: members.filter((candidate) => candidate.serverId === member.serverId),
+      members: members.filter(
+        (candidate) => candidate.serverId === member.serverId && !owner(candidate),
+      ),
     });
   }
   return cards;

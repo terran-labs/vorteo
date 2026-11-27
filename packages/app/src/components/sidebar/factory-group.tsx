@@ -13,6 +13,7 @@ export function FactoryGroup({
   title,
   count,
   level,
+  defaultCollapsed = false,
   testID,
   children,
 }: {
@@ -23,12 +24,15 @@ export function FactoryGroup({
   count: number;
   /** The group row's level; its items sit one further in. */
   level: number;
+  /** Starts folded; the stored key then records that the owner opened it. */
+  defaultCollapsed?: boolean;
   testID: string;
   children: ReactNode;
 }) {
-  const collapsed = useSidebarCollapsedSectionsStore((state) =>
+  const toggled = useSidebarCollapsedSectionsStore((state) =>
     state.collapsedWorkspaceGroupKeys.has(groupKey),
   );
+  const collapsed = defaultCollapsed ? !toggled : toggled;
   const toggleGroupCollapsed = useSidebarCollapsedSectionsStore(
     (state) => state.toggleWorkspaceGroupCollapsed,
   );
