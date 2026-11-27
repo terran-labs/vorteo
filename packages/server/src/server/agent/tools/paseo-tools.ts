@@ -1774,8 +1774,9 @@ function createToolCatalog(
       description: [
         "Create a workspace using an existing local checkout or a new Vorteo-managed worktree.",
         "Project ownership: projectId, when given, owns the workspace.",
-        "Otherwise a local workspace stays in your project only when its folder is inside your project's root, inside one of its workspaces, or a checkout of its repository.",
-        "A local folder outside your project joins the deepest registered project that contains it, or is registered as a new project when none does.",
+        "Otherwise a local workspace joins the deepest registered project that contains its folder, which may be yours.",
+        "A checkout of your project's repository, and a folder inside one of your project's worktrees that no project contains, stay in your project.",
+        "A git repository root inside a plain directory project, and any folder no project contains, are registered as a new project.",
         "Set newProject true to register the local folder as its own project explicitly, for example a nested repository.",
         "A worktree belongs to its source repository's project.",
       ].join(" "),

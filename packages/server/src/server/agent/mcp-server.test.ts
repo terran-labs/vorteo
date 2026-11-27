@@ -3008,18 +3008,44 @@ describe("create_agent MCP tool", () => {
       newProject: true,
       expected: "registered",
     },
-  ])("files a local workspace under $name", async ({ folder, newProject, expected }) => {
+    // The caller also owns a directory workspace on the parent folder, as Builds does on a
+    // Projects folder; it must not claim the folders beneath it.
+    { name: "a new repository beside the caller", folder: "newrepo", expected: "registered" },
+    {
+      name: "a new repository inside the caller's directory project",
+      folder: "caller/newrepo",
+      callerKind: "non_git" as const,
+      expected: "registered",
+    },
+    { name: "an explicit projectId", folder: "caller/sub", projectId: "other", expected: "other" },
+    // The Foreman creates issue workspaces on Dev by serverId; Dev's daemon decides ownership.
+    {
+      name: "a workspace on another host",
+      folder: "caller",
+      serverId: "srv_dev",
+      expected: "remote",
+    },
+  ])("files a local workspace under $name", async (row) => {
+    const { folder, newProject, expected } = row;
     const root = realpathSync(await mkdtemp(join(tmpdir(), "mcp-workspace-owner-")));
     try {
-      for (const dir of ["caller/sub", "worktrees/task", "other/inner/x", "outside"]) {
+      for (const dir of [
+        "caller/sub",
+        "caller/newrepo",
+        "worktrees/task",
+        "other/inner/x",
+        "outside",
+        "newrepo",
+      ]) {
         await mkdir(join(root, dir), { recursive: true });
       }
+      const gitRoots = new Set([join(root, "newrepo"), join(root, "caller/newrepo")]);
       const { agentManager, agentStorage, spies } = createTestDeps();
       const project = (projectId: string, dir: string) =>
         createPersistedProjectRecord({
           projectId,
           rootPath: join(root, dir),
-          kind: "git",
+          kind: projectId === "caller" && "callerKind" in row ? row.callerKind : "git",
           displayName: projectId,
           createdAt: "2026-11-14T00:00:00.000Z",
           updatedAt: "2026-11-14T00:00:00.000Z",
@@ -3036,6 +3062,30 @@ describe("create_agent MCP tool", () => {
         updatedAt: "2026-11-14T00:00:00.000Z",
       });
       parent.projectMembership = { key: "caller-key", name: "Caller" };
+      const parentFolderWorkspace = createPersistedWorkspaceRecord({
+        workspaceId: "builds-workspace",
+        projectId: "caller",
+        cwd: root,
+        kind: "directory",
+        displayName: "Builds",
+        createdAt: "2026-11-14T00:00:00.000Z",
+        updatedAt: "2026-11-14T00:00:00.000Z",
+      });
+      const remoteCreates: unknown[] = [];
+      const remoteClient = {
+        getLastServerInfoMessage: () => ({ features: {} }),
+        createWorkspace: async (request: unknown) => {
+          remoteCreates.push(request);
+          return {
+            workspace: {
+              id: "dev-workspace",
+              projectId: "dev-project",
+              workspaceDirectory: join(root, folder),
+              workspaceKind: "directory",
+            },
+          };
+        },
+      };
       spies.agentManager.getAgent.mockReturnValue(
         createManagedAgent({
           id: "parent-agent",
@@ -3056,9 +3106,21 @@ describe("create_agent MCP tool", () => {
         },
         workspaceRegistry: {
           get: async () => parent,
-          list: async () => [parent],
+          list: async () => [parent, parentFolderWorkspace],
           upsert: async () => {},
         },
+        workspaceGitService: {
+          getSnapshot: async (cwd: string) => ({
+            git: gitRoots.has(cwd)
+              ? { isGit: true, repoRoot: cwd, mainRepoRoot: cwd }
+              : { isGit: false },
+          }),
+        } as never,
+        hosts: () => ({
+          directory: async () => ({}) as never,
+          use: async (_serverId: string, action: (client: never) => unknown) =>
+            action(remoteClient as never),
+        }),
         registerProjectForDirectory: async (cwd) => {
           registered.push(cwd);
           return project("registered", folder);
@@ -3074,8 +3136,21 @@ describe("create_agent MCP tool", () => {
         isolation: "local",
         path: join(root, folder),
         ...(newProject ? { newProject } : {}),
+        ...("projectId" in row ? { projectId: row.projectId } : {}),
+        ...("serverId" in row ? { serverId: row.serverId } : {}),
       });
 
+      if (expected === "remote") {
+        // Forwarded untouched: no local ownership decision, registration or workspace.
+        expect(received).toEqual([]);
+        expect(registered).toEqual([]);
+        expect(remoteCreates).toEqual([
+          expect.objectContaining({
+            source: { kind: "directory", path: join(root, folder), projectId: undefined },
+          }),
+        ]);
+        return;
+      }
       // Only the caller's own folders keep its sidebar membership.
       expect(received).toEqual([
         {
