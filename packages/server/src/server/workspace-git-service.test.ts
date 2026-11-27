@@ -12,7 +12,9 @@ import type {
   PullRequestStatusResult,
 } from "../utils/checkout-git.js";
 import {
+  BACKGROUND_GIT_FETCH_ACTIVITY_CHECK_INTERVAL_MS,
   BACKGROUND_GIT_FETCH_INTERVAL_MS,
+  IDLE_BACKGROUND_GIT_FETCH_INTERVAL_MS,
   withWorkspacePollStatOptions,
   WORKSPACE_GIT_OBSERVATION_REENSURE_INTERVAL_MS,
   WORKSPACE_GIT_OBSERVATION_SETUP_CONCURRENCY,
@@ -270,6 +272,7 @@ interface CreateServiceTestOptions {
   getWorkspaceGitSelfHealPhaseMs?: (cwd: string) => number;
   workspaceFolderExists?: (cwd: string) => Promise<boolean>;
   now?: () => Date;
+  isWorkspaceActive?: (cwd: string) => boolean;
 }
 
 function buildDefaultTestServiceDeps() {
@@ -313,7 +316,8 @@ function buildDefaultTestServiceDeps() {
 }
 
 function createService(options?: CreateServiceTestOptions) {
-  const deps = { ...buildDefaultTestServiceDeps(), ...options };
+  const { isWorkspaceActive, ...overrides } = options ?? {};
+  const deps = { ...buildDefaultTestServiceDeps(), ...overrides };
   deps.getCheckoutWorktreeState =
     options?.getCheckoutWorktreeState ??
     vi.fn(async (cwd: string) => {
@@ -329,6 +333,7 @@ function createService(options?: CreateServiceTestOptions) {
   return new WorkspaceGitServiceImpl({
     logger: createLogger() as unknown as pino.Logger,
     paseoHome: "/tmp/paseo-test",
+    isWorkspaceActive,
     deps,
   });
 }
@@ -2181,6 +2186,43 @@ describe("workspace polling pressure", () => {
     await service.getSnapshot(REPO_CWD, { force: true, reason: "owner-refresh" });
     expect(getCheckoutStatus.mock.calls.length).toBeGreaterThan(before);
     subscription.unsubscribe();
+    await service.dispose();
+  });
+
+  test("idle repositories skip the background fetch until a workspace becomes active", async () => {
+    let agentRunning = false;
+    const runGitFetch = vi.fn(async () => ({ changes: [], error: null }));
+    const service = createService({
+      getCheckoutSnapshotFacts: vi.fn(async (cwd: string) => ({
+        ...createCheckoutSnapshotFacts(cwd),
+        gitCommonDir: join(REPO_CWD, ".git"),
+        absoluteGitDir: join(REPO_CWD, ".git"),
+      })),
+      hasOriginRemote: vi.fn(async () => true),
+      runGitFetch,
+      isWorkspaceActive: () => agentRunning,
+    });
+    const sidebar = service.registerWorkspace({ cwd: REPO_CWD, background: true }, vi.fn());
+    await vi.waitFor(() => expect(service.getMetrics().repositoryTargetCount).toBe(1));
+    await waitForRefreshesToSettle(service);
+
+    await vi.advanceTimersByTimeAsync(2 * BACKGROUND_GIT_FETCH_INTERVAL_MS);
+    expect(runGitFetch).not.toHaveBeenCalled();
+
+    // An agent starts with nobody viewing the workspace; the stale repository fetches at once.
+    agentRunning = true;
+    await vi.advanceTimersByTimeAsync(BACKGROUND_GIT_FETCH_ACTIVITY_CHECK_INTERVAL_MS);
+    expect(runGitFetch).toHaveBeenCalledTimes(1);
+
+    agentRunning = false;
+    await vi.advanceTimersByTimeAsync(
+      IDLE_BACKGROUND_GIT_FETCH_INTERVAL_MS - BACKGROUND_GIT_FETCH_ACTIVITY_CHECK_INTERVAL_MS,
+    );
+    expect(runGitFetch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(BACKGROUND_GIT_FETCH_ACTIVITY_CHECK_INTERVAL_MS);
+    expect(runGitFetch).toHaveBeenCalledTimes(2);
+
+    sidebar.unsubscribe();
     await service.dispose();
   });
 
