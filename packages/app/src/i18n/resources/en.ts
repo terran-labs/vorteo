@@ -136,7 +136,8 @@ export const en = {
       all: "All Factories",
       allTitle: "All Factories",
       sample: "Sample Factory",
-      pipelineSummary: "{{queued}} queued · {{active}} active · {{review}} review",
+      pipelineSummary:
+        "{{queued}} queued · {{active}} active · {{stalled}} stalled · {{review}} review",
       snapshotAt: "Queue snapshot: {{time}} ({{minutes}} min ago)",
       queueRetry: "Queue unavailable. Retry",
       sidebarSummary_one:
@@ -1607,7 +1608,6 @@ export const en = {
       moreIssues: "+{{count}} more",
       issue: "#{{number}} {{title}}",
       runners: "Runners",
-      runnersActive: "{{count}} active",
       steps: { plan: "Plan", build: "Build", review: "Review", merge: "Merge", deploy: "Deploy" },
       trackCurrent: "{{step}} · {{stage}}",
       trackDanger: "{{step}} needs attention · {{stage}}",
