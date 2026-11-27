@@ -134,7 +134,8 @@ import type {
   WorkspaceRegistry,
 } from "../../workspace-registry.js";
 import { resolveWorktreeSourceCwd } from "../../workspace-source.js";
-import { resolveLocalWorkspaceOwner } from "./workspace-ownership.js";
+import { findArchivedProjectAt, resolveLocalWorkspaceOwner } from "./workspace-ownership.js";
+import { ProjectsFolderError } from "../../projects-folder.js";
 import type { WorkspaceScriptsService } from "../../session/workspace-scripts/workspace-scripts-service.js";
 import {
   type ArchiveCommandDependencies,
@@ -1726,10 +1727,29 @@ function createToolCatalog(
   async function registerNewProject(cwd: string): Promise<PersistedProjectRecord> {
     if (!options.registerProjectForDirectory) {
       throw new Error(
-        `${cwd} is outside every registered project, and project registration is not configured. Supply projectId explicitly.`,
+        `${cwd} is outside every registered project, and project registration is not configured. Pass projectId to file it under an existing project.`,
       );
     }
-    return options.registerProjectForDirectory(cwd);
+    // Registering an archived project's root would create a new active project there and
+    // return what the owner archived to the sidebar. Session settings sync refuses the same.
+    const archived = findArchivedProjectAt((await options.projectRegistry?.list()) ?? [], cwd);
+    if (archived) {
+      throw new PaseoToolInputError(
+        `${cwd} belongs to a project the owner archived (${archived.projectId}). Pass projectId to file it under an existing project, or ask the owner to restore the archived one.`,
+      );
+    }
+    try {
+      return await options.registerProjectForDirectory(cwd);
+    } catch (error) {
+      // The Projects folder rule and the daemon's own state refuse some folders; say the way out.
+      if (error instanceof ProjectsFolderError) {
+        throw new ProjectsFolderError(
+          error.code,
+          `${error.message} Pass projectId to file it under an existing project.`,
+        );
+      }
+      throw error;
+    }
   }
 
   /** Main repository root of a git checkout, so a manual worktree stays with its repository. */
@@ -1775,8 +1795,8 @@ function createToolCatalog(
         "Create a workspace using an existing local checkout or a new Vorteo-managed worktree.",
         "Project ownership: projectId, when given, owns the workspace.",
         "Otherwise a local workspace joins the deepest registered project that contains its folder, which may be yours.",
-        "A checkout of your project's repository, and a folder inside one of your project's worktrees that no project contains, stay in your project.",
-        "A git repository root inside a plain directory project, and any folder no project contains, are registered as a new project.",
+        "A checkout of your project's own repository, and a folder inside one of your project's worktrees that no project contains, stay in your project.",
+        "A git repository root inside a plain directory project, and any folder no project contains, are registered as a new project. An archived project's root is refused; pass projectId to file the workspace under an existing project.",
         "Set newProject true to register the local folder as its own project explicitly, for example a nested repository.",
         "A worktree belongs to its source repository's project.",
       ].join(" "),
@@ -1798,7 +1818,7 @@ function createToolCatalog(
           .boolean()
           .optional()
           .describe(
-            "Local isolation only. True registers path as its own project, reusing a project already rooted there, and files the workspace under it. Cannot be combined with projectId.",
+            "Local isolation on this host only. True registers path as its own project, reusing a project already rooted there, and files the workspace under it. Cannot be combined with projectId or serverId, and never restores an archived project.",
           ),
         title: z.string().trim().min(1).optional(),
         background: z

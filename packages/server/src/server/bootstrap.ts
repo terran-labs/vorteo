@@ -216,6 +216,7 @@ import {
   projectsFolderPolicyFor,
   setActiveProjectsFolder,
 } from "./projects-folder.js";
+import { isDaemonStateDirectory } from "./agent/tools/workspace-ownership.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { ScheduleService } from "./schedule/service.js";
 import { QuotaSchedulePreflight } from "./schedule/quota-preflight.js";
@@ -2227,6 +2228,12 @@ export async function createPaseoDaemon(
       return workspace;
     },
     registerProjectForDirectory: async (cwd) => {
+      // Whatever the Projects folder policy says, the daemon's own state is never a project.
+      if (isDaemonStateDirectory(cwd, config.paseoHome)) {
+        throw new Error(
+          `${cwd} holds or contains this daemon's own state, so it cannot become a project. Pass projectId to file it under an existing project.`,
+        );
+      }
       const rejection = await findNewProjectRejection(newProjectPolicy, cwd, {
         projectRegistry,
         workspaceRegistry,

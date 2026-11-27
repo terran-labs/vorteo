@@ -30,19 +30,20 @@ export function resolveLocalWorkspaceOwner(
   input: ResolveLocalWorkspaceOwnerInput,
 ): LocalWorkspaceOwner {
   const { cwd, callerProject, checkoutRepoRoot } = input;
-  // A checkout of the caller's repository, such as a manual worktree, stays with it. Only a git
-  // project has a repository; a directory project's children are judged by the rules below.
+  // A checkout of the caller's own repository, such as a manual worktree outside its root,
+  // stays with it. Only that repository counts: a different repository nested inside the
+  // caller's root, perhaps registered as its own project, is judged by the rules below.
   if (
     callerProject.kind === "git" &&
     checkoutRepoRoot &&
-    contains(callerProject.rootPath, checkoutRepoRoot)
+    samePath(callerProject.rootPath, checkoutRepoRoot)
   ) {
     return { kind: "caller" };
   }
 
   const deepest = input.projects
     .filter((project) => !project.archivedAt && contains(project.rootPath, cwd))
-    .sort((left, right) => depth(right.rootPath) - depth(left.rootPath))[0];
+    .sort((left, right) => compareOwnerCandidates(left, right, callerProject.projectId))[0];
   if (deepest) {
     const ownRepository =
       deepest.kind === "non_git" &&
@@ -64,6 +65,44 @@ export function resolveLocalWorkspaceOwner(
       contains(workspace.cwd, cwd),
   );
   return callerWorktreeFolder ? { kind: "caller" } : { kind: "new" };
+}
+
+/**
+ * Deepest root first. Two projects can reach one folder at equal depth through different paths,
+ * such as a symlink, so ties go to the caller, then to the earliest created, never to list order.
+ */
+function compareOwnerCandidates(
+  left: PersistedProjectRecord,
+  right: PersistedProjectRecord,
+  callerProjectId: string,
+): number {
+  const byDepth = depth(right.rootPath) - depth(left.rootPath);
+  if (byDepth !== 0) return byDepth;
+  const byCaller =
+    Number(right.projectId === callerProjectId) - Number(left.projectId === callerProjectId);
+  if (byCaller !== 0) return byCaller;
+  return left.createdAt.localeCompare(right.createdAt);
+}
+
+/**
+ * An archived project rooted exactly at `cwd` with no active project there. Registering the
+ * folder again would quietly return a project the owner archived to the sidebar.
+ */
+export function findArchivedProjectAt(
+  projects: readonly PersistedProjectRecord[],
+  cwd: string,
+): PersistedProjectRecord | null {
+  const atRoot = projects.filter((project) => samePath(project.rootPath, cwd));
+  if (atRoot.some((project) => !project.archivedAt)) return null;
+  return atRoot.find((project) => project.archivedAt) ?? null;
+}
+
+/**
+ * The daemon's own state is never a project: neither its home nor anything inside it, nor a
+ * folder that contains it, such as an installation's state root or the user's home.
+ */
+export function isDaemonStateDirectory(cwd: string, paseoHome: string): boolean {
+  return contains(paseoHome, cwd) || contains(cwd, paseoHome);
 }
 
 function samePath(left: string, right: string): boolean {

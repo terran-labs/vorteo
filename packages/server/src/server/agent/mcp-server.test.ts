@@ -34,7 +34,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { realpathSync } from "node:fs";
 
-import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 
 import { join, resolve as resolvePath } from "node:path";
 
@@ -3025,6 +3025,30 @@ describe("create_agent MCP tool", () => {
       serverId: "srv_dev",
       expected: "remote",
     },
+    {
+      name: "a manual worktree of the caller's repository",
+      folder: "manual-wt",
+      expected: "caller",
+    },
+    {
+      name: "a registered repository nested in the caller",
+      folder: "caller/nested/src",
+      expected: "nested",
+    },
+    {
+      name: "an archived project's root",
+      folder: "archived",
+      expected: "refused",
+      error: "belongs to a project the owner archived",
+    },
+    {
+      name: "a new project on another host",
+      folder: "caller",
+      serverId: "srv_dev",
+      newProject: true,
+      expected: "refused",
+      error: "newProject is not supported when creating a workspace on another host",
+    },
   ])("files a local workspace under $name", async (row) => {
     const { folder, newProject, expected } = row;
     const root = realpathSync(await mkdtemp(join(tmpdir(), "mcp-workspace-owner-")));
@@ -3036,10 +3060,20 @@ describe("create_agent MCP tool", () => {
         "other/inner/x",
         "outside",
         "newrepo",
+        "manual-wt",
+        "caller/nested/src",
+        "archived",
       ]) {
         await mkdir(join(root, dir), { recursive: true });
       }
-      const gitRoots = new Set([join(root, "newrepo"), join(root, "caller/newrepo")]);
+      await symlink(join(root, "caller"), join(root, "alias"));
+      // Folder -> main repository root of its git checkout.
+      const gitRoots = new Map([
+        [join(root, "newrepo"), join(root, "newrepo")],
+        [join(root, "caller/newrepo"), join(root, "caller/newrepo")],
+        [join(root, "manual-wt"), join(root, "caller")],
+        [join(root, "caller/nested/src"), join(root, "caller/nested")],
+      ]);
       const { agentManager, agentStorage, spies } = createTestDeps();
       const project = (projectId: string, dir: string) =>
         createPersistedProjectRecord({
@@ -3050,8 +3084,14 @@ describe("create_agent MCP tool", () => {
           createdAt: "2026-11-14T00:00:00.000Z",
           updatedAt: "2026-11-14T00:00:00.000Z",
         });
-      const projects = [project("caller", "caller"), project("other", "other")];
-      projects.push(project("inner", "other/inner"));
+      // "alias" reaches the caller's folders through a symlink at the same depth and is listed
+      // first, so every caller row also checks that the tie goes to the caller.
+      const projects = [project("alias", "alias"), project("caller", "caller")];
+      projects.push(project("other", "other"), project("inner", "other/inner"));
+      projects.push(project("nested", "caller/nested"));
+      const archivedProject = project("gone", "archived");
+      archivedProject.archivedAt = "2026-11-20T00:00:00.000Z";
+      projects.push(archivedProject);
       const parent = createPersistedWorkspaceRecord({
         workspaceId: "parent-workspace",
         projectId: "caller",
@@ -3112,7 +3152,7 @@ describe("create_agent MCP tool", () => {
         workspaceGitService: {
           getSnapshot: async (cwd: string) => ({
             git: gitRoots.has(cwd)
-              ? { isGit: true, repoRoot: cwd, mainRepoRoot: cwd }
+              ? { isGit: true, repoRoot: cwd, mainRepoRoot: gitRoots.get(cwd) }
               : { isGit: false },
           }),
         } as never,
@@ -3132,13 +3172,19 @@ describe("create_agent MCP tool", () => {
         logger,
       });
 
-      await invokeToolWithParsedInput(registeredTool(server, "create_workspace"), {
+      const create = invokeToolWithParsedInput(registeredTool(server, "create_workspace"), {
         isolation: "local",
         path: join(root, folder),
         ...(newProject ? { newProject } : {}),
         ...("projectId" in row ? { projectId: row.projectId } : {}),
         ...("serverId" in row ? { serverId: row.serverId } : {}),
       });
+      if (expected === "refused") {
+        await expect(create).rejects.toThrow("error" in row ? row.error : "");
+        expect([received, registered, remoteCreates]).toEqual([[], [], []]);
+        return;
+      }
+      await create;
 
       if (expected === "remote") {
         // Forwarded untouched: no local ownership decision, registration or workspace.
