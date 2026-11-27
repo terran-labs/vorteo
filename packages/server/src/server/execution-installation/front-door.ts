@@ -89,6 +89,10 @@ export const OWNER_ROUTE_FRONT_DOORS: Readonly<Record<string, FrontDoor>> = {
     why: "Restoring a pre-install snapshot is the owner's decision under the Builds charter.",
   },
   "/api/installation/owner/connections": CREDENTIALS,
+  "/api/installation/owner/factory/lean": {
+    excluded: "lean-factory-owner",
+    why: "Lean Factory answers, intent and standing rules require a verified owner session.",
+  },
   "/api/installation/owner/profiles": CREDENTIALS,
   "/api/installation/owner/profiles/resolve": CREDENTIALS,
   "/api/installation/owner/profiles/synchronize": CREDENTIALS,

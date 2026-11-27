@@ -2917,7 +2917,7 @@ Sidebar integration review: shared state is integrated with the published Nova b
 
 ## Incomplete integrations
 
-- The lean Factory dispatcher and merge gate run against a simulated repository. On a private GitHub issue, a development daemon opened a Builder, read its plan and delivered the go to the same Builder after restart. Live review, acceptance and merge still require verification.
+- A development daemon took a private GitHub issue from its ready label to a pinned merge using separate Builder, Reviewer and Lead sessions on one Codex account. The hosted check passed and GitHub confirmed the reviewed head and merge commit. The Builder needed manual permissions to commit, push and open the pull request.
 
 - **Linux Host adapters.** Inert source reads systemd user services through the pinned user manager and observes process identity through procfs. Linux Host provisioning, protocol support, launcher units, restarts, peer authentication, watchdog signal binding and recovery remain unimplemented. See the [Linux Host hardening](https://github.com/terran-labs/vorteo/issues/40).
 
@@ -3620,3 +3620,7 @@ The installation settings coordinator reuses successful background skill catalog
 Dev Compose uses a [generated, checksum-verified seccomp profile](../docker/multiplex/seccomp/README.md) pinned to moby/profiles seccomp v0.2.3 commit `836ae4d37ef2ec995c77c99fc55f5b5f3af3a897`, retaining the installed Dev namespace and private mount exceptions for bubblewrap and allowing chroot for Chromium's user namespace sandbox. The six unconditional exceptions are explicitly documented and verified against the full upstream policy. Disposable removal probes proved the five bubblewrap allowances necessary for the installed provider; clone3 was unnecessary and removed. Deployments using Docker's default gain six allowances; the installed Dev snapshot gains chroot and drops its redundant clone3 rule. No container capability is added. A mapped non-root user namespace could not chroot under the previous filter; adding only the chroot allowance made that probe succeed. Seccomp filters are immutable for a running container, so applying this policy requires tracked container recreation rather than a daemon source update. Provider browser acceptance remains pending installation.
 
 Vorteo locks the worktrees it creates and cleans up only the requested worktree's registration, preserving worktrees another environment cannot see. New worktrees avoid paths already registered elsewhere. Registration cleanup resolves links before checking ownership; the lock migration supports existing worktrees and removes only Vorteo's own locks for downgrades. See [worktree cleanup](task-delivery.md#archive-a-task).
+
+### Factory wire contracts
+
+The daemon imports the project and Lean Factory contracts through separate package exports. The app can bundle the same contract sources with Metro.

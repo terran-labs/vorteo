@@ -19,7 +19,12 @@ import type { FactoryGitHub } from "../project/claims.js";
 import { createAccountTable, type LeanAccountDependencies } from "./accounts.js";
 import { createRunnerPort, runnerStatusFromAgent, type RunnerDependencies } from "./runners.js";
 import { LEAN_PROTOCOL_MAJOR, type RunnerOpenInput } from "./types.js";
-import { isRunnerRepository, runnerTitle } from "./runner-workspaces.js";
+import type { BuilderIngress } from "./builder-ingress.js";
+import {
+  isRunnerRepository,
+  runnerTitle,
+  type BuilderWorkspacePublication,
+} from "./runner-workspaces.js";
 
 const execute = promisify(execFile);
 const shaPattern = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
@@ -33,6 +38,7 @@ interface WorkspaceBinding {
   /** Exact, authenticated PR head from the reconciler. Null for other roles. */
   reviewHead: string | null;
   title?: string;
+  authorizedBuilderHead?: string;
 }
 
 class IssueAuthorityError extends Error {}
@@ -51,6 +57,8 @@ export interface LocalRunnerDependencies extends LeanAccountDependencies {
   requiredProviderTypes?: Partial<Record<RunnerOpenInput["role"], string>>;
   recoveryIssue?: number;
   deliveryCharter?: string;
+  builderIngress?: Pick<BuilderIngress, "register" | "revoke">;
+  verifyBuilderPublication?(input: BuilderWorkspacePublication): Promise<boolean>;
 }
 
 export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
@@ -110,6 +118,32 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
     return workspace;
   }
 
+  async function registerBuilder(agentId: string, issue: number, workspaceId: string, cwd: string) {
+    await deps.builderIngress?.register({
+      agentId,
+      issue,
+      projectId: deps.projectId,
+      workspaceId,
+      cwd,
+    });
+  }
+
+  async function restoreBuilder(agentId: string, workspaceId: string | undefined): Promise<void> {
+    if (!deps.builderIngress || !workspaceId) return;
+    const row = (await deps.state.read(deps.projectId)).runners[agentId];
+    if (
+      !row ||
+      row.closedAt !== null ||
+      row.serverId !== null ||
+      row.role !== "lead" ||
+      row.issue === null
+    )
+      return;
+    await authorizeIssue({ projectId: deps.projectId, issue: row.issue, role: row.role });
+    const workspace = await activeWorkspace(workspaceId);
+    await registerBuilder(agentId, row.issue, workspaceId, workspace.cwd);
+  }
+
   const createAgent: RunnerDependencies["createAgent"] = async (launch) => {
     const { input, choice } = launch;
     if (launch.serverId !== null || !choice.account) {
@@ -138,9 +172,16 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
     const issueIdentity = branch
       ? `Factory issue #${input.issue}, claim branch ${branch}.`
       : "Factory project operation.";
+    const systemPrompt = builderSystemPrompt(
+      launch.systemPrompt,
+      input.role === "lead" && deps.builderIngress !== undefined,
+    );
     const initialPrompt = [
       issueIdentity,
       review ? `Review exactly ${review.headSha}.` : "",
+      binding.authorizedBuilderHead
+        ? `Use ${binding.authorizedBuilderHead} as the expected remote head for Builder Git operations.`
+        : "",
       launch.initialPrompt,
     ]
       .filter(Boolean)
@@ -155,7 +196,7 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
         config: {
           cwd: workspace.cwd,
           provider,
-          systemPrompt: launch.systemPrompt,
+          systemPrompt,
           ...(choice.profileId ? { profileId: choice.profileId } : {}),
         },
         labels: launch.labels,
@@ -176,6 +217,9 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
             );
           }
           await authorizeIssue(input);
+          if (input.role === "lead" && input.issue !== null) {
+            await registerBuilder(agentId, input.issue, workspace.workspaceId, workspace.cwd);
+          }
         },
       });
       if (result.initialPromptError && !result.liveSnapshot.config.usageLimitHold) {
@@ -184,6 +228,7 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
       return { agentId: result.snapshot.id, ...(review ? { review } : {}) };
     } catch (error) {
       if (createdId) {
+        deps.builderIngress?.revoke(createdId);
         await agentManager.archiveAgent(createdId).catch((cleanup: unknown) => {
           logger.warn(
             { err: cleanup, agentId: createdId },
@@ -268,11 +313,23 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
       if (!stored || stored.archivedAt) return null;
       const hold = stored.config?.usageLimitHold;
       const held = hold && !hold.releasedAt;
-      if (!held) await ensureUnarchivedAgentLoaded(agentId, loader);
+      if (!held) {
+        await ensureUnarchivedAgentLoaded(agentId, loader);
+        await restoreBuilder(agentId, stored.workspaceId);
+      } else {
+        deps.builderIngress?.revoke(agentId);
+      }
       const stop = agentManager.subscribe(
         (event) => {
-          if (event.type === "agent_state") listener(runnerStatusFromAgent(event.agent));
-          if (event.type === "agent_removed") listener({ kind: "detached" });
+          if (event.type === "agent_state") {
+            const status = runnerStatusFromAgent(event.agent);
+            if (status.kind === "quota") deps.builderIngress?.revoke(agentId);
+            listener(status);
+          }
+          if (event.type === "agent_removed") {
+            deps.builderIngress?.revoke(agentId);
+            listener({ kind: "detached" });
+          }
         },
         { agentId, includeInternal: true },
       );
@@ -306,9 +363,14 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
         throw error;
       }
     },
-    lastReply(runner) {
+    async lastReply(runner) {
       requireLocal(runner.serverId);
-      return agentManager.getLastAssistantMessage(runner.agentId);
+      const reply = await agentManager.getLastAssistantMessage(runner.agentId);
+      // Codex inserts this display separator before a final message following a tool call.
+      const separator = "\n\n---\n\n";
+      return runner.providerType === "codex" && reply?.startsWith(separator)
+        ? reply.slice(separator.length)
+        : reply;
     },
     async readUsage({ serverId, agentId }) {
       requireLocal(serverId);
@@ -319,6 +381,7 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
     },
     async archiveAgent({ serverId, agentId }) {
       requireLocal(serverId);
+      deps.builderIngress?.revoke(agentId);
       const stored = await agentStorage.get(agentId);
       if (!stored || stored.archivedAt) return;
       await agentManager.archiveAgent(agentId);
@@ -343,9 +406,16 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
         ) {
           return `The remote claim branch ${branch} could not be verified.`;
         }
-        return pushed.data.object.sha === head
-          ? null
-          : `Push the lead's current commit to ${branch} before closing it.`;
+        const remoteHead = pushed.data.object.sha;
+        const published =
+          remoteHead === head ||
+          (await deps.verifyBuilderPublication?.({
+            issue,
+            workspaceId: workspace.workspaceId,
+            workspaceHead: head,
+            remoteHead,
+          }));
+        return published ? null : `Push the lead's current commit to ${branch} before closing it.`;
       } catch (error) {
         logger.warn(
           {
@@ -360,6 +430,13 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
     },
   });
   return { runners, accounts };
+}
+
+function builderSystemPrompt(charter: string, authenticatedGit: boolean): string {
+  if (!authenticatedGit) return charter;
+  return `${charter}
+
+Use the authenticated Factory Builder Git tools to publish approved changes and open the issue pull request. Supply the expected remote head and the exact approved file paths. The upload helper reads the files in your workspace. Use Published Head to recover a previous publication after a restart. Leave shared Git configuration, filesystem permissions and network permissions alone.`;
 }
 
 function requireLocal(serverId: string | null): void {

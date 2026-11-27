@@ -7,13 +7,21 @@ import type { ClaimState } from "../project/state.js";
 import { issueBrief, issueTrust, readIssueFacts, readTrustedAccounts } from "../project/trust.js";
 import type { ReviewAccountSelection } from "./accounts.js";
 import { plan } from "./dispatcher.js";
+import { createPrimaryGateRuntime, type PrimaryGateRuntimeOptions } from "./gate-runtime.js";
 import { createLeanGitHub, type LeanGitHubFacts, type LeanGitHubOptions } from "./github.js";
 import { deriveStages, type IssueLedger } from "./issue-state.js";
 import { createMergeGate, type MergeEvidence, type MergeIntent } from "./merge-gate.js";
 import { createMergeIntentStore } from "./merge-intent.js";
 import type { LeanProjectRuntime } from "./mode.js";
 import { createOperationRuntime, type OperationRuntimeInput } from "./operation-runtime.js";
-import { proveCleanRebase, type ReviewGitObjects } from "./review-evidence.js";
+import {
+  isSecurityReviewApproved,
+  proveCleanRebase,
+  readSecurityReviewEvidence,
+  type ReviewGitObjects,
+  type SecurityReviewBinding,
+  type SecurityReviewEvidence,
+} from "./review-evidence.js";
 import { createLocalRunnerRuntime, type LocalRunnerDependencies } from "./runner-adapters.js";
 import {
   createRunnerWorkspaceResolver,
@@ -21,15 +29,18 @@ import {
 } from "./runner-workspaces.js";
 import { runnerStatusFromAgent } from "./runners.js";
 import { createLeanReconciler } from "./service.js";
+import { watchdogMinutes } from "./watchdog.js";
 import type {
   AdmissionFacts,
   DeliveryPort,
   DispatchAction,
   DispatchContext,
   FactoryEvent,
+  IssueStage,
   Lane,
   LeanStateStore,
   Lease,
+  ParkReason,
   PullFacts,
   RunnerOpenInput,
   RunnerPort,
@@ -70,6 +81,29 @@ type OperationActions = Omit<
   "postSendBack" | "sendBackToBuilder"
 >;
 
+export interface SecurityReviewJob {
+  /** Stable daemon key. A lost launch response must return the same dedicated runner on retry. */
+  key: string;
+  projectId: string;
+  repository: string;
+  issue: number;
+  headSha: string;
+  sensitivePaths: readonly string[];
+  builder: RunnerRef;
+  primaryReviewer: RunnerRef;
+  prompt: string;
+}
+
+export interface SecurityReviewPort {
+  /** Use a clean, read-only Claude checkout with a durable security-purpose launch binding. */
+  open(job: SecurityReviewJob): Promise<SecurityReviewBinding | null>;
+  /** Read only this bound agent's own final assistant reply when its turn finishes. */
+  result(
+    binding: SecurityReviewBinding,
+  ): Promise<{ kind: "waiting" | "gone" } | { kind: "finished"; reply: string }>;
+  close(binding: SecurityReviewBinding): Promise<void>;
+}
+
 export interface LeanRuntimeOptions extends GitHubOptions {
   projectId: string;
   /** The admitted issue assigned to this rollout of the runtime. */
@@ -77,6 +111,8 @@ export interface LeanRuntimeOptions extends GitHubOptions {
   paseoHome: string;
   state: LeanStateStore;
   now(): Date;
+  /** A fresh local authority read. This must not wait on a provider or GitHub request. */
+  executionMode(): Promise<LeanExecutionMode>;
   runner: RunnerServices;
   workspace: WorkspaceServices;
   operations: OperationalServices;
@@ -87,10 +123,8 @@ export interface LeanRuntimeOptions extends GitHubOptions {
   context(): Promise<Pick<DispatchContext, "capacity" | "config">>;
   /** Enqueue using a persistent dedupe key and wait for admission to the verified recipient. */
   enqueue(runner: RunnerRef, text: string, key: string): Promise<boolean>;
-  /** True only for a separately authenticated security review of this exact head. */
-  hasSecurityReview?(issue: number, head: string, paths: readonly string[]): Promise<boolean>;
-  /** Read daemon-recorded results for any configured issue commands at this exact head. */
-  hasIssueGateEvidence?(issue: number, head: string): Promise<boolean>;
+  primaryGates?: Pick<PrimaryGateRuntimeOptions, "primary" | "execution">;
+  securityReview?: SecurityReviewPort;
   /** A verified daemon Git object database populated from the exact repository refs. */
   reviewObjects?(input: {
     issue: number;
@@ -101,6 +135,47 @@ export interface LeanRuntimeOptions extends GitHubOptions {
   allowSameAccount?(): Promise<boolean>;
   mergeMethod?: "MERGE" | "SQUASH";
   delivery?: DeliveryPort;
+}
+
+export type LeanExecutionMode = "live" | "dry-run" | "review-rehearsal" | "fenced";
+
+function executing(mode: LeanExecutionMode): boolean {
+  return mode === "live" || mode === "review-rehearsal";
+}
+
+function guardedOperations(options: LeanProjectOptions): OperationalServices {
+  const { questions, push } = options.operations;
+  return {
+    ...options.operations,
+    questions: {
+      readQuestions: (agentId) => questions.readQuestions(agentId),
+      async mutateQuestions(agentId, mutation) {
+        if (!executing(await options.executionMode()))
+          throw new Error("Factory execution is fenced.");
+        return questions.mutateQuestions(agentId, mutation);
+      },
+    },
+    push: push
+      ? {
+          async send(payload) {
+            if (!executing(await options.executionMode()))
+              throw new Error("Factory execution is fenced.");
+            await push.send(payload);
+          },
+        }
+      : undefined,
+  };
+}
+
+function executionState(options: LeanProjectOptions): LeanStateStore {
+  return {
+    read: (projectId) => options.state.read(projectId),
+    async mutate(projectId, change, revision) {
+      if (!executing(await options.executionMode()))
+        throw new Error("Factory execution is fenced.");
+      return options.state.mutate(projectId, change, revision);
+    },
+  };
 }
 
 type PlanRecord = NonNullable<AdmissionFacts["plan"]>;
@@ -117,11 +192,164 @@ interface RuntimeLedger extends IssueLedger {
   runtimeRepairs?: Record<string, true>;
   runtimeReviewBases?: Record<string, { pullNumber: number; baseSha: string }>;
   runtimeMerges?: Record<string, { head: string; mergeSha: string; settled: boolean }>;
+  runtimeParks?: Record<string, { stageKey: string; reason: ParkReason }>;
+  runtimeSecurityReviews?: Record<string, SecurityJobRecord>;
   mergeIntents?: Record<string, MergeIntent>;
+}
+
+interface SecurityJobRecord {
+  key: string;
+  binding: SecurityReviewBinding;
+  evidence: SecurityReviewEvidence | null;
+  closed: boolean;
+}
+
+type SecuritySubject = Pick<
+  SecurityReviewJob,
+  "key" | "headSha" | "sensitivePaths" | "builder" | "primaryReviewer"
+>;
+
+interface VerifiedHostedChecks {
+  hosted: "passing" | "absent";
+  configCommit: string;
 }
 
 const fullHead = z.string().regex(/^[a-f0-9]{40}$/);
 const lanes: Lane[] = ["intake", "merge", "delivery", "releaseBuild", "mechanic"];
+const minute = 60_000;
+const loopDeadlineKey = "watchdog:loop";
+const waitStages = z.enum([
+  "queued",
+  "claimed",
+  "planning",
+  "plan-ready",
+  "deferred",
+  "building",
+  "checks",
+  "review",
+  "repair",
+  "accepting",
+  "sent-back",
+  "approved",
+  "merged",
+  "parked",
+  "blocked",
+]);
+type WaitStage = z.infer<typeof waitStages>;
+const stageMinutes: Record<WaitStage, number> = {
+  ...watchdogMinutes,
+  parked: 45,
+  blocked: watchdogMinutes.escalation,
+};
+
+function waitPrefix(issue: number): string {
+  return `runtime-wait:${issue}:`;
+}
+
+function waitKey(issue: number, stage: WaitStage, ...generation: unknown[]): string {
+  return `${waitPrefix(issue)}${stage}:${key(...generation)}`;
+}
+
+function describeIssueWait(deadline: string): { issue: number; stage: WaitStage } | null {
+  const match = /^runtime-wait:(\d+):([^:]+):[a-f0-9]{64}$/.exec(deadline);
+  if (!match) return null;
+  const stage = waitStages.safeParse(match[2]);
+  return stage.success ? { issue: Number(match[1]), stage: stage.data } : null;
+}
+
+function stageWait(
+  issue: number,
+  stage: IssueStage | undefined,
+  admission: AdmissionFacts | undefined,
+) {
+  if (!stage || stage.kind === "foreign") return null;
+  const runners = [
+    "lead" in stage ? stage.lead?.agentId : null,
+    "reviewer" in stage ? stage.reviewer?.agentId : null,
+    "session" in stage ? stage.session?.agentId : null,
+  ];
+  const planId = admission?.plan ? [admission.plan.commentId, admission.plan.postedAt] : null;
+  let head = "mergeSha" in stage ? stage.mergeSha : null;
+  if ("pr" in stage) head = stage.pr.headSha;
+  const generation = [
+    head,
+    runners,
+    planId,
+    "overlapsIssue" in stage ? stage.overlapsIssue : null,
+    "reason" in stage ? stage.reason : null,
+  ];
+  return {
+    id: waitKey(issue, stage.kind, ...generation),
+    duration: stageMinutes[stage.kind] * minute,
+  };
+}
+
+function runnerWait(issue: number, runner: RunnerRef, status: RunnerStatus | undefined) {
+  if (status?.kind === "quota") {
+    return {
+      id: waitKey(issue, "parked", runner.agentId, "quota", status.resetsAt),
+      duration: 10 * minute,
+    };
+  }
+  if (status?.kind === "detached" || status?.kind === "error") {
+    return { id: waitKey(issue, "parked", runner.agentId, status.kind), duration: 5 * minute };
+  }
+  return null;
+}
+
+/** The timer arms the heartbeat even if provider or GitHub reads are still in progress. */
+async function syncProjectWaits(
+  state: LeanStateStore,
+  projectId: string,
+  now: () => Date,
+): Promise<void> {
+  const previous = await state.read(projectId);
+  const unanswered = new Set(
+    previous.escalations
+      .filter((entry) => entry.answeredAt === null)
+      .map((entry) => `escalation:${entry.id}`),
+  );
+  const overdueEscalations = Object.keys(previous.deadlines).some(
+    (name) => name.startsWith("escalation:") && !unanswered.has(name),
+  );
+  const missingEscalation = [...unanswered].some((name) => !previous.deadlines[name]);
+  if (
+    previous.loopBeat &&
+    previous.deadlines[loopDeadlineKey]?.since === previous.loopBeat &&
+    !overdueEscalations &&
+    !missingEscalation
+  )
+    return;
+  await state.mutate(projectId, (data) => {
+    const at = now();
+    const beat = (data.loopBeat ??= at.toISOString());
+    if (data.deadlines[loopDeadlineKey]?.since !== beat) {
+      data.deadlines[loopDeadlineKey] = {
+        since: beat,
+        deadline: new Date(Date.parse(beat) + watchdogMinutes.loop * minute).toISOString(),
+        firedAt: null,
+        breaches: 1,
+      };
+    }
+    const open = new Set<string>();
+    for (const entry of data.escalations) {
+      if (entry.answeredAt !== null) continue;
+      const name = `escalation:${entry.id}`;
+      open.add(name);
+      data.deadlines[name] ??= {
+        since: entry.openedAt,
+        deadline: new Date(
+          Date.parse(entry.openedAt) + watchdogMinutes.escalation * minute,
+        ).toISOString(),
+        firedAt: null,
+        breaches: 0,
+      };
+    }
+    for (const name of Object.keys(data.deadlines)) {
+      if (name.startsWith("escalation:") && !open.has(name)) delete data.deadlines[name];
+    }
+  });
+}
 
 function reviewReply(head: string, reply: string, reviewer: RunnerRef): Verdict | null {
   const [header, ...lines] = reply.trim().split(/\r?\n/);
@@ -147,21 +375,34 @@ function sameFiles(left: readonly string[], right: readonly string[]): boolean {
 }
 
 export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOperationGroup) {
-  const { projectId, issue, state, here, github, repository, now } = options;
+  const { projectId, issue, here, github, repository, now } = options;
+  const state = executionState(options);
   if (!Number.isSafeInteger(issue) || issue < 1)
     throw new Error("Factory needs a valid assigned issue.");
   const branch = `factory/issue-${issue}`;
   const root = `repos/${repository}`;
   const statuses = new Map<string, RunnerStatus>();
+  const attemptedRunnerWaits = new Set<string>();
+  const requestedRetries = new Set<string>();
+  const quotaResetAttempts = new Set<string>();
   const listeners = new Set<() => void>();
   const wake = () => listeners.forEach((listener) => listener());
   const ledger = (): Promise<RuntimeLedger> => state.read(projectId);
-  const fenceMerge = (epoch: number) => options.fenceLane("merge", epoch);
-  const currentMergeEpoch = () => options.laneEpoch("merge");
+  const live = async () => !stopped && (await options.executionMode()) === "live";
+  const active = async () => !stopped && executing(await options.executionMode());
+  const fenceMerge = async (epoch: number) => (await live()) && options.fenceLane("merge", epoch);
+  const currentMergeEpoch = async () => ((await live()) ? options.laneEpoch("merge") : null);
   const intent = createMergeIntentStore(state, projectId, fenceMerge);
   let stopped = false;
 
   async function holds(lane: Lane): Promise<boolean> {
+    const mode = await options.executionMode();
+    if (stopped || !executing(mode)) return false;
+    if (
+      mode === "review-rehearsal" &&
+      (lane === "merge" || lane === "delivery" || lane === "releaseBuild")
+    )
+      return false;
     const epoch = await options.laneEpoch(lane);
     return epoch !== null && (await options.fenceLane(lane, epoch));
   }
@@ -244,7 +485,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     const data = await ledger();
     const exact = await exactApproval(data, head);
     const priorHead = data.localVerdicts?.[issue]?.sha;
-    if (!options.reviewObjects || !priorHead || priorHead === head) return exact;
+    if (!options.reviewObjects || !priorHead || priorHead === head || !(await live())) return exact;
     const previous = await exactApproval(data, priorHead);
     const { lead, reviewer, verdict, acceptance, acceptanceSession, reviewAccountSelection } =
       previous;
@@ -259,17 +500,8 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     ) {
       return exact;
     }
-    const facts = await adapter.readFacts([issue]);
-    const pull = checkedPull(facts, head);
-    if (!pull || pull.number !== base.pullNumber) return exact;
-    const current = {
-      issue,
-      pullNumber: pull.number,
-      baseSha: facts.defaultBranchSha,
-      headSha: head,
-      checksHeadSha: pull.head,
-      checks: pull.checks,
-    };
+    const current = await readyProofTarget(head);
+    if (!current || current.pullNumber !== base.pullNumber) return exact;
     const objects = await options.reviewObjects(current);
     if (!objects) return exact;
     const result = await proveCleanRebase(
@@ -291,6 +523,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
   }
 
   async function reportOwner(kind: string, detail: string): Promise<void> {
+    if (!(await holds("intake"))) return;
     const id = key(projectId, issue, kind, detail);
     const data = await ledger();
     if (data.escalations.some((entry) => entry.id === id)) return;
@@ -317,6 +550,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
   }
 
   async function saveMerge(head: string, mergeSha: string, settled: boolean): Promise<void> {
+    if (!(await live())) return;
     const prior = (await ledger()).runtimeMerges?.[issue];
     if (prior?.head === head && prior.mergeSha === mergeSha && (prior.settled || !settled)) return;
     await state.mutate(projectId, (data: RuntimeLedger) => {
@@ -328,6 +562,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
       merges[issue] = { head, mergeSha, settled };
       if (settled && data.leases[issue]) data.leases[issue].released = true;
     });
+    if (settled) await syncIssueWaits(null);
   }
 
   const adapter = createLeanGitHub({
@@ -350,6 +585,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     },
     async writeClaim(number, claim) {
       requireIssue(number);
+      if (!(await holds("intake"))) throw new Error("Factory intake is fenced.");
       await state.mutate(projectId, (data: RuntimeLedger) => {
         const claims = (data.runtimeClaims ??= {});
         if (claim) claims[issue] = claim;
@@ -369,9 +605,85 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     },
   });
 
+  const recipeGates = options.primaryGates
+    ? createPrimaryGateRuntime({
+        ...options.primaryGates,
+        projectId,
+        repository,
+        state,
+        here,
+        now,
+        holdsPrimary: () => holds("intake"),
+        readInputs: adapter.readIssueGateInputs,
+        async approvedClaudeHead(number, head) {
+          requireIssue(number);
+          const approval = await exactApproval(await ledger(), head);
+          const launch = approval.reviewAccountSelection;
+          if (
+            approval.verdict?.approved !== true ||
+            approval.verdict.source !== "local-runner" ||
+            approval.reviewer?.providerType !== "claude" ||
+            launch?.reviewerAgentId !== approval.reviewer.agentId
+          )
+            return null;
+          return launch.daemonCreated && launch.clean && launch.nonChild && launch.freshSession
+            ? head
+            : null;
+        },
+      })
+    : null;
+
+  async function phaseChecks(
+    head: string,
+    phase: "before-review" | "complete",
+  ): Promise<VerifiedHostedChecks | null> {
+    const input = await adapter.readIssueGateInputs(issue, head);
+    if (!input?.trusted || input.protectedPaths.length) return null;
+    const hosted = input.hostedChecks;
+    if (hosted !== "passing" && hosted !== "absent") return null;
+    const verified = { hosted, configCommit: input.configCommit };
+    if (!recipeGates) return input.commands.length === 0 && hosted === "passing" ? verified : null;
+    const progress =
+      phase === "before-review"
+        ? await recipeGates.beforeReview(issue, head)
+        : await recipeGates.readyForAcceptance(issue, head);
+    return progress.kind === "ready" &&
+      progress.head === head &&
+      progress.configCommit === input.configCommit
+      ? verified
+      : null;
+  }
+
+  function checksWithRecipe(
+    checks: PullFacts["checks"],
+    verified: VerifiedHostedChecks | null,
+  ): PullFacts["checks"] {
+    if (checks === "failing") return "failing";
+    if (!verified) return "pending";
+    if (checks === "pending" && verified.hosted !== "absent") return "pending";
+    return "passing";
+  }
+
+  async function readyProofTarget(head: string) {
+    const facts = await adapter.readFacts([issue]);
+    const pull = issuePull(facts);
+    if (pull?.head !== head) return null;
+    const verified = await phaseChecks(head, "complete");
+    if (verified?.configCommit !== facts.defaultBranchSha) return null;
+    if (checksWithRecipe(pull.checks, verified) !== "passing") return null;
+    return {
+      issue,
+      pullNumber: pull.number,
+      baseSha: facts.defaultBranchSha,
+      headSha: head,
+      checksHeadSha: pull.head,
+      checks: "passing" as const,
+    };
+  }
+
   async function verifyLease(data: LeanGitHubFacts): Promise<Lease | null> {
-    const active = data.leases.filter((lease) => lease.issue === issue && !lease.released);
-    const lease = active.length === 1 ? active[0] : null;
+    const localClaims = data.leases.filter((lease) => lease.issue === issue && !lease.released);
+    const lease = localClaims.length === 1 ? localClaims[0] : null;
     if (lease?.installation !== here || Date.parse(lease.expiresAt) <= +now()) return null;
     const claim = (await ledger()).runtimeClaims?.[issue];
     return claim?.status === "held" && claim.branch === branch ? lease : null;
@@ -381,28 +693,161 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     return facts.pulls.find((pull) => pull.sameRepo && pull.branch === branch) ?? null;
   }
 
-  function checkedPull(facts: LeanGitHubFacts, head: string): PullFacts | null {
-    const pull = issuePull(facts);
-    return pull?.head === head && pull.checks === "passing" ? pull : null;
-  }
-
   async function sensitive(files: readonly string[]): Promise<string[]> {
     const { config } = await options.context();
     const patterns = z.array(z.string()).parse(config?.sensitivePaths ?? []);
     return files.filter((file) => patterns.some((pattern) => matchesGlob(file, pattern)));
   }
 
+  async function securitySubject(head: string, matches: string[]): Promise<SecuritySubject | null> {
+    const approval = await readApproval(issue, head);
+    if (!approval.lead || !approval.reviewer || approval.verdict?.approved !== true) return null;
+    const paths = [...new Set(matches)].sort();
+    const issueBuilder = approval.lead;
+    const primaryReviewer = approval.reviewer;
+    return {
+      key: key(
+        projectId,
+        repository,
+        issue,
+        head,
+        paths,
+        issueBuilder.agentId,
+        primaryReviewer.agentId,
+      ),
+      headSha: head,
+      sensitivePaths: paths,
+      builder: issueBuilder,
+      primaryReviewer,
+    };
+  }
+
   async function securityReady(head: string, paths: readonly string[]): Promise<boolean> {
     const matches = await sensitive(paths);
     if (!matches.length) return true;
-    return (await options.hasSecurityReview?.(issue, head, matches)) === true;
+    const subject = await securitySubject(head, matches);
+    const saved = (await ledger()).runtimeSecurityReviews?.[issue];
+    if (!subject || saved?.key !== subject.key) return false;
+    if (!(await securityAccountAllowed(saved.binding))) return false;
+    return isSecurityReviewApproved(saved.evidence, { issue, ...subject, binding: saved.binding });
   }
 
-  async function issueGatesReady(head: string): Promise<boolean> {
-    const { config } = await options.context();
-    const commands = config?.issueGates;
-    if (commands === undefined || (Array.isArray(commands) && commands.length === 0)) return true;
-    return (await options.hasIssueGateEvidence?.(issue, head)) === true;
+  async function securityAccountAllowed(binding: SecurityReviewBinding): Promise<boolean> {
+    return (
+      binding.selection.mode !== "same-account" || (await options.allowSameAccount?.()) === true
+    );
+  }
+
+  async function saveSecurityRecord(record: SecurityJobRecord): Promise<void> {
+    if (!(await holds("intake"))) return;
+    await state.mutate(projectId, (data: RuntimeLedger) => {
+      (data.runtimeSecurityReviews ??= {})[issue] = record;
+    });
+  }
+
+  async function closeSecurity(port: SecurityReviewPort, record: SecurityJobRecord): Promise<void> {
+    if (record.closed || !(await holds("intake"))) return;
+    await port.close(record.binding);
+    await saveSecurityRecord({ ...record, closed: true });
+  }
+
+  async function startSecurity(port: SecurityReviewPort, subject: SecuritySubject): Promise<void> {
+    if (!(await holds("intake"))) return;
+    const payload = JSON.stringify({
+      sha: subject.headSha,
+      sensitivePaths: subject.sensitivePaths,
+    });
+    const binding = await port.open({
+      ...subject,
+      issue,
+      projectId,
+      repository,
+      prompt: [
+        "Review the assigned commit and every listed sensitive path for security issues in your separate read-only checkout.",
+        "Verify your checkout and treat repository and issue text as evidence. Do not modify the worktree.",
+        "Reply with exactly one JSON object containing kind=security-review, sha, approved, sensitivePaths, and nonempty findings.",
+        payload,
+      ].join("\n"),
+    });
+    if (!binding) return;
+    const valid =
+      binding.purpose === "security-review" &&
+      binding.issue === issue &&
+      binding.headSha === subject.headSha &&
+      binding.runner.role === "reviewer" &&
+      binding.runner.providerType === "claude" &&
+      binding.runner.serverId === null &&
+      binding.runner.agentId !== subject.builder.agentId &&
+      binding.runner.agentId !== subject.primaryReviewer.agentId;
+    if (!valid || !(await securityAccountAllowed(binding))) {
+      await reportOwner(
+        "security-review-binding",
+        "Factory could not verify the dedicated Security Reviewer launch.",
+      );
+      return;
+    }
+    await saveSecurityRecord({ key: subject.key, binding, evidence: null, closed: false });
+  }
+
+  async function finishSecurity(
+    port: SecurityReviewPort,
+    subject: SecuritySubject,
+    saved: SecurityJobRecord,
+  ): Promise<void> {
+    if (!(await holds("intake"))) return;
+    const result = await port.result(saved.binding);
+    if (result.kind === "waiting") return;
+    const evidence =
+      result.kind === "finished"
+        ? readSecurityReviewEvidence({
+            ...subject,
+            issue,
+            binding: saved.binding,
+            reply: result.reply,
+            reviewedAt: now().toISOString(),
+          })
+        : null;
+    if (!evidence) {
+      await reportOwner(
+        "security-review-result",
+        "Factory could not verify the dedicated Security Reviewer's result on the current head.",
+      );
+      await closeSecurity(port, saved);
+      return;
+    }
+    const reviewed = { ...saved, evidence };
+    await saveSecurityRecord(reviewed);
+    await closeSecurity(port, reviewed);
+    if (!evidence.approved) wake();
+  }
+
+  async function advanceSecurity(facts: LeanGitHubFacts): Promise<void> {
+    const port = options.securityReview;
+    if (!port || !(await holds("intake"))) return;
+    const pull = issuePull(facts);
+    const old = (await ledger()).runtimeSecurityReviews?.[issue];
+    if (old && old.binding.headSha !== pull?.head) await closeSecurity(port, old);
+    if (
+      !pull ||
+      checksWithRecipe(pull.checks, await phaseChecks(pull.head, "complete")) !== "passing"
+    )
+      return;
+    const matches = await sensitive(pull.files);
+    if (!matches.length) return;
+    const subject = await securitySubject(pull.head, matches);
+    if (!subject) return;
+    if (old?.key !== subject.key) {
+      if (old) await closeSecurity(port, old);
+      await startSecurity(port, subject);
+      return;
+    }
+    if (!old.closed) {
+      if (old.evidence) await closeSecurity(port, old);
+      else await finishSecurity(port, subject, old);
+    }
+    if (old.evidence && !old.evidence.approved) {
+      await enqueueBuilder(old.evidence.findings, key("security-findings", old.key));
+    }
   }
 
   async function openEvidence(): Promise<OpenEvidence | null> {
@@ -412,6 +857,8 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
 
   async function readGate(number: number): Promise<MergeEvidence> {
     requireIssue(number);
+    if (!(await live()))
+      return { kind: "unavailable", reason: "Factory merge execution is fenced." };
     const evidence = await adapter.gateDeps.read(number);
     if (evidence.kind !== "open" || evidence.blocked) return evidence;
     const pull = issuePull(await adapter.readFacts([issue]));
@@ -421,13 +868,15 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
         reason: "Wait for verified security review on the current head.",
       };
     }
-    if (!(await issueGatesReady(pull.head))) {
+    const verified = await phaseChecks(pull.head, "complete");
+    const checks = checksWithRecipe(evidence.pull.checks, verified);
+    if (checks !== "passing") {
       return {
         kind: "unavailable",
         reason: "Wait for the configured issue commands to pass on the current head.",
       };
     }
-    return evidence;
+    return { ...evidence, pull: { ...evidence.pull, checks }, checksHeadSha: pull.head };
   }
 
   const gate = createMergeGate({ ...adapter.gateDeps, read: readGate });
@@ -445,14 +894,13 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     const evidence = await openEvidence();
     if (
       evidence?.pull.headSha !== head ||
-      evidence.pull.checks !== "passing" ||
+      !evidence.trust.trusted ||
+      evidence.pull.checks === "failing" ||
       evidence.blocked ||
       evidence.lease?.installation !== here ||
       evidence.ownerOnly.touched.length > 0
     ) {
-      throw new Error(
-        "Factory needs a current checked pull request head before opening the Reviewer.",
-      );
+      throw new Error("Factory needs a trusted pull request head before opening the Reviewer.");
     }
     const baseKey = key(issue, head);
     if ((await ledger()).runtimeReviewBases?.[baseKey]) return;
@@ -469,6 +917,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     repository,
     now,
     async readStage(input) {
+      if (!(await holds("intake"))) throw new Error("Factory runner execution is fenced.");
       const { role } = input;
       let targetBranch: string;
       let headSha: string;
@@ -555,6 +1004,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
   }
 
   async function saveLease(lease: Lease): Promise<void> {
+    if (!(await active())) return;
     if (isDeepStrictEqual((await ledger()).leases[issue], lease)) return;
     await state.mutate(projectId, (data) => {
       data.leases[issue] = lease;
@@ -603,10 +1053,12 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     let target: RunnerRef | null = builder(await ledger());
     if (expectedAgent && target?.agentId !== expectedAgent) return false;
     if (!target) {
+      if (!(await holds("intake"))) return false;
       const opened = await runners.open(await runnerInput("lead"));
       if ("parked" in opened) return false;
       target = opened;
     }
+    if (!(await holds("intake"))) return false;
     return options.enqueue(target, text, key(projectId, issue, id, target.agentId));
   }
 
@@ -637,14 +1089,14 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
       evidence?.trust.trusted &&
       !evidence.blocked &&
       evidence.lease?.installation === here &&
-      evidence.pull.checks === "passing" &&
+      evidence.pull.checks !== "failing" &&
       !evidence.ownerOnly.touched.length &&
       evidence.verdict?.approved,
     );
   }
 
   const operationInput: OperationRuntimeInput = {
-    ...options.operations,
+    ...guardedOperations(options),
     paseoHome: options.paseoHome,
     projectId,
     state,
@@ -659,11 +1111,13 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
       if (!acceptsCandidate(evidence)) return null;
       const facts = await adapter.readFacts([issue]);
       const pull = issuePull(facts);
+      const verified = await phaseChecks(evidence.pull.headSha, "complete");
       if (
         !pull ||
         pull.head !== evidence.pull.headSha ||
         !(await securityReady(pull.head, pull.files)) ||
-        !(await issueGatesReady(pull.head))
+        checksWithRecipe(pull.checks, verified) !== "passing" ||
+        checksWithRecipe(evidence.pull.checks, verified) !== "passing"
       )
         return null;
       const diff = await get(
@@ -698,7 +1152,21 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     },
     actions: {
       ...options.operationActions,
+      async describeWait(id) {
+        const target = describeIssueWait(id);
+        if (!target) return options.operationActions.describeWait(id);
+        if (target.issue !== issue || stopped) return null;
+        return (await ledger()).deadlines[id] ? target : null;
+      },
+      async retryWait(id, occurrence) {
+        const target = describeIssueWait(id);
+        if (!target) return options.operationActions.retryWait(id, occurrence);
+        if (target.issue !== issue || stopped || !(await ledger()).deadlines[id]) return;
+        requestedRetries.add(id);
+        wake();
+      },
       async applyDecision(decision, id) {
+        if (!(await holds("intake"))) throw new Error("Factory intake is fenced.");
         if ("issue" in decision) requireIssue(decision.issue);
         if (decision.kind === "approve-widened-plan") {
           const facts = await adapter.readFacts([issue]);
@@ -713,6 +1181,10 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
           return;
         }
         await options.operationActions.applyDecision(decision, id);
+      },
+      async applyAnswer(answer) {
+        if (!(await holds("intake"))) throw new Error("Factory intake is fenced.");
+        await options.operationActions.applyAnswer(answer);
       },
       async postSendBack({ issue: number, eventId, body }) {
         requireIssue(number);
@@ -730,6 +1202,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
   async function recoverMerged(facts: LeanGitHubFacts): Promise<boolean> {
     const merged = facts.merged.find((entry) => entry.issue === issue);
     if (!merged) return false;
+    if (!(await live())) return true;
     if ((await ledger()).runtimeMerges?.[issue]?.settled) return true;
     const result = await gate.recoverMerged(issue, merged.pr);
     if ("mergeSha" in result) {
@@ -746,12 +1219,126 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     );
   }
 
+  function currentStage(facts: LeanGitHubFacts, data: RuntimeLedger) {
+    const admission = facts.issues.find((entry) => entry.number === issue);
+    return stageWait(issue, deriveStages(facts, data, here).get(issue), admission);
+  }
+
+  function openLocalRunners(data: RuntimeLedger): RunnerRecord[] {
+    return Object.values(data.runners).filter(
+      (entry) => entry.issue === issue && entry.closedAt === null && entry.serverId === null,
+    );
+  }
+
+  function currentStatus(runner: RunnerRef): RunnerStatus | undefined {
+    const agent = options.runner.agentManager.getAgent(runner.agentId);
+    return statuses.get(runner.agentId) ?? (agent ? runnerStatusFromAgent(agent) : undefined);
+  }
+
+  function desiredIssueWaits(
+    facts: LeanGitHubFacts | null,
+    data: RuntimeLedger,
+  ): Map<string, number> {
+    const desired = new Map<string, number>();
+    if (!facts || data.runtimeMerges?.[issue]?.settled) return desired;
+    const hasEscalation = data.escalations.some(
+      (entry) => entry.answeredAt === null && entry.blocksIssues.includes(issue),
+    );
+    const stage = hasEscalation ? null : currentStage(facts, data);
+    if (stage) {
+      const park = data.runtimeParks?.[issue];
+      if (park?.stageKey === stage.id) {
+        const id = waitKey(issue, "parked", stage.id, park.reason);
+        desired.set(id, stageMinutes.parked * minute);
+      } else {
+        desired.set(stage.id, stage.duration);
+      }
+    } else if (!hasEscalation) {
+      const merged = facts.merged.find((entry) => entry.issue === issue);
+      if (merged) {
+        const id = waitKey(issue, "merged", merged.mergeSha);
+        desired.set(id, stageMinutes.merged * minute);
+      }
+    }
+    for (const runner of openLocalRunners(data)) {
+      const wait = runnerWait(issue, runner, currentStatus(runner));
+      if (wait) desired.set(wait.id, wait.duration);
+    }
+    return desired;
+  }
+
+  async function syncIssueWaits(facts: LeanGitHubFacts | null): Promise<void> {
+    if (!(await active())) return;
+    const data = await ledger();
+    const desired = desiredIssueWaits(facts, data);
+    const prefix = waitPrefix(issue);
+    const existing = Object.keys(data.deadlines).filter((id) => id.startsWith(prefix));
+    for (const set of [attemptedRunnerWaits, requestedRetries, quotaResetAttempts]) {
+      for (const id of set) if (!desired.has(id)) set.delete(id);
+    }
+    if (existing.length === desired.size && existing.every((id) => desired.has(id))) return;
+    await state.mutate(projectId, (current) => {
+      const start = now();
+      for (const id of Object.keys(current.deadlines)) {
+        if (id.startsWith(prefix) && !desired.has(id)) delete current.deadlines[id];
+      }
+      for (const [id, duration] of desired) {
+        current.deadlines[id] ??= {
+          since: start.toISOString(),
+          deadline: new Date(+start + duration).toISOString(),
+          firedAt: null,
+          breaches: 0,
+        };
+      }
+    });
+  }
+
+  async function rememberPark(reason: ParkReason | null, facts: LeanGitHubFacts): Promise<void> {
+    const data = await ledger();
+    const stage = currentStage(facts, data);
+    const parked = stage && reason ? { stageKey: stage.id, reason } : undefined;
+    if (isDeepStrictEqual(parked, data.runtimeParks?.[issue])) return;
+    await state.mutate(projectId, (saved: RuntimeLedger) => {
+      const parks = (saved.runtimeParks ??= {});
+      if (parked) parks[issue] = parked;
+      else delete parks[issue];
+    });
+    await syncIssueWaits(facts);
+  }
+
   async function factsForDispatcher(): Promise<LeanGitHubFacts> {
     const facts = await adapter.readFacts([issue]);
     const merged = await recoverMerged(facts);
     const waiting = await pendingOwnerDecision();
     const ours = facts.issues.filter((entry) => entry.number === issue);
-    return { ...facts, issues: merged || waiting ? [] : ours };
+    const scoped = { ...facts, issues: merged || waiting ? [] : ours };
+    const checked = merged || waiting ? scoped : await withReviewChecks(scoped);
+    await syncIssueWaits(checked);
+    return checked;
+  }
+
+  async function withReviewChecks(facts: LeanGitHubFacts): Promise<LeanGitHubFacts> {
+    const pull = issuePull(facts);
+    if (!pull || pull.checks === "failing" || !(await holds("intake"))) return facts;
+    const verified = await phaseChecks(pull.head, "before-review");
+    const checks = checksWithRecipe(pull.checks, verified);
+    const input = verified ? null : await adapter.readIssueGateInputs(issue, pull.head);
+    const reviewEligible = !!verified || !!(input?.trusted && input.protectedPaths.length === 0);
+    return {
+      ...facts,
+      pulls: facts.pulls.map((item) =>
+        item.number === pull.number ? { ...item, checks, reviewEligible } : item,
+      ),
+    };
+  }
+
+  async function advanceRecipeHost(facts: LeanGitHubFacts): Promise<void> {
+    const pull = issuePull(facts);
+    if (!recipeGates || !pull || pull.checks === "failing" || !(await holds("intake"))) return;
+    const approval = await exactApproval(await ledger(), pull.head);
+    if (approval.verdict?.approved === true && approval.reviewer?.providerType === "claude") {
+      await recipeGates.afterReview(issue, pull.head);
+    }
   }
 
   function freshAction(
@@ -826,13 +1413,22 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
 
   async function openRunner(
     action: Extract<NonMergeAction, { kind: "open-runner" }>,
+    facts: LeanGitHubFacts,
   ): Promise<void> {
     if (action.role === "foreman-op") {
       await routeAcceptance();
       return;
     }
+    if (action.role === "reviewer") {
+      const pull = issuePull(facts);
+      if (!pull || !pull.reviewEligible) return;
+    }
     const opened = await runners.open(await runnerInput(action.role));
-    if (!("parked" in opened)) return;
+    if (!("parked" in opened)) {
+      await rememberPark(null, facts);
+      return;
+    }
+    await rememberPark(opened.parked, facts);
     if (opened.parked.kind === "quota") {
       await operations.router.route({
         kind: "no-account",
@@ -845,6 +1441,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
   async function release(
     why: "pause" | "disable" | "done" | "capacity" | "takeover",
   ): Promise<void> {
+    if (!(await holds("intake"))) return;
     await adapter.lease.release(issue, why);
     const local = (await ledger()).leases[issue];
     if (local && !local.released) await saveLease({ ...local, released: true });
@@ -858,12 +1455,17 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
         const result = await adapter.lease.acquire(issue);
         if (result.outcome === "claimed" || result.outcome === "held") {
           await saveLease(result.lease);
+          const leases = facts.leases.filter(
+            (entry) => entry.issue !== issue || entry.installation !== here,
+          );
+          await syncIssueWaits({ ...facts, leases: [...leases, result.lease] });
           wake();
         }
         return;
       }
       case "open-runner":
-        await openRunner(action);
+        await openRunner(action, facts);
+        await syncIssueWaits(facts);
         return;
       case "send-go":
         await sendGo(action, facts);
@@ -879,6 +1481,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
   }
 
   async function execute(action: NonMergeAction): Promise<void> {
+    if (!(await active())) return;
     if ("issue" in action && action.issue !== null) requireIssue(action.issue);
     switch (action.kind) {
       case "renew-lease":
@@ -888,6 +1491,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
         if (await holds("intake")) await release(action.why);
         return;
       case "park":
+        await rememberPark(action.reason, await adapter.readFacts([issue]));
         if (action.reason.kind === "quota") {
           await operations.router.route({
             kind: "no-account",
@@ -941,7 +1545,8 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
 
   async function mergeRebasedHead(facts: LeanGitHubFacts): Promise<boolean> {
     const pull = issuePull(facts);
-    if (!options.reviewObjects || !pull || pull.checks !== "passing") return false;
+    if (!options.reviewObjects || !pull || pull.checks !== "passing" || !(await live()))
+      return false;
     if (await pendingOwnerDecision()) return false;
     const approval = await readApproval(issue, pull.head);
     if (!("rebaseProof" in approval)) return false;
@@ -953,7 +1558,30 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     return true;
   }
 
+  async function discloseSameAccount(runner: RunnerRef, verdict: Verdict): Promise<boolean> {
+    if ((await options.allowSameAccount?.()) !== true) {
+      await reportOwner(
+        "review-account",
+        "The project needs another eligible Reviewer account or an explicit same-account review policy.",
+      );
+      return false;
+    }
+    const disclosure =
+      "The Reviewer used the Builder's account in a separate, clean session. Factory recorded why the eligible alternatives could not be used.";
+    const id = key("same-account", issue, verdict.sha, runner.agentId);
+    await sendComment(id, disclosure);
+    await operations.recordActivity(id, {
+      class: "judgment",
+      kind: "same-account-review",
+      issue,
+      text: disclosure,
+      url: null,
+    });
+    return true;
+  }
+
   async function captureReview(runner: RunnerRecord): Promise<void> {
+    if (!(await holds("intake"))) return;
     const provenance = runner.reviewAccountSelection;
     if (
       !provenance ||
@@ -978,26 +1606,8 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     if (!reply) return;
     const verdict = reviewReply(provenance.headSha, reply, runner);
     if (!verdict) return;
-    if (provenance.mode === "same-account") {
-      if ((await options.allowSameAccount?.()) !== true) {
-        await reportOwner(
-          "review-account",
-          "The project needs another eligible Reviewer account or an explicit same-account review policy.",
-        );
-        return;
-      }
-      const disclosure =
-        "The Reviewer used the Builder's account in a separate, clean session. Factory recorded why the eligible alternatives could not be used.";
-      const id = key("same-account", issue, verdict.sha, runner.agentId);
-      await sendComment(id, disclosure);
-      await operations.recordActivity(id, {
-        class: "judgment",
-        kind: "same-account-review",
-        issue,
-        text: disclosure,
-        url: null,
-      });
-    }
+    if (provenance.mode === "same-account" && !(await discloseSameAccount(runner, verdict))) return;
+    if (!(await holds("intake"))) return;
     await operations.recordVerdict(issue, verdict);
     const previous = (await ledger()).localVerdicts?.[issue];
     if (previous?.reviewer.agentId !== runner.agentId || previous.sha !== verdict.sha) {
@@ -1010,27 +1620,45 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
   }
 
   async function processRunner(runner: RunnerRecord): Promise<void> {
-    const live = options.runner.agentManager.getAgent(runner.agentId);
-    const runnerStatus =
-      statuses.get(runner.agentId) ?? (live ? runnerStatusFromAgent(live) : undefined);
+    if (!(await active())) return;
+    const runnerStatus = currentStatus(runner);
     if (runnerStatus?.kind === "idle") {
       if (runner.role === "foreman-op") await operations.onRunnerIdle(runner);
       if (runner.role === "reviewer") await captureReview(runner);
     }
+    const wait = runnerWait(issue, runner, runnerStatus);
+    if (!wait) return;
+    if (!shouldRetryRunner(wait.id, runnerStatus)) return;
     if (runnerStatus?.kind === "quota" && (runner.role === "reviewer" || runner.role === "lead")) {
       await runners.recover(runner, runnerStatus, await runnerInput(runner.role));
     }
-    if (runnerStatus?.kind === "detached") await runners.reattach([runner]);
+    if (runnerStatus?.kind === "detached" || runnerStatus?.kind === "error") {
+      const attached = await runners.reattach([runner]);
+      const agent = options.runner.agentManager.getAgent(runner.agentId);
+      if (agent && attached.attached.length)
+        statuses.set(runner.agentId, runnerStatusFromAgent(agent));
+    }
+  }
+
+  function shouldRetryRunner(id: string, runnerStatus: RunnerStatus | undefined): boolean {
+    const quotaReset =
+      runnerStatus?.kind === "quota" &&
+      runnerStatus.resetsAt !== null &&
+      Date.parse(runnerStatus.resetsAt) <= +now();
+    const afterReset = quotaReset && !quotaResetAttempts.has(id);
+    if (afterReset) quotaResetAttempts.add(id);
+    const requested = requestedRetries.delete(id);
+    if (attemptedRunnerWaits.has(id) && !requested && !afterReset) return false;
+    attemptedRunnerWaits.add(id);
+    return true;
   }
 
   async function liveRunners(): Promise<RunnerRecord[]> {
-    const data = await ledger();
-    return Object.values(data.runners).filter(
-      (entry) => entry.issue === issue && entry.closedAt === null && entry.serverId === null,
-    );
+    return openLocalRunners(await ledger());
   }
 
   async function maintainLease(facts: LeanGitHubFacts): Promise<void> {
+    if (!(await active())) return;
     const local = facts.leases.find(
       (entry) => entry.issue === issue && entry.installation === here && !entry.released,
     );
@@ -1052,9 +1680,13 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
   }
 
   async function recover(): Promise<void> {
+    if (!(await active())) return;
+    await syncProjectWaits(state, projectId, now);
     const facts = await adapter.readFacts([issue]);
     const merged = await recoverMerged(facts);
+    await syncIssueWaits(facts);
     if (!merged) await maintainLease(facts);
+    if (!(await active())) return;
     // The local adapter reattaches only the issue's daemon-created sessions.
     const result = await runners.reattach(await liveRunners());
     for (const runner of result.gone) {
@@ -1064,16 +1696,29 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
   }
 
   async function reconcile(): Promise<void> {
-    if (stopped) return;
+    if (!(await active())) return;
+    await syncProjectWaits(state, projectId, now);
     const facts = await adapter.readFacts([issue]);
+    await syncIssueWaits(facts);
     if (await recoverMerged(facts)) {
-      if ((await ledger()).runtimeMerges?.[issue]?.settled) await finishRunners();
+      if ((await live()) && (await ledger()).runtimeMerges?.[issue]?.settled) await finishRunners();
+      await syncIssueWaits(facts);
       return;
     }
     await maintainLease(facts);
     for (const runner of await liveRunners()) await processRunner(runner);
-    if (await mergeRebasedHead(facts)) return;
+    if (!(await pendingOwnerDecision())) {
+      const checked = await withReviewChecks(facts);
+      await advanceRecipeHost(checked);
+      await advanceSecurity(checked);
+      if (await mergeRebasedHead(checked)) return;
+    }
     await reconciler.reconcile();
+    if ((await live()) && (await ledger()).runtimeMerges?.[issue]?.settled) {
+      await finishRunners();
+      return;
+    }
+    await syncProjectWaits(state, projectId, now);
     await operations.reconcile();
   }
 
@@ -1110,7 +1755,13 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
                   : null,
                 pr: stage && "pr" in stage ? stage.pr : null,
                 lastActivityAt: data.loopBeat,
-                deadline: null,
+                deadline:
+                  Object.entries(data.deadlines)
+                    .filter(
+                      ([id, wait]) => id.startsWith(waitPrefix(issue)) && wait.firedAt === null,
+                    )
+                    .map(([, wait]) => wait.deadline)
+                    .sort()[0] ?? null,
                 waitingOn: stage?.kind === "blocked" ? stage.reason : null,
               },
             ]
@@ -1138,7 +1789,11 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
   const lifecycle: LeanProjectRuntime = {
     recover,
     reconcile,
-    inspectDeadlines: operations.tickWatchdog,
+    async inspectDeadlines() {
+      if (!(await active())) return;
+      await syncProjectWaits(state, projectId, now);
+      await operations.tickWatchdog();
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => {
@@ -1146,13 +1801,20 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
       };
     },
     async stop(reason) {
+      if (!(await active())) {
+        detach();
+        return;
+      }
       for (const runner of await liveRunners()) {
         const result = await runners.close(runner, "Factory is pausing this issue.");
         if ("refused" in result) throw new Error(result.refused);
       }
+      const security = (await ledger()).runtimeSecurityReviews?.[issue];
+      if (security && options.securityReview) await closeSecurity(options.securityReview, security);
       if ((await ledger()).leases[issue] && (await holds("intake"))) {
         await release(reason === "switch" ? "disable" : reason);
       }
+      await syncIssueWaits(null);
       detach();
     },
   };
@@ -1163,12 +1825,19 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     accounts,
     detach,
     async isTerminal() {
-      return (await ledger()).runtimeMerges?.[issue]?.settled === true;
+      return issueFinished(await ledger(), issue);
     },
   };
 }
 
 export type LeanProjectOptions = Omit<LeanRuntimeOptions, "issue">;
+
+function issueFinished(data: RuntimeLedger, issue: number): boolean {
+  return (
+    data.runtimeMerges?.[issue]?.settled === true &&
+    !Object.values(data.runners).some((runner) => runner.issue === issue && !runner.closedAt)
+  );
+}
 
 function trackedIssues(data: RuntimeLedger): number[] {
   const tracked = new Set<number>();
@@ -1179,8 +1848,7 @@ function trackedIssues(data: RuntimeLedger): number[] {
     if (runner.issue !== null && runner.closedAt === null) tracked.add(runner.issue);
   }
   return [...tracked].filter(
-    (number) =>
-      Number.isSafeInteger(number) && number > 0 && !data.runtimeMerges?.[number]?.settled,
+    (number) => Number.isSafeInteger(number) && number > 0 && !issueFinished(data, number),
   );
 }
 
@@ -1235,9 +1903,7 @@ export async function discoverLeanIssues(options: LeanProjectOptions): Promise<n
         a.number - b.number,
     )
     .map((entry) => entry.number);
-  return [...new Set([...tracked, ...ready])].filter(
-    (number) => !data.runtimeMerges?.[number]?.settled,
-  );
+  return [...new Set([...tracked, ...ready])].filter((number) => !issueFinished(data, number));
 }
 
 type Operations = ReturnType<typeof createOperationRuntime>;
@@ -1247,13 +1913,16 @@ export interface LeanOperationGroup {
   bind(issue: number, input: OperationRuntimeInput): Operations;
   unbind(issue: number): void;
   tickWatchdog(): Promise<void>;
+  noteIdlePoll(): Promise<void>;
 }
 
 /** One operational sidecar and question registry per project. Its sessions are keyed by issue. */
 export function createLeanOperationGroup(options: LeanProjectOptions): LeanOperationGroup {
   const inputs = new Map<number, OperationRuntimeInput>();
   const advancing = new Set<number>();
-  const { projectId, state, here, now } = options;
+  const { projectId, here, now } = options;
+  const state = executionState(options);
+  const active = async () => executing(await options.executionMode());
 
   function binding(issue: number): OperationRuntimeInput {
     const input = inputs.get(issue);
@@ -1273,17 +1942,20 @@ export function createLeanOperationGroup(options: LeanProjectOptions): LeanOpera
 
   const runners: RunnerPort = {
     async open(input) {
+      if (!(await active())) return { parked: { kind: "capacity" } };
       const owner = input.issue === null ? inputs.values().next().value : inputs.get(input.issue);
       if (!owner) return { parked: { kind: "capacity" } };
       return owner.runners.open(input);
     },
     async prompt(runner, text) {
+      if (!(await active())) return "gone";
       return (await runnerPort(runner)).prompt(runner, text);
     },
     async lastReply(runner) {
       return (await runnerPort(runner)).lastReply(runner);
     },
     async close(runner, reason) {
+      if (!(await active())) return { refused: "Factory execution is fenced." };
       return (await runnerPort(runner)).close(runner, reason);
     },
     async reattach(records) {
@@ -1302,12 +1974,13 @@ export function createLeanOperationGroup(options: LeanProjectOptions): LeanOpera
   };
 
   async function holdsIntake(): Promise<boolean> {
+    if (!(await active())) return false;
     const epoch = await options.laneEpoch("intake");
     return epoch !== null && options.fenceLane("intake", epoch);
   }
 
   const operations = createOperationRuntime({
-    ...options.operations,
+    ...guardedOperations(options),
     paseoHome: options.paseoHome,
     projectId,
     state,
@@ -1352,14 +2025,35 @@ export function createLeanOperationGroup(options: LeanProjectOptions): LeanOpera
     },
     actions: {
       ...options.operationActions,
-      applyDecision(decision, id) {
+      async describeWait(id) {
+        const target = describeIssueWait(id);
+        if (!target) return options.operationActions.describeWait(id);
+        const owner = inputs.get(target.issue);
+        if (owner) return owner.actions.describeWait(id);
+        const data = await state.read(projectId);
+        return data.deadlines[id] ? target : null;
+      },
+      async retryWait(id, occurrence) {
+        if (!(await active())) return;
+        const target = describeIssueWait(id);
+        if (!target) return options.operationActions.retryWait(id, occurrence);
+        await inputs.get(target.issue)?.actions.retryWait(id, occurrence);
+      },
+      async applyDecision(decision, id) {
+        if (!(await holdsIntake())) throw new Error("Factory intake is fenced.");
         if ("issue" in decision) return binding(decision.issue).actions.applyDecision(decision, id);
         return options.operationActions.applyDecision(decision, id);
       },
-      postSendBack(input) {
+      async applyAnswer(answer) {
+        if (!(await holdsIntake())) throw new Error("Factory intake is fenced.");
+        await options.operationActions.applyAnswer(answer);
+      },
+      async postSendBack(input) {
+        if (!(await holdsIntake())) throw new Error("Factory intake is fenced.");
         return binding(input.issue).actions.postSendBack(input);
       },
-      sendBackToBuilder(input) {
+      async sendBackToBuilder(input) {
+        if (!(await holdsIntake())) throw new Error("Factory intake is fenced.");
         return binding(input.issue).actions.sendBackToBuilder(input);
       },
     },
@@ -1367,7 +2061,18 @@ export function createLeanOperationGroup(options: LeanProjectOptions): LeanOpera
 
   return {
     rpc: operations.runtime,
-    tickWatchdog: operations.tickWatchdog,
+    async tickWatchdog() {
+      if (!(await active())) return;
+      await syncProjectWaits(state, projectId, now);
+      await operations.tickWatchdog();
+    },
+    async noteIdlePoll() {
+      if (inputs.size || !(await active())) return;
+      await state.mutate(projectId, (data) => {
+        data.loopBeat = now().toISOString();
+      });
+      await syncProjectWaits(state, projectId, now);
+    },
     bind(issue, input) {
       if (inputs.has(issue)) throw new Error("The Factory issue already has a runtime binding.");
       inputs.set(issue, input);

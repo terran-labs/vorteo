@@ -97,6 +97,7 @@ const PINNED_GAPS: string[] = [];
 // Routes the grant never approves, each on OWNER_ONLY_OPERATIONS.
 const PINNED_EXCLUSIONS = [
   "/api/installation/owner/connections",
+  "/api/installation/owner/factory/lean",
   "/api/installation/owner/health-dismissals",
   "/api/installation/owner/instruction-requests/decision",
   "/api/installation/owner/profiles",
@@ -218,6 +219,7 @@ test("every owner route that changes something has an agent front door, an exclu
     "source-upgrade-rollback",
     "account-credentials",
     "health-dismissal",
+    "lean-factory-owner",
   ]);
 });
 

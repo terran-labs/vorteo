@@ -36,8 +36,17 @@ export interface RunnerWorkspaceDependencies {
   workspaces: Pick<WorkspaceRegistry, "get" | "upsert">;
   /** Read daemon-authenticated stage facts. The runner's brief and labels supply no authority. */
   readStage(input: RunnerOpenInput): Promise<AuthorizedRunnerStage>;
+  /** Verify an exact chain of daemon publication receipts for this preserved checkout. */
+  verifyBuilderPublication?(input: BuilderWorkspacePublication): Promise<boolean>;
   now(): Date;
   onWorkspaceChanged?(workspaceId: string): void;
+}
+
+export interface BuilderWorkspacePublication {
+  issue: number;
+  workspaceId: string;
+  workspaceHead: string;
+  remoteHead: string;
 }
 
 type ResolveWorkspace = LocalRunnerDependencies["resolveWorkspace"];
@@ -92,7 +101,22 @@ export function createRunnerWorkspaceResolver(deps: RunnerWorkspaceDependencies)
       const checkout = lead ? ["-b", stage.branch] : ["--detach"];
       await git(repository, ["worktree", "add", ...checkout, cwd, stage.headSha]);
     }
-    await verifyWorktree({ cwd, repository, stage, lead });
+    await verifyWorktree({
+      cwd,
+      repository,
+      stage,
+      lead,
+      async verifyPublishedHead(workspaceHead) {
+        const verify = deps.verifyBuilderPublication;
+        if (!verify || stage.issue === null) return false;
+        return verify({
+          issue: stage.issue,
+          workspaceId,
+          workspaceHead,
+          remoteHead: stage.headSha,
+        });
+      },
+    });
     const title = runnerTitle(stage.role, stage.issue, stage.issueTitle);
     if (!existing) {
       const now = deps.now().toISOString();
@@ -115,7 +139,12 @@ export function createRunnerWorkspaceResolver(deps: RunnerWorkspaceDependencies)
     } else {
       await refreshTitle(existing, stage.issueTitle ? title : null);
     }
-    return { workspaceId, reviewHead: stage.role === "reviewer" ? stage.headSha : null, title };
+    return {
+      workspaceId,
+      reviewHead: stage.role === "reviewer" ? stage.headSha : null,
+      authorizedBuilderHead: lead ? stage.headSha : undefined,
+      title,
+    };
   }
 
   async function refreshTitle(
@@ -263,6 +292,7 @@ async function verifyWorktree(input: {
   repository: string;
   stage: AuthorizedRunnerStage;
   lead: boolean;
+  verifyPublishedHead(workspaceHead: string): Promise<boolean>;
 }): Promise<void> {
   const { cwd, repository, stage, lead } = input;
   const common = await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
@@ -280,12 +310,15 @@ async function verifyWorktree(input: {
   if (branch !== stage.branch)
     throw new Error("The builder's saved worktree is on another branch.");
   // A retry keeps commits saved locally before a quota stop, provided the authorized head is an ancestor.
-  await git(cwd, ["merge-base", "--is-ancestor", stage.headSha, head]).catch((cause: unknown) => {
-    throw new Error(
-      "The builder's saved branch diverged from the authorized head. Reconcile it before resuming.",
-      { cause },
-    );
-  });
+  await git(cwd, ["merge-base", "--is-ancestor", stage.headSha, head]).catch(
+    async (cause: unknown) => {
+      if (await input.verifyPublishedHead(head)) return;
+      throw new Error(
+        "The builder's saved branch diverged from the authorized head. Reconcile it before resuming.",
+        { cause },
+      );
+    },
+  );
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {

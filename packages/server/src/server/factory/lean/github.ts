@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   claimIssue,
@@ -16,6 +17,7 @@ import {
   type TrustedAccounts,
 } from "../project/trust.js";
 import type { MergeEvidence, MergeGateDeps } from "./merge-gate.js";
+import type { HostedGateState, IssueGateInputs } from "./gate-runtime.js";
 import {
   LEAN_PROTOCOL_MAJOR,
   type AdmissionFacts,
@@ -70,6 +72,7 @@ export interface LeanGitHubFacts extends GitHubFacts {
 
 export interface LeanGitHub {
   readFacts(trackedIssues?: readonly number[]): Promise<LeanGitHubFacts>;
+  readIssueGateInputs(issue: number, head: string): Promise<IssueGateInputs | null>;
   gateDeps: MergeGateDeps;
   lease: LeasePort;
 }
@@ -209,6 +212,34 @@ const file = z.object({ filename: z.string(), previous_filename: z.string().opti
 const leasePattern =
   /^<!-- factory-lease v1 installation=(\S+) protocol=(\d+) expires=(\S+?)(?: released=(\S+))? -->$/m;
 const ownerOnlyPaths = new Set([...OWNER_ONLY_FILES, ".github/vorteo-factory.json"]);
+const gateConfig = z.looseObject({
+  schema: z.literal("vorteo-factory"),
+  version: z.literal(1),
+  issueGates: z
+    .array(
+      z.object({
+        argv: z.array(z.string().min(1)).min(1),
+        where: z.enum(["container", "host"]).default("container"),
+        requiredOutput: z.string().min(1).optional(),
+      }),
+    )
+    .min(1)
+    .optional(),
+  checks: z.array(z.string().min(1)).optional(),
+  releaseRecipeFiles: z.array(z.string().min(1)).optional(),
+});
+const treeEntries = z.object({
+  sha: oid,
+  truncated: z.literal(false),
+  tree: z.array(z.object({ path: z.string(), mode: z.string(), type: z.string(), sha: oid })),
+});
+
+function pinnedTreeEntry(tree: z.infer<typeof treeEntries>, path: string) {
+  const matches = tree.tree.filter((entry) => entry.path === path);
+  if (matches.length > 1)
+    throw new FactoryGitHubError("The owner configuration path is ambiguous.");
+  return matches[0];
+}
 
 function protectedChanges(paths: readonly string[], recipeFiles: readonly string[]): string[] {
   return paths.filter(
@@ -487,23 +518,8 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
     return names;
   }
 
-  async function checks(pull: PullDetail, repo: Repository): Promise<PullRef["checks"]> {
-    const names = await requiredChecks(repo);
-    const configured = new Set(options.requiredChecks ?? []);
-    for (const check of configured) names.add(check);
-    const extra = new Set(options.extraChecks ?? []);
+  async function* headCheckContexts(pull: PullDetail): AsyncGenerator<CheckContext> {
     let cursor: string | null = null;
-    let pending = false;
-    let observed = false;
-    function inspect(context: z.infer<typeof checkContext>): boolean {
-      const required = context.isRequired || configured.has(context.name);
-      if (required) names.delete(context.name);
-      if (!required && !extra.has(context.name)) return true;
-      observed = true;
-      const result = checkState(context);
-      if (required && result === "pending") pending = true;
-      return result !== "failing";
-    }
     for (;;) {
       const data: z.infer<typeof checkData> = await graph(
         checkQuery,
@@ -515,14 +531,40 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
         throw new FactoryGitHubError("GitHub returned checks for another commit.");
       const contexts = commit.statusCheckRollup?.contexts;
       if (!contexts) break;
-      if (!contexts.nodes.every(inspect)) return "failing";
+      yield* contexts.nodes;
       if (!contexts.pageInfo.hasNextPage) break;
       const next = contexts.pageInfo.endCursor;
       if (!next || next === cursor)
         throw new FactoryGitHubError("GitHub did not finish listing commit checks.");
       cursor = next;
     }
-    return pending || names.size || !observed ? "pending" : "passing";
+  }
+
+  async function hostedChecks(
+    pull: PullDetail,
+    repo: Repository,
+    configuredChecks: readonly string[],
+  ): Promise<HostedGateState> {
+    const names = await requiredChecks(repo);
+    const configured = new Set(configuredChecks);
+    for (const checkName of configured) names.add(checkName);
+    const extra = new Set(options.extraChecks ?? []);
+    let pending = false;
+    let observed = false;
+    let anyContext = extra.size > 0;
+    for await (const context of headCheckContexts(pull)) {
+      anyContext = true;
+      const required = context.isRequired || configured.has(context.name);
+      if (required) names.delete(context.name);
+      if (!required && !extra.has(context.name)) continue;
+      observed = true;
+      const result = checkState(context);
+      if (result === "failing") return "failing";
+      if (required && result === "pending") pending = true;
+    }
+    if (pending || names.size > 0) return "pending";
+    if (observed) return "passing";
+    return anyContext ? "pending" : "absent";
   }
 
   async function filePaths(pull: PullDetail): Promise<string[]> {
@@ -538,12 +580,20 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
     ];
   }
 
-  async function inspectOpen(pull: PullDetail, repo: Repository, trusted: TrustedAccounts) {
+  async function inspectOpen(
+    pull: PullDetail,
+    repo: Repository,
+    trusted: TrustedAccounts,
+    configuredChecks = options.requiredChecks ?? [],
+  ) {
     const threads = await reviewThreads(pull, trusted);
     if (threads.state.mergeQueueEntry) {
       return { kind: "queued" as const, pull: pullRef(pull, repo, "pending") };
     }
-    const [files, status] = await Promise.all([filePaths(pull), checks(pull, repo)]);
+    const [files, status] = await Promise.all([
+      filePaths(pull),
+      hostedChecks(pull, repo, configuredChecks),
+    ]);
     const after = await get(`pulls/${pull.number}`, pullDetail);
     if (
       after.head.sha !== pull.head.sha ||
@@ -558,7 +608,9 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
     const permissible = ["CLEAN", "UNSTABLE"].includes(threads.state.mergeStateStatus);
     return {
       kind: "open" as const,
-      pull: pullRef(after, repo, status),
+      pull: pullRef(after, repo, status === "absent" ? "pending" : status),
+      hostedChecks: status,
+      draft: after.draft,
       files,
       trustedThreadsOpen: threads.open,
       mergeable: after.mergeable === null ? null : after.mergeable && !after.draft && permissible,
@@ -665,6 +717,116 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
       trustedThreadsOpen: inspected.trustedThreadsOpen,
       mergeable: inspected.mergeable,
     };
+  }
+
+  async function readPinnedGateConfig(
+    configCommit: string,
+  ): Promise<z.infer<typeof gateConfig> | null> {
+    const commit = await get(
+      `git/commits/${configCommit}`,
+      z.object({ sha: z.literal(configCommit), tree: z.object({ sha: oid }) }),
+    );
+    const rootTree = await get(`git/trees/${commit.tree.sha}`, treeEntries);
+    if (rootTree.sha !== commit.tree.sha)
+      throw new FactoryGitHubError("GitHub returned the wrong configuration tree.");
+    const directory = pinnedTreeEntry(rootTree, ".github");
+    if (!directory) return null;
+    if (directory.type !== "tree" || directory.mode !== "040000")
+      throw new FactoryGitHubError("The owner configuration directory must be a Git tree.");
+    const tree = await get(`git/trees/${directory.sha}`, treeEntries);
+    if (tree.sha !== directory.sha)
+      throw new FactoryGitHubError("GitHub returned the wrong owner configuration directory.");
+    const entry = pinnedTreeEntry(tree, "vorteo-factory.json");
+    if (!entry) return null;
+    if (entry.type !== "blob" || entry.mode !== "100644")
+      throw new FactoryGitHubError(
+        "The owner recipe must be a regular file on the default branch.",
+      );
+    const blob = await get(
+      `git/blobs/${entry.sha}`,
+      z.object({ sha: z.literal(entry.sha), encoding: z.literal("base64"), content: z.string() }),
+    );
+    const bytes = Buffer.from(blob.content, "base64");
+    const sha = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+    if (sha !== entry.sha)
+      throw new FactoryGitHubError("GitHub returned the wrong owner recipe bytes.");
+    return gateConfig.parse(JSON.parse(bytes.toString("utf8")));
+  }
+
+  async function readIssueGateInputs(
+    issue: number,
+    expectedHead: string,
+  ): Promise<IssueGateInputs | null> {
+    if (options.scopeIssue !== undefined && options.scopeIssue !== issue) return null;
+    const [{ repository: repo, viewer }, trusted] = await Promise.all([
+      graph(repositoryQuery, scope, repositoryData),
+      readTrustedAccounts(github, repository),
+    ]);
+    const configCommit = repo.defaultBranchRef.target.oid;
+    const [config, pulls, data] = await Promise.all([
+      readPinnedGateConfig(configCommit),
+      candidates(issue, repo),
+      readIssue(issue, trusted),
+    ]);
+    const open = findOpen(pulls);
+    if (!open || open.head.sha !== expectedHead || open.draft) return null;
+    const inspected = await inspectOpen(open, repo, trusted, config?.checks ?? []);
+    if (
+      inspected.kind !== "open" ||
+      inspected.draft ||
+      inspected.pull.headSha !== expectedHead ||
+      !inspected.pull.sameRepo ||
+      !inspected.pull.targetsDefaultBranch
+    )
+      return null;
+    const [branchHead, claim, { repository: current }] = await Promise.all([
+      readBranch(issue),
+      options.readClaim(issue),
+      graph(repositoryQuery, scope, repositoryData),
+    ]);
+    if (
+      current.defaultBranchRef.target.oid !== configCommit ||
+      current.defaultBranchRef.name !== repo.defaultBranchRef.name ||
+      branchHead !== expectedHead
+    )
+      return null;
+    return {
+      issue,
+      repository,
+      head: expectedHead,
+      configCommit,
+      commands: config?.issueGates ?? [],
+      hostedChecks: inspected.hostedChecks,
+      trusted: trustedGateClaim({
+        issue,
+        data,
+        pullLabels: inspected.labels,
+        claim,
+        viewer: viewer.login,
+      }),
+      protectedPaths: protectedChanges(inspected.files, config?.releaseRecipeFiles ?? []),
+    };
+  }
+
+  function trustedGateClaim(input: {
+    issue: number;
+    data: Awaited<ReturnType<typeof readIssue>>;
+    pullLabels: string[];
+    claim: ClaimState | undefined;
+    viewer: string;
+  }): boolean {
+    const { issue, data, pullLabels, claim, viewer } = input;
+    const active = data.leases.filter(({ lease }) => activeLease(lease, options.now()));
+    return (
+      data.summary.state === "open" &&
+      data.trust.trusted &&
+      !data.labels.includes("factory:blocked") &&
+      !pullLabels.includes("factory:blocked") &&
+      active.length === 1 &&
+      Boolean(ownLease(active, viewer)) &&
+      claim?.status === "held" &&
+      claim.branch === branch(issue)
+    );
   }
 
   async function writeLease(
@@ -1027,6 +1189,7 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
 
   return {
     readFacts,
+    readIssueGateInputs,
     lease,
     gateDeps: {
       here,

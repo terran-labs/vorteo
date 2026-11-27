@@ -27,6 +27,7 @@ import { writePrivateFileAtomicSync } from "../private-files.js";
  * - `source-upgrade-rollback`: rolling back a Stable source upgrade.
  * - `account-credentials`: connecting, editing or synchronizing provider accounts.
  * - `health-dismissal`: dismissing a failed maintenance record from System Health.
+ * - `lean-factory-owner`: answering Lean Factory questions or changing its owner intent and rules.
  */
 export const OWNER_ONLY_OPERATIONS: readonly string[] = [
   // Owner decision 2026-11-07: agents never edit their own guardrails. An approved request
@@ -42,6 +43,7 @@ export const OWNER_ONLY_OPERATIONS: readonly string[] = [
   "account-credentials",
   // Issue #639: dismissing a failure hides it from the owner's Health count. Only the owner may.
   "health-dismissal",
+  "lean-factory-owner",
 ];
 
 /** Whether the full maintenance grant may approve the operation. Default in. */

@@ -68,7 +68,7 @@ function pullStage(
   const pr: PullRef = { number: pull.number, headSha: pull.head, checks: pull.checks };
   if (pull.checks === "failing")
     return { kind: "repair", lease, pr, findings: "Required checks failed.", lead };
-  if (pull.checks !== "passing") return { kind: "checks", lease, pr };
+  if (pull.checks !== "passing" && !pull.reviewEligible) return { kind: "checks", lease, pr };
   const verdict = ledger.localVerdicts?.[issue.number];
   if (
     verdict?.sha !== pr.headSha ||
@@ -85,6 +85,7 @@ function pullStage(
       findings: verdict.findings ?? "Reviewer requested changes.",
       lead,
     };
+  if (pull.checks !== "passing") return { kind: "checks", lease, pr };
   const acceptance = ledger.acceptances[issue.number]?.at(-1);
   if (
     acceptance?.sha !== pr.headSha ||

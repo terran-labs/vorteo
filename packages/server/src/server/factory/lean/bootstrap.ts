@@ -1,4 +1,4 @@
-import { FactoryConfigV1Schema } from "@getpaseo/server/factory-project";
+import { FactoryConfigV1Schema } from "@getpaseo/server/factory-lean";
 import { z } from "zod";
 import type { Logger } from "pino";
 
@@ -30,8 +30,10 @@ const configFile = ".github/vorteo-factory.json";
 const INITIALIZE_TIMEOUT_MS = 8_000;
 const FIRST_RETRY_MS = 2_000;
 const MAX_RETRY_MS = 60_000;
+const lanes: Lane[] = ["intake", "merge", "delivery", "releaseBuild", "mechanic"];
 const configSchema = FactoryConfigV1Schema.extend({
   version: z.literal(1),
+  builder: z.looseObject({ provider: z.string().min(1).optional() }).optional(),
   scratch: z.boolean().optional(),
   providers: z
     .object({
@@ -43,11 +45,14 @@ const configSchema = FactoryConfigV1Schema.extend({
   review: z.object({ allowSameAccount: z.boolean().optional() }).optional(),
   checks: z.array(z.string().min(1)).optional(),
   releaseRecipeFiles: z.array(z.string().min(1)).optional(),
+  shadow: z.enum(["dry-run", "review-rehearsal"]).optional(),
 });
 
 type Config = z.infer<typeof configSchema>;
 type Options = Omit<LeanRuntimeOptions, "issue">;
+type BootstrapOptions = Options & { refreshAuthority(): Promise<Config | null> };
 type Runtime = ReturnType<typeof createLeanRuntime>;
+type ExecutionMode = "live" | "dry-run" | "review-rehearsal" | "fenced";
 type ProjectRecord = ProjectState & { mode?: "crew" | "lean" };
 type RuntimeServices = Pick<Options, "operations" | "enqueue">;
 type RunnerServices = Omit<
@@ -115,50 +120,119 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
     const data = z
       .object({ encoding: z.literal("base64"), content: z.string() })
       .parse(result.body);
-    return configSchema.parse(JSON.parse(Buffer.from(data.content, "base64").toString("utf8")));
+    const config = configSchema.parse(
+      JSON.parse(Buffer.from(data.content, "base64").toString("utf8")),
+    );
+    configuredPrimary(config);
+    if (config.builder?.provider) {
+      if (config.providers?.builder && config.providers.builder !== config.builder.provider) {
+        throw new Error("Factory configuration names two different Builder providers.");
+      }
+      config.providers = { ...config.providers, builder: config.builder.provider };
+    }
+    return config;
   }
 
-  async function projectOptions(projectId: string, wake: () => void): Promise<Options> {
+  async function projectOptions(projectId: string, wake: () => void): Promise<BootstrapOptions> {
     const record = await projectRecord(projectId);
     const { repository } = record;
     const config = await readConfig(repository);
-    const scratchProvider = await verifiedScratchProvider(deps, config);
+    const here = `${deps.serverId}/${projectId}`;
+    const initialPrimary = configuredPrimary(config);
+    const checkProviderNow =
+      config?.shadow !== "dry-run" && (initialPrimary === null || initialPrimary === here);
+    const scratchProvider = await verifiedScratchProvider(deps, config, checkProviderNow);
+    const reviewer = config?.providers?.reviewer ?? "claude";
+    const reviewerType = deps.factoryAccounts.providerType({ provider: reviewer }) ?? reviewer;
+    let currentConfig = config;
+    let refreshing: Promise<Config | null> | null = null;
+    function refreshAuthority(): Promise<Config | null> {
+      if (refreshing) return refreshing;
+      refreshing = readConfig(repository)
+        .then((latest) => {
+          currentConfig = latest;
+          return latest;
+        })
+        .finally(() => {
+          refreshing = null;
+        });
+      return refreshing;
+    }
+    async function executionMode(): Promise<ExecutionMode> {
+      if (closing) return "fenced";
+      const current: ProjectRecord | undefined = (await projects.read()).projects[projectId];
+      if (
+        !current?.enabled ||
+        current.mode !== "lean" ||
+        current.paused ||
+        current.repository !== repository
+      ) {
+        return "fenced";
+      }
+      const primary = configuredPrimary(currentConfig);
+      if (primary && primary !== here) return "fenced";
+      if (currentConfig?.shadow === "dry-run") return "dry-run";
+      if (!scratchProvider && !deps.runner.accountPolicy) return "fenced";
+      return currentConfig?.shadow ?? "live";
+    }
+    async function requireIssueEffects(): Promise<void> {
+      if (!allowsIssueEffects(await executionMode())) {
+        throw new Error("Factory issue effects are disabled by project configuration.");
+      }
+    }
     const configuredRoles = async (role: RunnerRole) => {
+      const latest = await refreshAuthority();
+      const mode = await executionMode();
+      if (!allowsIssueEffects(mode) || (mode === "review-rehearsal" && role === "delivery")) {
+        throw new Error(
+          "Factory cannot launch this runner under the current project configuration.",
+        );
+      }
       const saved = await projectRecord(projectId);
-      const latest = await readConfig(repository);
       const allowed = await verifiedScratchProvider(deps, latest);
       if (allowed !== scratchProvider)
         throw new Error("Factory provider authority changed. Restart the project mode.");
       return roleAccounts(role, saved, latest, deps.factoryAccounts, allowed);
     };
     async function holds(lane: Lane): Promise<boolean> {
-      if (closing || (lane !== "intake" && lane !== "merge")) return false;
-      if (!scratchProvider && !deps.runner.accountPolicy) return false;
-      const file = await projects.read();
-      const current: ProjectRecord | undefined = file.projects[projectId];
+      const mode = await executionMode();
       return (
-        current?.enabled === true &&
-        current.mode === "lean" &&
-        !current.paused &&
-        current.repository === repository
+        (lane === "intake" && allowsIssueEffects(mode)) || (lane === "merge" && mode === "live")
       );
     }
+    const projectState: Options["state"] = {
+      read: (id) => state.read(id),
+      async mutate(id, change, revision) {
+        await requireIssueEffects();
+        return state.mutate(id, change, revision);
+      },
+    };
     return {
       projectId,
       repository,
-      github,
+      github: projectGitHub(github, repository, async () => {
+        await refreshAuthority();
+        return executionMode();
+      }),
       now,
-      state,
+      state: projectState,
       paseoHome: deps.paseoHome,
-      here: `${deps.serverId}/${projectId}`,
+      here,
+      executionMode,
+      refreshAuthority,
       leaseTtlMs: (config?.lease?.ttlMinutes ?? 120) * 60_000,
       requiredChecks: config?.checks,
       releaseRecipeFiles: async () => [
         configFile,
-        ...((await readConfig(repository))?.releaseRecipeFiles ?? []),
+        ...((await refreshAuthority())?.releaseRecipeFiles ?? []),
       ],
       runner: {
         ...deps.runner,
+        async createAgent(input) {
+          await refreshAuthority();
+          await requireIssueEffects();
+          return deps.runner.createAgent(input);
+        },
         roleAccounts: configuredRoles,
         accounts: {
           ...deps.factoryAccounts,
@@ -169,12 +243,33 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
           },
         },
         accountDefinitions: () => accountDefinitions(deps, scratchProvider),
-        allowSameAccountReview: () => sameAccountAllowed(repository),
-        requiredProviderTypes: { "foreman-op": scratchProvider ? "codex" : "claude" },
+        allowSameAccountReview: async () =>
+          (await refreshAuthority())?.review?.allowSameAccount === true,
+        requiredProviderTypes: {
+          "foreman-op": scratchProvider ? "codex" : "claude",
+          reviewer: scratchProvider ? "codex" : reviewerType,
+        },
       },
       workspace: deps.workspace,
       operations: {
         ...deps.operations,
+        ...(deps.operations.push
+          ? {
+              push: {
+                async send(payload) {
+                  await requireIssueEffects();
+                  await deps.operations.push?.send(payload);
+                },
+              },
+            }
+          : {}),
+        questions: {
+          readQuestions: (agentId) => deps.operations.questions.readQuestions(agentId),
+          async mutateQuestions(agentId, mutation) {
+            await requireIssueEffects();
+            return deps.operations.questions.mutateQuestions(agentId, mutation);
+          },
+        },
         async ownerThread() {
           return (await projectRecord(projectId)).roles["factory-intake"]?.agentId ?? null;
         },
@@ -203,7 +298,7 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
       async context() {
         const ledger = await state.read(projectId);
         return {
-          config: await readConfig(repository),
+          config: currentConfig,
           capacity: {
             runners: {
               open: Object.values(ledger.runners).filter((entry) => entry.closedAt === null).length,
@@ -214,13 +309,12 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
           },
         };
       },
-      enqueue: deps.enqueue,
-      allowSameAccount: () => sameAccountAllowed(repository),
+      async enqueue(runner, message, id) {
+        await requireIssueEffects();
+        return deps.enqueue(runner, message, id);
+      },
+      allowSameAccount: async () => (await refreshAuthority())?.review?.allowSameAccount === true,
     };
-  }
-
-  async function sameAccountAllowed(repository: string): Promise<boolean> {
-    return (await readConfig(repository))?.review?.allowSameAccount === true;
   }
 
   async function projectRuntime(projectId: string) {
@@ -232,8 +326,23 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
     const group = createLeanOperationGroup(options);
     groups.set(projectId, group);
     const children = new Map<number, { runtime: Runtime; unsubscribe: () => void }>();
+    async function stopChildren(reason?: Parameters<LeanModePort["stop"]>[1]) {
+      for (const child of children.values()) {
+        child.unsubscribe();
+        if (!reason) child.runtime.detach();
+        else await child.runtime.stop(reason);
+      }
+      children.clear();
+    }
 
     async function reconcile() {
+      await options.refreshAuthority();
+      const mode = await options.executionMode();
+      if (!allowsIssueEffects(mode)) {
+        await stopChildren();
+        if (mode === "dry-run") await discoverLeanIssues(options);
+        return;
+      }
       const discovered = await discoverLeanIssues(options);
       const slots = Math.max(1, (await state.read(projectId)).local.runners);
       for (const issue of discovered) {
@@ -247,6 +356,10 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
           runtime.detach();
           throw error;
         }
+      }
+      if (children.size === 0) {
+        await group.noteIdlePoll();
+        return;
       }
       await Promise.all(
         [...children].map(async ([issue, child]) => {
@@ -273,7 +386,9 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
         await boundInitialization(state.read(projectId));
       },
       reconcile,
-      inspectDeadlines: () => group.tickWatchdog(),
+      async inspectDeadlines() {
+        if (allowsIssueEffects(await options.executionMode())) await group.tickWatchdog();
+      },
       subscribe(listener: () => void) {
         listeners.add(listener);
         return () => {
@@ -282,12 +397,9 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
       },
       async stop(reason: Parameters<LeanModePort["stop"]>[1]) {
         groups.delete(projectId);
-        for (const child of children.values()) {
-          child.unsubscribe();
-          if (closing || reason === "switch") child.runtime.detach();
-          else await child.runtime.stop(reason);
-        }
-        children.clear();
+        const active =
+          !closing && reason !== "switch" && allowsIssueEffects(await options.executionMode());
+        await stopChildren(active ? reason : undefined);
       },
     };
   }
@@ -408,6 +520,7 @@ async function boundInitialization<T>(action: Promise<T>): Promise<T> {
 async function verifiedScratchProvider(
   deps: LeanBootstrapDependencies,
   config: Config | null,
+  requireReady = true,
 ): Promise<string | null> {
   if (!config?.scratch) return null;
   if (deps.settings().sharedProviderPreferences?.installation) {
@@ -420,6 +533,7 @@ async function verifiedScratchProvider(
   if (deps.factoryAccounts.providerType({ provider: builder }) !== "codex") {
     throw new Error("Scratch Factory needs an actual configured Codex provider.");
   }
+  if (!requireReady) return builder;
   const ready = (await deps.factoryAccounts.readyProviders()).filter(
     (provider) => deps.factoryAccounts.providerType({ provider }) === "codex",
   );
@@ -427,6 +541,85 @@ async function verifiedScratchProvider(
     throw new Error("Scratch Factory needs the configured provider as its only ready account.");
   }
   return builder;
+}
+
+function configuredPrimary(config: Config | null): string | null {
+  if (!config) return null;
+  let primary = singleHolder(config.order);
+  for (const lane of lanes) {
+    const configured = config.lanes?.[lane];
+    if (configured === undefined) continue;
+    const holder = laneHolder(configured);
+    if (primary !== null && primary !== holder) {
+      throw new Error("Factory V1 lanes must all name the same fixed primary.");
+    }
+    primary = holder;
+  }
+  return primary;
+}
+
+type ConfiguredLane = NonNullable<NonNullable<Config["lanes"]>[Lane]>;
+
+function laneHolder(configured: ConfiguredLane): string | null {
+  if (typeof configured === "string") return configured;
+  const candidates = Array.isArray(configured) ? configured : configured.holders;
+  return singleHolder(candidates);
+}
+
+function singleHolder(candidates: readonly string[] | undefined): string | null {
+  if (!candidates) return null;
+  if (candidates.length !== 1) throw new Error("Factory V1 requires exactly one fixed primary.");
+  return candidates[0];
+}
+
+function allowsIssueEffects(mode: ExecutionMode | undefined): boolean {
+  return mode === "live" || mode === "review-rehearsal";
+}
+
+function projectGitHub(
+  backend: Options["github"],
+  repository: string,
+  mode: () => Promise<ExecutionMode>,
+): Options["github"] {
+  return {
+    async rest(method, route, body) {
+      const query = graphQLText(method, route, body);
+      if (method === "GET" || (query && /^\s*query\b/.test(query) && !/\bmutation\b/.test(query))) {
+        return backend.rest(method, route, body);
+      }
+      const current = await mode();
+      if (
+        current === "live" ||
+        (current === "review-rehearsal" && rehearsalIssueWrite(method, route, repository, query))
+      ) {
+        return backend.rest(method, route, body);
+      }
+      throw new Error("Factory GitHub write is disabled by project configuration.");
+    },
+  };
+}
+
+function graphQLText(method: string, route: string, body: unknown): string | null {
+  if (method !== "POST" || route !== "graphql" || !body || typeof body !== "object") return null;
+  return "query" in body && typeof body.query === "string" ? body.query : null;
+}
+
+function rehearsalIssueWrite(
+  method: string,
+  route: string,
+  repository: string,
+  query: string | null,
+): boolean {
+  if (method !== "POST") return false;
+  const prefix = `repos/${repository}/`;
+  if (route.startsWith(prefix)) {
+    const pathname = route.slice(prefix.length);
+    return pathname === "git/refs" || /^issues\/\d+\/comments$/.test(pathname);
+  }
+  // The lease renewal operation is the only GraphQL mutation needed in rehearsal.
+  const leaseComment =
+    "mutation($id:ID!,$body:String!){updateIssueComment(input:{id:$id,body:$body}){issueComment{id}}}";
+  return query?.replace(/\s+/g, "") === leaseComment;
 }
 
 function roleAccounts(
