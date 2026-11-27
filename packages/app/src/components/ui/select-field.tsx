@@ -58,6 +58,7 @@ export interface SelectFieldProps<TValue> {
   hint?: string;
   error?: string | null;
   searchable?: boolean;
+  keepOpenOnSelect?: boolean;
   searchPlaceholder?: string;
   title?: string;
   size?: ControlSize;
@@ -206,6 +207,7 @@ export function SelectField<TValue>({
   hint,
   error,
   searchable = false,
+  keepOpenOnSelect = false,
   searchPlaceholder,
   title,
   size = "md",
@@ -250,9 +252,9 @@ export function SelectField<TValue>({
         return;
       }
       onChange(option.value, { label: option.label, description: option.description });
-      setOpen(false);
+      if (!keepOpenOnSelect) setOpen(false);
     },
-    [onChange, optionById],
+    [keepOpenOnSelect, onChange, optionById],
   );
 
   const handlePress = useCallback(() => {
@@ -347,6 +349,7 @@ export function SelectField<TValue>({
         options={comboboxOptions}
         value={selectedOptionId}
         onSelect={handleSelect}
+        keepOpenOnSelect={keepOpenOnSelect}
         searchable={searchable}
         searchPlaceholder={searchPlaceholder}
         emptyText={loading && visibleOptions.length === 0 ? "Loading..." : emptyText}

@@ -26,6 +26,23 @@ describe("profile schema compatibility", () => {
     const profile = { id: "standard", name: "Standard", provider: "claude" };
     expect(AgentProfileSchema.parse(profile)).toEqual(profile);
   });
+
+  it("keeps frozen team members and distinguishes omission from clearing", () => {
+    const profile = { id: "team", name: "Team", provider: "codex" };
+    const workers = [
+      { id: "one", name: "One", provider: "codex-work" },
+      { id: "two", name: "Two", provider: "claude" },
+    ];
+    const team = { ...profile, workerProfileIds: workers.map((worker) => worker.id) };
+    expect(AgentProfileLaunchSchema.parse({ profile: team, workers })).toEqual({
+      profile: team,
+      workers,
+    });
+    expect(WireProfileSchema.parse({ ...profile, workerProfileIds: [] }).workerProfileIds).toEqual(
+      [],
+    );
+    expect(WireProfileSchema.parse(profile).workerProfileIds).toBeUndefined();
+  });
 });
 
 it("uses an explicit uncapped flag without changing finite or omitted limits", () => {

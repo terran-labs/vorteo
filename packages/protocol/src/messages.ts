@@ -369,6 +369,7 @@ export const AgentProfileLaunchSchema = z.object({
   skillSnapshot: SkillSnapshotSchema.optional(),
   profile: AgentProfileSchema,
   worker: AgentProfileSchema.optional(),
+  workers: z.array(AgentProfileSchema).optional(),
   providerType: z.string().optional(),
   configurationRevision: z.number().int().nonnegative().optional(),
   workflowId: z.string().optional(),
@@ -4804,6 +4805,8 @@ export const ServerInfoStatusPayloadSchema = z
         agentProfileSwitch: z.boolean().optional(),
         // COMPAT(agentProfileSwitchPreview): added 2026-11-17; retain gate through 2027-05-17.
         agentProfileSwitchPreview: z.boolean().optional(),
+        // COMPAT(workerTeams): gate worker team editing on daemon support.
+        workerTeams: z.boolean().optional(),
         // COMPAT(agentProviderRecovery): added in Vorteo 2026-10, remove gate after 2027-04-28.
         agentProviderRecovery: z.boolean().optional(),
         // COMPAT(localProjectConfig): added in Vorteo 2026-10, remove gate after 2027-04-22.

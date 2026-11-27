@@ -12,12 +12,20 @@ export function PreferredChoicesField({
   preferred,
   onToggle,
   disabled,
+  placeholder = "Choose preferred options",
+  emptyText = "No catalog choices available",
+  testID,
+  keepOpenOnSelect,
 }: {
   label: string;
   options: SelectFieldOption<string>[];
   preferred: readonly string[];
   onToggle: (value: string) => void;
   disabled: boolean;
+  placeholder?: string;
+  emptyText?: string;
+  testID?: string;
+  keepOpenOnSelect?: boolean;
 }) {
   const display = useMemo(() => {
     const labels = preferred.map(
@@ -29,6 +37,7 @@ export function PreferredChoicesField({
     ({ option, active, onPress }: SelectFieldRenderOptionInput<string>) => (
       <ComboboxItem
         label={option.label}
+        description={option.description}
         selected={preferred.includes(option.value)}
         active={active}
         onPress={onPress}
@@ -44,9 +53,11 @@ export function PreferredChoicesField({
       options={options}
       onChange={onToggle}
       renderOption={renderOption}
-      placeholder="Choose preferred options"
-      emptyText="No catalog choices available"
+      placeholder={placeholder}
+      emptyText={emptyText}
       disabled={disabled}
+      testID={testID}
+      keepOpenOnSelect={keepOpenOnSelect}
       searchable
     />
   );

@@ -459,7 +459,7 @@ export function useAgentProfilePicker(
 
       if (target.kind === "draft") {
         if (!supportsLaunch) {
-          if (profile.instructions || profile.workerProfileId) {
+          if (profile.instructions || profile.workerProfileId || profile.workerProfileIds?.length) {
             toast.error(
               "Enable Vorteo Mode on a supported host to launch a preset with instructions or workers.",
             );

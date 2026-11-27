@@ -844,6 +844,9 @@ function WorkflowInstructions({
   definition: AgentProfile | undefined;
   definitions: readonly AgentProfile[];
 }) {
+  const workerIds =
+    definition?.workerProfileIds ??
+    (definition?.workerProfileId ? [definition.workerProfileId] : []);
   return (
     <>
       {definition?.instructions ? (
@@ -852,12 +855,13 @@ function WorkflowInstructions({
           <Text style={[styles.summary, styles.sectionContent]}>{definition.instructions}</Text>
         </>
       ) : null}
-      {definition?.workerProfileId ? (
+      {definition && workerIds.length ? (
         <>
           <Text style={styles.label}>Workers</Text>
           <Text style={[styles.summary, styles.sectionContent]}>
-            {definitions.find((profile) => profile.id === definition.workerProfileId)?.name ??
-              definition.workerProfileId}{" "}
+            {workerIds
+              .map((id) => definitions.find((profile) => profile.id === id)?.name ?? id)
+              .join(", ")}{" "}
             ·{" "}
             {definition.uncappedWorkers === true
               ? "Uncapped"

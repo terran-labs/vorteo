@@ -95,6 +95,7 @@ export interface AgentProfileFormState {
   instructions: string;
   skillPolicy: SkillPolicy | undefined;
   workerProfileId: string;
+  workerProfileIds?: readonly string[];
   workerAccount?: string;
   workerAccountId: string | null;
   maxWorkers: number | "uncapped";
@@ -157,6 +158,7 @@ export interface AgentProfileFormModel {
   setInstructions: (value: string) => void;
   setWorkerAccount: (value: string) => void;
   setWorkerProfileId: (value: string) => void;
+  setWorkerProfileIds: (value: readonly string[]) => void;
   setMaxWorkers: (value: number | "uncapped") => void;
   setProvider: (providerId: string, display: AgentProfileFormDisplay) => void;
   setModel: (modelId: string, display: AgentProfileFormDisplay | null) => void;
@@ -438,6 +440,9 @@ function buildSubmitValue(state: AgentProfileFormState): AgentProfileValue | nul
     excludedEnvironments: [...state.excludedEnvironments],
     ...(state.skillPolicy ? { skillPolicy: state.skillPolicy } : {}),
     workerProfileId: state.workerProfileId,
+    ...(state.workerProfileIds !== undefined
+      ? { workerProfileIds: [...state.workerProfileIds] }
+      : {}),
     workerAccount: state.workerAccount,
     maxWorkers: state.maxWorkers === "uncapped" ? undefined : state.maxWorkers,
     uncappedWorkers: state.maxWorkers === "uncapped",
@@ -489,6 +494,7 @@ function buildInitialState(snapshot: AgentProfileFormSnapshot): AgentProfileForm
     instructions: profile.instructions ?? "",
     skillPolicy: profile.skillPolicy,
     workerProfileId: profile.workerProfileId ?? "",
+    workerProfileIds: profile.workerProfileIds,
     workerAccount: profile.workerAccount,
     workerAccountId: null,
     maxWorkers: savedWorkerLimit(profile),
@@ -771,6 +777,14 @@ export function openAgentProfileForm(snapshot: AgentProfileFormSnapshot): AgentP
         workerAccount: undefined,
       })),
     setWorkerProfileId: (value) => publish((current) => ({ ...current, workerProfileId: value })),
+    setWorkerProfileIds: (value) =>
+      publish((current) => ({
+        ...current,
+        workerProfileIds: [...value],
+        workerProfileId: "",
+        workerAccount: undefined,
+        workerAccountId: null,
+      })),
     setMaxWorkers: (value) => publish((current) => ({ ...current, maxWorkers: value })),
     setProvider: (providerId, display) =>
       publish((current) => {

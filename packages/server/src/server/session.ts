@@ -6259,6 +6259,7 @@ export class Session {
       {
         logger: this.sessionLogger,
         getAgent: (id) => this.agentManager.getAgent(id),
+        getCached: (id) => this.agentStorage.getLoadedRecord(id),
         getStored: (id) => this.agentStorage.get(id),
         serverId: this.serverId,
       },
