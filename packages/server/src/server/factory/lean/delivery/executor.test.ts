@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { FactoryConfigV1Schema, type ReleaseRecipeV1 } from "@getpaseo/server/factory-project";
+import { FactoryConfigV1Schema, type ReleaseRecipeV1 } from "@getpaseo/server/factory-lean";
 import { createLeanStateStore } from "../state.js";
 import {
   createDeliveryExecutor,

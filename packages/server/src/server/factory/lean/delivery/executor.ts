@@ -24,7 +24,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import type { FactoryReleaseEvent, ReleaseRecipeV1 } from "@getpaseo/server/factory-project";
+import type { FactoryReleaseEvent, ReleaseRecipeV1 } from "@getpaseo/server/factory-lean";
 import { writeFileAtomic } from "../../../atomic-file.js";
 import type { DeliveryJob, DeliveryLock, LeanLedger, LeanStateStore } from "../types.js";
 

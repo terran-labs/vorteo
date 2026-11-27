@@ -29,6 +29,7 @@
  *   first effective holder acquire; intake stays pinned until the ledger is portable).
  */
 
+import type { DeliveryRun } from "./delivery/executor.js";
 import type {
   FactoryActivityEntry,
   FactoryConfigV1,
@@ -311,7 +312,11 @@ export interface LeanLedger {
   escalations: Escalation[];
   intent: Record<string, IntentRecord>;
   rules: StandingRule[];
-  delivery: { lock: DeliveryLock | null; receipts: DeliveryReceipt[] };
+  delivery: {
+    lock: DeliveryLock | null;
+    receipts: DeliveryReceipt[];
+    runs?: Record<string, DeliveryRun>;
+  };
   releases: FactoryReleaseEvent[];
   /** Owner pre-authorization for the next qualifying beta; null when none. */
   preauthorization: {

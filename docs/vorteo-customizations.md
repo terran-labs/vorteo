@@ -3624,3 +3624,5 @@ Vorteo locks the worktrees it creates and cleans up only the requested worktree'
 ### Factory wire contracts
 
 The daemon imports the project and Lean Factory contracts through separate package exports. The app can bundle the same contract sources with Metro.
+
+The Lean delivery executor records each release step before launch. If the daemon loses the result, recovery waits for the owner to resolve that step before another deployment starts.
