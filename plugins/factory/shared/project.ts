@@ -1,5 +1,8 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { FactoryModeSchema } from "./lean.js";
+
+export * from "./lean.js";
 
 /** Stored role identities, in sidebar folder order. Never rename one: state files keep them. */
 export const PROJECT_FACTORY_ROLE_IDS = [
@@ -156,6 +159,11 @@ export const ProjectFactoryStateSchema = z.object({
    * `.github/factory.json`. Optional so older daemons still parse.
    */
   installation: z.string().min(1).optional(),
+  /**
+   * "crew" (today's five roles) or "lean". Absent from daemons without the lean mode, which
+   * means crew. A string so a later mode never fails an older client.
+   */
+  mode: z.string().optional(),
   /** The last `.github/factory.json` read; null before the first. Optional for older daemons. */
   assignment: ProjectFactoryAssignmentSchema.nullable().optional(),
   /**
@@ -268,6 +276,11 @@ export const ProjectFactoryQueueSchema = z.object({
         })
         .nullable()
         .optional(),
+      /**
+       * Why no trusted account has approved the issue's current text; `factory.project.claim`
+       * refuses it until one does. Absent when trusted, and from daemons without intake trust.
+       */
+      untrusted: z.string().optional(),
     }),
   ),
 });
@@ -285,6 +298,11 @@ export const factoryProjectEnable = defineRpc({
     repository: ProjectFactoryRepositorySchema,
     /** Existing agents to bind to roles instead of creating new ones. */
     adopt: z.partialRecord(ProjectFactoryRoleIdSchema, z.string().min(1)).optional(),
+    /**
+     * Owner-only, and sent only to daemons advertising `factoryLean`; an older daemon refuses
+     * the unknown key. Absent keeps the project's mode, or crew for a new one.
+     */
+    mode: FactoryModeSchema.optional(),
   }),
   output: ProjectFactoryStateSchema,
 });
@@ -320,6 +338,8 @@ export const factoryProjectConfigure = defineRpc({
     workerProfileId: nullableId.optional(),
     reviewerProfileId: nullableId.optional(),
     issueAgents: ProjectFactoryIssueAgentsSchema.optional(),
+    /** Owner-only switch between crew and lean; drains first. Only to `factoryLean` daemons. */
+    mode: FactoryModeSchema.optional(),
   }),
   output: ProjectFactoryStateSchema,
 });
@@ -472,6 +492,16 @@ export const ProjectFactoryClaimSchema = z.object({
   headSha: z.string().nullable(),
   /** Lines to put in the plan comment and PR body; set when this installation owns the claim. */
   marker: z.string().nullable(),
+  /**
+   * The issue as agents receive it, set with the marker: the trusted task, then outside comments
+   * in a marked block. Absent from daemons without intake trust.
+   */
+  brief: z.string().optional(),
+  /**
+   * The issue's open pull request head that the owner-only file check read. Merge only this
+   * commit, pinned with `gh pr merge --match-head-commit`. Absent without an open pull request.
+   */
+  checkedHeadSha: z.string().optional(),
 });
 export type ProjectFactoryClaim = z.infer<typeof ProjectFactoryClaimSchema>;
 

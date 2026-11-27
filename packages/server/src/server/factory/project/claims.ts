@@ -10,6 +10,7 @@ import {
 } from "@getpaseo/server/factory-project";
 
 import type { AssignmentState, ClaimState, ForeignClaimState } from "./state.js";
+import type { TrustedAccounts } from "./trust.js";
 
 /**
  * Several Vorteo installations can run Factory against one repository. GitHub decides which
@@ -183,18 +184,24 @@ function expect(response: GitHubResponse, ok: number[], what: string): unknown {
   throw new FactoryGitHubError(`GitHub refused ${what}: ${message} (HTTP ${response.status}).`);
 }
 
-export interface ClaimContext {
+/** What claims and releases share; releasing reads no markers, so it needs no trust. */
+export interface ClaimBase {
   github: FactoryGitHub;
   repository: string;
   installation: string;
   issue: number;
   now: Date;
-  /** The owner chose this installation in a conflict. */
-  keep?: boolean;
   /** Reads this installation's claim for the issue. */
   read: () => Promise<ClaimState | undefined>;
   /** Writes (or, with undefined, removes) this installation's claim for the issue. */
   write: (claim: ClaimState | undefined) => Promise<void>;
+}
+
+export interface ClaimContext extends ClaimBase {
+  /** The owner chose this installation in a conflict. */
+  keep?: boolean;
+  /** Only markers in comments by these accounts count; anyone can comment on a public issue. */
+  trusted: TrustedAccounts;
 }
 
 /**
@@ -295,7 +302,7 @@ export async function claimIssue(ctx: ClaimContext): Promise<ProjectFactoryClaim
   return result("foreign", head);
 }
 
-export interface ReleaseContext extends ClaimContext {
+export interface ReleaseContext extends ClaimBase {
   foreign: ForeignClaimState | undefined;
 }
 
@@ -343,13 +350,13 @@ export async function releaseClaim(ctx: ReleaseContext): Promise<ProjectFactoryC
   return { issue: ctx.issue, branch, outcome: "archived", archivedAs, headSha };
 }
 
-async function readHead(ctx: ClaimContext, branch: string): Promise<string | null> {
+async function readHead(ctx: ClaimBase, branch: string): Promise<string | null> {
   const response = await ctx.github.rest("GET", `repos/${ctx.repository}/git/ref/heads/${branch}`);
   if (response.status === 404) return null;
   return refSchema.parse(expect(response, [200], `reading ${branch}`)).object.sha;
 }
 
-async function defaultBranchHead(ctx: ClaimContext): Promise<string> {
+async function defaultBranchHead(ctx: ClaimBase): Promise<string> {
   const repo = z
     .object({ default_branch: z.string() })
     .parse(
@@ -360,7 +367,7 @@ async function defaultBranchHead(ctx: ClaimContext): Promise<string> {
   return head;
 }
 
-async function archives(ctx: ClaimContext): Promise<string[]> {
+async function archives(ctx: ClaimBase): Promise<string[]> {
   const response = await ctx.github.rest(
     "GET",
     `repos/${ctx.repository}/git/matching-refs/heads/${ARCHIVE_PREFIX}/issue-${ctx.issue}/`,
@@ -372,7 +379,7 @@ async function archives(ctx: ClaimContext): Promise<string[]> {
 }
 
 /** A release archives the claim under a new name, so any archive newer than the claim means it was released. */
-async function wasReleased(ctx: ClaimContext, claim: ClaimState): Promise<boolean> {
+async function wasReleased(ctx: ClaimBase, claim: ClaimState): Promise<boolean> {
   const known = new Set(claim.archivesAtClaim);
   return (await archives(ctx)).some((ref) => !known.has(ref));
 }
@@ -383,7 +390,7 @@ async function foreignMarkers(
   branch: string,
   overruled: readonly string[] = [],
 ): Promise<string[]> {
-  const texts = await activityTexts(ctx.github, ctx.repository, ctx.issue, branch);
+  const texts = await activityTexts(ctx.github, ctx.repository, ctx.issue, branch, ctx.trusted);
   return texts
     .flatMap((item) => markerInstallations(item.body, branch))
     .filter(
@@ -391,7 +398,13 @@ async function foreignMarkers(
     );
 }
 
-const commentSchema = z.array(z.object({ body: z.string().nullable(), updated_at: z.string() }));
+const commentSchema = z.array(
+  z.object({
+    body: z.string().nullable(),
+    updated_at: z.string(),
+    user: z.object({ login: z.string() }).nullable().optional(),
+  }),
+);
 const pullSchema = z.array(z.object({ body: z.string().nullable(), updated_at: z.string() }));
 
 async function activityTexts(
@@ -399,6 +412,7 @@ async function activityTexts(
   repository: string,
   issue: number,
   branch: string,
+  trusted: TrustedAccounts,
 ): Promise<{ body: string; updatedAt: string }[]> {
   const owner = repository.split("/")[0];
   const [comments, pulls] = await Promise.all([
@@ -408,10 +422,120 @@ async function activityTexts(
       `repos/${repository}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}`,
     ),
   ]);
+  // The `owner:branch` head filter already leaves out pull requests from forks.
+  const trustedComments = [];
+  for (const comment of commentSchema.parse(expect(comments, [200], `comments on #${issue}`)))
+    if (await trusted(comment.user?.login)) trustedComments.push(comment);
   return [
-    ...commentSchema.parse(expect(comments, [200], `comments on #${issue}`)),
+    ...trustedComments,
     ...pullSchema.parse(expect(pulls, [200], `pull requests from ${branch}`)),
   ].map((item) => ({ body: item.body ?? "", updatedAt: item.updated_at }));
+}
+
+/**
+ * Files that decide who Factory trusts and where its roles run. A Factory pull request that
+ * changes one never merges through Factory: the owner reviews and merges it.
+ */
+export const OWNER_ONLY_FILES = [".github/delivery-approvers.json", ".github/factory.json"];
+
+const pullHeadSchema = z.object({
+  number: z.number(),
+  head: z.object({
+    ref: z.string(),
+    sha: z.string(),
+    repo: z.object({ full_name: z.string() }).nullable(),
+  }),
+});
+const pullFilesSchema = z.array(
+  z.object({ filename: z.string(), previous_filename: z.string().optional() }),
+);
+
+export interface OwnerOnlyCheck {
+  /** Owner-only files the issue's open pull requests change. */
+  touched: string[];
+  /** The head commit of the issue's pull request that was checked; null without one. */
+  checkedHeadSha: string | null;
+}
+
+/**
+ * Checks every open same-repository pull request the queue treats as the issue's: the claim
+ * branch and the older `<prefix>/factory-issue-<n>` form. Each pull request's head is read
+ * again after its files, so the result names the exact commit checked; a push in between
+ * refuses. Fails closed on any read error.
+ */
+export async function ownerOnlyChanges(
+  github: FactoryGitHub,
+  repository: string,
+  issue: number,
+): Promise<OwnerOnlyCheck> {
+  const branch = projectFactoryClaimBranch(issue);
+  const ours = (pull: z.infer<typeof pullHeadSchema>) =>
+    pull.head.repo?.full_name.toLowerCase() === repository.toLowerCase() &&
+    (pull.head.ref === branch || pull.head.ref.endsWith(`/factory-issue-${issue}`));
+  const pulls: z.infer<typeof pullHeadSchema>[] = [];
+  for (let page = 1; ; page++) {
+    const listed = z
+      .array(pullHeadSchema)
+      .parse(
+        expect(
+          await github.rest(
+            "GET",
+            `repos/${repository}/pulls?state=open&per_page=100&page=${page}`,
+          ),
+          [200],
+          "open pull requests",
+        ),
+      );
+    pulls.push(...listed.filter(ours));
+    if (listed.length < 100) break;
+  }
+  const touched = new Set<string>();
+  let checkedHeadSha: string | null = null;
+  for (const pull of pulls) {
+    for (const name of await pullFileNames(github, repository, pull.number))
+      if (OWNER_ONLY_FILES.includes(name)) touched.add(name);
+    const after = pullHeadSchema.parse(
+      expect(
+        await github.rest("GET", `repos/${repository}/pulls/${pull.number}`),
+        [200],
+        `pull request #${pull.number}`,
+      ),
+    );
+    if (after.head.sha !== pull.head.sha)
+      throw new FactoryGitHubError(
+        `Pull request #${pull.number} moved while Factory checked it. Claim the issue again.`,
+      );
+    if (pull.head.ref === branch || checkedHeadSha === null) checkedHeadSha = pull.head.sha;
+  }
+  return { touched: [...touched], checkedHeadSha };
+}
+
+/** Every path a pull request adds, changes, removes or renames from. */
+async function pullFileNames(
+  github: FactoryGitHub,
+  repository: string,
+  number: number,
+): Promise<string[]> {
+  const names: string[] = [];
+  // GitHub lists at most 3000 files, 100 per page.
+  for (let page = 1; page <= 30; page++) {
+    const files = pullFilesSchema.parse(
+      expect(
+        await github.rest(
+          "GET",
+          `repos/${repository}/pulls/${number}/files?per_page=100&page=${page}`,
+        ),
+        [200],
+        `files of pull request #${number}`,
+      ),
+    );
+    for (const file of files)
+      names.push(file.filename, ...(file.previous_filename ? [file.previous_filename] : []));
+    if (files.length < 100) return names;
+  }
+  throw new FactoryGitHubError(
+    `Pull request #${number} lists more files than GitHub returns, so Factory cannot check it.`,
+  );
 }
 
 export interface StaleClaim {
@@ -441,6 +565,7 @@ export async function scanForeignClaims(input: {
   github: FactoryGitHub;
   repository: string;
   installation: string;
+  trusted: TrustedAccounts;
   own: Record<string, ClaimState>;
   previous: Record<string, ForeignClaimState>;
   now: Date;
@@ -467,7 +592,7 @@ export async function scanForeignClaims(input: {
     if (record.notifiedAt) continue;
     const conflict = own?.status === "conflict";
     if (!conflict && input.now.getTime() - Date.parse(record.seenAt) <= STALE_CLAIM_MS) continue;
-    const texts = await activityTexts(input.github, input.repository, issue, branch);
+    const texts = await activityTexts(input.github, input.repository, issue, branch, input.trusted);
     const commit = z
       .object({ committer: z.object({ date: z.string() }) })
       .safeParse(
