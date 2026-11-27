@@ -151,7 +151,6 @@ export const en = {
       sample: "Sample Factory",
       pipelineSummary:
         "{{queued}} queued · {{active}} active · {{stalled}} stalled · {{review}} review",
-      snapshotAt: "Queue snapshot: {{time}} ({{minutes}} min ago)",
       queueRetry: "Queue unavailable. Retry",
       sidebarSummary_one:
         "{{count}} Factory · {{running}} on · {{paused}} paused · {{held}} held/draining",
