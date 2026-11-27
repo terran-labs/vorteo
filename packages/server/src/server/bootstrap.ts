@@ -334,6 +334,7 @@ import { ManagedPluginSources } from "./plugins/managed-source.js";
 const MCP_DEBUG_BATCH_LIMIT = 10;
 // Startup waits at most this long to re-link services that survived the previous daemon.
 const SURVIVING_SERVICES_RELINK_DEADLINE_MS = 3_000;
+const STUCK_INITIALIZING_AGENT_LOG_MS = 600_000;
 const MCP_DEBUG_SECRET = "[redacted]";
 const DOWNLOAD_OPEN_FLAGS =
   process.platform === "win32" ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW;
@@ -1199,18 +1200,45 @@ export async function createPaseoDaemon(
     workspaceRegistry,
   });
   const github = createGitHubService();
+  // Working directories of running or starting agents, computed once per synchronous pass: one
+  // workspace git activity check asks this for every workspace of a repository.
+  let activeAgentCwds: Set<string> | null = null;
+  const stuckInitializingAgentIds = new Set<string>();
+  const getActiveAgentCwds = (): Set<string> => {
+    if (activeAgentCwds) return activeAgentCwds;
+    const cwds = new Set<string>();
+    const nowMs = Date.now();
+    for (const agent of agentManager.listAgents()) {
+      if (agent.lifecycle !== "running" && agent.lifecycle !== "initializing") {
+        stuckInitializingAgentIds.delete(agent.id);
+        continue;
+      }
+      cwds.add(path.resolve(agent.cwd));
+      // An agent stuck initializing keeps its repository on the frequent background fetch.
+      if (
+        agent.lifecycle === "initializing" &&
+        nowMs - agent.updatedAt.getTime() > STUCK_INITIALIZING_AGENT_LOG_MS &&
+        !stuckInitializingAgentIds.has(agent.id)
+      ) {
+        stuckInitializingAgentIds.add(agent.id);
+        logger.warn(
+          { agentId: agent.id, cwd: agent.cwd, initializingSince: agent.updatedAt.toISOString() },
+          "Agent has been initializing for over 10 minutes; its repository stays on the active git fetch schedule",
+        );
+      }
+    }
+    activeAgentCwds = cwds;
+    queueMicrotask(() => {
+      activeAgentCwds = null;
+    });
+    return cwds;
+  };
   const workspaceGitService = new WorkspaceGitServiceImpl({
     logger,
     paseoHome: config.paseoHome,
     worktreesRoot: config.worktreesRoot,
     isWorkspaceActive: (cwd) =>
-      agentManager
-        .listAgents()
-        .some(
-          (agent) =>
-            (agent.lifecycle === "running" || agent.lifecycle === "initializing") &&
-            path.resolve(agent.cwd) === cwd,
-        ) ||
+      getActiveAgentCwds().has(cwd) ||
       (wsServer?.listSessions().some((session) => session.isWorkspaceGitActive(cwd)) ?? false),
     deps: {
       forgeOverrides: { github },

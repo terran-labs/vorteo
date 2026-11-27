@@ -15,6 +15,7 @@ import {
   BACKGROUND_GIT_FETCH_ACTIVITY_CHECK_INTERVAL_MS,
   BACKGROUND_GIT_FETCH_INTERVAL_MS,
   IDLE_BACKGROUND_GIT_FETCH_INTERVAL_MS,
+  IDLE_GIT_RELEASE_STARTUP_WINDOW_MS,
   withWorkspacePollStatOptions,
   WORKSPACE_GIT_OBSERVATION_REENSURE_INTERVAL_MS,
   WORKSPACE_GIT_OBSERVATION_SETUP_CONCURRENCY,
@@ -273,6 +274,7 @@ interface CreateServiceTestOptions {
   workspaceFolderExists?: (cwd: string) => Promise<boolean>;
   now?: () => Date;
   isWorkspaceActive?: (cwd: string) => boolean;
+  getIdleGitReleasePhaseMs?: (repoGitRoot: string) => number;
 }
 
 function buildDefaultTestServiceDeps() {
@@ -2192,6 +2194,7 @@ describe("workspace polling pressure", () => {
   test("idle repositories skip the background fetch until a workspace becomes active", async () => {
     let agentRunning = false;
     const runGitFetch = vi.fn(async () => ({ changes: [], error: null }));
+    const firstIdleReleaseMs = IDLE_GIT_RELEASE_STARTUP_WINDOW_MS - 30_000;
     const service = createService({
       getCheckoutSnapshotFacts: vi.fn(async (cwd: string) => ({
         ...createCheckoutSnapshotFacts(cwd),
@@ -2201,12 +2204,13 @@ describe("workspace polling pressure", () => {
       hasOriginRemote: vi.fn(async () => true),
       runGitFetch,
       isWorkspaceActive: () => agentRunning,
+      getIdleGitReleasePhaseMs: () => firstIdleReleaseMs,
     });
     const sidebar = service.registerWorkspace({ cwd: REPO_CWD, background: true }, vi.fn());
     await vi.waitFor(() => expect(service.getMetrics().repositoryTargetCount).toBe(1));
     await waitForRefreshesToSettle(service);
 
-    await vi.advanceTimersByTimeAsync(2 * BACKGROUND_GIT_FETCH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(BACKGROUND_GIT_FETCH_INTERVAL_MS + 30_000);
     expect(runGitFetch).not.toHaveBeenCalled();
 
     // An agent starts with nobody viewing the workspace; the stale repository fetches at once.
@@ -2214,15 +2218,66 @@ describe("workspace polling pressure", () => {
     await vi.advanceTimersByTimeAsync(BACKGROUND_GIT_FETCH_ACTIVITY_CHECK_INTERVAL_MS);
     expect(runGitFetch).toHaveBeenCalledTimes(1);
 
+    // Idle again: the first idle release fetches at the repository's phase, then every interval.
     agentRunning = false;
+    await vi.advanceTimersByTimeAsync(BACKGROUND_GIT_FETCH_ACTIVITY_CHECK_INTERVAL_MS);
+    expect(runGitFetch).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(
       IDLE_BACKGROUND_GIT_FETCH_INTERVAL_MS - BACKGROUND_GIT_FETCH_ACTIVITY_CHECK_INTERVAL_MS,
     );
-    expect(runGitFetch).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(BACKGROUND_GIT_FETCH_ACTIVITY_CHECK_INTERVAL_MS);
     expect(runGitFetch).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(BACKGROUND_GIT_FETCH_ACTIVITY_CHECK_INTERVAL_MS);
+    expect(runGitFetch).toHaveBeenCalledTimes(3);
 
     sidebar.unsubscribe();
+    await service.dispose();
+  });
+
+  test("an idle worktree beside an active one gets ref changes at the idle release", async () => {
+    const gitCommonDir = join(REPO_CWD, ".git");
+    const idleCwd = join(REPO_CWD, "packages", "server");
+    const watchCallbacks = new Map<string, WatchCallback>();
+    const subscribe = vi.fn(async (directory: string, callback: WatchCallback) => {
+      watchCallbacks.set(directory, callback);
+      return createAsyncSubscription();
+    });
+    const getCheckoutSnapshotFacts = vi.fn(async (cwd: string) => ({
+      ...createCheckoutSnapshotFacts(cwd),
+      gitCommonDir,
+      absoluteGitDir: gitCommonDir,
+    }));
+    const service = createService({
+      subscribe,
+      getCheckoutSnapshotFacts,
+      getIdleGitReleasePhaseMs: () => 0,
+    });
+    const viewed = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+    const idleListener = vi.fn();
+    const idle = service.registerWorkspace({ cwd: idleCwd, background: true }, idleListener);
+    await vi.waitFor(() => expect(service.getMetrics().repositoryWorkspaceLinkCount).toBe(2));
+    // Let the startup idle release and its drain window pass.
+    await vi.advanceTimersByTimeAsync(BACKGROUND_GIT_FETCH_ACTIVITY_CHECK_INTERVAL_MS);
+    await waitForRefreshesToSettle(service);
+    idleListener.mockClear();
+    getCheckoutSnapshotFacts.mockClear();
+
+    watchCallbacks.get(gitCommonDir)?.(null, [
+      { path: join(gitCommonDir, "packed-refs"), type: "update" },
+    ]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await waitForRefreshesToSettle(service);
+    const calledCwds = () => getCheckoutSnapshotFacts.mock.calls.map(([cwd]) => cwd);
+    expect(calledCwds()).toContain(REPO_CWD);
+    expect(calledCwds()).not.toContain(idleCwd);
+    expect(idleListener).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(IDLE_BACKGROUND_GIT_FETCH_INTERVAL_MS);
+    await waitForRefreshesToSettle(service);
+    expect(calledCwds()).toContain(idleCwd);
+    expect(idleListener).toHaveBeenCalled();
+
+    viewed.unsubscribe();
+    idle.unsubscribe();
     await service.dispose();
   });
 

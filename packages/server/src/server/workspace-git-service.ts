@@ -75,10 +75,19 @@ import { createWatcherLivenessCanary } from "./watcher-liveness-canary.js";
 
 const WORKSPACE_GIT_WATCH_DEBOUNCE_MS = 1_000;
 export const BACKGROUND_GIT_FETCH_INTERVAL_MS = 180_000;
-// A repository none of whose workspaces is active (see isWorkspaceTargetActive) still fetches,
-// but only this often, so sidebar behind counts and PR state stay roughly current without a
-// `git fetch` plus a refresh of every worktree every three minutes for each idle repository.
+// Idle release: every repository, this often, fetches (when it has an origin) and runs the ref
+// refreshes deferred for its idle workspaces (see isWorkspaceTargetActive), whether or not a
+// sibling workspace is active. Sidebar behind counts and branch state for idle workspaces stay
+// roughly current without a `git fetch` plus a refresh of every worktree every three minutes.
 export const IDLE_BACKGROUND_GIT_FETCH_INTERVAL_MS = 1_800_000;
+// The first idle release after a repository is observed (including after a daemon restart) lands
+// at a random point in this window, which also staggers later releases across repositories.
+export const IDLE_GIT_RELEASE_STARTUP_WINDOW_MS = 300_000;
+// Idle releases running at once across the daemon. Later ones wait for the next activity check.
+export const IDLE_GIT_RELEASE_CONCURRENCY = 4;
+// Watcher events from a fetch can arrive after it returns; an idle release keeps refreshing idle
+// workspaces for this long afterwards, then releases anything deferred meanwhile.
+const IDLE_GIT_RELEASE_DRAIN_MS = 5_000;
 // How often the repository fetch timer re-evaluates activity. The check itself runs no Git; it
 // bounds how long a workspace that became active without a direct signal (an agent starting
 // while nobody is viewing it) waits for its stale fetch.
@@ -155,6 +164,14 @@ function mergeSets<T>(
     }
   }
   return { merged, added };
+}
+
+/** Deterministic per-repository phase, so repositories spread their idle releases apart. */
+export function getIdleGitReleasePhaseMs(repoGitRoot: string): number {
+  return (
+    createHash("sha256").update(`idle-release:${repoGitRoot}`).digest().readUInt32BE(0) %
+    IDLE_GIT_RELEASE_STARTUP_WINDOW_MS
+  );
 }
 
 export function getWorkspaceGitObservationReensurePhaseMs(cwd: string): number {
@@ -408,6 +425,8 @@ interface WorkspaceGitServiceDependencies {
   createWatcherLivenessCanary: typeof createWatcherLivenessCanary;
   workspaceFolderExists: (cwd: string) => Promise<boolean>;
   now: () => Date;
+  /** Offset of a repository's first idle release, in [0, IDLE_GIT_RELEASE_STARTUP_WINDOW_MS). */
+  getIdleGitReleasePhaseMs: (repoGitRoot: string) => number;
 }
 
 interface WorkspaceGitServiceOptions {
@@ -479,10 +498,14 @@ interface RepoGitTarget {
   fallbackPollQuietTickCount: number;
   recovery: WatchRecoveryState;
   intervalId: NodeJS.Timeout | null;
-  /** Time elapsed on the fetch timer since the last background fetch started. */
+  /** Time elapsed on the activity timer since the last background fetch started. */
   fetchAgeMs: number;
-  /** Set during the slow idle fetch so its results also refresh idle workspaces. */
+  /** Time elapsed on the activity timer since the last idle release started. */
+  idleReleaseAgeMs: number;
+  hasOrigin: boolean;
+  /** Set during an idle release and its drain window so ref changes also refresh idle workspaces. */
   refreshIdleWorkspaces: boolean;
+  idleReleaseDrainTimer: NodeJS.Timeout | null;
   fetchInFlight: boolean;
   bufferedFetchMetadataEvents: FileChange[];
   recentFetchRemoteRefChanges: Map<
@@ -607,6 +630,7 @@ function buildDefaultWorkspaceGitServiceDeps(
     createWatcherLivenessCanary,
     workspaceFolderExists,
     now: () => new Date(),
+    getIdleGitReleasePhaseMs,
   };
 }
 
@@ -650,6 +674,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
   private readonly snapshotUpdatedListeners = new Set<WorkspaceGitSnapshotUpdatedListener>();
   private readonly workspaceTargets = new Map<string, WorkspaceGitTarget>();
   private readonly repoTargets = new Map<string, RepoGitTarget>();
+  private idleReleasesInFlight = 0;
   private readonly workingTreeWatchTargets = new Map<string, WorkingTreeWatchTarget>();
   private readonly workingTreeWatchSetups = new Map<string, Promise<WorkingTreeWatchTarget>>();
   private readonly workingTreeWatchResolutions = new Map<string, Promise<WorkingTreeWatchTarget>>();
@@ -1461,12 +1486,17 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
   }
 
   /**
-   * Active means a client is viewing the workspace (a foreground listener or a focused agent in
-   * it) or an agent in it is running or starting. Sidebar subscriptions alone are idle. Background
-   * polling, fetching and repository refresh fan-out all gate on this one predicate.
+   * Active means a client is viewing the workspace (a foreground listener, an open uncommitted
+   * diff watching its working tree, or a focused agent in it) or an agent in it is running or
+   * starting. Sidebar subscriptions alone are idle. Background polling, fetching and repository
+   * refresh fan-out all gate on this one predicate.
    */
   private isWorkspaceTargetActive(target: WorkspaceGitTarget): boolean {
-    return target.foregroundListeners.size > 0 || this.isWorkspaceActive(target.cwd);
+    return (
+      target.foregroundListeners.size > 0 ||
+      (this.getWorkingTreeWatchTargetForWorkspace(target)?.listeners.size ?? 0) > 0 ||
+      this.isWorkspaceActive(target.cwd)
+    );
   }
 
   private isActiveObservedWorkspaceTarget(target: WorkspaceGitTarget): boolean {
@@ -2404,7 +2434,13 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       intervalId: null,
       // No fetch has run yet, so the first active check fetches at once.
       fetchAgeMs: BACKGROUND_GIT_FETCH_INTERVAL_MS,
+      // The first idle release, which also refreshes idle sidebars after a daemon restart, lands
+      // within the startup window at this repository's phase.
+      idleReleaseAgeMs:
+        IDLE_BACKGROUND_GIT_FETCH_INTERVAL_MS - this.deps.getIdleGitReleasePhaseMs(repoGitRoot),
+      hasOrigin: false,
       refreshIdleWorkspaces: false,
+      idleReleaseDrainTimer: null,
       fetchInFlight: false,
       bufferedFetchMetadataEvents: [],
       recentFetchRemoteRefChanges: new Map(),
@@ -2435,20 +2471,21 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     if (repoTarget.closed || this.repoTargets.get(repoGitRoot) !== repoTarget) {
       return;
     }
-    if (!hasOrigin) {
-      return;
-    }
+    // Repositories without an origin still need the timer: their idle workspaces defer ref
+    // changes from local commits and rely on the idle release to catch up.
+    repoTarget.hasOrigin = hasOrigin;
     repoTarget.intervalId = setInterval(() => {
       repoTarget.fetchAgeMs += BACKGROUND_GIT_FETCH_ACTIVITY_CHECK_INTERVAL_MS;
+      repoTarget.idleReleaseAgeMs += BACKGROUND_GIT_FETCH_ACTIVITY_CHECK_INTERVAL_MS;
       this.maybeRunRepoFetch(repoTarget);
     }, BACKGROUND_GIT_FETCH_ACTIVITY_CHECK_INTERVAL_MS);
     this.maybeRunRepoFetch(repoTarget);
   }
 
   /**
-   * Fetch on the normal interval only while a workspace of the repository is active, and on the
-   * slow idle interval otherwise. Also releases refreshes deferred for workspaces that are now
-   * active, which is how an agent starting in an unviewed workspace picks up missed ref changes.
+   * Fetch on the normal interval only while a workspace of the repository is active, and run the
+   * idle release on its own clock regardless. Also releases refreshes deferred for workspaces that
+   * are now active, which is how an agent starting in an unviewed workspace catches up.
    */
   private maybeRunRepoFetch(repoTarget: RepoGitTarget): void {
     if (repoTarget.closed || this.repoTargets.get(repoTarget.repoGitRoot) !== repoTarget) {
@@ -2462,13 +2499,63 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
         this.flushDeferredWorkspaceRefresh(workspaceTarget);
       }
     }
-    if (repoTarget.intervalId === null || repoTarget.fetchInFlight) {
+    if (
+      repoTarget.intervalId === null ||
+      repoTarget.fetchInFlight ||
+      repoTarget.refreshIdleWorkspaces
+    ) {
       return;
     }
-    if (anyActive && repoTarget.fetchAgeMs >= BACKGROUND_GIT_FETCH_INTERVAL_MS) {
-      void this.runRepoFetch(repoTarget, { refreshIdleWorkspaces: false });
-    } else if (repoTarget.fetchAgeMs >= IDLE_BACKGROUND_GIT_FETCH_INTERVAL_MS) {
-      void this.runRepoFetch(repoTarget, { refreshIdleWorkspaces: true });
+    if (
+      repoTarget.idleReleaseAgeMs >= IDLE_BACKGROUND_GIT_FETCH_INTERVAL_MS &&
+      this.idleReleasesInFlight < IDLE_GIT_RELEASE_CONCURRENCY
+    ) {
+      void this.runIdleRelease(repoTarget);
+      return;
+    }
+    if (
+      repoTarget.hasOrigin &&
+      anyActive &&
+      repoTarget.fetchAgeMs >= BACKGROUND_GIT_FETCH_INTERVAL_MS
+    ) {
+      void this.runRepoFetch(repoTarget);
+    }
+  }
+
+  private async runIdleRelease(repoTarget: RepoGitTarget): Promise<void> {
+    this.idleReleasesInFlight += 1;
+    repoTarget.idleReleaseAgeMs = 0;
+    repoTarget.refreshIdleWorkspaces = true;
+    try {
+      if (repoTarget.hasOrigin) {
+        await this.runRepoFetch(repoTarget);
+      }
+    } finally {
+      if (repoTarget.closed) {
+        this.endIdleRelease(repoTarget);
+      } else {
+        this.flushIdleDeferredRefreshes(repoTarget);
+        repoTarget.idleReleaseDrainTimer = setTimeout(() => {
+          repoTarget.idleReleaseDrainTimer = null;
+          this.flushIdleDeferredRefreshes(repoTarget);
+          this.endIdleRelease(repoTarget);
+        }, IDLE_GIT_RELEASE_DRAIN_MS);
+      }
+    }
+  }
+
+  private endIdleRelease(repoTarget: RepoGitTarget): void {
+    if (!repoTarget.refreshIdleWorkspaces) {
+      return;
+    }
+    repoTarget.refreshIdleWorkspaces = false;
+    this.idleReleasesInFlight -= 1;
+  }
+
+  private flushIdleDeferredRefreshes(repoTarget: RepoGitTarget): void {
+    for (const workspaceKey of repoTarget.workspaceKeys) {
+      const workspaceTarget = this.workspaceTargets.get(workspaceKey);
+      if (workspaceTarget) this.flushDeferredWorkspaceRefresh(workspaceTarget);
     }
   }
 
@@ -3871,17 +3958,13 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     }
   }
 
-  private async runRepoFetch(
-    target: RepoGitTarget,
-    options: { refreshIdleWorkspaces: boolean },
-  ): Promise<void> {
+  private async runRepoFetch(target: RepoGitTarget): Promise<void> {
     if (target.fetchInFlight) {
       return;
     }
 
     target.fetchInFlight = true;
     target.fetchAgeMs = 0;
-    target.refreshIdleWorkspaces = options.refreshIdleWorkspaces;
     this.logger.debug(
       { repoGitRoot: target.repoGitRoot, cwd: target.cwd },
       "Running background git fetch",
@@ -3910,16 +3993,8 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
         );
       }
       this.applyRepoFetchResult(target, result, eventsBeforeFetchSnapshot);
-      if (target.refreshIdleWorkspaces) {
-        // The slow idle fetch is also when idle workspaces catch up on deferred ref changes.
-        for (const workspaceKey of target.workspaceKeys) {
-          const workspaceTarget = this.workspaceTargets.get(workspaceKey);
-          if (workspaceTarget) this.flushDeferredWorkspaceRefresh(workspaceTarget);
-        }
-      }
     } finally {
       target.fetchInFlight = false;
-      target.refreshIdleWorkspaces = false;
     }
   }
 
@@ -4136,6 +4211,11 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     if (target.intervalId) {
       clearInterval(target.intervalId);
       target.intervalId = null;
+    }
+    if (target.idleReleaseDrainTimer) {
+      clearTimeout(target.idleReleaseDrainTimer);
+      target.idleReleaseDrainTimer = null;
+      this.endIdleRelease(target);
     }
     if (target.fallbackPollTimer) {
       clearTimeout(target.fallbackPollTimer);
