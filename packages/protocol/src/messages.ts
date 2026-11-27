@@ -345,6 +345,8 @@ const MutableDaemonProviderConfigSchema = z
     enabled: z.boolean().optional(),
     // COMPAT(usageLimitResume): added 2026-10-22; absent means on.
     autoResumeAfterUsageLimit: z.boolean().optional(),
+    // COMPAT(primaryConnectionAutomatic): added 2026-11-25; absent means Automatic may use it.
+    automaticPrimary: z.boolean().optional(),
     additionalModels: z.array(MutableDaemonProviderModelSchema).optional(),
   })
   .passthrough();
@@ -472,6 +474,11 @@ export const MutableDaemonConfigSchema = z
     // primary connection. Until it arrives, an installation daemon keeps the earlier launch
     // rule (the first usable provider) instead of waiting for a choice it can never receive.
     installationPrimaryConnectionSupported: z.boolean().optional(),
+    // COMPAT(primaryConnectionAutomatic): added 2026-11-25, remove after 2027-05-25. Projected as
+    // true only by coordinators where an unchosen primary connection means Automatic. Daemons
+    // that support Automatic always report the key, false until then; with false, an unchosen
+    // installation primary keeps waiting, as older coordinators expect.
+    installationPrimaryConnectionAutomatic: z.boolean().optional(),
     // COMPAT(timeZoneSetting): added 2026-11-13. The owner's time zone for agent prompts. Daemons
     // that know the setting always report the key, so a coordinator projects it only to them.
     timeZone: DaemonTimeZoneSchema.optional(),
@@ -519,6 +526,7 @@ export const MutableDaemonConfigPatchSchema = z
     primaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
     installationPrimaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
     installationPrimaryConnectionSupported: z.boolean().optional(),
+    installationPrimaryConnectionAutomatic: z.boolean().optional(),
     timeZone: DaemonTimeZoneSchema.optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
     pluginsEnabled: z.boolean().optional(),
@@ -4771,6 +4779,9 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(primaryConnection): added 2026-11-05, remove gate after 2027-05-05. The daemon
         // launches system threads with the primary connection and stores it when standalone.
         primaryConnectionSetting: z.boolean().optional(),
+        // COMPAT(primaryConnectionAutomatic): added 2026-11-25, remove gate after 2027-05-25. An
+        // unchosen primary connection means Automatic, and usage lists report its current pick.
+        primaryConnectionAutomatic: z.boolean().optional(),
         // COMPAT(timeZoneSetting): added 2026-11-13, remove gate after 2027-05-13. The daemon
         // stores the owner's time zone and names it in agent prompts.
         timeZoneSetting: z.boolean().optional(),
@@ -7580,12 +7591,22 @@ export const ProviderUsageSchema = z.object({
   error: z.string().nullable().optional(),
 });
 
+/** The account Automatic would launch system threads on: a provider id and its label. */
+export const AutomaticPrimarySchema = z.object({
+  providerId: z.string(),
+  label: z.string(),
+});
+export type AutomaticPrimary = z.infer<typeof AutomaticPrimarySchema>;
+
 export const ProviderUsageListResponseMessageSchema = z.object({
   type: z.literal("provider.usage.list.response"),
   payload: z.object({
     requestId: z.string(),
     fetchedAt: z.string(),
     providers: z.array(ProviderUsageSchema),
+    // COMPAT(primaryConnectionAutomatic): added 2026-11-25. Present only where Automatic is
+    // supported: the account it picks now, or null when no account can run system threads.
+    automaticPrimary: AutomaticPrimarySchema.nullable().optional(),
     workerActivity: z
       .object({
         checkedAt: z.string(),

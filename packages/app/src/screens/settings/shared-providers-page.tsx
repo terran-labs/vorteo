@@ -47,6 +47,7 @@ import {
   isPrimaryConnection,
   usePrimaryConnection,
 } from "@/execution-installation/primary-connection";
+import { PrimaryConnectionRow } from "./automatic-primary";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { isWeb } from "@/constants/platform";
 import { useInstallationSettings } from "@/execution-installation/settings";
@@ -90,6 +91,7 @@ function ProviderFamilyCard({
   dragHandleProps,
   showDrag = false,
   primary = false,
+  automaticSupported = false,
   firstConnection = null,
   onMove,
   canMoveUp = false,
@@ -97,6 +99,8 @@ function ProviderFamilyCard({
 }: {
   /** The family holds the installation's primary connection. */
   primary?: boolean;
+  /** Clearing the primary connection leaves system threads on Automatic. */
+  automaticSupported?: boolean;
   family: ProviderFamily;
   snapshot: InstallationSettingsSnapshot;
   busy: boolean;
@@ -117,7 +121,12 @@ function ProviderFamilyCard({
   const { t } = useTranslation();
   const toggle = useCallback(
     async (enabled: boolean) => {
-      if (!enabled && primary && !(await confirmDisablePrimary(family.name, confirmDialog))) return;
+      if (
+        !enabled &&
+        primary &&
+        !(await confirmDisablePrimary(family.name, confirmDialog, automaticSupported))
+      )
+        return;
       save({
         expectedRevision: snapshot.revision,
         settings: {
@@ -129,7 +138,7 @@ function ProviderFamilyCard({
         },
       });
     },
-    [save, snapshot, family.id, family.name, primary],
+    [save, snapshot, family.id, family.name, primary, automaticSupported],
   );
   const toggleExpanded = useCallback(
     () => onToggleExpanded(family.id),
@@ -487,7 +496,7 @@ function ProviderCatalog({
   const [useDev, setUseDev] = useState(false);
   const reportActionError = useReportActionError();
   const change = useMutation({ mutationFn: save, onError: reportActionError });
-  const { primary } = usePrimaryConnection();
+  const { primary, automatic } = usePrimaryConnection();
   const [showAvailable, setShowAvailable] = useState(false);
   const toggleAvailable = useCallback(() => setShowAvailable((value) => !value), []);
   // One provider open at a time; a provider address opens with it expanded.
@@ -616,6 +625,7 @@ function ProviderCatalog({
         expanded={item.id === expanded}
         onToggleExpanded={toggleExpanded}
         primary={item.accounts.some((account) => isPrimaryConnection(primary, account.definitions))}
+        automaticSupported={automatic.supported}
         firstConnection={awaitingFirstConnection(item, signInSources)}
         onMove={move}
         {...movePosition(item)}
@@ -623,7 +633,17 @@ function ProviderCatalog({
         dragHandleProps={dragHandleProps}
       />
     ),
-    [data, change, expanded, toggleExpanded, primary, signInSources, move, movePosition],
+    [
+      data,
+      change,
+      expanded,
+      toggleExpanded,
+      primary,
+      automatic.supported,
+      signInSources,
+      move,
+      movePosition,
+    ],
   );
   const availableFamilies = useMemo(
     () => families.filter((family) => providerFamilyGroup(family) === "available"),
@@ -673,6 +693,7 @@ function ProviderCatalog({
           Add provider
         </Button>
       </View>
+      <PrimaryConnectionRow definitions={definitions} environments={environments} />
       {[true, false].map((enabled) => (
         <DraggableList
           key={String(enabled)}

@@ -8,6 +8,7 @@ export const fr: TranslationResources = {
   vorteoSetup: en.vorteoSetup,
   // Draft English until the wording is approved, then translated.
   codexAdoption: en.codexAdoption,
+  automaticPrimary: en.automaticPrimary,
   paneFind: {
     connectionFailure:
       "Impossible de rechercher dans cette conversation. Vérifiez la connexion à l’hôte et réessayez.",

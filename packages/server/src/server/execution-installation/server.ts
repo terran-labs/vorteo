@@ -156,6 +156,7 @@ import {
 import {
   InstallationSettingsUpdateSchema,
   UNSET_TIME_ZONE,
+  type InstallationSettings,
   type InstallationSettingsSnapshot,
 } from "@getpaseo/protocol/installation-settings";
 import { AgentSkillSelectionSchema } from "@getpaseo/protocol/messages";
@@ -217,6 +218,7 @@ function ownerSettingsSnapshot(
     projectPoliciesAware: boolean;
     primaryConnectionAware: boolean;
     timeZoneAware: boolean;
+    automaticPrimaryAware: boolean;
   },
 ) {
   const catalogs = [snapshot.settings, ...Object.values(snapshot.conflicts?.candidates ?? {})];
@@ -236,8 +238,15 @@ function ownerSettingsSnapshot(
     // newer ones read the key's presence as the coordinator's support.
     if (client.timeZoneAware) catalog.timeZone ??= { ...UNSET_TIME_ZONE };
     else delete catalog.timeZone;
+    if (!client.automaticPrimaryAware) withoutAutomaticPolicy(catalog);
   }
   return snapshot;
+}
+
+// COMPAT(primaryConnectionAutomatic): added 2026-11-25, remove after 2027-05-25. Older strict
+// readers reject the Automatic policy key on provider definitions.
+function withoutAutomaticPolicy(catalog: InstallationSettings) {
+  for (const provider of catalog.providerDefinitions ?? []) delete provider.policy.automaticPrimary;
 }
 
 function ownerSettingsClient(req: Request) {
@@ -246,6 +255,7 @@ function ownerSettingsClient(req: Request) {
     projectPoliciesAware: req.get("X-Vorteo-Project-Policies") === "1",
     primaryConnectionAware: req.get("X-Vorteo-Primary-Connection") === "1",
     timeZoneAware: req.get("X-Vorteo-Time-Zone") === "1",
+    automaticPrimaryAware: req.get("X-Vorteo-Automatic-Primary") === "1",
   };
 }
 
@@ -1809,6 +1819,8 @@ export function createInstallationServer(
     // COMPAT(timeZoneSetting): added 2026-11-13, remove after 2027-05-13. Same strict readers.
     if (req.query.timeZone !== "1") delete snapshot.settings.timeZone;
     else snapshot.settings.timeZone ??= { ...UNSET_TIME_ZONE };
+    const automaticAware = req.query.automaticPrimary === "1";
+    if (!automaticAware) withoutAutomaticPolicy(snapshot.settings);
     res.json({
       installationId: config.public.installationId,
       serverId: environment.serverId,
@@ -1816,6 +1828,7 @@ export function createInstallationServer(
       revision: snapshot.revision,
       settings: snapshot.settings,
       installationInstructions: kind === "host" ? installationHostInstructions(config) : "",
+      ...(automaticAware ? { primaryConnectionAutomatic: true } : {}),
     });
   });
 
@@ -2791,21 +2804,28 @@ export function createInstallationServer(
   });
   app.patch("/api/installation/owner/settings", (req, res, next) => {
     const input = InstallationSettingsUpdateSchema.parse(req.body);
-    const removalAware = req.get("X-Vorteo-Provider-Removal") === "1";
+    const client = ownerSettingsClient(req);
     const current = settings.snapshot();
     if (
-      !removalAware &&
+      !client.removalAware &&
       input.settings.providerDefinitions &&
       (input.settings.providerDefinitions.some((provider) => provider.removed !== undefined) ||
         current.settings?.providerDefinitions?.some((provider) => provider.removed))
     )
       throw new InstallationSettingsConflict(current.revision);
+    // COMPAT(primaryConnectionAutomatic): added 2026-11-25, remove after 2027-05-25. An older
+    // client never saw the Automatic switches, so replacing definitions would clear them.
+    if (
+      !client.automaticPrimaryAware &&
+      input.settings.providerDefinitions &&
+      current.settings?.providerDefinitions?.some(
+        (provider) => provider.policy.automaticPrimary !== undefined,
+      )
+    )
+      throw new InstallationSettingsConflict(current.revision);
     void settings
       .update(input)
-      .then(
-        (snapshot) => res.json(ownerSettingsSnapshot(snapshot, ownerSettingsClient(req))),
-        next,
-      );
+      .then((snapshot) => res.json(ownerSettingsSnapshot(snapshot, client)), next);
   });
   const readProfiles = (_req: Request, res: Response) => {
     const snapshot = profiles.snapshot();

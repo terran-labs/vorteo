@@ -2690,6 +2690,8 @@ export class VoiceAssistantWebSocketServer {
         installationProjectPolicies: true,
         // COMPAT(primaryConnection): added 2026-11-05, remove gate after 2027-05-05.
         primaryConnectionSetting: true,
+        // COMPAT(primaryConnectionAutomatic): added 2026-11-25, remove gate after 2027-05-25.
+        primaryConnectionAutomatic: true,
         // COMPAT(timeZoneSetting): added 2026-11-13, remove gate after 2027-05-13.
         timeZoneSetting: true,
         installationSettingsAuthority: true,

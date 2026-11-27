@@ -8,6 +8,7 @@ export const ru: TranslationResources = {
   vorteoSetup: en.vorteoSetup,
   // Draft English until the wording is approved, then translated.
   codexAdoption: en.codexAdoption,
+  automaticPrimary: en.automaticPrimary,
   paneFind: {
     connectionFailure:
       "Не удалось выполнить поиск в чате. Проверьте подключение к хосту и повторите попытку.",

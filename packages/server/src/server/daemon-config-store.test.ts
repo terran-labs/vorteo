@@ -1600,6 +1600,15 @@ describe("DaemonConfigStore", () => {
     expect(store.get().installationPrimaryConnectionSupported).toBe(true);
     expect(loadPersistedConfig(home).daemon?.installationPrimaryConnectionSupported).toBe(true);
     expect(loadPersistedConfig(home).daemon?.installationPrimaryConnection).toEqual(copy);
+    // Automatic applies only when the coordinator says an unchosen primary means Automatic.
+    await expect(
+      store.patchFromClient({ installationPrimaryConnectionAutomatic: true }),
+    ).rejects.toThrow("installation coordinator");
+    expect(store.get().installationPrimaryConnectionAutomatic).not.toBe(true);
+    admission.primaryConnectionAutomatic = true;
+    await store.patchFromClient({ installationPrimaryConnectionAutomatic: true });
+    expect(store.get().installationPrimaryConnectionAutomatic).toBe(true);
+    expect(loadPersistedConfig(home).daemon?.installationPrimaryConnectionAutomatic).toBe(true);
   });
 
   test("the support marker follows the coordinator on every successful read", async () => {
@@ -1616,6 +1625,7 @@ describe("DaemonConfigStore", () => {
       ...binding,
       installationInstructions: "",
       settings: { ...readInstallationSettings(initial), primaryConnection: null },
+      primaryConnectionAutomatic: true,
     };
     // An older coordinator's admission has no primaryConnection key at all.
     const older: InstallationSettingsAdmission = {
@@ -1649,11 +1659,20 @@ describe("DaemonConfigStore", () => {
     );
     await store.refreshPrimaryConnectionSupport();
     expect(store.get().installationPrimaryConnectionSupported).toBe(true);
+    expect(store.get().installationPrimaryConnectionAutomatic).toBe(true);
 
     // A transport failure keeps the last known answer.
     reader.answer = new Error("connect ECONNREFUSED");
     await store.refreshPrimaryConnectionSupport();
     expect(store.get().installationPrimaryConnectionSupported).toBe(true);
+
+    // A coordinator that owns the primary connection but predates Automatic clears only the
+    // Automatic marker, so an unchosen primary waits as that coordinator expects.
+    reader.answer = { ...supporting, primaryConnectionAutomatic: undefined };
+    await store.refreshPrimaryConnectionSupport();
+    expect(store.get().installationPrimaryConnectionSupported).toBe(true);
+    expect(store.get().installationPrimaryConnectionAutomatic).toBe(false);
+    expect(loadPersistedConfig(home).daemon?.installationPrimaryConnectionAutomatic).toBe(false);
 
     // Reconnecting to an older coordinator clears it, and the daemon persists that.
     reader.answer = older;
@@ -1665,10 +1684,12 @@ describe("DaemonConfigStore", () => {
     reader.answer = supporting;
     await store.refreshPrimaryConnectionSupport();
     expect(store.get().installationPrimaryConnectionSupported).toBe(true);
+    expect(store.get().installationPrimaryConnectionAutomatic).toBe(true);
     store.patch({
       expectedInstallationResourceRevision: installationResourceRevision(store.get()),
     });
     expect(store.get().installationPrimaryConnectionSupported).toBe(false);
+    expect(store.get().installationPrimaryConnectionAutomatic).toBe(false);
   });
 
   test("a standalone daemon stores its own primary connection and replaces it whole", async () => {
