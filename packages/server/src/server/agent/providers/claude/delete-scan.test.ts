@@ -100,6 +100,36 @@ describe("scanForDelete", () => {
     expect(scanForDelete(command)).toEqual({ deletes: false, finding: null });
   });
 
+  // Rule version 2: every bypass the first independent review found, each of which deletes.
+  test.each([
+    String.raw`$'\x72\x6d' -rf build`,
+    String.raw`$'\162\155' -rf build`,
+    String.raw`$'rm' -rf build`,
+    String.raw`$'r\x6d' -rf build`,
+    String.raw`ls | xargs $'\x72\x6d' -rf`,
+    String.raw`find . -name x -exec $'\x72\x6d' {} \;`,
+    String.raw`sudo $'\x72\x6d' -rf build`,
+    String.raw`for f in a b; do $'\x72\x6d' -rf "$f"; done`,
+    "{r,}m -rf b",
+    "sed 's/x/y/e' f",
+    "git config alias.wipe '!git clean -fdx' ; git wipe",
+    "terraform destroy",
+    "pulumi destroy -y",
+  ])("asks for %s", (command) => {
+    expect(scanForDelete(command).deletes).toBe(true);
+  });
+
+  test.each([
+    ["a glob in the command word", "/usr/bin/r? -rf build"],
+    ["a non-ASCII command word", "r\u200bm -rf build"],
+    ["a sed e command", "sed -e '1e echo hi' f"],
+    ["git -c alias", "git -c alias.x='!git clean -fdx' x"],
+    ["helm uninstall", "helm uninstall web"],
+    ["terraform apply -destroy", "terraform apply -destroy -auto-approve"],
+  ])("%s asks", (_label, command) => {
+    expect(scanForDelete(command).deletes).toBe(true);
+  });
+
   // The cost direction: a delete word anywhere asks, even where it cannot run.
   test.each([
     ["a quoted mention in a commit message", `git commit -m "rm old file"`],
@@ -109,7 +139,7 @@ describe("scanForDelete", () => {
   });
 
   test("the rule version is recorded", () => {
-    expect(DELETE_SCAN_RULE_VERSION).toBe(1);
+    expect(DELETE_SCAN_RULE_VERSION).toBe(2);
   });
 });
 

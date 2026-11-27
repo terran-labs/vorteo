@@ -102,5 +102,12 @@ export async function readAutoAnswerSetting(
   }
 }
 
-/** After this many automatic answers in one turn, the thread says so, so a loop is visible. */
-export const AUTO_ANSWER_TURN_WARNING = 5;
+/** At most this many automatic answers in one turn; the next prompt asks the owner. */
+export const AUTO_ANSWER_TURN_LIMIT = 5;
+
+/**
+ * At most AUTO_ANSWER_WINDOW_LIMIT automatic answers per thread in any AUTO_ANSWER_WINDOW_MS, so
+ * a thread that keeps starting new turns cannot reset the per-turn bound.
+ */
+export const AUTO_ANSWER_WINDOW_LIMIT = 20;
+export const AUTO_ANSWER_WINDOW_MS = 10 * 60_000;

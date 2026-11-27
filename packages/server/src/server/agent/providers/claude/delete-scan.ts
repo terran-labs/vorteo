@@ -18,6 +18,11 @@
  * the hiding constructs); it never clears a mention, so a parser gap fails toward asking. The cost
  * is a false ask, for example `git commit -m "rm old file"`; a missed delete would be worse.
  *
+ * Anything the scan cannot read literally also means ask (rule version 2): ANSI-C quoting
+ * (`$'...'`) with a backslash escape, which is decoded for the mention check as well; brace
+ * expansion (`{a,b}`, `{a..b}`) anywhere in the text; and a command word holding an expansion,
+ * a substitution, a glob character or anything outside printable ASCII.
+ *
  * Some commands that pass can delete indirectly: `make`, `npm run` and other build or script
  * runners, a script that already exists on disk, or `mv` and `cp` onto an existing file. That is
  * acceptable only because the scan is consulted for one kind of prompt: Claude Code's
@@ -28,7 +33,7 @@
  */
 
 /** Bump when the rules change; recorded with every automatic answer. */
-export const DELETE_SCAN_RULE_VERSION = 1;
+export const DELETE_SCAN_RULE_VERSION = 2;
 
 export interface DeleteScanResult {
   /** True when the command deletes, may delete, or could not be read. */
@@ -44,6 +49,8 @@ interface Word {
   dynamic: boolean;
   /** A process substitution, `<(...)` or `>(...)`. */
   processSubstitution: boolean;
+  /** Why the word cannot be read literally, such as ANSI-C escapes; it then counts as a delete. */
+  unreadable?: string;
 }
 
 interface SimpleCommand {
@@ -127,7 +134,7 @@ const WRAPPERS = new Set([
 /** Scans a shell command. Never throws. */
 export function scanForDelete(command: string): DeleteScanResult {
   try {
-    return mentionIn(command) ?? scanShell(command, 0);
+    return mentionIn(command) ?? braceExpansionIn(command) ?? scanShell(command, 0);
   } catch {
     return { deletes: true, finding: "could not read the command" };
   }
@@ -145,6 +152,7 @@ function scanShell(text: string, depth: number): DeleteScanResult {
       ...simple.redirects.flatMap((r) => (r.target ? [r.target] : [])),
     ];
     for (const word of words) {
+      if (word.unreadable) return { deletes: true, finding: word.unreadable };
       const mention = mentionIn(word.text);
       if (mention) return mention;
     }
@@ -167,6 +175,17 @@ function scanShell(text: string, depth: number): DeleteScanResult {
 }
 
 const NO_DELETE: DeleteScanResult = { deletes: false, finding: null };
+
+// `{a,b}` or `{a..b}` with no space or operator inside: the shell may expand it into any word.
+const BRACE_EXPANSION = /\{[^{}\s;&|]*(?:,|\.\.)[^{}\s;&|]*\}/;
+
+/** Brace expansion anywhere in the text, quoted or not; null when none. */
+function braceExpansionIn(text: string): DeleteScanResult | null {
+  const match = BRACE_EXPANSION.exec(text);
+  return match
+    ? { deletes: true, finding: `uses brace expansion: ${match[0].slice(0, 80)}` }
+    : null;
+}
 
 /** A delete word as a whole token anywhere in the text, case-insensitively; null when none. */
 function mentionIn(text: string): DeleteScanResult | null {
@@ -234,6 +253,10 @@ function analyseFrom(
   const first = words[start]!;
   if (first.dynamic || first.processSubstitution) {
     return { deletes: true, finding: `runs a command named by an expansion: ${first.text}` };
+  }
+  // A glob or a character outside printable ASCII in the command word is not read literally.
+  if (first.text !== "[" && first.text !== "[[" && /[*?[\]]|[^\x20-\x7e]/.test(first.text)) {
+    return { deletes: true, finding: `runs a command word it cannot read: ${first.text}` };
   }
   const verb = verbOf(first);
   if (WRAPPERS.has(verb)) {
@@ -401,7 +424,53 @@ const VERB_RULES: Record<string, ArgRule> = {
   pip: (args) => nonOptions(args)[0]?.text === "uninstall",
   pip3: (args) => nonOptions(args)[0]?.text === "uninstall",
   uv: (args) => has(nonOptions(args), "uninstall", "remove"),
+  sed: sedExecutes,
+  gsed: sedExecutes,
+  terraform: infrastructureDeletes,
+  tofu: infrastructureDeletes,
+  pulumi: infrastructureDeletes,
+  cdk: infrastructureDeletes,
+  cdktf: infrastructureDeletes,
+  helm: infrastructureDeletes,
+  serverless: infrastructureDeletes,
+  sls: infrastructureDeletes,
 };
+
+/** Destroying, deleting or uninstalling infrastructure or releases. */
+function infrastructureDeletes(args: readonly Word[]): boolean {
+  return (
+    has(args, "-destroy", "--destroy") ||
+    has(nonOptions(args), "destroy", "delete", "uninstall", "remove", "rm")
+  );
+}
+
+/**
+ * sed runs shell commands through the `e` command or the `e` flag of `s`, so either makes it an
+ * interpreter; a script read from a file cannot be checked.
+ */
+function sedExecutes(args: readonly Word[]): boolean {
+  if (args.some((word) => /^(?:-f|--file)/.test(word.text))) return true;
+  const scripts: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const text = args[index]!.text;
+    if (text === "-e" || text === "--expression") scripts.push(args[++index]?.text ?? "");
+    else if (text.startsWith("--expression=")) scripts.push(text.slice("--expression=".length));
+  }
+  if (scripts.length === 0) {
+    const first = args.find((word) => !word.text.startsWith("-"));
+    if (first) scripts.push(first.text);
+  }
+  return scripts.some(sedScriptExecutes);
+}
+
+function sedScriptExecutes(script: string): boolean {
+  // The `e` command, at the start of a command.
+  if (/(?:^|[;\n{}])\s*(?:\d+|\$|\/[^/]*\/)?\s*e(?:\s|;|$)/.test(script)) return true;
+  // `s` with an `e` among its flags, for any delimiter.
+  const substitution = /s(.)(?:\\.|(?!\1)[^\\])*\1(?:\\.|(?!\1)[^\\])*\1([a-zA-Z0-9]*)/g;
+  for (const match of script.matchAll(substitution)) if (match[2]!.includes("e")) return true;
+  return false;
+}
 
 function containerDeletes(args: readonly Word[]): boolean {
   return has(nonOptions(args), "rm", "rmi", "prune", "kill");
@@ -432,6 +501,8 @@ const GIT_SUBCOMMANDS: Record<string, ArgRule> = {
 };
 
 function gitDeletes(args: readonly Word[]): boolean {
+  // An alias can run any shell command (`!...`) and is defined and run in one command line.
+  if (args.some((word) => /^alias\./i.test(word.text))) return true;
   let index = 0;
   while (index < args.length && args[index]!.text.startsWith("-")) {
     index += GIT_GLOBAL_WITH_VALUE.has(args[index]!.text) ? 2 : 1;
@@ -625,6 +696,24 @@ interface WordState {
   value: string;
   dynamic: boolean;
   processSubstitution: boolean;
+  unreadable?: string;
+}
+
+/** Decodes the escapes of a `$'...'` body the way bash does, as far as the scan needs. */
+function decodeAnsiC(body: string): string {
+  const simple: Record<string, string> = { n: "\n", t: "\t", r: "\r", a: "\x07", b: "\b" };
+  return body.replace(
+    /\\(x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{1,4}|U[0-9a-fA-F]{1,8}|[0-7]{1,3}|c.|.)/g,
+    (_match, code: string) => {
+      const kind = code[0]!;
+      if (kind === "x" || kind === "u" || kind === "U") {
+        return String.fromCodePoint(Number.parseInt(code.slice(1), 16));
+      }
+      if (/[0-7]/.test(kind)) return String.fromCharCode(Number.parseInt(code, 8));
+      if (kind === "c") return String.fromCharCode(code.charCodeAt(1) & 0x1f);
+      return simple[kind] ?? kind;
+    },
+  );
 }
 
 /** Reads one shell word starting at `start`; returns it and the index after it. */
@@ -638,7 +727,12 @@ function readWord(text: string, start: number, nested: string[]): [Word | null, 
   }
   if (i === start) return [null, i];
   return [
-    { text: state.value, dynamic: state.dynamic, processSubstitution: state.processSubstitution },
+    {
+      text: state.value,
+      dynamic: state.dynamic,
+      processSubstitution: state.processSubstitution,
+      ...(state.unreadable ? { unreadable: state.unreadable } : {}),
+    },
     i,
   ];
 }
@@ -667,7 +761,10 @@ function readWordPart(text: string, i: number, nested: string[], state: WordStat
   }
   if (char === "$" && text[i + 1] === "'") {
     const end = findAnsiQuoteEnd(text, i + 2);
-    state.value += text.slice(i + 2, end).replace(/\\(.)/g, "$1");
+    const body = text.slice(i + 2, end);
+    // Decoded so the mention check sees what runs; any escape means it is not read literally.
+    state.value += decodeAnsiC(body);
+    if (body.includes("\\")) state.unreadable = `uses ANSI-C escapes: $'${body.slice(0, 60)}'`;
     return end + 1;
   }
   if (char === '"') {

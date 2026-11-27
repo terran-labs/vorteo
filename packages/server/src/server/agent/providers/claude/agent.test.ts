@@ -4757,6 +4757,8 @@ describe("Claude automatic answers to removal prompts", () => {
     decisionReason?: string;
     beforeAnswer?: (session: object) => void;
     times?: number;
+    /** Starts a new turn before each prompt, as a thread that keeps going would. */
+    newTurnEachTime?: boolean;
   }) {
     let session: Awaited<ReturnType<ClaudeAgentClient["createSession"]>> | null = null;
     const setting: AutoAnswerSetting | undefined = input.setting
@@ -4783,6 +4785,9 @@ describe("Claude automatic answers to removal prompts", () => {
     const pending: Promise<unknown>[] = [];
     try {
       for (let index = 0; index < (input.times ?? 1); index += 1) {
+        if (input.newTurnEachTime) {
+          (session as unknown as { autoAnswersThisTurn: number }).autoAnswersThisTurn = 0;
+        }
         const answer = internal
           .handlePermissionRequest(
             "Bash",
@@ -4828,13 +4833,18 @@ describe("Claude automatic answers to removal prompts", () => {
     expect(notes).toEqual([]);
   });
 
-  test("with the setting on, allows the call once, applies no rule and records it", async () => {
-    const { results, requested, notes } = await prompt({ setting: async () => true, times: 5 });
-    expect(results).toHaveLength(5);
-    for (const result of results) {
+  test("with the setting on, allows each call once, applies no rule, records it, and stops at the turn bound", async () => {
+    const { results, requested, notes } = await prompt({ setting: async () => true, times: 6 });
+    expect(results).toHaveLength(6);
+    for (const result of results.slice(0, 5)) {
       expect(result).toEqual({ behavior: "allow", updatedInput: { command: NO_DELETE } });
     }
-    expect(requested).toEqual([]);
+    // The sixth in one turn asks, and the card says why.
+    expect(results[5]).toBe("asked");
+    expect(requested).toHaveLength(1);
+    expect(requested[0]!.description).toContain(
+      "Vorteo stopped answering automatically: 5 removal prompts were already answered in this turn.",
+    );
     const info = notes.filter((note) => note.level === "info");
     expect(info).toHaveLength(5);
     expect(info[0]!.message).toBe(
@@ -4842,7 +4852,17 @@ describe("Claude automatic answers to removal prompts", () => {
     );
     expect(info[0]!.details).toContain(UNRESOLVED);
     expect(info[0]!.details).toContain(NO_DELETE);
-    expect(notes.filter((note) => note.level === "warning")).toHaveLength(1);
+  });
+
+  test("new turns cannot reset the bound: 20 in 10 minutes, then it asks", async () => {
+    const { results, requested } = await prompt({
+      setting: async () => true,
+      times: 21,
+      newTurnEachTime: true,
+    });
+    expect(results.slice(0, 20).every((result) => result !== "asked")).toBe(true);
+    expect(results[20]).toBe("asked");
+    expect(requested[0]!.description).toContain("in this thread in the last 10 minutes");
   });
 
   test("a mode change while the setting is read asks", async () => {
