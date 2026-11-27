@@ -22,10 +22,12 @@ describe("lean Factory gate", () => {
 });
 
 describe("lean runners", () => {
-  it("lists Builders, Reviewers and the Delivery runner with the machine each runs on", () => {
+  it("badges each runner with its own machine, not the issue's Builder machine", () => {
     const rows = leanRunnerRows(demoLeanStatus(), demoLeanView());
     expect(rows.map((row) => [row.issue, row.role, row.machine])).toEqual([
-      [41, "builder", "srv_studio"],
+      [41, "builder", "Studio"],
+      // Issue 41's line names Studio, but its Reviewer runs on the primary.
+      [41, "reviewer", "M2"],
       [42, "reviewer", "M2"],
       [null, "delivery", "M2"],
     ]);

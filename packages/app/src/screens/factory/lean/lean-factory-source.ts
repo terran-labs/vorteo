@@ -101,6 +101,16 @@ export type LeanView = Omit<FactoryLeanView, "health"> & {
 };
 
 export type LeanStatus = FactoryLeanStatus;
+
+/**
+ * A runner reference as a newer daemon may send it. Pending contract: `installation` and
+ * `friendlyName` name the machine the runner itself runs on, which can differ from the issue
+ * line's `installation` (the Builder's machine), as for a Reviewer on the primary.
+ */
+export type LeanRunnerRef = NonNullable<LeanStatus["issues"][number]["runner"]> & {
+  installation?: string | null;
+  friendlyName?: string | null;
+};
 export type LeanActivityEntry = FactoryActivityEntry;
 
 /** The repository config path; a runtime copy, checked against the contract's constant. */

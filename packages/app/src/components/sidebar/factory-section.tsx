@@ -215,7 +215,8 @@ export const FactorySection = memo(function FactorySection({
         groupKey={`factory-runners:${card.key}`}
         serverId={card.serverId}
         runners={runners}
-        workspaces={issueWorkspaces}
+        // Lean rows open their own runner's agent: a Reviewer must not open the Builder's workspace.
+        workspaces={lean ? undefined : issueWorkspaces}
         level={level + 1}
         onBeforeNavigate={onWorkspacePress}
       />

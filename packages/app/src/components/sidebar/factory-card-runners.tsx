@@ -86,7 +86,8 @@ export function FactoryRunners({
     >
       {runners.map((issue) => (
         <RunnerRow
-          key={`${issue.serverId ?? serverId}:${issue.tag ?? ""}#${issue.number}`}
+          // A lean issue can have a Builder and a Reviewer at once; the agent keeps rows apart.
+          key={`${issue.serverId ?? serverId}:${issue.tag ?? ""}#${issue.number}:${issue.agents[0]?.agentId ?? ""}`}
           serverId={issue.serverId ?? serverId ?? ""}
           issue={issue}
           workspace={issue.tag ? undefined : workspaces?.get(issue.number)}

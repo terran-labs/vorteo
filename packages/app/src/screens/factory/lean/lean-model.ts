@@ -1,6 +1,6 @@
 import type { FactoryQueueIssue } from "@/components/sidebar/factory-card-model";
 import type { FactoryChip } from "@/components/sidebar/factory-card-roles";
-import type { LeanStatus, LeanView } from "./lean-factory-source";
+import type { LeanRunnerRef, LeanStatus, LeanView } from "./lean-factory-source";
 
 /**
  * Pure view models for lean Factories. Fed by the adapter's shapes; no React, no RPCs.
@@ -84,16 +84,20 @@ export function leanRunnerRows(status: LeanStatus | null, view: LeanView | null)
   const machines = view?.machines ?? [];
   const rows: LeanRunnerRow[] = [];
   for (const line of status?.issues ?? view?.inFlight ?? []) {
-    const role = line.runner ? RUNNER_ROLE_BY_WIRE[line.runner.role] : undefined;
-    if (!line.runner || !role) continue;
+    const runner = line.runner as LeanRunnerRef | null;
+    const role = runner ? RUNNER_ROLE_BY_WIRE[runner.role] : undefined;
+    if (!runner || !role) continue;
     rows.push({
-      key: `issue-${line.issue}-${line.runner.agentId}`,
+      key: `issue-${line.issue}-${runner.agentId}`,
       issue: line.issue,
       title: line.title,
       role,
-      agentId: line.runner.agentId,
-      serverId: line.runner.serverId,
-      machine: leanMachineName(line.installation, machines),
+      agentId: runner.agentId,
+      serverId: runner.serverId,
+      // The runner's own machine. The line's installation is the Builder's, which is wrong for
+      // a Reviewer on the primary reviewing a secondary's work; older daemons send only that.
+      machine:
+        runner.friendlyName || leanMachineName(runner.installation ?? line.installation, machines),
       stage: line.stage,
       danger: DANGER_STAGES.has(line.stage),
     });
@@ -285,7 +289,9 @@ export function leanRunnerIssues(
   status: LeanStatus | null,
 ): LeanRunnerIssue[] {
   return rows.map((row) => {
-    const line = status?.issues.find((candidate) => candidate.issue === row.issue);
+    const line = status?.issues.find(
+      (candidate) => candidate.issue === row.issue && candidate.runner?.agentId === row.agentId,
+    );
     const base: QueueIssue = line
       ? queueIssue(line)
       : {
