@@ -59,7 +59,7 @@ import {
 } from "@/utils/projects";
 import {
   formatEnvironmentList,
-  resolveProjectHostTarget,
+  resolvePinnedProjectHostTarget,
   type ProjectHostTargetResult,
 } from "@/components/sidebar/project-host-target";
 import {
@@ -123,10 +123,17 @@ export default function ProjectSettingsScreen({
   );
   // The route names one host, but a project merged across environments can be edited on any
   // online host that has its folder: keep the routed host when it qualifies, else prefer this
-  // installation's Host, so a paused Dev does not lock the project's settings.
+  // installation's Host, so a paused Dev does not lock the project's settings. Once chosen, the
+  // host is pinned for this route: if it drops mid-edit the screen says so instead of moving the
+  // kept draft to another host, where it would save against that host's revision.
+  const routeKey = `${serverId}:${projectId}`;
+  const [pin, setPin] = useState<{ route: string; serverId: string; projectId: string } | null>(
+    null,
+  );
+  const pinned = pin?.route === routeKey ? pin : null;
   const target = useMemo(
     () =>
-      resolveProjectHostTarget(
+      resolvePinnedProjectHostTarget(
         (project?.hosts ?? []).map((entry) => ({
           serverId: entry.serverId,
           projectId: entry.projectId,
@@ -134,12 +141,17 @@ export default function ProjectSettingsScreen({
           rootPath: entry.repoRoot,
           entry,
         })),
+        pinned,
         [serverId, installationHostServerId(readExecutionInstallation())],
       ),
-    [project, serverId],
+    [project, pinned, serverId],
   );
   const selectedHost = target.kind === "usable" ? target.host.entry : undefined;
-  const selectedServerId = selectedHost?.serverId ?? serverId;
+  useEffect(() => {
+    if (pinned || !selectedHost) return;
+    setPin({ route: routeKey, serverId: selectedHost.serverId, projectId: selectedHost.projectId });
+  }, [pinned, selectedHost, routeKey]);
+  const selectedServerId = selectedHost?.serverId ?? pinned?.serverId ?? serverId;
   const selectedSnapshot = useHostRuntimeSnapshot(selectedServerId);
   const isHostGone =
     Boolean(selectedServerId) &&

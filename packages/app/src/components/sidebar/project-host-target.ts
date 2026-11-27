@@ -45,6 +45,23 @@ export function resolveProjectHostTarget<T extends ProjectHostCandidate>(
   return offline.length > 0 ? { kind: "offline", offline } : { kind: "no_folder" };
 }
 
+/**
+ * Once a screen has settled on a host, it stays there: an edit drafted against one host's
+ * revision must never be saved to another. A pinned host that drops reads as offline.
+ */
+export function resolvePinnedProjectHostTarget<T extends ProjectHostCandidate>(
+  hosts: readonly T[],
+  pinned: { serverId: string; projectId: string } | null,
+  preferredServerIds: readonly (string | null | undefined)[] = [],
+): ProjectHostTargetResult<T> {
+  if (!pinned) return resolveProjectHostTarget(hosts, preferredServerIds);
+  return resolveProjectHostTarget(
+    hosts.filter(
+      (host) => host.serverId === pinned.serverId && host.projectId === pinned.projectId,
+    ),
+  );
+}
+
 export interface ProjectMenuHostPlacement {
   serverId: string;
   projectId: string;
@@ -55,6 +72,8 @@ export interface ProjectMenuHostPlacement {
 /** Why the project menu offers no Factory actions, when it should say so. */
 export type ProjectFactoryNotice =
   | { kind: "none" }
+  /** This installation's Host has the project but its plugin catalog has not loaded yet. */
+  | { kind: "loading" }
   | { kind: "offline"; serverIds: string[] }
   | { kind: "missing_plugin"; serverId: string };
 
@@ -66,14 +85,19 @@ export interface ProjectMenuTarget {
 /**
  * The project menu's target: an online host with the project's folder. It prefers this
  * installation's Host when that runs the Factory plugin, then any host that does, then the Host,
- * so settings and Factory actions share one target whenever possible. With none usable, settings still
- * open against the first host so its screen can explain why nothing is editable.
+ * so settings and Factory actions share one target whenever possible. While the Host's plugin
+ * catalog is still loading, the menu waits on the Host instead of falling through to another
+ * Factory host, which could otherwise turn on a second Factory for the same project. With none
+ * usable, settings still open against the first host so its screen can explain why nothing is
+ * editable.
  */
 export function resolveProjectMenuTarget(input: {
   hosts: readonly ProjectMenuHostPlacement[];
   onlineServerIds: ReadonlySet<string>;
   factoryServerIds: ReadonlySet<string>;
   installationHostServerId: string | null;
+  /** Whether the Host's plugin catalog is still loading, so its Factory plugin is not yet known. */
+  installationHostPluginsLoading?: boolean;
 }): ProjectMenuTarget {
   const candidates = input.hosts.map((host) => ({
     serverId: host.serverId,
@@ -82,6 +106,15 @@ export function resolveProjectMenuTarget(input: {
     rootPath: host.iconWorkingDir,
   }));
   const hostServerId = input.installationHostServerId;
+  const loadingHost = input.installationHostPluginsLoading
+    ? candidates.find((host) => host.serverId === hostServerId && isUsableProjectHost(host))
+    : undefined;
+  if (loadingHost) {
+    return {
+      settingsTarget: { serverId: loadingHost.serverId, projectId: loadingHost.projectId },
+      factoryNotice: { kind: "loading" },
+    };
+  }
   const result = resolveProjectHostTarget(candidates, [
     hostServerId && input.factoryServerIds.has(hostServerId) ? hostServerId : null,
     ...input.factoryServerIds,

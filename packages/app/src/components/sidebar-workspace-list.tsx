@@ -108,7 +108,7 @@ import {
 } from "@/hooks/use-sidebar-workspace-pin";
 import { useSidebarCollapsedSectionsStore } from "@/stores/sidebar-collapsed-sections-store";
 import { useHostFeatureMap } from "@/runtime/host-features";
-import { useInstalledPlugins } from "@/plugins/registry";
+import { useInstalledPlugins, usePluginCatalogStatus } from "@/plugins/registry";
 import { projectFactoryOverviewRoute } from "@/screens/factory/routes";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useIsSystemProjectOnAnyHost } from "@/workspace/lifecycle/system-membership";
@@ -706,6 +706,8 @@ function useProjectMenuTarget(project: SidebarProjectEntry): ProjectMenuTarget {
   const serverIds = useMemo(() => project.hosts.map((host) => host.serverId), [project.hosts]);
   const statuses = useHostRuntimeConnectionStatuses(serverIds);
   const plugins = useInstalledPlugins();
+  const hostServerId = installationHostServerId(readExecutionInstallation());
+  const hostCatalogStatus = usePluginCatalogStatus(hostServerId ?? "");
   return useMemo(() => {
     const onlineServerIds = new Set<string>();
     for (const [serverId, status] of statuses) {
@@ -717,9 +719,10 @@ function useProjectMenuTarget(project: SidebarProjectEntry): ProjectMenuTarget {
       factoryServerIds: new Set(
         plugins.filter((plugin) => plugin.id === "factory").map((plugin) => plugin.serverId),
       ),
-      installationHostServerId: installationHostServerId(readExecutionInstallation()),
+      installationHostServerId: hostServerId,
+      installationHostPluginsLoading: hostServerId !== null && hostCatalogStatus === "loading",
     });
-  }, [project.hosts, statuses, plugins]);
+  }, [project.hosts, statuses, plugins, hostServerId, hostCatalogStatus]);
 }
 
 function ProjectFactoryNoticeItem({
@@ -732,6 +735,13 @@ function ProjectFactoryNoticeItem({
   const { t } = useTranslation();
   const hosts = useHosts();
   if (notice.kind === "none") return null;
+  if (notice.kind === "loading") {
+    return (
+      <ProjectMenuItem surface={surface} disabled>
+        {t("projectFactory.loading")}
+      </ProjectMenuItem>
+    );
+  }
   const label = (serverId: string) =>
     hosts.find((host) => host.serverId === serverId)?.label ?? serverId;
   const text =

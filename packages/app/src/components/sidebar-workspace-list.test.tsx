@@ -11,7 +11,10 @@ import { createRoot, type Root } from "react-dom/client";
 import React from "react";
 import type { ReactElement } from "react";
 import { createProjectViewKey } from "@/projects/workspace-structure";
-import { resolveProjectMenuTarget } from "@/components/sidebar/project-host-target";
+import {
+  resolvePinnedProjectHostTarget,
+  resolveProjectMenuTarget,
+} from "@/components/sidebar/project-host-target";
 
 vi.hoisted(() => {
   (globalThis as unknown as { __DEV__: boolean }).__DEV__ = false;
@@ -666,5 +669,32 @@ describe("sidebar project menu target", () => {
     });
     expect(target.settingsTarget).toEqual({ serverId: "host", projectId: "prj_host" });
     expect(target.factoryNotice).toEqual({ kind: "none" });
+  });
+
+  it("waits on the Host's loading plugin catalog instead of offering Dev's Factory", () => {
+    const target = resolveProjectMenuTarget({
+      hosts: [
+        { serverId: "dev", projectId: "prj_dev", iconWorkingDir: "/Users/me/dev/app" },
+        { serverId: "host", projectId: "prj_host", iconWorkingDir: "/Users/me/dev/app" },
+      ],
+      onlineServerIds: new Set(["dev", "host"]),
+      factoryServerIds: new Set(["dev"]),
+      installationHostServerId: "host",
+      installationHostPluginsLoading: true,
+    });
+    expect(target.settingsTarget).toEqual({ serverId: "host", projectId: "prj_host" });
+    expect(target.factoryNotice).toEqual({ kind: "loading" });
+  });
+
+  it("keeps project settings on their pinned host when it drops mid-edit", () => {
+    const hosts = [
+      { serverId: "dev", projectId: "prj_dev", online: false, rootPath: "/Users/me/dev/app" },
+      { serverId: "host", projectId: "prj_host", online: true, rootPath: "/Users/me/dev/app" },
+    ];
+    const target = resolvePinnedProjectHostTarget(hosts, {
+      serverId: "dev",
+      projectId: "prj_dev",
+    });
+    expect(target).toEqual({ kind: "offline", offline: [hosts[0]] });
   });
 });
