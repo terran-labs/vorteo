@@ -2737,6 +2737,8 @@ Owner-controlled daemon automation: Installation controls expose a persistent ow
 
 ## Goals, queues and supervised workers
 
+- **Account selection evidence.** Callers can inspect the ranked accounts behind a worker placement decision, including each quota window, its reset, the reading age and the reason an account was excluded. The caller can reserve additional quota above the owner's floor, supply a concurrent-session cap and live count, require measured usage or prefer a different account for review. Ordinary worker launches supply no capacity limit or extra reservation.
+
 - **Worker placement and rollback.** Launches share the daemon's usage cache and check existing provider holds before choosing an account. An active hold also excludes aliases of the held account. A saved team keeps its first member in the single-worker field for older daemons. A daemon that supports teams refuses delegation for an explicitly empty team.
 
 - **Worker presets across providers.** The installation owner can select a team in the profile editor. A supervisor names a preset from its frozen team and can leave the account to the daemon. For example, a Claude review preset can use any eligible Claude account. Each account must pass the existing Automatic eligibility rules. The daemon drops accounts at or below the normal-priority quota floor and picks the account with the most measured headroom. If only unreadable accounts remain, it prefers the preset default. The worker thread and launch result identify an unmeasured choice and the accounts dropped for low quota. Existing single-worker presets keep their launch rules. A session admitted before a restart hold finishes registration and joins the drain.
