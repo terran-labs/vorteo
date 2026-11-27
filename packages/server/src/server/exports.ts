@@ -3,6 +3,12 @@ export { createPaseoDaemon, type PaseoDaemon, type PaseoDaemonConfig } from "./b
 export { loadConfig, type CliConfigOverrides } from "./config.js";
 export { resolvePaseoHome } from "./paseo-home.js";
 export { getOrCreateServerId } from "./server-id.js";
+export {
+  manageFactoryMachineIdentity,
+  type FactoryMachineIdentity,
+} from "./factory/lean/machines/machine-identity.js";
+export { resolveInstalledFactoryHost } from "./factory/lean/machines/machine-identity-installation.js";
+export { verifyFactoryMachineOverlap } from "./factory/lean/machines/machine-identity-enrollment.js";
 export { createRootLogger, type LogLevel, type LogFormat } from "./logger.js";
 export {
   loadPersistedConfig,

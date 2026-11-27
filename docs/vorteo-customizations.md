@@ -3626,3 +3626,7 @@ Vorteo locks the worktrees it creates and cleans up only the requested worktree'
 The daemon imports the project and Lean Factory contracts through separate package exports. The app can bundle the same contract sources with Metro.
 
 The Lean delivery executor records each release step before launch. If the daemon loses the result, recovery waits for the owner to resolve that step before another deployment starts.
+
+Each enrolled Factory installation has a project-specific Ed25519 signing key in private Host state. The owner can stage a replacement and activate it once the project's default-branch configuration lists both public keys. Keep the previous public key enrolled until its outstanding claims and gate receipts have expired.
+
+The primary can request an owner-configured heavy test batch on a secondary through a dedicated Git ref. Its signed request and the secondary's signed result bind the project, issue, commit, ordered commands and expiry. The primary records each accepted challenge durably. Per-issue gates still run on the primary.
