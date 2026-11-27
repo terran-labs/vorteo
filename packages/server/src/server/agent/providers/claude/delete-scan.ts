@@ -133,8 +133,17 @@ const WRAPPERS = new Set([
 
 /** Scans a shell command. Never throws. */
 export function scanForDelete(command: string): DeleteScanResult {
+  // A bound on the daemon's single thread: a longer command is not read at all.
+  if (command.length > MAX_SCAN_LENGTH) {
+    return {
+      deletes: true,
+      finding: `could not read the command: longer than ${MAX_SCAN_LENGTH} characters`,
+    };
+  }
   try {
-    return mentionIn(command) ?? braceExpansionIn(command) ?? scanShell(command, 0);
+    // bash removes a backslash-newline before it splits words, inside a word too.
+    const joined = command.replace(/\\\n/g, "");
+    return mentionIn(joined) ?? braceExpansionIn(command) ?? scanShell(command, 0);
   } catch {
     return { deletes: true, finding: "could not read the command" };
   }
@@ -177,14 +186,39 @@ function scanShell(text: string, depth: number): DeleteScanResult {
 const NO_DELETE: DeleteScanResult = { deletes: false, finding: null };
 
 // `{a,b}` or `{a..b}` with no space or operator inside: the shell may expand it into any word.
-const BRACE_EXPANSION = /\{[^{}\s;&|]*(?:,|\.\.)[^{}\s;&|]*\}/;
+/** Commands longer than this are not scanned and ask; every rule below is linear in length. */
+export const MAX_SCAN_LENGTH = 16_384;
 
-/** Brace expansion anywhere in the text, quoted or not; null when none. */
+const BRACE_STOP = new Set([" ", "\t", "\n", ";", "&", "|", "{"]);
+
+/**
+ * Brace expansion anywhere in the text, quoted or not; null when none. One linear pass: a `{`
+ * opens a candidate, a space, operator or another `{` drops it, and a `}` after a `,` or `..`
+ * inside it is a match.
+ */
 function braceExpansionIn(text: string): DeleteScanResult | null {
-  const match = BRACE_EXPANSION.exec(text);
-  return match
-    ? { deletes: true, finding: `uses brace expansion: ${match[0].slice(0, 80)}` }
-    : null;
+  let open = -1;
+  let expands = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i]!;
+    if (char === "{") {
+      open = i;
+      expands = false;
+    } else if (open >= 0 && BRACE_STOP.has(char)) {
+      open = -1;
+    } else if (open >= 0 && (char === "," || (char === "." && text[i + 1] === "."))) {
+      expands = true;
+    } else if (open >= 0 && char === "}") {
+      if (expands) {
+        return {
+          deletes: true,
+          finding: `uses brace expansion: ${text.slice(open, i + 1).slice(0, 80)}`,
+        };
+      }
+      open = -1;
+    }
+  }
+  return null;
 }
 
 /** A delete word as a whole token anywhere in the text, case-insensitively; null when none. */
@@ -750,7 +784,8 @@ function readWordPart(text: string, i: number, nested: string[], state: WordStat
   }
   if (char === "<" || char === ">" || char === "(" || char === ")") return null;
   if (char === "\\") {
-    state.value += text[i + 1] ?? "";
+    // A backslash-newline is a line continuation: bash removes both, joining the word.
+    if (text[i + 1] !== "\n") state.value += text[i + 1] ?? "";
     return i + 2;
   }
   if (char === "'") {
@@ -807,7 +842,8 @@ function readDoubleQuoted(
     const char = text[i]!;
     if (char === '"') return i + 1;
     if (char === "\\") {
-      emit(text[i + 1] ?? "", false);
+      // Inside double quotes too, bash drops a backslash-newline.
+      if (text[i + 1] !== "\n") emit(text[i + 1] ?? "", false);
       i += 2;
       continue;
     }

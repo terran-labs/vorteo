@@ -3,7 +3,8 @@ import { DELETE_SCAN_RULE_VERSION, scanForDelete, type DeleteScanResult } from "
 /**
  * When Vorteo may answer Claude Code's dangerous-removal prompt by itself (#659, part B): the
  * owner put the thread in Bypass mode, the request is a Bash command, Claude Code raised it only
- * because its removal check could not analyse the command, no ask rule of the owner's forced it,
+ * because the command had more command substitutions than its removal check analyses, no ask
+ * rule of the owner's forced it,
  * Vorteo's own scan finds no delete in the command, and the owner's setting reads a clear "on".
  * Anything else asks the owner.
  *
@@ -16,13 +17,14 @@ import { DELETE_SCAN_RULE_VERSION, scanForDelete, type DeleteScanResult } from "
  * Phrasings from claude.exe 2.1.321.
  */
 export const AUTO_ANSWERABLE_REASONS: readonly RegExp[] = [
-  /^Dangerous (?:rm|rmdir) operation on statically-unresolvable target: [^\n]+$/,
-  /^Dangerous (?:rm|rmdir) operation not ruled out — the shell may read this command differently than it was parsed$/,
   /^Dangerous (?:rm|rmdir) operation not ruled out — too many command substitutions to analyze \(\d+\)$/,
   /^Dangerous (?:rm|rmdir) operation not ruled out — too many nested command substitutions to analyze$/,
   /^Dangerous (?:rm|rmdir) operation not ruled out — some nested commands or function substitutions could not be analyzed$/,
-  /^This shell -c script runs rm and could not be checked$/,
 ];
+// Never auto-answerable, though they too mean "could not analyse": "on statically-unresolvable
+// target" and "this shell -c script runs rm" say Claude Code found an rm, so a no-delete scan
+// would mean one parser is wrong; "the shell may read this command differently than it was
+// parsed" names a parser mismatch, and the scan is another parser (independent review, #670).
 
 // The structured discriminators claude.exe 2.1.321 sends for this check; SDK 0.3.246 forwards
 // neither. A later SDK that forwards one must agree, or the owner is asked.
@@ -65,12 +67,12 @@ export function evaluateAutoAnswer(input: {
   options: ClaudePermissionPromptOptions;
 }): AutoAnswerVerdict {
   const command = input.toolInput.command;
-  const scan = typeof command === "string" ? scanForDelete(command) : null;
-  if (input.modeId !== "bypassPermissions") return { answer: false, scan };
-  if (input.toolName !== "Bash" || typeof command !== "string" || !scan) {
-    return { answer: false, scan };
-  }
-  if (!isAutoAnswerableReason(input.options)) return { answer: false, scan };
+  // The scan runs only once every cheaper condition holds, so an ordinary prompt never pays for it.
+  if (input.modeId !== "bypassPermissions") return { answer: false, scan: null };
+  if (input.toolName !== "Bash" || typeof command !== "string")
+    return { answer: false, scan: null };
+  if (!isAutoAnswerableReason(input.options)) return { answer: false, scan: null };
+  const scan = scanForDelete(command);
   if (scan.deletes) return { answer: false, scan };
   return {
     answer: true,

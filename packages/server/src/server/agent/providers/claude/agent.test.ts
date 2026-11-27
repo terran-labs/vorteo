@@ -4748,7 +4748,7 @@ describe("Claude question permission notifications", () => {
 // a clear "on". Until part B2 supplies that setting, every case here must ask.
 describe("Claude automatic answers to removal prompts", () => {
   const UNRESOLVED =
-    "Dangerous rm operation on statically-unresolvable target: command substitution output";
+    "Dangerous rm operation not ruled out \u2014 too many nested command substitutions to analyze";
   const NO_DELETE = "cd /work/app && tar -czf /work/archive/app.tgz $(git ls-files)";
 
   async function prompt(input: {

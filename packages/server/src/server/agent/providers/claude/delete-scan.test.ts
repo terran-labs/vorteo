@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { isAutoAnswerableReason } from "./auto-answer.js";
-import { DELETE_SCAN_RULE_VERSION, scanForDelete } from "./delete-scan.js";
+import { DELETE_SCAN_RULE_VERSION, MAX_SCAN_LENGTH, scanForDelete } from "./delete-scan.js";
 
 // Commands that stopped threads in Bypass mode on Nov 23 and 25 (#659), with paths and names
 // replaced. Only the first has no delete; the rest must keep asking.
@@ -130,6 +130,27 @@ describe("scanForDelete", () => {
     expect(scanForDelete(command).deletes).toBe(true);
   });
 
+  // Second independent review: bash removes a backslash-newline, even inside a word.
+  test.each([
+    ["an unquoted line continuation", "sh -c r\\\nm\\ -rf\\ /tmp/victim"],
+    ["a double-quoted line continuation", 'sh -c "r\\\nm -rf /tmp/victim"'],
+  ])("%s asks", (_label, command) => {
+    expect(scanForDelete(command).deletes).toBe(true);
+  });
+
+  // A bound on the daemon's single thread: a command too long to read asks, and the longest
+  // readable one, built to defeat backtracking, is still read quickly.
+  test("an overlong command asks, and the longest readable one is read quickly", () => {
+    expect(scanForDelete("x".repeat(MAX_SCAN_LENGTH + 1))).toEqual({
+      deletes: true,
+      finding: `could not read the command: longer than ${MAX_SCAN_LENGTH} characters`,
+    });
+    const started = performance.now();
+    scanForDelete(`echo {${",".repeat(MAX_SCAN_LENGTH - 6)}`);
+    scanForDelete(`sed '${"s".repeat(MAX_SCAN_LENGTH - 8)}' f`);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
   // The cost direction: a delete word anywhere asks, even where it cannot run.
   test.each([
     ["a quoted mention in a commit message", `git commit -m "rm old file"`],
@@ -146,18 +167,20 @@ describe("scanForDelete", () => {
 // The automatic answer's own match (#659, part B), separate from the card's display match.
 describe("isAutoAnswerableReason", () => {
   test.each([
-    "Dangerous rm operation on statically-unresolvable target: /tmp/x/*",
-    "Dangerous rmdir operation on statically-unresolvable target: command substitution output",
-    "Dangerous rm operation not ruled out \u2014 the shell may read this command differently than it was parsed",
     "Dangerous rm operation not ruled out \u2014 too many command substitutions to analyze (12)",
     "Dangerous rm operation not ruled out \u2014 too many nested command substitutions to analyze",
     "Dangerous rm operation not ruled out \u2014 some nested commands or function substitutions could not be analyzed",
-    "This shell -c script runs rm and could not be checked",
   ])("answers %s", (decisionReason) => {
     expect(isAutoAnswerableReason({ decisionReason })).toBe(true);
   });
 
   test.each([
+    // Claude Code found an rm, or names a parser mismatch: a no-delete scan would mean a parser
+    // is wrong, so these always ask.
+    "Dangerous rm operation on statically-unresolvable target: /tmp/x/*",
+    "Dangerous rmdir operation on statically-unresolvable target: command substitution output",
+    "Dangerous rm operation not ruled out \u2014 the shell may read this command differently than it was parsed",
+    "This shell -c script runs rm and could not be checked",
     // Known dangerous targets always ask.
     "Dangerous rm operation on critical path: /etc",
     "Dangerous rm operation on working directory or its ancestor: /work",
@@ -176,7 +199,8 @@ describe("isAutoAnswerableReason", () => {
   });
 
   test("an ask rule, a reason code or another reason type asks", () => {
-    const decisionReason = "This shell -c script runs rm and could not be checked";
+    const decisionReason =
+      "Dangerous rm operation not ruled out \u2014 too many nested command substitutions to analyze";
     expect(isAutoAnswerableReason({ decisionReason, matchedAskRule: { source: "user" } })).toBe(
       false,
     );
