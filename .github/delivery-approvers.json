@@ -1,4 +1,4 @@
 {
-  "description": "Accounts the owner has explicitly delegated to approve pull requests on the owner's behalf, in addition to the repository owner. Write access alone never delegates approval. Add a login only at the owner's explicit request. scripts/publish-main.mjs reads this file from the base branch.",
+  "description": "Accounts the owner has explicitly delegated to approve pull requests on the owner's behalf, in addition to the repository owner. Write access alone never delegates approval. Factory also trusts these accounts to approve issues for its intake (docs/factory.md, Trust on public repositories). Add a login only at the owner's explicit request. scripts/publish-main.mjs and the Factory daemon read this file from the default branch.",
   "approvers": []
 }
