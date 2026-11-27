@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import type { Agent, WorkspaceDescriptor } from "@/stores/session-store";
 import type { WorkspaceStructureProject } from "@/projects/workspace-structure";
 import { buildWorkspaceAgentActivityIndex } from "@/utils/workspace-agent-activity";
+import { factoryIssueRows, groupFactoryMembers } from "@/components/sidebar/factory-card-model";
 import {
   appendMissingOrderKeys,
   applyStoredOrdering,
@@ -1858,4 +1859,22 @@ it("lists a Dev issue worker under the Host Factory its labels name, without the
   );
   expect(staleGroups.factory).toEqual([]);
   expect(staleGroups.work).toEqual([stale]);
+});
+
+it("lists every workspace of one Factory issue, opening the newest from its Runners row (#683)", () => {
+  const member = (id: string, statusBucket: "running" | "done", enteredAt: number) => ({
+    id,
+    factoryIssue: { issue: 345, installation: null },
+    statusBucket,
+    statusEnteredAt: new Date(enteredAt),
+  });
+  const repair = member("repair", "done", 2_000);
+  const first = member("first", "done", 1_000);
+  const { byIssue } = groupFactoryMembers([first, repair]);
+  // Not running: both list as Idle.
+  expect(factoryIssueRows(byIssue, new Set()).idle).toEqual([repair, first]);
+  // Running: the row opens the newest, and the other still lists as Idle.
+  const rows = factoryIssueRows(byIssue, new Set([345]));
+  expect(rows.opened.get(345)).toBe(repair);
+  expect(rows.idle).toEqual([first]);
 });

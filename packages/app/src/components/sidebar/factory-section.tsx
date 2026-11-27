@@ -31,8 +31,10 @@ import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { useProjectFactory } from "./factory-instructions";
 import {
   factoryOverviewPathTarget,
+  factoryIssueRows,
   factoryRunners,
   factoryStatePill,
+  groupFactoryMembers,
   factoryStateReason,
   type FactoryCardModel,
   type FactoryStatePill,
@@ -102,28 +104,18 @@ export const FactorySection = memo(function FactorySection({
     () => card.members.flatMap((member) => entries.get(member.workspaceKey) ?? []),
     [card.members, entries],
   );
-  // Issue workers are not crew: running ones open from their Runners row, the rest list as Idle.
-  const { crewMembers, issueWorkspaces } = useMemo(() => {
-    const byIssue = new Map<number, SidebarWorkspaceEntry>();
-    const others: SidebarWorkspaceEntry[] = [];
-    for (const member of members) {
-      const issue = member.factoryIssue?.issue;
-      if (issue === undefined) others.push(member);
-      else if (!byIssue.has(issue)) byIssue.set(issue, member);
-    }
-    return { crewMembers: others, issueWorkspaces: byIssue };
-  }, [members]);
+  // Issue workers are not crew: a running issue's row opens its newest workspace, and every
+  // other issue workspace lists as Idle.
+  const { crew: crewMembers, byIssue } = useMemo(() => groupFactoryMembers(members), [members]);
   const { foreman, crew } = useMemo(
     () => splitForeman(factoryChips(state?.roles, crewMembers)),
     [state?.roles, crewMembers],
   );
   const runners = useMemo(() => (issues ? factoryRunners(issues) : []), [issues]);
-  const idle = useMemo(() => {
-    const running = new Set(runners.map((issue) => issue.number));
-    return Array.from(issueWorkspaces.values()).filter(
-      (workspace) => !running.has(workspace.factoryIssue?.issue ?? 0),
-    );
-  }, [runners, issueWorkspaces]);
+  const { opened: issueWorkspaces, idle } = useMemo(
+    () => factoryIssueRows(byIssue, new Set(runners.map((issue) => issue.number))),
+    [byIssue, runners],
+  );
   // Finished: the issue has left the open queue and the workspace's pull request merged.
   const finished = useMemo(() => {
     if (!issues) return [];

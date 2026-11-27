@@ -141,8 +141,9 @@ export function FactoryIdleWorkspaces({
 
 /**
  * Archives finished issue workspaces after the owner confirms. Each one goes through the same
- * checks as archiving it by hand: a workspace the app protects is left alone, and one with
- * uncommitted files, commits ahead of its upstream, or a git state not yet read is skipped.
+ * checks as archiving it by hand, applied strictly: a workspace the app protects is left alone,
+ * and one with uncommitted files, commits ahead of its upstream, no upstream, or a git state not
+ * yet read is skipped.
  */
 function useArchiveFinishedIssueWorkspaces(finished: readonly SidebarWorkspaceEntry[]) {
   const { t } = useTranslation();
@@ -160,7 +161,8 @@ function useArchiveFinishedIssueWorkspaces(finished: readonly SidebarWorkspaceEn
       (workspace) =>
         getWorkspaceArchiveBlockReason(workspace.serverId, workspace.workspaceId) === null &&
         workspace.archiveHasUncommittedChanges === false &&
-        (workspace.archiveUnpushedCommitCount ?? 0) === 0,
+        // Null is no upstream or not read yet: local commits could go unseen, so skip it.
+        workspace.archiveUnpushedCommitCount === 0,
     );
     const failures = await archiveWorkspacesOptimistically({
       getClient: (serverId) => getHostRuntimeStore().getClient(serverId),

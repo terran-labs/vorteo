@@ -152,6 +152,56 @@ export function factoryRunnerAgent(issue: Pick<FactoryQueueIssue, "agents">) {
   );
 }
 
+type IssueMember = Pick<SidebarWorkspaceEntry, "factoryIssue" | "statusBucket" | "statusEnteredAt">;
+
+/** Running first, then the latest status change: the workspace a Runners row should open. */
+function newestFirst(left: IssueMember, right: IssueMember): number {
+  const running =
+    Number(right.statusBucket === "running") - Number(left.statusBucket === "running");
+  if (running !== 0) return running;
+  return (right.statusEnteredAt?.getTime() ?? 0) - (left.statusEnteredAt?.getTime() ?? 0);
+}
+
+/**
+ * A Factory card's members split into crew and issue workspaces. An issue can have several
+ * workspaces, such as a respawned repair worker; each issue keeps all of them, newest first.
+ */
+export function groupFactoryMembers<Entry extends IssueMember>(members: readonly Entry[]) {
+  const crew: Entry[] = [];
+  const byIssue = new Map<number, Entry[]>();
+  for (const member of members) {
+    const issue = member.factoryIssue?.issue;
+    if (issue === undefined) {
+      crew.push(member);
+      continue;
+    }
+    const list = byIssue.get(issue) ?? [];
+    list.push(member);
+    byIssue.set(issue, list);
+  }
+  for (const list of byIssue.values()) list.sort(newestFirst);
+  return { crew, byIssue };
+}
+
+/**
+ * Which workspace each running issue's row opens, and the Idle list: every other issue workspace,
+ * so a second workspace for a running issue still shows.
+ */
+export function factoryIssueRows<Entry extends IssueMember>(
+  byIssue: ReadonlyMap<number, readonly Entry[]>,
+  running: ReadonlySet<number>,
+) {
+  const opened = new Map<number, Entry>();
+  const idle: Entry[] = [];
+  for (const [issue, list] of byIssue) {
+    const [first, ...rest] = list;
+    if (first && running.has(issue)) opened.set(issue, first);
+    else if (first) idle.push(first);
+    idle.push(...rest);
+  }
+  return { opened, idle };
+}
+
 /** "Vorteo :: Foreman" and "Vorteo System :: Mechanic" read as "Foreman" and "Mechanic". */
 export function factoryShortName(title: string): string {
   const parts = title.split("::");
@@ -236,8 +286,12 @@ export function factoryCardModels(input: {
     installationId: target.installationId,
     members: members.filter((member) => belongs(member, target.serverId, target.projectId)),
   }));
+  // An issue worker whose owning Factory has no card here, for example no overview on that host,
+  // stays visible on its own host's card instead of vanishing.
+  const orphan = (member: SidebarWorkspacePlacement) =>
+    owner(member) !== null && !cards.some((card) => card.members.includes(member));
   for (const member of members) {
-    if (owner(member)) continue;
+    if (owner(member) && !orphan(member)) continue;
     if (cards.some((card) => card.serverId === member.serverId)) continue;
     const projectId = entries.get(member.workspaceKey)?.projectId;
     if (!projectId) continue;
@@ -247,9 +301,14 @@ export function factoryCardModels(input: {
       projectId,
       installationId: null,
       members: members.filter(
-        (candidate) => candidate.serverId === member.serverId && !owner(candidate),
+        (candidate) =>
+          candidate.serverId === member.serverId && (!owner(candidate) || orphan(candidate)),
       ),
     });
+  }
+  for (const member of members) {
+    if (orphan(member))
+      cards.find((card) => card.serverId === member.serverId)?.members.push(member);
   }
   return cards;
 }
