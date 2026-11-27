@@ -1,4 +1,4 @@
-import { FactoryConfigV1Schema } from "@getpaseo/server/factory-project";
+import { FactoryConfigV1Schema } from "@getpaseo/server/factory-lean";
 import { z } from "zod";
 import type { Logger } from "pino";
 

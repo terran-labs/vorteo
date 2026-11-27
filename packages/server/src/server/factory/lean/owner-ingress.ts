@@ -8,7 +8,7 @@ import {
   factoryLeanRulesAdd,
   factoryLeanRulesList,
   factoryLeanRulesRemove,
-} from "@getpaseo/server/factory-project";
+} from "@getpaseo/server/factory-lean";
 import { z } from "zod";
 import { OwnerSessions } from "../../execution-installation/owner-sessions.js";
 import { FactoryRefusal } from "../project/owner-writes.js";

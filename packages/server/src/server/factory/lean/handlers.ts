@@ -13,7 +13,7 @@ import {
   factoryLeanSendBack,
   factoryLeanStatus,
   type FactoryLeanStatus,
-} from "@getpaseo/server/factory-project";
+} from "@getpaseo/server/factory-lean";
 import { FACTORY_OWNER_ONLY_CODE, FactoryRefusal } from "../project/owner-writes.js";
 import type { createAcceptance } from "./acceptance.js";
 import {

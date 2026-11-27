@@ -35,7 +35,7 @@ import type {
   FactoryEffectiveConfig,
   FactoryReleaseEvent,
   ReleaseRecipeV1,
-} from "@getpaseo/server/factory-project";
+} from "@getpaseo/server/factory-lean";
 
 // ---------------------------------------------------------------------------------------------
 // Identities

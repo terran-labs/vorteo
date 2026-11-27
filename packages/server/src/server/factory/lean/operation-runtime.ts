@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentQuestion, QuestionMutation } from "@getpaseo/protocol/agent-questions";
-import type { FactoryLeanStatus, factoryLeanDecide } from "@getpaseo/server/factory-project";
+import type { FactoryLeanStatus, factoryLeanDecide } from "@getpaseo/server/factory-lean";
 import type { PushNotificationSender } from "../../push/index.js";
 import { createAcceptance } from "./acceptance.js";
 import { createActivityLog } from "./activity.js";
