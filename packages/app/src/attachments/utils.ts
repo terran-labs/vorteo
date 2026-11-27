@@ -1,6 +1,7 @@
 import { generateMessageId } from "@/types/stream";
 import { isAbsolutePath } from "@/utils/path";
-import { isRasterImageMimeType } from "./file-types";
+import { isRasterImageMimeType, resolveRasterImageMimeType } from "./file-types";
+import type { AttachmentDataSource, SaveAttachmentInput } from "./types";
 
 export function generateAttachmentId(): string {
   return `att_${generateMessageId()}`;
@@ -199,4 +200,133 @@ export function getFileExtensionFromName(fileName: string | null | undefined): s
     return "";
   }
   return fileName.slice(idx);
+}
+
+/**
+ * Claude scales any image whose long edge exceeds 2,576 px down on its side, and OpenAI's high
+ * detail fits 2,048 px, so larger pixels only cost bytes.
+ */
+export const IMAGE_MAX_LONG_EDGE_PX = 2576;
+/**
+ * Bedrock and Vertex accept at most 5 MB per image. Base64 grows the bytes by a third, so 3 MiB
+ * stays well under that once encoded, and several images fit one session host frame.
+ */
+export const IMAGE_TARGET_BYTES = 3 * 1024 * 1024;
+const REDUCED_JPEG_QUALITY = 0.85;
+const MAX_REDUCTION_PASSES = 4;
+/** Formats every platform decodes and encodes; others, such as animated GIF, stay as they are. */
+const REDUCIBLE_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+
+export type ReducedImageType = "image/png" | "image/jpeg";
+
+export interface ImageSize {
+  width: number;
+  height: number;
+}
+
+export interface EncodedImage {
+  source: AttachmentDataSource;
+  byteSize: number;
+}
+
+export interface ResizedImage {
+  /** Null when this platform cannot read pixels; the image is then treated as transparent. */
+  hasTransparency(): Promise<boolean | null>;
+  encode(input: { type: ReducedImageType; quality: number }): Promise<EncodedImage>;
+}
+
+export interface OpenedImage extends ImageSize {
+  /** Encoded size of the source as given. */
+  byteSize: number;
+  resize(size: ImageSize): Promise<ResizedImage>;
+  /** Frees what open and resize created. */
+  release(): Promise<void>;
+}
+
+export interface ImageCodec {
+  /** Null when this platform cannot read the source; the attachment is then kept as it is. */
+  open(input: { source: AttachmentDataSource; mimeType: string }): Promise<OpenedImage | null>;
+}
+
+function sourceMimeType(input: SaveAttachmentInput): string | null {
+  const { source } = input;
+  let fromSource: string | undefined;
+  if (source.kind === "blob") fromSource = source.blob.type;
+  if (source.kind === "data_url") fromSource = parseDataUrl(source.dataUrl).mimeType;
+  return resolveRasterImageMimeType({
+    mimeType: input.mimeType || fromSource,
+    path: input.fileName ?? (source.kind === "file_uri" ? source.uri : null),
+  });
+}
+
+function scaledSize(image: ImageSize, scale: number): ImageSize {
+  return {
+    width: Math.max(1, Math.round(image.width * scale)),
+    height: Math.max(1, Math.round(image.height * scale)),
+  };
+}
+
+function renamedForType(fileName: string | null | undefined, type: ReducedImageType) {
+  if (!fileName) return fileName;
+  const extension = type === "image/png" ? ".png" : ".jpg";
+  const current = getFileExtensionFromName(fileName);
+  return current ? `${fileName.slice(0, -current.length)}${extension}` : `${fileName}${extension}`;
+}
+
+/**
+ * Keeps PNG for transparency or when it already fits, since it is lossless; otherwise JPEG when
+ * that is smaller. A JPEG source stays JPEG.
+ */
+async function encodeReduced(
+  image: ResizedImage,
+  sourceType: string,
+): Promise<{
+  type: ReducedImageType;
+  encoded: EncodedImage;
+}> {
+  const jpeg = { type: "image/jpeg" as const, quality: REDUCED_JPEG_QUALITY };
+  if (sourceType === "image/jpeg") return { type: jpeg.type, encoded: await image.encode(jpeg) };
+  const png = await image.encode({ type: "image/png", quality: 1 });
+  if (png.byteSize <= IMAGE_TARGET_BYTES || (await image.hasTransparency()) !== false)
+    return { type: "image/png", encoded: png };
+  const encoded = await image.encode(jpeg);
+  return encoded.byteSize < png.byteSize
+    ? { type: jpeg.type, encoded }
+    : { type: "image/png", encoded: png };
+}
+
+/**
+ * Shrinks a raster image attachment to what providers use: a long edge of at most
+ * IMAGE_MAX_LONG_EDGE_PX, never upscaled, and at most IMAGE_TARGET_BYTES. An image already within
+ * both, a type the codec cannot reduce, or a source it cannot read is returned unchanged.
+ */
+export async function reduceImageForSending(
+  input: SaveAttachmentInput,
+  codec: ImageCodec,
+): Promise<SaveAttachmentInput> {
+  const mimeType = sourceMimeType(input);
+  if (!mimeType || !REDUCIBLE_IMAGE_TYPES.has(mimeType)) return input;
+  const image = await codec.open({ source: input.source, mimeType });
+  if (!image) return input;
+  try {
+    const longEdge = Math.max(image.width, image.height);
+    if (longEdge <= IMAGE_MAX_LONG_EDGE_PX && image.byteSize <= IMAGE_TARGET_BYTES) return input;
+    let scale = Math.min(1, IMAGE_MAX_LONG_EDGE_PX / longEdge);
+    let reduced: { type: ReducedImageType; encoded: EncodedImage } | null = null;
+    for (let pass = 0; pass < MAX_REDUCTION_PASSES; pass += 1) {
+      reduced = await encodeReduced(await image.resize(scaledSize(image, scale)), mimeType);
+      if (reduced.encoded.byteSize <= IMAGE_TARGET_BYTES) break;
+      // Encoded size grows roughly with pixel count, so scale each side by the root of the excess.
+      scale *= Math.sqrt(IMAGE_TARGET_BYTES / reduced.encoded.byteSize) * 0.9;
+    }
+    if (!reduced || reduced.encoded.byteSize >= image.byteSize) return input;
+    return {
+      ...input,
+      mimeType: reduced.type,
+      fileName: renamedForType(input.fileName, reduced.type),
+      source: reduced.encoded.source,
+    };
+  } finally {
+    await image.release();
+  }
 }

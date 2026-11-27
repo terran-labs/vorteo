@@ -808,6 +808,7 @@ function AppWithSidebar({ children }: { children: ReactNode }) {
       pathname === "/new" ||
       pathname === "/sessions" ||
       pathname === "/schedules" ||
+      pathname === "/dashboard" ||
       pathname === "/usage" ||
       routeHasHostShell);
 
@@ -841,6 +842,7 @@ function RootStack() {
         <Stack.Screen name="usage" />
         <Stack.Screen name="pair-scan" />
       </Stack.Protected>
+      <Stack.Screen name="dashboard" />
       <Stack.Screen name="h/[serverId]" />
       <Stack.Screen name="settings/hosts/[serverId]/index" />
       <Stack.Screen name="settings/hosts/[serverId]/[hostSection]" />

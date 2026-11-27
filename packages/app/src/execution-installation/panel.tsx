@@ -45,6 +45,14 @@ import {
 import type { SessionHostJob } from "@getpaseo/protocol/session-host-maintenance";
 import type { InstructionRequestQuery } from "@getpaseo/protocol/instruction-requests";
 import { diffInstructionLines } from "./instruction-diff";
+import { maintenanceHeadline } from "./maintenance-dashboard-model";
+import {
+  instructionOwnerState,
+  jobOwnerState,
+  restartOwnerState,
+  restartProgressLine,
+  type OwnerState,
+} from "./owner-waiting";
 import {
   healthCardAnchorProps,
   useOnHealthCardReveal,
@@ -71,7 +79,6 @@ import {
   sessionHostStatusLines,
   sessionHostUpgradeHolderLines,
   sessionHostUpgradeHolders,
-  visibleSessionHostJobs,
   type SessionHostAction,
   type SessionHostOverview,
 } from "./session-host-review";
@@ -84,6 +91,7 @@ import {
   useState,
   useSyncExternalStore,
   type ComponentProps,
+  type ReactNode,
 } from "react";
 import { Pressable, Text, View } from "react-native";
 import {
@@ -122,6 +130,7 @@ import {
   CoordinatorRecoveryHistory,
   HistoryGroup,
   useCoordinatorHistoryCount,
+  useCoordinatorUnavailable,
   getPreclaimRecoveryPanel,
   getClaimedRecoveryPanel,
   ClaimedRecoveryReview,
@@ -466,6 +475,98 @@ function CoordinatorMaintenanceReviews() {
 }
 
 /**
+ * A collapsed section of Host or Dev Details for what does not wait on the owner (#656). Its
+ * header gives a count or a one-line summary in plain text, never an attention colour. It opens
+ * for a Health Fix aimed at a card inside it, and when `open` says something inside waits.
+ */
+function SystemSection({
+  title,
+  count,
+  summary,
+  open: forced = false,
+  revealHost,
+  revealCards = NO_CARDS,
+  testID,
+  children,
+}: {
+  title: string;
+  count?: number;
+  summary?: string | null;
+  open?: boolean;
+  revealHost?: HealthCardHost;
+  revealCards?: readonly HealthCard[];
+  testID: string;
+  children: ReactNode;
+}) {
+  const size = useVortonTouch() ? "md" : "sm";
+  const [open, setOpen] = useState(forced);
+  useEffect(() => {
+    if (forced) setOpen(true);
+  }, [forced]);
+  const toggle = useCallback(() => setOpen((value) => !value), []);
+  const reveal = useCallback(
+    (card: HealthCard) => {
+      if (revealCards.includes(card)) setOpen(true);
+    },
+    [revealCards],
+  );
+  useOnHealthCardReveal(revealHost ?? "host", reveal);
+  return (
+    <View style={[styles.cardBody, settingsStyles.rowBorder]} testID={testID}>
+      <View style={styles.requestHeader}>
+        <Button
+          variant="ghost"
+          size={size}
+          onPress={toggle}
+          {...disclosureProps(open)}
+          testID={`${testID}-toggle`}
+        >
+          {count === undefined ? title : `${title} (${count})`}
+        </Button>
+      </View>
+      {summary ? <Text style={styles.text}>{summary}</Text> : null}
+      {open ? <SettingsExpansion testID={`${testID}-content`}>{children}</SettingsExpansion> : null}
+    </View>
+  );
+}
+const NO_CARDS: readonly HealthCard[] = [];
+
+/** A restart that does not wait on the owner, in one plain line, or null to use its status. */
+function quietLine(job: RestartJob): string | null {
+  if (job.delegatedTo) return `Being handled by ${job.delegatedTo}`;
+  return restartProgressLine(job);
+}
+
+/**
+ * A restart that does not wait on the owner: its status in one plain line, with the requester's
+ * reason behind a disclosure and no approval controls.
+ */
+function QuietRestart({ job }: { job: RestartJob }) {
+  const size = useVortonTouch() ? "md" : "sm";
+  const [reasonShown, setReasonShown] = useState(false);
+  const toggle = useCallback(() => setReasonShown((value) => !value), []);
+  const status = restartStatus(job);
+  const line = quietLine(job) ?? status.label;
+  return (
+    <View style={styles.historyItem} testID={`restart-quiet-${job.id}`}>
+      <View style={styles.requestHeader}>
+        <Text style={settingsStyles.rowTitle}>{restartTargetLabel(job)}</Text>
+        <StatusBadge label={status.label} variant="muted" />
+      </View>
+      <Text style={styles.text}>{line}</Text>
+      <Button variant="ghost" size={size} onPress={toggle} {...disclosureProps(reasonShown)}>
+        Show reason
+      </Button>
+      {reasonShown ? (
+        <Text selectable style={styles.text}>
+          {restartRequestSummary(job)}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+/**
  * One history for everything finished: restarts and updates, coordinator
  * updates and coordinator recoveries. Only active work stays above it.
  */
@@ -480,6 +581,8 @@ function InstallationHistory({
   visible,
   onToggle,
   controlSize,
+  state,
+  serviceDismissal,
 }: {
   anchorHost: HealthCardHost;
   /** A failed restart's Fix lands here when no restart is active. */
@@ -492,9 +595,13 @@ function InstallationHistory({
   visible: boolean;
   onToggle: () => void;
   controlSize: "sm" | "md";
+  /** For finished requests from the other maintenance queues, under their own heading. */
+  state: PanelState;
+  serviceDismissal: HealthDismissalControls | null;
 }) {
+  const extraCount = otherHistoryCount(state, anchorHost, serviceDismissal);
   const receipts = useAgentActionReceipts(useInstallationOwnerClient()).data ?? [];
-  const historyCount = history.length + receipts.length + useCoordinatorHistoryCount();
+  const historyCount = history.length + receipts.length + useCoordinatorHistoryCount() + extraCount;
   const bootstrapModel = getBootstrapPanel();
   return (
     <View
@@ -532,6 +639,16 @@ function InstallationHistory({
                   }
                 />
               ))}
+            </HistoryGroup>
+          ) : null}
+          {extraCount ? (
+            <HistoryGroup title="Maintenance requests">
+              <OtherHistory
+                model={model}
+                state={state}
+                target={anchorHost}
+                serviceDismissal={serviceDismissal}
+              />
             </HistoryGroup>
           ) : null}
           {bootstrapModel ? <BootstrapHistory model={bootstrapModel} /> : null}
@@ -698,6 +815,258 @@ function useRevealRestartHistory(
   useOnHealthCardReveal(target, reveal);
 }
 
+type PanelState = ReturnType<InstallationPanelModel["getState"]>;
+
+/**
+ * This environment's restarts by whether they wait on the owner. A pending request that a newer
+ * one replaced is history; a failed one counts while it is the latest for the environment and
+ * the owner has not dismissed it, and then it waits.
+ */
+function groupRestarts(state: PanelState, dismissal: RestartDismissal | null) {
+  const pendingIds = new Set(state.pendingJobs.map((job) => job.id));
+  const latest = latestRestart(state.jobs);
+  const countedFailedId =
+    latest?.status === "failed" && !dismissal?.dismissedIds.has(latest.id) ? latest.id : null;
+  const decided = new Set(state.decidedIds);
+  const stateOf = (job: RestartJob): OwnerState =>
+    job.status === "pending" && !pendingIds.has(job.id)
+      ? "history"
+      : restartOwnerState(job, job.id === countedFailedId);
+  const pick = (only: ShownState) =>
+    state.jobs.filter((job) => inShown(stateOf(job), decided.has(job.id), only)).toReversed();
+  return {
+    decidedRestarts: pick("decided"),
+    waitingRestarts: pick("waiting"),
+    progressRestarts: pick("in-progress"),
+    history: pick("history"),
+  };
+}
+
+/** The service maintenance queue with only the records in one owner state, or null if none. */
+function serviceQueueSlice(
+  status: PanelState["serviceQueue"],
+  only: OwnerState,
+  dismissal: HealthDismissalControls | null,
+): PanelState["serviceQueue"] {
+  if (!status) return only === "waiting" ? status : null;
+  const counted = dismissal?.counted ?? countedIds(status.jobs);
+  const jobs = status.jobs.filter((job) => jobOwnerState(job, counted.has(job.id)) === only);
+  // The waiting slice keeps an unavailable queue's notice even with nothing listed.
+  if (!jobs.length && (only !== "waiting" || status.available)) return null;
+  return { ...status, jobs };
+}
+
+/** Everything in Host or Dev Details that waits on the owner, open with its one action. */
+function WaitingItems({
+  model,
+  state,
+  target,
+  restarts,
+  decidedRestarts,
+  requestId,
+  restartDismissal,
+  serviceDismissal,
+}: {
+  model: InstallationPanelModel;
+  state: PanelState;
+  target: HealthCardHost;
+  restarts: RestartJob[];
+  /** Restarts the owner decided in this visit, shown as one line until it ends. */
+  decidedRestarts: RestartJob[];
+  requestId: string | null;
+  restartDismissal: RestartDismissal | null;
+  serviceDismissal: HealthDismissalControls | null;
+}) {
+  return (
+    <>
+      <View {...healthCardAnchorProps(target, "services")}>
+        <MaintenanceServiceQueue
+          status={serviceQueueSlice(state.serviceQueue, "waiting", serviceDismissal)}
+          error={state.serviceQueueError}
+          refreshing={state.serviceQueueRefreshing}
+          busy={state.busy}
+          onRefresh={model.refreshServiceQueue}
+          onCancel={model.cancelMaintenanceService}
+          dismissal={serviceDismissal}
+        />
+      </View>
+      {target === "host" ? (
+        <InstallationServiceRequests model={model} state={state} only="waiting" />
+      ) : null}
+      {restarts.length ? (
+        <View {...healthCardAnchorProps(target, "restarts")}>
+          {restarts.map((job) => (
+            <RestartRequest
+              key={job.id}
+              job={job}
+              model={model}
+              busy={state.busy}
+              showActions={false}
+              linked={job.id === requestId}
+              dismissible={restartDismissal?.dismissibleId === job.id}
+            />
+          ))}
+        </View>
+      ) : null}
+      {decidedRestarts.map((job) => (
+        <DecidedLine
+          key={job.id}
+          label={restartTargetLabel(job)}
+          job={job}
+          status={restartStatus(job).label}
+        />
+      ))}
+    </>
+  );
+}
+
+/** Finished requests from the maintenance queues, for the History section. */
+function OtherHistory({
+  model,
+  state,
+  target,
+  serviceDismissal,
+}: {
+  model: InstallationPanelModel;
+  state: PanelState;
+  target: HealthCardHost;
+  serviceDismissal: HealthDismissalControls | null;
+}) {
+  return (
+    <>
+      <MaintenanceServiceQueue
+        status={serviceQueueSlice(state.serviceQueue, "history", serviceDismissal)}
+        error={null}
+        refreshing={false}
+        busy={state.busy}
+        onRefresh={model.refreshServiceQueue}
+        onCancel={model.cancelMaintenanceService}
+        dismissal={serviceDismissal}
+      />
+      {target === "host" ? (
+        <InstallationServiceRequests model={model} state={state} only="history" />
+      ) : null}
+    </>
+  );
+}
+
+function otherHistoryCount(
+  state: PanelState,
+  target: HealthCardHost,
+  serviceDismissal: HealthDismissalControls | null,
+): number {
+  const services = serviceQueueSlice(state.serviceQueue, "history", serviceDismissal);
+  return (
+    (services?.jobs.length ?? 0) + (target === "host" ? serviceRecordCount(state, "history") : 0)
+  );
+}
+
+/** Requests the installation or an agent is carrying out; nothing here needs the owner. */
+function InProgressSection({
+  model,
+  state,
+  target,
+  restarts,
+  serviceDismissal,
+}: {
+  model: InstallationPanelModel;
+  state: PanelState;
+  target: HealthCardHost;
+  restarts: RestartJob[];
+  serviceDismissal: HealthDismissalControls | null;
+}) {
+  const services = serviceQueueSlice(state.serviceQueue, "in-progress", serviceDismissal);
+  const count =
+    restarts.length +
+    (services?.jobs.length ?? 0) +
+    (target === "host" ? serviceRecordCount(state, "in-progress") : 0);
+  if (!count) return null;
+  const summary = restarts[0] ? quietLine(restarts[0]) : null;
+  return (
+    <SystemSection
+      title="In progress"
+      count={count}
+      summary={summary}
+      testID={`system-in-progress-${target}`}
+    >
+      {restarts.map((job) => (
+        <QuietRestart key={job.id} job={job} />
+      ))}
+      <MaintenanceServiceQueue
+        status={services}
+        error={null}
+        refreshing={false}
+        busy={state.busy}
+        onRefresh={model.refreshServiceQueue}
+        onCancel={model.cancelMaintenanceService}
+        dismissal={serviceDismissal}
+      />
+      {target === "host" ? (
+        <InstallationServiceRequests model={model} state={state} only="in-progress" />
+      ) : null}
+    </SystemSection>
+  );
+}
+
+/** Unattended maintenance and the recovery bookmark; open only when something there waits. */
+function MaintenanceSection({
+  model,
+  state,
+  target,
+}: {
+  model: InstallationPanelModel;
+  state: PanelState;
+  target: HealthCardHost;
+}) {
+  const coordinatorUnavailable = useCoordinatorUnavailable() && target === "host";
+  const headline = state.enrollmentStatus ? maintenanceHeadline(state.enrollmentStatus) : null;
+  // A blocked service or a recovery to reconcile waits on the owner.
+  const waiting = headline?.variant === "error";
+  const summary = coordinatorUnavailable
+    ? "Coordinator maintenance is unavailable"
+    : maintenanceSummary(headline?.label ?? null);
+  return (
+    <SystemSection
+      title="Maintenance"
+      summary={summary}
+      open={waiting}
+      revealHost={target}
+      revealCards={DASHBOARD_CARDS}
+      testID={`system-maintenance-${target}`}
+    >
+      {coordinatorUnavailable ? (
+        <Text style={styles.text}>
+          Coordinator maintenance is unavailable on this installation, and the reason is not known
+          yet. Restarts and updates still work and ask for your approval as usual.
+        </Text>
+      ) : null}
+      <View {...healthCardAnchorProps(target, "dashboard")}>
+        <MaintenanceDashboard
+          status={state.enrollmentStatus}
+          error={state.enrollmentError}
+          refreshing={state.enrollmentRefreshing}
+          onRefresh={model.refreshEnrollmentStatus}
+        >
+          <RecoveryBookmark
+            status={state.recoveryAccess}
+            error={state.recoveryAccessError}
+            refreshing={state.recoveryAccessRefreshing}
+            onRefresh={model.refreshRecoveryAccess}
+          />
+        </MaintenanceDashboard>
+      </View>
+    </SystemSection>
+  );
+}
+const DASHBOARD_CARDS: readonly HealthCard[] = ["dashboard"];
+
+/** The Maintenance header's one line, in plain words for an optional feature. */
+function maintenanceSummary(label: string | null): string | null {
+  if (label === "Ready") return "Unattended maintenance is ready";
+  if (label === "Not activated") return "Unattended maintenance is off";
+  return label;
+}
+
 function InstallationSystemDetailsBody({
   model,
   requestId,
@@ -719,14 +1088,11 @@ function InstallationSystemDetailsBody({
   );
   const [historyVisible, setHistoryVisible] = useState(false);
   const [sharingVisible, setSharingVisible] = useState(false);
-  const pendingIds = new Set(state.pendingJobs.map((job) => job.id));
-  const active = state.jobs
-    .filter(
-      (job) => pendingIds.has(job.id) || job.status === "approved" || job.status === "running",
-    )
-    .toReversed();
-  const activeIds = new Set(active.map((job) => job.id));
-  const history = state.jobs.filter((job) => !activeIds.has(job.id)).toReversed();
+  const restartDismissal = useRestartDismissal(state);
+  const { decidedRestarts, waitingRestarts, progressRestarts, history } = groupRestarts(
+    state,
+    restartDismissal,
+  );
   const selectedHistory = history.find((job) => job.id === requestId);
   const selectedHistoryId = selectedHistory?.id;
   const visibleHistory = selectedHistory
@@ -735,9 +1101,8 @@ function InstallationSystemDetailsBody({
   useEffect(() => {
     if (selectedHistoryId) setHistoryVisible(true);
   }, [selectedHistoryId]);
-  const restartsInHistory = active.length === 0;
+  const restartsInHistory = waitingRestarts.length === 0;
   const serviceDismissal = useServiceDismissal(model, state);
-  const restartDismissal = useRestartDismissal(state);
   useRevealRestartHistory(target, restartsInHistory, setHistoryVisible);
   const missingRequest =
     requestId &&
@@ -765,43 +1130,17 @@ function InstallationSystemDetailsBody({
         {target === "host" ? <CoordinatorMaintenanceReviews /> : null}
         {state.unlocked ? (
           <>
-            <View {...healthCardAnchorProps(target, "dashboard")}>
-              <MaintenanceDashboard
-                status={state.enrollmentStatus}
-                error={state.enrollmentError}
-                refreshing={state.enrollmentRefreshing}
-                onRefresh={model.refreshEnrollmentStatus}
-              >
-                <RecoveryBookmark
-                  status={state.recoveryAccess}
-                  error={state.recoveryAccessError}
-                  refreshing={state.recoveryAccessRefreshing}
-                  onRefresh={model.refreshRecoveryAccess}
-                />
-              </MaintenanceDashboard>
-            </View>
-            <View {...healthCardAnchorProps(target, "services")}>
-              <MaintenanceServiceQueue
-                status={state.serviceQueue}
-                error={state.serviceQueueError}
-                refreshing={state.serviceQueueRefreshing}
-                busy={state.busy}
-                onRefresh={model.refreshServiceQueue}
-                onCancel={model.cancelMaintenanceService}
-                dismissal={serviceDismissal}
-              />
-            </View>
-            {target === "host" ? <InstallationServiceRequests model={model} state={state} /> : null}
-            {active.map((job) => (
-              <RestartRequest
-                key={job.id}
-                job={job}
-                model={model}
-                busy={state.busy}
-                showActions={false}
-                linked={job.id === requestId}
-              />
-            ))}
+            {/* Waiting on the owner: open, each with its one action (#656). */}
+            <WaitingItems
+              model={model}
+              state={state}
+              target={target}
+              restarts={waitingRestarts}
+              decidedRestarts={decidedRestarts}
+              requestId={requestId}
+              restartDismissal={restartDismissal}
+              serviceDismissal={serviceDismissal}
+            />
             {missingRequest ? (
               <Text style={[styles.textInset, styles.text]}>
                 This restart request is no longer available.
@@ -841,7 +1180,17 @@ function InstallationSystemDetailsBody({
                 ) : null}
               </View>
             ) : null}
+            <InProgressSection
+              model={model}
+              state={state}
+              target={target}
+              restarts={progressRestarts}
+              serviceDismissal={serviceDismissal}
+            />
+            <MaintenanceSection model={model} state={state} target={target} />
             <InstallationHistory
+              state={state}
+              serviceDismissal={serviceDismissal}
               anchorHost={target}
               anchored={restartsInHistory}
               dismissal={restartDismissal}
@@ -870,26 +1219,86 @@ function firstNeedingReview<T extends { id: string; status: string; target?: str
   return recordsNeedingReview(jobs, byTarget)[0]?.id ?? jobs[0]?.id;
 }
 
+/**
+ * Where a record shows. "decided" lists, in addition, requests the owner decided during this
+ * visit that no longer wait on them: one line each in the open area, so a tap on Approve
+ * visibly did something (#656). Their full card, with any Cancel, stays in its section.
+ */
+type ShownState = OwnerState | "decided";
+
+function inShown(base: OwnerState, decided: boolean, only: ShownState): boolean {
+  return only === "decided" ? decided && base !== "waiting" : base === only;
+}
+
+/** Records that still count on System Health, after the owner's dismissals. */
+function countedIds<T extends { id: string; status: string; target?: string }>(
+  jobs: readonly T[],
+): Set<string> {
+  return new Set(recordsNeedingReview(jobs, byTarget).map((job) => job.id));
+}
+
+/** Each Host maintenance queue's records, split by whether they wait on the owner (#656). */
+function classifyServiceRecords(state: ReturnType<InstallationPanelModel["getState"]>) {
+  // The owner's dismissals apply before anything is counted, anchored or marked superseded.
+  const dismissals = state.healthDismissals;
+  const broker = withDismissals(state.brokerJobs, dismissals, "preview-broker");
+  const monitor = withDismissals(state.monitorJobs, dismissals, "preview-monitor");
+  const helper = withDismissals(state.helperJobs, dismissals, "native-helper");
+  const decided = new Set(state.decidedIds);
+  const split = <T extends { id: string; status: string; stage?: string; target?: string }>(
+    jobs: readonly T[],
+  ) => {
+    const counted = countedIds(jobs);
+    return (only: ShownState) =>
+      jobs.filter((job) =>
+        inShown(jobOwnerState(job, counted.has(job.id)), decided.has(job.id), only),
+      );
+  };
+  return {
+    all: { broker, monitor, helper },
+    broker: split(broker),
+    monitor: split(monitor),
+    helper: split(helper),
+  };
+}
+
+/** How many Host maintenance records, instruction changes included, are in one state. */
+function serviceRecordCount(
+  state: ReturnType<InstallationPanelModel["getState"]>,
+  only: OwnerState,
+): number {
+  const records = classifyServiceRecords(state);
+  return (
+    records.broker(only).length +
+    records.monitor(only).length +
+    records.helper(only).length +
+    sessionHostJobs(state, only).length +
+    instructionRequests(state, only).length
+  );
+}
+
 function InstallationServiceRequests({
   model,
   state,
+  only,
 }: {
   model: InstallationPanelModel;
   state: ReturnType<InstallationPanelModel["getState"]>;
+  /** Which records to show: those waiting on the owner, in progress, or finished. */
+  only: OwnerState;
 }) {
-  // The owner's dismissals apply before anything is counted, anchored or marked superseded.
-  const dismissals = state.healthDismissals;
-  const brokerJobs = withDismissals(state.brokerJobs, dismissals, "preview-broker");
-  const monitorJobs = withDismissals(state.monitorJobs, dismissals, "preview-monitor");
-  const helperJobs = withDismissals(state.helperJobs, dismissals, "native-helper");
-  const brokerAnchor = firstNeedingReview(brokerJobs);
-  const monitorAnchor = firstNeedingReview(monitorJobs);
-  const helperAnchor = firstNeedingReview(helperJobs);
+  const records = classifyServiceRecords(state);
+  const { broker: brokerJobs, monitor: monitorJobs, helper: helperJobs } = records.all;
+  const waiting = only === "waiting";
+  // A queue's Health Fix lands on its first record that still counts, which is always waiting.
+  const brokerAnchor = waiting ? firstNeedingReview(brokerJobs) : undefined;
+  const monitorAnchor = waiting ? firstNeedingReview(monitorJobs) : undefined;
+  const helperAnchor = waiting ? firstNeedingReview(helperJobs) : undefined;
   // Older coordinators have no dismissal routes, so they get no Dismiss.
-  const dismissible = dismissals !== null;
+  const dismissible = state.healthDismissals !== null;
   return (
     <>
-      {brokerJobs.map((job) => (
+      {records.broker(only).map((job) => (
         <BrokerRequest
           key={`${job.id}:${job.revision}`}
           job={job}
@@ -900,7 +1309,7 @@ function InstallationServiceRequests({
           dismissQueue={dismissible ? "preview-broker" : null}
         />
       ))}
-      {monitorJobs.map((job) => (
+      {records.monitor(only).map((job) => (
         <MonitorRequest
           key={`${job.id}:${job.revision}`}
           job={job}
@@ -911,7 +1320,7 @@ function InstallationServiceRequests({
           dismissQueue={dismissible ? "preview-monitor" : null}
         />
       ))}
-      {helperJobs.map((job) => (
+      {records.helper(only).map((job) => (
         <HelperRequest
           key={`${job.id}:${job.revision}`}
           job={job}
@@ -922,9 +1331,68 @@ function InstallationServiceRequests({
           dismissQueue={dismissible ? "native-helper" : null}
         />
       ))}
-      <SessionHostCard model={model} state={state} />
-      <InstructionRequestsCard model={model} state={state} />
+      <SessionHostCard model={model} state={state} only={only} />
+      <InstructionRequestsCard model={model} state={state} only={only} />
+      {waiting ? (
+        <>
+          {records.broker("decided").map((job) => (
+            <DecidedLine key={job.id} label={DECIDED_LABELS.broker} job={job} />
+          ))}
+          {records.monitor("decided").map((job) => (
+            <DecidedLine key={job.id} label={DECIDED_LABELS.monitor} job={job} />
+          ))}
+          {records.helper("decided").map((job) => (
+            <DecidedLine key={job.id} label={DECIDED_LABELS.helper} job={job} />
+          ))}
+          {sessionHostJobs(state, "decided").map((job) => (
+            <DecidedLine key={job.id} label={DECIDED_LABELS.sessionHost} job={job} />
+          ))}
+        </>
+      ) : null}
     </>
+  );
+}
+
+// Names of decided requests: one-line notes, not settings rows.
+const DECIDED_LABELS = {
+  broker: "Preview broker request",
+  monitor: "Preview monitor request",
+  helper: "Native helper request",
+  sessionHost: "Session host request",
+} as const;
+
+const DECIDED_STATUS: Record<string, string> = {
+  pending: "Waiting",
+  approved: "Approved",
+  running: "Running",
+  succeeded: "Done",
+  failed: "Failed",
+  rejected: "Rejected",
+  cancelled: "Cancelled",
+};
+
+/**
+ * A request the owner decided during this visit, in one line: what it is and where it stands,
+ * with its result once it finishes. It stays until the visit ends (#656).
+ */
+function DecidedLine({
+  label,
+  job,
+  status,
+}: {
+  label: string;
+  job: { id: string; status: string; detail?: string };
+  /** Overrides the plain status word, such as a restart's own status label. */
+  status?: string;
+}) {
+  const finished = !["pending", "approved", "running"].includes(job.status);
+  return (
+    <View style={[styles.cardBody, settingsStyles.rowBorder]} testID={`decided-${job.id}`}>
+      <Text style={settingsStyles.rowTitle}>
+        {`${label}: ${status ?? DECIDED_STATUS[job.status] ?? job.status}`}
+      </Text>
+      {finished && job.detail ? <Text style={styles.text}>{job.detail}</Text> : null}
+    </View>
   );
 }
 
@@ -1812,22 +2280,44 @@ function HelperActionButton({
  * Agent-proposed changes to the shared agent instructions. Nothing changes until the owner presses
  * Apply, which applies exactly the text shown. Hidden for coordinators without instruction requests.
  */
+/** Instruction change requests in one owner state; settled ones are the newest three. */
+function instructionRequests(
+  state: ReturnType<InstallationPanelModel["getState"]>,
+  only: OwnerState,
+): InstructionRequest[] {
+  const overview = state.instructionRequests;
+  if (!overview) return [];
+  const settled = new Set(
+    overview.requests
+      .filter((request) => request.status !== "pending")
+      .slice(-3)
+      .map((request) => request.id),
+  );
+  return overview.requests.filter((request) => {
+    if (request.status !== "pending" && !settled.has(request.id)) return false;
+    const stale = instructionRequestIsStale(request, overview.revision);
+    return instructionOwnerState(request, stale) === only;
+  });
+}
+
 function InstructionRequestsCard({
   model,
   state,
+  only,
 }: {
   model: InstallationPanelModel;
   state: ReturnType<InstallationPanelModel["getState"]>;
+  only: OwnerState;
 }) {
   const size = useVortonTouch() ? "md" : "sm";
   const overview = state.instructionRequests;
   if (!overview) return null;
-  const pending = overview.requests.filter((request) => request.status === "pending");
-  const recent = overview.requests
-    .filter((request) => request.status !== "pending")
-    .slice(-3)
-    .toReversed();
-  if (!pending.length && !recent.length && !state.instructionError) return null;
+  const shown = instructionRequests(state, only);
+  const pending = shown.filter((request) => request.status === "pending");
+  const recent = shown.filter((request) => request.status !== "pending").toReversed();
+  // A request error is something to act on, so it shows with the waiting requests.
+  const error = only === "waiting" ? state.instructionError : null;
+  if (!pending.length && !recent.length && !error) return null;
   // Stale requests were written against older instructions and can only be rejected; current
   // ones come first, so Fix lands on the one the owner can approve.
   const isStale = (request: InstructionRequest) =>
@@ -1837,8 +2327,8 @@ function InstructionRequestsCard({
   return (
     <View
       style={[styles.cardBody, settingsStyles.rowBorder]}
-      testID="instruction-requests-card"
-      {...healthCardAnchorProps("host", "instructions")}
+      testID={only === "waiting" ? "instruction-requests-card" : `instruction-requests-${only}`}
+      {...(only === "waiting" ? healthCardAnchorProps("host", "instructions") : null)}
     >
       <View style={styles.requestHeader}>
         <Text style={settingsStyles.rowTitle}>Agent instruction changes</Text>
@@ -1847,10 +2337,10 @@ function InstructionRequestsCard({
           variant={current.length ? "warning" : "muted"}
         />
       </View>
-      {state.instructionError ? (
+      {error ? (
         <>
           <Text accessibilityRole="alert" style={styles.error}>
-            {state.instructionError}
+            {error}
           </Text>
           <Button variant="ghost" size={size} onPress={model.dismissInstructionError}>
             Dismiss
@@ -2152,12 +2642,30 @@ function CustomDomainCard({
   );
 }
 
+/** Session host jobs in one owner state, newest first, with the owner's dismissals applied. */
+function sessionHostJobs(
+  state: ReturnType<InstallationPanelModel["getState"]>,
+  only: ShownState,
+): SessionHostJob[] {
+  const overview = state.sessionHost;
+  if (!overview) return [];
+  const jobs = withDismissals(overview.jobs, state.healthDismissals, "session-host");
+  const counted = new Set(recordsNeedingReview(jobs, byTargetAndOperation).map((job) => job.id));
+  const decided = new Set(state.decidedIds);
+  return jobs
+    .filter((job) => inShown(jobOwnerState(job, counted.has(job.id)), decided.has(job.id), only))
+    .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
 function SessionHostCard({
   model,
   state,
+  only,
 }: {
   model: InstallationPanelModel;
   state: ReturnType<InstallationPanelModel["getState"]>;
+  /** Waiting shows the controls and the requests waiting on the owner; others list requests. */
+  only: OwnerState;
 }) {
   const size = useVortonTouch() ? "md" : "sm";
   const install = useCallback(() => {
@@ -2185,10 +2693,26 @@ function SessionHostCard({
   if (!overview) return null;
   const review = { busy: state.busy, unlocked: state.unlocked };
   const jobs = withDismissals(overview.jobs, state.healthDismissals, "session-host");
-  const shownJobs = visibleSessionHostJobs(jobs);
+  const shownJobs = sessionHostJobs(state, only);
+  const dismissQueue = state.healthDismissals ? "session-host" : null;
+  if (only !== "waiting")
+    return (
+      <>
+        {shownJobs.map((job) => (
+          <SessionHostRequest
+            key={`${job.id}:${job.revision}`}
+            job={job}
+            model={model}
+            busy={state.busy}
+            superseded={isSupersededFailure(job, jobs, byTargetAndOperation)}
+            dismissQueue={dismissQueue}
+          />
+        ))}
+      </>
+    );
   // Fix lands on the request that needs the owner, or on the card when none does.
   const anchorJob = recordsNeedingReview(jobs, byTargetAndOperation).find((job) =>
-    shownJobs.includes(job),
+    shownJobs.some((shown) => shown.id === job.id),
   )?.id;
   return (
     <>
@@ -2280,7 +2804,7 @@ function SessionHostCard({
           busy={state.busy}
           anchored={job.id === anchorJob}
           superseded={isSupersededFailure(job, jobs, byTargetAndOperation)}
-          dismissQueue={state.healthDismissals ? "session-host" : null}
+          dismissQueue={dismissQueue}
         />
       ))}
     </>

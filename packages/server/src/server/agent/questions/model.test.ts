@@ -57,6 +57,13 @@ test("ask records an open question and retries are idempotent", () => {
   );
 });
 
+// #660: the owner's client opens the conversation where a question was asked.
+test("a new question records the thread's timeline position when one is known", () => {
+  const [question] = mutateQuestions([], ask, { ...context, askedSeq: 42, askedEpoch: "e1" });
+  expect(question).toMatchObject({ askedSeq: 42, askedEpoch: "e1" });
+  expect(asked()[0]).not.toHaveProperty("askedSeq");
+});
+
 test("blocked tasks must exist in the thread checklist", () => {
   expect(() => mutateQuestions([], { ...ask, blocks: ["missing"] }, context)).toThrow(
     "Checklist task missing does not exist",

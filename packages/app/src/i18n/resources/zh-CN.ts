@@ -261,6 +261,8 @@ export const zhCN: TranslationResources = {
       implement: "实施",
       question: "你想如何继续？",
       proposedPlan: "建议计划",
+      questionNotFound: "找不到这个问题在对话中提出的位置。",
+      approvalNotFound: "找不到这个批准在对话中请求的位置。",
       mode: "此对话处于{{mode}}模式。",
     },
   },

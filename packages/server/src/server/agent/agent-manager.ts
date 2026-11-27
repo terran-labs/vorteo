@@ -186,6 +186,7 @@ import type {
 } from "@getpaseo/protocol/agent-types";
 import { parseAgentMessage, projectAgentMessages } from "./agent-messages/index.js";
 import { isStaleProviderSessionError } from "./stale-provider-session-error.js";
+import { isSessionHostFrameTooLargeError } from "../session-host/client.js";
 import {
   PASEO_MCP_SERVER_NAME,
   stripInternalPaseoMcpServer,
@@ -2549,6 +2550,11 @@ export class AgentManager {
       const agent = this.requireAgent(agentId);
       if (!item.sendNow || agent.activeTurnId !== item.sendNow.expectedTurnId)
         throw new Error("The active turn changed. Review the task before sending now.");
+      // An undeliverable message must not stop the turn it would replace.
+      this.agents.get(agentId)?.session?.assertPromptFits?.(prompt, {
+        clientMessageId: item.id,
+        queuedMessage: item,
+      });
       if (this.hasInFlightRun(agentId)) {
         if (item.sendNow.expectedTurnId === null)
           throw new Error("A turn is starting. Wait for its state before sending now.");
@@ -6441,7 +6447,17 @@ export class AgentManager {
     mutation: import("@getpaseo/protocol/agent-questions").QuestionMutation,
   ): Promise<import("@getpaseo/protocol/agent-questions").AgentQuestion[]> {
     const agent = this.requireAgent(agentId);
-    const questions = await this.requireRegistry().mutateQuestions(agentId, mutation);
+    // Where the question was asked, so the owner's client can open the conversation there.
+    // A sequence number means something only within its epoch, so both are recorded.
+    const hasTimeline = this.timelineStore.has(agentId);
+    const askedSeq = hasTimeline
+      ? (this.timelineStore.getLatestSeq(agentId) ?? undefined)
+      : undefined;
+    const askedEpoch = hasTimeline ? this.timelineStore.getEpoch(agentId) : undefined;
+    const questions = await this.requireRegistry().mutateQuestions(agentId, mutation, {
+      askedSeq,
+      askedEpoch,
+    });
     agent.questions = questions;
     this.emitState(agent, { persist: false });
     return structuredClone(questions);
@@ -6671,6 +6687,17 @@ export class AgentManager {
         throw error;
       }
       agent.pendingReplacement = false;
+      if (isSessionHostFrameTooLargeError(error)) {
+        // Refused before anything was sent, so no turn exists to fail and the attempt stays in
+        // the composer or queue that submitted it. The caller shows the reason there, once.
+        this.runs.settleForegroundStart(pendingRun, { status: "failed", error: error.message });
+        try {
+          this.finalizeForegroundTurn(agent);
+        } finally {
+          this.runs.settleForegroundRun(agentId, pendingRun.token);
+        }
+        throw error;
+      }
       const errorMsg = error instanceof Error ? error.message : "Failed to start turn";
       this.runs.settleForegroundStart(pendingRun, { status: "failed", error: errorMsg });
       try {
@@ -6742,6 +6769,7 @@ export class AgentManager {
     const existingAgent = this.requireSessionAgent(agentId);
     this.assertNotAutomaticallyClosing(agentId);
     this.assertQuotaNotPaused(agentId);
+    existingAgent.session.assertPromptFits?.(prompt, options);
     options?.automaticRecoveryPermit?.assertValidForDispatch();
     this.takeOverUsageLimitHold(existingAgent, options);
     this.assertManagedWorkerStartAllowed(existingAgent, agentId);
@@ -6963,6 +6991,8 @@ export class AgentManager {
     }
 
     const agent = this.requireSessionAgent(agentId);
+    // An undeliverable prompt must not cancel the turn it would replace.
+    agent.session.assertPromptFits?.(prompt, options);
     agent.pendingReplacement = true;
     agent.lifecycle = "running";
     this.touchUpdatedAt(agent);
@@ -7037,6 +7067,8 @@ export class AgentManager {
       this.assertAcceptingAgentRegistrations();
       return { status: "inactive" };
     }
+    // A refused steer would otherwise fall back to replacing the running turn.
+    agent.session.assertPromptFits?.(prompt);
 
     const result = agent.session.steerActiveTurn
       ? await this.runSteerAdmission(agent, expectedTurnId, async () => {
