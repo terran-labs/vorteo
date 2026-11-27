@@ -1072,6 +1072,8 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
     type: z.literal("notification"),
     level: z.enum(["info", "warning", "error"]),
     message: z.string(),
+    // COMPAT(notificationDetails): added November 2026; older clients ignore it.
+    details: z.string().optional(),
   }),
   z.object({
     type: z.literal("compaction"),
