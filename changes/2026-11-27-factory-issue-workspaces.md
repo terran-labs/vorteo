@@ -1,6 +1,6 @@
 ### Fixes
 
-- Factory issue workspaces, including those in Dev, now list under the Factory that owns their issue instead of in the project's ordinary list. A running issue's Runners row opens its workspace, and issue workspaces with nothing running sit in a folded Idle group (#683).
+- Factory issue workspaces, including those in Dev, now list under the Factory that owns their issue instead of in the project's ordinary list. A running issue's Runners row opens its workspace, and issue workspaces with nothing running sit in a folded Idle group, each row showing its issue number, title and workspace status (#683).
 - A Factory issue workspace whose worker finished no longer shows the green "finished, unread" dot, which read as running; it shows the neutral state. Green keeps its meaning everywhere else (#683).
 
 ## Maintenance review

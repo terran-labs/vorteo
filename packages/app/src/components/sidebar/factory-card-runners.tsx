@@ -119,6 +119,11 @@ export function FactoryIdleWorkspaces({
   );
 }
 
+/** "Factory #345: restart holds" reads "restart holds" beside its number. */
+function idleTitle(name: string, issue: number): string {
+  return name.replace(new RegExp(`^.*#${issue}\\s*:\\s*`), "") || name;
+}
+
 const IdleRow = memo(function IdleRow({
   workspace,
   level,
@@ -156,7 +161,7 @@ const IdleRow = memo(function IdleRow({
         </View>
         <Text style={styles.number}>#{number}</Text>
         <Text style={styles.idleTitle} numberOfLines={1}>
-          {workspace.name}
+          {idleTitle(workspace.name, number)}
         </Text>
       </View>
     </PressHighlight>
