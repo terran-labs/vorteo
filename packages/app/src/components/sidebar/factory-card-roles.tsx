@@ -126,6 +126,8 @@ function FactoryTile({
   primary = false,
   ...props
 }: ChipSelectionProps & { chip: FactoryChip; primary?: boolean }) {
+  // An empty tile keeps the touch height so it lines up beside a workspace tile.
+  const touch = useVortonTouch() || isNative;
   return chip.entry ? (
     <WorkspaceChip
       chip={chip}
@@ -139,7 +141,12 @@ function FactoryTile({
   ) : (
     <View
       pointerEvents="none"
-      style={[styles.chip, primary && styles.chipPrimary, styles.chipEmpty]}
+      style={[
+        styles.chip,
+        touch && styles.chipTouch,
+        primary && styles.chipPrimary,
+        styles.chipEmpty,
+      ]}
     >
       <View style={styles.indicatorSlot} />
       <Text style={[styles.chipText, styles.chipTextMuted]} numberOfLines={1}>

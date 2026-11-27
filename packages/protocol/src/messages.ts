@@ -4440,6 +4440,8 @@ export const ServerInfoStatusPayloadSchema = z
         serviceAgentGrants: z.boolean().optional(),
         // COMPAT(agentToolAccess): added 2026-11-04, remove gate after 2027-05-04.
         agentToolAccess: z.boolean().optional(),
+        // COMPAT(factoryLean): added 2026-11-27, remove gate after 2027-05-27.
+        factoryLean: z.boolean().optional(),
         // COMPAT(usageSetting): added in v0.14, remove after 2027-05-01.
         usageSetting: z.boolean().optional(),
         usageSources: z.boolean().optional(),

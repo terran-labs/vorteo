@@ -58,6 +58,8 @@ import {
   type FactoryInvoke,
   type FactoryQueue,
 } from "./queue";
+import { useIsLeanFactory } from "./lean/lean-factory-queries";
+import { LeanFactoryOverview } from "./lean/lean-overview";
 
 interface Target {
   serverId: string;
@@ -175,7 +177,7 @@ function ProjectOverview({ serverId, projectId }: Target) {
         </View>
       ) : null}
       {factory.data && factory.data.state !== "off" && plugin && focused ? (
-        <ProjectContent
+        <LiveProjectContent
           serverId={serverId}
           projectId={projectId}
           name={name}
@@ -185,6 +187,22 @@ function ProjectOverview({ serverId, projectId }: Target) {
         />
       ) : null}
     </PageLayout>
+  );
+}
+
+/** A live project's content: the lean overview for a lean Factory, else the crew overview. */
+function LiveProjectContent(props: Parameters<typeof ProjectContent>[0]) {
+  const lean = useIsLeanFactory(props.serverId, props.state);
+  return lean ? (
+    <LeanFactoryOverview
+      serverId={props.serverId}
+      projectId={props.projectId}
+      state={props.state}
+      invoke={props.invoke}
+      active={props.active}
+    />
+  ) : (
+    <ProjectContent {...props} />
   );
 }
 

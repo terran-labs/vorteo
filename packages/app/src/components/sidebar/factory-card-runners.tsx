@@ -1,6 +1,7 @@
 import { memo, useCallback, useMemo } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { CircleAlert } from "lucide-react-native";
 import { PressHighlight } from "@/components/ui/press-highlight";
@@ -29,6 +30,7 @@ import { getWorkspaceArchiveBlockReason } from "@/workspace/lifecycle/archive";
 import { archiveWorkspacesOptimistically } from "@/workspace/workspace-archive";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { useVortonTouch } from "@/vorton-touch";
+import type { LeanNeedsYouItem, LeanRunnerRole } from "@/screens/factory/lean/lean-model";
 import {
   FACTORY_TRACK_STEPS,
   factoryRunnerAgent,
@@ -39,9 +41,18 @@ import {
 
 const ThemedCircleAlert = withUnistyles(CircleAlert);
 const dangerColor = (theme: Theme) => ({ color: theme.colors.statusDanger });
+const mutedColor = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
-/** A runner's issue; issues merged from several Factories carry their host and project tag. */
-export type RunnerIssue = FactoryQueueIssue & { serverId?: string; tag?: string };
+/**
+ * A runner's issue; issues merged from several Factories carry their host and project tag. A
+ * lean runner names its role and the machine it runs on; number 0 is a batch, not an issue.
+ */
+export type RunnerIssue = FactoryQueueIssue & {
+  serverId?: string;
+  tag?: string;
+  machine?: string;
+  leanRole?: LeanRunnerRole;
+};
 
 /** Issues with an agent running now, each opening its most relevant agent. */
 export function FactoryRunners({
@@ -179,6 +190,62 @@ function useArchiveFinishedIssueWorkspaces(finished: readonly SidebarWorkspaceEn
   }, [finished, t, toast]);
 }
 
+function needsYouSummary(items: readonly LeanNeedsYouItem[], t: TFunction): string {
+  return items
+    .map((item) => {
+      if (item.kind === "beta-notice") {
+        return t(
+          item.held ? "sidebar.factoryCard.needsYou.betaHeld" : "sidebar.factoryCard.needsYou.beta",
+          { version: item.version },
+        );
+      }
+      if (item.kind === "approval") return t("sidebar.factoryCard.needsYou.approval");
+      if (item.kind === "question") return item.question;
+      return t("sidebar.factoryCard.needsYou.promote", { version: item.version });
+    })
+    .join(" · ");
+}
+
+/**
+ * One quiet line naming what waits on the owner. It opens the overview, where each item's
+ * action (answer, approve, hold, promote) lives. Nothing waiting, no line.
+ */
+export function FactoryNeedsYou({
+  items,
+  level,
+  onPress,
+}: {
+  items: readonly LeanNeedsYouItem[];
+  level: number;
+  onPress: (() => void) | null;
+}) {
+  const { t } = useTranslation();
+  const touch = useVortonTouch() || isNative;
+  if (items.length === 0) return null;
+  const summary = needsYouSummary(items, t);
+  return (
+    <PressHighlight
+      accessibilityRole="button"
+      accessibilityLabel={t("sidebar.factoryCard.needsYou.open", { summary })}
+      onPress={onPress ?? undefined}
+      disabled={!onPress}
+      style={[styles.row, sidebarIndentStyle(level), touch && styles.rowTouch, styles.rowHoverable]}
+      highlightStyle={styles.rowPressed}
+      testID="factory-card-needs-you"
+    >
+      <View style={styles.summary}>
+        <View style={styles.activity}>
+          <ThemedCircleAlert size={14} uniProps={mutedColor} />
+        </View>
+        <Text style={styles.number}>{t("sidebar.factoryCard.needsYou.title")}</Text>
+        <Text style={styles.idleTitle} numberOfLines={1}>
+          {summary}
+        </Text>
+      </View>
+    </PressHighlight>
+  );
+}
+
 /** "Factory #345: restart holds" reads "restart holds" beside its number. */
 function idleTitle(name: string, issue: number): string {
   return name.replace(new RegExp(`^.*#${issue}\\s*:\\s*`), "") || name;
@@ -283,13 +350,13 @@ const RunnerRow = memo(function RunnerRow({
                 </View>
               )}
             </View>
-            <Text style={styles.number}>#{issue.number}</Text>
+            {issue.number > 0 ? <Text style={styles.number}>#{issue.number}</Text> : null}
             <Text style={styles.title} numberOfLines={1}>
               {issue.title}
             </Text>
-            {issue.tag ? (
-              <Text style={styles.tag} numberOfLines={1}>
-                {issue.tag}
+            {issue.tag || issue.machine ? (
+              <Text style={styles.tag} numberOfLines={1} testID="factory-card-runner-machine">
+                {issue.tag ?? issue.machine}
               </Text>
             ) : null}
           </View>
@@ -317,6 +384,14 @@ const RunnerRow = memo(function RunnerRow({
 function RunnerTooltip({ issue }: { issue: RunnerIssue }) {
   const { t } = useTranslation();
   const lines: string[] = issue.tag ? [issue.tag] : [];
+  if (issue.leanRole) {
+    const role = t(`sidebar.factoryCard.leanRoles.${issue.leanRole}`);
+    lines.push(
+      issue.machine
+        ? t("sidebar.factoryCard.leanRunnerOn", { role, machine: issue.machine })
+        : role,
+    );
+  }
   if (issue.pr) {
     lines.push(
       issue.pr.checks
@@ -327,7 +402,7 @@ function RunnerTooltip({ issue }: { issue: RunnerIssue }) {
         : t("sidebar.factoryCard.pullRequest", { number: issue.pr.number }),
     );
   }
-  for (const agent of issue.agents) {
+  for (const agent of issue.leanRole ? [] : issue.agents) {
     lines.push(
       t("sidebar.factoryCard.agentStatus", {
         role: t(`projectFactory.agents.${agent.role}`),
@@ -338,7 +413,11 @@ function RunnerTooltip({ issue }: { issue: RunnerIssue }) {
   if (issue.agents.length === 0) lines.push(t("sidebar.factoryCard.noAgents"));
   return (
     <TooltipText
-      label={t("sidebar.factoryCard.issue", { number: issue.number, title: issue.title })}
+      label={
+        issue.number > 0
+          ? t("sidebar.factoryCard.issue", { number: issue.number, title: issue.title })
+          : issue.title
+      }
       description={lines.join("\n")}
     />
   );

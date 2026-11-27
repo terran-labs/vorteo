@@ -45,7 +45,15 @@ import {
   factoryChips,
   splitForeman,
 } from "./factory-card-roles";
-import { FactoryIdleWorkspaces, FactoryRunners } from "./factory-card-runners";
+import { FactoryIdleWorkspaces, FactoryNeedsYou, FactoryRunners } from "./factory-card-runners";
+import { useIsLeanFactory, useLeanFactoryReads } from "@/screens/factory/lean/lean-factory-queries";
+import {
+  leanNeedsYou,
+  leanRunnerIssues,
+  leanRunnerRows,
+  leanStageBarIssues,
+  leanTiles,
+} from "@/screens/factory/lean/lean-model";
 import { FactoryStageBar, type StageBarIssue } from "./factory-card-stage-bar";
 import { useFactoryCardStore } from "./factory-card-store";
 import type { ProjectFactoryState } from "./factory-state";
@@ -98,7 +106,25 @@ export const FactorySection = memo(function FactorySection({
   const { plugin, route, openOverview } = useFactoryOverview(card, onWorkspacePress);
   const routeTarget = factoryOverviewPathTarget(usePathname());
   const state = useProjectFactory(card.serverId, card.projectId, true).data;
-  const issues = useFactoryQueueIssues({ card, plugin, state, collapsed });
+  const lean = useIsLeanFactory(card.serverId, state);
+  const active = useRetainedPanelActive();
+  const crewIssues = useFactoryQueueIssues({ card, plugin, state, collapsed, lean });
+  const leanReads = useLeanFactoryReads({
+    serverId: card.serverId,
+    projectId: card.projectId,
+    invoke: plugin?.invoke,
+    enabled: lean && active,
+    polling: factoryCardReadsQueue({ active, collapsed, state }),
+  });
+  const leanRows = useMemo(
+    () => (lean ? leanRunnerRows(leanReads.status, leanReads.view) : []),
+    [lean, leanReads.status, leanReads.view],
+  );
+  const needsYou = useMemo(
+    () => (lean ? leanNeedsYou(leanReads.status, leanReads.view) : []),
+    [lean, leanReads.status, leanReads.view],
+  );
+  const issues = lean ? leanStageBarIssues(leanReads.status) : crewIssues;
 
   const members = useMemo(
     () => card.members.flatMap((member) => entries.get(member.workspaceKey) ?? []),
@@ -111,7 +137,10 @@ export const FactorySection = memo(function FactorySection({
     () => splitForeman(factoryChips(state?.roles, crewMembers)),
     [state?.roles, crewMembers],
   );
-  const runners = useMemo(() => (issues ? factoryRunners(issues) : []), [issues]);
+  const runners = useMemo(() => {
+    if (lean) return leanRunnerIssues(leanRows, leanReads.status);
+    return crewIssues ? factoryRunners(crewIssues) : [];
+  }, [crewIssues, lean, leanReads.status, leanRows]);
   const { opened: issueWorkspaces, idle } = useMemo(
     () => factoryIssueRows(byIssue, new Set(runners.map((issue) => issue.number))),
     [byIssue, runners],
@@ -153,8 +182,25 @@ export const FactorySection = memo(function FactorySection({
       selected={routeTarget?.serverId === card.serverId && routeTarget.projectId === card.projectId}
       pinnable
     >
-      {foreman ? <FactoryForemanTile chip={foreman} level={level + 1} {...selection} /> : null}
-      {crew.length > 0 ? (
+      {lean ? (
+        <>
+          {/* Lean: the Lead and Mechanic tiles side by side; no Crew group. */}
+          <FactoryRoleChips
+            chips={leanTiles([...(foreman ? [foreman] : []), ...crew])}
+            level={level + 1}
+            {...selection}
+          />
+          <FactoryNeedsYou
+            items={needsYou}
+            level={level + 1}
+            onPress={route ? openOverview : null}
+          />
+        </>
+      ) : null}
+      {!lean && foreman ? (
+        <FactoryForemanTile chip={foreman} level={level + 1} {...selection} />
+      ) : null}
+      {!lean && crew.length > 0 ? (
         <FactoryGroup
           groupKey={`factory-crew:${card.key}`}
           title={t("sidebar.factoryCard.crew")}
@@ -321,8 +367,10 @@ function useFactoryQueueIssues(input: {
   plugin: { invoke: FactoryInvoke } | undefined;
   state: ProjectFactoryState | undefined;
   collapsed: boolean;
+  /** A lean Factory reads its own status instead of the crew queue. */
+  lean: boolean;
 }) {
-  const { card, plugin, state, collapsed } = input;
+  const { card, plugin, state, collapsed, lean } = input;
   const active = useRetainedPanelActive();
   const queryKey = ["factoryQueue", card.serverId, card.projectId];
   // A card with nothing read yet reads once, so a collapsed or paused card still has a stage bar.
@@ -330,13 +378,13 @@ function useFactoryQueueIssues(input: {
   const queryClient = useQueryClient();
   const read = queryClient.getQueryState(queryKey) !== undefined;
   const refreshing = queryClient.getQueryData<FactoryQueue | null>(queryKey)?.refreshing === true;
-  const readable = active && !!plugin && !!state && state.state !== "off";
-  const polling = !!plugin && factoryCardReadsQueue({ active, collapsed, state });
+  const readable = !lean && active && !!plugin && !!state && state.state !== "off";
+  const polling = !lean && !!plugin && factoryCardReadsQueue({ active, collapsed, state });
   const queue = useFetchQuery({
     dataShape: "value",
     queryKey,
     staleTimeMs: 30_000,
-    enabled: polling || (readable && !read) || (active && refreshing),
+    enabled: polling || (readable && !read) || (!lean && active && refreshing),
     retry: polling ? undefined : false,
     // A daemon without the queue answers null; never poll it again.
     refetchInterval: (query) =>

@@ -11,6 +11,8 @@ import { PLUGIN_SURFACE_MESSAGES } from "@/plugins/surface-contribution";
 import { useFactoryPlugin } from "./availability";
 import { FactoryModelsAndRoles } from "./overview-controls";
 import { useProjectNames } from "./overview-sources";
+import { LeanConfigEditor } from "./lean/lean-config-editor";
+import { useIsLeanFactory } from "./lean/lean-factory-queries";
 
 /**
  * One live Factory's settings: where its home is, the models for each issue stage and where
@@ -21,13 +23,14 @@ export function FactorySettings({ serverId, projectId }: { serverId: string; pro
   const { t } = useTranslation();
   const focused = useIsFocused();
   useDirectoryDemand(focused ? serverId : null);
-  const { availability } = useFactoryPlugin(serverId);
+  const { plugin, availability } = useFactoryPlugin(serverId);
   const factory = useProjectFactory(serverId, projectId, focused);
   const name = useProjectNames()(serverId, projectId);
   const reload = useCallback(() => {
     void factory.refetch();
   }, [factory]);
   const state = factory.data;
+  const lean = useIsLeanFactory(serverId, state);
   return (
     <PageLayout
       title={
@@ -61,6 +64,14 @@ export function FactorySettings({ serverId, projectId }: { serverId: string; pro
       ) : null}
       {state && state.state !== "off" ? (
         <FactoryModelsAndRoles serverId={serverId} projectId={projectId} state={state} />
+      ) : null}
+      {lean && plugin && state && state.state !== "off" ? (
+        <LeanConfigEditor
+          serverId={serverId}
+          projectId={projectId}
+          invoke={plugin.invoke}
+          active={focused}
+        />
       ) : null}
     </PageLayout>
   );

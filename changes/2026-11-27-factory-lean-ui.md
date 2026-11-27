@@ -1,0 +1,13 @@
+### Improvements
+
+- Lean Factories show a Lead and a Mechanic tile, a Needs you line and Runners with a badge naming each runner's machine in the sidebar. Factories in the current crew mode look exactly as before.
+- A lean Factory's overview shows what needs you, the production release, betas you can promote and earlier releases you can roll back to, each confirmed with its exact version, plus previews, activity and health.
+- A lean Factory's settings edit its repository configuration, the primary machine and builder provider, by showing the change and opening a pull request.
+
+### Fixes
+
+- On touch screens, a Factory tile with no workspace yet is as tall as the tiles beside it.
+
+## Maintenance review
+
+Lean Factory interface, step 1 (sidebar). App only, plus the one optional `factoryLean` feature flag in the protocol's server info features, added with its COMPAT tag so the app can read the capability; the spine adds the same line. Every view is gated on that flag and `mode: "lean"`, which no installed daemon sends. Wire access sits in `packages/app/src/screens/factory/lean/lean-factory-source.ts`, with fields agreed with the spine but not yet in the shared contract (`pendingBeta`, `delivery`, `deliveryLock.holderInfo`, the hold and release RPCs, `builder.provider`) marked as pending contract there. Pure view models and demo data have one focused test file covering the gate, runner rows with machines, Needs you order and the Lead and Mechanic tiles. Updated the "Factory sidebar sections" inventory entry. README overview and onboarding are unchanged. Interface only; not installed. Step 2 (overview) and step 3 (settings editor): added the "Lean Factory Overview and configuration" inventory entry. The release model test covers which releases offer Promote and Roll back; a config model test covers preserving unknown keys and formatting, the diff, refusing invalid JSON and a missing file. Actions are gated on the view's pending `readiness` flags, covered by one case in the lean model test; the builder provider list comes from the installation's enabled provider types, covered by one case in the config model test. A development-only `/lean-factory-demo` route serves the views on demo data.
