@@ -262,14 +262,25 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
  * the trusted accounts cannot be read, every issue is shown as unverified.
  */
 async function trustEvidence(input: QueueInput, prs: PullRequest[]) {
-  let trusted: TrustedAccounts;
+  let lookup: TrustedAccounts;
   let trustError: string | null = null;
   try {
-    trusted = await input.trusted();
+    lookup = await input.trusted();
   } catch (error) {
-    trustError = error instanceof Error ? error.message : String(error);
-    trusted = async () => false;
+    trustError = errorMessage(error);
+    lookup = async () => false;
   }
+  // A failed lookup of one login (a 403 or 429 for someone who reviewed or commented) counts
+  // that login as untrusted and is reported on the issues it affects; the read goes on.
+  const failures = new Map<string, string>();
+  const trusted: TrustedAccounts = async (login) => {
+    try {
+      return await lookup(login);
+    } catch (error) {
+      if (login) failures.set(login, errorMessage(error));
+      return false;
+    }
+  };
   const sameRepository = prs.filter((pr) => !pr.isCrossRepository);
   for (const pr of sameRepository) {
     // Anyone can review a public pull request; only trusted reviewers count, even for display.
@@ -282,10 +293,34 @@ async function trustEvidence(input: QueueInput, prs: PullRequest[]) {
   const verdict = async (issue: z.infer<typeof issueSchema>): Promise<{ untrusted?: string }> => {
     if (trustError)
       return { untrusted: `Could not verify who approved issue #${issue.number}: ${trustError}` };
+    const before = new Set(failures.keys());
     const result: IssueTrust = await issueTrust(issue, trusted);
-    return result.trusted ? {} : { untrusted: result.reason };
+    if (result.trusted) return {};
+    const failed = [...failures].find(
+      ([login]) => !before.has(login) || issueLogins(issue).has(login),
+    );
+    return {
+      untrusted: failed
+        ? `Could not verify whether @${failed[0]} is trusted for issue #${issue.number}: ${failed[1]}`
+        : result.reason,
+    };
   };
   return { verdict, sameRepository };
+}
+
+/** Every account that wrote, edited, retitled or labeled the issue. */
+function issueLogins(issue: z.infer<typeof issueSchema>): Set<string> {
+  return new Set(
+    [
+      issue.author?.login,
+      ...issue.userContentEdits.nodes.map((edit) => edit.editor?.login),
+      ...issue.timelineItems.nodes.map((item) => item.actor?.login),
+    ].filter((login): login is string => Boolean(login)),
+  );
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**

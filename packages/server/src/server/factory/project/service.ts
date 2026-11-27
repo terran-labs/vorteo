@@ -63,6 +63,7 @@ import type { CharterInput } from "./charters/shared.js";
 import {
   assignmentBlock,
   claimIssue,
+  ownerOnlyChanges,
   defaultFactoryGitHub,
   installationIdentity,
   readAssignment,
@@ -113,6 +114,7 @@ import { queueDeadline, readIssueQueue, type DevQueueAgents } from "./queue.js";
 import {
   FACTORY_FOREMAN_UNADOPTED_CODE,
   FACTORY_ISSUE_UNTRUSTED_CODE,
+  FACTORY_OWNER_ONLY_FILE_CODE,
   FactoryRefusal,
 } from "./owner-writes.js";
 import {
@@ -1119,27 +1121,42 @@ export class ProjectFactoryService {
       if (!project.enabled)
         throw new ProjectFactoryError("Turn on Factory for this project first.");
       // Intake trust comes first, so an issue nobody trusted approved never gets a branch, and
-      // every later step on it stops as soon as an outside edit lands. Unreadable fails closed.
+      // the Foreman's next claim on a running issue refuses once an outside edit lands. Any
+      // read that fails refuses: unreadable is never trusted.
       const github = this.github();
-      let trusted, facts;
-      try {
-        trusted = await readTrustedAccounts(github, project.repository);
-        facts = await readIssueFacts(github, project.repository, request.issue);
-      } catch (error) {
-        if (!(error instanceof FactoryTrustError)) throw error;
-        throw new FactoryRefusal(
-          `Factory could not verify who approved issue #${request.issue}, so it is not admitted. ${error.message}`,
+      const unverified = (error: unknown) => {
+        if (!(error instanceof FactoryTrustError)) return error;
+        return new FactoryRefusal(
+          `Factory could not verify who approved issue #${request.issue}, so it does not work on it. ${error.message}`,
           FACTORY_ISSUE_UNTRUSTED_CODE,
         );
+      };
+      let claim: ProjectFactoryClaim;
+      let brief: string;
+      try {
+        const trusted = await readTrustedAccounts(github, project.repository);
+        const facts = await readIssueFacts(github, project.repository, request.issue);
+        const verdict = await issueTrust(facts, trusted);
+        if (!verdict.trusted)
+          throw new FactoryRefusal(verdict.reason, FACTORY_ISSUE_UNTRUSTED_CODE);
+        brief = await issueBrief(facts, trusted);
+        claim = await claimIssue({
+          ...this.claimContext(request.projectId, project.repository, request.issue),
+          trusted,
+          keep: request.keep,
+        });
+      } catch (error) {
+        throw unverified(error);
       }
-      const verdict = await issueTrust(facts, trusted);
-      if (!verdict.trusted) throw new FactoryRefusal(verdict.reason, FACTORY_ISSUE_UNTRUSTED_CODE);
-      const claim = await claimIssue({
-        ...this.claimContext(request.projectId, project.repository, request.issue),
-        trusted,
-        keep: request.keep,
-      });
-      return claim.marker ? { ...claim, brief: await issueBrief(facts, trusted) } : claim;
+      if (!claim.marker) return claim;
+      // Trust lists and role assignment change only through the owner, never a Factory merge.
+      const touched = await ownerOnlyChanges(github, project.repository, claim.branch);
+      if (touched.length)
+        throw new FactoryRefusal(
+          `The pull request for issue #${request.issue} changes ${touched.join(" and ")}, which only the owner may change. Label the issue factory:blocked and ask the owner to review and merge it.`,
+          FACTORY_OWNER_ONLY_FILE_CODE,
+        );
+      return { ...claim, brief };
     });
   }
 
@@ -1162,7 +1179,6 @@ export class ProjectFactoryService {
     const branch = projectFactoryClaimBranch(issue);
     const released = await releaseClaim({
       ...this.claimContext(projectId, project.repository, issue),
-      trusted: await readTrustedAccounts(this.github(), project.repository),
       foreign: project.foreignClaims?.[branch],
     });
     await this.mutateProject(projectId, (next) => {

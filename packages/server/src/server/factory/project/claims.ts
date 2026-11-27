@@ -184,20 +184,24 @@ function expect(response: GitHubResponse, ok: number[], what: string): unknown {
   throw new FactoryGitHubError(`GitHub refused ${what}: ${message} (HTTP ${response.status}).`);
 }
 
-export interface ClaimContext {
+/** What claims and releases share; releasing reads no markers, so it needs no trust. */
+export interface ClaimBase {
   github: FactoryGitHub;
   repository: string;
   installation: string;
   issue: number;
   now: Date;
-  /** The owner chose this installation in a conflict. */
-  keep?: boolean;
-  /** Only markers in comments by these accounts count; anyone can comment on a public issue. */
-  trusted: TrustedAccounts;
   /** Reads this installation's claim for the issue. */
   read: () => Promise<ClaimState | undefined>;
   /** Writes (or, with undefined, removes) this installation's claim for the issue. */
   write: (claim: ClaimState | undefined) => Promise<void>;
+}
+
+export interface ClaimContext extends ClaimBase {
+  /** The owner chose this installation in a conflict. */
+  keep?: boolean;
+  /** Only markers in comments by these accounts count; anyone can comment on a public issue. */
+  trusted: TrustedAccounts;
 }
 
 /**
@@ -298,7 +302,7 @@ export async function claimIssue(ctx: ClaimContext): Promise<ProjectFactoryClaim
   return result("foreign", head);
 }
 
-export interface ReleaseContext extends ClaimContext {
+export interface ReleaseContext extends ClaimBase {
   foreign: ForeignClaimState | undefined;
 }
 
@@ -346,13 +350,13 @@ export async function releaseClaim(ctx: ReleaseContext): Promise<ProjectFactoryC
   return { issue: ctx.issue, branch, outcome: "archived", archivedAs, headSha };
 }
 
-async function readHead(ctx: ClaimContext, branch: string): Promise<string | null> {
+async function readHead(ctx: ClaimBase, branch: string): Promise<string | null> {
   const response = await ctx.github.rest("GET", `repos/${ctx.repository}/git/ref/heads/${branch}`);
   if (response.status === 404) return null;
   return refSchema.parse(expect(response, [200], `reading ${branch}`)).object.sha;
 }
 
-async function defaultBranchHead(ctx: ClaimContext): Promise<string> {
+async function defaultBranchHead(ctx: ClaimBase): Promise<string> {
   const repo = z
     .object({ default_branch: z.string() })
     .parse(
@@ -363,7 +367,7 @@ async function defaultBranchHead(ctx: ClaimContext): Promise<string> {
   return head;
 }
 
-async function archives(ctx: ClaimContext): Promise<string[]> {
+async function archives(ctx: ClaimBase): Promise<string[]> {
   const response = await ctx.github.rest(
     "GET",
     `repos/${ctx.repository}/git/matching-refs/heads/${ARCHIVE_PREFIX}/issue-${ctx.issue}/`,
@@ -375,7 +379,7 @@ async function archives(ctx: ClaimContext): Promise<string[]> {
 }
 
 /** A release archives the claim under a new name, so any archive newer than the claim means it was released. */
-async function wasReleased(ctx: ClaimContext, claim: ClaimState): Promise<boolean> {
+async function wasReleased(ctx: ClaimBase, claim: ClaimState): Promise<boolean> {
   const known = new Set(claim.archivesAtClaim);
   return (await archives(ctx)).some((ref) => !known.has(ref));
 }
@@ -426,6 +430,69 @@ async function activityTexts(
     ...trustedComments,
     ...pullSchema.parse(expect(pulls, [200], `pull requests from ${branch}`)),
   ].map((item) => ({ body: item.body ?? "", updatedAt: item.updated_at }));
+}
+
+/**
+ * Files that decide who Factory trusts and where its roles run. A Factory pull request that
+ * changes one never merges through Factory: the owner reviews and merges it.
+ */
+export const OWNER_ONLY_FILES = [".github/delivery-approvers.json", ".github/factory.json"];
+
+const pullNumbersSchema = z.array(z.object({ number: z.number() }));
+const pullFilesSchema = z.array(
+  z.object({ filename: z.string(), previous_filename: z.string().optional() }),
+);
+
+/** Owner-only files the open pull request from `branch` changes; fails closed on any read error. */
+export async function ownerOnlyChanges(
+  github: FactoryGitHub,
+  repository: string,
+  branch: string,
+): Promise<string[]> {
+  const owner = repository.split("/")[0];
+  const pulls = pullNumbersSchema.parse(
+    expect(
+      await github.rest(
+        "GET",
+        `repos/${repository}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}`,
+      ),
+      [200],
+      `pull requests from ${branch}`,
+    ),
+  );
+  const touched = new Set<string>();
+  for (const pull of pulls)
+    for (const name of await pullFileNames(github, repository, pull.number))
+      if (OWNER_ONLY_FILES.includes(name)) touched.add(name);
+  return [...touched];
+}
+
+/** Every path a pull request adds, changes, removes or renames from. */
+async function pullFileNames(
+  github: FactoryGitHub,
+  repository: string,
+  number: number,
+): Promise<string[]> {
+  const names: string[] = [];
+  // GitHub lists at most 3000 files, 100 per page.
+  for (let page = 1; page <= 30; page++) {
+    const files = pullFilesSchema.parse(
+      expect(
+        await github.rest(
+          "GET",
+          `repos/${repository}/pulls/${number}/files?per_page=100&page=${page}`,
+        ),
+        [200],
+        `files of pull request #${number}`,
+      ),
+    );
+    for (const file of files)
+      names.push(file.filename, ...(file.previous_filename ? [file.previous_filename] : []));
+    if (files.length < 100) return names;
+  }
+  throw new FactoryGitHubError(
+    `Pull request #${number} lists more files than GitHub returns, so Factory cannot check it.`,
+  );
 }
 
 export interface StaleClaim {
