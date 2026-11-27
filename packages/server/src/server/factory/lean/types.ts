@@ -207,6 +207,19 @@ export interface RoutedEvent {
 // Ledger (1.1): `$PASEO_HOME/factory/lean/<projectId>.json`, written atomically.
 // ---------------------------------------------------------------------------------------------
 
+export interface OwnerApproval {
+  actionId: string;
+  eventId: string;
+  version: string;
+  words: string;
+  at: string;
+}
+
+export interface DeliveryExecutorHolder {
+  kind: "executor";
+  installation: Installation;
+}
+
 export interface DeliveryJob {
   id: string;
   kind: "deliver" | "cut-beta" | "promote" | "rollback";
@@ -216,10 +229,11 @@ export interface DeliveryJob {
   releaseEventId: string | null;
   /** The owner action that authorized promote or rollback. */
   ownerAction: string | null;
+  approval?: OwnerApproval | null;
 }
 
 export interface DeliveryLock {
-  holder: RunnerRef;
+  holder: RunnerRef | DeliveryExecutorHolder;
   job: DeliveryJob;
   /** The delivery lane lease epoch the lock was taken under; recorded on every receipt. */
   laneEpoch: number;
@@ -368,6 +382,8 @@ export interface AdmissionFacts {
 }
 
 export interface PullFacts {
+  /** The daemon verified that a Reviewer can inspect this exact head while checks run. */
+  reviewEligible?: boolean;
   number: number;
   head: string;
   branch: string;

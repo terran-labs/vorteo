@@ -129,6 +129,18 @@ import {
   type FactoryHomeAnswer,
   type FactoryHomePort,
 } from "../../execution-installation/factory-home.js";
+import {
+  createLeanConversation,
+  leanConversationCharter,
+  leanConversationTitle,
+  readLeanConversation,
+  type LeanConversationKind,
+} from "../lean/conversation.js";
+
+const leanRoles = [
+  { id: "factory-intake", kind: "lead" },
+  { id: "factory-mechanic", kind: "mechanic" },
+] as const;
 
 /** How many account picks the state file keeps, newest last. */
 const ACCOUNT_PICKS_KEPT = 50;
@@ -154,6 +166,8 @@ export type PromptOutcome = "sent" | "busy";
 
 export interface ProjectFactoryServiceInput {
   lean?: import("../lean/types.js").LeanModePort;
+  /** Fresh daemon authority for this active Lean project's primary and execution mode. */
+  canOpenLeanConversation?(projectId: string, repository: string): Promise<boolean>;
   paseoHome: string;
   serverId: string;
   projects: Pick<ProjectRegistry, "get">;
@@ -248,6 +262,7 @@ export class ProjectFactoryService {
   private queue: Promise<unknown> = Promise.resolve();
   private stopped = false;
   private readonly issueQueues: FactoryQueueSnapshots;
+  private readonly leanConversation: ReturnType<typeof createLeanConversation>;
 
   static supports(method: string): boolean {
     return PROJECT_FACTORY_RPCS.some((rpc) => rpc.name === method);
@@ -260,6 +275,15 @@ export class ProjectFactoryService {
       path.join(input.paseoHome, "factory", "queues"),
       this.logger,
     );
+    this.leanConversation = createLeanConversation({
+      paseoHome: input.paseoHome,
+      canOpen: ({ projectId, repository }) => this.canOpenLeanConversation(projectId, repository),
+      defaultLaunch: input.defaultLaunch,
+      createAgent: input.createAgent,
+      agents: input.agentStorage,
+      workspaces: input.workspaces,
+      createWorkspace: input.createWorkspace,
+    });
   }
 
   /** Restarts heartbeats and checks for charter drift on every enabled project. */
@@ -270,7 +294,7 @@ export class ProjectFactoryService {
         if (project.mode === "lean") {
           const record = await this.input.projects.get(projectId);
           if (record && !record.archivedAt && project.enabled && !project.paused)
-            await this.input.lean?.start(projectId);
+            await this.startLean(record);
           continue;
         }
         await this.reconcileOptimizerReview(projectId, project);
@@ -282,6 +306,73 @@ export class ProjectFactoryService {
         if (!project.paused) this.startTimers(projectId);
       }
     });
+  }
+
+  /** Called by Lean activation recovery or an authorized on-demand Mechanic event. */
+  async ensureLeanConversation(projectId: string, kind: LeanConversationKind) {
+    return this.serialize(async () => {
+      const record = await this.requireActiveProject(projectId);
+      return this.openLeanConversation(record, kind);
+    });
+  }
+
+  private async canOpenLeanConversation(projectId: string, repository: string): Promise<boolean> {
+    const [record, project] = await Promise.all([
+      this.input.projects.get(projectId),
+      this.readProject(projectId),
+    ]);
+    if (
+      this.stopped ||
+      !record ||
+      record.archivedAt ||
+      !project?.enabled ||
+      project.paused ||
+      project.mode !== "lean" ||
+      project.drain ||
+      project.repository !== repository
+    )
+      return false;
+    const local = this.input.home?.environment;
+    if (local && project.home?.environment !== local) return false;
+    return (await this.input.canOpenLeanConversation?.(projectId, repository)) === true;
+  }
+
+  private async openLeanConversation(record: PersistedProjectRecord, kind: LeanConversationKind) {
+    const project = await this.readProject(record.projectId);
+    if (!project) return null;
+    const role = await this.leanConversation.ensure(
+      {
+        projectId: record.projectId,
+        repository: project.repository,
+        cwd: record.rootPath,
+        name: projectName(record),
+      },
+      kind,
+    );
+    if (!role || !(await this.canOpenLeanConversation(record.projectId, project.repository)))
+      return null;
+    const workspaceId = await this.bindMembership(
+      record,
+      {
+        title: leanConversationTitle(kind),
+        membershipRole: "factory",
+      },
+      role.workspaceId,
+    );
+    if (workspaceId) this.input.onWorkspacesChanged?.([workspaceId]);
+    return role;
+  }
+
+  private async startLean(record: PersistedProjectRecord): Promise<void> {
+    await this.input.lean?.start(record.projectId);
+    try {
+      await this.openLeanConversation(record, "lead");
+    } catch (error) {
+      this.logger.warn(
+        { projectId: record.projectId, err: error },
+        "Lean Factory Lead conversation is unavailable",
+      );
+    }
   }
 
   stop(): void {
@@ -413,7 +504,7 @@ export class ProjectFactoryService {
       return this.describe(record, undefined, error.message);
     }
     if (record.archivedAt) return this.describe(record, project, "This project is archived.");
-    const state = this.describe(record, project, null);
+    const state = await this.describe(record, project, null);
     const host = project ? await this.observedDev(project) : null;
     return host ? { ...state, issueAgentHost: host } : state;
   }
@@ -485,9 +576,12 @@ export class ProjectFactoryService {
       const mode = request.mode ?? existing?.mode ?? "crew";
       if (existing?.enabled && mode !== (existing.mode ?? "crew"))
         throw new ProjectFactoryError("Disable the Factory before switching its mode.");
-      if (mode === "lean" && !this.input.lean)
-        throw new ProjectFactoryError("Lean Factory is unavailable on this daemon.");
-      if (mode === "crew") {
+      if (mode === "lean") {
+        if (!this.input.lean)
+          throw new ProjectFactoryError("Lean Factory is unavailable on this daemon.");
+        if (request.adopt && Object.keys(request.adopt).length > 0)
+          throw new ProjectFactoryError("Lean Factory creates a dedicated Lead conversation.");
+      } else {
         await this.validateAdoption(request.projectId, request.adopt ?? {});
         await this.refuseUnadoptedForeman(request.projectId, request.adopt ?? {});
       }
@@ -534,7 +628,7 @@ export class ProjectFactoryService {
       });
       await this.claimHome(request.projectId, repository.data, previous);
       if (mode === "lean") {
-        await this.input.lean!.start(request.projectId);
+        await this.startLean(record);
         return this.describe(record, await this.readProject(request.projectId), null);
       }
       const changed: string[] = [];
@@ -564,7 +658,7 @@ export class ProjectFactoryService {
       });
       if (configured.mode === "lean") {
         if (paused) await this.input.lean?.stop(projectId, "pause");
-        else await this.input.lean?.start(projectId);
+        else await this.startLean(record);
       } else if (paused) this.stopTimers(projectId);
       else this.startTimers(projectId);
       return this.describe(record, await this.readProject(projectId), null);
@@ -580,7 +674,26 @@ export class ProjectFactoryService {
       if (project.mode === "lean") await this.input.lean?.stop(projectId, "disable");
       const installationId = projectFactoryInstallationId(projectId);
       const changed: string[] = [];
-      for (const role of Object.values(project.roles)) {
+      const roles =
+        project.mode === "lean"
+          ? await Promise.all(
+              leanRoles.map(({ kind }) =>
+                readLeanConversation(
+                  this.input.paseoHome,
+                  projectId,
+                  project.repository,
+                  kind,
+                ).catch((error: unknown) => {
+                  this.logger.warn(
+                    { err: error, projectId },
+                    "Could not read a Lean workspace while disabling Factory",
+                  );
+                  return null;
+                }),
+              ),
+            )
+          : Object.values(project.roles);
+      for (const role of roles) {
         if (!role?.workspaceId || !this.input.workspaces.setProjectFactoryMember) continue;
         await this.input.workspaces.setProjectFactoryMember(role.workspaceId, null, installationId);
         changed.push(role.workspaceId);
@@ -718,9 +831,10 @@ export class ProjectFactoryService {
           if (resume) project.paused = false;
           delete project.drain;
         });
-        if (resume && drain.mode === "lean") await this.input.lean?.start(entry.projectId);
-        else if (resume) this.startTimers(entry.projectId);
-        const foreman = drain.roles["factory-intake"]?.agentId;
+        if (resume && drain.mode === "lean") {
+          await this.startLean(await this.requireActiveProject(entry.projectId));
+        } else if (resume) this.startTimers(entry.projectId);
+        const foreman = drain.mode === "lean" ? null : drain.roles["factory-intake"]?.agentId;
         if (resume && foreman) await this.notifyForeman(entry.projectId, foreman, DRAIN_ENDED);
       }
       return this.list();
@@ -758,6 +872,10 @@ export class ProjectFactoryService {
           current.workers.reviewerProfileId = request.reviewerProfileId;
         if (request.issueAgents !== undefined) current.workers.issueAgents = request.issueAgents;
         if (!request.role) return;
+        if (current.mode === "lean")
+          throw new ProjectFactoryError(
+            "Lean Factory conversations use the installation primary connection.",
+          );
         const role = (current.roles[request.role] ??= emptyRoleState());
         if (request.provider !== undefined) role.launch.provider = request.provider;
         if (request.profileId !== undefined) role.launch.profileId = request.profileId;
@@ -766,7 +884,7 @@ export class ProjectFactoryService {
       const outcome = request.role
         ? await this.applyLaunch(record, request.projectId, request.role)
         : "none";
-      return { state: this.describe(record, project, null), outcome };
+      return { state: await this.describe(record, project, null), outcome };
     }).then(({ state, outcome }) => {
       // Deliver the charter promptly after a switch instead of waiting for the next heartbeat.
       if (outcome === "switched" && request.role)
@@ -789,6 +907,8 @@ export class ProjectFactoryService {
     return (async () => {
       const record = await this.requireProject(request.projectId);
       const project = await this.mutateProject(request.projectId, (current) => {
+        if (current.mode === "lean")
+          throw new ProjectFactoryError("Lean Factory records status through its runtime.");
         const role = (current.roles[request.role] ??= emptyRoleState());
         role.status = request.line
           ? { line: request.line, updatedAt: this.now().toISOString() }
@@ -800,18 +920,26 @@ export class ProjectFactoryService {
 
   private sendThread(request: { projectId: string; agentId: string }): Promise<{ queued: true }> {
     return this.serialize(async () => {
-      await this.requireActiveProject(request.projectId);
+      const record = await this.requireActiveProject(request.projectId);
       const project = await this.readProject(request.projectId);
       if (!project?.enabled) throw new ProjectFactoryError("Factory is off for this project.");
       if (project.paused)
         throw new ProjectFactoryError("Factory is paused for this project. Resume it first.");
       const thread = await this.input.agentStorage.get(request.agentId);
       if (!thread) throw new ProjectFactoryError(`Thread ${request.agentId} was not found.`);
-      const triage = project.roles["factory-triage"]?.agentId;
-      if (!triage) throw new ProjectFactoryError("This project's Triage agent is not set up yet.");
+      const intake =
+        project.mode === "lean"
+          ? (await this.openLeanConversation(record, "lead"))?.agentId
+          : project.roles["factory-triage"]?.agentId;
+      if (!intake)
+        throw new ProjectFactoryError(
+          project.mode === "lean"
+            ? "This project's Lean Factory Lead is unavailable."
+            : "This project's Triage agent is not set up yet.",
+        );
       const title = thread.title?.trim() || "Untitled";
       await this.input.agents.sendPrompt(
-        triage,
+        intake,
         `Turn Vorteo thread ${request.agentId} (title: ${title}) into one Factory task issue for ${project.repository}, following your charter.`,
         { steer: true },
       );
@@ -897,6 +1025,10 @@ export class ProjectFactoryService {
     return this.serialize(async () => {
       const record = await this.requireProject(projectId);
       const configured = await this.requireConfiguredProject(projectId);
+      if (configured.mode === "lean")
+        throw new ProjectFactoryError(
+          "Record Lean Factory instructions as owner intent or standing rules.",
+        );
       const charter = this.charterText(record, configured, roleId);
       const project = await this.mutateProject(projectId, (current) => {
         const role = (current.roles[roleId] ??= emptyRoleState());
@@ -1551,7 +1683,7 @@ export class ProjectFactoryService {
   /** Sets membership unless the workspace is a system workspace, which keeps its own. */
   private async bindMembership(
     record: PersistedProjectRecord,
-    role: ProjectFactoryRole,
+    role: Pick<ProjectFactoryRole, "title" | "membershipRole">,
     workspaceId: string,
   ): Promise<string | null> {
     const workspace = await this.input.workspaces.get(workspaceId);
@@ -1842,11 +1974,11 @@ export class ProjectFactoryService {
     return this.timers.has(timerKey(projectId, roleId));
   }
 
-  private describe(
+  private async describe(
     record: PersistedProjectRecord,
     project: ProjectState | undefined,
     unavailable: string | null,
-  ): ProjectFactoryState {
+  ): Promise<ProjectFactoryState> {
     const state = factoryState(project, unavailable);
     return {
       schemaVersion: 1,
@@ -1871,23 +2003,51 @@ export class ProjectFactoryService {
       drain: project?.drain
         ? { id: project.drain.id, reason: project.drain.reason, pausedAt: project.drain.pausedAt }
         : null,
-      roles: (project?.mode === "lean" ? [] : PROJECT_FACTORY_ROLES).map((role) => {
-        const roleState = project?.roles[role.id] ?? emptyRoleState();
+      roles:
+        project?.mode === "lean"
+          ? await this.describeLeanRoles(record.projectId, project.repository)
+          : PROJECT_FACTORY_ROLES.map((role) => {
+              const roleState = project?.roles[role.id] ?? emptyRoleState();
+              return {
+                role: role.id,
+                title: role.title,
+                workspaceId: roleState.workspaceId,
+                agentId: roleState.agentId,
+                heartbeat: project?.enabled ? { cron: role.cron, paused: project.paused } : null,
+                launch: roleState.launch,
+                status: roleState.status,
+                instructions: {
+                  revision: roleState.instructions.revision,
+                  review: roleState.instructions.review.status,
+                },
+              };
+            }),
+    };
+  }
+
+  private describeLeanRoles(
+    projectId: string,
+    repository: string,
+  ): Promise<ProjectFactoryState["roles"]> {
+    return Promise.all(
+      leanRoles.map(async ({ id, kind }) => {
+        const saved = await readLeanConversation(this.input.paseoHome, projectId, repository, kind);
+        const empty = emptyRoleState();
         return {
-          role: role.id,
-          title: role.title,
-          workspaceId: roleState.workspaceId,
-          agentId: roleState.agentId,
-          heartbeat: project?.enabled ? { cron: role.cron, paused: project.paused } : null,
-          launch: roleState.launch,
-          status: roleState.status,
+          role: id,
+          title: leanConversationTitle(kind),
+          workspaceId: saved?.workspaceId ?? null,
+          agentId: saved?.agentId ?? null,
+          heartbeat: null,
+          launch: saved?.launch ?? empty.launch,
+          status: null,
           instructions: {
-            revision: roleState.instructions.revision,
-            review: roleState.instructions.review.status,
+            revision: empty.instructions.revision,
+            review: empty.instructions.review.status,
           },
         };
       }),
-    };
+    );
   }
 
   /** Before the first answer, an enabled project's home is where it was turned on: here. */
@@ -1906,8 +2066,17 @@ export class ProjectFactoryService {
     project: ProjectState,
     roleId: ProjectFactoryRoleId,
   ): ProjectFactoryInstructions {
-    const state = project.roles[roleId]?.instructions ?? emptyRoleState().instructions;
-    const shippedCharter = this.charterText(record, project, roleId);
+    const lean = project.mode === "lean" ? leanRoles.find(({ id }) => id === roleId) : undefined;
+    if (project.mode === "lean" && !lean)
+      throw new ProjectFactoryError("This Factory role belongs to crew mode.");
+    const state =
+      (lean ? null : project.roles[roleId]?.instructions) ?? emptyRoleState().instructions;
+    const shippedCharter = lean
+      ? leanConversationCharter(lean.kind, {
+          name: projectName(record),
+          repository: project.repository,
+        })
+      : this.charterText(record, project, roleId);
     return {
       role: roleId,
       shippedCharter,

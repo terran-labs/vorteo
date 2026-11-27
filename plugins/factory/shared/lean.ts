@@ -60,19 +60,22 @@ const gateRef = z.looseObject({
   heavy: z.boolean().optional(),
 });
 /** A recipe step: a command, or an installation lifecycle request (Vorteo source installs). */
+const releaseLocation = z.enum(["container", "host"]).optional();
 const releaseStep = z.union([
-  z.looseObject({ run: z.string().min(1) }),
+  z.looseObject({ run: z.string().min(1), where: releaseLocation }),
   z.looseObject({ lifecycle: z.literal("host-source-update") }),
 ]);
 
 /**
- * How a project ships. Commands may use the placeholders {version}, {commit}, {artifact},
- * {previousVersion} and {targetVersion}. Commands run only inside a delivery runner's worktree
- * on the `releaseBuild` or `delivery` lane's installation.
+ * The executor passes values in the environment. VORTEO_RELEASE_ variables include VERSION,
+ * COMMIT, ARTIFACT, PREVIOUS_VERSION, TARGET_VERSION, NUMBER, NOTE, APPROVAL and TARGET.
  */
 export const ReleaseRecipeV1Schema = z.looseObject({
   channels: z.looseObject({
-    beta: z.looseObject({ tag: z.string().min(1) }),
+    beta: z.looseObject({
+      tag: z.string().min(1),
+      noticeMinutes: z.number().nonnegative().optional(),
+    }),
     stable: z.looseObject({ tag: z.string().min(1) }),
   }),
   /**
@@ -95,6 +98,7 @@ export const ReleaseRecipeV1Schema = z.looseObject({
     rollback: z.looseObject({
       /** redeploy an earlier build; forward-release a new version with an earlier tree; none. */
       kind: z.enum(["redeploy", "forward-release", "none"]),
+      where: releaseLocation,
       run: z.string().min(1).optional(),
     }),
     /** Absent: the delivery runner drafts notes from the merged pull requests. */
@@ -127,6 +131,8 @@ export type ReleaseRecipeV1 = z.infer<typeof ReleaseRecipeV1Schema>;
  * live here.
  */
 export const FactoryConfigV1Schema = z.looseObject({
+  builder: z.looseObject({ provider: z.string().min(1).optional() }).optional(),
+  shadow: z.enum(["dry-run", "review-rehearsal"]).optional(),
   /** The primary records each configured command's exit status at the exact issue head. */
   issueGates: z
     .array(
@@ -330,6 +336,20 @@ export const FactoryLeanStatusSchema = z.object({
 export type FactoryLeanStatus = z.infer<typeof FactoryLeanStatusSchema>;
 
 export const FactoryLeanViewSchema = z.object({
+  pendingBeta: z
+    .object({ eventId: z.string(), version: z.string(), shipsAt: iso, held: z.boolean() })
+    .nullable()
+    .optional(),
+  delivery: z
+    .object({
+      state: z.string(),
+      jobId: z.string(),
+      kind: z.string(),
+      version: z.string().nullable(),
+      approvalUrl: z.string().nullable(),
+    })
+    .nullable()
+    .optional(),
   production: FactoryReleaseEventSchema.nullable(),
   betas: z.array(FactoryReleaseEventSchema),
   earlier: z.array(FactoryReleaseEventSchema),
@@ -346,7 +366,20 @@ export const FactoryLeanViewSchema = z.object({
   ),
   health: z.object({
     alerts: z.array(z.string()),
-    deliveryLock: z.object({ holder: z.string(), batch: z.string(), expiresAt: iso }).nullable(),
+    deliveryLock: z
+      .object({
+        holder: z.string(),
+        holderInfo: z
+          .object({
+            kind: z.enum(["executor", "runner"]),
+            agentId: z.string().optional(),
+            installationId: z.string().optional(),
+          })
+          .optional(),
+        batch: z.string(),
+        expiresAt: iso,
+      })
+      .nullable(),
   }),
   recipe: z.object({ valid: z.boolean(), error: z.string().nullable() }),
 });
@@ -531,6 +564,18 @@ export const factoryLeanDeliveryReport = defineRpc({
   output: z.object({ accepted: z.boolean(), reason: z.string().nullable() }),
 });
 
+const pendingBetaInput = z.strictObject({ projectId, eventId: z.string().min(1) });
+const pendingBetaOutput = z.union([z.object({ held: z.boolean() }), refusal]);
+export const factoryLeanReleasesHold = defineRpc({
+  name: "factory.lean.releases.hold",
+  input: pendingBetaInput,
+  output: pendingBetaOutput,
+});
+export const factoryLeanReleasesRelease = defineRpc({
+  name: "factory.lean.releases.release",
+  input: pendingBetaInput,
+  output: pendingBetaOutput,
+});
 export const factoryLeanReleasesList = defineRpc({
   name: "factory.lean.releases.list",
   input: projectInput,
@@ -633,6 +678,8 @@ export const FACTORY_LEAN_RPCS = [
   factoryLeanRulesRemove,
   factoryLeanDeliveryReport,
   factoryLeanReleasesList,
+  factoryLeanReleasesHold,
+  factoryLeanReleasesRelease,
   factoryLeanReleasesPromote,
   factoryLeanReleasesRollback,
   factoryLeanReleasesPreauthorize,
@@ -644,6 +691,8 @@ export const FACTORY_LEAN_RPCS = [
 
 /** Writes only the owner's app may make; the daemon refuses and logs them from other clients. */
 export const FACTORY_LEAN_OWNER_ONLY = [
+  factoryLeanReleasesHold.name,
+  factoryLeanReleasesRelease.name,
   factoryLeanRulesRemove.name,
   factoryLeanReleasesPromote.name,
   factoryLeanReleasesRollback.name,

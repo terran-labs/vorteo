@@ -2917,7 +2917,7 @@ Sidebar integration review: shared state is integrated with the published Nova b
 
 ## Incomplete integrations
 
-- The lean Factory dispatcher and merge gate run against a simulated repository. On a private GitHub issue, a development daemon opened a Builder, read its plan and delivered the go to the same Builder after restart. Live review, acceptance and merge still require verification.
+- A development daemon took a private GitHub issue from its ready label to a pinned merge using separate Builder, Reviewer and Lead sessions on one Codex account. The hosted check passed and GitHub confirmed the reviewed head and merge commit. The Builder needed manual permissions to commit, push and open the pull request.
 
 - **Linux Host adapters.** Inert source reads systemd user services through the pinned user manager and observes process identity through procfs. Linux Host provisioning, protocol support, launcher units, restarts, peer authentication, watchdog signal binding and recovery remain unimplemented. See the [Linux Host hardening](https://github.com/terran-labs/vorteo/issues/40).
 

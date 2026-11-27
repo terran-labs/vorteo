@@ -1,4 +1,5 @@
 import { ClaudeOAuthRecoveryRequestSchema } from "./accounts/claude-oauth-recovery.js";
+import { forwardLeanOwnerAction, leanOwnerSocketPath } from "../factory/lean/owner-ingress.js";
 import { InstallationManagement } from "./management.js";
 import {
   BrokerDeploymentRefused,
@@ -2664,6 +2665,30 @@ export function createInstallationServer(
   app.post("/api/installation/owner/profiles/query", (_req, res) => res.json(profiles.status()));
   app.post("/api/installation/owner/settings/read", (req, res) => {
     res.json(ownerSettingsSnapshot(settings.snapshot(), ownerSettingsClient(req)));
+  });
+  app.post("/api/installation/owner/factory/lean", (req, res, next) => {
+    // The common owner middleware also accepts the installation password. This route
+    // forwards only a current owner session so the Host can verify it independently.
+    const ownerSession = sessionToken(req);
+    const localOwnerOrigin = sessionOrigin(req);
+    if (!ownerSession || !sessions.expiresAt(ownerSession, localOwnerOrigin)) {
+      res.status(401).json({ error: "Unlock the installation owner session first." });
+      return;
+    }
+    const host = config.public.environments.find(({ kind }) => kind === "host");
+    const home = config.host.startupValidation?.home;
+    if (!host || !home) {
+      res.status(503).json({ error: "The managed Host owner transport is unavailable." });
+      return;
+    }
+    void forwardLeanOwnerAction({
+      socketPath: leanOwnerSocketPath(home),
+      ownerSession,
+      localOrigin: localOwnerOrigin,
+      installationId: config.public.installationId,
+      serverId: host.serverId,
+      action: req.body,
+    }).then((result) => res.status(result.status).json(result.body), next);
   });
   app.post("/api/installation/owner/settings/plugins/resolve", (req, res, next) => {
     const input = PluginSourceResolutionInputSchema.parse(req.body);

@@ -119,7 +119,8 @@ it("claims a labeled issue and requests a pinned merge after local review and ac
             branch: facts.leases[0].branch,
             sameRepo: true,
             files: ["a"],
-            checks: "passing",
+            checks: "pending",
+            reviewEligible: true,
             mergeable: true,
             trustedThreadsOpen: 0,
             labels: [],
@@ -170,7 +171,11 @@ it("claims a labeled issue and requests a pinned merge after local review and ac
         facts.issues = [];
       },
     });
-    for (let cycle = 0; cycle < 8; cycle++) await service.reconcile();
+    for (let cycle = 0; cycle < 5; cycle++) await service.reconcile();
+    expect(actions).toEqual(["claim", "lead", "send-go", "reviewer"]);
+    expect(merged).toEqual([]);
+    facts.pulls[0].checks = "passing";
+    for (let cycle = 0; cycle < 3; cycle++) await service.reconcile();
     expect(actions).toEqual(["claim", "lead", "send-go", "reviewer", "foreman-op"]);
     expect(merged).toEqual(["reviewed"]);
   } finally {
