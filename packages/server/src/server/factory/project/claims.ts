@@ -10,6 +10,7 @@ import {
 } from "@getpaseo/server/factory-project";
 
 import type { AssignmentState, ClaimState, ForeignClaimState } from "./state.js";
+import type { TrustedAccounts } from "./trust.js";
 
 /**
  * Several Vorteo installations can run Factory against one repository. GitHub decides which
@@ -191,6 +192,8 @@ export interface ClaimContext {
   now: Date;
   /** The owner chose this installation in a conflict. */
   keep?: boolean;
+  /** Only markers in comments by these accounts count; anyone can comment on a public issue. */
+  trusted: TrustedAccounts;
   /** Reads this installation's claim for the issue. */
   read: () => Promise<ClaimState | undefined>;
   /** Writes (or, with undefined, removes) this installation's claim for the issue. */
@@ -383,7 +386,7 @@ async function foreignMarkers(
   branch: string,
   overruled: readonly string[] = [],
 ): Promise<string[]> {
-  const texts = await activityTexts(ctx.github, ctx.repository, ctx.issue, branch);
+  const texts = await activityTexts(ctx.github, ctx.repository, ctx.issue, branch, ctx.trusted);
   return texts
     .flatMap((item) => markerInstallations(item.body, branch))
     .filter(
@@ -391,7 +394,13 @@ async function foreignMarkers(
     );
 }
 
-const commentSchema = z.array(z.object({ body: z.string().nullable(), updated_at: z.string() }));
+const commentSchema = z.array(
+  z.object({
+    body: z.string().nullable(),
+    updated_at: z.string(),
+    user: z.object({ login: z.string() }).nullable().optional(),
+  }),
+);
 const pullSchema = z.array(z.object({ body: z.string().nullable(), updated_at: z.string() }));
 
 async function activityTexts(
@@ -399,6 +408,7 @@ async function activityTexts(
   repository: string,
   issue: number,
   branch: string,
+  trusted: TrustedAccounts,
 ): Promise<{ body: string; updatedAt: string }[]> {
   const owner = repository.split("/")[0];
   const [comments, pulls] = await Promise.all([
@@ -408,8 +418,12 @@ async function activityTexts(
       `repos/${repository}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}`,
     ),
   ]);
+  // The `owner:branch` head filter already leaves out pull requests from forks.
+  const trustedComments = [];
+  for (const comment of commentSchema.parse(expect(comments, [200], `comments on #${issue}`)))
+    if (await trusted(comment.user?.login)) trustedComments.push(comment);
   return [
-    ...commentSchema.parse(expect(comments, [200], `comments on #${issue}`)),
+    ...trustedComments,
     ...pullSchema.parse(expect(pulls, [200], `pull requests from ${branch}`)),
   ].map((item) => ({ body: item.body ?? "", updatedAt: item.updated_at }));
 }
@@ -441,6 +455,7 @@ export async function scanForeignClaims(input: {
   github: FactoryGitHub;
   repository: string;
   installation: string;
+  trusted: TrustedAccounts;
   own: Record<string, ClaimState>;
   previous: Record<string, ForeignClaimState>;
   now: Date;
@@ -467,7 +482,7 @@ export async function scanForeignClaims(input: {
     if (record.notifiedAt) continue;
     const conflict = own?.status === "conflict";
     if (!conflict && input.now.getTime() - Date.parse(record.seenAt) <= STALE_CLAIM_MS) continue;
-    const texts = await activityTexts(input.github, input.repository, issue, branch);
+    const texts = await activityTexts(input.github, input.repository, issue, branch, input.trusted);
     const commit = z
       .object({ committer: z.object({ date: z.string() }) })
       .safeParse(

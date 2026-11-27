@@ -110,7 +110,18 @@ import {
   type IssueAgentHosts,
 } from "./issue-agent-host.js";
 import { queueDeadline, readIssueQueue, type DevQueueAgents } from "./queue.js";
-import { FACTORY_FOREMAN_UNADOPTED_CODE, FactoryRefusal } from "./owner-writes.js";
+import {
+  FACTORY_FOREMAN_UNADOPTED_CODE,
+  FACTORY_ISSUE_UNTRUSTED_CODE,
+  FactoryRefusal,
+} from "./owner-writes.js";
+import {
+  FactoryTrustError,
+  issueBrief,
+  issueTrust,
+  readIssueFacts,
+  readTrustedAccounts,
+} from "./trust.js";
 import {
   FACTORY_HOME_LABELS,
   type FactoryHomeAnswer,
@@ -352,6 +363,7 @@ export class ProjectFactoryService {
             ),
           ),
           gh: this.input.gh ?? defaultGhRunner,
+          trusted: () => readTrustedAccounts(this.github(), project.repository),
           agents: () => this.input.agentStorage.list(),
           workspaceIds,
           devAgents: async () => {
@@ -1081,6 +1093,7 @@ export class ProjectFactoryService {
         github: this.github(),
         repository: project.repository,
         installation: this.installation(record.projectId),
+        trusted: await readTrustedAccounts(this.github(), project.repository),
         own: project.claims ?? {},
         previous: project.foreignClaims ?? {},
         now: this.now(),
@@ -1105,10 +1118,28 @@ export class ProjectFactoryService {
       const project = await this.requireConfiguredProject(request.projectId);
       if (!project.enabled)
         throw new ProjectFactoryError("Turn on Factory for this project first.");
-      return claimIssue({
+      // Intake trust comes first, so an issue nobody trusted approved never gets a branch, and
+      // every later step on it stops as soon as an outside edit lands. Unreadable fails closed.
+      const github = this.github();
+      let trusted, facts;
+      try {
+        trusted = await readTrustedAccounts(github, project.repository);
+        facts = await readIssueFacts(github, project.repository, request.issue);
+      } catch (error) {
+        if (!(error instanceof FactoryTrustError)) throw error;
+        throw new FactoryRefusal(
+          `Factory could not verify who approved issue #${request.issue}, so it is not admitted. ${error.message}`,
+          FACTORY_ISSUE_UNTRUSTED_CODE,
+        );
+      }
+      const verdict = await issueTrust(facts, trusted);
+      if (!verdict.trusted) throw new FactoryRefusal(verdict.reason, FACTORY_ISSUE_UNTRUSTED_CODE);
+      const claim = await claimIssue({
         ...this.claimContext(request.projectId, project.repository, request.issue),
+        trusted,
         keep: request.keep,
       });
+      return claim.marker ? { ...claim, brief: await issueBrief(facts, trusted) } : claim;
     });
   }
 
@@ -1131,6 +1162,7 @@ export class ProjectFactoryService {
     const branch = projectFactoryClaimBranch(issue);
     const released = await releaseClaim({
       ...this.claimContext(projectId, project.repository, issue),
+      trusted: await readTrustedAccounts(this.github(), project.repository),
       foreign: project.foreignClaims?.[branch],
     });
     await this.mutateProject(projectId, (next) => {
