@@ -7979,7 +7979,7 @@ export class AgentManager {
   ): Promise<ManagedAgent> {
     let registered = false;
     try {
-      if (!this.acceptingAgentRegistrations) throw new AgentManagerShuttingDownError();
+      this.assertRegistrationCanFinish();
       const resolvedAgentId = validateAgentId(agentId, "registerSession");
       if (this.agents.has(resolvedAgentId)) {
         throw new Error(`Agent with id ${resolvedAgentId} already exists`);
@@ -8016,10 +8016,12 @@ export class AgentManager {
         }
       }
 
-      if (!this.acceptingAgentRegistrations) throw new AgentManagerShuttingDownError();
+      this.assertRegistrationCanFinish();
       this.restoreLatestQuotaReserve(resolvedAgentId, managed.config);
-      await this.persistWorkerGovernance(managed, initialPersistedTitle, options);
-      this.assertAcceptingAgentRegistrations();
+      if (options?.workerGovernance) {
+        await this.persistWorkerGovernance(managed, initialPersistedTitle, options);
+        this.assertRegistrationCanFinish();
+      }
       this.agents.set(resolvedAgentId, managed);
       registered = true;
       void this.deliverPendingAnswers(resolvedAgentId).catch((error: unknown) => {
@@ -8095,6 +8097,11 @@ export class AgentManager {
       this.restartHoldWaiters.add(done);
       signal?.addEventListener("abort", done, { once: true });
     });
+  }
+
+  /** A restart drains registrations already in progress. Shutdown rejects them. */
+  private assertRegistrationCanFinish(): void {
+    if (!this.acceptingAgentRegistrations) throw new AgentManagerShuttingDownError();
   }
 
   private assertAcceptingAgentRegistrations(): void {
