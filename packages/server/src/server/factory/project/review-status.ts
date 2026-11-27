@@ -22,7 +22,10 @@ export interface ReviewAgent {
   agentId: string;
   issue: number;
   role: ReviewRole;
-  /** factory.account, when picked. */
+  /**
+   * The account the agent runs on, or null when unknown, as for an agent on the configured
+   * default. The live step must take it from the agent's launch config, not its labels.
+   */
   account: string | null;
 }
 
@@ -68,7 +71,8 @@ export function parseReviewReply(text: string): { approved: boolean; sha: string
 
 /**
  * Success only for an approval of this exact head from this issue's reviewer, who is neither
- * its lead nor its worker and shares no account with them. A new push needs a new review.
+ * its lead nor its worker and runs on a known account none of them uses. A new push needs a
+ * new review. Provider independence is not checked.
  */
 export function decideReviewStatus(input: ReviewStatusInput): ReviewStatusDecision {
   if (!SHA.test(input.headSha)) throw new Error(`Not a full commit SHA: ${input.headSha}`);
@@ -87,11 +91,14 @@ export function decideReviewStatus(input: ReviewStatusInput): ReviewStatusDecisi
     (agent) => agent.issue === input.issue && agent.role !== "reviewer",
   );
   // Agent ids are unique, so a reviewer is never the lead or worker thread itself; a shared
-  // account would still make it the same identity.
-  const shared = authors.some(
-    (agent) => agent.account !== null && agent.account === reviewer.account,
-  );
-  if (shared)
+  // account would still make it the same identity. An unknown account on either side, such as
+  // two agents on the configured default, cannot be shown to differ, so it is not independent.
+  if (reviewer.account === null || authors.some((agent) => agent.account === null))
+    return decision(
+      "failure",
+      `The reviewer's or an author's account is unknown, so independence is unproven.`,
+    );
+  if (authors.some((agent) => agent.account === reviewer.account))
     return decision("failure", `The reviewer shares an account with the issue's lead or worker.`);
   const verdict = parseReviewReply(input.reply.text);
   if (!verdict) return decision("pending", `The reviewer's reply has no verdict for ${head}.`);

@@ -19,6 +19,11 @@ const agents: ReviewAgent[] = [
   { agentId: "same-account", issue: 7, role: "reviewer", account: "codex-2" },
   { agentId: "other-issue", issue: 8, role: "reviewer", account: "claude-1" },
 ];
+// Every agent on the configured default: no account is known on either side.
+const defaults: ReviewAgent[] = [
+  { agentId: "worker", issue: 7, role: "worker", account: null },
+  { agentId: "reviewer", issue: 7, role: "reviewer", account: null },
+];
 const KEY = "-----BEGIN RSA PRIVATE KEY-----\nc3ludGhldGlj\n-----END RSA PRIVATE KEY-----";
 const credentials: ReviewStatusCredentials = {
   appId: DRY_RUN_APP,
@@ -52,9 +57,16 @@ describe("factory-review status decision", () => {
       state: "pending",
     },
     { name: "no reply yet", from: null, text: "", state: "pending" },
-  ])("$name: $state", ({ from, text, state }) => {
+    {
+      name: "worker and reviewer both on the default account",
+      from: "reviewer",
+      text: `APPROVE ${HEAD}`,
+      state: "failure",
+      team: defaults,
+    },
+  ])("$name: $state", ({ from, text, state, team }) => {
     const reply = from ? { agentId: from, text } : null;
-    const decision = decideReviewStatus({ issue: 7, headSha: HEAD, agents, reply });
+    const decision = decideReviewStatus({ issue: 7, headSha: HEAD, agents: team ?? agents, reply });
     expect(decision).toMatchObject({ context: "factory-review", sha: HEAD, state });
     expect(decision.description.length).toBeLessThanOrEqual(140);
   });
