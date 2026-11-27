@@ -7,13 +7,14 @@ import type { Query } from "@anthropic-ai/claude-agent-sdk";
 import { ClaudeAgentClient } from "./agent/providers/claude/agent.js";
 import http from "node:http";
 import path from "node:path";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import pino from "pino";
 import { afterEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import { WebSocket } from "ws";
 
 import { createPaseoDaemon, parseListenString, type PaseoDaemonConfig } from "./bootstrap.js";
 import { loadConfig } from "./config.js";
+import { readDashboardHistory } from "./dashboard-history.js";
 import {
   FileBackedProjectRegistry,
   FileBackedWorkspaceRegistry,
@@ -90,6 +91,93 @@ describe("paseo daemon bootstrap", () => {
       expect(typeof payload.timestamp).toBe("string");
     } finally {
       await daemonHandle.close();
+    }
+  });
+
+  test("collects local dashboard metrics before a client connects with an external source offline", async () => {
+    const paseoHomeRoot = await mkdtemp(path.join(os.tmpdir(), "paseo-dashboard-offline-"));
+    onTestFinished(() => rm(paseoHomeRoot, { recursive: true, force: true }));
+    const dashboardDir = path.join(paseoHomeRoot, ".paseo", "dashboard");
+    await mkdir(dashboardDir, { recursive: true });
+    await writeFile(
+      path.join(dashboardDir, "sources.json"),
+      JSON.stringify({
+        newsletter: { listId: 1, apiKeyFile: path.join(dashboardDir, "missing-key") },
+      }),
+    );
+    const handle = await createTestPaseoDaemon({ paseoHomeRoot });
+    const client = new DaemonClient({ url: `ws://127.0.0.1:${handle.port}/ws` });
+    try {
+      await vi.waitFor(async () => {
+        expect(await readDashboardHistory(handle.paseoHome)).toHaveLength(1);
+      });
+      await client.connect();
+      const report = await client.getDashboardMetrics();
+      expect(report.error).toBeNull();
+      expect(report.samples).toHaveLength(1);
+      expect(report.samples[0]?.values.workspaces).toEqual(expect.any(Number));
+      expect(report.samples[0]?.values).not.toHaveProperty("newsletterEligible");
+      expect(report.samples[0]?.unavailable).toContain(
+        "Newsletter unavailable at this observation.",
+      );
+    } finally {
+      await client.close();
+      await handle.close();
+    }
+  });
+
+  test("cancels an active dashboard sample at shutdown entry without writing history", async () => {
+    const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-dashboard-shutdown-"));
+    onTestFinished(() => rm(paseoHome, { recursive: true, force: true }));
+    const dashboardDir = path.join(paseoHome, "dashboard");
+    await mkdir(dashboardDir);
+
+    let reportStarted!: (signal: AbortSignal) => void;
+    const sourceStarted = new Promise<AbortSignal>((resolve) => {
+      reportStarted = resolve;
+    });
+    let sourceFinished = false;
+    const config: PaseoDaemonConfig = {
+      listen: "127.0.0.1:0",
+      paseoHome,
+      corsAllowedOrigins: [],
+      staticDir: path.join(paseoHome, "static"),
+      mcpDebug: false,
+      mcpEnabled: false,
+      pluginsEnabled: false,
+      systemProjectEnabled: false,
+      agentClients: createTestAgentClients(),
+      agentStoragePath: path.join(paseoHome, "agents"),
+      relayEnabled: false,
+    };
+    const daemon = await createPaseoDaemon(config, pino({ level: "silent" }), {
+      async collectDashboardSources(_home, _now, values, signal) {
+        const aborted = once(signal, "abort");
+        reportStarted(signal);
+        await aborted;
+        values.projects = 42;
+        sourceFinished = true;
+        return [];
+      },
+    });
+    let stopping: Promise<void> | undefined;
+    try {
+      await daemon.start();
+      const signal = await sourceStarted;
+      expect(signal.aborted).toBe(false);
+      expect(await readdir(dashboardDir)).toEqual([]);
+      let cancelledAtFirstStep: boolean | undefined;
+      stopping = daemon.stop({
+        onStep() {
+          cancelledAtFirstStep ??= signal.aborted;
+        },
+      });
+      await stopping;
+      expect(cancelledAtFirstStep).toBe(true);
+      expect(sourceFinished).toBe(true);
+      expect(await readdir(dashboardDir)).toEqual([]);
+    } finally {
+      await (stopping ?? daemon.stop());
     }
   });
 

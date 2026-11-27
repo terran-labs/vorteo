@@ -28,7 +28,11 @@ import type { AgentMetadata, AgentSessionConfig } from "../agent/agent-sdk-types
 import { stripInternalPaseoMcpServer } from "../agent/runtime-mcp-config.js";
 import { StaleProviderSessionError } from "../agent/stale-provider-session-error.js";
 import type { AppliedSeqStore } from "./applied-store.js";
-import type { HostedSession, HostedSessionDetachReason } from "./client.js";
+import {
+  serializeSessionHostFrame,
+  type HostedSession,
+  type HostedSessionDetachReason,
+} from "./client.js";
 import { DroppedEventSchema } from "./protocol.js";
 import {
   HostedPortEventSchema,
@@ -185,6 +189,14 @@ interface HeldEntry {
 /** Plain JSON for a call argument; the host validates its shape. */
 function asJson<T>(value: unknown): T {
   return (value === undefined ? null : JSON.parse(JSON.stringify(value))) as T;
+}
+
+function startTurnCall(prompt: AgentPromptInput, options?: AgentRunOptions): CallOf<"startTurn"> {
+  return {
+    method: "startTurn",
+    prompt: asJson<CallOf<"startTurn">["prompt"]>(prompt),
+    ...(options ? { options: asJson<CallOf<"startTurn">["options"]>(options) } : {}),
+  };
 }
 
 /** Saved history carries rows, not lifecycle: the snapshot restores turn and permission state. */
@@ -499,12 +511,20 @@ export class HostedAgentSession implements AgentSession {
     prompt: AgentPromptInput,
     options?: AgentRunOptions,
   ): Promise<{ turnId: string }> {
-    const call: CallOf<"startTurn"> = {
-      method: "startTurn",
-      prompt: asJson<CallOf<"startTurn">["prompt"]>(prompt),
-      ...(options ? { options: asJson<CallOf<"startTurn">["options"]>(options) } : {}),
-    };
-    return this.invoke(call);
+    return this.invoke(startTurnCall(prompt, options));
+  }
+
+  /**
+   * Measures the turn call this prompt would send, so the manager can refuse it before it
+   * replaces or steers a running turn. The client refuses the actual frame as well.
+   */
+  assertPromptFits(prompt: AgentPromptInput, options?: AgentRunOptions): void {
+    serializeSessionHostFrame({
+      type: "call",
+      requestId: randomUUID(),
+      sessionId: this.channel.sessionId,
+      call: startTurnCall(prompt, options),
+    });
   }
 
   async steerActiveTurn(

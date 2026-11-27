@@ -3737,7 +3737,6 @@ function ProjectModeListContent({
   const content = (
     <>
       {listTopComponent}
-      {/* The main sidebar only; a single project's rail flyout has no global section. */}
       <AllFactoriesSection
         mainSidebar={rootFolders}
         focused={focus !== null}

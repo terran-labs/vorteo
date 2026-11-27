@@ -4277,6 +4277,7 @@ describe("Codex app-server provider", () => {
     );
     // 200K uncached at $2, 800K cached at $0.10 and 100K output at $10 per million.
     expect(usage?.estimatedCostUsd).toBeCloseTo(0.4 + 0.08 + 1, 10);
+    expect(usage?.sessionTokens).toBe(1_100_000);
     expect(usage?.totalCostUsd).toBeUndefined();
   });
 

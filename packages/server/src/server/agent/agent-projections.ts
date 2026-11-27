@@ -633,6 +633,7 @@ function sanitizeUsage(value: unknown): AgentUsage | undefined {
   }
   const result: AgentUsage = {};
   const fields: UsageNumericField[] = [
+    "sessionTokens",
     "inputTokens",
     "cachedInputTokens",
     "outputTokens",

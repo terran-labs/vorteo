@@ -145,6 +145,19 @@ function assertUnclipped(card: HTMLElement, width: number) {
   }
 }
 
+/** Opens Host's In progress section when `open`; returns a reader for its content (#656). */
+async function openInProgressIf(container: HTMLElement, open: boolean) {
+  const content = () =>
+    container.querySelector<HTMLElement>('[data-testid="system-in-progress-host-content"]');
+  if (open && !content())
+    await act(async () => {
+      container
+        .querySelector<HTMLElement>('[data-testid="system-in-progress-host-toggle"]')!
+        .click();
+    });
+  return content;
+}
+
 test("production monitor review preserves exact evidence and manual gates at 390px", async () => {
   vi.stubGlobal("React", React);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -194,6 +207,10 @@ test("production monitor review preserves exact evidence and manual gates at 390
       ] as const) {
         current = { ...reviewJob, status, stage };
         await act(() => model.refresh());
+        // Approved and running requests no longer wait on the owner: they fold into In
+        // progress (#656), which is opened only for them. Pending and recovery stay open.
+        const folded = status === "approved" || status === "running";
+        const progressContent = await openInProgressIf(container, folded);
         const details = page.getByRole("button", {
           name: "Details",
           exact: true,
@@ -206,6 +223,8 @@ test("production monitor review preserves exact evidence and manual gates at 390
         const card = container.querySelector<HTMLElement>(
           `[data-testid="monitor-request-${current.id}"]`,
         )!;
+        // The card is inside In progress exactly when the request no longer waits on the owner.
+        expect(Boolean(progressContent()?.contains(card))).toBe(folded);
         expect(card.checkVisibility()).toBe(true);
         await expect.element(page.getByText(current.reason, { exact: true })).toBeVisible();
         for (const value of [
