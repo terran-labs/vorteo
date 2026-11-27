@@ -2,6 +2,7 @@ import type { MutableDaemonConfig, ProviderUsage } from "@getpaseo/protocol/mess
 import { describe, expect, it } from "vitest";
 import {
   pickWorkerAccount,
+  type WorkerAccountCandidate,
   type WorkerAccountInput,
   type WorkerAccountPick,
 } from "./worker-account.js";
@@ -34,43 +35,170 @@ interface Case {
   readings: ProviderUsage[];
   settings?: MutableDaemonConfig;
   avoidProvider?: string;
-  usageLimitedUntilByProvider?: WorkerAccountInput["usageLimitedUntilByProvider"];
-  result: WorkerAccountPick;
+  options?: Partial<WorkerAccountInput>;
+  evidence?: Partial<WorkerAccountCandidate>[];
+  result: Omit<WorkerAccountPick, "candidates"> & { droppedLowProviders?: string[] };
 }
 
 const cases: Case[] = [
   {
-    title: "excludes a positively measured account when an alias has an active usage hold",
+    title: "parks a positively measured account while an installation alias is held",
     readings: [reading("codex", [[95]]), reading("backup", [[55]])],
-    settings: {
-      providers: {
-        codex: { env: { CODEX_HOME: "/tmp/worker-hold-account" } },
-        alias: { extends: "codex" },
-        backup: { extends: "codex", env: { CODEX_HOME: "/tmp/worker-hold-backup" } },
-      },
-    },
-    usageLimitedUntilByProvider: { alias: soon },
-    result: { provider: "backup", reason: "known-headroom", earliestResetAt: null },
-  },
-  {
-    title: "reports the earliest account release when holds and quota windows both block placement",
-    readings: [reading("codex", [[90], [10, nextDay]]), reading("backup", [[90]])],
     settings: {
       providers: { backup: { extends: "codex", env: { CODEX_HOME: "/tmp/worker-hold-backup" } } },
     },
-    usageLimitedUntilByProvider: { codex: soon, backup: later },
-    result: { provider: null, reason: "quota-below-floor", earliestResetAt: later },
+    options: {
+      installationDefinitionByProvider: { codex: "held-definition", alias: "held-definition" },
+      usageLimitedUntilByProvider: { alias: soon },
+    },
+    result: { provider: "backup", reason: "known-headroom", earliestResetAt: null },
+    evidence: [
+      { provider: "backup", eligibility: "eligible" },
+      {
+        provider: "codex",
+        eligibility: "known-low",
+        exclusionReason: "usage-limit-hold",
+        remainingPct: 95,
+        earliestResetAt: soon,
+      },
+      { provider: "alias", eligibility: "ineligible", exclusionReason: "not-ready" },
+    ],
   },
   {
-    title: "allows placement after a usage hold expires",
+    title: "allows a measured account after its hold expires",
     readings: [reading("codex", [[95]])],
-    usageLimitedUntilByProvider: { codex: now },
+    options: { usageLimitedUntilByProvider: { codex: now } },
     result: { provider: "codex", reason: "known-headroom", earliestResetAt: null },
+  },
+  {
+    title: "keeps disabled and unreported destination bindings in the evidence",
+    readings: [],
+    options: {
+      ready: [{ provider: "codex", enabled: false, status: "ready" }],
+      installationDefinitionByProvider: {
+        codex: "default-definition",
+        missing: "missing-definition",
+      },
+    },
+    result: { provider: null, reason: "no-eligible-account", earliestResetAt: null },
+    evidence: [
+      { provider: "codex", eligibility: "ineligible", exclusionReason: "disabled" },
+      {
+        provider: "missing",
+        eligibility: "ineligible",
+        exclusionReason: "not-ready",
+        installationDefinitionId: "missing-definition",
+      },
+    ],
   },
   {
     title: "picks the strongest worst window",
     readings: [reading("codex", [[95], [30]]), reading("backup", [[60], [55]])],
     result: { provider: "backup", reason: "known-headroom", earliestResetAt: null },
+    evidence: [
+      {
+        provider: "backup",
+        installationDefinitionId: null,
+        eligibility: "eligible",
+        capacity: null,
+        floorPct: 25,
+        reservedHeadroomPct: 0,
+        remainingPct: 55,
+        readingAgeMs: 0,
+        windows: [
+          { id: "0", remainingPct: 60, resetsAt: null },
+          { id: "1", remainingPct: 55, resetsAt: null },
+        ],
+      },
+      { provider: "codex", remainingPct: 30 },
+    ],
+  },
+  {
+    title: "parks a measured-only request when usage is unreadable",
+    readings: [],
+    options: { requireMeasured: true },
+    result: { provider: null, reason: "measurement-required", earliestResetAt: null },
+    evidence: [
+      { provider: "codex", eligibility: "unreadable", exclusionReason: "measurement-required" },
+      { provider: "backup", eligibility: "unreadable", exclusionReason: "measurement-required" },
+    ],
+  },
+  {
+    title: "requires headroom strictly above the floor and reservation",
+    readings: [reading("codex", [[35, soon]]), reading("backup", [[36]])],
+    options: { requireMeasured: true, reservedHeadroomPct: 10 },
+    result: { provider: "backup", reason: "known-headroom", earliestResetAt: null },
+    evidence: [
+      { provider: "backup", eligibility: "eligible", reservedHeadroomPct: 10 },
+      {
+        provider: "codex",
+        eligibility: "known-low",
+        floorPct: 25,
+        reservedHeadroomPct: 10,
+        earliestResetAt: soon,
+      },
+    ],
+  },
+  {
+    title: "parks when the cap is reached and fails closed on an invalid count",
+    readings: [reading("codex", [[95]]), reading("backup", [[99]])],
+    options: {
+      capacityByProvider: { codex: { cap: 1, current: 1 }, backup: { cap: 2, current: -1 } },
+    },
+    result: { provider: null, reason: "no-capacity", earliestResetAt: null },
+    evidence: [
+      {
+        provider: "codex",
+        eligibility: "ineligible",
+        exclusionReason: "capacity-reached",
+        capacity: { cap: 1, current: 1 },
+      },
+      {
+        provider: "backup",
+        eligibility: "ineligible",
+        exclusionReason: "invalid-capacity",
+        capacity: null,
+      },
+    ],
+  },
+  {
+    title: "fails closed on a nonfinite reservation",
+    readings: [reading("codex", [[95]])],
+    options: { reservedHeadroomPct: NaN },
+    result: { provider: null, reason: "invalid-reservation", earliestResetAt: null },
+    evidence: [
+      { provider: "codex", exclusionReason: "invalid-reservation", reservedHeadroomPct: null },
+      { provider: "backup", exclusionReason: "invalid-reservation", reservedHeadroomPct: null },
+    ],
+  },
+  {
+    title: "prefers a different measured reviewer account over the builder and its aliases",
+    readings: [reading("codex", [[95]]), reading("alias", [[98]]), reading("backup", [[60]])],
+    settings: {
+      providers: {
+        alias: { extends: "codex" },
+        backup: { extends: "codex", env: { CODEX_HOME: "/tmp/distinct-reviewer-account" } },
+      },
+    },
+    options: {
+      deprioritizeProviders: ["codex"],
+      installationDefinitionByProvider: {
+        codex: "builder-definition",
+        alias: "builder-definition",
+      },
+    },
+    result: { provider: "backup", reason: "known-headroom", earliestResetAt: null },
+    evidence: [
+      { provider: "backup", installationDefinitionId: null },
+      { provider: "alias", installationDefinitionId: "builder-definition", accountRef: "alias" },
+      { provider: "codex", installationDefinitionId: "builder-definition" },
+    ],
+  },
+  {
+    title: "keeps the builder eligible when it is the only measured account",
+    readings: [reading("codex", [[60]])],
+    options: { deprioritizeProviders: ["codex"] },
+    result: { provider: "codex", reason: "known-headroom", earliestResetAt: null },
   },
   {
     title: "uses the preset default on an equal score above the floor",
@@ -160,29 +288,32 @@ const cases: Case[] = [
 describe("quota-picked worker account", () => {
   it.each(cases)(
     "$title",
-    async ({ readings, settings, avoidProvider, usageLimitedUntilByProvider, result }) => {
+    async ({ readings, settings, avoidProvider, options, evidence, result }) => {
       const providers = {
         backup: { extends: "codex" },
         ...settings?.providers,
       };
-      const ready = [...Object.keys(providers), "codex"].map((provider) => ({
+      const ready = [...new Set([...Object.keys(providers), "codex"])].map((provider) => ({
         provider,
         enabled: true,
         status: "ready" as const,
       }));
-      expect(
-        await pickWorkerAccount({
-          settings: { ...settings, providers },
-          ready,
-          usage: { fetchedAt: now, providers: readings },
-          providerType: "codex",
-          defaultProvider: "codex",
-          priority: "normal",
-          nowMs: Date.parse(now),
-          avoidProvider,
-          usageLimitedUntilByProvider,
-        }),
-      ).toEqual(result);
+      const { candidates, ...choice } = await pickWorkerAccount({
+        settings: { ...settings, providers },
+        ready,
+        usage: { fetchedAt: now, providers: readings },
+        providerType: "codex",
+        defaultProvider: "codex",
+        priority: "normal",
+        nowMs: Date.parse(now),
+        avoidProvider,
+        ...options,
+      });
+      expect(choice).toEqual(result);
+      const supplied = (options?.ready ?? ready).map(({ provider }) => provider);
+      const bindings = Object.keys(options?.installationDefinitionByProvider ?? {});
+      expect(candidates).toHaveLength(new Set([...supplied, ...bindings]).size);
+      if (evidence) expect(candidates).toMatchObject(evidence);
     },
   );
 });
