@@ -5,6 +5,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 const hook = vi.hoisted(() => ({
   daemonSupports: true,
   data: undefined as object | undefined,
+  usage: { kind: "loading" } as object,
+}));
+vi.mock("@/provider-usage/use-provider-usage", () => ({
+  providerUsageQueryKey: (serverId: string) => ["providerUsage", serverId],
+  useProviderUsage: () => ({ view: hook.usage }),
 }));
 vi.mock("@/runtime/host-features", () => ({ useHostFeature: () => hook.daemonSupports }));
 vi.mock("./policy", () => ({
@@ -25,6 +30,7 @@ import {
   confirmPrimaryConnection,
   isPrimaryConnection,
   primaryConnectionUpdate,
+  AUTOMATIC_PRIMARY,
   PrimaryConnectionUnavailableError,
   recordPrimaryConnection,
 } from "./primary-connection";
@@ -110,6 +116,11 @@ describe("primary connection", () => {
     expect(primaryConnectionUpdate({ revision: 7 }, { providerId: "claude-def" })).toEqual({
       expectedRevision: 7,
       settings: { primaryConnection: { providerId: "claude-def" } },
+    });
+    // Choosing Automatic clears the choice; null is what the coordinator stores for it.
+    expect(primaryConnectionUpdate({ revision: 7 }, AUTOMATIC_PRIMARY)).toEqual({
+      expectedRevision: 7,
+      settings: { primaryConnection: null },
     });
   });
 
@@ -278,6 +289,14 @@ describe("primary connection", () => {
     // A supporting coordinator sends null while nothing is chosen.
     hook.data = { revision: 4, settings: { providerDefinitions: [], primaryConnection: null } };
     expect(read()).toMatchObject({ supported: true, loaded: true, primary: null });
+    // Automatic applies only once the Host reports its pick, which it does only where its
+    // coordinator says an unchosen primary means Automatic.
+    expect(read().automatic).toEqual({ supported: false, current: undefined });
+    hook.usage = { kind: "ready", payload: { providers: [], automaticPrimary: null } };
+    expect(read().automatic).toEqual({ supported: true, current: null });
+    hook.usage = { kind: "ready", payload: { providers: [] } };
+    expect(read().automatic).toEqual({ supported: false, current: undefined });
+    hook.usage = { kind: "loading" };
     // An older Host daemon hides it too.
     hook.daemonSupports = false;
     expect(read()).toMatchObject({ supported: false, loaded: false });

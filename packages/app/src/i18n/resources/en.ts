@@ -136,7 +136,8 @@ export const en = {
       all: "All Factories",
       allTitle: "All Factories",
       sample: "Sample Factory",
-      pipelineSummary: "{{queued}} queued · {{active}} active · {{review}} review",
+      pipelineSummary:
+        "{{queued}} queued · {{active}} active · {{stalled}} stalled · {{review}} review",
       snapshotAt: "Queue snapshot: {{time}} ({{minutes}} min ago)",
       queueRetry: "Queue unavailable. Retry",
       sidebarSummary_one:
@@ -1607,7 +1608,6 @@ export const en = {
       moreIssues: "+{{count}} more",
       issue: "#{{number}} {{title}}",
       runners: "Runners",
-      runnersActive: "{{count}} active",
       steps: { plan: "Plan", build: "Build", review: "Review", merge: "Merge", deploy: "Deploy" },
       trackCurrent: "{{step}} · {{stage}}",
       trackDanger: "{{step}} needs attention · {{stage}}",
@@ -3870,6 +3870,18 @@ export const en = {
     },
   },
   // DRAFT wording for adopting a legacy Codex account; awaiting approval.
+  automaticPrimary: {
+    title: "Primary connection",
+    option: "Automatic",
+    current: "Automatic: currently {{account}}",
+    none: "Automatic: no account can run system threads right now",
+    use: "Use Automatic",
+    confirmTitle: "Use Automatic for system threads?",
+    confirmMessage:
+      "Automatic starts system threads, such as the Optimizer and Factory, on the ready account with the most usage left, and stays on it while it can run them. Threads that are running keep their current connection.",
+    saved: "System threads now use Automatic.",
+    eligible: "Automatic may use this account",
+  },
   codexAdoption: {
     title: "Use the Host's sign-in on Dev",
     description:

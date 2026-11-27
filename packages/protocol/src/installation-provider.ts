@@ -1,7 +1,13 @@
 import { z } from "zod";
 import { ProviderOverrideSchema } from "./provider-config.js";
 
-/** Portable provider policy. Runtime arguments, account homes and credentials stay local. */
+/**
+ * Portable provider policy. Runtime arguments, account homes and credentials stay local.
+ * COMPAT(primaryConnectionAutomatic): added 2026-11-25. Older strict readers reject
+ * `automaticPrimary`, so coordinators send it only to owner clients that ask with the
+ * X-Vorteo-Automatic-Primary header, admission readers that ask with `automaticPrimary=1`, and
+ * daemons that report `installationPrimaryConnectionAutomatic`.
+ */
 export const InstallationProviderPolicySchema = ProviderOverrideSchema.pick({
   label: true,
   description: true,
@@ -10,6 +16,7 @@ export const InstallationProviderPolicySchema = ProviderOverrideSchema.pick({
   disallowedTools: true,
   paseoTools: true,
   enabled: true,
+  automaticPrimary: true,
   order: true,
 }).strict();
 export const InstallationProviderSchema = z.strictObject({

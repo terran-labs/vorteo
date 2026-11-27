@@ -1588,6 +1588,62 @@ test("an upgrade with several usable connections leaves the choice to the owner"
   expect((await unconfirmed.service.reconcile()).settings?.primaryConnection).toBeNull();
 });
 
+test("with Automatic everywhere an upgrade chooses nothing; older daemons keep their shape", async () => {
+  const { service, host, container } = fixture();
+  const claudeAccount = "0f6f1a0e-7d0b-4bd3-9a51-0d7e1f4b2c11";
+  const codexAccount = "5b8d3f2a-1c4e-4f6a-8b9d-2e7c0a1f3d22";
+  host.config.installationPrimaryConnection = null;
+  host.config.installationPrimaryConnectionAutomatic = false;
+  host.config.providers = {
+    "claude-account": {
+      extends: "claude",
+      label: "Claude 1",
+      installationAccountId: claudeAccount,
+    },
+    "codex-account": { extends: "codex", label: "Codex 1", installationAccountId: codexAccount },
+  };
+  container.config.providers = {
+    "dev-claude": { extends: "claude", label: "Claude 1", installationAccountId: claudeAccount },
+    "dev-codex": { extends: "codex", label: "Codex 1", installationAccountId: codexAccount },
+  };
+  host.usableProviders = ["claude-account"];
+  host.pendingProviders = ["codex-account"];
+  host.automaticPrimary = true;
+  // Dev is an older daemon: it reports neither the marker nor Automatic support, so the
+  // earlier adoption applies and waits for Codex to settle.
+  container.automaticPrimary = false;
+  expect((await service.reconcile()).settings?.primaryConnection).toBeUndefined();
+
+  // Once every environment supports Automatic, the only usable connection is not chosen for the
+  // owner: null means Automatic.
+  container.automaticPrimary = true;
+  const upgraded = await service.reconcile();
+  expect(upgraded.settings?.primaryConnection).toBeNull();
+  expect(host.config.installationPrimaryConnectionAutomatic).toBe(true);
+  expect(container.config.installationPrimaryConnectionAutomatic).toBeUndefined();
+
+  // The owner switches Codex off for Automatic. Host receives the switch; Dev, which would
+  // reject the unknown policy key, receives the definitions without it.
+  const definitions = structuredClone(upgraded.settings?.providerDefinitions ?? []);
+  const codex = definitions.find((entry) => entry.accountId === codexAccount);
+  if (!codex) throw new Error("Expected the Codex connection");
+  codex.policy.automaticPrimary = false;
+  container.patches = [];
+  await service.update({
+    expectedRevision: upgraded.revision,
+    settings: { providerDefinitions: definitions },
+  });
+  const projected = await service.reconcile();
+  expect(host.config.providers["codex-account"]?.automaticPrimary).toBe(false);
+  expect(container.config.providers["dev-codex"]).not.toHaveProperty("automaticPrimary");
+  const devPolicies = container.patches.flatMap(
+    (patch) => patch.installationProviderPolicy?.definitions.map((entry) => entry.policy) ?? [],
+  );
+  expect(devPolicies).toHaveLength(2);
+  expect(devPolicies.some((policy) => "automaticPrimary" in policy)).toBe(false);
+  expect(projected.sources).toMatchObject({ host: { error: null }, container: { error: null } });
+});
+
 function removeDefinition<T extends { id: string; removed?: boolean }>(
   definitions: readonly T[] | undefined,
   id: string,

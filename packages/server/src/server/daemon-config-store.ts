@@ -24,6 +24,7 @@ import {
   assertPrimaryConnectionProjection,
   changesPrimaryConnectionCopy,
   localPrimaryConnection,
+  reconciledAutomaticMarker,
   reconciledSupportMarker,
 } from "./execution-installation/settings/primary-connection.js";
 import {
@@ -102,6 +103,7 @@ interface SupportedMutableConfigPatch {
   primaryConnection?: MutableDaemonConfig["primaryConnection"];
   installationPrimaryConnection?: MutableDaemonConfig["installationPrimaryConnection"];
   installationPrimaryConnectionSupported?: boolean;
+  installationPrimaryConnectionAutomatic?: boolean;
   timeZone?: MutableDaemonConfig["timeZone"];
   agentProfiles?: MutableDaemonConfig["agentProfiles"];
   sharedProviderPreferences?: MutableDaemonConfig["sharedProviderPreferences"];
@@ -343,6 +345,7 @@ const RELOADABLE_PATHS = [
   "daemon.primaryConnection",
   "daemon.installationPrimaryConnection",
   "daemon.installationPrimaryConnectionSupported",
+  "daemon.installationPrimaryConnectionAutomatic",
   "daemon.timeZone",
   "daemon.agentProfiles",
   "daemon.sharedProviderPreferences",
@@ -380,6 +383,7 @@ const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["daemon.primaryConnection", "primaryConnection"],
   ["daemon.installationPrimaryConnection", "installationPrimaryConnection"],
   ["daemon.installationPrimaryConnectionSupported", "installationPrimaryConnectionSupported"],
+  ["daemon.installationPrimaryConnectionAutomatic", "installationPrimaryConnectionAutomatic"],
   ["daemon.timeZone", "timeZone"],
   ["daemon.agentProfiles", "agentProfiles"],
   ["daemon.sharedProviderPreferences", "sharedProviderPreferences"],
@@ -453,7 +457,10 @@ function pickProjectPolicies(patch: MutableDaemonConfigPatch): SupportedMutableC
 function pickPrimaryConnection(
   patch: Pick<
     SupportedMutableConfigPatch,
-    "primaryConnection" | "installationPrimaryConnection" | "installationPrimaryConnectionSupported"
+    | "primaryConnection"
+    | "installationPrimaryConnection"
+    | "installationPrimaryConnectionSupported"
+    | "installationPrimaryConnectionAutomatic"
   >,
 ): SupportedMutableConfigPatch {
   const picked: SupportedMutableConfigPatch = {};
@@ -462,6 +469,8 @@ function pickPrimaryConnection(
     picked.installationPrimaryConnection = patch.installationPrimaryConnection;
   if (patch.installationPrimaryConnectionSupported !== undefined)
     picked.installationPrimaryConnectionSupported = patch.installationPrimaryConnectionSupported;
+  if (patch.installationPrimaryConnectionAutomatic !== undefined)
+    picked.installationPrimaryConnectionAutomatic = patch.installationPrimaryConnectionAutomatic;
   return picked;
 }
 
@@ -924,7 +933,8 @@ export class DaemonConfigStore {
    * Re-reads whether the coordinator owns the primary connection, so a daemon that moved back
    * to an older coordinator stops waiting for a choice it can never receive. A failed read keeps
    * the last known answer. Turning support on also takes the coordinator's choice from the same
-   * answer, so the marker never pairs with a copy older than it.
+   * answer, so the marker never pairs with a copy older than it. The Automatic marker follows the
+   * same answer.
    */
   public async refreshPrimaryConnectionSupport(): Promise<void> {
     if (!this.current.sharedProviderPreferences?.installation) return;
@@ -936,9 +946,10 @@ export class DaemonConfigStore {
     }
     if (!admission) return;
     const marker = reconciledSupportMarker(this.current, {}, admission);
-    if (marker === undefined) return;
+    const automatic = reconciledAutomaticMarker(this.current, {}, admission);
+    if (marker === undefined && automatic === undefined) return;
     this.applyPatch(
-      marker
+      marker === true || automatic === true
         ? {
             installationPrimaryConnection: localPrimaryConnection(
               admission.settings,
@@ -1010,6 +1021,8 @@ export class DaemonConfigStore {
     assertTimeZoneProjection({ current: this.current, patch: parsed, admission });
     const marker = reconciledSupportMarker(this.current, parsed, admission);
     if (marker !== undefined) parsed.installationPrimaryConnectionSupported = marker;
+    const automatic = reconciledAutomaticMarker(this.current, parsed, admission);
+    if (automatic !== undefined) parsed.installationPrimaryConnectionAutomatic = automatic;
     this.validateInstallationProjection(parsed);
     if (parsed.sharedProviderPreferences) {
       const revision = this.current.sharedProviderPreferences?.revision ?? null;

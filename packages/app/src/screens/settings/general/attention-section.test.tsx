@@ -2,14 +2,21 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ReactNode } from "react";
+const noAutomatic = { supported: false, current: undefined as object | null | undefined };
 const state = vi.hoisted(() => ({
   serverId: "host" as string | undefined,
   installation: {} as object | null,
   data: undefined as object | undefined,
   error: null as Error | null,
   isLoading: false,
-  primary: { loaded: false, supported: false, primary: undefined as object | null | undefined },
+  primary: {
+    loaded: false,
+    supported: false,
+    primary: undefined as object | null | undefined,
+    automatic: { supported: false, current: undefined as object | null | undefined },
+  },
   standalone: { loaded: false, supported: false, primary: undefined as object | null | undefined },
+  standaloneAutomatic: { supported: false, current: undefined as object | null | undefined },
   availability: "available" as string,
   hosts: [] as { serverId: string }[],
   system: null as object | null,
@@ -52,6 +59,7 @@ vi.mock("@/provider-usage/use-provider-usage", () => ({
 vi.mock("@/execution-installation/primary-connection", () => ({
   primaryConnectionAvailability: () => state.availability,
   usePrimaryConnection: () => state.primary,
+  useAutomaticPrimary: () => state.standaloneAutomatic,
 }));
 vi.mock("@/execution-installation/panel", () => ({
   useInstallationSystemModel: () =>
@@ -96,8 +104,9 @@ beforeEach(() => {
   state.data = undefined;
   state.error = null;
   state.isLoading = false;
-  state.primary = { loaded: false, supported: false, primary: undefined };
+  state.primary = { loaded: false, supported: false, primary: undefined, automatic: noAutomatic };
   state.standalone = { loaded: false, supported: false, primary: undefined };
+  state.standaloneAutomatic = noAutomatic;
   state.availability = "available";
   state.hosts = [];
   state.system = null;
@@ -128,21 +137,43 @@ it.each([
 });
 it("asks for a primary connection once shared settings load without one", () => {
   state.installation = null;
-  state.primary = { loaded: true, supported: true, primary: null };
+  state.primary = { loaded: true, supported: true, primary: null, automatic: noAutomatic };
   expect(rows(render())).toEqual(["primary-connection"]);
-  state.primary = { loaded: true, supported: true, primary: { providerId: "claude" } };
+  state.primary = {
+    loaded: true,
+    supported: true,
+    primary: { providerId: "claude" },
+    automatic: noAutomatic,
+  };
   expect(rows(render())).toEqual(["clear"]);
   // Not loaded yet, or unsupported: never asks.
-  state.primary = { loaded: false, supported: false, primary: undefined };
+  state.primary = { loaded: false, supported: false, primary: undefined, automatic: noAutomatic };
   expect(rows(render())).toEqual(["clear"]);
 });
 it("asks for another primary connection when the chosen one cannot run anywhere", () => {
   state.installation = null;
-  state.primary = { loaded: true, supported: true, primary: { providerId: "claude" } };
+  const automatic = { supported: true, current: { providerId: "codex", label: "Codex 1" } };
+  state.primary = { loaded: true, supported: true, primary: { providerId: "claude" }, automatic };
   state.availability = "unavailable";
   expect(rows(render())).toEqual(["primary-connection"]);
   // Still checking: say nothing rather than flicker.
   state.availability = "unknown";
+  expect(rows(render())).toEqual(["clear"]);
+});
+it("with Automatic, says only when no account can run system threads", () => {
+  state.installation = null;
+  const automatic = { supported: true, current: { providerId: "codex", label: "Codex 1" } };
+  state.primary = { loaded: true, supported: true, primary: null, automatic };
+  expect(rows(render())).toEqual(["clear"]);
+  // Still reading usage: nothing to say yet.
+  state.primary = { ...state.primary, automatic: { supported: true, current: undefined } };
+  expect(rows(render())).toEqual(["clear"]);
+  state.primary = { ...state.primary, automatic: { supported: true, current: null } };
+  expect(rows(render())).toEqual(["automatic-primary"]);
+  state.hosts = [{ serverId: "local" }];
+  state.primary = { loaded: false, supported: false, primary: undefined, automatic: noAutomatic };
+  state.standalone = { loaded: true, supported: true, primary: null };
+  state.standaloneAutomatic = automatic;
   expect(rows(render())).toEqual(["clear"]);
 });
 it("asks a standalone daemon's owner the same way", () => {

@@ -63,13 +63,21 @@ export interface SettingsEnvironment {
   /**
    * Local provider ids that can run a system thread now, best first; those whose readiness is
    * not settled yet, still loading or ready with a usage reading that failed; and ready ones
-   * whose settled reading neither confirms nor refuses a sign in.
+   * whose settled reading neither confirms nor refuses a sign in. `automatic` is true when the
+   * daemon treats an unchosen primary connection as Automatic.
    */
-  readProviderReadiness(): Promise<{ usable: string[]; pending: string[]; unconfirmed: string[] }>;
+  readProviderReadiness(): Promise<ProviderReadiness>;
   patch(
     patch: MutableDaemonConfigPatch,
     confirmedSkillRemovals?: readonly string[],
   ): Promise<MutableDaemonConfig>;
+}
+
+export interface ProviderReadiness {
+  usable: string[];
+  pending: string[];
+  unconfirmed: string[];
+  automatic: boolean;
 }
 
 interface SettingsProjectionVerification {
@@ -350,9 +358,10 @@ export class InstallationSettingsService {
   }
 
   /**
-   * Upgrades an installation that has never chosen a primary connection, once. The only usable
-   * connection becomes primary; with several the owner chooses, so it is set to null. With none
-   * it stays unchosen and a later pass, or the setup guide, decides. A failed read retries, and
+   * Upgrades an installation that has never chosen a primary connection, once. When every
+   * environment supports Automatic, it is recorded as null, which means Automatic, and nothing is
+   * chosen for the owner. Otherwise the only usable connection becomes primary; with several the
+   * owner chooses, so it is set to null. With none it stays unchosen and a later pass, or the setup guide, decides. A failed read retries, and
    * so does a pass where any eligible connection is still loading or its usage reading failed:
    * right after the upgrade restart, that connection may be usable too, and adopting the only
    * one ready so far would choose for the owner. An eligible connection whose settled reading
@@ -362,15 +371,22 @@ export class InstallationSettingsService {
   private async adoptPrimaryConnection(): Promise<void> {
     const previous = this.snapshot();
     if (!previous.settings?.providerDefinitions) return;
-    const usable = new Set<string>();
-    let unconfirmed = false;
+    const readings: ProviderReadiness[] = [];
     for (const environment of this.environments) {
-      let readiness: { usable: string[]; pending: string[]; unconfirmed: string[] };
       try {
-        readiness = await environment.readProviderReadiness();
+        readings.push(await environment.readProviderReadiness());
       } catch {
         return;
       }
+    }
+    if (readings.every((readiness) => readiness.automatic)) {
+      if (previous.revision === this.state.revision) this.commitAdoption(previous, null);
+      return;
+    }
+    const usable = new Set<string>();
+    let unconfirmed = false;
+    for (const [index, environment] of this.environments.entries()) {
+      const readiness = readings[index]!;
       const excluded = previous.settings.resourceExclusions[environment.serverId]?.providerIds;
       const eligible = (localId: string) =>
         previous.settings!.providerDefinitions!.find(
@@ -389,9 +405,17 @@ export class InstallationSettingsService {
     }
     if ((usable.size === 0 && !unconfirmed) || previous.revision !== this.state.revision) return;
     const [only] = usable;
+    this.commitAdoption(previous, usable.size === 1 && !unconfirmed ? { providerId: only! } : null);
+  }
+
+  private commitAdoption(
+    previous: InstallationSettingsSnapshot,
+    primaryConnection: InstallationSettings["primaryConnection"],
+  ): void {
+    if (!previous.settings) return;
     const settings: InstallationSettings = {
       ...structuredClone(previous.settings),
-      primaryConnection: usable.size === 1 && !unconfirmed ? { providerId: only! } : null,
+      primaryConnection,
     };
     this.validateResources(settings);
     const next = { ...previous, revision: previous.revision + 1, settings };
@@ -1104,7 +1128,8 @@ export class InstallationSettingsService {
             patch.installationPrimaryConnection,
           ) &&
             verifiedConfig.installationPrimaryConnectionSupported ===
-              patch.installationPrimaryConnectionSupported)) &&
+              patch.installationPrimaryConnectionSupported &&
+            automaticMarkerSettled(verifiedConfig, patch))) &&
         timeZoneSettled(verifiedConfig, patch)
         ? null
         : "verification_failed",
@@ -1171,8 +1196,20 @@ function environmentCopiesSettled(
         patch.installationPrimaryConnection,
       ) &&
         local.installationPrimaryConnectionSupported ===
-          patch.installationPrimaryConnectionSupported)) &&
+          patch.installationPrimaryConnectionSupported &&
+        automaticMarkerSettled(local, patch))) &&
     timeZoneSettled(local, patch)
+  );
+}
+
+/** The daemon's Automatic marker matches, or this daemon predates Automatic. */
+function automaticMarkerSettled(
+  local: MutableDaemonConfig,
+  patch: ReturnType<typeof projectInstallationSettings>,
+): boolean {
+  return (
+    patch.installationPrimaryConnectionAutomatic === undefined ||
+    local.installationPrimaryConnectionAutomatic === patch.installationPrimaryConnectionAutomatic
   );
 }
 

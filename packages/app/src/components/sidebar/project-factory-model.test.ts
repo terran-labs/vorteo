@@ -20,7 +20,11 @@ import {
   writeInstructions,
   type Instructions,
 } from "./factory-instructions-model";
-import { factoryRunnerTrack, factoryStageCounts } from "./factory-card-model";
+import {
+  factoryPipelineCounts,
+  factoryRunnerTrack,
+  factoryStageCounts,
+} from "./factory-card-model";
 import { aggregateFactories, factorySummaryState } from "./factory-global-model";
 describe("Factory menu and repository dialog", () => {
   it("offers the actions appropriate to each state", () => {
@@ -273,15 +277,25 @@ it("counts queue stages for the card's bar and places each runner on its five-st
   expect(factoryRunnerTrack(issue("queued", 8))).toMatchObject({ step: null });
 });
 
-it("sums every Factory for the All Factories card", () => {
-  const issue = (number: number, stage: "queued" | "building" | "blocked", label = "running") => ({
+it("counts only issues with a running or starting agent as active runners (#683)", () => {
+  interface Agent {
+    role: "lead" | "worker" | "reviewer";
+    agentId: string;
+    status: string;
+  }
+  const issue = (
+    number: number,
+    stage: "queued" | "building" | "blocked" | "review",
+    agents: Agent[] = [],
+    label = "running",
+  ) => ({
     number,
     title: `Issue ${number}`,
     url: "",
     label: label as "running" | "human-review",
     stage,
     pr: null,
-    agents: [],
+    agents,
   });
   const factory = (
     projectId: string,
@@ -295,17 +309,26 @@ it("sums every Factory for the All Factories card", () => {
     listed: { state, drain: null },
     issues,
   });
-  const on = factory("a", "on", [issue(1, "building"), issue(2, "queued", "human-review")]);
+  const worker = (status: string): Agent => ({ role: "worker", agentId: status, status });
+  // A running worker, a thread that finished weeks ago, a queued issue and a blocked one.
+  const on = factory("a", "on", [
+    issue(1, "building", [worker("running")]),
+    issue(2, "building", [worker("completed")]),
+    issue(3, "queued", [], "human-review"),
+  ]);
   const aggregate = aggregateFactories([on, factory("b", "on", [issue(1, "blocked")])]);
   expect(aggregate.pill.label).toBe("on");
-  expect(aggregate.runners.map((runner) => `${runner.tag}#${runner.number}`)).toEqual([
-    "a#1",
-    "b#1",
-  ]);
+  expect(aggregate.runners.map((runner) => `${runner.tag}#${runner.number}`)).toEqual(["a#1"]);
   expect(aggregate.chips.map((chip) => [chip.name, chip.inFlight])).toEqual([
     ["a", 1],
-    ["b", 1],
+    ["b", 0],
   ]);
+  expect(factoryPipelineCounts(aggregate.issues)).toEqual({
+    queued: 1,
+    active: 1,
+    stalled: 2,
+    review: 0,
+  });
   expect(aggregateFactories([on, factory("b", "paused", [])]).pill.label).toBe("paused");
 });
 
