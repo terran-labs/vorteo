@@ -671,19 +671,27 @@ describe("sidebar project menu target", () => {
     expect(target.factoryNotice).toEqual({ kind: "none" });
   });
 
-  it("waits on the Host's loading plugin catalog instead of offering Dev's Factory", () => {
-    const target = resolveProjectMenuTarget({
-      hosts: [
-        { serverId: "dev", projectId: "prj_dev", iconWorkingDir: "/Users/me/dev/app" },
-        { serverId: "host", projectId: "prj_host", iconWorkingDir: "/Users/me/dev/app" },
-      ],
-      onlineServerIds: new Set(["dev", "host"]),
-      factoryServerIds: new Set(["dev"]),
-      installationHostServerId: "host",
-      installationHostPluginsLoading: true,
+  it("stays on the Host until its plugin catalog is ready instead of offering Dev's Factory", () => {
+    const resolve = (status: "loading" | "error") =>
+      resolveProjectMenuTarget({
+        hosts: [
+          { serverId: "dev", projectId: "prj_dev", iconWorkingDir: "/Users/me/dev/app" },
+          { serverId: "host", projectId: "prj_host", iconWorkingDir: "/Users/me/dev/app" },
+        ],
+        onlineServerIds: new Set(["dev", "host"]),
+        factoryServerIds: new Set(["dev"]),
+        installationHostServerId: "host",
+        installationHostPluginStatus: status,
+      });
+    const hostTarget = { serverId: "host", projectId: "prj_host" };
+    expect(resolve("loading")).toEqual({
+      settingsTarget: hostTarget,
+      factoryNotice: { kind: "loading" },
     });
-    expect(target.settingsTarget).toEqual({ serverId: "host", projectId: "prj_host" });
-    expect(target.factoryNotice).toEqual({ kind: "loading" });
+    expect(resolve("error")).toEqual({
+      settingsTarget: hostTarget,
+      factoryNotice: { kind: "missing_plugin", serverId: "host" },
+    });
   });
 
   it("keeps project settings on their pinned host when it drops mid-edit", () => {

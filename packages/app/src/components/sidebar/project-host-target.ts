@@ -85,8 +85,8 @@ export interface ProjectMenuTarget {
 /**
  * The project menu's target: an online host with the project's folder. It prefers this
  * installation's Host when that runs the Factory plugin, then any host that does, then the Host,
- * so settings and Factory actions share one target whenever possible. While the Host's plugin
- * catalog is still loading, the menu waits on the Host instead of falling through to another
+ * so settings and Factory actions share one target whenever possible. Until the Host's plugin
+ * catalog is ready (still loading or failed), the menu stays on the Host instead of falling through to another
  * Factory host, which could otherwise turn on a second Factory for the same project. With none
  * usable, settings still open against the first host so its screen can explain why nothing is
  * editable.
@@ -96,8 +96,11 @@ export function resolveProjectMenuTarget(input: {
   onlineServerIds: ReadonlySet<string>;
   factoryServerIds: ReadonlySet<string>;
   installationHostServerId: string | null;
-  /** Whether the Host's plugin catalog is still loading, so its Factory plugin is not yet known. */
-  installationHostPluginsLoading?: boolean;
+  /**
+   * The Host's plugin catalog status. Until it is "ready", the Host's Factory plugin is unknown,
+   * so the menu stays on the Host instead of offering another environment's Factory.
+   */
+  installationHostPluginStatus?: "loading" | "ready" | "error";
 }): ProjectMenuTarget {
   const candidates = input.hosts.map((host) => ({
     serverId: host.serverId,
@@ -106,13 +109,18 @@ export function resolveProjectMenuTarget(input: {
     rootPath: host.iconWorkingDir,
   }));
   const hostServerId = input.installationHostServerId;
-  const loadingHost = input.installationHostPluginsLoading
-    ? candidates.find((host) => host.serverId === hostServerId && isUsableProjectHost(host))
-    : undefined;
-  if (loadingHost) {
+  const hostStatus = input.installationHostPluginStatus ?? "ready";
+  const pendingHost =
+    hostStatus === "ready"
+      ? undefined
+      : candidates.find((host) => host.serverId === hostServerId && isUsableProjectHost(host));
+  if (pendingHost) {
     return {
-      settingsTarget: { serverId: loadingHost.serverId, projectId: loadingHost.projectId },
-      factoryNotice: { kind: "loading" },
+      settingsTarget: { serverId: pendingHost.serverId, projectId: pendingHost.projectId },
+      factoryNotice:
+        hostStatus === "loading"
+          ? { kind: "loading" }
+          : { kind: "missing_plugin", serverId: pendingHost.serverId },
     };
   }
   const result = resolveProjectHostTarget(candidates, [

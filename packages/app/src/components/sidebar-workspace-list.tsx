@@ -720,7 +720,7 @@ function useProjectMenuTarget(project: SidebarProjectEntry): ProjectMenuTarget {
         plugins.filter((plugin) => plugin.id === "factory").map((plugin) => plugin.serverId),
       ),
       installationHostServerId: hostServerId,
-      installationHostPluginsLoading: hostServerId !== null && hostCatalogStatus === "loading",
+      installationHostPluginStatus: hostServerId === null ? "ready" : hostCatalogStatus,
     });
   }, [project.hosts, statuses, plugins, hostServerId, hostCatalogStatus]);
 }
