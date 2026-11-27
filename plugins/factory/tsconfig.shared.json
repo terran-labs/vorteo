@@ -7,5 +7,5 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": ["shared/project.ts"]
+  "include": ["shared/project.ts", "shared/lean.ts"]
 }

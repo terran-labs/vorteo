@@ -1,8 +1,12 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
-import { FactoryModeSchema } from "./lean.js";
 
-export * from "./lean.js";
+/**
+ * Factory modes. Kept here, not imported from `./lean`, because this file has no relative
+ * imports: the app's Metro bundler cannot resolve `./lean.js`, and the daemon's Node runtime
+ * cannot resolve `./lean`. Same values as FACTORY_MODES in `lean.ts`; change both together.
+ */
+const FactoryModeSchema = z.enum(["crew", "lean"]);
 
 /** Stored role identities, in sidebar folder order. Never rename one: state files keep them. */
 export const PROJECT_FACTORY_ROLE_IDS = [
