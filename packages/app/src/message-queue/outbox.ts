@@ -1,6 +1,6 @@
 import type {
   QueueAttachment,
-  QueueOperation,
+  QueueChangeOperation,
   QueueSnapshot,
 } from "@getpaseo/protocol/message-queue";
 import {
@@ -18,7 +18,7 @@ export interface QueueOutboxPort {
   mutate(
     serverId: string,
     agentId: string,
-    operation: QueueOperation,
+    operation: QueueChangeOperation,
   ): Promise<{
     snapshot: QueueSnapshot | null;
     error: { code: string; message: string } | null;
@@ -52,7 +52,7 @@ export class QueueOutbox {
     serverId: string;
     agentId: string;
     createdAt: number;
-    operation: QueueOperation;
+    operation: QueueChangeOperation;
     localAttachments: LocalQueueAttachment[];
   }): Promise<void> {
     if (

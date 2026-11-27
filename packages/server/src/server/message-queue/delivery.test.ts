@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentStreamEvent } from "../agent/agent-sdk-types.js";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import pino from "pino";
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js";
@@ -10,7 +10,12 @@ import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager
 import { SessionHostFrameTooLargeError } from "../session-host/client.js";
 import { createAgentQueueDelivery } from "./agent-delivery.js";
 import type { QueueAttachmentStore } from "./attachments.js";
-import { MessageQueueStore, UNCONFIRMED_DELIVERY_REASON } from "./store.js";
+import {
+  EDIT_HELD_MESSAGE,
+  EDIT_HOLD_MS,
+  MessageQueueStore,
+  UNCONFIRMED_DELIVERY_REASON,
+} from "./store.js";
 import {
   QueueDeliveryWorker,
   UNCONFIRMED_DELIVERY_BOUND_MS,
@@ -224,6 +229,79 @@ it("delivers in order without clients and retains accepted content for timeline 
     expect((await store.read("agent")).items).toEqual([]);
     expect(await store.acceptedHistory("agent")).toHaveLength(2);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("holds a message open for editing, and the messages behind it, until the hold expires", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const root = await mkdtemp(join(tmpdir(), "paseo-delivery-edit-hold-"));
+  let now = Date.parse("2026-11-27T18:24:17Z");
+  const clock = () => now;
+  try {
+    const store = new MessageQueueStore(root, clock);
+    for (const id of ["held", "next"])
+      await store.mutate("agent", {
+        kind: "enqueue",
+        operationId: id,
+        messageId: id,
+        text: id,
+        attachments: [],
+      });
+    await store.mutate("agent", {
+      kind: "hold_edit",
+      operationId: "hold",
+      messageId: "held",
+      expectedRevision: 0,
+      holderId: "editor",
+    });
+    const received: string[] = [];
+    const worker = new QueueDeliveryWorker(
+      store,
+      {
+        load: async (item) => item.text,
+        prepare: async () => true,
+        start: (_agentId, item) =>
+          (async function* () {
+            received.push(item.id);
+            yield { type: "turn_started", provider: "codex", turnId: item.id };
+          })(),
+        changed: () => {},
+        failed: (error) => {
+          throw error;
+        },
+      },
+      clock,
+    );
+    await worker.wake("agent");
+    expect(received).toEqual([]);
+    // The hold survives a daemon restart. Another window can neither take it nor send the text now.
+    const restarted = new MessageQueueStore(root, clock);
+    const refused = { code: "delivery_conflict", message: EDIT_HELD_MESSAGE };
+    await expect(
+      restarted.mutate("agent", {
+        kind: "hold_edit",
+        operationId: "other-hold",
+        messageId: "held",
+        expectedRevision: 0,
+        holderId: "other",
+      }),
+    ).rejects.toMatchObject(refused);
+    await expect(
+      restarted.mutate("agent", {
+        kind: "send_now",
+        operationId: "other-send",
+        messageId: "held",
+        expectedRevision: 0,
+        expectedTurnId: null,
+      }),
+    ).rejects.toMatchObject(refused);
+    now += EDIT_HOLD_MS;
+    await vi.advanceTimersByTimeAsync(EDIT_HOLD_MS + 10);
+    await vi.waitFor(() => expect(received).toEqual(["held", "next"]));
+    worker.close();
+  } finally {
+    vi.useRealTimers();
     await rm(root, { recursive: true, force: true });
   }
 });

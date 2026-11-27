@@ -1,5 +1,5 @@
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import type { QueueSnapshot } from "@getpaseo/protocol/message-queue";
+import type { QueueEditHoldOperation, QueueSnapshot } from "@getpaseo/protocol/message-queue";
 import { queryClient } from "@/data/query-client";
 import { queueAttachmentStore } from "./attachment-store";
 import { createOutboxStorage } from "./outbox-storage";
@@ -73,6 +73,22 @@ export function requireQueueClient(serverId: string): DaemonClient {
   if (!client.getLastServerInfoMessage()?.features?.durableMessageQueue)
     throw new Error("Update the host to use shared message queues.");
   return client;
+}
+
+export function queueEditHoldSupported(serverId: string): boolean {
+  return clients.get(serverId)?.getLastServerInfoMessage()?.features?.messageQueueEditHold === true;
+}
+
+/** Holds are short-lived and renewed, so they bypass the durable outbox and are never replayed. */
+export async function sendQueueEditHold(
+  serverId: string,
+  agentId: string,
+  operation: QueueEditHoldOperation,
+): Promise<void> {
+  const result = await requireQueueClient(serverId).mutateMessageQueue(agentId, operation);
+  if (result.error || !result.snapshot)
+    throw new Error(result.error?.message ?? "Queue state is unavailable.");
+  applyQueueSnapshot(serverId, result.snapshot);
 }
 
 export function applyQueueSnapshot(serverId: string, snapshot: QueueSnapshot): void {

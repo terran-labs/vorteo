@@ -9,6 +9,7 @@ import {
   QueueIdSchema as IdSchema,
   QueueSnapshotSchema as SnapshotSchema,
   QueueOperationSchema as OperationSchema,
+  type QueueEditHoldOperation,
   type QueueOperation,
   type QueueSnapshot,
   type QueueItem,
@@ -88,11 +89,26 @@ export const AMBIGUOUS_DELIVERY_REASON =
 export const UNCONFIRMED_DELIVERY_REASON =
   "Delivery could not be confirmed: this message is not in the thread's history. It may not have reached the agent, or it may have arrived without a record the host can match. Check the thread before retrying, because a retry may send it again; otherwise discard it.";
 
+/** An edit hold lasts this long after its last renewal, so a closed or silent editor cannot block delivery. */
+export const EDIT_HOLD_MS = 2 * 60 * 1000;
+
+/** Shown when another editor holds the message, so its edit is never lost. */
+export const EDIT_HELD_MESSAGE = "This message is being edited in another window.";
+
+/** The item's hold while it is unexpired. An expired hold counts as absent everywhere. */
+export function activeEditHold(item: QueueItem, now: number): QueueItem["editHold"] | undefined {
+  const hold = item.editHold;
+  return hold && Date.parse(hold.expiresAt) > now ? hold : undefined;
+}
+
 export class MessageQueueStore {
   private readonly tails = new Map<string, Promise<void>>();
   /** Called after an acceptance commits, whether by delivery, steering or history repair. */
   onAccepted?: (agentId: string, item: QueueItem) => void;
-  constructor(private readonly root: string) {}
+  constructor(
+    private readonly root: string,
+    private readonly now: () => number = Date.now,
+  ) {}
 
   private notifyAccepted(agentId: string, items: readonly QueueItem[]): void {
     for (const item of items) this.onAccepted?.(agentId, item);
@@ -303,6 +319,9 @@ export class MessageQueueStore {
       // A pause holds back ordinary delivery, not a named item steered into an active turn.
       const paused = record.snapshot.paused && !head?.sendNow && !messageId;
       if (!head || paused || head.delivery.status !== "queued") return null;
+      // A message open for editing waits, and so does everything behind it, until the hold ends.
+      if (activeEditHold(head, this.now())) return null;
+      delete head.editHold;
       head.delivery = {
         status: "dispatching",
         attemptId: randomUUID(),
@@ -540,6 +559,8 @@ export class MessageQueueStore {
     const operation = OperationSchema.parse(input);
     if (JSON.stringify(operation).length > 1_000_000)
       throw new QueueStoreError("full", "The queued message exceeds the content limit.");
+    if (operation.kind === "hold_edit" || operation.kind === "release_edit")
+      return this.changeEditHold(agentId, operation);
     return this.serial(agentId, async () => {
       const record = await this.load(agentId);
       const fingerprint = createHash("sha256").update(JSON.stringify(operation)).digest("hex");
@@ -564,7 +585,7 @@ export class MessageQueueStore {
         (restart.phase !== "held" || restart.abandoned || record.snapshot.paused)
       )
         return record.snapshot;
-      apply(record, operation);
+      apply(record, operation, this.now());
       record.snapshot.revision += 1;
       record.receipts.push({
         operationId: operation.operationId,
@@ -578,9 +599,55 @@ export class MessageQueueStore {
       return record.snapshot;
     });
   }
+
+  /**
+   * Holds keep no operation receipt and record no ingress evidence: they change no content,
+   * renewing is idempotent, and a renewal every 30 seconds would otherwise grow both without bound.
+   * The item revision is unchanged, so the editor's eventual edit still matches it.
+   */
+  private changeEditHold(
+    agentId: string,
+    operation: QueueEditHoldOperation,
+  ): Promise<QueueSnapshot> {
+    return this.serial(agentId, async () => {
+      const record = await this.load(agentId);
+      const item = record.snapshot.items.find((candidate) => candidate.id === operation.messageId);
+      if (operation.kind === "release_edit") {
+        if (item?.editHold?.holderId !== operation.holderId) return record.snapshot;
+        delete item.editHold;
+      } else {
+        if (!item) throw new QueueStoreError("missing", "The queued message no longer exists.");
+        if (item.revision !== operation.expectedRevision)
+          throw new QueueStoreError(
+            "revision_conflict",
+            "The queued message changed. Review the current version.",
+          );
+        if (item.delivery.status !== "queued")
+          throw new QueueStoreError(
+            "delivery_conflict",
+            "Delivery has already been attempted. Resolve its outcome before changing the message.",
+          );
+        const now = this.now();
+        const held = activeEditHold(item, now);
+        if (held && held.holderId !== operation.holderId)
+          throw new QueueStoreError("delivery_conflict", EDIT_HELD_MESSAGE);
+        item.editHold = {
+          holderId: operation.holderId,
+          expiresAt: new Date(now + EDIT_HOLD_MS).toISOString(),
+        };
+      }
+      record.snapshot.revision += 1;
+      await this.commit(record);
+      return record.snapshot;
+    });
+  }
 }
 
-function apply(record: QueueRecord, operation: QueueOperation): void {
+function apply(
+  record: QueueRecord,
+  operation: Exclude<QueueOperation, QueueEditHoldOperation>,
+  now: number,
+): void {
   const snapshot = record.snapshot;
   if (operation.kind === "reorder") {
     reorder(snapshot, operation);
@@ -646,6 +713,9 @@ function apply(record: QueueRecord, operation: QueueOperation): void {
     return;
   }
   if (operation.kind === "send_now") {
+    // Sending the unedited text would lose the edit. The editor saves first, which releases it.
+    if (activeEditHold(item, now))
+      throw new QueueStoreError("delivery_conflict", EDIT_HELD_MESSAGE);
     if (snapshot.items.some((entry) => entry.delivery.status !== "queued" || entry.sendNow))
       throw new QueueStoreError(
         "delivery_conflict",
@@ -660,6 +730,8 @@ function apply(record: QueueRecord, operation: QueueOperation): void {
   item.text = operation.text;
   item.attachments = operation.attachments;
   item.context = operation.context;
+  // Submitting the edit releases its hold in the same commit.
+  delete item.editHold;
   item.revision += 1;
 }
 

@@ -1,6 +1,6 @@
 import type { QueueItem, QueueSnapshot } from "@getpaseo/protocol/message-queue";
 import type { AgentStreamEvent, AgentPromptInput } from "../agent/agent-sdk-types.js";
-import { MessageQueueStore, type QueueSettlementOutcome } from "./store.js";
+import { MessageQueueStore, activeEditHold, type QueueSettlementOutcome } from "./store.js";
 import { UNCONFIRMED_DELIVERY_BOUND_MS } from "./evidence.js";
 import { isSessionHostFrameTooLargeError } from "../session-host/client.js";
 
@@ -59,6 +59,7 @@ export class QueueDeliveryWorker {
   private readonly suspensions = new Map<string, number>();
   private readonly admissionVersions = new Map<string, number>();
   private readonly stopVersions = new Map<string, number>();
+  private readonly holdWakes = new Map<string, ReturnType<typeof setTimeout>>();
 
   private unavailable(agentId: string): boolean {
     return (
@@ -172,6 +173,20 @@ export class QueueDeliveryWorker {
   close(): void {
     this.closed = true;
     this.requested.clear();
+    for (const timer of this.holdWakes.values()) clearTimeout(timer);
+    this.holdWakes.clear();
+  }
+
+  /** Re-check the queue when the head's edit hold expires; a renewal reschedules it. */
+  private wakeAfterHold(agentId: string, expiresAt: string): void {
+    clearTimeout(this.holdWakes.get(agentId));
+    const delay = Math.max(0, Date.parse(expiresAt) - this.now()) + 10;
+    const timer = setTimeout(() => {
+      this.holdWakes.delete(agentId);
+      void this.wake(agentId);
+    }, delay);
+    timer.unref?.();
+    this.holdWakes.set(agentId, timer);
   }
 
   private async pump(agentId: string): Promise<void> {
@@ -221,6 +236,12 @@ export class QueueDeliveryWorker {
         return;
       }
       if (head.delivery.status !== "queued") return;
+      // Queue order holds: everything behind an item open for editing waits for its hold.
+      const hold = activeEditHold(head, this.now());
+      if (hold) {
+        this.wakeAfterHold(agentId, hold.expiresAt);
+        return;
+      }
       const canStart = this.admissionGuard(agentId);
       if (
         !head.sendNow &&

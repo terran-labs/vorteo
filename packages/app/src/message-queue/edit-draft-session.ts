@@ -1,4 +1,4 @@
-import type { QueueItem } from "@getpaseo/protocol/message-queue";
+import type { QueueEditHoldOperation, QueueItem } from "@getpaseo/protocol/message-queue";
 import {
   type QueueEditDraft,
   type QueueEditDraftStorage,
@@ -11,14 +11,30 @@ export interface QueueEditDraftPort {
   identity(): string;
   commit(draft: QueueEditDraft): Promise<void>;
   cleanup(draft: QueueEditDraft): Promise<void>;
+  editHold?: QueueEditHoldPort;
 }
+
+/** Holds the queued message from delivery while it is edited, on daemons that support it. */
+export interface QueueEditHoldPort {
+  supported(serverId: string): boolean;
+  send(serverId: string, agentId: string, operation: QueueEditHoldOperation): Promise<void>;
+}
+
+/** The daemon releases a hold two minutes after its last renewal. */
+export const EDIT_HOLD_RENEWAL_MS = 30_000;
 
 // Drafts are independently identified: two tabs can edit the same message without
 // overwriting each other's unsaved work. The server revision arbitrates Save.
 export class QueueEditDraftSession {
   constructor(private readonly port: QueueEditDraftPort) {}
 
-  async open(serverId: string, agentId: string, item: QueueItem): Promise<QueueEditDraft> {
+  /** With `hold`, a refused hold, such as another window editing the message, opens no draft. */
+  async open(
+    serverId: string,
+    agentId: string,
+    item: QueueItem,
+    options: { hold: boolean } = { hold: true },
+  ): Promise<QueueEditDraft> {
     const draft: QueueEditDraft = {
       version: 1,
       id: this.port.identity(),
@@ -31,6 +47,7 @@ export class QueueEditDraftSession {
       localAttachments: [],
       submissionId: null,
     };
+    if (options.hold) await this.renew(draft);
     if (!(await this.port.storage.exchange(draft, null)))
       throw new Error("Could not create the queue edit.");
     return draft;
@@ -53,7 +70,37 @@ export class QueueEditDraftSession {
     return next;
   }
 
+  /** Acquires or renews the hold. The draft identity is the holder, shared by tabs showing it. */
+  async renew(draft: QueueEditDraft): Promise<void> {
+    const hold = this.port.editHold;
+    if (!hold?.supported(draft.serverId)) return;
+    await hold.send(draft.serverId, draft.agentId, {
+      kind: "hold_edit",
+      operationId: this.port.identity(),
+      messageId: draft.original.id,
+      expectedRevision: draft.original.revision,
+      holderId: draft.id,
+    });
+  }
+
+  async release(draft: QueueEditDraft): Promise<void> {
+    const hold = this.port.editHold;
+    if (!hold?.supported(draft.serverId)) return;
+    await hold.send(draft.serverId, draft.agentId, {
+      kind: "release_edit",
+      operationId: this.port.identity(),
+      messageId: draft.original.id,
+      holderId: draft.id,
+    });
+  }
+
   async discard(draft: QueueEditDraft): Promise<void> {
+    await this.remove(draft);
+    // An unreleased hold still expires, so a failed release never blocks the queue for long.
+    await this.release(draft).catch(() => undefined);
+  }
+
+  private async remove(draft: QueueEditDraft): Promise<void> {
     if (!(await this.port.storage.remove(draft.id, draft.revision)))
       throw new Error(
         "This draft changed in another tab. Reload its saved copy before discarding it.",
@@ -79,6 +126,8 @@ export class QueueEditDraftSession {
     // A crash after commit but before removal leaves a visible submitted draft.
     // Never automatically replay it: acknowledgement may already have removed the outbox record.
     await this.port.commit(submitted);
-    await this.discard(submitted);
+    // The submitted edit releases the hold on the daemon. Releasing here could reach it
+    // before the edit and let the unedited text be delivered.
+    await this.remove(submitted);
   }
 }
