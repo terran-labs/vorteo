@@ -199,6 +199,11 @@ function needsYouSummary(items: readonly LeanNeedsYouItem[], t: TFunction): stri
           { version: item.version },
         );
       }
+      if (item.kind === "delivery-failed") {
+        return t("sidebar.factoryCard.needsYou.deliveryStuck", {
+          version: item.version ?? "",
+        });
+      }
       if (item.kind === "approval") return t("sidebar.factoryCard.needsYou.approval");
       if (item.kind === "question") return item.question;
       return t("sidebar.factoryCard.needsYou.promote", { version: item.version });

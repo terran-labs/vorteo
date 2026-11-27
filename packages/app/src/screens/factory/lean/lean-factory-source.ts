@@ -40,16 +40,35 @@ export interface LeanPendingBeta {
   held: boolean;
 }
 
-/** Pending contract: the delivery executor's current job. */
+/** The delivery executor's current job: in the contract, plus pending fields marked below. */
 export interface LeanDelivery {
   /** "pending" | "running" | "awaiting-approval" | "verifying" | "delivered" | "failed" */
   state: string;
   jobId: string;
-  /** "deliver" | "cut-beta" | "promote" | "rollback" */
+  /** The executor's run kinds: "beta" | "promote" | "rollback" */
   kind: string;
   version: string | null;
   approvalUrl: string | null;
+  /** Pending contract: why the run is not moving, in the executor's own words. */
+  waitingOn: string | null;
+  /** Pending contract: "step-failed" | "unknown" | "refused" | "cancelled", or null. */
+  failureKind: string | null;
+  /** Pending contract: the executor's sentence the owner can act on. */
+  failureReason: string | null;
 }
+
+/** Pending contract: one unfinished delivery run, oldest first. */
+export interface LeanQueuedDelivery {
+  jobId: string;
+  kind: string;
+  state: string;
+  version: string | null;
+  waitingOn: string | null;
+}
+
+/** The executor's choices for a run whose step failed or whose outcome is unknown. */
+export const LEAN_RESOLVE_ACTIONS = ["verify-only", "rerun", "abandon"] as const;
+export type LeanResolveAction = (typeof LEAN_RESOLVE_ACTIONS)[number];
 
 /** Pending contract: `health.deliveryLock.holderInfo`, beside the legacy `holder` string. */
 export interface LeanDeliveryHolder {
@@ -76,8 +95,9 @@ export type LeanView = Omit<FactoryLeanView, "health"> & {
   };
   /** Pending contract. */
   pendingBeta: LeanPendingBeta | null;
-  /** Pending contract. */
   delivery: LeanDelivery | null;
+  /** Pending contract: every unfinished delivery run, oldest first. */
+  deliveryQueue: LeanQueuedDelivery[];
 };
 
 export type LeanStatus = FactoryLeanStatus;
@@ -125,7 +145,8 @@ function mapHolder(
 export function mapLeanView(raw: FactoryLeanView): LeanView {
   const extra = raw as FactoryLeanView & {
     pendingBeta?: LeanPendingBeta | null;
-    delivery?: LeanDelivery | null;
+    delivery?: WireDelivery | null;
+    deliveryQueue?: Partial<LeanQueuedDelivery>[];
     readiness?: Partial<LeanReadiness>;
   };
   const lock = raw.health.deliveryLock as
@@ -150,7 +171,43 @@ export function mapLeanView(raw: FactoryLeanView): LeanView {
       deliveryActions: extra.readiness?.deliveryActions === true,
     },
     pendingBeta: extra.pendingBeta ?? null,
-    delivery: extra.delivery ?? null,
+    delivery: extra.delivery ? mapDelivery(extra.delivery) : null,
+    deliveryQueue: (extra.deliveryQueue ?? []).flatMap((run) =>
+      run.jobId
+        ? [
+            {
+              jobId: run.jobId,
+              kind: run.kind ?? "",
+              state: run.state ?? "",
+              version: run.version ?? null,
+              waitingOn: run.waitingOn ?? null,
+            },
+          ]
+        : [],
+    ),
+  };
+}
+
+/**
+ * The delivery as a daemon may send it. The failure names are unconfirmed: this accepts the
+ * flat `failureKind` the spine described and the executor's own `failure { kind, reason }`.
+ */
+type WireDelivery = Omit<LeanDelivery, "waitingOn" | "failureKind" | "failureReason"> & {
+  waitingOn?: string | null;
+  failureKind?: string | null;
+  failure?: { kind?: string; reason?: string } | null;
+};
+
+function mapDelivery(raw: WireDelivery): LeanDelivery {
+  return {
+    state: raw.state,
+    jobId: raw.jobId,
+    kind: raw.kind,
+    version: raw.version,
+    approvalUrl: raw.approvalUrl,
+    waitingOn: raw.waitingOn ?? null,
+    failureKind: raw.failureKind ?? raw.failure?.kind ?? null,
+    failureReason: raw.failure?.reason ?? null,
   };
 }
 
@@ -205,6 +262,16 @@ export function createLeanSource(invoke: FactoryInvoke, projectId: string) {
         installations: raw.installations.map(({ id, friendlyName }) => ({ id, friendlyName })),
       };
     },
+    /**
+     * Pending contract, name unconfirmed: settles a failed or unknown-outcome delivery with one
+     * of the executor's choices. Owner-only.
+     */
+    resolveDelivery: async (jobId: string, action: LeanResolveAction) =>
+      (await invoke("factory.lean.delivery.resolve", {
+        projectId,
+        jobId,
+        action,
+      })) as LeanWriteResult<{ resolved: boolean }>,
     proposeConfig: async (baseCommit: string, content: string) =>
       (await invoke("factory.lean.config.propose", {
         projectId,

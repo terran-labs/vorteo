@@ -60,9 +60,12 @@ describe("Needs you", () => {
       delivery: {
         state: "awaiting-approval",
         jobId: "job-9",
-        kind: "deliver",
+        kind: "promote",
         version: null,
         approvalUrl: null,
+        waitingOn: null,
+        failureKind: null,
+        failureReason: null,
       },
     });
     const items = leanNeedsYou(demoLeanStatus(), view);
@@ -73,6 +76,30 @@ describe("Needs you", () => {
       "promote",
     ]);
     expect(items.at(-1)).toMatchObject({ version: "1.4.1-beta.2", count: 2 });
+  });
+
+  it("puts a failed or unknown delivery first, and never a cancelled one", () => {
+    const delivery = (failureKind: string) =>
+      mapLeanView({
+        ...demoLeanView(),
+        delivery: {
+          state: "failed",
+          jobId: "run-7",
+          kind: "rollback",
+          version: "1.3.0",
+          approvalUrl: null,
+          failure: { kind: failureKind, reason: "The deploy step's outcome is unknown." },
+        },
+      } as never);
+    const first = leanNeedsYou(demoLeanStatus(), delivery("unknown"))[0];
+    expect(first).toMatchObject({
+      kind: "delivery-failed",
+      jobId: "run-7",
+      deliveryKind: "rollback",
+      failureKind: "unknown",
+    });
+    const cancelled = leanNeedsYou(demoLeanStatus(), delivery("cancelled"));
+    expect(cancelled.some((item) => item.kind === "delivery-failed")).toBe(false);
   });
 
   it("offers no promote decision when no beta is newer than production", () => {
@@ -158,10 +185,11 @@ describe("releases", () => {
 
 describe("action readiness", () => {
   it("keeps every action disabled until the daemon reports readiness, and absent means not ready", () => {
-    const actions = ["hold", "promote", "rollback", "approval", "config-save"] as const;
+    const actions = ["hold", "promote", "rollback", "approval", "resolve", "config-save"] as const;
     const { readiness: _ready, ...wire } = demoLeanView();
     const absent = mapLeanView(wire as never).readiness;
     expect(actions.map((action) => leanActionBlock(absent, action))).toEqual([
+      "owner",
       "owner",
       "owner",
       "owner",
@@ -173,6 +201,7 @@ describe("action readiness", () => {
       "delivery",
       "delivery",
       "delivery",
+      null,
       null,
       null,
     ]);

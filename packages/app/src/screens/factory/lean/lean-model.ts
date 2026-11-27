@@ -126,6 +126,17 @@ export function isNewerThanProduction(
 }
 
 export type LeanNeedsYouItem =
+  | {
+      kind: "delivery-failed";
+      key: string;
+      jobId: string;
+      /** The run's kind: beta, promote or rollback. */
+      deliveryKind: string;
+      version: string | null;
+      /** "unknown" when the step's outcome is not known, else "step-failed". */
+      failureKind: string;
+      reason: string | null;
+    }
   | { kind: "question"; key: string; id: string; question: string; blocksIssues: number[] }
   | { kind: "approval"; key: string; jobId: string; version: string | null; url: string | null }
   | {
@@ -139,11 +150,25 @@ export type LeanNeedsYouItem =
   | { kind: "promote"; key: string; version: string; count: number };
 
 /**
- * What waits on the owner, most urgent first: a beta about to reset occupied rooms (which ships
- * unless held), delivery approvals, open questions, then whether to promote the newest beta.
+ * What waits on the owner, most urgent first: a failed or unknown delivery to settle, a beta about
+ * to reset occupied rooms (which ships unless held), delivery approvals, open questions, then
+ * whether to promote the newest beta.
  */
 export function leanNeedsYou(status: LeanStatus | null, view: LeanView | null): LeanNeedsYouItem[] {
   const items: LeanNeedsYouItem[] = [];
+  // Nothing ships until the owner settles a failed or unknown delivery, so it leads.
+  const stuck = view?.delivery;
+  if (stuck && (stuck.failureKind === "unknown" || stuck.failureKind === "step-failed")) {
+    items.push({
+      kind: "delivery-failed",
+      key: `delivery-failed-${stuck.jobId}`,
+      jobId: stuck.jobId,
+      deliveryKind: stuck.kind,
+      version: stuck.version,
+      failureKind: stuck.failureKind,
+      reason: stuck.failureReason,
+    });
+  }
   const beta = view?.pendingBeta;
   if (beta) {
     items.push({
@@ -365,7 +390,13 @@ export function leanHealthAlerts(status: LeanStatus | null, view: LeanView | nul
 }
 
 /** Owner actions on a lean Factory, each gated on the daemon's readiness. */
-export type LeanOwnerAction = "hold" | "promote" | "rollback" | "approval" | "config-save";
+export type LeanOwnerAction =
+  | "hold"
+  | "promote"
+  | "rollback"
+  | "approval"
+  | "resolve"
+  | "config-save";
 
 /** Why an action is unavailable: no verified owner route, or no wired delivery executor. */
 export type LeanActionBlock = "owner" | "delivery";

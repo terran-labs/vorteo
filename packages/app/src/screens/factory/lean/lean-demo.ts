@@ -167,6 +167,7 @@ export function demoLeanView(overrides: Partial<LeanView> = {}): LeanView {
     readiness: { ownerActions: true, deliveryActions: true },
     pendingBeta: null,
     delivery: null,
+    deliveryQueue: [],
     ...overrides,
   };
 }
@@ -252,6 +253,75 @@ function demoReleases(): Pick<LeanView, "production" | "betas" | "earlier"> {
   };
 }
 
+/**
+ * Delivery in the executor's words. Ready and Not ready: a promote whose deploy outcome is
+ * unknown, with a rollback queued behind it. New project: a promote waiting for approval, with a
+ * rollback queued behind the delivery in progress.
+ */
+function demoDelivery(state: DemoState) {
+  if (state === "new-project") {
+    return {
+      delivery: {
+        state: "awaiting-approval",
+        jobId: "run-12",
+        kind: "promote",
+        version: "1.4.1-beta.3",
+        approvalUrl: "https://github.com/",
+        waitingOn: null,
+      },
+      deliveryQueue: [
+        {
+          jobId: "run-12",
+          kind: "promote",
+          state: "awaiting-approval",
+          version: "1.4.1-beta.3",
+          waitingOn: null,
+        },
+        {
+          jobId: "run-13",
+          kind: "rollback",
+          state: "pending",
+          version: "1.3.1",
+          waitingOn:
+            "Waits for the promote already in progress to finish; it never runs alongside it.",
+        },
+      ],
+    };
+  }
+  return {
+    delivery: {
+      state: "failed",
+      jobId: "run-12",
+      kind: "promote",
+      version: "1.4.1-beta.3",
+      approvalUrl: null,
+      waitingOn: null,
+      failure: {
+        kind: "unknown",
+        reason:
+          "The daemon restarted during the deploy step. Check the target, then choose verify, rerun or abandon.",
+      },
+    },
+    deliveryQueue: [
+      {
+        jobId: "run-12",
+        kind: "promote",
+        state: "failed",
+        version: "1.4.1-beta.3",
+        waitingOn: null,
+      },
+      {
+        jobId: "run-13",
+        kind: "rollback",
+        state: "pending",
+        version: "1.3.1",
+        waitingOn:
+          "Waits for you to settle the promote whose outcome is unknown; it never runs alongside it.",
+      },
+    ],
+  };
+}
+
 /** The view a daemon would send for a demo state, in wire shape. */
 export function demoWireView(state: DemoState, held = false, shipsAt?: string) {
   const ready = state === "ready";
@@ -284,13 +354,7 @@ export function demoWireView(state: DemoState, held = false, shipsAt?: string) {
       shipsAt: shipsAt ?? new Date(Date.now() + 8 * 60_000).toISOString(),
       held,
     },
-    delivery: {
-      state: "awaiting-approval",
-      jobId: "job-9",
-      kind: "deliver",
-      version: "1.4.1",
-      approvalUrl: "https://github.com/",
-    },
+    ...demoDelivery(state),
     readiness: { ownerActions: ready, deliveryActions: ready },
   };
 }
@@ -363,6 +427,8 @@ export function createDemoLeanInvoke(
             { id: STUDIO, friendlyName: "Studio", seenAs: ["presence"] },
           ],
         };
+      case "factory.lean.delivery.resolve":
+        return { resolved: true };
       case "factory.lean.config.propose":
         return { refused: "Demo only. No pull request was opened." };
       default:
