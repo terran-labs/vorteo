@@ -1,6 +1,12 @@
 import { SidebarDisclosureBody } from "./sidebar/disclosure-body";
 import { ProjectMenuItem, type ProjectMenuSurface } from "./sidebar/project-menu-item";
 import { FactoryProjectActions } from "./sidebar/factory-project-actions";
+import {
+  formatEnvironmentList,
+  resolveProjectMenuTarget,
+  type ProjectFactoryNotice,
+  type ProjectMenuTarget,
+} from "./sidebar/project-host-target";
 import { FactorySection } from "./sidebar/factory-section";
 import { AllFactoriesSection } from "./sidebar/factory-all-section";
 import { factoryCardModels } from "./sidebar/factory-card-model";
@@ -86,7 +92,15 @@ import {
 import { NestableScrollContainer } from "react-native-draggable-flatlist";
 import { DraggableList, type DraggableRenderItemInfo } from "./draggable-list";
 import type { DraggableListDragHandleProps } from "./draggable-list.types";
-import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
+import {
+  getHostRuntimeStore,
+  useHostRuntimeConnectionStatuses,
+  useHosts,
+} from "@/runtime/host-runtime";
+import {
+  installationHostServerId,
+  readExecutionInstallation,
+} from "@/execution-installation/policy";
 import type { PinnedSidebarGroups } from "@/hooks/use-sidebar-pins";
 import {
   useSidebarWorkspacePinController,
@@ -94,7 +108,7 @@ import {
 } from "@/hooks/use-sidebar-workspace-pin";
 import { useSidebarCollapsedSectionsStore } from "@/stores/sidebar-collapsed-sections-store";
 import { useHostFeatureMap } from "@/runtime/host-features";
-import { useInstalledPlugins } from "@/plugins/registry";
+import { useInstalledPlugins, usePluginCatalogStatus } from "@/plugins/registry";
 import { projectFactoryOverviewRoute } from "@/screens/factory/routes";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useIsSystemProjectOnAnyHost } from "@/workspace/lifecycle/system-membership";
@@ -547,6 +561,7 @@ function ProjectRowTrailingActions({
   displayName,
   worktreeTarget,
   settingsTarget,
+  factoryNotice,
   projectPath,
   isMobileBreakpoint,
   isProjectActive,
@@ -561,6 +576,7 @@ function ProjectRowTrailingActions({
   displayName: string;
   worktreeTarget: SidebarProjectHostTarget | null;
   settingsTarget: { serverId: string; projectId: string } | null;
+  factoryNotice: ProjectFactoryNotice;
   projectPath: string;
   focus: SidebarRowFocus;
   isMobileBreakpoint: boolean;
@@ -594,6 +610,7 @@ function ProjectRowTrailingActions({
             projectViewKey={projectViewKey}
             projectName={displayName}
             settingsTarget={settingsTarget}
+            factoryNotice={factoryNotice}
             projectPath={projectPath}
             onRemoveProject={onRemoveProject}
             removeProjectStatus={removeProjectStatus}
@@ -631,6 +648,7 @@ function ProjectKebabMenu({
   projectViewKey,
   projectName,
   settingsTarget,
+  factoryNotice,
   projectPath,
   onRemoveProject,
   removeProjectStatus,
@@ -639,6 +657,7 @@ function ProjectKebabMenu({
   projectViewKey: string;
   projectName: string;
   settingsTarget: { serverId: string; projectId: string } | null;
+  factoryNotice: ProjectFactoryNotice;
   projectPath: string;
   onRemoveProject: () => void;
   removeProjectStatus: "idle" | "pending" | "success";
@@ -671,6 +690,7 @@ function ProjectKebabMenu({
           projectViewKey={projectViewKey}
           projectName={projectName}
           settingsTarget={settingsTarget}
+          factoryNotice={factoryNotice}
           projectPath={projectPath}
           onRemoveProject={onRemoveProject}
           removeProjectStatus={removeProjectStatus}
@@ -681,11 +701,71 @@ function ProjectKebabMenu({
   );
 }
 
+// Settings and Factory act on the same usable host, not blindly on the project's first host.
+function useProjectMenuTarget(project: SidebarProjectEntry): ProjectMenuTarget {
+  const serverIds = useMemo(() => project.hosts.map((host) => host.serverId), [project.hosts]);
+  const statuses = useHostRuntimeConnectionStatuses(serverIds);
+  const plugins = useInstalledPlugins();
+  const hostServerId = installationHostServerId(readExecutionInstallation());
+  const hostCatalogStatus = usePluginCatalogStatus(hostServerId ?? "");
+  return useMemo(() => {
+    const onlineServerIds = new Set<string>();
+    for (const [serverId, status] of statuses) {
+      if (status === "online") onlineServerIds.add(serverId);
+    }
+    return resolveProjectMenuTarget({
+      hosts: project.hosts,
+      onlineServerIds,
+      factoryServerIds: new Set(
+        plugins.filter((plugin) => plugin.id === "factory").map((plugin) => plugin.serverId),
+      ),
+      installationHostServerId: hostServerId,
+      installationHostPluginStatus: hostServerId === null ? "ready" : hostCatalogStatus,
+    });
+  }, [project.hosts, statuses, plugins, hostServerId, hostCatalogStatus]);
+}
+
+function ProjectFactoryNoticeItem({
+  surface,
+  notice,
+}: {
+  surface: ProjectMenuSurface;
+  notice: ProjectFactoryNotice;
+}) {
+  const { t } = useTranslation();
+  const hosts = useHosts();
+  if (notice.kind === "none") return null;
+  if (notice.kind === "loading") {
+    return (
+      <ProjectMenuItem surface={surface} disabled>
+        {t("projectFactory.loading")}
+      </ProjectMenuItem>
+    );
+  }
+  const label = (serverId: string) =>
+    hosts.find((host) => host.serverId === serverId)?.label ?? serverId;
+  const text =
+    notice.kind === "missing_plugin"
+      ? t("projectHostTarget.factoryMissingPlugin", { environment: label(notice.serverId) })
+      : t(
+          notice.serverIds.length > 1
+            ? "projectHostTarget.factoryOfflineMany"
+            : "projectHostTarget.factoryOfflineOne",
+          { environments: formatEnvironmentList(notice.serverIds.map(label), t) },
+        );
+  return (
+    <ProjectMenuItem surface={surface} disabled>
+      {text}
+    </ProjectMenuItem>
+  );
+}
+
 function ProjectMenuItems({
   surface,
   projectViewKey,
   projectName,
   settingsTarget,
+  factoryNotice,
   projectPath,
   onRemoveProject,
   removeProjectStatus,
@@ -695,6 +775,7 @@ function ProjectMenuItems({
   projectViewKey: string;
   projectName: string;
   settingsTarget: { serverId: string; projectId: string } | null;
+  factoryNotice: ProjectFactoryNotice;
   projectPath: string;
   onRemoveProject: () => void;
   removeProjectStatus: "idle" | "pending" | "success";
@@ -757,7 +838,9 @@ function ProjectMenuItems({
             projectPath={projectPath}
           />
         </>
-      ) : null}
+      ) : (
+        <ProjectFactoryNoticeItem surface={surface} notice={factoryNotice} />
+      )}
       {settingsTarget ? (
         <ProjectMenuItem
           surface={surface}
@@ -1171,7 +1254,7 @@ function ProjectHeaderRow({
   const isMobileBreakpoint = useIsCompactFormFactor();
   const localDaemonServerId = useLocalDaemonServerId();
   const projectPath = resolveSidebarProjectLocalPath(project, localDaemonServerId);
-  const settingsTarget = project.hosts[0] ?? null;
+  const { settingsTarget, factoryNotice } = useProjectMenuTarget(project);
   const handleBeginWorkspaceSetup = useSidebarNewWorkspaceRoute({
     project,
     displayName,
@@ -1281,6 +1364,7 @@ function ProjectHeaderRow({
             displayName={displayName}
             worktreeTarget={worktreeTarget}
             settingsTarget={settingsTarget}
+            factoryNotice={factoryNotice}
             projectPath={projectPath}
             isMobileBreakpoint={isMobileBreakpoint}
             isProjectActive={isProjectActive}
@@ -1365,6 +1449,7 @@ function ProjectHeaderRow({
           projectViewKey={project.viewKey}
           projectName={displayName}
           settingsTarget={settingsTarget}
+          factoryNotice={factoryNotice}
           projectPath={projectPath}
           onRemoveProject={onRemoveProject}
           removeProjectStatus={removeProjectStatus}
@@ -2098,6 +2183,7 @@ function ProjectFocusActions({
   );
   const worktreeTarget =
     rowModel.trailingAction.kind === "new_workspace" ? rowModel.trailingAction.target : null;
+  const menuTarget = useProjectMenuTarget(project);
   const handleBeginWorkspaceSetup = useSidebarNewWorkspaceRoute({
     project,
     displayName,
@@ -2124,7 +2210,8 @@ function ProjectFocusActions({
       <ProjectKebabMenu
         projectViewKey={project.viewKey}
         projectName={displayName}
-        settingsTarget={project.hosts[0] ?? null}
+        settingsTarget={menuTarget.settingsTarget}
+        factoryNotice={menuTarget.factoryNotice}
         projectPath={resolveSidebarProjectLocalPath(project, localDaemonServerId)}
         onRemoveProject={handleRemoveProject}
         removeProjectStatus={isRemovingProject ? "pending" : "idle"}

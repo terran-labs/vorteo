@@ -5,6 +5,7 @@ import { pluginSettings } from "./plugin-settings";
 export const es: TranslationResources = {
   previewStatus: previewStatus.es,
   projectFactory: en.projectFactory,
+  projectHostTarget: en.projectHostTarget,
   vorteoSetup: en.vorteoSetup,
   // Draft English until the wording is approved, then translated.
   codexAdoption: en.codexAdoption,
