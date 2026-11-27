@@ -9686,14 +9686,17 @@ export class AgentManager {
     requests: readonly AgentPermissionRequest[],
   ): void {
     const previous = agent.pendingPermissions;
+    // Questions have their own card and no escalation; they pass through as the session has them.
     agent.pendingPermissions = new Map(
       requests.map((request) => [
         request.id,
-        this.recordPermissionContext(agent, request, previous.get(request.id)),
+        request.kind === "question"
+          ? request
+          : this.recordPermissionContext(agent, request, previous.get(request.id)),
       ]),
     );
     for (const request of agent.pendingPermissions.values()) {
-      this.armPermissionEscalation(agent, request);
+      if (request.kind !== "question") this.armPermissionEscalation(agent, request);
     }
   }
 
@@ -9712,7 +9715,9 @@ export class AgentManager {
     const timer = setTimeout(
       () => {
         this.escalationTimers.delete(key);
-        if (agent.pendingPermissions.has(request.id)) this.emitState(agent);
+        // The live agent: the one this timer was armed with may have been replaced since.
+        const live = this.agents.get(agent.id);
+        if (live?.pendingPermissions.has(request.id)) this.emitState(live);
       },
       Math.max(0, remaining),
     );
