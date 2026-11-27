@@ -25,7 +25,8 @@
  * - Held pending owner decisions (do not build behaviour that depends on them yet):
  *   decision 1 (where reviews of a secondary's pull request run: `Verdict.source`),
  *   decision 3 (heavy placement granularity beyond per issue: `CapacityPort`),
- *   decision 7 (ordered lane lists: `LaneLeasePort` acquires only the first listed holder).
+ *   decision 7 (lanes that follow availability: until answered, `LaneLeasePort` lets only the
+ *   first effective holder acquire; intake stays pinned until the ledger is portable).
  */
 
 import type {
@@ -126,8 +127,13 @@ export interface RunnerRef {
   role: RunnerRole;
   /** Null for this daemon; otherwise the connected host it runs on (Dev). */
   serverId: string | null;
-  /** The account the daemon chose at launch; null when the configured default was used. */
+  /** This daemon's (or `serverId`'s) local account id the runner launched on; null for the configured default. */
   account: string | null;
+  /**
+   * The installation account definition behind `account`. One account has different local ids
+   * on Host and Dev, so parks and independence checks use this id. Null when unknown.
+   */
+  accountDefinition: string | null;
   providerType: string | null;
   openedAt: string;
   /** 1 for the first runner of this role on this issue; +1 for each reopening. */
@@ -300,7 +306,7 @@ export interface LeanLedger {
     ownerAction: string;
   } | null;
   /** This machine's settings, never written to the repository. */
-  local: { runners: number; heavySlots: number };
+  local: { runners: number; heavyQueueLimit: number };
   /** Last completed reconcile pass; read by the watchdog's own timer. */
   loopBeat: string | null;
 }
@@ -408,7 +414,13 @@ export type DispatchAction =
       sha: string;
     }
   | { kind: "merge"; issue: number; pr: PullRef; verdict: Verdict; acceptance: Acceptance }
-  | { kind: "renew-lease" | "release-lease"; issue: number }
+  | { kind: "renew-lease"; issue: number }
+  /**
+   * `capacity`: at plan-ready a heavy issue on a machine whose heavy queue is over its limit is
+   * released so another machine claims it (W1 dispatcher). Only `factory:heavy` affects the
+   * claim itself, since the plan does not exist yet when the claim happens.
+   */
+  | { kind: "release-lease"; issue: number; why: "done" | "capacity" | "takeover" }
   | { kind: "park"; issue: number; reason: ParkReason }
   | { kind: "close-runner"; runner: RunnerRef; reason: string }
   | { kind: "route"; event: FactoryEvent }
@@ -437,7 +449,18 @@ export type PlanActions = (
 // W2: runners, accounts, capacity (1.4 to 1.6)
 // ---------------------------------------------------------------------------------------------
 
-export type RunnerStatus = "running" | "idle" | "error" | "permission";
+/**
+ * `quota`: the agent manager's structured usage-limit stop (its quota latch and observer),
+ * never parsed from error text. `detached`: the daemon restarted and the in-memory status
+ * subscription is gone; reattach from the ledger, never treat it as the job being done.
+ */
+export type RunnerStatus =
+  | { kind: "running" }
+  | { kind: "idle" }
+  | { kind: "error"; detail: string }
+  | { kind: "permission"; detail: string }
+  | { kind: "quota"; accountDefinition: string | null; resetsAt: string | null }
+  | { kind: "detached" };
 
 export interface RunnerOpenInput {
   projectId: string;
@@ -455,19 +478,26 @@ export interface RunnerPort {
   /** Opens one runner, or parks when no account or capacity is available. */
   open(input: RunnerOpenInput): Promise<RunnerRef | { parked: ParkReason }>;
   prompt(runner: RunnerRef, text: string): Promise<"sent" | "busy" | "gone">;
-  /** Archives the agent; its result must already be in GitHub or the ledger. */
-  close(runner: RunnerRef, why: string): Promise<void>;
+  /**
+   * Archives the AGENT only, never its workspace: a workspace archive deletes the worktree.
+   * A lead's close is refused until its branch is pushed (local head equals the remote branch).
+   */
+  close(runner: RunnerRef, why: string): Promise<{ closed: true } | { refused: string }>;
+  /**
+   * On daemon start: re-subscribe to every open runner in the ledger. Status subscriptions and
+   * finish subscriptions are in memory and can be consumed by a "was closed" notice, so the
+   * ledger is the only record of what is open.
+   */
+  reattach(runners: RunnerRef[]): Promise<{ attached: RunnerRef[]; gone: RunnerRef[] }>;
   /** The agent's own last assistant message, read by the daemon; never from a PR comment. */
   lastReply(runner: RunnerRef): Promise<string | null>;
-  onStatus(
-    listener: (runner: RunnerRef, status: RunnerStatus, detail: string | null) => void,
-  ): () => void;
-  /** Classifies an error detail; "quota" parks the account and reopens elsewhere. */
-  classifyError(detail: string): { kind: "quota"; resetsAt: string | null } | { kind: "other" };
+  onStatus(listener: (runner: RunnerRef, status: RunnerStatus) => void): () => void;
 }
 
 export interface AccountChoice {
+  /** The destination's local account id. */
   account: string | null;
+  accountDefinition: string | null;
   providerType: string;
   profileId: string | null;
 }
@@ -478,13 +508,27 @@ export interface AccountTable {
     serverId: string | null;
     avoid: string[];
   }): Promise<AccountChoice | { parked: { providerType: string; resetsAt: string | null } }>;
-  /** Skips the account until `until`, or 60 minutes when the reset time is unknown. */
-  park(account: string, providerType: string, until: string | null, reason: string): Promise<void>;
+  /**
+   * Parks by installation account definition, so a refusal on Dev also parks the Host binding
+   * of the same account. Skipped until `until`, or 60 minutes when the reset time is unknown.
+   */
+  park(
+    accountDefinition: string,
+    providerType: string,
+    until: string | null,
+    reason: string,
+  ): Promise<void>;
 }
 
 export interface CapacitySnapshot {
   runners: { open: number; max: number };
-  heavy: { running: boolean; waiting: number; slots: number };
+  /**
+   * The machine's heavy-job queue runs ONE heavy job at a time (scripts/heavy-job.mjs has one
+   * holder per computer). `queueLimit` is how many waiting heavy tickets this machine accepts
+   * before it stops claiming heavy issues; more machines, not a higher limit, add parallel heavy
+   * capacity. Real parallel slots in the shared ticket protocol are a post-MVP option.
+   */
+  heavy: { running: boolean; waiting: number; queueLimit: number };
   /** The heavy-job queue's memory guard. */
   memory: { ok: boolean; reason: string | null };
 }
@@ -521,7 +565,10 @@ export interface LeasePort {
   /** Claims through `claimIssue`, then writes the lease comment. `continueFrom` names an archive branch after a takeover. */
   acquire(issue: number): Promise<LeaseAcquire>;
   renew(issue: number): Promise<Lease>;
-  release(issue: number, why: "pause" | "disable" | "done" | "takeover"): Promise<void>;
+  release(
+    issue: number,
+    why: "pause" | "disable" | "done" | "takeover" | "capacity",
+  ): Promise<void>;
   /** Expired by this reader's clock and with no push for the TTL. Decision 2: taken over without asking. */
   expired(leases: Lease[], now: Date): Lease[];
 }
@@ -530,6 +577,10 @@ export interface LaneHolder {
   lane: Lane;
   /** The configured holder, or the first entry of an ordered list. */
   configured: Installation | null;
+  /** The effective ordered holders: the lane's own list, else the project's default order. */
+  ordered: Installation[];
+  /** A machine-bound lane never moves (an install onto one machine); only `configured` may hold it. */
+  pinned: boolean;
   /** Who holds the lane lease now, if anyone. */
   leaseHolder: Installation | null;
   epoch: number | null;
@@ -561,7 +612,8 @@ export interface PresenceRecord {
   mode: FactoryMode;
   daemonVersion: string;
   leanProtocol: number;
-  heavySlots: number;
+  /** Waiting heavy tickets accepted before the machine stops claiming heavy issues. */
+  heavyQueueLimit: number;
   runnersMax: number;
   runnersOpen: number;
   seq: number;

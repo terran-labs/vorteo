@@ -39,8 +39,15 @@ export const FACTORY_CONFIG_PATH = ".github/vorteo-factory.json";
 /** The newest configuration major this release understands. */
 export const FACTORY_CONFIG_VERSION = 1;
 
-/** One installation, or an ordered preference list for lanes that may follow availability. */
-const laneHolders = z.union([InstallationSchema, z.array(InstallationSchema).min(1)]);
+/**
+ * One installation; an ordered preference list; or the object form, whose `pinned` marks a
+ * machine-bound lane (an install onto one machine) that never moves to another holder.
+ */
+const laneHolders = z.union([
+  InstallationSchema,
+  z.array(InstallationSchema).min(1),
+  z.looseObject({ holders: z.array(InstallationSchema).min(1), pinned: z.boolean().optional() }),
+]);
 
 const gateRef = z.looseObject({
   name: z.string().min(1),
@@ -124,20 +131,23 @@ export const FactoryConfigV1Schema = z.looseObject({
   /** Absent means "crew". */
   mode: FactoryModeSchema.optional(),
   /**
-   * One installation per lane, or an ordered list where the lane allows one (`releaseBuild`,
-   * and `delivery` when its deploy is machine-independent). Machines that only build issues
-   * are never listed. Ordered lists are held pending the owner's decision on lanes that follow
-   * availability; a daemon of this release uses only the first entry.
+   * Per-lane overrides of `order`. Every lane may name an ordered list. Intake is treated as
+   * pinned until the ledger is portable, and delivery is pinned automatically when the recipe
+   * installs onto a machine (`lifecycle` steps). Machines that only build issues are never
+   * listed. Lane failover is held pending the owner's decision 7; until then only the first
+   * effective holder acquires.
    */
   lanes: z
     .looseObject({
-      intake: InstallationSchema.optional(),
-      merge: InstallationSchema.optional(),
+      intake: laneHolders.optional(),
+      merge: laneHolders.optional(),
       delivery: laneHolders.optional(),
       releaseBuild: laneHolders.optional(),
-      mechanic: InstallationSchema.optional(),
+      mechanic: laneHolders.optional(),
     })
     .optional(),
+  /** The project's default lane order, used by every lane without its own entry. */
+  order: z.array(InstallationSchema).min(1).optional(),
   /** Optional allowlist; absent means any trusted, lease-capable installation may claim. */
   claimers: z.array(InstallationSchema).optional(),
   lease: z
@@ -244,7 +254,8 @@ export const FactoryPresenceSchema = z.object({
   mode: z.string(),
   daemonVersion: z.string(),
   leanProtocol: z.number().int(),
-  heavySlots: z.number().int(),
+  /** Waiting heavy tickets accepted before the machine stops claiming heavy issues. */
+  heavyQueueLimit: z.number().int(),
   runnersMax: z.number().int(),
   runnersOpen: z.number().int(),
   /** Reader-relative: when this reader last saw the record change. */
@@ -586,9 +597,10 @@ export const factoryLeanLocalSet = defineRpc({
   input: z.strictObject({
     projectId,
     runners: z.number().int().min(0).max(32).optional(),
-    heavySlots: z.number().int().min(0).max(8).optional(),
+    /** Waiting heavy tickets accepted before this machine stops claiming heavy issues. */
+    heavyQueueLimit: z.number().int().min(0).max(8).optional(),
   }),
-  output: z.object({ runners: z.number().int(), heavySlots: z.number().int() }),
+  output: z.object({ runners: z.number().int(), heavyQueueLimit: z.number().int() }),
 });
 
 /** Every lean RPC. Registered by the plugin only when the daemon advertises `factoryLean`. */
