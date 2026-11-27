@@ -58,6 +58,13 @@ describe("factory-review status decision", () => {
     },
     { name: "no reply yet", from: null, text: "", state: "pending" },
     {
+      name: "no lead or worker recorded for the issue",
+      from: "reviewer",
+      text: `APPROVE ${HEAD}`,
+      state: "failure",
+      team: [agents[2]!],
+    },
+    {
       name: "worker and reviewer both on the default account",
       from: "reviewer",
       text: `APPROVE ${HEAD}`,

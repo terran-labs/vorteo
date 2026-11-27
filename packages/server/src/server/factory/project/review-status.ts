@@ -93,10 +93,15 @@ export function decideReviewStatus(input: ReviewStatusInput): ReviewStatusDecisi
   // Agent ids are unique, so a reviewer is never the lead or worker thread itself; a shared
   // account would still make it the same identity. An unknown account on either side, such as
   // two agents on the configured default, cannot be shown to differ, so it is not independent.
-  if (reviewer.account === null || authors.some((agent) => agent.account === null))
+  // With no lead or worker recorded there is nothing to be independent of, so it is unproven.
+  if (
+    authors.length === 0 ||
+    reviewer.account === null ||
+    authors.some((agent) => agent.account === null)
+  )
     return decision(
       "failure",
-      `The reviewer's or an author's account is unknown, so independence is unproven.`,
+      `No lead or worker is recorded, or an account is unknown, so independence is unproven.`,
     );
   if (authors.some((agent) => agent.account === reviewer.account))
     return decision("failure", `The reviewer shares an account with the issue's lead or worker.`);
