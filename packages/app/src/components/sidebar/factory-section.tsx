@@ -124,6 +124,15 @@ export const FactorySection = memo(function FactorySection({
       (workspace) => !running.has(workspace.factoryIssue?.issue ?? 0),
     );
   }, [runners, issueWorkspaces]);
+  // Finished: the issue has left the open queue and the workspace's pull request merged.
+  const finished = useMemo(() => {
+    if (!issues) return [];
+    const open = new Set(issues.map((issue) => issue.number));
+    return idle.filter(
+      (workspace) =>
+        workspace.prHint?.state === "merged" && !open.has(workspace.factoryIssue?.issue ?? 0),
+    );
+  }, [idle, issues]);
   const pill = useMemo(
     () =>
       state ? { pill: factoryStatePill(state), description: factoryStateReason(state, t) } : null,
@@ -175,6 +184,7 @@ export const FactorySection = memo(function FactorySection({
       <FactoryIdleWorkspaces
         groupKey={`factory-idle-open:${card.key}`}
         workspaces={idle}
+        finished={finished}
         level={level + 1}
         onBeforeNavigate={onWorkspacePress}
       />

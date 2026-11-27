@@ -1835,4 +1835,27 @@ it("lists a Dev issue worker under the Host Factory its labels name, without the
   ]);
   expect(groups.factory).toEqual([issue]);
   expect(groups.work).toEqual([mixed]);
+  // A membership no reported role claims, kept from an older Factory, is not crew.
+  const stale = createSidebarWorkspaceEntry({
+    serverId: "host",
+    workspace: {
+      ...base,
+      id: "ws-stale",
+      projectId: "vorteo",
+      factoryMembership: {
+        installationId: "project-factory:vorteo",
+        projectId: "vorteo",
+        serverId: "host",
+        role: "factory",
+      },
+    },
+  });
+  const staleGroups = splitFactoryWorkspaces(
+    [stale],
+    new Map([[stale.workspaceKey, stale]]),
+    new Map([["host", true]]),
+    [hostFactory],
+  );
+  expect(staleGroups.factory).toEqual([]);
+  expect(staleGroups.work).toEqual([stale]);
 });

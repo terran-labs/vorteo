@@ -1,4 +1,4 @@
-import { memo, useCallback } from "react";
+import { memo, useCallback, useMemo } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -21,6 +21,12 @@ import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
 import type { SidebarWorkspaceEntry } from "@/hooks/use-sidebar-workspaces-list";
 import { WorkspaceStatusIndicator } from "./sidebar-workspace-row-content";
+import { ContextMenuItem } from "@/components/ui/context-menu";
+import { useToast } from "@/contexts/toast-context";
+import { getHostRuntimeStore } from "@/runtime/host-runtime";
+import { confirmDialog } from "@/utils/confirm-dialog";
+import { getWorkspaceArchiveBlockReason } from "@/workspace/lifecycle/archive";
+import { archiveWorkspacesOptimistically } from "@/workspace/workspace-archive";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { useVortonTouch } from "@/vorton-touch";
 import {
@@ -88,15 +94,28 @@ export function FactoryRunners({
 export function FactoryIdleWorkspaces({
   groupKey,
   workspaces,
+  finished,
   level,
   onBeforeNavigate,
 }: {
   groupKey: string;
   workspaces: readonly SidebarWorkspaceEntry[];
+  /** Idle workspaces whose issue is closed and pull request merged, offered for archiving. */
+  finished: readonly SidebarWorkspaceEntry[];
   level: number;
   onBeforeNavigate?: () => void;
 }) {
   const { t } = useTranslation();
+  const archiveFinished = useArchiveFinishedIssueWorkspaces(finished);
+  const menu = useMemo(
+    () =>
+      finished.length > 0 ? (
+        <ContextMenuItem onSelect={archiveFinished} testID="factory-card-idle-archive">
+          {t("sidebar.factoryCard.archiveFinished")}
+        </ContextMenuItem>
+      ) : undefined,
+    [archiveFinished, finished.length, t],
+  );
   if (workspaces.length === 0) return null;
   return (
     <FactoryGroup
@@ -105,6 +124,7 @@ export function FactoryIdleWorkspaces({
       count={workspaces.length}
       level={level}
       defaultCollapsed
+      menu={menu}
       testID="factory-card-idle"
     >
       {workspaces.map((workspace) => (
@@ -117,6 +137,44 @@ export function FactoryIdleWorkspaces({
       ))}
     </FactoryGroup>
   );
+}
+
+/**
+ * Archives finished issue workspaces after the owner confirms. Each one goes through the same
+ * checks as archiving it by hand: a workspace the app protects is left alone, and one with
+ * uncommitted files, commits ahead of its upstream, or a git state not yet read is skipped.
+ */
+function useArchiveFinishedIssueWorkspaces(finished: readonly SidebarWorkspaceEntry[]) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  return useCallback(async () => {
+    const confirmed = await confirmDialog({
+      title: t("sidebar.factoryCard.archiveFinishedTitle", { count: finished.length }),
+      message: t("sidebar.factoryCard.archiveFinishedBody"),
+      confirmLabel: t("sidebar.factoryCard.archiveFinishedConfirm"),
+      cancelLabel: t("common.actions.cancel"),
+      destructive: true,
+    });
+    if (!confirmed) return;
+    const clean = finished.filter(
+      (workspace) =>
+        getWorkspaceArchiveBlockReason(workspace.serverId, workspace.workspaceId) === null &&
+        workspace.archiveHasUncommittedChanges === false &&
+        (workspace.archiveUnpushedCommitCount ?? 0) === 0,
+    );
+    const failures = await archiveWorkspacesOptimistically({
+      getClient: (serverId) => getHostRuntimeStore().getClient(serverId),
+      workspaces: clean.map(({ serverId, workspaceId }) => ({ serverId, workspaceId })),
+    });
+    const archived = clean.length - failures.length;
+    toast.show(
+      t("sidebar.factoryCard.archiveFinishedResult", {
+        archived,
+        skipped: finished.length - clean.length,
+      }),
+      { variant: failures.length > 0 ? "error" : "success" },
+    );
+  }, [finished, t, toast]);
 }
 
 /** "Factory #345: restart holds" reads "restart holds" beside its number. */
