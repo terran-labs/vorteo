@@ -942,6 +942,93 @@ test("a quota drop during creation reports the created agent for cleanup and nev
   }
 });
 
+test("team dispatch uses the chosen account and preserves the frozen worker settings", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "worker-team-dispatch-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const agentManager = new AgentManager({
+    clients: { codex: createTestAgentClient("codex"), backup: createTestAgentClient("backup") },
+    registry: storage,
+    logger,
+  });
+  const providerSnapshotManager = createProviderSnapshotManagerStub().manager;
+  const worker = {
+    id: "reviewer",
+    name: "Reviewer",
+    provider: "codex",
+    model: "frozen",
+    thinkingOptionId: "high",
+  };
+  const pickTeamWorkerAccount = vi.fn(async () => ({
+    provider: "backup",
+    reason: "alternate-usage-unreadable",
+    droppedLowProviders: ["codex"],
+    earliestResetAt: null,
+  }));
+  try {
+    const parent = await agentManager.createAgent(
+      {
+        cwd: workdir,
+        provider: "codex",
+        profileLaunch: {
+          profile: { id: "team", name: "Team", provider: "codex", workerProfileIds: [worker.id] },
+          workers: [worker],
+        },
+      },
+      undefined,
+      { workspaceId: "ws-team" },
+    );
+    const settings = MutableDaemonConfigSchema.parse({
+      mcp: { injectIntoAgents: false },
+      providers: { backup: { extends: "codex" } },
+    });
+    const dependencies = {
+      agentManager,
+      agentStorage: storage,
+      logger,
+      providerSnapshotManager,
+      pickTeamWorkerAccount,
+      getSharedProviderConfig: () => settings,
+      serverId: "host",
+    };
+    const launch = {
+      kind: "mcp" as const,
+      callerAgentId: parent.id,
+      title: "Review",
+      profileId: worker.id,
+      thinking: "override",
+      notifyOnFinish: false,
+    };
+    const result = await createAgentCommand(dependencies, launch);
+    expect(result.accountChoiceReason).toContain("without a quota reading");
+    expect(result.accountChoiceReason).toContain("codex");
+    expect(result.snapshot.config).toMatchObject({
+      provider: "backup",
+      model: "frozen",
+      thinkingOptionId: "high",
+    });
+    expect(result.snapshot.labels[PARENT_AGENT_ID_LABEL]).toBe(parent.id);
+    expect((await storage.get(result.snapshot.id))?.workerGovernance).toEqual({
+      supervisorAgentId: parent.id,
+      serverId: "host",
+      workerProfileId: worker.id,
+      accountChoice: { provider: "backup", reason: result.accountChoiceReason },
+    });
+    expect(pickTeamWorkerAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ worker, supervisorProvider: "codex" }),
+    );
+    await expect(
+      createAgentCommand(dependencies, { ...launch, callerAgentId: result.snapshot.id }),
+    ).rejects.toMatchObject({
+      code: "team-worker-launch",
+    });
+    await expect(
+      createAgentCommand(dependencies, { ...launch, callerAgentId: undefined }),
+    ).rejects.toThrow("provider/model is required");
+  } finally {
+    await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
+  }
+});
+
 test("a shared supervisor retains frozen worker values after inspecting installation context", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "shared-worker-test-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);

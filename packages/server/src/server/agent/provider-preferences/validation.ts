@@ -67,15 +67,27 @@ export function validateProviderPreferences(input: {
     ...input.legacyProfiles,
     ...sharedProfiles,
   ];
+  validateWorkerReferences(sharedProfiles, profiles, preferences, providers);
+}
+
+function validateWorkerReferences(
+  sharedProfiles: readonly AgentProfile[],
+  profiles: readonly AgentProfile[],
+  preferences: SharedProviderPreferences,
+  providers: MutableDaemonConfig["providers"],
+): void {
   for (const profile of sharedProfiles) {
-    if (!profile.workerProfileId) continue;
-    const workerId = canonicalProfileId(profile.workerProfileId, preferences, providers);
-    const worker = profiles.find((candidate) => candidate.id === workerId);
-    if (!worker || !worker.model || worker.workerProfileId) {
-      throw new ProviderPreferencesValidationError(
-        profile.workerProfileId,
-        "Choose an existing worker with an explicit model and no worker team.",
-      );
+    const references = [...(profile.workerProfileIds ?? [])];
+    if (profile.workerProfileId) references.push(profile.workerProfileId);
+    for (const reference of references) {
+      const workerId = canonicalProfileId(reference, preferences, providers);
+      const worker = profiles.find((candidate) => candidate.id === workerId);
+      if (!worker?.model || worker.workerProfileId || worker.workerProfileIds?.length) {
+        throw new ProviderPreferencesValidationError(
+          reference,
+          "Choose an existing worker with an explicit model and no worker team.",
+        );
+      }
     }
   }
 }

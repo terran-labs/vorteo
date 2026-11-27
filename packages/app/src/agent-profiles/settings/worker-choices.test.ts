@@ -1,8 +1,8 @@
 import { expect, it } from "vitest";
 import type { AgentProfile } from "@getpaseo/protocol/messages";
 import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
-import { sharedWorkflowProfileId } from "@getpaseo/protocol/provider-preferences";
-import { workerChoices } from "./worker-choices";
+import { sharedProfileId, sharedWorkflowProfileId } from "@getpaseo/protocol/provider-preferences";
+import { workerChoices, workerTeamChoices } from "./worker-choices";
 
 const providers = {
   "claude-one": { extends: "claude" },
@@ -106,4 +106,22 @@ it("displays the runtime's local binding for an unchanged installation worker re
     originalWorkerId: canonical,
   });
   expect(changed.accountId).toBe("codex-one");
+});
+
+it("offers one portable team choice per eligible profile and retains unavailable selections", () => {
+  const nested = {
+    ...profiles[2],
+    id: sharedWorkflowProfileId("codex-two", "nested"),
+    workerProfileIds: ["worker"],
+  };
+  const options = workerTeamChoices(
+    { ...input, profiles: [...profiles, nested] },
+    { version: 1, revision: 1, providers: {}, legacyProfiles: {} },
+    ["removed"],
+  );
+  expect(options.map((option) => option.value)).toEqual([
+    sharedProfileId("claude", "worker"),
+    sharedProfileId("codex", "worker"),
+    "removed",
+  ]);
 });

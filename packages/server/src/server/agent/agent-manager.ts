@@ -73,7 +73,7 @@ import { describeHookAgent, publishAgentStream } from "../plugins/lifecycle/inde
 import type { PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { managedWorkerLimit } from "./worker-limit.js";
+import { hasManagedWorkers, managedWorkerLimit } from "./worker-limit.js";
 import { countRunningWorkers } from "./worker-activity.js";
 import { basename, resolve } from "node:path";
 import { stat } from "node:fs/promises";
@@ -147,7 +147,12 @@ import type { AgentUsageLimitResumeAction, UsageLimitHold } from "@getpaseo/prot
 import { usageLimitContinuationText } from "./usage-limit/resume-service.js";
 import { buildArchivedAgentRecord, type ArchivedStoredAgentRecord } from "./agent-archive.js";
 import { restoreStoredUsage, toStoredAgentRecord } from "./agent-projections.js";
-import type { StoredAgentRecord, AgentStorage, ChecklistWakeGeneration } from "./agent-storage.js";
+import type {
+  StoredAgentRecord,
+  AgentStorage,
+  ChecklistWakeGeneration,
+  WorkerGovernance,
+} from "./agent-storage.js";
 import type { AgentOwner } from "./agent-owner.js";
 import { ProviderQuotaExhaustedError } from "./quota-error.js";
 import {
@@ -616,6 +621,7 @@ type ProviderEnabledMap = Partial<Record<AgentProvider, ProviderEnabledFlag>>;
 type ProviderClientMap = Partial<Record<AgentProvider, AgentClient>>;
 
 export interface CreateAgentOptions {
+  workerGovernance?: WorkerGovernance;
   labels?: Record<string, string>;
   initialPrompt?: string;
   env?: Record<string, string>;
@@ -732,9 +738,9 @@ export function isQuotaAdmissionRefusal(error: unknown): boolean {
 function quotaTeamRoot(
   thread: { id: string },
   parentId: string | undefined,
-  parentConfig: { profileLaunch?: { worker?: unknown } | null } | null | undefined,
+  parentConfig: Pick<AgentSessionConfig, "profileLaunch"> | null | undefined,
 ): string {
-  return parentId && parentConfig?.profileLaunch?.worker ? parentId : thread.id;
+  return parentId && hasManagedWorkers(parentConfig?.profileLaunch) ? parentId : thread.id;
 }
 
 /**
@@ -1634,7 +1640,7 @@ export class AgentManager {
     parent: ManagedAgent | StoredAgentRecord | null | undefined,
     provider: AgentProvider,
   ): Promise<void> {
-    if (!parent?.config?.profileLaunch?.worker || !this.registry) return;
+    if (!hasManagedWorkers(parent?.config?.profileLaunch) || !this.registry) return;
     const limitedUntil = await this.usageLimitedUntil(provider);
     if (limitedUntil)
       throw new WorkerLaunchRefusal(
@@ -1664,7 +1670,7 @@ export class AgentManager {
     const isTeammate = (labels: Record<string, string>, id: string, provider: AgentProvider) =>
       (id === rootId || labels[PARENT_AGENT_ID_LABEL] === rootId) && provider === failed.provider;
     // Only worker-profile teams latch: a worker's supervisor, or a supervisor itself.
-    if (rootId === failed.id && !failed.config.profileLaunch?.worker) return;
+    if (rootId === failed.id && !hasManagedWorkers(failed.config.profileLaunch)) return;
     const records = (await this.registry?.list()) ?? [];
     const loadedTeam = this.listAgents().filter((agent) =>
       isTeammate(agent.labels, agent.id, agent.provider),
@@ -1722,7 +1728,7 @@ export class AgentManager {
     const parent = parentId
       ? (this.agents.get(parentId) ?? records.find((record) => record.id === parentId))
       : undefined;
-    const rootId = parent?.config?.profileLaunch?.worker ? parent.id : agentId;
+    const rootId = parent && hasManagedWorkers(parent.config?.profileLaunch) ? parent.id : agentId;
     const resetAt = new Date(this.now()).toISOString();
     for (const record of records) {
       if (record.id !== rootId && record.labels[PARENT_AGENT_ID_LABEL] !== rootId) continue;
@@ -3794,16 +3800,16 @@ export class AgentManager {
       : undefined;
     if (parent) this.assertQuotaNotPaused(parent.id);
     // Only team workers wait on the check; other creation must not yield here.
-    if (parent?.config?.profileLaunch?.worker)
+    const launch = parent?.config?.profileLaunch;
+    if (parent && hasManagedWorkers(launch)) {
       await this.assertWorkerAccountAvailable(parent, config.provider);
-    if (parent?.config?.profileLaunch?.worker) {
       const pending = this.pendingWorkerCreations.get(parent.id) ?? 0;
       const running = this.listAgents().filter(
         (agent) =>
           agent.labels[PARENT_AGENT_ID_LABEL] === parent.id &&
           (isAgentBusy(agent.lifecycle) || this.runs.hasRun(agent.id)),
       ).length;
-      const limit = managedWorkerLimit(parent.config.profileLaunch.profile);
+      const limit = managedWorkerLimit(launch.profile);
       if (limit !== null && pending + running >= limit) {
         throw new WorkerLaunchRefusal(
           "Worker limit reached. Wait for a worker to finish before creating another.",
@@ -3973,6 +3979,7 @@ export class AgentManager {
       initialTitle: options.initialTitle,
       workspaceId: options.workspaceId,
       owner: options.owner,
+      workerGovernance: options.workerGovernance,
       launchEnv: options.env ? { ...options.env } : undefined,
       historyPrimed: true,
     });
@@ -4739,6 +4746,7 @@ export class AgentManager {
 
     // History and launch preparation yield. Recheck before closing the source; settings
     // setters share this lifecycle lane and resolve their session only after acquiring it.
+    await this.checkProfileSwitchScope(input, expectedSource);
     await this.recheckProfileSwitchSource(agentId, input, expectedSource, existing);
 
     let session: AgentSession | undefined;
@@ -6742,14 +6750,15 @@ export class AgentManager {
   ): void {
     const parentId = existingAgent.labels[PARENT_AGENT_ID_LABEL];
     const parent = parentId ? this.agents.get(parentId) : undefined;
-    if (parent?.config.profileLaunch?.worker) {
+    const launch = parent?.config.profileLaunch;
+    if (parent && hasManagedWorkers(launch)) {
       const running = this.listAgents().filter(
         (agent) =>
           agent.id !== agentId &&
           agent.labels[PARENT_AGENT_ID_LABEL] === parent.id &&
           (isAgentBusy(agent.lifecycle) || this.runs.hasRun(agent.id)),
       ).length;
-      const limit = managedWorkerLimit(parent.config.profileLaunch.profile);
+      const limit = managedWorkerLimit(launch.profile);
       if (limit !== null && running >= limit) {
         throw new Error(
           "Worker limit reached. Wait for a worker to finish before starting another.",
@@ -7958,6 +7967,7 @@ export class AgentManager {
       workspaceId?: string;
       owner?: AgentOwner;
       launchEnv?: Record<string, string>;
+      workerGovernance?: WorkerGovernance;
     },
   ): Promise<ManagedAgent> {
     let registered = false;
@@ -8001,6 +8011,8 @@ export class AgentManager {
 
       if (!this.acceptingAgentRegistrations) throw new AgentManagerShuttingDownError();
       this.restoreLatestQuotaReserve(resolvedAgentId, managed.config);
+      await this.persistWorkerGovernance(managed, initialPersistedTitle, options);
+      this.assertAcceptingAgentRegistrations();
       this.agents.set(resolvedAgentId, managed);
       registered = true;
       void this.deliverPendingAnswers(resolvedAgentId).catch((error: unknown) => {
@@ -8520,6 +8532,28 @@ export class AgentManager {
         ? config.title.trim()
         : null;
     return explicitTitle ?? fallbackTitle;
+  }
+
+  private async persistWorkerGovernance(
+    agent: ManagedAgent,
+    title: string | null,
+    options?: Pick<CreateAgentOptions, "workerGovernance">,
+  ): Promise<void> {
+    const governance = options?.workerGovernance;
+    if (!governance) return;
+    const registry = this.requireRegistry();
+    if (agent.internal) {
+      throw new WorkerLaunchRefusal(
+        "A managed team worker requires a durable thread.",
+        "worker-governance-unavailable",
+      );
+    }
+    if (!(await registry.recordWorkerGovernance(agent.id, governance, { agent, title }))) {
+      throw new WorkerLaunchRefusal(
+        "Could not save the worker's team authority.",
+        "worker-governance-unavailable",
+      );
+    }
   }
 
   private async persistSnapshot(
@@ -9981,7 +10015,7 @@ export class AgentManager {
       ? this.resolvePaseoToolPolicy(storedConfig.provider)
       : { enabled: false };
     if (
-      storedConfig.profileLaunch?.worker &&
+      hasManagedWorkers(storedConfig.profileLaunch) &&
       (!isPaseoToolPolicyEnabled(paseoToolPolicy) ||
         paseoToolPolicy?.disabledTools?.includes("create_agent"))
     ) {

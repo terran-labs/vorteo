@@ -29,6 +29,7 @@ class Environment implements ProfileEnvironment {
   readyProviders: string[] = [];
   offline = false;
   workerAccounts = false;
+  workerTeams = false;
   uncappedManagedWorkers = false;
   reads = 0;
   loseReply = false;
@@ -1228,6 +1229,27 @@ test("coordinator refuses a new explicit worker account until every environment 
     service.patch({ expectedRevision: snapshot.revision, providers }),
   ).rejects.toBeInstanceOf(ProfileSharingConflict);
   expect(service.snapshot()).toEqual(snapshot);
+});
+
+test("team edits require every environment and survive a save from an older editor", async () => {
+  const { service, host, container } = fixture();
+  host.workerTeams = true;
+  await service.synchronize();
+  const snapshot = service.snapshot()!;
+  const providers = structuredClone(snapshot.providers);
+  const group = providers.codex;
+  const worker = group.workflows[0];
+  const members = [`shared-profile/codex/${worker.id}`];
+  group.workflows.push({ id: "team", name: "Team", provider: "codex", workerProfileIds: members });
+  await expect(service.patch({ expectedRevision: snapshot.revision, providers })).rejects.toThrow(
+    "Update every environment",
+  );
+  container.workerTeams = true;
+  const saved = await service.patch({ expectedRevision: snapshot.revision, providers });
+  expect(saved.workerTeams).toBe(true);
+  delete group.workflows.at(-1)!.workerProfileIds;
+  const preserved = await service.patch({ expectedRevision: saved.revision, providers });
+  expect(preserved.providers.codex.workflows.at(-1)?.workerProfileIds).toEqual(members);
 });
 
 test("an explicit worker account cannot fall back to another account when unavailable", async () => {

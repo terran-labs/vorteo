@@ -196,6 +196,8 @@ import { switchAgentProfileCommand } from "./agent/profile-switch/command.js";
 import { ProjectFactoryService } from "./factory/project/service.js";
 import { createFactoryHomeClient } from "./execution-installation/factory-home.js";
 import { daemonFactoryAccounts } from "./factory/project/account-choice.js";
+import { pickWorkerAccount } from "./agent/account-pool/worker-account.js";
+import { resolveProviderType } from "@getpaseo/protocol/provider-preferences";
 import { profileProvider, resolveDefaultLaunch } from "./system-project/launch-selection.js";
 import type { SessionHostConnector } from "./session-host/connector.js";
 import { bootstrapWorkspaceRegistries } from "./workspace-registry-bootstrap.js";
@@ -1689,6 +1691,27 @@ export async function createPaseoDaemon(
   };
 
   const createAgentCommandDependencies: CreateAgentCommandDependencies = {
+    pickTeamWorkerAccount: async ({ worker, requestedProvider, avoidProvider }) => {
+      const settings = daemonConfigStore.get();
+      const [ready, usage] = await Promise.all([
+        providerSnapshotManager.listProviders({ wait: false }),
+        providerUsageService
+          .listUsage({ forceRefresh: true })
+          .catch(() => ({ fetchedAt: "", providers: [] })),
+      ]);
+      return pickWorkerAccount({
+        settings,
+        ready: requestedProvider
+          ? ready.filter((entry) => entry.provider === requestedProvider)
+          : ready,
+        usage,
+        providerType: resolveProviderType(worker.provider, settings.providers ?? {}),
+        defaultProvider: worker.provider,
+        avoidProvider,
+        priority: "normal",
+        nowMs: Date.now(),
+      });
+    },
     getAgentProfiles: () => daemonConfigStore.get().agentProfiles ?? [],
     getSharedProviderConfig: () => daemonConfigStore.get(),
     validateSharedConfiguration: (selection) =>
@@ -2270,6 +2293,7 @@ export async function createPaseoDaemon(
     markWorkspaceArchiving: markWorkspaceArchivingExternal,
     clearWorkspaceArchiving: clearWorkspaceArchivingExternal,
     ensureWorkspaceForCreate: createAgentCommandDependencies.ensureWorkspaceForCreate,
+    pickTeamWorkerAccount: createAgentCommandDependencies.pickTeamWorkerAccount,
     createPaseoWorktree: createAgentCommandDependencies.createPaseoWorktree,
     browserToolsEnabled: browserToolsPolicy.isEnabled(),
     browserToolsBroker,

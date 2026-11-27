@@ -44,6 +44,7 @@ import {
 } from "../agent-projections.js";
 import { summarizeAgentActivity } from "../activity-curator.js";
 import type { AgentStorage } from "../agent-storage.js";
+import { reopenWorkerAfterUsageLimit } from "../usage-limit/worker-recovery.js";
 import { AgentNotFoundError, ensureAgentLoaded } from "../agent-loading.js";
 import { isStoredAgentProviderAvailable } from "../../persistence-hooks.js";
 import {
@@ -170,6 +171,7 @@ import { createPreviewTools } from "../../previews/tools.js";
 
 export interface PaseoToolHostDependencies {
   agentMessages?: () => AgentMessageDelivery;
+  pickTeamWorkerAccount?: CreateAgentCommandDependencies["pickTeamWorkerAccount"];
   finishSubscriptions?: () => FinishSubscriptions;
   serverId?: string;
   hosts?: () => ToolHosts;
@@ -1424,9 +1426,7 @@ function createToolCatalog(
     profileId: z
       .string()
       .optional()
-      .describe(
-        "Launch a saved preset, including instructions. A supervisor must use its configured worker preset.",
-      ),
+      .describe("Launch a saved preset. Supervisors choose from their frozen worker presets."),
     title: z
       .string()
       .trim()
@@ -1466,6 +1466,9 @@ function createToolCatalog(
   };
   const agentToAgentInputSchema = {
     ...canonicalCreateAgentFields,
+    provider: ProviderModelInputSchema.optional().describe(
+      "Provider/model pair. Only a worker team supervisor can omit it for quota-aware account selection.",
+    ),
     notifyOnFinish: z
       .boolean()
       .optional()
@@ -1487,6 +1490,7 @@ function createToolCatalog(
   const legacyAgentToAgentInputSchema = {
     ...commonCreateAgentFields,
     ...legacyCreateAgentPlacementFields,
+    provider: agentToAgentInputSchema.provider,
     notifyOnFinish: agentToAgentInputSchema.notifyOnFinish,
   };
   const legacyTopLevelCreateAgentInputSchema = {
@@ -2065,11 +2069,42 @@ function createToolCatalog(
   );
 
   registerTool(
+    "reopen_worker_after_usage_limit",
+    {
+      title: "Reopen a worker after a usage limit",
+      description:
+        "Reopen one of your team workers on another eligible account after a recorded usage stop. Keeps the worker's thread, saved context, and workspace. Does not send a prompt. A waiting result includes the earliest known reset.",
+      inputSchema: { agentId: z.string().min(1) },
+    },
+    async ({ agentId }) => {
+      const caller = resolveCallerAgent();
+      if (!caller) throw new PaseoToolInputError("Reopening requires an agent-scoped session");
+      const dependencies = { ...createAgentDependencies(), providerSnapshotManager };
+      const result = await reopenWorkerAfterUsageLimit(
+        {
+          agentStorage,
+          getSharedProviderConfig: dependencies.getSharedProviderConfig,
+          pickTeamWorkerAccount: dependencies.pickTeamWorkerAccount,
+          switchProfile: (target, settings) =>
+            switchAgentProfileCommand(dependencies, target, settings),
+        },
+        {
+          agentId,
+          supervisorId: caller.id,
+          serverId: options.serverId,
+          inScope: (cwd) => isSameOrDescendantPath(resolveScopedCwd(cwd), expandUserPath(cwd)),
+        },
+      );
+      return { content: [], structuredContent: ensureValidJson(result) };
+    },
+  );
+
+  registerTool(
     "create_agent",
     {
       title: "Create agent",
       description:
-        "Create an agent. Agent-scoped creation defaults to your workspace and creates your subagent. Top-level creation without workspaceId creates a new local workspace. Requires provider/model (for example codex/gpt-5.4) and an initial prompt. For a different provider, set settings.modeId from inspect_provider; omission is accepted for targets with no modes and for unattended execution supported by the target. Do not guess; call list_providers and list_models first if uncertain.",
+        "Create an agent. Agent-scoped creation defaults to your workspace and creates your subagent. Top-level creation without workspaceId creates a new local workspace. Requires an initial prompt. Only a worker team supervisor can omit provider/model for quota-aware account selection. For a different provider, set settings.modeId from inspect_provider; omission is accepted for targets with no modes and for unattended execution supported by the target. Do not guess; call list_providers and list_models first if uncertain.",
       inputSchema: createAgentInputSchema,
       outputSchema: {
         agentId: z.string(),
@@ -2080,6 +2115,7 @@ function createToolCatalog(
         currentModeId: z.string().nullable(),
         availableModes: z.array(ProviderModeSchema),
         guidance: z.string().optional(),
+        accountChoiceReason: z.string().optional(),
       },
     },
     async (args: unknown) => {
@@ -2093,9 +2129,13 @@ function createToolCatalog(
       const notifyOnFinish = resolveNotifyOnFinish();
       assertAgentCanSetFeatures(parsedArgs.settings?.features);
       if (callerAgentId) assertNoReservedLabels(parsedArgs.labels);
-      const selectedProvider = resolveRequiredProviderModel(parsedArgs.provider).provider;
-      const inheritedConfig = resolveInheritedProviderConfig(selectedProvider);
-      const { snapshot, initialPromptStarted } = await createAgentCommand(
+      const selectedProvider = parsedArgs.provider
+        ? resolveRequiredProviderModel(parsedArgs.provider).provider
+        : undefined;
+      const inheritedConfig = selectedProvider
+        ? resolveInheritedProviderConfig(selectedProvider)
+        : undefined;
+      const { snapshot, initialPromptStarted, accountChoiceReason } = await createAgentCommand(
         createAgentDependencies(),
         {
           kind: "mcp",
@@ -2147,6 +2187,7 @@ function createToolCatalog(
           currentModeId: currentSnapshot.currentModeId,
           availableModes: currentSnapshot.availableModes,
           ...(guidance ? { guidance } : {}),
+          ...(accountChoiceReason ? { accountChoiceReason } : {}),
         }),
       };
       return response;
@@ -2185,7 +2226,12 @@ function createToolCatalog(
       if (!callerAgentId)
         throw new PaseoToolInputError("request_lead_launch requires an agent-scoped session");
       const caller = resolveCallerAgent()!;
-      const worker = caller.config.profileLaunch?.worker;
+      if ((await agentStorage.get(callerAgentId))?.workerGovernance)
+        throw new PaseoToolInputError(
+          "Team workers cannot request lead launches. Ask your supervisor.",
+        );
+      const launch = caller.config.profileLaunch;
+      const worker = launch?.workers?.[0] ?? launch?.worker;
       if (!worker)
         throw new PaseoToolInputError(
           "You have no worker preset, so create_agent already accepts any preset.",
@@ -2304,6 +2350,7 @@ function createToolCatalog(
     return {
       agentManager,
       agentStorage,
+      pickTeamWorkerAccount: options.pickTeamWorkerAccount,
       finishSubscriptions: options.finishSubscriptions?.(),
       logger: childLogger,
       paseoHome: options.paseoHome,
@@ -2351,10 +2398,16 @@ function createToolCatalog(
       throw new PaseoToolInputError("workspaceId cannot be combined with legacy placement fields");
     }
     if (callerAgentId) {
+      const assertProvider = (provider: string | undefined): void => {
+        if (!provider && !resolveCallerAgent()?.config.profileLaunch?.workers?.length) {
+          throw new PaseoToolInputError("provider/model is required outside worker team launches");
+        }
+      };
       if (hasLegacyCreateAgentPlacement(args)) {
         // COMPAT(nestedCreateAgentPlacement): accept the old relationship/workspace shape without
         // advertising it to models. Added in v0.2.0; remove after 2027-01-17.
         const parsed = parseToolArguments(legacyAgentToAgentCreateAgentArgsSchema, args);
+        assertProvider(parsed.provider);
         const { cwd, workspaceId, worktree } = await resolveCreateAgentWorkspace(parsed.workspace, {
           prompt: parsed.initialPrompt,
         });
@@ -2368,6 +2421,7 @@ function createToolCatalog(
         };
       }
       const parsed = parseToolArguments(agentToAgentCreateAgentArgsSchema, args);
+      assertProvider(parsed.provider);
       const { cwd, workspaceId } = await resolveCanonicalCreateAgentWorkspace(parsed.workspaceId, {
         prompt: parsed.initialPrompt,
       });
