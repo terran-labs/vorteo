@@ -43,6 +43,7 @@ export const queueEditDraftSession = new QueueEditDraftSession({
         agentId: draft.agentId,
         createdAt: Date.now(),
         ...captured,
+        original: { text: draft.original.text, createdAt: draft.original.createdAt },
       });
     } catch (error) {
       await Promise.allSettled(
