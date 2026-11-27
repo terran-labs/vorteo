@@ -597,9 +597,7 @@ function pendingAttachments(record: OutboxRecord) {
   return [...operation.attachments, ...record.localAttachments];
 }
 
-const EDIT_HELD_MESSAGE = "This message is being edited in another window.";
-
-/** An expired hold counts as absent, matching the daemon. */
+/** For the "Being edited" label only; the daemon's own clock decides what is held. */
 function isBeingEdited(item: QueueItem): boolean {
   return !!item.editHold && Date.parse(item.editHold.expiresAt) > Date.now();
 }
@@ -749,14 +747,9 @@ function QueueActions({
   toggleDetails: () => void;
 }) {
   const rowActionStyle = useTaskCardRowActionStyle();
-  const reportError = useReportActionError();
   const queued = item.delivery.status === "queued";
   const sendNow = useCallback(() => {
-    // The daemon refuses this too; refusing here keeps it out of the outbox's recovery list.
-    if (isBeingEdited(item)) {
-      reportError(new Error(EDIT_HELD_MESSAGE));
-      return;
-    }
+    // The daemon decides whether a held message may be sent now; this client's clock may differ.
     void control
       .mutate({
         kind: "send_now",
@@ -765,7 +758,7 @@ function QueueActions({
         expectedTurnId: control.activeTurnId,
       })
       .catch(() => {});
-  }, [control, item, reportError]);
+  }, [control, item]);
   const blocked = item.delivery.status === "uncertain" || item.delivery.status === "failed";
   const remove = useCallback(() => {
     void control

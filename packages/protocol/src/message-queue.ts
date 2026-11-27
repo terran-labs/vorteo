@@ -37,7 +37,10 @@ export const QueueItemSchema = QueueContentSchema.extend({
   sendNow: z.object({ expectedTurnId: z.string().nullable() }).optional(),
   // COMPAT(messageQueueEditHold): added 2026-11-27, retain until the client floor includes it.
   // An editor holds the item from delivery until expiresAt; an expired hold is absent.
-  editHold: z.object({ holderId: QueueIdSchema, expiresAt: z.string() }).optional(),
+  // heldSince marks the holder's first hold; the daemon stops renewing 30 minutes after it.
+  editHold: z
+    .object({ holderId: QueueIdSchema, expiresAt: z.string(), heldSince: z.string().optional() })
+    .optional(),
 });
 export const QueueSnapshotSchema = z.object({
   agentId: QueueIdSchema,

@@ -297,12 +297,14 @@ Daemons that validate typed questions also advertise `features.agentQuestionInpu
 
 Daemons advertise `features.messageQueueEditHold` when `agent.queue.mutate.request` accepts the
 `hold_edit` and `release_edit` operations and queue items carry optional `editHold`
-(`holderId`, `expiresAt`). Clients send hold operations only to capable daemons; an older
+(`holderId`, `expiresAt`, optional `heldSince`). Clients send hold operations only to capable daemons; an older
 daemon's operation schema rejects them. Older clients ignore `editHold` and never hold, so
 their editing behaves as before, but their send now on a held item is refused. A hold changes
 the snapshot revision, not the item revision, so the holder's later edit still matches. Holds
-keep no operation receipt and record no ingress evidence. An expired hold counts as absent;
-a client's clock decides only whether it shows "Being edited".
+keep no operation receipt and record no ingress evidence. An expired hold counts as absent, and
+so does one expiring more than two minutes ahead of the daemon's clock. The daemon refuses
+renewal 30 minutes after `heldSince`. A client's clock decides only whether it shows "Being
+edited"; the daemon decides whether the message may be edited or sent now.
 
 ## Workspace project membership at creation
 

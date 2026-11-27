@@ -12,6 +12,7 @@ import { createAgentQueueDelivery } from "./agent-delivery.js";
 import type { QueueAttachmentStore } from "./attachments.js";
 import {
   EDIT_HELD_MESSAGE,
+  EDIT_HOLD_EXPIRED_MESSAGE,
   EDIT_HOLD_MS,
   MessageQueueStore,
   UNCONFIRMED_DELIVERY_REASON,
@@ -233,78 +234,118 @@ it("delivers in order without clients and retains accepted content for timeline 
   }
 });
 
-it("holds a message open for editing, and the messages behind it, until the hold expires", async () => {
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const root = await mkdtemp(join(tmpdir(), "paseo-delivery-edit-hold-"));
-  let now = Date.parse("2026-11-27T18:24:17Z");
-  const clock = () => now;
-  try {
-    const store = new MessageQueueStore(root, clock);
-    for (const id of ["held", "next"])
+it.each([
+  { ending: "the hold expires", delivered: ["held", "next"] },
+  { ending: "the holder saves its edit", delivered: ["held, edited", "next"] },
+  { ending: "renewals reach the 30 minute cap", delivered: ["held", "next"] },
+])(
+  "holds a message open for editing, and the messages behind it, until $ending",
+  async ({ ending, delivered }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const root = await mkdtemp(join(tmpdir(), "paseo-delivery-edit-hold-"));
+    let now = Date.parse("2026-11-27T18:24:17Z");
+    const clock = () => now;
+    try {
+      const store = new MessageQueueStore(root, clock);
+      for (const id of ["held", "next"])
+        await store.mutate("agent", {
+          kind: "enqueue",
+          operationId: id,
+          messageId: id,
+          text: id,
+          attachments: [],
+        });
       await store.mutate("agent", {
-        kind: "enqueue",
-        operationId: id,
-        messageId: id,
-        text: id,
-        attachments: [],
-      });
-    await store.mutate("agent", {
-      kind: "hold_edit",
-      operationId: "hold",
-      messageId: "held",
-      expectedRevision: 0,
-      holderId: "editor",
-    });
-    const received: string[] = [];
-    const worker = new QueueDeliveryWorker(
-      store,
-      {
-        load: async (item) => item.text,
-        prepare: async () => true,
-        start: (_agentId, item) =>
-          (async function* () {
-            received.push(item.id);
-            yield { type: "turn_started", provider: "codex", turnId: item.id };
-          })(),
-        changed: () => {},
-        failed: (error) => {
-          throw error;
-        },
-      },
-      clock,
-    );
-    await worker.wake("agent");
-    expect(received).toEqual([]);
-    // The hold survives a daemon restart. Another window can neither take it nor send the text now.
-    const restarted = new MessageQueueStore(root, clock);
-    const refused = { code: "delivery_conflict", message: EDIT_HELD_MESSAGE };
-    await expect(
-      restarted.mutate("agent", {
         kind: "hold_edit",
-        operationId: "other-hold",
+        operationId: "hold",
         messageId: "held",
         expectedRevision: 0,
-        holderId: "other",
-      }),
-    ).rejects.toMatchObject(refused);
-    await expect(
-      restarted.mutate("agent", {
-        kind: "send_now",
-        operationId: "other-send",
-        messageId: "held",
-        expectedRevision: 0,
-        expectedTurnId: null,
-      }),
-    ).rejects.toMatchObject(refused);
-    now += EDIT_HOLD_MS;
-    await vi.advanceTimersByTimeAsync(EDIT_HOLD_MS + 10);
-    await vi.waitFor(() => expect(received).toEqual(["held", "next"]));
-    worker.close();
-  } finally {
-    vi.useRealTimers();
-    await rm(root, { recursive: true, force: true });
-  }
-});
+        holderId: "editor",
+      });
+      const received: string[] = [];
+      const worker = new QueueDeliveryWorker(
+        store,
+        {
+          load: async (item) => item.text,
+          prepare: async () => true,
+          start: (_agentId, item) =>
+            (async function* () {
+              received.push(item.text);
+              yield { type: "turn_started", provider: "codex", turnId: item.id };
+            })(),
+          changed: () => {},
+          failed: (error) => {
+            throw error;
+          },
+        },
+        clock,
+      );
+      await worker.wake("agent");
+      expect(received).toEqual([]);
+      // The hold survives a daemon restart. Another window can neither take it nor send the text now.
+      const restarted = new MessageQueueStore(root, clock);
+      const refused = { code: "delivery_conflict", message: EDIT_HELD_MESSAGE };
+      await expect(
+        restarted.mutate("agent", {
+          kind: "hold_edit",
+          operationId: "other-hold",
+          messageId: "held",
+          expectedRevision: 0,
+          holderId: "other",
+        }),
+      ).rejects.toMatchObject(refused);
+      await expect(
+        restarted.mutate("agent", {
+          kind: "send_now",
+          operationId: "other-send",
+          messageId: "held",
+          expectedRevision: 0,
+          expectedTurnId: null,
+        }),
+      ).rejects.toMatchObject(refused);
+      if (ending === "the holder saves its edit") {
+        // The edit clears the hold in the same commit, so the edited text is what sends.
+        await restarted.mutate("agent", {
+          kind: "edit",
+          operationId: "edit",
+          messageId: "held",
+          expectedRevision: 0,
+          text: "held, edited",
+          attachments: [],
+        });
+        await worker.wake("agent");
+      } else {
+        if (ending === "renewals reach the 30 minute cap") {
+          const renew = (operationId: string) =>
+            restarted.mutate("agent", {
+              kind: "hold_edit",
+              operationId,
+              messageId: "held",
+              expectedRevision: 0,
+              holderId: "editor",
+            });
+          for (let minute = 1; minute < 30; minute += 1) {
+            now += 60_000;
+            await renew(`renew-${minute}`);
+          }
+          now += 60_000;
+          await expect(renew("renew-30")).rejects.toMatchObject({
+            code: "delivery_conflict",
+            message: EDIT_HOLD_EXPIRED_MESSAGE,
+          });
+          expect(received).toEqual([]);
+        }
+        now += EDIT_HOLD_MS;
+        await vi.advanceTimersByTimeAsync(EDIT_HOLD_MS + 10);
+      }
+      await vi.waitFor(() => expect(received).toEqual(delivered));
+      worker.close();
+    } finally {
+      vi.useRealTimers();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
 const oversized = new SessionHostFrameTooLargeError(37 * 1024 * 1024, 32 * 1024 * 1024);
 

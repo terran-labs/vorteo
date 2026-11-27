@@ -109,4 +109,23 @@ it("holds the message on a capable daemon and leaves its release to the submitte
   );
   // A release sent beside the queued edit could reach the daemon first and free the old text.
   expect(sent.map((operation) => operation.kind)).toEqual(["hold_edit"]);
+  // An editor that closes only stops renewing: another tab may still show this draft.
+  sent.length = 0;
+  const other = await session.open("host", "agent", { ...item, id: "other" });
+  sent.length = 0;
+  let renewals: (() => void) | null = null;
+  const stop = session.keepHeld(
+    () => other,
+    () => undefined,
+    (renew) => {
+      renewals = renew;
+      return () => {
+        renewals = null;
+      };
+    },
+  );
+  stop();
+  await Promise.resolve();
+  expect(renewals).toBeNull();
+  expect(sent.map((operation) => operation.kind)).toEqual(["hold_edit"]);
 });

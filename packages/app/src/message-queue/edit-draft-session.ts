@@ -83,6 +83,37 @@ export class QueueEditDraftSession {
     });
   }
 
+  /**
+   * Keeps the hold while an editor shows the draft: acquires now, then renews every 30 seconds,
+   * reporting a refusal once. Stopping only stops renewing. It never releases: the draft
+   * outlives its editor and tabs showing it share the holder, so only a discard releases, and
+   * an editor that closed is covered by the daemon's expiry.
+   */
+  keepHeld(
+    current: () => QueueEditDraft,
+    report: (error: unknown) => void,
+    schedule: (renew: () => void) => () => void = (renew) => {
+      const timer = setInterval(renew, EDIT_HOLD_RENEWAL_MS);
+      return () => clearInterval(timer);
+    },
+  ): () => void {
+    let reported = false;
+    const renew = () => {
+      void this.renew(current()).then(
+        () => {
+          reported = false;
+          return;
+        },
+        (error: unknown) => {
+          if (!reported) report(error);
+          reported = true;
+        },
+      );
+    };
+    renew();
+    return schedule(renew);
+  }
+
   async release(draft: QueueEditDraft): Promise<void> {
     const hold = this.port.editHold;
     if (!hold?.supported(draft.serverId)) return;

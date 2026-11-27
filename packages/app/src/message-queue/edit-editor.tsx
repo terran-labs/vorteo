@@ -20,7 +20,6 @@ import { SharedQueueAttachments } from "./shared-attachments";
 import { useQueueEditDrafts } from "./edit-draft-context";
 import { type QueueEditDraft, draftHasChanges, draftHasContent } from "./edit-draft";
 import { queueEditDraftSession, queueEditDraftStorage } from "./edit-draft-runtime";
-import { EDIT_HOLD_RENEWAL_MS } from "./edit-draft-session";
 import { QueueEditMediaInput } from "./edit-media-input";
 
 export function QueueEditEditor({
@@ -124,9 +123,7 @@ export function QueueEditEditor({
       })
       .finally(() => setSaving(false));
   }, [refresh, report]);
-  const submitted = useRef(false);
   const save = useCallback(() => {
-    submitted.current = true;
     setSaving(true);
     void writes.current
       .then(() => queueEditDraftSession.save(latest.current))
@@ -136,8 +133,6 @@ export function QueueEditEditor({
           (entry) => entry.id === draft.id,
         );
         if (persisted) latest.current = persisted;
-        // Only a submission may hand the hold to the daemon; a refused save keeps releasing it.
-        submitted.current = !!persisted?.submissionId;
         report(failure);
         await refresh();
       })
@@ -201,7 +196,7 @@ export function QueueEditEditor({
   );
   const changedElsewhere = current && current.revision !== draft.original.revision;
   const unavailable = !current || current.delivery.status !== "queued";
-  useQueueEditHold({ draft, current, latest, active, submitted, report });
+  useQueueEditHold({ draft, current, latest, report });
   const disabled = saving || processing || unsaved || !!draft.submissionId;
   return (
     <QueueEditMediaInput add={add} disabled={disabled} onError={report}>
@@ -299,55 +294,31 @@ export function QueueEditEditor({
 }
 /**
  * Holds the message from delivery while this editor shows its current revision: renews every
- * 30 seconds, acquiring again after a reload, and releases when the editor closes. A cancel
- * releases through the draft session, and a submitted edit releases on the daemon.
+ * 30 seconds, acquiring again after a reload. Closing the editor never releases the hold: the
+ * draft outlives the editor and every tab showing the thread shares its holder, so a release on
+ * unmount could free a message another tab is still editing. Discarding releases through the
+ * draft session, a submitted edit releases on the daemon, and an editor that simply closed is
+ * covered by the daemon's two-minute expiry.
  */
 function useQueueEditHold({
   draft,
   current,
   latest,
-  active,
-  submitted,
   report,
 }: {
   draft: QueueEditDraft;
   current: QueueItem | undefined;
   latest: { readonly current: QueueEditDraft };
-  active: { readonly current: boolean };
-  submitted: { readonly current: boolean };
   report: (error: unknown) => void;
 }) {
   const holdable =
     current?.delivery.status === "queued" &&
     current.revision === draft.original.revision &&
     !draft.submissionId;
-  const releaseOnClose = useCallback(() => {
-    if (active.current && !submitted.current)
-      void queueEditDraftSession.release(latest.current).catch(() => undefined);
-  }, [active, submitted, latest]);
   useEffect(() => {
     if (!holdable) return;
-    let reported = false;
-    const renew = () => {
-      void queueEditDraftSession.renew(latest.current).then(
-        () => {
-          reported = false;
-          return;
-        },
-        (error: unknown) => {
-          // Report a refusal once rather than at every renewal.
-          if (!reported) report(error);
-          reported = true;
-        },
-      );
-    };
-    renew();
-    const timer = setInterval(renew, EDIT_HOLD_RENEWAL_MS);
-    return () => {
-      clearInterval(timer);
-      releaseOnClose();
-    };
-  }, [holdable, latest, report, releaseOnClose]);
+    return queueEditDraftSession.keepHeld(() => latest.current, report);
+  }, [holdable, latest, report]);
 }
 
 function DraftSaveStatus({ unsaved, persisting }: { unsaved: boolean; persisting: boolean }) {

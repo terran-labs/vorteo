@@ -95,10 +95,31 @@ export const EDIT_HOLD_MS = 2 * 60 * 1000;
 /** Shown when another editor holds the message, so its edit is never lost. */
 export const EDIT_HELD_MESSAGE = "This message is being edited in another window.";
 
-/** The item's hold while it is unexpired. An expired hold counts as absent everywhere. */
+/** Renewals stop this long after a holder first held the message, so an abandoned edit still sends. */
+export const EDIT_HOLD_MAX_MS = 30 * 60 * 1000;
+
+/** Shown when renewal reaches the cap; the message sends as written once the current hold ends. */
+export const EDIT_HOLD_EXPIRED_MESSAGE =
+  "This message has been held for editing for 30 minutes, so it will send as written in about 2 minutes. Save your edit now to change it.";
+
+/**
+ * The item's hold while it is unexpired. An expired hold counts as absent everywhere, and so
+ * does one ending further ahead than a fresh hold could, which bounds a backward clock step or
+ * a corrupted queue file to one hold period.
+ */
 export function activeEditHold(item: QueueItem, now: number): QueueItem["editHold"] | undefined {
   const hold = item.editHold;
-  return hold && Date.parse(hold.expiresAt) > now ? hold : undefined;
+  if (!hold) return undefined;
+  const expiresAt = Date.parse(hold.expiresAt);
+  return expiresAt > now && expiresAt <= now + EDIT_HOLD_MS ? hold : undefined;
+}
+
+/** When this holder first held the item; an unreadable or future time counts as now. */
+function editHeldSince(item: QueueItem, holderId: string, now: number): number {
+  const hold = item.editHold;
+  if (hold?.holderId !== holderId || !hold.heldSince) return now;
+  const since = Date.parse(hold.heldSince);
+  return Number.isFinite(since) && since <= now ? since : now;
 }
 
 export class MessageQueueStore {
@@ -631,8 +652,13 @@ export class MessageQueueStore {
         const held = activeEditHold(item, now);
         if (held && held.holderId !== operation.holderId)
           throw new QueueStoreError("delivery_conflict", EDIT_HELD_MESSAGE);
+        // The start survives this holder's lapsed holds, so renewing after gaps cannot reset it.
+        const heldSince = editHeldSince(item, operation.holderId, now);
+        if (now - heldSince >= EDIT_HOLD_MAX_MS)
+          throw new QueueStoreError("delivery_conflict", EDIT_HOLD_EXPIRED_MESSAGE);
         item.editHold = {
           holderId: operation.holderId,
+          heldSince: new Date(heldSince).toISOString(),
           expiresAt: new Date(now + EDIT_HOLD_MS).toISOString(),
         };
       }
