@@ -27,6 +27,8 @@ export const OutboxRecordSchema = z.object({
   prepared: QueueOperationSchema.nullable(),
   error: z.object({ code: z.string(), message: z.string() }).nullable(),
   dismissed: z.boolean().optional(),
+  // An edit keeps the message it replaced, so a rejection can say what happened to it.
+  original: z.object({ text: z.string(), createdAt: z.string() }).optional(),
 });
 
 export type LocalQueueAttachment = z.infer<typeof LocalQueueAttachmentSchema>;
@@ -57,6 +59,20 @@ export function canKeepRejectedChange(record: OutboxRecord): boolean {
     record.error.code,
   );
 }
+
+/** An edit refused because its message was delivered, removed or changed elsewhere first. */
+export function isSupersededEdit(record: OutboxRecord): boolean {
+  return (
+    record.operation.kind === "edit" &&
+    ["missing", "delivery_conflict", "revision_conflict"].includes(record.error?.code ?? "")
+  );
+}
+
+// Deterministic, so an interrupted or concurrent resend queues the message once.
+export function resendOperationId(operationId: string): string {
+  return `${operationId}~resend`;
+}
+
 export type OutboxKey = Pick<OutboxRecord, "serverId" | "agentId"> & { operationId: string };
 
 export function outboxKey(record: OutboxRecord): OutboxKey {
