@@ -434,7 +434,7 @@ export const factoryLeanAccept = defineRpc({
 
 /** Numbered improvements, posted verbatim on the issue and delivered unchanged to its lead. */
 export const factoryLeanSendBack = defineRpc({
-  name: "factory.lean.sendBack",
+  name: "factory.lean.send-back",
   input: z.strictObject({
     ...sessionInput,
     issue: z.number().int(),
