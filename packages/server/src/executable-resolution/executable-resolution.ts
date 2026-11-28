@@ -161,7 +161,7 @@ export function describeExecutableSearch(
       .split(delimiter)
       .map((entry) => entry.trim())
       .filter(Boolean),
-    ...(options?.includeFallbackDirs === false ? [] : fallbackExecutableDirs(options?.env)),
+    ...(options?.includeFallbackDirs ? fallbackExecutableDirs(options?.env) : []),
   ];
   const unique = Array.from(new Set(searched));
   const where = unique.length > 0 ? unique.join(", ") : "empty PATH";
@@ -312,7 +312,7 @@ export async function findExecutable(
   const {
     probeTimeoutMs = PROBE_TIMEOUT_MS,
     env,
-    includeFallbackDirs = true,
+    includeFallbackDirs = false,
   } = typeof options === "number" ? { probeTimeoutMs: options } : options;
   const trimmed = name.trim();
   if (!trimmed || trimmed === "." || trimmed === "..") {

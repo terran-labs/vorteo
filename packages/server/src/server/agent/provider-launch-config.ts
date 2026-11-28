@@ -74,7 +74,7 @@ async function resolveLaunchPath(
   includeFallbackDirs?: boolean,
 ): Promise<string | null> {
   const allowFallback =
-    includeFallbackDirs ?? (env?.PATH === undefined || env.PATH === process.env.PATH);
+    includeFallbackDirs === true && (env?.PATH === undefined || env.PATH === process.env.PATH);
   const found = await findExecutable(command, { env, includeFallbackDirs: allowFallback });
   if (found) {
     return found;

@@ -89,7 +89,7 @@ describe("findExecutable", () => {
       await expect(findExecutable("foo")).resolves.toBe(executable);
     });
 
-    test("finds a CLI installed only in ~/.local/bin when daemon PATH omits it", async () => {
+    test("finds a CLI installed only in ~/.local/bin when opt-in fallback is enabled and leaves default PATH lookup unchanged", async () => {
       const fakeHome = makeTempDir();
       const localBin = path.join(fakeHome, ".local", "bin");
       mkdirSync(localBin, { recursive: true });
@@ -98,6 +98,12 @@ describe("findExecutable", () => {
 
       await expect(
         findExecutable("agy-test-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
+      ).resolves.toBeNull();
+      await expect(
+        findExecutable("agy-test-cli", {
+          env: { PATH: emptyPathDir, HOME: fakeHome },
+          includeFallbackDirs: true,
+        }),
       ).resolves.toBe(realpathSync(cli));
     });
 
@@ -110,7 +116,10 @@ describe("findExecutable", () => {
       const onPath = writeExecutable(path.join(pathDir, "agy-pref-cli"), "#!/bin/sh\necho path\n");
 
       await expect(
-        findExecutable("agy-pref-cli", { env: { PATH: pathDir, HOME: fakeHome } }),
+        findExecutable("agy-pref-cli", {
+          env: { PATH: pathDir, HOME: fakeHome },
+          includeFallbackDirs: true,
+        }),
       ).resolves.toBe(onPath);
     });
 
@@ -127,13 +136,23 @@ describe("findExecutable", () => {
         path.join("relative/home", ".local/bin"),
       );
       await expect(
-        findExecutable("dir-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
+        findExecutable("dir-cli", {
+          env: { PATH: emptyPathDir, HOME: fakeHome },
+          includeFallbackDirs: true,
+        }),
       ).resolves.toBeNull();
       await expect(
-        findExecutable("nonexec-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
+        findExecutable("nonexec-cli", {
+          env: { PATH: emptyPathDir, HOME: fakeHome },
+          includeFallbackDirs: true,
+        }),
       ).resolves.toBeNull();
-      await expect(findExecutable(".", { env: { PATH: emptyPathDir } })).resolves.toBeNull();
-      await expect(findExecutable("..", { env: { PATH: emptyPathDir } })).resolves.toBeNull();
+      await expect(
+        findExecutable(".", { env: { PATH: emptyPathDir }, includeFallbackDirs: true }),
+      ).resolves.toBeNull();
+      await expect(
+        findExecutable("..", { env: { PATH: emptyPathDir }, includeFallbackDirs: true }),
+      ).resolves.toBeNull();
     });
 
     test("refuses group-writable or world-writable fallback directories, ancestors, symlinks, and binaries", async () => {
@@ -144,24 +163,21 @@ describe("findExecutable", () => {
       chmodSync(localDir, 0o755);
       chmodSync(localBin, 0o755);
       const emptyPathDir = makeTempDir();
+      const opts = { env: { PATH: emptyPathDir, HOME: fakeHome }, includeFallbackDirs: true };
 
       const worldWritableBin = writeExecutable(
         path.join(localBin, "ww-bin-cli"),
         "#!/bin/sh\necho 1.0\n",
       );
       chmodSync(worldWritableBin, 0o777);
-      await expect(
-        findExecutable("ww-bin-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
-      ).resolves.toBeNull();
+      await expect(findExecutable("ww-bin-cli", opts)).resolves.toBeNull();
 
       const groupWritableBin = writeExecutable(
         path.join(localBin, "gw-bin-cli"),
         "#!/bin/sh\necho 1.0\n",
       );
       chmodSync(groupWritableBin, 0o775);
-      await expect(
-        findExecutable("gw-bin-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
-      ).resolves.toBeNull();
+      await expect(findExecutable("gw-bin-cli", opts)).resolves.toBeNull();
 
       const okBin = writeExecutable(path.join(localBin, "ok-cli"), "#!/bin/sh\necho 1.0\n");
       chmodSync(okBin, 0o755);
@@ -177,9 +193,7 @@ describe("findExecutable", () => {
       const symlinkBin = path.join(localBin, "sym-cli");
       symlinkSync(intermediateLink, symlinkBin);
 
-      await expect(
-        findExecutable("sym-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
-      ).resolves.toBe(realpathSync(targetBin));
+      await expect(findExecutable("sym-cli", opts)).resolves.toBe(realpathSync(targetBin));
 
       // Symlink containing `..` after a directory symlink must follow POSIX semantics, not lexical
       // collapse (so `dir-link/../tricky-bin` resolves inside `outside`, not `localBin`).
@@ -201,50 +215,37 @@ describe("findExecutable", () => {
       symlinkSync(outsideSub, path.join(localBin, "dir-link"));
       symlinkSync("dir-link/../tricky-target", path.join(localBin, "tricky-cli"));
 
-      await expect(
-        findExecutable("tricky-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
-      ).resolves.toBeNull();
+      await expect(findExecutable("tricky-cli", opts)).resolves.toBeNull();
 
       chmodSync(outsideTarget, 0o755);
-      await expect(
-        findExecutable("tricky-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
-      ).resolves.toBe(realpathSync(outsideTarget));
+      await expect(findExecutable("tricky-cli", opts)).resolves.toBe(realpathSync(outsideTarget));
 
       // Group-writable ancestor on symlink target rejects symlinked fallback executable.
       chmodSync(targetSub, 0o775);
-      await expect(
-        findExecutable("sym-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
-      ).resolves.toBeNull();
+      await expect(findExecutable("sym-cli", opts)).resolves.toBeNull();
       chmodSync(targetSub, 0o755);
 
       // World-writable symlink target is rejected.
       chmodSync(targetBin, 0o777);
-      await expect(
-        findExecutable("sym-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
-      ).resolves.toBeNull();
+      await expect(findExecutable("sym-cli", opts)).resolves.toBeNull();
 
       // Group-writable ancestor (~/.local) rejects binaries inside ~/.local/bin.
       chmodSync(localDir, 0o775);
-      await expect(
-        findExecutable("ok-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
-      ).resolves.toBeNull();
+      await expect(findExecutable("ok-cli", opts)).resolves.toBeNull();
       chmodSync(localDir, 0o755);
 
       // Group-writable or world-writable fallback directory itself is rejected.
       chmodSync(localBin, 0o775);
-      await expect(
-        findExecutable("ok-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
-      ).resolves.toBeNull();
+      await expect(findExecutable("ok-cli", opts)).resolves.toBeNull();
       chmodSync(localBin, 0o777);
-      await expect(
-        findExecutable("ok-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
-      ).resolves.toBeNull();
+      await expect(findExecutable("ok-cli", opts)).resolves.toBeNull();
     });
 
     test("omits searched PATH directories when describing an explicit missing binary path", () => {
       const explicitMessage = describeExecutableSearch("/opt/missing/agy", {
         env: { PATH: "/usr/bin" },
         providerId: "antigravity",
+        includeFallbackDirs: true,
       });
       expect(explicitMessage).toContain('Could not find executable "/opt/missing/agy"');
       expect(explicitMessage).not.toContain("searched:");
@@ -253,6 +254,7 @@ describe("findExecutable", () => {
       const bareMessage = describeExecutableSearch("agy", {
         env: { PATH: "/usr/bin" },
         providerId: "antigravity",
+        includeFallbackDirs: true,
       });
       expect(bareMessage).toContain('Could not find "agy" (searched: /usr/bin');
     });

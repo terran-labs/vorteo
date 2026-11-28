@@ -106,7 +106,9 @@ describe("daemon E2E", () => {
 });
 
 test("Antigravity creates an agent and answers a prompt with real agy", async ({ skip }) => {
-  const command = await findExecutable(process.env.AGY_COMMAND ?? "agy");
+  const command = await findExecutable(process.env.AGY_COMMAND ?? "agy", {
+    includeFallbackDirs: true,
+  });
   if (command === null) {
     skip("agy is not resolvable");
     return;
@@ -158,7 +160,9 @@ test("Antigravity creates an agent and answers a prompt with real agy", async ({
 }, 120000);
 
 test("Antigravity receives Vorteo MCP tools over ACP with real agy", async ({ skip }) => {
-  const command = await findExecutable(process.env.AGY_COMMAND ?? "agy");
+  const command = await findExecutable(process.env.AGY_COMMAND ?? "agy", {
+    includeFallbackDirs: true,
+  });
   if (command === null) {
     skip("agy is not resolvable");
     return;
