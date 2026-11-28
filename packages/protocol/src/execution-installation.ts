@@ -669,17 +669,25 @@ export const RestartJobSchema = RestartRequestSchema.extend({
   // operationProgress=1 and never journaled: the coordinator keeps them in its private
   // restart-progress.json, so strict older clients and rollback coordinators never see them.
   // Remove the request gate once every owner client floor includes these fields.
+  /**
+   * The history began after the job was already under way, at a coordinator startup without a
+   * record of it, so its earlier times are unknown rather than measured. Exclude it from estimates.
+   */
+  progressReconstructed: z.literal(true).optional(),
   /** When the coordinator first acted on the approved job. */
   startedAt: z.string().datetime().optional(),
   /** The current step, recorded from the coordinator's own transitions. A string, so it can grow. */
   step: z.string().min(1).max(64).optional(),
   stepStartedAt: z.string().datetime().optional(),
-  /** Recorded steps, oldest first, at most 16; the current one has a null finishedAt. */
+  /**
+   * Recorded steps, oldest first, at most 16; the current one has a null finishedAt. A null
+   * startedAt is unknown: the step was already under way when the history began.
+   */
   steps: z
     .array(
       z.strictObject({
         step: z.string().min(1).max(64),
-        startedAt: z.string().datetime(),
+        startedAt: z.string().datetime().nullable(),
         finishedAt: z.string().datetime().nullable(),
       }),
     )
@@ -691,8 +699,11 @@ export const RestartJobSchema = RestartRequestSchema.extend({
   holdDeadlineAt: z.string().datetime().optional(),
   holdReleasedAt: z.string().datetime().optional(),
   finishedAt: z.string().datetime().optional(),
-  /** Whether the requesting agent was told the hold passed its deadline, or will be at release. */
-  requesterNotice: z.enum(["pending-release", "delivered"]).optional(),
+  /**
+   * The hold passed its deadline and the agent that requested it was not told by the system;
+   * the system has no scoped credential to message another agent's thread. Absent otherwise.
+   */
+  requesterNotice: z.literal("not-notified").optional(),
   impact: RestartImpactSchema.optional(),
 });
 export type RestartJob = z.infer<typeof RestartJobSchema>;

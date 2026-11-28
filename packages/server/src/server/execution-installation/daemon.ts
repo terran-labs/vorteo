@@ -890,32 +890,6 @@ export function createInstallationRestartExecutor(
         await client.close();
       }
     },
-    // A fixed system notice for a requesting agent, never authority. Steered into a running turn,
-    // so a requester mid-turn is told without being interrupted. A held environment refuses to
-    // start a turn for an idle agent, so that case waits for the release.
-    async notifyRequester({ environment, agentId, heldTarget, messageId, text }) {
-      const client = await connectInstallationDaemon(config, environment);
-      try {
-        const agent = (await client.fetchAgent(agentId))?.agent;
-        if (!agent) return "not-addressable";
-        const heldEnvironment = heldTarget === "host" ? "host" : heldTarget && "container";
-        if (heldEnvironment === environment && agent.status !== "running") return "pending-release";
-        try {
-          await client.sendAgentMessage(agentId, text, {
-            messageId,
-            origin: "agent",
-            activeTurnBehavior: "steer",
-          });
-          return "delivered";
-        } catch (error) {
-          if (error instanceof Error && "code" in error && error.code === "restart_hold")
-            return "pending-release";
-          throw error;
-        }
-      } finally {
-        await client.close();
-      }
-    },
     async releaseCurrentTurns(target, requestId) {
       const client = await connectInstallationDaemon(
         config,

@@ -1243,21 +1243,29 @@ test.each([
 });
 
 test.each([
-  { name: "an agent id", requester: "5b4d0f5e-7c1a-4f4b-9d6e-2f0f3c9a1b2c", told: true },
-  { name: "a free-text label", requester: "Builds release task", told: false },
+  {
+    name: "an agent's request",
+    requestedBy: "host-agent" as const,
+    requester: "5b4d0f5e-7c1a-4f4b-9d6e-2f0f3c9a1b2c",
+    notice: "not-notified",
+  },
+  {
+    name: "the owner's request",
+    requestedBy: "owner" as const,
+    requester: undefined,
+    notice: undefined,
+  },
 ])(
-  "the requester hears once that its hold passed the deadline: $name",
-  async ({ requester, told }) => {
+  "an overdue hold is recorded for the owner, never delivered into a thread: $name",
+  async ({ requestedBy, requester, notice }) => {
     const journal = new MemoryJournal();
     let now = Date.now();
     const state = { busy: true };
-    const notifyRequester = vi
-      .fn<NonNullable<RestartExecutor["notifyRequester"]>>()
-      .mockResolvedValueOnce("pending-release")
-      .mockResolvedValueOnce("delivered");
+    const progressState = memoryState();
+    const executor = holdingExecutor(state);
     const queue = new InstallationRestarts(
       journal,
-      holdingExecutor(state, { notifyRequester }),
+      executor,
       () => now,
       {},
       {
@@ -1265,40 +1273,105 @@ test.each([
         finishTurnsDeadlineMs: 1000,
         afterHoldDeadline: "ask",
         holdState: memoryState({}),
+        progressState,
       },
     );
-    const request = queue.request({ target: "host", reason: "Install", requester }, "host-agent");
+    const request = queue.request(
+      { target: "host", reason: "Install", ...(requester ? { requester } : {}) },
+      requestedBy,
+    );
     queue.decide(request.id, request.revision, "finish-current-turns");
     await queue.drain();
     now += 1001;
     await queue.drain();
     await queue.drain();
-    if (!told) {
-      expect(notifyRequester).not.toHaveBeenCalled();
-      expect(queue.progressReply(onlyJob(queue))).not.toHaveProperty("requesterNotice");
-      return;
-    }
-    await vi.waitFor(() => expect(notifyRequester).toHaveBeenCalledTimes(1));
-    expect(notifyRequester.mock.calls[0]?.[0]).toMatchObject({
-      environment: "host",
-      agentId: requester,
-      heldTarget: "host",
-    });
-    await vi.waitFor(() =>
-      expect(queue.progressReply(onlyJob(queue)).requesterNotice).toBe("pending-release"),
-    );
+    expect(queue.holdDeadlineExceeded(request.id)).toBe(true);
+    expect(queue.progressReply(onlyJob(queue)).requesterNotice).toBe(notice);
+    // The executor has no route into a thread, so no owner evidence or permission change can
+    // follow from a free-text requester label; the label is never copied into private history.
+    if (requester) expect(JSON.stringify(progressState.saved)).not.toContain(requester);
     state.busy = false;
     await queue.drain();
     await queue.drain();
-    await vi.waitFor(() => expect(notifyRequester).toHaveBeenCalledTimes(2));
-    expect(notifyRequester.mock.calls[1]?.[0]).toMatchObject({ heldTarget: null });
-    await vi.waitFor(() =>
-      expect(queue.progressReply(onlyJob(queue)).requesterNotice).toBe("delivered"),
-    );
-    await queue.drain();
-    expect(notifyRequester).toHaveBeenCalledTimes(2);
+    expect(onlyJob(queue).status).toBe("succeeded");
+    expect(queue.progressReply(onlyJob(queue)).requesterNotice).toBe(notice);
   },
 );
+
+test("a history first seen at startup reports unknown times instead of inventing them", async () => {
+  const journal = new MemoryJournal();
+  const start = Date.parse("2026-11-27T20:00:00.000Z");
+  let now = start;
+  const at = (minutes: number) => new Date(start + minutes * 60_000).toISOString();
+  const state = { busy: true };
+  const holdState = memoryState({});
+  const executor = holdingExecutor(state);
+  // A coordinator that kept no history file holds a restart for a while.
+  const first = new InstallationRestarts(
+    journal,
+    executor,
+    () => now,
+    {},
+    {
+      fenced: false,
+      finishTurnsDeadlineMs: 15 * 60_000,
+      holdState,
+    },
+  );
+  const held = first.request({ target: "host", reason: "Held" }, "owner");
+  first.decide(held.id, held.revision, "finish-current-turns");
+  now = start + 2 * 60_000;
+  await first.drain();
+  const waiting = first.request({ target: "container-daemon", reason: "Waiting" }, "owner");
+
+  now = start + 40 * 60_000;
+  const progressState = memoryState();
+  const second = new InstallationRestarts(
+    journal,
+    executor,
+    () => now,
+    {},
+    {
+      fenced: false,
+      finishTurnsDeadlineMs: 15 * 60_000,
+      holdState,
+      progressState,
+    },
+  );
+  const job = (id: string) => {
+    const found = second.list().find((item) => item.id === id);
+    if (!found) throw new Error("missing job");
+    return found;
+  };
+  const reconstructed = second.progressReply(job(held.id));
+  expect(reconstructed).toMatchObject({
+    progressReconstructed: true,
+    step: "holding-turns",
+    steps: [{ step: "holding-turns", startedAt: null, finishedAt: null }],
+    // The coordinator's own persisted hold start and deadline are measured, so they stay.
+    holdStartedAt: at(2),
+    holdDeadlineAt: at(17),
+  });
+  expect(reconstructed).not.toHaveProperty("startedAt");
+  expect(reconstructed).not.toHaveProperty("stepStartedAt");
+  // A job still awaiting approval has its journaled creation time; nothing is unknown.
+  const pending = second.progressReply(job(waiting.id));
+  expect(pending).toMatchObject({ step: "awaiting-approval", stepStartedAt: waiting.createdAt });
+  expect(pending).not.toHaveProperty("progressReconstructed");
+
+  state.busy = false;
+  now = start + 45 * 60_000;
+  await second.drain();
+  await second.drain();
+  const done = second.progressReply(job(held.id));
+  expect(done.steps).toEqual([
+    { step: "holding-turns", startedAt: null, finishedAt: at(45) },
+    { step: "restarting", startedAt: at(45), finishedAt: at(45) },
+    { step: "succeeded", startedAt: at(45), finishedAt: at(45) },
+  ]);
+  expect(done).toMatchObject({ progressReconstructed: true, finishedAt: at(45) });
+  expect(done).not.toHaveProperty("startedAt");
+});
 
 test.each([
   { policy: "omitted", options: {} },

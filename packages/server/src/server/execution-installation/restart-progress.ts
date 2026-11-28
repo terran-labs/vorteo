@@ -26,13 +26,19 @@ const BEFORE_START = new Set<RestartStep>(["awaiting-approval", "waiting-to-star
 const TERMINAL = new Set<RestartStep>(["succeeded", "failed", "rejected"]);
 
 const iso = z.string().datetime();
+/** A null startedAt is unknown: the step was already under way when this history began. */
 const StepRecordSchema = z.strictObject({
   step: z.string().min(1).max(64),
-  startedAt: iso,
+  startedAt: iso.nullable(),
   finishedAt: iso.nullable(),
 });
 
 const ProgressRecordSchema = z.strictObject({
+  /**
+   * The history began at coordinator startup with the job already past approval ("started") or
+   * approved but not yet acting ("before-start"), so times before that are unknown, not measured.
+   */
+  reconstructed: z.enum(["before-start", "started"]).optional(),
   startedAt: iso.optional(),
   finishedAt: iso.optional(),
   steps: z.array(StepRecordSchema).max(RESTART_PROGRESS_STEPS_MAX),
@@ -46,12 +52,8 @@ const ProgressRecordSchema = z.strictObject({
   holdReleasedAt: iso.optional(),
   /** Agent id to when the coordinator first saw it holding this job's current revision. */
   holders: z.strictObject({ revision: z.string(), since: z.record(z.string(), iso) }).optional(),
-  notice: z
-    .strictObject({
-      state: z.enum(["pending-release", "delivered", "not-addressable"]),
-      messageId: z.string().uuid(),
-    })
-    .optional(),
+  /** The hold passed its deadline and the requesting agent was not told by the system. */
+  notice: z.strictObject({ state: z.literal("not-notified") }).optional(),
 });
 export type RestartProgressRecord = z.infer<typeof ProgressRecordSchema>;
 export type RestartProgressMap = Record<string, RestartProgressRecord>;
@@ -104,27 +106,60 @@ function holdAcknowledged(job: RestartJob, record: RestartProgressRecord | undef
   return record?.hold?.revision === job.revision;
 }
 
+/**
+ * A history first seen at coordinator startup. Only a pending job's step start is known, from its
+ * journaled creation time; anything already under way gets null times, never the startup time.
+ */
+function reconstructedRecord(
+  current: RestartProgressRecord,
+  job: RestartJob,
+  step: RestartStep,
+): RestartProgressRecord {
+  if (step === "awaiting-approval") {
+    return { ...current, steps: [{ step, startedAt: job.createdAt, finishedAt: null }] };
+  }
+  return {
+    ...current,
+    reconstructed: BEFORE_START.has(step) ? "before-start" : "started",
+    steps: [{ step, startedAt: null, finishedAt: null }],
+  };
+}
+
 /** Records the job's current step; returns the same object when nothing changed. */
 export function recordRestartStep(
   record: RestartProgressRecord | undefined,
   job: RestartJob,
   at: string,
+  startup = false,
 ): RestartProgressRecord {
   const step = restartStepOf(job, holdAcknowledged(job, record));
   const current = record ?? { steps: [] };
+  if (startup && current.steps.length === 0) return reconstructedRecord(current, job, step);
   const last = current.steps.at(-1);
   const released = job.holdReleased && current.hold && !current.holdReleasedAt;
   if (last?.step === step && !released) return current;
-  let next: RestartProgressRecord = { ...current };
-  if (last?.step !== step) {
-    const closed = last ? [...current.steps.slice(0, -1), { ...last, finishedAt: at }] : [];
-    const terminal = TERMINAL.has(step);
-    const steps = [...closed, { step, startedAt: at, finishedAt: terminal ? at : null }];
-    next = { ...next, steps: steps.slice(-RESTART_PROGRESS_STEPS_MAX) };
-    if (!next.startedAt && !BEFORE_START.has(step) && !terminal) next.startedAt = at;
-    if (terminal && !next.finishedAt) next.finishedAt = at;
-  }
+  const next = last?.step === step ? { ...current } : withStep(current, step, at);
   if (released) next.holdReleasedAt = at;
+  return next;
+}
+
+/** Closes the last step at `at` and opens `step`, setting the job's start and finish once. */
+function withStep(
+  current: RestartProgressRecord,
+  step: RestartStep,
+  at: string,
+): RestartProgressRecord {
+  const last = current.steps.at(-1);
+  const closed = last ? [...current.steps.slice(0, -1), { ...last, finishedAt: at }] : [];
+  const terminal = TERMINAL.has(step);
+  const steps = [...closed, { step, startedAt: at, finishedAt: terminal ? at : null }];
+  const next = { ...current, steps: steps.slice(-RESTART_PROGRESS_STEPS_MAX) };
+  // A job already acting when its history began has no measured start.
+  const measurableStart = current.reconstructed !== "started";
+  if (!next.startedAt && !BEFORE_START.has(step) && !terminal && measurableStart) {
+    next.startedAt = at;
+  }
+  if (terminal && !next.finishedAt) next.finishedAt = at;
   return next;
 }
 
@@ -173,6 +208,7 @@ export function recordHolders(
 }
 
 export interface RestartProgressReply {
+  progressReconstructed?: true;
   startedAt?: string;
   step?: string;
   stepStartedAt?: string;
@@ -181,7 +217,7 @@ export interface RestartProgressReply {
   holdDeadlineAt?: string;
   holdReleasedAt?: string;
   finishedAt?: string;
-  requesterNotice?: "pending-release" | "delivered";
+  requesterNotice?: "not-notified";
 }
 
 /** The reply-only fields for a capable client. Absent values stay absent. */
@@ -192,15 +228,16 @@ export function restartProgressReply(
   if (!record) return {};
   const last = record.steps.at(-1);
   const hold = holdAcknowledged(job, record) ? record.hold : undefined;
-  const notice = record.notice?.state;
   return {
+    ...(record.reconstructed ? { progressReconstructed: true as const } : {}),
     ...(record.startedAt ? { startedAt: record.startedAt } : {}),
-    ...(last ? { step: last.step, stepStartedAt: last.startedAt, steps: record.steps } : {}),
+    ...(last ? { step: last.step, steps: record.steps } : {}),
+    ...(last?.startedAt ? { stepStartedAt: last.startedAt } : {}),
     ...(hold ? { holdStartedAt: hold.startedAt } : {}),
     ...(hold?.deadlineAt ? { holdDeadlineAt: hold.deadlineAt } : {}),
     ...(hold && record.holdReleasedAt ? { holdReleasedAt: record.holdReleasedAt } : {}),
     ...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
-    ...(notice === "pending-release" || notice === "delivered" ? { requesterNotice: notice } : {}),
+    ...(record.notice ? { requesterNotice: record.notice.state } : {}),
   };
 }
 

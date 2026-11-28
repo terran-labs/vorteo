@@ -438,6 +438,19 @@ test("service maintenance status and cancellation require owner access", async (
   expect(listing.jobs[0]).toMatchObject({ id: job.id, revision: job.revision, cancelable: true });
   expect(listing.jobs[0]).not.toHaveProperty("proposal");
   expect(listing.jobs[0]).not.toHaveProperty("evidence");
+  // Progress fields are opt-in; a client that did not ask sees the same shape as before.
+  for (const field of ["startedAt", "step", "stepStartedAt", "finishedAt"]) {
+    expect(listing.jobs[0]).not.toHaveProperty(field);
+  }
+  const progress = await (
+    await f.request(`${query}?operationProgress=1`, "owner-test-password", {})
+  ).json();
+  expect(progress.jobs[0]).toMatchObject({
+    id: job.id,
+    step: "awaiting-approval",
+    stepStartedAt: job.createdAt,
+  });
+  expect(progress.jobs[0]).not.toHaveProperty("startedAt");
   const agentView = await (
     await f.request(`${agentRequests}/${job.id}`, "host-agent-test-token")
   ).json();

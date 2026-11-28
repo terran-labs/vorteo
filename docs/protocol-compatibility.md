@@ -398,14 +398,15 @@ Owner clients that send `operationProgress=1` on `restarts/query` receive option
 
 - `startedAt`, `step` (a string of at most 64 characters), `stepStartedAt`, and `steps` (at most 16, oldest dropped);
 - `holdStartedAt`, `holdDeadlineAt` and `holdReleasedAt`;
-- `finishedAt`, and `requesterNotice`;
+- `finishedAt`, and `requesterNotice` (only `"not-notified"`);
+- `progressReconstructed` (only `true`);
 - `waitingSince` on each `impact.agents` entry.
 
-The coordinator records steps from its own transitions and clock in its private `restart-progress.json`, never in the restart journal, so a rollback coordinator reads the journal unchanged and ignores the file. A missing or damaged file starts a fresh history and never stops a restart.
+The coordinator records steps from its own transitions and clock in its private `restart-progress.json`, never in the restart journal, so a rollback coordinator reads the journal unchanged and ignores the file. A missing or damaged file starts a fresh history and never stops a restart. A job first seen at coordinator startup, already past approval, gets `progressReconstructed: true`: its `startedAt` is omitted and the startup step's `startedAt` is `null` rather than the startup time. A pending job keeps its journaled `createdAt` as its step start and is not marked.
 
 On `maintenance-services/query`, the same flag adds `startedAt`, `step`, `stepStartedAt` and `finishedAt`. These are derived from timestamps the maintenance journal already keeps. The restart and maintenance view schemas are strict for older clients, so without the flag the replies are unchanged. `COMPAT(operationProgress)` marks both gates; remove them once every owner client floor includes the fields.
 
-Daemons advertise `restartImpactTurnStart` and then add an optional `turnStartedAt` to each restart impact agent. The coordinator relays it only from daemons that advertise it, marked `COMPAT(restartImpactTurnStart)`. A refused `send_agent_message_response` may carry an optional `errorCode: "restart_hold"`. The payload is not strict, so older apps keep reading only `error`.
+Daemons advertise `restartImpactTurnStart` and then add an optional `turnStartedAt` to each restart impact agent. The coordinator relays it only from daemons that advertise it, marked `COMPAT(restartImpactTurnStart)`. It is journaled impact data on a non-strict object, so it reaches clients with or without `operationProgress=1`; the daemon capability, not the query flag, gates it. A refused `send_agent_message_response` may carry an optional `errorCode: "restart_hold"`. The payload is not strict, so older apps keep reading only `error`.
 
 ## Unavailable-provider thread recovery
 

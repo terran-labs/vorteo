@@ -155,25 +155,7 @@ const HoldRecordSchema = z.strictObject({
 });
 type HoldRecord = z.infer<typeof HoldRecordSchema>;
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-
-/** Where a requester could be told, from its credential's environment and an agent-id label. */
-function requesterAddress(
-  job: RestartJob,
-): { environment: "host" | "container"; agentId: string } | null {
-  const environment = REQUESTER_ENVIRONMENT[job.requestedBy];
-  const agentId = job.requester && UUID.test(job.requester) ? job.requester : null;
-  return environment && agentId ? { environment, agentId } : null;
-}
-
-/** Fixed wording: it names the job and target, never the requester label or job details. */
-function requesterNoticeText(job: RestartJob, moment: "deadline" | "release", minutes: number) {
-  const target = job.target === "host" ? "Host" : "Dev";
-  if (moment === "deadline")
-    return `The ${target} restart you requested (job ${job.id}) has waited more than ${minutes} minutes for running turns to finish. The owner is asked to restart now or cancel. Check it with restart-status ${job.id}.`;
-  return `The ${target} restart you requested (job ${job.id}) passed its ${minutes}-minute hold deadline while you could not be told. Its hold has now ended. Check it with restart-status ${job.id}.`;
-}
-/** Only an agent requester has a thread to tell; an owner request has none. */
+/** Only a request made by an agent has a requester the system could tell; an owner request has none. */
 const REQUESTER_ENVIRONMENT = {
   "host-agent": "host",
   "container-agent": "container",
@@ -232,15 +214,6 @@ export interface RestartJournal {
   write(jobs: LifecycleJob[], evidence?: MaintenanceServiceAdmissionEvidence): void;
   admissionAvailable?(): boolean;
   activationChildAdmissionAvailable?(job: RestartJob): boolean;
-}
-
-export interface RequesterNotice {
-  environment: "host" | "container";
-  agentId: string;
-  /** The target whose hold is active, or null when the hold has ended. */
-  heldTarget: RestartJob["target"] | null;
-  messageId: string;
-  text: string;
 }
 
 export interface RestartExecutor {
@@ -353,13 +326,6 @@ export interface RestartExecutor {
   inspect?(target: RestartJob["target"]): Promise<RestartImpact>;
   restartWhenIdle?(target: RestartJob["target"]): Promise<string | null>;
   holdCurrentTurns?(target: RestartJob["target"], requestId: string): Promise<void>;
-  /**
-   * Delivers a fixed system notice to an agent that exists on that environment. "pending-release"
-   * when `heldTarget` holds that environment and the agent has no running turn to steer into.
-   */
-  notifyRequester?(
-    input: RequesterNotice,
-  ): Promise<"pending-release" | "delivered" | "not-addressable">;
   /** Independently inspected process birth and boot identity, only for initial migration. */
   initialActivationInstance?(job: RestartJob): Promise<string>;
   releaseCurrentTurns?(target: RestartJob["target"], requestId: string): Promise<void>;
@@ -568,7 +534,8 @@ export class InstallationRestarts {
     this.sessionHosts = this.snapshot.filter(
       (job): job is SessionHostJob => job.target === "session-host",
     );
-    this.observeProgress();
+    // Jobs already under way get no invented times: see reconstructed histories.
+    this.observeProgress(true);
     if (!startup.fenced) this.activate();
   }
 
@@ -3728,7 +3695,7 @@ export class InstallationRestarts {
         : { startedAt: this.now(), exceeded: false, revision: job.revision };
     const exceeded = this.now() - held.startedAt >= this.finishTurnsDeadlineMs;
     const minutes = Math.round(this.finishTurnsDeadlineMs / 60_000);
-    if (exceeded && !held.exceeded) void this.noticeRequester(job);
+    if (exceeded && !held.exceeded) this.markRequesterNotTold(job);
     if (exceeded && !held.exceeded)
       this.progress(
         this.afterHoldDeadline === "ask"
@@ -3761,7 +3728,7 @@ export class InstallationRestarts {
   }
 
   /** Records each job's current step after every journal write or reload, and forgets gone jobs. */
-  private observeProgress(): void {
+  private observeProgress(startup = false): void {
     const at = this.isoNow();
     const ids = new Set(this.jobs.map((job) => job.id));
     let changed = false;
@@ -3771,15 +3738,11 @@ export class InstallationRestarts {
         changed = true;
       }
     for (const job of this.jobs) {
-      const record = this.progressRecords.get(job.id);
-      const next = recordRestartStep(record, job, at);
-      if (next === record) continue;
+      const record = this.progressRecords.get(job.id) ?? (startup ? this.heldSeed(job) : undefined);
+      const next = recordRestartStep(record, job, at, startup);
+      if (next === this.progressRecords.get(job.id)) continue;
       this.progressRecords.set(job.id, next);
       changed = true;
-      const releasedNow = next.holdReleasedAt && !record?.holdReleasedAt;
-      const finishedNow = next.finishedAt && !record?.finishedAt;
-      if (next.notice?.state === "pending-release" && (releasedNow || finishedNow))
-        void this.noticeRequester(job, "release");
     }
     if (changed) this.persistProgress();
   }
@@ -3814,39 +3777,29 @@ export class InstallationRestarts {
   }
 
   /**
-   * Tells the requesting agent, once, that its hold passed the deadline, or at release when it
-   * could not be told then. The requester label is unauthenticated: it is used only to address an
-   * agent that exists on the requesting environment, never as authority and never echoed.
+   * The hold passed its deadline: record, once, that the requesting agent was not told. There is
+   * no scoped service credential for messaging an arbitrary requester's thread, and an owner
+   * connection would write the notice as owner evidence and clear that thread's pending
+   * permissions, so nothing is delivered; the owner sees the overdue hold instead.
    */
-  private async noticeRequester(job: RestartJob, moment: "deadline" | "release" = "deadline") {
-    const record = this.progressRecords.get(job.id);
-    const address = requesterAddress(job);
-    if (!this.executor.notifyRequester || !address) return;
-    const due =
-      moment === "deadline" ? !record?.notice : record?.notice?.state === "pending-release";
-    if (!due) return;
-    const { environment, agentId } = address;
-    const messageId = record?.notice?.messageId ?? randomUUID();
-    const text = requesterNoticeText(job, moment, Math.round(this.finishTurnsDeadlineMs / 60_000));
-    let state: "pending-release" | "delivered" | "not-addressable";
-    try {
-      state = await this.executor.notifyRequester({
-        environment,
-        agentId,
-        heldTarget: moment === "release" ? null : job.target,
-        messageId,
-        text,
-      });
-    } catch (error) {
-      this.progress("Restart requester notice failed", { job: job.id, error: String(error) });
-      state = "pending-release";
-    }
-    if (moment === "release" && state === "pending-release") state = "not-addressable";
-    this.updateProgress(job.id, (current) => ({
-      ...(current ?? { steps: [] }),
-      notice: { state, messageId },
-    }));
-    this.progress("Restart requester notice", { job: job.id, moment, state });
+  private markRequesterNotTold(job: RestartJob): void {
+    if (!REQUESTER_ENVIRONMENT[job.requestedBy]) return;
+    this.updateProgress(job.id, (record) =>
+      record?.notice ? record : { ...(record ?? { steps: [] }), notice: { state: "not-notified" } },
+    );
+  }
+
+  /**
+   * A history first seen at startup for a job this coordinator already holds: the private hold
+   * record carries its own measured start and deadline, so they are kept rather than guessed.
+   */
+  private heldSeed(job: RestartJob): RestartProgressRecord | undefined {
+    const held = this.holds.get(job.id);
+    if (!job.finishCurrentTurns || !held || (held.revision && held.revision !== job.revision))
+      return undefined;
+    const startedAt = new Date(held.startedAt).toISOString();
+    const deadlineAt = new Date(held.startedAt + this.finishTurnsDeadlineMs).toISOString();
+    return { steps: [], hold: { revision: job.revision, startedAt, deadlineAt } };
   }
 
   /** The reply-only progress fields; see `operationProgress`. */
