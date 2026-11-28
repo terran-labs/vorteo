@@ -21,7 +21,10 @@ const COMPARED_FIELDS: ReadonlyArray<{ label: string; read: (profile: AgentProfi
     { label: "instructions", read: (profile) => profile.instructions?.trim() || null },
     {
       label: "workers",
-      read: (profile) => [profile.workerProfileId || null, profile.maxWorkers ?? null],
+      read: (profile) => [
+        profile.workerProfileIds ?? (profile.workerProfileId || null),
+        profile.maxWorkers ?? null,
+      ],
     },
     { label: "features", read: (profile) => profile.featureValues ?? {} },
   ];

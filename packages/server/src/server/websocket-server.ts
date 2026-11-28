@@ -966,7 +966,7 @@ export class VoiceAssistantWebSocketServer {
         return state.clients[providerId] ?? null;
       },
       onConnected: (providerId) => {
-        this.providerUsageService.invalidate();
+        this.providerUsageService.invalidate(providerId);
         void this.providerSnapshotManager
           .refreshSettingsSnapshot({ providers: [providerId] })
           .catch((error) => {
@@ -2616,6 +2616,8 @@ export class VoiceAssistantWebSocketServer {
         agentQuestions: true,
         // COMPAT(agentQuestionInputs): added November 2026; retain until the client floor includes it.
         agentQuestionInputs: true,
+        // COMPAT(agentCreatedBy): added November 2026; retain until the client floor includes it.
+        agentCreatedBy: true,
         // COMPAT(previews): added November 2026; retain until the client floor includes it.
         previews: this.agentManager.previews !== null,
         // COMPAT(projectedSubagentTimeline): added after v0.8.0, remove gates after 2027-03-14; retain advertisement.
@@ -2680,6 +2682,7 @@ export class VoiceAssistantWebSocketServer {
         sharedProviderPreferences: Boolean(this.daemonConfigStore.get().sharedProviderPreferences),
         accountIndependentProfiles: Boolean(this.daemonConfigStore.get().sharedProviderPreferences),
         explicitWorkerAccounts: true,
+        workerTeams: true,
         uncappedManagedWorkers: true,
         profileWorkflowAliases: Boolean(this.daemonConfigStore.get().sharedProviderPreferences),
         installationProfileAuthority: Boolean(

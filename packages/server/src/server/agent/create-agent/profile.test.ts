@@ -114,6 +114,73 @@ describe("profile launch", () => {
     expect(resolveProfileLaunch(config, [])).toEqual(config);
   });
 
+  it("freezes team profiles only from authenticated installation settings", () => {
+    const first = { id: "local", name: "Local", model: "local-model", provider: "codex" };
+    const second = { id: "review", name: "Review", model: "review-model" };
+    const team = {
+      id: "team",
+      name: "Team",
+      model: "supervisor",
+      workerProfileIds: [sharedProfileId("codex", first.id), sharedProfileId("claude", second.id)],
+      provider: "codex",
+    };
+    const sharedConfig = MutableDaemonConfigSchema.parse({
+      mcp: { injectIntoAgents: false },
+      sharedProviderPreferences: {
+        version: 1,
+        revision: 1,
+        legacyProfiles: {},
+        installation: {
+          installationId: "00000000-0000-4000-8000-000000000001",
+          environment: "host",
+          serverId: "host",
+          revision: 1,
+        },
+        providers: {
+          codex: {
+            defaults: {},
+            preferredModels: [],
+            preferredThinkingOptions: [],
+            defaultWorkflowId: null,
+            workflows: [team, first],
+          },
+          claude: {
+            defaults: {},
+            preferredModels: [],
+            preferredThinkingOptions: [],
+            defaultWorkflowId: null,
+            workflows: [{ ...second, provider: "claude" }],
+          },
+        },
+      },
+    });
+    const input = { provider: "codex", cwd: "/work", profileId: sharedProfileId("codex", team.id) };
+    expect(() => resolveProfileLaunch(input, [], 1000, sharedConfig)).toThrow(
+      "authenticated installation",
+    );
+    expect(() =>
+      resolveProfileLaunch({ ...input, profileId: team.id }, [
+        { ...team, provider: input.provider },
+      ]),
+    ).toThrow("authenticated installation");
+    const config = resolveProfileLaunch(input, [], 1000, sharedConfig, "host", {
+      installationProfilesAdmitted: true,
+    });
+    expect(config.profileLaunch?.worker?.id).toBe(team.workerProfileIds[0]);
+    expect(config.profileLaunch?.workers?.map(({ id, model }) => [id, model])).toEqual([
+      [team.workerProfileIds[0], first.model],
+      [team.workerProfileIds[1], second.model],
+    ]);
+    const workflow = sharedConfig.sharedProviderPreferences!.providers.codex.workflows[0];
+    workflow.workerProfileIds = [];
+    workflow.workerProfileId = sharedProfileId("codex", first.id);
+    const disabled = resolveProfileLaunch(input, [], 1000, sharedConfig, "host", {
+      installationProfilesAdmitted: true,
+    });
+    expect(disabled.profileLaunch?.workers).toEqual([]);
+    expect(disabled.profileLaunch?.worker).toBeUndefined();
+  });
+
   it("refuses missing profiles and recursive teams", () => {
     const config = { provider: "codex", cwd: "/work", profileId: "missing" };
     expect(() => resolveProfileLaunch(config, [])).toThrow("not found");

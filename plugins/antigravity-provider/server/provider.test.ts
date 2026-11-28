@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import type { ProviderEvent } from "@getpaseo/plugin/server/provider";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAntigravityProvider } from "./provider.js";
+import { AntigravityUsage } from "./usage.js";
 
 const directories: string[] = [];
 
@@ -1016,4 +1017,213 @@ child.on("exit", (code) => process.exit(code ?? 1));
   } finally {
     await connection.close();
   }
+});
+
+describe("AntigravityUsage", () => {
+  async function writeUsageFakeAgy(): Promise<string> {
+    const directory = await mkdtemp(path.join(tmpdir(), "antigravity-usage-fake-"));
+    directories.push(directory);
+    const signedOutFixture = path.resolve(
+      import.meta.dirname,
+      "../test/fixtures/usage-signed-out.stderr.ndjson",
+    );
+    const script = path.join(directory, "fake-agy.cjs");
+    await writeFile(
+      script,
+      `const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (args.includes("--version")) {
+  process.stdout.write("1.5.18\\n");
+  process.exit(0);
+}
+if (args.includes("acp")) {
+  process.stderr.write("unexpected acp subcommand in usage query\\n");
+  process.exit(2);
+}
+if (args.includes("-p") && args.includes("/usage")) {
+  const signedOut = fs.readFileSync(${JSON.stringify(signedOutFixture)}, "utf8").trim() + "\\n";
+  if (process.env.AGY_TEST_USAGE === "no-quota") {
+    process.stderr.write("No account quota for GEMINI_API_KEY\\n");
+    process.exit(2);
+  }
+  if (process.env.AGY_TEST_USAGE === "signed-out") {
+    process.stderr.write(signedOut);
+    process.exit(1);
+  }
+  if (process.env.AGY_TEST_USAGE === "not-logged-into") {
+    process.stderr.write("You are not logged into Antigravity.\\n");
+    process.exit(1);
+  }
+  if (process.env.AGY_TEST_USAGE === "network-error") {
+    process.stderr.write("network failure while refreshing login\\n");
+    process.exit(1);
+  }
+  if (process.env.AGY_TEST_USAGE === "unknown-flag") {
+    process.stderr.write("flag provided but not defined: -log-file\\n");
+    process.exit(2);
+  }
+  if (process.env.AGY_TEST_USAGE === "signed-out-hang") {
+    process.stderr.write(signedOut);
+    setInterval(() => {}, 1000);
+  } else {
+    process.stdout.write(
+      JSON.stringify({
+        conversation_id: "",
+        status: "SUCCESS",
+        command: {
+          name: "usage",
+          data: {
+            groups: [
+              {
+                name: "Gemini Models",
+                buckets: [
+                  {
+                    id: "gemini-weekly",
+                    name: "Weekly Limit Remaining",
+                    window: "weekly",
+                    remaining_fraction: 0.92,
+                    reset_time: "2026-12-04T20:39:17Z",
+                  },
+                  {
+                    id: "gemini-5h",
+                    name: "Five Hour Limit Remaining",
+                    window: "5h",
+                    remaining_fraction: 0.85,
+                    reset_time: "2026-11-28T01:39:17Z",
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      }) + "\\n",
+    );
+    process.exit(0);
+  }
+}
+`,
+    );
+    return script;
+  }
+
+  it("discovers remembered ACP launches, strips acp, and fetches quota windows via agy -p /usage", async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "antigravity-usage-test-"));
+    directories.push(cwd);
+    const fake = await writeUsageFakeAgy();
+    const usage = new AntigravityUsage();
+    const withUsage = createAntigravityProvider(usage);
+    const env = { ANTIGRAVITY_APP_DATA_DIR: cwd };
+    const launch = { command: process.execPath, args: [fake, "acp"], env };
+
+    expect(await withUsage.status!({ launch })).toMatchObject({ available: true });
+    const source = usage.registration();
+    const accounts = await source.discover({ kind: "global" });
+    expect(accounts).toHaveLength(1);
+    expect(await source.discover({ kind: "session", provider: "antigravity", env })).toEqual(
+      accounts,
+    );
+
+    const report = await source.fetch(accounts[0]!.input);
+    expect(report).toMatchObject({
+      status: "available",
+      windows: [
+        expect.objectContaining({
+          id: "gemini-5h",
+          label: "5-hour",
+          shortLabel: "5h",
+          summary: true,
+          remainingPct: 85,
+          resetsAt: "2026-11-28T01:39:17.000Z",
+        }),
+        expect.objectContaining({
+          id: "gemini-weekly",
+          label: "Weekly",
+          shortLabel: "wk",
+          summary: true,
+          remainingPct: 92,
+          resetsAt: "2026-12-04T20:39:17.000Z",
+        }),
+      ],
+    });
+  });
+
+  it("reports no_quota when agy exits with code 2", async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "antigravity-usage-noquota-"));
+    directories.push(cwd);
+    const fake = await writeUsageFakeAgy();
+    const usage = new AntigravityUsage();
+    const { account } = usage.remember({
+      command: process.execPath,
+      args: [fake, "acp"],
+      env: { ANTIGRAVITY_APP_DATA_DIR: cwd, AGY_TEST_USAGE: "no-quota" },
+    });
+    const report = await usage.registration().fetch({ account });
+    expect(report).toEqual({
+      status: "unavailable",
+      problem: { kind: "no_quota", detail: "No usage quota reported" },
+    });
+  });
+
+  it("classifies real signed-out agy output as rejected without hiding network errors", async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "antigravity-usage-auth-"));
+    directories.push(cwd);
+    const fake = await writeUsageFakeAgy();
+
+    const signedOut = new AntigravityUsage();
+    const { account: signedOutAccount } = signedOut.remember({
+      command: process.execPath,
+      args: [fake, "acp"],
+      env: { ANTIGRAVITY_APP_DATA_DIR: cwd, AGY_TEST_USAGE: "signed-out" },
+    });
+    expect(await signedOut.registration().fetch({ account: signedOutAccount })).toEqual({
+      status: "unavailable",
+      problem: { kind: "rejected", status: 401, refreshedBy: "agy" },
+    });
+
+    const notLoggedInto = new AntigravityUsage();
+    const { account: notLoggedIntoAccount } = notLoggedInto.remember({
+      command: process.execPath,
+      args: [fake, "acp"],
+      env: { ANTIGRAVITY_APP_DATA_DIR: cwd, AGY_TEST_USAGE: "not-logged-into" },
+    });
+    expect(await notLoggedInto.registration().fetch({ account: notLoggedIntoAccount })).toEqual({
+      status: "unavailable",
+      problem: { kind: "rejected", status: 401, refreshedBy: "agy" },
+    });
+
+    const networkError = new AntigravityUsage();
+    const { account: networkErrorAccount } = networkError.remember({
+      command: process.execPath,
+      args: [fake, "acp"],
+      env: { ANTIGRAVITY_APP_DATA_DIR: cwd, AGY_TEST_USAGE: "network-error" },
+    });
+    expect(await networkError.registration().fetch({ account: networkErrorAccount })).toEqual({
+      status: "error",
+      error: "Antigravity usage check failed (exit code 1)",
+    });
+
+    const unknownFlag = new AntigravityUsage();
+    const { account: unknownFlagAccount } = unknownFlag.remember({
+      command: process.execPath,
+      args: [fake, "acp"],
+      env: { ANTIGRAVITY_APP_DATA_DIR: cwd, AGY_TEST_USAGE: "unknown-flag" },
+    });
+    expect(await unknownFlag.registration().fetch({ account: unknownFlagAccount })).toEqual({
+      status: "error",
+      error: "Antigravity usage check failed (exit code 2)",
+    });
+
+    const signedOutHang = new AntigravityUsage();
+    const { account: signedOutHangAccount } = signedOutHang.remember({
+      command: process.execPath,
+      args: [fake, "acp"],
+      env: { ANTIGRAVITY_APP_DATA_DIR: cwd, AGY_TEST_USAGE: "signed-out-hang" },
+    });
+    const started = Date.now();
+    expect(await signedOutHang.registration().fetch({ account: signedOutHangAccount })).toEqual({
+      status: "unavailable",
+      problem: { kind: "rejected", status: 401, refreshedBy: "agy" },
+    });
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
 });

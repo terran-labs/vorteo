@@ -8,6 +8,7 @@ import type {
 } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
 import { mapToolCall } from "./tool-calls.js";
+import type { AntigravityUsage } from "./usage.js";
 
 const legacySession = z.object({
   version: z.literal(1),
@@ -169,7 +170,7 @@ function describeSignIn(env: Readonly<Record<string, string>>): string {
     : "SSH session: no\nSign-in: can differ from agy over SSH";
 }
 
-export function createAntigravityProvider(): ProviderRegistration {
+export function createAntigravityProvider(usage?: AntigravityUsage): ProviderRegistration {
   const provider = runAcpProvider({
     id: "antigravity",
     label: "Antigravity",
@@ -212,6 +213,10 @@ export function createAntigravityProvider(): ProviderRegistration {
   });
   return {
     ...provider,
+    async connect(request) {
+      if (request.launch) usage?.remember(request.launch);
+      return provider.connect(request);
+    },
     docsUrl: "https://paseo.sh/docs/supported-providers/antigravity#troubleshooting",
     // agy documents no update command and no release source, so there is nothing to check or run.
     installation: {
@@ -229,6 +234,7 @@ export function createAntigravityProvider(): ProviderRegistration {
           diagnostic: `Install Antigravity ${MIN_AGY_VERSION_LABEL} or later.`,
         };
       }
+      usage?.remember(launch);
       // A sign-in problem can stop ACP from starting, so the report says which sign-in either way.
       const signIn = describeSignIn(launch.env);
       let version: string | undefined;

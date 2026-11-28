@@ -434,6 +434,8 @@ export type AgentTimelineItem =
       type: "notification";
       level: "info" | "warning" | "error";
       message: string;
+      /** Optional longer text the client shows on request, such as a full command. */
+      details?: string;
     }
   | CompactionTimelineItem
   | ProfileSwitchTimelineItem

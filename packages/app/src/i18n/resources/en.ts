@@ -1628,6 +1628,13 @@ export const en = {
       statusAge: "{{line}} · {{age}}",
       openRole: "Open {{role}}",
       openRunner: "Open #{{number}} {{title}}",
+      archiveFinished: "Archive finished issue workspaces",
+      archiveFinishedTitle_one: "Archive {{count}} finished issue workspace?",
+      archiveFinishedTitle_other: "Archive {{count}} finished issue workspaces?",
+      archiveFinishedBody:
+        "These issues are closed and their pull requests are merged. Each workspace is checked for uncommitted work first, and any that has some is skipped.",
+      archiveFinishedConfirm: "Archive",
+      archiveFinishedResult: "Archived {{archived}}. Skipped {{skipped}} with uncommitted work.",
       agentStatus: "{{role}}: {{status}}",
       pullRequestChecks: "PR #{{number}} · {{checks}}",
       pullRequest: "PR #{{number}}",

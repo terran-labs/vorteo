@@ -7,16 +7,25 @@ export type ProviderApiFetch = typeof fetch;
 export interface ProviderUsageConfig {
   extends?: string;
   label?: string;
+  command?: string[];
   env?: Record<string, string>;
   enabled?: boolean;
+  removed?: boolean;
 }
 
 export type ProviderUsageConfigMap = Record<string, ProviderUsageConfig>;
 
+export interface ProviderUsageFetchOptions {
+  /** True only for an explicit user-triggered refresh from a client. */
+  userRefresh?: boolean;
+}
+
 export interface ProviderUsageFetcher {
   readonly providerId: string;
   readonly displayName: string;
-  fetchUsage(): Promise<ProviderUsage>;
+  /** Minimum wait between non-user-initiated refreshes; omitted means every refresh runs. */
+  readonly minPollIntervalMs?: number;
+  fetchUsage(options?: ProviderUsageFetchOptions): Promise<ProviderUsage>;
 }
 
 export interface ProviderUsageFetcherFactoryOptions {
