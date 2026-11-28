@@ -3178,6 +3178,7 @@ describe("session checkout merge handling", () => {
     );
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/base-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "merge-to-base",
     });
     expect(github.invalidate).toHaveBeenCalledTimes(1);
@@ -3263,6 +3264,7 @@ describe("session checkout merge handling", () => {
     );
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "merge-from-base",
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
@@ -3377,6 +3379,7 @@ diff --git a/file.txt b/file.txt
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledTimes(1);
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "commit-changes",
     });
     expect(checkoutDiffManager.scheduleRefreshForCwd).toHaveBeenCalledWith("/tmp/request-worktree");
@@ -3879,6 +3882,7 @@ diff --git a/file.txt b/file.txt
 
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "create-pr",
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
@@ -3971,6 +3975,7 @@ describe("session checkout pull request merge", () => {
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenNthCalledWith(2, "/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "merge-pr",
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
@@ -4107,6 +4112,7 @@ describe("session checkout pull request merge", () => {
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenNthCalledWith(2, "/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "merge-pr",
     });
     expect(messages).toContainEqual({
@@ -4247,6 +4253,7 @@ describe("session checkout pull request auto-merge", () => {
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenNthCalledWith(2, "/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "enable-pr-auto-merge",
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
@@ -4321,6 +4328,7 @@ describe("session checkout pull request auto-merge", () => {
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenNthCalledWith(2, "/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "disable-pr-auto-merge",
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
@@ -4570,6 +4578,7 @@ describe("session checkout pull and push handling", () => {
     expect(checkoutGitMocks.pullCurrentBranch).toHaveBeenCalledWith("/tmp/request-worktree");
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "pull",
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
@@ -4600,6 +4609,7 @@ describe("session checkout pull and push handling", () => {
     expect(checkoutGitMocks.pushCurrentBranch).toHaveBeenCalledWith("/tmp/request-worktree");
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "push",
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
@@ -4637,6 +4647,7 @@ describe("session checkout refresh handling", () => {
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       includeForge: true,
       reason: "manual-refresh",
     });
@@ -5110,6 +5121,7 @@ describe("session checkout switch branch handling", () => {
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/repo", {
       force: true,
+      afterInFlight: true,
       reason: "switch-branch",
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/repo" });
@@ -5243,6 +5255,7 @@ describe("session checkout rename branch handling", () => {
     );
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/repo", {
       force: true,
+      afterInFlight: true,
       reason: "rename-branch",
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/repo" });
@@ -5438,6 +5451,7 @@ describe("session stash mutation handling", () => {
     );
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/repo", {
       force: true,
+      afterInFlight: true,
       reason: "stash-push",
     });
     expect(messages).toContainEqual({
@@ -5476,6 +5490,7 @@ describe("session stash mutation handling", () => {
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/repo", {
       force: true,
+      afterInFlight: true,
       reason: "stash-pop",
     });
     expect(messages).toContainEqual({
@@ -5517,12 +5532,14 @@ describe("session paseo worktree creation handling", () => {
 
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/repo", {
       force: true,
+      afterInFlight: true,
       reason: "create-worktree",
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith(
       "/tmp/paseo/worktrees/new-worktree",
       {
         force: true,
+        afterInFlight: true,
         reason: "create-worktree",
       },
     );
