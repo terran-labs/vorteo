@@ -13,6 +13,7 @@ import {
 import path from "node:path";
 import { promisify } from "node:util";
 import { isInsideFolder } from "../lib/projects-folder.mjs";
+import { collectContainerInventory, collectWritableBindRoots } from "./container-inventory.mjs";
 
 const execute = promisify(execFile);
 
@@ -146,14 +147,11 @@ export async function build(command, args, cwd, log, environment = {}, runComman
 
 /** Host paths that any container, running or stopped, can write through a bind mount. */
 export async function writableBindRoots(docker, runCommand = run) {
-  const ids = (await runCommand(docker, ["ps", "-aq"])).split(/\s+/).filter(Boolean);
-  if (!ids.length) return [];
-  const containers = JSON.parse(await runCommand(docker, ["inspect", ...ids]));
-  return containers.flatMap((container) =>
-    container.Mounts.filter((mount) => mount.Type === "bind" && mount.RW).map(
-      (mount) => mount.Source,
-    ),
-  );
+  return collectWritableBindRoots(docker, runCommand);
+}
+
+export function readContainerInventory(docker, options = {}, runCommand = run) {
+  return collectContainerInventory(docker, options, runCommand, canonicalFuturePath, within);
 }
 
 export function canonicalFuturePath(file) {

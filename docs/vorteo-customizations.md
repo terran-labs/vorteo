@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+The installer inventory includes read-only and writable binds, volumes, tmpfs, network mode and published ports for running and stopped containers.
+
 Maintenance review (2026-11-21): Release preparation for 26.11.2100 folded 75 change fragments into the changelog and this inventory. The release is cut for dictation reliability (issues #552, #553 and #554); every other entry it carries was already installed on the owner installation. No inventory entry changes beyond the folded reviews.
 
 Maintenance review (2026-11-21): Test routing only; no shipped behavior changes, so no inventory entry changes. `packages/app/vitest.config.ts` now differs from upstream on its two `e2e` exclusions and one named include, so a later upstream edit to those lines will need a manual merge; the test file stays byte-identical to upstream. README overview and onboarding are unchanged. Source only; nothing to install.

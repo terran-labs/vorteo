@@ -36,6 +36,7 @@ import {
   writeContainerSystemSource,
 } from "./install-execution-host.mjs";
 import { formatWorktreeLinkReport } from "./lib/worktree-links.mjs";
+import { readContainerInventory, writableBindRoots } from "./installer/primitives.mjs";
 import {
   mergeProjectsFolderSettings,
   mountsFolderAtIdenticalPath,
@@ -53,6 +54,181 @@ import {
 } from "./instance-web-artifact.mjs";
 // These tests run the installation client's request commands, which only Vorteo :: Builds may run.
 process.env.VORTEO_BUILDS = "1";
+
+const inventoryDocker = "/fixture/bin/docker";
+const inventoryId = "a".repeat(64);
+const siblingId = "b".repeat(64);
+const inventorySocket = "/fixture-host/engine.sock";
+const boundOptions = {
+  installationId: "aa72d8bf-f3c7-46c5-87a4-b500da0aeae1",
+  boundContainerId: inventoryId,
+  engineSocketPaths: [inventorySocket],
+};
+
+function inspectFixture(overrides = {}) {
+  return {
+    Id: inventoryId,
+    Name: "/fixture-dev",
+    Image: `sha256:${"c".repeat(64)}`,
+    State: { Status: "running" },
+    HostConfig: { NetworkMode: "bridge", PortBindings: {} },
+    NetworkSettings: { Ports: {}, Networks: {} },
+    Mounts: [],
+    ...overrides,
+  };
+}
+
+function bindFixture(source, destination, readWrite) {
+  return { Type: "bind", Source: source, Destination: destination, RW: readWrite };
+}
+
+function inventoryCommand(rows, ids = rows.map(({ Id }) => Id), output = JSON.stringify(rows)) {
+  const listed = ids.map((id) => id.slice(0, 12));
+  return vi.fn().mockResolvedValueOnce(listed.join("\n")).mockResolvedValueOnce(output);
+}
+
+test("container inventory classifies mounts, socket aliases, stopped siblings and ports", async () => {
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "inventory-socket-")));
+  try {
+    const socket = path.join(root, "engine.sock");
+    const alias = path.join(root, "alias");
+    writeFileSync(socket, "");
+    symlinkSync(socket, alias);
+    const configured = { "8080/tcp": [{ HostIp: "127.0.0.1", HostPort: "18080" }] };
+    const active = { "8090/tcp": [{ HostIp: "0.0.0.0", HostPort: "18090" }] };
+    const dev = inspectFixture({
+      Mounts: [
+        bindFixture(alias, "/guest/socket", false),
+        bindFixture("/fixture-host/checkout", "/worktree", false),
+        {
+          Type: "volume",
+          Name: "cache",
+          Source: "/fixture-host/cache",
+          Destination: "/cache",
+          RW: true,
+        },
+      ],
+      HostConfig: {
+        NetworkMode: "bridge",
+        PortBindings: configured,
+        Mounts: [
+          { Type: "tmpfs", Target: "/scratch", TmpfsOptions: { SizeBytes: 4096 } },
+          {
+            Type: "volume",
+            Source: "cache",
+            Target: "/cache",
+            VolumeOptions: {
+              Subpath: "stage/cache",
+              DriverConfig: { Options: { device: "private-volume-option" } },
+            },
+          },
+        ],
+      },
+      NetworkSettings: { Networks: {}, Ports: { ...configured, ...active } },
+    });
+    const stopped = inspectFixture({
+      Id: siblingId,
+      Name: "/fixture-stopped",
+      State: { Status: "exited" },
+      HostConfig: { NetworkMode: "bridge", PortBindings: active },
+      NetworkSettings: { Ports: null, Networks: null },
+      Mounts: [
+        bindFixture("/fixture-host/old", "/old", true),
+        bindFixture(alias, "/socket", false),
+      ],
+    });
+    const host = inspectFixture({
+      Id: "e".repeat(64),
+      Name: "/fixture-host-net",
+      HostConfig: { NetworkMode: "host", PortBindings: {} },
+    });
+    const run = inventoryCommand([dev, stopped, host]);
+    const result = await readContainerInventory(
+      inventoryDocker,
+      { engineSocketPaths: [socket] },
+      run,
+    );
+    const [current, sibling, hostNetwork] = result.containers;
+    expect(current).toMatchObject({
+      engineSocket: true,
+      mounts: expect.arrayContaining([
+        expect.objectContaining({ source: socket, readWrite: false, engineSocket: true }),
+        expect.objectContaining({ destination: "/worktree", readWrite: false }),
+        expect.objectContaining({ type: "volume", name: "cache", readWrite: true }),
+      ]),
+      tmpfs: [{ destination: "/scratch", options: { SizeBytes: 4096 } }],
+    });
+    expect(
+      current.publishedPorts.map(({ hostPort, nonLoopback }) => [hostPort, nonLoopback]),
+    ).toEqual([
+      ["18080", false],
+      ["18090", true],
+    ]);
+    expect(current.declaredMounts.find(({ Type }) => Type === "volume")).toMatchObject({
+      Source: "cache",
+      Target: "/cache",
+      VolumeSubpath: "stage/cache",
+    });
+    expect(JSON.stringify(result)).not.toContain("private-volume-option");
+    expect(sibling).toMatchObject({
+      id: siblingId,
+      state: "exited",
+      engineSocket: true,
+      activePorts: [],
+      nonLoopbackPorts: true,
+    });
+    expect(hostNetwork.hostNetwork).toBe(true);
+    expect(run.mock.calls.map(([, args]) => args)).toEqual([
+      ["ps", "-aq"],
+      ["inspect", ...[dev, stopped, host].map(({ Id }) => Id.slice(0, 12))],
+    ]);
+    expect(
+      await writableBindRoots(inventoryDocker, inventoryCommand([dev, stopped, host])),
+    ).toEqual(["/fixture-host/old"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("container inventory binds digest to the installation and bound container", async () => {
+  const dev = inspectFixture();
+  const sibling = inspectFixture({ Id: siblingId });
+  const attachment = {
+    NetworkSettings: { Ports: {}, Networks: { fixture: { NetworkID: "new" } } },
+  };
+  const read = async (bound, peer, options = boundOptions) =>
+    (await readContainerInventory(inventoryDocker, options, inventoryCommand([bound, peer])))
+      .boundDigest;
+  const inventoryDigest = await read(dev, sibling);
+  expect(inventoryDigest).toMatch(/^[a-f0-9]{64}$/);
+  expect(await read(dev, { ...sibling, ...attachment })).toBe(inventoryDigest);
+  const replacementId = "d".repeat(64);
+  expect(
+    await read({ ...dev, Id: replacementId }, sibling, {
+      ...boundOptions,
+      boundContainerId: replacementId,
+    }),
+  ).not.toBe(inventoryDigest);
+  expect(await read({ ...dev, ...attachment }, sibling)).not.toBe(inventoryDigest);
+  expect(
+    await read(dev, sibling, { ...boundOptions, installationId: "different-installation" }),
+  ).not.toBe(inventoryDigest);
+});
+
+const wrongContainer = inspectFixture({ Id: siblingId });
+const timeout = vi
+  .fn()
+  .mockResolvedValueOnce(inventoryId.slice(0, 12))
+  .mockRejectedValueOnce(new Error("timeout"));
+test.each([
+  ["truncated inspect JSON", inventoryCommand([], [inventoryId], "["), "inspect failed"],
+  ["partial inspect row", inventoryCommand([{ Id: inventoryId, Mounts: [] }]), "Incomplete Docker"],
+  ["mismatched inspect ID", inventoryCommand([wrongContainer], [inventoryId]), "Incomplete Docker"],
+  ["absent bound container", inventoryCommand([wrongContainer]), "Bound container is absent"],
+  ["inspect timeout", timeout, "inspect failed"],
+])("container inventory refuses %s", async (_name, run, reason) => {
+  await expect(readContainerInventory(inventoryDocker, boundOptions, run)).rejects.toThrow(reason);
+});
 
 test("Dev bootstrap requires the fixed profile client in both supervisor and worker", () => {
   const expected = "/fixture/.local/share/vorteo-installation-client/client.json";
@@ -591,9 +767,11 @@ async function webSourceFixture() {
     docker,
     `#!${process.execPath}\nconst fs = require('node:fs');\nfs.appendFileSync(${JSON.stringify(
       calls,
-    )}, JSON.stringify(process.argv.slice(2)) + '\\n');\nif(process.argv[2] === 'ps') console.log('fixture');\nelse if(process.argv[2] === 'inspect') console.log(JSON.stringify([{Mounts: JSON.parse(fs.readFileSync(${JSON.stringify(
-      mounts,
-    )}, 'utf8'))}]));\nelse process.exit(91);\n`,
+    )}, JSON.stringify(process.argv.slice(2)) + '\\n');\nif(process.argv[2] === 'ps') console.log(${JSON.stringify(inventoryId.slice(0, 12))});\nelse if(process.argv[2] === 'inspect') {
+      const row = ${JSON.stringify(inspectFixture())};
+      row.Mounts = JSON.parse(fs.readFileSync(${JSON.stringify(mounts)}, 'utf8'));
+      console.log(JSON.stringify([row]));
+    } else process.exit(91);\n`,
     { mode: 0o700 },
   );
   const config = {
@@ -664,9 +842,9 @@ test("web source setup reads actual config, seeds live history and preserves con
     );
     expect(readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse)).toEqual([
       ["ps", "-aq"],
-      ["inspect", "fixture"],
+      ["inspect", inventoryId.slice(0, 12)],
       ["ps", "-aq"],
-      ["inspect", "fixture"],
+      ["inspect", inventoryId.slice(0, 12)],
     ]);
   } finally {
     rmSync(f.root, { recursive: true, force: true });
@@ -747,7 +925,7 @@ test.each(["repository", "config", "binding-parent", "writable-parent"])(
         mkdirSync(source);
       }
       if (mode === "writable-parent") chmodSync(f.root, 0o777);
-      else writeFileSync(f.mounts, JSON.stringify([{ Type: "bind", RW: true, Source: source }]));
+      else writeFileSync(f.mounts, JSON.stringify([bindFixture(source, "/guest/fixture", true)]));
       await expect(configureWebSource(f.plan)).rejects.toThrow(
         /writable container bind|protected and Host-owned/,
       );

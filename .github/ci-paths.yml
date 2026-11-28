@@ -29,6 +29,11 @@ quality:
   - "**/*.{cjs,js,json,jsx,mjs,ts,tsx}"
   - "packages/expo-two-way-audio/**"
 
+installer_inventory:
+  - "scripts/installer/primitives.mjs"
+  - "scripts/installer/container-inventory.mjs"
+  - "scripts/install-execution-host.test.mjs"
+
 hub:
   - "packages/cli/src/commands/hub/**"
   - "packages/server/src/server/hub/**"

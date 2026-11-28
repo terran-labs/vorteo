@@ -54,6 +54,7 @@ jobs:
       windows_host: ${{ github.event_name == 'workflow_dispatch' }}
       format: ${{ steps.filter.outputs.format }}
       quality: ${{ steps.filter.outputs.quality }}
+      installer_inventory: ${{ steps.filter.outputs.installer_inventory }}
       hub: ${{ steps.filter.outputs.hub }}
       server: ${{ steps.filter.outputs.server }}
       desktop: ${{ steps.filter.outputs.desktop }}
@@ -199,6 +200,10 @@ jobs:
       - name: Test lint rules
         if: ${{ !cancelled() && steps.install.outcome == 'success' && (needs.changes.outputs.full != 'false' || needs.changes.outputs.quality != 'false') }}
         run: node --test scripts/oxlint/paseo-plugin.test.mjs
+
+      - name: Test synthetic container inventory
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && needs.changes.outputs.installer_inventory == 'true' }}
+        run: node_modules/.bin/vitest run scripts/install-execution-host.test.mjs -t 'container inventory'
 
       - name: Build relay
         if: ${{ !cancelled() && steps.install.outcome == 'success' && (needs.changes.outputs.full != 'false' || needs.changes.outputs.relay != 'false') }}
