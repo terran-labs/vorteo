@@ -1,8 +1,21 @@
-import type {
-  FACTORY_CONFIG_PATH,
-  FactoryActivityEntry,
-  FactoryLeanStatus,
-  FactoryLeanView,
+import { callPluginRpc } from "@getpaseo/plugin/client/host";
+import type { PluginRpcContract } from "@getpaseo/plugin";
+import type { input as zInput, output as zOutput, ZodType } from "zod";
+import {
+  factoryLeanActivityList,
+  factoryLeanConfigPropose,
+  factoryLeanConfigRead,
+  factoryLeanDeliveryResolve,
+  factoryLeanReleasesHold,
+  factoryLeanReleasesPromote,
+  factoryLeanReleasesRelease,
+  factoryLeanReleasesRollback,
+  factoryLeanStatus,
+  factoryLeanView,
+  type FACTORY_CONFIG_PATH,
+  type FactoryActivityEntry,
+  type FactoryLeanStatus,
+  type FactoryLeanView,
 } from "../../../../../../plugins/factory/shared/lean";
 import type { ProjectFactoryState } from "@/components/sidebar/factory-state";
 import type { FactoryInvoke } from "../queue";
@@ -174,44 +187,49 @@ export const leanQueryKeys = {
   config: (serverId: string, projectId: string) => ["factoryLeanConfig", serverId, projectId],
 };
 
+/**
+ * The first line of a failed call: a reply that does not match the shared contract names the
+ * first field that failed, so the owner sees the real problem instead of a blank page.
+ */
+export function leanCallError(method: string, error: unknown): Error {
+  const issues = (error as { issues?: { path?: PropertyKey[]; message?: string }[] }).issues;
+  const first = Array.isArray(issues) ? issues[0] : undefined;
+  if (first) {
+    const field = (first.path ?? []).map(String).join(".") || "reply";
+    return new Error(
+      `The daemon's ${method} reply does not match: ${field} ${first.message ?? ""}`.trim(),
+    );
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(message.split("\n")[0] ?? message);
+}
+
 export function createLeanSource(invoke: FactoryInvoke, projectId: string) {
+  // Every reply is validated against the shared contract before any view reads it.
+  const call = async <Input extends ZodType, Output extends ZodType>(
+    contract: PluginRpcContract<Input, Output>,
+    input: zInput<Input>,
+  ): Promise<zOutput<Output>> => {
+    try {
+      return await callPluginRpc(contract, invoke, input as never);
+    } catch (error) {
+      throw leanCallError(contract.name, error);
+    }
+  };
   return {
-    status: async () => (await invoke("factory.lean.status", { projectId })) as LeanStatus,
-    view: async () =>
-      mapLeanView((await invoke("factory.lean.view", { projectId })) as FactoryLeanView),
-    activity: async (limit = 50) =>
-      (await invoke("factory.lean.activity.list", { projectId, limit })) as {
-        entries: LeanActivityEntry[];
-        nextBefore: string | null;
-      },
-    promote: async (eventId: string, expectedProduction: string | null) =>
-      (await invoke("factory.lean.releases.promote", {
-        projectId,
-        eventId,
-        expectedProduction,
-      })) as LeanWriteResult<{ queued: true; jobId: string }>,
-    rollback: async (targetEventId: string, expectedProduction: string) =>
-      (await invoke("factory.lean.releases.rollback", {
-        projectId,
-        targetEventId,
-        expectedProduction,
-      })) as LeanWriteResult<{ queued: true; jobId: string }>,
+    status: () => call(factoryLeanStatus, { projectId }),
+    view: async () => mapLeanView(await call(factoryLeanView, { projectId })),
+    activity: (limit = 50) => call(factoryLeanActivityList, { projectId, limit }),
+    promote: (eventId: string, expectedProduction: string | null) =>
+      call(factoryLeanReleasesPromote, { projectId, eventId, expectedProduction }),
+    rollback: (targetEventId: string, expectedProduction: string) =>
+      call(factoryLeanReleasesRollback, { projectId, targetEventId, expectedProduction }),
     /** Owner-only: holds a pending beta past its notice. */
-    holdBeta: async (eventId: string) =>
-      (await invoke("factory.lean.releases.hold", { projectId, eventId })) as LeanWriteResult<{
-        held: boolean;
-      }>,
+    holdBeta: (eventId: string) => call(factoryLeanReleasesHold, { projectId, eventId }),
     /** Owner-only: lets a held beta ship. */
-    releaseBeta: async (eventId: string) =>
-      (await invoke("factory.lean.releases.release", { projectId, eventId })) as LeanWriteResult<{
-        held: boolean;
-      }>,
+    releaseBeta: (eventId: string) => call(factoryLeanReleasesRelease, { projectId, eventId }),
     config: async (): Promise<LeanConfigRead> => {
-      const raw = (await invoke("factory.lean.config.read", { projectId })) as {
-        file: string | null;
-        commit: string | null;
-        installations: { id: string; friendlyName: string | null }[];
-      };
+      const raw = await call(factoryLeanConfigRead, { projectId });
       return {
         file: raw.file,
         commit: raw.commit,
@@ -222,18 +240,10 @@ export function createLeanSource(invoke: FactoryInvoke, projectId: string) {
      * Owner-only, through the verified owner ingress: settles a failed or unknown-outcome
      * delivery with one of the executor's choices.
      */
-    resolveDelivery: async (jobId: string, action: LeanResolveAction) =>
-      (await invoke("factory.lean.delivery.resolve", {
-        projectId,
-        jobId,
-        action,
-      })) as LeanWriteResult<{ resolved: true }>,
-    proposeConfig: async (baseCommit: string, content: string) =>
-      (await invoke("factory.lean.config.propose", {
-        projectId,
-        baseCommit,
-        content,
-      })) as LeanWriteResult<{ pullRequest: number; url: string }>,
+    resolveDelivery: (jobId: string, action: LeanResolveAction) =>
+      call(factoryLeanDeliveryResolve, { projectId, jobId, action }),
+    proposeConfig: (baseCommit: string, content: string) =>
+      call(factoryLeanConfigPropose, { projectId, baseCommit, content }),
   };
 }
 export type LeanSource = ReturnType<typeof createLeanSource>;

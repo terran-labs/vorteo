@@ -59,7 +59,14 @@ export function useLeanFactoryReads(input: {
     refetchInterval: live && polling ? LEAN_POLL_MS : false,
     queryFn: () => source!.view(),
   });
-  return { source, status: status.data ?? null, view: view.data ?? null };
+  return {
+    source,
+    status: status.data ?? null,
+    view: view.data ?? null,
+    /** The view's read error, already one line; the overview shows it with Retry. */
+    error: view.error ?? null,
+    retry: view.refetch,
+  };
 }
 
 /** The newest activity entries, read while the overview is visible. */

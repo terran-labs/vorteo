@@ -186,7 +186,7 @@ export const FactorySection = memo(function FactorySection({
         <>
           {/* Lean: the Lead and Mechanic tiles side by side; no Crew group. */}
           <FactoryRoleChips
-            chips={leanTiles([...(foreman ? [foreman] : []), ...crew])}
+            chips={leanTiles([...(foreman ? [foreman] : []), ...crew], t)}
             level={level + 1}
             {...selection}
           />

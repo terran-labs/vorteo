@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Text, View } from "react-native";
+import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import { ScrollView } from "@/components/ui/scroll-view";
 import { SegmentedControl } from "@/components/ui/segmented-control";
@@ -59,7 +60,7 @@ function demoWorkspace(
   } as SidebarWorkspaceEntry;
 }
 
-function demoTiles(serverId: string, state: DemoState): FactoryChip[] {
+function demoTiles(serverId: string, state: DemoState, t: (key: string) => string): FactoryChip[] {
   const chip = (key: string, label: string, entry: SidebarWorkspaceEntry): FactoryChip => ({
     key,
     label,
@@ -73,13 +74,13 @@ function demoTiles(serverId: string, state: DemoState): FactoryChip[] {
     demoWorkspace(serverId, "wks-mechanic", "Mira :: Mechanic", "done"),
   );
   // A new lean project has no Lead record yet; its tile stays, with nothing to open.
-  if (state === "new-project") return leanTiles([mechanic]);
+  if (state === "new-project") return leanTiles([mechanic], t);
   const lead = chip(
     "factory-intake",
     "Foreman",
     demoWorkspace(serverId, "wks-lead", "Mira :: Lead", "running"),
   );
-  return leanTiles([lead, mechanic]);
+  return leanTiles([lead, mechanic], t);
 }
 
 /**
@@ -88,6 +89,7 @@ function demoTiles(serverId: string, state: DemoState): FactoryChip[] {
  * here reads credentials or talks to a daemon.
  */
 export function LeanFactoryDemoScreen() {
+  const { t } = useTranslation();
   const [demoState, setDemoState] = useState<DemoState>("ready");
   // Each state reads through its own cache keys, like a different daemon.
   const serverId = `lean-demo-${demoState}`;
@@ -103,11 +105,11 @@ export function LeanFactoryDemoScreen() {
     const status = demoLeanStatus();
     const view = mapLeanView(demoWireView(demoState) as never);
     return {
-      tiles: demoTiles(serverId, demoState),
+      tiles: demoTiles(serverId, demoState, t),
       needsYou: leanNeedsYou(status, view),
       runners: leanRunnerIssues(leanRunnerRows(status, view), status),
     };
-  }, [demoState, serverId]);
+  }, [demoState, serverId, t]);
   return (
     <ScrollView contentContainerStyle={styles.page} testID="lean-factory-demo">
       <SegmentedControl

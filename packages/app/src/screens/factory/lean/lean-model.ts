@@ -226,18 +226,22 @@ export function leanPromotableBetas(view: Pick<LeanView, "betas" | "production">
     .sort((left, right) => Date.parse(right.at) - Date.parse(left.at));
 }
 
-/** The two lean tiles, Lead first. Role labels are product names, as the crew tiles' are. */
+/** The two lean tiles, Lead first, with their translation keys. */
 export const LEAN_TILE_ROLES = [
-  { key: "factory-intake", label: "Lead" },
-  { key: "factory-mechanic", label: "Mechanic" },
+  { key: "factory-intake", labelKey: "sidebar.factoryCard.leanTiles.lead" },
+  { key: "factory-mechanic", labelKey: "sidebar.factoryCard.leanTiles.mechanic" },
 ] as const;
 
 /**
  * The Lead and Mechanic tiles from the Factory's role chips. A fresh lean project may have no
  * record for either yet; its tile stays, with nothing to open, instead of disappearing.
  */
-export function leanTiles(chips: readonly FactoryChip[]): FactoryChip[] {
-  return LEAN_TILE_ROLES.map(({ key, label }) => {
+export function leanTiles(
+  chips: readonly FactoryChip[],
+  t: (key: string) => string,
+): FactoryChip[] {
+  return LEAN_TILE_ROLES.map(({ key, labelKey }) => {
+    const label = t(labelKey);
     const chip = chips.find((candidate) => candidate.key === key);
     // A copy, so relabeling never changes the shared chip.
     const tile: FactoryChip = chip
@@ -257,7 +261,7 @@ function queueIssue(line: LeanStatus["issues"][number]): QueueIssue {
     number: line.issue,
     title: line.title,
     url: "",
-    label: line.runner ? "running" : "ready",
+    label: issueRunners(line).length > 0 ? "running" : "ready",
     stage: leanQueueStage(line.stage),
     pr: line.pr
       ? {
@@ -366,8 +370,13 @@ export function leanReleases(
             : null,
       }),
     );
+  // Earlier means older than production by the same comparison betas use, whatever the daemon
+  // placed in the list; a release newer than production is never offered as a rollback.
   const earlier = view.earlier
-    .filter((event) => event.id !== production?.id)
+    .filter(
+      (event) =>
+        event.id !== production?.id && !(production && isNewerThanProduction(event, production)),
+    )
     .sort(byNewest)
     .map(
       (event): LeanReleaseRow => ({

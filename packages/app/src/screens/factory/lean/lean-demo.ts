@@ -197,7 +197,7 @@ function demoConfig(provider: string): string {
   "schema": "vorteo-factory",
   "version": 1,
   "mode": "lean",
-  "order": ["srv_m2/mira"],
+  "order": ["srv_m2/mira", "srv_studio/mira"],
   "builder": { "provider": "${provider}" },
   "lease": { "ttlMinutes": 120 }
 }
@@ -438,6 +438,14 @@ export function createDemoLeanInvoke(
           // The new project's file names a provider this installation has not enabled.
           file: demoConfig(state === "new-project" ? "gemini" : "codex"),
           commit: "a".repeat(40),
+          effective: {
+            value: {},
+            fromFile: ["order", "builder.provider"],
+            defaults: [],
+            notUnderstood: [],
+            sectionErrors: [],
+            source: { path: ".github/vorteo-factory.json", commit: "a".repeat(40) },
+          },
           installations: [
             { id: M2, friendlyName: "M2", seenAs: ["this"] },
             { id: STUDIO, friendlyName: "Studio", seenAs: ["presence"] },

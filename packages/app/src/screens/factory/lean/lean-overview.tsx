@@ -94,6 +94,8 @@ export function LeanFactoryOverview({
   const alerts = useMemo(() => leanHealthAlerts(status, view), [status, view]);
   const leadAgentId = state.roles.find((role) => role.role === "factory-intake")?.agentId ?? null;
   const closeConfirm = useCallback(() => setConfirming(null), []);
+  const { retry } = reads;
+  const retryView = useCallback(() => void retry(), [retry]);
   const confirmRelease = useCallback(
     (action: LeanReleaseAction) => {
       if (source) setConfirming(releaseRequest(action, source, t));
@@ -115,6 +117,18 @@ export function LeanFactoryOverview({
     [releases],
   );
 
+  if (!view && reads.error) {
+    return (
+      <View style={styles.dialogBody} testID="factory-lean-error">
+        <Text style={styles.error} accessibilityRole="alert">
+          {reads.error.message}
+        </Text>
+        <Button size="sm" variant="outline" onPress={retryView}>
+          {t("common.actions.retry")}
+        </Button>
+      </View>
+    );
+  }
   if (!view) {
     return <Text style={styles.muted}>{t("projectFactory.loading")}</Text>;
   }
@@ -133,6 +147,7 @@ export function LeanFactoryOverview({
                   source={source}
                   onPromote={promoteNewest}
                   onResolve={confirmResolve}
+                  onConfirm={setConfirming}
                 />
               ))}
             </SettingsCard>
@@ -416,6 +431,7 @@ function NeedsYouRow({
   source,
   onPromote,
   onResolve,
+  onConfirm,
 }: {
   item: LeanNeedsYouItem;
   serverId: string;
@@ -423,13 +439,16 @@ function NeedsYouRow({
   source: LeanSource | null;
   onPromote: () => void;
   onResolve: ResolveHandler;
+  onConfirm: (request: LeanConfirmRequest) => void;
 }) {
   const { t } = useTranslation();
   const blocked = useLeanBlockReason(NEEDS_YOU_ACTION[item.kind]);
   if (item.kind === "delivery-failed") {
     return <DeliveryFailedRow item={item} blocked={blocked} onResolve={onResolve} />;
   }
-  if (item.kind === "beta-notice") return <BetaNoticeRow item={item} source={source} />;
+  if (item.kind === "beta-notice") {
+    return <BetaNoticeRow item={item} source={source} onConfirm={onConfirm} />;
+  }
   if (item.kind === "approval") {
     return (
       <SettingsRow
@@ -487,24 +506,30 @@ function NeedsYouRow({
   );
 }
 
+/**
+ * The beta notice. Hold is one tap on purpose: it is the safe, reversible direction, and the
+ * owner may have only the notice window, on a phone, to stop a beta that resets occupied rooms;
+ * a confirmation there would cost more than it protects. Let it ship is irreversible, so it is
+ * confirmed with the exact version, or "the next beta" while the version is not known.
+ */
 function BetaNoticeRow({
   item,
   source,
+  onConfirm,
 }: {
   item: Extract<LeanNeedsYouItem, { kind: "beta-notice" }>;
   source: LeanSource | null;
+  onConfirm: (request: LeanConfirmRequest) => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
   const queryClient = useQueryClient();
   const [pending, setPending] = useState(false);
-  const toggle = useCallback(async () => {
+  const hold = useCallback(async () => {
     if (!source) return;
     setPending(true);
     try {
-      const result = item.held
-        ? await source.releaseBeta(item.eventId)
-        : await source.holdBeta(item.eventId);
+      const result = await source.holdBeta(item.eventId);
       if (isRefusal(result)) {
         toast.show(t("projectFactory.lean.refused", { reason: result.refused }), {
           variant: "error",
@@ -516,8 +541,23 @@ function BetaNoticeRow({
     } finally {
       setPending(false);
     }
-  }, [item.eventId, item.held, queryClient, source, t, toast]);
-  const press = useCallback(() => void toggle(), [toggle]);
+  }, [item.eventId, queryClient, source, t, toast]);
+  const press = useCallback(() => {
+    if (!item.held) {
+      void hold();
+      return;
+    }
+    if (!source) return;
+    const beta = leanBetaName(item.version, t);
+    onConfirm({
+      title: t("projectFactory.lean.letShipTitle", { beta }),
+      body: t("projectFactory.lean.letShipBody", { beta }),
+      confirmLabel: t("projectFactory.lean.letShip"),
+      destructive: true,
+      done: t("projectFactory.lean.letShipDone", { beta }),
+      run: () => source.releaseBeta(item.eventId),
+    });
+  }, [hold, item.eventId, item.held, item.version, onConfirm, source, t]);
   const blocked = useLeanBlockReason("hold");
   const time = useMemo(
     () => new Date(item.shipsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),

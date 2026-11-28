@@ -10,7 +10,7 @@ type Json = Record<string, unknown>;
 export interface LeanConfigFields {
   /** The primary machine: `order[0]`, one `<serverId>/<projectId>` installation. */
   primary: string | null;
-  /** Pending contract `builder.provider`, such as "codex" or "claude". */
+  /** `builder.provider`, such as "codex" or "claude". */
   builderProvider: string | null;
 }
 
@@ -54,19 +54,19 @@ function indentOf(file: string | null): string | number {
  * Replaces values in place so lines the owner did not change keep their formatting. Returns
  * null when a key is not in a simple form; the caller then reserializes the whole file.
  */
-function editInPlace(file: string, value: Json, fields: LeanConfigFields): string | null {
+function editInPlace(file: string, value: Json, edits: Partial<LeanConfigFields>): string | null {
   let text = file;
-  if (fields.primary) {
+  if (edits.primary) {
     const order = /("order"\s*:\s*)\[[^[\]]*\]/;
     if (!order.test(text)) return null;
-    text = text.replace(order, (_, key: string) => `${key}${JSON.stringify([fields.primary])}`);
+    text = text.replace(order, (_, key: string) => `${key}${JSON.stringify(value.order)}`);
   }
-  if (fields.builderProvider) {
+  if (edits.builderProvider) {
     const provider = /("builder"\s*:\s*\{[^{}]*?"provider"\s*:\s*)"(?:[^"\\]|\\.)*"/;
     if (!provider.test(text)) return null;
     text = text.replace(
       provider,
-      (_, key: string) => `${key}${JSON.stringify(fields.builderProvider)}`,
+      (_, key: string) => `${key}${JSON.stringify(edits.builderProvider)}`,
     );
   }
   // Only keep the in-place edit when it means exactly the structured edit.
@@ -78,27 +78,32 @@ function editInPlace(file: string, value: Json, fields: LeanConfigFields): strin
 }
 
 /**
- * New file text with the fields applied. V1 runs one fixed primary, so `order` becomes that one
- * installation. A repository without the file gets a minimal lean configuration.
+ * New file text with only the owner's edits applied; a field the owner did not touch is left
+ * exactly as the file has it. A new primary replaces `order[0]` and keeps the rest of the order,
+ * minus that machine if it was listed later. A repository without the file gets a minimal lean
+ * configuration.
  */
 export function applyLeanConfigFields(
   file: string | null,
-  fields: LeanConfigFields,
+  edits: Partial<LeanConfigFields>,
 ): { ok: true; content: string } | { ok: false; error: string } {
   const parsed = parseLeanConfig(file);
   if (!parsed.ok) return parsed;
   const value: Json = parsed.value
     ? { ...parsed.value }
     : { schema: "vorteo-factory", version: 1, mode: "lean" };
-  if (fields.primary) value.order = [fields.primary];
-  if (fields.builderProvider) {
+  if (edits.primary) {
+    const order = Array.isArray(value.order) ? value.order : [];
+    value.order = [edits.primary, ...order.slice(1).filter((entry) => entry !== edits.primary)];
+  }
+  if (edits.builderProvider) {
     const builder = isObject(value.builder) ? value.builder : {};
-    value.builder = { ...builder, provider: fields.builderProvider };
+    value.builder = { ...builder, provider: edits.builderProvider };
   }
   if (file !== null && JSON.stringify(value) === JSON.stringify(parsed.value)) {
     return { ok: true, content: file };
   }
-  const inPlace = file === null ? null : editInPlace(file, value, fields);
+  const inPlace = file === null ? null : editInPlace(file, value, edits);
   if (inPlace !== null) return { ok: true, content: inPlace };
   const trailingNewline = file === null || file.endsWith("\n");
   const content = JSON.stringify(value, null, indentOf(file)) + (trailingNewline ? "\n" : "");
@@ -198,8 +203,9 @@ export function leanConfigDraft(
 ): LeanConfigDraft {
   const parsed = parseLeanConfig(file);
   if (!parsed.ok) return { fields: null, content: null, changes: [], unreadable: parsed.error };
+  // The dropdowns show the file's values with the owner's edits; only the edits are applied.
   const fields = { ...parsed.fields, ...edits };
-  const next = applyLeanConfigFields(file, fields);
+  const next = applyLeanConfigFields(file, edits);
   if (!next.ok) return { fields, content: null, changes: [], unreadable: next.error };
   const changes = lineDiff(file ?? "", next.content).flatMap((line, position) =>
     line.kind === "same" ? [] : [{ ...line, key: `${position}` }],

@@ -32,6 +32,10 @@ export const en = {
       betaResets: "A beta resets occupied beta rooms.",
       hold: "Hold",
       letShip: "Let it ship",
+      letShipTitle: "Let {{beta}} ship",
+      letShipBody:
+        "{{beta}} goes out as scheduled and resets occupied beta rooms. Once it ships, this cannot be undone.",
+      letShipDone: "{{beta}} will ship",
       refused: "Refused: {{reason}}",
       blocked: {
         owner: "Not available yet on this installation.",
@@ -1715,6 +1719,7 @@ export const en = {
       issue: "#{{number}} {{title}}",
       runners: "Runners",
       leanRoles: { builder: "Builder", reviewer: "Reviewer", delivery: "Delivery" },
+      leanTiles: { lead: "Lead", mechanic: "Mechanic" },
       leanRunnerOn: "{{role}} on {{machine}}",
       needsYou: {
         title: "Needs you",
