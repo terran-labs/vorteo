@@ -41,6 +41,7 @@ export interface NewTabLauncher {
   showChanges: boolean;
   showPullRequest: boolean;
   showBrowser: boolean;
+  showSharedFiles: boolean;
   terminalDisabled: boolean;
   launch: (selection: NewTabSelection, destination: WorkspaceTabLaunchDestination) => void;
 }
@@ -83,6 +84,7 @@ const BUILT_IN_SELECTIONS = {
   changes: { kind: "target", target: { kind: "changes_tree" } },
   diff: { kind: "target", target: { kind: "working_diff" } },
   files: { kind: "target", target: { kind: "files" } },
+  sharedFiles: { kind: "target", target: { kind: "shared_files" } },
   browser: { kind: "browser" },
   pullRequest: { kind: "target", target: { kind: "pull_request" } },
 } satisfies Record<BuiltInLaunchItemId, NewTabSelection>;
@@ -124,6 +126,7 @@ export function useWorkspaceTabLaunchCatalog(input: {
     const diffPresentation = getLaunchPresentation("working_diff");
     const filesPresentation = getLaunchPresentation("files");
     const pullRequestPresentation = getLaunchPresentation("pull_request");
+    const sharedFilesPresentation = getLaunchPresentation("shared_files");
     const builtIns: Record<BuiltInLaunchItemId, WorkspaceTabLaunchItem & { hidden?: boolean }> = {
       agent: {
         id: "agent",
@@ -171,6 +174,15 @@ export function useWorkspaceTabLaunchCatalog(input: {
         disabled: false,
         panelKind: "files",
         launch: launchSelection(BUILT_IN_SELECTIONS.files),
+      },
+      sharedFiles: {
+        id: "shared-files",
+        label: sharedFilesPresentation.label(t),
+        Icon: sharedFilesPresentation.icon,
+        disabled: false,
+        panelKind: "shared_files",
+        hidden: !launcher.showSharedFiles,
+        launch: launchSelection(BUILT_IN_SELECTIONS.sharedFiles),
       },
       browser: {
         id: "browser",

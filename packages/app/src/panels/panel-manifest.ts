@@ -116,6 +116,14 @@ const manifests = {
     compactSheet: { openAsTab: false, preferSheet: true },
     resourceKey: () => "pull_request",
   },
+  shared_files: {
+    kind: "shared_files",
+    supportedHosts: ["main"],
+    showCloseButton: true,
+    singleton: true,
+    compactSheet: null,
+    resourceKey: () => "shared_files",
+  },
   file: {
     kind: "file",
     supportedHosts: ["main", "explorer"],

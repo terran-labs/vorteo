@@ -72,17 +72,20 @@ function SharedContext({ context }: { context: QueueContext }) {
   );
 }
 
-function SharedAttachment({
-  serverId,
-  agentId,
-  messageId,
-  attachment,
-}: {
+interface QueueAttachmentRef {
   serverId: string;
   agentId: string;
   messageId: string;
-  attachment: QueueAttachment;
-}) {
+  attachmentId: string;
+}
+
+/** Opens a captured upload: images in the lightbox, anything else as a download. */
+export function useQueueAttachmentOpener({
+  serverId,
+  agentId,
+  messageId,
+  attachmentId,
+}: QueueAttachmentRef) {
   const hosts = useHosts();
   const [busy, setBusy] = useState(false);
   const reportError = useReportActionError();
@@ -94,17 +97,13 @@ function SharedAttachment({
       mounted.current = false;
     };
   }, []);
-  const source = useMemo(() => (uri ? { type: "uri" as const, uri } : null), [uri]);
-  const close = useCallback(() => setUri(null), []);
-  const open = useCallback(async () => {
+  const preview = useMemo(() => (uri ? { type: "uri" as const, uri } : null), [uri]);
+  const closePreview = useCallback(() => setUri(null), []);
+  const load = useCallback(async () => {
     setBusy(true);
     try {
       const client = requireQueueClient(serverId);
-      const result = await client.getMessageQueueAttachment({
-        agentId,
-        messageId,
-        attachmentId: attachment.id,
-      });
+      const result = await client.getMessageQueueAttachment({ agentId, messageId, attachmentId });
       if (result.error || !result.file)
         throw new Error(result.error?.message ?? "Attachment is unavailable.");
       const file = result.file;
@@ -138,7 +137,7 @@ function SharedAttachment({
             const download = await client.getMessageQueueAttachment({
               agentId,
               messageId,
-              attachmentId: attachment.id,
+              attachmentId,
               download: true,
             });
             return {
@@ -156,16 +155,36 @@ function SharedAttachment({
     } finally {
       if (mounted.current) setBusy(false);
     }
-  }, [serverId, agentId, messageId, attachment.id, hosts, reportError]);
-  const press = useCallback(() => {
-    void open();
-  }, [open]);
+  }, [serverId, agentId, messageId, attachmentId, hosts, reportError]);
+  const open = useCallback(() => {
+    void load();
+  }, [load]);
+  return { busy, open, preview, closePreview };
+}
+
+function SharedAttachment({
+  serverId,
+  agentId,
+  messageId,
+  attachment,
+}: {
+  serverId: string;
+  agentId: string;
+  messageId: string;
+  attachment: QueueAttachment;
+}) {
+  const { busy, open, preview, closePreview } = useQueueAttachmentOpener({
+    serverId,
+    agentId,
+    messageId,
+    attachmentId: attachment.id,
+  });
   return (
     <View>
-      <Button variant="ghost" size="sm" style={styles.touch} onPress={press} disabled={busy}>
+      <Button variant="ghost" size="sm" style={styles.touch} onPress={open} disabled={busy}>
         {busy ? "Loading..." : attachment.fileName}
       </Button>
-      <AttachmentLightbox source={source} onClose={close} />
+      <AttachmentLightbox source={preview} onClose={closePreview} />
     </View>
   );
 }

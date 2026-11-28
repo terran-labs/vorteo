@@ -3334,6 +3334,19 @@ export class DaemonClient {
     });
   }
 
+  async listWorkspaceSharedFiles(
+    workspaceId: string,
+  ): Promise<
+    Extract<SessionOutboundMessage, { type: "workspace.shared_files.list.response" }>["payload"]
+  > {
+    const payload = await this.sendCorrelatedSessionRequest({
+      message: { type: "workspace.shared_files.list.request", workspaceId },
+      responseType: "workspace.shared_files.list.response",
+    });
+    if (payload.error) throw new Error(payload.error);
+    return payload;
+  }
+
   async startWorkspaceScriptWithStatus(
     workspaceId: string,
     scriptName: string,
