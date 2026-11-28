@@ -1,0 +1,134 @@
+{
+  "schema": "vorteo-factory",
+  "version": 1,
+  "mode": "lean",
+  "about": "Proposed Lean Factory configuration for Mira. Owner-only: Factory never merges a change to this file.",
+  "order": ["srv_dDYiqxDpCkRy/REPLACE-WITH-MIRA-PROJECT-ID"],
+  "runners": {
+    "placement": "host"
+  },
+  "builder": {
+    "provider": "codex"
+  },
+  "reviewer": {
+    "provider": "claude"
+  },
+  "sensitivePaths": [
+    "server/**",
+    "shared/**",
+    "wrangler.toml",
+    "wrangler.staging.toml",
+    "tools/ship.sh",
+    "tools/release.sh",
+    "tools/rollback.sh",
+    "tools/promote-stable.sh",
+    "tools/cloudflare-token.sh",
+    "tools/frozen-versions.mjs",
+    "tools/frozen-fingerprint.mjs",
+    "tools/release-notes.mjs",
+    "tools/heavy.sh",
+    "tools/heavy.py",
+    "tools/lib/**",
+    "ops/RELEASE.md",
+    ".github/**"
+  ],
+  "issueGates": [
+    {
+      "argv": ["npm", "run", "typecheck"],
+      "where": "host"
+    },
+    {
+      "argv": ["npx", "vitest", "run", "tests/core"],
+      "where": "host",
+      "about": "Provisional: a fixed common folder until Mira agrees how an issue names its lane. The full unit suite runs as a beta gate."
+    }
+  ],
+  "release": {
+    "about": "tools/ship.sh exits 0 even when a release fails; it reports through /tmp/mira-ship-N.done. Factory therefore decides success only from the verify steps, which read what beta.mira.cc and mira.cc actually serve, the way tools/release.sh verifies: the served build.json id and version must name the frozen copy, and tools/frozen-versions.mjs check must pass against it.",
+    "checkout": "/Users/vtn/dev/Syn3h-factory",
+    "records": ["release-notes/betas.tsv", "release-notes/history.tsv"],
+    "milestoneTag": "m-factory-",
+    "baselineCommit": "eee10bfe8365bcad6112337db901358913bbf0f2",
+    "version": {
+      "where": "host",
+      "run": "node tools/release-notes.mjs next"
+    },
+    "channels": {
+      "beta": {
+        "tag": "beta",
+        "noticeMinutes": 10
+      },
+      "stable": {
+        "tag": "production"
+      }
+    },
+    "identity": "artifact",
+    "steps": {
+      "install": [
+        {
+          "where": "host",
+          "run": "npm ci",
+          "lockfile": "package-lock.json"
+        }
+      ],
+      "releaseNumber": {
+        "about": "Read-only. The next release-N after every release recorded in ../Syn3h-stable/releases.tsv and every release-N tag.",
+        "where": "host",
+        "run": "last=\"$( { cut -f1 ../Syn3h-stable/releases.tsv 2>/dev/null; git tag -l 'release-*'; } | sed -n 's/^release-\\([0-9][0-9]*\\)$/\\1/p' | sort -n | tail -1)\"\nprintf '{\"number\":\"%s\"}\\n' \"$(( ${last:-0} + 1 ))\""
+      },
+      "deployBeta": {
+        "where": "host",
+        "run": "exec tools/ship.sh \"$VORTEO_RELEASE_NUMBER\" \"$VORTEO_RELEASE_NOTE\" --beta"
+      },
+      "verifyBeta": {
+        "about": "Read-only. The newest betas.tsv row must be the accepted commit, and beta.mira.cc must serve exactly that frozen copy.",
+        "where": "host",
+        "run": "set -eu\nrow=\"$(grep -v '^#' release-notes/betas.tsv | tail -1)\"\nversion=\"$(printf '%s' \"$row\" | cut -f1)\"\ncommit=\"$(git rev-parse --verify \"$(printf '%s' \"$row\" | cut -f3)^0\")\"\nfrozen=\"$(printf '%s' \"$row\" | cut -f5)\"\nserved=\"$(curl -sf --max-time 15 https://beta.mira.cc/build.json | node -e 'let s=\"\";process.stdin.on(\"data\",(d)=>(s+=d)).on(\"end\",()=>{const b=JSON.parse(s);process.stdout.write(b.id+\" \"+b.version)})')\"\n[ \"$served\" = \"$frozen $version\" ] || { echo \"beta.mira.cc serves $served, not $frozen $version\" >&2; exit 1; }\nnode tools/frozen-versions.mjs check https://beta.mira.cc/ \"../Syn3h-stable/$frozen\" >&2\nprintf '{\"version\":\"%s\",\"commit\":\"%s\",\"artifact\":\"%s\"}\\n' \"$version\" \"$commit\" \"$frozen\""
+      },
+      "promote": {
+        "where": "host",
+        "run": "exec tools/ship.sh \"$VORTEO_RELEASE_NUMBER\" \"$VORTEO_RELEASE_NOTE\" --promote \"$VORTEO_RELEASE_ARTIFACT\" --approved \"$VORTEO_RELEASE_VERSION\" --approval \"$VORTEO_RELEASE_APPROVAL\""
+      },
+      "verifyStable": {
+        "about": "Read-only. mira.cc must serve the frozen copy being promoted or restored, at that copy's own version.",
+        "where": "host",
+        "run": "set -eu\nfrozen=\"../Syn3h-stable/$VORTEO_RELEASE_ARTIFACT\"\nversion=\"$(node -e 'process.stdout.write(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).version)' \"$frozen/dist/build.json\")\"\nserved=\"$(curl -sf --max-time 15 https://mira.cc/build.json | node -e 'let s=\"\";process.stdin.on(\"data\",(d)=>(s+=d)).on(\"end\",()=>{const b=JSON.parse(s);process.stdout.write(b.id+\" \"+b.version)})')\"\n[ \"$served\" = \"$VORTEO_RELEASE_ARTIFACT $version\" ] || { echo \"mira.cc serves $served, not $VORTEO_RELEASE_ARTIFACT $version\" >&2; exit 1; }\nnode tools/frozen-versions.mjs check https://mira.cc/ \"$frozen\" >&2\nprintf '{\"version\":\"%s\",\"commit\":null,\"artifact\":\"%s\"}\\n' \"$version\" \"$VORTEO_RELEASE_ARTIFACT\""
+      },
+      "rollback": {
+        "kind": "redeploy",
+        "where": "host",
+        "run": "exec tools/rollback.sh \"$VORTEO_RELEASE_TARGET\""
+      }
+    },
+    "gates": {
+      "beta": [
+        {
+          "name": "typecheck",
+          "where": "host",
+          "run": "npm run typecheck"
+        },
+        {
+          "name": "unit suite",
+          "where": "host",
+          "run": "tools/heavy.sh npx vitest run"
+        },
+        {
+          "name": "tools suite",
+          "where": "host",
+          "run": "tools/heavy.sh npm run test:tools"
+        }
+      ],
+      "stable": [
+        {
+          "name": "browser checks",
+          "about": "macOS WebGPU suites: Host only, after review and the owner-only gate. The delivery checkout's own tools/heavy.sh holds one shared slot for up to an hour.",
+          "where": "host",
+          "run": "MIRA_HEAVY_TIMEOUT_S=3600 tools/heavy.sh node tools/browser-checks.mjs"
+        }
+      ]
+    },
+    "trigger": {
+      "kind": "every-batch"
+    }
+  }
+}

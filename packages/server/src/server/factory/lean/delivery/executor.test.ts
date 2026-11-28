@@ -1,17 +1,30 @@
-import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { FactoryConfigV1Schema, type ReleaseRecipeV1 } from "@getpaseo/server/factory-lean";
 import { createLeanStateStore } from "../state.js";
+import type { OwnerApproval } from "../types.js";
+import {
+  createContainerStepAdapter,
+  createHostStepAdapter,
+  createDeliveryCheckout,
+  createVerifiedCheckout,
+  type GitRunner,
+  type SpawnRequest,
+} from "./adapters.js";
 import {
   createDeliveryExecutor,
   type DeliveryExecutor,
+  cancelUnstartedBetas,
+  type BranchCommit,
+  type DeliveryCheckoutPort,
   type DeliveryStepAdapter,
+  type SideEffect,
+  type DeliveryStepRequest,
   type HostGateRecord,
   type LifecycleStatus,
-  type OwnerApproval,
   type StepOutput,
 } from "./executor.js";
 
@@ -19,24 +32,48 @@ const projectId = "mira";
 const commit = "a".repeat(40);
 const secret = "SECRET-TOKEN-do-not-store";
 const fixture = FactoryConfigV1Schema.parse(
-  JSON.parse(readFileSync(new URL("./mira-recipe.json", import.meta.url), "utf8")),
+  JSON.parse(readFileSync(new URL("./mira-vorteo-factory.json", import.meta.url), "utf8")),
 );
 function recipeOf(config: typeof fixture): ReleaseRecipeV1 {
   if (!config.release) throw new Error("The Mira fixture has no release recipe.");
   return config.release;
 }
 const mira = recipeOf(fixture);
-type StepName = "deployBeta" | "verifyBeta" | "promote" | "verifyStable" | "rollback";
-type Behavior = "hang-before-launch" | "hang-after-launch" | "exit-1" | "ok";
+type StepName =
+  | "releaseNumber"
+  | "deployBeta"
+  | "verifyBeta"
+  | "promote"
+  | "verifyStable"
+  | "rollback"
+  | "version"
+  | "install"
+  | `gate:${string}`;
+type Behavior = "hang-before-launch" | "wait-before-launch" | "hang-after-launch" | "exit-1" | "ok";
 
-function commandOf(recipe: ReleaseRecipeV1, name: StepName): string {
-  const step: Record<string, unknown> = recipe.steps[name];
+function commandOf(recipe: ReleaseRecipeV1, name: (typeof STEP_NAMES)[number]): string {
+  const step: unknown = recipe.steps[name];
+  if (typeof step !== "object" || step === null || !("run" in step)) return "";
   return typeof step.run === "string" ? step.run : "";
 }
 
+const STEP_NAMES = [
+  "releaseNumber",
+  "deployBeta",
+  "verifyBeta",
+  "promote",
+  "verifyStable",
+  "rollback",
+] as const;
+
 function stepNameOf(command: string): StepName {
-  const names: StepName[] = ["deployBeta", "verifyBeta", "promote", "verifyStable", "rollback"];
-  return names.find((name) => commandOf(mira, name) === command) ?? "deployBeta";
+  const step = STEP_NAMES.find((name) => commandOf(mira, name) === command);
+  if (step) return step;
+  if (command === mira.version?.run) return "version";
+  if (command === "npm ci") return "install";
+  const gates = [...mira.gates.beta, ...mira.gates.stable];
+  const gate = gates.find((candidate) => candidate.run === command);
+  return gate ? `gate:${gate.name}` : "deployBeta";
 }
 
 interface Launch {
@@ -55,6 +92,14 @@ interface HarnessState {
   lifecycleRequests: number;
   lifecycleStatus: LifecycleStatus;
   betaCount: number;
+  branchHead: string;
+  branchCommits: BranchCommit[] | null;
+  tags: string[];
+  prepared: string[];
+  pushes: number;
+  sideEffects: SideEffect[];
+  vetoPush: boolean;
+  releaseLaunch(): void;
   gate(sha: string): HostGateRecord | null;
 }
 
@@ -70,6 +115,14 @@ async function harness(recipe: ReleaseRecipeV1 = mira) {
     lifecycleRequests: 0,
     lifecycleStatus: { kind: "pending" },
     betaCount: 0,
+    branchHead: commit,
+    branchCommits: [],
+    tags: [],
+    prepared: [],
+    pushes: 0,
+    sideEffects: [],
+    vetoPush: false,
+    releaseLaunch: () => undefined,
     gate: (sha) => ({
       commit: sha,
       trust: { passed: true, sha },
@@ -79,6 +132,10 @@ async function harness(recipe: ReleaseRecipeV1 = mira) {
   };
 
   function output(step: StepName, env: Record<string, string>): StepOutput {
+    if (step === "releaseNumber") return { exitCode: 0, stdout: '{"number":"136"}\n' };
+    if (step === "version") {
+      return { exitCode: 0, stdout: `v26.11.27${String(h.betaCount + 1).padStart(2, "0")}\n` };
+    }
     if (step === "verifyBeta") {
       h.betaCount++;
       const report = {
@@ -106,22 +163,62 @@ async function harness(recipe: ReleaseRecipeV1 = mira) {
         const behavior = behave[step] ?? "ok";
         h.entered.push(step);
         if (behavior === "hang-before-launch") return new Promise(() => undefined);
+        if (behavior === "wait-before-launch") {
+          await new Promise<void>((resolve) => {
+            h.releaseLaunch = resolve;
+          });
+        }
         if (!(await input.authorizeLaunch())) return null;
         h.launches.push({ step, command: input.command, env: input.env });
         if (behavior === "hang-after-launch") return new Promise(() => undefined);
         if (behavior === "exit-1") return { exitCode: 1, stdout: "failed" };
-        return output(step, input.env);
+        const result = output(step, input.env);
+        await mkdir(path.dirname(input.outputPath), { recursive: true });
+        await writeFile(input.outputPath, result.stdout);
+        return result;
       },
     };
   }
 
-  function executor(behave: Partial<Record<StepName, Behavior>> = {}): DeliveryExecutor {
+  function checkoutPort(where: "host" | "container"): DeliveryCheckoutPort {
+    return {
+      path: where === "host" ? "/Users/vtn/dev/Syn3h-factory" : "/home/paseo/dev/Syn3h-factory",
+      async prepare(input) {
+        h.prepared.push(`${where}:${input.commit}`);
+        return { head: input.commit };
+      },
+      blob: async () => "blob-1",
+      async tag(name) {
+        h.tags.push(name);
+        return { tagged: true };
+      },
+      async commitRecords(request) {
+        const built = { commit: "d".repeat(40), parent: request.expectedHead };
+        if (!(await request.authorizePush({ ...built, expectedHead: request.expectedHead }))) {
+          return { withheld: true };
+        }
+        h.pushes++;
+        return { ...built, paths: ["release-notes/betas.tsv"] };
+      },
+    };
+  }
+
+  function executor(
+    behave: Partial<Record<StepName, Behavior>> = {},
+    host: DeliveryStepAdapter | null = null,
+  ): DeliveryExecutor {
     const steps = adapter(behave);
     return createDeliveryExecutor({
       projectId,
       installation: "srv/mira",
       state: h.store,
-      adapters: { host: steps, container: steps },
+      adapters: { host: host ?? steps, container: steps },
+      deliveryCheckouts: { host: checkoutPort("host"), container: checkoutPort("container") },
+      branch: { head: async () => h.branchHead, firstParent: async () => h.branchCommits },
+      async authorizeSideEffect(effect) {
+        h.sideEffects.push(effect);
+        return !(effect.kind === "records-push" && h.vetoPush);
+      },
       lifecycle: {
         async request() {
           h.lifecycleRequests++;
@@ -131,6 +228,7 @@ async function harness(recipe: ReleaseRecipeV1 = mira) {
           return h.lifecycleStatus;
         },
       },
+      checks: null,
       recipeAt: async () => ({ recipe: h.recipe, error: null }),
       hostGate: async (sha) => h.gate(sha),
       fence: async () => 1,
@@ -149,7 +247,7 @@ async function harness(recipe: ReleaseRecipeV1 = mira) {
     h.now = new Date(h.now.getTime() + 11 * 60_000);
   }
 
-  return { h, executor, count, pastNotice };
+  return { h, executor, count, pastNotice, adapter };
 }
 
 type Harness = Awaited<ReturnType<typeof harness>>;
@@ -424,7 +522,8 @@ describe("delivery executor", () => {
     const run = await only(executor);
     expect(run.state).toBe("failed");
     expect(run.failure?.kind).toBe("refused");
-    expect(t.h.launches).toEqual([]);
+    expect(t.count("deployBeta")).toBe(0);
+    expect(t.h.launches.map((launch) => launch.step)).not.toContain("deployBeta");
   });
 
   it("passes hostile values only through the environment and keeps output out of the ledger", async () => {
@@ -458,7 +557,7 @@ describe("delivery executor", () => {
     };
     const legacy = await harness(placeholder);
     await shipBeta(legacy, legacy.executor());
-    expect(legacy.h.launches).toEqual([]);
+    expect(legacy.count("deployBeta")).toBe(0);
   });
 
   it("lets the owner's rollback cancel a pending beta and wait behind a running one", async () => {
@@ -506,5 +605,456 @@ describe("delivery executor", () => {
     });
     expect(behind).toMatchObject({ behind: "runId" in beta ? beta.runId : "" });
     expect(t.count("rollback")).toBe(1);
+  });
+  it("fails the beta at a failed gate before anything deploys and records the failure", async () => {
+    const t = await harness();
+    await shipBeta(t, t.executor({ "gate:unit suite": "exit-1" }));
+    const run = await only(t.executor());
+    expect(run.failure?.kind).toBe("step-failed");
+    expect(t.count("deployBeta")).toBe(0);
+    expect(t.count("gate:tools suite")).toBe(0);
+    const failed = await latestRelease(t);
+    expect(failed.kind).toBe("failed");
+    expect(failed.gates.map((gate) => gate.result)).toEqual(["pass", "fail", "not-run"]);
+  });
+
+  it.each([
+    { name: "the merged pull request titles", supplied: null, notes: "- Fix the jump (#12)" },
+    { name: "notes supplied by the caller", supplied: "Faster boats.", notes: "Faster boats." },
+  ])("reports the release number, records gates and passes $name", async ({ supplied, notes }) => {
+    const t = await harness();
+    const executor = t.executor();
+    const contents = [{ pr: 12, issue: 3, title: "Fix the jump" }];
+    const queued = await executor.queueBeta({ commit, number: null, note: null, contents });
+    if (!("runId" in queued)) throw new Error(queued.refused);
+    if (supplied) await executor.supplyNotes(queued.runId, supplied);
+    await executor.advance();
+    t.pastNotice();
+    await executor.advance();
+
+    const deploy = t.h.launches.find((launch) => launch.step === "deployBeta");
+    expect(t.count("releaseNumber")).toBe(1);
+    expect(deploy?.env.VORTEO_RELEASE_NUMBER).toBe("136");
+    expect(deploy?.env.VORTEO_RELEASE_NOTES).toBe(notes);
+    expect(deploy?.env.VORTEO_RELEASE_NOTE).toBe("Fix the jump");
+    const beta = await latestRelease(t);
+    expect(beta.kind).toBe("beta");
+    expect(beta.gates.map((gate) => gate.result)).toEqual(["pass", "pass", "pass"]);
+  });
+
+  it.each([
+    {
+      name: "only release records",
+      commits: [{ sha: "e".repeat(40), paths: ["release-notes/betas.tsv"] }],
+      delivered: true,
+    },
+    {
+      name: "a change outside the records",
+      commits: [{ sha: "f".repeat(40), paths: ["src/game.ts", "release-notes/betas.tsv"] }],
+      delivered: false,
+    },
+    { name: "an unprovable history", commits: null, delivered: false },
+  ])(
+    "accepts commits landing during the deploy only with $name",
+    async ({ commits, delivered }) => {
+      const t = await harness();
+      t.h.branchCommits = commits;
+      const executor = t.executor();
+      await shipBeta(t, executor);
+      const run = await only(executor);
+      expect(run.state).toBe(delivered ? "delivered" : "failed");
+      expect(t.count("verifyBeta")).toBe(delivered ? 1 : 0);
+      expect(t.h.sideEffects[0]).toEqual({ runId: run.id, kind: "deploy", expectedHead: commit });
+      if (!delivered) {
+        if (commits) expect(run.failure?.reason).toContain("f".repeat(40));
+        return;
+      }
+      const receipt = (await t.h.store.read(projectId)).delivery.receipts.at(-1);
+      expect(receipt).toMatchObject({
+        branch: { before: commit, after: commit, commits },
+        records: { commit: "d".repeat(40), parent: commit, paths: ["release-notes/betas.tsv"] },
+      });
+    },
+  );
+
+  it("tags the beta with its version and holds the records push until the composition allows it", async () => {
+    const t = await harness();
+    t.h.vetoPush = true;
+    const executor = t.executor();
+    await shipBeta(t, executor);
+    expect(t.h.tags).toEqual(["m-factory-v26.11.2701"]);
+    expect(t.h.prepared).toEqual([`host:${commit}`]);
+    const held = await only(executor);
+    expect(held.state).toBe("verifying");
+    expect(held.waitingOn).toContain("records push");
+    expect(t.h.pushes).toBe(0);
+
+    t.h.vetoPush = false;
+    await executor.advance();
+    expect((await only(executor)).state).toBe("delivered");
+    expect(t.h.pushes).toBe(1);
+  });
+
+  it("installs dependencies again only when the lockfile changed", async () => {
+    const t = await harness();
+    const executor = t.executor();
+    await shipBeta(t, executor);
+    await shipBeta(t, executor);
+    const betas = (await t.h.store.read(projectId)).releases.filter((e) => e.kind === "beta");
+    expect(betas).toHaveLength(2);
+    expect(t.count("install")).toBe(1);
+  });
+
+  it.each([
+    {
+      name: "after its gates ran",
+      step: "deployBeta",
+      behavior: "wait-before-launch",
+      cancels: true,
+    },
+    {
+      name: "while its deploy runs",
+      step: "deployBeta",
+      behavior: "hang-after-launch",
+      cancels: false,
+    },
+    {
+      name: "while a gate runs",
+      step: "gate:unit suite",
+      behavior: "hang-after-launch",
+      cancels: false,
+    },
+  ] as const)("lets the owner's pause cancel a beta $name", async ({ step, behavior, cancels }) => {
+    const t = await harness();
+    const executor = t.executor({ [step]: behavior });
+    await executor.queueBeta({ commit, number: "70", note: "n", contents: [] });
+    await executor.advance();
+    t.pastNotice();
+    const pass = executor.advance();
+    await vi.waitFor(() => expect(t.h.entered).toContain(step));
+    if (behavior === "hang-after-launch") await vi.waitFor(() => expect(t.count(step)).toBe(1));
+
+    const at = t.h.now.toISOString();
+    const reason = "Paused by the owner.";
+    const ids = await t.h.store.mutate(projectId, (ledger) =>
+      cancelUnstartedBetas(ledger, { reason, at }),
+    );
+    expect(ids).toHaveLength(cancels ? 1 : 0);
+    if (!cancels) return;
+    t.h.releaseLaunch();
+    await pass;
+    const run = await only(executor);
+    expect(run.failure?.kind).toBe("cancelled");
+    expect(t.count("deployBeta")).toBe(0);
+    expect((await t.h.store.read(projectId)).delivery.lock).toBeNull();
+  });
+});
+
+interface FakeProcess {
+  spawned: SpawnRequest[];
+  spawner: {
+    spawn(
+      request: SpawnRequest,
+    ): Promise<{ pid: number; exited: Promise<never> | Promise<{ code: number; signal: null }> }>;
+  };
+}
+
+function fakeSpawner(exit: "exit-0" | "never"): FakeProcess {
+  const spawned: SpawnRequest[] = [];
+  return {
+    spawned,
+    spawner: {
+      async spawn(request) {
+        spawned.push(request);
+        const exited =
+          exit === "never"
+            ? new Promise<never>(() => undefined)
+            : Promise.resolve({ code: 0, signal: null });
+        return { pid: 4242, exited };
+      },
+    },
+  };
+}
+
+function fakeGit(head: string, options: { dirty?: boolean; changed?: string } = {}): GitRunner {
+  return {
+    async run(_cwd, args) {
+      if (args[0] === "rev-parse") return head;
+      if (args[0] === "status") return options.dirty ? (options.changed ?? " M tools/ship.sh") : "";
+      throw Object.assign(new Error(`unexpected git ${args.join(" ")}`), { code: 1 });
+    },
+  };
+}
+
+const hostile = `1"; touch /tmp/pwned; echo "$(id)`;
+const later = "c".repeat(40);
+const files = { tail: async () => "tail" };
+
+function stepRequest(
+  overrides: Partial<DeliveryStepRequest> = {},
+): DeliveryStepRequest & { pids: number[]; authorized: number } {
+  const pids: number[] = [];
+  const state = { pids, authorized: 0 };
+  return Object.assign(state, {
+    commit,
+    records: ["release-notes/betas.tsv"],
+    command: 'exec tools/ship.sh "$VORTEO_RELEASE_NUMBER"',
+    env: { VORTEO_RELEASE_NUMBER: hostile },
+    timeoutMs: 1_000,
+    heavy: false,
+    outputPath: "/private/delivery-logs/run.log",
+    authorizeLaunch: async () => {
+      state.authorized++;
+      return true;
+    },
+    onSpawned: async (pid: number) => {
+      pids.push(pid);
+    },
+    ...overrides,
+  });
+}
+
+describe("delivery step adapters", () => {
+  it.each([
+    {
+      name: "at the accepted commit",
+      git: fakeGit(commit),
+      runs: true,
+    },
+    { name: "at another commit", git: fakeGit(later), runs: false },
+    {
+      name: "with only the release record changed",
+      git: fakeGit(commit, { dirty: true, changed: " M release-notes/betas.tsv" }),
+      runs: true,
+    },
+    {
+      name: "with uncommitted changes",
+      git: fakeGit(commit, { dirty: true }),
+      runs: false,
+    },
+  ] as const)("runs a Host step only in a verified checkout: $name", async ({ git, runs }) => {
+    const fake = fakeSpawner("exit-0");
+    const checkout = createVerifiedCheckout({ gitPath: "/mira", cwd: "/mira", git });
+    const adapter = createHostStepAdapter({
+      spawner: fake.spawner,
+      files,
+      checkout,
+      baseEnv: { PATH: "/usr/bin:/bin", HOME: "/Users/owner" },
+      heavyWrapper: null,
+    });
+    const step = stepRequest();
+    const output = await adapter.run(step);
+
+    expect(fake.spawned.length).toBe(runs ? 1 : 0);
+    expect(step.authorized).toBe(runs ? 1 : 0);
+    if (!runs) {
+      expect(output).toHaveProperty("notStarted");
+      return;
+    }
+    expect(output).toEqual({ exitCode: 0, stdout: "tail" });
+    expect(step.pids).toEqual([4242]);
+    expect(fake.spawned[0]).toMatchObject({
+      file: "/bin/sh",
+      args: ["-c", step.command],
+      cwd: "/mira",
+      env: { PATH: "/usr/bin:/bin", HOME: "/Users/owner", VORTEO_RELEASE_NUMBER: hostile },
+    });
+  });
+
+  it("names release values to docker exec without putting them in its arguments", async () => {
+    const fake = fakeSpawner("exit-0");
+    const adapter = createContainerStepAdapter({
+      spawner: fake.spawner,
+      files,
+      checkout: { at: async () => ({ cwd: "/home/paseo/mira", head: commit }) },
+      dockerBinary: "/usr/local/bin/docker",
+      container: "vorteo-dev",
+      clientEnv: { PATH: "/usr/bin:/bin" },
+    });
+    const step = stepRequest();
+    await adapter.run(step);
+    const [spawned] = fake.spawned;
+    expect(spawned?.args).toEqual([
+      "exec",
+      "--workdir",
+      "/home/paseo/mira",
+      "--env",
+      "VORTEO_RELEASE_NUMBER",
+      "vorteo-dev",
+      "/bin/sh",
+      "-c",
+      step.command,
+    ]);
+    expect(spawned?.args.join(" ")).not.toContain(hostile);
+    expect(spawned?.env.VORTEO_RELEASE_NUMBER).toBe(hostile);
+  });
+
+  it("records the deploy's process id and leaves an overrun or orphaned deploy unknown", async () => {
+    const t = await harness();
+    const fake = fakeSpawner("never");
+    const deploying = createHostStepAdapter({
+      spawner: fake.spawner,
+      files,
+      checkout: { at: async () => ({ cwd: "/mira", head: commit }) },
+      baseEnv: { PATH: "/usr/bin:/bin" },
+      heavyWrapper: null,
+    });
+    const others = t.adapter();
+    const host: DeliveryStepAdapter = {
+      run: (request) =>
+        request.command === commandOf(mira, "deployBeta")
+          ? deploying.run(request)
+          : others.run(request),
+    };
+    const first = t.executor({}, host);
+    await first.queueBeta({ commit, number: "70", note: "n", contents: [] });
+    await first.advance();
+    t.pastNotice();
+    void first.advance();
+    await vi.waitFor(async () => expect((await only(first)).receipts.deploy?.pid).toBe(4242));
+
+    const second = t.executor({}, host);
+    await second.resume();
+    await second.advance();
+    const run = await only(second);
+    expect(run.receipts.deploy?.status).toBe("unknown");
+    expect(run.failure?.kind).toBe("unknown");
+    expect(fake.spawned.length).toBe(1);
+  });
+
+  it.each([
+    {
+      name: "an appended row",
+      working: "row-1\nrow-2\n",
+      upstream: "row-1",
+      other: false,
+      allow: true,
+      push: true,
+      result: "commit",
+    },
+    {
+      name: "an edited row",
+      working: "row-x\nrow-2\n",
+      upstream: "row-1",
+      other: false,
+      allow: true,
+      push: true,
+      result: "refused",
+    },
+    {
+      name: "rows that changed upstream",
+      working: "row-1\nrow-2\n",
+      upstream: "row-0",
+      other: false,
+      allow: true,
+      push: true,
+      result: "refused",
+    },
+    {
+      name: "another dirty file",
+      working: "row-1\nrow-2\n",
+      upstream: "row-1",
+      other: true,
+      allow: true,
+      push: true,
+      result: "refused",
+    },
+    {
+      name: "a withheld push",
+      working: "row-1\nrow-2\n",
+      upstream: "row-1",
+      other: false,
+      allow: false,
+      push: true,
+      result: "withheld",
+    },
+    {
+      name: "a rejected push",
+      working: "row-1\nrow-2\n",
+      upstream: "row-1",
+      other: false,
+      allow: true,
+      push: false,
+      result: "refused",
+    },
+  ] as const)("commits release records only as $name allows", async (c) => {
+    const base = "a".repeat(40);
+    const expectedHead = "e".repeat(40);
+    const calls: string[][] = [];
+    const git: GitRunner = {
+      async run(_cwd, args) {
+        calls.push(args);
+        const [command, target = ""] = args;
+        if (command === "status")
+          return c.other
+            ? " M release-notes/betas.tsv\n M src/game.ts"
+            : " M release-notes/betas.tsv";
+        if (command === "log") return "";
+        if (command === "show") return target.startsWith(base) ? "row-1" : c.upstream;
+        if (command === "hash-object") return "b".repeat(40);
+        if (command === "write-tree") return "t".repeat(40);
+        if (command === "commit-tree") return "c".repeat(40);
+        if (command === "push" && !c.push) throw Object.assign(new Error("rejected"), { code: 1 });
+        return "";
+      },
+    };
+    const checkout = createDeliveryCheckout({
+      repository: "/mira",
+      path: "/mira-factory",
+      git,
+      remote: "origin",
+      defaultBranch: "main",
+      identity: { name: "Vorteo Factory", email: "factory@example.invalid" },
+      exists: async () => true,
+      readWorking: async () => c.working,
+    });
+    const result = await checkout.commitRecords({
+      base,
+      expectedHead,
+      records: ["release-notes/betas.tsv"],
+      message: "Record Factory release v1 (run)",
+      authorizePush: async () => c.allow,
+    });
+    const pushed = calls.some(([command]) => command === "push");
+    if (c.result === "commit") {
+      expect(result).toEqual({
+        commit: "c".repeat(40),
+        parent: expectedHead,
+        paths: ["release-notes/betas.tsv"],
+      });
+      expect(calls.find(([command]) => command === "push")).toEqual([
+        "push",
+        "--quiet",
+        "origin",
+        `${"c".repeat(40)}:refs/heads/main`,
+      ]);
+      return;
+    }
+    expect(result).toHaveProperty(c.result);
+    expect(pushed).toBe(c.result === "refused" && !c.push);
+  });
+
+  it("refuses an existing path that is not this project's delivery worktree", async () => {
+    const calls: string[][] = [];
+    const git: GitRunner = {
+      async run(cwd, args) {
+        calls.push(args);
+        if (args.includes("--git-common-dir"))
+          return cwd === "/mira" ? "/mira/.git" : "/other/.git";
+        return "";
+      },
+    };
+    const checkout = createDeliveryCheckout({
+      repository: "/mira",
+      path: "/Users/owner/dev/Syn3h-factory",
+      git,
+      remote: "origin",
+      defaultBranch: "main",
+      identity: { name: "Vorteo Factory", email: "factory@example.invalid" },
+      exists: async () => true,
+    });
+    const prepared = await checkout.prepare({ commit, records: [] });
+    expect(prepared).toHaveProperty("notStarted");
+    expect(calls.some(([command]) => command === "checkout" || command === "worktree")).toBe(false);
   });
 });
