@@ -1707,6 +1707,42 @@ describe("WorkspaceGitServiceImpl", () => {
 
     service.dispose();
   });
+  test("a manual refresh after a checkout reads the new branch while an opening refresh is in flight", async () => {
+    let branch = "main";
+    let releaseOpening: () => void = () => {};
+    const openingRead = new Promise<void>((resolve) => {
+      releaseOpening = resolve;
+    });
+    let reads = 0;
+    const getCheckoutSnapshotFacts = vi.fn(async (cwd: string) => {
+      const headAtRead = branch;
+      reads += 1;
+      if (reads === 1) await openingRead;
+      return { ...createCheckoutSnapshotFacts(cwd), currentBranch: headAtRead };
+    });
+    const getCheckoutStatus = vi.fn(
+      async (cwd: string, context?: { facts?: { currentBranch?: string | null } }) => ({
+        ...createCheckoutStatus(cwd),
+        currentBranch: context?.facts?.currentBranch ?? null,
+      }),
+    );
+    const service = createService({ getCheckoutSnapshotFacts, getCheckoutStatus });
+    // Opening a project starts a forced refresh that reads HEAD before a checkout lands.
+    const opening = service.getSnapshot(REPO_CWD, { force: true, reason: "open_project" });
+    await vi.waitFor(() => expect(reads).toBe(1));
+    branch = "feature/x";
+    // Without afterInFlight the manual refresh joins the opening one and keeps "main".
+    const manual = service.getSnapshot(REPO_CWD, {
+      force: true,
+      afterInFlight: true,
+      reason: "manual-refresh",
+    });
+    releaseOpening();
+    await Promise.all([opening, manual]);
+    await waitForRefreshesToSettle(service);
+    expect((await service.getSnapshot(REPO_CWD)).git.currentBranch).toBe("feature/x");
+    await service.dispose();
+  });
 });
 
 describe("WorkspaceGitServiceImpl with workspace folders that no longer exist", () => {
