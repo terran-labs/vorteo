@@ -2238,7 +2238,7 @@ describe("workspace polling pressure", () => {
     await service.dispose();
   });
 
-  test("an idle worktree beside an active one gets ref changes at the idle release", async () => {
+  test("an idle worktree beside an active one gets ref changes at the idle release and a checkout at once", async () => {
     const gitCommonDir = join(REPO_CWD, ".git");
     const idleCwd = join(REPO_CWD, "packages", "server");
     const watchCallbacks = new Map<string, WatchCallback>();
@@ -2277,6 +2277,18 @@ describe("workspace polling pressure", () => {
     expect(idleListener).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(IDLE_BACKGROUND_GIT_FETCH_INTERVAL_MS);
+    await waitForRefreshesToSettle(service);
+    expect(calledCwds()).toContain(idleCwd);
+    expect(idleListener).toHaveBeenCalled();
+
+    // HEAD moving is a checkout: the branch every list shows changed, so it cannot wait 30 minutes.
+    await vi.advanceTimersByTimeAsync(5_000);
+    idleListener.mockClear();
+    getCheckoutSnapshotFacts.mockClear();
+    watchCallbacks.get(gitCommonDir)?.(null, [
+      { path: join(gitCommonDir, "HEAD"), type: "update" },
+    ]);
+    await vi.advanceTimersByTimeAsync(1_000);
     await waitForRefreshesToSettle(service);
     expect(calledCwds()).toContain(idleCwd);
     expect(idleListener).toHaveBeenCalled();
