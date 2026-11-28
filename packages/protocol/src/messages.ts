@@ -4756,6 +4756,9 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: z.boolean().optional(),
         durableMessageQueue: z.boolean().optional(),
+        // COMPAT(messageQueueEditHold): added 2026-11-27, remove gate after 2027-05-27. The daemon
+        // accepts hold_edit and release_edit queue operations and does not deliver a held item.
+        messageQueueEditHold: z.boolean().optional(),
         agentMessageProvenance: z.boolean().optional(),
         agentMessageBatching: z.boolean().optional(),
         // COMPAT(agentTurnIdentity): accept peers that observed pre-release v0.2.6 through 2027-01-31.

@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import type { QueueOperation } from "@getpaseo/protocol/message-queue";
+import type { QueueChangeOperation } from "@getpaseo/protocol/message-queue";
 import type { AttachmentMetadata, SaveAttachmentInput } from "../attachments/types";
 import { captureQueueEdit, captureQueueSubmission, type QueueAttachmentCapturePort } from "./stage";
 
@@ -103,7 +103,7 @@ const retained = {
   mimeType: "image/png",
   size: 3,
 };
-const edit: Extract<QueueOperation, { kind: "edit" }> = {
+const edit: Extract<QueueChangeOperation, { kind: "edit" }> = {
   kind: "edit" as const,
   operationId: "edit-op",
   messageId: "message",

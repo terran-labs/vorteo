@@ -1,7 +1,11 @@
 import { expect, it } from "vitest";
-import type { QueueItem } from "@getpaseo/protocol/message-queue";
+import {
+  QUEUE_EDIT_HOLD_EXPIRED_CODE,
+  type QueueEditHoldOperation,
+  type QueueItem,
+} from "@getpaseo/protocol/message-queue";
 import type { QueueEditDraft, QueueEditDraftStorage } from "./edit-draft";
-import { QueueEditDraftSession } from "./edit-draft-session";
+import { QueueEditDraftSession, editHoldSnapshot } from "./edit-draft-session";
 
 const item: QueueItem = {
   id: "message",
@@ -88,4 +92,66 @@ it("refuses an empty edited message before creating a submission", async () => {
   const empty = await f.session.update(draft, { text: " ", attachments: [], localAttachments: [] });
   await expect(f.session.save(empty)).rejects.toThrow("Add text");
   expect((await f.storage.list())[0].submissionId).toBeNull();
+});
+
+it("holds the message on a capable daemon and leaves its release to the submitted edit", async () => {
+  const f = fixture();
+  const sent: QueueEditHoldOperation[] = [];
+  let refusal: { code: string; message: string } | null = null;
+  const session = new QueueEditDraftSession({
+    ...f.port,
+    editHold: {
+      supported: () => true,
+      send: async (_host, _agent, operation) => {
+        sent.push(operation);
+        // The runtime's send translates the daemon response through the same helper.
+        if (refusal) editHoldSnapshot({ snapshot: null, error: refusal });
+      },
+    },
+  });
+  const draft = await session.open("host", "agent", item);
+  expect(sent).toEqual([
+    expect.objectContaining({ kind: "hold_edit", messageId: "message", holderId: draft.id }),
+  ]);
+  await session.save(
+    await session.update(draft, { text: "edit", attachments: [], localAttachments: [] }),
+  );
+  // A release sent beside the queued edit could reach the daemon first and free the old text.
+  expect(sent.map((operation) => operation.kind)).toEqual(["hold_edit"]);
+  // An editor that closes only stops renewing: another tab may still show this draft.
+  sent.length = 0;
+  const other = await session.open("host", "agent", { ...item, id: "other" });
+  sent.length = 0;
+  let renewals: (() => void) | null = null;
+  const stop = session.keepHeld(
+    () => other,
+    () => undefined,
+    (renew) => {
+      renewals = renew;
+      return () => {
+        renewals = null;
+      };
+    },
+  );
+  stop();
+  await Promise.resolve();
+  expect(renewals).toBeNull();
+  expect(sent.map((operation) => operation.kind)).toEqual(["hold_edit"]);
+  // Refused at the daemon's maximum, the editor stops renewing so the message sends as written.
+  sent.length = 0;
+  refusal = { code: QUEUE_EDIT_HOLD_EXPIRED_CODE, message: "held too long" };
+  const reported: unknown[] = [];
+  const scheduled: { renew?: () => void } = {};
+  session.keepHeld(
+    () => other,
+    (error) => reported.push(error),
+    (renew) => {
+      scheduled.renew = renew;
+      return () => undefined;
+    },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  scheduled.renew?.();
+  expect(sent).toHaveLength(1);
+  expect(reported).toEqual([expect.objectContaining(refusal)]);
 });
