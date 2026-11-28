@@ -1153,6 +1153,9 @@ if (args.includes("-p") && args.includes("/usage")) {
     expect(stripAcpSubcommand(["script.cjs", "acp", "--log-file", "/tmp/a.log"])).toEqual([
       "script.cjs",
     ]);
+    expect(stripAcpSubcommand(["script.cjs", "acp", "--log-file=/tmp/a.log"])).toEqual([
+      "script.cjs",
+    ]);
     expect(stripAcpSubcommand(["--sandbox", "acp"])).toEqual(["--sandbox"]);
     expect(stripAcpSubcommand(["--verbose", "acp"])).toEqual(["--verbose"]);
     expect(stripAcpSubcommand(["--log-file", "acp", "acp"])).toEqual(["--log-file", "acp"]);
@@ -1162,6 +1165,18 @@ if (args.includes("-p") && args.includes("/usage")) {
       "agy",
     ]);
     expect(stripAcpSubcommand(["--profile", "acp", "agy"])).toEqual(["--profile", "acp", "agy"]);
+    expect(stripAcpSubcommand(["--profile", "acp", "--verbose", "agy"])).toEqual([
+      "--profile",
+      "acp",
+      "--verbose",
+      "agy",
+    ]);
+    expect(stripAcpSubcommand(["--profile", "acp", "--log-file=/tmp/a.log", "agy"])).toEqual([
+      "--profile",
+      "acp",
+      "--log-file=/tmp/a.log",
+      "agy",
+    ]);
     expect(stripAcpSubcommand(["--project", "acp"])).toEqual(["--project", "acp"]);
   });
 
