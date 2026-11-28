@@ -96,6 +96,8 @@ export function LeanFactoryOverview({
   const closeConfirm = useCallback(() => setConfirming(null), []);
   const { retry } = reads;
   const retryView = useCallback(() => void retry(), [retry]);
+  const { retryStatus } = reads;
+  const retryStatusRead = useCallback(() => void retryStatus(), [retryStatus]);
   const confirmRelease = useCallback(
     (action: LeanReleaseAction) => {
       if (source) setConfirming(releaseRequest(action, source, t));
@@ -119,14 +121,7 @@ export function LeanFactoryOverview({
 
   if (!view && reads.error) {
     return (
-      <View style={styles.dialogBody} testID="factory-lean-error">
-        <Text style={styles.error} accessibilityRole="alert">
-          {reads.error.message}
-        </Text>
-        <Button size="sm" variant="outline" onPress={retryView}>
-          {t("common.actions.retry")}
-        </Button>
-      </View>
+      <ReadError message={reads.error.message} onRetry={retryView} testID="factory-lean-error" />
     );
   }
   if (!view) {
@@ -135,6 +130,14 @@ export function LeanFactoryOverview({
   return (
     <ReadinessContext.Provider value={view.readiness}>
       <View style={styles.page} testID="factory-lean-overview">
+        {/* Without status, issues, questions and the stage bar would look empty; say why. */}
+        {reads.statusError ? (
+          <ReadError
+            message={reads.statusError.message}
+            onRetry={retryStatusRead}
+            testID="factory-lean-status-error"
+          />
+        ) : null}
         {needsYou.length > 0 ? (
           <Panel title={t("projectFactory.lean.needsYou")} testID="factory-lean-needs-you">
             <SettingsCard>
@@ -582,6 +585,29 @@ function BetaNoticeRow({
         {item.held ? t("projectFactory.lean.letShip") : t("projectFactory.lean.hold")}
       </Button>
     </SettingsRow>
+  );
+}
+
+/** A read that failed: its one-line reason and a Retry. */
+function ReadError({
+  message,
+  onRetry,
+  testID,
+}: {
+  message: string;
+  onRetry: () => void;
+  testID: string;
+}) {
+  const { t } = useTranslation();
+  return (
+    <View style={styles.dialogBody} testID={testID}>
+      <Text style={styles.error} accessibilityRole="alert">
+        {message}
+      </Text>
+      <Button size="sm" variant="outline" onPress={onRetry}>
+        {t("common.actions.retry")}
+      </Button>
+    </View>
   );
 }
 

@@ -9,6 +9,7 @@ import type { ProjectFactoryState } from "@/components/sidebar/factory-state";
 import type { FactoryInvoke } from "../queue";
 import {
   FACTORY_LEAN_FEATURE,
+  retryLeanRead,
   createLeanSource,
   isLeanFactory,
   leanQueryKeys,
@@ -47,6 +48,7 @@ export function useLeanFactoryReads(input: {
     dataShape: "value",
     queryKey: leanQueryKeys.status(serverId, projectId),
     staleTimeMs: 30_000,
+    retry: retryLeanRead,
     enabled: live,
     refetchInterval: live && polling ? LEAN_POLL_MS : false,
     queryFn: () => source!.status(),
@@ -55,6 +57,7 @@ export function useLeanFactoryReads(input: {
     dataShape: "value",
     queryKey: leanQueryKeys.view(serverId, projectId),
     staleTimeMs: 30_000,
+    retry: retryLeanRead,
     enabled: live,
     refetchInterval: live && polling ? LEAN_POLL_MS : false,
     queryFn: () => source!.view(),
@@ -66,6 +69,9 @@ export function useLeanFactoryReads(input: {
     /** The view's read error, already one line; the overview shows it with Retry. */
     error: view.error ?? null,
     retry: view.refetch,
+    /** The status read's error: the overview shows it above its content, with Retry. */
+    statusError: status.error ?? null,
+    retryStatus: status.refetch,
   };
 }
 
@@ -82,6 +88,7 @@ export function useLeanActivity(input: {
     dataShape: "value",
     queryKey: leanQueryKeys.activity(serverId, projectId),
     staleTimeMs: 30_000,
+    retry: retryLeanRead,
     enabled: live,
     refetchInterval: live ? LEAN_POLL_MS : false,
     queryFn: () => createLeanSource(invoke!, projectId).activity(),
@@ -105,6 +112,7 @@ export function useLeanConfig(input: {
     dataShape: "value",
     queryKey: leanQueryKeys.config(serverId, projectId),
     staleTimeMs: 30_000,
+    retry: retryLeanRead,
     enabled: enabled && source !== null,
     queryFn: () => source!.config(),
   });

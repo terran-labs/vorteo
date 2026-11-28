@@ -27,6 +27,10 @@ describe("Factory config editor", () => {
     if (!primary.ok) throw new Error(primary.error);
     expect(JSON.parse(primary.content).order).toEqual(["srv_new/mira", "srv_studio/mira"]);
     expect(JSON.parse(primary.content).builder).toEqual({ provider: "codex", model: "x" });
+    // A primary already listed moves to the front; nothing is dropped.
+    const reorder = applyLeanConfigFields(FILE, { primary: "srv_studio/mira" });
+    if (!reorder.ok) throw new Error(reorder.error);
+    expect(JSON.parse(reorder.content).order).toEqual(["srv_studio/mira", "srv_m2/mira"]);
   });
 
   it("refuses to edit a file that is not valid JSON rather than overwrite it", () => {

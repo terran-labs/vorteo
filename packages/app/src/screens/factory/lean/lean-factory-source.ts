@@ -191,12 +191,22 @@ export const leanQueryKeys = {
  * The first line of a failed call: a reply that does not match the shared contract names the
  * first field that failed, so the owner sees the real problem instead of a blank page.
  */
+/** A reply that does not match the shared contract; retrying the same daemon will not fix it. */
+export class LeanContractError extends Error {
+  override name = "LeanContractError";
+}
+
+/** Retry transient read failures a few times, never a reply that breaks the contract. */
+export function retryLeanRead(failures: number, error: Error): boolean {
+  return !(error instanceof LeanContractError) && failures < 3;
+}
+
 export function leanCallError(method: string, error: unknown): Error {
   const issues = (error as { issues?: { path?: PropertyKey[]; message?: string }[] }).issues;
   const first = Array.isArray(issues) ? issues[0] : undefined;
   if (first) {
     const field = (first.path ?? []).map(String).join(".") || "reply";
-    return new Error(
+    return new LeanContractError(
       `The daemon's ${method} reply does not match: ${field} ${first.message ?? ""}`.trim(),
     );
   }

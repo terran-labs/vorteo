@@ -79,9 +79,9 @@ function editInPlace(file: string, value: Json, edits: Partial<LeanConfigFields>
 
 /**
  * New file text with only the owner's edits applied; a field the owner did not touch is left
- * exactly as the file has it. A new primary replaces `order[0]` and keeps the rest of the order,
- * minus that machine if it was listed later. A repository without the file gets a minimal lean
- * configuration.
+ * exactly as the file has it. A primary already in `order` moves to the front with the rest in
+ * their order; a primary not listed replaces `order[0]` and the rest stay. A repository without
+ * the file gets a minimal lean configuration.
  */
 export function applyLeanConfigFields(
   file: string | null,
@@ -93,8 +93,12 @@ export function applyLeanConfigFields(
     ? { ...parsed.value }
     : { schema: "vorteo-factory", version: 1, mode: "lean" };
   if (edits.primary) {
-    const order = Array.isArray(value.order) ? value.order : [];
-    value.order = [edits.primary, ...order.slice(1).filter((entry) => entry !== edits.primary)];
+    const order: unknown[] = Array.isArray(value.order) ? value.order : [];
+    value.order = order.includes(edits.primary)
+      ? // Already listed: move it to the front, everything else keeps its relative order.
+        [edits.primary, ...order.filter((entry) => entry !== edits.primary)]
+      : // Not listed: it replaces the current primary and the rest stay.
+        [edits.primary, ...order.slice(1)];
   }
   if (edits.builderProvider) {
     const builder = isObject(value.builder) ? value.builder : {};

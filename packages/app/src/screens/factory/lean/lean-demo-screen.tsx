@@ -24,6 +24,7 @@ const DEMO_STATES: { value: DemoState; label: string }[] = [
   { value: "ready", label: "Ready" },
   { value: "not-ready", label: "Not ready" },
   { value: "new-project", label: "New project" },
+  { value: "bad-reply", label: "Bad reply" },
 ];
 const DEMO_PROJECT = "mira";
 const noop = () => undefined;

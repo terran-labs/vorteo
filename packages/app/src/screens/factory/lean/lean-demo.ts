@@ -189,8 +189,11 @@ export function demoLeanView(overrides: Partial<LeanView> = {}): LeanView {
   };
 }
 
-/** The demo page's states: everything ready, actions not ready, and a new project with no Lead. */
-export type DemoState = "ready" | "not-ready" | "new-project";
+/**
+ * The demo page's states: everything ready, actions not ready, a new project with no Lead, and a
+ * daemon whose view reply fails the shared contract, to show the error state.
+ */
+export type DemoState = "ready" | "not-ready" | "new-project" | "bad-reply";
 
 function demoConfig(provider: string): string {
   return `{
@@ -389,8 +392,13 @@ export function createDemoLeanInvoke(
     switch (method) {
       case "factory.lean.status":
         return demoLeanStatus();
-      case "factory.lean.view":
-        return demoWireView(state, held, shipsAt);
+      case "factory.lean.view": {
+        const view = demoWireView(state, held, shipsAt);
+        if (state !== "bad-reply") return view;
+        // A daemon that advertises factoryLean but omits the release lists.
+        const { betas: _betas, earlier: _earlier, ...broken } = view;
+        return broken;
+      }
       case "factory.lean.activity.list":
         return {
           entries: [
