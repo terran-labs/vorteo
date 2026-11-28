@@ -41,6 +41,12 @@ import {
 import { connectToDaemon } from "../../utils/client.js";
 import { addJsonAndDaemonHostOptions } from "../../utils/command-options.js";
 
+import {
+  createHostPublisherCommand,
+  readHostPublisherStatus,
+  type HostPublisherStatus,
+} from "./host-publisher.js";
+
 type Client = Awaited<ReturnType<typeof connectToDaemon>>;
 interface Rpc<Output> {
   name: string;
@@ -51,7 +57,8 @@ const stateSchema: OutputSchema<ProjectFactoryState> = {
   idField: "projectId",
   columns: [],
   renderHuman: (result) => {
-    const state = result.data as ProjectFactoryState;
+    const state = result.data as ProjectFactoryState & { hostPublisher?: HostPublisherStatus };
+    const publisher = state.hostPublisher;
     const rows = state.roles.map((role) =>
       [
         role.title,
@@ -70,6 +77,11 @@ const stateSchema: OutputSchema<ProjectFactoryState> = {
       `Project: ${state.projectId}`,
       `Factory: ${state.state}${state.reason ? ` (${state.reason})` : ""}`,
       `Repository: ${state.repository ?? "none"}`,
+      ...(publisher
+        ? [
+            `Host publisher: ${publisher.enabled ? "enabled" : "disabled"} for ${publisher.repository} (${publisher.provider})${publisher.projectActive ? "" : ", project inactive"}`,
+          ]
+        : []),
       ...(state.installation ? [`Installation: ${state.installation}`] : []),
       ...(state.home
         ? [
@@ -252,19 +264,26 @@ function stateCommand(
   );
   return addJsonAndDaemonHostOptions(command).action(
     withOutput(async (projectId: string, options: CommandOptions, _command: Command) =>
-      withClient(options, async (client) =>
-        single(
-          // Only configure sends issueAgents.
-          await call(client, rpc, input(projectId, options)).catch((error: unknown) =>
-            refusedNewField(
-              error,
-              "issueAgents",
-              "Update the daemon to choose where issue agents run.",
-            ),
+      withClient(options, async (client) => {
+        // Only configure sends issueAgents.
+        const state = await call(client, rpc, input(projectId, options)).catch((error: unknown) =>
+          refusedNewField(
+            error,
+            "issueAgents",
+            "Update the daemon to choose where issue agents run.",
           ),
-          stateSchema,
-        ),
-      ),
+        );
+        const serverId = client.getLastServerInfoMessage()?.serverId;
+        const hostPublisher =
+          name === "show" && serverId
+            ? await readHostPublisherStatus({
+                target: options.daemonTarget,
+                serverId,
+                project: state,
+              })
+            : undefined;
+        return single(hostPublisher ? { ...state, hostPublisher } : state, stateSchema);
+      }),
     ),
   );
 }
@@ -300,6 +319,8 @@ export function createFactoryProjectCommand(): Command {
       projectId: id,
     })),
   );
+  project.addCommand(createHostPublisherCommand("enable"));
+  project.addCommand(createHostPublisherCommand("disable"));
   project.addCommand(
     stateCommand(
       "enable",

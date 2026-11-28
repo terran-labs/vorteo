@@ -244,6 +244,14 @@ export interface DeliveryLock {
 
 export interface DeliveryReceipt {
   jobId: string;
+  /** First-parent changes on the default branch observed during the deploy step. */
+  branch?: {
+    before: string;
+    after: string;
+    commits: { sha: string; paths: string[] }[];
+  };
+  /** Append-only release records committed by the daemon after verification. */
+  records?: { commit: string; parent: string; paths: string[] } | null;
   kind: DeliveryJob["kind"];
   commits: string[];
   target: string;

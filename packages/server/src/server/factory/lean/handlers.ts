@@ -5,15 +5,22 @@ import {
   factoryLeanAnswer,
   factoryLeanAsk,
   factoryLeanDecide,
+  factoryLeanDeliveryResolve,
   factoryLeanEscalate,
   factoryLeanIntentSet,
+  factoryLeanReleasesHold,
+  factoryLeanReleasesPromote,
+  factoryLeanReleasesRelease,
+  factoryLeanReleasesRollback,
   factoryLeanRulesAdd,
   factoryLeanRulesList,
   factoryLeanRulesRemove,
   factoryLeanSendBack,
   factoryLeanStatus,
+  factoryLeanView,
   type FactoryLeanStatus,
 } from "@getpaseo/server/factory-lean";
+import { z } from "zod";
 import { FACTORY_OWNER_ONLY_CODE, FactoryRefusal } from "../project/owner-writes.js";
 import type { createAcceptance } from "./acceptance.js";
 import {
@@ -23,12 +30,62 @@ import {
   type IntentStore,
   type LeanLedger,
   type LeanStateStore,
+  type OwnerApproval,
   type RoutedEvent,
   type RunnerRef,
 } from "./types.js";
+import { createLeanView, type LeanDeliverySnapshot, type LeanViewDetails } from "./view.js";
+
+const deliveryRefusal = z.object({ refused: z.string() });
+const ownerApprovalFields = {
+  version: z.string().min(1).max(256),
+  words: z
+    .string()
+    .min(1)
+    .max(4096)
+    .refine((words) => words.trim().length > 0),
+};
+const ownerQueued = z.union([
+  z.object({
+    queued: z.literal(true),
+    jobId: z.string(),
+    behind: z.string().nullable(),
+    waitingOn: z.string().nullable(),
+    cancelled: z.array(z.string()),
+  }),
+  deliveryRefusal,
+]);
+const verifiedHold = {
+  ...factoryLeanReleasesHold,
+  output: z.union([
+    z.object({ held: z.literal(true), cancelled: z.literal(true) }),
+    deliveryRefusal,
+  ]),
+};
+const verifiedPromote = {
+  ...factoryLeanReleasesPromote,
+  input: factoryLeanReleasesPromote.input.extend(ownerApprovalFields),
+  output: ownerQueued,
+};
+const verifiedRollback = {
+  ...factoryLeanReleasesRollback,
+  input: factoryLeanReleasesRollback.input.extend(ownerApprovalFields),
+  output: ownerQueued,
+};
+/** The coordinator and native socket share this allowlist after owner session verification. */
+export const leanOwnerDeliveryContracts = [
+  verifiedHold,
+  verifiedPromote,
+  verifiedRollback,
+  factoryLeanDeliveryResolve,
+] as const;
+const deliveryMethods: ReadonlySet<string> = new Set(
+  [...leanOwnerDeliveryContracts, factoryLeanReleasesRelease].map(({ name }) => name),
+);
 
 const contracts = [
   factoryLeanStatus,
+  factoryLeanView,
   factoryLeanActivityList,
   factoryLeanDecide,
   factoryLeanEscalate,
@@ -77,6 +134,53 @@ export interface LeanProjectRuntime {
 
 export type LeanRuntimeRegistry = (projectId: string) => LeanProjectRuntime | null;
 
+interface Refused {
+  refused: string;
+}
+interface QueuedDelivery {
+  runId: string;
+  behind: string | null;
+  waitingOn: string | null;
+  cancelled: string[];
+}
+type DeliveryResolution = z.infer<typeof factoryLeanDeliveryResolve.input>["action"];
+
+/** Existing executor operations, narrowed to the project owner surface. */
+export interface LeanDeliveryConnection {
+  executor: {
+    snapshot(): Promise<LeanDeliverySnapshot>;
+    hold(runId: string, ownerAction: string): Promise<{ cancelled: true } | Refused>;
+    queuePromote(input: {
+      eventId: string;
+      expectedProduction: string | null;
+      approval: OwnerApproval;
+      number: null;
+      note: null;
+    }): Promise<QueuedDelivery | Refused>;
+    queueRollback(input: {
+      targetEventId: string;
+      expectedProduction: string;
+      approval: OwnerApproval;
+      target: string;
+    }): Promise<QueuedDelivery | Refused>;
+    resolve(
+      runId: string,
+      input: { action: DeliveryResolution; ownerAction: string },
+    ): Promise<{ resolved: true } | Refused>;
+  };
+  /** Check the fresh local delivery fence and whether the configured executor can act. */
+  ready(): Promise<boolean>;
+  /** Resolve recipe-specific rollback target text from trusted release configuration. */
+  rollbackTarget?(eventId: string): Promise<string | null>;
+}
+
+export interface LeanHandlerPorts {
+  /** True only while the daemon's managed owner ingress is accepting verified sessions. */
+  ownerIngressReady?(projectId: string): Promise<boolean>;
+  readViewDetails?(projectId: string): Promise<LeanViewDetails | null>;
+  delivery?(projectId: string): LeanDeliveryConnection | null;
+}
+
 interface SocketCaller {
   principalId: string | null | undefined;
   credential: string | null;
@@ -86,6 +190,14 @@ type Caller = { kind: "owner" } | { kind: "reader" } | { kind: "agent"; agentId:
 
 const operationalOnly = "Only the assigned Lead session can decide these events.";
 const intakeOnly = "Retry this change on the Factory intake lane holder.";
+const deliveryUnavailable = "Verified owner delivery actions are unavailable for this project.";
+const noRelease = "This Factory does not release a held beta.";
+
+function queuedResult(result: QueuedDelivery | Refused) {
+  if ("refused" in result) return result;
+  const { runId, ...queue } = result;
+  return { queued: true as const, jobId: runId, ...queue };
+}
 
 function isOperationalRunner(runner: LeanLedger["runners"][string] | undefined): boolean {
   return runner?.role === "foreman-op" && runner.serverId === null && runner.closedAt === null;
@@ -146,7 +258,108 @@ async function assignedEvents(
 export function createLeanHandlers(
   registry: LeanRuntimeRegistry,
   now: () => Date = () => new Date(),
+  ports: LeanHandlerPorts = {},
 ) {
+  async function ingressReady(projectId: string): Promise<boolean> {
+    try {
+      return (await ports.ownerIngressReady?.(projectId)) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function deliveryReady(
+    delivery: LeanDeliveryConnection | null | undefined,
+  ): Promise<boolean> {
+    try {
+      return (await delivery?.ready()) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function readView(projectId: string, runtime: LeanProjectRuntime) {
+    const delivery = ports.delivery?.(projectId);
+    const [status, ledger, ingress, details, snapshot] = await Promise.all([
+      runtime.status(),
+      runtime.state.read(projectId),
+      ingressReady(projectId),
+      ports.readViewDetails?.(projectId),
+      delivery?.executor.snapshot().catch(() => null),
+    ]);
+    const [ownerActions, deliveryActions] = ingress
+      ? await Promise.all([runtime.holdsIntake().catch(() => false), deliveryReady(delivery)])
+      : [false, false];
+    return createLeanView({
+      status,
+      ledger,
+      readiness: { ownerActions, deliveryActions: deliveryActions && Boolean(snapshot) },
+      details,
+      deliverySnapshot: snapshot,
+    });
+  }
+
+  function approval(eventId: string, version: string, words: string): OwnerApproval {
+    return { actionId: randomUUID(), eventId, version, words, at: now().toISOString() };
+  }
+
+  async function invokeOwnerDelivery(method: string, raw: unknown): Promise<unknown> {
+    const contract = leanOwnerDeliveryContracts.find(({ name }) => name === method);
+    if (!contract) return { refused: noRelease };
+    const { projectId } = contract.input.parse(raw);
+    const delivery = ports.delivery?.(projectId);
+    if (
+      !registry(projectId) ||
+      !delivery ||
+      !(await ingressReady(projectId)) ||
+      !(await deliveryReady(delivery))
+    ) {
+      return contract.output.parse({ refused: deliveryUnavailable });
+    }
+    const { executor } = delivery;
+    switch (contract.name) {
+      case verifiedHold.name: {
+        const { eventId } = verifiedHold.input.parse(raw);
+        const { pendingBeta } = await executor.snapshot();
+        if (pendingBeta?.id !== eventId) return { refused: "That beta is no longer pending." };
+        const result = await executor.hold(eventId, randomUUID());
+        return verifiedHold.output.parse("refused" in result ? result : { held: true, ...result });
+      }
+      case verifiedPromote.name: {
+        const { eventId, expectedProduction, version, words } = verifiedPromote.input.parse(raw);
+        const result = await executor.queuePromote({
+          eventId,
+          expectedProduction,
+          approval: approval(eventId, version, words),
+          number: null,
+          note: null,
+        });
+        return verifiedPromote.output.parse(queuedResult(result));
+      }
+      case verifiedRollback.name: {
+        const { targetEventId, expectedProduction, version, words } =
+          verifiedRollback.input.parse(raw);
+        const target = await delivery.rollbackTarget?.(targetEventId);
+        if (!target || !(await deliveryReady(delivery))) {
+          return { refused: "Factory could not verify the rollback target." };
+        }
+        const result = await executor.queueRollback({
+          targetEventId,
+          expectedProduction,
+          target,
+          approval: approval(targetEventId, version, words),
+        });
+        return verifiedRollback.output.parse(queuedResult(result));
+      }
+      case factoryLeanDeliveryResolve.name: {
+        const { jobId, action } = factoryLeanDeliveryResolve.input.parse(raw);
+        return factoryLeanDeliveryResolve.output.parse(
+          await executor.resolve(jobId, { action, ownerAction: randomUUID() }),
+        );
+      }
+    }
+  }
+
   async function answer(
     runtime: LeanProjectRuntime,
     { projectId, escalationId, decision }: ReturnType<typeof factoryLeanAnswer.input.parse>,
@@ -344,6 +557,8 @@ export function createLeanHandlers(
     switch (method) {
       case factoryLeanStatus.name:
         return factoryLeanStatus.output.parse(await runtime.status());
+      case factoryLeanView.name:
+        return readView(projectId, runtime);
       case factoryLeanActivityList.name:
         return factoryLeanActivityList.output.parse(
           await runtime.activity.list(factoryLeanActivityList.input.parse(raw)),
@@ -362,13 +577,25 @@ export function createLeanHandlers(
           throw new FactoryRefusal(intakeOnly, "factory_intake_required");
         return contract.output.parse(await writeOwner(runtime, method, raw));
       default:
-        if (!ledger || !runner) return { refused: operationalOnly };
-        try {
-          return contract.output.parse(await agentOperation(runtime, ledger, runner, method, raw));
-        } catch (error) {
-          if (error instanceof RevisionConflictError) return { refused: error.message };
-          throw error;
-        }
+        return invokeAgentAction(runtime, contract, raw, ledger, runner);
+    }
+  }
+
+  async function invokeAgentAction(
+    runtime: LeanProjectRuntime,
+    contract: (typeof contracts)[number],
+    raw: unknown,
+    ledger: LeanLedger | null,
+    runner: LeanLedger["runners"][string] | undefined,
+  ): Promise<unknown> {
+    if (!ledger || !runner) return { refused: operationalOnly };
+    try {
+      return contract.output.parse(
+        await agentOperation(runtime, ledger, runner, contract.name, raw),
+      );
+    } catch (error) {
+      if (error instanceof RevisionConflictError) return { refused: error.message };
+      throw error;
     }
   }
 
@@ -382,13 +609,21 @@ export function createLeanHandlers(
           "factory_session_required",
         );
       }
+      if (deliveryMethods.has(method)) {
+        return {
+          refused: method === factoryLeanReleasesRelease.name ? noRelease : deliveryUnavailable,
+        };
+      }
       return invoke({ kind: "reader" }, method, raw);
     },
     invokeAgent(agentId: string, method: string, raw: unknown): Promise<unknown> {
+      if (deliveryMethods.has(method))
+        return Promise.reject(new FactoryRefusal(deliveryUnavailable, FACTORY_OWNER_ONLY_CODE));
       return invoke({ kind: "agent", agentId }, method, raw);
     },
     /** For an in-process ingress that already verified the installation owner session. */
     invokeOwner(method: string, raw: unknown): Promise<unknown> {
+      if (deliveryMethods.has(method)) return invokeOwnerDelivery(method, raw);
       return invoke({ kind: "owner" }, method, raw);
     },
   };
@@ -397,5 +632,5 @@ export function createLeanHandlers(
 export type LeanHandlers = ReturnType<typeof createLeanHandlers>;
 
 export function isLeanFactoryMethod(method: string): boolean {
-  return methods.has(method);
+  return methods.has(method) || deliveryMethods.has(method);
 }

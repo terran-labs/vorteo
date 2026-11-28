@@ -5,9 +5,11 @@ import { pluginSettings } from "./plugin-settings";
 export const fr: TranslationResources = {
   previewStatus: previewStatus.fr,
   projectFactory: en.projectFactory,
+  projectHostTarget: en.projectHostTarget,
   vorteoSetup: en.vorteoSetup,
   // Draft English until the wording is approved, then translated.
   codexAdoption: en.codexAdoption,
+  automaticPrimary: en.automaticPrimary,
   paneFind: {
     connectionFailure:
       "Impossible de rechercher dans cette conversation. Vérifiez la connexion à l’hôte et réessayez.",

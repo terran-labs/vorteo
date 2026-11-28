@@ -295,6 +295,24 @@ describe("Lean Factory merge gate", () => {
     expect((await gate.evaluate(7)).ready).toBe(true);
     open.reviewAccountSelection.candidates[1].reason = "unknown";
     expect((await gate.evaluate(7)).ready).toBe(false);
+    const alternate = open.reviewAccountSelection.candidates[1];
+    alternate.reason = "below-floor";
+    expect((await gate.evaluate(7)).ready).toBe(false);
+    alternate.evidence = {
+      provider: "second",
+      installationDefinitionId: "second",
+      accountRef: "second",
+      eligibility: "known-low",
+      windows: [],
+      floorPct: 25,
+      reservedHeadroomPct: 0,
+      remainingPct: 20,
+      capacity: null,
+      readingAgeMs: 0,
+      exclusionReason: "quota-below-floor",
+      earliestResetAt: null,
+    };
+    expect((await gate.evaluate(7)).ready).toBe(true);
   });
   it.each(refusals)("refuses %s at evaluation and at execution", async (_name, change) => {
     const { gate, open, state } = fixture();

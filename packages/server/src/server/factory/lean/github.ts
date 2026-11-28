@@ -666,6 +666,32 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
     return withIntent[0] ?? null;
   }
 
+  async function planScopeRefusal(
+    issue: number,
+    local: boolean,
+    protectedPaths: readonly string[],
+    comments: Awaited<ReturnType<typeof readIssue>>["comments"],
+    viewer: string,
+    files: readonly string[],
+  ): Promise<Extract<MergeEvidence, { kind: "unavailable" }> | null> {
+    if (local && !protectedPaths.length) {
+      const builderComments = comments.filter(
+        (entry) => entry.user?.login.toLowerCase() === viewer.toLowerCase(),
+      );
+      const plan = latestPlan(builderComments, here, branch(issue));
+      const go = plan && (await options.readGo(issue, plan));
+      if (!go) return { kind: "unavailable", reason: "The current plan needs a recorded go." };
+      const approved = new Set(go.files);
+      const outside = files.filter((path) => !approved.has(path));
+      if (outside.length)
+        return {
+          kind: "unavailable",
+          reason: `Changes outside the approved plan: ${outside.join(", ")}`,
+        };
+    }
+    return null;
+  }
+
   async function readGate(issue: number): Promise<MergeEvidence> {
     const [{ repository: repo, viewer }, trusted] = await Promise.all([
       graph(repositoryQuery, scope, repositoryData),
@@ -697,6 +723,15 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
     }
     const protectedPaths = protectedChanges(inspected.files, await options.releaseRecipeFiles());
     if (protectedPaths.length) await options.reportProtectedChange(issue, protectedPaths);
+    const refusal = await planScopeRefusal(
+      issue,
+      lease?.installation === here,
+      protectedPaths,
+      issueData.comments,
+      viewer.login,
+      inspected.files,
+    );
+    if (refusal) return refusal;
     const approval = await options.readApproval(issue, inspected.pull.headSha);
     const blocked =
       issueData.summary.state !== "open" ||

@@ -12,7 +12,7 @@ import {
 import { z } from "zod";
 import { OwnerSessions } from "../../execution-installation/owner-sessions.js";
 import { FactoryRefusal } from "../project/owner-writes.js";
-import type { LeanHandlers } from "./handlers.js";
+import { leanOwnerDeliveryContracts, type LeanHandlers } from "./handlers.js";
 
 const endpoint = "/lean-owner-action";
 const requestLimit = 64 * 1024;
@@ -26,6 +26,7 @@ const ownerContracts = [
   factoryLeanRulesAdd,
   factoryLeanRulesList,
   factoryLeanRulesRemove,
+  ...leanOwnerDeliveryContracts,
 ] as const;
 
 const envelope = z.strictObject({ method: z.string(), input: z.unknown() });

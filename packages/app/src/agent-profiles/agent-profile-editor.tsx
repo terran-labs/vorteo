@@ -138,12 +138,26 @@ export function useAgentProfileEditor(serverId: string | null): AgentProfileEdit
           mode={request.mode}
           profile={request.profile}
           sharedScope={sharedScope}
+          workerTeamStorageAvailable={
+            supportsSharedPreferences &&
+            Boolean(sharedProfiles.installation && sharedProfiles.workerTeams)
+          }
           onBack={close}
           onSave={handleSave}
           onDelete={request.mode === "edit" ? handleDelete : undefined}
         />
       ) : null,
-    [close, handleSave, handleDelete, request, serverId, sharedScope],
+    [
+      close,
+      handleSave,
+      handleDelete,
+      request,
+      serverId,
+      sharedScope,
+      sharedProfiles.installation,
+      sharedProfiles.workerTeams,
+      supportsSharedPreferences,
+    ],
   );
 
   return useMemo(

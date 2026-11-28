@@ -13,7 +13,7 @@ import {
   LIST_ROW_SPACING,
   LIST_ROW_TOUCH_HEIGHT,
 } from "@/styles/list-row-metrics";
-import { FactorySubheading } from "./factory-subheading";
+import { FactoryGroup } from "./factory-group";
 import { sidebarIndentStyle } from "./indent";
 import { isNative } from "@/constants/platform";
 import type { Theme } from "@/styles/theme";
@@ -34,13 +34,16 @@ const dangerColor = (theme: Theme) => ({ color: theme.colors.statusDanger });
 /** A runner's issue; issues merged from several Factories carry their host and project tag. */
 export type RunnerIssue = FactoryQueueIssue & { serverId?: string; tag?: string };
 
-/** In-flight issues, each opening its most relevant agent. */
+/** Issues with an agent running now, each opening its most relevant agent. */
 export function FactoryRunners({
+  groupKey,
   serverId,
   runners,
   level,
   onBeforeNavigate,
 }: {
+  /** The Runners group's collapse key. */
+  groupKey: string;
   /** The host of issues that do not name their own. */
   serverId?: string;
   runners: readonly RunnerIssue[];
@@ -51,12 +54,13 @@ export function FactoryRunners({
   const { t } = useTranslation();
   if (runners.length === 0) return null;
   return (
-    <View pointerEvents="box-none" testID="factory-card-runners">
-      <FactorySubheading
-        label={t("sidebar.factoryCard.runners")}
-        trailing={t("sidebar.factoryCard.runnersActive", { count: runners.length })}
-        level={level}
-      />
+    <FactoryGroup
+      groupKey={groupKey}
+      title={t("sidebar.factoryCard.runners")}
+      count={runners.length}
+      level={level}
+      testID="factory-card-runners"
+    >
       {runners.map((issue) => (
         <RunnerRow
           key={`${issue.serverId ?? serverId}:${issue.tag ?? ""}#${issue.number}`}
@@ -66,7 +70,7 @@ export function FactoryRunners({
           onBeforeNavigate={onBeforeNavigate}
         />
       ))}
-    </View>
+    </FactoryGroup>
   );
 }
 

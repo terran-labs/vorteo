@@ -31,7 +31,7 @@ import {
   loadFactoryList,
 } from "@/screens/factory/factory-reads";
 import { factoryCardReadsQueue } from "./factory-section";
-import { factoryStageCounts, factoryOverviewPathTarget } from "./factory-card-model";
+import { factoryOverviewPathTarget, factoryPipelineCounts } from "./factory-card-model";
 import {
   aggregateFactories,
   factorySummaryState,
@@ -183,7 +183,7 @@ export const AllFactoriesSection = memo(function AllFactoriesSection({
   const { t } = useTranslation();
   const { factories, errors, fetchedAt, retry, visible, degraded } = useAllFactories(false);
   const aggregate = useMemo(() => aggregateFactories(factories), [factories]);
-  const counts = useMemo(() => factoryStageCounts(aggregate.issues), [aggregate.issues]);
+  const pipeline = useMemo(() => factoryPipelineCounts(aggregate.issues), [aggregate.issues]);
   const firstServerId = factories[0]?.serverId ?? null;
   const routeTarget = factoryOverviewPathTarget(usePathname());
   const openOverview = useCallback(() => {
@@ -194,11 +194,6 @@ export const AllFactoriesSection = memo(function AllFactoriesSection({
   if (!mainSidebar || focused || !visible) return null;
   const summary = factorySummaryState(factories);
   const anyQueue = summary.hasQueue;
-  const queued = counts.find((entry) => entry.segment === "queued")?.count ?? 0;
-  const review = counts.find((entry) => entry.segment === "review")?.count ?? 0;
-  const active = counts
-    .filter((entry) => entry.segment !== "queued" && entry.segment !== "review")
-    .reduce((sum, entry) => sum + entry.count, 0);
   const selected = routeTarget !== null && routeTarget.projectId === null;
   return (
     <PressHighlight
@@ -221,7 +216,7 @@ export const AllFactoriesSection = memo(function AllFactoriesSection({
           {t("projectFactory.scope.sidebarSummary", summary)}
         </Text>
         <Text style={styles.counts} numberOfLines={1}>
-          {anyQueue ? t("projectFactory.scope.pipelineSummary", { queued, active, review }) : null}
+          {anyQueue ? t("projectFactory.scope.pipelineSummary", pipeline) : null}
         </Text>
         {fetchedAt ? (
           <Text style={styles.counts}>

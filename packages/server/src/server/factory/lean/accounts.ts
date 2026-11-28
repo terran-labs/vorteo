@@ -11,6 +11,12 @@ import type {
   RunnerRef,
   RunnerRole,
 } from "./types.js";
+import type {
+  WorkerAccountCandidate,
+  WorkerAccountPick,
+} from "../../agent/account-pool/worker-account.js";
+import type { RunnerAccountPolicy } from "./account-policy.js";
+export type { RunnerAccountPolicy } from "./account-policy.js";
 
 const UNKNOWN_RESET_MS = 60 * 60 * 1000;
 
@@ -21,8 +27,9 @@ interface RoleAccounts {
   allowedDefinitions: readonly string[] | null;
 }
 
-type Reason =
+export type Reason =
   | "selected"
+  | "qualifies"
   | "lower-headroom"
   | "builder-account"
   | "not-allowed"
@@ -36,23 +43,14 @@ type Reason =
   | "exhausted"
   | "below-floor"
   | "pool-excluded"
+  | "capacity-reached"
   | "policy-unresolved";
-
-export type RunnerAccountPolicy = (
-  input: Parameters<typeof rankAccounts>[0] & { role: RunnerRole; providerType: string },
-) => Promise<{
-  considered: {
-    provider: string;
-    verdict: Reason | "qualifies";
-    remainingPct: number | null;
-    resetsAt?: string | null;
-  }[];
-}>;
 
 interface CandidateEvidence {
   account: string;
   accountDefinition: string | null;
   reason: Reason;
+  evidence?: Candidate["evidence"];
 }
 
 interface ReviewDecision {
@@ -77,23 +75,35 @@ export interface ReviewAccountSelection extends ReviewDecision {
 }
 
 export type ReviewBuilder = RunnerRef & { account: string; accountDefinition: string };
-type Choice = AccountChoice & { reviewDecision?: ReviewDecision };
-type Parked = Exclude<Awaited<ReturnType<AccountTable["choose"]>>, AccountChoice>;
+export type Choice = AccountChoice & {
+  reviewDecision?: ReviewDecision;
+  candidates?: CandidateEvidence[];
+  accountPolicy?: WorkerAccountPick;
+};
+export interface Parked {
+  parked: Exclude<Awaited<ReturnType<AccountTable["choose"]>>, AccountChoice>["parked"] & {
+    accountPolicy?: WorkerAccountPick;
+    candidates?: CandidateEvidence[];
+    reason?: string;
+  };
+}
 type ChooseInput = Parameters<AccountTable["choose"]>[0];
 
 export interface LeanAccountTable extends AccountTable {
+  choose(input: ChooseInput): Promise<Choice | Parked>;
   chooseReviewer(
     input: Omit<ChooseInput, "role">,
     builder: ReviewBuilder,
   ): Promise<Choice | Parked>;
 }
 
-interface Candidate {
+export interface Candidate {
   local: string;
   placed: string;
   definition: string | null;
   reason: Reason | null;
   until: number;
+  evidence?: WorkerAccountCandidate & { openProjectRunners?: number | null };
 }
 
 export interface LeanAccountDependencies {
@@ -127,7 +137,7 @@ export function createAccountTable(deps: LeanAccountDependencies): LeanAccountTa
       deps.accountDefinitions(),
       serverId ? deps.accounts.destinationAccounts(serverId) : null,
       deps.state.read(deps.projectId),
-      deps.accounts.readUsage(),
+      deps.accountPolicy ? null : deps.accounts.readUsage(),
     ]);
     const nowMs = deps.now().getTime();
     const candidates = ready.map((local): Candidate => {
@@ -149,11 +159,24 @@ export function createAccountTable(deps: LeanAccountDependencies): LeanAccountTa
       return { local, placed: placed ?? local, definition, reason, until };
     });
     applyAvoid(candidates, avoid);
+    if (deps.accountPolicy) {
+      return deps.accountPolicy({
+        projectId: deps.projectId,
+        serverId,
+        role,
+        providerType,
+        profileId,
+        builder,
+        candidates,
+        runners: ledger.runners,
+        now: () => deps.now(),
+        allowSame: deps.allowSameAccountReview,
+      });
+    }
+    if (!usage) throw new Error("Factory account usage is unavailable.");
     const available = candidates.filter((candidate) => candidate.reason === null);
     const rankInput = { candidates: available.map((item) => item.local), usage, nowMs };
-    const rank: Awaited<ReturnType<RunnerAccountPolicy>> = deps.accountPolicy
-      ? await deps.accountPolicy({ ...rankInput, role, providerType })
-      : rankAccounts(rankInput);
+    const rank = rankAccounts(rankInput);
     const verdicts = new Map(rank.considered.map((entry) => [entry.provider, entry]));
     for (const candidate of available)
       applyVerdict(candidate, verdicts.get(candidate.local), builder);
@@ -208,7 +231,7 @@ export function createAccountTable(deps: LeanAccountDependencies): LeanAccountTa
 
 function applyVerdict(
   candidate: Candidate,
-  assessment: Awaited<ReturnType<RunnerAccountPolicy>>["considered"][number] | undefined,
+  assessment: ReturnType<typeof rankAccounts>["considered"][number] | undefined,
   builder: ReviewBuilder | null,
 ): void {
   const verdict = assessment?.verdict;
@@ -217,7 +240,6 @@ function applyVerdict(
   } else if (verdict !== "qualifies") {
     candidate.reason = verdict;
   }
-  if (verdict === "below-floor") candidate.until = Date.parse(assessment?.resetsAt ?? "");
 }
 
 function candidateExclusion(input: {
@@ -274,7 +296,7 @@ function preferredCandidate(
   return uncertain ? undefined : ranked[0];
 }
 
-function reviewDecision(
+export function reviewDecision(
   candidates: Candidate[],
   chosen: Candidate,
   builder: ReviewBuilder,
@@ -292,6 +314,7 @@ function reviewDecision(
     candidates: candidates.map((candidate) => ({
       account: candidate.placed,
       accountDefinition: candidate.definition,
+      ...(candidate.evidence ? { evidence: candidate.evidence } : {}),
       reason:
         candidate.reason ??
         (candidate.definition === builder.accountDefinition ? "builder-account" : "lower-headroom"),

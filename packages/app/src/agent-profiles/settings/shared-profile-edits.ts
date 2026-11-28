@@ -11,6 +11,7 @@ export function replaceProviderDefaults(
 ): ProviderPreferences {
   const {
     workerProfileId: _worker,
+    workerProfileIds: _team,
     workerAccount: _account,
     maxWorkers: _limit,
     uncappedWorkers: _uncapped,
@@ -22,6 +23,9 @@ export function replaceProviderDefaults(
       : {}),
     ...(group.defaults.workerProfileId !== undefined
       ? { workerProfileId: group.defaults.workerProfileId }
+      : {}),
+    ...(group.defaults.workerProfileIds !== undefined
+      ? { workerProfileIds: group.defaults.workerProfileIds }
       : {}),
     ...(group.defaults.maxWorkers !== undefined ? { maxWorkers: group.defaults.maxWorkers } : {}),
     ...(group.defaults.uncappedWorkers !== undefined
@@ -54,6 +58,7 @@ export function editSharedProfile(
     ...original,
     ...workflowValue,
     skillPolicy: value.skillPolicy,
+    workerProfileIds: value.workerProfileIds ?? original?.workerProfileIds,
     workerAccount: value.workerAccount,
     id,
     provider: providerType,
@@ -78,6 +83,7 @@ export function editSharedProfile(
     "instructions",
     "skillPolicy",
     "workerProfileId",
+    "workerProfileIds",
     "workerAccount",
     "maxWorkers",
     "uncappedWorkers",

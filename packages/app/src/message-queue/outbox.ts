@@ -6,7 +6,9 @@ import type {
 import {
   OutboxRecordSchema,
   canKeepRejectedChange,
+  isSupersededEdit,
   outboxKey,
+  resendOperationId,
   type LocalQueueAttachment,
   type OutboxKey,
   type OutboxRecord,
@@ -54,6 +56,7 @@ export class QueueOutbox {
     createdAt: number;
     operation: QueueOperation;
     localAttachments: LocalQueueAttachment[];
+    original?: OutboxRecord["original"];
   }): Promise<void> {
     if (
       input.localAttachments.length &&
@@ -219,12 +222,57 @@ export class QueueOutbox {
 
   async removeRejectedCopy(key: OutboxKey): Promise<void> {
     const record = await this.storage.read(key);
-    if (!record?.dismissed)
+    if (!record || (!record.dismissed && !isSupersededEdit(record)))
       throw new Error("This operation still owns an unsynchronized message or attachment.");
     if (!(await this.storage.exchange(key, record.revision, null)))
       throw new Error("The local copy changed. Review it again.");
-    await this.port.discarded?.(record);
+    // An interrupted resend may already own these attachments.
+    const resent = await this.storage.read({
+      ...key,
+      operationId: resendOperationId(key.operationId),
+    });
+    if (!resent) await this.port.discarded?.(record);
     this.notifyLocalChange(key.serverId, false);
+  }
+
+  /**
+   * Queues the content of an edit whose message was delivered, removed or changed
+   * first as a new message at the end of the queue, then removes the rejected edit.
+   * The new operation takes over the edit's local attachments.
+   */
+  async resendRejectedEdit(key: OutboxKey, createdAt: number): Promise<void> {
+    const record = await this.storage.read(key);
+    const edit = record?.operation;
+    if (!record || edit?.kind !== "edit" || !isSupersededEdit(record))
+      throw new Error("Only an edit that could not be applied can be sent as a new message.");
+    const operationId = resendOperationId(edit.operationId);
+    const operation: QueueOperation = {
+      kind: "enqueue",
+      operationId,
+      messageId: operationId,
+      text: edit.text,
+      ...(edit.context ? { context: edit.context } : {}),
+      attachments: edit.attachments,
+    };
+    const next = OutboxRecordSchema.parse({
+      version: 1,
+      serverId: record.serverId,
+      agentId: record.agentId,
+      revision: 0,
+      createdAt,
+      operation,
+      localAttachments: record.localAttachments,
+      prepared: record.localAttachments.length ? null : operation,
+      error: null,
+    });
+    const nextKey = outboxKey(next);
+    // False when an interrupted or concurrent resend already queued this copy.
+    const inserted = await this.storage.exchange(nextKey, null, next);
+    if (!(await this.storage.exchange(key, record.revision, null))) {
+      if (inserted) await this.storage.exchange(nextKey, 0, null);
+      throw new Error("The pending change was updated on another tab. Review it again.");
+    }
+    this.notifyLocalChange(key.serverId, true);
   }
 
   private async prepare(record: OutboxRecord): Promise<OutboxRecord | null> {

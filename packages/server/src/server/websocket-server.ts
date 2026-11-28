@@ -2371,6 +2371,12 @@ export class VoiceAssistantWebSocketServer {
   }
 
   private buildServerInfoStatusPayload(session: Session): ServerInfoStatusPayload {
+    const plugins = this.pluginRuntime;
+    const leanAvailable =
+      plugins &&
+      "isBuiltinPluginLoaded" in plugins &&
+      typeof plugins.isBuiltinPluginLoaded === "function" &&
+      plugins.isBuiltinPluginLoaded("factory") === true;
     return {
       status: "server_info",
       protocolVersion: WS_PROTOCOL_VERSION,
@@ -2390,6 +2396,7 @@ export class VoiceAssistantWebSocketServer {
         // COMPAT(workspaceTitleSuggestions): added in v0.7.2, remove gate after 2027-03-10.
         // Advertise RPC support independently of catalog freshness.
         workspaceTitleSuggestions: true,
+        ...(leanAvailable ? { factoryLean: true } : {}),
         connectedHosts: true,
         hostMultiplexing: true,
         // COMPAT(servicePrincipals): added 2026-11-03, remove gate after 2027-05-03.
@@ -2683,6 +2690,7 @@ export class VoiceAssistantWebSocketServer {
         sharedProviderPreferences: Boolean(this.daemonConfigStore.get().sharedProviderPreferences),
         accountIndependentProfiles: Boolean(this.daemonConfigStore.get().sharedProviderPreferences),
         explicitWorkerAccounts: true,
+        workerTeams: true,
         uncappedManagedWorkers: true,
         profileWorkflowAliases: Boolean(this.daemonConfigStore.get().sharedProviderPreferences),
         installationProfileAuthority: Boolean(
@@ -2693,6 +2701,8 @@ export class VoiceAssistantWebSocketServer {
         installationProjectPolicies: true,
         // COMPAT(primaryConnection): added 2026-11-05, remove gate after 2027-05-05.
         primaryConnectionSetting: true,
+        // COMPAT(primaryConnectionAutomatic): added 2026-11-25, remove gate after 2027-05-25.
+        primaryConnectionAutomatic: true,
         // COMPAT(timeZoneSetting): added 2026-11-13, remove gate after 2027-05-13.
         timeZoneSetting: true,
         installationSettingsAuthority: true,

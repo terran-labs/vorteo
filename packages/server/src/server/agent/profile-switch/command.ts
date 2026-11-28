@@ -79,19 +79,21 @@ function describeAccount(
   return model ? `${account} (${model})` : account;
 }
 
-type ProfileSwitchDependencies = CreateAgentCommandDependencies & {
+export type ProfileSwitchDependencies = CreateAgentCommandDependencies & {
   providerSnapshotManager: Pick<
     ProviderSnapshotManager,
     "resolveCreateConfig" | "readSessionHistory"
   >;
 };
 
-interface ProfileSwitchOptions {
+export interface ProfileSwitchOptions {
   /** Instructions retained ahead of the carried context, such as a daemon role charter. */
   standingInstructions?: string;
   actor?: { kind: "agent" | "principal"; id: string; label?: string };
   includeResult?: boolean;
   validateScope?: AgentProfileSwitchInput["validateScope"];
+  /** A worker recovery keeps the source tool restrictions and rejects an active reserve. */
+  workerRecovery?: boolean;
 }
 
 export function switchAgentProfileCommand(
@@ -315,6 +317,7 @@ async function prepareCommand(
   const preservedSettings = coordinator
     ? effectiveSwitchSettings(sourceConfig, expectedSource, record)
     : undefined;
+  const frozenWorker = options.workerRecovery ? sourceConfig.profileLaunch : undefined;
   if (preservedSettings) {
     captureSource({
       ...sourceResult,
@@ -338,16 +341,7 @@ async function prepareCommand(
         rows: await agentManager.readStoredSwitchHistory(record, history),
       };
   const settings = dependencies.getSharedProviderConfig?.();
-  const config: AgentSessionConfig = {
-    provider: target.provider,
-    cwd: record.cwd,
-    title: sourceConfig.title,
-    mcpServers: sourceConfig.mcpServers,
-    systemPrompt: options.standingInstructions,
-    ...(target.profileId ? { profileId: target.profileId } : {}),
-    ...(target.model ? { model: target.model } : {}),
-    ...(target.thinkingOptionId ? { thinkingOptionId: target.thinkingOptionId } : {}),
-  };
+  const config = switchTargetConfig(target, sourceConfig, options);
   const input = {
     validateScope: options.validateScope,
     expectedSource,
@@ -361,6 +355,7 @@ async function prepareCommand(
             sourceProvider: sourceConfig.provider,
             sourceModel: sourceSwitchModel(sourceConfig, expectedSource, record),
             settings: preservedSettings,
+            frozenWorker,
           }
         : undefined,
     ),
@@ -378,6 +373,31 @@ async function prepareCommand(
       }),
   };
   return { dryRun: false as const, input, record, settings };
+}
+
+function switchTargetConfig(
+  target: ProfileSwitchTarget,
+  source: AgentSessionConfig,
+  options: ProfileSwitchOptions,
+): AgentSessionConfig {
+  if (options.workerRecovery && source.quotaReserve)
+    throw new ProfileSwitchError(
+      "This worker has a quota reserve. Reopen it through the owner's quota controls.",
+      "incompatible-target",
+    );
+  return {
+    provider: target.provider,
+    cwd: source.cwd,
+    title: source.title,
+    mcpServers: source.mcpServers,
+    systemPrompt: options.workerRecovery ? source.systemPrompt : options.standingInstructions,
+    ...(options.workerRecovery
+      ? { toolAccess: source.toolAccess, toolPolicy: source.toolPolicy }
+      : {}),
+    ...(target.profileId ? { profileId: target.profileId } : {}),
+    ...(target.model ? { model: target.model } : {}),
+    ...(target.thinkingOptionId ? { thinkingOptionId: target.thinkingOptionId } : {}),
+  };
 }
 
 function describeActor(

@@ -28,10 +28,8 @@ interface RouteEditorProps {
 /** Capture the reviewed revision once; polls must never silently authorize a newer revision. */
 function RouteEditor({ serverId, provider, profileId, shared }: RouteEditorProps) {
   const [snapshot] = useState(shared);
-  const { providerType, saveWorkflow, deleteWorkflow, saveDefaults } = useSharedProviderProfiles(
-    serverId,
-    provider,
-  );
+  const { providerType, saveWorkflow, deleteWorkflow, saveDefaults, workerTeams, installation } =
+    useSharedProviderProfiles(serverId, provider);
   const router = useRouter();
   const originalGroup = sharedProviderGroup(snapshot, providerType);
   const [preferredModels, setPreferredModels] = useState(originalGroup.preferredModels);
@@ -159,6 +157,7 @@ function RouteEditor({ serverId, provider, profileId, shared }: RouteEditorProps
       profile={profile}
       mode={profileId === "new" ? "create" : "edit"}
       sharedScope={scope}
+      workerTeamStorageAvailable={Boolean(installation && workerTeams)}
       additionalDirty={
         defaults &&
         (JSON.stringify(preferredModels) !== JSON.stringify(originalGroup.preferredModels) ||

@@ -22,7 +22,10 @@ import { useAgentProfiles } from "../internal/use-agent-profiles";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { resolveProviderType } from "@getpaseo/protocol/provider-preferences";
-import { workerChoices, workerAccountProfiles } from "./worker-choices";
+import { workerChoices, workerAccountProfiles, workerTeamChoices } from "./worker-choices";
+import { PreferredChoicesField } from "./preferred-choices-field";
+import { useHostFeature } from "@/runtime/host-features";
+import { readExecutionInstallation } from "@/execution-installation/policy";
 import { settingsStyles } from "@/styles/settings";
 
 export interface ProfileSharedScope {
@@ -213,45 +216,50 @@ function AvailabilityField({
     </Field>
   );
 }
-export function AgentProfileForm({
+function WorkerFields({
   serverId,
   profileId,
   model,
   state,
-  sharedScope,
-  modelDetails,
+  workerTeamStorageAvailable,
+  ownerLocked,
 }: {
   serverId: string;
   profileId: string;
   model: AgentProfileFormModel;
   state: AgentProfileFormState;
-  sharedScope?: ProfileSharedScope;
-  modelDetails?: (disabled: boolean) => ReactNode;
+  workerTeamStorageAvailable?: boolean;
+  ownerLocked: boolean;
 }) {
-  useAgentProfileFormCatalog({ serverId, model, sharedScope });
-  useAgentProfileFormFeatures({ serverId, model, state });
   const { profiles, legacyProfiles } = useAgentProfiles(serverId);
   const { entries } = useProvidersSnapshot(serverId);
   const { config } = useDaemonConfig(serverId);
+  const installation = readExecutionInstallation();
+  const environment = installation?.environments.find((item) => item.serverId === serverId)?.kind;
+  // COMPAT(workerTeams): installation profiles also require support from the profile authority.
+  const daemonWorkerTeams = useHostFeature(serverId, "workerTeams");
+  const supportsTeams = daemonWorkerTeams && workerTeamStorageAvailable === true;
   const [originalWorkerId] = useState(state.workerProfileId);
-  const [workersEnabled, setWorkersEnabled] = useState(Boolean(state.workerProfileId));
-  const workers = useMemo(
-    () =>
-      workerChoices({
-        profiles: workerAccountProfiles(
-          config,
-          entries ?? [],
-          profiles ?? [],
-          legacyProfiles,
-          state.workerProfileId,
-        ),
-        entries: entries ?? [],
-        providers: config?.providers ?? {},
-        supervisor: { id: profileId, provider: state.provider },
-        selectedWorkerId: state.workerProfileId,
-        originalWorkerId,
-        accountId: state.workerAccountId,
-      }),
+  const [workersEnabled, setWorkersEnabled] = useState(
+    Boolean(state.workerProfileIds?.length ?? state.workerProfileId),
+  );
+  const workerInput = useMemo(
+    () => ({
+      profiles: workerAccountProfiles(
+        config,
+        entries ?? [],
+        profiles ?? [],
+        legacyProfiles,
+        state.workerProfileId,
+      ),
+      entries: entries ?? [],
+      providers: config?.providers ?? {},
+      supervisor: { id: profileId, provider: state.provider },
+      selectedWorkerId: state.workerProfileId,
+      originalWorkerId,
+      accountId: state.workerAccountId,
+      environment,
+    }),
     [
       config,
       entries,
@@ -262,17 +270,39 @@ export function AgentProfileForm({
       state.workerProfileId,
       state.workerAccountId,
       originalWorkerId,
+      environment,
     ],
+  );
+  const workers = useMemo(() => workerChoices(workerInput), [workerInput]);
+  const teamOptions = useMemo(
+    () =>
+      supportsTeams
+        ? workerTeamChoices(
+            workerInput,
+            config?.sharedProviderPreferences,
+            state.workerProfileIds ?? [],
+          )
+        : [],
+    [supportsTeams, workerInput, config?.sharedProviderPreferences, state.workerProfileIds],
+  );
+  const toggleTeamProfile = useCallback(
+    (id: string) => {
+      const current = state.workerProfileIds ?? [];
+      model.setWorkerProfileIds(
+        current.includes(id) ? current.filter((value) => value !== id) : [...current, id],
+      );
+    },
+    [model, state.workerProfileIds],
   );
   const toggleWorkers = useCallback(
     (enabled: boolean) => {
       setWorkersEnabled(enabled);
       if (!enabled) {
-        model.setWorkerAccount("");
-        model.setWorkerProfileId("");
+        if (state.workerProfileIds !== undefined) model.setWorkerProfileIds([]);
+        else model.setWorkerAccount("");
       }
     },
-    [model],
+    [model, state.workerProfileIds],
   );
   const changeLimit = useCallback(
     (value: string) => {
@@ -286,11 +316,109 @@ export function AgentProfileForm({
     [model],
   );
   // A saved limit above the usual choices stays selectable rather than showing as empty.
-  const maxWorkerOptions = useMemo(() => {
+  const workerLimit = useMemo(() => {
     const current = String(state.maxWorkers);
-    if (MAX_WORKER_OPTIONS.some((option) => option.value === current)) return MAX_WORKER_OPTIONS;
-    return [{ id: current, value: current, label: current }, ...MAX_WORKER_OPTIONS];
+    const standard = MAX_WORKER_OPTIONS.find((option) => option.value === current);
+    if (standard) return { selected: standard, options: MAX_WORKER_OPTIONS };
+    const saved = { id: current, value: current, label: current };
+    return { selected: saved, options: [saved, ...MAX_WORKER_OPTIONS] };
   }, [state.maxWorkers]);
+  if (!supportsTeams && state.workerProfileIds !== undefined) return null;
+  const disabled = state.isSubmitting || ownerLocked;
+  return (
+    <Section title="Workers">
+      <Switch
+        accessibilityLabel="Enable workers"
+        value={workersEnabled}
+        onValueChange={toggleWorkers}
+        disabled={disabled}
+      />
+      {workersEnabled ? (
+        <>
+          {supportsTeams ? (
+            <PreferredChoicesField
+              label={state.workerProfileId ? "Replace with worker team" : "Worker profiles"}
+              testID="agent-profile-worker-team-field"
+              options={teamOptions}
+              preferred={state.workerProfileIds ?? []}
+              onToggle={toggleTeamProfile}
+              placeholder="Choose worker profiles"
+              emptyText="No eligible profiles"
+              disabled={disabled}
+              keepOpenOnSelect
+            />
+          ) : null}
+          {!supportsTeams || (state.workerProfileIds === undefined && originalWorkerId) ? (
+            <>
+              <SelectField
+                label="Worker account"
+                testID="agent-profile-worker-account-field"
+                value={workers.accountId}
+                selectedDisplay={workers.accountDisplay}
+                options={workers.accountOptions}
+                onChange={model.setWorkerAccount}
+                placeholder="Choose account"
+                emptyText="No eligible accounts"
+                disabled={disabled}
+              />
+              <SelectField
+                label="Worker profile"
+                testID="agent-profile-worker-field"
+                value={state.workerProfileId}
+                selectedDisplay={workers.profileDisplay}
+                options={workers.profiles}
+                onChange={model.setWorkerProfileId}
+                placeholder="Choose profile"
+                emptyText="No eligible profiles"
+                disabled={disabled}
+                error={
+                  workers.accountId && !state.workerProfileId
+                    ? "Choose a worker profile to save"
+                    : null
+                }
+              />
+            </>
+          ) : null}
+          {/* A fixed choice, so an invalid number can never be typed and silently ignored. */}
+          <SelectField
+            label="Maximum workers"
+            testID="agent-profile-max-workers-field"
+            value={workerLimit.selected.value}
+            selectedDisplay={workerLimit.selected}
+            options={workerLimit.options}
+            onChange={changeLimit}
+            placeholder="Choose a limit"
+            emptyText="No options"
+            disabled={disabled}
+          />
+        </>
+      ) : null}
+    </Section>
+  );
+}
+
+export function AgentProfileForm({
+  serverId,
+  profileId,
+  model,
+  state,
+  sharedScope,
+  workerTeamStorageAvailable,
+  ownerLocked,
+  modelDetails,
+}: {
+  serverId: string;
+  profileId: string;
+  model: AgentProfileFormModel;
+  state: AgentProfileFormState;
+  sharedScope?: ProfileSharedScope;
+  workerTeamStorageAvailable?: boolean;
+  ownerLocked: boolean;
+  modelDetails?: (disabled: boolean) => ReactNode;
+}) {
+  useAgentProfileFormCatalog({ serverId, model, sharedScope });
+  useAgentProfileFormFeatures({ serverId, model, state });
+  const { config } = useDaemonConfig(serverId);
   const defaults = sharedScope?.kind === "defaults";
   const disabled = state.isSubmitting;
   const providerType = resolveProviderType(state.provider, config?.providers ?? {});
@@ -393,60 +521,14 @@ export function AgentProfileForm({
         />
       </Section>
       {!defaults ? (
-        <Section title="Workers">
-          <Switch
-            accessibilityLabel="Enable workers"
-            value={workersEnabled}
-            onValueChange={toggleWorkers}
-            disabled={disabled}
-          />
-          {workersEnabled ? (
-            <>
-              <SelectField
-                label="Worker account"
-                testID="agent-profile-worker-account-field"
-                value={workers.accountId}
-                selectedDisplay={workers.accountDisplay}
-                options={workers.accountOptions}
-                onChange={model.setWorkerAccount}
-                placeholder="Choose account"
-                emptyText="No eligible accounts"
-                disabled={disabled}
-              />
-              <SelectField
-                label="Worker profile"
-                testID="agent-profile-worker-field"
-                value={state.workerProfileId}
-                selectedDisplay={workers.profileDisplay}
-                options={workers.profiles}
-                onChange={model.setWorkerProfileId}
-                placeholder="Choose profile"
-                emptyText="No eligible profiles"
-                disabled={disabled}
-                error={
-                  workers.accountId && !state.workerProfileId
-                    ? "Choose a worker profile to save"
-                    : null
-                }
-              />
-              {/* A fixed choice, so an invalid number can never be typed and silently ignored. */}
-              <SelectField
-                label="Maximum workers"
-                testID="agent-profile-max-workers-field"
-                value={String(state.maxWorkers)}
-                selectedDisplay={
-                  maxWorkerOptions.find((option) => option.value === String(state.maxWorkers)) ??
-                  null
-                }
-                options={maxWorkerOptions}
-                onChange={changeLimit}
-                placeholder="Choose a limit"
-                emptyText="No options"
-                disabled={disabled}
-              />
-            </>
-          ) : null}
-        </Section>
+        <WorkerFields
+          serverId={serverId}
+          profileId={profileId}
+          model={model}
+          state={state}
+          workerTeamStorageAvailable={workerTeamStorageAvailable}
+          ownerLocked={ownerLocked}
+        />
       ) : null}
       {/* Profiles work in every environment; excluding one is rare, so it waits under Advanced. */}
       {!defaults ? (

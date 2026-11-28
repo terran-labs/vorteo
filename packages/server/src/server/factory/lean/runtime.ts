@@ -6,6 +6,16 @@ import { claimMarker, FactoryGitHubError } from "../project/claims.js";
 import type { ClaimState } from "../project/state.js";
 import { issueBrief, issueTrust, readIssueFacts, readTrustedAccounts } from "../project/trust.js";
 import type { ReviewAccountSelection } from "./accounts.js";
+import { BuilderGitRefusal } from "./builder-git.js";
+import {
+  builderPlanComment,
+  builderPlanId,
+  builderPlanInstructions,
+  builderReplyInstructions,
+  createProjectBuilderRuntime,
+  readBuilderPlanReply,
+  type BuilderPublicationOptions,
+} from "./builder-runtime.js";
 import { plan } from "./dispatcher.js";
 import { createPrimaryGateRuntime, type PrimaryGateRuntimeOptions } from "./gate-runtime.js";
 import { createLeanGitHub, type LeanGitHubFacts, type LeanGitHubOptions } from "./github.js";
@@ -115,6 +125,7 @@ export interface LeanRuntimeOptions extends GitHubOptions {
   executionMode(): Promise<LeanExecutionMode>;
   runner: RunnerServices;
   workspace: WorkspaceServices;
+  builderPublication?: BuilderPublicationOptions;
   operations: OperationalServices;
   operationActions: OperationActions;
   /** The single primary controls these epochs. No fallback lane holder is assumed. */
@@ -188,6 +199,7 @@ type OpenEvidence = Extract<MergeEvidence, { kind: "open" }>;
 interface RuntimeLedger extends IssueLedger {
   runtimeClaims?: Record<string, ClaimState>;
   runtimeGo?: Record<string, { plan: PlanRecord; at: string }>;
+  runtimeBuilderHead?: Record<string, { planId: string; head: string }>;
   runtimePlanApproval?: Record<string, PlanRecord>;
   runtimeRepairs?: Record<string, true>;
   runtimeReviewBases?: Record<string, { pullNumber: number; baseSha: string }>;
@@ -910,12 +922,76 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     });
   }
 
+  const publication = options.builderPublication
+    ? createProjectBuilderRuntime({
+        options: options.builderPublication,
+        projectId,
+        installation: here,
+        repository,
+        issue,
+        state,
+        now,
+        github,
+        agents: options.runner.agentStorage,
+        workspaces: options.workspace.workspaces,
+        async readIntakeEpoch() {
+          if (!(await active())) return null;
+          const epoch = await options.laneEpoch("intake");
+          return epoch !== null && (await options.fenceLane("intake", epoch)) ? epoch : null;
+        },
+        async readApprovedPlan(agentId) {
+          const data = await ledger();
+          const assigned = builder(data);
+          const go = data.runtimeGo?.[issue];
+          const target = data.runtimeBuilderHead?.[issue];
+          if (
+            assigned?.agentId !== agentId ||
+            currentStatus(assigned)?.kind !== "idle" ||
+            options.runner.agentManager.hasInFlightRun(agentId) ||
+            !go ||
+            target?.planId !== builderPlanId(go.plan)
+          )
+            return null;
+          const facts = await adapter.readFacts([issue]);
+          const admission = facts.issues.find((entry) => entry.number === issue);
+          if (
+            !admission?.trust.trusted ||
+            admission.labels.includes("factory:blocked") ||
+            !isDeepStrictEqual(admission.plan, go.plan) ||
+            !(await verifyLease(facts))
+          )
+            return null;
+          const [repo, protectedPaths] = await Promise.all([
+            get(root, z.object({ default_branch: z.string() })),
+            options.releaseRecipeFiles(),
+          ]);
+          return {
+            planId: target.planId,
+            expectedHead: target.head,
+            approvedPaths: go.plan.files,
+            protectedPaths,
+            baseBranch: repo.default_branch,
+          };
+        },
+      })
+    : null;
+
+  async function publicationInstructions(approved: PlanRecord, head: string): Promise<string> {
+    if (!publication) return "";
+    const planId = builderPlanId(approved);
+    await state.mutate(projectId, (data: RuntimeLedger) => {
+      (data.runtimeBuilderHead ??= {})[issue] = { planId, head };
+    });
+    return builderReplyInstructions(planId, head, issue);
+  }
+
   const resolveWorkspace = createRunnerWorkspaceResolver({
     ...options.workspace,
     paseoHome: options.paseoHome,
     projectId,
     repository,
     now,
+    verifyBuilderPublication: publication?.verifyBuilderPublication,
     async readStage(input) {
       if (!(await holds("intake"))) throw new Error("Factory runner execution is fenced.");
       const { role } = input;
@@ -960,6 +1036,9 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     state,
     recoveryIssue: issue,
     now,
+    builderIngress: publication?.ingress ?? options.runner.builderIngress,
+    verifyBuilderPublication:
+      publication?.verifyBuilderPublication ?? options.runner.verifyBuilderPublication,
     requiredProviderTypes: {
       "foreman-op": "claude",
       reviewer: "claude",
@@ -981,6 +1060,19 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     return issueBrief(facts, trusted);
   }
 
+  async function builderBrief(role: RunnerRef["role"], posted?: PlanRecord): Promise<string> {
+    if (!publication || role !== "lead") return "";
+    if (!posted) return builderPlanInstructions(issue);
+    const data = await ledger();
+    const target = data.runtimeBuilderHead?.[issue];
+    const approved = data.runtimeGo?.[issue]?.plan;
+    return approved &&
+      target?.planId === builderPlanId(approved) &&
+      isDeepStrictEqual(posted, approved)
+      ? builderReplyInstructions(target.planId, target.head, issue)
+      : "";
+  }
+
   async function runnerInput(role: RunnerRef["role"]): Promise<RunnerOpenInput> {
     const facts = await adapter.readFacts([issue]);
     if (!(await verifyLease(facts)))
@@ -997,6 +1089,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
       admission?.go
         ? "A go was recorded for the current plan. Continue from the existing branch and worktree."
         : "",
+      await builderBrief(role, admission?.plan ?? undefined),
     ]
       .filter(Boolean)
       .join("\n\n");
@@ -1011,7 +1104,11 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     });
   }
 
-  async function sendComment(id: string, body: string): Promise<void> {
+  async function sendComment(
+    id: string,
+    body: string,
+    stillAuthorized?: () => Promise<boolean>,
+  ): Promise<void> {
     const marker = `<!-- factory-runtime v1 receipt=${key(projectId, issue, id)} -->`;
     const user = await get("user", z.object({ login: z.string() }));
     for (let page = 1; ; page++) {
@@ -1029,6 +1126,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
       if (entries.length < 100) break;
     }
     if (!(await holds("intake"))) throw new Error("The Factory intake lane moved.");
+    if (stillAuthorized && !(await stillAuthorized())) return;
     const result = await github.rest("POST", `${root}/issues/${issue}/comments`, {
       body: `(AI Generated)\n\n${body}\n\n${marker}`,
     });
@@ -1192,7 +1290,10 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
       },
       async sendBackToBuilder({ issue: number, eventId, text }) {
         requireIssue(number);
-        if (!(await enqueueBuilder(text, eventId)))
+        const go = (await ledger()).runtimeGo?.[issue]?.plan;
+        const handoff =
+          publication && go ? await publicationInstructions(go, await branchHead(branch)) : "";
+        if (!(await enqueueBuilder([text, handoff].filter(Boolean).join("\n\n"), eventId)))
           throw new Error("Factory is waiting to deliver the Lead's findings to the Builder.");
       },
     },
@@ -1379,8 +1480,16 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
         return;
       }
     }
+    const handoff = publication
+      ? await publicationInstructions(posted, await branchHead(branch))
+      : "";
     const sent = await enqueueBuilder(
-      `Proceed with the recorded plan. Edit only these approved files:\n${posted.files.join("\n")}`,
+      [
+        `Proceed with the recorded plan. Edit only these approved files:\n${posted.files.join("\n")}`,
+        handoff,
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
       key("go", posted),
       action.lead.agentId,
     );
@@ -1405,7 +1514,16 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     if (!pull) return;
     const id = key("repair", issue, pull.head, action.findings, action.lead.agentId);
     if ((await ledger()).runtimeRepairs?.[id]) return;
-    if (!(await enqueueBuilder(action.findings, id, action.lead.agentId))) return;
+    const go = (await ledger()).runtimeGo?.[issue]?.plan;
+    const handoff = publication && go ? await publicationInstructions(go, pull.head) : "";
+    if (
+      !(await enqueueBuilder(
+        [action.findings, handoff].filter(Boolean).join("\n\n"),
+        id,
+        action.lead.agentId,
+      ))
+    )
+      return;
     await state.mutate(projectId, (data: RuntimeLedger) => {
       (data.runtimeRepairs ??= {})[id] = true;
     });
@@ -1619,12 +1737,64 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     wake();
   }
 
+  async function captureBuilder(runner: RunnerRecord): Promise<void> {
+    if (!publication) return;
+    try {
+      const reply = await runners.lastReply(runner);
+      if (!reply) return;
+      const proposed = readBuilderPlanReply(reply, issue);
+      if (proposed) {
+        await captureBuilderPlan(runner.agentId, proposed);
+      } else if (await publication.capture(runner, reply)) {
+        wake();
+      }
+    } catch (error) {
+      if (!(error instanceof BuilderGitRefusal)) throw error;
+      options.runner.logger.warn(
+        { issue, agentId: runner.agentId, error },
+        "Factory refused Builder publication",
+      );
+    }
+  }
+
+  async function captureBuilderPlan(
+    agentId: string,
+    proposed: NonNullable<ReturnType<typeof readBuilderPlanReply>>,
+  ): Promise<void> {
+    const epoch = await options.laneEpoch("intake");
+    if (epoch === null) return;
+    const stillAuthorized = async () => {
+      if (!(await active()) || !(await options.fenceLane("intake", epoch))) return false;
+      const facts = await adapter.readFacts([issue]);
+      const admission = facts.issues.find((entry) => entry.number === issue);
+      const assigned = builder(await ledger());
+      return (
+        admission?.trust.trusted === true &&
+        !admission.labels.includes("factory:blocked") &&
+        !admission.plan &&
+        !issuePull(facts) &&
+        (await verifyLease(facts)) !== null &&
+        assigned?.agentId === agentId &&
+        currentStatus(assigned)?.kind === "idle" &&
+        !options.runner.agentManager.hasInFlightRun(agentId)
+      );
+    };
+    if (!(await stillAuthorized())) return;
+    await sendComment(
+      key("builder-plan", issue, proposed),
+      builderPlanComment(proposed, claimMarker(here, branch)),
+      stillAuthorized,
+    );
+    wake();
+  }
+
   async function processRunner(runner: RunnerRecord): Promise<void> {
     if (!(await active())) return;
     const runnerStatus = currentStatus(runner);
     if (runnerStatus?.kind === "idle") {
       if (runner.role === "foreman-op") await operations.onRunnerIdle(runner);
       if (runner.role === "reviewer") await captureReview(runner);
+      if (runner.role === "lead") await captureBuilder(runner);
     }
     const wait = runnerWait(issue, runner, runnerStatus);
     if (!wait) return;
@@ -1728,9 +1898,14 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     const stage = stages.get(issue);
     const entry = facts.issues.find((item) => item.number === issue);
     const merged = data.runtimeMerges?.[issue]?.settled;
-    const open = Object.values(data.runners).find(
-      (runner) => runner.issue === issue && runner.closedAt === null,
-    );
+    const issueRunners = Object.values(data.runners)
+      .filter((runner) => runner.issue === issue && runner.closedAt === null)
+      .map(({ agentId, role, serverId }) => ({
+        agentId,
+        role,
+        serverId,
+        installation: serverId === null ? here : undefined,
+      }));
     return {
       projectId,
       mode: "lean",
@@ -1750,9 +1925,8 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
                 title: entry?.title ?? `Issue #${issue}`,
                 stage: merged ? "merged" : (stage?.kind ?? "queued"),
                 installation: data.leases[issue]?.installation ?? null,
-                runner: open
-                  ? { agentId: open.agentId, role: open.role, serverId: open.serverId }
-                  : null,
+                runner: issueRunners[0] ?? null,
+                runners: issueRunners,
                 pr: stage && "pr" in stage ? stage.pr : null,
                 lastActivityAt: data.loopBeat,
                 deadline:
@@ -1781,6 +1955,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
   function detach(): void {
     stopped = true;
     unsubscribeStatus();
+    publication?.ingress.close();
     runners.dispose();
     listeners.clear();
     shared?.unbind(issue);

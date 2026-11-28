@@ -5,9 +5,11 @@ import { pluginSettings } from "./plugin-settings";
 export const ptBR: TranslationResources = {
   previewStatus: previewStatus["pt-BR"],
   projectFactory: en.projectFactory,
+  projectHostTarget: en.projectHostTarget,
   vorteoSetup: en.vorteoSetup,
   // Draft English until the wording is approved, then translated.
   codexAdoption: en.codexAdoption,
+  automaticPrimary: en.automaticPrimary,
   paneFind: {
     connectionFailure:
       "Não foi possível pesquisar nesta conversa. Verifique a conexão com o host e tente novamente.",

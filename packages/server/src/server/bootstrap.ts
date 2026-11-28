@@ -197,7 +197,13 @@ import { ProjectFactoryService } from "./factory/project/service.js";
 import { createFactoryHomeClient } from "./execution-installation/factory-home.js";
 import { daemonFactoryAccounts } from "./factory/project/account-choice.js";
 import { createLeanBootstrap } from "./factory/lean/bootstrap.js";
+import {
+  createManagedHostBuilderPublication,
+  loadStandaloneBuilderPublication,
+} from "./factory/lean/builder-provisioning.js";
 import { createLeanHandlers } from "./factory/lean/handlers.js";
+import { pickWorkerAccount } from "./agent/account-pool/worker-account.js";
+import { resolveProviderType } from "@getpaseo/protocol/provider-preferences";
 import { profileProvider, resolveDefaultLaunch } from "./system-project/launch-selection.js";
 import type { SessionHostConnector } from "./session-host/connector.js";
 import { bootstrapWorkspaceRegistries } from "./workspace-registry-bootstrap.js";
@@ -336,6 +342,7 @@ import { ManagedPluginSources } from "./plugins/managed-source.js";
 const MCP_DEBUG_BATCH_LIMIT = 10;
 // Startup waits at most this long to re-link services that survived the previous daemon.
 const SURVIVING_SERVICES_RELINK_DEADLINE_MS = 3_000;
+const STUCK_INITIALIZING_AGENT_LOG_MS = 600_000;
 const MCP_DEBUG_SECRET = "[redacted]";
 const DOWNLOAD_OPEN_FLAGS =
   process.platform === "win32" ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW;
@@ -524,6 +531,7 @@ export interface PaseoDaemonConfig {
   primaryConnection?: MutableDaemonConfig["primaryConnection"];
   installationPrimaryConnection?: MutableDaemonConfig["installationPrimaryConnection"];
   installationPrimaryConnectionSupported?: boolean;
+  installationPrimaryConnectionAutomatic?: boolean;
   timeZone?: MutableDaemonConfig["timeZone"];
   skillSelection?: AgentSkillSelection;
   pluginsEnabled?: boolean;
@@ -714,6 +722,7 @@ function createInitialMutableDaemonConfig(config: ResolvedDaemonSettings): Mutab
     primaryConnection: config.primaryConnection,
     installationPrimaryConnection: config.installationPrimaryConnection,
     installationPrimaryConnectionSupported: config.installationPrimaryConnectionSupported,
+    installationPrimaryConnectionAutomatic: config.installationPrimaryConnectionAutomatic,
     timeZone: daemonTimeZone(config.timeZone),
   };
 
@@ -1204,18 +1213,45 @@ export async function createPaseoDaemon(
     workspaceRegistry,
   });
   const github = createGitHubService();
+  // Working directories of running or starting agents, computed once per synchronous pass: one
+  // workspace git activity check asks this for every workspace of a repository.
+  let activeAgentCwds: Set<string> | null = null;
+  const stuckInitializingAgentIds = new Set<string>();
+  const getActiveAgentCwds = (): Set<string> => {
+    if (activeAgentCwds) return activeAgentCwds;
+    const cwds = new Set<string>();
+    const nowMs = Date.now();
+    for (const agent of agentManager.listAgents()) {
+      if (agent.lifecycle !== "running" && agent.lifecycle !== "initializing") {
+        stuckInitializingAgentIds.delete(agent.id);
+        continue;
+      }
+      cwds.add(path.resolve(agent.cwd));
+      // An agent stuck initializing keeps its repository on the frequent background fetch.
+      if (
+        agent.lifecycle === "initializing" &&
+        nowMs - agent.updatedAt.getTime() > STUCK_INITIALIZING_AGENT_LOG_MS &&
+        !stuckInitializingAgentIds.has(agent.id)
+      ) {
+        stuckInitializingAgentIds.add(agent.id);
+        logger.warn(
+          { agentId: agent.id, cwd: agent.cwd, initializingSince: agent.updatedAt.toISOString() },
+          "Agent has been initializing for over 10 minutes; its repository stays on the active git fetch schedule",
+        );
+      }
+    }
+    activeAgentCwds = cwds;
+    queueMicrotask(() => {
+      activeAgentCwds = null;
+    });
+    return cwds;
+  };
   const workspaceGitService = new WorkspaceGitServiceImpl({
     logger,
     paseoHome: config.paseoHome,
     worktreesRoot: config.worktreesRoot,
     isWorkspaceActive: (cwd) =>
-      agentManager
-        .listAgents()
-        .some(
-          (agent) =>
-            (agent.lifecycle === "running" || agent.lifecycle === "initializing") &&
-            path.resolve(agent.cwd) === cwd,
-        ) ||
+      getActiveAgentCwds().has(cwd) ||
       (wsServer?.listSessions().some((session) => session.isWorkspaceGitActive(cwd)) ?? false),
     deps: {
       forgeOverrides: { github },
@@ -1664,6 +1700,29 @@ export async function createPaseoDaemon(
   };
 
   const createAgentCommandDependencies: CreateAgentCommandDependencies = {
+    pickTeamWorkerAccount: async ({ worker, requestedProvider, avoidProvider }) => {
+      const settings = daemonConfigStore.get();
+      const [ready, usage, limits] = await Promise.all([
+        providerSnapshotManager.listProviders({ wait: false }),
+        providerUsageService
+          .listUsage({ forceRefresh: false })
+          .catch(() => ({ fetchedAt: "", providers: [] })),
+        agentManager.usageLimitsByProvider(),
+      ]);
+      return pickWorkerAccount({
+        settings,
+        ready: requestedProvider
+          ? ready.filter((entry) => entry.provider === requestedProvider)
+          : ready,
+        usage,
+        providerType: resolveProviderType(worker.provider, settings.providers ?? {}),
+        defaultProvider: worker.provider,
+        avoidProvider,
+        usageLimitedUntilByProvider: Object.fromEntries(limits),
+        priority: "normal",
+        nowMs: Date.now(),
+      });
+    },
     getAgentProfiles: () => daemonConfigStore.get().agentProfiles ?? [],
     getSharedProviderConfig: () => daemonConfigStore.get(),
     validateSharedConfiguration: (selection) =>
@@ -2008,13 +2067,6 @@ export async function createPaseoDaemon(
     }
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
-  // A standalone daemon's one-time primary connection choice; installations choose centrally.
-  const adoptPrimaryConnection = async (primary: MutableDaemonConfig["primaryConnection"]) => {
-    // Never overwrite a choice the owner made while the launch was being resolved.
-    daemonConfigStore.patch((current) =>
-      current.primaryConnection === undefined ? { primaryConnection: primary } : {},
-    );
-  };
   const factoryHosts = () => {
     if (!wsServer) throw new Error("Daemon is not accepting host operations");
     return wsServer.toolHosts();
@@ -2027,15 +2079,74 @@ export async function createPaseoDaemon(
     serverId,
     readInstallationSettings: () => daemonConfigStore.readInstallationSettingsAuthority(),
   });
+  const factoryHome = createFactoryHomeClient(process.env.VORTEO_INSTALLATION_CLIENT_CONFIG);
+  async function enqueueFactoryMessage(agentId: string, message: string, messageId: string) {
+    const stored = await agentStorage.get(agentId);
+    if (!stored || stored.archivedAt) return false;
+    const agent = await ensureUnarchivedAgentLoaded(agentId, {
+      agentManager,
+      agentStorage,
+      logger,
+    });
+    const rows = await agentManager.getTimelineRows(agent.id);
+    if (
+      rows.some(({ item }) => item.type === "user_message" && item.clientMessageId === messageId)
+    ) {
+      return true;
+    }
+    if (agentManager.hasInFlightRun(agent.id) || agent.pendingPermissions.size > 0) return false;
+    const hold = agent.config.usageLimitHold;
+    if (hold && !hold.releasedAt) return false;
+    await startAgentRun(agentManager, agent.id, formatSystemNotificationPrompt(message), logger, {
+      runOptions: { origin: "agent", clientMessageId: messageId },
+    });
+    return true;
+  }
+  async function openBuilderPublishers() {
+    const builderPublication = await loadStandaloneBuilderPublication({
+      paseoHome: config.paseoHome,
+      standalone:
+        !process.env.VORTEO_INSTALLATION_CLIENT_CONFIG &&
+        !daemonConfigStore.get().sharedProviderPreferences?.installation,
+    });
+    const managedBuilderPublication = createManagedHostBuilderPublication({
+      paseoHome: config.paseoHome,
+      identity: factoryHome ? { environment: factoryHome.environment, serverId } : null,
+    });
+    return {
+      builderPublication: builderPublication?.forProject,
+      managedBuilderPublication: managedBuilderPublication.forProject,
+      async close() {
+        await builderPublication?.close();
+        await managedBuilderPublication.close();
+      },
+    };
+  }
+  const publishers = await openBuilderPublishers();
   leanFactory = createLeanBootstrap({
+    builderPublication: publishers.builderPublication,
+    managedBuilderPublication: publishers.managedBuilderPublication,
     paseoHome: config.paseoHome,
     serverId,
     logger,
     settings: () => daemonConfigStore.get(),
     readAuthority: () => daemonConfigStore.readInstallationSettingsAuthority(),
     factoryAccounts,
+    providerSnapshot: () => providerSnapshotManager.listProviders({ wait: false }),
     readUsage: (options) => providerUsageService.listUsage(options),
-    runner: { agentManager, agentStorage, createAgent, logger },
+    runner: {
+      agentManager,
+      agentStorage,
+      createAgent,
+      logger,
+    },
+    get localEnvironment() {
+      return factoryHome?.environment;
+    },
+    async ensureConversation(projectId, kind) {
+      return projectFactoryService?.ensureLeanConversation(projectId, kind);
+    },
+    enqueueConversation: enqueueFactoryMessage,
     workspace: {
       projects: projectRegistry,
       workspaces: workspaceRegistry,
@@ -2058,36 +2169,20 @@ export async function createPaseoDaemon(
     },
     async enqueue(runner, message, messageId) {
       if (runner.serverId !== null) return false;
-      const stored = await agentStorage.get(runner.agentId);
-      if (!stored || stored.archivedAt) return false;
-      const agent = await ensureUnarchivedAgentLoaded(runner.agentId, {
-        agentManager,
-        agentStorage,
-        logger,
-      });
-      const rows = await agentManager.getTimelineRows(agent.id);
-      if (
-        rows.some(({ item }) => item.type === "user_message" && item.clientMessageId === messageId)
-      ) {
-        return true;
-      }
-      if (agentManager.hasInFlightRun(agent.id) || agent.pendingPermissions.size > 0) return false;
-      const hold = agent.config.usageLimitHold;
-      if (hold && !hold.releasedAt) return false;
-      await startAgentRun(agentManager, agent.id, formatSystemNotificationPrompt(message), logger, {
-        runOptions: { origin: "agent", clientMessageId: messageId },
-      });
-      return true;
+      return enqueueFactoryMessage(runner.agentId, message, messageId);
     },
   });
   projectFactoryService = new ProjectFactoryService({
     paseoHome: config.paseoHome,
     serverId,
-    home: createFactoryHomeClient(process.env.VORTEO_INSTALLATION_CLIENT_CONFIG),
+    home: factoryHome,
     projects: projectRegistry,
     workspaces: workspaceRegistry,
     agentStorage,
     lean: leanFactory.mode,
+    async canOpenLeanConversation(projectId, repository) {
+      return (await leanFactory?.canOpenConversation(projectId, repository)) === true;
+    },
     createAgent,
     createWorkspace: async (input) => {
       const workspace = await workspaceProvisioning.createWorkspaceForDirectory(
@@ -2127,7 +2222,6 @@ export async function createPaseoDaemon(
         providers: providerSnapshotManager,
         readUsage: (options) => providerUsageService.listUsage(options),
         getSettings: () => daemonConfigStore.get(),
-        adoptPrimary: adoptPrimaryConnection,
         refreshSupport: () => daemonConfigStore.refreshPrimaryConnectionSupport(),
       }),
     profileProvider: (profileId) => profileProvider(profileId, daemonConfigStore.get()),
@@ -2137,9 +2231,6 @@ export async function createPaseoDaemon(
     onWorkspacesChanged: (workspaceIds) => void emitWorkspaceUpdatesExternal(workspaceIds),
     logger,
   });
-  void projectFactoryService
-    .start()
-    .catch((error) => logger.warn({ err: error }, "Per-project Factory did not start"));
   let optimizerAgent: { stop: () => void } | null = null;
   const startOptimizerSeeding = (environment: SystemEnvironment) =>
     startOptimizerAgent({
@@ -2150,7 +2241,6 @@ export async function createPaseoDaemon(
       providers: providerSnapshotManager,
       readUsage: (options) => providerUsageService.listUsage(options),
       getSettings: () => daemonConfigStore.get(),
-      adoptPrimary: adoptPrimaryConnection,
       refreshSupport: () => daemonConfigStore.refreshPrimaryConnectionSupport(),
       // Any settings change, such as a newly connected account or a new default profile.
       onSettingsChange: (handler) => daemonConfigStore.onChange(() => handler()),
@@ -2309,6 +2399,7 @@ export async function createPaseoDaemon(
     markWorkspaceArchiving: markWorkspaceArchivingExternal,
     clearWorkspaceArchiving: clearWorkspaceArchivingExternal,
     ensureWorkspaceForCreate: createAgentCommandDependencies.ensureWorkspaceForCreate,
+    pickTeamWorkerAccount: createAgentCommandDependencies.pickTeamWorkerAccount,
     createPaseoWorktree: createAgentCommandDependencies.createPaseoWorktree,
     browserToolsEnabled: browserToolsPolicy.isEnabled(),
     browserToolsBroker,
@@ -2626,6 +2717,9 @@ export async function createPaseoDaemon(
             checklistMonitoring = true;
             checklistWakes.start();
             wsServer.beginAcceptingConnections();
+            void projectFactoryService
+              ?.start()
+              .catch((error) => logger.warn({ err: error }, "Per-project Factory did not start"));
             const relaySecurityLogger = logger.child({ module: "relay-security" });
             relayRuntime = createRelayRuntime({
               config: {
@@ -2783,6 +2877,7 @@ export async function createPaseoDaemon(
     // Close ingress before waiting for metadata processes or other teardown.
     wsServer?.prepareForShutdown();
     await leanFactory?.shutdown();
+    await publishers.close();
     agentManager.prepareForShutdown();
     // Revoke remote execution authority before asynchronous fork teardown.
     step("hub relationships");

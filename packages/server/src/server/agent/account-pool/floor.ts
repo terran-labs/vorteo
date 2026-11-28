@@ -9,8 +9,8 @@ import {
 import { rankAccounts, type UsageList } from "../../factory/project/account-choice.js";
 
 /**
- * Pure quota floor evaluation (#518 slice 6). Nothing calls this yet: admission, launch, switch
- * and pause paths behave as before. A floor is the percent of every usage window an account must
+ * Quota floor evaluation shared by worker account selection and recovery.
+ * A floor is the percent of every usage window an account must
  * keep for a given priority; the binding window is whichever has the least remaining now.
  *
  * Freshness and window validity come from Factory account choice (`rankAccounts`), so both

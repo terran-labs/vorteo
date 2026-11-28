@@ -2,12 +2,67 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { expect, it } from "vitest";
+import { MutableDaemonConfigSchema } from "@getpaseo/protocol/messages";
+import { localAccountPolicy } from "./bootstrap.js";
 import { createLeanStateStore } from "./state.js";
 import { createLeanReconciler } from "./service.js";
 import { createMergeGate } from "./merge-gate.js";
 import { createMergeIntentStore } from "./merge-intent.js";
 import type { IssueLedger } from "./issue-state.js";
 import type { Acceptance, GitHubFacts, PullRef, RunnerRef, Verdict } from "./types.js";
+
+it.each([
+  { role: "lead", provider: "claude", remaining: 35, buffer: 10, starts: false },
+  { role: "lead", provider: "claude", remaining: 36, buffer: 10, starts: true },
+  { role: "lead", provider: "codex", remaining: 26, buffer: 0, starts: true },
+  { role: "reviewer", provider: "claude", remaining: 26, buffer: 0, starts: true },
+  { role: "reviewer", provider: "claude", remaining: 25, buffer: 0, starts: false },
+] as const)(
+  "applies a $buffer point buffer for $role on $provider at $remaining percent",
+  async ({ role, provider, remaining, buffer, starts }) => {
+    const at = new Date("2026-11-27T18:00:00Z");
+    const policy = localAccountPolicy(
+      {
+        serverId: "host",
+        settings: () => MutableDaemonConfigSchema.parse({ mcp: { injectIntoAgents: false } }),
+        readAuthority: async () => null,
+        providerSnapshot: async () => [{ provider, enabled: true, status: "ready" }],
+        runner: { agentManager: { usageLimitsByProvider: async () => new Map() } },
+        factoryAccounts: { profileAccount: () => null },
+      },
+      "project",
+      null,
+      async () => ({
+        fetchedAt: at.toISOString(),
+        providers: [
+          {
+            providerId: provider,
+            displayName: provider,
+            planLabel: null,
+            status: "available",
+            windows: [{ id: "weekly", label: "Weekly", remainingPct: remaining }],
+          },
+        ],
+      }),
+    );
+    const result = await policy({
+      projectId: "project",
+      serverId: null,
+      role,
+      providerType: provider,
+      profileId: null,
+      candidates: [
+        { local: provider, placed: provider, definition: null, reason: null, until: NaN },
+      ],
+      builder: null,
+      runners: {},
+      now: () => at,
+    });
+    const decision = "parked" in result ? result.parked.accountPolicy : result.accountPolicy;
+    expect(decision?.candidates[0]).toMatchObject({ floorPct: 25, reservedHeadroomPct: buffer });
+    expect(decision?.provider).toBe(starts ? provider : null);
+  },
+);
 
 it("claims a labeled issue and requests a pinned merge after local review and acceptance", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "lean-service-"));

@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { z } from "zod";
+import type { WorkerAccountCandidate } from "../../agent/account-pool/worker-account.js";
 import type { Acceptance, PullRef, RunnerRef, Verdict } from "./types.js";
 
 const exec = promisify(execFile);
@@ -70,7 +71,12 @@ export interface ReviewLaunchEvidence {
   reviewerAccount: string;
   reviewerAccountDefinition: string;
   mode: "different-account" | "same-account";
-  candidates: readonly { accountDefinition: string | null; reason: string }[];
+  candidates: readonly {
+    account?: string;
+    accountDefinition: string | null;
+    reason: string;
+    evidence?: WorkerAccountCandidate;
+  }[];
 }
 
 interface ReviewTarget {
@@ -160,7 +166,26 @@ function matchesLaunch(
   );
 }
 
-function provesSameAccountFallback(selection: ReviewLaunchEvidence): boolean {
+function policyExcluded(candidate: ReviewLaunchEvidence["candidates"][number]): boolean {
+  const evidence = candidate.evidence;
+  if (
+    !evidence ||
+    evidence.provider !== candidate.account ||
+    evidence.installationDefinitionId !== candidate.accountDefinition
+  )
+    return false;
+  if (candidate.reason === "below-floor")
+    return evidence.exclusionReason === "quota-below-floor" && evidence.eligibility === "known-low";
+  if (candidate.reason === "pool-excluded")
+    return (
+      evidence.eligibility === "ineligible" &&
+      (evidence.exclusionReason === "outside-pool" ||
+        evidence.exclusionReason === "automatic-opt-out")
+    );
+  return false;
+}
+
+export function provesSameAccountFallback(selection: ReviewLaunchEvidence): boolean {
   if (selection.mode !== "same-account") return false;
   const selected = selection.candidates.filter(({ reason }) => reason === "selected");
   return (
@@ -170,6 +195,7 @@ function provesSameAccountFallback(selection: ReviewLaunchEvidence): boolean {
       (candidate) =>
         candidate === selected[0] ||
         ineligibleAlternates.has(candidate.reason) ||
+        policyExcluded(candidate) ||
         (candidate.reason === "builder-account" &&
           candidate.accountDefinition === selection.builderAccountDefinition),
     )

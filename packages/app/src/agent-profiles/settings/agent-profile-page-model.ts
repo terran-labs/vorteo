@@ -15,6 +15,7 @@ export function profileDraftKey(state: AgentProfileFormState): string {
     state.notes,
     state.skillPolicy,
     state.workerProfileId,
+    state.workerProfileIds,
     state.workerAccountId,
     state.maxWorkers,
     [...state.excludedEnvironments].sort(),

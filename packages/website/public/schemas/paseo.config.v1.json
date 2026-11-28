@@ -282,6 +282,9 @@
         "installationPrimaryConnectionSupported": {
           "type": "boolean"
         },
+        "installationPrimaryConnectionAutomatic": {
+          "type": "boolean"
+        },
         "timeZone": {
           "type": "object",
           "properties": {
@@ -456,6 +459,12 @@
               },
               "workerProfileId": {
                 "type": "string"
+              },
+              "workerProfileIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               },
               "workerAccount": {
                 "type": "string"
@@ -673,6 +682,12 @@
                       "workerProfileId": {
                         "type": "string"
                       },
+                      "workerProfileIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
                       "workerAccount": {
                         "type": "string"
                       },
@@ -841,6 +856,12 @@
                         },
                         "workerProfileId": {
                           "type": "string"
+                        },
+                        "workerProfileIds": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
                         },
                         "workerAccount": {
                           "type": "string"
@@ -1272,6 +1293,9 @@
                 "type": "boolean"
               },
               "autoResumeAfterUsageLimit": {
+                "type": "boolean"
+              },
+              "automaticPrimary": {
                 "type": "boolean"
               },
               "order": {

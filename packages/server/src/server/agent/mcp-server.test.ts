@@ -57,6 +57,7 @@ import {
   checkPresetFence,
   governingSupervisor,
   presetFenceReason,
+  type PresetFencePath,
   type PresetFenceRequest,
 } from "./lead-launch/fence.js";
 
@@ -6345,6 +6346,139 @@ describe("preset fence (#360)", () => {
     lead: thread("lead", { "paseo.lead-requested-by": "supervisor" }),
     other: thread("other", {}),
   };
+
+  it("enforces team membership and prevents team workers from delegating", async () => {
+    const team = {
+      ...supervisor,
+      config: {
+        ...supervisor.config,
+        profileLaunch: {
+          profile: supervisor.config.profileLaunch!.profile,
+          workers: [worker, { ...worker, id: "review" }],
+        },
+      },
+    };
+    const child = agents.child!;
+    const movedWorker = {
+      ...child,
+      id: "moved-worker",
+      labels: {},
+      workerGovernance: {
+        supervisorAgentId: team.id,
+        serverId: "host",
+        workerProfileId: worker.id,
+      },
+    };
+    const lookup = {
+      getAgent: (id: string) => (id === team.id ? team : agents[id]),
+      getStored: async (id: string) => (id === movedWorker.id ? movedWorker : null),
+      logger: createTestLogger(),
+    };
+    const cases: Array<[string, PresetFencePath, PresetFenceRequest, string | null]> = [
+      [team.id, "create_agent", { kind: "launch", profileId: worker.id }, null],
+      [
+        movedWorker.id,
+        "create_agent",
+        { kind: "launch", profileId: "outside" },
+        "team-worker-launch",
+      ],
+      [team.id, "create_agent", { kind: "launch", profileId: "review" }, null],
+      [team.id, "create_agent", { kind: "launch", profileId: null }, "preset-required"],
+      [team.id, "create_agent", { kind: "launch", profileId: "outside" }, "preset-required"],
+      [
+        team.id,
+        "create_agent",
+        { kind: "launch", profileId: worker.id, detached: true },
+        "detached",
+      ],
+      [
+        team.id,
+        "remote_create_agent",
+        { kind: "launch", profileId: worker.id },
+        "team-local-dispatch",
+      ],
+      [
+        team.id,
+        "session_create_agent",
+        { kind: "launch", profileId: worker.id },
+        "team-local-dispatch",
+      ],
+      [child.id, "create_agent", { kind: "launch", profileId: "review" }, "team-worker-launch"],
+      [child.id, "create_agent", { kind: "launch", profileId: worker.id }, "team-worker-launch"],
+      [
+        child.id,
+        "set_agent_mode",
+        { kind: "change", targetAgentId: child.id, mode: true },
+        "mode-change",
+      ],
+      [
+        child.id,
+        "update_agent",
+        { kind: "change", targetAgentId: child.id, labels: { "paseo.parent-agent-id": "" } },
+        "governance-label",
+      ],
+      [
+        child.id,
+        "switch_agent_profile",
+        { kind: "change", targetAgentId: child.id, settings: true },
+        "settings-change",
+      ],
+    ];
+    for (const [callerId, path, request, code] of cases) {
+      const decision = checkPresetFence(lookup, path, callerId, request);
+      if (code) await expect(decision).rejects.toMatchObject({ code });
+      else await expect(decision).resolves.toBeUndefined();
+    }
+  });
+
+  it("refuses team launches on a governance read failure and keeps the legacy fence in report mode", async () => {
+    const empty = {
+      ...supervisor,
+      id: "empty-team",
+      config: {
+        ...supervisor.config,
+        profileLaunch: { ...supervisor.config.profileLaunch!, workers: [] },
+      },
+    };
+    const lookup = {
+      getAgent: (id: string) => (id === empty.id ? empty : agents[id]),
+      getStored: async () => {
+        throw new Error("Storage unavailable");
+      },
+      logger: createTestLogger(),
+    };
+    const launch = { kind: "launch" as const, profileId: worker.id };
+    await expect(checkPresetFence(lookup, "create_agent", empty.id, launch)).rejects.toMatchObject({
+      code: "worker-governance-unavailable",
+    });
+    await expect(
+      checkPresetFence(lookup, "create_agent", agents.child!.id, launch),
+    ).resolves.toBeUndefined();
+    const moved = thread("detached-team-worker", {});
+    const movedLookup = {
+      ...lookup,
+      getAgent: (id: string) => (id === moved.id ? moved : lookup.getAgent(id)),
+      getCached: (id: string) =>
+        id === moved.id
+          ? {
+              ...moved,
+              workerGovernance: {
+                supervisorAgentId: supervisor.id,
+                serverId: "host",
+                workerProfileId: worker.id,
+              },
+            }
+          : null,
+    };
+    await expect(
+      checkPresetFence(movedLookup, "create_agent", moved.id, launch),
+    ).rejects.toMatchObject({ code: "worker-governance-unavailable" });
+    for (const path of ["create_agent", "remote_create_agent", "session_create_agent"] as const) {
+      await expect(
+        checkPresetFence({ ...lookup, getStored: async () => null }, path, empty.id, launch),
+      ).rejects.toMatchObject({ code: "delegation-disabled" });
+    }
+  });
 
   it("decides each path for a supervisor's own threads and launches", () => {
     const cases: Array<[ManagedAgent | null, PresetFenceRequest, string | null]> = [

@@ -1,5 +1,5 @@
 import type { ReviewAccountSelection } from "./accounts.js";
-import type { CleanRebaseProof } from "./review-evidence.js";
+import { provesSameAccountFallback, type CleanRebaseProof } from "./review-evidence.js";
 import { isDeepStrictEqual } from "node:util";
 import type {
   Acceptance,
@@ -83,6 +83,8 @@ type ApprovalEvidence = Pick<
 /** The daemon's immutable authorization for one exact submission target. */
 export interface MergeIntent extends MergeTarget {
   approval: ApprovalEvidence;
+  /** Captured by the primary after checking current intake and every changed path. */
+  hostGate?: { primary: string; trustedHead: string; protectedPathsCheckedHead: string };
 }
 
 type MergeResult = { mergeSha: string } | { refused: string; code?: "merge-inconsistent" };
@@ -190,26 +192,7 @@ function sameAccountReview(
     !Number.isFinite(Date.parse(selection.at))
   )
     return false;
-  const chosen = selection.candidates.filter((candidate) => candidate.reason === "selected");
-  const exclusions = new Set([
-    "profile-bound",
-    "not-allowed",
-    "wrong-provider",
-    "unavailable-on-destination",
-    "parked",
-    "exhausted",
-  ]);
-  return (
-    chosen.length === 1 &&
-    chosen[0].accountDefinition === reviewer.accountDefinition &&
-    selection.candidates.every(
-      (candidate) =>
-        candidate === chosen[0] ||
-        exclusions.has(candidate.reason) ||
-        (candidate.reason === "builder-account" &&
-          candidate.accountDefinition === lead.accountDefinition),
-    )
-  );
+  return provesSameAccountFallback(selection);
 }
 
 function independentReview(
@@ -399,6 +382,11 @@ export function createMergeGate(deps: MergeGateDeps): RecoverableMergeGate {
       const recorded = await deps.recordIntent(
         {
           ...target,
+          hostGate: {
+            primary: deps.here,
+            trustedHead: current.pr.headSha,
+            protectedPathsCheckedHead: current.pr.headSha,
+          },
           approval: {
             lead: evidence.lead,
             reviewer: current.verdict.reviewer,

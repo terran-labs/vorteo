@@ -436,7 +436,7 @@ function builderSystemPrompt(charter: string, authenticatedGit: boolean): string
   if (!authenticatedGit) return charter;
   return `${charter}
 
-Use the authenticated Factory Builder Git tools to publish approved changes and open the issue pull request. Supply the expected remote head and the exact approved file paths. The upload helper reads the files in your workspace. Use Published Head to recover a previous publication after a restart. Leave shared Git configuration, filesystem permissions and network permissions alone.`;
+Follow the daemon's structured publication instructions when you finish. Your final reply names the approved files you changed and the exact head it supplied. The daemon reads the files and handles Git and pull request writes. Keep working in the same workspace after a retry. Leave shared Git configuration, filesystem permissions and network permissions alone.`;
 }
 
 function requireLocal(serverId: string | null): void {
