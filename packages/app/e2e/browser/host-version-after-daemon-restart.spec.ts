@@ -93,6 +93,8 @@ async function showSystemHostDetails(page: Page, host: RestartableHostDaemon): P
   await selectSettingsHost(page, host.serverId);
   await revealSettingsLocation(page, "system.overview");
   await page.getByRole("button", { name: "Host Details", exact: true }).click();
+  // Transport, version, process and commits fold into Diagnostics until asked for (#656).
+  await page.getByTestId("system-diagnostics-host").filter({ visible: true }).click();
 }
 
 function hostIdentity(page: Page) {
