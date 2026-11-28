@@ -161,7 +161,7 @@ const AGY_ACP_VALUE_FLAGS = new Set([
 function isTrailingSubcommandArgs(tail: readonly string[]): boolean {
   for (let index = 0; index < tail.length; index += 1) {
     const token = tail[index]!;
-    if (!token.startsWith("-")) return false;
+    if (token === "--" || !token.startsWith("-")) return false;
     if (!token.includes("=") && AGY_ACP_VALUE_FLAGS.has(token)) {
       if (index + 1 >= tail.length) return false;
       index += 1;
@@ -171,17 +171,18 @@ function isTrailingSubcommandArgs(tail: readonly string[]): boolean {
 }
 
 export function stripAcpSubcommand(args: readonly string[]): string[] {
-  for (let index = args.length - 1; index >= 0; index -= 1) {
-    if (args[index] !== "acp") continue;
-    const previous = index > 0 ? args[index - 1] : undefined;
-    if (
-      previous !== undefined &&
-      (AGY_VALUE_FLAGS.has(previous) || AGY_ACP_VALUE_FLAGS.has(previous))
-    ) {
+  let index = 0;
+  while (index < args.length) {
+    const token = args[index]!;
+    if (token === "--") break;
+    if (token === "acp" && isTrailingSubcommandArgs(args.slice(index + 1))) {
+      return args.slice(0, index);
+    }
+    if (!token.includes("=") && AGY_VALUE_FLAGS.has(token)) {
+      index += 2;
       continue;
     }
-    if (!isTrailingSubcommandArgs(args.slice(index + 1))) continue;
-    return args.slice(0, index);
+    index += 1;
   }
   return [...args];
 }

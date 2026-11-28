@@ -1163,6 +1163,12 @@ if (args.includes("-p") && args.includes("/usage")) {
     expect(stripAcpSubcommand(["--sandbox", "acp"])).toEqual(["--sandbox"]);
     expect(stripAcpSubcommand(["--verbose", "acp"])).toEqual(["--verbose"]);
     expect(stripAcpSubcommand(["--log-file", "acp", "acp"])).toEqual(["--log-file", "acp"]);
+    expect(stripAcpSubcommand(["--log-file", "--model", "acp"])).toEqual(["--log-file", "--model"]);
+    expect(stripAcpSubcommand(["--log-file", "--model", "acp", "--app-data-dir", "acp"])).toEqual([
+      "--log-file",
+      "--model",
+    ]);
+    expect(stripAcpSubcommand(["--", "acp"])).toEqual(["--", "acp"]);
     expect(stripAcpSubcommand(["--profile", "acp", "agy", "acp"])).toEqual([
       "--profile",
       "acp",
