@@ -117,26 +117,31 @@ test("lists built-in and subprocess usage; validates input and isolates fetch er
     // automaticPrimary (COMPAT(primaryConnectionAutomatic)), which this case does not forbid.
     expect(legacy.requestId).toBe("account-usage");
     expect(legacy.fetchedAt).toMatch(/^\d{4}-/);
-    expect(legacy.providers).toEqual(
-      [
+    const unavailableEntry = (providerId: string, displayName: string) => ({
+      providerId,
+      displayName,
+      status: "unavailable",
+      planLabel: null,
+      windows: [],
+      balances: [],
+      details: [],
+      error: null,
+    });
+    expect(legacy.providers).toEqual([
+      ...[
         ["copilot", "GitHub Copilot"],
         ["cursor", "Cursor"],
         ["zai", "Z.ai"],
         ["grok", "Grok"],
         ["kimi", "Kimi"],
         ["minimax", "MiniMax"],
-        ["fixture-codex", "Isolated account"],
-      ].map(([providerId, displayName]) => ({
-        providerId,
-        displayName,
-        status: "unavailable",
-        planLabel: null,
-        windows: [],
-        balances: [],
-        details: [],
-        error: null,
-      })),
-    );
+      ].map(([providerId, displayName]) => unavailableEntry(providerId, displayName)),
+      {
+        ...unavailableEntry("antigravity", "Antigravity"),
+        fetchedAt: expect.stringMatching(/^\d{4}-/),
+      },
+      unavailableEntry("fixture-codex", "Isolated account"),
+    ]);
     expect(legacy.workerActivity).toEqual({
       checkedAt: expect.stringMatching(/^\d{4}-/),
       runningByProvider: {},
