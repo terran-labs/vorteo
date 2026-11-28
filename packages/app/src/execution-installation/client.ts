@@ -2,6 +2,7 @@ import {
   CustomDomainStatusSchema,
   type CustomDomainStatus,
 } from "@getpaseo/protocol/custom-domain";
+import * as installationProtocol from "@getpaseo/protocol/execution-installation";
 import {
   InstallationTypeStatusSchema,
   type InstallationType,
@@ -1085,20 +1086,20 @@ export class InstallationClient {
       ? `${resource}${resource.includes("?") ? "&" : "?"}sourceUpdates=1&sourceBatches=1&containerSourceUpdates=1&supervisorMaintenance=1&hostAutomaticRestarts=1&factoryRuntimeAdoption=1&engineRestart=1&engineRecovery=1&hostLauncherUpdate=1&bootEntrySwitch=1&delegatedRequests=1&restartHoldDeadline=1`
       : resource;
     if (
-      (path.startsWith("restarts") && RESTART_PROGRESS_FIELDS) ||
-      (path.startsWith("maintenance-services") && SERVICE_PROGRESS_FIELDS)
+      OPERATION_PROGRESS &&
+      (path.startsWith("restarts") || path === "maintenance-services/query")
     )
       query = `${query}${query.includes("?") ? "&" : "?"}operationProgress=1`;
     return this.ports.request(query, this.password, body);
   }
 }
 
-// COMPAT(operationProgress): added 2026-11-28 (#720). Asks for step and timing fields only once
-// this app's strict schemas define them, so a newer coordinator's fields can never fail an older
-// app's parse; older coordinators read flags by name and ignore this one. Remove the shape checks
+// COMPAT(operationProgress): added 2026-11-28 (#720). Asks for step and timing fields only when
+// this app's protocol exports OPERATION_PROGRESS_REPLY, which ships in the same change as the
+// strict schemas that define those fields, so a newer coordinator's fields can never fail an
+// older app's parse; older coordinators read flags by name and ignore this one. Remove the gate
 // once every published app includes the fields.
-const RESTART_PROGRESS_FIELDS = "progressReconstructed" in RestartJobSchema.shape;
-const SERVICE_PROGRESS_FIELDS = "startedAt" in MaintenanceServiceViewSchema.shape;
+export const OPERATION_PROGRESS = "OPERATION_PROGRESS_REPLY" in installationProtocol;
 
 export async function requestInstallationOwner(
   path: string,

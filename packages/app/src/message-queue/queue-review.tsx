@@ -43,7 +43,12 @@ export function useQueueReviewRequests(
  * cannot bring it back; a later rejection shows on the item in the Queue card.
  */
 export function ComposerQueuedNotice({ queuedAt }: { queuedAt: number | null }) {
+  // Measured from the current time whenever a new queueing arrives, not from when the notice
+  // mounted, so a long-open composer cannot stretch the confirmation.
   const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    setNow(Date.now());
+  }, [queuedAt]);
   const remaining = queuedNoticeRemainingMs(queuedAt, now);
   useEffect(() => {
     if (remaining <= 0) return;

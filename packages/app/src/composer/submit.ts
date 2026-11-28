@@ -161,5 +161,6 @@ export const QUEUED_NOTICE_MS = 6_000;
  */
 export function queuedNoticeRemainingMs(queuedAt: number | null, now: number): number {
   if (queuedAt === null) return 0;
-  return Math.max(0, queuedAt + QUEUED_NOTICE_MS - now);
+  // Never longer than the display time, whatever clock the caller read it against.
+  return Math.min(QUEUED_NOTICE_MS, Math.max(0, queuedAt + QUEUED_NOTICE_MS - now));
 }

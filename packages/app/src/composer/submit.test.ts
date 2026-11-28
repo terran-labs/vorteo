@@ -348,4 +348,6 @@ it("tells queued, held and failed sends apart (#720)", () => {
   expect(queuedNoticeRemainingMs(1_000, 1_000)).toBe(6_000);
   expect(queuedNoticeRemainingMs(1_000, 8_000)).toBe(0);
   expect(queuedNoticeRemainingMs(null, 1_000)).toBe(0);
+  // Read against a clock from long before the queueing, it still never exceeds the display time.
+  expect(queuedNoticeRemainingMs(600_000, 0)).toBe(6_000);
 });
