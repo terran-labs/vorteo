@@ -140,7 +140,8 @@ export function deriveSystemEnvironment(input: SystemEnvironmentInput): {
   const reason =
     waiting?.reason ||
     (handled ? handledLine(handled) : undefined) ||
-    (activeJob ? (restartProgressLine(activeJob) ?? activeJob.reason) : undefined) ||
+    // A running request keeps its purpose; its progress shows in full below the row (#720).
+    activeJob?.reason ||
     (upgrade ? `Update to ${upgrade.release}` : undefined) ||
     live?.server.detail ||
     (status === "attention" ? attentionReason(input) : undefined);

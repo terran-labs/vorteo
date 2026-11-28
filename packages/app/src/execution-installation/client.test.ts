@@ -5,7 +5,11 @@ import type {
 } from "@getpaseo/protocol/installation-enrollment";
 import { InstallationRouteUnavailable } from "./client";
 import { expect, test, vi } from "vitest";
-import { InstallationClient, hasInstallationConnections } from "./client";
+import { InstallationClient, OPERATION_PROGRESS, hasInstallationConnections } from "./client";
+
+// The progress flag is requested only once the protocol defines its fields (#720), so these
+// expectations hold whichever of the interface and coordinator changes merges first.
+const PROGRESS_SUFFIX = OPERATION_PROGRESS ? "&operationProgress=1" : "";
 import type { HostProfile } from "@/types/host-connection";
 import {
   validateExecutionInstallation,
@@ -160,7 +164,8 @@ test("session-capable clients discard the password and restore verified connecti
     await client.unlock("recovery-password");
     await client.listRestarts();
     expect(calls.at(-1)).toEqual([
-      "restarts/query?sourceUpdates=1&sourceBatches=1&containerSourceUpdates=1&supervisorMaintenance=1&hostAutomaticRestarts=1&factoryRuntimeAdoption=1&engineRestart=1&engineRecovery=1&hostLauncherUpdate=1&bootEntrySwitch=1&delegatedRequests=1&restartHoldDeadline=1",
+      "restarts/query?sourceUpdates=1&sourceBatches=1&containerSourceUpdates=1&supervisorMaintenance=1&hostAutomaticRestarts=1&factoryRuntimeAdoption=1&engineRestart=1&engineRecovery=1&hostLauncherUpdate=1&bootEntrySwitch=1&delegatedRequests=1&restartHoldDeadline=1" +
+        PROGRESS_SUFFIX,
       "",
     ]);
     expect(await client.restoreSession()).toBe(true);
@@ -195,7 +200,8 @@ test("capable installation clients request extended restart details without chan
   await client.listRestarts();
   expect(calls).toEqual([
     "unlock",
-    "restarts/query?idleRestarts=1&sourceUpdates=1&sourceBatches=1&containerSourceUpdates=1&supervisorMaintenance=1&hostAutomaticRestarts=1&factoryRuntimeAdoption=1&engineRestart=1&engineRecovery=1&hostLauncherUpdate=1&bootEntrySwitch=1&delegatedRequests=1&restartHoldDeadline=1",
+    "restarts/query?idleRestarts=1&sourceUpdates=1&sourceBatches=1&containerSourceUpdates=1&supervisorMaintenance=1&hostAutomaticRestarts=1&factoryRuntimeAdoption=1&engineRestart=1&engineRecovery=1&hostLauncherUpdate=1&bootEntrySwitch=1&delegatedRequests=1&restartHoldDeadline=1" +
+      PROGRESS_SUFFIX,
   ]);
 });
 
@@ -505,7 +511,7 @@ test("maintenance queue binds installation identity and cancellation uses the re
             password: "fixture",
           })),
         };
-      if (path === "maintenance-services/query")
+      if (path === `maintenance-services/query${OPERATION_PROGRESS ? "?operationProgress=1" : ""}`)
         return {
           installationId: wrongInstallation
             ? "00000000-0000-4000-8000-000000000099"

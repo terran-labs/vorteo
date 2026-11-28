@@ -1,4 +1,6 @@
 import { FLOATING_PANEL_INSET } from "@/styles/floating-panel";
+import { ComposerSendError } from "@/execution-installation/maintenance-status";
+import { ComposerQueuedNotice, requestQueueReview } from "@/message-queue/queue-review";
 import { COLUMN_COMPOSER_INSET } from "@/agent-stream/columns/geometry";
 import { StreamColumnWidthContext } from "@/agent-stream/columns/layout";
 
@@ -1327,6 +1329,12 @@ function ComposerContentImpl({
   const editingSession = useComposerEditingSession(inputMode, providedEditingSession);
   const isFullscreen = useComposerFullscreen(editingSession);
   const [sendError, setSendError] = useState<string | null>(null);
+  // When this composer last queued a message; cleared by every new submit and by any send
+  // error, so the queued confirmation only ever describes the send that produced it (#720).
+  const [queuedAt, setQueuedAt] = useState<number | null>(null);
+  useEffect(() => {
+    if (sendError) setQueuedAt(null);
+  }, [sendError]);
   const clearSendError = useCallback(() => setSendError(null), []);
   useResetOnReconnect(serverId, clearSendError);
   // A host rejection stays visible until the owner edits the draft it describes.
@@ -1611,6 +1619,7 @@ function ComposerContentImpl({
     ) => {
       // A parent-managed submit reports its own failures; the composer only restores the draft.
       const isParentManagedSubmit = Boolean(onSubmitMessageRef.current);
+      setQueuedAt(null);
       const result = await submitAgentInput({
         message: outgoingMessage,
         attachments: outgoingAttachments,
@@ -1652,8 +1661,14 @@ function ComposerContentImpl({
         result,
         outgoingAttachments,
       });
+      // A queued send says so and unfolds the Queue card, so it is not pressed again (#720).
+      if (result === "queued") {
+        setQueuedAt(Date.now());
+        requestQueueReview(serverId, agentId);
+      }
     },
     [
+      agentId,
       allowEmptySubmit,
       configurationRequired,
       beginSubmit,
@@ -1666,6 +1681,7 @@ function ComposerContentImpl({
       setSelectedAttachments,
       replaceUserInput,
       submitBehavior,
+      serverId,
       submitMessage,
       t,
       textSource,
@@ -2387,12 +2403,13 @@ function ComposerContentImpl({
   const submitLoadingPressHandler = isAgentRunning ? handleCancelAgent : undefined;
   const sendErrorNode = useMemo(
     () =>
+      // Failed, held or queued (#720): each renders differently, never one as another.
       sendError ? (
-        <Text accessibilityRole="alert" style={styles.sendErrorText}>
-          {sendError}
-        </Text>
-      ) : null,
-    [sendError],
+        <ComposerSendError serverId={serverId} message={sendError} style={styles.sendErrorText} />
+      ) : (
+        <ComposerQueuedNotice queuedAt={queuedAt} />
+      ),
+    [queuedAt, sendError, serverId],
   );
   const githubEmptyText = githubSearchResultsQuery.isFetching
     ? t("composer.github.searching")

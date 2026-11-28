@@ -15,6 +15,7 @@ import { hoverStyle } from "@/styles/hover";
 import { isWeb } from "@/constants/platform";
 import { useResponsiveSidebar } from "@/hooks/use-responsive-sidebar";
 import { InstallationRestartBanner } from "@/execution-installation/panel";
+import { MaintenanceSidebarRow } from "@/execution-installation/maintenance-status";
 import { usePointerResize } from "./use-pointer-resize";
 import { useMenuContext } from "@/components/ui/menu/menu-context";
 import { SidebarMenuToggle } from "@/components/headers/menu-header";
@@ -1014,6 +1015,7 @@ function MobileSidebar({
             <SidebarSyncNotice />
             <DemoControls />
             <SidebarFooterRows onBeforeNavigate={closeSidebar} />
+            <MaintenanceSidebarRow onBeforeNavigate={closeSidebar} />
             <SidebarIdentityFooter />
           </SidebarFooterBlock>
         </SidebarInsetContext.Provider>
@@ -1328,6 +1330,7 @@ function DesktopSidebar({
             <SidebarSyncNotice compact={compact} />
             {!compact ? <DemoControls /> : null}
             {!compact ? <SidebarFooterRows /> : null}
+            <MaintenanceSidebarRow rail={compact} />
             {!compact ? <SidebarIdentityFooter /> : null}
           </SidebarFooterBlock>
 

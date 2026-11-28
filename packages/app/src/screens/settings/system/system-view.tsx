@@ -6,6 +6,10 @@ import { StatusBadge, type StatusBadgeVariant } from "@/components/ui/status-bad
 import { isWeb } from "@/constants/platform";
 import { settingsStyles } from "@/styles/settings";
 import { useOnHealthCardReveal } from "@/execution-installation/health-cards";
+import {
+  MaintenanceOperationDetail,
+  maintenanceAnchorId,
+} from "@/execution-installation/maintenance-detail";
 import type { SystemAction, SystemStatus } from "./system-status-model";
 
 const labels: Record<SystemStatus, string> = {
@@ -17,6 +21,11 @@ const badgeVariants: Record<SystemStatus, StatusBadgeVariant> = {
   healthy: "success",
   updating: "muted",
   attention: "warning",
+};
+/** Which daemon's maintenance each environment row shows (#720). */
+const ROW_TARGETS: Record<SystemEnvironmentRow["name"], "host" | "dev"> = {
+  Host: "host",
+  Dev: "dev",
 };
 export interface SystemEnvironmentRow {
   name: "Host" | "Dev";
@@ -63,8 +72,9 @@ function EnvironmentRow({ row, first }: { row: SystemEnvironmentRow; first: bool
     () => (isWeb ? ({ "aria-expanded": expanded } as const) : null),
     [expanded],
   );
+  const target = ROW_TARGETS[row.name];
   return (
-    <View>
+    <View nativeID={maintenanceAnchorId(target)}>
       {/* One line per environment: name, status, its action, the menu and Details. */}
       <View style={rowStyle} onLayout={retainRowHeight}>
         <View style={styles.line}>
@@ -96,6 +106,8 @@ function EnvironmentRow({ row, first }: { row: SystemEnvironmentRow; first: bool
           </Pressable>
         </View>
         {row.reason ? <Text style={styles.reason}>{row.reason}</Text> : null}
+        {/* Running maintenance: its step, times, what a hold waits on and overdue (#720). */}
+        <MaintenanceOperationDetail target={target} />
       </View>
       {/* Details grow with the page rather than scrolling inside it, so a jump to a card inside
           them scrolls one container and lands on the card on phones and desktops alike. */}
@@ -135,7 +147,11 @@ export function SystemView({
         <EnvironmentRow key={row.name} row={row} first={index === 0} />
       ))}
       {services || servicesHeight > 0 ? (
-        <View style={servicesStyle} onLayout={retainServicesHeight}>
+        <View
+          style={servicesStyle}
+          onLayout={retainServicesHeight}
+          nativeID={maintenanceAnchorId("system")}
+        >
           {services ? (
             <>
               <Text style={[settingsStyles.rowTitle, styles.servicesTitle]}>System services</Text>
@@ -143,6 +159,9 @@ export function SystemView({
               {servicesReason ? (
                 <Text style={[styles.reason, styles.servicesReason]}>{servicesReason}</Text>
               ) : null}
+              <View style={styles.servicesReason}>
+                <MaintenanceOperationDetail target="system" />
+              </View>
             </>
           ) : null}
         </View>

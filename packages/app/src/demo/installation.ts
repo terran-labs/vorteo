@@ -37,11 +37,89 @@ export const DEMO_SERVERS: Record<string, { hostname: string; primary: boolean }
   [DEMO_DEV_SERVER_ID]: { hostname: "Dev", primary: false },
 };
 
+// --- Maintenance fixture (#720) --------------------------------------------------------------
+
+const MAINTENANCE_FIXTURE_KEY = "vorteo:demo:maintenance";
+
+/**
+ * A controlled maintenance scene for reviewing the progress display: a Host update holding new
+ * work for two named threads and past its deadline, a Dev update running alongside it, and
+ * public counts while locked. On only with `?maintenance=1`, so the regular demo is unchanged.
+ */
+export function demoMaintenanceFixture(): boolean {
+  if (typeof window === "undefined") return false;
+  if (new URL(window.location.href).searchParams.get("maintenance") === "1")
+    window.sessionStorage.setItem(MAINTENANCE_FIXTURE_KEY, "1");
+  return window.sessionStorage.getItem(MAINTENANCE_FIXTURE_KEY) === "1";
+}
+
+/** The daemon's refusal while a restart holds new work, as a real daemon words it. */
+export const DEMO_RESTART_HOLD_MESSAGE =
+  "A restart is waiting for current turns to finish. New work is held until restart or cancellation.";
+
+function minutesAgo(now: number, minutes: number): string {
+  return new Date(now - minutes * 60_000).toISOString();
+}
+
+function fixtureRestartJobs(now: number) {
+  const update = {
+    sourceCommit: "a".repeat(40),
+    baseCommit: "b".repeat(40),
+    sha256: "c".repeat(64),
+    bytes: 4096,
+  };
+  return [
+    {
+      id: "7a000000-0000-4000-8000-000000000001",
+      revision: "7a000000-0000-4000-8000-000000000002",
+      target: "host",
+      reason: "Install the reviewed Host update",
+      requestedBy: "host-agent",
+      createdAt: minutesAgo(now, 31),
+      expiresAt: minutesAgo(now, -90),
+      status: "approved",
+      detail: "Waiting for current turns to finish",
+      approvedAt: minutesAgo(now, 29),
+      automaticDispatchAfter: minutesAgo(now, 29),
+      finishCurrentTurns: true,
+      holdDeadlineExceeded: true,
+      update,
+      impact: {
+        target: "host",
+        checkedAt: minutesAgo(now, 0),
+        agents: [
+          { id: "demo-agent-0", title: "demo-agent-0", status: "running" },
+          { id: "demo-agent-1", title: "demo-agent-1", status: "running" },
+        ],
+        pendingStarts: 0,
+        idleRestartSupported: true,
+        error: null,
+      },
+    },
+    {
+      id: "7a000000-0000-4000-8000-000000000003",
+      revision: "7a000000-0000-4000-8000-000000000004",
+      target: "container-daemon",
+      reason: "Install the reviewed Dev update",
+      requestedBy: "container-agent",
+      createdAt: minutesAgo(now, 8),
+      expiresAt: minutesAgo(now, -90),
+      status: "running",
+      detail: "Installing",
+      approvedAt: minutesAgo(now, 6),
+      automaticDispatchAfter: minutesAgo(now, 6),
+      update,
+    },
+  ];
+}
+
 export function demoInstallation(origin: string): ExecutionInstallation {
   return ExecutionInstallationSchema.parse({
     version: 1,
     installationId: INSTALLATION_ID,
     name: "Demo Lab",
+    // Public restart counts are read only from installations that offer idle restarts.
+    ...(demoMaintenanceFixture() ? { idleRestarts: true } : {}),
     origin,
     environments: [
       { kind: "host", serverId: DEMO_SERVER_ID, endpoint: HOST_ENDPOINT, useTls: false },
@@ -421,6 +499,20 @@ export class DemoCoordinator {
 
   /** `path` is the part after `/api/installation/`. */
   handle(path: string, method: string, body: unknown): DemoReply {
+    return this.maintenanceRoute(path) ?? this.ownerRoute(path, method, body);
+  }
+
+  /** Restart counts and, with the maintenance fixture, its restart requests (#720). */
+  private maintenanceRoute(path: string): DemoReply | null {
+    // Public counts answer while locked, as a real coordinator's do.
+    if (path === "restart-summary")
+      return ok({ requested: 0, queued: 0, running: demoMaintenanceFixture() ? 2 : 0 });
+    if (path === "owner/restarts/query" && this.unlocked && demoMaintenanceFixture())
+      return ok(fixtureRestartJobs(this.now()));
+    return null;
+  }
+
+  private ownerRoute(path: string, method: string, body: unknown): DemoReply {
     if (path === "owner-access" && method === "GET")
       return ok({ sessions: true, passwordFile: null });
     if (path === "owner/session") return ok({ authenticated: this.unlocked, expiresAt: null });

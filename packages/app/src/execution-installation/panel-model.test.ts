@@ -18,6 +18,7 @@ import {
   passwordCopyCommand,
 } from "./panel-model";
 import type { RestartJob } from "@getpaseo/protocol/execution-installation";
+import { maintenanceProgress, messageHold } from "./maintenance-progress";
 
 function enrollmentStatusModel(
   read: () => Promise<InstallationEnrollmentStatus | null>,
@@ -1338,4 +1339,154 @@ test("Dev Force uses the same delayed approval guard as Host", () => {
   expect(restartForceDeadline(update)).toBe(deadline);
   // The server acts on it only while the update waits for idle.
   expect(restartForceDeadline({ ...update, whenIdle: false })).toBeNull();
+});
+
+// Maintenance progress (#720): one model for the sidebar, phone entry, Settings and composer.
+const PROGRESS_NOW = Date.parse("2026-11-28T04:00:00.000Z");
+function progressJob(overrides: Partial<RestartJob> & Record<string, unknown> = {}): RestartJob {
+  return {
+    id: "10000000-0000-4000-8000-000000000001",
+    revision: "10000000-0000-4000-8000-000000000002",
+    target: "host",
+    reason: "Install the reviewed update",
+    requestedBy: "host-agent",
+    createdAt: "2026-11-28T03:50:00.000Z",
+    expiresAt: "2026-11-28T05:50:00.000Z",
+    status: "approved",
+    detail: "Waiting for current turns",
+    approvedAt: "2026-11-28T03:51:00.000Z",
+    finishCurrentTurns: true,
+    update: {
+      sourceCommit: "a".repeat(40),
+      baseCommit: "b".repeat(40),
+      sha256: "c".repeat(64),
+      bytes: 10,
+    },
+    impact: {
+      target: "host",
+      checkedAt: "2026-11-28T03:59:50.000Z",
+      agents: [
+        { id: "agent-visible", title: "private title from coordinator", status: "running" },
+        { id: "agent-hidden", title: "another workspace", status: "running" },
+      ],
+      pendingStarts: 0,
+      idleRestartSupported: true,
+      error: null,
+    },
+    ...overrides,
+  } as RestartJob;
+}
+function progressOf(
+  input: Partial<Parameters<typeof maintenanceProgress>[0]> = {},
+): ReturnType<typeof maintenanceProgress> {
+  return maintenanceProgress({
+    unlocked: true,
+    jobs: [progressJob()],
+    serviceJobs: [],
+    summary: null,
+    lastUpdatedAt: "2026-11-28T03:59:58.000Z",
+    now: PROGRESS_NOW,
+    visibleThread: (_target, agentId) => (agentId === "agent-visible" ? "Fix room reset" : null),
+    ...input,
+  });
+}
+
+test("a turn hold holds messages, names only threads the owner can open, and marks overdue", () => {
+  const [operation] = progressOf().operations;
+  expect(operation).toMatchObject({
+    target: "host",
+    kind: "update",
+    phase: "holding-turns",
+    holdsMessages: true,
+    overdue: false,
+    since: { at: "2026-11-28T03:51:00.000Z", from: "approved" },
+    // Approval is not the step's start; no step time until the coordinator reports one.
+    stepSince: null,
+    estimate: null,
+  });
+  expect(operation!.blockers.map((blocker) => blocker.title)).toEqual(["Fix room reset", null]);
+  const overdue = progressOf({
+    jobs: [progressJob({ holdDeadlineExceeded: true, requesterNotice: "not-notified" })],
+  });
+  expect(overdue.operations[0]).toMatchObject({ overdue: true, requesterNotNotified: true });
+  // Rebuilt at coordinator startup: start times are unknown, never the startup time.
+  const rebuilt = progressOf({ jobs: [progressJob({ progressReconstructed: true })] });
+  expect(rebuilt.operations[0]).toMatchObject({ startUnknown: true, since: null, stepSince: null });
+  expect(messageHold(overdue, "host")?.id).toBe(progressJob().id);
+  expect(messageHold(overdue, "dev")).toBeNull();
+});
+
+test("concurrent Host and Dev work stays separate; finished, failed and owner-waiting work is not progress", () => {
+  const dev = progressJob({
+    id: "10000000-0000-4000-8000-000000000003",
+    target: "container-daemon",
+    status: "running",
+    finishCurrentTurns: false,
+  });
+  const done = progressJob({ id: "10000000-0000-4000-8000-000000000004", status: "succeeded" });
+  const failed = progressJob({ id: "10000000-0000-4000-8000-000000000005", status: "failed" });
+  const awaitingOwner = progressJob({
+    id: "10000000-0000-4000-8000-000000000006",
+    status: "pending",
+    approvedAt: undefined,
+  });
+  const service = { ...serviceViewFixture(), status: "running" as const };
+  const progress = progressOf({
+    jobs: [dev, progressJob(), done, failed, awaitingOwner],
+    serviceJobs: [service],
+  });
+  expect(progress.operations.map((operation) => [operation.target, operation.phase])).toEqual([
+    ["host", "holding-turns"],
+    ["dev", "installing"],
+    ["system", "running"],
+  ]);
+  expect(progress.operations[1]!.holdsMessages).toBe(false);
+});
+
+test("locked controls report only that maintenance runs, and a silent coordinator goes stale", () => {
+  const locked = progressOf({
+    unlocked: false,
+    summary: { requested: 0, queued: 1, running: 1 },
+  });
+  expect(locked).toEqual({ operations: [], locked: { running: 1, queued: 1 }, staleSince: null });
+  const stale = progressOf({ lastUpdatedAt: "2026-11-28T03:59:00.000Z" });
+  expect(stale.staleSince).toBe("2026-11-28T03:59:00.000Z");
+  expect(stale.operations).toHaveLength(1);
+});
+
+test("estimates come only from measured history of the same target and kind", () => {
+  const finished = (index: number, minutes: number, target: RestartJob["target"] = "host") =>
+    progressJob({
+      id: `20000000-0000-4000-8000-00000000000${index}`,
+      target,
+      status: "succeeded",
+      createdAt: `2026-11-2${index}T00:00:00.000Z`,
+      startedAt: `2026-11-2${index}T00:00:00.000Z`,
+      finishedAt: `2026-11-2${index}T00:${String(minutes).padStart(2, "0")}:00.000Z`,
+    });
+  const withSteps = progressJob({
+    startedAt: "2026-11-28T03:52:00.000Z",
+    stepStartedAt: "2026-11-28T03:55:00.000Z",
+  });
+  const twoSamples = progressOf({ jobs: [withSteps, finished(1, 4), finished(2, 8)] });
+  expect(twoSamples.operations[0]).toMatchObject({
+    since: { at: "2026-11-28T03:52:00.000Z", from: "started" },
+    stepSince: "2026-11-28T03:55:00.000Z",
+    estimate: null,
+  });
+  const measured = progressOf({
+    jobs: [
+      withSteps,
+      finished(1, 4),
+      finished(2, 8),
+      finished(3, 6),
+      finished(4, 30, "container-daemon"),
+    ],
+  });
+  expect(measured.operations[0]!.estimate).toEqual({
+    medianMs: 6 * 60_000,
+    minMs: 4 * 60_000,
+    maxMs: 8 * 60_000,
+    samples: 3,
+  });
 });

@@ -1,4 +1,5 @@
 import { toErrorMessage } from "@/utils/error-messages";
+import { publishMaintenanceSource } from "./maintenance-model-source";
 import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { useAgentActionReceipts, useInstallationUpgradeStatus } from "./use-installation-upgrades";
 import { upgradesStillOpen } from "./installation-upgrades-model";
@@ -370,6 +371,13 @@ function InstallationSession({ model }: { model: InstallationPanelModel }) {
   const router = useRouter();
   const pathname = usePathname();
   useEffect(() => {
+    // Maintenance progress reads the model from this light registry, not the panel (#720).
+    const installation = readExecutionInstallation();
+    const servers: Partial<Record<"host" | "dev", string>> = {};
+    for (const environment of installation?.environments ?? []) {
+      servers[environment.kind === "host" ? "host" : "dev"] = environment.serverId;
+    }
+    publishMaintenanceSource({ model, servers });
     void model.initialize();
     void getBootstrapPanel()?.refresh();
     void getPreclaimRecoveryPanel()?.refresh();

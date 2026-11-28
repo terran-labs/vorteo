@@ -11,6 +11,7 @@ import { ScheduledWorkspaceProvider } from "@/workspace/lifecycle/scheduled";
 import { ProjectMoveModalHost } from "@/workspace/project-move/modal";
 import { SidebarFolderDialogHost } from "@/sidebar-folders/dialogs";
 import { InstallationSessionHost } from "@/execution-installation/panel";
+import { MaintenancePhoneEntry } from "@/execution-installation/maintenance-status";
 import { BrowserTimeZoneReporter } from "@/execution-installation/time-zone";
 import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
 import { PortalProvider } from "@gorhom/portal";
@@ -471,7 +472,14 @@ function AppContainer({ children, chromeEnabled: chromeEnabledOverride }: AppCon
         <WindowChromeRegion
           corners={compactGesturesEnabled ? "both" : appChromeLayout.contentCorners}
         >
-          <View style={flexStyle}>{children}</View>
+          <View style={flexStyle}>
+            {/* On phones the sidebar is closed, so running maintenance shows above the page. */}
+            {isCompactLayout && chromeEnabled ? (
+              <MaintenancePhoneEntry>{children}</MaintenancePhoneEntry>
+            ) : (
+              children
+            )}
+          </View>
         </WindowChromeRegion>
       </CompactExplorerSidebarHost>
     </View>

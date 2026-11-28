@@ -1,4 +1,5 @@
 import { CardDisclosureLayoutContext } from "./use-card-disclosure";
+import { useQueueReviewRequests } from "@/message-queue/queue-review";
 import { CardGrid } from "./card-grid";
 import { PortalHost } from "@gorhom/portal";
 import { StreamColumns, useStreamColumns } from "./columns/layout";
@@ -1436,6 +1437,8 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     );
     const [queueReviewRequest, setQueueReviewRequest] = useState(0);
     const reviewMessages = useCallback(() => setQueueReviewRequest((value) => value + 1), []);
+    // The composer asks for the Queue card when it queues a message (#720).
+    useQueueReviewRequests(serverId, agentId, reviewMessages);
     const inlineCardsHost = useInlineCardsHost(agentId);
     const cardsPortalHost = resolveCardsHost(inlineCardsHost, workspaceCardHost);
     const inlineCards = useMemo(

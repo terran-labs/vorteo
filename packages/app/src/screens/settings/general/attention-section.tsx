@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useMessageHoldNotice } from "@/execution-installation/maintenance-hold-notice";
 import { View } from "react-native";
 import { SettingsCard, SettingsRow, SettingsSection } from "@/components/settings";
 import { OwnerUnlockDialog } from "@/components/settings/owner-lock";
@@ -159,6 +160,8 @@ export function SystemHealthSection({ onFix }: { onFix: (target: SettingsJumpTar
     return () => clearTimeout(timer);
   }, [awaitingUnlock, unlockOpen]);
   const items = useSystemHealthRows({ installationItems, locked });
+  // A restart or update holding the owner's messages is not "all good", nor a request (#720).
+  const holdNotice = useMessageHoldNotice();
   // Hand the sidebar button the rows it cannot compute without the settings queries.
   const extraIds = items
     ?.filter((item) => !installationItems.some((entry) => entry.id === item.id))
@@ -177,6 +180,14 @@ export function SystemHealthSection({ onFix }: { onFix: (target: SettingsJumpTar
         label="Checking..."
         hint="Looking for anything that needs you."
         testID="settings-attention-checking"
+      />
+    );
+  else if (items.length === 0 && !locked && holdNotice)
+    rows = (
+      <SettingsRow
+        label={holdNotice.label}
+        hint={holdNotice.hint}
+        testID="settings-attention-maintenance"
       />
     );
   else if (items.length === 0 && !locked)

@@ -2,6 +2,7 @@ import {
   CustomDomainStatusSchema,
   type CustomDomainStatus,
 } from "@getpaseo/protocol/custom-domain";
+import * as installationProtocol from "@getpaseo/protocol/execution-installation";
 import {
   InstallationTypeStatusSchema,
   type InstallationType,
@@ -1081,12 +1082,24 @@ export class InstallationClient {
       this.installation.idleRestarts && path.startsWith("restarts")
         ? `${path}?idleRestarts=1${this.installation.gracefulRestarts ? "&gracefulRestarts=1" : ""}`
         : path;
-    const query = path.startsWith("restarts")
+    let query = path.startsWith("restarts")
       ? `${resource}${resource.includes("?") ? "&" : "?"}sourceUpdates=1&sourceBatches=1&containerSourceUpdates=1&supervisorMaintenance=1&hostAutomaticRestarts=1&factoryRuntimeAdoption=1&engineRestart=1&engineRecovery=1&hostLauncherUpdate=1&bootEntrySwitch=1&delegatedRequests=1&restartHoldDeadline=1`
       : resource;
+    if (
+      OPERATION_PROGRESS &&
+      (path.startsWith("restarts") || path === "maintenance-services/query")
+    )
+      query = `${query}${query.includes("?") ? "&" : "?"}operationProgress=1`;
     return this.ports.request(query, this.password, body);
   }
 }
+
+// COMPAT(operationProgress): added 2026-11-28 (#720). Asks for step and timing fields only when
+// this app's protocol exports OPERATION_PROGRESS_REPLY, which ships in the same change as the
+// strict schemas that define those fields, so a newer coordinator's fields can never fail an
+// older app's parse; older coordinators read flags by name and ignore this one. Remove the gate
+// once every published app includes the fields.
+export const OPERATION_PROGRESS = "OPERATION_PROGRESS_REPLY" in installationProtocol;
 
 export async function requestInstallationOwner(
   path: string,
