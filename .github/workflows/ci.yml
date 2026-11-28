@@ -42,7 +42,7 @@ jobs:
       # Heavy suites stay off pull requests and main pushes. A job reads it as
       # `heavy != 'false'`, so missing routing outputs fail open to more coverage.
       heavy: ${{ contains(fromJSON('["merge_group","workflow_dispatch","schedule"]'), github.event_name) || startsWith(github.ref, 'refs/tags/release-') }}
-      installer: ${{ steps.filter.outputs.installer == 'true' || steps.installer_job.outputs.changed == 'true' }}
+      installer: ${{ steps.filter.outputs.installer == 'true' || (steps.installer_job.outcome != 'skipped' && (steps.installer_job.outcome != 'success' || steps.installer_job.outputs.changed != 'false')) }}
       # The full eight-shard Playwright suite runs nightly, on manual runs and on release
       # tags. Merge groups run the core-flow smoke instead, so a merge waits minutes, not
       # an hour or more. Read as `e2e != 'false'`, so missing outputs fail open to the full suite.

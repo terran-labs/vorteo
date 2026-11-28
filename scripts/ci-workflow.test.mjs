@@ -259,16 +259,14 @@ test("installer detection errors select the installer suite without failing chan
   assert.match(step, /BASE_SHA: \$\{\{ github.event.pull_request.base.sha \}\}/);
   const command = /^        run: (.+)$/m.exec(step)[1];
 
-  const missingBase = spawnSync(
-    process.execPath,
-    ["scripts/installer/ci-job-changed.mjs", "missing-ci-base"],
-    {
+  for (const base of ["", "HEAD", "0".repeat(40)]) {
+    const detection = spawnSync(process.execPath, ["scripts/installer/ci-job-changed.mjs", base], {
       cwd: repoRoot,
       encoding: "utf8",
-    },
-  );
-  assert.equal(missingBase.status, 0);
-  assert.equal(missingBase.stdout.trim(), "changed=true");
+    });
+    assert.equal(detection.status, 0);
+    assert.equal(detection.stdout.trim(), "changed=true", JSON.stringify(base));
+  }
 
   // A missing detector exercises the workflow fallback even if Node cannot start the script.
   const dir = mkdtempSync(join(tmpdir(), "installer-routing-"));
@@ -286,19 +284,31 @@ test("installer detection errors select the installer suite without failing chan
 
   const outputs = changes.split("    outputs:\n")[1].split("    steps:\n")[0];
   const entries = [...outputs.matchAll(/^      (\w+): \$\{\{ (.*) \}\}$/gm)];
-  function readOutputs(changed) {
+  function readOutputs(outcome, changed) {
     const steps = {
       filter: { outputs: { installer: "false" } },
-      installer_job: { outputs: { changed } },
+      installer_job: { outcome, outputs: changed === undefined ? {} : { changed } },
     };
     const context = { ...contextFor("pull_request"), steps };
     return Object.fromEntries(
       entries.map(([, name, expr]) => [name, runInNewContext(expr, context)]),
     );
   }
-  const before = readOutputs("false");
+  const before = readOutputs("skipped");
   assert.equal(before.installer, false);
-  assert.deepEqual(readOutputs("true"), { ...before, installer: true });
+  for (const [outcome, changed, installer] of [
+    ["success", "false", false],
+    ["success", "true", true],
+    ["failure", undefined, true],
+    ["success", "invalid", true],
+    ["success", "", true],
+  ]) {
+    assert.deepEqual(
+      readOutputs(outcome, changed),
+      { ...before, installer },
+      `${outcome}: ${changed}`,
+    );
+  }
 });
 
 test("ordinary CI keeps app tests without prebuilding Android modules", () => {
