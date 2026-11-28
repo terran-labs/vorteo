@@ -117,11 +117,36 @@ function nullLogPath(): string {
   return process.platform === "win32" ? "NUL" : "/dev/null";
 }
 
+// Global agy flags that consume the following token as a value (from `agy --help`).
+const AGY_VALUE_FLAGS = new Set([
+  "--add-dir",
+  "--agent",
+  "--conversation",
+  "-r",
+  "--resume",
+  "--effort",
+  "--input-format",
+  "--json-schema",
+  "--log-file",
+  "--mode",
+  "--model",
+  "--output-format",
+  "-p",
+  "--print",
+  "--prompt",
+  "-i",
+  "--prompt-interactive",
+  "--print-timeout",
+  "--project",
+  "--settings",
+]);
+
 export function stripAcpSubcommand(args: readonly string[]): string[] {
   for (let index = args.length - 1; index >= 0; index -= 1) {
-    if (args[index] === "acp" && (index === 0 || !args[index - 1]!.startsWith("-"))) {
-      return args.slice(0, index);
-    }
+    if (args[index] !== "acp") continue;
+    const previous = index > 0 ? args[index - 1] : undefined;
+    if (previous !== undefined && AGY_VALUE_FLAGS.has(previous)) continue;
+    return args.slice(0, index);
   }
   return [...args];
 }

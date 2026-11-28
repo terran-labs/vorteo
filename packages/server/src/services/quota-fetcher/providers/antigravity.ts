@@ -24,6 +24,40 @@ const NO_QUOTA_PATTERN =
   /\b(?:no\s+account\s+quota|has\s+no\s+account\s+quota|no\s+usage\s+quota)\b/i;
 const UNKNOWN_FLAG_PATTERN = /flag provided but not defined|unknown flag/i;
 
+// Global agy flags that consume the following token as a value (from `agy --help`).
+const AGY_VALUE_FLAGS = new Set([
+  "--add-dir",
+  "--agent",
+  "--conversation",
+  "-r",
+  "--resume",
+  "--effort",
+  "--input-format",
+  "--json-schema",
+  "--log-file",
+  "--mode",
+  "--model",
+  "--output-format",
+  "-p",
+  "--print",
+  "--prompt",
+  "-i",
+  "--prompt-interactive",
+  "--print-timeout",
+  "--project",
+  "--settings",
+]);
+
+function stripAcpSubcommand(args: readonly string[]): string[] {
+  for (let index = args.length - 1; index >= 0; index -= 1) {
+    if (args[index] !== "acp") continue;
+    const previous = index > 0 ? args[index - 1] : undefined;
+    if (previous !== undefined && AGY_VALUE_FLAGS.has(previous)) continue;
+    return args.slice(0, index);
+  }
+  return [...args];
+}
+
 const AntigravityQuotaBucketSchema = z.object({
   id: z.string().optional(),
   name: z.string().optional(),
@@ -412,18 +446,7 @@ export class AntigravityQuotaProvider implements ProviderUsageFetcher {
     this.minPollIntervalMs = options.minPollIntervalMs ?? ANTIGRAVITY_MIN_POLL_INTERVAL_MS;
     const configuredCommand = options.command;
     this.command = configuredCommand?.[0] ?? "agy";
-    const rawPrefixArgs = configuredCommand?.slice(1) ?? [];
-    let acpIndex = -1;
-    for (let index = rawPrefixArgs.length - 1; index >= 0; index -= 1) {
-      if (
-        rawPrefixArgs[index] === "acp" &&
-        (index === 0 || !rawPrefixArgs[index - 1]!.startsWith("-"))
-      ) {
-        acpIndex = index;
-        break;
-      }
-    }
-    this.prefixArgs = acpIndex === -1 ? rawPrefixArgs : rawPrefixArgs.slice(0, acpIndex);
+    this.prefixArgs = stripAcpSubcommand(configuredCommand?.slice(1) ?? []);
     this.env = options.env;
     this.cwd = options.cwd ?? tmpdir();
     this.timeoutMs = options.timeoutMs ?? ANTIGRAVITY_USAGE_TIMEOUT_MS;

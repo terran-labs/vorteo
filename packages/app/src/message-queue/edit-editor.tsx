@@ -1,5 +1,5 @@
 import { ActionFooter } from "@/components/ui/action-footer";
-import { useCallback, useRef, useState, useMemo } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { ImagePlus, X } from "lucide-react-native";
@@ -196,6 +196,7 @@ export function QueueEditEditor({
   );
   const changedElsewhere = current && current.revision !== draft.original.revision;
   const unavailable = !current || current.delivery.status !== "queued";
+  useQueueEditHold({ draft, current, latest, report });
   const disabled = saving || processing || unsaved || !!draft.submissionId;
   return (
     <QueueEditMediaInput add={add} disabled={disabled} onError={report}>
@@ -291,6 +292,35 @@ export function QueueEditEditor({
     </QueueEditMediaInput>
   );
 }
+/**
+ * Holds the message from delivery while this editor shows its current revision: renews every
+ * 30 seconds, acquiring again after a reload. Closing the editor never releases the hold: the
+ * draft outlives the editor and every tab showing the thread shares its holder, so a release on
+ * unmount could free a message another tab is still editing. Discarding releases through the
+ * draft session, a submitted edit releases on the daemon, and an editor that simply closed is
+ * covered by the daemon's two-minute expiry.
+ */
+function useQueueEditHold({
+  draft,
+  current,
+  latest,
+  report,
+}: {
+  draft: QueueEditDraft;
+  current: QueueItem | undefined;
+  latest: { readonly current: QueueEditDraft };
+  report: (error: unknown) => void;
+}) {
+  const holdable =
+    current?.delivery.status === "queued" &&
+    current.revision === draft.original.revision &&
+    !draft.submissionId;
+  useEffect(() => {
+    if (!holdable) return;
+    return queueEditDraftSession.keepHeld(() => latest.current, report);
+  }, [holdable, latest, report]);
+}
+
 function DraftSaveStatus({ unsaved, persisting }: { unsaved: boolean; persisting: boolean }) {
   if (unsaved) {
     return (

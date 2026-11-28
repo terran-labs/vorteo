@@ -1147,15 +1147,18 @@ if (args.includes("-p") && args.includes("/usage")) {
     });
   });
 
-  it("strips only the trailing acp subcommand without truncating flag values named acp", () => {
+  it("strips only the trailing acp subcommand including after boolean flags without truncating agy value flags", () => {
     expect(stripAcpSubcommand(["acp"])).toEqual([]);
     expect(stripAcpSubcommand(["script.cjs", "acp", "--debug"])).toEqual(["script.cjs"]);
+    expect(stripAcpSubcommand(["--sandbox", "acp"])).toEqual(["--sandbox"]);
+    expect(stripAcpSubcommand(["--verbose", "acp"])).toEqual(["--verbose"]);
+    expect(stripAcpSubcommand(["--log-file", "acp", "acp"])).toEqual(["--log-file", "acp"]);
     expect(stripAcpSubcommand(["--profile", "acp", "agy", "acp"])).toEqual([
       "--profile",
       "acp",
       "agy",
     ]);
-    expect(stripAcpSubcommand(["--profile", "acp", "agy"])).toEqual(["--profile", "acp", "agy"]);
+    expect(stripAcpSubcommand(["--project", "acp"])).toEqual(["--project", "acp"]);
   });
 
   it("reports no_quota when agy exits with code 2", async () => {

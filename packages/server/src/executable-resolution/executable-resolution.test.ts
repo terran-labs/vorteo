@@ -3,6 +3,7 @@ import {
   copyFileSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -97,7 +98,7 @@ describe("findExecutable", () => {
 
       await expect(
         findExecutable("agy-test-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
-      ).resolves.toBe(cli);
+      ).resolves.toBe(realpathSync(cli));
     });
 
     test("prefers a PATH executable over a ~/.local/bin fallback", async () => {
@@ -178,7 +179,36 @@ describe("findExecutable", () => {
 
       await expect(
         findExecutable("sym-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
-      ).resolves.toBe(symlinkBin);
+      ).resolves.toBe(realpathSync(targetBin));
+
+      // Symlink containing `..` after a directory symlink must follow POSIX semantics, not lexical
+      // collapse (so `dir-link/../tricky-bin` resolves inside `outside`, not `localBin`).
+      const outsideRoot = makeTempDir();
+      const outsideSub = path.join(outsideRoot, "sub");
+      mkdirSync(outsideSub, { recursive: true });
+      chmodSync(outsideRoot, 0o755);
+      chmodSync(outsideSub, 0o755);
+      const localDecoy = writeExecutable(
+        path.join(localBin, "tricky-target"),
+        "#!/bin/sh\necho local\n",
+      );
+      chmodSync(localDecoy, 0o755);
+      const outsideTarget = writeExecutable(
+        path.join(outsideRoot, "tricky-target"),
+        "#!/bin/sh\necho outside\n",
+      );
+      chmodSync(outsideTarget, 0o775);
+      symlinkSync(outsideSub, path.join(localBin, "dir-link"));
+      symlinkSync("dir-link/../tricky-target", path.join(localBin, "tricky-cli"));
+
+      await expect(
+        findExecutable("tricky-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
+      ).resolves.toBeNull();
+
+      chmodSync(outsideTarget, 0o755);
+      await expect(
+        findExecutable("tricky-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
+      ).resolves.toBe(realpathSync(outsideTarget));
 
       // Group-writable ancestor on symlink target rejects symlinked fallback executable.
       chmodSync(targetSub, 0o775);

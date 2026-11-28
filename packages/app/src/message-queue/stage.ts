@@ -1,5 +1,8 @@
 import type { AgentAttachment, UploadedFileAttachment } from "@getpaseo/protocol/messages";
-import { QueueOperationSchema, type QueueOperation } from "@getpaseo/protocol/message-queue";
+import {
+  QueueChangeOperationSchema,
+  type QueueChangeOperation,
+} from "@getpaseo/protocol/message-queue";
 import type { AttachmentMetadata, AttachmentStore } from "@/attachments/types";
 import type { LocalQueueAttachment } from "./outbox-record";
 
@@ -20,10 +23,10 @@ export async function captureQueueSubmission(
     attachments: AgentAttachment[];
   },
   port: QueueAttachmentCapturePort,
-): Promise<{ operation: QueueOperation; localAttachments: LocalQueueAttachment[] }> {
+): Promise<{ operation: QueueChangeOperation; localAttachments: LocalQueueAttachment[] }> {
   const context = input.attachments.filter((attachment) => attachment.type !== "uploaded_file");
   const files = input.attachments.filter((attachment) => attachment.type === "uploaded_file");
-  const operation = QueueOperationSchema.parse({
+  const operation = QueueChangeOperationSchema.parse({
     kind: "enqueue",
     operationId: input.operationId,
     messageId: input.messageId,
@@ -34,22 +37,22 @@ export async function captureQueueSubmission(
   return captureQueueContent(operation, input.images, files, port);
 }
 
-type QueueEditOperation = Extract<QueueOperation, { kind: "edit" }>;
+type QueueEditOperation = Extract<QueueChangeOperation, { kind: "edit" }>;
 
 export function captureQueueEdit(
   operation: QueueEditOperation,
   images: AttachmentMetadata[],
   port: QueueAttachmentCapturePort,
-): Promise<{ operation: QueueOperation; localAttachments: LocalQueueAttachment[] }> {
-  return captureQueueContent(QueueOperationSchema.parse(operation), images, [], port);
+): Promise<{ operation: QueueChangeOperation; localAttachments: LocalQueueAttachment[] }> {
+  return captureQueueContent(QueueChangeOperationSchema.parse(operation), images, [], port);
 }
 
 async function captureQueueContent(
-  operation: QueueOperation,
+  operation: QueueChangeOperation,
   images: AttachmentMetadata[],
   files: UploadedFileAttachment[],
   port: QueueAttachmentCapturePort,
-): Promise<{ operation: QueueOperation; localAttachments: LocalQueueAttachment[] }> {
+): Promise<{ operation: QueueChangeOperation; localAttachments: LocalQueueAttachment[] }> {
   if (operation.kind !== "enqueue" && operation.kind !== "edit")
     throw new Error("Only queue content operations can capture attachments.");
   if (operation.attachments.length + images.length + files.length > 32)

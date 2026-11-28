@@ -35,6 +35,12 @@ export const QueueItemSchema = QueueContentSchema.extend({
   createdAt: z.string(),
   delivery: QueueDeliverySchema,
   sendNow: z.object({ expectedTurnId: z.string().nullable() }).optional(),
+  // COMPAT(messageQueueEditHold): added 2026-11-27, retain until the client floor includes it.
+  // An editor holds the item from delivery until expiresAt; an expired hold is absent.
+  // heldSince marks the holder's first hold; the daemon stops renewing 30 minutes after it.
+  editHold: z
+    .object({ holderId: QueueIdSchema, expiresAt: z.string(), heldSince: z.string().optional() })
+    .optional(),
 });
 export const QueueSnapshotSchema = z.object({
   agentId: QueueIdSchema,
@@ -43,7 +49,8 @@ export const QueueSnapshotSchema = z.object({
   items: z.array(QueueItemSchema).max(100),
   deliveryError: z.string().max(4000).optional(),
 });
-export const QueueOperationSchema = z.discriminatedUnion("kind", [
+/** Operations that change queued content or order; the app's outbox persists only these. */
+export const QueueChangeOperationSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("send_now"),
     operationId: QueueIdSchema,
@@ -88,7 +95,36 @@ export const QueueOperationSchema = z.discriminatedUnion("kind", [
     expectedRevision: z.number().int().nonnegative(),
   }),
 ]);
+// COMPAT(messageQueueEditHold): added 2026-11-27, remove gate after 2027-05-27. Send only to
+// daemons advertising features.messageQueueEditHold; older daemons reject these kinds.
+/**
+ * Queue mutation error code for a renewal refused because the holder has held the message for
+ * the daemon's maximum. COMPAT(messageQueueEditHold): added 2026-11-27 with the feature.
+ */
+export const QUEUE_EDIT_HOLD_EXPIRED_CODE = "edit_hold_expired";
 
+export const QueueEditHoldOperationSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("hold_edit"),
+    operationId: QueueIdSchema,
+    messageId: QueueIdSchema,
+    expectedRevision: z.number().int().nonnegative(),
+    holderId: QueueIdSchema,
+  }),
+  z.object({
+    kind: z.literal("release_edit"),
+    operationId: QueueIdSchema,
+    messageId: QueueIdSchema,
+    holderId: QueueIdSchema,
+  }),
+]);
+export const QueueOperationSchema = z.discriminatedUnion("kind", [
+  ...QueueChangeOperationSchema.options,
+  ...QueueEditHoldOperationSchema.options,
+]);
+
+export type QueueChangeOperation = z.infer<typeof QueueChangeOperationSchema>;
+export type QueueEditHoldOperation = z.infer<typeof QueueEditHoldOperationSchema>;
 export type QueueOperation = z.infer<typeof QueueOperationSchema>;
 export type QueueSnapshot = z.infer<typeof QueueSnapshotSchema>;
 export type QueueItem = z.infer<typeof QueueItemSchema>;

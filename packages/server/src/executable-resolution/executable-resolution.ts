@@ -2,7 +2,7 @@ import { getProviderProbeCwd } from "../utils/provider-probe-cwd.js";
 import { constants, existsSync } from "node:fs";
 import { access, lstat, readlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join, normalize, resolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { ProcessEnvRecord } from "../server/paseo-env.js";
 import { execCommand } from "../utils/spawn.js";
 import which from "which";
@@ -53,62 +53,71 @@ function isTrustedFinalEntry(
 }
 
 /**
- * Walks every ancestor directory and symlink hop from `/` to `targetPath` so no group-writable,
- * world-writable, or non-owner/non-root component can shadow a fallback CLI binary.
+ * Resolves `targetPath` component by component following exact POSIX semantics (expanding each
+ * symlink before evaluating any subsequent `..`) and validates ownership and non-group/world-
+ * writability across every ancestor directory, symlink hop, and final entry.
  */
 async function resolveTrustedPosixPath(
   targetPath: string,
   expect: "dir" | "file",
-  depth = 0,
 ): Promise<string | null> {
-  if (depth > MAX_SYMLINK_DEPTH || !isAbsolute(targetPath)) return null;
+  if (!isAbsolute(targetPath)) return null;
   try {
     const rootInfo = await lstat("/");
     if (!rootInfo.isDirectory() || !isTrustedAncestorDir(rootInfo)) return null;
 
-    const segments = normalize(targetPath).split("/").filter(Boolean);
-    if (segments.length === 0) return null;
+    const resolved: string[] = [];
+    const queue = targetPath.split("/").filter(Boolean);
+    let symlinksFollowed = 0;
 
-    let current = "/";
-    for (let index = 0; index < segments.length; index += 1) {
-      const next = join(current, segments[index]!);
+    while (queue.length > 0) {
+      const segment = queue.shift()!;
+      if (segment === ".") continue;
+      if (segment === "..") {
+        // Every entry in `resolved` is a real validated directory, so popping matches POSIX `..`.
+        resolved.pop();
+        continue;
+      }
+
+      const next = resolved.length === 0 ? `/${segment}` : `/${resolved.join("/")}/${segment}`;
       const info = await lstat(next);
       if (!isTrustedPosixOwner(info)) return null;
 
       if (info.isSymbolicLink()) {
+        symlinksFollowed += 1;
+        if (symlinksFollowed > MAX_SYMLINK_DEPTH) return null;
         const linkTarget = await readlink(next);
-        const resolvedLink = isAbsolute(linkTarget) ? linkTarget : resolve(current, linkTarget);
-        const remaining = segments.slice(index + 1);
-        const nextPath = remaining.length > 0 ? join(resolvedLink, ...remaining) : resolvedLink;
-        return resolveTrustedPosixPath(nextPath, expect, depth + 1);
+        if (isAbsolute(linkTarget)) resolved.length = 0;
+        queue.unshift(...linkTarget.split("/").filter(Boolean));
+        continue;
       }
 
-      const isFinal = index === segments.length - 1;
-      const trusted = isFinal
-        ? isTrustedFinalEntry(info, expect)
-        : info.isDirectory() && isTrustedAncestorDir(info);
+      const trusted =
+        queue.length === 0
+          ? isTrustedFinalEntry(info, expect)
+          : info.isDirectory() && isTrustedAncestorDir(info);
       if (!trusted) return null;
 
-      current = next;
+      resolved.push(segment);
     }
-    return current;
+
+    if (resolved.length === 0) return null;
+    const finalPath = `/${resolved.join("/")}`;
+    const finalInfo = await lstat(finalPath);
+    return isTrustedFinalEntry(finalInfo, expect) ? finalPath : null;
   } catch {
     return null;
   }
 }
 
-async function isTrustedFallbackDir(dir: string): Promise<boolean> {
-  return (await resolveTrustedPosixPath(dir, "dir")) !== null;
-}
-
-async function isTrustedExecutableFile(filePath: string): Promise<boolean> {
+async function resolveTrustedExecutableFile(filePath: string): Promise<string | null> {
   const resolved = await resolveTrustedPosixPath(filePath, "file");
-  if (!resolved) return false;
+  if (!resolved) return null;
   try {
     await access(resolved, constants.X_OK);
-    return true;
+    return resolved;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -336,12 +345,13 @@ export async function findExecutable(
   }
   const seen = new Set(pathCandidates);
   for (const dir of fallbackExecutableDirs(env)) {
-    if (!(await isTrustedFallbackDir(dir))) continue;
-    const candidate = join(dir, trimmed);
-    if (!seen.has(candidate) && (await isTrustedExecutableFile(candidate))) {
-      seen.add(candidate);
-      if (await probeExecutable(candidate, { probeTimeoutMs, env })) {
-        return candidate;
+    const trustedDir = await resolveTrustedPosixPath(dir, "dir");
+    if (!trustedDir) continue;
+    const trustedCandidate = await resolveTrustedExecutableFile(join(trustedDir, trimmed));
+    if (trustedCandidate && !seen.has(trustedCandidate)) {
+      seen.add(trustedCandidate);
+      if (await probeExecutable(trustedCandidate, { probeTimeoutMs, env })) {
+        return trustedCandidate;
       }
     }
   }

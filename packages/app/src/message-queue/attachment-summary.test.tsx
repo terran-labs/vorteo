@@ -260,6 +260,8 @@ vi.mock("react-native-unistyles", () => ({
 vi.mock("@/storage/app-storage", () => ({
   default: { getItem: async () => null, setItem: async () => {}, removeItem: async () => {} },
 }));
+// The queue view's older-daemon warning uses a toast; this suite covers queue rendering.
+vi.mock("@/contexts/toast-context", () => ({ useToast: () => ({ show: vi.fn() }) }));
 vi.mock("react-native", () => ({
   Dimensions: { get: () => ({ width: 1400, height: 900 }) },
   StyleSheet: { create: () => ({}) },
