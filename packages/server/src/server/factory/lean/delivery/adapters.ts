@@ -9,6 +9,7 @@
  */
 
 import { execFile, spawn } from "node:child_process";
+import { constants } from "node:fs";
 import { once } from "node:events";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -326,67 +327,149 @@ function sha256(bytes: string | Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-/**
- * One line per entry, sorted by path: files by content hash and executable bit, symlinks by their
- * literal target (never followed), so a retargeted link changes the digest.
- */
-async function treeLines(
-  root: string,
-  relative: string,
-  exclude: readonly string[],
-): Promise<string[]> {
-  const lines: string[] = [];
-  const entries = (await readdir(path.join(root, relative), { withFileTypes: true })).sort((a, b) =>
-    a.name < b.name ? -1 : 1,
-  );
-  for (const entry of entries) {
-    const name = relative === "" ? entry.name : `${relative}/${entry.name}`;
-    if (relative === "" && exclude.includes(entry.name)) continue;
-    const full = path.join(root, name);
-    if (entry.isSymbolicLink()) lines.push(`link ${name} ${await readlink(full)}`);
-    else if (entry.isDirectory()) lines.push(...(await treeLines(root, name, exclude)));
-    else if (entry.isFile()) {
-      const mode = (await lstat(full)).mode & 0o111 ? "x" : "-";
-      lines.push(`file ${name} ${mode} ${sha256(await readFile(full))}`);
-    } else lines.push(`other ${name}`);
+/** One entry of an artifact tree. Serialized as JSON, so no path or target can be ambiguous. */
+type TreeEntry =
+  | ["dir", string]
+  | ["file", string, "x" | "-", string]
+  | ["symlink", string, string];
+
+class ArtifactCustodyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ArtifactCustodyError";
   }
-  return lines;
+}
+
+function sameObject(a: { dev: number; ino: number }, b: { dev: number; ino: number }): boolean {
+  return a.dev === b.dev && a.ino === b.ino;
+}
+
+/** Reads a file only if the opened handle is the inode the listing saw, never through a link. */
+async function readListedFile(full: string, listed: { dev: number; ino: number }): Promise<Buffer> {
+  const handle = await open(full, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => null);
+  if (handle === null)
+    throw new ArtifactCustodyError(`${full} could not be opened without following a link.`);
+  try {
+    if (!sameObject(await handle.stat(), listed)) {
+      throw new ArtifactCustodyError(`${full} was replaced while it was being read.`);
+    }
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Every entry under `root`, empty directories included, in path order. Symlinks are recorded by
+ * their literal target and never followed; FIFOs, sockets and devices are refused. Each directory
+ * is checked again after the walk, so a directory replaced during it refuses the evidence.
+ */
+async function treeEntries(root: string, exclude: readonly string[]): Promise<TreeEntry[]> {
+  const entries: TreeEntry[] = [];
+  const directories: { full: string; seen: { dev: number; ino: number } }[] = [];
+  async function walk(relative: string): Promise<void> {
+    const full = path.join(root, relative);
+    directories.push({ full, seen: await lstat(full) });
+    const names = (await readdir(full)).sort();
+    for (const name of names) {
+      if (relative === "" && exclude.includes(name)) continue;
+      const childRelative = relative === "" ? name : `${relative}/${name}`;
+      const child = path.join(root, childRelative);
+      const stats = await lstat(child);
+      if (stats.isSymbolicLink()) entries.push(["symlink", childRelative, await readlink(child)]);
+      else if (stats.isDirectory()) {
+        entries.push(["dir", childRelative]);
+        await walk(childRelative);
+      } else if (stats.isFile()) {
+        const mode = stats.mode & 0o111 ? "x" : "-";
+        entries.push(["file", childRelative, mode, sha256(await readListedFile(child, stats))]);
+      } else {
+        throw new ArtifactCustodyError(`${childRelative} is not a file, directory or symlink.`);
+      }
+    }
+  }
+  await walk("");
+  for (const directory of directories) {
+    const now = await lstat(directory.full).catch(() => null);
+    if (!now?.isDirectory() || !sameObject(now, directory.seen)) {
+      throw new ArtifactCustodyError(`${directory.full} was replaced while it was being read.`);
+    }
+  }
+  return entries;
 }
 
 /**
  * Reads a frozen artifact as a pure read: executes nothing, writes nothing, follows no symlink.
- * Dependencies are not frozen bytes; only where the dependency link resolves and the installed
- * lockfile there are recorded, so a change is detected, not prevented.
+ * Dependencies are not frozen bytes. Their evidence counts only when the artifact's dependency
+ * link resolves to `trustedDependencies`, the Factory's own delivery checkout; the installed
+ * lockfile there is hashed so a reinstall is detected, not prevented. A path replaced during the
+ * read refuses the evidence rather than hashing whatever was swapped in.
  */
 export async function readArtifactEvidence(
   links: readonly CheckoutLink[],
   request: ArtifactEvidenceRequest,
+  trustedDependencies: string | null,
 ): Promise<ArtifactEvidence | StepNotStarted> {
   const holder = links.find((link) => link.name === request.link);
   const valid = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(request.artifact);
-  if (!holder || !valid)
+  if (!holder || !valid) {
     return { notStarted: `Factory cannot locate the artifact ${request.artifact}.` };
+  }
   const root = path.join(holder.target, request.artifact);
-  const top = await lstat(root).catch(() => null);
-  if (!top?.isDirectory())
-    return { notStarted: `There is no frozen artifact ${request.artifact} to check.` };
-  const digest = sha256((await treeLines(root, "", request.exclude)).join("\n"));
-  if (request.dependencies === null) return { digest, dependencies: null };
-  const linkPath = path.join(root, request.dependencies.link);
+  try {
+    const anchored = (await realpath(holder.target)) === holder.target;
+    const top = await lstat(root).catch(() => null);
+    if (!anchored || !top?.isDirectory()) {
+      return { notStarted: `There is no frozen artifact ${request.artifact} at its exact place.` };
+    }
+    const entries = await treeEntries(root, request.exclude);
+    const after = await lstat(root);
+    if (!sameObject(after, top) || (await realpath(holder.target)) !== holder.target) {
+      return { notStarted: `${request.artifact} was replaced while it was being read.` };
+    }
+    const digest = sha256(JSON.stringify(entries));
+    if (request.dependencies === null) return { digest, dependencies: null };
+    return await dependencyEvidence(root, request, trustedDependencies, digest);
+  } catch (error) {
+    if (error instanceof ArtifactCustodyError) return { notStarted: error.message };
+    throw error;
+  }
+}
+
+async function dependencyEvidence(
+  root: string,
+  request: ArtifactEvidenceRequest,
+  trustedDependencies: string | null,
+  digest: string,
+): Promise<ArtifactEvidence | StepNotStarted> {
+  const dependencies = request.dependencies;
+  if (dependencies === null) return { digest, dependencies: null };
+  const linkPath = path.join(root, dependencies.link);
   const dependencyLink = await lstat(linkPath).catch(() => null);
   if (!dependencyLink?.isSymbolicLink()) {
-    return { notStarted: `${request.artifact} has no ${request.dependencies.link} link to check.` };
+    return { notStarted: `${request.artifact} has no ${dependencies.link} link to check.` };
   }
   const target = path.resolve(root, await readlink(linkPath));
-  const lockfile = await readFile(path.join(target, request.dependencies.lockfile)).catch(
-    () => null,
-  );
-  if (lockfile === null) {
+  if (trustedDependencies === null || target !== trustedDependencies) {
     return {
-      notStarted: `The dependencies ${request.artifact} links to have no ${request.dependencies.lockfile}.`,
+      notStarted: `${request.artifact} links its dependencies to ${target}, outside the Factory's delivery checkout.`,
     };
   }
-  return { digest, dependencies: { target, lockfile: sha256(lockfile) } };
+  const place = await lstat(target).catch(() => null);
+  if (!place?.isDirectory() || (await realpath(target)) !== target) {
+    return {
+      notStarted: `The dependencies at ${target} are not a plain directory at their own path.`,
+    };
+  }
+  const lockfilePath = path.join(target, dependencies.lockfile);
+  const listed = await lstat(lockfilePath).catch(() => null);
+  if (!listed?.isFile()) {
+    return {
+      notStarted: `The dependencies ${request.artifact} links to have no ${dependencies.lockfile}.`,
+    };
+  }
+  const lockfile = sha256(await readListedFile(lockfilePath, listed));
+  return { digest, dependencies: { target, lockfile } };
 }
 
 /** Whether a path exists at all, without following a final symlink. */
@@ -743,7 +826,13 @@ export function createDeliveryCheckout(input: {
     },
     commitRecords,
     tags: localTags,
-    artifactEvidence: (request) => readArtifactEvidence(input.links, request),
+    // The dependency link a Factory-made frozen copy carries points at this checkout's own tree.
+    artifactEvidence: (request) =>
+      readArtifactEvidence(
+        input.links,
+        request,
+        request.dependencies ? path.join(dir, request.dependencies.link) : null,
+      ),
     async pushTags(request) {
       const all = await localTags(request.names);
       const tags = request.names.map((name) => ({ name, object: all[name] ?? "" }));

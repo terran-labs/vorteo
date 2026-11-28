@@ -1333,34 +1333,26 @@ describe("delivery step adapters", () => {
   });
 
   it.each([
-    { name: "rereading an untouched copy", change: "none", same: true, dependencies: "same" },
-    { name: "an edited file", change: "file", same: false, dependencies: "same" },
+    { name: "rereading an untouched copy", change: "none", expect: "same" },
+    { name: "an edited file", change: "file", expect: "differs" },
+    { name: "a file the release tools wrote under .wrangler", change: "excluded", expect: "same" },
+    { name: "an added empty directory", change: "empty-dir", expect: "differs" },
+    { name: "a file whose name holds a newline", change: "newline-name", expect: "differs" },
+    { name: "a reinstalled dependency tree", change: "lockfile", expect: "lockfile" },
     {
-      name: "a file the release tools wrote under .wrangler",
-      change: "excluded",
-      same: true,
-      dependencies: "same",
-    },
-    {
-      name: "a retargeted node_modules link",
+      name: "a node_modules link retargeted outside the checkout",
       change: "retarget",
-      same: false,
-      dependencies: "target",
+      expect: "refused",
     },
-    {
-      name: "a reinstalled dependency tree",
-      change: "lockfile",
-      same: true,
-      dependencies: "lockfile",
-    },
+    { name: "a FIFO inside the copy", change: "fifo", expect: "refused" },
   ] as const)(
     "reads frozen artifact evidence without executing anything: $name",
-    async ({ change, same, dependencies }) => {
+    async ({ change, expect: outcome }) => {
       const root = await realpath(await mkdtemp(path.join(tmpdir(), "lean-artifact-")));
       const stable = path.join(root, "stable");
       const copy = path.join(stable, "20261126-161319-eee10bfe");
-      const deps = path.join(root, "trunk-node_modules");
-      const otherDeps = path.join(root, "other-node_modules");
+      const deps = path.join(root, "Syn3h-factory", "node_modules");
+      const otherDeps = path.join(root, "trunk", "node_modules");
       for (const dir of [path.join(copy, "dist"), path.join(copy, ".wrangler"), deps, otherDeps]) {
         await mkdir(dir, { recursive: true });
       }
@@ -1377,36 +1369,41 @@ describe("delivery step adapters", () => {
         exclude: [".wrangler"],
         dependencies: { link: "node_modules", lockfile: ".package-lock.json" },
       };
-      const before = await readArtifactEvidence(links, request);
-
+      const before = await readArtifactEvidence(links, request, deps);
       if (change === "file")
         await writeFile(path.join(copy, "dist", "index.html"), "<html>edited</html>");
       if (change === "excluded") await writeFile(path.join(copy, ".wrangler", "state"), "2");
+      if (change === "empty-dir") await mkdir(path.join(copy, "dist", "empty"));
+      if (change === "newline-name") await writeFile(path.join(copy, "dist", "a\nfile b - x"), "");
+      if (change === "lockfile")
+        await writeFile(path.join(deps, ".package-lock.json"), '{"lockfileVersion":3,"x":1}');
       if (change === "retarget") {
         await rm(path.join(copy, "node_modules"));
         await symlink(otherDeps, path.join(copy, "node_modules"), "dir");
       }
-      if (change === "lockfile")
-        await writeFile(path.join(deps, ".package-lock.json"), '{"lockfileVersion":3,"x":1}');
-      const after = await readArtifactEvidence(links, request);
+      if (change === "fifo") execFileSync("mkfifo", [path.join(copy, "dist", "pipe")]);
+      const after = await readArtifactEvidence(links, request, deps);
 
-      if ("notStarted" in before || "notStarted" in after)
-        throw new Error("The artifact could not be read.");
-      expect(after.digest === before.digest).toBe(same);
-      expect(after.dependencies?.target).toBe(dependencies === "target" ? otherDeps : deps);
+      if ("notStarted" in before) throw new Error(before.notStarted);
+      if (outcome === "refused") {
+        expect(after).toHaveProperty("notStarted");
+        return;
+      }
+      if ("notStarted" in after) throw new Error(after.notStarted);
+      expect(after.digest === before.digest).toBe(outcome === "same" || outcome === "lockfile");
+      expect(after.dependencies?.target).toBe(deps);
       expect(after.dependencies?.lockfile === before.dependencies?.lockfile).toBe(
-        dependencies !== "lockfile",
+        outcome !== "lockfile",
       );
     },
   );
 
   it("refuses an artifact id that leaves the configured folder", async () => {
-    const result = await readArtifactEvidence([{ name: "Syn3h-stable", target: "/tmp" }], {
-      link: "Syn3h-stable",
-      artifact: "../etc",
-      exclude: [],
-      dependencies: null,
-    });
+    const result = await readArtifactEvidence(
+      [{ name: "Syn3h-stable", target: "/tmp" }],
+      { link: "Syn3h-stable", artifact: "../etc", exclude: [], dependencies: null },
+      null,
+    );
     expect(result).toHaveProperty("notStarted");
   });
 });

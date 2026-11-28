@@ -4,6 +4,7 @@
   "mode": "lean",
   "about": "Proposed Lean Factory configuration for Mira. Owner-only: Factory never merges a change to this file.",
   "order": ["srv_dDYiqxDpCkRy/REPLACE-WITH-MIRA-PROJECT-ID"],
+  "shadow": "dry-run",
   "runners": {
     "placement": "host"
   },
