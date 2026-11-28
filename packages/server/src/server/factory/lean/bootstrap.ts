@@ -19,6 +19,12 @@ import { PROJECT_FACTORY_ROLE_LABEL } from "../project/roles.js";
 import type { MutableDaemonConfig } from "@getpaseo/protocol/messages";
 import { readLeanConversation, type LeanConversationKind } from "./conversation.js";
 import { createLeanGateBootstrap } from "./gate-bootstrap.js";
+import {
+  createDeliveryRuntimeRegistry,
+  deliveryReleaseSchema,
+  pauseProjectDelivery,
+  type DeliveryRuntimeProvider,
+} from "./delivery-runtime.js";
 import { createLeanGitHubClient } from "./github-client.js";
 import { createLeanMode } from "./mode.js";
 import {
@@ -27,8 +33,9 @@ import {
   discoverLeanIssues,
   type LeanRuntimeOptions,
 } from "./runtime.js";
-import { createSecurityRuntime } from "./security-runtime.js";
+import { createSecurityRuntime, readExactReviewEvidence } from "./security-runtime.js";
 import { createLeanStateStore } from "./state.js";
+import type { LaunchLedger } from "./runners.js";
 import { isRunnerRepository } from "./runner-workspaces.js";
 import type { Lane, LeanModePort, RunnerRole } from "./types.js";
 
@@ -56,6 +63,7 @@ const configSchema = FactoryConfigV1Schema.extend({
     .optional(),
   review: z.object({ allowSameAccount: z.boolean().optional() }).optional(),
   checks: z.array(z.string().min(1)).optional(),
+  release: deliveryReleaseSchema.optional(),
   releaseRecipeFiles: z.array(z.string().min(1)).optional(),
   shadow: z.enum(["dry-run", "review-rehearsal"]).optional(),
 });
@@ -64,6 +72,8 @@ type Config = z.infer<typeof configSchema>;
 type Options = Omit<LeanRuntimeOptions, "issue">;
 type BootstrapOptions = Options & {
   refreshAuthority(): Promise<Config | null>;
+  deliveryEpoch(): Promise<number | null>;
+  deliveryBaseline(): Promise<string | null>;
   resolveBuilderPublisher(): Promise<Options["builderPublication"]>;
   canOpenConversation(repository: string): Promise<boolean>;
 };
@@ -99,6 +109,8 @@ export interface LeanBootstrapDependencies {
   readUsage(options?: { forceRefresh?: boolean }): Promise<UsageList>;
   runner: RunnerServices;
   workspace: Options["workspace"];
+  /** Trusted native provisioner. Construction only; return null for an unconfigured project. */
+  delivery?: DeliveryRuntimeProvider;
   operations: Omit<RuntimeServices["operations"], "ownerThread">;
   enqueue: RuntimeServices["enqueue"];
   localEnvironment?: NonNullable<ProjectRecord["home"]>["environment"];
@@ -128,6 +140,29 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
   const github = createLeanGitHubClient();
   const state = createLeanStateStore(deps.paseoHome);
   const projects = new ProjectFactoryStateStore(projectFactoryStatePath(deps.paseoHome));
+  deps.runner.agentManager.setFactoryHostRunnerLookup(async (agentId, workspaceId) => {
+    const workspace = await deps.workspace.workspaces.get(workspaceId);
+    if (!workspace?.projectId || !(await projects.read()).projects[workspace.projectId])
+      return null;
+    const ledger = (await state.read(workspace.projectId)) as LaunchLedger;
+    const saved = ledger.runners[agentId];
+    if (saved && saved.serverId === null) {
+      return {
+        role: saved.role,
+        account: saved.account,
+        head: saved.reviewAccountSelection?.headSha,
+      };
+    }
+    const pending = ledger.pendingRunnerLaunches?.[agentId];
+    if (pending?.workspaceId !== workspaceId || pending.runner.serverId !== null) return null;
+    return {
+      role: pending.runner.role,
+      account: pending.runner.account,
+      head: pending.review?.headSha,
+    };
+  });
+  const createDelivery = createDeliveryRuntimeRegistry();
+  const deliveries = new Map<string, ReturnType<typeof createDelivery>>();
   const groups = new Map<string, ReturnType<typeof createLeanOperationGroup>>();
   const startups = new Map<string, StartupAttempt>();
   const pinnedConfigs = new Map<string, { commit: string; config: Config | null }>();
@@ -226,6 +261,12 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
         throw new Error("Factory configuration names two different Builder providers.");
       }
       config.providers = { ...config.providers, builder: config.builder.provider };
+    }
+    if (config.reviewer?.provider) {
+      if (config.providers?.reviewer && config.providers.reviewer !== config.reviewer.provider) {
+        throw new Error("Factory configuration names two different Reviewer providers.");
+      }
+      config.providers = { ...config.providers, reviewer: config.reviewer.provider };
     }
     if ((await defaultCommit()) !== commit) {
       throw new Error("The owner configuration changed while Factory was reading it.");
@@ -380,6 +421,22 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
         return state.mutate(id, change, revision);
       },
     };
+    function gitEvidence(primary: string | null) {
+      if (!primary) return null;
+      return createLeanGateBootstrap({
+        paseoHome: deps.paseoHome,
+        projectId,
+        repository,
+        primary,
+        here,
+        github,
+        holdsPrimary: () => holds("intake"),
+      });
+    }
+    function scratchEvidence() {
+      return !initialPrimary && scratchProvider ? gitEvidence(here) : null;
+    }
+    const scratchReviewEvidence = scratchEvidence();
     const localRunner: Options["runner"] = {
       ...deps.runner,
       accountPolicy,
@@ -387,6 +444,15 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
         await refreshAuthority();
         await requireIssueEffects();
         return deps.runner.createAgent(input);
+      },
+      allowHostCodexDiffOnly: scratchProvider !== null,
+      async hostReviewEvidence(issue, headSha) {
+        const pool = evidence || scratchReviewEvidence;
+        if (!pool) return null;
+        const source = await pool.sourceForHead({ issue, headSha });
+        return source?.repository === repository && source.head === headSha
+          ? readExactReviewEvidence(source)
+          : null;
       },
       roleAccounts: configuredRoles,
       accounts: {
@@ -405,17 +471,7 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
         reviewer: scratchProvider ? "codex" : reviewerType,
       },
     };
-    const evidence =
-      initialPrimary &&
-      createLeanGateBootstrap({
-        paseoHome: deps.paseoHome,
-        projectId,
-        repository,
-        primary: initialPrimary,
-        here,
-        github,
-        holdsPrimary: () => holds("intake"),
-      });
+    const evidence = gitEvidence(initialPrimary);
     const securityReview =
       evidence && !scratchProvider
         ? createSecurityRuntime({
@@ -464,6 +520,14 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
       here,
       executionMode,
       refreshAuthority,
+      async deliveryEpoch() {
+        await refreshAuthority();
+        if ((await executionMode()) !== "live") return null;
+        return currentConfig?.release && configuredPrimary(currentConfig) === here ? 1 : null;
+      },
+      async deliveryBaseline() {
+        return (await refreshAuthority())?.release?.baselineCommit ?? null;
+      },
       canOpenConversation,
       leaseTtlMs: (config?.lease?.ttlMinutes ?? 120) * 60_000,
       requiredChecks: config?.checks,
@@ -568,6 +632,53 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
     };
     const options = await boundInitialization(projectOptions(projectId, wake));
     const group = createLeanOperationGroup(options);
+    const deliveryServices = { projectId, repository: options.repository, state, github };
+    const deliveryProject: Parameters<DeliveryRuntimeProvider>[0] = {
+      ...deliveryServices,
+      async readOwnerDelivery() {
+        const checkout = (await options.refreshAuthority())?.release?.checkout;
+        return checkout && typeof checkout !== "string"
+          ? { checkout: { name: checkout.name, links: checkout.links ?? [] } }
+          : null;
+      },
+    };
+    let delivery: ReturnType<typeof createDelivery> | undefined;
+    let provisioning = false;
+    let deliveryStopped = false;
+    async function attachDelivery() {
+      if (!deps.delivery || delivery || deliveryStopped || provisioning) return;
+      provisioning = true;
+      try {
+        const ports = await deps.delivery(deliveryProject);
+        if (!ports || deliveryStopped) return;
+        delivery = createDelivery({
+          ...deliveryServices,
+          installation: options.here,
+          now,
+          ports,
+          laneEpoch: () => options.deliveryEpoch(),
+          readBaseline: () => options.deliveryBaseline(),
+          onError(err) {
+            deps.logger.warn({ err, projectId }, "Lean Factory delivery reconcile failed");
+          },
+        });
+        delivery.tick();
+      } catch (err) {
+        deps.logger.warn({ err, projectId }, "Lean Factory delivery initialization failed");
+      } finally {
+        provisioning = false;
+      }
+    }
+    const deliveryControl = {
+      tick() {
+        delivery?.tick();
+      },
+      stop() {
+        deliveryStopped = true;
+        delivery?.stop();
+      },
+    };
+    deliveries.set(projectId, deliveryControl);
     groups.set(projectId, group);
     const children = new Map<number, { runtime: Runtime; unsubscribe: () => void }>();
     async function stopChildren(reason?: Parameters<LeanModePort["stop"]>[1]) {
@@ -582,7 +693,9 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
     let lastPlacementRefusal: string | null = null;
     let attachedPublisher: Options["builderPublication"];
     async function reconcile() {
+      delivery?.tick();
       const config = await options.refreshAuthority();
+      if (config?.release?.checkout && !delivery) void attachDelivery();
       const refusal = placementRefusal(config);
       if (refusal && refusal !== lastPlacementRefusal && config?.shadow !== "dry-run") {
         deps.logger.warn({ projectId }, refusal);
@@ -660,6 +773,7 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
       },
       reconcile,
       async inspectDeadlines() {
+        delivery?.tick();
         if (allowsIssueEffects(await options.executionMode())) await group.tickWatchdog();
       },
       subscribe(listener: () => void) {
@@ -669,6 +783,8 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
         };
       },
       async stop(reason: Parameters<LeanModePort["stop"]>[1]) {
+        deliveryControl.stop();
+        if (deliveries.get(projectId) === deliveryControl) deliveries.delete(projectId);
         groups.delete(projectId);
         conversationAuthorities.delete(projectId);
         const active =
@@ -747,6 +863,8 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
         },
         (error: unknown) => {
           groups.delete(projectId);
+          deliveries.get(projectId)?.stop();
+          deliveries.delete(projectId);
           conversationAuthorities.delete(projectId);
           if (startups.get(projectId) !== entry) return undefined;
           if (error instanceof InactiveProjectError) {
@@ -786,11 +904,21 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
       if (!entry.retry) await startAttempt(projectId, entry);
     },
     async stop(projectId, reason) {
+      deliveries.get(projectId)?.stop();
       const entry = startups.get(projectId);
       startups.delete(projectId);
       if (entry?.retry) clearTimeout(entry.retry);
-      await entry?.pending;
-      await engine.stop(projectId, reason);
+      try {
+        if (reason === "pause" && deps.delivery) {
+          const record = (await projects.read()).projects[projectId];
+          if (record?.mode === "lean" && record.paused && !record.drain) {
+            await pauseProjectDelivery(state, projectId, now);
+          }
+        }
+      } finally {
+        await entry?.pending;
+        await engine.stop(projectId, reason);
+      }
     },
   };
   return {

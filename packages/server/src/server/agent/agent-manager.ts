@@ -492,11 +492,28 @@ function buildStoredAgentConfig(record: StoredAgentRecord): AgentSessionConfig {
   if (record.config.quotaReserve) config.quotaReserve = record.config.quotaReserve;
   if (record.config.mcpServers != null) config.mcpServers = record.config.mcpServers;
   if (record.config.toolAccess === "none") config.toolAccess = "none";
+  config.factoryCodexBoundary = record.config.factoryCodexBoundary;
+  config.factoryReviewHead = record.config.factoryReviewHead;
   return stripInternalPaseoMcpServer(config);
+}
+
+function factoryOpeningToolAccess(config: AgentSessionConfig): AgentToolAccessSetting | undefined {
+  return config.factoryReviewHead || config.factoryCodexBoundary ? "none" : config.toolAccess;
 }
 
 /** Effective tool access reported to the authorization layer. */
 export type AgentToolAccess = "none" | "default";
+
+interface FactoryHostRunnerBinding {
+  role: string;
+  account: string | null;
+  head?: string;
+}
+
+type FactoryHostRunnerLookup = (
+  agentId: string,
+  workspaceId: string,
+) => Promise<FactoryHostRunnerBinding | null>;
 
 /** Only the Claude provider disables every built-in tool, so tool-less agents run only there. */
 const TOOL_LESS_PROVIDER_FAMILY = "claude";
@@ -3123,6 +3140,8 @@ export class AgentManager {
   ): Promise<AgentToolResult> {
     const agent = this.getAgent(agentId);
     if (!agent || agent.lifecycle === "closed") throw new Error(`Agent is not live: ${agentId}`);
+    if ((await this.getToolAccess(agentId)) === "none")
+      throw new ToolAccessError("Daemon tools are unavailable for this agent.");
     if (!this.pluginAgentTools) throw new Error("Plugin tools are unavailable");
     const record = await this.registry?.get(agentId);
     return this.pluginAgentTools.callTool(
@@ -3133,6 +3152,101 @@ export class AgentManager {
       input,
       signal,
     );
+  }
+
+  setFactoryHostRunnerLookup(lookup: FactoryHostRunnerLookup): void {
+    this.factoryHostRunnerLookup = lookup;
+  }
+
+  private factoryHostRunnerLookup?: FactoryHostRunnerLookup;
+
+  private async factoryHostRunner(agentId: string, workspaceId?: string) {
+    if (!this.factoryHostRunnerLookup) return null;
+    const workspace =
+      workspaceId ??
+      this.agents.get(agentId)?.workspaceId ??
+      (await this.registry?.get(agentId))?.workspaceId;
+    return workspace ? this.factoryHostRunnerLookup(agentId, workspace) : null;
+  }
+
+  private assertFactoryHostRunner(
+    runner: FactoryHostRunnerBinding,
+    config: AgentSessionConfig,
+    mode?: string | null,
+  ): void {
+    if (config.factoryCodexBoundary) {
+      if (this.factoryCodexPermitted(runner, config, mode)) return;
+      throw new ToolAccessError("The Factory Codex runner has no verified tool boundary.");
+    }
+    const pinned =
+      runner.role === "reviewer" &&
+      runner.head !== undefined &&
+      config.factoryReviewHead === runner.head &&
+      config.toolAccess !== "none" &&
+      config.modeId === "plan";
+    const toolLess =
+      runner.role === "foreman-op" && config.toolAccess === "none" && config.modeId === "default";
+    if (
+      (!pinned && !toolLess) ||
+      config.provider !== runner.account ||
+      this.resolveProviderFamily(config.provider) !== "claude" ||
+      (mode !== undefined && mode !== config.modeId)
+    )
+      throw new ToolAccessError("The Factory Host runner has no verified tool boundary.");
+  }
+
+  private factoryCodexPermitted(
+    runner: FactoryHostRunnerBinding,
+    config: AgentSessionConfig,
+    mode: string | null | undefined,
+  ): boolean {
+    if (
+      process.platform !== "darwin" ||
+      this.resolveProviderFamily(config.provider) !== "codex" ||
+      config.provider !== runner.account ||
+      config.modeId !== "auto" ||
+      (mode !== undefined && mode !== "auto")
+    )
+      return false;
+    if (runner.role === "lead") return config.factoryCodexBoundary === "checkout-write";
+    if (config.factoryCodexBoundary !== "no-tool-effects") return false;
+    if (runner.role === "foreman-op") return true;
+    return (
+      runner.role === "reviewer" &&
+      runner.head !== undefined &&
+      config.factoryReviewHead === runner.head
+    );
+  }
+
+  private async bindFactoryCreateConfig(
+    config: AgentSessionConfig,
+    resolvedAgentId: string,
+    workspaceId: string | undefined,
+  ): Promise<AgentSessionConfig> {
+    const factoryRunner = await this.factoryHostRunner(resolvedAgentId, workspaceId);
+    if (factoryRunner) {
+      const saved = (await this.registry?.get(resolvedAgentId))?.config;
+      if (saved?.factoryReviewHead)
+        config = { ...config, factoryReviewHead: saved.factoryReviewHead };
+      if (saved?.factoryCodexBoundary)
+        config = { ...config, factoryCodexBoundary: saved.factoryCodexBoundary };
+      if (config.factoryCodexBoundary) config = { ...config, modeId: "auto" };
+      if (
+        !config.factoryCodexBoundary &&
+        factoryRunner.role === "reviewer" &&
+        config.factoryReviewHead === factoryRunner.head
+      )
+        config = { ...config, modeId: "plan" };
+      if (factoryRunner.role === "foreman-op" && config.toolAccess === "none")
+        config = { ...config, modeId: "default" };
+      this.assertFactoryHostRunner(factoryRunner, config);
+    } else if (config.factoryReviewHead || config.factoryCodexBoundary) {
+      throw new ToolAccessError("The Factory Reviewer has no authenticated runner record.");
+    }
+    // An agent recreated before it acquired a provider handle keeps its tool restriction.
+    if ((await this.readStoredToolAccess(resolvedAgentId)) === "none")
+      return { ...config, toolAccess: "none" };
+    return config;
   }
 
   private detachPluginTools(agentId: string): void {
@@ -3925,16 +4039,13 @@ export class AgentManager {
       (await this.registry?.get(resolvedAgentId))?.config?.controllerExecutionId
     )
       throw new Error("Controller-managed execution must be created through its controller.");
-    // Recreating a stored tool-less agent, as loading one without a provider handle does,
-    // keeps it tool-less even though its record is replaced.
-    if ((await this.readStoredToolAccess(resolvedAgentId)) === "none")
-      config = { ...config, toolAccess: "none" };
+    config = await this.bindFactoryCreateConfig(config, resolvedAgentId, options.workspaceId);
     await this.deleteAgentState(resolvedAgentId);
     this.assertAcceptingAgentRegistrations();
     const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
       config,
       resolvedAgentId,
-      { env: options?.env },
+      { env: options?.env, workspaceId: options.workspaceId },
     );
     this.assertAcceptingAgentRegistrations();
     this.requireEnabledProvider(storedConfig.provider);
@@ -3958,7 +4069,7 @@ export class AgentManager {
       storedConfig.cwd,
       paseoToolPolicy,
       options?.env,
-      { ...buildCreateOpening(), toolAccess: storedConfig.toolAccess },
+      { ...buildCreateOpening(), toolAccess: factoryOpeningToolAccess(storedConfig) },
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const createOptions = this.buildCreateSessionOptions(options);
@@ -4147,7 +4258,7 @@ export class AgentManager {
       storedConfig.cwd,
       paseoToolPolicy,
       launchEnv,
-      { ...buildResumeOpening(), toolAccess: storedConfig.toolAccess },
+      { ...buildResumeOpening(), toolAccess: factoryOpeningToolAccess(storedConfig) },
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     await this.awaitProviderStart(storedConfig.provider);
@@ -4320,7 +4431,7 @@ export class AgentManager {
         workspaceId: existing.workspaceId,
         title: await this.resolveInitialPersistedTitle(agentId, existing.config, null),
         labels: existing.labels,
-        toolAccess: storedConfig.toolAccess,
+        toolAccess: factoryOpeningToolAccess(storedConfig),
       },
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
@@ -4716,7 +4827,7 @@ export class AgentManager {
         reason: "create",
         purpose: "interactive",
         workspaceId: source.workspaceId,
-        toolAccess: storedConfig.toolAccess,
+        toolAccess: factoryOpeningToolAccess(storedConfig),
       },
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
@@ -5431,6 +5542,8 @@ export class AgentManager {
   async setAgentMode(agentId: string, modeId: string): Promise<AgentProviderNotice | null> {
     return this.runLifecycleMutation(agentId, async () => {
       const agent = this.requireSessionAgent(agentId);
+      const factoryRunner = await this.factoryHostRunner(agentId, agent.workspaceId);
+      if (factoryRunner) this.assertFactoryHostRunner(factoryRunner, agent.config, modeId);
       const notice = (await agent.session.setMode(modeId)) ?? null;
       await this.drainSessionEvents(agentId);
       const currentMode = (await agent.session.getCurrentMode()) ?? modeId;
@@ -6350,6 +6463,7 @@ export class AgentManager {
     // Providers parse slash commands from the raw text, so a command another agent sent
     // must reach them without its sender envelope.
     const agentMessage = typeof prompt === "string" ? parseAgentMessage(prompt) : null;
+    if (await this.factoryHostRunner(agentId, agent.workspaceId)) return false;
     const handler = agent.session.tryHandleOutOfBand?.(
       agentMessage?.source ? agentMessage.text : prompt,
     );
@@ -6685,6 +6799,9 @@ export class AgentManager {
   }): Promise<string> {
     const { agent, agentId, pendingRun, prompt, options } = params;
     try {
+      const factoryRunner = await this.factoryHostRunner(agentId, agent.workspaceId);
+      if (factoryRunner)
+        this.assertFactoryHostRunner(factoryRunner, agent.config, agent.currentModeId);
       const result = await agent.session.startTurn(prompt, options);
       if (pendingRun.settled) {
         throw new Error(`Agent ${agentId} run was canceled before its turn started`);
@@ -7146,6 +7263,8 @@ export class AgentManager {
     return this.runForegroundMutation(agent.id, async () => {
       await this.drainSessionEvents(agent.id);
       this.agentStreamCoalescer.flushFor(agent.id);
+      const runner = await this.factoryHostRunner(agent.id, agent.workspaceId);
+      if (runner) this.assertFactoryHostRunner(runner, agent.config, agent.currentModeId);
       this.assertSteerAdmissionOwnsTurn(agent, expectedTurnId);
       const barrier: SteerEventBarrier = { events: [] };
       this.steerEventBarriers.set(agent.id, barrier);
@@ -7351,6 +7470,8 @@ export class AgentManager {
     response: AgentPermissionResponse,
   ): Promise<AgentPermissionResult | void> {
     const agent = this.requireAgent(agentId);
+    if (response.behavior === "allow" && (await this.factoryHostRunner(agentId, agent.workspaceId)))
+      throw new ToolAccessError("Factory Host runners cannot receive tool approval overrides.");
     if (agent.inFlightPermissionResponses.has(requestId)) {
       throw new Error("A response to this permission request is already being submitted");
     }
@@ -10004,13 +10125,91 @@ export class AgentManager {
     }
   }
 
+  private async prepareFactoryConfig(
+    config: AgentSessionConfig,
+    agentId: string,
+    options: NormalizeConfigOptions & { workspaceId?: string },
+  ): Promise<PreparedSessionConfig | null> {
+    const live = this.agents.get(agentId)?.config;
+    const saved = (await this.registry?.get(agentId))?.config;
+    const runner = await this.factoryHostRunner(agentId, options.workspaceId);
+    const head = live?.factoryReviewHead ?? saved?.factoryReviewHead ?? config.factoryReviewHead;
+    const codex =
+      live?.factoryCodexBoundary ?? saved?.factoryCodexBoundary ?? config.factoryCodexBoundary;
+    if (!runner && (head || codex))
+      throw new ToolAccessError("The Factory Reviewer has no authenticated runner record.");
+    if (!runner) return null;
+    if (codex) return this.prepareFactoryCodexConfig(config, runner, codex, head, options);
+    if (head) return this.prepareFactoryReviewConfig(config, runner, head, agentId, options);
+    if (options.purpose !== "history") this.assertFactoryHostRunner(runner, config);
+    return null;
+  }
+
+  private async prepareFactoryCodexConfig(
+    config: AgentSessionConfig,
+    runner: FactoryHostRunnerBinding,
+    codex: NonNullable<AgentSessionConfig["factoryCodexBoundary"]>,
+    head: string | undefined,
+    options: NormalizeConfigOptions,
+  ): Promise<PreparedSessionConfig> {
+    if (config.factoryCodexBoundary && config.factoryCodexBoundary !== codex)
+      throw new ToolAccessError("The Factory Codex launch does not match its runner record.");
+    const source = withoutToolGrants({
+      ...config,
+      factoryCodexBoundary: codex,
+      factoryReviewHead: head,
+      modeId: "auto",
+      featureValues: {},
+      providerOptions: {},
+    });
+    delete source.toolAccess;
+    delete source.skillSnapshot;
+    return this.finishFactoryConfig(source, runner, options);
+  }
+
+  private async prepareFactoryReviewConfig(
+    config: AgentSessionConfig,
+    runner: FactoryHostRunnerBinding,
+    head: string,
+    agentId: string,
+    options: NormalizeConfigOptions,
+  ): Promise<PreparedSessionConfig> {
+    if (config.factoryReviewHead && config.factoryReviewHead !== head)
+      throw new ToolAccessError("The Factory Reviewer commit cannot change.");
+    if (config.toolAccess === "none" || (await this.readStoredToolAccess(agentId)) === "none")
+      throw new ToolAccessError("A tool-less session cannot become an ordinary Factory Reviewer.");
+    const source = withoutToolGrants({ ...config, factoryReviewHead: head, modeId: "plan" });
+    delete source.toolAccess;
+    return this.finishFactoryConfig(source, runner, options);
+  }
+
+  private async finishFactoryConfig(
+    config: AgentSessionConfig,
+    runner: FactoryHostRunnerBinding,
+    options: NormalizeConfigOptions,
+  ): Promise<PreparedSessionConfig> {
+    const storedConfig = await this.normalizeConfig(config, options);
+    this.assertFactoryHostRunner(runner, storedConfig);
+    return {
+      storedConfig,
+      launchConfig: this.applyDaemonAppendSystemPrompt(storedConfig),
+      paseoToolPolicy: { enabled: false },
+    };
+  }
+
   private async prepareSessionConfig(
     config: AgentSessionConfig,
     agentId: string,
-    options: { env?: Record<string, string>; purpose?: AgentResumePurpose } = {},
+    options: {
+      env?: Record<string, string>;
+      purpose?: AgentResumePurpose;
+      workspaceId?: string;
+    } = {},
   ): Promise<PreparedSessionConfig> {
     if (config.controllerExecutionId)
       throw new Error("Controller-managed execution requires trusted registration.");
+    const factoryConfig = await this.prepareFactoryConfig(config, agentId, options);
+    if (factoryConfig) return factoryConfig;
     // Tool access only narrows. Once an agent is tool-less, no override, profile switch or
     // reload config can restore its tools.
     const toolLess =
@@ -10090,9 +10289,17 @@ export class AgentManager {
    * Every other agent, including an unknown one, reports "default".
    */
   async getToolAccess(agentId: string): Promise<AgentToolAccess> {
-    if ((await this.readStoredToolAccess(agentId)) !== "none") return "default";
-    const provider =
-      this.agents.get(agentId)?.provider ?? (await this.registry?.get(agentId))?.provider;
+    const live = this.agents.get(agentId);
+    const saved = live ? undefined : await this.registry?.get(agentId);
+    const config = live?.config ?? saved?.config;
+    if (
+      config?.factoryReviewHead ||
+      config?.factoryCodexBoundary ||
+      (await this.factoryHostRunner(agentId, saved?.workspaceId))
+    )
+      return "none";
+    if (config?.toolAccess !== "none") return "default";
+    const provider = live?.provider ?? saved?.provider;
     if (!provider) return "default";
     return this.resolveProviderFamily(provider) === TOOL_LESS_PROVIDER_FAMILY ? "none" : "default";
   }
@@ -10201,6 +10408,11 @@ export class AgentManager {
     launchConfig: AgentSessionConfig,
     launchContext: AgentLaunchContext,
   ): AgentSessionConfig {
+    if (launchConfig.factoryReviewHead || launchConfig.factoryCodexBoundary) {
+      const confined = resolveToolLessLaunchConfig(launchConfig, launchContext);
+      delete confined.toolAccess;
+      return confined;
+    }
     if (launchConfig.toolAccess === "none")
       return resolveToolLessLaunchConfig(launchConfig, launchContext);
     const savedServerNames = new Set(

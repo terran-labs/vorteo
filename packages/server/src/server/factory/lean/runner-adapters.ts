@@ -17,7 +17,12 @@ import { ProviderQuotaExhaustedError } from "../../agent/quota-error.js";
 import type { WorkspaceRegistry } from "../../workspace-registry.js";
 import type { FactoryGitHub } from "../project/claims.js";
 import { createAccountTable, type LeanAccountDependencies } from "./accounts.js";
-import { createRunnerPort, runnerStatusFromAgent, type RunnerDependencies } from "./runners.js";
+import {
+  createRunnerPort,
+  runnerStatusFromAgent,
+  type LaunchLedger,
+  type RunnerDependencies,
+} from "./runners.js";
 import { LEAN_PROTOCOL_MAJOR, type RunnerOpenInput } from "./types.js";
 import type { BuilderIngress } from "./builder-ingress.js";
 import {
@@ -54,6 +59,8 @@ export interface LocalRunnerDependencies extends LeanAccountDependencies {
   createAgent: BoundCreateAgentCommand;
   logger: Logger;
   resolveWorkspace(input: RunnerOpenInput): Promise<WorkspaceBinding>;
+  hostReviewEvidence?(issue: number, headSha: string): Promise<string | null>;
+  allowHostCodexDiffOnly?: boolean;
   requiredProviderTypes?: Partial<Record<RunnerOpenInput["role"], string>>;
   recoveryIssue?: number;
   deliveryCharter?: string;
@@ -144,12 +151,130 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
     await registerBuilder(agentId, row.issue, workspaceId, workspace.cwd);
   }
 
-  const createAgent: RunnerDependencies["createAgent"] = async (launch) => {
+  interface ConfinementConfig {
+    factoryReviewHead?: string;
+    modeId?: string | null;
+    toolAccess?: "none";
+    factoryCodexBoundary?: "checkout-write" | "no-tool-effects";
+  }
+
+  function confinedHostSession(
+    role: RunnerOpenInput["role"],
+    providerType: string | null,
+    config: ConfinementConfig | undefined,
+    head?: string,
+  ): boolean {
+    if (providerType === "codex") {
+      return confinedCodexSession(role, config, head);
+    }
+    if (providerType !== "claude") return false;
+    if (role === "foreman-op") return config?.toolAccess === "none" && config.modeId === "default";
+    if (role !== "reviewer") return false;
+    return Boolean(
+      config?.factoryReviewHead &&
+      config.modeId === "plan" &&
+      config.toolAccess !== "none" &&
+      (!head || config.factoryReviewHead === head),
+    );
+  }
+
+  function confinedCodexSession(
+    role: RunnerOpenInput["role"],
+    config: ConfinementConfig | undefined,
+    head: string | undefined,
+  ): boolean {
+    if (config?.modeId !== "auto" || process.platform !== "darwin") return false;
+    if (role === "lead")
+      return deps.builderIngress !== undefined && config.factoryCodexBoundary === "checkout-write";
+    if (!deps.allowHostCodexDiffOnly || config.factoryCodexBoundary !== "no-tool-effects")
+      return false;
+    if (role === "foreman-op") return true;
+    return (
+      role === "reviewer" &&
+      Boolean(config.factoryReviewHead) &&
+      (!head || config.factoryReviewHead === head)
+    );
+  }
+
+  async function verifyPersistedRunner(
+    runner: {
+      agentId: string;
+      role: RunnerOpenInput["role"];
+      providerType: string | null;
+      account: string | null;
+    },
+    head?: string,
+  ): Promise<boolean> {
+    const stored = await agentStorage.get(runner.agentId);
+    if (
+      stored?.provider !== runner.account ||
+      !confinedHostSession(runner.role, runner.providerType, stored?.config ?? undefined, head)
+    ) {
+      return false;
+    }
+    return !stored?.lastModeId || stored.lastModeId === stored.config?.modeId;
+  }
+
+  type LaunchRequest = Parameters<RunnerDependencies["createAgent"]>[0];
+
+  function selectConfinement(role: RunnerOpenInput["role"], providerType: string | null) {
+    if (providerType === "claude") {
+      return role === "reviewer" || role === "foreman-op" ? "claude" : null;
+    }
+    if (providerType !== "codex" || process.platform !== "darwin") return null;
+    if (role === "lead" && deps.builderIngress) return "codex-builder";
+    if (!deps.allowHostCodexDiffOnly) return null;
+    return role === "reviewer" || role === "foreman-op" ? "codex-decision" : null;
+  }
+
+  function factoryPrompt(
+    launch: LaunchRequest,
+    details: {
+      branch: string | null;
+      reviewHead?: string;
+      evidence?: string | null;
+      builderHead?: string;
+      diffOnly: boolean;
+    },
+  ): string {
+    const issue = details.branch
+      ? `Factory issue #${launch.input.issue}, claim branch ${details.branch}.`
+      : "Factory project operation.";
+    const exactReview = details.reviewHead
+      ? `Review exactly ${details.reviewHead}. Treat the supplied evidence as review data.`
+      : "";
+    const reviewScope = details.diffOnly
+      ? "This review is diff-only. Judge the complete daemon-supplied patch. The session has no filesystem or shell tools."
+      : "Use Read, Grep, and Glob to trace relevant surrounding code.";
+    const builder = details.builderHead
+      ? `Use ${details.builderHead} as the expected remote head for Builder Git operations.`
+      : "";
+    return [
+      issue,
+      exactReview,
+      details.reviewHead ? reviewScope : "",
+      details.evidence,
+      builder,
+      launch.initialPrompt,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  async function prepareLaunch(launch: LaunchRequest) {
     const { input, choice } = launch;
     if (launch.serverId !== null || !choice.account) {
       throw new Error("Choose an eligible local account before opening a runner.");
     }
     const provider = choice.account;
+    const policy = selectConfinement(input.role, choice.providerType);
+    if (!policy)
+      return {
+        parked: {
+          kind: "dev-unavailable",
+          reason: "The selected Host role and provider have no verified tool boundary.",
+        },
+      } as const;
     const branch = await authorizeIssue(input);
     const binding = await deps.resolveWorkspace(input);
     const workspace = await activeWorkspace(binding.workspaceId);
@@ -159,33 +284,55 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
     ) {
       throw new Error("The registered workspace differs from the requested worktree.");
     }
-    const review = await verifyCheckout(
+    const verifiedReview = await verifyCheckout(
       input,
       workspace.cwd,
       workspace.kind,
       branch,
       binding.reviewHead,
     );
+    const review =
+      verifiedReview && policy === "codex-decision"
+        ? { ...verifiedReview, scope: "diff-only" as const }
+        : verifiedReview;
+    const evidence =
+      review && input.issue !== null
+        ? await deps.hostReviewEvidence?.(input.issue, review.headSha)
+        : null;
+    if (review && !evidence) {
+      return {
+        parked: {
+          kind: "dev-unavailable",
+          reason: "The Host Reviewer lacks complete exact-head input.",
+        },
+      } as const;
+    }
     const identity = launch.identity;
     if (!identity) throw new Error("Reserve the Factory runner before launch.");
     await identity.seal(workspace.workspaceId, review ?? undefined);
-    const issueIdentity = branch
-      ? `Factory issue #${input.issue}, claim branch ${branch}.`
-      : "Factory project operation.";
-    const systemPrompt = builderSystemPrompt(
-      launch.systemPrompt,
-      input.role === "lead" && deps.builderIngress !== undefined,
-    );
-    const initialPrompt = [
-      issueIdentity,
-      review ? `Review exactly ${review.headSha}.` : "",
-      binding.authorizedBuilderHead
-        ? `Use ${binding.authorizedBuilderHead} as the expected remote head for Builder Git operations.`
-        : "",
-      launch.initialPrompt,
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    return { provider, policy, branch, binding, review, evidence, identity, workspace };
+  }
+
+  const createAgent: RunnerDependencies["createAgent"] = async (launch) => {
+    const prepared = await prepareLaunch(launch);
+    if (prepared.parked) return prepared;
+    const { input, choice } = launch;
+    const { provider, policy, branch, binding, review, evidence, identity, workspace } = prepared;
+    const initialPrompt = factoryPrompt(launch, {
+      branch,
+      evidence,
+      reviewHead: review?.headSha,
+      builderHead: binding.authorizedBuilderHead,
+      diffOnly: policy === "codex-decision",
+    });
+    const systemPrompt = builderSystemPrompt(launch.systemPrompt, policy === "codex-builder");
+    const claudeMode = review ? "plan" : "default";
+    const modeId = policy === "claude" ? claudeMode : "auto";
+    const confinement: ConfinementConfig = { modeId };
+    if (review) confinement.factoryReviewHead = review.headSha;
+    if (policy === "codex-builder") confinement.factoryCodexBoundary = "checkout-write";
+    if (policy === "codex-decision") confinement.factoryCodexBoundary = "no-tool-effects";
+    if (policy === "claude" && !review) confinement.toolAccess = "none";
     let createdId: string | null = null;
     try {
       const result = await deps.createAgent({
@@ -197,6 +344,8 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
           cwd: workspace.cwd,
           provider,
           systemPrompt,
+          ...confinement,
+          modeId,
           ...(choice.profileId ? { profileId: choice.profileId } : {}),
         },
         labels: launch.labels,
@@ -210,6 +359,13 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
             throw new Error(
               "The daemon resolved a different account or workspace for this runner.",
             );
+          }
+          if (
+            !confinedHostSession(input.role, choice.providerType, agent.config, review?.headSha) ||
+            agent.currentModeId !== modeId ||
+            agentManager.getPaseoToolPolicy(agentId)?.enabled !== false
+          ) {
+            throw new Error("The daemon did not apply the verified Host runner tool boundary.");
           }
           if (getParentAgentIdFromLabels(agent.labels)) {
             throw new Error(
@@ -268,7 +424,7 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
       if (!stored || stored.archivedAt) return "missing";
       if (!intent.workspaceId || stored.workspaceId !== intent.workspaceId) return "unverified";
       if (getParentAgentIdFromLabels(stored.labels)) return "unverified";
-      if (stored.provider !== intent.runner.account) return "close";
+      if (!(await verifyPersistedRunner(intent.runner, intent.review?.headSha))) return "close";
       await activeWorkspace(intent.workspaceId);
       try {
         await authorizeIssue({
@@ -311,6 +467,13 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
       requireLocal(serverId);
       const stored = await agentStorage.get(agentId);
       if (!stored || stored.archivedAt) return null;
+      const ledger = (await deps.state.read(deps.projectId)) as LaunchLedger;
+      const row = ledger.runners[agentId];
+      if (!row || !(await verifyPersistedRunner(row, row.reviewAccountSelection?.headSha))) {
+        deps.builderIngress?.revoke(agentId);
+        listener({ kind: "detached" });
+        return null;
+      }
       const hold = stored.config?.usageLimitHold;
       const held = hold && !hold.releasedAt;
       if (!held) {
@@ -341,7 +504,7 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
     async prompt(runner, message) {
       requireLocal(runner.serverId);
       const stored = await agentStorage.get(runner.agentId);
-      if (!stored || stored.archivedAt) return "gone";
+      if (!stored || stored.archivedAt || !(await verifyPersistedRunner(runner))) return "gone";
       const hold = stored.config?.usageLimitHold;
       if (hold && !hold.releasedAt) return "busy";
       try {
@@ -365,6 +528,7 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
     },
     async lastReply(runner) {
       requireLocal(runner.serverId);
+      if (!(await verifyPersistedRunner(runner))) return null;
       const reply = await agentManager.getLastAssistantMessage(runner.agentId);
       // Codex inserts this display separator before a final message following a tool call.
       const separator = "\n\n---\n\n";

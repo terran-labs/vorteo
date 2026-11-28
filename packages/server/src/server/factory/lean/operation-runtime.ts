@@ -775,11 +775,12 @@ export function createOperationRuntime(input: OperationRuntimeInput) {
     tickWatchdog: () => watchdog.tick(),
     recordActivity: log,
     recordVerdict(issue: number, verdict: Verdict) {
+      const scope = verdict.scope === "diff-only" ? "Diff-only review. " : "";
       return log(`review:${issue}:${verdict.sha}:${verdict.reviewer.agentId}`, {
         class: "judgment",
         kind: verdict.approved ? "review-approved" : "review-findings",
         issue,
-        text: verdict.findings ?? `Reviewer approved ${verdict.sha}.`,
+        text: scope + (verdict.findings ?? `Reviewer approved ${verdict.sha}.`),
         url: null,
       });
     },

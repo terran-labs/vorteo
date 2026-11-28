@@ -24,6 +24,12 @@ import {
 import { requireClaudeAuthentication } from "./authentication.js";
 import { setImmediate } from "node:timers/promises";
 import { ClaudeRuntimeSafety } from "./runtime-safety.js";
+import {
+  factoryReviewOptions,
+  verifyFactoryReviewCheckout,
+  verifyFactoryReviewHandshake,
+  verifyFactoryReviewInit,
+} from "./factory-review.js";
 import { validateProviderOptions } from "../../provider-options.js";
 import type { ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -2744,6 +2750,7 @@ class ClaudeAgentSession implements AgentSession {
   private readonly resolveBinary: () => Promise<string>;
   private readonly resolveBinaryVersion: (executable: string) => Promise<string | null>;
   private query: Query | null = null;
+  private reviewHandshake: Promise<void> | null = null;
   private readonly runtimeSafety = new ClaudeRuntimeSafety();
   private processingSdkMessages = 0;
   private harnessEnvironment: Record<string, string>;
@@ -2905,6 +2912,8 @@ class ClaudeAgentSession implements AgentSession {
     }
 
     this.currentMode = isPermissionMode(config.modeId) ? config.modeId : "default";
+    if (config.factoryReviewHead && this.currentMode !== "plan")
+      throw new Error("The Factory Reviewer must start in Claude plan mode.");
     if (config.toolAccess === "none" && !TOOL_LESS_PERMISSION_MODES.has(this.currentMode)) {
       this.currentMode = "default";
     }
@@ -3001,6 +3010,10 @@ class ClaudeAgentSession implements AgentSession {
 
     await verifySkillSnapshot(this.config);
     const slashCommand = this.resolveSlashCommandInvocation(prompt);
+    if (this.config.factoryReviewHead) {
+      if (slashCommand) throw new Error("The Factory Reviewer cannot use slash commands.");
+      await verifyFactoryReviewCheckout(this.config.cwd, this.config.factoryReviewHead);
+    }
     if (slashCommand?.commandName === REWIND_COMMAND_NAME) {
       const turnId = this.createTurnId("foreground");
       this.activeForegroundTurnId = turnId;
@@ -3212,6 +3225,8 @@ class ClaudeAgentSession implements AgentSession {
     }
 
     const normalized = isPermissionMode(modeId) ? modeId : "default";
+    if (this.config.factoryReviewHead && normalized !== "plan")
+      throw new Error("The Factory Reviewer cannot leave Claude plan mode.");
     if (this.config.toolAccess === "none" && !TOOL_LESS_PERMISSION_MODES.has(normalized)) {
       throw new Error(`A thread without tools cannot use the '${modeId}' mode.`);
     }
@@ -3864,6 +3879,7 @@ class ClaudeAgentSession implements AgentSession {
     insertions?: number;
     deletions?: number;
   }> {
+    if (this.config.factoryReviewHead) throw new Error("The Factory Reviewer cannot rewind files.");
     try {
       const activeQuery = await this.ensureFreshQuery();
       return await activeQuery.rewindFiles(messageId, { dryRun: false });
@@ -4091,6 +4107,7 @@ class ClaudeAgentSession implements AgentSession {
     // Null out query/input BEFORE awaiting the old iterator's return so the
     // old pump sees this.query !== activeQuery and skips failActiveTurns.
     this.query = null;
+    this.reviewHandshake = null;
     this.input = null;
     this.queryPumpPromise = null;
     this.queryRestartNeeded = false;
@@ -4152,7 +4169,7 @@ class ClaudeAgentSession implements AgentSession {
     if (this.query && credentialDigest !== this.queryCredentialDigest)
       this.queryRestartNeeded = true;
     if (this.query && (!this.queryRestartNeeded || this.activeForegroundQuery === this.query)) {
-      return this.query;
+      return this.awaitVerifiedQuery(this.query);
     }
 
     if (this.queryRestartNeeded && this.query) {
@@ -4190,7 +4207,7 @@ class ClaudeAgentSession implements AgentSession {
     // Another call for this session may have started the CLI while this one waited for the slot.
     if (this.query) {
       startSlot.release();
-      return this.query;
+      return this.awaitVerifiedQuery(this.query);
     }
     this.input = input;
     this.queryCredentialDigest = credentialDigest;
@@ -4226,15 +4243,43 @@ class ClaudeAgentSession implements AgentSession {
         ? startedQuery.initializationResult()
         : Promise.resolve(),
     );
-    const fastMode = this.resolveFastModeSetting();
-    if (fastMode !== null) {
-      await this.query.applyFlagSettings({ fastMode });
-    }
+    await this.configureStartedQuery(startedQuery);
     // Do not kick off background control-plane queries here. Methods like
     // supportedCommands()/setPermissionMode() may execute immediately after
     // ensureQuery() (for listCommands()/setMode()), and sharing the same query
     // control plane can cause those calls to wait behind supportedModels().
     return this.query;
+  }
+
+  private async configureStartedQuery(startedQuery: Query): Promise<void> {
+    if (this.config.factoryReviewHead) {
+      this.reviewHandshake = withTimeout(
+        verifyFactoryReviewHandshake(startedQuery),
+        8_000,
+        "Claude did not verify the Factory Reviewer before the first prompt.",
+      );
+      try {
+        await this.awaitVerifiedQuery(startedQuery);
+        return;
+      } catch (error) {
+        if (this.query === startedQuery) await this.retireQuery();
+        throw error;
+      }
+    }
+    const fastMode = this.resolveFastModeSetting();
+    if (fastMode !== null) {
+      await startedQuery.applyFlagSettings({ fastMode });
+    }
+  }
+
+  private async awaitVerifiedQuery(query: Query): Promise<Query> {
+    if (this.config.factoryReviewHead) {
+      if (!this.reviewHandshake) throw new Error("The Factory Reviewer tool guard is missing.");
+      await this.reviewHandshake;
+      if (this.query !== query)
+        throw new Error("The verified Factory Reviewer query was replaced.");
+    }
+    return query;
   }
 
   private async awaitWithTimeout(
@@ -4438,6 +4483,21 @@ class ClaudeAgentSession implements AgentSession {
       ];
     }
     if (selectedSkills) base.skills = selectedSkills;
+    return this.restrictFactoryOptions(base, permissionMode, appendedSystemPrompt);
+  }
+
+  private async restrictFactoryOptions(
+    base: ClaudeOptions,
+    permissionMode: PermissionMode,
+    appendedSystemPrompt: string,
+  ): Promise<ClaudeOptions> {
+    if (this.config.factoryReviewHead) {
+      assertToolLessClaudeCommand(this.runtimeSettings);
+      if (permissionMode !== "plan" || this.runtimeSettings?.command?.mode === "replace")
+        throw new Error("The Factory Reviewer requires the managed Claude command in plan mode.");
+      await verifyFactoryReviewCheckout(this.config.cwd, this.config.factoryReviewHead);
+      return factoryReviewOptions(base, appendedSystemPrompt);
+    }
     if (this.config.toolAccess === "none") {
       assertToolLessClaudeCommand(this.runtimeSettings);
       return applyToolLessClaudeOptions(base);
@@ -5531,6 +5591,15 @@ class ClaudeAgentSession implements AgentSession {
     events: AgentStreamEvent[],
   ): Promise<void> {
     if (message.subtype === "init") {
+      if (this.config.factoryReviewHead) {
+        try {
+          verifyFactoryReviewInit(message, this.config.cwd);
+        } catch (error) {
+          this.queryRestartNeeded = true;
+          this.query?.close();
+          throw error;
+        }
+      }
       const sessionUpdate = this.handleSystemMessage(message);
       if (sessionUpdate.notice) {
         events.push({
@@ -5977,6 +6046,11 @@ class ClaudeAgentSession implements AgentSession {
 
   /** Records a mode Claude Code reports, returning whether it differs from the current one. */
   private observePermissionMode(mode: PermissionMode): boolean {
+    if (this.config.factoryReviewHead && mode !== "plan") {
+      this.queryRestartNeeded = true;
+      this.query?.close();
+      throw new Error("Claude attempted to change the Factory Reviewer permission mode.");
+    }
     const changed = this.currentMode !== mode;
     this.currentMode = mode;
     if (mode !== "plan") {

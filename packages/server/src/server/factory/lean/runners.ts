@@ -19,12 +19,14 @@ import type {
 
 type Record = LeanLedger["runners"][string] & {
   reviewAccountSelection?: ReviewAccountSelection;
+  reviewScope?: "diff-only";
   runMetrics?: RunnerMetrics;
   quotaRecoveryPending?: true;
 };
 
 export interface RunnerMetrics {
   elapsedMs: number;
+  reviewScope?: "diff-only";
   providerType: string | null;
   account: string | null;
   accountDefinition: string | null;
@@ -59,12 +61,14 @@ export interface PendingRunnerLaunch {
   review?: ReviewLaunch;
 }
 
-interface LaunchLedger extends LeanLedger {
+export interface LaunchLedger extends LeanLedger {
+  runners: { [agentId: string]: Record };
   pendingRunnerLaunches?: { [agentId: string]: PendingRunnerLaunch };
 }
 
 interface ReviewLaunch {
   headSha: string;
+  scope?: "diff-only";
   daemonCreated: true;
   clean: true;
   nonChild: true;
@@ -73,7 +77,8 @@ interface ReviewLaunch {
 
 type LaunchResult =
   | { agentId: string; review?: ReviewLaunch }
-  | { quota: { resetsAt: string | null } };
+  | { quota: { resetsAt: string | null } }
+  | { parked: ParkReason };
 type LaunchChoice = Awaited<ReturnType<LeanAccountTable["chooseReviewer"]>>;
 type SelectedChoice = Exclude<LaunchChoice, { parked: unknown }>;
 type Placement = { serverId: string | null } | { parked: ParkReason };
@@ -285,8 +290,12 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
         systemPrompt,
         initialPrompt: input.brief,
       });
+      if ("parked" in launch) {
+        await forgetReservedLaunch(identity);
+        return launch;
+      }
       if ("quota" in launch) {
-        if (identity) await forgetLaunch(identity.agentId);
+        await forgetReservedLaunch(identity);
         const rejected = choice.accountDefinition ?? choice.account;
         const reset = Date.parse(launch.quota.resetsAt ?? "");
         if (reset > deps.now().getTime()) rejectedResets.push(new Date(reset).toISOString());
@@ -327,6 +336,7 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
     try {
       const decision = launch.choice.reviewDecision;
       let record: Record = { ...runner, issue, closedAt: null, closeReason: null };
+      if (launch.review?.scope === "diff-only") record.reviewScope = "diff-only";
       if (decision) {
         if (issue === null || !launch.review) {
           throw new Error("The reviewer launch could not prove its independent session.");
@@ -394,6 +404,10 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
         });
       },
     };
+  }
+
+  async function forgetReservedLaunch(identity: LaunchIdentity | undefined): Promise<void> {
+    if (identity) await forgetLaunch(identity.agentId);
   }
 
   async function forgetLaunch(agentId: string): Promise<void> {
@@ -473,6 +487,7 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
         delete current.quotaRecoveryPending;
         current.runMetrics = {
           elapsedMs: Math.max(0, finished.getTime() - Date.parse(current.openedAt)),
+          ...(current.reviewScope ? { reviewScope: current.reviewScope } : {}),
           providerType: current.providerType,
           account: current.account,
           accountDefinition: current.accountDefinition,

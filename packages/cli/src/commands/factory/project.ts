@@ -329,11 +329,15 @@ export function createFactoryProjectCommand(): Command {
       (id, options) => ({
         projectId: id,
         repository: options.repository,
+        ...(options.mode ? { mode: options.mode } : {}),
         ...(options.adopt ? { adopt: options.adopt } : {}),
       }),
       (command) =>
         command
           .requiredOption("--repository <owner/name>", "GitHub repository the Factory serves")
+          .addOption(
+            new Option("--mode <mode>", "Factory mode for this project").choices(["crew", "lean"]),
+          )
           .option("--adopt <role=agentId>", "Bind an existing agent to a role", collectAdopt),
     ),
   );

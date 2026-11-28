@@ -1,3 +1,5 @@
+import { realpath } from "node:fs/promises";
+import { isDeepStrictEqual } from "node:util";
 import type { Logger } from "pino";
 import type { JsonValue } from "@getpaseo/protocol/agent-types";
 import type {
@@ -21,6 +23,9 @@ import {
   type HostedSessionLoss,
   type HostedSessionLossReason,
 } from "./hosted-agent-session.js";
+import type { FactoryManagedCodexAccount } from "../agent/providers/codex/factory-boundary.js";
+import type { ResolveFactoryManagedCodexAccount } from "../agent/provider-registry.js";
+import { FactoryManagedCodexBindingSchema, type FactoryManagedCodexBinding } from "./protocol.js";
 import type { HostedOpenRequest } from "./session-contract.js";
 import type { AppliedSeqStore } from "./applied-store.js";
 import { withPaseoMcpAuthToken } from "../agent/runtime-mcp-config.js";
@@ -30,6 +35,7 @@ export interface HostedSessionRouting {
   connector: SessionHostConnector;
   /** Read for every new session, so the setting can be turned off without a restart. */
   isEnabled(): boolean;
+  resolveFactoryManagedCodexAccount?: ResolveFactoryManagedCodexAccount;
   logger: Logger;
   /** How long and how often a hosted session keeps trying to reattach. Defaults suit production. */
   reattach?: HostedReattachPolicy;
@@ -51,6 +57,7 @@ export interface HostedSessionRouting {
 export interface HostedAdoption {
   channel: HostedSession;
   hostId: string;
+  factoryManagedCodex?: FactoryManagedCodexBinding;
   throughSeq: number;
   lossy: boolean;
   /** Receives the adopted session, so startup can release its held events. */
@@ -94,12 +101,31 @@ function isHostable(input: EligibilityInput): input is EligibilityInput & {
     input.persistSession !== false &&
     input.config.internal !== true &&
     // A session host built before tool access existed would launch with default tools.
-    input.config.toolAccess !== "none"
+    (input.config.toolAccess !== "none" || input.config.factoryCodexBoundary !== undefined)
   );
 }
 
 function toJson<T>(value: unknown): T {
   return JSON.parse(JSON.stringify(value ?? null)) as T;
+}
+
+function resumeConfig(handle: AgentPersistenceHandle, overrides?: Partial<AgentSessionConfig>) {
+  const saved = handle.metadata as Partial<AgentSessionConfig> | undefined;
+  const savedBoundary = saved?.factoryCodexBoundary;
+  if (
+    savedBoundary !== undefined &&
+    overrides?.factoryCodexBoundary !== undefined &&
+    savedBoundary !== overrides.factoryCodexBoundary
+  ) {
+    throw new Error("The saved Factory Codex boundary changed before resume.");
+  }
+  const config = { ...saved, ...overrides } as AgentSessionConfig;
+  const boundary = savedBoundary ?? config.factoryCodexBoundary;
+  if (boundary !== undefined) {
+    config.factoryCodexBoundary = boundary;
+    overrides = { ...overrides, factoryCodexBoundary: boundary };
+  }
+  return { config, overrides };
 }
 
 /**
@@ -113,28 +139,83 @@ export function createHostedAgentClient(input: {
   routing: HostedSessionRouting;
   /** The derived provider this client was built for, so the host builds the same one. */
   customProvider?: { id: string; label: string; extends: string };
+  factoryManagedAccount?(): Promise<FactoryManagedCodexAccount | null>;
 }): AgentClient {
   const { inner, routing } = input;
   const logger = routing.logger.child({ module: "session-host", provider: inner.provider });
+
+  async function managedBinding(
+    config: AgentSessionConfig,
+    client?: SessionHostClient,
+  ): Promise<FactoryManagedCodexBinding | undefined> {
+    if (config.factoryCodexBoundary === undefined) return undefined;
+    if (client && client.factoryManagedCodex !== true)
+      throw new Error("The session host does not support confined Codex accounts.");
+    const account = await input.factoryManagedAccount?.();
+    const parsed = FactoryManagedCodexBindingSchema.safeParse({
+      ...account,
+      boundary: config.factoryCodexBoundary,
+    });
+    const env = input.runtimeSettings?.env;
+    if (
+      !parsed.success ||
+      inner.provider !== "codex" ||
+      parsed.data.providerId !== (input.customProvider?.id ?? inner.provider) ||
+      !env?.CODEX_HOME ||
+      env.OPENAI_BASE_URL?.trim()
+    ) {
+      throw new Error("The selected Factory Codex account is unavailable.");
+    }
+    if (
+      env.CODEX_HOME !== parsed.data.codexHome &&
+      (await realpath(env.CODEX_HOME).catch(() => null)) !== parsed.data.codexHome
+    ) {
+      throw new Error("The selected Factory Codex home differs from its provider binding.");
+    }
+    return parsed.data;
+  }
+
+  function managedRuntimeSettings() {
+    const command = input.runtimeSettings?.command;
+    if (
+      command &&
+      command.mode !== "default" &&
+      !(command.mode === "append" && !command.args?.length) &&
+      !(command.mode === "replace" && command.argv.length === 1)
+    ) {
+      throw new Error("The selected Factory Codex provider has an unverified native command.");
+    }
+    return toJson<HostedOpenRequest["runtimeSettings"]>({
+      env: { CODEX_HOME: input.runtimeSettings?.env?.CODEX_HOME },
+      command,
+    });
+  }
 
   /**
    * Null means the host no longer runs the session. Anything short of that, such as a host that is
    * slow to answer or at its connection limit, throws HostedReattachPendingError so the session
    * tries again instead of failing a turn the provider is still running.
    */
-  function reattacher(agentId: string) {
+  function reattacher(agentId: string, config: AgentSessionConfig) {
     return async (afterSeq: number): Promise<HostedReattachment | null> => {
       const client = await routing.connector.connect({ force: true });
       if (!client) throw new HostedReattachPendingError("The session host is not answering yet.");
+      const factoryManagedCodex = await managedBinding(config, client);
+      const attach = (seq: number | null) =>
+        client.attach({
+          sessionId: agentId,
+          afterSeq: seq,
+          ...(factoryManagedCodex ? { factoryManagedCodex } : {}),
+        });
       try {
-        return { channel: await client.attach({ sessionId: agentId, afterSeq }), lossy: false };
+        return { channel: await attach(afterSeq), lossy: false };
       } catch (error) {
         if (error instanceof SessionHostClientError && error.code === "not_found") return null;
         if (!(error instanceof SessionHostClientError) || error.code !== "replay_unavailable")
           throw new HostedReattachPendingError("Reattaching did not finish.", { cause: error });
       }
       // Keep the turn running and mark what was missed rather than ending the session.
-      return { channel: await client.attach({ sessionId: agentId, afterSeq: null }), lossy: true };
+      return { channel: await attach(null), lossy: true };
     };
   }
 
@@ -142,7 +223,7 @@ export function createHostedAgentClient(input: {
     channel: HostedSession;
     agentId: string;
     hostId: string;
-    model: string | undefined;
+    config: AgentSessionConfig;
     launchEnv: Record<string, string> | undefined;
     rebuild?: { throughSeq: number; lossy: boolean };
   }): HostedAgentSession {
@@ -150,11 +231,11 @@ export function createHostedAgentClient(input: {
       provider: inner.provider,
       capabilities: inner.capabilities,
       channel: params.channel,
-      reattach: reattacher(params.agentId),
+      reattach: reattacher(params.agentId, params.config),
       reattachPolicy: routing.reattach,
       hostState: () => routing.connector.hostState(),
       usage: {
-        model: params.model,
+        model: params.config.model,
         env: createProviderEnv({
           baseEnv: process.env,
           runtimeSettings: input.runtimeSettings,
@@ -177,22 +258,29 @@ export function createHostedAgentClient(input: {
   async function attachExisting(params: {
     client: SessionHostClient;
     agentId: string;
-    model: string | undefined;
+    config: AgentSessionConfig;
     launchEnv: Record<string, string> | undefined;
   }): Promise<HostedAgentSession | null> {
     const { client, agentId } = params;
+    const factoryManagedCodex = await managedBinding(params.config, client);
+    const attach = (afterSeq: number | null) =>
+      client.attach({
+        sessionId: agentId,
+        afterSeq,
+        ...(factoryManagedCodex ? { factoryManagedCodex } : {}),
+      });
     const record = await routing.applied?.read(agentId);
     const afterSeq = record && record.hostId === client.host.id ? record.lastAppliedSeq : 0;
     let channel: HostedSession;
     let throughSeq = afterSeq;
     let lossy = false;
     try {
-      channel = await client.attach({ sessionId: agentId, afterSeq });
+      channel = await attach(afterSeq);
     } catch (error) {
       if (!(error instanceof SessionHostClientError)) throw error;
       if (error.code === "not_found") return null;
       if (error.code !== "replay_unavailable") throw error;
-      channel = await client.attach({ sessionId: agentId, afterSeq: null });
+      channel = await attach(null);
       throughSeq = channel.attach.lastSeq;
       lossy = true;
     }
@@ -201,7 +289,7 @@ export function createHostedAgentClient(input: {
       channel,
       agentId,
       hostId: client.host.id,
-      model: params.model,
+      config: params.config,
       launchEnv: params.launchEnv,
       rebuild: { throughSeq, lossy },
     });
@@ -236,12 +324,12 @@ export function createHostedAgentClient(input: {
    */
   async function remnant(
     agentId: string | undefined,
-    model: string | undefined,
+    config: AgentSessionConfig,
     launchEnv: Record<string, string> | undefined,
   ): Promise<HostedAgentSession | null> {
     if (!agentId || !routing.applied || !(await routing.applied.read(agentId))) return null;
     const client = await connectWhileHostLives(agentId);
-    const session = client ? await attachExisting({ client, agentId, model, launchEnv }) : null;
+    const session = client ? await attachExisting({ client, agentId, config, launchEnv }) : null;
     if (!session) await routing.applied.remove(agentId);
     return session;
   }
@@ -315,13 +403,30 @@ export function createHostedAgentClient(input: {
     retried = false,
   ): Promise<AgentSession | null> {
     const client: SessionHostClient | null = await connectForOpen(params.agentId);
-    if (!client) return null;
+    if (!client) {
+      if (
+        params.config.factoryCodexBoundary !== undefined &&
+        (await routing.connector.hostState()) !== "gone"
+      ) {
+        throw new SessionHostUnresponsiveError(params.agentId);
+      }
+      return null;
+    }
+    const factoryManagedCodex = await managedBinding(params.config, client);
+    const request = factoryManagedCodex
+      ? {
+          ...params.request,
+          launchEnv: undefined,
+          runtimeSettings: managedRuntimeSettings(),
+        }
+      : withHostToken(params.request, client.mcpToken);
     let channel: HostedSession;
     try {
       channel = await client.open({
         sessionId: params.agentId,
         provider: inner.provider,
-        config: withHostToken(params.request, client.mcpToken) as unknown as JsonValue,
+        config: request as unknown as JsonValue,
+        ...(factoryManagedCodex ? { factoryManagedCodex } : {}),
       });
     } catch (error) {
       // The host already runs this agent's session: take it over rather than start another.
@@ -329,13 +434,16 @@ export function createHostedAgentClient(input: {
         const existing = await attachExisting({
           client,
           agentId: params.agentId,
-          model: params.config.model,
+          config: params.config,
           launchEnv: params.launchContext.env,
         });
         if (existing) return existing;
         // It ended between the open and the attach: open once more, never loop.
-        return retried ? null : open(params, true);
+        if (!retried) return open(params, true);
+        if (factoryManagedCodex) throw error;
+        return null;
       }
+      if (factoryManagedCodex) throw error;
       logger.warn(
         { err: error, agentId: params.agentId },
         "The session host could not open a session; it runs in the worker",
@@ -347,7 +455,7 @@ export function createHostedAgentClient(input: {
       channel,
       agentId: params.agentId,
       hostId: client.host.id,
-      model: params.config.model,
+      config: params.config,
       launchEnv: params.launchContext.env,
     });
   }
@@ -356,22 +464,25 @@ export function createHostedAgentClient(input: {
    * A session attached at startup is adopted whichever way its agent loads, and even if the
    * setting was turned off since, so the turn it is running can finish.
    */
-  function adopt(
+  async function adopt(
     config: AgentSessionConfig,
     launchContext: AgentLaunchContext | undefined,
-  ): HostedAgentSession | null {
+  ): Promise<HostedAgentSession | null> {
     const agentId = launchContext?.agentId;
     const adoption = agentId ? routing.adoptions?.get(agentId) : undefined;
     if (!agentId || !adoption) return null;
     // A hosted session was launched with whatever tools its host gave it; a tool-less
     // agent never adopts one and launches locally instead.
-    if (config.toolAccess === "none") return null;
+    if (config.toolAccess === "none" && config.factoryCodexBoundary === undefined) return null;
+    const factoryManagedCodex = await managedBinding(config);
+    if (!isDeepStrictEqual(adoption.factoryManagedCodex, factoryManagedCodex))
+      throw new Error("The hosted Factory account binding changed before adoption.");
     routing.adoptions?.delete(agentId);
     const session = hostedSession({
       channel: adoption.channel,
       agentId,
       hostId: adoption.hostId,
-      model: config.model,
+      config,
       launchEnv: launchContext?.env,
       rebuild: { throughSeq: adoption.throughSeq, lossy: adoption.lossy },
     });
@@ -385,7 +496,7 @@ export function createHostedAgentClient(input: {
     launchContext?: AgentLaunchContext,
     options?: AgentCreateSessionOptions,
   ): Promise<AgentSession> {
-    const adopted = adopt(config, launchContext);
+    const adopted = await adopt(config, launchContext);
     if (adopted) return adopted;
     const eligibility = { config, launchContext, persistSession: options?.persistSession };
     if (routing.isEnabled() && isHostable(eligibility)) {
@@ -405,23 +516,20 @@ export function createHostedAgentClient(input: {
       });
       if (hosted) return hosted;
     }
-    const existing = await remnant(launchContext?.agentId, config.model, launchContext?.env);
+    const existing = await remnant(launchContext?.agentId, config, launchContext?.env);
     if (existing) return existing;
     return inner.createSession(config, launchContext, options);
   }
 
   async function resumeSession(
     handle: AgentPersistenceHandle,
-    overrides?: Partial<AgentSessionConfig>,
+    requestedOverrides?: Partial<AgentSessionConfig>,
     launchContext?: AgentLaunchContext,
     options?: Parameters<AgentClient["resumeSession"]>[3],
   ): Promise<AgentSession> {
-    const config = {
-      ...(handle.metadata as Partial<AgentSessionConfig> | undefined),
-      ...overrides,
-    } as AgentSessionConfig;
+    const { config, overrides } = resumeConfig(handle, requestedOverrides);
     const eligibility = { config, launchContext };
-    const adopted = options?.purpose === "history" ? null : adopt(config, launchContext);
+    const adopted = options?.purpose === "history" ? null : await adopt(config, launchContext);
     if (adopted) return adopted;
     // Reading saved history needs no running provider, so it stays in the worker.
     if (options?.purpose !== "history" && routing.isEnabled() && isHostable(eligibility)) {
@@ -443,7 +551,7 @@ export function createHostedAgentClient(input: {
       if (hosted) return hosted;
     }
     if (options?.purpose !== "history") {
-      const existing = await remnant(launchContext?.agentId, config.model, launchContext?.env);
+      const existing = await remnant(launchContext?.agentId, config, launchContext?.env);
       if (existing) return existing;
     }
     return inner.resumeSession(handle, overrides, launchContext, options);

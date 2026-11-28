@@ -5334,6 +5334,78 @@ test("a tool-less agent launches without tools, only on Claude, and stays tool-l
   expect((await reloadedStorage.get(agent.id))?.config?.toolAccess).toBe("none");
 });
 
+test("Factory Reviewer authority pins its session across creation, mode changes, and reload", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "factory-review-manager-"));
+  onTestFinished(() => rmSync(cwd, { recursive: true, force: true }));
+  const storage = new AgentStorage(join(cwd, "agents"), logger);
+  function reviewerSession(config: AgentSessionConfig): AgentSession {
+    const session = new TestAgentSession(config);
+    return Object.assign(session, {
+      describePersistence: () => ({ provider: "claude", sessionId: session.id }),
+    });
+  }
+  class ReviewerClient extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      this.createdConfigs.push(config);
+      return reviewerSession(config);
+    }
+    override async resumeSession(
+      _handle: AgentPersistenceHandle,
+      config?: Partial<AgentSessionConfig>,
+    ): Promise<AgentSession> {
+      this.resumeOverrides.push(config);
+      return reviewerSession({ provider: "claude", cwd, ...config });
+    }
+  }
+  const client = new ReviewerClient("claude");
+  const host = new AgentManager({
+    clients: { claude: client },
+    providerDefinitions: { claude: { enabled: true, derivedFromProviderId: null } },
+    registry: storage,
+    logger,
+    mcpBaseUrl: "http://127.0.0.1:6767/mcp/agents",
+  });
+  const head = "a".repeat(40);
+  const id = randomUUID();
+  const workspaceId = randomUUID();
+  const config: AgentSessionConfig = {
+    provider: "claude",
+    cwd,
+    factoryReviewHead: head,
+    mcpServers: { injected: { type: "stdio", command: "/usr/bin/false" } },
+  };
+  await expect(host.createAgent(config, id, { workspaceId })).rejects.toThrow(
+    "no authenticated runner record",
+  );
+  host.setFactoryHostRunnerLookup(async (agent, workspace) =>
+    agent === id && workspace === workspaceId
+      ? { role: "reviewer", account: "claude", head }
+      : null,
+  );
+  try {
+    await host.createAgent(config, id, { workspaceId });
+    expect(client.createdConfigs.at(-1)).toMatchObject({ factoryReviewHead: head, modeId: "plan" });
+    expect(client.createdConfigs.at(-1)?.mcpServers).toBeUndefined();
+    await expect(host.getToolAccess(id)).resolves.toBe("none");
+    await expect(host.setAgentMode(id, "bypassPermissions")).rejects.toThrow(
+      "verified tool boundary",
+    );
+    await host.flush();
+    expect((await storage.get(id))?.config?.factoryReviewHead).toBe(head);
+    await host.reloadAgentSession(id);
+    expect(client.resumeOverrides.at(-1)).toMatchObject({
+      factoryReviewHead: head,
+      modeId: "plan",
+    });
+    await expect(
+      host.reloadAgentSession(id, { factoryReviewHead: "b".repeat(40) }),
+    ).rejects.toThrow("commit cannot change");
+  } finally {
+    if (host.getAgent(id)) await host.closeAgent(id);
+    await host.flush();
+  }
+});
+
 test("createAgent closes and rejects a provider session that cannot honor MCP servers", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);

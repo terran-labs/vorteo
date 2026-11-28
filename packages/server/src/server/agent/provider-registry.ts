@@ -40,6 +40,7 @@ import {
   type HostedSessionRouting,
 } from "../session-host/hosted-agent-client.js";
 import { CodexAppServerAgentClient } from "./providers/codex-app-server-agent.js";
+import type { FactoryManagedCodexAccount } from "./providers/codex/factory-boundary.js";
 import { CopilotACPAgentClient } from "./providers/copilot-acp-agent.js";
 import { CursorACPAgentClient } from "./providers/cursor-acp-agent.js";
 import { GenericACPAgentClient } from "./providers/generic-acp-agent.js";
@@ -108,7 +109,12 @@ export interface RegisteredProviderDefinition extends AgentProviderDefinition {
   createClient: (logger: Logger, runtimeSettings?: ProviderRuntimeSettings) => AgentClient;
 }
 
+export type ResolveFactoryManagedCodexAccount = (
+  providerId: string,
+) => Promise<FactoryManagedCodexAccount | null>;
+
 export interface BuildProviderRegistryOptions {
+  resolveFactoryManagedCodexAccount?: ResolveFactoryManagedCodexAccount;
   pluginProviders?: Record<string, RegisteredProviderDefinition>;
   runtimeSettings?: AgentProviderRuntimeSettingsMap;
   providerOverrides?: Record<string, ProviderOverride>;
@@ -123,7 +129,11 @@ export interface BuildProviderRegistryOptions {
 
 interface ProviderClientFactoryOptions extends Pick<
   BuildProviderRegistryOptions,
-  "workspaceGitService" | "managedProcesses" | "ompRuntime" | "sessionHost"
+  | "workspaceGitService"
+  | "managedProcesses"
+  | "ompRuntime"
+  | "sessionHost"
+  | "resolveFactoryManagedCodexAccount"
 > {
   openCodeBridge?: OpenCodeBridge;
   customProvider?: {
@@ -202,9 +212,14 @@ const PROVIDER_CLIENT_FACTORIES: Record<string, ProviderClientFactory> = {
       : client;
   },
   codex: (logger, runtimeSettings, options) => {
+    const resolver = options?.resolveFactoryManagedCodexAccount;
+    const factoryManagedAccount = resolver
+      ? () => resolver(options?.customProvider?.id ?? "codex")
+      : undefined;
     const client = new CodexAppServerAgentClient(logger, runtimeSettings, {
       workspaceGitService: options?.workspaceGitService,
       customProvider: options?.customProvider,
+      factoryManagedAccount,
     });
     // Durable sessions phase 2: Codex sessions run in the host too; the setting decides per session.
     return options?.sessionHost
@@ -213,6 +228,7 @@ const PROVIDER_CLIENT_FACTORIES: Record<string, ProviderClientFactory> = {
           runtimeSettings,
           routing: options.sessionHost,
           customProvider: options?.customProvider,
+          factoryManagedAccount,
         })
       : client;
   },
@@ -827,7 +843,12 @@ function buildResolvedBuiltinProviders(
   runtimeSettings: AgentProviderRuntimeSettingsMap | undefined,
   options: Pick<
     BuildProviderRegistryOptions,
-    "workspaceGitService" | "managedProcesses" | "ompRuntime" | "openCodeBridge" | "sessionHost"
+    | "workspaceGitService"
+    | "managedProcesses"
+    | "ompRuntime"
+    | "openCodeBridge"
+    | "sessionHost"
+    | "resolveFactoryManagedCodexAccount"
   >,
   isDev: boolean,
 ): Map<string, ResolvedProvider> {
@@ -853,6 +874,7 @@ function buildResolvedBuiltinProviders(
             ompRuntime: options.ompRuntime,
             openCodeBridge: options.openCodeBridge,
             sessionHost: options.sessionHost,
+            resolveFactoryManagedCodexAccount: options.resolveFactoryManagedCodexAccount,
           }),
         contract: PROVIDER_CONTRACTS[definition.id] ?? UNSUPPORTED_PROVIDER_CONTRACT,
       }),
@@ -867,7 +889,7 @@ function addDerivedProviders(
   providerOverrides: Record<string, ProviderOverride>,
   options: Pick<
     BuildProviderRegistryOptions,
-    "managedProcesses" | "openCodeBridge" | "sessionHost"
+    "managedProcesses" | "openCodeBridge" | "sessionHost" | "resolveFactoryManagedCodexAccount"
   >,
 ): void {
   for (const [providerId, override] of Object.entries(providerOverrides)) {
@@ -966,6 +988,7 @@ function addDerivedProviders(
           managedProcesses: options.managedProcesses,
           openCodeBridge: options.openCodeBridge,
           sessionHost: options.sessionHost,
+          resolveFactoryManagedCodexAccount: options.resolveFactoryManagedCodexAccount,
           customProvider: {
             id: providerId,
             label: override.label ?? providerId,
@@ -1021,6 +1044,7 @@ export function buildProviderRegistry(
     managedProcesses: options?.managedProcesses,
     openCodeBridge: options?.openCodeBridge,
     sessionHost: options?.sessionHost,
+    resolveFactoryManagedCodexAccount: options?.resolveFactoryManagedCodexAccount,
   };
   const resolvedProviders = buildResolvedBuiltinProviders(
     providerOverrides,

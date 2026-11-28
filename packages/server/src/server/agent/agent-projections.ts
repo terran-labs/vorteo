@@ -471,6 +471,8 @@ function copyLaunchState(config: AgentSessionConfig, serializable: SerializableA
   if (config.usageLimitHold) serializable.usageLimitHold = config.usageLimitHold;
   if (config.quotaReserve) serializable.quotaReserve = config.quotaReserve;
   if (config.toolAccess === "none") serializable.toolAccess = "none";
+  if (config.factoryCodexBoundary) serializable.factoryCodexBoundary = config.factoryCodexBoundary;
+  if (config.factoryReviewHead) serializable.factoryReviewHead = config.factoryReviewHead;
 }
 
 function sanitizePendingPermissions(

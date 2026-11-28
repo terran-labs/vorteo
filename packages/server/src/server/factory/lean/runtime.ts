@@ -192,6 +192,7 @@ function executionState(options: LeanProjectOptions): LeanStateStore {
 type PlanRecord = NonNullable<AdmissionFacts["plan"]>;
 type RunnerRecord = IssueLedger["runners"][string] & {
   reviewAccountSelection?: ReviewAccountSelection;
+  reviewScope?: "diff-only";
 };
 type NonMergeAction = Exclude<DispatchAction, { kind: "merge" }>;
 type OpenEvidence = Extract<MergeEvidence, { kind: "open" }>;
@@ -363,7 +364,7 @@ async function syncProjectWaits(
   });
 }
 
-function reviewReply(head: string, reply: string, reviewer: RunnerRef): Verdict | null {
+function reviewReply(head: string, reply: string, reviewer: RunnerRecord): Verdict | null {
   const [header, ...lines] = reply.trim().split(/\r?\n/);
   const approved = header === `APPROVE ${head}`;
   const findings = lines.join("\n").trim();
@@ -374,6 +375,7 @@ function reviewReply(head: string, reply: string, reviewer: RunnerRef): Verdict 
     reviewer,
     approved,
     findings: approved ? null : findings,
+    scope: reviewer.reviewScope,
     source: "local-runner",
   };
 }

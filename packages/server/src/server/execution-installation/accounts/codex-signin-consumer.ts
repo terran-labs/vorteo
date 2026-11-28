@@ -77,6 +77,61 @@ function plainTitle(raw: string): string {
 const MANAGED_PROVIDER_ID =
   /^codex-account-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+async function activeFactoryDefinition(
+  store: DaemonConfigStore,
+  serverId: string,
+  providerId: string,
+) {
+  if (!MANAGED_PROVIDER_ID.test(providerId)) return null;
+  const authority = await store.readInstallationSettingsAuthority();
+  if (authority?.environment !== "host" || authority.serverId !== serverId) return null;
+  const matches = authority.settings.providerDefinitions?.filter(
+    (item) => item.bindings[serverId] === providerId,
+  );
+  if (matches?.length !== 1) return null;
+  const [definition] = matches;
+  const excluded = authority.settings.resourceExclusions[serverId]?.providerIds ?? [];
+  if (
+    definition.providerType !== "codex" ||
+    definition.removed ||
+    definition.policy.enabled === false ||
+    excluded.includes(definition.id)
+  )
+    return null;
+  return definition;
+}
+
+/** Resolve placement metadata only. Native Codex owns sign-in in the selected account home. */
+export async function resolveFactoryCodexAccount(
+  store: DaemonConfigStore,
+  paseoHome: string,
+  serverId: string,
+  providerId: string,
+  resolveBinary: () => Promise<string | null>,
+) {
+  const definition = await activeFactoryDefinition(store, serverId, providerId);
+  if (!definition) return null;
+  const entry = ProviderOverrideSchema.safeParse(store.get().providers[providerId]);
+  const codexHome = join(paseoHome, "codex-accounts", providerId);
+  if (
+    !entry.success ||
+    entry.data.extends !== "codex" ||
+    entry.data.enabled === false ||
+    entry.data.removed ||
+    entry.data.env?.CODEX_HOME !== codexHome
+  )
+    return null;
+  const setup = definition.accountSetup;
+  const matchesAccount = setup
+    ? setup.provider === "codex" && providerId === `codex-account-${setup.creationId}`
+    : Boolean(definition.accountId && entry.data.installationAccountId === definition.accountId);
+  if (!matchesAccount) return null;
+  pinCodexHome(codexHome);
+  const codexBinary = await resolveBinary();
+  if (!codexBinary || !isAbsolute(codexBinary)) return null;
+  return { providerId, accountKey: definition.id, codexHome, codexBinary };
+}
+
 interface LegacyScope {
   installationId: string;
   serverId: string;

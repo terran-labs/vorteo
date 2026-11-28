@@ -29,6 +29,23 @@ export const SELF_PROBE_RELEASE = "session-host-self-probe";
 /** Free-form identity text for the audit log, never used for authorization. */
 const LabelSchema = z.string().max(200);
 
+// COMPAT(factory-managed-codex): protocol v1 peers strictly parse hello. Opt in through
+// its existing free-form release label so older peers still accept ordinary connections.
+export const FACTORY_CODEX_HELLO_SUFFIX = " [factory-managed-codex-v1]";
+export const FactoryCodexBoundarySchema = z.enum(["checkout-write", "no-tool-effects"]);
+export const FactoryCodexPlacementSchema = z
+  .object({
+    providerId: IdSchema,
+    boundary: FactoryCodexBoundarySchema,
+  })
+  .strict();
+export const FactoryManagedCodexBindingSchema = FactoryCodexPlacementSchema.extend({
+  accountKey: z.string().min(1).max(500),
+  codexHome: z.string().min(1).max(4096),
+  codexBinary: z.string().min(1).max(4096),
+}).strict();
+export type FactoryManagedCodexBinding = z.infer<typeof FactoryManagedCodexBindingSchema>;
+
 export const SessionHostErrorCodeSchema = z.enum([
   /** Missing or wrong token, or a frame before hello. The host closes the connection. */
   "unauthorized",
@@ -84,6 +101,7 @@ export const SessionHostRequestSchema = z.discriminatedUnion("type", [
       sessionId: IdSchema,
       provider: IdSchema,
       config: JsonSchema,
+      factoryManagedCodex: FactoryManagedCodexBindingSchema.optional(),
     })
     .strict(),
   z
@@ -93,6 +111,7 @@ export const SessionHostRequestSchema = z.discriminatedUnion("type", [
       sessionId: IdSchema,
       /** Replays every retained event after this seq. Null attaches at the newest event. */
       afterSeq: SeqSchema.nullable(),
+      factoryManagedCodex: FactoryManagedCodexBindingSchema.optional(),
     })
     .strict(),
   z
@@ -178,6 +197,7 @@ export const HostedSessionSummarySchema = z
     lastSeq: SeqSchema,
     /** True while some worker connection is attached. */
     attached: z.boolean(),
+    factoryCodexPlacement: FactoryCodexPlacementSchema.optional(),
     snapshot: JsonSchema,
   })
   .strict();
@@ -198,6 +218,7 @@ export const SessionHostReplySchema = z.discriminatedUnion("type", [
        * lifetime, so every worker that attaches must accept it. Rotates with each host start.
        */
       mcpToken: z.string().min(1).max(512),
+      factoryManagedCodex: z.literal(true).optional(),
     })
     .strict(),
   z.object({ type: z.literal("result"), requestId: IdSchema, value: JsonSchema }).strict(),

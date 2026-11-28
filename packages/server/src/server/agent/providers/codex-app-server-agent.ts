@@ -1,3 +1,15 @@
+import {
+  factoryCodexArgs,
+  factoryCodexConfig,
+  factoryCodexThread,
+  factoryCodexTurn,
+  openManagedFactoryCodex,
+  type FactoryManagedCodexAccount,
+  type FactoryCodexOpening,
+  verifyFactoryCodexConfig,
+  verifyFactoryCodexThread,
+  type FactoryCodexBoundary,
+} from "./codex/factory-boundary.js";
 import { getProviderProbeCwd } from "../../../utils/provider-probe-cwd.js";
 import {
   verifySkillSnapshot,
@@ -356,6 +368,9 @@ interface CodexAppServerClientLike {
 
 interface CodexAppServerAgentDeps {
   environment?: Record<string, string>;
+  /** Resolves fresh installation authority for the already-selected provider on each opening. */
+  factoryManagedAccount?(): Promise<FactoryManagedCodexAccount | null>;
+  factoryOpening?: FactoryCodexOpening;
   workspaceGitService?: Pick<WorkspaceGitService, "resolveRepoRoot">;
   customProvider?: {
     id: string;
@@ -3684,6 +3699,7 @@ export class CodexAppServerAgentSession implements AgentSession {
   private closed = false;
   private quotaAdmissionGuard: QuotaAdmissionGuard | null = null;
   private readonly verifiedQuotaThreads = new Set<string>();
+  private readonly verifiedFactoryThreads = new Set<string>();
   private collaborationModes: Array<{
     name: string;
     mode?: string | null;
@@ -3734,6 +3750,7 @@ export class CodexAppServerAgentSession implements AgentSession {
       provider: CODEX_PROVIDER,
       agentId: this.agentId,
     });
+    this.assertFactorySessionLaunch(config, ephemeral);
     if (config.modeId !== undefined) {
       validateCodexMode(config.modeId);
     }
@@ -3800,6 +3817,16 @@ export class CodexAppServerAgentSession implements AgentSession {
     });
   }
 
+  private assertFactorySessionLaunch(config: AgentSessionConfig, ephemeral: boolean): void {
+    if (
+      config.factoryCodexBoundary &&
+      (process.platform !== "darwin" || config.modeId !== DEFAULT_CODEX_MODE_ID || ephemeral)
+    )
+      throw new Error(
+        "The Factory Codex policy requires the supported Host and a persistent Default thread.",
+      );
+  }
+
   async connect(): Promise<void> {
     if (this.closed) {
       throw this.createClosedError();
@@ -3814,7 +3841,7 @@ export class CodexAppServerAgentSession implements AgentSession {
     }
 
     let authGeneration: CodexAuthGeneration | null = null;
-    const connectionPromise = readCodexAuthGeneration(this.codexHome).then((generation) => {
+    const connectionPromise = this.readSessionAuthGeneration().then((generation) => {
       authGeneration = generation;
       if (this.closed) throw this.createClosedError();
       return this.establishConnection();
@@ -3837,6 +3864,7 @@ export class CodexAppServerAgentSession implements AgentSession {
 
   private async establishConnection(): Promise<void> {
     this.verifiedQuotaThreads.clear();
+    this.verifiedFactoryThreads.clear();
     this.skillCatalogSignature = null;
     if (this.initialResumePurpose === "history") {
       this.stagedHistory = await this.readArchivedHistory();
@@ -3866,7 +3894,7 @@ export class CodexAppServerAgentSession implements AgentSession {
       const initialized = toObjectRecord(
         await client.request("initialize", buildCodexAppServerInitializeParams()),
       );
-      this.threadRollbackAvailable = codexServerHasThreadRollback(initialized?.userAgent);
+      this.threadRollbackAvailable = this.verifiedThreadRollback(initialized?.userAgent);
       await verifySkillSnapshot(this.config);
       if (
         sessionSkillSnapshot(this.config) &&
@@ -3880,13 +3908,12 @@ export class CodexAppServerAgentSession implements AgentSession {
       client.notify("initialized", {});
 
       if (this.quotaGovernance) await this.verifyGovernedConnection(client);
+      await this.verifyFactoryCodexConnection();
 
       this.speedModels =
         CodexModelListResponseSchema.parse(await client.request("model/list", {})).data ?? [];
       this.reconcileServiceTier();
-      await this.loadResolvedWorkspaceWrite();
-      await this.loadCollaborationModes();
-      await this.loadSkills();
+      await this.loadOpeningDefaults();
 
       if (this.currentThreadId) {
         await this.ensureThreadLoaded();
@@ -3913,6 +3940,30 @@ export class CodexAppServerAgentSession implements AgentSession {
       }
       throw error;
     }
+  }
+
+  private verifiedThreadRollback(userAgent: unknown): boolean {
+    if (!this.config.factoryCodexBoundary) return codexServerHasThreadRollback(userAgent);
+    if (typeof userAgent !== "string" || !/\b0\.162\.1\b/u.test(userAgent))
+      throw new Error("This Codex build has no verified Factory sandbox contract.");
+    return false;
+  }
+
+  private async loadOpeningDefaults(): Promise<void> {
+    if (this.config.factoryCodexBoundary) return;
+    await this.loadResolvedWorkspaceWrite();
+    await this.loadCollaborationModes();
+    await this.loadSkills();
+  }
+
+  private async verifyFactoryCodexConnection(client = this.client): Promise<void> {
+    const boundary = this.config.factoryCodexBoundary;
+    if (!boundary) return;
+    const cwd = this.config.cwd;
+    if (!client || !cwd || !this.deps.factoryOpening)
+      throw new Error("The Factory Codex checkout connection is missing.");
+    const result = await client.request("config/read", { cwd, includeLayers: false }, 10_000);
+    await verifyFactoryCodexConfig(boundary, cwd, result);
   }
 
   private async loadResolvedWorkspaceWrite(): Promise<void> {
@@ -4239,6 +4290,8 @@ export class CodexAppServerAgentSession implements AgentSession {
   }
 
   private applyFeatureValue(featureId: "plan_mode", value: boolean): void {
+    if (value && this.config.factoryCodexBoundary)
+      throw new Error("Factory Codex cannot leave Default collaboration mode.");
     this.config.featureValues = { ...this.config.featureValues, [featureId]: value };
     this.planModeEnabled = value;
     this.refreshResolvedCollaborationMode();
@@ -4248,7 +4301,7 @@ export class CodexAppServerAgentSession implements AgentSession {
   // Codex reads MCP servers when it loads a thread, so a change takes effect when the next turn
   // starts a fresh app-server and resumes the same thread with the new configuration.
   private applyChromeFeature(enabled: boolean): void {
-    if (enabled && !this.chromeAllowed()) {
+    if (enabled && (this.config.factoryCodexBoundary || !this.chromeAllowed())) {
       throw new Error("Chrome is not available to quota-managed workers.");
     }
     if (enabled && !isChromeAvailableForCodex()) {
@@ -4340,6 +4393,7 @@ export class CodexAppServerAgentSession implements AgentSession {
 
   private registerRequestHandlers(): void {
     if (!this.client) return;
+    if (this.config.factoryCodexBoundary) return;
 
     if (this.quotaGovernance?.externalChatgptAuth) {
       this.client.setRequestHandler("account/chatgptAuthTokens/refresh", (params) => {
@@ -4411,8 +4465,12 @@ export class CodexAppServerAgentSession implements AgentSession {
     const child = await this.spawnAppServer();
     const client = new CodexAppServerClient(child, this.logger, () => this.traceContext());
     try {
-      await client.request("initialize", buildCodexAppServerInitializeParams());
+      const initialized = toObjectRecord(
+        await client.request("initialize", buildCodexAppServerInitializeParams()),
+      );
+      this.verifiedThreadRollback(initialized?.userAgent);
       client.notify("initialized", {});
+      await this.verifyFactoryCodexConnection(client);
       return await this.readThreadHistory(client);
     } finally {
       await client.dispose();
@@ -4533,6 +4591,15 @@ export class CodexAppServerAgentSession implements AgentSession {
       verifyWorkerRuntimeRoots(toObjectRecord(response)?.runtimeWorkspaceRoots, this.config.cwd);
     }
     const id = resumedThreadId ?? toObjectRecord(toObjectRecord(response)?.thread)?.id;
+    if (this.config.factoryCodexBoundary) {
+      const verified = verifyFactoryCodexThread(
+        this.config.factoryCodexBoundary,
+        this.config.cwd,
+        response,
+        resumedThreadId,
+      );
+      this.verifiedFactoryThreads.add(verified);
+    }
     if (this.quotaGovernance && typeof id === "string") this.verifiedQuotaThreads.add(id);
   }
 
@@ -4559,6 +4626,20 @@ export class CodexAppServerAgentSession implements AgentSession {
     }
   }
 
+  private applyFactoryThreadSettings(params: Record<string, unknown>): void {
+    if (this.config.factoryCodexBoundary)
+      Object.assign(params, factoryCodexThread(this.config.factoryCodexBoundary, this.config.cwd));
+  }
+
+  private loadedThreadVerified(threadId: string): boolean {
+    if (this.config.factoryCodexBoundary) return this.verifiedFactoryThreads.has(threadId);
+    return !this.quotaGovernance || this.verifiedQuotaThreads.has(threadId);
+  }
+
+  private mayUnarchive(permit?: QuotaAdmissionPermit): boolean {
+    return !permit && !this.config.factoryCodexBoundary;
+  }
+
   private async ensureThreadLoaded(automaticRecoveryPermit?: QuotaAdmissionPermit): Promise<void> {
     automaticRecoveryPermit?.assertValidForDispatch();
     if (!this.client || !this.currentThreadId) return;
@@ -4583,23 +4664,22 @@ export class CodexAppServerAgentSession implements AgentSession {
     if (codexConfig) {
       params.config = codexConfig;
     }
+    this.applyFactoryThreadSettings(params);
     try {
       const loaded = toObjectRecord(await this.client.request("thread/loaded/list", {}));
       const ids = Array.isArray(loaded?.data) ? loaded.data : [];
-      if (
-        ids.includes(this.currentThreadId) &&
-        (!this.quotaGovernance || this.verifiedQuotaThreads.has(this.currentThreadId))
-      ) {
+      if (ids.includes(this.currentThreadId) && this.loadedThreadVerified(this.currentThreadId)) {
         return;
       }
       if (automaticRecoveryPermit)
         throw new Error("Automatic recovery cannot resume an unloaded native thread.");
+      await this.verifyFactoryCodexConnection();
       const response = await this.client.request("thread/resume", params);
       this.verifyGovernedThreadResponse(response, this.currentThreadId);
       this.rememberResolvedSandboxPolicy(response);
     } catch (error) {
       // Never unarchive/resume in the automatic path, even after a native lookup error.
-      if (automaticRecoveryPermit) throw error;
+      if (!this.mayUnarchive(automaticRecoveryPermit)) throw error;
       const threadId = this.currentThreadId;
       const message = error instanceof Error ? error.message : String(error);
       if (isArchivedCodexThreadResumeError(error, threadId)) {
@@ -4748,6 +4828,10 @@ export class CodexAppServerAgentSession implements AgentSession {
       params.config = codexConfig;
     }
 
+    if (this.config.factoryCodexBoundary) {
+      delete params.collaborationMode;
+      Object.assign(params, factoryCodexTurn(this.config.factoryCodexBoundary, this.config.cwd));
+    }
     return {
       params,
       thinkingOptionId,
@@ -4919,6 +5003,18 @@ export class CodexAppServerAgentSession implements AgentSession {
     throw error;
   }
 
+  private async prepareOpeningPrompt(prompt: AgentPromptInput): Promise<CodexPromptInput> {
+    const slashCommand = await this.resolveSlashCommandInvocation(prompt);
+    if (this.config.factoryCodexBoundary) {
+      if (slashCommand) throw new Error("Factory Codex cannot run slash commands.");
+      await this.verifyFactoryCodexConnection();
+      return prompt;
+    }
+    return slashCommand
+      ? this.buildCommandPromptInput(slashCommand.commandName, slashCommand.args)
+      : prompt;
+  }
+
   async startTurn(
     prompt: AgentPromptInput,
     options?: AgentRunOptions,
@@ -4941,7 +5037,7 @@ export class CodexAppServerAgentSession implements AgentSession {
     let authGeneration: CodexAuthGeneration | null = null;
     try {
       // Setup RPCs can refresh credentials too. Keep the generation that began this attempt.
-      authGeneration = await readCodexAuthGeneration(this.codexHome);
+      authGeneration = await this.readSessionAuthGeneration();
       await this.pendingNotifications;
       this.turnAuthGeneration = authGeneration;
       if (options?.automaticRecoveryPermit) {
@@ -4960,10 +5056,7 @@ export class CodexAppServerAgentSession implements AgentSession {
       }
 
       if (sessionSkillSnapshot(this.config)) await this.loadSkills();
-      const slashCommand = await this.resolveSlashCommandInvocation(prompt);
-      const effectivePrompt = slashCommand
-        ? await this.buildCommandPromptInput(slashCommand.commandName, slashCommand.args)
-        : prompt;
+      const effectivePrompt = await this.prepareOpeningPrompt(prompt);
 
       if (this.currentThreadId) {
         await this.ensureThreadLoaded(options?.automaticRecoveryPermit);
@@ -5197,6 +5290,8 @@ export class CodexAppServerAgentSession implements AgentSession {
   }
 
   async setMode(modeId: string): Promise<void | AgentProviderNotice> {
+    if (this.config.factoryCodexBoundary && modeId !== DEFAULT_CODEX_MODE_ID)
+      throw new Error("Factory Codex cannot change its permission mode.");
     validateCodexMode(modeId);
     if (this.quotaAdmissionGuard && modeId === "auto-review") {
       throw new Error("Native automatic review is unavailable for quota-governed sessions.");
@@ -5636,7 +5731,17 @@ export class CodexAppServerAgentSession implements AgentSession {
         systemPrompt: this.config.systemPrompt,
         mcpServers: this.config.mcpServers,
         asyncQuestions: this.asyncQuestions.serialize(),
+        ...this.factoryPersistenceMetadata(),
       },
+    };
+  }
+
+  private factoryPersistenceMetadata(): Record<string, unknown> {
+    const opening = this.deps.factoryOpening;
+    if (!opening) return {};
+    return {
+      factoryAccountIdentity: opening.identity,
+      factoryCodexBoundary: this.config.factoryCodexBoundary,
     };
   }
 
@@ -6199,6 +6304,7 @@ export class CodexAppServerAgentSession implements AgentSession {
     const model = await this.applyDefaultModelAndThinking();
 
     const { params, approvalPolicy, sandbox } = this.buildThreadStartRequest(model);
+    await this.verifyFactoryCodexConnection();
     const rawResponse = await this.client.request("thread/start", params);
     this.verifyGovernedThreadResponse(rawResponse);
     this.rememberResolvedSandboxPolicy(rawResponse);
@@ -6253,6 +6359,7 @@ export class CodexAppServerAgentSession implements AgentSession {
     }
     if (this.quotaGovernance) params.approvalsReviewer = "user";
     this.applyGovernedPermissionProfile(params);
+    this.applyFactoryThreadSettings(params);
     return { params, approvalPolicy, sandbox };
   }
 
@@ -6268,6 +6375,8 @@ export class CodexAppServerAgentSession implements AgentSession {
   }
 
   private buildCodexInnerConfig(): Record<string, unknown> | null {
+    if (this.config.factoryCodexBoundary)
+      return factoryCodexConfig(this.config.factoryCodexBoundary);
     const innerConfig: Record<string, unknown> = {};
     Object.assign(innerConfig, this.providerOptions);
     if (this.deps.customCodexConfig) {
@@ -6335,6 +6444,10 @@ export class CodexAppServerAgentSession implements AgentSession {
       return [toCodexTextInput(prompt)];
     }
     return await codexAppServerTurnInputFromPrompt(prompt, this.logger);
+  }
+
+  private async readSessionAuthGeneration(): Promise<CodexAuthGeneration | null> {
+    return this.config.factoryCodexBoundary ? null : readCodexAuthGeneration(this.codexHome);
   }
 
   private async recordRefreshRejection(
@@ -8342,6 +8455,32 @@ export class CodexAppServerAgentClient implements AgentClient {
     };
   }
 
+  private async openFactoryCodex(
+    config: AgentSessionConfig,
+    previous?: { identity: unknown },
+  ): Promise<FactoryCodexOpening | undefined> {
+    if (!config.factoryCodexBoundary) return undefined;
+    const custom = this.deps.customProvider;
+    if (custom && custom.extends !== CODEX_PROVIDER)
+      throw new Error("Factory requires a verified native Codex provider.");
+    return openManagedFactoryCodex({
+      account: await this.deps.factoryManagedAccount?.(),
+      providerId: custom?.id ?? CODEX_PROVIDER,
+      runtime: this.runtimeSettings,
+      cwd: config.cwd,
+      previous,
+    });
+  }
+
+  private openingSessionDeps(
+    env: Record<string, string> | undefined,
+    environment: Record<string, string>,
+    opening: FactoryCodexOpening | undefined,
+  ): CodexAppServerAgentDeps {
+    if (!opening) return { ...this.sessionDeps(env), environment };
+    return { ...this.deps, environment, factoryOpening: opening, codexHome: opening.home };
+  }
+
   private customProviderConfig(): CodexCustomProviderConfig | null {
     return buildCodexCustomProviderConfig(this.runtimeSettings, this.deps.customProvider);
   }
@@ -8398,6 +8537,18 @@ export class CodexAppServerAgentClient implements AgentClient {
     }
   }
 
+  private async nativeStartCommand(boundary?: FactoryCodexBoundary, opening?: FactoryCodexOpening) {
+    if (boundary) {
+      if (!opening) throw new Error("Factory Codex requires a verified native launch.");
+      return {
+        launchPrefix: { command: opening.binary, args: [] },
+        args: ["app-server", ...factoryCodexArgs(boundary)],
+      };
+    }
+    const launchPrefix = await resolveCodexLaunchPrefix(this.runtimeSettings);
+    return { launchPrefix, args: [...launchPrefix.args, "app-server"] };
+  }
+
   private async spawnAppServer(
     launchEnv?: Record<string, string>,
     options?: {
@@ -8408,10 +8559,14 @@ export class CodexAppServerAgentClient implements AgentClient {
       workerCwd?: string;
       processCwd?: string;
       processCustody?: QuotaGovernedSessionInput["processCustody"];
+      factoryBoundary?: FactoryCodexBoundary;
+      factoryOpening?: FactoryCodexOpening;
     },
   ): Promise<ChildProcessWithoutNullStreams> {
-    const launchPrefix = await resolveCodexLaunchPrefix(this.runtimeSettings);
-    const args = [...launchPrefix.args, "app-server"];
+    const { launchPrefix, args } = await this.nativeStartCommand(
+      options?.factoryBoundary,
+      options?.factoryOpening,
+    );
     if (options?.goalsEnabled) {
       args.push("--enable", "goals");
     }
@@ -8564,9 +8719,13 @@ export class CodexAppServerAgentClient implements AgentClient {
       // utility generations through `codex exec --ephemeral` in a larger change.
     }
     const sessionConfig: AgentSessionConfig = { ...config, provider: CODEX_PROVIDER };
-    const goalsEnabled = await this.resolveGoalsEnabled();
-    const autoReviewEnabled = await this.resolveAutoReviewEnabled();
-    const environment = buildCodexAppServerEnv(this.runtimeSettings, launchContext?.env);
+    const boundary = sessionConfig.factoryCodexBoundary;
+    const goalsEnabled = !boundary && (await this.resolveGoalsEnabled());
+    const autoReviewEnabled = !boundary && (await this.resolveAutoReviewEnabled());
+    const factoryOpening = await this.openFactoryCodex(sessionConfig);
+    const environment =
+      factoryOpening?.environment ??
+      buildCodexAppServerEnv(this.runtimeSettings, launchContext?.env);
     const session = new CodexAppServerAgentSession(
       sessionConfig,
       null,
@@ -8576,8 +8735,10 @@ export class CodexAppServerAgentClient implements AgentClient {
           goalsEnabled,
           agentId: launchContext?.agentId,
           environment,
+          factoryBoundary: boundary,
+          factoryOpening,
         }),
-      { ...this.sessionDeps(launchContext?.env), environment },
+      this.openingSessionDeps(launchContext?.env, environment, factoryOpening),
       options?.persistSession === false,
       goalsEnabled,
       autoReviewEnabled,
@@ -8601,9 +8762,16 @@ export class CodexAppServerAgentClient implements AgentClient {
       provider: CODEX_PROVIDER,
       cwd: overrides?.cwd ?? storedConfig.cwd ?? process.cwd(),
     };
-    const goalsEnabled = await this.resolveGoalsEnabled();
-    const autoReviewEnabled = await this.resolveAutoReviewEnabled();
-    const environment = buildCodexAppServerEnv(this.runtimeSettings, launchContext?.env);
+    this.restoreFactoryBoundary(handle.metadata, merged, overrides);
+    const boundary = merged.factoryCodexBoundary;
+    const goalsEnabled = !boundary && (await this.resolveGoalsEnabled());
+    const autoReviewEnabled = !boundary && (await this.resolveAutoReviewEnabled());
+    const factoryOpening = await this.openFactoryCodex(merged, {
+      identity: handle.metadata?.factoryAccountIdentity,
+    });
+    const environment =
+      factoryOpening?.environment ??
+      buildCodexAppServerEnv(this.runtimeSettings, launchContext?.env);
     const session = new CodexAppServerAgentSession(
       merged,
       handle,
@@ -8613,8 +8781,10 @@ export class CodexAppServerAgentClient implements AgentClient {
           goalsEnabled,
           agentId: launchContext?.agentId,
           environment,
+          factoryBoundary: boundary,
+          factoryOpening,
         }),
-      { ...this.sessionDeps(launchContext?.env), environment },
+      this.openingSessionDeps(launchContext?.env, environment, factoryOpening),
       false,
       goalsEnabled,
       autoReviewEnabled,
@@ -8623,6 +8793,22 @@ export class CodexAppServerAgentClient implements AgentClient {
     );
     await session.connect();
     return session;
+  }
+
+  private restoreFactoryBoundary(
+    metadata: Record<string, unknown> | undefined,
+    config: AgentSessionConfig,
+    overrides: Partial<AgentSessionConfig> | undefined,
+  ): void {
+    const stored = metadata?.factoryCodexBoundary;
+    if (stored === "checkout-write" || stored === "no-tool-effects") {
+      if (overrides?.factoryCodexBoundary && overrides.factoryCodexBoundary !== stored)
+        throw new Error("The Factory Codex boundary changed before resume.");
+      config.factoryCodexBoundary = stored;
+      return;
+    }
+    if (metadata?.factoryAccountIdentity !== undefined && !config.factoryCodexBoundary)
+      throw new Error("The saved Factory Codex session is missing its boundary.");
   }
 
   async openAccountLoginSession(): Promise<CodexLoginSession> {

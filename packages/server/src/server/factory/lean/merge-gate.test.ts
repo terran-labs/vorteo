@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   createMergeGate,
@@ -5,6 +6,8 @@ import {
   type MergeGateDeps,
   type MergeIntent,
 } from "./merge-gate.js";
+import { createLeanDeliveryHostGate } from "./delivery-host-gate.js";
+import { emptyLedger } from "./state.js";
 import { LEAN_PROTOCOL_MAJOR, type RunnerRef } from "./types.js";
 
 const headSha = "a".repeat(40);
@@ -451,5 +454,230 @@ describe("Lean Factory merge gate", () => {
       ["fence", 4],
       ["complete", { issue: 7, number: 19, headSha, mergeSha, epoch: 4 }],
     ]);
+  });
+});
+
+describe("Lean Factory Host delivery checkpoints", () => {
+  const checkpoint = "1".repeat(40);
+  const intermediate = "2".repeat(40);
+  const target = "3".repeat(40);
+  const output = "release-notes/betas.tsv";
+  const settings = ".github/vorteo-factory.json";
+  const repository = "owner/repo";
+
+  function history(options: {
+    paths: string[];
+    fromIntermediate?: boolean;
+    configured?: string;
+    delivered?: string;
+    receiptPaths?: string[];
+    merger?: string;
+    addedDelegate?: string;
+  }) {
+    const ledger = emptyLedger();
+    const parent = options.fromIntermediate ? intermediate : checkpoint;
+    const routes = new Map<string, unknown>();
+    const root = `repos/${repository}`;
+    function bind(path: string, body: unknown) {
+      routes.set(root + path, body);
+    }
+    function commit(sha: string, before: string | null, baselineCommit?: string) {
+      const tree = createHash("sha1").update(`tree:${sha}`).digest("hex");
+      const directory = createHash("sha1").update(`directory:${sha}`).digest("hex");
+      const text = JSON.stringify({
+        schema: "vorteo-factory",
+        version: 1,
+        release: {
+          baselineCommit,
+          identity: "commit",
+          records: [output],
+          channels: { beta: { tag: "beta" }, stable: { tag: "stable" } },
+          steps: {
+            deployBeta: { run: "true" },
+            verifyBeta: { run: "true" },
+            promote: { run: "true" },
+            verifyStable: { run: "true" },
+            rollback: { kind: "none" },
+          },
+          gates: { beta: [], stable: [] },
+          trigger: { kind: "every-batch" },
+        },
+      });
+      const blob = createHash("sha1")
+        .update(`blob ${Buffer.byteLength(text)}\0`)
+        .update(text)
+        .digest("hex");
+      bind(`/git/commits/${sha}`, {
+        sha,
+        tree: { sha: tree },
+        parents: before ? [{ sha: before }] : [],
+      });
+      bind(`/git/trees/${tree}`, {
+        sha: tree,
+        truncated: false,
+        tree: [{ path: ".github", mode: "040000", type: "tree", sha: directory }],
+      });
+      const entries = [{ path: "vorteo-factory.json", mode: "100644", type: "blob", sha: blob }];
+      if (sha === target && options.addedDelegate) {
+        const delegates = JSON.stringify({ approvers: [options.addedDelegate] });
+        const delegateBlob = createHash("sha1")
+          .update(`blob ${Buffer.byteLength(delegates)}\0`)
+          .update(delegates)
+          .digest("hex");
+        entries.push({
+          path: "delivery-approvers.json",
+          mode: "100644",
+          type: "blob",
+          sha: delegateBlob,
+        });
+        bind(`/git/blobs/${delegateBlob}`, {
+          sha: delegateBlob,
+          encoding: "base64",
+          content: Buffer.from(delegates).toString("base64"),
+        });
+      }
+      bind(`/git/trees/${directory}`, {
+        sha: directory,
+        truncated: false,
+        tree: entries,
+      });
+      bind(`/git/blobs/${blob}`, {
+        sha: blob,
+        encoding: "base64",
+        content: Buffer.from(text).toString("base64"),
+      });
+    }
+    function diff(before: string, after: string, paths: string[]) {
+      bind(`/compare/${before}...${after}?per_page=1`, {
+        status: "ahead",
+        merge_base_commit: { sha: before },
+        files: paths.map((filename) => ({ filename, status: "modified" })),
+      });
+    }
+    commit(checkpoint, null);
+    commit(intermediate, checkpoint);
+    commit(target, parent, options.configured);
+    diff(parent, target, options.paths);
+    diff(checkpoint, intermediate, ["src/unattributed.ts"]);
+    bind("", {
+      full_name: repository,
+      default_branch: "main",
+      owner: { login: "owner", type: "User" },
+    });
+    bind("/git/ref/heads/main", { ref: "refs/heads/main", object: { sha: target } });
+    bind(`/commits/${target}/pulls?per_page=100`, [{ number: 27, merge_commit_sha: target }]);
+    bind("/pulls/27", {
+      number: 27,
+      merged: true,
+      merge_commit_sha: target,
+      merged_by: { login: options.merger ?? "owner" },
+      base: { ref: "main", repo: { full_name: repository } },
+    });
+    if (options.delivered || options.receiptPaths) {
+      ledger.delivery.receipts.push({
+        jobId: "delivery",
+        kind: "cut-beta",
+        commits: [options.delivered ?? checkpoint],
+        target: "beta",
+        verifiedAt: now,
+        verification: "Exact installed version verified",
+        outcome: "delivered",
+        laneEpoch: 1,
+        notesUrl: null,
+        ...(options.receiptPaths
+          ? { records: { commit: target, parent, paths: options.receiptPaths } }
+          : {}),
+      });
+    }
+    return createLeanDeliveryHostGate({
+      repository,
+      projectId: "project",
+      initialDeliveredCommit: checkpoint,
+      state: {
+        async read() {
+          return ledger;
+        },
+        async mutate() {
+          throw new Error("Host gate wrote state");
+        },
+      },
+      github: {
+        async rest(method, route) {
+          if (method !== "GET") throw new Error("Host gate wrote GitHub");
+          return { status: routes.has(route) ? 200 : 404, body: routes.get(route) };
+        },
+      },
+    });
+  }
+
+  it.each([
+    { name: "a trusted settings-only PR", paths: [settings], passed: true },
+    {
+      name: "a daemon-owned delivery record",
+      paths: [output],
+      receiptPaths: [output],
+      passed: true,
+    },
+    {
+      name: "settings plus an unrelated change",
+      paths: [settings, "src/hidden.ts"],
+      passed: false,
+    },
+    {
+      name: "a settings PR merged by an untrusted account",
+      paths: [settings],
+      merger: "unknown",
+      passed: false,
+    },
+    {
+      name: "a settings PR granting the merger their own trust",
+      paths: [".github/delivery-approvers.json"],
+      merger: "new-user",
+      addedDelegate: "new-user",
+      passed: false,
+    },
+    {
+      name: "a delivery output receipt for the wrong paths",
+      paths: [output, "src/hidden.ts"],
+      receiptPaths: [output],
+      passed: false,
+    },
+  ])("checks $name on first-parent history", async ({ passed, ...options }) => {
+    const result = await history(options)(target);
+    expect(result?.trust).toEqual({ passed, sha: target });
+    expect(result?.ownerOnly.passed).toBe(passed);
+    if (!passed) expect(result?.reason).toContain(target.slice(0, 12));
+  });
+
+  it("uses the newer trusted checkpoint and cannot rewind to a stale setting", async () => {
+    const newerOwner = history({
+      paths: [settings],
+      fromIntermediate: true,
+      configured: intermediate,
+      delivered: checkpoint,
+    });
+    expect(await newerOwner(target, intermediate)).toMatchObject({
+      checkpoint: intermediate,
+      trust: { passed: true },
+    });
+    const newerDelivery = history({
+      paths: [settings],
+      fromIntermediate: true,
+      configured: checkpoint,
+      delivered: intermediate,
+    });
+    expect(await newerDelivery(target, checkpoint)).toMatchObject({
+      checkpoint: intermediate,
+      trust: { passed: true },
+    });
+    const untrusted = history({
+      paths: [settings, "src/hidden.ts"],
+      fromIntermediate: true,
+      configured: intermediate,
+    });
+    const blocked = await untrusted(target, intermediate);
+    expect(blocked?.trust.passed).toBe(false);
+    expect(blocked?.reason).toContain(target.slice(0, 12));
+    expect(blocked?.reason).toContain(intermediate.slice(0, 12));
   });
 });

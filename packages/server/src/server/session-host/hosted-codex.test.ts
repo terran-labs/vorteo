@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
@@ -13,6 +13,13 @@ import {
   ControlledSession,
 } from "../test-utils/controlled-provider-session.js";
 import { createSessionHostConnector } from "./connector.js";
+import { createAgentProviderRuntime } from "../agent/provider-runtime.js";
+import { resolveFactoryCodexAccount } from "../execution-installation/accounts/codex-signin-consumer.js";
+import type { DaemonConfigStore } from "../daemon-config-store.js";
+import type { FactoryManagedCodexAccount } from "../agent/providers/codex/factory-boundary.js";
+import { createAppliedSeqStore } from "./applied-store.js";
+import { planHostedStartup } from "./boot-attach.js";
+import type { HostedAdoption } from "./hosted-agent-client.js";
 import { createHostedAgentClient } from "./hosted-agent-client.js";
 import { HostedAgentSession } from "./hosted-agent-session.js";
 import { rotateSessionHostToken, sessionHostPaths } from "./host-files.js";
@@ -33,7 +40,12 @@ const config: AgentSessionConfig = { provider: "codex", cwd: "/work", model: "gp
  * A host whose client factory builds Codex-shaped sessions (goals on, /goal and /compact handled)
  * and records what the worker asked it to build.
  */
-async function codexFixture() {
+async function codexFixture(
+  options: {
+    managed?: true;
+    resolve?: () => Promise<FactoryManagedCodexAccount | null>;
+  } = {},
+) {
   const home = mkdtempSync(join(tmpdir(), "hosted-codex-"));
   cleanups.push(() => rmSync(home, { recursive: true, force: true }));
   const paths = sessionHostPaths(home);
@@ -44,6 +56,7 @@ async function codexFixture() {
     socketPath: paths.socketPath,
     token,
     mcpToken: "test-mcp-token",
+    factoryManagedCodex: options.managed,
     openSession: createProviderSessionFactory({
       logger,
       createClient: (input) => {
@@ -82,8 +95,12 @@ async function codexFixture() {
     }),
   });
   cleanups.push(() => host.close());
-  const connector = createSessionHostConnector({ paths, logger, retryAfterMs: 0 });
-  cleanups.push(() => connector.close());
+  const newConnector = () => {
+    const connector = createSessionHostConnector({ paths, logger, retryAfterMs: 0 });
+    cleanups.push(() => connector.close());
+    return connector;
+  };
+  const connector = newConnector();
   const local: ControlledSession[] = [];
   const inner: AgentClient = {
     provider: "codex",
@@ -107,14 +124,195 @@ async function codexFixture() {
       return true;
     },
   };
-  const client = createHostedAgentClient({
-    inner,
-    runtimeSettings: { env: { CODEX_HOME: "/accounts/codex-1" } },
-    customProvider: CUSTOM_PROVIDER,
-    routing: { connector, isEnabled: () => true, logger },
-  });
-  return { client, hosted, local, factoryInputs };
+  const newWorker = (workerConnector: ReturnType<typeof newConnector>) =>
+    createHostedAgentClient({
+      inner,
+      runtimeSettings: { env: { CODEX_HOME: "/accounts/codex-1" } },
+      customProvider: CUSTOM_PROVIDER,
+      factoryManagedAccount: options.resolve,
+      routing: { connector: workerConnector, isEnabled: () => true, logger },
+    });
+  return {
+    client: newWorker(connector),
+    hosted,
+    local,
+    factoryInputs,
+    connector,
+    paths,
+    newWorker,
+    newConnector,
+  };
 }
+
+const managedAccount: FactoryManagedCodexAccount = {
+  providerId: CUSTOM_PROVIDER.id,
+  accountKey: "stable-installation-account",
+  codexHome: "/accounts/codex-1",
+  codexBinary: "/native/bin/codex",
+};
+const confined = { ...config, factoryCodexBoundary: "checkout-write" as const };
+
+test("daemon provider runtime routes the installed account through the session host", async () => {
+  const fixture = await codexFixture({ managed: true });
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "factory-managed-runtime-")));
+  cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+  const creationId = "00000000-0000-4000-8000-000000000001";
+  const providerId = `codex-account-${creationId}`;
+  const codexHome = join(home, "codex-accounts", providerId);
+  mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+  const definition = {
+    id: "fixture-account",
+    providerType: "codex",
+    bindings: { host: providerId },
+    policy: { enabled: true },
+    accountSetup: { provider: "codex", creationId },
+  };
+  const providerOverrides = {
+    [providerId]: { extends: "codex", label: "Fixture", env: { CODEX_HOME: codexHome } },
+  };
+  const store = {
+    readInstallationSettingsAuthority: async () => ({
+      environment: "host",
+      serverId: "host",
+      settings: { providerDefinitions: [definition], resourceExclusions: {} },
+    }),
+    get: () => ({ providers: providerOverrides }),
+  } as unknown as DaemonConfigStore;
+  const worker = async () => {
+    const runtime = await createAgentProviderRuntime({
+      paseoHome: home,
+      logger,
+      snapshotManager: {
+        providerOverrides,
+        sessionHost: { connector: fixture.newConnector(), isEnabled: () => true, logger },
+        resolveFactoryManagedCodexAccount: (id) =>
+          resolveFactoryCodexAccount(store, home, "host", id, async () => "/native/bin/codex"),
+      },
+    });
+    cleanups.push(() => runtime.shutdown());
+    return runtime.snapshotManager.getAgentManagerProviderState().clients[providerId]!;
+  };
+  const client = await worker();
+  const context = { agentId: "managed-runtime-agent" };
+  await client.createSession(confined, context);
+  expect(fixture.factoryInputs[0]?.factoryManagedCodex).toMatchObject({
+    providerId,
+    codexHome,
+    accountKey: definition.id,
+  });
+  const handle = { provider: "codex", sessionId: "managed-runtime-thread", metadata: confined };
+  const recovered = await worker();
+  await recovered.resumeSession(handle, {}, context);
+  expect(fixture.hosted).toHaveLength(1);
+  definition.policy.enabled = false;
+  await expect(recovered.resumeSession(handle, {}, context)).rejects.toThrow(
+    "account is unavailable",
+  );
+});
+
+test("confined Codex opens and resumes only with the current daemon-resolved account", async () => {
+  let current: FactoryManagedCodexAccount | null = managedAccount;
+  let reads = 0;
+  const fixture = await codexFixture({
+    managed: true,
+    resolve: async () => {
+      reads++;
+      return current;
+    },
+  });
+  const context = { agentId: "factory-agent", env: { UNRELATED_VALUE: "worker-only" } };
+  const created = await fixture.client.createSession(
+    { ...confined, factoryManagedCodex: { accountKey: "agent-supplied" } } as AgentSessionConfig,
+    context,
+  );
+  expect(created).toBeInstanceOf(HostedAgentSession);
+  expect(fixture.factoryInputs[0]?.factoryManagedCodex).toEqual({
+    ...managedAccount,
+    boundary: "checkout-write",
+  });
+
+  const transport = await fixture.newConnector().connect();
+  expect(transport?.factoryManagedCodex).toBe(true);
+  expect(await transport?.list()).toEqual([
+    expect.objectContaining({
+      factoryCodexPlacement: { providerId: CUSTOM_PROVIDER.id, boundary: "checkout-write" },
+    }),
+  ]);
+  await expect(
+    transport?.attach({ sessionId: "factory-agent", afterSeq: null }),
+  ).rejects.toMatchObject({ code: "unauthorized" });
+
+  const handle = { provider: "codex", sessionId: "factory-thread", metadata: confined };
+  const worker = fixture.newWorker(fixture.newConnector());
+  await expect(
+    worker.resumeSession(handle, {}, { agentId: "another-verified-agent" }),
+  ).resolves.toBeInstanceOf(HostedAgentSession);
+  current = { ...managedAccount, accountKey: "another-account" };
+  await expect(worker.resumeSession(handle, {}, context)).rejects.toThrow(
+    "account binding changed",
+  );
+  expect(reads).toBeGreaterThan(1);
+  current = null;
+  await expect(
+    fixture.client.resumeSession(handle, {}, { agentId: "revoked-agent" }),
+  ).rejects.toThrow("account is unavailable");
+  expect(fixture.local).toEqual([]);
+  expect(fixture.factoryInputs).toHaveLength(2);
+});
+
+test("an older host can open ordinary Codex but cannot open confined Codex", async () => {
+  const fixture = await codexFixture({ resolve: async () => managedAccount });
+  await expect(
+    fixture.client.createSession(confined, { agentId: "factory-agent" }),
+  ).rejects.toThrow("does not support confined Codex accounts");
+  expect(fixture.local).toEqual([]);
+  expect(fixture.factoryInputs).toEqual([]);
+  await expect(
+    fixture.client.createSession(config, { agentId: "ordinary-agent" }),
+  ).resolves.toBeInstanceOf(HostedAgentSession);
+  expect(fixture.factoryInputs[0]?.factoryManagedCodex).toBeUndefined();
+});
+
+test("startup attaches a confined turn only after verifying the saved provider and current account", async () => {
+  const fixture = await codexFixture({ managed: true, resolve: async () => managedAccount });
+  const session = await fixture.client.createSession(confined, { agentId: "factory-agent" });
+  await session.startTurn("an in-flight turn");
+  const connector = fixture.newConnector();
+  const adoptions = new Map<string, HostedAdoption>();
+  let current: FactoryManagedCodexAccount | null = null;
+  let provider = "a-different-provider";
+  const lookedUp: string[] = [];
+  const plan = () =>
+    planHostedStartup({
+      routing: {
+        connector,
+        adoptions,
+        applied: createAppliedSeqStore(fixture.paths),
+        isEnabled: () => true,
+        logger,
+        async resolveFactoryManagedCodexAccount(providerId) {
+          lookedUp.push(providerId);
+          return current;
+        },
+      },
+      agents: {
+        async get() {
+          return { provider, config: confined };
+        },
+      },
+      logger,
+    });
+  expect((await plan()).adopted).toEqual([]);
+  expect(lookedUp).toEqual([]);
+  provider = CUSTOM_PROVIDER.id;
+  expect((await plan()).adopted).toEqual([]);
+  current = managedAccount;
+  expect((await plan()).adopted).toEqual(["factory-agent"]);
+  expect(lookedUp).toEqual([CUSTOM_PROVIDER.id, CUSTOM_PROVIDER.id]);
+  expect(adoptions.get("factory-agent")?.factoryManagedCodex?.accountKey).toBe(
+    managedAccount.accountKey,
+  );
+});
 
 test("a Codex session is hosted with its account descriptor and reports its own capabilities", async () => {
   const fixture = await codexFixture();

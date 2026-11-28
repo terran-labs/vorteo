@@ -1009,6 +1009,9 @@ function createToolCatalog(
       input: unknown,
       context: PaseoToolExecutionContext = {},
     ): Promise<PaseoToolResult> {
+      if (callerAgentId && (await agentManager.getToolAccess(callerAgentId)) === "none") {
+        throw new PaseoToolInputError("Daemon tools are unavailable for this agent.");
+      }
       const tool = tools.get(name);
       if (!tool) {
         throw new PaseoToolInputError(`Vorteo tool not found: ${name}`);

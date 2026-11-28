@@ -1,14 +1,20 @@
 import type { Logger } from "pino";
 import type { AppliedSeqStore } from "./applied-store.js";
 import { SessionHostClientError, type HostedSession, type SessionHostClient } from "./client.js";
+import type { HostedSessionSummary } from "./protocol.js";
 import { providerAllowsStop } from "./host.js";
 import type { HostedAdoption, HostedSessionRouting } from "./hosted-agent-client.js";
 import type { HostedAgentSession } from "./hosted-agent-session.js";
+import { FactoryManagedCodexBindingSchema, type FactoryManagedCodexBinding } from "./protocol.js";
 import { HostedSessionSnapshotSchema } from "./session-contract.js";
 
 /** The part of agent storage startup needs: whether an agent still exists and is active. */
 export interface StoredAgentLookup {
-  get(agentId: string): Promise<{ archivedAt?: string | null } | null>;
+  get(agentId: string): Promise<{
+    archivedAt?: string | null;
+    provider?: string;
+    config?: { factoryCodexBoundary?: string } | null;
+  } | null>;
 }
 
 export interface HostedStartupPlan {
@@ -30,9 +36,37 @@ interface StartupRouting extends HostedSessionRouting {
   adoptions: Map<string, HostedAdoption>;
 }
 
-async function closeHosted(client: SessionHostClient, sessionId: string): Promise<void> {
-  const channel = await client.attach({ sessionId, afterSeq: null });
+async function closeHosted(
+  client: SessionHostClient,
+  sessionId: string,
+  factoryManagedCodex?: FactoryManagedCodexBinding,
+): Promise<void> {
+  const channel = await client.attach({
+    sessionId,
+    afterSeq: null,
+    ...(factoryManagedCodex ? { factoryManagedCodex } : {}),
+  });
   await channel.call({ method: "close" });
+}
+
+async function startupFactoryBinding(
+  placement: HostedSessionSummary["factoryCodexPlacement"],
+  stored: Awaited<ReturnType<StoredAgentLookup["get"]>>,
+  routing: StartupRouting,
+): Promise<FactoryManagedCodexBinding | null | undefined> {
+  if (!placement) return undefined;
+  if (
+    stored &&
+    (stored.provider !== placement.providerId ||
+      stored.config?.factoryCodexBoundary !== placement.boundary)
+  )
+    return null;
+  const account = await routing.resolveFactoryManagedCodexAccount?.(placement.providerId);
+  const binding = FactoryManagedCodexBindingSchema.safeParse({
+    ...account,
+    boundary: placement.boundary,
+  });
+  return binding.success && binding.data.providerId === placement.providerId ? binding.data : null;
 }
 
 /** Idle sessions checked at once at startup, and the bound on their background work checks. */
@@ -64,15 +98,22 @@ async function attachRunning(
   client: SessionHostClient,
   sessionId: string,
   afterSeq: number,
+  factoryManagedCodex?: FactoryManagedCodexBinding,
 ): Promise<{ channel: HostedSession; throughSeq: number; lossy: boolean }> {
+  const attach = (seq: number | null) =>
+    client.attach({
+      sessionId,
+      afterSeq: seq,
+      ...(factoryManagedCodex ? { factoryManagedCodex } : {}),
+    });
   try {
-    const channel = await client.attach({ sessionId, afterSeq });
+    const channel = await attach(afterSeq);
     return { channel, throughSeq: afterSeq, lossy: false };
   } catch (error) {
     if (!(error instanceof SessionHostClientError) || error.code !== "replay_unavailable")
       throw error;
   }
-  const channel = await client.attach({ sessionId, afterSeq: null });
+  const channel = await attach(null);
   return { channel, throughSeq: channel.attach.lastSeq, lossy: true };
 }
 
@@ -126,6 +167,12 @@ export async function planHostedStartup(input: {
     const agentId = summary.sessionId;
     try {
       const stored = await input.agents.get(agentId);
+      const factoryManagedCodex = await startupFactoryBinding(
+        summary.factoryCodexPlacement,
+        stored,
+        routing,
+      );
+      if (factoryManagedCodex === null) return null;
       const snapshot = HostedSessionSnapshotSchema.safeParse(summary.snapshot);
       const running =
         !snapshot.success ||
@@ -139,11 +186,11 @@ export async function planHostedStartup(input: {
       // and idle as if the turn had ended under this worker.
       const unapplied = summary.lastSeq > afterSeq;
       if (!stored || stored.archivedAt) {
-        await closeHosted(connected, agentId);
+        await closeHosted(connected, agentId, factoryManagedCodex);
         await routing.applied.remove(agentId);
         return "closed";
       }
-      const attached = await attachRunning(connected, agentId, afterSeq);
+      const attached = await attachRunning(connected, agentId, afterSeq, factoryManagedCodex);
       let outcome: Outcome = "adopted";
       // An idle session whose watcher is still alive is adopted without a prompt: the provider
       // survived this daemon restart, and its watcher will wake the agent.
@@ -160,7 +207,11 @@ export async function planHostedStartup(input: {
         }
         outcome = holds === "yes" ? "background" : "deadline";
       }
-      routing.adoptions.set(agentId, { ...attached, hostId: connected.host.id });
+      routing.adoptions.set(agentId, {
+        ...attached,
+        hostId: connected.host.id,
+        ...(factoryManagedCodex ? { factoryManagedCodex } : {}),
+      });
       return outcome;
     } catch (error) {
       logger.warn({ err: error, agentId }, "Could not take over a hosted session at startup");

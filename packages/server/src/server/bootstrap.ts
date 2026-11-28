@@ -13,6 +13,8 @@ import {
   deferBootstrapReview,
 } from "./execution-installation/coordinator-bootstrap-launch.js";
 import { mountInstallationAccountConsumers } from "./execution-installation/accounts/consumers.js";
+import { resolveFactoryCodexAccount } from "./execution-installation/accounts/codex-signin-consumer.js";
+import { findDefaultCodexBinary } from "./agent/providers/codex-app-server-agent.js";
 import { ScheduleStore } from "./schedule/store.js";
 import {
   assertSystemThreadArchiveAllowed,
@@ -197,6 +199,7 @@ import { ProjectFactoryService } from "./factory/project/service.js";
 import { createFactoryHomeClient } from "./execution-installation/factory-home.js";
 import { daemonFactoryAccounts } from "./factory/project/account-choice.js";
 import { createLeanBootstrap } from "./factory/lean/bootstrap.js";
+import { createNativeDeliveryProvider } from "./factory/lean/delivery-native.js";
 import {
   createManagedHostBuilderPublication,
   loadStandaloneBuilderPublication,
@@ -1285,11 +1288,22 @@ export async function createPaseoDaemon(
   });
   const { connector: sessionHostConnector, routing: sessionHostRouting } =
     createDurableSessionsRouting({ paseoHome: config.paseoHome, logger, release: daemonVersion });
+  const factoryHome = createFactoryHomeClient(process.env.VORTEO_INSTALLATION_CLIENT_CONFIG);
   const agentProviderRuntime = await createAgentProviderRuntime({
     paseoHome: config.paseoHome,
     logger,
     snapshotManager: {
       sessionHost: sessionHostRouting,
+      resolveFactoryManagedCodexAccount: async (providerId: string) =>
+        factoryHome?.environment === "host"
+          ? resolveFactoryCodexAccount(
+              daemonConfigStore,
+              config.paseoHome,
+              serverId,
+              providerId,
+              findDefaultCodexBinary,
+            )
+          : null,
       refreshTimeoutMs: config.providerCatalogRefreshTimeoutMs,
       runtimeSettings: config.agentProviderSettings,
       providerOverrides: config.providerOverrides,
@@ -2079,7 +2093,6 @@ export async function createPaseoDaemon(
     serverId,
     readInstallationSettings: () => daemonConfigStore.readInstallationSettingsAuthority(),
   });
-  const factoryHome = createFactoryHomeClient(process.env.VORTEO_INSTALLATION_CLIENT_CONFIG);
   async function enqueueFactoryMessage(agentId: string, message: string, messageId: string) {
     const stored = await agentStorage.get(agentId);
     if (!stored || stored.archivedAt) return false;
@@ -2124,6 +2137,24 @@ export async function createPaseoDaemon(
   }
   const publishers = await openBuilderPublishers();
   leanFactory = createLeanBootstrap({
+    delivery: createNativeDeliveryProvider({
+      paseoHome: config.paseoHome,
+      projects: projectRegistry,
+      canRun: () => !agentManager.isRestartDraining(),
+      async isManagedHost() {
+        if (factoryHome?.environment !== "host") return false;
+        const authority = await daemonConfigStore.readInstallationSettingsAuthority();
+        return authority?.environment === "host" && authority.serverId === serverId;
+      },
+      async notifyOwner(payload) {
+        if (config.pushNotificationSender) return config.pushNotificationSender.send(payload);
+        if (!wsServer) throw new Error("The installation push sender is not available.");
+        await wsServer.sendPushNotification(payload);
+      },
+      unavailable(projectId, reason) {
+        logger.warn({ projectId, reason }, "Lean Factory native delivery unavailable");
+      },
+    }),
     builderPublication: publishers.builderPublication,
     managedBuilderPublication: publishers.managedBuilderPublication,
     paseoHome: config.paseoHome,

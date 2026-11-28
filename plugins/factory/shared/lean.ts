@@ -76,90 +76,156 @@ const releaseStep = z.union([
   z.looseObject({ lifecycle: z.literal("host-source-update") }),
 ]);
 
+const installStep = z.looseObject({
+  run: z.string().min(1),
+  where: z.enum(["container", "host"]),
+  heavy: z.boolean().optional(),
+  lockfile: z
+    .string()
+    .regex(/^[^/]+(?:\/[^/]+)*$/u)
+    .refine(safePathSegments),
+});
+
+const checkoutName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u);
+const absoluteCheckoutPath = z
+  .string()
+  .regex(/^\/(?:[^/]+\/)*[^/]+$/u)
+  .refine(safePathSegments);
+const namedCheckout = z
+  .looseObject({
+    name: checkoutName,
+    links: z.array(z.strictObject({ name: checkoutName, target: absoluteCheckoutPath })).optional(),
+  })
+  .refine(
+    ({ name, links = [] }) =>
+      new Set([name, ...links.map((link) => link.name)]).size === links.length + 1,
+  );
+
+const releaseTagPatterns = z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*\*?$/u));
+
 /**
  * The executor passes values in the environment. VORTEO_RELEASE_ variables include VERSION,
  * COMMIT, ARTIFACT, PREVIOUS_VERSION, TARGET_VERSION, NUMBER, NOTE, NOTES, APPROVAL and TARGET.
  */
-export const ReleaseRecipeV1Schema = z.looseObject({
-  /** Absolute path of the dedicated delivery worktree. */
-  checkout: z
-    .string()
-    .regex(/^\/(?:[^/]+\/)*[^/]+$/u)
-    .refine(safePathSegments)
-    .optional(),
-  /** Exact paths to append-only release records. */
-  records: z.array(releaseRecordPath).optional(),
-  milestoneTag: z
-    .string()
-    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u)
-    .optional(),
-  /** Owner-attested production commit used until the daemon has a verified delivery receipt. */
-  baselineCommit: z
-    .string()
-    .regex(/^[a-f0-9]{40}$/u)
-    .optional(),
-  channels: z.looseObject({
-    beta: z.looseObject({
-      tag: z.string().min(1),
-      noticeMinutes: z.number().nonnegative().optional(),
-    }),
-    stable: z.looseObject({ tag: z.string().min(1) }),
-  }),
-  /**
-   * What must be identical between a beta and its promotion: the source commit (installs
-   * built from source, CI-signed builds) or a frozen artifact (Syn3h's fingerprinted builds).
-   */
-  identity: z.enum(["commit", "artifact"]),
-  /** Prints the next version; absent when the prepare step sets it. */
-  version: z.looseObject({ run: z.string().min(1) }).optional(),
-  steps: z.looseObject({
-    /** Runs when the lockfile blob differs from the last install for this checkout. */
-    install: z
+export const ReleaseRecipeV1Schema = z
+  .looseObject({
+    /** Named private checkout. Legacy absolute paths still decode for existing readers. */
+    checkout: z.union([namedCheckout, absoluteCheckoutPath]).optional(),
+    artifact: z
       .looseObject({
-        run: z.string().min(1),
-        where: z.enum(["container", "host"]),
-        heavy: z.boolean().optional(),
-        lockfile: z
-          .string()
-          .regex(/^[^/]+(?:\/[^/]+)*$/u)
-          .refine(safePathSegments),
+        link: checkoutName,
+        exclude: z
+          .array(
+            z
+              .string()
+              .regex(/^[A-Za-z0-9._-]+$/u)
+              .refine(safePathSegments),
+          )
+          .optional(),
+        dependencies: z
+          .looseObject({
+            link: checkoutName,
+            lockfile: z
+              .string()
+              .regex(/^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/u)
+              .refine((file) => safePathSegments(file) && !file.startsWith(".github/")),
+          })
+          .optional(),
       })
       .optional(),
-    /** A version commit; with `viaPullRequest` it lands through the merge lane before the beta. */
-    prepare: z.looseObject({ run: z.string().min(1), viaPullRequest: z.boolean() }).optional(),
-    /** Prints the artifact id when identity is "artifact". */
-    build: z.looseObject({ run: z.string().min(1), artifact: z.string().optional() }).optional(),
-    deployBeta: releaseStep,
-    verifyBeta: releaseStep,
-    /** Reuses the beta's commit or artifact; never rebuilds when identity is "artifact". */
-    promote: releaseStep,
-    verifyStable: releaseStep,
-    rollback: z.looseObject({
-      /** redeploy an earlier build; forward-release a new version with an earlier tree; none. */
-      kind: z.enum(["redeploy", "forward-release", "none"]),
-      where: releaseLocation,
-      run: z.string().min(1).optional(),
+    /** Exact paths to append-only release records. */
+    records: z.array(releaseRecordPath).optional(),
+    tags: z
+      .object({ import: releaseTagPatterns.optional(), publish: releaseTagPatterns.optional() })
+      .optional(),
+    milestoneTag: z
+      .string()
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u)
+      .optional(),
+    /** Owner-attested production commit used until the daemon has a verified delivery receipt. */
+    baselineCommit: z
+      .string()
+      .regex(/^[a-f0-9]{40}$/u)
+      .optional(),
+    channels: z.looseObject({
+      beta: z.looseObject({
+        tag: z.string().min(1),
+        noticeMinutes: z.number().nonnegative().optional(),
+      }),
+      stable: z.looseObject({ tag: z.string().min(1) }),
     }),
-    /** Absent: the delivery runner drafts notes from the merged pull requests. */
-    notes: z.looseObject({ run: z.string().min(1).optional() }).optional(),
-  }),
-  /** Beta gates run on every beta; stable gates run once, on the exact beta being promoted. */
-  gates: z.looseObject({ beta: z.array(gateRef), stable: z.array(gateRef) }),
-  trigger: z.union([
-    z.looseObject({ kind: z.literal("every-batch") }),
-    z.looseObject({
-      kind: z.literal("score"),
-      /** change-fragments: the repository's `changes/` files; pr-labels: labels on merged PRs. */
-      source: z.enum(["change-fragments", "pr-labels"]),
-      threshold: z.number().positive(),
-      /** A user-visible fix waiting longer than this cuts a beta regardless of score. */
-      maxAgeHours: z.number().positive(),
-      /** Hold this long for an approved pull request that could ride along. */
-      rideAlongMinutes: z.number().nonnegative(),
+    /**
+     * What must be identical between a beta and its promotion: the source commit (installs
+     * built from source, CI-signed builds) or a frozen artifact (Syn3h's fingerprinted builds).
+     */
+    identity: z.enum(["commit", "artifact"]),
+    /** Prints the next version; absent when the prepare step sets it. */
+    version: z.looseObject({ run: z.string().min(1) }).optional(),
+    steps: z.looseObject({
+      guard: z
+        .looseObject({
+          run: z.string().min(1),
+          where: releaseLocation,
+          heavy: z.boolean().optional(),
+        })
+        .optional(),
+      /** Legacy recipes may decode this field. The daemon computes artifact evidence itself. */
+      fingerprint: z
+        .looseObject({
+          run: z.string().min(1),
+          where: releaseLocation,
+          heavy: z.boolean().optional(),
+        })
+        .optional(),
+      /** Runs when the lockfile blob differs from the last install for this checkout. */
+      install: z.union([installStep, z.array(installStep)]).optional(),
+      /** A version commit; with `viaPullRequest` it lands through the merge lane before the beta. */
+      prepare: z.looseObject({ run: z.string().min(1), viaPullRequest: z.boolean() }).optional(),
+      /** Prints the artifact id when identity is "artifact". */
+      build: z.looseObject({ run: z.string().min(1), artifact: z.string().optional() }).optional(),
+      deployBeta: releaseStep,
+      verifyBeta: releaseStep,
+      /** Reuses the beta's commit or artifact; never rebuilds when identity is "artifact". */
+      promote: releaseStep,
+      verifyStable: releaseStep,
+      rollback: z.looseObject({
+        /** redeploy an earlier build; forward-release a new version with an earlier tree; none. */
+        kind: z.enum(["redeploy", "forward-release", "none"]),
+        where: releaseLocation,
+        run: z.string().min(1).optional(),
+      }),
+      /** Absent: the delivery runner drafts notes from the merged pull requests. */
+      notes: z.looseObject({ run: z.string().min(1).optional() }).optional(),
     }),
-  ]),
-  promotion: z.looseObject({ preauthorization: z.enum(["off", "allowed"]).optional() }).optional(),
-});
+    /** Beta gates run on every beta; stable gates run once, on the exact beta being promoted. */
+    gates: z.looseObject({ beta: z.array(gateRef), stable: z.array(gateRef) }),
+    trigger: z.union([
+      z.looseObject({ kind: z.literal("every-batch") }),
+      z.looseObject({
+        kind: z.literal("score"),
+        /** change-fragments: the repository's `changes/` files; pr-labels: labels on merged PRs. */
+        source: z.enum(["change-fragments", "pr-labels"]),
+        threshold: z.number().positive(),
+        /** A user-visible fix waiting longer than this cuts a beta regardless of score. */
+        maxAgeHours: z.number().positive(),
+        /** Hold this long for an approved pull request that could ride along. */
+        rideAlongMinutes: z.number().nonnegative(),
+      }),
+    ]),
+    promotion: z
+      .looseObject({ preauthorization: z.enum(["off", "allowed"]).optional() })
+      .optional(),
+  })
+  .refine(
+    ({ artifact, checkout }) =>
+      !artifact ||
+      (typeof checkout === "object" &&
+        checkout.links?.some(({ name }) => name === artifact.link) === true),
+    {
+      path: ["artifact", "link"],
+      message: "Choose an artifact link declared in the delivery checkout.",
+    },
+  );
 export type ReleaseRecipeV1 = z.infer<typeof ReleaseRecipeV1Schema>;
 
 /**
@@ -172,6 +238,7 @@ export type ReleaseRecipeV1 = z.infer<typeof ReleaseRecipeV1Schema>;
 export const FactoryConfigV1Schema = z.looseObject({
   runners: z.looseObject({ placement: z.enum(["host", "dev"]).optional() }).optional(),
   builder: z.looseObject({ provider: z.string().min(1).optional() }).optional(),
+  reviewer: z.looseObject({ provider: z.string().min(1).optional() }).optional(),
   shadow: z.enum(["dry-run", "review-rehearsal"]).optional(),
   /** The primary records each configured command's exit status at the exact issue head. */
   issueGates: z
@@ -435,7 +502,7 @@ export const FactoryLeanViewSchema = z.object({
         holder: z.string(),
         holderInfo: z
           .object({
-            kind: z.enum(["executor", "runner"]),
+            kind: z.string(),
             agentId: z.string().optional(),
             installationId: z.string().optional(),
           })
@@ -636,7 +703,7 @@ export const factoryLeanDeliveryResolve = defineRpc({
     jobId: z.string().min(1),
     action: z.enum(["verify-only", "rerun", "abandon"]),
   }),
-  output: z.union([z.strictObject({ resolved: z.literal(true) }), refusal.strict()]),
+  output: z.union([z.object({ resolved: z.literal(true) }), refusal]),
 });
 
 const pendingBetaInput = z.strictObject({ projectId, eventId: z.string().min(1) });

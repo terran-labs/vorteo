@@ -99,6 +99,11 @@ const SERIALIZABLE_CONFIG_SCHEMA = z
     quotaReserve: QuotaReserveConfigSchema.optional(),
     mcpServers: z.record(z.string(), z.any()).nullable().optional(),
     toolAccess: z.literal("none").optional(),
+    factoryCodexBoundary: z.enum(["checkout-write", "no-tool-effects"]).optional(),
+    factoryReviewHead: z
+      .string()
+      .regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/)
+      .optional(),
   })
   .nullable()
   .optional();
@@ -225,6 +230,8 @@ export type SerializableAgentConfig = Pick<
   | "quotaReserve"
   | "mcpServers"
   | "toolAccess"
+  | "factoryReviewHead"
+  | "factoryCodexBoundary"
 >;
 
 export type StoredAgentRecord = z.infer<typeof STORED_AGENT_SCHEMA>;
@@ -1543,6 +1550,15 @@ function preserveOwnedRecordFields({ record, existing, options }: OwnedRecordFie
 
 /** Tool access is fixed at creation. No later snapshot or update can widen it. */
 function preserveToolAccess(record: StoredAgentRecord, existing: StoredAgentRecord | null): void {
+  if (existing?.config?.factoryCodexBoundary) {
+    record.config = {
+      ...record.config,
+      factoryCodexBoundary: existing.config.factoryCodexBoundary,
+    };
+  }
+  if (existing?.config?.factoryReviewHead) {
+    record.config = { ...record.config, factoryReviewHead: existing.config.factoryReviewHead };
+  }
   if (existing?.config?.toolAccess === "none" && record.config?.toolAccess !== "none") {
     record.config = { ...record.config, toolAccess: "none" };
   }

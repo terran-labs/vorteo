@@ -107,6 +107,12 @@ describe("Codex executable discovery", () => {
 });
 
 import { CodexAppServerClient } from "./codex/app-server-transport.js";
+import {
+  factoryCodexArgs,
+  factoryCodexConfig,
+  type FactoryCodexOpening,
+  type FactoryManagedCodexAccount,
+} from "./codex/factory-boundary.js";
 
 import { QuotaConstructionCleanupError } from "../agent-sdk-types.js";
 
@@ -381,6 +387,170 @@ function createProviderWithFakeAppServer(
   internals.spawnAppServer = async () => appServer.child;
   return provider;
 }
+
+test.skipIf(process.platform !== "darwin")(
+  "managed Factory Codex pins the native account on launch and resume",
+  async () => {
+    const root = await realpath(await mkdtemp(path.join(tmpdir(), "factory-managed-codex-")));
+    const cwd = path.join(root, "checkout");
+    const codexHome = path.join(root, "managed-home");
+    const codexBinary = path.join(root, "installed-codex");
+    mkdirSync(cwd);
+    mkdirSync(codexHome, { mode: 0o700 });
+    writeFileSync(codexBinary, "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+    const customProvider = { id: "codex-managed-test", label: "Managed", extends: "codex" };
+    const account: FactoryManagedCodexAccount = {
+      providerId: customProvider.id,
+      accountKey: "installation-account",
+      codexHome,
+      codexBinary,
+    };
+    const boundary = "no-tool-effects";
+    const runtimeSettings = {
+      command: { mode: "replace" as const, argv: [codexBinary] },
+      env: { CODEX_HOME: codexHome },
+    };
+    const launchContext = {
+      env: { CODEX_HOME: "/different/home", OPENAI_API_KEY: "unused-fixture-value" },
+    };
+    const config = createConfig({ cwd, factoryCodexBoundary: boundary });
+    const authority = vi.fn<() => Promise<FactoryManagedCodexAccount | null>>(async () => account);
+    const safeConfig = { ...factoryCodexConfig(boundary), model_provider: "openai" };
+    const response = {
+      cwd,
+      runtimeWorkspaceRoots: [cwd],
+      thread: { id: "thread-1" },
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandbox: { type: "readOnly", networkAccess: false },
+    };
+
+    function fixture(effectiveConfig: Record<string, unknown> = safeConfig) {
+      const rpc = createFakeCodexAppServer({
+        initialize: () => ({ userAgent: "codex/0.162.1" }),
+        "config/read": () => ({ config: effectiveConfig }),
+        "thread/start": () => response,
+        "thread/resume": () => response,
+      });
+      const provider = new CodexAppServerAgentClient(createTestLogger(), runtimeSettings, {
+        customProvider,
+        factoryManagedAccount: authority,
+      });
+      interface NativeSpawnOptions {
+        factoryBoundary: typeof boundary;
+        factoryOpening: FactoryCodexOpening;
+        environment: Record<string, string>;
+      }
+      const internals = castInternals<{
+        spawnAppServer(
+          env: unknown,
+          options: NativeSpawnOptions,
+        ): Promise<ChildProcessWithoutNullStreams>;
+        nativeStartCommand(boundary: string, opening: FactoryCodexOpening): Promise<unknown>;
+      }>(provider);
+      const spawn = vi.fn(async (_env: unknown, options: NativeSpawnOptions) => {
+        expect(options.environment).toEqual({
+          HOME: codexHome,
+          CODEX_HOME: codexHome,
+          PATH: "/usr/bin:/bin",
+          SHELL: "/bin/sh",
+        });
+        await expect(
+          internals.nativeStartCommand(options.factoryBoundary, options.factoryOpening),
+        ).resolves.toMatchObject({
+          launchPrefix: { command: codexBinary },
+          args: ["app-server", ...factoryCodexArgs(boundary)],
+        });
+        return rpc.child;
+      });
+      internals.spawnAppServer = spawn;
+      return { rpc, provider, spawn };
+    }
+
+    const first = fixture();
+    const resumed = fixture();
+    const unsafe = fixture({ ...safeConfig, notify: ["/usr/bin/false"] });
+    const sessions: AgentSession[] = [];
+    try {
+      const session = await first.provider.createSession(config, launchContext);
+      sessions.push(session);
+      await session.startTurn("Persist a synthetic Factory conversation");
+      await first.rpc.waitForTurnStart();
+      const saving = waitForNextEvent(session, "thread_started");
+      first.rpc.startsTurn({ threadId: "thread-1" });
+      await saving;
+      const handle = session.describePersistence()!;
+      expect(handle.metadata).toMatchObject({ factoryCodexBoundary: boundary });
+      expect(handle.metadata?.factoryAccountIdentity).toEqual(expect.any(String));
+      await session.close();
+      sessions.pop();
+
+      // No launch override is needed to keep the persisted policy pinned.
+      const same = await resumed.provider.resumeSession(handle, undefined, launchContext);
+      sessions.push(same);
+      const methods = resumed.rpc.requests().map(({ method }) => method);
+      expect(methods).toContain("thread/resume");
+      expect(methods.lastIndexOf("config/read")).toBeLessThan(methods.indexOf("thread/resume"));
+      expect(methods).not.toContain("account/login/start");
+      const permissions = vi.fn();
+      const stopListening = same.subscribe((event) => {
+        if (event.type === "permission_requested") permissions(event);
+      });
+      resumed.rpc.child.stdout.write(
+        JSON.stringify({
+          id: 9001,
+          method: "item/tool/requestUserInput",
+          params: {
+            threadId: "thread-1",
+            turnId: "trial-turn",
+            itemId: "fixture-question",
+            questions: [],
+          },
+        }) + "\n",
+      );
+      // The native transport acknowledges requests with an empty result when no handler exists.
+      await expect
+        .poll(() => resumed.rpc.requests().find(({ id }) => id === 9001))
+        .toEqual({ id: 9001, result: {} });
+      expect(permissions).not.toHaveBeenCalled();
+      stopListening();
+      expect(authority).toHaveBeenCalledTimes(2);
+
+      authority.mockResolvedValueOnce({ ...account, accountKey: "different-installation-account" });
+      await expect(resumed.provider.resumeSession(handle)).rejects.toThrow(/account changed/);
+      authority.mockResolvedValueOnce({ ...account, providerId: "codex-different" });
+      await expect(resumed.provider.resumeSession(handle)).rejects.toThrow(
+        /no verified managed account/,
+      );
+      await expect(
+        resumed.provider.resumeSession(handle, { factoryCodexBoundary: "checkout-write" }),
+      ).rejects.toThrow(/boundary changed/);
+      expect(resumed.spawn).toHaveBeenCalledTimes(1);
+
+      await expect(unsafe.provider.resumeSession(handle)).rejects.toThrow(/verify the Factory/);
+      expect(unsafe.rpc.requests().map(({ method }) => method)).not.toContain("thread/resume");
+
+      const noBinding = new CodexAppServerAgentClient(createTestLogger(), runtimeSettings, {
+        customProvider,
+      });
+      await expect(noBinding.createSession(config)).rejects.toThrow(/no verified managed account/);
+      const customCommand = new CodexAppServerAgentClient(
+        createTestLogger(),
+        {
+          ...runtimeSettings,
+          command: { mode: "replace", argv: [codexBinary, "--extra"] },
+        },
+        { customProvider, factoryManagedAccount: authority },
+      );
+      await expect(customCommand.createSession(config)).rejects.toThrow(
+        /unverified native command/,
+      );
+    } finally {
+      await Promise.all(sessions.map((session) => session.close()));
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
 
 function createGovernedAppServer(
   accountId = "reserved-account",

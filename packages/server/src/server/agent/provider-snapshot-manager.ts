@@ -40,6 +40,7 @@ import {
   buildProviderRegistry,
   shutdownAgentClients,
   type ProviderDefinition,
+  type ResolveFactoryManagedCodexAccount,
 } from "./provider-registry.js";
 import { BUILTIN_PROVIDER_IDS } from "@getpaseo/protocol/provider-manifest";
 import { applyMutableProviderConfigToOverrides } from "../daemon-config-store.js";
@@ -128,6 +129,7 @@ export interface ProviderSnapshotManagerOptions {
   openCodeBridge?: OpenCodeBridge;
   /** Routes eligible sessions through the durable session host. */
   sessionHost?: HostedSessionRouting;
+  resolveFactoryManagedCodexAccount?: ResolveFactoryManagedCodexAccount;
 }
 
 interface ProviderSnapshotRefreshOptions {
@@ -254,6 +256,7 @@ export class ProviderSnapshotManager {
   private readonly managedProcesses?: ManagedProcessRegistry;
   private readonly openCodeBridge?: OpenCodeBridge;
   private readonly sessionHost?: HostedSessionRouting;
+  private readonly resolveFactoryManagedCodexAccount?: ResolveFactoryManagedCodexAccount;
   private readonly isDev: boolean;
   private readonly extraClients: Partial<Record<AgentProvider, AgentClient>>;
   private runtimeSettings: AgentProviderRuntimeSettingsMap | undefined;
@@ -274,6 +277,10 @@ export class ProviderSnapshotManager {
     this.managedProcesses = options.managedProcesses;
     this.openCodeBridge = options.openCodeBridge;
     this.sessionHost = options.sessionHost;
+    this.resolveFactoryManagedCodexAccount = options.resolveFactoryManagedCodexAccount;
+    if (this.sessionHost && this.resolveFactoryManagedCodexAccount) {
+      this.sessionHost.resolveFactoryManagedCodexAccount = this.resolveFactoryManagedCodexAccount;
+    }
     this.isDev = options.isDev === true;
     this.extraClients = options.extraClients ?? {};
     this.runtimeSettings = options.runtimeSettings;
@@ -778,6 +785,7 @@ export class ProviderSnapshotManager {
       managedProcesses: this.managedProcesses,
       openCodeBridge: this.openCodeBridge,
       sessionHost: this.sessionHost,
+      resolveFactoryManagedCodexAccount: this.resolveFactoryManagedCodexAccount,
       isDev: this.isDev,
     });
 

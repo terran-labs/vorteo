@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { chmod } from "node:fs/promises";
 import net from "node:net";
@@ -18,6 +19,8 @@ import {
   MAX_HELLO_FRAME_BYTES,
   SELF_PROBE_RELEASE,
   SESSION_HOST_PROTOCOL_VERSION,
+  FACTORY_CODEX_HELLO_SUFFIX,
+  type FactoryManagedCodexBinding,
   SessionHostRequestSchema,
   type AttachResult,
   type DroppedEvent,
@@ -62,6 +65,7 @@ export type HostedSessionFactory = (input: {
   sessionId: string;
   provider: string;
   config: JsonValue;
+  factoryManagedCodex?: FactoryManagedCodexBinding;
 }) => Promise<HostedSessionPort>;
 
 export interface SessionHostLimits {
@@ -148,6 +152,7 @@ export interface SessionHostOptions {
   /** Given to every worker at hello; see the hello reply in the protocol. */
   mcpToken: string;
   openSession: HostedSessionFactory;
+  factoryManagedCodex?: true;
   /** Records authentication, attach and detach outcomes. */
   audit?: SessionHostAuditSink;
   /** Reported to workers and the audit log. */
@@ -179,6 +184,7 @@ interface LoggedEvent {
 
 interface HostedSessionState {
   provider: string;
+  factoryManagedCodex?: FactoryManagedCodexBinding;
   port: HostedSessionPort;
   log: LoggedEvent[];
   retainedBytes: number;
@@ -395,6 +401,9 @@ export async function startSessionHost(options: SessionHostOptions): Promise<Ses
         sessionId: request.sessionId,
         provider: request.provider,
         config: request.config,
+        ...(request.factoryManagedCodex
+          ? { factoryManagedCodex: request.factoryManagedCodex }
+          : {}),
       });
     } finally {
       opening.delete(request.sessionId);
@@ -405,6 +414,7 @@ export async function startSessionHost(options: SessionHostOptions): Promise<Ses
     }
     const state: HostedSessionState = {
       provider: request.provider,
+      factoryManagedCodex: request.factoryManagedCodex,
       port,
       log: [],
       retainedBytes: 0,
@@ -424,7 +434,7 @@ export async function startSessionHost(options: SessionHostOptions): Promise<Ses
       sessionId: request.sessionId,
       provider: request.provider,
     });
-    return attachTo(connection, request.sessionId, 0).result;
+    return attachTo(connection, request.sessionId, 0, request.factoryManagedCodex).result;
   }
 
   /**
@@ -435,8 +445,11 @@ export async function startSessionHost(options: SessionHostOptions): Promise<Ses
     connection: Connection,
     sessionId: string,
     requestedAfterSeq: number | null,
+    factoryManagedCodex?: FactoryManagedCodexBinding,
   ): { result: AttachResult; afterSeq: number } {
     const state = requireSession(sessionId);
+    if (!isDeepStrictEqual(state.factoryManagedCodex, factoryManagedCodex))
+      throw new HostError("unauthorized", "The hosted Factory account binding changed.");
     const lastSeq = state.nextSeq - 1;
     // Null attaches at the newest event: no replay, so nothing missed can be refused.
     const afterSeq = requestedAfterSeq ?? lastSeq;
@@ -618,7 +631,7 @@ export async function startSessionHost(options: SessionHostOptions): Promise<Ses
    * frame are left out; the worker then attaches those sessions and gets their state from the
    * attach result.
    */
-  function list(): SessionList {
+  function list(factoryManagedCodex: boolean): SessionList {
     let budget = limits.maxFrameBytes / 2;
     return {
       sessions: [...sessions].map(([sessionId, state]) => {
@@ -631,6 +644,13 @@ export async function startSessionHost(options: SessionHostOptions): Promise<Ses
           provider: state.provider,
           lastSeq: state.nextSeq - 1,
           attached: state.attached !== null && !state.attached.destroyed(),
+          factoryCodexPlacement:
+            factoryManagedCodex && state.factoryManagedCodex
+              ? {
+                  providerId: state.factoryManagedCodex.providerId,
+                  boundary: state.factoryManagedCodex.boundary,
+                }
+              : undefined,
           snapshot,
         };
       }),
@@ -720,6 +740,7 @@ export async function startSessionHost(options: SessionHostOptions): Promise<Ses
     }, limits.helloTimeoutMs);
     helloTimer.unref();
 
+    let factoryManagedCodex = false;
     function greet(frame: unknown): void {
       const envelope = HelloEnvelopeSchema.safeParse(frame);
       if (!envelope.success) {
@@ -742,6 +763,9 @@ export async function startSessionHost(options: SessionHostOptions): Promise<Ses
         reject("invalid_frame", "Malformed session host hello.", "invalid_frame");
         return;
       }
+      const release = hello.data.client.release;
+      const requestedFactoryCodex = release?.endsWith(FACTORY_CODEX_HELLO_SUFFIX) === true;
+      factoryManagedCodex = requestedFactoryCodex && options.factoryManagedCodex === true;
       phase = "ready";
       clearTimeout(helloTimer);
       reader.setMaxFrameBytes(limits.maxFrameBytes);
@@ -754,13 +778,16 @@ export async function startSessionHost(options: SessionHostOptions): Promise<Ses
           event: "hello_accepted",
           connectionId,
           clientPid: hello.data.client.pid,
-          clientRelease: hello.data.client.release,
+          clientRelease: requestedFactoryCodex
+            ? release?.slice(0, -FACTORY_CODEX_HELLO_SUFFIX.length) || undefined
+            : release,
         });
       connection.send({
         type: "hello",
         protocolVersion: SESSION_HOST_PROTOCOL_VERSION,
         host: identity,
         mcpToken: options.mcpToken,
+        ...(factoryManagedCodex ? { factoryManagedCodex: true as const } : {}),
       });
     }
 
@@ -797,6 +824,14 @@ export async function startSessionHost(options: SessionHostOptions): Promise<Ses
     }
 
     function dispatch(request: SessionHostRequest): void {
+      if (
+        (request.type === "open" || request.type === "attach") &&
+        request.factoryManagedCodex &&
+        !factoryManagedCodex
+      ) {
+        fail(request.requestId, new HostError("unauthorized", "Managed Codex was not negotiated."));
+        return;
+      }
       switch (request.type) {
         case "ack":
           acknowledge(connection, request.sessionId, request.seq);
@@ -812,13 +847,18 @@ export async function startSessionHost(options: SessionHostOptions): Promise<Ses
         case "history":
         case "list":
           answer(request.requestId, () =>
-            request.type === "list" ? list() : history(connection, request),
+            request.type === "list" ? list(factoryManagedCodex) : history(connection, request),
           );
           return;
         case "attach": {
           let attached: { result: AttachResult; afterSeq: number };
           try {
-            attached = attachTo(connection, request.sessionId, request.afterSeq);
+            attached = attachTo(
+              connection,
+              request.sessionId,
+              request.afterSeq,
+              request.factoryManagedCodex,
+            );
           } catch (error) {
             if (error instanceof HostError && error.code === "not_found")
               audit({

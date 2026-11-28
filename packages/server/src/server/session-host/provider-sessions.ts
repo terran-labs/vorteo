@@ -13,6 +13,7 @@ import {
 import { createAgentSessionPort } from "./agent-session-port.js";
 import type { HostedSessionFactory, HostedSessionPort } from "./host.js";
 import { HostedOpenRequestSchema, type HostedOpenRequest } from "./session-contract.js";
+import { FactoryCodexBoundarySchema, type FactoryManagedCodexBinding } from "./protocol.js";
 import { isToolRelayServer } from "./tool-relay-config.js";
 import type { ToolRelay, ToolRelaySession } from "./tool-relay.js";
 
@@ -23,6 +24,7 @@ export type HostedClientFactory = (input: {
   /** A derived provider (an account) the worker would have built the client for. */
   customProvider?: { id: string; label: string; extends: string };
   logger: Logger;
+  factoryManagedCodex?: FactoryManagedCodexBinding;
 }) => AgentClient;
 
 /** Phase 1 ran Claude only; phase 2 adds Codex. Derived account providers report these base ids. */
@@ -98,20 +100,21 @@ export function createProviderSessionFactory(input: {
   toolRelay?: ToolRelay | null;
 }): HostedSessionFactory {
   const providers = input.providers ?? HOSTED_PROVIDERS;
-  return async ({ sessionId, provider, config }) => {
+  return async ({ sessionId, provider, config, factoryManagedCodex }) => {
     if (!providers.includes(provider))
       throw new HostedOpenRefusedError(`The session host does not run ${provider} sessions.`);
     const parsed = HostedOpenRequestSchema.safeParse(config);
     if (!parsed.success) throw new HostedOpenRefusedError("The session open request is malformed.");
     let request = withoutStaleRelay(parsed.data);
+    requireManagedCodexBinding(sessionId, provider, request, factoryManagedCodex);
     let relay: ToolRelaySession | null = null;
-    const url = input.toolRelay ? directToolUrl(request) : null;
+    const url = input.toolRelay && !factoryManagedCodex ? directToolUrl(request) : null;
     if (url && input.toolRelay) {
       relay = await input.toolRelay.open(sessionId, url);
       if (relay) request = withRelay(request, relay);
     }
     try {
-      const port = await openProviderSession(input, provider, request);
+      const port = await openProviderSession(input, provider, request, factoryManagedCodex);
       return relay ? withRelayClose(port, relay) : port;
     } catch (error) {
       await relay?.close();
@@ -120,10 +123,39 @@ export function createProviderSessionFactory(input: {
   };
 }
 
+function requireManagedCodexBinding(
+  sessionId: string,
+  provider: string,
+  request: HostedOpenRequest,
+  binding: FactoryManagedCodexBinding | undefined,
+): void {
+  const declared = [
+    request.config.factoryCodexBoundary,
+    request.handle?.metadata?.factoryCodexBoundary,
+    request.overrides?.factoryCodexBoundary,
+  ].filter((value) => value !== undefined);
+  if (!binding && declared.length === 0) return;
+  const boundary = FactoryCodexBoundarySchema.safeParse(request.config.factoryCodexBoundary);
+  if (
+    !binding ||
+    !boundary.success ||
+    provider !== "codex" ||
+    request.agentId !== sessionId ||
+    request.config.provider !== provider ||
+    (request.customProvider && request.customProvider.extends !== provider) ||
+    (request.customProvider?.id ?? provider) !== binding.providerId ||
+    binding.boundary !== boundary.data ||
+    declared.some((value) => value !== binding.boundary)
+  ) {
+    throw new HostedOpenRefusedError("The hosted Factory Codex account binding is invalid.");
+  }
+}
+
 async function openProviderSession(
   input: { logger: Logger; createClient: HostedClientFactory },
   provider: string,
   request: HostedOpenRequest,
+  factoryManagedCodex?: FactoryManagedCodexBinding,
 ): Promise<HostedSessionPort> {
   {
     const client = input.createClient({
@@ -131,6 +163,7 @@ async function openProviderSession(
       runtimeSettings: request.runtimeSettings as ProviderRuntimeSettings | undefined,
       ...(request.customProvider ? { customProvider: request.customProvider } : {}),
       logger: input.logger,
+      ...(factoryManagedCodex ? { factoryManagedCodex } : {}),
     });
     const launchContext: AgentLaunchContext = { agentId: request.agentId, env: request.launchEnv };
     let session;

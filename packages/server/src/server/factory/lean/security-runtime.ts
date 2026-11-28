@@ -106,6 +106,69 @@ function validJob(job: SecurityReviewJob): boolean {
   );
 }
 
+export async function readExactReviewEvidence(
+  source: LeanEvidenceSource,
+  sensitivePaths: readonly string[] = [],
+  git = createEvidenceGit(),
+): Promise<string | null> {
+  try {
+    const mergeBase = (
+      await git(source.gitDirectory, ["merge-base", "--all", source.baseSha, source.head])
+    ).trim();
+    if (!oid.test(mergeBase)) return null;
+    const files = await git(
+      source.gitDirectory,
+      [
+        "diff",
+        "--no-textconv",
+        "--no-ext-diff",
+        "--no-renames",
+        "--unified=1000",
+        mergeBase,
+        source.head,
+        "--",
+      ],
+      { maxBuffer: maxReviewBytes },
+    );
+    const blobs = [];
+    for (const path of sensitivePaths) {
+      const spec = `${source.head}:${path}`;
+      const listing = await git(source.gitDirectory, [
+        "--literal-pathspecs",
+        "ls-tree",
+        source.head,
+        "--",
+        path,
+      ]);
+      if (!listing) {
+        blobs.push({ path, text: null });
+        continue;
+      }
+      if (!/^100(?:644|755) blob /u.test(listing)) return null;
+      const text = await git(source.gitDirectory, ["cat-file", "blob", spec], {
+        maxBuffer: maxReviewBytes,
+      });
+      if (text.includes("\0") || text.includes("\uFFFD")) return null;
+      blobs.push({ path, text });
+    }
+    const evidence = JSON.stringify({
+      head: source.head,
+      mergeBase,
+      patch: files,
+      sensitiveFilesAtHead: blobs,
+    });
+    if (
+      Buffer.byteLength(evidence, "utf8") > maxReviewBytes ||
+      files.includes("\uFFFD") ||
+      /^Binary files /mu.test(files)
+    )
+      return null;
+    return evidence;
+  } catch {
+    return null;
+  }
+}
+
 export function createSecurityRuntime(options: SecurityRuntimeOptions): SecurityReviewPort {
   const { projectId, state, repository, now } = options;
   const git = createEvidenceGit(options.gitBinary);
@@ -216,68 +279,6 @@ export function createSecurityRuntime(options: SecurityRuntimeOptions): Security
       throw new Error(
         "The Security Reviewer checkout does not match its detached read-only input.",
       );
-    }
-  }
-
-  async function reviewEvidence(
-    job: SecurityReviewJob,
-    source: LeanEvidenceSource,
-  ): Promise<string | null> {
-    try {
-      const mergeBase = (
-        await git(source.gitDirectory, ["merge-base", "--all", source.baseSha, source.head])
-      ).trim();
-      if (!oid.test(mergeBase)) return null;
-      const files = await git(
-        source.gitDirectory,
-        [
-          "diff",
-          "--no-textconv",
-          "--no-ext-diff",
-          "--no-renames",
-          "--unified=1000",
-          mergeBase,
-          source.head,
-          "--",
-        ],
-        { maxBuffer: maxReviewBytes },
-      );
-      const blobs = [];
-      for (const path of job.sensitivePaths) {
-        const spec = `${source.head}:${path}`;
-        const listing = await git(source.gitDirectory, [
-          "--literal-pathspecs",
-          "ls-tree",
-          source.head,
-          "--",
-          path,
-        ]);
-        if (!listing) {
-          blobs.push({ path, text: null });
-          continue;
-        }
-        if (!/^100(?:644|755) blob /u.test(listing)) return null;
-        const text = await git(source.gitDirectory, ["cat-file", "blob", spec], {
-          maxBuffer: maxReviewBytes,
-        });
-        if (text.includes("\0") || text.includes("\uFFFD")) return null;
-        blobs.push({ path, text });
-      }
-      const evidence = JSON.stringify({
-        head: source.head,
-        mergeBase,
-        patch: files,
-        sensitiveFilesAtHead: blobs,
-      });
-      if (
-        Buffer.byteLength(evidence, "utf8") > maxReviewBytes ||
-        files.includes("\uFFFD") ||
-        /^Binary files /mu.test(files)
-      )
-        return null;
-      return evidence;
-    } catch {
-      return null;
     }
   }
 
@@ -449,7 +450,7 @@ export function createSecurityRuntime(options: SecurityRuntimeOptions): Security
     }
     const source = await options.sourceForHead({ issue: job.issue, headSha: job.headSha });
     if (source?.repository !== repository || source.head !== job.headSha) return null;
-    const evidence = await reviewEvidence(job, source);
+    const evidence = await readExactReviewEvidence(source, job.sensitivePaths, git);
     if (!evidence) return null;
     const cwd = await snapshot(identity, source);
     const launch = prior ?? (await reserve(job, identity, cwd));

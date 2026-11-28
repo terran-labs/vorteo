@@ -10,6 +10,9 @@ import {
   type LoggedHistoryPage,
   MAX_FRAME_BYTES,
   SESSION_HOST_PROTOCOL_VERSION,
+  FACTORY_CODEX_HELLO_SUFFIX,
+  SELF_PROBE_RELEASE,
+  type FactoryManagedCodexBinding,
   SessionHostReplySchema,
   type AttachResult,
   type HelloRequest,
@@ -77,6 +80,7 @@ export function isSessionHostFrameTooLargeError(
 export type HostedEventListener = (event: JsonValue, seq: number) => void;
 
 interface Greeting {
+  factoryManagedCodex?: true;
   host: HostIdentity;
   mcpToken: string;
 }
@@ -108,13 +112,23 @@ export interface SessionHostClient {
   readonly host: HostIdentity;
   /** Bearer token the worker's agent tool endpoint must accept for hosted providers. */
   readonly mcpToken: string;
+  readonly factoryManagedCodex?: true;
   /** True once the connection has ended. */
   readonly closed: boolean;
   /** Every session the host runs, so a starting worker can decide which ones to attach. */
   list(): Promise<HostedSessionSummary[]>;
-  open(input: { sessionId: string; provider: string; config: JsonValue }): Promise<HostedSession>;
+  open(input: {
+    sessionId: string;
+    provider: string;
+    config: JsonValue;
+    factoryManagedCodex?: FactoryManagedCodexBinding;
+  }): Promise<HostedSession>;
   /** afterSeq null attaches at the newest event, without replay. */
-  attach(input: { sessionId: string; afterSeq: number | null }): Promise<HostedSession>;
+  attach(input: {
+    sessionId: string;
+    afterSeq: number | null;
+    factoryManagedCodex?: FactoryManagedCodexBinding;
+  }): Promise<HostedSession>;
   /** Called once when the connection ends for any reason. */
   onClose(listener: (error: SessionHostClientError) => void): void;
   close(): void;
@@ -197,7 +211,11 @@ export async function connectSessionHost(
           terminate(new SessionHostClientError("version", "Session host protocol differs."));
           return;
         }
-        greeted?.({ host: reply.host, mcpToken: reply.mcpToken });
+        greeted?.({
+          host: reply.host,
+          mcpToken: reply.mcpToken,
+          factoryManagedCodex: reply.factoryManagedCodex,
+        });
         greeted = null;
         return;
       case "event": {
@@ -300,7 +318,7 @@ export async function connectSessionHost(
   }
 
   const connectTimeoutMs = options.connectTimeoutMs ?? 5_000;
-  const { host, mcpToken } = await new Promise<Greeting>((resolve, reject) => {
+  const { host, mcpToken, factoryManagedCodex } = await new Promise<Greeting>((resolve, reject) => {
     const timer = setTimeout(
       () =>
         terminate(new SessionHostClientError("timeout", "Session host did not answer in time.")),
@@ -316,7 +334,14 @@ export async function connectSessionHost(
         type: "hello",
         protocolVersion: SESSION_HOST_PROTOCOL_VERSION,
         token: options.token,
-        client: { pid: process.pid, ...(options.release ? { release: options.release } : {}) },
+        client: {
+          pid: process.pid,
+          release:
+            options.release === SELF_PROBE_RELEASE
+              ? options.release
+              : (options.release ?? "").slice(0, 200 - FACTORY_CODEX_HELLO_SUFFIX.length) +
+                FACTORY_CODEX_HELLO_SUFFIX,
+        },
       }),
     );
   });
@@ -412,6 +437,7 @@ export async function connectSessionHost(
   return {
     host,
     mcpToken,
+    factoryManagedCodex,
     async list() {
       const value = await call((requestId) => ({ type: "list", requestId }));
       const parsed = SessionListSchema.safeParse(value);
@@ -422,15 +448,27 @@ export async function connectSessionHost(
     get closed() {
       return closeError !== null;
     },
-    open: ({ sessionId, provider, config }) =>
-      bind(sessionId, 0, (requestId) => ({ type: "open", requestId, sessionId, provider, config })),
-    attach: ({ sessionId, afterSeq }) =>
-      bind(sessionId, afterSeq, (requestId) => ({
+    async open({ sessionId, provider, config, factoryManagedCodex: binding }) {
+      if (binding && !factoryManagedCodex) throw unsupportedManagedCodex();
+      return bind(sessionId, 0, (requestId) => ({
+        type: "open",
+        requestId,
+        sessionId,
+        provider,
+        config,
+        factoryManagedCodex: binding,
+      }));
+    },
+    async attach({ sessionId, afterSeq, factoryManagedCodex: binding }) {
+      if (binding && !factoryManagedCodex) throw unsupportedManagedCodex();
+      return bind(sessionId, afterSeq, (requestId) => ({
         type: "attach",
         requestId,
         sessionId,
         afterSeq,
-      })),
+        factoryManagedCodex: binding,
+      }));
+    },
     onClose(listener) {
       if (closeError) listener(closeError);
       else closeListeners.push(listener);
@@ -443,6 +481,13 @@ export async function connectSessionHost(
         ),
       ),
   };
+}
+
+function unsupportedManagedCodex(): SessionHostClientError {
+  return new SessionHostClientError(
+    "version",
+    "The session host does not support confined Codex accounts.",
+  );
 }
 
 function parseLine(line: string): unknown {

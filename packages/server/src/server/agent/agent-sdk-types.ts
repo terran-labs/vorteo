@@ -698,6 +698,10 @@ export interface AgentSessionConfig {
    * creation, and preserved by every later launch and reconfiguration.
    */
   toolAccess?: AgentToolAccessSetting;
+  /** Daemon-only admission policy for a Factory checkout Reviewer. */
+  factoryReviewHead?: string;
+  /** Internal macOS Factory policy. No wire input may set it. */
+  factoryCodexBoundary?: "checkout-write" | "no-tool-effects";
   /**
    * Internal agents are hidden from listings and don't trigger notifications.
    * They are used for ephemeral system tasks like commit/PR generation.

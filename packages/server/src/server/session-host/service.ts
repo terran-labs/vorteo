@@ -174,10 +174,11 @@ async function loadProviderClientFactory(
     import("../agent/providers/claude/agent.js"),
     import("../agent/providers/codex-app-server-agent.js"),
   ]);
-  return ({ provider, logger, runtimeSettings, customProvider }) => {
+  return ({ provider, logger, runtimeSettings, customProvider, factoryManagedCodex }) => {
     if (provider === "codex")
       return new CodexAppServerAgentClient(logger, runtimeSettings, {
         customProvider,
+        ...(factoryManagedCodex ? { factoryManagedAccount: async () => factoryManagedCodex } : {}),
         workspaceGitService: { resolveRepoRoot },
         onChildSpawned: (child, context) => {
           if (child.pid === undefined) return;
@@ -399,6 +400,7 @@ export async function startSessionHostService(
       // without invalidating the running host's token.
       token: () => rotateSessionHostToken(paths),
       mcpToken,
+      factoryManagedCodex: true,
       openSession: createProviderSessionFactory({
         logger: sessionLogger,
         createClient,

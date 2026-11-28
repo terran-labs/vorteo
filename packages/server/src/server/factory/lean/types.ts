@@ -150,6 +150,8 @@ export interface PullRef {
 /** A reviewer's verdict, bound to the commit it reviewed. */
 export interface Verdict {
   sha: string;
+  /** Explicitly recorded when the Reviewer received only the complete daemon diff. */
+  scope?: "diff-only";
   approved: boolean;
   reviewer: RunnerRef;
   /** Findings text for a rejection, verbatim from the reviewer's reply. */
@@ -243,6 +245,14 @@ export interface DeliveryLock {
 }
 
 export interface DeliveryReceipt {
+  /** Frozen artifact and verified SHA-256 digest in the private delivery ledger. */
+  artifact?: {
+    id: string;
+    digest: string;
+    dependencies?: { target: string; lockfile: string } | null;
+  } | null;
+  tags?: { name: string; object: string }[];
+  tagsNotPublished?: string | null;
   jobId: string;
   /** First-parent changes on the default branch observed during the deploy step. */
   branch?: {
