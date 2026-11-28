@@ -2,7 +2,7 @@ import { getProviderProbeCwd } from "../utils/provider-probe-cwd.js";
 import { constants, existsSync } from "node:fs";
 import { access, lstat, readlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { delimiter, isAbsolute, resolve } from "node:path";
 import type { ProcessEnvRecord } from "../server/paseo-env.js";
 import { execCommand } from "../utils/spawn.js";
 import which from "which";
@@ -137,7 +137,7 @@ export function fallbackExecutableDirs(env?: ProcessEnvRecord): string[] {
   for (const entry of POSIX_FALLBACK_BIN_DIRS) {
     let dir = "";
     if ("homeRelative" in entry) {
-      if (home) dir = join(home, entry.homeRelative);
+      if (home) dir = `${home.replace(/\/+$/, "")}/${entry.homeRelative}`;
     } else {
       dir = entry.absolute;
     }
@@ -349,7 +349,7 @@ export async function findExecutable(
   for (const dir of fallbackExecutableDirs(env)) {
     const trustedDir = await resolveTrustedPosixPath(dir, "dir");
     if (!trustedDir) continue;
-    const trustedCandidate = await resolveTrustedExecutableFile(join(trustedDir, trimmed));
+    const trustedCandidate = await resolveTrustedExecutableFile(`${trustedDir}/${trimmed}`);
     if (trustedCandidate && !seen.has(trustedCandidate)) {
       seen.add(trustedCandidate);
       if (await probeExecutable(trustedCandidate, { probeTimeoutMs, env })) {

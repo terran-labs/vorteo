@@ -227,6 +227,34 @@ describe("findExecutable", () => {
       chmodSync(outsideTarget, 0o755);
       await expect(findExecutable("tricky-cli", opts)).resolves.toBe(realpathSync(outsideTarget));
 
+      // Embedded `..` in HOME must not be lexically folded before symlink expansion.
+      const homeWithDotDot = `${localBin}/dir-link/..`;
+      expect(fallbackExecutableDirs({ HOME: homeWithDotDot, PATH: emptyPathDir })[0]).toBe(
+        `${homeWithDotDot}/.local/bin`,
+      );
+      const outsideLocalBin = path.join(outsideRoot, ".local", "bin");
+      mkdirSync(outsideLocalBin, { recursive: true });
+      chmodSync(path.join(outsideRoot, ".local"), 0o755);
+      chmodSync(outsideLocalBin, 0o755);
+      const outsideHomeCli = writeExecutable(
+        path.join(outsideLocalBin, "home-dotdot-cli"),
+        "#!/bin/sh\necho outside-home\n",
+      );
+      chmodSync(outsideHomeCli, 0o775);
+      await expect(
+        findExecutable("home-dotdot-cli", {
+          env: { PATH: emptyPathDir, HOME: homeWithDotDot },
+          includeFallbackDirs: true,
+        }),
+      ).resolves.toBeNull();
+      chmodSync(outsideHomeCli, 0o755);
+      await expect(
+        findExecutable("home-dotdot-cli", {
+          env: { PATH: emptyPathDir, HOME: homeWithDotDot },
+          includeFallbackDirs: true,
+        }),
+      ).resolves.toBe(realpathSync(outsideHomeCli));
+
       // Group-writable ancestor on symlink target rejects symlinked fallback executable.
       chmodSync(targetSub, 0o775);
       await expect(findExecutable("sym-cli", opts)).resolves.toBeNull();
