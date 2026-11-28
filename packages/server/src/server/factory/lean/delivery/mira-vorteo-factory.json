@@ -57,8 +57,17 @@
     "records": ["release-notes/betas.tsv", "release-notes/history.tsv"],
     "milestoneTag": "m-factory-",
     "tags": {
-      "import": ["release-*"],
+      "import": ["release-*", "v*"],
       "publish": ["release-*", "v*"]
+    },
+    "artifact": {
+      "about": "Frozen copies are checked by the daemon itself, as a pure read: every file and symlink of ../Syn3h-stable/<id> except .wrangler (wrangler's own scratch state), plus where its node_modules link resolves and that directory's installed lockfile.",
+      "link": "Syn3h-stable",
+      "exclude": [".wrangler"],
+      "dependencies": {
+        "link": "node_modules",
+        "lockfile": ".package-lock.json"
+      }
     },
     "baselineCommit": "eee10bfe8365bcad6112337db901358913bbf0f2",
     "version": {
@@ -83,10 +92,10 @@
           "lockfile": "package-lock.json"
         }
       ],
-      "fingerprint": {
-        "about": "Read-only. Mira's own fingerprint of every deployable byte of the frozen copy, the hash release.sh records for a beta and checks before a promotion.",
+      "guard": {
+        "about": "Read-only. Refuses when the next release number or version already appears in Syn3h-stable, which means Mira released something the origin does not show yet.",
         "where": "host",
-        "run": "set -eu\ndigest=\"$(node tools/frozen-fingerprint.mjs hash \"../Syn3h-stable/$VORTEO_RELEASE_ARTIFACT\")\"\nprintf '{\"artifact\":\"%s\",\"digest\":\"%s\"}\\n' \"$VORTEO_RELEASE_ARTIFACT\" \"$digest\""
+        "run": "set -eu\nif [ -n \"${VORTEO_RELEASE_NUMBER:-}\" ] && cut -f1 ../Syn3h-stable/releases.tsv | grep -qx \"release-$VORTEO_RELEASE_NUMBER\"; then echo \"release-$VORTEO_RELEASE_NUMBER is already recorded in Syn3h-stable\" >&2; exit 3; fi\nnode -e 'const fs=require(\"fs\"),p=require(\"path\");const v=process.argv[1]||\"\";if(!v)process.exit(0);const root=\"../Syn3h-stable\";const bare=v.replace(/^v/,\"\");if(fs.existsSync(p.join(root,\"versions\",bare))){console.error(v+\" is archived in Syn3h-stable\");process.exit(3)}const approvals=fs.existsSync(p.join(root,\"approvals.tsv\"))?fs.readFileSync(p.join(root,\"approvals.tsv\"),\"utf8\").split(\"\\n\").map((l)=>l.split(\"\\t\")[0]):[];if(approvals.includes(v)){console.error(v+\" is approved in Syn3h-stable\");process.exit(3)}for(const d of fs.readdirSync(root)){try{if(JSON.parse(fs.readFileSync(p.join(root,d,\"dist\",\"build.json\"),\"utf8\")).version===v){console.error(v+\" is already frozen as \"+d);process.exit(3)}}catch{}}' \"${VORTEO_RELEASE_VERSION:-}\""
       },
       "releaseNumber": {
         "about": "Read-only. The next release-N after every release recorded in ../Syn3h-stable/releases.tsv and every release-N tag.",
@@ -100,7 +109,7 @@
       "verifyBeta": {
         "about": "Read-only. The newest betas.tsv row must be the accepted commit, and beta.mira.cc must serve exactly that frozen copy.",
         "where": "host",
-        "run": "set -eu\nrow=\"$(grep -v '^#' release-notes/betas.tsv | tail -1)\"\nversion=\"$(printf '%s' \"$row\" | cut -f1)\"\ncommit=\"$(git rev-parse --verify \"$(printf '%s' \"$row\" | cut -f3)^0\")\"\nfrozen=\"$(printf '%s' \"$row\" | cut -f5)\"\ntested=\"$(printf '%s' \"$row\" | cut -f6)\"\ndigest=\"$(node tools/frozen-fingerprint.mjs hash \"../Syn3h-stable/$frozen\")\"\n[ -n \"$tested\" ] && [ \"$digest\" = \"$tested\" ] || { echo \"$frozen hashes as $digest, not the $tested release.sh recorded\" >&2; exit 1; }\nserved=\"$(curl -sf --max-time 15 https://beta.mira.cc/build.json | node -e 'let s=\"\";process.stdin.on(\"data\",(d)=>(s+=d)).on(\"end\",()=>{const b=JSON.parse(s);process.stdout.write(b.id+\" \"+b.version)})')\"\n[ \"$served\" = \"$frozen $version\" ] || { echo \"beta.mira.cc serves $served, not $frozen $version\" >&2; exit 1; }\nnode tools/frozen-versions.mjs check https://beta.mira.cc/ \"../Syn3h-stable/$frozen\" >&2\nprintf '{\"version\":\"%s\",\"commit\":\"%s\",\"artifact\":\"%s\",\"digest\":\"%s\"}\\n' \"$version\" \"$commit\" \"$frozen\" \"$digest\""
+        "run": "set -eu\nrow=\"$(grep -v '^#' release-notes/betas.tsv | tail -1)\"\nversion=\"$(printf '%s' \"$row\" | cut -f1)\"\ncommit=\"$(git rev-parse --verify \"$(printf '%s' \"$row\" | cut -f3)^0\")\"\nfrozen=\"$(printf '%s' \"$row\" | cut -f5)\"\nserved=\"$(curl -sf --max-time 15 https://beta.mira.cc/build.json | node -e 'let s=\"\";process.stdin.on(\"data\",(d)=>(s+=d)).on(\"end\",()=>{const b=JSON.parse(s);process.stdout.write(b.id+\" \"+b.version)})')\"\n[ \"$served\" = \"$frozen $version\" ] || { echo \"beta.mira.cc serves $served, not $frozen $version\" >&2; exit 1; }\nnode tools/frozen-versions.mjs check https://beta.mira.cc/ \"../Syn3h-stable/$frozen\" >&2\nprintf '{\"version\":\"%s\",\"commit\":\"%s\",\"artifact\":\"%s\"}\\n' \"$version\" \"$commit\" \"$frozen\""
       },
       "promote": {
         "where": "host",
@@ -109,7 +118,7 @@
       "verifyStable": {
         "about": "Read-only. mira.cc must serve the frozen copy being promoted or restored, at that copy's own version.",
         "where": "host",
-        "run": "set -eu\nfrozen=\"../Syn3h-stable/$VORTEO_RELEASE_ARTIFACT\"\nversion=\"$(node -e 'process.stdout.write(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).version)' \"$frozen/dist/build.json\")\"\nserved=\"$(curl -sf --max-time 15 https://mira.cc/build.json | node -e 'let s=\"\";process.stdin.on(\"data\",(d)=>(s+=d)).on(\"end\",()=>{const b=JSON.parse(s);process.stdout.write(b.id+\" \"+b.version)})')\"\n[ \"$served\" = \"$VORTEO_RELEASE_ARTIFACT $version\" ] || { echo \"mira.cc serves $served, not $VORTEO_RELEASE_ARTIFACT $version\" >&2; exit 1; }\nnode tools/frozen-versions.mjs check https://mira.cc/ \"$frozen\" >&2\ndigest=\"$(node tools/frozen-fingerprint.mjs hash \"$frozen\")\"\nprintf '{\"version\":\"%s\",\"commit\":null,\"artifact\":\"%s\",\"digest\":\"%s\"}\\n' \"$version\" \"$VORTEO_RELEASE_ARTIFACT\" \"$digest\""
+        "run": "set -eu\nfrozen=\"../Syn3h-stable/$VORTEO_RELEASE_ARTIFACT\"\nversion=\"$(node -e 'process.stdout.write(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).version)' \"$frozen/dist/build.json\")\"\nserved=\"$(curl -sf --max-time 15 https://mira.cc/build.json | node -e 'let s=\"\";process.stdin.on(\"data\",(d)=>(s+=d)).on(\"end\",()=>{const b=JSON.parse(s);process.stdout.write(b.id+\" \"+b.version)})')\"\n[ \"$served\" = \"$VORTEO_RELEASE_ARTIFACT $version\" ] || { echo \"mira.cc serves $served, not $VORTEO_RELEASE_ARTIFACT $version\" >&2; exit 1; }\nnode tools/frozen-versions.mjs check https://mira.cc/ \"$frozen\" >&2\nprintf '{\"version\":\"%s\",\"commit\":null,\"artifact\":\"%s\"}\\n' \"$version\" \"$VORTEO_RELEASE_ARTIFACT\""
       },
       "rollback": {
         "kind": "redeploy",

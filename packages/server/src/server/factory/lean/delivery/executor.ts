@@ -116,7 +116,23 @@ export interface ReleaseReport {
   version: string;
   commit: string | null;
   artifact: string | null;
-  digest?: string;
+}
+
+/** What the daemon read from a frozen artifact, executing nothing. */
+export interface ArtifactEvidence {
+  /** sha256 over every file and symlink in the artifact, symlinks recorded by name and target. */
+  digest: string;
+  /** Where the artifact's dependency link resolves, and the installed lockfile's sha256 there. */
+  dependencies: { target: string; lockfile: string } | null;
+}
+
+export interface ArtifactEvidenceRequest {
+  /** The checkout link whose target holds artifacts by id (Mira: Syn3h-stable). */
+  link: string;
+  artifact: string;
+  /** Top-level entries the release tools write into an artifact; not hashed. */
+  exclude: readonly string[];
+  dependencies: { link: string; lockfile: string } | null;
 }
 
 export interface OwnerResolution {
@@ -177,8 +193,10 @@ export interface DeliveryRun {
   noticeAttemptedAt?: string | null;
   /** When the sender accepted the notice; not a claim that the owner's device received it. */
   noticeSentAt: string | null;
-  /** The recipe declares steps.fingerprint, so delivery needs an artifact digest. */
+  /** The recipe declares release.artifact, so delivery needs artifact evidence. */
   requiresDigest?: boolean;
+  /** The evidence read when this run's verification passed. */
+  artifactEvidence?: ArtifactEvidence | null;
   /** Local tags matching the declared publish patterns just before the deploy. */
   tagsBefore?: Record<string, string> | null;
   /** Tags this run published to the origin. */
@@ -206,8 +224,8 @@ export interface DeliveryRun {
 export interface DeliveredReceipt extends DeliveryReceipt {
   branch?: { before: string; after: string; commits: BranchCommit[] };
   records?: RecordsCommit | null;
-  /** The frozen artifact and the digest its verification reported. */
-  artifact?: { id: string; digest: string } | null;
+  /** The frozen artifact and what the daemon read from it when verification passed. */
+  artifact?: { id: string; digest: string; dependencies?: ArtifactEvidence["dependencies"] } | null;
   /** Tags published to the origin for this release; present when the recipe declares any. */
   tags?: TagRef[];
   tagsNotPublished?: string | null;
@@ -303,6 +321,8 @@ export interface DeliveryCheckoutPort {
    * `importTags` come from the origin too, never overwriting a local tag that differs.
    */
   prepare(input: PrepareRequest): Promise<{ head: string } | StepNotStarted>;
+  /** Reads a frozen artifact through a configured link; executes nothing, follows no symlink. */
+  artifactEvidence(request: ArtifactEvidenceRequest): Promise<ArtifactEvidence | StepNotStarted>;
   /** Local tags matching the patterns, by name. */
   tags(patterns: readonly string[]): Promise<Record<string, string>>;
   /** Pushes exactly these local tags, atomically and without force. */
@@ -545,11 +565,6 @@ const CheckoutSchema = z
   });
 /** A tag name, optionally ending in one `*`, such as Mira's `release-*` and `v*`. */
 const TagPatternSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*\*?$/u);
-/** Read-only: its last line is {"artifact": "...", "digest": "<sha256>"}. */
-const FingerprintReportSchema = z.object({
-  artifact: z.string().min(1),
-  digest: z.string().regex(/^[0-9a-f]{64}$/u),
-});
 /** The delivery fields beyond the shared recipe contract; validated here before any use. */
 const RecipeExtrasSchema = z.looseObject({
   /** A string is the retired absolute-path form; it decodes but is refused, never trusted. */
@@ -558,6 +573,22 @@ const RecipeExtrasSchema = z.looseObject({
   milestoneTag: z
     .string()
     .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u)
+    .optional(),
+  /** Frozen artifacts the daemon checks itself before promoting or rolling back to them. */
+  artifact: z
+    .looseObject({
+      link: SegmentSchema,
+      /** Top-level names, dotfiles included (Mira: .wrangler). */
+      exclude: z
+        .array(
+          z
+            .string()
+            .regex(/^[A-Za-z0-9._-]+$/u)
+            .refine((name) => name !== "." && name !== ".."),
+        )
+        .optional(),
+      dependencies: z.looseObject({ link: SegmentSchema, lockfile: RepoPathSchema }).optional(),
+    })
     .optional(),
   /** Absent publishes nothing. `publish` applies to production promotions only. */
   tags: z
@@ -570,7 +601,8 @@ const RecipeExtrasSchema = z.looseObject({
   steps: z.looseObject({
     releaseNumber: CommandStepSchema.optional(),
     install: z.union([InstallStepSchema, z.array(InstallStepSchema)]).optional(),
-    fingerprint: CommandStepSchema.optional(),
+    /** Read-only; a non-zero exit means a release exists locally that the origin does not show. */
+    guard: CommandStepSchema.optional(),
   }),
   channels: z.looseObject({
     beta: z.looseObject({ noticeMinutes: z.number().nonnegative().optional() }),
@@ -581,11 +613,6 @@ const ReportSchema = z.object({
   version: z.string().min(1),
   commit: z.string().nullable(),
   artifact: z.string().nullable(),
-  /** The frozen artifact's digest; required when the recipe declares steps.fingerprint. */
-  digest: z
-    .string()
-    .regex(/^[0-9a-f]{64}$/u)
-    .optional(),
 });
 const NumberReportSchema = z.object({ number: z.string().regex(/^[0-9]+$/u) });
 const VersionLineSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u);
@@ -660,9 +687,10 @@ function planOf(run: DeliveryRun, read: RecipeRead, places: readonly StepWhere[]
   for (const install of installs) keys.push(`install:${install.where ?? "container"}`);
   if (wantsVersion(run, extras)) keys.push("version");
   if (wantsNumber(run, extras)) keys.push("number");
+  if (run.kind === "beta" && extras.steps.guard !== undefined) keys.push("guard");
   for (const gate of run.gates) keys.push(`gate:${gate.name}`);
   if (run.kind === "beta" && extras.milestoneTag !== undefined) keys.push("milestone");
-  if (run.kind !== "beta" && extras.steps.fingerprint !== undefined) keys.push("fingerprint");
+  if (run.kind !== "beta" && extras.artifact !== undefined) keys.push("fingerprint");
   keys.push("deploy", "branch");
   return keys;
 }
@@ -710,7 +738,7 @@ function resolveStep(read: RecipeRead, run: DeliveryRun, key: StepKey): Resolved
   const { recipe, extras } = read;
   if (key === "number") return commandStep(extras.steps.releaseNumber, "releaseNumber step");
   if (key === "version") return commandStep(extras.version, "version step");
-  if (key === "fingerprint") return commandStep(extras.steps.fingerprint, "fingerprint step");
+  if (key === "guard") return commandStep(extras.steps.guard, "guard step");
   if (key.startsWith("install:")) {
     const where = key.slice("install:".length);
     const install = installsOf(extras).find((step) => (step.where ?? "container") === where);
@@ -735,7 +763,7 @@ function resolveStep(read: RecipeRead, run: DeliveryRun, key: StepKey): Resolved
 
 /** Every place a command step of this run executes, Host first. */
 function placesOf(read: RecipeRead, run: DeliveryRun): StepWhere[] {
-  const keys: StepKey[] = ["number", "version", "fingerprint", "deploy", "verify"];
+  const keys: StepKey[] = ["number", "version", "guard", "deploy", "verify"];
   for (const gate of run.gates) keys.push(`gate:${gate.name}`);
   for (const install of installsOf(read.extras))
     keys.push(`install:${install.where ?? "container"}`);
@@ -798,22 +826,6 @@ function lastJsonLine(stdout: string): unknown {
   }
 }
 
-function digestRefusal(
-  run: DeliveryRun,
-  report: ReleaseReport,
-  ledger: DeliveryLedger,
-): string | null {
-  if (run.requiresDigest !== true) return null;
-  if (report.digest === undefined)
-    return "Verification reported no artifact digest; nothing is recorded as shipped.";
-  if (run.kind === "beta") return null;
-  const artifact = run.values.artifact ?? "";
-  if (report.digest !== recordedDigest(ledger, artifact)) {
-    return `Production serves ${artifact} with a digest other than the one its beta recorded.`;
-  }
-  return null;
-}
-
 function reportRefusal(
   run: DeliveryRun,
   report: ReleaseReport,
@@ -825,13 +837,13 @@ function reportRefusal(
     }
     const known = ledger.releases.some((e) => e.kind === "beta" && e.version === report.version);
     if (known) return `Beta ${report.version} was already recorded; this run shipped nothing new.`;
-    return digestRefusal(run, report, ledger);
+    return null;
   }
   const expected = run.kind === "promote" ? run.values.version : run.values.targetVersion;
   if (report.version !== expected || report.artifact !== run.values.artifact) {
     return `Production reports ${report.version}, not ${expected ?? "the expected release"}.`;
   }
-  return digestRefusal(run, report, ledger);
+  return null;
 }
 
 /** Commits that landed during the deploy may only change release records. */
@@ -969,15 +981,57 @@ function sameLinks(a: readonly CheckoutLink[], b: readonly CheckoutLink[]): bool
 }
 
 /**
- * The one digest every delivered receipt records for this artifact, including its beta's. Null
- * when there is none, no beta recorded it, or two receipts disagree.
+ * The one piece of evidence every delivered receipt records for this artifact, including its
+ * beta's. Null when there is none, no beta recorded it, or two receipts disagree.
  */
-function recordedDigest(ledger: DeliveryLedger, artifact: string): string | null {
+function recordedEvidence(ledger: DeliveryLedger, artifact: string): ArtifactEvidence | null {
   const receipts = ledger.delivery.receipts.filter((receipt) => receipt.artifact?.id === artifact);
-  const digests = new Set(receipts.map((receipt) => receipt.artifact?.digest));
   const fromBeta = receipts.some((receipt) => receipt.kind === "cut-beta");
-  const [digest] = [...digests];
-  return fromBeta && digests.size === 1 && typeof digest === "string" ? digest : null;
+  const kinds = new Set(
+    receipts.map((receipt) =>
+      JSON.stringify([receipt.artifact?.digest, receipt.artifact?.dependencies ?? null]),
+    ),
+  );
+  const first = receipts[0]?.artifact;
+  if (!fromBeta || kinds.size !== 1 || !first) return null;
+  return { digest: first.digest, dependencies: first.dependencies ?? null };
+}
+
+/** After verification: the artifact must be readable and, past a beta, match its beta's evidence. */
+function verifiedArtifactRefusal(
+  ledger: DeliveryLedger,
+  run: DeliveryRun,
+  evidence: ArtifactEvidence | StepNotStarted | null,
+): string | null {
+  if (evidence === null) return "Verification passed but the artifact could not be read.";
+  if ("notStarted" in evidence) return evidence.notStarted;
+  if (run.kind === "beta") return null;
+  const artifact = run.values.artifact ?? "";
+  const recorded = recordedEvidence(ledger, artifact);
+  if (recorded === null) return `No delivered beta recorded evidence for ${artifact}.`;
+  return evidenceRefusal(artifact, recorded, evidence, "after");
+}
+
+/** A readable reason when the artifact or its dependencies differ from what was recorded. */
+function evidenceRefusal(
+  artifact: string,
+  recorded: ArtifactEvidence,
+  now: ArtifactEvidence,
+  moment: "before" | "after",
+): string | null {
+  const was = recorded.dependencies;
+  const is = now.dependencies;
+  if (was?.target !== is?.target) {
+    return `Dependencies changed since this beta was verified: ${artifact} now links to ${is?.target ?? "nothing"}, not ${was?.target ?? "nothing"}.`;
+  }
+  if (was?.lockfile !== is?.lockfile) {
+    return `Dependencies changed since this beta was verified: the installed lockfile in ${is?.target ?? "its dependencies"} differs.`;
+  }
+  if (recorded.digest === now.digest) return null;
+  if (moment === "before") {
+    return `${artifact} changed since its beta was verified; nothing was deployed. Ship a new beta.`;
+  }
+  return `${artifact} changed during the release, so production may not serve what the owner tested.`;
 }
 
 function logName(runId: string, key: StepKey, attempt: number): string {
@@ -1021,6 +1075,13 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
     if (!placed) {
       return {
         refused: `This installation has no delivery checkout named ${checkout?.name} with those links.`,
+      };
+    }
+    const artifactLink = extras.data.artifact?.link;
+    const linked = (checkout?.links ?? []).some((link) => link.name === artifactLink);
+    if (artifactLink !== undefined && !linked) {
+      return {
+        refused: `The artifact link ${artifactLink} is not one of the delivery checkout's links.`,
       };
     }
     if ((records?.length ?? 0) > 0 && checkout === undefined) {
@@ -1089,7 +1150,7 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
       run.values = { ...run.values, number: input.number, note: input.note };
       run.contents = input.contents;
       run.gates = gatePlan(read.recipe, "beta");
-      run.requiresDigest = read.extras.steps.fingerprint !== undefined;
+      run.requiresDigest = read.extras.artifact !== undefined;
       run.notBefore = new Date(deps.now().getTime() + minutes * 60_000).toISOString();
       return enqueue(ledger, run, []);
     });
@@ -1118,7 +1179,7 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
       run.approval = input.approval;
       run.contents = event.contents;
       run.gates = gatePlan(read.recipe, "promote");
-      run.requiresDigest = read.extras.steps.fingerprint !== undefined;
+      run.requiresDigest = read.extras.artifact !== undefined;
       run.values = {
         ...run.values,
         version: event.version,
@@ -1154,7 +1215,7 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
       const cancelled = cancelPendingBetas(ledger, "Cancelled by the owner's rollback.", at);
       // The recipe comes from the release now in production, the newest accepted config.
       const run = baseRun("rollback", current.commit);
-      run.requiresDigest = read.extras.steps.fingerprint !== undefined;
+      run.requiresDigest = read.extras.artifact !== undefined;
       run.releaseEventId = target.id;
       run.approval = input.approval;
       run.values = {
@@ -1578,6 +1639,8 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
   async function complete(input: StepCompletion): Promise<void> {
     const { runId, key, attempt, startedAt, output } = input;
     const digest = output ? createHash("sha256").update(output.stdout).digest("hex") : null;
+    const verified = key === "verify" && output?.exitCode === 0;
+    const evidence = verified ? await verifiedEvidence(runId, output.stdout) : null;
     await mutate((ledger) => {
       const run = ledger.delivery.runs?.[runId];
       const receipt = run?.receipts[key];
@@ -1599,12 +1662,64 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
       if (output.exitCode !== 0) {
         const beforeDeploy = !run.receipts.deploy || key === "deploy";
         const note = beforeDeploy && key !== "deploy" ? " Nothing was deployed." : "";
-        const reason = `The ${key} step exited with ${output.exitCode}; see its delivery log.${note}`;
+        const reason =
+          key === "guard"
+            ? "A release exists locally that the origin does not show; push the project's release records and tags first."
+            : `The ${key} step exited with ${output.exitCode}; see its delivery log.${note}`;
         failRun(ledger, run, { kind: "step-failed", reason, at });
         return;
       }
-      settleOutput({ ledger, run, receipt, stdout: output.stdout, at });
+      settleOutput({ ledger, run, receipt, stdout: output.stdout, at, evidence });
     });
+  }
+
+  /** The verify step passed: read the artifact it names, before the outcome is recorded. */
+  async function verifiedEvidence(
+    runId: string,
+    stdout: string,
+  ): Promise<ArtifactEvidence | StepNotStarted | null> {
+    const run = (await state.read(projectId)).delivery.runs?.[runId];
+    if (!run || run.requiresDigest !== true) return null;
+    const parsed = ReportSchema.safeParse(lastJsonLine(stdout));
+    const artifact = run.kind === "beta" ? (parsed.data?.artifact ?? null) : run.values.artifact;
+    if (artifact === null)
+      return { notStarted: "Verification named no frozen artifact to record." };
+    return readArtifact(run, artifact);
+  }
+
+  async function readArtifact(
+    run: DeliveryRun,
+    artifact: string,
+  ): Promise<ArtifactEvidence | StepNotStarted> {
+    const read = await readRecipe(run.commit);
+    const port = deps.deliveryCheckouts.host;
+    if ("refused" in read) return { notStarted: read.refused };
+    const declared = read.extras.artifact;
+    if (!port || !declared)
+      return { notStarted: "Artifact checks need the Host delivery checkout." };
+    return port.artifactEvidence({
+      link: declared.link,
+      artifact,
+      exclude: declared.exclude ?? [],
+      dependencies: declared.dependencies ?? null,
+    });
+  }
+
+  /** Before a promote or rollback deploys: the artifact must still be what its beta verified. */
+  async function checkArtifact(run: DeliveryRun): Promise<true> {
+    const artifact = run.values.artifact ?? "";
+    const now = await readArtifact(run, artifact);
+    if ("notStarted" in now) return refuse(run.id, now.notStarted);
+    const recorded = recordedEvidence(await state.read(projectId), artifact);
+    if (recorded === null) {
+      return refuse(
+        run.id,
+        `No delivered beta recorded evidence for ${artifact}, so it cannot be shown to be what the owner tested.`,
+      );
+    }
+    const refusal = evidenceRefusal(artifact, recorded, now, "before");
+    if (refusal) return stepFailed(run.id, refusal);
+    return settled(run, "fingerprint", now.digest);
   }
 
   function settleOutput(input: {
@@ -1613,8 +1728,9 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
     receipt: StepReceipt;
     stdout: string;
     at: string;
+    evidence: ArtifactEvidence | StepNotStarted | null;
   }): void {
-    const { ledger, run, receipt, stdout, at } = input;
+    const { ledger, run, receipt, stdout, at, evidence } = input;
     function fail(reason: string): void {
       receipt.status = "failed";
       failRun(ledger, run, { kind: "step-failed", reason, at });
@@ -1633,26 +1749,6 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
       run.values.number = parsed.data.number;
       return;
     }
-    if (receipt.key === "fingerprint") {
-      const parsed = FingerprintReportSchema.safeParse(lastJsonLine(stdout));
-      const artifact = run.values.artifact ?? "";
-      if (!parsed.success || parsed.data.artifact !== artifact) {
-        return fail(`The fingerprint step did not report a digest for ${artifact}.`);
-      }
-      const recorded = recordedDigest(ledger, artifact);
-      if (recorded === null) {
-        return fail(
-          `No delivered beta recorded a digest for ${artifact}, so it cannot be shown to be what the owner tested.`,
-        );
-      }
-      if (parsed.data.digest !== recorded) {
-        return fail(
-          `${artifact} changed since its beta was verified; nothing was deployed. Ship a new beta.`,
-        );
-      }
-      receipt.detail = parsed.data.digest;
-      return;
-    }
     if (receipt.key === "version") {
       const parsed = VersionLineSchema.safeParse(lastLine(stdout));
       if (!parsed.success) return fail("The version step printed no version on its last line.");
@@ -1666,6 +1762,10 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
     if (report === null) return fail("Verification printed no release report.");
     const refusal = reportRefusal(run, report, ledger);
     if (refusal !== null) return fail(refusal);
+    if (run.requiresDigest !== true) return;
+    const unproven = verifiedArtifactRefusal(ledger, run, evidence);
+    if (unproven !== null) return fail(unproven);
+    if (evidence !== null && !("notStarted" in evidence)) run.artifactEvidence = evidence;
   }
 
   /** After verification: commit the appended record rows, then record the delivery. */
@@ -1869,8 +1969,9 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
 
   function artifactOf(run: DeliveryRun, report: ReleaseReport): DeliveredReceipt["artifact"] {
     const id = run.kind === "beta" ? report.artifact : run.values.artifact;
-    if (run.requiresDigest !== true || id === null || report.digest === undefined) return null;
-    return { id, digest: report.digest };
+    const evidence = run.artifactEvidence;
+    if (run.requiresDigest !== true || id === null || !evidence) return null;
+    return { id, digest: evidence.digest, dependencies: evidence.dependencies };
   }
 
   function deliver(ledger: DeliveryLedger, run: DeliveryRun, at: string): void {
@@ -1985,6 +2086,7 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
     if (key.startsWith("install:")) return install(run, key, read);
     if (key === "milestone") return tagMilestone(run, read);
     if (key === "branch") return checkBranch(run, read);
+    if (key === "fingerprint") return checkArtifact(run);
     return launch(run, key);
   }
 

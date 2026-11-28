@@ -1,5 +1,14 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, realpath, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,6 +23,7 @@ import {
   createDeliveryCheckout,
   createGitRunner,
   createVerifiedCheckout,
+  readArtifactEvidence,
   type GitRunner,
   type SpawnRequest,
 } from "./adapters.js";
@@ -56,7 +66,7 @@ type StepName =
   | "rollback"
   | "version"
   | "install"
-  | "fingerprint"
+  | "guard"
   | `gate:${string}`;
 type Behavior = "hang-before-launch" | "wait-before-launch" | "hang-after-launch" | "exit-1" | "ok";
 
@@ -67,7 +77,7 @@ function commandOf(recipe: ReleaseRecipeV1, name: (typeof STEP_NAMES)[number]): 
 }
 
 const STEP_NAMES = [
-  "fingerprint",
+  "guard",
   "releaseNumber",
   "deployBeta",
   "verifyBeta",
@@ -110,8 +120,12 @@ interface HarnessState {
   sideEffects: SideEffect[];
   vetoPush: boolean;
   /** Overrides what the fingerprint and stable verify steps report; null reports the truth. */
-  fingerprintDigest: string | null;
-  stableDigest: string | null;
+  /** What the daemon reads from a frozen artifact now; changed to simulate tampering. */
+  artifactSalt: string;
+  depsTarget: string;
+  depsLockfile: string;
+  /** Applied when the promote deploy runs: simulates bytes changing during the release. */
+  saltDuringDeploy: string | null;
   notifyFails: boolean;
   localTags: Record<string, string>;
   pushedTags: string[];
@@ -139,8 +153,10 @@ async function harness(recipe: ReleaseRecipeV1 = mira) {
     pushes: 0,
     sideEffects: [],
     vetoPush: false,
-    fingerprintDigest: null,
-    stableDigest: null,
+    artifactSalt: "",
+    depsTarget: "/Users/owner/dev/Syn3h-factory/node_modules",
+    depsLockfile: "lock-1",
+    saltDuringDeploy: null,
     notifyFails: false,
     localTags: { "release-135": "old-release", "v26.11.2606": "old-calver" },
     pushedTags: [],
@@ -156,11 +172,6 @@ async function harness(recipe: ReleaseRecipeV1 = mira) {
 
   function output(step: StepName, env: Record<string, string>): StepOutput {
     if (step === "releaseNumber") return { exitCode: 0, stdout: '{"number":"136"}\n' };
-    if (step === "fingerprint") {
-      const artifact = env.VORTEO_RELEASE_ARTIFACT ?? "";
-      const digest = h.fingerprintDigest ?? digestOf(artifact);
-      return { exitCode: 0, stdout: `${JSON.stringify({ artifact, digest })}\n` };
-    }
     if (step === "version") {
       return { exitCode: 0, stdout: `v26.11.27${String(h.betaCount + 1).padStart(2, "0")}\n` };
     }
@@ -170,7 +181,6 @@ async function harness(recipe: ReleaseRecipeV1 = mira) {
         version: `v26.11.27${String(h.betaCount).padStart(2, "0")}`,
         commit: env.VORTEO_RELEASE_COMMIT,
         artifact: `frozen-${h.betaCount}`,
-        digest: digestOf(`frozen-${h.betaCount}`),
       };
       return { exitCode: 0, stdout: `${secret}\n${JSON.stringify(report)}\n` };
     }
@@ -179,7 +189,6 @@ async function harness(recipe: ReleaseRecipeV1 = mira) {
         version: env.VORTEO_RELEASE_TARGET_VERSION ?? env.VORTEO_RELEASE_VERSION,
         commit: null,
         artifact: env.VORTEO_RELEASE_ARTIFACT,
-        digest: h.stableDigest ?? digestOf(env.VORTEO_RELEASE_ARTIFACT ?? ""),
       };
       return { exitCode: 0, stdout: JSON.stringify(report) };
     }
@@ -202,6 +211,7 @@ async function harness(recipe: ReleaseRecipeV1 = mira) {
         h.launches.push({ step, command: input.command, env: input.env });
         if (behavior === "hang-after-launch") return new Promise(() => undefined);
         if (behavior === "exit-1") return { exitCode: 1, stdout: "failed" };
+        if (step === "promote" && h.saltDuringDeploy !== null) h.artifactSalt = h.saltDuringDeploy;
         if (step === "promote") {
           h.localTags["release-136"] = "new-release";
           h.localTags["v26.11.2701"] = "new-calver";
@@ -225,6 +235,12 @@ async function harness(recipe: ReleaseRecipeV1 = mira) {
         return { head: input.commit };
       },
       blob: async () => "blob-1",
+      async artifactEvidence(request) {
+        return {
+          digest: digestOf(`${request.artifact}${h.artifactSalt}`),
+          dependencies: { target: h.depsTarget, lockfile: h.depsLockfile },
+        };
+      },
       async tags(patterns) {
         const matches = (name: string) =>
           patterns.some((p) => (p.endsWith("*") ? name.startsWith(p.slice(0, -1)) : name === p));
@@ -803,79 +819,98 @@ describe("delivery executor", () => {
   it.each([
     {
       name: "its frozen copy is unchanged",
-      fingerprint: null,
-      stable: null,
-      strip: false,
+      change: "none",
       delivered: true,
       deployed: 1,
       because: "",
     },
     {
-      name: "its frozen copy changed since the beta",
-      fingerprint: "0".repeat(64),
-      stable: null,
-      strip: false,
+      name: "a file in its frozen copy changed",
+      change: "file",
       delivered: false,
       deployed: 0,
       because: "changed since its beta",
     },
     {
-      name: "no beta recorded a digest",
-      fingerprint: null,
-      stable: null,
-      strip: true,
+      name: "its dependency link was retargeted",
+      change: "target",
       delivered: false,
       deployed: 0,
-      because: "No delivered beta recorded a digest",
+      because: "Dependencies changed since this beta was verified",
     },
     {
-      name: "production serves other bytes",
-      fingerprint: null,
-      stable: "1".repeat(64),
-      strip: false,
+      name: "its installed dependencies changed",
+      change: "lockfile",
+      delivered: false,
+      deployed: 0,
+      because: "Dependencies changed since this beta was verified",
+    },
+    {
+      name: "no beta recorded its evidence",
+      change: "strip",
+      delivered: false,
+      deployed: 0,
+      because: "No delivered beta recorded evidence",
+    },
+    {
+      name: "its bytes change during the release",
+      change: "during",
       delivered: false,
       deployed: 1,
-      because: "digest other than",
+      because: "changed during the release",
     },
-  ])(
-    "promotes only when $name",
-    async ({ fingerprint, stable, strip, delivered, deployed, because }) => {
-      const t = await harness();
-      const executor = t.executor();
-      const beta = await deliverBeta(t, executor);
-      if (strip) {
-        await t.h.store.mutate(projectId, (ledger) => {
-          for (const receipt of ledger.delivery.receipts)
-            Reflect.deleteProperty(receipt, "artifact");
-        });
-      }
-      t.h.fingerprintDigest = fingerprint;
-      t.h.stableDigest = stable;
-      await executor.queuePromote({
-        eventId: beta.id,
-        expectedProduction: null,
-        approval: approval(beta.id, beta.version),
-        number: "70",
-        note: "n",
+  ] as const)("promotes only when $name", async ({ change, delivered, deployed, because }) => {
+    const t = await harness();
+    const executor = t.executor();
+    const beta = await deliverBeta(t, executor);
+    if (change === "strip") {
+      await t.h.store.mutate(projectId, (ledger) => {
+        for (const receipt of ledger.delivery.receipts) Reflect.deleteProperty(receipt, "artifact");
       });
-      await executor.advance();
-      const run = await only(executor);
-      expect(run.state).toBe(delivered ? "delivered" : "failed");
-      expect(t.count("promote")).toBe(deployed);
-      expect(t.count("install")).toBe(1);
-      if (!delivered) {
-        expect(run.failure?.reason).toContain(because);
-        return;
-      }
-      const ledger: DeliveryLedger = await t.h.store.read(projectId);
-      const receipts = ledger.delivery.receipts;
-      const digest = digestOf(beta.artifact ?? "");
-      expect(receipts.map((receipt) => receipt.artifact)).toEqual([
-        { id: beta.artifact, digest },
-        { id: beta.artifact, digest },
-      ]);
-    },
-  );
+    }
+    if (change === "file") t.h.artifactSalt = "edited";
+    if (change === "target") t.h.depsTarget = "/Users/owner/dev/Syn3h/node_modules";
+    if (change === "lockfile") t.h.depsLockfile = "lock-2";
+    if (change === "during") t.h.saltDuringDeploy = "edited";
+    await executor.queuePromote({
+      eventId: beta.id,
+      expectedProduction: null,
+      approval: approval(beta.id, beta.version),
+      number: "70",
+      note: "n",
+    });
+    await executor.advance();
+    const run = await only(executor);
+    expect(run.state).toBe(delivered ? "delivered" : "failed");
+    expect(t.count("promote")).toBe(deployed);
+    expect(t.count("install")).toBe(1);
+    if (!delivered) {
+      expect(run.failure?.reason).toContain(because);
+      return;
+    }
+    const ledger: DeliveryLedger = await t.h.store.read(projectId);
+    const evidence = {
+      id: beta.artifact,
+      digest: digestOf(beta.artifact ?? ""),
+      dependencies: { target: t.h.depsTarget, lockfile: "lock-1" },
+    };
+    expect(ledger.delivery.receipts.map((receipt) => receipt.artifact)).toEqual([
+      evidence,
+      evidence,
+    ]);
+  });
+
+  it("refuses a beta whose version or number already exists locally but not on the origin", async () => {
+    const t = await harness();
+    const executor = t.executor({ guard: "exit-1" });
+    await executor.queueBeta({ commit, number: null, note: "n", contents: [] });
+    await executor.advance();
+    t.pastNotice();
+    await executor.advance();
+    const run = await only(executor);
+    expect(run.failure?.reason).toContain("push the project's release records and tags first");
+    expect(t.count("deployBeta")).toBe(0);
+  });
 
   it("records the notice attempt before handing it to the sender", async () => {
     const t = await harness();
@@ -1295,6 +1330,84 @@ describe("delivery step adapters", () => {
     const prepared = await checkout.prepare({ commit, records: [], importTags: [] });
     expect(prepared).toHaveProperty("notStarted");
     expect(calls.some(([command]) => command === "checkout" || command === "worktree")).toBe(false);
+  });
+
+  it.each([
+    { name: "rereading an untouched copy", change: "none", same: true, dependencies: "same" },
+    { name: "an edited file", change: "file", same: false, dependencies: "same" },
+    {
+      name: "a file the release tools wrote under .wrangler",
+      change: "excluded",
+      same: true,
+      dependencies: "same",
+    },
+    {
+      name: "a retargeted node_modules link",
+      change: "retarget",
+      same: false,
+      dependencies: "target",
+    },
+    {
+      name: "a reinstalled dependency tree",
+      change: "lockfile",
+      same: true,
+      dependencies: "lockfile",
+    },
+  ] as const)(
+    "reads frozen artifact evidence without executing anything: $name",
+    async ({ change, same, dependencies }) => {
+      const root = await realpath(await mkdtemp(path.join(tmpdir(), "lean-artifact-")));
+      const stable = path.join(root, "stable");
+      const copy = path.join(stable, "20261126-161319-eee10bfe");
+      const deps = path.join(root, "trunk-node_modules");
+      const otherDeps = path.join(root, "other-node_modules");
+      for (const dir of [path.join(copy, "dist"), path.join(copy, ".wrangler"), deps, otherDeps]) {
+        await mkdir(dir, { recursive: true });
+      }
+      await writeFile(path.join(copy, "dist", "index.html"), "<html>v26.11.2606</html>");
+      await writeFile(path.join(copy, "wrangler.toml"), 'name = "syn3h"');
+      await writeFile(path.join(copy, ".wrangler", "state"), "1");
+      await writeFile(path.join(deps, ".package-lock.json"), '{"lockfileVersion":3}');
+      await writeFile(path.join(otherDeps, ".package-lock.json"), '{"lockfileVersion":3}');
+      await symlink(deps, path.join(copy, "node_modules"), "dir");
+      const links = [{ name: "Syn3h-stable", target: stable }];
+      const request = {
+        link: "Syn3h-stable",
+        artifact: "20261126-161319-eee10bfe",
+        exclude: [".wrangler"],
+        dependencies: { link: "node_modules", lockfile: ".package-lock.json" },
+      };
+      const before = await readArtifactEvidence(links, request);
+
+      if (change === "file")
+        await writeFile(path.join(copy, "dist", "index.html"), "<html>edited</html>");
+      if (change === "excluded") await writeFile(path.join(copy, ".wrangler", "state"), "2");
+      if (change === "retarget") {
+        await rm(path.join(copy, "node_modules"));
+        await symlink(otherDeps, path.join(copy, "node_modules"), "dir");
+      }
+      if (change === "lockfile")
+        await writeFile(path.join(deps, ".package-lock.json"), '{"lockfileVersion":3,"x":1}');
+      const after = await readArtifactEvidence(links, request);
+
+      if ("notStarted" in before || "notStarted" in after)
+        throw new Error("The artifact could not be read.");
+      expect(after.digest === before.digest).toBe(same);
+      expect(after.dependencies?.target).toBe(dependencies === "target" ? otherDeps : deps);
+      expect(after.dependencies?.lockfile === before.dependencies?.lockfile).toBe(
+        dependencies !== "lockfile",
+      );
+    },
+  );
+
+  it("refuses an artifact id that leaves the configured folder", async () => {
+    const result = await readArtifactEvidence([{ name: "Syn3h-stable", target: "/tmp" }], {
+      link: "Syn3h-stable",
+      artifact: "../etc",
+      exclude: [],
+      dependencies: null,
+    });
+    expect(result).toHaveProperty("notStarted");
   });
 });
 

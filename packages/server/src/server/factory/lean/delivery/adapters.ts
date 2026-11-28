@@ -10,13 +10,14 @@
 
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   lstat,
   mkdir,
   mkdtemp,
   open,
   readFile,
+  readdir,
   readlink,
   realpath,
   rename,
@@ -29,6 +30,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type {
+  ArtifactEvidence,
+  ArtifactEvidenceRequest,
   CheckoutLink,
   DeliveryCheckoutPort,
   PrepareRequest,
@@ -317,6 +320,73 @@ export function createContainerStepAdapter(input: {
       };
     },
   });
+}
+
+function sha256(bytes: string | Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/**
+ * One line per entry, sorted by path: files by content hash and executable bit, symlinks by their
+ * literal target (never followed), so a retargeted link changes the digest.
+ */
+async function treeLines(
+  root: string,
+  relative: string,
+  exclude: readonly string[],
+): Promise<string[]> {
+  const lines: string[] = [];
+  const entries = (await readdir(path.join(root, relative), { withFileTypes: true })).sort((a, b) =>
+    a.name < b.name ? -1 : 1,
+  );
+  for (const entry of entries) {
+    const name = relative === "" ? entry.name : `${relative}/${entry.name}`;
+    if (relative === "" && exclude.includes(entry.name)) continue;
+    const full = path.join(root, name);
+    if (entry.isSymbolicLink()) lines.push(`link ${name} ${await readlink(full)}`);
+    else if (entry.isDirectory()) lines.push(...(await treeLines(root, name, exclude)));
+    else if (entry.isFile()) {
+      const mode = (await lstat(full)).mode & 0o111 ? "x" : "-";
+      lines.push(`file ${name} ${mode} ${sha256(await readFile(full))}`);
+    } else lines.push(`other ${name}`);
+  }
+  return lines;
+}
+
+/**
+ * Reads a frozen artifact as a pure read: executes nothing, writes nothing, follows no symlink.
+ * Dependencies are not frozen bytes; only where the dependency link resolves and the installed
+ * lockfile there are recorded, so a change is detected, not prevented.
+ */
+export async function readArtifactEvidence(
+  links: readonly CheckoutLink[],
+  request: ArtifactEvidenceRequest,
+): Promise<ArtifactEvidence | StepNotStarted> {
+  const holder = links.find((link) => link.name === request.link);
+  const valid = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(request.artifact);
+  if (!holder || !valid)
+    return { notStarted: `Factory cannot locate the artifact ${request.artifact}.` };
+  const root = path.join(holder.target, request.artifact);
+  const top = await lstat(root).catch(() => null);
+  if (!top?.isDirectory())
+    return { notStarted: `There is no frozen artifact ${request.artifact} to check.` };
+  const digest = sha256((await treeLines(root, "", request.exclude)).join("\n"));
+  if (request.dependencies === null) return { digest, dependencies: null };
+  const linkPath = path.join(root, request.dependencies.link);
+  const dependencyLink = await lstat(linkPath).catch(() => null);
+  if (!dependencyLink?.isSymbolicLink()) {
+    return { notStarted: `${request.artifact} has no ${request.dependencies.link} link to check.` };
+  }
+  const target = path.resolve(root, await readlink(linkPath));
+  const lockfile = await readFile(path.join(target, request.dependencies.lockfile)).catch(
+    () => null,
+  );
+  if (lockfile === null) {
+    return {
+      notStarted: `The dependencies ${request.artifact} links to have no ${request.dependencies.lockfile}.`,
+    };
+  }
+  return { digest, dependencies: { target, lockfile: sha256(lockfile) } };
 }
 
 /** Whether a path exists at all, without following a final symlink. */
@@ -673,6 +743,7 @@ export function createDeliveryCheckout(input: {
     },
     commitRecords,
     tags: localTags,
+    artifactEvidence: (request) => readArtifactEvidence(input.links, request),
     async pushTags(request) {
       const all = await localTags(request.names);
       const tags = request.names.map((name) => ({ name, object: all[name] ?? "" }));
