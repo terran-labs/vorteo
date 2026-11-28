@@ -1,12 +1,87 @@
 import { getProviderProbeCwd } from "../utils/provider-probe-cwd.js";
-import { existsSync } from "node:fs";
-import { delimiter, resolve } from "node:path";
+import { constants, existsSync } from "node:fs";
+import { access, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { ProcessEnvRecord } from "../server/paseo-env.js";
 import { execCommand } from "../utils/spawn.js";
 import which from "which";
 import { windowsExecutableResolution } from "./windows.js";
 
 const PROBE_TIMEOUT_MS = 2000;
+
+/** Common per-user and package-manager bin folders searched on POSIX when a daemon PATH omits them. */
+const POSIX_FALLBACK_BIN_DIRS = [
+  { homeRelative: ".local/bin" },
+  { homeRelative: "bin" },
+  { homeRelative: ".cargo/bin" },
+  { absolute: "/opt/homebrew/bin" },
+  { absolute: "/usr/local/bin" },
+] as const;
+
+function resolveAbsoluteHome(env?: ProcessEnvRecord): string | null {
+  for (const candidate of [env?.HOME?.trim(), process.env.HOME?.trim(), homedir()]) {
+    if (candidate && isAbsolute(candidate)) return candidate;
+  }
+  return null;
+}
+
+async function isExecutableFile(filePath: string): Promise<boolean> {
+  try {
+    if (!(await stat(filePath)).isFile()) return false;
+    await access(filePath, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function fallbackExecutableDirs(env?: ProcessEnvRecord): string[] {
+  if (process.platform === "win32") return [];
+  const home = resolveAbsoluteHome(env);
+  const pathEntries = new Set(
+    (env?.PATH ?? process.env.PATH ?? "")
+      .split(delimiter)
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  );
+  const dirs: string[] = [];
+  for (const entry of POSIX_FALLBACK_BIN_DIRS) {
+    let dir = "";
+    if ("homeRelative" in entry) {
+      if (home) dir = join(home, entry.homeRelative);
+    } else {
+      dir = entry.absolute;
+    }
+    if (dir && !pathEntries.has(dir) && !dirs.includes(dir)) {
+      dirs.push(dir);
+    }
+  }
+  return dirs;
+}
+
+export function describeExecutableSearch(
+  command: string,
+  options?: { env?: ProcessEnvRecord; providerId?: string; includeFallbackDirs?: boolean },
+): string {
+  const configHint = options?.providerId
+    ? ` Set agents.providers.${options.providerId}.command in config.json to point Vorteo at the binary.`
+    : "";
+  if (hasPathSeparator(command.trim())) {
+    return `Could not find executable "${command}".${configHint}`;
+  }
+  const pathValue = options?.env?.PATH ?? process.env.PATH ?? "";
+  const searched = [
+    ...pathValue
+      .split(delimiter)
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+    ...(options?.includeFallbackDirs === false ? [] : fallbackExecutableDirs(options?.env)),
+  ];
+  const unique = Array.from(new Set(searched));
+  const where = unique.length > 0 ? unique.join(", ") : "empty PATH";
+  return `Could not find "${command}" (searched: ${where}).${configHint}`;
+}
 
 function hasPathSeparator(value: string): boolean {
   return value.includes("/") || value.includes("\\");
@@ -142,16 +217,20 @@ export async function findExecutableWithoutProbing(
 export interface ExecutableResolutionOptions {
   probeTimeoutMs?: number;
   env?: ProcessEnvRecord;
+  includeFallbackDirs?: boolean;
 }
 
 export async function findExecutable(
   name: string,
   options: number | ExecutableResolutionOptions = PROBE_TIMEOUT_MS,
 ): Promise<string | null> {
-  const { probeTimeoutMs = PROBE_TIMEOUT_MS, env } =
-    typeof options === "number" ? { probeTimeoutMs: options } : options;
+  const {
+    probeTimeoutMs = PROBE_TIMEOUT_MS,
+    env,
+    includeFallbackDirs = true,
+  } = typeof options === "number" ? { probeTimeoutMs: options } : options;
   const trimmed = name.trim();
-  if (!trimmed) {
+  if (!trimmed || trimmed === "." || trimmed === "..") {
     return null;
   }
 
@@ -166,10 +245,21 @@ export async function findExecutable(
   }
 
   if (hasPathSeparator(trimmed)) {
-    return (await probeExecutable(trimmed, { probeTimeoutMs, env })) ? trimmed : null;
+    const candidate = resolve(trimmed);
+    return (await probeExecutable(candidate, { probeTimeoutMs, env })) ? trimmed : null;
   }
 
   const candidates = await enumerateCandidates(trimmed, env);
+  if (includeFallbackDirs) {
+    const seen = new Set(candidates);
+    for (const dir of fallbackExecutableDirs(env)) {
+      const candidate = join(dir, trimmed);
+      if (!seen.has(candidate) && (await isExecutableFile(candidate))) {
+        seen.add(candidate);
+        candidates.push(candidate);
+      }
+    }
+  }
   for (const candidate of candidates) {
     if (await probeExecutable(candidate, { probeTimeoutMs, env })) {
       return candidate;

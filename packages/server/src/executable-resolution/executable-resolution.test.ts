@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { executableExists, findExecutable } from "./executable-resolution.js";
+import {
+  describeExecutableSearch,
+  executableExists,
+  fallbackExecutableDirs,
+  findExecutable,
+} from "./executable-resolution.js";
 import { windowsExecutableResolution } from "./windows.js";
 import { isPlatform } from "../test-utils/platform.js";
 
@@ -73,6 +78,69 @@ describe("findExecutable", () => {
       prependPath(nonExecutableDir, executableDir);
 
       await expect(findExecutable("foo")).resolves.toBe(executable);
+    });
+
+    test("finds a CLI installed only in ~/.local/bin when daemon PATH omits it", async () => {
+      const fakeHome = makeTempDir();
+      const localBin = path.join(fakeHome, ".local", "bin");
+      mkdirSync(localBin, { recursive: true });
+      const cli = writeExecutable(path.join(localBin, "agy-test-cli"), "#!/bin/sh\necho 1.5.18\n");
+      const emptyPathDir = makeTempDir();
+
+      await expect(
+        findExecutable("agy-test-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
+      ).resolves.toBe(cli);
+    });
+
+    test("prefers a PATH executable over a ~/.local/bin fallback", async () => {
+      const fakeHome = makeTempDir();
+      const localBin = path.join(fakeHome, ".local", "bin");
+      mkdirSync(localBin, { recursive: true });
+      writeExecutable(path.join(localBin, "agy-pref-cli"), "#!/bin/sh\necho fallback\n");
+      const pathDir = makeTempDir();
+      const onPath = writeExecutable(path.join(pathDir, "agy-pref-cli"), "#!/bin/sh\necho path\n");
+
+      await expect(
+        findExecutable("agy-pref-cli", { env: { PATH: pathDir, HOME: fakeHome } }),
+      ).resolves.toBe(onPath);
+    });
+
+    test("ignores relative HOME values, dot segments, and non-executable fallback entries", async () => {
+      const fakeHome = makeTempDir();
+      const localBin = path.join(fakeHome, ".local", "bin");
+      mkdirSync(path.join(localBin, "dir-cli"), { recursive: true });
+      const nonExec = path.join(localBin, "nonexec-cli");
+      writeFileSync(nonExec, "#!/bin/sh\necho nope\n");
+      chmodSync(nonExec, 0o644);
+      const emptyPathDir = makeTempDir();
+
+      expect(fallbackExecutableDirs({ HOME: "relative/home", PATH: emptyPathDir })).not.toContain(
+        path.join("relative/home", ".local/bin"),
+      );
+      await expect(
+        findExecutable("dir-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
+      ).resolves.toBeNull();
+      await expect(
+        findExecutable("nonexec-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
+      ).resolves.toBeNull();
+      await expect(findExecutable(".", { env: { PATH: emptyPathDir } })).resolves.toBeNull();
+      await expect(findExecutable("..", { env: { PATH: emptyPathDir } })).resolves.toBeNull();
+    });
+
+    test("omits searched PATH directories when describing an explicit missing binary path", () => {
+      const explicitMessage = describeExecutableSearch("/opt/missing/agy", {
+        env: { PATH: "/usr/bin" },
+        providerId: "antigravity",
+      });
+      expect(explicitMessage).toContain('Could not find executable "/opt/missing/agy"');
+      expect(explicitMessage).not.toContain("searched:");
+      expect(explicitMessage).toContain("agents.providers.antigravity.command");
+
+      const bareMessage = describeExecutableSearch("agy", {
+        env: { PATH: "/usr/bin" },
+        providerId: "antigravity",
+      });
+      expect(bareMessage).toContain('Could not find "agy" (searched: /usr/bin');
     });
   });
 

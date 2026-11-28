@@ -31,3 +31,18 @@ export function accountProviderKind(
   const base = providers?.[providerId]?.extends ?? providerId;
   return base === "claude" || base === "codex" ? base : null;
 }
+
+/**
+ * Picks the dialog recovery mode for a provider connection. Only Claude and Codex accounts use
+ * the interactive OAuth/device-code login panel; other providers (such as Antigravity) stay on
+ * manual recovery naming their own instructions and snapshot check.
+ */
+export function resolveReconnectRecovery(input: {
+  accountKind: "claude" | "codex" | null;
+  authRecovery: ProviderUsage["authRecovery"] | undefined;
+  fallbackInstructions: string;
+}): NonNullable<ProviderUsage["authRecovery"]> {
+  if (input.authRecovery) return input.authRecovery;
+  if (input.accountKind) return { method: "device_code", instructions: "" };
+  return { instructions: input.fallbackInstructions };
+}
