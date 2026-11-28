@@ -6864,6 +6864,75 @@ test("only the owner's app can save the preset fence setting, and it waits for a
   }
 });
 
+test.each([
+  {
+    name: "replace quota policy",
+    patch: { accountQuotaPolicy: { version: 1, ladder: {}, accounts: {} } },
+  },
+  { name: "clear quota policy", patch: { accountQuotaPolicy: null } },
+  {
+    name: "write automatic primary eligibility",
+    patch: { providers: { excluded: { automaticPrimary: true } } },
+  },
+  {
+    name: "remove a provider with automatic primary eligibility",
+    patch: { removeProviders: ["excluded"] },
+  },
+])("only the owner's app can $name through daemon config", async ({ patch }) => {
+  const config = {
+    mcp: { injectIntoAgents: false },
+    providers: { excluded: { automaticPrimary: false }, ordinary: {} },
+  };
+  const patchFromClient = vi.fn(async () => config);
+  const daemonConfigStore = { get: vi.fn(() => config), patchFromClient };
+  const messages: unknown[] = [];
+  const cli = createSessionForTest({ clientType: "cli", messages, daemonConfigStore });
+  const owner = createSessionForTest({ clientType: "browser", daemonConfigStore });
+  try {
+    const request: SessionInboundMessage = {
+      type: "set_daemon_config_request",
+      requestId: "protected-config",
+      config: { ...patch, autoArchiveAfterMerge: true },
+    };
+    await cli.handleMessage(request);
+    expect(patchFromClient).not.toHaveBeenCalled();
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "rpc_error",
+        payload: expect.objectContaining({ requestId: request.requestId }),
+      }),
+    );
+    await owner.handleMessage(request);
+    expect(patchFromClient).toHaveBeenCalledExactlyOnceWith(request.config);
+  } finally {
+    await cli.cleanup();
+    await owner.cleanup();
+  }
+});
+
+test("ordinary provider config patches still reach the daemon config store", async () => {
+  const config = {
+    mcp: { injectIntoAgents: false },
+    providers: { excluded: { automaticPrimary: false }, ordinary: {} },
+  };
+  const patchFromClient = vi.fn(async () => config);
+  const cli = createSessionForTest({
+    clientType: "cli",
+    daemonConfigStore: { get: vi.fn(() => config), patchFromClient },
+  });
+  try {
+    const patch = { providers: { excluded: { enabled: false } }, removeProviders: ["ordinary"] };
+    await cli.handleMessage({
+      type: "set_daemon_config_request",
+      requestId: "ordinary-config",
+      config: patch,
+    });
+    expect(patchFromClient).toHaveBeenCalledExactlyOnceWith(patch);
+  } finally {
+    await cli.cleanup();
+  }
+});
+
 test("a CLI or other non-app client cannot write daemon-only labels (#360)", async () => {
   const updateAgentMetadata = vi.fn();
   const messages: unknown[] = [];

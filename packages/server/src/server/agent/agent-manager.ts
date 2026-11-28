@@ -813,6 +813,11 @@ interface HandleStreamEventOptions {
   fromHistory?: boolean;
 }
 
+interface RegistrationMetadata {
+  title: string | null;
+  authority: Pick<ManagedAgentBase, "workerGovernance" | "createdByAgentId">;
+}
+
 interface ManagedAgentBase {
   journal?: import("@getpaseo/protocol/agent-journal").AgentJournalEntry[];
   questions?: import("@getpaseo/protocol/agent-questions").AgentQuestion[];
@@ -833,6 +838,8 @@ interface ManagedAgentBase {
   workspaceId?: string;
   owner?: AgentOwner;
   createdByAgentId?: string | null;
+  /** Daemon-authored team authority, restored from the internal thread record. */
+  workerGovernance?: WorkerGovernance;
   /** The creator holds a live finish subscription for this thread (#659); refreshed on emit. */
   permissionWatchedByCreator?: boolean;
   capabilities: AgentCapabilityFlags;
@@ -4350,7 +4357,7 @@ export class AgentManager {
         reason: "refresh",
         purpose: "interactive",
         workspaceId: existing.workspaceId,
-        title: await this.resolveInitialPersistedTitle(agentId, existing.config, null),
+        title: (await this.readRegistrationMetadata(agentId, existing.config, null)).title,
         labels: existing.labels,
         toolAccess: storedConfig.toolAccess,
       },
@@ -8021,7 +8028,7 @@ export class AgentManager {
       if (this.agents.has(resolvedAgentId)) {
         throw new Error(`Agent with id ${resolvedAgentId} already exists`);
       }
-      const initialPersistedTitle = await this.resolveInitialPersistedTitle(
+      const { title: initialPersistedTitle, authority } = await this.readRegistrationMetadata(
         resolvedAgentId,
         config,
         options?.initialTitle ?? null,
@@ -8043,6 +8050,7 @@ export class AgentManager {
         options,
       });
 
+      Object.assign(managed, authority);
       await this.restoreGoalPersistence(managed, options);
       // Read history before publishing the agent: a provider failure must leave the
       // session unregistered so the registration catch closes it.
@@ -8571,20 +8579,25 @@ export class AgentManager {
     );
   }
 
-  private async resolveInitialPersistedTitle(
+  private async readRegistrationMetadata(
     agentId: string,
     config: AgentSessionConfig,
     fallbackTitle: string | null,
-  ): Promise<string | null> {
+  ): Promise<RegistrationMetadata> {
     const existing = await this.registry?.get(agentId);
     if (existing) {
-      return existing.title ?? null;
+      return {
+        title: existing.title ?? null,
+        authority: {
+          workerGovernance: structuredClone(existing.workerGovernance),
+          ...(existing.createdByAgentId !== undefined
+            ? { createdByAgentId: existing.createdByAgentId }
+            : {}),
+        },
+      };
     }
-    const explicitTitle =
-      typeof config.title === "string" && config.title.trim().length > 0
-        ? config.title.trim()
-        : null;
-    return explicitTitle ?? fallbackTitle;
+    const title = config.title?.trim() || fallbackTitle;
+    return { title, authority: {} };
   }
 
   private async persistWorkerGovernance(
@@ -8607,6 +8620,7 @@ export class AgentManager {
         "worker-governance-unavailable",
       );
     }
+    agent.workerGovernance = structuredClone(governance);
   }
 
   private async persistSnapshot(
