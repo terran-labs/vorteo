@@ -2450,6 +2450,54 @@ describe("AntigravityQuotaProvider", () => {
     ]);
   });
 
+  it("omits unconfigured Antigravity from usage listings when agy is absent, and includes it when configured or installed", async () => {
+    const absentUnconfigured = new ProviderUsageService({
+      logger: createLogger(),
+      fetchers: [
+        new AntigravityQuotaProvider({
+          logger: createLogger(),
+          cache: createAntigravityUsageCache(),
+          configured: false,
+          resolveExecutable: async () => null,
+          runCommand: vi.fn(),
+        }),
+      ],
+    });
+    expect((await absentUnconfigured.listUsage()).providers).toEqual([]);
+
+    const absentConfigured = new ProviderUsageService({
+      logger: createLogger(),
+      fetchers: [
+        new AntigravityQuotaProvider({
+          logger: createLogger(),
+          cache: createAntigravityUsageCache(),
+          configured: true,
+          resolveExecutable: async () => null,
+          runCommand: vi.fn(),
+        }),
+      ],
+    });
+    expect((await absentConfigured.listUsage()).providers).toEqual([
+      expect.objectContaining({ providerId: "antigravity", status: "unavailable" }),
+    ]);
+
+    const installedUnconfigured = new ProviderUsageService({
+      logger: createLogger(),
+      fetchers: [
+        new AntigravityQuotaProvider({
+          logger: createLogger(),
+          cache: createAntigravityUsageCache(),
+          configured: false,
+          resolveExecutable: async () => "/usr/bin/agy",
+          runCommand: async () => ({ code: 0, stdout: sampleOutput, stderr: "" }),
+        }),
+      ],
+    });
+    expect((await installedUnconfigured.listUsage()).providers).toEqual([
+      expect.objectContaining({ providerId: "antigravity", status: "available" }),
+    ]);
+  });
+
   it("enforces the 5-minute floor across quota-reserve forceRefresh calls and unrelated invalidations", async () => {
     let now = Date.parse("2026-11-27T21:00:00Z");
     const runCommand = vi.fn(async () => ({ code: 0, stdout: sampleOutput, stderr: "" }));

@@ -93,6 +93,7 @@ function createAntigravityFetcher(
     logger: options.logger,
     providerId,
     displayName: configured?.label ?? (providerId === "antigravity" ? "Antigravity" : providerId),
+    configured: configured !== undefined,
     command: configured?.command,
     env: configured?.env,
   });

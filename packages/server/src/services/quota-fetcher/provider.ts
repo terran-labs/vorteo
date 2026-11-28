@@ -25,6 +25,8 @@ export interface ProviderUsageFetcher {
   readonly displayName: string;
   /** Minimum wait between non-user-initiated refreshes; omitted means every refresh runs. */
   readonly minPollIntervalMs?: number;
+  /** When false, omit this provider from usage listings instead of reporting unavailable. */
+  isApplicable?(): Promise<boolean> | boolean;
   fetchUsage(options?: ProviderUsageFetchOptions): Promise<ProviderUsage>;
 }
 

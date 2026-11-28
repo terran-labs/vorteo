@@ -178,6 +178,47 @@ export class ProviderUsageService {
     }
   }
 
+  private runFetcher(
+    fetcher: ProviderUsageFetcher,
+    nowMs: number,
+    respectBackoff: boolean,
+    userRefresh: boolean,
+  ): Promise<ProviderUsage | null> | null {
+    const previous = this.lastReading.get(fetcher.providerId);
+    if (previous) {
+      if (respectBackoff) {
+        const waiting = this.backoff.get(fetcher.providerId);
+        if (waiting && nowMs < waiting.retryAtMs) return null;
+      }
+      const minInterval = fetcher.minPollIntervalMs;
+      const lastAt = this.lastFetchedAt.get(fetcher.providerId);
+      if (
+        !userRefresh &&
+        minInterval !== undefined &&
+        lastAt !== undefined &&
+        nowMs - lastAt < minInterval
+      ) {
+        return null;
+      }
+    }
+    return fetcher.fetchUsage({ userRefresh });
+  }
+
+  private async runConditionalFetcher(
+    fetcher: ProviderUsageFetcher,
+    nowMs: number,
+    respectBackoff: boolean,
+    userRefresh: boolean,
+  ): Promise<ProviderUsage | null | "omitted"> {
+    try {
+      const applicable = await fetcher.isApplicable?.();
+      if (applicable === false) return "omitted";
+    } catch {
+      // Fall through and let fetchUsage surface any runtime error.
+    }
+    return this.runFetcher(fetcher, nowMs, respectBackoff, userRefresh);
+  }
+
   private async fetchFreshUsage(
     nowMs: number,
     respectBackoff: boolean,
@@ -186,54 +227,47 @@ export class ProviderUsageService {
     const generation = this.generation;
     const fetchers = this.getFetchers();
     const settled = await Promise.allSettled(
-      fetchers.map((fetcher) => {
-        const previous = this.lastReading.get(fetcher.providerId);
-        if (previous) {
-          if (respectBackoff) {
-            const waiting = this.backoff.get(fetcher.providerId);
-            if (waiting && nowMs < waiting.retryAtMs) return null;
-          }
-          const minInterval = fetcher.minPollIntervalMs;
-          const lastAt = this.lastFetchedAt.get(fetcher.providerId);
-          if (
-            !userRefresh &&
-            minInterval !== undefined &&
-            lastAt !== undefined &&
-            nowMs - lastAt < minInterval
-          ) {
-            return null;
-          }
-        }
-        return fetcher.fetchUsage({ userRefresh });
-      }),
+      fetchers.map((fetcher) =>
+        fetcher.isApplicable
+          ? this.runConditionalFetcher(fetcher, nowMs, respectBackoff, userRefresh)
+          : this.runFetcher(fetcher, nowMs, respectBackoff, userRefresh),
+      ),
     );
     const fresh: ProviderUsage[] = [];
-    const providers = settled.map((result, index) => {
+    const providers: ProviderUsage[] = [];
+    for (const [index, result] of settled.entries()) {
       const fetcher = fetchers[index];
-      if (result.status === "fulfilled" && result.value === null) {
-        // Backing off or within minPollIntervalMs: reuse the last reading and log nothing new.
-        return this.lastReading.get(fetcher.providerId)!;
-      }
       let usage: ProviderUsage;
-      if (result.status === "fulfilled" && result.value) {
-        usage = result.value;
+      if (result.status === "fulfilled") {
+        const value = result.value;
+        if (value === "omitted") {
+          this.lastReading.delete(fetcher.providerId);
+          this.lastFetchedAt.delete(fetcher.providerId);
+          this.backoff.delete(fetcher.providerId);
+          continue;
+        }
+        if (value === null) {
+          // Backing off or within minPollIntervalMs: reuse the last reading and log nothing new.
+          providers.push(this.lastReading.get(fetcher.providerId)!);
+          continue;
+        }
+        usage = value;
       } else {
-        const reason = result.status === "rejected" ? result.reason : undefined;
         this.logger.debug(
-          { err: reason, providerId: fetcher.providerId },
+          { err: result.reason, providerId: fetcher.providerId },
           "Provider usage fetch failed",
         );
         usage = unavailableUsage({
           providerId: fetcher.providerId,
           displayName: fetcher.displayName,
-          error: reason instanceof Error ? reason.message : String(reason),
+          error: result.reason instanceof Error ? result.reason.message : String(result.reason),
         });
       }
       this.lastReading.set(fetcher.providerId, usage);
       this.lastFetchedAt.set(fetcher.providerId, nowMs);
       if (this.updateBackoff(fetcher.providerId, usage, nowMs)) fresh.push(usage);
-      return usage;
-    });
+      providers.push(usage);
+    }
 
     try {
       await this.history.record(fresh, nowMs);

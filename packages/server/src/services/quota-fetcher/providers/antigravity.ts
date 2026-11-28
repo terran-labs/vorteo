@@ -118,6 +118,7 @@ interface AntigravityQuotaProviderOptions {
   logger: Logger;
   providerId?: string;
   displayName?: string;
+  configured?: boolean;
   command?: string[];
   env?: Record<string, string>;
   cwd?: string;
@@ -393,6 +394,7 @@ export class AntigravityQuotaProvider implements ProviderUsageFetcher {
   readonly minPollIntervalMs: number;
 
   private readonly logger: Logger;
+  private readonly configured: boolean;
   private readonly command: string;
   private readonly prefixArgs: string[];
   private readonly env?: Record<string, string>;
@@ -409,6 +411,7 @@ export class AntigravityQuotaProvider implements ProviderUsageFetcher {
     this.logger = options.logger;
     this.providerId = options.providerId ?? "antigravity";
     this.displayName = options.displayName ?? "Antigravity";
+    this.configured = options.configured === true;
     this.minPollIntervalMs = options.minPollIntervalMs ?? ANTIGRAVITY_MIN_POLL_INTERVAL_MS;
     const configuredCommand = options.command;
     this.command = configuredCommand?.[0] ?? "agy";
@@ -422,6 +425,11 @@ export class AntigravityQuotaProvider implements ProviderUsageFetcher {
     this.resolveExecutable = options.resolveExecutable ?? defaultResolveExecutable;
     this.runCommand = options.runCommand ?? defaultRunCommand;
     this.now = options.now ?? Date.now;
+  }
+
+  async isApplicable(): Promise<boolean> {
+    if (this.configured) return true;
+    return (await this.resolveExecutable(this.command, this.env)) !== null;
   }
 
   async fetchUsage(options?: ProviderUsageFetchOptions): Promise<ProviderUsage> {
