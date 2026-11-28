@@ -1149,6 +1149,10 @@ if (args.includes("-p") && args.includes("/usage")) {
 
   it("strips only the trailing acp subcommand including after boolean flags without truncating wrapper prefixes or agy value flags", () => {
     expect(stripAcpSubcommand(["acp"])).toEqual([]);
+    expect(stripAcpSubcommand(["acp", "--app-data-dir", "acp"])).toEqual([]);
+    expect(stripAcpSubcommand(["script.cjs", "acp", "--app-data-dir", "acp"])).toEqual([
+      "script.cjs",
+    ]);
     expect(stripAcpSubcommand(["script.cjs", "acp", "--debug"])).toEqual(["script.cjs"]);
     expect(stripAcpSubcommand(["script.cjs", "acp", "--log-file", "/tmp/a.log"])).toEqual([
       "script.cjs",

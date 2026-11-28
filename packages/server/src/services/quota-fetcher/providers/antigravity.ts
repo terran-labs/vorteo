@@ -81,7 +81,12 @@ function stripAcpSubcommand(args: readonly string[]): string[] {
   for (let index = args.length - 1; index >= 0; index -= 1) {
     if (args[index] !== "acp") continue;
     const previous = index > 0 ? args[index - 1] : undefined;
-    if (previous !== undefined && AGY_VALUE_FLAGS.has(previous)) continue;
+    if (
+      previous !== undefined &&
+      (AGY_VALUE_FLAGS.has(previous) || AGY_ACP_VALUE_FLAGS.has(previous))
+    ) {
+      continue;
+    }
     if (!isTrailingSubcommandArgs(args.slice(index + 1))) continue;
     return args.slice(0, index);
   }
