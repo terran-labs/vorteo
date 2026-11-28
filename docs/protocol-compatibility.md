@@ -392,6 +392,22 @@ The coordinator keeps when each finish-current-turns hold started, and whether i
 
 The optional `restartHoldDeadlineMinutes` installation setting is read by coordinators that include this change. The installation config schema is strict, so a rollback coordinator refuses a config that sets it: remove the setting before rolling back to an earlier coordinator. Leaving it unset keeps the 15-minute default and needs no preparation.
 
+## Operation progress
+
+Owner clients that send `operationProgress=1` on `restarts/query` receive optional reply-only progress fields on each restart job:
+
+- `startedAt`, `step` (a string of at most 64 characters), `stepStartedAt`, and `steps` (at most 16, oldest dropped);
+- `holdStartedAt`, `holdDeadlineAt` and `holdReleasedAt`;
+- `finishedAt`, and `requesterNotice` (only `"not-notified"`);
+- `progressReconstructed` (only `true`);
+- `waitingSince` on each `impact.agents` entry.
+
+The coordinator records steps from its own transitions and clock in its private `restart-progress.json`, never in the restart journal, so a rollback coordinator reads the journal unchanged and ignores the file. A missing or damaged file starts a fresh history and never stops a restart. A job first seen at coordinator startup, already past approval, gets `progressReconstructed: true`: its `startedAt` is omitted and the startup step's `startedAt` is `null` rather than the startup time. A pending job keeps its journaled `createdAt` as its step start and is not marked.
+
+On `maintenance-services/query`, the same flag adds `startedAt`, `step`, `stepStartedAt` and `finishedAt`. These are derived from timestamps the maintenance journal already keeps. The restart and maintenance view schemas are strict for older clients, so without the flag the replies are unchanged. The protocol package exports `OPERATION_PROGRESS_REPLY` from `execution-installation` only when both schemas define the fields; clients send the flag only when that export exists. `COMPAT(operationProgress)` marks both gates and the export; remove them once every owner client floor includes the fields.
+
+Daemons advertise `restartImpactTurnStart` and then add an optional `turnStartedAt` to each restart impact agent. The coordinator relays it only from daemons that advertise it, marked `COMPAT(restartImpactTurnStart)`. It is journaled impact data on a non-strict object, so it reaches clients with or without `operationProgress=1`; the daemon capability, not the query flag, gates it. A refused `send_agent_message_response` may carry an optional `errorCode: "restart_hold"`. The payload is not strict, so older apps keep reading only `error`.
+
 ## Unavailable-provider thread recovery
 
 The optional `agentProviderRecovery` feature advertises recovery through the existing `agent.profile.switch.request`. The client shows recovery in the load error only with this capability; older hosts retain Retry. The request shape and switch marker are unchanged, and the existing `profile_switch_timeline` client gate still applies. Older clients ignore the optional feature and continue using ordinary switching.

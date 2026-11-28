@@ -111,6 +111,7 @@ import { ProviderPreferencesValidationError } from "../agent/provider-preference
 import type { InstallationProfiles } from "./profiles/service.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { RESTART_PROGRESS_FILE, type RestartProgressStore } from "./restart-progress.js";
 import { writePrivateFileAtomicSync } from "../private-files.js";
 import path from "node:path";
 import express, { type Request, type Response, type NextFunction } from "express";
@@ -318,6 +319,39 @@ function restartHoldState(stateDir: string, initial: unknown) {
         `${JSON.stringify(value)}\n`,
       ),
   };
+}
+
+/** main.ts passes this when the restart progress file exists but cannot be read or parsed. */
+export const RESTART_PROGRESS_UNREADABLE = Symbol("restart-progress-unreadable");
+
+/** Coordinator-private restart step history: the copy main.ts read at startup, and the writer.
+ * An unreadable copy is thrown, so the coordinator logs once and starts a fresh history. */
+function restartProgressState(stateDir: string, initial: unknown): RestartProgressStore {
+  return {
+    read: (): unknown => {
+      if (initial === RESTART_PROGRESS_UNREADABLE) throw new Error("Restart progress unreadable");
+      return initial;
+    },
+    write: (value) =>
+      writePrivateFileAtomicSync(
+        path.join(stateDir, RESTART_PROGRESS_FILE),
+        `${JSON.stringify(value)}\n`,
+      ),
+  };
+}
+
+// COMPAT(operationProgress): added 2026-11-28; only clients that send operationProgress=1 receive
+// the step, timing and requester-notice fields, kept in coordinator-private restart-progress.json.
+// Remove the gate once every owner client floor includes them.
+function withOperationProgress(
+  reply: RestartJob,
+  job: RestartJob,
+  restarts: InstallationRestarts,
+  requested: boolean,
+): RestartJob {
+  if (!requested) return reply;
+  const impact = reply.impact ? { impact: restarts.progressImpact(job, reply.impact) } : {};
+  return { ...reply, ...restarts.progressReply(job), ...impact };
 }
 
 // COMPAT(restartHoldDeadline): added 2026-11-11; only clients that send restartHoldDeadline=1
@@ -541,6 +575,8 @@ export function createInstallationServer(
   overviewDependencies?: OverviewDependencies,
   /** The private restart hold record, read by main.ts at startup. Omitted in tests. */
   restartHolds?: unknown,
+  /** The private restart progress history, read by main.ts at startup. Omitted in tests. */
+  restartProgress?: unknown,
 ) {
   mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
   const instructionRequests = new InstructionRequests(
@@ -733,6 +769,7 @@ export function createInstallationServer(
       finishTurnsDeadlineMs: restartHoldDeadlineMs(config),
       afterHoldDeadline: config.restartHoldAfterDeadline,
       holdState: restartHoldState(config.stateDir, restartHolds),
+      progressState: restartProgressState(config.stateDir, restartProgress),
     },
   );
   const releaseRuntime = optionalReleaseRuntime(files, {
@@ -2476,7 +2513,9 @@ export function createInstallationServer(
     res.json({
       installationId: config.public.installationId,
       available: restarts.serviceMaintenanceAvailable(),
-      jobs: restarts.listServices().map(maintenanceServiceView),
+      jobs: restarts
+        .listServices()
+        .map((job) => maintenanceServiceView(job, _req.query.operationProgress === "1")),
     });
   });
   app.post("/api/installation/owner/maintenance-services/cancel", (req, res) => {
@@ -3068,11 +3107,13 @@ export function createInstallationServer(
   });
   app.post("/api/installation/owner/restarts/query", (req, res) => {
     const delegation = requestedDelegation(config.stateDir, req.query.delegatedRequests === "1");
+    const operationProgress = req.query.operationProgress === "1";
     res.json(
       restarts
         .list()
-        .map((job) =>
-          withDelegation(
+        .map((job) => ({
+          job,
+          reply: withDelegation(
             restartReply(
               job,
               req.query.idleRestarts === "1",
@@ -3092,12 +3133,17 @@ export function createInstallationServer(
             job,
             delegation,
           ),
-        )
-        .map((reply) =>
-          withHoldDeadline(
-            reply,
-            restarts.holdDeadlineExceeded(reply.id),
-            req.query.restartHoldDeadline === "1",
+        }))
+        .map(({ job, reply }) =>
+          withOperationProgress(
+            withHoldDeadline(
+              reply,
+              restarts.holdDeadlineExceeded(reply.id),
+              req.query.restartHoldDeadline === "1",
+            ),
+            job,
+            restarts,
+            operationProgress,
           ),
         ),
     );

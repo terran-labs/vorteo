@@ -175,6 +175,7 @@ import {
   AgentRunCancellationError,
   type ProviderSubagentHistoryEvent,
 } from "./agent/agent-manager.js";
+import { isRestartHoldError } from "./agent/restart-hold.js";
 import { buildTimelinePromptIndex } from "./agent/timeline-prompt-index.js";
 import { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 import type {
@@ -10880,6 +10881,8 @@ export class Session {
           agentId: resolved.agentId,
           accepted: false,
           error: errorToFriendlyMessage(error),
+          // Additive: older apps read only `error` and keep showing the generic failure.
+          ...(isRestartHoldError(error) ? { errorCode: "restart_hold" as const } : {}),
         },
       });
     }

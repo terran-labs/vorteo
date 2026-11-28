@@ -17,6 +17,13 @@ export const MaintenanceServiceViewSchema = MaintenanceServiceJobSchema.pick({
   generation: z.uuid().nullable(),
   outcome: z.enum(["candidate", "previous", "unknown"]).nullable(),
   observedAt: z.string().datetime().nullable(),
+  // COMPAT(operationProgress): added 2026-11-28; reply-only, sent only to clients that request
+  // operationProgress=1, derived from timestamps the maintenance journal already keeps. Remove the
+  // request gate once every owner client floor includes these fields.
+  startedAt: z.string().datetime().optional(),
+  step: z.string().min(1).max(64).optional(),
+  stepStartedAt: z.string().datetime().optional(),
+  finishedAt: z.string().datetime().optional(),
 });
 export type MaintenanceServiceView = z.infer<typeof MaintenanceServiceViewSchema>;
 

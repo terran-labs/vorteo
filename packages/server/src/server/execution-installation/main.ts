@@ -36,7 +36,12 @@ import {
   codexHostRefreshEnabled,
   parseInstallationConfig,
 } from "./config.js";
-import { createInstallationServer, RESTART_HOLDS_FILE } from "./server.js";
+import {
+  createInstallationServer,
+  RESTART_HOLDS_FILE,
+  RESTART_PROGRESS_UNREADABLE,
+} from "./server.js";
+import { RESTART_PROGRESS_FILE } from "./restart-progress.js";
 import {
   connectInstallationDaemon,
   createInstallationRegistrationAdmission,
@@ -327,6 +332,21 @@ function readRestartHolds(): unknown {
     return undefined;
   }
 }
+/** The coordinator-private restart step history; missing means none, damaged starts fresh. */
+function readRestartProgress(): unknown {
+  let text: string;
+  try {
+    text = readFileSync(join(config.stateDir, RESTART_PROGRESS_FILE), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    return RESTART_PROGRESS_UNREADABLE;
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return RESTART_PROGRESS_UNREADABLE;
+  }
+}
 const app = createInstallationServer(
   config,
   executor,
@@ -346,6 +366,7 @@ const app = createInstallationServer(
   codexSignIn,
   undefined,
   readRestartHolds(),
+  readRestartProgress(),
 );
 const telemetry = createOperationalTelemetry({
   enabled: config.operationalTelemetryEnabled === true,

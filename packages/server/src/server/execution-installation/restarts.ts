@@ -88,6 +88,18 @@ import {
 } from "./maintenance/service-progress.js";
 import type { MaintenanceServiceNativeObservation } from "./maintenance/service-execution.js";
 import { createHash, randomUUID } from "node:crypto";
+import {
+  loadRestartProgress,
+  recordHoldDeadline,
+  recordHolders,
+  recordHoldStart,
+  recordRestartStep,
+  restartProgressReply,
+  withHolderSince,
+  type RestartProgressRecord,
+  type RestartProgressReply,
+  type RestartProgressStore,
+} from "./restart-progress.js";
 import type {
   CooperativeDrainPreparation,
   StandingInterruption,
@@ -132,6 +144,8 @@ export interface RestartStartupOptions {
   afterHoldDeadline?: "auto" | "ask";
   /** Coordinator-private hold start times. Absent keeps them in memory only. */
   holdState?: { read(): unknown; write(value: Record<string, HoldRecord>): void };
+  /** Coordinator-private step history (`restart-progress.json`). Absent keeps it in memory only. */
+  progressState?: RestartProgressStore;
 }
 
 const HoldRecordSchema = z.strictObject({
@@ -140,6 +154,13 @@ const HoldRecordSchema = z.strictObject({
   revision: z.string().optional(),
 });
 type HoldRecord = z.infer<typeof HoldRecordSchema>;
+
+/** Only a request made by an agent has a requester the system could tell; an owner request has none. */
+const REQUESTER_ENVIRONMENT = {
+  "host-agent": "host",
+  "container-agent": "container",
+  owner: null,
+} as const;
 
 /** Default deadline before a finish-current-turns hold applies its configured policy. */
 export const FINISH_TURNS_DEADLINE_MS = 15 * 60_000;
@@ -449,6 +470,10 @@ export class InstallationRestarts {
   private readonly holds = new Map<string, HoldRecord>();
   /** The last holder set logged per job, so only changes are logged. */
   private readonly loggedHolders = new Map<string, string>();
+  private readonly progressState: RestartProgressStore | undefined;
+  /** Coordinator-private step history per job, recorded from this coordinator's transitions. */
+  private progressRecords = new Map<string, RestartProgressRecord>();
+  private progressWriteFailed = false;
   private jobs: RestartJob[];
   private helpers: NativeHelperJob[];
   private monitors: PreviewMonitorJob[];
@@ -483,6 +508,13 @@ export class InstallationRestarts {
     } catch {
       // An unreadable record only restarts the deadline from now.
     }
+    this.progressState = startup.progressState;
+    const loaded = loadRestartProgress(startup.progressState);
+    this.progressRecords = loaded.progress;
+    if (loaded.discarded)
+      this.progress("Restart progress history was unreadable; starting a fresh history", {
+        reason: loaded.discarded,
+      });
     this.snapshot = journal.read();
     this.jobs = this.snapshot.filter(
       (job): job is RestartJob => job.target === "host" || job.target === "container-daemon",
@@ -502,6 +534,8 @@ export class InstallationRestarts {
     this.sessionHosts = this.snapshot.filter(
       (job): job is SessionHostJob => job.target === "session-host",
     );
+    // Jobs already under way get no invented times: see reconstructed histories.
+    this.observeProgress(true);
     if (!startup.fenced) this.activate();
   }
 
@@ -525,6 +559,7 @@ export class InstallationRestarts {
     this.sessionHosts = this.snapshot.filter(
       (job): job is SessionHostJob => job.target === "session-host",
     );
+    this.observeProgress();
   }
 
   /** Only the verified coordinator handoff releases this startup fence. */
@@ -2773,6 +2808,7 @@ export class InstallationRestarts {
       if (!this.executor.holdCurrentTurns) throw new Error("Graceful restart unavailable");
       job = await this.captureRestartContinuation(job);
       await this.executor.holdCurrentTurns(job.target, job.id);
+      this.markHoldStart(job);
     }
     return this.inspectHeldTarget(job);
   }
@@ -2818,6 +2854,7 @@ export class InstallationRestarts {
       this.replace(job);
       job = await this.captureRestartContinuation(job);
       await this.executor.holdCurrentTurns(job.target, job.id);
+      this.markHoldStart(job);
       impact = await this.inspectHeldTarget(job);
     }
     if (!impact.restartDrainObservationSupported || impact.restartDrainId !== job.id)
@@ -2857,6 +2894,7 @@ export class InstallationRestarts {
       this.replace(job);
       job = await this.captureRestartContinuation(job);
       await this.executor.holdCurrentTurns!(job.target, job.id);
+      this.markHoldStart(job);
       if ((await this.executor.initialActivationInstance!(job)) !== instance)
         throw new RestartRequestError("Initial daemon lifetime changed during hold admission");
       const acknowledged = this.jobs.find((item) => item.id === job.id);
@@ -3657,6 +3695,7 @@ export class InstallationRestarts {
         : { startedAt: this.now(), exceeded: false, revision: job.revision };
     const exceeded = this.now() - held.startedAt >= this.finishTurnsDeadlineMs;
     const minutes = Math.round(this.finishTurnsDeadlineMs / 60_000);
+    if (exceeded && !held.exceeded) this.markRequesterNotTold(job);
     if (exceeded && !held.exceeded)
       this.progress(
         this.afterHoldDeadline === "ask"
@@ -3669,6 +3708,10 @@ export class InstallationRestarts {
           afterDeadline: this.afterHoldDeadline,
         },
       );
+    const deadlineAt = new Date(held.startedAt + this.finishTurnsDeadlineMs).toISOString();
+    this.updateProgress(job.id, (record) =>
+      recordHoldDeadline(record, job, deadlineAt, this.isoNow()),
+    );
     if (!this.holds.has(job.id) || saved?.revision !== job.revision || held.exceeded !== exceeded) {
       this.holds.set(job.id, { ...held, exceeded, revision: job.revision });
       this.persistHolds();
@@ -3678,6 +3721,95 @@ export class InstallationRestarts {
         ? `Current turns have not finished after ${minutes} minutes. ${waitingDetail}. Keep waiting, choose Force restart now to review interrupting current turns, or cancel.`
         : waitingDetail;
     return job.detail === detail ? job : { ...job, detail };
+  }
+
+  private isoNow(): string {
+    return new Date(this.now()).toISOString();
+  }
+
+  /** Records each job's current step after every journal write or reload, and forgets gone jobs. */
+  private observeProgress(startup = false): void {
+    const at = this.isoNow();
+    const ids = new Set(this.jobs.map((job) => job.id));
+    let changed = false;
+    for (const id of this.progressRecords.keys())
+      if (!ids.has(id)) {
+        this.progressRecords.delete(id);
+        changed = true;
+      }
+    for (const job of this.jobs) {
+      const record = this.progressRecords.get(job.id) ?? (startup ? this.heldSeed(job) : undefined);
+      const next = recordRestartStep(record, job, at, startup);
+      if (next === this.progressRecords.get(job.id)) continue;
+      this.progressRecords.set(job.id, next);
+      changed = true;
+    }
+    if (changed) this.persistProgress();
+  }
+
+  private updateProgress(
+    id: string,
+    change: (record: RestartProgressRecord | undefined) => RestartProgressRecord,
+  ): void {
+    const record = this.progressRecords.get(id);
+    const next = change(record);
+    if (next === record) return;
+    this.progressRecords.set(id, next);
+    this.persistProgress();
+  }
+
+  /** History is advisory: a failed write is logged once and never stops a restart. */
+  private persistProgress(): void {
+    try {
+      this.progressState?.write(Object.fromEntries(this.progressRecords));
+      this.progressWriteFailed = false;
+    } catch (error) {
+      if (!this.progressWriteFailed)
+        this.progress("Restart progress history could not be saved", { error: String(error) });
+      this.progressWriteFailed = true;
+    }
+  }
+
+  /** The target acknowledged the hold: admission closed now, not when the job was approved. */
+  private markHoldStart(job: RestartJob): void {
+    this.updateProgress(job.id, (record) => recordHoldStart(record, job, this.isoNow()));
+    this.observeProgress();
+  }
+
+  /**
+   * The hold passed its deadline: record, once, that the requesting agent was not told. There is
+   * no scoped service credential for messaging an arbitrary requester's thread, and an owner
+   * connection would write the notice as owner evidence and clear that thread's pending
+   * permissions, so nothing is delivered; the owner sees the overdue hold instead.
+   */
+  private markRequesterNotTold(job: RestartJob): void {
+    if (!REQUESTER_ENVIRONMENT[job.requestedBy]) return;
+    this.updateProgress(job.id, (record) =>
+      record?.notice ? record : { ...(record ?? { steps: [] }), notice: { state: "not-notified" } },
+    );
+  }
+
+  /**
+   * A history first seen at startup for a job this coordinator already holds: the private hold
+   * record carries its own measured start and deadline, so they are kept rather than guessed.
+   */
+  private heldSeed(job: RestartJob): RestartProgressRecord | undefined {
+    const held = this.holds.get(job.id);
+    if (!job.finishCurrentTurns || !held || (held.revision && held.revision !== job.revision))
+      return undefined;
+    const startedAt = new Date(held.startedAt).toISOString();
+    const deadlineAt = new Date(held.startedAt + this.finishTurnsDeadlineMs).toISOString();
+    return { steps: [], hold: { revision: job.revision, startedAt, deadlineAt } };
+  }
+
+  /** The reply-only progress fields; see `operationProgress`. */
+  progressReply(job: RestartJob): RestartProgressReply {
+    return restartProgressReply(job, this.progressRecords.get(job.id));
+  }
+
+  /** The reply impact with each holder's first sighting; see `operationProgress`. */
+  progressImpact(job: RestartJob, impact: RestartJob["impact"]): RestartJob["impact"] {
+    return withHolderSince(impact, job, this.progressRecords.get(job.id));
   }
 
   /** Whether a waiting hold passed its deadline. Reply-only; see `holdDeadlineExceeded`. */
@@ -3713,6 +3845,7 @@ export class InstallationRestarts {
   /** Logs each change in what a waiting restart holds for: agent IDs only, never titles. */
   private logHolders(job: RestartJob, impact: RestartImpact): void {
     const agents = impact.agents.map((agent) => agent.id).sort();
+    this.updateProgress(job.id, (record) => recordHolders(record, job, agents, this.isoNow()));
     const signature = JSON.stringify([agents, impact.pendingStarts, Boolean(impact.error)]);
     const previous = this.loggedHolders.get(job.id);
     if (previous === signature) return;
@@ -4175,6 +4308,7 @@ export class InstallationRestarts {
     this.sessionHosts = sessionHosts;
     if (activity && this.operationalActivitySink)
       activity.flush(this.operationalActivitySink, this.now);
+    this.observeProgress();
   }
 
   private replaceService(

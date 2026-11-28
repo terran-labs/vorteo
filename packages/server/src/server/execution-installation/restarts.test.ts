@@ -22,6 +22,11 @@ import {
   replaceHostKeepingTerminals,
 } from "./host-install-terminals.js";
 import { hostReleaseRetentionIdle } from "./host-release-retention.js";
+import {
+  RESTART_PROGRESS_STEPS_MAX,
+  recordRestartStep,
+  type RestartProgressRecord,
+} from "./restart-progress.js";
 import { digestBootstrapArtifact } from "./coordinator-bootstrap-artifact.js";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -1075,6 +1080,297 @@ test("a finish-current-turns hold asks the owner after its deadline and logs hol
   expect(saved).toEqual({});
   expect(restart).not.toHaveBeenCalled();
   expect(restartWhenIdle).toHaveBeenCalledTimes(1);
+});
+
+function memoryState(initial?: unknown) {
+  const state = {
+    saved: initial,
+    read: () => state.saved,
+    write: (value: unknown) => {
+      state.saved = structuredClone(value);
+    },
+  };
+  return state;
+}
+
+function onlyJob(queue: InstallationRestarts): RestartJob {
+  const [job] = queue.list();
+  if (!job) throw new Error("No restart job");
+  return job;
+}
+
+function holdingExecutor(
+  state: { busy: boolean },
+  extra: Partial<RestartExecutor> = {},
+): RestartExecutor {
+  return {
+    restartContinuationAvailable: async () => false,
+    inspect: async () => idleImpact("host", state.busy),
+    holdCurrentTurns: async () => {},
+    releaseCurrentTurns: async () => {},
+    restart: vi.fn(async () => "unexpected force restart"),
+    restartWhenIdle: vi.fn(async () => "replacement verified"),
+    ...extra,
+  };
+}
+
+test("operation progress records the coordinator's own steps, survives a restart and starts the hold at admission close", async () => {
+  const journal = new MemoryJournal();
+  const start = Date.parse("2026-11-27T20:00:00.000Z");
+  let now = start;
+  const at = (minutes: number) => new Date(start + minutes * 60_000).toISOString();
+  const state = { busy: true };
+  const holdState = memoryState({});
+  const progressState = memoryState();
+  const executor = holdingExecutor(state);
+  const startup = (): RestartStartupOptions => ({
+    fenced: false,
+    finishTurnsDeadlineMs: 15 * 60_000,
+    afterHoldDeadline: "ask",
+    holdState,
+    progressState,
+  });
+  const queue = new InstallationRestarts(journal, executor, () => now, {}, startup());
+  const request = queue.request({ target: "host", reason: "Hold" }, "owner");
+  now = start + 60_000;
+  queue.decide(request.id, request.revision, "finish-current-turns");
+  // Admission closes five minutes after approval, when the target acknowledges the hold.
+  now = start + 6 * 60_000;
+  await queue.drain();
+  expect(queue.progressReply(onlyJob(queue))).toMatchObject({
+    startedAt: at(6),
+    step: "holding-turns",
+    stepStartedAt: at(6),
+    holdStartedAt: at(6),
+    holdDeadlineAt: at(21),
+  });
+
+  now = start + 36 * 60_000;
+  const recovered = new InstallationRestarts(journal, executor, () => now, {}, startup());
+  const resumed = recovered.progressReply(onlyJob(recovered));
+  expect(resumed.steps?.map((step) => step.step)).toEqual([
+    "awaiting-approval",
+    "waiting-to-start",
+    "holding-turns",
+  ]);
+  expect(resumed.stepStartedAt).toBe(at(6));
+
+  state.busy = false;
+  await recovered.drain();
+  await recovered.drain();
+  const done = recovered.progressReply(onlyJob(recovered));
+  expect(onlyJob(recovered).status).toBe("succeeded");
+  expect(done.steps?.map((step) => step.step)).toEqual([
+    "awaiting-approval",
+    "waiting-to-start",
+    "holding-turns",
+    "restarting",
+    "succeeded",
+  ]);
+  expect(done.steps?.[2]).toEqual({ step: "holding-turns", startedAt: at(6), finishedAt: at(36) });
+  // The hold's start and enforced deadline outlive the private hold record, so history shows the overrun.
+  expect(done).toMatchObject({
+    startedAt: at(6),
+    finishedAt: at(36),
+    step: "succeeded",
+    holdStartedAt: at(6),
+    holdDeadlineAt: at(21),
+  });
+  // The shared journal never carries the coordinator-private history.
+  expect(JSON.stringify(journal.jobs)).not.toContain("holding-turns");
+  expect(JSON.stringify(progressState.saved)).toContain("holding-turns");
+});
+
+test("operation progress keeps the newest 16 steps", () => {
+  const queue = new InstallationRestarts(
+    new MemoryJournal(),
+    holdingExecutor({ busy: false }),
+    () => 0,
+  );
+  const job = queue.request({ target: "host", reason: "Cap" }, "owner");
+  let record: RestartProgressRecord | undefined;
+  for (let index = 0; index < 20; index += 1) {
+    const status = index % 2 === 0 ? "pending" : "approved";
+    record = recordRestartStep(record, { ...job, status }, new Date(index * 1000).toISOString());
+  }
+  expect(record?.steps).toHaveLength(RESTART_PROGRESS_STEPS_MAX);
+  expect(record?.steps.at(-1)).toEqual({
+    step: "waiting-to-start",
+    startedAt: new Date(19_000).toISOString(),
+    finishedAt: null,
+  });
+  expect(record?.steps[0]?.startedAt).toBe(new Date(4000).toISOString());
+});
+
+test.each([
+  { name: "a truncated file", read: () => JSON.parse('{"a":'), reason: "unreadable" },
+  {
+    name: "a file of the wrong shape",
+    read: () => ({ job: { steps: "lost" } }),
+    reason: "unrecognized",
+  },
+  {
+    name: "an unreadable file",
+    read: () => {
+      throw new Error("EACCES");
+    },
+    reason: "unreadable",
+  },
+])("a damaged progress history never stops a restart: $name", async ({ read, reason }) => {
+  const journal = new MemoryJournal();
+  const progress: Array<{ message: string; fields: Record<string, unknown> }> = [];
+  const executor = holdingExecutor({ busy: false });
+  const queue = new InstallationRestarts(
+    journal,
+    executor,
+    () => Date.now(),
+    {},
+    {
+      fenced: false,
+      progressState: { read, write: () => {} },
+      progress: (message, fields) => progress.push({ message, fields }),
+    },
+  );
+  const request = queue.request({ target: "host", reason: "Damaged history" }, "owner");
+  queue.decide(request.id, request.revision, "approve");
+  await queue.drain();
+  expect(onlyJob(queue).status).toBe("succeeded");
+  const logged = progress.filter((entry) =>
+    entry.message.includes("progress history was unreadable"),
+  );
+  expect(logged).toEqual([{ message: expect.any(String), fields: { reason } }]);
+  expect(queue.progressReply(onlyJob(queue)).step).toBe("succeeded");
+});
+
+test.each([
+  {
+    name: "an agent's request",
+    requestedBy: "host-agent" as const,
+    requester: "5b4d0f5e-7c1a-4f4b-9d6e-2f0f3c9a1b2c",
+    notice: "not-notified",
+  },
+  {
+    name: "the owner's request",
+    requestedBy: "owner" as const,
+    requester: undefined,
+    notice: undefined,
+  },
+])(
+  "an overdue hold is recorded for the owner, never delivered into a thread: $name",
+  async ({ requestedBy, requester, notice }) => {
+    const journal = new MemoryJournal();
+    let now = Date.now();
+    const state = { busy: true };
+    const progressState = memoryState();
+    const executor = holdingExecutor(state);
+    const queue = new InstallationRestarts(
+      journal,
+      executor,
+      () => now,
+      {},
+      {
+        fenced: false,
+        finishTurnsDeadlineMs: 1000,
+        afterHoldDeadline: "ask",
+        holdState: memoryState({}),
+        progressState,
+      },
+    );
+    const request = queue.request(
+      { target: "host", reason: "Install", ...(requester ? { requester } : {}) },
+      requestedBy,
+    );
+    queue.decide(request.id, request.revision, "finish-current-turns");
+    await queue.drain();
+    now += 1001;
+    await queue.drain();
+    await queue.drain();
+    expect(queue.holdDeadlineExceeded(request.id)).toBe(true);
+    expect(queue.progressReply(onlyJob(queue)).requesterNotice).toBe(notice);
+    // The executor has no route into a thread, so no owner evidence or permission change can
+    // follow from a free-text requester label; the label is never copied into private history.
+    if (requester) expect(JSON.stringify(progressState.saved)).not.toContain(requester);
+    state.busy = false;
+    await queue.drain();
+    await queue.drain();
+    expect(onlyJob(queue).status).toBe("succeeded");
+    expect(queue.progressReply(onlyJob(queue)).requesterNotice).toBe(notice);
+  },
+);
+
+test("a history first seen at startup reports unknown times instead of inventing them", async () => {
+  const journal = new MemoryJournal();
+  const start = Date.parse("2026-11-27T20:00:00.000Z");
+  let now = start;
+  const at = (minutes: number) => new Date(start + minutes * 60_000).toISOString();
+  const state = { busy: true };
+  const holdState = memoryState({});
+  const executor = holdingExecutor(state);
+  // A coordinator that kept no history file holds a restart for a while.
+  const first = new InstallationRestarts(
+    journal,
+    executor,
+    () => now,
+    {},
+    {
+      fenced: false,
+      finishTurnsDeadlineMs: 15 * 60_000,
+      holdState,
+    },
+  );
+  const held = first.request({ target: "host", reason: "Held" }, "owner");
+  first.decide(held.id, held.revision, "finish-current-turns");
+  now = start + 2 * 60_000;
+  await first.drain();
+  const waiting = first.request({ target: "container-daemon", reason: "Waiting" }, "owner");
+
+  now = start + 40 * 60_000;
+  const progressState = memoryState();
+  const second = new InstallationRestarts(
+    journal,
+    executor,
+    () => now,
+    {},
+    {
+      fenced: false,
+      finishTurnsDeadlineMs: 15 * 60_000,
+      holdState,
+      progressState,
+    },
+  );
+  const job = (id: string) => {
+    const found = second.list().find((item) => item.id === id);
+    if (!found) throw new Error("missing job");
+    return found;
+  };
+  const reconstructed = second.progressReply(job(held.id));
+  expect(reconstructed).toMatchObject({
+    progressReconstructed: true,
+    step: "holding-turns",
+    steps: [{ step: "holding-turns", startedAt: null, finishedAt: null }],
+    // The coordinator's own persisted hold start and deadline are measured, so they stay.
+    holdStartedAt: at(2),
+    holdDeadlineAt: at(17),
+  });
+  expect(reconstructed).not.toHaveProperty("startedAt");
+  expect(reconstructed).not.toHaveProperty("stepStartedAt");
+  // A job still awaiting approval has its journaled creation time; nothing is unknown.
+  const pending = second.progressReply(job(waiting.id));
+  expect(pending).toMatchObject({ step: "awaiting-approval", stepStartedAt: waiting.createdAt });
+  expect(pending).not.toHaveProperty("progressReconstructed");
+
+  state.busy = false;
+  now = start + 45 * 60_000;
+  await second.drain();
+  await second.drain();
+  const done = second.progressReply(job(held.id));
+  expect(done.steps).toEqual([
+    { step: "holding-turns", startedAt: null, finishedAt: at(45) },
+    { step: "restarting", startedAt: at(45), finishedAt: at(45) },
+    { step: "succeeded", startedAt: at(45), finishedAt: at(45) },
+  ]);
+  expect(done).toMatchObject({ progressReconstructed: true, finishedAt: at(45) });
+  expect(done).not.toHaveProperty("startedAt");
 });
 
 test.each([

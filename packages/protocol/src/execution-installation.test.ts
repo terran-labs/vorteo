@@ -1,4 +1,6 @@
 import { expect, test } from "vitest";
+import * as installationProtocol from "./execution-installation.js";
+import { MaintenanceServiceViewSchema } from "./maintenance-service-status.js";
 import {
   installationHasContainer,
   InstallationUnlockSchema,
@@ -123,4 +125,17 @@ test("owner approval requirements are optional durable request and contribution 
     requestedBy: "host-agent",
     requireOwnerApproval: true,
   });
+});
+
+test("the operation progress marker is exported only with the reply fields it promises", () => {
+  // Clients send operationProgress=1 only when this marker exists. A partial revert that kept it
+  // without the fields would make strict client schemas reject every progress reply.
+  if (!("OPERATION_PROGRESS_REPLY" in installationProtocol)) return;
+  const restart = installationProtocol.RestartJobSchema.shape;
+  for (const field of ["progressReconstructed", "startedAt", "step", "steps", "requesterNotice"]) {
+    expect(restart).toHaveProperty(field);
+  }
+  for (const field of ["startedAt", "step", "stepStartedAt", "finishedAt"]) {
+    expect(MaintenanceServiceViewSchema.shape).toHaveProperty(field);
+  }
 });

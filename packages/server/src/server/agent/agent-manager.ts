@@ -2908,11 +2908,16 @@ export class AgentManager {
     );
     const agents = managed
       .filter((agent) => agent.lifecycle === "initializing" || this.hasInFlightRun(agent.id))
-      .map((agent) => ({
-        id: agent.id,
-        title: agent.config.title || agent.id,
-        status: String(agent.lifecycle),
-      }));
+      .map((agent) => {
+        const blocker: { id: string; title: string; status: string; turnStartedAt?: string } = {
+          id: agent.id,
+          title: agent.config.title || agent.id,
+          status: String(agent.lifecycle),
+        };
+        if (agent.activeTurnStartedAt)
+          blocker.turnStartedAt = agent.activeTurnStartedAt.toISOString();
+        return blocker;
+      });
     for (const parent of managed) {
       for (const [id, child] of this.liveProviderChildren.get(parent) ?? []) {
         if (child.status === "running") {

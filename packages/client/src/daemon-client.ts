@@ -4287,7 +4287,8 @@ export class DaemonClient {
       },
     });
     if (!payload.accepted) {
-      throw new Error(payload.error ?? "sendAgentMessage rejected");
+      const error = new Error(payload.error ?? "sendAgentMessage rejected");
+      throw payload.errorCode ? Object.assign(error, { code: payload.errorCode }) : error;
     }
     return payload.deliveryStatus ? { deliveryStatus: payload.deliveryStatus } : {};
   }
