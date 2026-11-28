@@ -106,7 +106,9 @@ describe("daemon E2E", () => {
 });
 
 test("Antigravity creates an agent and answers a prompt with real agy", async ({ skip }) => {
-  const command = await findExecutable(process.env.AGY_COMMAND ?? "agy");
+  const command = await findExecutable(process.env.AGY_COMMAND ?? "agy", {
+    includeFallbackDirs: true,
+  });
   if (command === null) {
     skip("agy is not resolvable");
     return;
@@ -116,7 +118,9 @@ test("Antigravity creates an agent and answers a prompt with real agy", async ({
     agentClients: {},
     mcpEnabled: false,
     builtinPlugins: new BuiltinPluginLoader(undefined, ["antigravity-provider"]),
-    providerOverrides: { antigravity: { command: [command], paseoTools: { enabled: false } } },
+    providerOverrides: {
+      antigravity: { command: [command, "acp"], paseoTools: { enabled: false } },
+    },
   });
   const client = new DaemonClient({
     url: `ws://127.0.0.1:${daemon.port}/ws`,
@@ -137,16 +141,7 @@ test("Antigravity creates an agent and answers a prompt with real agy", async ({
       title: "Antigravity E2E",
     });
     expect(agent.currentModeId).toBe("full-access");
-    expect(agent.availableModes?.map((mode) => mode.id)).toEqual(["full-access"]);
-    const openedTimeline = await client.fetchAgentTimeline(agent.id, { limit: 100 });
-    expect(openedTimeline.entries.map((entry) => entry.item)).toEqual([
-      {
-        type: "notification",
-        level: "warning",
-        message:
-          "Antigravity is running with full access\nAntigravity's CLI cannot ask for permission when another app drives it, so Paseo starts it with --dangerously-skip-permissions. Every tool call, including shell commands, runs without asking.",
-      },
-    ]);
+    expect(agent.availableModes?.map((mode) => mode.id)).toContain("full-access");
     await client.sendMessage(agent.id, "Reply with exactly ANTIGRAVITY_E2E_OK. No tools.");
     const result = await client.waitForFinish(agent.id, 90000);
     expect(result.status).toBe("idle");
@@ -155,6 +150,64 @@ test("Antigravity creates an agent and answers a prompt with real agy", async ({
       timeline.entries.some(
         (entry) =>
           entry.item.type === "assistant_message" && entry.item.text.includes("ANTIGRAVITY_E2E_OK"),
+      ),
+    ).toBe(true);
+  } finally {
+    await client.close();
+    await daemon.close();
+    await rm(cwd, { recursive: true, force: true });
+  }
+}, 120000);
+
+test("Antigravity receives Vorteo MCP tools over ACP with real agy", async ({ skip }) => {
+  const command = await findExecutable(process.env.AGY_COMMAND ?? "agy", {
+    includeFallbackDirs: true,
+  });
+  if (command === null) {
+    skip("agy is not resolvable");
+    return;
+  }
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "paseo-antigravity-mcp-e2e-"));
+  const daemon = await createTestPaseoDaemon({
+    agentClients: {},
+    mcpEnabled: true,
+    builtinPlugins: new BuiltinPluginLoader(undefined, ["antigravity-provider"]),
+    providerOverrides: {
+      antigravity: { command: [command, "acp"], paseoTools: { enabled: true } },
+    },
+  });
+  const client = new DaemonClient({
+    url: `ws://127.0.0.1:${daemon.port}/ws`,
+    appVersion: "0.10.0",
+  });
+  try {
+    await client.connect();
+    await client.fetchAgents({ subscribe: {} });
+    await client.refreshProvidersSnapshot({ cwd, providers: ["antigravity"] });
+    const agent = await client.createAgent({
+      provider: "antigravity",
+      cwd,
+      title: "Antigravity MCP E2E",
+    });
+    await client.sendMessage(
+      agent.id,
+      "Call the paseo get_checklist MCP tool now (with no arguments), then reply with exactly MCP_CHECKLIST_OK.",
+    );
+    const result = await client.waitForFinish(agent.id, 90000);
+    expect(result.status).toBe("idle");
+    const timeline = await client.fetchAgentTimeline(agent.id, { limit: 100 });
+    expect(
+      timeline.entries.some(
+        (entry) =>
+          entry.item.type === "tool_call" &&
+          entry.item.name.includes("get_checklist") &&
+          entry.item.status === "completed",
+      ),
+    ).toBe(true);
+    expect(
+      timeline.entries.some(
+        (entry) =>
+          entry.item.type === "assistant_message" && entry.item.text.includes("MCP_CHECKLIST_OK"),
       ),
     ).toBe(true);
   } finally {

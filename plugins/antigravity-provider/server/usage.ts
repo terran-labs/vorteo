@@ -1,7 +1,8 @@
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import type { UsageSourceRegistration } from "@getpaseo/plugin/server";
+import { spawnProcess, type UsageSourceRegistration } from "@getpaseo/plugin/server";
 import type { ProviderLaunch } from "@getpaseo/plugin/server/provider";
 import {
   hashAccountKey,
@@ -11,23 +12,186 @@ import {
   type UsageReport,
   type UsageWindow,
 } from "@getpaseo/plugin/server/usage";
-import { probe } from "./internal/process.js";
-import { AntigravityError } from "./internal/wire.js";
 
 const USAGE_TIMEOUT_MS = 15_000;
+const USAGE_MAX_OUTPUT_BYTES = 1024 * 1024;
 const AUTH_ERROR_PATTERN =
   /\b(?:authentication\s+(?:required|failed|expired)|not\s+(?:logged|signed)\s+in(?:to\b)?|unauthenticated|please\s+(?:log|sign)\s+in|run\s+['`"]?agy['`"]?\s+to\s+(?:log|sign)\s+in|visit\s+the\s+url\s+to\s+log\s+in)\b/i;
 const NO_QUOTA_PATTERN =
   /\b(?:no\s+account\s+quota|has\s+no\s+account\s+quota|no\s+usage\s+quota)\b/i;
 const UNKNOWN_FLAG_PATTERN = /flag provided but not defined|unknown flag/i;
 
+class UsageProbeError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly exitCode?: number | null,
+    readonly stderr?: string,
+  ) {
+    super(message);
+    this.name = "UsageProbeError";
+  }
+}
+
+function cleanupGroupQuietly(child: ChildProcessWithoutNullStreams): void {
+  if (!child.pid) return;
+  try {
+    if (process.platform === "win32") process.kill(child.pid, "SIGKILL");
+    else process.kill(-child.pid, "SIGKILL");
+  } catch {
+    // Process group already exited or cannot be signaled after close.
+  }
+}
+
+function probeUsage(options: {
+  launch: ProviderLaunch;
+  args: string[];
+  cwd: string;
+  timeoutMs: number;
+  abortOnStderr?: RegExp;
+}): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawnProcess(options.launch.command, [...options.launch.args, ...options.args], {
+      env: options.launch.env,
+      cwd: options.cwd,
+      stdio: "pipe",
+      detached: process.platform !== "win32",
+    });
+    child.stdin.end();
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const deadline = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      const trimmedStderr = stderr.trim();
+      cleanupGroupQuietly(child);
+      if (options.abortOnStderr?.test(trimmedStderr)) {
+        reject(new UsageProbeError(trimmedStderr, "PROBE_ERROR", 1, trimmedStderr));
+        return;
+      }
+      reject(new UsageProbeError("Antigravity usage check timed out", "PROBE_TIMEOUT"));
+    }, options.timeoutMs);
+    child.stdout.on("data", (chunk: Buffer) => {
+      const remaining = USAGE_MAX_OUTPUT_BYTES - stdout.length;
+      if (remaining > 0) stdout += chunk.toString().slice(0, remaining);
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr = (stderr + chunk.toString()).slice(-8192);
+      if (!settled && options.abortOnStderr?.test(stderr)) {
+        settled = true;
+        clearTimeout(deadline);
+        cleanupGroupQuietly(child);
+        const trimmedStderr = stderr.trim();
+        reject(new UsageProbeError(trimmedStderr, "PROBE_ERROR", 1, trimmedStderr));
+      }
+    });
+    child.on("error", (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      reject(new UsageProbeError(error.message, "SPAWN_ERROR"));
+    });
+    child.on("close", (code) => {
+      cleanupGroupQuietly(child);
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      if (code === 0) resolve(stdout);
+      else {
+        const trimmedStderr = stderr.trim();
+        reject(
+          new UsageProbeError(
+            trimmedStderr || `agy exited with code ${code}`,
+            "PROBE_ERROR",
+            code,
+            trimmedStderr,
+          ),
+        );
+      }
+    });
+  });
+}
+
 function nullLogPath(): string {
   return process.platform === "win32" ? "NUL" : "/dev/null";
 }
 
+// Global agy flags that consume the following token as a value (from `agy --help`).
+const AGY_VALUE_FLAGS = new Set([
+  "--add-dir",
+  "--agent",
+  "--conversation",
+  "-r",
+  "--resume",
+  "--effort",
+  "--input-format",
+  "--json-schema",
+  "--log-file",
+  "--mode",
+  "--model",
+  "--output-format",
+  "-p",
+  "--print",
+  "--prompt",
+  "-i",
+  "--prompt-interactive",
+  "--print-timeout",
+  "--project",
+  "--settings",
+]);
+
+// `agy acp` flags that consume the following token as a value (from `agy acp --help`).
+const AGY_ACP_VALUE_FLAGS = new Set([
+  "--add-dir",
+  "--agent",
+  "--app-data-dir",
+  "--app_data_dir",
+  "--cli_dir_name",
+  "--cli_log_file",
+  "--cloud_code_endpoint",
+  "--gemini-dir",
+  "--gemini_dir",
+  "--ide-mcp-port",
+  "--ide_mcp_port",
+  "--log-file",
+  "--override_user_agent_name",
+]);
+
+function isTrailingSubcommandArgs(tail: readonly string[]): boolean {
+  for (let index = 0; index < tail.length; index += 1) {
+    const token = tail[index]!;
+    if (token === "--" || !token.startsWith("-")) return false;
+    if (!token.includes("=") && AGY_ACP_VALUE_FLAGS.has(token)) {
+      if (index + 1 >= tail.length) return false;
+      index += 1;
+    }
+  }
+  return true;
+}
+
+export function stripAcpSubcommand(args: readonly string[]): string[] {
+  let index = 0;
+  while (index < args.length) {
+    const token = args[index]!;
+    if (token === "--") break;
+    if (token === "acp" && isTrailingSubcommandArgs(args.slice(index + 1))) {
+      return args.slice(0, index);
+    }
+    if (!token.includes("=") && AGY_VALUE_FLAGS.has(token)) {
+      index += 2;
+      continue;
+    }
+    index += 1;
+  }
+  return [...args];
+}
+
 function usageLaunch(launch: ProviderLaunch): ProviderLaunch {
-  if (launch.env.SSH_CONNECTION) return launch;
-  return { ...launch, env: { ...launch.env, SSH_CONNECTION: "1 2 3 4" } };
+  // The ACP launch ends with the `acp` subcommand and its flags; usage queries the CLI itself.
+  const args = stripAcpSubcommand(launch.args);
+  const env = launch.env.SSH_CONNECTION ? launch.env : { ...launch.env, SSH_CONNECTION: "1 2 3 4" };
+  return { ...launch, args, env };
 }
 
 const inputSchema = z.object({ account: z.string() }).strict();
@@ -230,17 +394,16 @@ export class AntigravityUsage {
         const launch = this.launches.get(account);
         if (!launch) throw new Error("Antigravity login no longer exists");
         try {
-          const stdout = await probe({
+          const stdout = await probeUsage({
             launch: usageLaunch(launch),
             args: ["--log-file", nullLogPath(), "-p", "/usage", "--output-format", "json"],
             cwd: tmpdir(),
             timeoutMs: USAGE_TIMEOUT_MS,
-            cleanupProcessGroup: true,
             abortOnStderr: AUTH_ERROR_PATTERN,
           });
           return parseUsageReport(stdout);
         } catch (error) {
-          if (error instanceof AntigravityError) {
+          if (error instanceof UsageProbeError) {
             const detail = error.stderr ?? error.message;
             if (
               (error.exitCode === 2 && !UNKNOWN_FLAG_PATTERN.test(detail)) ||

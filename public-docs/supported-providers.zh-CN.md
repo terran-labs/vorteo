@@ -21,24 +21,20 @@ nav: 支持的 Provider
 
 ### Antigravity {#antigravity}
 
-在 daemon 主机上安装 Antigravity CLI（`agy`），然后运行一次 `agy` 登录。在 Paseo 中选择 **Antigravity**。该 Provider 随 Paseo 一起提供，无需另外安装插件。
+在 daemon 主机上安装 Antigravity CLI（`agy` 1.5.1 或更高版本），然后运行一次 `agy` 登录。在 Vorteo 中选择 **Antigravity**。该 Provider 随 Vorteo 一起提供，无需另外安装插件。
 
-**Full access** 是唯一的权限模式。当由其他应用驱动时，Antigravity 无法请求权限，因此 Paseo 会以 `--dangerously-skip-permissions` 启动 `agy`。每次工具调用（包括 shell 命令）都不会询问就直接运行。每个会话开始时都会显示一条说明此事的警告，重新打开聊天时也会显示。Antigravity 自己的策略仍然可以拒绝某个操作。
-
-daemon 重启后，Antigravity 会记得对话，但 Paseo 的对话记录会重新开始，因为 `agy` 不会重放它的历史。
+Vorteo 通过 `agy acp` 运行 Antigravity，支持交互式权限模式、Vorteo MCP 工具（检查清单、笔记、子 Agent、定时任务）、会话历史重放、按模型划分的思考深度以及附加图片。升级后现有 Antigravity 会话仍可继续恢复。
 
 此集成使用你已安装的 CLI 和登录状态，未经 Google 认可。
 
-Paseo MCP 工具和引导功能不可用。你自己为 `agy` 配置的 MCP 服务器仍然可用。附加的图片会以文件引用的形式传给 Agent 读取。
-
-如果 `agy` 不在 daemon 的 PATH 中，请在 `~/.paseo/config.json` 中覆盖它的命令。使用 `env` 设置 Provider 专用的环境变量：
+Vorteo 会检查 daemon 的 `PATH` 以及常见的 POSIX 用户目录（如 `~/.local/bin`）。如果 `agy` 位于其他位置，请在 `~/.paseo/config.json` 中覆盖它的命令（包含 `"acp"` 子命令）。使用 `env` 设置 Provider 专用的环境变量：
 
 ```json
 {
   "agents": {
     "providers": {
       "antigravity": {
-        "command": ["/absolute/path/to/agy"],
+        "command": ["/absolute/path/to/agy", "acp"],
         "env": { "EXAMPLE_VARIABLE": "value" }
       }
     }
