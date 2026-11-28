@@ -22,6 +22,11 @@ const badgeVariants: Record<SystemStatus, StatusBadgeVariant> = {
   updating: "muted",
   attention: "warning",
 };
+/** Which daemon's maintenance each environment row shows (#720). */
+const ROW_TARGETS: Record<SystemEnvironmentRow["name"], "host" | "dev"> = {
+  Host: "host",
+  Dev: "dev",
+};
 export interface SystemEnvironmentRow {
   name: "Host" | "Dev";
   status: SystemStatus;
@@ -67,7 +72,7 @@ function EnvironmentRow({ row, first }: { row: SystemEnvironmentRow; first: bool
     () => (isWeb ? ({ "aria-expanded": expanded } as const) : null),
     [expanded],
   );
-  const target = row.name === "Dev" ? "dev" : "host";
+  const target = ROW_TARGETS[row.name];
   return (
     <View nativeID={maintenanceAnchorId(target)}>
       {/* One line per environment: name, status, its action, the menu and Details. */}

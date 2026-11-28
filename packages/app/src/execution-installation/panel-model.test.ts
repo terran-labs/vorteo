@@ -1443,7 +1443,7 @@ test("locked controls report only that maintenance runs, and a silent coordinato
     unlocked: false,
     summary: { requested: 0, queued: 1, running: 1 },
   });
-  expect(locked).toEqual({ operations: [], locked: { running: 2 }, staleSince: null });
+  expect(locked).toEqual({ operations: [], locked: { running: 1, queued: 1 }, staleSince: null });
   const stale = progressOf({ lastUpdatedAt: "2026-11-28T03:59:00.000Z" });
   expect(stale.staleSince).toBe("2026-11-28T03:59:00.000Z");
   expect(stale.operations).toHaveLength(1);

@@ -112,7 +112,7 @@ export interface MaintenanceProgress {
    * Installation controls are locked, so only public counts are known: maintenance is running,
    * without targets or thread titles. Null when unlocked or when nothing runs.
    */
-  locked: { running: number } | null;
+  locked: { running: number; queued: number } | null;
   /** The last successful read is too old to trust; times keep counting from it. */
   staleSince: string | null;
 }
@@ -329,8 +329,15 @@ export function maintenanceProgress(input: MaintenanceProgressInput): Maintenanc
     input.now - Date.parse(input.lastUpdatedAt) > MAINTENANCE_STALE_MS;
   const staleSince = stale ? input.lastUpdatedAt : null;
   if (!input.unlocked) {
-    const running = (input.summary?.queued ?? 0) + (input.summary?.running ?? 0);
-    return { operations: [], locked: running > 0 ? { running } : null, staleSince };
+    // `queued` counts approved work and work another agent will approve; requests waiting on
+    // the owner are `requested` and keep their own attention badge, so they are not counted.
+    const running = input.summary?.running ?? 0;
+    const queued = input.summary?.queued ?? 0;
+    return {
+      operations: [],
+      locked: running + queued > 0 ? { running, queued } : null,
+      staleSince,
+    };
   }
   const jobs = input.jobs as readonly ProgressJob[];
   const services = input.serviceJobs as readonly ProgressService[];
@@ -363,4 +370,28 @@ export function messageHold(
       (operation) => operation.target === target && operation.holdsMessages,
     ) ?? null
   );
+}
+
+// Words shared by every surface: plain English, as the rest of Settings > System is written.
+
+const TARGET_NAMES: Record<MaintenanceTarget, string> = {
+  host: "Host",
+  dev: "Dev",
+  system: "System services",
+};
+
+export function targetName(target: MaintenanceTarget): string {
+  return TARGET_NAMES[target];
+}
+
+export function operationName(operation: Pick<MaintenanceOperation, "target" | "kind">): string {
+  const target = TARGET_NAMES[operation.target];
+  if (operation.kind === "update") return `${target} update`;
+  if (operation.kind === "restart") return `${target} restart`;
+  return `${target} maintenance`;
+}
+
+export function holdLine(operation: MaintenanceOperation): string | null {
+  if (!operation.holdsMessages) return null;
+  return `New messages to ${TARGET_NAMES[operation.target]} are held until it finishes.`;
 }

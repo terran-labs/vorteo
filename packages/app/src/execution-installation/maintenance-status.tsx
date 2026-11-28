@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
@@ -19,8 +20,10 @@ import { requestSettingsJump } from "@/screens/settings/settings-jump";
 import { useSessionStore } from "@/stores/session-store";
 import type { Theme } from "@/styles/theme";
 import {
+  holdLine,
   maintenanceProgress,
   messageHold,
+  operationName,
   type MaintenanceOperation,
   type MaintenanceProgress,
   type MaintenanceTarget,
@@ -43,8 +46,19 @@ const STALE_CHECK_MS = 5_000;
 const noSubscription = () => () => {};
 const noState = () => null;
 
+/** An operation that finished while the app was watching, shown briefly so it does not vanish. */
+export interface FinishedOperation {
+  id: string;
+  name: string;
+  at: string;
+}
+export type LiveMaintenance = MaintenanceProgress & { finished: FinishedOperation[] };
+
+/** How long a finished operation stays mentioned. A failure keeps its own attention item. */
+const FINISHED_SHOWN_MS = 60_000;
+
 /** The live maintenance snapshot, or null where this app has no installation. */
-export function useMaintenanceProgress(): MaintenanceProgress | null {
+export function useMaintenanceProgress(): LiveMaintenance | null {
   const model = useInstallationSystemModel();
   const state = useSyncExternalStore(
     model?.subscribe ?? noSubscription,
@@ -57,7 +71,7 @@ export function useMaintenanceProgress(): MaintenanceProgress | null {
     const timer = setInterval(() => setNow(Date.now()), STALE_CHECK_MS);
     return () => clearInterval(timer);
   }, [state]);
-  return useMemo(() => {
+  const progress = useMemo(() => {
     if (!state) return null;
     const servers = targetServers();
     return maintenanceProgress({
@@ -76,6 +90,55 @@ export function useMaintenanceProgress(): MaintenanceProgress | null {
       },
     });
   }, [now, state]);
+  const finished = useRecentlyFinished(progress, state?.jobs, state?.serviceQueue?.jobs);
+  return useMemo(() => (progress ? { ...progress, finished } : null), [finished, progress]);
+}
+
+interface TrackedRecord {
+  id: string;
+  status: string;
+  finishedAt?: string;
+}
+
+/**
+ * Operations that left the running list because they succeeded, kept for a minute. The finish
+ * time is the coordinator's when it reports one, otherwise when this app saw it end.
+ */
+function useRecentlyFinished(
+  progress: MaintenanceProgress | null,
+  jobs: readonly TrackedRecord[] | undefined,
+  serviceJobs: readonly TrackedRecord[] | undefined,
+): FinishedOperation[] {
+  const seen = useRef(new Map<string, MaintenanceOperation>());
+  const [finished, setFinished] = useState<FinishedOperation[]>([]);
+  useEffect(() => {
+    if (!progress) return;
+    const records = [...(jobs ?? []), ...(serviceJobs ?? [])];
+    const active = new Map(progress.operations.map((operation) => [operation.id, operation]));
+    const ended: FinishedOperation[] = [];
+    for (const [id, operation] of seen.current) {
+      if (active.has(id)) continue;
+      const record = records.find((job) => job.id === id);
+      if (record?.status !== "succeeded") continue;
+      ended.push({
+        id,
+        name: operationName(operation),
+        at: record.finishedAt ?? new Date().toISOString(),
+      });
+    }
+    seen.current = active;
+    if (ended.length) setFinished((current) => [...current, ...ended]);
+  }, [jobs, progress, serviceJobs]);
+  useEffect(() => {
+    if (!finished.length) return;
+    const expire = () =>
+      setFinished((current) =>
+        current.filter((entry) => Date.now() - Date.parse(entry.at) < FINISHED_SHOWN_MS),
+      );
+    const timer = setTimeout(expire, FINISHED_SHOWN_MS);
+    return () => clearTimeout(timer);
+  }, [finished]);
+  return finished;
 }
 
 /** Each daemon's server id, from the installation the app was served with. */
@@ -99,19 +162,6 @@ export function serverTarget(serverId: string): "host" | "dev" | null {
 // ---------------------------------------------------------------------------------------------
 // Words. Plain English, shared by every surface, as the rest of Settings > System is written.
 // ---------------------------------------------------------------------------------------------
-
-const TARGET_NAMES: Record<MaintenanceTarget, string> = {
-  host: "Host",
-  dev: "Dev",
-  system: "System services",
-};
-
-export function operationName(operation: MaintenanceOperation): string {
-  const target = TARGET_NAMES[operation.target];
-  if (operation.kind === "update") return `${target} update`;
-  if (operation.kind === "restart") return `${target} restart`;
-  return `${target} maintenance`;
-}
 
 /** What the operation is doing now, from its tracked step. */
 export function phaseLine(operation: MaintenanceOperation): string {
@@ -182,11 +232,6 @@ export function blockersLine(operation: MaintenanceOperation): string | null {
   return `Waiting for: ${parts.join(", ")}`;
 }
 
-export function holdLine(operation: MaintenanceOperation): string | null {
-  if (!operation.holdsMessages) return null;
-  return `New messages to ${TARGET_NAMES[operation.target]} are held until it finishes.`;
-}
-
 export function overdueLine(operation: MaintenanceOperation): string | null {
   if (!operation.overdue) return null;
   const notice =
@@ -198,19 +243,27 @@ export function overdueLine(operation: MaintenanceOperation): string | null {
 
 function staleLine(progress: MaintenanceProgress): string | null {
   if (!progress.staleSince) return null;
-  const at = new Date(progress.staleSince).toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
-  return `Status not updated since ${at}`;
+  return `Status not updated since ${clockTime(progress.staleSince)}`;
 }
 
-const LOCKED_TITLE = "Maintenance is running";
 const LOCKED_DETAIL = "Unlock System settings to see what it is doing.";
 
+function clockTime(at: string): string {
+  return new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
 /** The one-line summary the sidebar row and the phone entry show. */
-function summary(progress: MaintenanceProgress, now: number): { title: string; detail: string } {
-  if (progress.locked) return { title: LOCKED_TITLE, detail: LOCKED_DETAIL };
+function summary(progress: LiveMaintenance, now: number): { title: string; detail: string } {
+  if (progress.locked) {
+    return {
+      title: progress.locked.running ? "Maintenance is running" : "Maintenance is waiting to start",
+      detail: LOCKED_DETAIL,
+    };
+  }
+  if (progress.operations.length === 0) {
+    const last = progress.finished[progress.finished.length - 1]!;
+    return { title: `${last.name} finished`, detail: `at ${clockTime(last.at)}` };
+  }
   const [first] = progress.operations;
   const stale = staleLine(progress);
   if (progress.operations.length > 1) {
@@ -244,8 +297,10 @@ function useClock(active: boolean): number {
   return now;
 }
 
-function hasMaintenance(progress: MaintenanceProgress | null): progress is MaintenanceProgress {
-  return Boolean(progress && (progress.locked || progress.operations.length > 0));
+function hasMaintenance(progress: LiveMaintenance | null): progress is LiveMaintenance {
+  return Boolean(
+    progress && (progress.locked || progress.operations.length > 0 || progress.finished.length > 0),
+  );
 }
 
 /** The System page anchor for a target's row; System services share the page's top. */
@@ -255,7 +310,10 @@ export function maintenanceAnchorId(target: MaintenanceTarget): string {
 const SYSTEM_ROUTE = "/settings/health";
 
 /** Opens Settings > System at the operation, or at the page top when locked or several run. */
-function useOpenMaintenance(progress: MaintenanceProgress | null, onBeforeNavigate?: () => void) {
+function useOpenMaintenance(
+  progress: Pick<MaintenanceProgress, "operations"> | null,
+  onBeforeNavigate?: () => void,
+) {
   const router = useRouter();
   const target =
     progress && progress.operations.length === 1 ? progress.operations[0]!.target : null;
@@ -341,31 +399,34 @@ export function MaintenancePhoneEntry({ children }: { children: ReactNode }) {
   const insets = useSafeAreaInsets();
   const now = useClock(shown);
   const open = useOpenMaintenance(progress);
-  const innerInsets = useMemo(() => ({ ...insets, top: 0 }), [insets]);
+  // One constant tree whether or not maintenance runs: only the bar and the inset change, so
+  // the page beneath is never remounted while the owner is typing.
+  const innerInsets = useMemo(() => (shown ? { ...insets, top: 0 } : insets), [insets, shown]);
   const barStyle = useMemo(() => [styles.phoneBar, { paddingTop: insets.top }], [insets.top]);
-  if (!shown) return children;
-  const { title, detail } = summary(progress, now);
+  const line = shown ? summary(progress, now) : null;
   return (
     <View style={styles.phoneColumn}>
-      <PressHighlight
-        style={barStyle}
-        highlightStyle={styles.pressed}
-        accessibilityRole="button"
-        accessibilityLabel={`${title}. ${detail}`}
-        accessibilityHint="Opens System settings at this operation"
-        onPress={open}
-        testID="phone-maintenance-status"
-      >
-        <View style={styles.phoneLine}>
-          <MaintenanceIcon size={14} uniProps={iconColor} />
-          <Text style={styles.phoneTitle} numberOfLines={1}>
-            {title}
-          </Text>
-          <Text style={styles.phoneDetail} numberOfLines={1}>
-            {detail}
-          </Text>
-        </View>
-      </PressHighlight>
+      {line ? (
+        <PressHighlight
+          style={barStyle}
+          highlightStyle={styles.pressed}
+          accessibilityRole="button"
+          accessibilityLabel={`${line.title}. ${line.detail}`}
+          accessibilityHint="Opens System settings at this operation"
+          onPress={open}
+          testID="phone-maintenance-status"
+        >
+          <View style={styles.phoneLine}>
+            <MaintenanceIcon size={14} uniProps={iconColor} />
+            <Text style={styles.phoneTitle} numberOfLines={1}>
+              {line.title}
+            </Text>
+            <Text style={styles.phoneDetail} numberOfLines={1}>
+              {line.detail}
+            </Text>
+          </View>
+        </PressHighlight>
+      ) : null}
       <SafeAreaInsetsContext.Provider value={innerInsets}>
         <View style={styles.phoneContent}>{children}</View>
       </SafeAreaInsetsContext.Provider>
@@ -412,22 +473,24 @@ export function MaintenanceOperationDetail({ target }: { target: MaintenanceTarg
   );
 }
 
-/** Health's line while a hold keeps the owner's messages out: progress, not a request. */
-export function useMessageHoldNotice(): string | null {
-  const progress = useMaintenanceProgress();
-  const holding = progress?.operations.find((operation) => operation.holdsMessages);
-  if (!holding) return null;
-  return `${operationName(holding)} in progress. ${holdLine(holding)}`;
-}
-
 // ---------------------------------------------------------------------------------------------
 // Composer
 // ---------------------------------------------------------------------------------------------
 
 /**
- * The composer's send error. When a tracked hold is keeping new messages out of this thread's
- * daemon, the refusal reads as held, names what it waits for and links to the operation; the
- * draft stays in the input as before. Any other failure renders unchanged.
+ * Whether a send error is the daemon's restart-hold refusal. STOPGAP (#720): the send response
+ * does not carry the error code yet, so this matches the daemon's RestartHoldError text; switch
+ * to `errorCode === "restart_hold"` once the response carries it.
+ */
+export function isRestartHoldRefusal(message: string): boolean {
+  return message.startsWith("A restart is waiting for current turns to finish.");
+}
+
+/**
+ * The composer's send error. Only the daemon's restart-hold refusal, while a tracked hold is
+ * active for this thread's daemon, reads as held: the daemon did not keep the message, the draft
+ * stays in the input, and the line names what the hold waits for and links to its progress.
+ * Every other failure, including one during a hold, shows its own message unchanged.
  */
 export function ComposerSendError({
   serverId,
@@ -440,8 +503,9 @@ export function ComposerSendError({
 }) {
   const progress = useMaintenanceProgress();
   const target = serverTarget(serverId);
-  const hold = progress && target ? messageHold(progress, target) : null;
-  const open = useOpenMaintenance(progress && hold ? { ...progress, operations: [hold] } : null);
+  const hold =
+    progress && target && isRestartHoldRefusal(message) ? messageHold(progress, target) : null;
+  const open = useOpenMaintenance(hold ? { operations: [hold] } : null);
   if (!hold) {
     return (
       <Text accessibilityRole="alert" style={style}>
@@ -452,7 +516,7 @@ export function ComposerSendError({
   const blockers = blockersLine(hold);
   return (
     <Text accessibilityRole="alert" style={styles.held} testID="composer-maintenance-hold">
-      {`Held for the ${operationName(hold)}; your draft is kept. `}
+      {`Not sent: the ${operationName(hold)} is holding new messages until it finishes. Your draft is kept; send it again afterwards. `}
       {blockers ? `${blockers}. ` : null}
       <Text accessibilityRole="link" style={styles.heldLink} onPress={open}>
         See progress

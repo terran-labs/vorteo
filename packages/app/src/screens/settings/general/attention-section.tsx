@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { useMessageHoldNotice } from "@/execution-installation/maintenance-status";
+import { useMessageHoldNotice } from "@/execution-installation/maintenance-hold-notice";
 import { View } from "react-native";
 import { SettingsCard, SettingsRow, SettingsSection } from "@/components/settings";
 import { OwnerUnlockDialog } from "@/components/settings/owner-lock";
@@ -185,8 +185,8 @@ export function SystemHealthSection({ onFix }: { onFix: (target: SettingsJumpTar
   else if (items.length === 0 && !locked && holdNotice)
     rows = (
       <SettingsRow
-        label="Update in progress"
-        hint={holdNotice}
+        label={holdNotice.label}
+        hint={holdNotice.hint}
         testID="settings-attention-maintenance"
       />
     );
