@@ -695,6 +695,10 @@ the turn can finish. A message that would start or replace a turn stays held and
 fails with a typed hold error. Finish notifications keep their durable intent and
 wait for the hold to end instead of retrying every few seconds.
 
+The coordinator records each restart's steps in its private `restart-progress.json`. The steps are awaiting approval, waiting to start, preparing the update, waiting for idle agents, holding for running turns, restarting, and the result. It also records when the target acknowledged the hold (admission closed) and when the hold was released. Owner clients read these with `operationProgress=1`. "Restarting" covers installing, starting and verifying as one step.
+
+When a hold passes its deadline, the coordinator tells the requesting agent once. It does so only when the request's `--requester` is the id of an agent on the requesting environment; the label is never treated as authority. An agent with a running turn has the notice steered into it. An idle agent on the environment being held cannot start a turn, so it is told when the hold ends, and until then the job reports the notice as pending.
+
 The coordinator records when the hold first waits in its private `restart-holds.json`,
 which survives a coordinator restart, and logs each change in the set of agents it
 waits for, by agent ID only. After `restartHoldDeadlineMinutes` (default 15),

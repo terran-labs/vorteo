@@ -266,6 +266,12 @@ async function reportRestartTimeout(
   );
 }
 
+// COMPAT(restartImpactTurnStart): a turn start is relayed only from daemons that advertise it.
+function relayTurnStarts(agents: RestartImpact["agents"], supported: boolean): void {
+  if (supported) return;
+  for (const agent of agents) delete agent.turnStartedAt;
+}
+
 export function createInstallationRegistrationAdmission(
   config: InstallationConfig,
   assertRegistrationReadiness?: (target: RestartJob["target"]) => void,
@@ -746,10 +752,12 @@ export function createInstallationRestartExecutor(
             idleMode: "inspect",
           });
           if (!response.impact) throw new Error("Daemon did not return restart impact");
+          const turnStarts = features?.restartImpactTurnStart === true;
           const agents = await filterArchivedRestartErrors(
             response.impact.agents,
             async (id) => (await client.fetchAgent(id))?.agent,
           );
+          relayTurnStarts(agents, turnStarts);
           return {
             target,
             checkedAt: new Date().toISOString(),
@@ -878,6 +886,32 @@ export function createInstallationRestartExecutor(
         });
         if (result.accepted !== true)
           throw new Error("Environment could not establish the restart hold");
+      } finally {
+        await client.close();
+      }
+    },
+    // A fixed system notice for a requesting agent, never authority. Steered into a running turn,
+    // so a requester mid-turn is told without being interrupted. A held environment refuses to
+    // start a turn for an idle agent, so that case waits for the release.
+    async notifyRequester({ environment, agentId, heldTarget, messageId, text }) {
+      const client = await connectInstallationDaemon(config, environment);
+      try {
+        const agent = (await client.fetchAgent(agentId))?.agent;
+        if (!agent) return "not-addressable";
+        const heldEnvironment = heldTarget === "host" ? "host" : heldTarget && "container";
+        if (heldEnvironment === environment && agent.status !== "running") return "pending-release";
+        try {
+          await client.sendAgentMessage(agentId, text, {
+            messageId,
+            origin: "agent",
+            activeTurnBehavior: "steer",
+          });
+          return "delivered";
+        } catch (error) {
+          if (error instanceof Error && "code" in error && error.code === "restart_hold")
+            return "pending-release";
+          throw error;
+        }
       } finally {
         await client.close();
       }

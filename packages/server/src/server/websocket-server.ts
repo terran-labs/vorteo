@@ -2538,6 +2538,7 @@ export class VoiceAssistantWebSocketServer {
         restartDrainObservation: true,
         restartContinuation: this.agentManager.supportsRestartContinuation(),
         heldIdleRestart: this.maintenanceRestart?.supported() === true,
+        restartImpactTurnStart: true,
         // COMPAT(projectRemove): added in v0.1.97, drop the gate when floor >= v0.1.97.
         projectRemove: true,
         // COMPAT(projectAdd): added in v0.1.97, drop the gate when floor >= v0.1.97.

@@ -4585,6 +4585,8 @@ export const ServerInfoStatusPayloadSchema = z
         restartContinuation: z.boolean().optional(),
         // COMPAT(heldIdleRestart): added v574; retain until daemon floor includes v574.
         heldIdleRestart: z.boolean().optional(),
+        // COMPAT(restartImpactTurnStart): added 2026-11-28; restart impact agents carry turnStartedAt.
+        restartImpactTurnStart: z.boolean().optional(),
         // COMPAT(projectRemove): added in v0.1.97, drop the gate when floor >= v0.1.97.
         projectRemove: z.boolean().optional(),
         // COMPAT(projectAdd): added in v0.1.97, drop the gate when floor >= v0.1.97.
@@ -4910,7 +4912,16 @@ export const RestartRequestedStatusPayloadSchema = z.object({
   accepted: z.boolean().optional(),
   impact: z
     .object({
-      agents: z.array(z.object({ id: z.string(), title: z.string(), status: z.string() })),
+      agents: z.array(
+        z.object({
+          id: z.string(),
+          title: z.string(),
+          status: z.string(),
+          // COMPAT(restartImpactTurnStart): added 2026-11-28; optional, sent by daemons that
+          // advertise restartImpactTurnStart. Retain until the daemon floor includes it.
+          turnStartedAt: z.string().datetime().optional(),
+        }),
+      ),
       pendingStarts: z.number().int().nonnegative(),
       restartDrainId: z.string().uuid().nullable().optional(),
       workerInstanceId: z.string().uuid().optional(),
@@ -6168,6 +6179,8 @@ export const SendAgentMessageResponseMessageSchema = z.object({
     accepted: z.boolean(),
     deliveryStatus: z.literal("queued").optional(),
     error: z.string().nullable(),
+    /** Present when a restart hold refused the send; older clients show only `error`. */
+    errorCode: z.literal("restart_hold").optional(),
   }),
 });
 

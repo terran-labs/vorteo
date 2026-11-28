@@ -387,7 +387,18 @@ export type RestartSummary = z.infer<typeof RestartSummarySchema>;
 export const RestartImpactSchema = z.object({
   target: RestartTargetSchema,
   checkedAt: z.string().datetime(),
-  agents: z.array(z.object({ id: z.string(), title: z.string(), status: z.string() })),
+  agents: z.array(
+    z.object({
+      id: z.string(),
+      title: z.string(),
+      status: z.string(),
+      // COMPAT(operationProgress): optional, so older daemons and clients simply omit them.
+      /** When the agent's current turn started, as its daemon reports it. */
+      turnStartedAt: z.string().datetime().optional(),
+      /** When the coordinator first saw this agent holding this job. Reply-only. */
+      waitingSince: z.string().datetime().optional(),
+    }),
+  ),
   pendingStarts: z.number().int().nonnegative(),
   idleRestartSupported: z.boolean(),
   gracefulRestartSupported: z.boolean().optional(),
@@ -654,6 +665,34 @@ export const RestartJobSchema = RestartRequestSchema.extend({
   // Remove the request gate once every owner client floor includes it.
   /** The finish-current-turns hold outlasted its deadline; the owner must restart now or cancel. */
   holdDeadlineExceeded: z.boolean().optional(),
+  // COMPAT(operationProgress): added 2026-11-28; reply-only, sent only to clients that request
+  // operationProgress=1 and never journaled: the coordinator keeps them in its private
+  // restart-progress.json, so strict older clients and rollback coordinators never see them.
+  // Remove the request gate once every owner client floor includes these fields.
+  /** When the coordinator first acted on the approved job. */
+  startedAt: z.string().datetime().optional(),
+  /** The current step, recorded from the coordinator's own transitions. A string, so it can grow. */
+  step: z.string().min(1).max(64).optional(),
+  stepStartedAt: z.string().datetime().optional(),
+  /** Recorded steps, oldest first, at most 16; the current one has a null finishedAt. */
+  steps: z
+    .array(
+      z.strictObject({
+        step: z.string().min(1).max(64),
+        startedAt: z.string().datetime(),
+        finishedAt: z.string().datetime().nullable(),
+      }),
+    )
+    .max(16)
+    .optional(),
+  /** When the target acknowledged the finish-current-turns hold, closing admission. */
+  holdStartedAt: z.string().datetime().optional(),
+  /** When the hold's deadline falls, as the coordinator actually applies it. */
+  holdDeadlineAt: z.string().datetime().optional(),
+  holdReleasedAt: z.string().datetime().optional(),
+  finishedAt: z.string().datetime().optional(),
+  /** Whether the requesting agent was told the hold passed its deadline, or will be at release. */
+  requesterNotice: z.enum(["pending-release", "delivered"]).optional(),
   impact: RestartImpactSchema.optional(),
 });
 export type RestartJob = z.infer<typeof RestartJobSchema>;

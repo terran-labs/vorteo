@@ -1667,6 +1667,36 @@ test("restart details are opt-in so existing open tabs can still decode their st
     ).json(),
   );
   expect(details[0]?.requester).toBe("Provider settings task");
+  // COMPAT(operationProgress): step and timing fields reach only clients that ask for them.
+  const progressFields = [
+    "startedAt",
+    "step",
+    "stepStartedAt",
+    "steps",
+    "holdStartedAt",
+    "holdDeadlineAt",
+    "holdReleasedAt",
+    "finishedAt",
+    "requesterNotice",
+  ];
+  for (const field of progressFields) {
+    expect(legacy[0]).not.toHaveProperty(field);
+    expect(details[0]).not.toHaveProperty(field);
+  }
+  const progress = RestartJobSchema.array().parse(
+    await (
+      await request(
+        "/api/installation/owner/restarts/query?idleRestarts=1&operationProgress=1",
+        "owner-test-password",
+        {},
+      )
+    ).json(),
+  );
+  expect(progress[0]).toMatchObject({
+    step: "awaiting-approval",
+    steps: [{ step: "awaiting-approval", finishedAt: null }],
+  });
+  expect(progress[0]?.stepStartedAt).toBe(progress[0]?.steps?.[0]?.startedAt);
 });
 
 test("legacy owner clients can read removed providers but cannot resurrect them", async () => {
