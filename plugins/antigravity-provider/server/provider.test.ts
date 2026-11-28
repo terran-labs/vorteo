@@ -1147,9 +1147,12 @@ if (args.includes("-p") && args.includes("/usage")) {
     });
   });
 
-  it("strips only the trailing acp subcommand including after boolean flags without truncating agy value flags", () => {
+  it("strips only the trailing acp subcommand including after boolean flags without truncating wrapper prefixes or agy value flags", () => {
     expect(stripAcpSubcommand(["acp"])).toEqual([]);
     expect(stripAcpSubcommand(["script.cjs", "acp", "--debug"])).toEqual(["script.cjs"]);
+    expect(stripAcpSubcommand(["script.cjs", "acp", "--log-file", "/tmp/a.log"])).toEqual([
+      "script.cjs",
+    ]);
     expect(stripAcpSubcommand(["--sandbox", "acp"])).toEqual(["--sandbox"]);
     expect(stripAcpSubcommand(["--verbose", "acp"])).toEqual(["--verbose"]);
     expect(stripAcpSubcommand(["--log-file", "acp", "acp"])).toEqual(["--log-file", "acp"]);
@@ -1158,6 +1161,7 @@ if (args.includes("-p") && args.includes("/usage")) {
       "acp",
       "agy",
     ]);
+    expect(stripAcpSubcommand(["--profile", "acp", "agy"])).toEqual(["--profile", "acp", "agy"]);
     expect(stripAcpSubcommand(["--project", "acp"])).toEqual(["--project", "acp"]);
   });
 

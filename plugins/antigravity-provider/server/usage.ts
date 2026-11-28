@@ -141,11 +141,21 @@ const AGY_VALUE_FLAGS = new Set([
   "--settings",
 ]);
 
+function isTrailingSubcommandArgs(tail: readonly string[]): boolean {
+  for (let index = 0; index < tail.length; index += 1) {
+    const token = tail[index]!;
+    if (token.startsWith("-")) continue;
+    if (index === 0 || !tail[index - 1]!.startsWith("-")) return false;
+  }
+  return true;
+}
+
 export function stripAcpSubcommand(args: readonly string[]): string[] {
   for (let index = args.length - 1; index >= 0; index -= 1) {
     if (args[index] !== "acp") continue;
     const previous = index > 0 ? args[index - 1] : undefined;
     if (previous !== undefined && AGY_VALUE_FLAGS.has(previous)) continue;
+    if (!isTrailingSubcommandArgs(args.slice(index + 1))) continue;
     return args.slice(0, index);
   }
   return [...args];
