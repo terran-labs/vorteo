@@ -315,7 +315,7 @@ export async function findExecutable(
     includeFallbackDirs = false,
   } = typeof options === "number" ? { probeTimeoutMs: options } : options;
   const trimmed = name.trim();
-  if (!trimmed || trimmed === "." || trimmed === "..") {
+  if (!trimmed) {
     return null;
   }
 
@@ -339,7 +339,7 @@ export async function findExecutable(
       return candidate;
     }
   }
-  if (!includeFallbackDirs) {
+  if (!includeFallbackDirs || trimmed === "." || trimmed === "..") {
     return null;
   }
   const seen = new Set(pathCandidates);
