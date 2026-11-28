@@ -6,3 +6,5 @@
 ## Maintenance review
 
 The approval-link fixture shares the standalone client's reply capability flags. It still checks owner approval, request methods and status polling independently.
+
+If the installer job comparison fails, CI selects the installer matrix and continues the required routing check.

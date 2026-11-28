@@ -242,6 +242,65 @@ test("PR routing ignores manifests whose only change is the Vorteo version", () 
   assert.equal(isVersionOnlyChange(base, base, "1.0.0-vorteo.1", "1.0.0-vorteo.1"), false);
 });
 
+const contextFor = (event_name, ref = "refs/heads/main") => ({
+  github: { event_name, ref },
+  contains: (list, item) => list.includes(item),
+  fromJSON: JSON.parse,
+  startsWith: (text, prefix) => text.startsWith(prefix),
+});
+
+test("installer detection errors select the installer suite without failing changes", () => {
+  const changes = jobBlocks(readFileSync(ciWorkflowPath, "utf8")).get("changes").join("\n");
+  assert.match(changes, /uses: actions\/checkout@[^\n]+\n        with:\n          fetch-depth: 0/);
+  const step = changes
+    .split("      - name: Detect installer job edits\n")[1]
+    .split("\n      - ")[0];
+  assert.match(step, /continue-on-error: true/);
+  assert.match(step, /BASE_SHA: \$\{\{ github.event.pull_request.base.sha \}\}/);
+  const command = /^        run: (.+)$/m.exec(step)[1];
+
+  const missingBase = spawnSync(
+    process.execPath,
+    ["scripts/installer/ci-job-changed.mjs", "missing-ci-base"],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+    },
+  );
+  assert.equal(missingBase.status, 0);
+  assert.equal(missingBase.stdout.trim(), "changed=true");
+
+  // A missing detector exercises the workflow fallback even if Node cannot start the script.
+  const dir = mkdtempSync(join(tmpdir(), "installer-routing-"));
+  try {
+    const output = join(dir, "output");
+    const result = spawnSync("bash", ["-e", "-c", command], {
+      cwd: dir,
+      env: { ...process.env, BASE_SHA: "HEAD", GITHUB_OUTPUT: output },
+    });
+    assert.equal(result.status, 0);
+    assert.equal(readFileSync(output, "utf8"), "changed=true\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  const outputs = changes.split("    outputs:\n")[1].split("    steps:\n")[0];
+  const entries = [...outputs.matchAll(/^      (\w+): \$\{\{ (.*) \}\}$/gm)];
+  function readOutputs(changed) {
+    const steps = {
+      filter: { outputs: { installer: "false" } },
+      installer_job: { outputs: { changed } },
+    };
+    const context = { ...contextFor("pull_request"), steps };
+    return Object.fromEntries(
+      entries.map(([, name, expr]) => [name, runInNewContext(expr, context)]),
+    );
+  }
+  const before = readOutputs("false");
+  assert.equal(before.installer, false);
+  assert.deepEqual(readOutputs("true"), { ...before, installer: true });
+});
+
 test("ordinary CI keeps app tests without prebuilding Android modules", () => {
   const source = readFileSync(ciWorkflowPath, "utf8");
   const app = jobBlocks(source).get("app-tests").join("\n");
@@ -415,7 +474,7 @@ test("browser and desktop tests have exclusive, directory-owned suites", () => {
 });
 
 /** Desktop and Windows server suites run only on manual runs; see the heavy-suites test. */
-function assertManualOnlyRouting(jobs, contextFor, selected, all) {
+function assertManualOnlyRouting(jobs, selected, all) {
   // Desktop suites (PWA is the only release channel) and Windows server suites (no Windows
   // Host yet) run only on manual runs.
   const manualOnly = [
@@ -470,12 +529,6 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
 
   const jobs = jobBlocks(source);
   const heavy = /^      heavy: \$\{\{ (.+) \}\}$/m.exec(jobs.get("changes").join("\n"))[1];
-  const contextFor = (event_name, ref = "refs/heads/main") => ({
-    github: { event_name, ref },
-    contains: (list, item) => list.includes(item),
-    fromJSON: JSON.parse,
-    startsWith: (text, prefix) => text.startsWith(prefix),
-  });
   for (const [event, ref, expected] of [
     ["pull_request", "refs/pull/1/merge", false],
     ["push", "refs/heads/main", false],
@@ -676,7 +729,7 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
       );
     }
   }
-  assertManualOnlyRouting(jobs, contextFor, selected, all);
+  assertManualOnlyRouting(jobs, selected, all);
   // Cheap runs replace the Ubuntu integration chain with server unit tests.
   const server = jobs.get("server-tests-ubuntu").join("\n");
   assert.match(

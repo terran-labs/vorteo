@@ -10,9 +10,16 @@ export function installerJob(source) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const workflow = ".github/workflows/ci.yml";
-  const base = execFileSync("git", ["show", `${process.argv[2]}:${workflow}`], {
-    encoding: "utf8",
-  });
-  const current = readFileSync(workflow, "utf8");
-  console.log(`changed=${installerJob(base) !== installerJob(current)}`);
+  let changed = true;
+  try {
+    const base = execFileSync("git", ["show", `${process.argv[2]}:${workflow}`], {
+      encoding: "utf8",
+    });
+    const before = installerJob(base);
+    const after = installerJob(readFileSync(workflow, "utf8"));
+    if (before && after) changed = before !== after;
+  } catch {
+    // An incomplete comparison should run the installer suite.
+  }
+  console.log(`changed=${changed}`);
 }
