@@ -444,19 +444,42 @@ test("preserves a media edit after another device changes the message", async ({
     await expect(
       editor.getByRole("button", { name: "Remove conflict.png", exact: true }),
     ).toBeVisible();
+    // Since #697 the open editor holds the message, so another device cannot open its own editor.
+    // It is told why rather than left with a tap that does nothing.
     await otherRow.getByRole("button", { name: "Edit queued message", exact: true }).click();
-    const otherEditor = other.getByTestId(/^queue-edit-draft-/);
-    await otherEditor
-      .getByRole("textbox", { name: "Edit queued message", exact: true })
-      .fill("Other device wins first");
-    await otherEditor.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(
+      other.getByRole("alert").filter({ hasText: /being edited in another window/i }),
+    ).toBeVisible();
+    await expect(other.getByTestId(/^queue-edit-draft-/)).toHaveCount(0);
+    // The change from elsewhere lands the way it still can: once the hold is gone (here released
+    // by the editor's holder ID, as a lapsed hold or an older client would leave it).
+    const holderId = (await editor.getAttribute("data-testid"))?.replace(/^queue-edit-draft-/, "");
+    expect(holderId).toBeTruthy();
+    await client.mutateMessageQueue(agent.agentId, {
+      kind: "release_edit",
+      operationId: "release-for-other-device",
+      messageId: "conflict-edit",
+      holderId: holderId!,
+    });
+    await client.mutateMessageQueue(agent.agentId, {
+      kind: "edit",
+      operationId: "other-device-edit",
+      messageId: "conflict-edit",
+      expectedRevision: 0,
+      text: "Other device wins first",
+      attachments: [],
+    });
     await expect
       .poll(async () => (await client.readMessageQueue(agent.agentId)).snapshot?.items[0])
       .toMatchObject({ revision: 1, text: "Other device wins first", attachments: [] });
     await expect(editor).toContainText("The message changed on another device");
     await editor.getByRole("button", { name: "Save", exact: true }).click();
     const queue = page.getByTestId("shared-message-queue");
-    await expect(queue).toContainText("Could not synchronize");
+    // Since #695 a refused edit to a still-queued message offers to review it against the
+    // current message rather than a generic synchronization failure.
+    await expect(
+      queue.getByRole("button", { name: "Review against current message", exact: true }),
+    ).toBeVisible();
     await reloadPreservingPreferences(page);
     await queue
       .getByRole("button", { name: "Review against current message", exact: true })
