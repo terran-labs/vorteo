@@ -74,6 +74,11 @@
       "source": "./source/factory-project.ts",
       "default": "./dist/server/factory-shared/project.js"
     },
+    "./factory-lean": {
+      "types": "./dist/server/factory-shared/lean.d.ts",
+      "source": "./source/factory-lean.ts",
+      "default": "./dist/server/factory-shared/lean.js"
+    },
     "./browser-automation/*": {
       "types": "./dist/server/server/browser-tools/engine/*.d.ts",
       "source": "./src/server/browser-tools/engine/*.ts",
