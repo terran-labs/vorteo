@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import type { ProviderEvent } from "@getpaseo/plugin/server/provider";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAntigravityProvider } from "./provider.js";
-import { AntigravityUsage } from "./usage.js";
+import { AntigravityUsage, stripAcpSubcommand } from "./usage.js";
 
 const directories: string[] = [];
 
@@ -1145,6 +1145,17 @@ if (args.includes("-p") && args.includes("/usage")) {
         }),
       ],
     });
+  });
+
+  it("strips only the trailing acp subcommand without truncating flag values named acp", () => {
+    expect(stripAcpSubcommand(["acp"])).toEqual([]);
+    expect(stripAcpSubcommand(["script.cjs", "acp", "--debug"])).toEqual(["script.cjs"]);
+    expect(stripAcpSubcommand(["--profile", "acp", "agy", "acp"])).toEqual([
+      "--profile",
+      "acp",
+      "agy",
+    ]);
+    expect(stripAcpSubcommand(["--profile", "acp", "agy"])).toEqual(["--profile", "acp", "agy"]);
   });
 
   it("reports no_quota when agy exits with code 2", async () => {

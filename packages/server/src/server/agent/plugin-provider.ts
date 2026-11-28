@@ -143,6 +143,16 @@ class ProviderExecutableNotFound extends Error {
   }
 }
 
+// Advertise only capabilities this host bridge actually implements and consumes.
+const UNIMPLEMENTED_HOST_CAPABILITIES = new Set<ProviderCapability>([
+  "session.launch_wrap",
+  "session.metrics",
+  "request.cancel",
+]);
+const HOST_PROVIDER_CAPABILITIES: readonly ProviderCapability[] = PROVIDER_CAPABILITIES.filter(
+  (capability) => !UNIMPLEMENTED_HOST_CAPABILITIES.has(capability),
+);
+
 class ProviderRuntime {
   private connection: ProviderConnection | null = null;
   private connecting: Promise<ProviderConnection> | null = null;
@@ -415,7 +425,7 @@ class ProviderRuntime {
     const rawConnection = await this.registration.connect({
       launch: await this.resolveLaunch(),
       versions: [PROVIDER_PROTOCOL_VERSION],
-      capabilities: PROVIDER_CAPABILITIES,
+      capabilities: HOST_PROVIDER_CAPABILITIES,
     });
     if (this.closed || generation !== this.generation) {
       await rawConnection.close().catch(() => undefined);
@@ -858,7 +868,9 @@ class ProviderRuntimeSession {
   }
 
   private normalizeSessionCapabilities(capabilities: readonly string[]): ProviderCapability[] {
-    const known = PROVIDER_CAPABILITIES.filter((capability) => capabilities.includes(capability));
+    const known = HOST_PROVIDER_CAPABILITIES.filter((capability) =>
+      capabilities.includes(capability),
+    );
     for (const capability of known) {
       if (!this.connection.capabilities.includes(capability)) {
         throw new Error(`Provider session selected unoffered capability ${capability}`);
@@ -883,7 +895,7 @@ class ProviderRuntimeSession {
 }
 
 function normalizeConnection(connection: ProviderConnection): ProviderConnection {
-  const capabilities = PROVIDER_CAPABILITIES.filter((capability) =>
+  const capabilities = HOST_PROVIDER_CAPABILITIES.filter((capability) =>
     connection.capabilities.includes(capability),
   );
   return {

@@ -1,14 +1,15 @@
 import { getProviderProbeCwd } from "../utils/provider-probe-cwd.js";
 import { constants, existsSync } from "node:fs";
-import { access, lstat, stat } from "node:fs/promises";
+import { access, lstat, readlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { delimiter, isAbsolute, join, normalize, resolve } from "node:path";
 import type { ProcessEnvRecord } from "../server/paseo-env.js";
 import { execCommand } from "../utils/spawn.js";
 import which from "which";
 import { windowsExecutableResolution } from "./windows.js";
 
 const PROBE_TIMEOUT_MS = 2000;
+const MAX_SYMLINK_DEPTH = 40;
 
 /** Common per-user and package-manager bin folders searched on POSIX when a daemon PATH omits them. */
 const POSIX_FALLBACK_BIN_DIRS = [
@@ -31,28 +32,80 @@ function isTrustedPosixOwner(info: { uid: number }): boolean {
   return uid === undefined || info.uid === uid || info.uid === 0;
 }
 
-function isTrustedPosixOwnerAndMode(info: { uid: number; mode: number }): boolean {
-  return (info.mode & 0o002) === 0 && isTrustedPosixOwner(info);
+function isStrictlyNonGroupOrWorldWritable(info: { uid: number; mode: number }): boolean {
+  return (info.mode & 0o022) === 0 && isTrustedPosixOwner(info);
 }
 
-async function isTrustedFallbackDir(dir: string): Promise<boolean> {
+function isTrustedAncestorDir(info: { uid: number; mode: number }): boolean {
+  if (!isTrustedPosixOwner(info)) return false;
+  // Sticky root-owned directories (such as /tmp or /private/tmp) prevent non-owners from
+  // renaming or replacing entries owned by another user.
+  if (info.uid === 0 && (info.mode & 0o1000) !== 0) return true;
+  return (info.mode & 0o022) === 0;
+}
+
+function isTrustedFinalEntry(
+  info: { uid: number; mode: number; isDirectory(): boolean; isFile(): boolean },
+  expect: "dir" | "file",
+): boolean {
+  const matchesKind = expect === "dir" ? info.isDirectory() : info.isFile();
+  return matchesKind && isStrictlyNonGroupOrWorldWritable(info);
+}
+
+/**
+ * Walks every ancestor directory and symlink hop from `/` to `targetPath` so no group-writable,
+ * world-writable, or non-owner/non-root component can shadow a fallback CLI binary.
+ */
+async function resolveTrustedPosixPath(
+  targetPath: string,
+  expect: "dir" | "file",
+  depth = 0,
+): Promise<string | null> {
+  if (depth > MAX_SYMLINK_DEPTH || !isAbsolute(targetPath)) return null;
   try {
-    const linkInfo = await lstat(dir);
-    if (!isTrustedPosixOwner(linkInfo)) return false;
-    const info = linkInfo.isSymbolicLink() ? await stat(dir) : linkInfo;
-    return info.isDirectory() && isTrustedPosixOwnerAndMode(info);
+    const rootInfo = await lstat("/");
+    if (!rootInfo.isDirectory() || !isTrustedAncestorDir(rootInfo)) return null;
+
+    const segments = normalize(targetPath).split("/").filter(Boolean);
+    if (segments.length === 0) return null;
+
+    let current = "/";
+    for (let index = 0; index < segments.length; index += 1) {
+      const next = join(current, segments[index]!);
+      const info = await lstat(next);
+      if (!isTrustedPosixOwner(info)) return null;
+
+      if (info.isSymbolicLink()) {
+        const linkTarget = await readlink(next);
+        const resolvedLink = isAbsolute(linkTarget) ? linkTarget : resolve(current, linkTarget);
+        const remaining = segments.slice(index + 1);
+        const nextPath = remaining.length > 0 ? join(resolvedLink, ...remaining) : resolvedLink;
+        return resolveTrustedPosixPath(nextPath, expect, depth + 1);
+      }
+
+      const isFinal = index === segments.length - 1;
+      const trusted = isFinal
+        ? isTrustedFinalEntry(info, expect)
+        : info.isDirectory() && isTrustedAncestorDir(info);
+      if (!trusted) return null;
+
+      current = next;
+    }
+    return current;
   } catch {
-    return false;
+    return null;
   }
 }
 
+async function isTrustedFallbackDir(dir: string): Promise<boolean> {
+  return (await resolveTrustedPosixPath(dir, "dir")) !== null;
+}
+
 async function isTrustedExecutableFile(filePath: string): Promise<boolean> {
+  const resolved = await resolveTrustedPosixPath(filePath, "file");
+  if (!resolved) return false;
   try {
-    const linkInfo = await lstat(filePath);
-    if (!isTrustedPosixOwner(linkInfo)) return false;
-    const targetInfo = linkInfo.isSymbolicLink() ? await stat(filePath) : linkInfo;
-    if (!targetInfo.isFile() || !isTrustedPosixOwnerAndMode(targetInfo)) return false;
-    await access(filePath, constants.X_OK);
+    await access(resolved, constants.X_OK);
     return true;
   } catch {
     return false;

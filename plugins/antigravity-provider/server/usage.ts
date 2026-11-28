@@ -117,10 +117,18 @@ function nullLogPath(): string {
   return process.platform === "win32" ? "NUL" : "/dev/null";
 }
 
+export function stripAcpSubcommand(args: readonly string[]): string[] {
+  for (let index = args.length - 1; index >= 0; index -= 1) {
+    if (args[index] === "acp" && (index === 0 || !args[index - 1]!.startsWith("-"))) {
+      return args.slice(0, index);
+    }
+  }
+  return [...args];
+}
+
 function usageLaunch(launch: ProviderLaunch): ProviderLaunch {
   // The ACP launch ends with the `acp` subcommand and its flags; usage queries the CLI itself.
-  const acp = launch.args.indexOf("acp");
-  const args = acp === -1 ? launch.args : launch.args.slice(0, acp);
+  const args = stripAcpSubcommand(launch.args);
   const env = launch.env.SSH_CONNECTION ? launch.env : { ...launch.env, SSH_CONNECTION: "1 2 3 4" };
   return { ...launch, args, env };
 }

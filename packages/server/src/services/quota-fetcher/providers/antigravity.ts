@@ -413,7 +413,16 @@ export class AntigravityQuotaProvider implements ProviderUsageFetcher {
     const configuredCommand = options.command;
     this.command = configuredCommand?.[0] ?? "agy";
     const rawPrefixArgs = configuredCommand?.slice(1) ?? [];
-    const acpIndex = rawPrefixArgs.indexOf("acp");
+    let acpIndex = -1;
+    for (let index = rawPrefixArgs.length - 1; index >= 0; index -= 1) {
+      if (
+        rawPrefixArgs[index] === "acp" &&
+        (index === 0 || !rawPrefixArgs[index - 1]!.startsWith("-"))
+      ) {
+        acpIndex = index;
+        break;
+      }
+    }
     this.prefixArgs = acpIndex === -1 ? rawPrefixArgs : rawPrefixArgs.slice(0, acpIndex);
     this.env = options.env;
     this.cwd = options.cwd ?? tmpdir();

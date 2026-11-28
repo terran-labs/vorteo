@@ -8,7 +8,7 @@ import type {
 } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
 import { mapToolCall } from "./tool-calls.js";
-import type { AntigravityUsage } from "./usage.js";
+import { stripAcpSubcommand, type AntigravityUsage } from "./usage.js";
 
 const legacySession = z.object({
   version: z.literal(1),
@@ -120,8 +120,7 @@ async function readAgyVersion(
   signal?: AbortSignal,
 ): Promise<string | undefined> {
   // The launch ends with the `acp` subcommand and its flags; the version comes from the CLI itself.
-  const acp = launch.args.indexOf("acp");
-  const prefix = acp === -1 ? launch.args : launch.args.slice(0, acp);
+  const prefix = stripAcpSubcommand(launch.args);
   const cacheKey = await agyVersionCacheKey(launch, prefix);
   if (cacheKey !== null) {
     if (agyVersionCache.has(cacheKey)) {
