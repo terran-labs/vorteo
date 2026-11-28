@@ -191,11 +191,15 @@ class ProviderRuntime {
     if (launch.source !== "override") launch.args.unshift(...command.slice(1));
     const includeFallbackDirs = this.runtimeSettings?.env?.PATH === undefined;
     const env = createProviderEnv({ runtimeSettings: this.runtimeSettings });
+    const rawCommand = launch.command;
+    if (rawCommand.includes("/") || rawCommand.includes("\\")) {
+      launch.command = resolvePath(rawCommand);
+    }
     launch.env = env;
     launch.includeFallbackDirs = includeFallbackDirs;
     const availability = await checkProviderLaunchAvailable(launch);
     if (!availability.resolvedPath) {
-      throw new ProviderExecutableNotFound(launch.command, {
+      throw new ProviderExecutableNotFound(rawCommand, {
         env,
         providerId: this.registration.id,
         includeFallbackDirs,

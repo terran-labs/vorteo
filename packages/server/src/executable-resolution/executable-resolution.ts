@@ -330,8 +330,7 @@ export async function findExecutable(
   }
 
   if (hasPathSeparator(trimmed)) {
-    const candidate = resolve(trimmed);
-    return (await probeExecutable(candidate, { probeTimeoutMs, env })) ? trimmed : null;
+    return (await probeExecutable(trimmed, { probeTimeoutMs, env })) ? trimmed : null;
   }
 
   const pathCandidates = await enumerateCandidates(trimmed, env);
