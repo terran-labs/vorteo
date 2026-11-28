@@ -16,7 +16,11 @@ import { demoFilePath } from "./files";
 import { DemoFileState, type DemoFilePersistence } from "./file-state";
 import { demoProviderUsage } from "./usage";
 import { createDemoDaemonConfig, demoProvidersSnapshot } from "./daemon-config";
-import { onDemoConnectionChange } from "./installation";
+import {
+  DEMO_RESTART_HOLD_MESSAGE,
+  demoMaintenanceFixture,
+  onDemoConnectionChange,
+} from "./installation";
 
 /** Which simulated daemon a session plays. Only the primary one holds the sample work. */
 export interface DemoSessionIdentity {
@@ -479,6 +483,8 @@ export class DemoSession {
       const text = message.text.trim();
       if (!text || text.length > 10_000)
         throw new Error("Enter a demo message of 1 to 10,000 characters.");
+      // The maintenance fixture holds new work on the Host, as a real restart hold does (#720).
+      if (demoMaintenanceFixture()) throw new Error(DEMO_RESTART_HOLD_MESSAGE);
       const timestamp = new Date().toISOString();
       const added = this.conversations.append({
         agentId: agent.id,

@@ -1,4 +1,5 @@
 import { FLOATING_PANEL_INSET } from "@/styles/floating-panel";
+import { ComposerSendError } from "@/execution-installation/maintenance-status";
 import { COLUMN_COMPOSER_INSET } from "@/agent-stream/columns/geometry";
 import { StreamColumnWidthContext } from "@/agent-stream/columns/layout";
 
@@ -2388,11 +2389,10 @@ function ComposerContentImpl({
   const sendErrorNode = useMemo(
     () =>
       sendError ? (
-        <Text accessibilityRole="alert" style={styles.sendErrorText}>
-          {sendError}
-        </Text>
+        // A refusal during a tracked restart hold reads as held and links to its progress (#720).
+        <ComposerSendError serverId={serverId} message={sendError} style={styles.sendErrorText} />
       ) : null,
-    [sendError],
+    [sendError, serverId],
   );
   const githubEmptyText = githubSearchResultsQuery.isFetching
     ? t("composer.github.searching")

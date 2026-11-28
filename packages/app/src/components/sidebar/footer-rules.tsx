@@ -11,8 +11,8 @@ import {
 import { useSidebarListReach } from "./list-reach";
 
 /** Rows of the sidebar footer block that follow the global sections, in display order. */
-export type SidebarFooterRow = "demo" | "rows" | "identity";
-const ROW_ORDER: readonly SidebarFooterRow[] = ["demo", "rows", "identity"];
+export type SidebarFooterRow = "demo" | "rows" | "maintenance" | "identity";
+const ROW_ORDER: readonly SidebarFooterRow[] = ["demo", "rows", "maintenance", "identity"];
 
 interface FooterRules {
   sectionsShown: boolean;
