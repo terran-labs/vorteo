@@ -599,6 +599,15 @@ export type SupervisorEffectExecutor = z.infer<typeof SupervisorEffectExecutorSc
 export type SupervisorEffectChild = z.infer<typeof SupervisorEffectChildSchema>;
 export type SupervisorEffectObservation = z.infer<typeof SupervisorEffectObservationSchema>;
 
+/**
+ * COMPAT(operationProgress): present only when this protocol build's `RestartJobSchema` (below) and
+ * `MaintenanceServiceViewSchema` (in `maintenance-service-status`) both define the optional
+ * `operationProgress=1` reply fields. A client sends `operationProgress=1` only when this export
+ * exists, so it never asks for fields its own strict schemas would reject. Never add it ahead of
+ * those fields; remove it together with the request gate.
+ */
+export const OPERATION_PROGRESS_REPLY = 1;
+
 export const RestartJobSchema = RestartRequestSchema.extend({
   // Protected ledger metadata only; legacy restart replies omit this one-use claim.
   supervisorEffect: SupervisorEffectSchema.optional(),
