@@ -30,7 +30,11 @@ import { getWorkspaceArchiveBlockReason } from "@/workspace/lifecycle/archive";
 import { archiveWorkspacesOptimistically } from "@/workspace/workspace-archive";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { useVortonTouch } from "@/vorton-touch";
-import type { LeanNeedsYouItem, LeanRunnerRole } from "@/screens/factory/lean/lean-model";
+import {
+  leanBetaName,
+  type LeanNeedsYouItem,
+  type LeanRunnerRole,
+} from "@/screens/factory/lean/lean-model";
 import {
   FACTORY_TRACK_STEPS,
   factoryRunnerAgent,
@@ -197,7 +201,7 @@ function needsYouSummary(items: readonly LeanNeedsYouItem[], t: TFunction): stri
       if (item.kind === "beta-notice") {
         return t(
           item.held ? "sidebar.factoryCard.needsYou.betaHeld" : "sidebar.factoryCard.needsYou.beta",
-          { version: item.version },
+          { beta: leanBetaName(item.version, t) },
         );
       }
       if (item.kind === "delivery-failed") {

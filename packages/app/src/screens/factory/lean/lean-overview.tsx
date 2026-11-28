@@ -26,6 +26,7 @@ import {
 import { useLeanActivity, useLeanFactoryReads } from "./lean-factory-queries";
 import {
   leanActionBlock,
+  leanBetaName,
   leanHealthAlerts,
   leanMachineName,
   leanNeedsYou,
@@ -526,8 +527,8 @@ function BetaNoticeRow({
     <SettingsRow
       label={
         item.held
-          ? t("projectFactory.lean.betaHeld", { version: item.version })
-          : t("projectFactory.lean.betaShips", { version: item.version, time })
+          ? t("projectFactory.lean.betaHeld", { beta: leanBetaName(item.version, t) })
+          : t("projectFactory.lean.betaShips", { beta: leanBetaName(item.version, t), time })
       }
       hint={[t("projectFactory.lean.betaResets"), blocked].filter(Boolean).join(" ")}
     >

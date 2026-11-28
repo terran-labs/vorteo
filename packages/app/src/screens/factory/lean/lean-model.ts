@@ -1,6 +1,6 @@
 import type { FactoryQueueIssue } from "@/components/sidebar/factory-card-model";
 import type { FactoryChip } from "@/components/sidebar/factory-card-roles";
-import type { LeanRunnerRef, LeanStatus, LeanView } from "./lean-factory-source";
+import { issueRunners, type LeanStatus, type LeanView } from "./lean-factory-source";
 
 /**
  * Pure view models for lean Factories. Fed by the adapter's shapes; no React, no RPCs.
@@ -84,23 +84,25 @@ export function leanRunnerRows(status: LeanStatus | null, view: LeanView | null)
   const machines = view?.machines ?? [];
   const rows: LeanRunnerRow[] = [];
   for (const line of status?.issues ?? view?.inFlight ?? []) {
-    const runner = line.runner as LeanRunnerRef | null;
-    const role = runner ? RUNNER_ROLE_BY_WIRE[runner.role] : undefined;
-    if (!runner || !role) continue;
-    rows.push({
-      key: `issue-${line.issue}-${runner.agentId}`,
-      issue: line.issue,
-      title: line.title,
-      role,
-      agentId: runner.agentId,
-      serverId: runner.serverId,
-      // The runner's own machine. The line's installation is the Builder's, which is wrong for
-      // a Reviewer on the primary reviewing a secondary's work; older daemons send only that.
-      machine:
-        runner.friendlyName || leanMachineName(runner.installation ?? line.installation, machines),
-      stage: line.stage,
-      danger: DANGER_STAGES.has(line.stage),
-    });
+    for (const runner of issueRunners(line)) {
+      const role = RUNNER_ROLE_BY_WIRE[runner.role];
+      if (!role) continue;
+      rows.push({
+        key: `issue-${line.issue}-${runner.agentId}`,
+        issue: line.issue,
+        title: line.title,
+        role,
+        agentId: runner.agentId,
+        serverId: runner.serverId,
+        // The runner's own machine. The line's installation is the Builder's, which is wrong for
+        // a Reviewer on the primary reviewing a secondary's work; older daemons send only that.
+        machine:
+          runner.friendlyName ||
+          leanMachineName(runner.installation ?? line.installation, machines),
+        stage: line.stage,
+        danger: DANGER_STAGES.has(line.stage),
+      });
+    }
   }
   const lock = view?.health.deliveryLock;
   if (lock?.holder.kind === "runner" && lock.holder.agentId) {
@@ -147,7 +149,8 @@ export type LeanNeedsYouItem =
       kind: "beta-notice";
       key: string;
       eventId: string;
-      version: string;
+      /** Null until the release tool has run; shown as the next beta. */
+      version: string | null;
       shipsAt: string;
       held: boolean;
     }
@@ -289,9 +292,7 @@ export function leanRunnerIssues(
   status: LeanStatus | null,
 ): LeanRunnerIssue[] {
   return rows.map((row) => {
-    const line = status?.issues.find(
-      (candidate) => candidate.issue === row.issue && candidate.runner?.agentId === row.agentId,
-    );
+    const line = status?.issues.find((candidate) => candidate.issue === row.issue);
     const base: QueueIssue = line
       ? queueIssue(line)
       : {
@@ -421,4 +422,14 @@ export function leanActionBlock(
   if (!readiness?.ownerActions) return "owner";
   if (NEEDS_DELIVERY.has(action) && !readiness.deliveryActions) return "delivery";
   return null;
+}
+
+/** "Beta 1.4.2-beta.1", or "The next beta" while its version is not known yet. */
+export function leanBetaName(
+  version: string | null,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  return version
+    ? t("projectFactory.lean.betaName", { version })
+    : t("projectFactory.lean.nextBeta");
 }

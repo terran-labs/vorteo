@@ -46,31 +46,25 @@ export function demoLeanStatus(overrides: Partial<LeanStatus> = {}): LeanStatus 
         title: "Fix room reset on reconnect",
         stage: "building",
         installation: STUDIO,
-        runner: {
-          agentId: "agent-builder-41",
-          role: "lead",
-          serverId: "srv_studio",
-          installation: STUDIO,
-          friendlyName: "Studio",
-        } as LeanStatus["issues"][number]["runner"],
+        runner: { agentId: "agent-builder-41", role: "lead", serverId: "srv_studio" },
+        // The Builder runs on the Studio while its Reviewer runs on the primary.
+        runners: [
+          {
+            agentId: "agent-builder-41",
+            role: "lead",
+            serverId: "srv_studio",
+            installation: STUDIO,
+            friendlyName: "Studio",
+          },
+          {
+            agentId: "agent-reviewer-41",
+            role: "reviewer",
+            serverId: null,
+            installation: M2,
+            friendlyName: "M2",
+          },
+        ],
         pr: null,
-        lastActivityAt: null,
-        deadline: null,
-        waitingOn: null,
-      },
-      {
-        // The same issue's Reviewer runs on the primary while the Builder's line says Studio.
-        issue: 41,
-        title: "Fix room reset on reconnect",
-        stage: "review",
-        installation: STUDIO,
-        runner: {
-          agentId: "agent-reviewer-41",
-          role: "reviewer",
-          serverId: null,
-          installation: M2,
-        } as LeanStatus["issues"][number]["runner"],
-        pr: { number: 91, headSha: "2".repeat(40), checks: "passing" },
         lastActivityAt: null,
         deadline: null,
         waitingOn: null,
@@ -319,11 +313,9 @@ function demoDelivery(state: DemoState) {
       version: "1.4.1-beta.3",
       approvalUrl: null,
       waitingOn: null,
-      failure: {
-        kind: "unknown",
-        reason:
-          "The daemon restarted during the deploy step. Check the target, then choose verify, rerun or abandon.",
-      },
+      failureKind: "unknown",
+      failureReason:
+        "The daemon restarted during the deploy step. Check the target, then choose verify, rerun or abandon.",
     },
     deliveryQueue: [
       {
@@ -373,7 +365,8 @@ export function demoWireView(state: DemoState, held = false, shipsAt?: string) {
     },
     pendingBeta: {
       eventId: "rel-142b1",
-      version: "1.4.2-beta.1",
+      // A new project's first beta has no version until the release tool runs.
+      version: state === "new-project" ? null : "1.4.2-beta.1",
       shipsAt: shipsAt ?? new Date(Date.now() + 8 * 60_000).toISOString(),
       held,
     },

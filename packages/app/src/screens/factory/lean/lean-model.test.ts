@@ -90,7 +90,9 @@ describe("Needs you", () => {
           kind: "rollback",
           version: "1.3.0",
           approvalUrl: null,
-          failure: { kind: failureKind, reason: "The deploy step's outcome is unknown." },
+          waitingOn: null,
+          failureKind,
+          failureReason: "The deploy step's outcome is unknown.",
         },
       } as never);
     const first = leanNeedsYou(demoLeanStatus(), delivery("unknown"))[0];
@@ -102,6 +104,22 @@ describe("Needs you", () => {
     });
     const cancelled = leanNeedsYou(demoLeanStatus(), delivery("cancelled"));
     expect(cancelled.some((item) => item.kind === "delivery-failed")).toBe(false);
+  });
+
+  it("keeps a pending beta whose version is not known yet, so the owner can still hold it", () => {
+    const view = demoLeanView({
+      pendingBeta: {
+        eventId: "rel-next",
+        version: null,
+        shipsAt: "2026-11-27T20:10:00Z",
+        held: false,
+      },
+    });
+    expect(leanNeedsYou(null, view)[0]).toMatchObject({
+      kind: "beta-notice",
+      eventId: "rel-next",
+      version: null,
+    });
   });
 
   it("offers no promote decision when no beta is newer than production", () => {

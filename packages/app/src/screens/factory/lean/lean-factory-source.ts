@@ -12,9 +12,8 @@ import type { FactoryInvoke } from "../queue";
  * wiring to the daemon, or reconciling with a revised contract, is an edit to this file only.
  * React hooks over it live in lean-factory-queries.ts and hold no wire knowledge.
  *
- * Types marked "pending contract" use the names the spine agreed on November 27 but are not in
- * the shared contract yet. They are optional on the wire: until a daemon sends them, the mapping
- * below leaves them null and the views that depend on them render nothing.
+ * Types derive from the shared contract in plugins/factory/shared/lean.ts. Fields a daemon may
+ * omit are resolved to defaults here, so views read one shape whatever the daemon's age.
  */
 
 /** The daemon capability that serves `factory.lean.*`. */
@@ -31,16 +30,18 @@ export function isLeanFactory(
   return features?.[FACTORY_LEAN_FEATURE] === true && state?.mode === "lean";
 }
 
-/** Pending contract: the beta notice the owner can hold before a beta resets occupied rooms. */
-export interface LeanPendingBeta {
-  eventId: string;
-  version: string;
-  /** When it ships unless held; the default notice is 10 minutes. */
-  shipsAt: string;
-  held: boolean;
-}
+type WireView = FactoryLeanView;
 
-/** The delivery executor's current job: in the contract, plus pending fields marked below. */
+/**
+ * The beta in its notice window, which the owner can hold before it resets occupied rooms. Its
+ * version is null until the release tool has run; the interface calls it the next beta.
+ */
+export type LeanPendingBeta = NonNullable<WireView["pendingBeta"]>;
+
+/** One unfinished delivery run, oldest first, with why it is not moving. */
+export type LeanQueuedDelivery = NonNullable<WireView["deliveryQueue"]>[number];
+
+/** The delivery executor's current run, with its optional fields made explicit. */
 export interface LeanDelivery {
   /** "pending" | "running" | "awaiting-approval" | "verifying" | "delivered" | "failed" */
   state: string;
@@ -49,68 +50,52 @@ export interface LeanDelivery {
   kind: string;
   version: string | null;
   approvalUrl: string | null;
-  /** Pending contract: why the run is not moving, in the executor's own words. */
   waitingOn: string | null;
-  /** Pending contract: "step-failed" | "unknown" | "refused" | "cancelled", or null. */
+  /** "step-failed" | "unknown" | "refused" | "cancelled", or null. */
   failureKind: string | null;
-  /** Pending contract: the executor's sentence the owner can act on. */
+  /** The executor's sentence the owner can act on. */
   failureReason: string | null;
-}
-
-/** Pending contract: one unfinished delivery run, oldest first. */
-export interface LeanQueuedDelivery {
-  jobId: string;
-  kind: string;
-  state: string;
-  version: string | null;
-  waitingOn: string | null;
 }
 
 /** The executor's choices for a run whose step failed or whose outcome is unknown. */
 export const LEAN_RESOLVE_ACTIONS = ["verify-only", "rerun", "abandon"] as const;
 export type LeanResolveAction = (typeof LEAN_RESOLVE_ACTIONS)[number];
 
-/** Pending contract: `health.deliveryLock.holderInfo`, beside the legacy `holder` string. */
-export interface LeanDeliveryHolder {
-  kind: "executor" | "runner";
-  agentId?: string;
-  installationId?: string;
-}
+type WireLock = NonNullable<WireView["health"]["deliveryLock"]>;
+/** Who holds the delivery lock: `holderInfo`, or the legacy `holder` string as the executor. */
+export type LeanDeliveryHolder = NonNullable<WireLock["holderInfo"]>;
 
 /**
- * Pending contract `view.readiness`. `factoryLean` advertises reading only; each flag is false,
- * and absent means false, until the daemon has a verified owner route or a wired executor.
+ * Whether the daemon takes owner actions now. `factoryLean` advertises reading only; an absent
+ * `readiness` means neither, until the daemon has a verified owner route or a wired executor.
  */
-export interface LeanReadiness {
-  ownerActions: boolean;
-  deliveryActions: boolean;
-}
+export type LeanReadiness = NonNullable<WireView["readiness"]>;
 
-export type LeanView = Omit<FactoryLeanView, "health"> & {
-  /** Pending contract. */
+/** The view with optional fields resolved to their defaults, so views never branch on absence. */
+export type LeanView = Omit<
+  WireView,
+  "health" | "readiness" | "pendingBeta" | "delivery" | "deliveryQueue"
+> & {
   readiness: LeanReadiness;
   health: {
     alerts: string[];
     deliveryLock: { holder: LeanDeliveryHolder; batch: string; expiresAt: string } | null;
   };
-  /** Pending contract. */
   pendingBeta: LeanPendingBeta | null;
   delivery: LeanDelivery | null;
-  /** Pending contract: every unfinished delivery run, oldest first. */
   deliveryQueue: LeanQueuedDelivery[];
 };
 
 export type LeanStatus = FactoryLeanStatus;
+type IssueLine = LeanStatus["issues"][number];
+/** One runner on an issue, with where it runs: `installation` and `friendlyName`. */
+export type LeanRunnerRef = NonNullable<IssueLine["runner"]>;
 
-/**
- * A runner reference as a newer daemon may send it. Pending contract: `installation` and
- * `friendlyName` name the machine the runner itself runs on, which can differ from the issue
- * line's `installation` (the Builder's machine), as for a Reviewer on the primary.
- */
-export type LeanRunnerRef = NonNullable<LeanStatus["issues"][number]["runner"]> & {
-  installation?: string | null;
-  friendlyName?: string | null;
-};
+/** Every active runner on an issue: `runners`, or the single legacy `runner` from older daemons. */
+export function issueRunners(line: Pick<IssueLine, "runner" | "runners">): LeanRunnerRef[] {
+  if (line.runners) return line.runners;
+  return line.runner ? [line.runner] : [];
+}
 export type LeanActivityEntry = FactoryActivityEntry;
 
 /** The repository config path; a runtime copy, checked against the contract's constant. */
@@ -118,7 +103,7 @@ export const FACTORY_CONFIG_FILE = ".github/vorteo-factory.json";
 const sameConfigPath: typeof FACTORY_CONFIG_PATH = FACTORY_CONFIG_FILE;
 void sameConfigPath;
 
-/** Pending contract: the config key `builder.provider`, which provider builds issues. */
+/** The config key `builder.provider`, which provider builds issues. */
 export const LEAN_BUILDER_PROVIDER_KEY = ["builder", "provider"] as const;
 
 export interface LeanConfigRead {
@@ -137,33 +122,29 @@ export function isRefusal(value: unknown): value is Refusal {
   return typeof value === "object" && value !== null && "refused" in value;
 }
 
-function mapHolder(
-  legacy: string,
-  info: Partial<LeanDeliveryHolder> | undefined,
-): LeanDeliveryHolder {
+function mapHolder(legacy: string, info: LeanDeliveryHolder | undefined): LeanDeliveryHolder {
   // A daemon without holderInfo names only an installation: no runner the owner can open.
-  if (!info) return { kind: "executor", installationId: legacy };
-  const holder = info;
+  return info ?? { kind: "executor", installationId: legacy };
+}
+
+type WireDelivery = NonNullable<WireView["delivery"]>;
+
+function mapDelivery(raw: WireDelivery): LeanDelivery {
   return {
-    kind: holder.kind === "runner" ? "runner" : "executor",
-    agentId: holder.agentId,
-    installationId: holder.installationId,
+    state: raw.state,
+    jobId: raw.jobId,
+    kind: raw.kind,
+    version: raw.version,
+    approvalUrl: raw.approvalUrl,
+    waitingOn: raw.waitingOn ?? null,
+    failureKind: raw.failureKind ?? null,
+    failureReason: raw.failureReason ?? null,
   };
 }
 
-/** Maps a wire view, including the pending-contract fields a newer daemon may add. */
+/** Maps a wire view, resolving every optional field to its default. */
 export function mapLeanView(raw: FactoryLeanView): LeanView {
-  const extra = raw as FactoryLeanView & {
-    pendingBeta?: LeanPendingBeta | null;
-    delivery?: WireDelivery | null;
-    deliveryQueue?: Partial<LeanQueuedDelivery>[];
-    readiness?: Partial<LeanReadiness>;
-  };
-  const lock = raw.health.deliveryLock as
-    | (NonNullable<FactoryLeanView["health"]["deliveryLock"]> & {
-        holderInfo?: Partial<LeanDeliveryHolder>;
-      })
-    | null;
+  const lock = raw.health.deliveryLock;
   return {
     ...raw,
     health: {
@@ -177,47 +158,12 @@ export function mapLeanView(raw: FactoryLeanView): LeanView {
         : null,
     },
     readiness: {
-      ownerActions: extra.readiness?.ownerActions === true,
-      deliveryActions: extra.readiness?.deliveryActions === true,
+      ownerActions: raw.readiness?.ownerActions === true,
+      deliveryActions: raw.readiness?.deliveryActions === true,
     },
-    pendingBeta: extra.pendingBeta ?? null,
-    delivery: extra.delivery ? mapDelivery(extra.delivery) : null,
-    deliveryQueue: (extra.deliveryQueue ?? []).flatMap((run) =>
-      run.jobId
-        ? [
-            {
-              jobId: run.jobId,
-              kind: run.kind ?? "",
-              state: run.state ?? "",
-              version: run.version ?? null,
-              waitingOn: run.waitingOn ?? null,
-            },
-          ]
-        : [],
-    ),
-  };
-}
-
-/**
- * The delivery as a daemon may send it. The failure names are unconfirmed: this accepts the
- * flat `failureKind` the spine described and the executor's own `failure { kind, reason }`.
- */
-type WireDelivery = Omit<LeanDelivery, "waitingOn" | "failureKind" | "failureReason"> & {
-  waitingOn?: string | null;
-  failureKind?: string | null;
-  failure?: { kind?: string; reason?: string } | null;
-};
-
-function mapDelivery(raw: WireDelivery): LeanDelivery {
-  return {
-    state: raw.state,
-    jobId: raw.jobId,
-    kind: raw.kind,
-    version: raw.version,
-    approvalUrl: raw.approvalUrl,
-    waitingOn: raw.waitingOn ?? null,
-    failureKind: raw.failureKind ?? raw.failure?.kind ?? null,
-    failureReason: raw.failure?.reason ?? null,
+    pendingBeta: raw.pendingBeta ?? null,
+    delivery: raw.delivery ? mapDelivery(raw.delivery) : null,
+    deliveryQueue: raw.deliveryQueue ?? [],
   };
 }
 
@@ -250,12 +196,12 @@ export function createLeanSource(invoke: FactoryInvoke, projectId: string) {
         targetEventId,
         expectedProduction,
       })) as LeanWriteResult<{ queued: true; jobId: string }>,
-    /** Pending contract: holds a pending beta past its notice. */
+    /** Owner-only: holds a pending beta past its notice. */
     holdBeta: async (eventId: string) =>
       (await invoke("factory.lean.releases.hold", { projectId, eventId })) as LeanWriteResult<{
         held: boolean;
       }>,
-    /** Pending contract: lets a held beta ship. */
+    /** Owner-only: lets a held beta ship. */
     releaseBeta: async (eventId: string) =>
       (await invoke("factory.lean.releases.release", { projectId, eventId })) as LeanWriteResult<{
         held: boolean;
@@ -273,15 +219,15 @@ export function createLeanSource(invoke: FactoryInvoke, projectId: string) {
       };
     },
     /**
-     * Pending contract, name unconfirmed: settles a failed or unknown-outcome delivery with one
-     * of the executor's choices. Owner-only.
+     * Owner-only, through the verified owner ingress: settles a failed or unknown-outcome
+     * delivery with one of the executor's choices.
      */
     resolveDelivery: async (jobId: string, action: LeanResolveAction) =>
       (await invoke("factory.lean.delivery.resolve", {
         projectId,
         jobId,
         action,
-      })) as LeanWriteResult<{ resolved: boolean }>,
+      })) as LeanWriteResult<{ resolved: true }>,
     proposeConfig: async (baseCommit: string, content: string) =>
       (await invoke("factory.lean.config.propose", {
         projectId,

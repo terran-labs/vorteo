@@ -50,6 +50,7 @@ const laneHolders = z.union([
 ]);
 
 const gateRef = z.looseObject({
+  where: z.enum(["container", "host"]).optional(),
   name: z.string().min(1),
   /** A command the delivery runner runs, or */
   run: z.string().min(1).optional(),
@@ -59,19 +60,49 @@ const gateRef = z.looseObject({
   heavy: z.boolean().optional(),
 });
 /** A recipe step: a command, or an installation lifecycle request (Vorteo source installs). */
+const releaseLocation = z.enum(["container", "host"]).optional();
+function safePathSegments(value: string): boolean {
+  return (
+    !value.includes("\0") &&
+    value.split("/").every((segment) => segment !== "." && segment !== "..")
+  );
+}
+const releaseRecordPath = z
+  .string()
+  .regex(/^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*\.tsv$/u)
+  .refine((value) => safePathSegments(value) && !value.startsWith(".github/"));
 const releaseStep = z.union([
-  z.looseObject({ run: z.string().min(1) }),
+  z.looseObject({ run: z.string().min(1), where: releaseLocation }),
   z.looseObject({ lifecycle: z.literal("host-source-update") }),
 ]);
 
 /**
- * How a project ships. Commands may use the placeholders {version}, {commit}, {artifact},
- * {previousVersion} and {targetVersion}. Commands run only inside a delivery runner's worktree
- * on the `releaseBuild` or `delivery` lane's installation.
+ * The executor passes values in the environment. VORTEO_RELEASE_ variables include VERSION,
+ * COMMIT, ARTIFACT, PREVIOUS_VERSION, TARGET_VERSION, NUMBER, NOTE, NOTES, APPROVAL and TARGET.
  */
 export const ReleaseRecipeV1Schema = z.looseObject({
+  /** Absolute path of the dedicated delivery worktree. */
+  checkout: z
+    .string()
+    .regex(/^\/(?:[^/]+\/)*[^/]+$/u)
+    .refine(safePathSegments)
+    .optional(),
+  /** Exact paths to append-only release records. */
+  records: z.array(releaseRecordPath).optional(),
+  milestoneTag: z
+    .string()
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u)
+    .optional(),
+  /** Owner-attested production commit used until the daemon has a verified delivery receipt. */
+  baselineCommit: z
+    .string()
+    .regex(/^[a-f0-9]{40}$/u)
+    .optional(),
   channels: z.looseObject({
-    beta: z.looseObject({ tag: z.string().min(1) }),
+    beta: z.looseObject({
+      tag: z.string().min(1),
+      noticeMinutes: z.number().nonnegative().optional(),
+    }),
     stable: z.looseObject({ tag: z.string().min(1) }),
   }),
   /**
@@ -82,6 +113,18 @@ export const ReleaseRecipeV1Schema = z.looseObject({
   /** Prints the next version; absent when the prepare step sets it. */
   version: z.looseObject({ run: z.string().min(1) }).optional(),
   steps: z.looseObject({
+    /** Runs when the lockfile blob differs from the last install for this checkout. */
+    install: z
+      .looseObject({
+        run: z.string().min(1),
+        where: z.enum(["container", "host"]),
+        heavy: z.boolean().optional(),
+        lockfile: z
+          .string()
+          .regex(/^[^/]+(?:\/[^/]+)*$/u)
+          .refine(safePathSegments),
+      })
+      .optional(),
     /** A version commit; with `viaPullRequest` it lands through the merge lane before the beta. */
     prepare: z.looseObject({ run: z.string().min(1), viaPullRequest: z.boolean() }).optional(),
     /** Prints the artifact id when identity is "artifact". */
@@ -94,6 +137,7 @@ export const ReleaseRecipeV1Schema = z.looseObject({
     rollback: z.looseObject({
       /** redeploy an earlier build; forward-release a new version with an earlier tree; none. */
       kind: z.enum(["redeploy", "forward-release", "none"]),
+      where: releaseLocation,
       run: z.string().min(1).optional(),
     }),
     /** Absent: the delivery runner drafts notes from the merged pull requests. */
@@ -126,6 +170,22 @@ export type ReleaseRecipeV1 = z.infer<typeof ReleaseRecipeV1Schema>;
  * live here.
  */
 export const FactoryConfigV1Schema = z.looseObject({
+  runners: z.looseObject({ placement: z.enum(["host", "dev"]).optional() }).optional(),
+  builder: z.looseObject({ provider: z.string().min(1).optional() }).optional(),
+  shadow: z.enum(["dry-run", "review-rehearsal"]).optional(),
+  /** The primary records each configured command's exit status at the exact issue head. */
+  issueGates: z
+    .array(
+      z.looseObject({
+        argv: z.array(z.string().min(1)).min(1),
+        where: z.enum(["container", "host"]).optional(),
+        requiredOutput: z.string().min(1).optional(),
+      }),
+    )
+    .min(1)
+    .optional(),
+  /** Matching paths require an independent security review. */
+  sensitivePaths: z.array(z.string().min(1)).optional(),
   schema: z.literal("vorteo-factory"),
   version: z.number().int().positive(),
   /** Absent means "crew". */
@@ -163,7 +223,7 @@ export const FactoryConfigV1Schema = z.looseObject({
     .optional(),
   acceptance: z
     .looseObject({
-      /** A plan acceptance session before the go. Default on. */
+      /** Enable plan judgment for explicit labels or changes requiring additional scrutiny. */
       plan: z.boolean().optional(),
       /** Send-backs per issue before the next result escalates to the owner. Default 2. */
       maxSendBacks: z.number().int().nonnegative().optional(),
@@ -271,6 +331,15 @@ export const FactoryPresenceSchema = z.object({
 });
 export type FactoryPresence = z.infer<typeof FactoryPresenceSchema>;
 
+const issueRunner = z.object({
+  agentId: z.string(),
+  role: z.string(),
+  serverId: z.string().nullable(),
+  /** Placement of this runner. A badge can be shown even without a presence observation. */
+  installation: z.string().optional(),
+  friendlyName: z.string().nullable().optional(),
+});
+
 const issueLine = z.object({
   issue: z.number().int(),
   title: z.string(),
@@ -278,9 +347,9 @@ const issueLine = z.object({
    * review, repair, accepting, sent-back, approved, merged, parked, blocked, foreign. */
   stage: z.string(),
   installation: z.string().nullable(),
-  runner: z
-    .object({ agentId: z.string(), role: z.string(), serverId: z.string().nullable() })
-    .nullable(),
+  runner: issueRunner.nullable(),
+  /** Concurrent roles attached to this issue, when the daemon can enumerate them. */
+  runners: z.array(issueRunner).optional(),
   pr: z.object({ number: z.number().int(), headSha: z.string(), checks: z.string() }).nullable(),
   lastActivityAt: iso.nullable(),
   deadline: iso.nullable(),
@@ -315,7 +384,36 @@ export const FactoryLeanStatusSchema = z.object({
 });
 export type FactoryLeanStatus = z.infer<typeof FactoryLeanStatusSchema>;
 
+const deliveryQueueLine = z.object({
+  jobId: z.string(),
+  kind: z.string(),
+  state: z.string(),
+  version: z.string().nullable(),
+  waitingOn: z.string().nullable(),
+});
+
 export const FactoryLeanViewSchema = z.object({
+  pendingBeta: z
+    .object({
+      eventId: z.string(),
+      version: z.string().nullable(),
+      shipsAt: iso,
+      held: z.boolean(),
+    })
+    .nullable()
+    .optional(),
+  delivery: deliveryQueueLine
+    .partial({ waitingOn: true })
+    .extend({
+      approvalUrl: z.string().nullable(),
+      failureKind: z.string().nullable().optional(),
+      failureReason: z.string().nullable().optional(),
+    })
+    .nullable()
+    .optional(),
+  deliveryQueue: z.array(deliveryQueueLine).optional(),
+  /** Absent when the daemon cannot advertise verified owner actions. */
+  readiness: z.object({ ownerActions: z.boolean(), deliveryActions: z.boolean() }).optional(),
   production: FactoryReleaseEventSchema.nullable(),
   betas: z.array(FactoryReleaseEventSchema),
   earlier: z.array(FactoryReleaseEventSchema),
@@ -332,7 +430,20 @@ export const FactoryLeanViewSchema = z.object({
   ),
   health: z.object({
     alerts: z.array(z.string()),
-    deliveryLock: z.object({ holder: z.string(), batch: z.string(), expiresAt: iso }).nullable(),
+    deliveryLock: z
+      .object({
+        holder: z.string(),
+        holderInfo: z
+          .object({
+            kind: z.enum(["executor", "runner"]),
+            agentId: z.string().optional(),
+            installationId: z.string().optional(),
+          })
+          .optional(),
+        batch: z.string(),
+        expiresAt: iso,
+      })
+      .nullable(),
   }),
   recipe: z.object({ valid: z.boolean(), error: z.string().nullable() }),
 });
@@ -517,6 +628,29 @@ export const factoryLeanDeliveryReport = defineRpc({
   output: z.object({ accepted: z.boolean(), reason: z.string().nullable() }),
 });
 
+/** Verified installation owner ingress only. It is absent from the ordinary plugin RPC list. */
+export const factoryLeanDeliveryResolve = defineRpc({
+  name: "factory.lean.delivery.resolve",
+  input: z.strictObject({
+    projectId,
+    jobId: z.string().min(1),
+    action: z.enum(["verify-only", "rerun", "abandon"]),
+  }),
+  output: z.union([z.strictObject({ resolved: z.literal(true) }), refusal.strict()]),
+});
+
+const pendingBetaInput = z.strictObject({ projectId, eventId: z.string().min(1) });
+const pendingBetaOutput = z.union([z.object({ held: z.boolean() }), refusal]);
+export const factoryLeanReleasesHold = defineRpc({
+  name: "factory.lean.releases.hold",
+  input: pendingBetaInput,
+  output: pendingBetaOutput,
+});
+export const factoryLeanReleasesRelease = defineRpc({
+  name: "factory.lean.releases.release",
+  input: pendingBetaInput,
+  output: pendingBetaOutput,
+});
 export const factoryLeanReleasesList = defineRpc({
   name: "factory.lean.releases.list",
   input: projectInput,
@@ -619,6 +753,8 @@ export const FACTORY_LEAN_RPCS = [
   factoryLeanRulesRemove,
   factoryLeanDeliveryReport,
   factoryLeanReleasesList,
+  factoryLeanReleasesHold,
+  factoryLeanReleasesRelease,
   factoryLeanReleasesPromote,
   factoryLeanReleasesRollback,
   factoryLeanReleasesPreauthorize,
@@ -630,6 +766,9 @@ export const FACTORY_LEAN_RPCS = [
 
 /** Writes only the owner's app may make; the daemon refuses and logs them from other clients. */
 export const FACTORY_LEAN_OWNER_ONLY = [
+  factoryLeanDeliveryResolve.name,
+  factoryLeanReleasesHold.name,
+  factoryLeanReleasesRelease.name,
   factoryLeanRulesRemove.name,
   factoryLeanReleasesPromote.name,
   factoryLeanReleasesRollback.name,
