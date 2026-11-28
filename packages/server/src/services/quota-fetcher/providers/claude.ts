@@ -684,6 +684,7 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
       providerId: this.providerId,
       displayName: this.displayName,
       status: "available",
+      fetchedAt: new Date(this.now()).toISOString(),
       planLabel: plan,
       windows,
       balances: [],
