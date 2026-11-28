@@ -9818,7 +9818,17 @@ export class AgentManager {
         this.escalationTimers.delete(key);
         // The live agent: the one this timer was armed with may have been replaced since.
         const live = this.agents.get(agent.id);
-        if (live?.pendingPermissions.has(request.id)) this.emitState(live);
+        const current = live?.pendingPermissions.get(request.id);
+        if (!live || !current) return;
+        // The timer runs on the monotonic clock and the bound is checked against the wall clock.
+        // A wall clock even a millisecond behind (load, NTP slew) would make the emit below skip
+        // the approval, and with this timer spent it would never reach the owner (#646). Until
+        // the wall clock agrees, wait out the difference instead.
+        if (Date.now() - askedAt < this.permissionOwnerEscalationMs) {
+          this.armPermissionEscalation(live, current);
+          return;
+        }
+        this.emitState(live);
       },
       Math.max(0, remaining),
     );
