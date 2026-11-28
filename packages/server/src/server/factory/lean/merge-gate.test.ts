@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   createMergeGate,
+  recordForeignReview,
   type MergeEvidence,
   type MergeGateDeps,
   type MergeIntent,
 } from "./merge-gate.js";
 import { LEAN_PROTOCOL_MAJOR, type RunnerRef } from "./types.js";
+import { hostPlanRevision, type HostSubmissionProof } from "./review-evidence.js";
 
 const headSha = "a".repeat(40);
 const nextHead = "b".repeat(40);
@@ -70,8 +72,64 @@ function openEvidence(): Extract<MergeEvidence, { kind: "open" }> {
   };
 }
 
-function fixture() {
+function foreignEvidence(host = false) {
   const open = openEvidence();
+  if (!open.lease || !open.reviewer) throw new Error("Missing fixture evidence.");
+  const remote = "studio/project";
+  open.lease.installation = remote;
+  open.reviewer.installation = here;
+  if (open.acceptanceSession) open.acceptanceSession.installation = here;
+  open.lead = null;
+  open.reviewPolicy = { configCommit: nextHead, providerType: "codex", placement: "host" };
+  open.foreignReview = {
+    submission: {
+      installation: remote,
+      generation: "7bdf4309-0c14-4791-9b34-6a31dd017a4e",
+      head: headSha,
+      builderProviderType: "claude",
+    },
+    launch: {
+      issue: 7,
+      headSha,
+      claimGeneration: "7bdf4309-0c14-4791-9b34-6a31dd017a4e",
+      at: now,
+      daemonCreated: true,
+      clean: true,
+      nonChild: true,
+      freshSession: true,
+      reviewerAgentId: open.reviewer.agentId,
+      reviewerAccount: "second",
+      reviewerAccountDefinition: "second",
+      candidates: [{ accountDefinition: "second", reason: "selected" }],
+    },
+  };
+  if (host) {
+    delete open.foreignReview.submission.builderProviderType;
+    const hostProof: HostSubmissionProof = {
+      repository: "owner/repo",
+      issue: 7,
+      pullNumber: open.pull.number,
+      head: headSha,
+      baseSha: nextHead,
+      configCommit: nextHead,
+      planRevision: "d".repeat(64),
+      installation: remote,
+      generation: open.foreignReview.submission.generation,
+    };
+    open.foreignReview.hostProof = hostProof;
+    open.foreignReview.launch.hostProof = { ...hostProof };
+  }
+  saveReview(open);
+  return open;
+}
+
+function saveReview(open: ReturnType<typeof openEvidence>) {
+  const record = recordForeignReview(7, open.pull, open, here);
+  if (!open.foreignReview || !record) throw new Error("Missing fixture outcome.");
+  open.foreignReview = { ...open.foreignReview, recorded: record };
+}
+
+function fixture(open = openEvidence(), requireIndependentHostProof?: true) {
   const state: {
     evidence: MergeEvidence;
     fence: boolean;
@@ -88,6 +146,7 @@ function fixture() {
   const merged: MergeEvidence = { kind: "merged", pull: open.pull, mergeSha };
   const deps: MergeGateDeps = {
     here,
+    requireIndependentHostProof,
     async read() {
       return state.evidence;
     },
@@ -118,6 +177,133 @@ function fixture() {
   };
   return { open, state, merged, deps, gate: createMergeGate(deps) };
 }
+
+describe("foreign merge approvals", () => {
+  it("persists signed-provider independence and recovers after the claim disappears", async () => {
+    const { open, state, deps, gate } = fixture(foreignEvidence());
+    expect(await gate.evaluate(7)).toMatchObject({
+      ready: true,
+      foreignIndependence: "different-provider",
+    });
+    const submit = deps.submit;
+    deps.submit = async (target, expectedForeign) => {
+      expect(expectedForeign).toEqual(open.foreignReview?.submission);
+      await submit(target);
+      return { kind: "queued" };
+    };
+    if (!open.verdict || !open.acceptance) throw new Error("Missing fixture approval.");
+    expect(await gate.merge(7, open.pull, open.verdict, open.acceptance)).toHaveProperty("refused");
+    expect(state.intent?.foreignIndependence).toBe("different-provider");
+    expect(await createMergeGate(deps).recoverMerged(7, open.pull)).toEqual({ mergeSha });
+    if (state.intent) delete state.intent.foreignIndependence;
+    expect(await createMergeGate(deps).recoverMerged(7, open.pull)).toHaveProperty(
+      "code",
+      "merge-inconsistent",
+    );
+  });
+
+  it("requires exact-head signed evidence and a Reviewer on the pinned provider", async () => {
+    const open = foreignEvidence();
+    const foreign = open.foreignReview;
+    if (!foreign || !open.reviewPolicy) throw new Error("Missing fixture policy.");
+    const { gate } = fixture(open);
+    open.foreignReview = undefined;
+    expect(await gate.evaluate(7)).toHaveProperty("ready", false);
+    open.foreignReview = foreign;
+    foreign.submission.head = nextHead;
+    expect(await gate.evaluate(7)).toHaveProperty("ready", false);
+    foreign.submission.head = headSha;
+    open.reviewPolicy.providerType = "claude";
+    expect(await gate.evaluate(7)).toHaveProperty("ready", false);
+  });
+
+  it("records same-provider foreign independence as unverified with policy and exclusions", async () => {
+    const open = foreignEvidence();
+    const foreign = open.foreignReview;
+    if (!foreign || !open.reviewPolicy) throw new Error("Missing fixture policy.");
+    const { gate } = fixture(open);
+    foreign.submission.builderProviderType = "codex";
+    saveReview(open);
+    open.foreignReview = { ...foreign, recorded: open.foreignReview?.recorded };
+    expect(await gate.evaluate(7)).toMatchObject({
+      ready: true,
+      foreignIndependence: "unverified-foreign",
+    });
+    open.reviewPolicy.allowForeignSameProvider = false;
+    expect(await gate.evaluate(7)).toHaveProperty("ready", false);
+    open.reviewPolicy.allowForeignSameProvider = true;
+    open.foreignReview.launch.candidates = [
+      ...foreign.launch.candidates,
+      { accountDefinition: "other", reason: "lower-headroom" },
+    ];
+    expect(await gate.evaluate(7)).toHaveProperty("ready", false);
+  });
+});
+
+describe("unsigned Host dispatch", () => {
+  it("binds approval to the approved proposal content even if comment identity is reused", () => {
+    const proposal = {
+      commentId: 8,
+      postedAt: now,
+      files: ["src/a.ts"],
+      heavy: false,
+      contentDigest: "a".repeat(64),
+    };
+    expect(hostPlanRevision({ ...proposal, contentDigest: "b".repeat(64) })).not.toBe(
+      hostPlanRevision(proposal),
+    );
+  });
+
+  it("submits and recovers with independent Host proof and unknown independence", async () => {
+    const { open, state, deps, gate } = fixture(foreignEvidence(true), true);
+    const proof = open.foreignReview?.hostProof;
+    if (!proof || !open.verdict || !open.acceptance)
+      throw new Error("Missing Host fixture evidence.");
+    expect(await gate.evaluate(7)).toMatchObject({
+      ready: true,
+      foreignIndependence: "unverified-foreign",
+    });
+    const submit = deps.submit;
+    deps.submit = async (target, signed, verified) => {
+      expect(signed).toBeUndefined();
+      expect(verified).toEqual(proof);
+      await submit(target);
+      return { kind: "queued" };
+    };
+    expect(await gate.merge(7, open.pull, open.verdict, open.acceptance)).toHaveProperty("refused");
+    expect(state.intent?.approval.foreignReview?.recorded?.independence).toBe("unverified-foreign");
+    expect(await createMergeGate(deps).recoverMerged(7, open.pull)).toEqual({ mergeSha });
+    expect(state.events.at(-1)).toMatchObject(["complete", { headSha, hostProof: proof }]);
+    if (!state.intent?.approval.foreignReview) throw new Error("Missing merge intent.");
+    delete state.intent.approval.foreignReview.hostProof;
+    expect(await createMergeGate(deps).recoverMerged(7, open.pull)).toHaveProperty(
+      "code",
+      "merge-inconsistent",
+    );
+  });
+
+  it("requires primary proof, exact plan identity, explicit placement and a local Reviewer", async () => {
+    expect(await fixture(foreignEvidence(), true).gate.evaluate(7)).toHaveProperty("ready", false);
+    const open = foreignEvidence(true);
+    const foreign = open.foreignReview;
+    if (!foreign?.hostProof || !open.reviewer || !open.reviewPolicy || !open.verdict)
+      throw new Error("Missing Host fixture evidence.");
+    const { gate } = fixture(open, true);
+    foreign.hostProof = { ...foreign.hostProof, planRevision: "e".repeat(64) };
+    expect(await gate.evaluate(7)).toHaveProperty("ready", false);
+    foreign.hostProof = foreign.launch.hostProof;
+    delete open.reviewPolicy.placement;
+    expect(await gate.evaluate(7)).toHaveProperty("ready", false);
+    open.reviewPolicy.placement = "host";
+    open.reviewer.serverId = "dev";
+    expect(await gate.evaluate(7)).toHaveProperty("ready", false);
+    open.reviewer.serverId = null;
+    open.verdict.approved = false;
+    open.verdict.findings = "Use the approved API.";
+    expect(recordForeignReview(7, open.pull, open, here)?.independence).toBe("unverified-foreign");
+    expect(await gate.evaluate(7)).toHaveProperty("ready", false);
+  });
+});
 
 type OpenEvidence = ReturnType<typeof openEvidence>;
 const refusals: Array<[string, (evidence: OpenEvidence) => void]> = [

@@ -12,14 +12,7 @@ const refSchema = z.object({
   object: z.object({ sha: z.string().regex(/^[a-f0-9]{40}$/u) }),
 });
 
-/** Retire the old public key only after evidence signed with it has drained. */
-export async function verifyFactoryMachineOverlap(input: {
-  repository: string;
-  installation: string;
-  active: string;
-  pending: string;
-}): Promise<boolean> {
-  const { repository, installation } = input;
+async function currentDevConfig(repository: string) {
   if (!/^[a-z\d][a-z\d-]*\/[a-z\d_.-]+$/iu.test(repository) || /\/\.{1,2}$/u.test(repository)) {
     return false;
   }
@@ -50,6 +43,28 @@ export async function verifyFactoryMachineOverlap(input: {
   if (!head) return false;
   const { readPinnedFactoryConfig } = await import("./pinned-factory-config.js");
   const config = await readPinnedFactoryConfig(github, repository, head);
+  if (
+    !z.object({ runners: z.object({ placement: z.literal("dev") }) }).safeParse(config).success ||
+    (await defaultHead()) !== head
+  )
+    return null;
+  return config;
+}
+
+export async function factoryProjectAllowsMachineKeys(repository: string): Promise<boolean> {
+  return Boolean(await currentDevConfig(repository));
+}
+
+/** Retire the old public key only after evidence signed with it has drained. */
+export async function verifyFactoryMachineOverlap(input: {
+  repository: string;
+  installation: string;
+  active: string;
+  pending: string;
+}): Promise<boolean> {
+  const { repository, installation } = input;
+  const config = await currentDevConfig(repository);
+  if (!config) return false;
   const { roles } = resolveMachineRoles(config, installation);
   const enrolled = roles?.publicKeysFor(installation).map(readMachinePublicKey) ?? [];
   const active = readMachinePublicKey(input.active);
@@ -59,7 +74,6 @@ export async function verifyFactoryMachineOverlap(input: {
     pending !== null &&
     !active.equals(pending) &&
     enrolled.some((key) => key?.equals(active)) &&
-    enrolled.some((key) => key?.equals(pending)) &&
-    (await defaultHead()) === head
+    enrolled.some((key) => key?.equals(pending))
   );
 }

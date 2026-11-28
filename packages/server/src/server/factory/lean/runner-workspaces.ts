@@ -230,6 +230,17 @@ async function optionalDirectory(path: string): Promise<boolean> {
   }
 }
 
+/** This bare repository contains daemon bookkeeping only and has no runner worktrees. */
+export async function openMachineRepository(
+  paseoHome: string,
+  projectId: string,
+  repository: string,
+) {
+  if (!isRunnerRepository(repository)) throw new Error("Invalid machine repository.");
+  const pool = await isolatedPool(paseoHome, hash(`machine/${projectId}/${repository}`));
+  return openRepository(pool, `https://github.com/${repository}.git`, repository);
+}
+
 async function isolatedPool(paseoHome: string, projectKey: string): Promise<string> {
   let location = await realpath(paseoHome);
   for (const name of ["factory", "lean", "runner-workspaces", projectKey]) {

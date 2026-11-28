@@ -131,6 +131,7 @@ export type ReleaseRecipeV1 = z.infer<typeof ReleaseRecipeV1Schema>;
  * live here.
  */
 export const FactoryConfigV1Schema = z.looseObject({
+  runners: z.looseObject({ placement: z.enum(["host", "dev"]).optional() }).optional(),
   builder: z.looseObject({ provider: z.string().min(1).optional() }).optional(),
   shadow: z.enum(["dry-run", "review-rehearsal"]).optional(),
   /** The primary records each configured command's exit status at the exact issue head. */
@@ -299,7 +300,13 @@ const issueLine = z.object({
   stage: z.string(),
   installation: z.string().nullable(),
   runner: z
-    .object({ agentId: z.string(), role: z.string(), serverId: z.string().nullable() })
+    .object({
+      agentId: z.string(),
+      role: z.string(),
+      serverId: z.string().nullable(),
+      installation: z.string().optional(),
+      friendlyName: z.string().nullable().optional(),
+    })
     .nullable(),
   pr: z.object({ number: z.number().int(), headSha: z.string(), checks: z.string() }).nullable(),
   lastActivityAt: iso.nullable(),

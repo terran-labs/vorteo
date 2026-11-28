@@ -6,6 +6,7 @@ import { projectFactoryClaimBranch } from "@getpaseo/server/factory-project";
 import { z } from "zod";
 
 import { OWNER_ONLY_FILES, type FactoryGitHub } from "../project/claims.js";
+import type { ClaimSnapshot, MachineLeasePort } from "./machines/claims.js";
 import { LEAN_PROTOCOL_MAJOR, type LeanLedger, type LeanStateStore } from "./types.js";
 
 export const BUILDER_UPLOAD_LIMIT_BYTES = 4 * 1024 * 1024;
@@ -67,6 +68,13 @@ interface BuilderBinding {
   issue: number;
   branch: string;
   authority: BuilderGitAuthority;
+  machineClaim?: BuilderClaimBinding;
+}
+
+interface BuilderClaimBinding {
+  issue: number;
+  generation: string;
+  providerType: string;
 }
 
 export interface BuilderPublishReceipt {
@@ -80,6 +88,8 @@ export interface BuilderPublishReceipt {
   paths: string[];
   preparedAt: string;
   pushedAt: string | null;
+  claimGeneration?: string;
+  builderProviderType?: string;
 }
 
 interface ReceiptLedger extends LeanLedger {
@@ -99,6 +109,8 @@ export interface BuilderGitDependencies {
   readAuthority(callerAgentId: string, issue: number): Promise<BuilderGitAuthority | null>;
   /** Authorize Builder writes in live/rehearsal mode and fence dry runs, foreign and paused projects. */
   allowWrites(): Promise<boolean>;
+  /** Enabled only for projects using verified, signed machine claims. */
+  machineClaims?: Pick<MachineLeasePort, "readClaim">;
 }
 
 interface Bytes {
@@ -136,6 +148,7 @@ export function createBuilderGit(deps: BuilderGitDependencies) {
   const prefix = `repos/${deps.repository}`;
   const remote = `https://github.com/${deps.repository}.git`;
   const owner = deps.repository.split("/")[0];
+  const machineClaims = deps.machineClaims;
   let tail = Promise.resolve();
 
   function serialize<T>(action: () => Promise<T>): Promise<T> {
@@ -169,6 +182,39 @@ export function createBuilderGit(deps: BuilderGitDependencies) {
         "Only the active, authenticated Builder for this issue may publish.",
       );
     }
+    requireLocalLease(lease, issue, branch);
+    const binding: BuilderBinding = { agentId: callerAgentId, issue, branch, authority };
+    if (machineClaims) {
+      if (!runner.providerType) {
+        throw new BuilderGitRefusal("The authenticated Builder has no recorded provider.");
+      }
+      const claim = await ownMachineClaim(issue);
+      const machineClaim = {
+        issue,
+        generation: claim.record.generation,
+        providerType: runner.providerType,
+      };
+      const launch = ledger.hostBuilderAssignments?.[callerAgentId];
+      if (
+        !launch ||
+        launch.issue !== issue ||
+        launch.branch !== branch ||
+        launch.workspaceId !== authority.workspaceId ||
+        launch.account !== runner.account ||
+        launch.generation !== machineClaim.generation
+      ) {
+        throw new BuilderGitRefusal("The Builder has no matching launch for this machine claim.");
+      }
+      binding.machineClaim = machineClaim;
+    }
+    return binding;
+  }
+
+  function requireLocalLease(
+    lease: LeanLedger["leases"][string] | undefined,
+    issue: number,
+    branch: string,
+  ): void {
     if (
       lease?.issue !== issue ||
       lease.branch !== branch ||
@@ -179,7 +225,20 @@ export function createBuilderGit(deps: BuilderGitDependencies) {
     ) {
       throw new BuilderGitRefusal("Factory no longer holds the issue's assigned branch.");
     }
-    return { agentId: callerAgentId, issue, branch, authority };
+  }
+
+  async function ownMachineClaim(issue: number, generation?: string): Promise<ClaimSnapshot> {
+    const claim = await machineClaims?.readClaim(issue);
+    if (
+      !claim ||
+      claim.record.installation !== deps.installation ||
+      claim.record.released ||
+      claim.record.expiresAt * 1000 <= +deps.now() ||
+      (generation !== undefined && generation !== claim.record.generation)
+    ) {
+      throw new BuilderGitRefusal("The Builder no longer holds its signed machine claim.");
+    }
+    return claim;
   }
 
   async function requireSame(binding: BuilderBinding, paths: string[]): Promise<void> {
@@ -189,7 +248,9 @@ export function createBuilderGit(deps: BuilderGitDependencies) {
     if (
       before.workspaceId !== after.workspaceId ||
       before.planId !== after.planId ||
-      before.baseBranch !== after.baseBranch
+      before.baseBranch !== after.baseBranch ||
+      binding.machineClaim?.generation !== fresh.machineClaim?.generation ||
+      binding.machineClaim?.providerType !== fresh.machineClaim?.providerType
     ) {
       throw new BuilderGitRefusal("The Builder binding changed before publication.");
     }
@@ -211,7 +272,12 @@ export function createBuilderGit(deps: BuilderGitDependencies) {
   ): Promise<BuilderPublishReceipt> {
     await deps.state.mutate(deps.projectId, (ledger: ReceiptLedger) => {
       const saved = ledger.builderPublications?.[key];
-      if (!saved || saved.head !== receipt.head)
+      if (
+        !saved ||
+        saved.head !== receipt.head ||
+        saved.claimGeneration !== receipt.claimGeneration ||
+        saved.builderProviderType !== receipt.builderProviderType
+      )
         throw new BuilderGitRefusal("The saved publication receipt changed.");
       saved.pushedAt ??= deps.now().toISOString();
     });
@@ -255,6 +321,12 @@ export function createBuilderGit(deps: BuilderGitDependencies) {
         paths,
         preparedAt: at,
         pushedAt: null,
+        ...(binding.machineClaim
+          ? {
+              claimGeneration: binding.machineClaim.generation,
+              builderProviderType: binding.machineClaim.providerType,
+            }
+          : {}),
       };
       await requireSame(binding, paths);
       await deps.state.mutate(deps.projectId, (ledger: ReceiptLedger) => {
@@ -273,6 +345,7 @@ export function createBuilderGit(deps: BuilderGitDependencies) {
         remote,
         `${commit}:${ref}`,
       ]);
+      if (binding.machineClaim) await requireSame(binding, paths);
       return await finish(key, receipt);
     } finally {
       await rm(isolated, { recursive: true });
@@ -298,7 +371,8 @@ export function createBuilderGit(deps: BuilderGitDependencies) {
         entry.branch === binding.branch &&
         entry.workspaceId === binding.authority.workspaceId &&
         entry.planId === binding.authority.planId &&
-        entry.head === expected,
+        entry.head === expected &&
+        matchesMachinePublication(binding, entry),
     );
     if (!publication) return null;
     const [key, receipt] = publication;
@@ -319,7 +393,11 @@ export function createBuilderGit(deps: BuilderGitDependencies) {
         "The exact head has no Factory publication receipt for this plan.",
       );
     const existing = await findPull(binding);
-    if (existing) return verifiedPull(existing, binding, deps.repository, input.expectedHead);
+    if (existing) {
+      const result = verifiedPull(existing, binding, deps.repository, input.expectedHead);
+      await requireSame(binding, receipt.paths);
+      return result;
+    }
     const body = [
       "(AI Generated)",
       "",
@@ -335,6 +413,7 @@ export function createBuilderGit(deps: BuilderGitDependencies) {
     if ((await branchHead(binding.branch)) !== input.expectedHead) {
       throw new BuilderGitRefusal("The issue branch moved before opening its pull request.");
     }
+    if (binding.machineClaim) await requireSame(binding, receipt.paths);
     const result = await deps.github.rest("POST", `${prefix}/pulls`, {
       title: input.title,
       body,
@@ -366,6 +445,18 @@ export function createBuilderGit(deps: BuilderGitDependencies) {
       });
     },
   };
+}
+
+function matchesMachinePublication(
+  binding: BuilderBinding,
+  receipt: BuilderPublishReceipt,
+): boolean {
+  const pinned = binding.machineClaim;
+  return pinned === undefined
+    ? receipt.claimGeneration === undefined
+    : receipt.builderAgentId === binding.agentId &&
+        receipt.claimGeneration === pinned.generation &&
+        receipt.builderProviderType === pinned.providerType;
 }
 
 function assertApproved(paths: string[], authority: BuilderGitAuthority): void {
@@ -429,6 +520,15 @@ function publicationKey(binding: BuilderBinding, input: PublishInput, changes: B
       input.message,
     ]),
   );
+  if (binding.machineClaim) {
+    digest.update(
+      JSON.stringify([
+        binding.agentId,
+        binding.machineClaim.generation,
+        binding.machineClaim.providerType,
+      ]),
+    );
+  }
   for (const entry of changes) {
     const sha = entry.data && createHash("sha256").update(entry.data).digest("hex");
     digest.update(JSON.stringify([entry.path, entry.mode, sha]));

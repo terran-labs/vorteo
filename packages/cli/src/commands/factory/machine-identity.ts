@@ -13,11 +13,13 @@ const schema: OutputSchema<FactoryMachineIdentity> = {
   columns: [],
   renderHuman: ({ data }) => {
     const { installation, active, pending } = data as FactoryMachineIdentity;
+    if ((data as FactoryMachineIdentity).signingDisabled)
+      return `Installation: ${installation}\nMachine signing is disabled for this placement.`;
     return [
       `Installation: ${installation}`,
       active
         ? `Active key (${active.fingerprint}):\n${active.publicKey.trimEnd()}`
-        : "No active key. Run vorteo factory machine generate.",
+        : "No active signing key for this placement.",
       ...(pending
         ? [
             `Staged key (${pending.fingerprint}):\n${pending.publicKey.trimEnd()}`,
@@ -67,6 +69,7 @@ async function runIdentity(
   }
   const {
     manageFactoryMachineIdentity: manage,
+    factoryProjectAllowsMachineKeys,
     resolveInstalledFactoryHost,
     verifyFactoryMachineOverlap,
   } = await import("@getpaseo/server");
@@ -81,6 +84,7 @@ async function runIdentity(
     projectId,
     expectedServerId: host.serverId,
     operation,
+    allowsDevSigning: () => factoryProjectAllowsMachineKeys(repository),
     verifyOverlap: (keys) => verifyFactoryMachineOverlap({ repository, ...keys }),
   });
   return { type: "single", data, schema };

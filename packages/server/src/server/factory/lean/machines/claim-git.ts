@@ -34,7 +34,9 @@ export interface GitClaimStoreOptions {
   chargeMutation(): Promise<void>;
 }
 
-export function createGitClaimStore(options: GitClaimStoreOptions): ClaimRefStore {
+export function createGitClaimStore(options: GitClaimStoreOptions): ClaimRefStore & {
+  listIssues(): Promise<Array<{ issue: number; revision: string }>>;
+} {
   const inherited = Object.fromEntries(gitEnvironment.map((name) => [name, process.env[name]]));
   const flags = [
     `--git-dir=${options.cwd}`,
@@ -51,7 +53,11 @@ export function createGitClaimStore(options: GitClaimStoreOptions): ClaimRefStor
     "-c",
     "credential.https://github.com.helper=!gh auth git-credential",
   ];
-  async function run(args: string[], env: NodeJS.ProcessEnv = {}): Promise<string> {
+  async function run(
+    args: string[],
+    env: NodeJS.ProcessEnv = {},
+    maxBuffer = 64 * 1024,
+  ): Promise<string> {
     const { stdout } = await execFileAsync("git", [...flags, ...args], {
       cwd: options.cwd,
       env: {
@@ -64,7 +70,7 @@ export function createGitClaimStore(options: GitClaimStoreOptions): ClaimRefStor
         GIT_TERMINAL_PROMPT: "0",
       },
       timeout: 30_000,
-      maxBuffer: 64 * 1024,
+      maxBuffer,
     });
     return stdout.trim();
   }
@@ -112,6 +118,27 @@ export function createGitClaimStore(options: GitClaimStoreOptions): ClaimRefStor
   }
 
   return {
+    async listIssues() {
+      await assertCanonicalOrigin();
+      const namespace = options.namespace ?? "claims";
+      const prefix = `refs/vorteo/${namespace}/`;
+      const entries = await run(
+        ["ls-remote", "--refs", "origin", prefix + "*"],
+        {},
+        4 * 1024 * 1024,
+      );
+      return entries
+        .split("\n")
+        .flatMap((entry) => {
+          const [revision, ref] = entry.split("\t");
+          if (!ref?.startsWith(prefix) || !objectId.test(revision)) return [];
+          const issue = Number(ref.slice(prefix.length));
+          if (!Number.isSafeInteger(issue) || issue <= 0 || issueRef(namespace, issue) !== ref)
+            return [];
+          return [{ issue, revision }];
+        })
+        .sort((a, b) => a.issue - b.issue);
+    },
     async read(issue) {
       const ref = issueRef(options.namespace ?? "claims", issue);
       const revision = await remoteRevision(ref);

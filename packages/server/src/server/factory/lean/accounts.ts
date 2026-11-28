@@ -11,6 +11,11 @@ import type {
   RunnerRef,
   RunnerRole,
 } from "./types.js";
+import {
+  recordedForeignAccountExclusions,
+  type ForeignReviewLaunchEvidence,
+  type ForeignReviewOpenEvidence,
+} from "./review-evidence.js";
 
 const UNKNOWN_RESET_MS = 60 * 60 * 1000;
 
@@ -77,7 +82,16 @@ export interface ReviewAccountSelection extends ReviewDecision {
 }
 
 export type ReviewBuilder = RunnerRef & { account: string; accountDefinition: string };
-type Choice = AccountChoice & { reviewDecision?: ReviewDecision };
+interface ForeignReviewDecision extends Pick<
+  ForeignReviewLaunchEvidence,
+  "reviewerAccount" | "reviewerAccountDefinition" | "candidates"
+> {
+  binding: ForeignReviewOpenEvidence;
+}
+type Choice = AccountChoice & {
+  reviewDecision?: ReviewDecision;
+  foreignReviewDecision?: ForeignReviewDecision;
+};
 type Parked = Exclude<Awaited<ReturnType<AccountTable["choose"]>>, AccountChoice>;
 type ChooseInput = Parameters<AccountTable["choose"]>[0];
 
@@ -85,6 +99,10 @@ export interface LeanAccountTable extends AccountTable {
   chooseReviewer(
     input: Omit<ChooseInput, "role">,
     builder: ReviewBuilder,
+  ): Promise<Choice | Parked>;
+  chooseForeignReviewer(
+    input: Omit<ChooseInput, "role">,
+    binding: ForeignReviewOpenEvidence,
   ): Promise<Choice | Parked>;
 }
 
@@ -113,11 +131,16 @@ export function createAccountTable(deps: LeanAccountDependencies): LeanAccountTa
   async function choose(
     input: ChooseInput,
     builder: ReviewBuilder | null,
+    foreign?: ForeignReviewOpenEvidence,
   ): Promise<Choice | Parked> {
     const { role, serverId, avoid } = input;
     const policy = await deps.roleAccounts(role);
     const { profileId, providerType } = policy;
     const park = (resetsAt: string | null): Parked => ({ parked: { providerType, resetsAt } });
+    const pinnedProvider = foreign?.policy.providerType ?? providerType;
+    if (pinnedProvider !== providerType) {
+      throw new Error("The configured reviewer provider changed before foreign review.");
+    }
     const bound = isAccountBound(profileId);
     const boundAccount = profileId && bound ? deps.accounts.profileAccount(profileId) : null;
     if (bound && (serverId || !boundAccount)) return park(null);
@@ -156,7 +179,7 @@ export function createAccountTable(deps: LeanAccountDependencies): LeanAccountTa
       : rankAccounts(rankInput);
     const verdicts = new Map(rank.considered.map((entry) => [entry.provider, entry]));
     for (const candidate of available)
-      applyVerdict(candidate, verdicts.get(candidate.local), builder);
+      applyVerdict(candidate, verdicts.get(candidate.local), Boolean(builder || foreign));
 
     const ranked = available.filter((item) => item.reason === null);
     ranked.sort(
@@ -173,21 +196,15 @@ export function createAccountTable(deps: LeanAccountDependencies): LeanAccountTa
       !(await deps.allowSameAccountReview())
     )
       return park(null);
-    const choice: Choice = {
-      account: chosen.placed,
-      accountDefinition: chosen.definition,
-      providerType,
-      profileId,
-    };
-    if (builder && chosen.definition) {
-      choice.reviewDecision = reviewDecision(candidates, chosen, builder, chosen.definition);
-    }
-    return choice;
+    const choice = selectedChoice(candidates, chosen, policy, builder, foreign);
+    return choice ?? park(earliestReset(candidates, usage, nowMs));
   }
 
   return {
     choose: (input) => choose(input, null),
     chooseReviewer: (input, builder) => choose({ ...input, role: "reviewer" }, builder),
+    chooseForeignReviewer: (input, binding) =>
+      choose({ ...input, role: "reviewer" }, null, binding),
     async park(accountDefinition, providerType, until, reason) {
       const nowMs = deps.now().getTime();
       const resetMs = Date.parse(until ?? "");
@@ -206,13 +223,63 @@ export function createAccountTable(deps: LeanAccountDependencies): LeanAccountTa
   };
 }
 
+function selectedChoice(
+  candidates: Candidate[],
+  chosen: Candidate,
+  policy: RoleAccounts,
+  builder: ReviewBuilder | null,
+  foreign: ForeignReviewOpenEvidence | undefined,
+): Choice | null {
+  const choice: Choice = {
+    account: chosen.placed,
+    accountDefinition: chosen.definition,
+    providerType: policy.providerType,
+    profileId: policy.profileId,
+  };
+  if (builder && chosen.definition) {
+    choice.reviewDecision = reviewDecision(candidates, chosen, builder, chosen.definition);
+  }
+  if (foreign) {
+    const decision = foreignReviewDecision(candidates, chosen, foreign);
+    if (!decision) return null;
+    choice.foreignReviewDecision = decision;
+  }
+  return choice;
+}
+
+function foreignReviewDecision(
+  candidates: Candidate[],
+  chosen: Candidate,
+  binding: ForeignReviewOpenEvidence,
+): ForeignReviewDecision | null {
+  if (!chosen.definition) return null;
+  const decision: ForeignReviewDecision = {
+    binding,
+    reviewerAccount: chosen.placed,
+    reviewerAccountDefinition: chosen.definition,
+    candidates: candidates.map((candidate) => ({
+      accountDefinition: candidate.definition,
+      reason: candidate === chosen ? "selected" : (candidate.reason ?? "lower-headroom"),
+    })),
+  };
+  const provider = binding.submission.builderProviderType;
+  const needsRecordedExclusions = !provider || provider === binding.policy.providerType;
+  if (
+    needsRecordedExclusions &&
+    (binding.policy.allowForeignSameProvider === false ||
+      !recordedForeignAccountExclusions(decision))
+  )
+    return null;
+  return decision;
+}
+
 function applyVerdict(
   candidate: Candidate,
   assessment: Awaited<ReturnType<RunnerAccountPolicy>>["considered"][number] | undefined,
-  builder: ReviewBuilder | null,
+  requiresDefinition: boolean,
 ): void {
   const verdict = assessment?.verdict;
-  if (!verdict || verdict === "unknown" || (builder && !candidate.definition)) {
+  if (!verdict || verdict === "unknown" || (requiresDefinition && !candidate.definition)) {
     candidate.reason = "unknown";
   } else if (verdict !== "qualifies") {
     candidate.reason = verdict;

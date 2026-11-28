@@ -38,7 +38,7 @@ interface OperationalState {
   sessions: Record<string, SessionAssignment>;
   effects: Record<string, true>;
   pushes: Record<string, number>;
-  decisions: Record<string, { decision: Decision; expectedRevision: number }>;
+  decisions: Record<string, { decision: Decision; expectedRevision: number; eventIds?: string[] }>;
   alerts: Record<string, string>;
 }
 
@@ -62,7 +62,11 @@ export interface OperationRuntimeInput {
   push?: PushNotificationSender;
   /** Project adapters validate target scopes and fence effects before applying. */
   actions: {
-    applyDecision(decision: Decision, operationId: string): Promise<void>;
+    applyDecision(
+      decision: Decision,
+      operationId: string,
+      eventIds?: readonly string[],
+    ): Promise<void>;
     applyAnswer(escalation: Escalation): Promise<void>;
     /** Upsert a receipt identified by eventId; issue comments are delivery receipts. */
     postSendBack(input: { issue: number; eventId: string; body: string }): Promise<void>;
@@ -400,7 +404,7 @@ export function createOperationRuntime(input: OperationRuntimeInput) {
     at: string,
   ) {
     if (!(await input.holdsIntake())) throw new Error("The Factory intake lane moved.");
-    await once(key, () => actions.applyDecision(entry.decision, key));
+    await once(key, () => actions.applyDecision(entry.decision, key, entry.eventIds));
     await log(key, {
       class: "judgment",
       kind: entry.decision.kind,
@@ -420,7 +424,7 @@ export function createOperationRuntime(input: OperationRuntimeInput) {
     const belongs = await Promise.all(eventIds.map((id) => sessionOwnsEvent(runner, id)));
     if (!belongs.every(Boolean)) return { refused: "Lead is no longer assigned these events." };
     const key = `operation:${digest([expectedRevision, [...eventIds].sort(), decision])}`;
-    const entry = { decision, expectedRevision };
+    const entry = { decision, expectedRevision, eventIds: [...eventIds] };
     const at = now().toISOString();
     // The durable intent alone grants no authority. Only the ledger transaction admits the effect.
     await local.update((data) => {

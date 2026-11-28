@@ -1,8 +1,10 @@
+import type { ReviewIndependence } from "./machines/roles.js";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { z } from "zod";
-import type { Acceptance, PullRef, RunnerRef, Verdict } from "./types.js";
+import type { Acceptance, AdmissionFacts, PullRef, RunnerRef, Verdict } from "./types.js";
+import type { ForeignMergeReview, MergeReviewPolicy } from "./merge-gate.js";
 
 const exec = promisify(execFile);
 const oidPattern = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -110,6 +112,119 @@ const ineligibleAlternates = new Set([
   "parked",
   "exhausted",
 ]);
+
+export interface ForeignReviewLaunchEvidence extends Omit<
+  ReviewLaunchEvidence,
+  "builderAgentId" | "builderAccount" | "builderAccountDefinition" | "mode"
+> {
+  claimGeneration: string;
+  /** Independent Host proof used to open this clean reviewer. */
+  hostProof?: HostSubmissionProof;
+}
+
+/** Produced by primary-side Git and plan verification. Installation and generation are dispatch data. */
+export interface HostSubmissionProof {
+  readonly repository: string;
+  readonly issue: number;
+  readonly pullNumber: number;
+  readonly head: string;
+  readonly baseSha: string;
+  readonly configCommit: string;
+  readonly planRevision: string;
+  readonly installation: string;
+  readonly generation: string;
+  readonly builderProviderType?: string;
+}
+
+export function hostPlanRevision(
+  plan: NonNullable<AdmissionFacts["plan"]> & { contentDigest?: string },
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([plan.commentId, plan.postedAt, plan.files, plan.heavy, plan.contentDigest]),
+    )
+    .digest("hex");
+}
+
+export interface ForeignReviewOpenEvidence {
+  submission: ForeignMergeReview["submission"];
+  policy: MergeReviewPolicy;
+  hostProof?: HostSubmissionProof;
+}
+
+/** Private Host ledger evidence written with the first verdict for this review. */
+export interface RecordedForeignReview {
+  readonly independence: ReviewIndependence;
+  readonly configCommit: string;
+  readonly submission: Readonly<ForeignMergeReview["submission"]>;
+  readonly verdictDigest: string;
+  readonly hostProof?: HostSubmissionProof;
+}
+
+export function reviewerVerdictDigest(verdict: Verdict): string {
+  const runner = verdict.reviewer;
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        verdict.sha,
+        verdict.approved,
+        verdict.findings,
+        verdict.source,
+        runner.agentId,
+        runner.installation,
+        runner.serverId,
+        runner.role,
+        runner.account,
+        runner.accountDefinition,
+        runner.providerType,
+        runner.openedAt,
+        runner.attempt,
+      ]),
+    )
+    .digest("hex");
+}
+
+/** The ledger binds the launch to this issue, dispatch generation and reviewed head. */
+export function foreignReviewLaunchMatches(
+  launch: ForeignReviewLaunchEvidence,
+  reviewer: RunnerRef,
+  issue: number,
+  headSha: string,
+  claimGeneration: string,
+): boolean {
+  return (
+    launch.issue === issue &&
+    launch.headSha === headSha &&
+    launch.claimGeneration === claimGeneration &&
+    launch.daemonCreated === true &&
+    launch.clean === true &&
+    launch.nonChild === true &&
+    launch.freshSession === true &&
+    Number.isFinite(Date.parse(launch.at)) &&
+    Boolean(reviewer.accountDefinition) &&
+    Boolean(reviewer.account) &&
+    launch.reviewerAgentId === reviewer.agentId &&
+    launch.reviewerAccount === reviewer.account &&
+    launch.reviewerAccountDefinition === reviewer.accountDefinition
+  );
+}
+
+export function recordedForeignAccountExclusions(
+  launch: Pick<ForeignReviewLaunchEvidence, "candidates" | "reviewerAccountDefinition">,
+): boolean {
+  const selected = launch.candidates.filter(({ reason }) => reason === "selected");
+  return (
+    selected.length === 1 &&
+    selected[0].accountDefinition === launch.reviewerAccountDefinition &&
+    launch.candidates.every(
+      (candidate) =>
+        candidate === selected[0] ||
+        ineligibleAlternates.has(candidate.reason) ||
+        candidate.reason === "below-floor" ||
+        candidate.reason === "pool-excluded",
+    )
+  );
+}
 
 function sameRunner(first: RunnerRef, second: RunnerRef): boolean {
   return (

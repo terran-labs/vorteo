@@ -32,11 +32,17 @@ const batch: HeavyGateBatch = {
   commands: [{ argv: ["npm", "test"], where: "container" }],
 };
 
-function configFixture(primaryKey: string, secondaryKey: string, includeBatch = true) {
+function configFixture(
+  primaryKey: string,
+  secondaryKey: string,
+  includeBatch = true,
+  placement = "dev",
+) {
   const config = {
     schema: "vorteo-factory",
     version: 1,
     mode: "lean",
+    runners: { placement },
     order: [primary],
     machines: {
       [primary]: { publicKey: primaryKey },
@@ -91,25 +97,31 @@ describe("GitHub machine batch transport", () => {
     await rm(home, { recursive: true, force: true });
   });
 
-  async function fixture(includeBatch = true) {
+  async function fixture(includeBatch = true, placement = "dev") {
     let clock = Date.parse("2026-11-27T20:00:00Z");
     let head = target.head;
     const primaryKeys = generateKeyPairSync("ed25519");
     const secondaryKeys = generateKeyPairSync("ed25519");
     const keyPath = join(home, "primary.pem");
     const secondaryPath = join(home, "secondary.pem");
-    await Promise.all([
-      writeFile(keyPath, primaryKeys.privateKey.export({ type: "pkcs8", format: "pem" }), {
-        mode: 0o600,
-      }),
-      writeFile(secondaryPath, secondaryKeys.privateKey.export({ type: "pkcs8", format: "pem" }), {
-        mode: 0o600,
-      }),
-    ]);
+    if (placement === "dev")
+      await Promise.all([
+        writeFile(keyPath, primaryKeys.privateKey.export({ type: "pkcs8", format: "pem" }), {
+          mode: 0o600,
+        }),
+        writeFile(
+          secondaryPath,
+          secondaryKeys.privateKey.export({ type: "pkcs8", format: "pem" }),
+          {
+            mode: 0o600,
+          },
+        ),
+      ]);
     const { github } = configFixture(
       primaryKeys.publicKey.export({ type: "spki", format: "pem" }).toString(),
       secondaryKeys.publicKey.export({ type: "spki", format: "pem" }).toString(),
       includeBatch,
+      placement,
     );
     const remote = join(home, "remote.git");
     const cwd = join(home, "local.git");
@@ -200,6 +212,18 @@ describe("GitHub machine batch transport", () => {
       },
     };
   }
+
+  it("leaves Host placement key files and remote batch refs untouched", async () => {
+    const f = await fixture(true, "host");
+    expect(
+      await f.primaryHost.requestConfigured(target.issue, target.head, batch.batchId, 60_000),
+    ).toBeNull();
+    expect(await f.primaryHost.acceptConfigured(target.issue, target.head, batch.batchId)).toBe(
+      false,
+    );
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.chargePrimary).not.toHaveBeenCalled();
+  });
 
   it("publishes and consumes authenticated evidence exactly once without creating a PR or claim ref", async () => {
     const f = await fixture();

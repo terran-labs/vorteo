@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { realpath } from "node:fs/promises";
 import { matchesGlob } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
@@ -6,11 +7,23 @@ import { claimMarker, FactoryGitHubError } from "../project/claims.js";
 import type { ClaimState } from "../project/state.js";
 import { issueBrief, issueTrust, readIssueFacts, readTrustedAccounts } from "../project/trust.js";
 import type { ReviewAccountSelection } from "./accounts.js";
+import type { BuilderPublishReceipt } from "./builder-git.js";
 import { plan } from "./dispatcher.js";
+import { createEvidenceGit } from "./gate-bootstrap.js";
 import { createPrimaryGateRuntime, type PrimaryGateRuntimeOptions } from "./gate-runtime.js";
 import { createLeanGitHub, type LeanGitHubFacts, type LeanGitHubOptions } from "./github.js";
 import { deriveStages, type IssueLedger } from "./issue-state.js";
-import { createMergeGate, type MergeEvidence, type MergeIntent } from "./merge-gate.js";
+import { allowsMachineAction, resolveMachineRoles, installationBadge } from "./machines/roles.js";
+import type { ObservedSubmissionOptions } from "./machines/observed-submission.js";
+import type { ClaimSnapshot } from "./machines/claims.js";
+import {
+  createMergeGate,
+  evaluateForeignReview,
+  recordForeignReview,
+  type MergeReviewPolicy,
+  type MergeEvidence,
+  type MergeIntent,
+} from "./merge-gate.js";
 import { createMergeIntentStore } from "./merge-intent.js";
 import type { LeanProjectRuntime } from "./mode.js";
 import { createOperationRuntime, type OperationRuntimeInput } from "./operation-runtime.js";
@@ -18,6 +31,9 @@ import {
   isSecurityReviewApproved,
   proveCleanRebase,
   readSecurityReviewEvidence,
+  hostPlanRevision,
+  type ForeignReviewOpenEvidence,
+  type RecordedForeignReview,
   type ReviewGitObjects,
   type SecurityReviewBinding,
   type SecurityReviewEvidence,
@@ -27,7 +43,7 @@ import {
   createRunnerWorkspaceResolver,
   type RunnerWorkspaceDependencies,
 } from "./runner-workspaces.js";
-import { runnerStatusFromAgent } from "./runners.js";
+import { runnerStatusFromAgent, type PendingRunnerLaunch } from "./runners.js";
 import { createLeanReconciler } from "./service.js";
 import { watchdogMinutes } from "./watchdog.js";
 import type {
@@ -42,6 +58,7 @@ import type {
   Lease,
   ParkReason,
   PullFacts,
+  PullRef,
   RunnerOpenInput,
   RunnerPort,
   RunnerRef,
@@ -52,6 +69,8 @@ import type {
 type GitHubOptions = Pick<
   LeanGitHubOptions,
   | "github"
+  | "machineClaims"
+  | "hostDispatch"
   | "repository"
   | "here"
   | "leaseTtlMs"
@@ -105,6 +124,15 @@ export interface SecurityReviewPort {
 }
 
 export interface LeanRuntimeOptions extends GitHubOptions {
+  hostSourceForHead?: ObservedSubmissionOptions["sourceForHead"];
+  /** Explicit owner-pause cleanup, fenced independently of normal issue writes. */
+  pausedMachineCleanup?: PausedMachineCleanup;
+  machineBatches?(readInputs: ReturnType<typeof createLeanGitHub>["readIssueGateInputs"]): {
+    readyForAcceptance(issue: number, head: string): Promise<boolean>;
+    reconcileSecondary(issue: number): Promise<boolean>;
+  };
+  machineReviewPolicy?(): Promise<MergeReviewPolicy | null>;
+  machineRunnerPlacement?(): Promise<{ configCommit: string; placement: "host" } | null>;
   projectId: string;
   /** The admitted issue assigned to this rollout of the runtime. */
   issue: number;
@@ -135,6 +163,26 @@ export interface LeanRuntimeOptions extends GitHubOptions {
   allowSameAccount?(): Promise<boolean>;
   mergeMethod?: "MERGE" | "SQUASH";
   delivery?: DeliveryPort;
+}
+
+export interface PausedClaimRelease {
+  issue: number;
+  claimRevision: string;
+  claimGeneration: string;
+  savedHead: string;
+}
+
+export interface PausedCleanupOutcome {
+  issue: number;
+  claimGeneration: string | null;
+  archivedBuilderId?: string;
+  result: { kind: "released"; savedHead: string } | { kind: "blocked"; reason: string };
+}
+
+export interface PausedMachineCleanup {
+  assertPaused(): Promise<void>;
+  release(input: PausedClaimRelease): Promise<void>;
+  record(input: PausedCleanupOutcome): Promise<void>;
 }
 
 export type LeanExecutionMode = "live" | "dry-run" | "review-rehearsal" | "fenced";
@@ -181,13 +229,24 @@ function executionState(options: LeanProjectOptions): LeanStateStore {
 type PlanRecord = NonNullable<AdmissionFacts["plan"]>;
 type RunnerRecord = IssueLedger["runners"][string] & {
   reviewAccountSelection?: ReviewAccountSelection;
+  foreignReviewLaunch?: import("./review-evidence.js").ForeignReviewLaunchEvidence;
 };
 type NonMergeAction = Exclude<DispatchAction, { kind: "merge" }>;
 type OpenEvidence = Extract<MergeEvidence, { kind: "open" }>;
+interface RuntimeGo {
+  plan: PlanRecord;
+  at: string;
+  builderAgentId?: string;
+  claimGeneration?: string;
+}
 
 interface RuntimeLedger extends IssueLedger {
+  builderPublications?: Record<string, BuilderPublishReceipt>;
+  pendingRunnerLaunches?: Record<string, PendingRunnerLaunch>;
   runtimeClaims?: Record<string, ClaimState>;
-  runtimeGo?: Record<string, { plan: PlanRecord; at: string }>;
+  runtimeGo?: Record<string, RuntimeGo>;
+  runtimeForeignReviews?: Record<string, RecordedForeignReview>;
+  runtimeForeignPlanApproval?: Record<string, PlanRecord>;
   runtimePlanApproval?: Record<string, PlanRecord>;
   runtimeRepairs?: Record<string, true>;
   runtimeReviewBases?: Record<string, { pullNumber: number; baseSha: string }>;
@@ -195,6 +254,76 @@ interface RuntimeLedger extends IssueLedger {
   runtimeParks?: Record<string, { stageKey: string; reason: ParkReason }>;
   runtimeSecurityReviews?: Record<string, SecurityJobRecord>;
   mergeIntents?: Record<string, MergeIntent>;
+}
+
+class PausedBuilderRefusal extends Error {}
+
+interface PausedBuilderStop {
+  issue: number;
+  here: string;
+  now(): Date;
+  cleanup: PausedMachineCleanup;
+  readClaim(): Promise<ClaimSnapshot | null>;
+  localBuilder(): Promise<RunnerRef>;
+  quiesce(builder: RunnerRef): Promise<void>;
+  savedHead(builder: RunnerRef, generation: string, archived?: true): Promise<string>;
+  archive(builder: RunnerRef): Promise<void>;
+}
+
+/** The owner has already persisted pause. Normal intake and Builder writes stay fenced. */
+export async function finishPausedMachineBuilder(input: PausedBuilderStop): Promise<void> {
+  const { cleanup, issue, here } = input;
+  let generation: string | null = null;
+  let archivedBuilderId: string | undefined;
+  let fallback = "The owner pause could not be verified.";
+  let result: PausedCleanupOutcome["result"];
+  try {
+    await cleanup.assertPaused();
+    fallback = "The current signed claim could not be verified.";
+    const initial = await input.readClaim();
+    if (!initial || initial.record.released || initial.record.installation !== here) return;
+    generation = initial.record.generation;
+    if (initial.record.expiresAt * 1000 <= +input.now())
+      throw new PausedBuilderRefusal("The signed claim expired before cleanup could begin.");
+    fallback = "The local Builder could not be safely stopped.";
+    const builder = await input.localBuilder();
+    await input.quiesce(builder);
+    fallback = "The Builder's saved branch could not be verified.";
+    const head = await input.savedHead(builder, generation);
+    const current = await input.readClaim();
+    if (
+      !current ||
+      current.record.released ||
+      current.record.installation !== here ||
+      current.record.generation !== generation ||
+      current.record.expiresAt * 1000 <= +input.now()
+    ) {
+      throw new PausedBuilderRefusal(
+        "The signed claim changed while the Builder's work was checked.",
+      );
+    }
+    await cleanup.assertPaused();
+    fallback = "The verified Builder session could not be closed.";
+    await input.archive(builder);
+    archivedBuilderId = builder.agentId;
+    fallback = "The Builder's workspace could not be rechecked after closure.";
+    if ((await input.savedHead(builder, generation, true)) !== head)
+      throw new PausedBuilderRefusal("The saved head changed while the Builder was closing.");
+    fallback = "The saved head and signed claim revision could not be confirmed for release.";
+    await cleanup.release({
+      issue,
+      claimRevision: current.revision,
+      claimGeneration: generation,
+      savedHead: head,
+    });
+    result = { kind: "released", savedHead: head };
+  } catch (error) {
+    result = {
+      kind: "blocked",
+      reason: error instanceof PausedBuilderRefusal ? error.message : fallback,
+    };
+  }
+  await cleanup.record({ issue, claimGeneration: generation, archivedBuilderId, result });
 }
 
 interface SecurityJobRecord {
@@ -407,6 +536,11 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     return epoch !== null && (await options.fenceLane(lane, epoch));
   }
 
+  async function primaryAuthority() {
+    if (options.hostDispatch) return (await active()) && (await options.hostDispatch.isPrimary());
+    if (!options.machineClaims) return holds("intake");
+    return (await active()) && (await options.machineClaims.isPrimary());
+  }
   async function context(): Promise<DispatchContext> {
     const data = await options.context();
     const held = await Promise.all(lanes.map(async (lane) => ((await holds(lane)) ? lane : null)));
@@ -431,7 +565,12 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     role: RunnerRef["role"],
   ): RunnerRecord | null {
     const candidate: RunnerRecord | undefined = data.runners[agentId];
-    if (candidate?.issue !== issue || candidate.role !== role || candidate.serverId !== null)
+    if (
+      candidate?.agentId !== agentId ||
+      candidate.issue !== issue ||
+      candidate.role !== role ||
+      candidate.serverId !== null
+    )
       return null;
     return candidate;
   }
@@ -447,9 +586,48 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     return entries.sort((a, b) => b.attempt - a.attempt)[0] ?? null;
   }
 
-  async function fromReviewer(data: RuntimeLedger, head: string) {
+  function foreignReviewKey(verdict: Verdict, generation: string): string {
+    return key(issue, verdict.sha, generation, verdict.reviewer.agentId);
+  }
+
+  async function fromForeignReviewer(
+    data: RuntimeLedger,
+    head: string,
+    verdict: Verdict,
+    reviewer: RunnerRecord,
+  ) {
+    const launch = reviewer.foreignReviewLaunch;
+    const binding = verdict.sha === head && launch ? await foreignBinding(head) : null;
+    if (!binding || !launch) return { lead: null, reviewer, verdict: null };
+    const recorded =
+      data.runtimeForeignReviews?.[foreignReviewKey(verdict, binding.submission.generation)];
+    return {
+      lead: null,
+      reviewer,
+      verdict: recorded ? verdict : null,
+      reviewPolicy: binding.policy,
+      foreignReview: {
+        submission: binding.submission,
+        launch,
+        recorded,
+        ...(binding.hostProof ? { hostProof: binding.hostProof } : {}),
+      },
+    };
+  }
+
+  async function fromReviewer(
+    data: RuntimeLedger,
+    head: string,
+  ): Promise<
+    Pick<
+      OpenEvidence,
+      "lead" | "reviewer" | "verdict" | "reviewPolicy" | "foreignReview" | "reviewAccountSelection"
+    >
+  > {
     const verdict = data.localVerdicts?.[issue];
     const reviewer = verdict ? savedRunner(data, verdict.reviewer.agentId, "reviewer") : null;
+    if (reviewer?.foreignReviewLaunch && verdict)
+      return fromForeignReviewer(data, head, verdict, reviewer);
     const provenance = reviewer?.reviewAccountSelection;
     const bound =
       provenance?.issue === issue &&
@@ -473,7 +651,9 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     const acceptanceSession = acceptance
       ? savedRunner(data, acceptance.session, "foreman-op")
       : null;
+    const policy = await hostReviewPolicy();
     return {
+      ...(policy ? { reviewPolicy: policy } : {}),
       ...(await fromReviewer(data, head)),
       acceptance,
       acceptanceSession,
@@ -567,7 +747,23 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
 
   const adapter = createLeanGitHub({
     ...options,
+    async readApprovedForeignPlan(number, proposal) {
+      return (
+        number === issue &&
+        (await primaryAuthority()) &&
+        isDeepStrictEqual((await ledger()).runtimeForeignPlanApproval?.[issue], proposal)
+      );
+    },
     scopeIssue: issue,
+    async pushSavedMachineWork(number, expected) {
+      requireIssue(number);
+      const open = await liveRunners();
+      if (open.some((runner) => runner.role === "lead") || !expected.workHead)
+        throw new Error(
+          "Quiesce the Builder and verify its pushed work before releasing the claim.",
+        );
+      return expected.workHead;
+    },
     ...intent,
     currentMergeEpoch,
     fenceMerge,
@@ -595,7 +791,16 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     async readGo(number, posted) {
       if (number !== issue) return null;
       const go = (await ledger()).runtimeGo?.[issue];
-      return go && isDeepStrictEqual(go.plan, posted) ? { at: go.at, files: go.plan.files } : null;
+      if (!go || !isDeepStrictEqual(go.plan, posted)) return null;
+      if (
+        adapter.machineLease &&
+        (!go.builderAgentId ||
+          !go.claimGeneration ||
+          go.claimGeneration !== (await machineBuilderGeneration(issue)) ||
+          !localHostBuilder(await ledger(), go.builderAgentId))
+      )
+        return null;
+      return { at: go.at, files: go.plan.files };
     },
     async recordMerge(merge) {
       requireIssue(merge.issue);
@@ -605,6 +810,21 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     },
   });
 
+  async function readAuthorizedGateInputs(number: number, head: string) {
+    if (!options.hostDispatch) return adapter.readIssueGateInputs(number, head);
+    if (number !== issue || !(await primaryAuthority())) return null;
+    const placement = await hostPlacement();
+    if (!placement) return null;
+    const input = await adapter.readIssueGateInputs(number, head);
+    if (!input?.trusted || input.configCommit !== placement.configCommit) return null;
+    const facts = await adapter.readFacts([number]);
+    if (await verifyLease(facts)) return input;
+    const policy = await hostReviewPolicy();
+    if (policy?.configCommit !== input.configCommit) return null;
+    return (await hostForeignBinding(input.head, policy)) ? input : null;
+  }
+
+  const batches = options.machineBatches?.(readAuthorizedGateInputs);
   const recipeGates = options.primaryGates
     ? createPrimaryGateRuntime({
         ...options.primaryGates,
@@ -613,12 +833,12 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
         state,
         here,
         now,
-        holdsPrimary: () => holds("intake"),
-        readInputs: adapter.readIssueGateInputs,
+        holdsPrimary: primaryAuthority,
+        readInputs: readAuthorizedGateInputs,
         async approvedClaudeHead(number, head) {
           requireIssue(number);
           const approval = await exactApproval(await ledger(), head);
-          const launch = approval.reviewAccountSelection;
+          const launch = approval.reviewAccountSelection ?? approval.foreignReview?.launch;
           if (
             approval.verdict?.approved !== true ||
             approval.verdict.source !== "local-runner" ||
@@ -637,7 +857,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     head: string,
     phase: "before-review" | "complete",
   ): Promise<VerifiedHostedChecks | null> {
-    const input = await adapter.readIssueGateInputs(issue, head);
+    const input = await readAuthorizedGateInputs(issue, head);
     if (!input?.trusted || input.protectedPaths.length) return null;
     const hosted = input.hostedChecks;
     if (hosted !== "passing" && hosted !== "absent") return null;
@@ -685,6 +905,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     const localClaims = data.leases.filter((lease) => lease.issue === issue && !lease.released);
     const lease = localClaims.length === 1 ? localClaims[0] : null;
     if (lease?.installation !== here || Date.parse(lease.expiresAt) <= +now()) return null;
+    if (adapter.machineLease || options.hostDispatch) return lease;
     const claim = (await ledger()).runtimeClaims?.[issue];
     return claim?.status === "held" && claim.branch === branch ? lease : null;
   }
@@ -739,20 +960,20 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
   }
 
   async function saveSecurityRecord(record: SecurityJobRecord): Promise<void> {
-    if (!(await holds("intake"))) return;
+    if (!(await primaryAuthority())) return;
     await state.mutate(projectId, (data: RuntimeLedger) => {
       (data.runtimeSecurityReviews ??= {})[issue] = record;
     });
   }
 
   async function closeSecurity(port: SecurityReviewPort, record: SecurityJobRecord): Promise<void> {
-    if (record.closed || !(await holds("intake"))) return;
+    if (record.closed || !(await primaryAuthority())) return;
     await port.close(record.binding);
     await saveSecurityRecord({ ...record, closed: true });
   }
 
   async function startSecurity(port: SecurityReviewPort, subject: SecuritySubject): Promise<void> {
-    if (!(await holds("intake"))) return;
+    if (!(await primaryAuthority())) return;
     const payload = JSON.stringify({
       sha: subject.headSha,
       sensitivePaths: subject.sensitivePaths,
@@ -794,7 +1015,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     subject: SecuritySubject,
     saved: SecurityJobRecord,
   ): Promise<void> {
-    if (!(await holds("intake"))) return;
+    if (!(await primaryAuthority())) return;
     const result = await port.result(saved.binding);
     if (result.kind === "waiting") return;
     const evidence =
@@ -823,7 +1044,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
 
   async function advanceSecurity(facts: LeanGitHubFacts): Promise<void> {
     const port = options.securityReview;
-    if (!port || !(await holds("intake"))) return;
+    if (!port || !(await primaryAuthority())) return;
     const pull = issuePull(facts);
     const old = (await ledger()).runtimeSecurityReviews?.[issue];
     if (old && old.binding.headSha !== pull?.head) await closeSecurity(port, old);
@@ -835,7 +1056,15 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     const matches = await sensitive(pull.files);
     if (!matches.length) return;
     const subject = await securitySubject(pull.head, matches);
-    if (!subject) return;
+    if (!subject) {
+      if (options.hostDispatch && (await foreignBinding(pull.head))) {
+        await reportOwner(
+          "foreign-security-review",
+          "This foreign build touches sensitive paths. The dedicated Security Reviewer requires a verified local Builder account.",
+        );
+      }
+      return;
+    }
     if (old?.key !== subject.key) {
       if (old) await closeSecurity(port, old);
       await startSecurity(port, subject);
@@ -857,7 +1086,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
 
   async function readGate(number: number): Promise<MergeEvidence> {
     requireIssue(number);
-    if (!(await live()))
+    if (!(await live()) || !(await primaryAuthority()))
       return { kind: "unavailable", reason: "Factory merge execution is fenced." };
     const evidence = await adapter.gateDeps.read(number);
     if (evidence.kind !== "open" || evidence.blocked) return evidence;
@@ -869,6 +1098,8 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
       };
     }
     const verified = await phaseChecks(pull.head, "complete");
+    if (verified && batches && !(await batches.readyForAcceptance(issue, pull.head)))
+      return { kind: "unavailable", reason: "Wait for verified heavy gates on this exact head." };
     const checks = checksWithRecipe(evidence.pull.checks, verified);
     if (checks !== "passing") {
       return {
@@ -879,7 +1110,12 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     return { ...evidence, pull: { ...evidence.pull, checks }, checksHeadSha: pull.head };
   }
 
-  const gate = createMergeGate({ ...adapter.gateDeps, read: readGate });
+  const gate = createMergeGate({
+    ...adapter.gateDeps,
+    read: readGate,
+    ...(options.machineClaims ? { requirePinnedReviewerPolicy: true } : {}),
+    ...(options.hostDispatch ? { requireIndependentHostProof: true } : {}),
+  });
   const refSchema = z.object({ ref: z.string(), object: z.object({ sha: fullHead }) });
 
   async function branchHead(name: string): Promise<string> {
@@ -890,6 +1126,102 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     return reference.object.sha;
   }
 
+  async function hostPlacement() {
+    const placement = await options.machineRunnerPlacement?.();
+    return placement?.placement === "host" ? placement : null;
+  }
+
+  async function hostReviewPolicy(): Promise<MergeReviewPolicy | null> {
+    const policy = await options.machineReviewPolicy?.();
+    const placement = await hostPlacement();
+    return policy && placement?.configCommit === policy.configCommit
+      ? { ...policy, placement: "host" }
+      : null;
+  }
+
+  async function machineBuilderGeneration(number: number): Promise<string | null> {
+    if (
+      number !== issue ||
+      !adapter.machineLease ||
+      !(await hostPlacement()) ||
+      !(await holds("intake"))
+    )
+      return null;
+    const claim = await adapter.machineLease.readClaim(issue);
+    if (
+      !claim ||
+      claim.record.installation !== here ||
+      claim.record.released ||
+      claim.record.expiresAt * 1000 <= +now()
+    )
+      return null;
+    return claim.record.generation;
+  }
+
+  async function requireHostPlacement(role: RunnerRef["role"]): Promise<void> {
+    if (!adapter.machineLease && !options.hostDispatch) return;
+    if (role === "lead" && !(await hostPlacement())) {
+      throw new Error("Factory requires explicit Host placement for machine Builders.");
+    }
+    if (
+      (role === "reviewer" || (role === "foreman-op" && options.hostDispatch)) &&
+      !(await hostReviewPolicy())
+    ) {
+      throw new Error(
+        "Factory requires explicit Host placement and a pinned project provider for machine Reviewers.",
+      );
+    }
+  }
+
+  async function hostForeignBinding(
+    head: string,
+    policy: MergeReviewPolicy,
+  ): Promise<ForeignReviewOpenEvidence | null> {
+    const pull = issuePull(await adapter.readFacts([issue]));
+    if (pull?.head !== head) return null;
+    const proof = await adapter.verifyHostSubmission?.({ issue, pullNumber: pull.number, head });
+    if (
+      !proof ||
+      proof.issue !== issue ||
+      proof.pullNumber !== pull.number ||
+      proof.head !== head ||
+      proof.repository.toLowerCase() !== repository.toLowerCase() ||
+      proof.configCommit !== policy.configCommit ||
+      proof.installation === here ||
+      !proof.generation
+    )
+      return null;
+    const { installation, generation, builderProviderType } = proof;
+    return {
+      policy,
+      hostProof: proof,
+      submission: {
+        installation,
+        generation,
+        head,
+        ...(builderProviderType ? { builderProviderType } : {}),
+      },
+    };
+  }
+
+  async function foreignBinding(head: string): Promise<ForeignReviewOpenEvidence | null> {
+    if ((!options.hostDispatch && !adapter.machineLease) || !(await primaryAuthority()))
+      return null;
+    const policy = await hostReviewPolicy();
+    if (!policy) return null;
+    if (options.hostDispatch) return hostForeignBinding(head, policy);
+    const claim = await adapter.machineLease?.readSubmission(issue, head);
+    if (!claim?.record.submission || claim.record.installation === here) return null;
+    return {
+      policy,
+      submission: {
+        ...claim.record.submission,
+        installation: claim.record.installation,
+        generation: claim.record.generation,
+      },
+    };
+  }
+
   async function rememberReviewBase(head: string, baseSha: string): Promise<void> {
     const evidence = await openEvidence();
     if (
@@ -897,10 +1229,18 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
       !evidence.trust.trusted ||
       evidence.pull.checks === "failing" ||
       evidence.blocked ||
-      evidence.lease?.installation !== here ||
+      (evidence.lease?.installation !== here && !(await foreignBinding(head))) ||
       evidence.ownerOnly.touched.length > 0
     ) {
       throw new Error("Factory needs a trusted pull request head before opening the Reviewer.");
+    }
+    if (
+      options.hostDispatch &&
+      (await phaseChecks(head, "before-review"))?.configCommit !== baseSha
+    ) {
+      throw new Error(
+        "Factory needs passing gates on the exact head and pinned policy before review.",
+      );
     }
     const baseKey = key(issue, head);
     if ((await ledger()).runtimeReviewBases?.[baseKey]) return;
@@ -917,27 +1257,35 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     repository,
     now,
     async readStage(input) {
-      if (!(await holds("intake"))) throw new Error("Factory runner execution is fenced.");
+      if (!(input.role === "lead" ? await holds("intake") : await primaryAuthority()))
+        throw new Error("Factory runner execution is fenced.");
       const { role } = input;
       let targetBranch: string;
       let headSha: string;
       let issueTitle: string | undefined;
       if (role === "lead" || role === "reviewer") {
         requireIssue(input.issue ?? 0);
+        await requireHostPlacement(role);
         const facts = await adapter.readFacts([issue]);
         const admission = facts.issues.find((entry) => entry.number === issue);
         if (
           !admission?.trust.trusted ||
           admission.labels.includes("factory:blocked") ||
-          !(await verifyLease(facts))
+          !(input.foreignReview && role === "reviewer"
+            ? isDeepStrictEqual(
+                input.foreignReview,
+                await foreignBinding(input.foreignReview.submission.head),
+              )
+            : await verifyLease(facts))
         ) {
           throw new Error("Factory cannot open an issue runner without a current trusted claim.");
         }
         targetBranch = branch;
         issueTitle = admission.title;
-        headSha = await branchHead(branch);
+        headSha = input.foreignReview?.submission.head ?? (await branchHead(branch));
         if (role === "reviewer") await rememberReviewBase(headSha, facts.defaultBranchSha);
       } else {
+        await requireHostPlacement(role);
         if (input.issue !== null) requireIssue(input.issue);
         if (input.issue !== null)
           issueTitle = (await readIssueFacts(github, repository, issue)).title;
@@ -951,7 +1299,29 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
 
   const { runners, accounts } = createLocalRunnerRuntime({
     ...options.runner,
+    ...(adapter.machineLease ? { machineBuilderGeneration } : {}),
+    ...(options.hostDispatch
+      ? {
+          async authorizePrimaryIssueOperation(number: number) {
+            return (
+              number === issue && (await primaryAuthority()) && Boolean(await hostReviewPolicy())
+            );
+          },
+        }
+      : {}),
     resolveWorkspace,
+    async roleAccounts(role) {
+      const configured = await options.runner.roleAccounts(role);
+      if ((adapter.machineLease || options.hostDispatch) && role === "reviewer") {
+        const policy = await hostReviewPolicy();
+        if (!policy || configured.providerType !== policy.providerType) {
+          throw new Error("Choose the pinned project Reviewer provider on Host.");
+        }
+      }
+      return configured;
+    },
+    verifyForeignReview: async (number, binding) =>
+      number === issue && isDeepStrictEqual(binding, await foreignBinding(binding.submission.head)),
     workspaces: options.workspace.workspaces,
     projectId,
     installation: here,
@@ -962,7 +1332,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     now,
     requiredProviderTypes: {
       "foreman-op": "claude",
-      reviewer: "claude",
+      ...(adapter.machineLease || options.hostDispatch ? {} : { reviewer: "claude" }),
       ...options.runner.requiredProviderTypes,
     },
   });
@@ -982,10 +1352,12 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
   }
 
   async function runnerInput(role: RunnerRef["role"]): Promise<RunnerOpenInput> {
+    await requireHostPlacement(role);
     const facts = await adapter.readFacts([issue]);
-    if (!(await verifyLease(facts)))
-      throw new Error("The Factory issue lease moved before opening the runner.");
     const pull = issuePull(facts);
+    const foreign = role === "reviewer" && pull ? await foreignBinding(pull.head) : null;
+    if (!foreign && !(await verifyLease(facts)))
+      throw new Error("The Factory issue lease moved before opening the runner.");
     const admission = facts.issues.find((entry) => entry.number === issue);
     const brief = [
       await trustedBrief(),
@@ -1000,7 +1372,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     ]
       .filter(Boolean)
       .join("\n\n");
-    return { projectId, issue, role, brief };
+    return { projectId, issue, role, brief, ...(foreign ? { foreignReview: foreign } : {}) };
   }
 
   async function saveLease(lease: Lease): Promise<void> {
@@ -1028,7 +1400,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
         return;
       if (entries.length < 100) break;
     }
-    if (!(await holds("intake"))) throw new Error("The Factory intake lane moved.");
+    if (!(await primaryAuthority())) throw new Error("Factory primary authority is fenced.");
     const result = await github.rest("POST", `${root}/issues/${issue}/comments`, {
       body: `(AI Generated)\n\n${body}\n\n${marker}`,
     });
@@ -1040,6 +1412,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     text: string,
     id: string,
     expectedAgent?: string,
+    expectedGeneration?: string,
   ): Promise<boolean> {
     if (!(await holds("intake"))) return false;
     const facts = await adapter.readFacts([issue]);
@@ -1059,6 +1432,8 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
       target = opened;
     }
     if (!(await holds("intake"))) return false;
+    if (expectedGeneration && expectedGeneration !== (await machineBuilderGeneration(issue)))
+      return false;
     return options.enqueue(target, text, key(projectId, issue, id, target.agentId));
   }
 
@@ -1072,8 +1447,27 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     return event;
   }
 
+  function foreignPlanEvent(proposal: PlanRecord) {
+    return { ...planEvent(proposal), planRevision: hostPlanRevision(proposal) };
+  }
+
+  async function routeForeignPlan() {
+    if (!options.hostDispatch || !(await primaryAuthority()) || !(await hostReviewPolicy())) return;
+    const proposal = await adapter.readForeignPlan?.(issue);
+    if (
+      !proposal ||
+      isDeepStrictEqual((await ledger()).runtimeForeignPlanApproval?.[issue], proposal)
+    )
+      return;
+    await operations.router.route(foreignPlanEvent(proposal));
+  }
+
   async function shouldJudgePlan(event: PlanPosted): Promise<boolean> {
     requireIssue(event.issue);
+    if (options.hostDispatch) {
+      const proposal = await adapter.readForeignPlan?.(issue);
+      if (proposal && isDeepStrictEqual(foreignPlanEvent(proposal), event)) return true;
+    }
     const facts = await adapter.readFacts([issue]);
     return (
       facts.issues.some(
@@ -1088,10 +1482,81 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     return Boolean(
       evidence?.trust.trusted &&
       !evidence.blocked &&
-      evidence.lease?.installation === here &&
+      (evidence.lease?.installation === here ||
+        !!evaluateForeignReview(issue, evidence.pull, evidence, here)) &&
       evidence.pull.checks !== "failing" &&
       !evidence.ownerOnly.touched.length &&
       evidence.verdict?.approved,
+    );
+  }
+
+  function approvedPlanEvent(event: PlanPosted, eventIds?: readonly string[]): boolean {
+    const id = createHash("sha256").update(JSON.stringify(event)).digest("hex");
+    return eventIds?.includes(id) === true;
+  }
+
+  async function stalePlanDecision() {
+    await operations.recordActivity(key("stale-plan-decision", issue), {
+      class: "judgment",
+      kind: "stale-plan-decision",
+      issue,
+      text: "The proposal changed before this decision could be applied. Review the current proposal.",
+      url: null,
+    });
+    wake();
+  }
+
+  async function approvePlan(files: readonly string[], eventIds?: readonly string[]) {
+    const foreign = options.hostDispatch ? await adapter.readForeignPlan?.(issue) : null;
+    if (foreign) {
+      if (
+        !approvedPlanEvent(foreignPlanEvent(foreign), eventIds) ||
+        !sameFiles(foreign.files, files)
+      )
+        return stalePlanDecision();
+      if (!(await primaryAuthority()) || !(await hostReviewPolicy()))
+        throw new Error("Factory can no longer approve this foreign proposal on the primary Host.");
+      await state.mutate(projectId, (data: RuntimeLedger) => {
+        (data.runtimeForeignPlanApproval ??= {})[issue] = foreign;
+      });
+    } else {
+      const facts = await adapter.readFacts([issue]);
+      const posted = facts.issues.find((entry) => entry.number === issue)?.plan;
+      if (!posted || !sameFiles(posted.files, files)) {
+        if (options.hostDispatch) return stalePlanDecision();
+        throw new Error("The posted Factory plan changed before its approval.");
+      }
+      if (options.hostDispatch && !approvedPlanEvent(planEvent(posted), eventIds))
+        return stalePlanDecision();
+      if (!(await primaryAuthority())) throw new Error("The Factory primary changed.");
+      await state.mutate(projectId, (data: RuntimeLedger) => {
+        (data.runtimePlanApproval ??= {})[issue] = posted;
+      });
+    }
+    wake();
+  }
+
+  async function currentHostCandidate(evidence: OpenEvidence): Promise<boolean> {
+    if (!options.hostDispatch) return true;
+    const policy = await hostReviewPolicy();
+    const { reviewer } = evidence;
+    return (
+      !!policy &&
+      reviewer?.serverId === null &&
+      reviewer.installation === here &&
+      reviewer.providerType === policy.providerType &&
+      isDeepStrictEqual(evidence.reviewPolicy, policy)
+    );
+  }
+
+  async function acceptanceChecks(pull: PullFacts, evidence: OpenEvidence): Promise<boolean> {
+    if (pull.head !== evidence.pull.headSha || !(await securityReady(pull.head, pull.files)))
+      return false;
+    const verified = await phaseChecks(pull.head, "complete");
+    return (
+      checksWithRecipe(pull.checks, verified) === "passing" &&
+      checksWithRecipe(evidence.pull.checks, verified) === "passing" &&
+      (!batches || (await batches.readyForAcceptance(issue, pull.head)))
     );
   }
 
@@ -1102,24 +1567,21 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     state,
     runners,
     now,
-    holdsIntake: () => holds("intake"),
+    holdsIntake: () => primaryAuthority(),
     shouldJudgePlan,
     status,
     async candidate(number) {
       requireIssue(number);
       const evidence = await openEvidence();
-      if (!acceptsCandidate(evidence)) return null;
-      const facts = await adapter.readFacts([issue]);
-      const pull = issuePull(facts);
-      const verified = await phaseChecks(evidence.pull.headSha, "complete");
       if (
-        !pull ||
-        pull.head !== evidence.pull.headSha ||
-        !(await securityReady(pull.head, pull.files)) ||
-        checksWithRecipe(pull.checks, verified) !== "passing" ||
-        checksWithRecipe(evidence.pull.checks, verified) !== "passing"
+        !(await primaryAuthority()) ||
+        !acceptsCandidate(evidence) ||
+        !(await currentHostCandidate(evidence))
       )
         return null;
+      const facts = await adapter.readFacts([issue]);
+      const pull = issuePull(facts);
+      if (!pull || !(await acceptanceChecks(pull, evidence))) return null;
       const diff = await get(
         `${root}/pulls/${pull.number}`,
         z.object({
@@ -1130,7 +1592,10 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
       );
       if (diff.head.sha !== pull.head) return null;
       const admission = facts.issues.find((entry) => entry.number === issue);
-      const planned = admission?.plan?.files ?? [];
+      const planned =
+        (evidence.foreignReview?.hostProof
+          ? (await ledger()).runtimeForeignPlanApproval?.[issue]?.files
+          : admission?.plan?.files) ?? [];
       return {
         sha: pull.head,
         labels: admission?.labels ?? [],
@@ -1165,25 +1630,14 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
         requestedRetries.add(id);
         wake();
       },
-      async applyDecision(decision, id) {
-        if (!(await holds("intake"))) throw new Error("Factory intake is fenced.");
+      async applyDecision(decision, id, eventIds) {
+        if (!(await primaryAuthority())) throw new Error("Factory primary authority is fenced.");
         if ("issue" in decision) requireIssue(decision.issue);
-        if (decision.kind === "approve-widened-plan") {
-          const facts = await adapter.readFacts([issue]);
-          const posted = facts.issues.find((entry) => entry.number === issue)?.plan;
-          if (!posted || !sameFiles(posted.files, decision.files))
-            throw new Error("The posted Factory plan changed before its approval.");
-          if (!(await holds("intake"))) throw new Error("The Factory intake lane moved.");
-          await state.mutate(projectId, (data: RuntimeLedger) => {
-            (data.runtimePlanApproval ??= {})[issue] = posted;
-          });
-          wake();
-          return;
-        }
+        if (decision.kind === "approve-widened-plan") return approvePlan(decision.files, eventIds);
         await options.operationActions.applyDecision(decision, id);
       },
       async applyAnswer(answer) {
-        if (!(await holds("intake"))) throw new Error("Factory intake is fenced.");
+        if (!(await primaryAuthority())) throw new Error("Factory primary authority is fenced.");
         await options.operationActions.applyAnswer(answer);
       },
       async postSendBack({ issue: number, eventId, body }) {
@@ -1199,11 +1653,74 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
   };
   const operations = shared?.bind(issue, operationInput) ?? createOperationRuntime(operationInput);
 
+  async function hasLocalPublishedHead(head: string): Promise<boolean> {
+    const data = await ledger();
+    const receipts = Object.values(data.builderPublications ?? {}).filter(
+      (receipt) =>
+        receipt.issue === issue &&
+        receipt.branch === branch &&
+        receipt.head === head &&
+        !!receipt.pushedAt &&
+        !!savedRunner(data, receipt.builderAgentId, "lead") &&
+        data.runners[receipt.builderAgentId].installation === here,
+    );
+    for (const receipt of receipts) {
+      const agent = await options.runner.agentStorage.get(receipt.builderAgentId);
+      if (agent?.workspaceId === receipt.workspaceId) return true;
+    }
+    return false;
+  }
+
+  async function observeMergedOnSecondary(pr: PullRef, mergeSha: string): Promise<void> {
+    const data = await ledger();
+    const tracking =
+      data.leases[issue]?.installation === here ||
+      Object.keys(data.runners).some((agentId) => localHostBuilder(data, agentId));
+    if (!tracking) return;
+    const [confirmed, closed] = await Promise.all([
+      adapter.gateDeps.read(issue).catch(() => null),
+      get(
+        `${root}/issues/${issue}`,
+        z.object({
+          number: z.literal(issue),
+          state: z.enum(["open", "closed"]),
+          pull_request: z.unknown().optional(),
+        }),
+      ).catch(() => null),
+    ]);
+    if (
+      closed?.state !== "closed" ||
+      closed.pull_request !== undefined ||
+      confirmed?.kind !== "merged" ||
+      confirmed.mergeSha !== mergeSha ||
+      confirmed.pull.number !== pr.number ||
+      confirmed.pull.headSha !== pr.headSha ||
+      !confirmed.pull.sameRepo ||
+      !confirmed.pull.targetsDefaultBranch ||
+      confirmed.pull.branch !== branch ||
+      !(await hasLocalPublishedHead(pr.headSha))
+    ) {
+      await operations.recordActivity(key("secondary-merge-evidence", issue, pr.headSha), {
+        class: "mechanical",
+        kind: "secondary-merge-evidence",
+        issue,
+        text: "Factory is preserving this Builder workspace until the issue is closed and GitHub confirms its recorded published head merged.",
+        url: null,
+      });
+      return;
+    }
+    await saveMerge(pr.headSha, mergeSha, true);
+  }
+
   async function recoverMerged(facts: LeanGitHubFacts): Promise<boolean> {
     const merged = facts.merged.find((entry) => entry.issue === issue);
     if (!merged) return false;
     if (!(await live())) return true;
     if ((await ledger()).runtimeMerges?.[issue]?.settled) return true;
+    if ((options.hostDispatch || options.machineClaims) && !(await primaryAuthority())) {
+      await observeMergedOnSecondary(merged.pr, merged.mergeSha);
+      return true;
+    }
     const result = await gate.recoverMerged(issue, merged.pr);
     if ("mergeSha" in result) {
       await saveMerge(merged.pr.headSha, result.mergeSha, true);
@@ -1319,22 +1836,32 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
 
   async function withReviewChecks(facts: LeanGitHubFacts): Promise<LeanGitHubFacts> {
     const pull = issuePull(facts);
-    if (!pull || pull.checks === "failing" || !(await holds("intake"))) return facts;
+    if (!pull || pull.checks === "failing" || !(await primaryAuthority())) return facts;
+    const foreign = await foreignBinding(pull.head);
     const verified = await phaseChecks(pull.head, "before-review");
     const checks = checksWithRecipe(pull.checks, verified);
     const input = verified ? null : await adapter.readIssueGateInputs(issue, pull.head);
-    const reviewEligible = !!verified || !!(input?.trusted && input.protectedPaths.length === 0);
+    const reviewEligible = options.hostDispatch
+      ? verified?.configCommit === (await hostReviewPolicy())?.configCommit && !!verified
+      : !!verified || !!(input?.trusted && input.protectedPaths.length === 0);
     return {
       ...facts,
       pulls: facts.pulls.map((item) =>
-        item.number === pull.number ? { ...item, checks, reviewEligible } : item,
+        item.number === pull.number
+          ? {
+              ...item,
+              checks,
+              reviewEligible,
+              foreignReviewHead: foreign && reviewEligible ? pull.head : undefined,
+            }
+          : item,
       ),
     };
   }
 
   async function advanceRecipeHost(facts: LeanGitHubFacts): Promise<void> {
     const pull = issuePull(facts);
-    if (!recipeGates || !pull || pull.checks === "failing" || !(await holds("intake"))) return;
+    if (!recipeGates || !pull || pull.checks === "failing" || !(await primaryAuthority())) return;
     const approval = await exactApproval(await ledger(), pull.head);
     if (approval.verdict?.approved === true && approval.reviewer?.providerType === "claude") {
       await recipeGates.afterReview(issue, pull.head);
@@ -1379,14 +1906,28 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
         return;
       }
     }
+    const builderAgentId = action.lead.agentId;
+    const claimGeneration = adapter.machineLease ? await machineBuilderGeneration(issue) : null;
+    if (
+      adapter.machineLease &&
+      (!claimGeneration || !localHostBuilder(await ledger(), builderAgentId))
+    )
+      return;
     const sent = await enqueueBuilder(
       `Proceed with the recorded plan. Edit only these approved files:\n${posted.files.join("\n")}`,
-      key("go", posted),
-      action.lead.agentId,
+      claimGeneration ? key("go", posted, claimGeneration) : key("go", posted),
+      builderAgentId,
+      claimGeneration ?? undefined,
     );
-    if (!sent) return;
+    if (!sent || (claimGeneration && claimGeneration !== (await machineBuilderGeneration(issue))))
+      return;
     await state.mutate(projectId, (data: RuntimeLedger) => {
-      (data.runtimeGo ??= {})[issue] = { plan: posted, at: now().toISOString() };
+      if (claimGeneration && !localHostBuilder(data, builderAgentId)) return;
+      (data.runtimeGo ??= {})[issue] = {
+        plan: posted,
+        at: now().toISOString(),
+        ...(claimGeneration ? { builderAgentId, claimGeneration } : {}),
+      };
     });
     wake();
   }
@@ -1449,7 +1990,12 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
 
   async function executePlanned(action: NonMergeAction): Promise<void> {
     const [facts, data, ctx] = await Promise.all([factsForDispatcher(), ledger(), context()]);
-    if (!ctx.lanesHeld.has("intake") || !freshAction(action, facts, data, ctx)) return;
+    if (options.machineClaims || options.hostDispatch) {
+      const { roles } = resolveMachineRoles(ctx.config, here);
+      const lease = facts.leases.find((value) => value.issue === issue) ?? null;
+      if (!allowsMachineAction(roles, action, lease)) return;
+    } else if (!ctx.lanesHeld.has("intake")) return;
+    if (!freshAction(action, facts, data, ctx)) return;
     switch (action.kind) {
       case "claim": {
         const result = await adapter.lease.acquire(issue);
@@ -1580,41 +2126,120 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     return true;
   }
 
-  async function captureReview(runner: RunnerRecord): Promise<void> {
-    if (!(await holds("intake"))) return;
-    const provenance = runner.reviewAccountSelection;
-    if (
-      !provenance ||
-      provenance.issue !== issue ||
-      provenance.reviewerAgentId !== runner.agentId
-    ) {
+  async function ownsReviewRunner(runner: RunnerRecord): Promise<boolean> {
+    if (!options.hostDispatch && !adapter.machineLease) return true;
+    const policy = await hostReviewPolicy();
+    return (
+      !!policy &&
+      runner.installation === here &&
+      runner.serverId === null &&
+      runner.providerType === policy.providerType
+    );
+  }
+
+  async function reviewReplyEvidence(runner: RunnerRecord) {
+    const provenance = runner.reviewAccountSelection ?? runner.foreignReviewLaunch;
+    if (provenance?.issue !== issue || provenance.reviewerAgentId !== runner.agentId) {
       await reportOwner(
         "review-provenance",
         "Factory could not verify this Reviewer's recorded launch.",
       );
-      return;
+      return null;
     }
     const evidence = await openEvidence();
-    if (!evidence) return;
+    if (!evidence) return null;
     if (evidence.pull.headSha !== provenance.headSha) {
       await runners.close(runner, "The pull request head changed.");
-      return;
+      return null;
     }
-    if (!evidence.trust.trusted || evidence.blocked || evidence.lease?.installation !== here)
-      return;
+    if (!evidence.trust.trusted || evidence.blocked || evidence.ownerOnly.touched.length)
+      return null;
+    const binding = runner.foreignReviewLaunch ? await foreignBinding(provenance.headSha) : null;
+    if (runner.foreignReviewLaunch ? !binding : evidence.lease?.installation !== here) return null;
+    if (!(await ownsReviewRunner(runner))) return null;
     const reply = await runners.lastReply(runner);
-    if (!reply) return;
-    const verdict = reviewReply(provenance.headSha, reply, runner);
-    if (!verdict) return;
-    if (provenance.mode === "same-account" && !(await discloseSameAccount(runner, verdict))) return;
-    if (!(await holds("intake"))) return;
-    await operations.recordVerdict(issue, verdict);
-    const previous = (await ledger()).localVerdicts?.[issue];
-    if (previous?.reviewer.agentId !== runner.agentId || previous.sha !== verdict.sha) {
-      await state.mutate(projectId, (data: RuntimeLedger) => {
-        (data.localVerdicts ??= {})[issue] = verdict;
+    const verdict = reply ? reviewReply(provenance.headSha, reply, runner) : null;
+    return verdict ? { evidence, verdict, binding } : null;
+  }
+
+  async function foreignVerdict(
+    runner: RunnerRecord,
+    result: NonNullable<Awaited<ReturnType<typeof reviewReplyEvidence>>>,
+  ) {
+    const { verdict, evidence, binding } = result;
+    const launch = runner.foreignReviewLaunch;
+    if (!launch || !binding || !isDeepStrictEqual(binding, await foreignBinding(verdict.sha)))
+      return null;
+    return recordForeignReview(
+      issue,
+      evidence.pull,
+      {
+        reviewer: runner,
+        verdict,
+        reviewPolicy: binding.policy,
+        foreignReview: {
+          submission: binding.submission,
+          launch,
+          ...(binding.hostProof ? { hostProof: binding.hostProof } : {}),
+        },
+        lead: null,
+        acceptance: null,
+        acceptanceSession: null,
+      },
+      here,
+    );
+  }
+
+  async function saveReview(verdict: Verdict, recorded: RecordedForeignReview | null) {
+    return state.mutate(projectId, (data: RuntimeLedger) => {
+      const verdicts = (data.localVerdicts ??= {});
+      const previous = verdicts[issue];
+      const unchangedRunner =
+        previous?.reviewer.agentId === verdict.reviewer.agentId && previous.sha === verdict.sha;
+      if (!recorded) {
+        verdicts[issue] = unchangedRunner ? previous : verdict;
+        return { verdict: verdicts[issue], recorded: null };
+      }
+      const reviews = (data.runtimeForeignReviews ??= {});
+      const reviewKey = foreignReviewKey(verdict, recorded.submission.generation);
+      if (unchangedRunner) {
+        const first = reviews[reviewKey];
+        return first ? { verdict: previous, recorded: first } : null;
+      }
+      verdicts[issue] = verdict;
+      reviews[reviewKey] = recorded;
+      return { verdict, recorded };
+    });
+  }
+
+  async function captureReview(runner: RunnerRecord): Promise<void> {
+    if (!(await primaryAuthority())) return;
+    const result = await reviewReplyEvidence(runner);
+    if (!result) return;
+    const { verdict } = result;
+    if (
+      runner.reviewAccountSelection?.mode === "same-account" &&
+      !(await discloseSameAccount(runner, verdict))
+    )
+      return;
+    const recorded = runner.foreignReviewLaunch ? await foreignVerdict(runner, result) : null;
+    if ((runner.foreignReviewLaunch && !recorded) || !(await primaryAuthority())) return;
+    const saved = await saveReview(verdict, recorded);
+    if (!saved) return;
+    if (saved.recorded) {
+      const { independence } = saved.recorded;
+      await operations.recordActivity(key(independence, issue, saved.verdict.sha, runner.agentId), {
+        class: "judgment",
+        kind: independence,
+        issue,
+        text:
+          independence === "unverified-foreign"
+            ? "Account independence unverified, foreign build."
+            : "The primary Reviewer and foreign Builder used different providers.",
+        url: null,
       });
     }
+    await operations.recordVerdict(issue, saved.verdict);
     await runners.close(runner, "Reviewer recorded its verdict on the exact head.");
     wake();
   }
@@ -1663,13 +2288,20 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
       (entry) => entry.issue === issue && entry.installation === here && !entry.released,
     );
     if (!local) return;
-    const renew = Math.min(10 * 60_000, options.leaseTtlMs / 2);
+    const renew = options.machineClaims
+      ? options.leaseTtlMs - 5 * 60_000
+      : Math.min(10 * 60_000, options.leaseTtlMs / 2);
     const elapsed = +now() - (Date.parse(local.expiresAt) - options.leaseTtlMs);
     if (elapsed >= renew && (await holds("intake"))) {
       await execute({ kind: "renew-lease", issue });
     } else {
       await saveLease(local);
     }
+  }
+
+  function localHostBuilder(data: RuntimeLedger, agentId: string): RunnerRecord | null {
+    const runner = savedRunner(data, agentId, "lead");
+    return runner?.installation === here && runner.closedAt === null ? runner : null;
   }
 
   async function finishRunners(): Promise<void> {
@@ -1687,6 +2319,10 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     await syncIssueWaits(facts);
     if (!merged) await maintainLease(facts);
     if (!(await active())) return;
+    if (merged && (options.hostDispatch || options.machineClaims) && !(await primaryAuthority())) {
+      if ((await ledger()).runtimeMerges?.[issue]?.settled) await finishRunners();
+      return;
+    }
     // The local adapter reattaches only the issue's daemon-created sessions.
     const result = await runners.reattach(await liveRunners());
     for (const runner of result.gone) {
@@ -1706,8 +2342,10 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
       return;
     }
     await maintainLease(facts);
+    if (batches && !(await primaryAuthority())) await batches.reconcileSecondary(issue);
     for (const runner of await liveRunners()) await processRunner(runner);
-    if (!(await pendingOwnerDecision())) {
+    if ((await primaryAuthority()) && !(await pendingOwnerDecision())) {
+      await routeForeignPlan();
       const checked = await withReviewChecks(facts);
       await advanceRecipeHost(checked);
       await advanceSecurity(checked);
@@ -1719,7 +2357,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
       return;
     }
     await syncProjectWaits(state, projectId, now);
-    await operations.reconcile();
+    if (await primaryAuthority()) await operations.reconcile();
   }
 
   async function status(): ReturnType<OperationRuntimeInput["status"]> {
@@ -1731,6 +2369,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     const open = Object.values(data.runners).find(
       (runner) => runner.issue === issue && runner.closedAt === null,
     );
+    const { roles } = resolveMachineRoles(ctx.config, here);
     return {
       projectId,
       mode: "lean",
@@ -1751,7 +2390,18 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
                 stage: merged ? "merged" : (stage?.kind ?? "queued"),
                 installation: data.leases[issue]?.installation ?? null,
                 runner: open
-                  ? { agentId: open.agentId, role: open.role, serverId: open.serverId }
+                  ? {
+                      agentId: open.agentId,
+                      role: open.role,
+                      serverId: open.serverId,
+                      ...(open.installation
+                        ? {
+                            installation: open.installation,
+                            friendlyName: installationBadge(roles, here, open.installation)
+                              .friendlyName,
+                          }
+                        : {}),
+                    }
                   : null,
                 pr: stage && "pr" in stage ? stage.pr : null,
                 lastActivityAt: data.loopBeat,
@@ -1786,6 +2436,144 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
     shared?.unbind(issue);
   }
 
+  async function pausedBuilder(): Promise<RunnerRef> {
+    const data = await ledger();
+    const pending = Object.values(data.pendingRunnerLaunches ?? {}).some(
+      (launch) => launch.issue === issue && launch.runner.role === "lead",
+    );
+    if (pending) {
+      throw new PausedBuilderRefusal(
+        "A saved Builder launch must be reconciled before releasing its claim.",
+      );
+    }
+    const candidates = openLocalRunners(data).filter((runner) => runner.role === "lead");
+    if (candidates.length !== 1 || candidates[0].installation !== here) {
+      throw new PausedBuilderRefusal("The claim has no unique authenticated local Builder.");
+    }
+    return candidates[0];
+  }
+
+  async function pausedWorkspace(runner: RunnerRef, archived = false) {
+    const saved = await options.runner.agentStorage.get(runner.agentId);
+    const matchesSession =
+      saved?.workspaceId &&
+      saved.provider === runner.account &&
+      Boolean(saved.archivedAt) === archived;
+    if (!saved?.workspaceId || !matchesSession) {
+      throw new PausedBuilderRefusal(
+        "The Builder's recorded workspace or session could not be verified.",
+      );
+    }
+    const workspace = await options.workspace.workspaces.get(saved.workspaceId);
+    if (
+      !workspace ||
+      workspace.projectId !== projectId ||
+      workspace.archivedAt !== null ||
+      workspace.kind !== "worktree" ||
+      !workspace.mainRepoRoot ||
+      workspace.worktreeRoot !== workspace.cwd
+    ) {
+      throw new PausedBuilderRefusal(
+        "The Builder no longer has an active worktree in this project.",
+      );
+    }
+    return workspace;
+  }
+
+  async function quiescePausedBuilder(runner: RunnerRef): Promise<void> {
+    const workspace = await pausedWorkspace(runner);
+    const manager = options.runner.agentManager;
+    const current = manager.getAgent(runner.agentId);
+    if (current?.workspaceId !== workspace.workspaceId || current.provider !== runner.account) {
+      throw new PausedBuilderRefusal(
+        "The running Builder does not match its authenticated local workspace.",
+      );
+    }
+    options.runner.builderIngress?.revoke(runner.agentId);
+    const cancellation = await manager.cancelAgentRun(runner.agentId, { reason: "manual" });
+    if (cancellation.status === "refused")
+      throw new PausedBuilderRefusal("The authenticated Builder did not stop. Its claim was kept.");
+  }
+
+  const evidenceGit = createEvidenceGit();
+  async function checkPausedWorkspaceHead(cwd: string, repositoryRoot: string): Promise<string> {
+    if ((await realpath(cwd)) !== cwd)
+      throw new PausedBuilderRefusal("The Builder's worktree path changed.");
+    const git = (args: string[]) => evidenceGit(cwd, ["--no-optional-locks", ...args]);
+    const [common, top, current, configs] = await Promise.all([
+      git(["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+      git(["rev-parse", "--show-toplevel"]),
+      git(["symbolic-ref", "--quiet", "HEAD"]),
+      git(["config", "--local", "--no-includes", "--name-only", "--list"]),
+    ]);
+    if (
+      (await realpath(common.trim())) !== (await realpath(repositoryRoot)) ||
+      top.trim() !== cwd ||
+      current.trim() !== `refs/heads/${branch}`
+    ) {
+      throw new PausedBuilderRefusal(
+        "The Builder's worktree is on a different repository or claim branch.",
+      );
+    }
+    if (/^(filter\.|include\.|includeif\.|extensions\.worktreeconfig)/imu.test(configs)) {
+      throw new PausedBuilderRefusal(
+        "The Builder's Git settings prevent a safe worktree inspection.",
+      );
+    }
+    const [dirty, tracked, head] = await Promise.all([
+      git([
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.filemode=true",
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "--ignore-submodules=none",
+      ]),
+      git(["ls-files", "-v", "-z"]),
+      git(["rev-parse", "HEAD^{commit}"]),
+    ]);
+    if (dirty.length || tracked.split("\0").some((entry) => /^[a-zS] /u.test(entry))) {
+      throw new PausedBuilderRefusal(
+        "The Builder still has changes that could not be verified as saved. Its worktree and claim were kept.",
+      );
+    }
+    return fullHead.parse(head.trim());
+  }
+
+  async function pausedSavedHead(
+    runner: RunnerRef,
+    generation: string,
+    archived?: true,
+  ): Promise<string> {
+    const workspace = await pausedWorkspace(runner, archived);
+    if (!workspace.mainRepoRoot)
+      throw new PausedBuilderRefusal("The Builder's repository identity is unavailable.");
+    const head = await checkPausedWorkspaceHead(workspace.cwd, workspace.mainRepoRoot);
+    const remote = await branchHead(branch);
+    if (head === remote) return remote;
+    const publications = Object.values((await ledger()).builderPublications ?? {});
+    const published = publications.some(
+      (receipt) =>
+        receipt.issue === issue &&
+        receipt.builderAgentId === runner.agentId &&
+        receipt.workspaceId === workspace.workspaceId &&
+        receipt.branch === branch &&
+        receipt.previousHead === head &&
+        receipt.head === remote &&
+        receipt.claimGeneration === generation &&
+        receipt.builderProviderType === runner.providerType &&
+        typeof receipt.pushedAt === "string" &&
+        Number.isFinite(Date.parse(receipt.pushedAt)),
+    );
+    if (!published)
+      throw new PausedBuilderRefusal(
+        "The Builder's commit has no matching pushed receipt on the signed claim branch.",
+      );
+    return remote;
+  }
+
   const lifecycle: LeanProjectRuntime = {
     recover,
     reconcile,
@@ -1801,6 +2589,26 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
       };
     },
     async stop(reason) {
+      if (reason === "pause" && options.machineClaims) {
+        detach();
+        const cleanup = options.pausedMachineCleanup;
+        const claims = adapter.machineLease;
+        if (!cleanup || !claims) return;
+        await finishPausedMachineBuilder({
+          issue,
+          here,
+          now,
+          cleanup,
+          readClaim: () => claims.readClaim(issue),
+          localBuilder: pausedBuilder,
+          quiesce: quiescePausedBuilder,
+          savedHead: pausedSavedHead,
+          async archive(runner) {
+            await options.runner.agentManager.archiveAgent(runner.agentId);
+          },
+        });
+        return;
+      }
       if (!(await active())) {
         detach();
         return;
@@ -1821,6 +2629,7 @@ export function createLeanRuntime(options: LeanRuntimeOptions, shared?: LeanOper
   return {
     ...lifecycle,
     rpc: operations.runtime,
+    machineLease: adapter.machineLease,
     runners,
     accounts,
     detach,
@@ -1975,6 +2784,8 @@ export function createLeanOperationGroup(options: LeanProjectOptions): LeanOpera
 
   async function holdsIntake(): Promise<boolean> {
     if (!(await active())) return false;
+    if (options.hostDispatch) return options.hostDispatch.isPrimary();
+    if (options.machineClaims) return options.machineClaims.isPrimary();
     const epoch = await options.laneEpoch("intake");
     return epoch !== null && options.fenceLane("intake", epoch);
   }
@@ -2039,9 +2850,10 @@ export function createLeanOperationGroup(options: LeanProjectOptions): LeanOpera
         if (!target) return options.operationActions.retryWait(id, occurrence);
         await inputs.get(target.issue)?.actions.retryWait(id, occurrence);
       },
-      async applyDecision(decision, id) {
+      async applyDecision(decision, id, eventIds) {
         if (!(await holdsIntake())) throw new Error("Factory intake is fenced.");
-        if ("issue" in decision) return binding(decision.issue).actions.applyDecision(decision, id);
+        if ("issue" in decision)
+          return binding(decision.issue).actions.applyDecision(decision, id, eventIds);
         return options.operationActions.applyDecision(decision, id);
       },
       async applyAnswer(answer) {

@@ -23,18 +23,33 @@ import {
   type LeanRuntimeOptions,
 } from "./runtime.js";
 import { createLeanStateStore } from "./state.js";
-import { isRunnerRepository } from "./runner-workspaces.js";
-import type { Lane, LeanModePort, RunnerRole } from "./types.js";
+import { createGitClaimStore } from "./machines/claim-git.js";
+import { createClosedClaimCleanup } from "./machines/claim-cleanup.js";
+import { resolveMachineRoles, holdsMachineLane } from "./machines/roles.js";
+import { readPinnedFactoryConfig } from "./machines/pinned-factory-config.js";
+import {
+  configuredLocalHeavyBatches,
+  createLocalHostBatches,
+} from "./machines/host-batch-runtime.js";
+import { createPausedMachineCleanup } from "./machines/paused-cleanup.js";
+import { createLeanGateBootstrap, type LeanGateBootstrapOptions } from "./gate-bootstrap.js";
+import { createGateCommandRunner } from "./gate-command-runner.js";
+import { verifyHostBuilderWorktreeCustody } from "./machines/host-worktree-custody.js";
+import { verifyMachinePayload } from "./machines/host-key.js";
+import { isRunnerRepository, openMachineRepository } from "./runner-workspaces.js";
+import type { Lane, LeanLedger, LeanModePort, LeanStateStore, RunnerRole } from "./types.js";
 
 const configFile = ".github/vorteo-factory.json";
 const INITIALIZE_TIMEOUT_MS = 8_000;
 const FIRST_RETRY_MS = 2_000;
 const MAX_RETRY_MS = 60_000;
+const commitSha = z.string().regex(/^[a-f0-9]{40}$/u);
 const lanes: Lane[] = ["intake", "merge", "delivery", "releaseBuild", "mechanic"];
 const configSchema = FactoryConfigV1Schema.extend({
   version: z.literal(1),
   builder: z.looseObject({ provider: z.string().min(1).optional() }).optional(),
   scratch: z.boolean().optional(),
+  runners: z.looseObject({ placement: z.enum(["host", "dev"]).optional() }).optional(),
   providers: z
     .object({
       builder: z.string().min(1).optional(),
@@ -48,9 +63,15 @@ const configSchema = FactoryConfigV1Schema.extend({
   shadow: z.enum(["dry-run", "review-rehearsal"]).optional(),
 });
 
-type Config = z.infer<typeof configSchema>;
+type Config = z.infer<typeof configSchema> & { configCommit: string };
 type Options = Omit<LeanRuntimeOptions, "issue">;
-type BootstrapOptions = Options & { refreshAuthority(): Promise<Config | null> };
+type BootstrapOptions = Options & {
+  isOwnerPaused(): Promise<boolean>;
+  refreshAuthority(): Promise<Config | null>;
+  cleanClosedClaims?(): Promise<void>;
+  coordinationRefusal(): Promise<string | null>;
+  pausedMachineCleanupForIssue?(issue: number): NonNullable<Options["pausedMachineCleanup"]>;
+};
 type Runtime = ReturnType<typeof createLeanRuntime>;
 type ExecutionMode = "live" | "dry-run" | "review-rehearsal" | "fenced";
 type ProjectRecord = ProjectState & { mode?: "crew" | "lean" };
@@ -65,6 +86,27 @@ type RunnerServices = Omit<
 >;
 
 export interface LeanBootstrapDependencies {
+  machineSigner?: (projectId: string, payload: Uint8Array) => Promise<string>;
+  /** Explicit isolated-fixture custody. Installed runtimes cannot use this path. */
+  allowStandalonePausedWorkspaceInspection?(
+    projectId: string,
+    repository: string,
+  ): Promise<boolean>;
+  localEnvironment?: "host" | "container";
+  /** Supplied only from complete verified Host topology. An empty list means Host-only. */
+  verifiedGuestRoots?: readonly string[];
+  delivery?(input: {
+    projectId: string;
+    repository: string;
+    state: LeanStateStore;
+    now(): Date;
+    fence(): Promise<number | null>;
+  }): Options["delivery"];
+  gateDocker?: LeanGateBootstrapOptions["docker"];
+  /** Shared owner-account mutation budget. Coordinated projects require this authority. */
+  chargeGitWrite?(repository: string): Promise<void>;
+  /** Existing delivery policy's current primary epoch. */
+  deliveryEpoch?(projectId: string, repository: string): Promise<number | null>;
   paseoHome: string;
   serverId: string;
   logger: Logger;
@@ -94,6 +136,7 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
   const projects = new ProjectFactoryStateStore(projectFactoryStatePath(deps.paseoHome));
   const groups = new Map<string, ReturnType<typeof createLeanOperationGroup>>();
   const startups = new Map<string, StartupAttempt>();
+  const pinnedConfigs = new Map<string, { sha: string; config: Config | null }>();
   const now = () => new Date();
   const usage = cachedUsage(deps, now);
   let closing = false;
@@ -104,7 +147,7 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
 
   async function projectRecord(projectId: string): Promise<ProjectRecord> {
     const record: ProjectRecord | undefined = (await projects.read()).projects[projectId];
-    if (!record || !record.enabled || record.mode !== "lean" || record.paused) {
+    if (!activeLeanProject(record)) {
       throw new InactiveProjectError("Lean Factory requires an enabled project in Lean mode.");
     }
     return record;
@@ -113,16 +156,37 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
   async function readConfig(repository: string): Promise<Config | null> {
     if (!isRunnerRepository(repository))
       throw new Error("The Factory project repository is invalid.");
-    const result = await github.rest("GET", `repos/${repository}/contents/${configFile}`);
-    if (result.status === 404) return null;
-    if (result.status !== 200)
-      throw new Error("Factory could not read the repository configuration.");
-    const data = z
-      .object({ encoding: z.literal("base64"), content: z.string() })
-      .parse(result.body);
-    const config = configSchema.parse(
-      JSON.parse(Buffer.from(data.content, "base64").toString("utf8")),
-    );
+    async function readDefaultCommit() {
+      const repo = await github.rest("GET", `repos/${repository}`);
+      if (repo.status !== 200) throw new Error("Factory could not read the repository.");
+      const identity = z
+        .object({ full_name: z.string(), default_branch: z.string().min(1) })
+        .parse(repo.body);
+      if (identity.full_name.toLowerCase() !== repository.toLowerCase()) {
+        throw new Error("Factory could not verify the configuration repository.");
+      }
+      const branch = identity.default_branch.split("/").map(encodeURIComponent).join("/");
+      const ref = await github.rest("GET", `repos/${repository}/git/ref/heads/${branch}`);
+      if (ref.status !== 200) throw new Error("Factory could not resolve the default branch.");
+      return z
+        .object({
+          ref: z.literal(`refs/heads/${identity.default_branch}`),
+          object: z.object({ type: z.literal("commit"), sha: commitSha }),
+        })
+        .parse(ref.body).object.sha;
+    }
+    const sha = await readDefaultCommit();
+    const previous = pinnedConfigs.get(repository);
+    if (previous?.sha === sha) return previous.config;
+    const raw = await readPinnedFactoryConfig(github, repository, sha);
+    if ((await readDefaultCommit()) !== sha) {
+      throw new Error("The owner configuration changed while Factory was reading it.");
+    }
+    if (raw === null) {
+      pinnedConfigs.set(repository, { sha, config: null });
+      return null;
+    }
+    const config = configSchema.parse(raw);
     configuredPrimary(config);
     if (config.builder?.provider) {
       if (config.providers?.builder && config.providers.builder !== config.builder.provider) {
@@ -130,7 +194,9 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
       }
       config.providers = { ...config.providers, builder: config.builder.provider };
     }
-    return config;
+    const pinned = { ...config, configCommit: sha };
+    pinnedConfigs.set(repository, { sha, config: pinned });
+    return pinned;
   }
 
   async function projectOptions(projectId: string, wake: () => void): Promise<BootstrapOptions> {
@@ -139,41 +205,126 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
     const config = await readConfig(repository);
     const here = `${deps.serverId}/${projectId}`;
     const initialPrimary = configuredPrimary(config);
-    const checkProviderNow =
-      config?.shadow !== "dry-run" && (initialPrimary === null || initialPrimary === here);
-    const scratchProvider = await verifiedScratchProvider(deps, config, checkProviderNow);
-    const reviewer = config?.providers?.reviewer ?? "claude";
-    const reviewerType = deps.factoryAccounts.providerType({ provider: reviewer }) ?? reviewer;
+    const coordination = coordinationMode(config);
+    const usesHostDispatch = coordination === "host";
+    const usesMachineClaims = coordination === "signed-dev";
+    const usesCoordination = coordination !== "local";
+    const signer = deps.machineSigner;
+    const sharedCharge = deps.chargeGitWrite;
+    function chargeMachineMutation() {
+      if (!sharedCharge)
+        throw new Error("The shared Factory GitHub mutation budget is unavailable.");
+      return sharedCharge(repository);
+    }
+    function pinnedReviewerType(latest: Config | null): string | null {
+      const provider = latest?.providers?.reviewer;
+      return provider ? deps.factoryAccounts.providerType({ provider }) : null;
+    }
+    function nativeHost(current: ProjectRecord) {
+      return (
+        deps.localEnvironment === "host" &&
+        !process.env.PASEO_NETWORK_MODE &&
+        current.home?.environment !== "container" &&
+        deps.settings().sharedProviderPreferences?.installation?.environment !== "container"
+      );
+    }
+    async function coordinationRefusal(): Promise<string | null> {
+      if (currentConfig?.shadow === "dry-run") return null;
+      const placement = currentConfig?.runners?.placement;
+      if (placement === "dev") {
+        return "Dev runner placement is paused. Set runners.placement to host for unsigned Host dispatch. Signed Dev dispatch requires an isolated signing service and remains unavailable.";
+      }
+      if (placement !== "host") {
+        return "Choose runner placement. To allow repository code on the Host, set runners.placement to host.";
+      }
+      if (coordinationMode(currentConfig) !== coordination) {
+        return "Restart Factory after changing its runner placement or machine roster.";
+      }
+      const current = (await projects.read()).projects[projectId];
+      if (!current || !nativeHost(current)) {
+        return "Host placement is configured. Run this Factory project on a verified native Host.";
+      }
+      if (usesHostDispatch) {
+        if (!sharedCharge) {
+          return "Coordinated Factory needs the shared GitHub mutation budget. Connect the installation-wide account budget before running this project.";
+        }
+        if (!roles(currentConfig)?.listsMachine(here)) {
+          return "Add this installation to the owner configuration's Host machine roster.";
+        }
+        if (!pinnedReviewerType(currentConfig)) {
+          return "Set providers.reviewer in the owner configuration to a supported provider type or a trusted Host account.";
+        }
+      }
+      return null;
+    }
+    async function initialScratchProvider() {
+      if (
+        config?.runners?.placement !== "host" ||
+        !nativeHost(record) ||
+        config.shadow === "dry-run"
+      ) {
+        return null;
+      }
+      const canUseProvider = usesHostDispatch
+        ? Boolean(sharedCharge)
+        : initialPrimary === null || initialPrimary === here;
+      return canUseProvider ? verifiedScratchProvider(deps, config) : null;
+    }
+    function configuredReviewerType() {
+      const reviewer = config?.providers?.reviewer ?? "claude";
+      return deps.factoryAccounts.providerType({ provider: reviewer }) ?? reviewer;
+    }
+    const scratchProvider = await initialScratchProvider();
+    const reviewerType = configuredReviewerType();
     let currentConfig = config;
+    function roles(latest: Config | null) {
+      if (!usesCoordination) return null;
+      const result = resolveMachineRoles(latest, here);
+      if (!result.roles) throw new Error(result.error);
+      return result.roles;
+    }
+    roles(currentConfig);
     let refreshing: Promise<Config | null> | null = null;
     function refreshAuthority(): Promise<Config | null> {
       if (refreshing) return refreshing;
       refreshing = readConfig(repository)
         .then((latest) => {
+          if (coordinationMode(latest) === coordination) roles(latest);
           currentConfig = latest;
           return latest;
+        })
+        .catch((error: unknown) => {
+          currentConfig = null;
+          throw error;
         })
         .finally(() => {
           refreshing = null;
         });
       return refreshing;
     }
+    function permitsExecutionPlacement(
+      current: ProjectRecord,
+      latest: Config,
+      primary: string | null,
+    ) {
+      if (latest.runners?.placement !== "host" || !nativeHost(current)) return false;
+      if (usesHostDispatch) return Boolean(sharedCharge && roles(latest)?.listsMachine(here));
+      return primary ? primary === here : Boolean(scratchProvider);
+    }
+
     async function executionMode(): Promise<ExecutionMode> {
       if (closing) return "fenced";
-      const current: ProjectRecord | undefined = (await projects.read()).projects[projectId];
-      if (
-        !current?.enabled ||
-        current.mode !== "lean" ||
-        current.paused ||
-        current.repository !== repository
-      ) {
-        return "fenced";
-      }
-      const primary = configuredPrimary(currentConfig);
-      if (primary && primary !== here) return "fenced";
-      if (currentConfig?.shadow === "dry-run") return "dry-run";
+      const current = (await projects.read()).projects[projectId];
+      if (!activeLeanProject(current) || current.repository !== repository) return "fenced";
+      const latest = currentConfig;
+      if (!latest || coordinationMode(latest) !== coordination) return "fenced";
+      const primary = configuredPrimary(latest);
+      if (primary !== initialPrimary) return "fenced";
+      if (latest.shadow === "dry-run") return "dry-run";
+      if (!permitsExecutionPlacement(current, latest, primary)) return "fenced";
+      if (Boolean(latest.scratch) !== Boolean(scratchProvider)) return "fenced";
       if (!scratchProvider && !deps.runner.accountPolicy) return "fenced";
-      return currentConfig?.shadow ?? "live";
+      return latest.shadow ?? "live";
     }
     async function requireIssueEffects(): Promise<void> {
       if (!allowsIssueEffects(await executionMode())) {
@@ -188,6 +339,15 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
           "Factory cannot launch this runner under the current project configuration.",
         );
       }
+      if (usesHostDispatch && role === "reviewer" && !pinnedReviewerType(latest)) {
+        throw new Error("The owner configuration needs a supported providers.reviewer.");
+      }
+      if (usesCoordination) {
+        const activeRoles = roles(latest);
+        const authorized = role === "lead" ? activeRoles?.canClaim : activeRoles?.primary === here;
+        if (!authorized)
+          throw new Error("This installation cannot launch the requested Factory role.");
+      }
       const saved = await projectRecord(projectId);
       const allowed = await verifiedScratchProvider(deps, latest);
       if (allowed !== scratchProvider)
@@ -196,9 +356,79 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
     };
     async function holds(lane: Lane): Promise<boolean> {
       const mode = await executionMode();
+      if (
+        !allowsIssueEffects(mode) ||
+        (usesCoordination && !holdsMachineLane(roles(currentConfig), lane))
+      ) {
+        return false;
+      }
+      if (lane === "intake") return true;
       return (
-        (lane === "intake" && allowsIssueEffects(mode)) || (lane === "merge" && mode === "live")
+        mode === "live" && (lane === "merge" || (lane === "delivery" && initialPrimary === here))
       );
+    }
+
+    async function isPrimary() {
+      const latest = await refreshAuthority();
+      return allowsIssueEffects(await executionMode()) && roles(latest)?.primary === here;
+    }
+
+    async function openCoordinationGit() {
+      if (!sharedCharge) return null;
+      const authorized = usesHostDispatch ? nativeHost(record) : usesMachineClaims && signer;
+      if (!authorized) return null;
+      return {
+        repository,
+        cwd: await openMachineRepository(deps.paseoHome, projectId, repository),
+        async chargeMutation() {
+          await refreshAuthority();
+          await requireIssueEffects();
+          await chargeMachineMutation();
+        },
+      };
+    }
+    const machineGit = await openCoordinationGit();
+    function createClosedCleanup() {
+      if (!machineGit || initialPrimary !== here) return undefined;
+      const cleanupRefs = createGitClaimStore({
+        ...machineGit,
+        async chargeMutation() {
+          await machineGit.chargeMutation();
+          if (roles(currentConfig)?.primary !== here || (await executionMode()) !== "live")
+            throw new Error("Only the active primary can clean closed Factory claims.");
+        },
+      });
+      return createClosedClaimCleanup({
+        now,
+        async holdsPrimary() {
+          const latest = await refreshAuthority();
+          return roles(latest)?.primary === here && (await executionMode()) === "live";
+        },
+        listIssues: cleanupRefs.listIssues,
+        async isClosedIssue(issue) {
+          const result = await github.rest("GET", `repos/${repository}/issues/${issue}`);
+          if (result.status !== 200) return false;
+          const parsed = z
+            .object({
+              number: z.literal(issue),
+              state: z.literal("closed"),
+              pull_request: z.undefined().optional(),
+            })
+            .safeParse(result.body);
+          return parsed.success;
+        },
+        async remove(issue, revision) {
+          const current = await cleanupRefs.read(issue);
+          if (current?.revision !== revision) return false;
+          const envelope = z
+            .object({ kind: z.string().optional() })
+            .safeParse(JSON.parse(current.body));
+          if (!envelope.success || (envelope.data.kind === "unsigned-host") !== usesHostDispatch) {
+            return false;
+          }
+          return cleanupRefs.compareAndSwap(issue, revision, null);
+        },
+      });
     }
     const projectState: Options["state"] = {
       read: (id) => state.read(id),
@@ -207,20 +437,292 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
         return state.mutate(id, change, revision);
       },
     };
+    async function isOwnerPaused(): Promise<boolean> {
+      if (closing || !usesCoordination) return false;
+      const current = (await projects.read()).projects[projectId];
+      const project = await deps.workspace.projects.get(projectId);
+      return Boolean(
+        project?.kind === "git" &&
+        project.archivedAt === null &&
+        current?.enabled &&
+        current.mode === "lean" &&
+        current.paused &&
+        current.repository === repository,
+      );
+    }
+    async function machineRunnerPlacement(): Promise<{
+      configCommit: string;
+      placement: "host";
+    } | null> {
+      if (!usesHostDispatch || !machineGit || closing) return null;
+      const latest = await refreshAuthority();
+      const [registry, project] = await Promise.all([
+        projects.read(),
+        deps.workspace.projects.get(projectId),
+      ]);
+      const current = registry.projects[projectId];
+      if (
+        project?.kind !== "git" ||
+        project.archivedAt !== null ||
+        !current?.enabled ||
+        current.mode !== "lean" ||
+        current.repository !== repository ||
+        !nativeHost(current) ||
+        latest?.runners?.placement !== "host" ||
+        currentConfig?.configCommit !== latest.configCommit
+      )
+        return null;
+      const authorized = roles(latest);
+      if (!authorized || authorized.primary !== initialPrimary || !authorized.listsMachine(here))
+        return null;
+      return { configCommit: latest.configCommit, placement: "host" };
+    }
+
+    async function verifyPausedHostWorkspace(issue: number): Promise<boolean> {
+      const guestRoots = deps.verifiedGuestRoots;
+      if (!guestRoots || !(await machineRunnerPlacement())) return false;
+      const ledger: LeanLedger & {
+        hostBuilderAssignments?: Record<
+          string,
+          { issue: number; workspaceId: string; account: string }
+        >;
+      } = await state.read(projectId);
+      const builders = Object.values(ledger.runners).filter(
+        (runner) =>
+          runner.issue === issue &&
+          runner.role === "lead" &&
+          runner.serverId === null &&
+          runner.installation === here &&
+          runner.closedAt === null,
+      );
+      if (builders.length !== 1) return false;
+      const runner = builders[0];
+      const launch = ledger.hostBuilderAssignments?.[runner.agentId];
+      if (!launch || launch.issue !== issue || launch.account !== runner.account) return false;
+      const [session, workspace] = await Promise.all([
+        deps.runner.agentStorage.get(runner.agentId),
+        deps.workspace.workspaces.get(launch.workspaceId),
+      ]);
+      if (!session?.provider || session.workspaceId !== launch.workspaceId || !workspace)
+        return false;
+      return verifyHostBuilderWorktreeCustody({
+        host: {
+          paseoHome: deps.paseoHome,
+          guestRoots,
+          topology: guestRoots.length === 0 ? "host-only" : "paired",
+        },
+        projectId,
+        installation: here,
+        issue,
+        runner: { ...runner, installation: here },
+        workspace,
+        session: {
+          agentId: runner.agentId,
+          provider: session.provider,
+          workspaceId: session.workspaceId,
+        },
+      });
+    }
+
+    function createPausedCleanupForIssue(issue: number) {
+      if (!machineGit || !initialPrimary) throw new Error("Factory claim cleanup is unavailable.");
+      const scope = {
+        issue,
+        git: { cwd: machineGit.cwd, repository },
+        projectId,
+        installation: here,
+        primary: initialPrimary,
+        state,
+        now,
+        isOwnerPaused,
+        async canVerifySavedWork() {
+          if (usesHostDispatch) return verifyPausedHostWorkspace(issue);
+          if (
+            process.env.VORTEO_INSTALLATION_CLIENT_CONFIG ||
+            process.env.PASEO_NETWORK_MODE ||
+            deps.settings().sharedProviderPreferences?.installation ||
+            (await projects.read()).projects[projectId]?.home?.environment === "container"
+          )
+            return false;
+          return (
+            (await deps.allowStandalonePausedWorkspaceInspection?.(projectId, repository)) === true
+          );
+        },
+        async refreshPinnedRoles() {
+          const latest = await refreshAuthority();
+          return latest && latest.shadow !== "dry-run" ? roles(latest) : null;
+        },
+        chargeMutation: chargeMachineMutation,
+        async readWorkHead(number: number) {
+          if (number !== issue) return null;
+          const ref = `refs/heads/factory/issue-${issue}`;
+          const result = await github.rest(
+            "GET",
+            `repos/${repository}/git/ref/heads/factory/issue-${issue}`,
+          );
+          if (result.status !== 200) return null;
+          return z
+            .object({
+              ref: z.literal(ref),
+              object: z.object({ type: z.literal("commit"), sha: commitSha }),
+            })
+            .parse(result.body).object.sha;
+        },
+      };
+      if (usesHostDispatch) return createPausedMachineCleanup({ ...scope, mode: "unsigned-host" });
+      if (!signer) throw new Error("Signed Factory cleanup needs isolated signing authority.");
+      return createPausedMachineCleanup({
+        ...scope,
+        sign: (payload) => signer(projectId, payload),
+      });
+    }
+
+    async function holdsPrimaryEvidence() {
+      if (usesHostDispatch) {
+        return (await machineRunnerPlacement()) !== null && (await isPrimary());
+      }
+      if (usesMachineClaims) return isPrimary();
+      await refreshAuthority();
+      return holds("intake");
+    }
+    const primaryEvidence = initialPrimary
+      ? createLeanGateBootstrap({
+          github,
+          projectId,
+          repository,
+          paseoHome: deps.paseoHome,
+          here,
+          primary: initialPrimary,
+          docker: deps.gateDocker,
+          holdsPrimary: holdsPrimaryEvidence,
+        })
+      : undefined;
+
+    function batchRuntime(readInputs: Parameters<NonNullable<Options["machineBatches"]>>[0]) {
+      if (!usesHostDispatch || !initialPrimary) {
+        // The old offload transport needs independent key isolation. Fail closed on configured batches.
+        return {
+          async readyForAcceptance() {
+            const latest = await refreshAuthority();
+            return latest !== null && configuredLocalHeavyBatches(latest)?.length === 0;
+          },
+          async reconcileSecondary() {
+            return false;
+          },
+        };
+      }
+      const execution = primaryEvidence?.primaryGates.execution;
+      const execute = execution
+        ? createGateCommandRunner({ ...execution, primary: initialPrimary, now })
+        : async () => null;
+      return createLocalHostBatches({
+        projectId,
+        repository,
+        primary: initialPrimary,
+        state: projectState,
+        now,
+        readInputs,
+        execute,
+        holdsPrimary: holdsPrimaryEvidence,
+        readConfig: (commit) => readPinnedFactoryConfig(github, repository, commit),
+      });
+    }
+    function createPrimaryDelivery() {
+      const readEpoch = deps.deliveryEpoch;
+      if (!readEpoch || !deps.delivery || initialPrimary !== here) return undefined;
+      async function primaryMayDeliver() {
+        await refreshAuthority();
+        return (await holds("delivery")) && (await holdsPrimaryEvidence());
+      }
+      return deps.delivery({
+        projectId,
+        repository,
+        state: projectState,
+        now,
+        async fence() {
+          if (!(await primaryMayDeliver())) return null;
+          const epoch = await readEpoch(projectId, repository);
+          if (epoch === null || !Number.isSafeInteger(epoch) || epoch <= 0) return null;
+          return (await primaryMayDeliver()) ? epoch : null;
+        },
+      });
+    }
+    function coordinationOptions(): Pick<
+      BootstrapOptions,
+      | "pausedMachineCleanupForIssue"
+      | "cleanClosedClaims"
+      | "hostDispatch"
+      | "machineClaims"
+      | "machineBatches"
+      | "machineRunnerPlacement"
+      | "hostSourceForHead"
+    > {
+      return {
+        pausedMachineCleanupForIssue:
+          machineGit && initialPrimary ? createPausedCleanupForIssue : undefined,
+        cleanClosedClaims: createClosedCleanup(),
+        hostSourceForHead: usesHostDispatch ? primaryEvidence?.sourceForHead : undefined,
+        machineRunnerPlacement,
+        hostDispatch:
+          usesHostDispatch && machineGit
+            ? { refs: createGitClaimStore(machineGit), isPrimary }
+            : undefined,
+        machineClaims:
+          usesMachineClaims && machineGit && signer
+            ? {
+                refs: createGitClaimStore(machineGit),
+                sign: (payload) => signer(projectId, payload),
+                async verify(installation, payload, signature) {
+                  const keys = roles(currentConfig)?.publicKeysFor(installation) ?? [];
+                  return keys.some((key) => verifyMachinePayload(key, payload, signature));
+                },
+                isPrimary,
+              }
+            : undefined,
+        machineBatches: usesCoordination ? batchRuntime : undefined,
+      };
+    }
+
     return {
       projectId,
       repository,
-      github: projectGitHub(github, repository, async () => {
-        await refreshAuthority();
-        return executionMode();
-      }),
+      github: projectGitHub(
+        github,
+        repository,
+        async () => {
+          await refreshAuthority();
+          return executionMode();
+        },
+        usesCoordination ? chargeMachineMutation : undefined,
+      ),
       now,
       state: projectState,
       paseoHome: deps.paseoHome,
       here,
       executionMode,
+      isOwnerPaused,
       refreshAuthority,
-      leaseTtlMs: (config?.lease?.ttlMinutes ?? 120) * 60_000,
+      ...coordinationOptions(),
+      ...(primaryEvidence
+        ? {
+            primaryGates: primaryEvidence.primaryGates,
+            reviewObjects: primaryEvidence.reviewObjects,
+          }
+        : {}),
+      coordinationRefusal,
+      delivery: createPrimaryDelivery(),
+      async machineReviewPolicy() {
+        const latest = await refreshAuthority();
+        if (!usesCoordination || !latest || roles(latest)?.primary !== here) return null;
+        const providerType = pinnedReviewerType(latest);
+        if (!providerType) return null;
+        return {
+          configCommit: latest.configCommit,
+          providerType,
+          allowForeignSameProvider: latest.review?.allowSameAccount ?? true,
+        };
+      },
+      leaseTtlMs: (usesCoordination ? 120 : (config?.lease?.ttlMinutes ?? 120)) * 60_000,
       requiredChecks: config?.checks,
       releaseRecipeFiles: async () => [
         configFile,
@@ -293,6 +795,7 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
         return (await holds(lane)) ? 1 : null;
       },
       async fenceLane(lane, epoch) {
+        if (usesCoordination) await refreshAuthority();
         return epoch === 1 && (await holds(lane));
       },
       async context() {
@@ -324,31 +827,62 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
     };
     const options = await boundInitialization(projectOptions(projectId, wake));
     const group = createLeanOperationGroup(options);
-    groups.set(projectId, group);
+    groups.set(projectId, {
+      ...group,
+      rpc: {
+        ...group.rpc,
+        async status() {
+          const [status, refusal] = await Promise.all([
+            group.rpc.status(),
+            options.coordinationRefusal(),
+          ]);
+          return refusal
+            ? { ...status, alerts: [...new Set([...status.alerts, refusal])] }
+            : status;
+        },
+      },
+    });
     const children = new Map<number, { runtime: Runtime; unsubscribe: () => void }>();
     async function stopChildren(reason?: Parameters<LeanModePort["stop"]>[1]) {
-      for (const child of children.values()) {
-        child.unsubscribe();
+      for (const [issue, child] of children) {
         if (!reason) child.runtime.detach();
         else await child.runtime.stop(reason);
+        child.unsubscribe();
+        children.delete(issue);
       }
-      children.clear();
     }
 
     async function reconcile() {
+      if (options.pausedMachineCleanupForIssue && (await options.isOwnerPaused())) return;
       await options.refreshAuthority();
       const mode = await options.executionMode();
       if (!allowsIssueEffects(mode)) {
+        if (options.pausedMachineCleanupForIssue && (await options.isOwnerPaused())) return;
         await stopChildren();
         if (mode === "dry-run") await discoverLeanIssues(options);
         return;
       }
       const discovered = await discoverLeanIssues(options);
+      await options
+        .cleanClosedClaims?.()
+        .catch((error) =>
+          deps.logger.warn(
+            { err: error, projectId },
+            "Factory could not finish cleaning closed issue claims",
+          ),
+        );
       const slots = Math.max(1, (await state.read(projectId)).local.runners);
       for (const issue of discovered) {
         if (children.has(issue)) continue;
         if (children.size >= slots) break;
-        const runtime = createLeanRuntime({ ...options, issue }, group);
+        const runtime = createLeanRuntime(
+          {
+            ...options,
+            issue,
+            pausedMachineCleanup: options.pausedMachineCleanupForIssue?.(issue),
+          },
+          group,
+        );
         try {
           await runtime.recover();
           children.set(issue, { runtime, unsubscribe: runtime.subscribe(wake) });
@@ -396,10 +930,15 @@ export function createLeanBootstrap(deps: LeanBootstrapDependencies) {
         };
       },
       async stop(reason: Parameters<LeanModePort["stop"]>[1]) {
-        groups.delete(projectId);
+        if (reason === "pause" && options.pausedMachineCleanupForIssue) {
+          await stopChildren("pause");
+          groups.delete(projectId);
+          return;
+        }
         const active =
           !closing && reason !== "switch" && allowsIssueEffects(await options.executionMode());
         await stopChildren(active ? reason : undefined);
+        groups.delete(projectId);
       },
     };
   }
@@ -543,7 +1082,16 @@ async function verifiedScratchProvider(
   return builder;
 }
 
-function configuredPrimary(config: Config | null): string | null {
+function activeLeanProject(record: ProjectRecord | undefined): record is ProjectRecord {
+  return Boolean(record?.enabled && record.mode === "lean" && !record.paused);
+}
+
+function coordinationMode(config: Config | null): "host" | "signed-dev" | "local" {
+  if (config?.machines === undefined) return "local";
+  return config.runners?.placement === "host" ? "host" : "signed-dev";
+}
+
+function configuredPrimary(config: Pick<Config, "order" | "lanes"> | null): string | null {
   if (!config) return null;
   let primary = singleHolder(config.order);
   for (const lane of lanes) {
@@ -580,6 +1128,7 @@ function projectGitHub(
   backend: Options["github"],
   repository: string,
   mode: () => Promise<ExecutionMode>,
+  chargeMutation?: () => Promise<void>,
 ): Options["github"] {
   return {
     async rest(method, route, body) {
@@ -592,6 +1141,7 @@ function projectGitHub(
         current === "live" ||
         (current === "review-rehearsal" && rehearsalIssueWrite(method, route, repository, query))
       ) {
+        await chargeMutation?.();
         return backend.rest(method, route, body);
       }
       throw new Error("Factory GitHub write is disabled by project configuration.");

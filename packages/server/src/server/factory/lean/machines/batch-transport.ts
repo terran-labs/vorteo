@@ -85,6 +85,7 @@ const heavyGateBatchesSchema = z.record(
 );
 const configSchema = z.object({
   schema: z.literal("vorteo-factory"),
+  runners: z.object({ placement: z.literal("dev") }),
   version: z.literal(1),
   mode: z.literal("lean"),
   order: z.array(installation),
@@ -95,7 +96,10 @@ const configSchema = z.object({
 });
 
 const optionalRecipes = z
-  .object({ heavyGateBatches: heavyGateBatchesSchema.optional() })
+  .object({
+    runners: z.object({ placement: z.literal("dev") }),
+    heavyGateBatches: heavyGateBatchesSchema.optional(),
+  })
   .nullable();
 
 export function configuredHeavyBatches(config: unknown) {
@@ -175,7 +179,6 @@ export function createMachineBatchTransport(options: MachineBatchTransportOption
 }
 
 async function createBatchTransport(options: MachineBatchTransportOptions, refs: ClaimRefStore) {
-  await loadNativeHostSigningKey(options);
   const { here, state, projectId, now } = options;
   const publishing = new Map<number, Promise<void>>();
   const running = new Set<string>();

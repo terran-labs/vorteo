@@ -37,6 +37,7 @@ const manage = (
     projectId: "project",
     expectedServerId: "srv_fixture",
     operation,
+    allowsDevSigning: async () => true,
     ...overrides,
   });
 
@@ -63,6 +64,9 @@ describe("Host Factory identity", () => {
       pending: null,
     });
     const path = machineSigningKeyPath(home, "project");
+    const hostProject = { allowsDevSigning: async () => false };
+    await expect(manage({ kind: "generate" }, hostProject)).rejects.toThrow("Dev runner placement");
+    expect(await manage({ kind: "show" }, hostProject)).toMatchObject({ signingDisabled: true });
     const clientFile = join(root, "host-agent.json");
     await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
     expect(
@@ -75,6 +79,7 @@ describe("Host Factory identity", () => {
       { environment: "host" },
       home,
       clientFile,
+      async () => true,
     );
     if (!machineSigner) throw new Error("Expected the native Host signer.");
     const payload = Buffer.from("test machine payload");

@@ -20,6 +20,7 @@ const roleConfig = z.object({
   lanes: z.record(z.string(), z.unknown()).optional(),
   claimers: z.array(z.string()).optional(),
   machines: z.unknown().optional(),
+  runners: z.object({ placement: z.string().optional() }).optional(),
 });
 
 const machineKey = z
@@ -50,6 +51,7 @@ export interface MachineRoles {
   readonly here: Installation;
   readonly primary: Installation;
   readonly canClaim: boolean;
+  readonly listsMachine: (installation: Installation) => boolean;
   readonly publicKeyFor: (installation: Installation) => string | null;
   readonly publicKeysFor: (installation: Installation) => readonly string[];
   readonly friendlyNameFor: (installation: Installation) => string | null;
@@ -81,23 +83,35 @@ export function resolveMachineRoles(
     };
   if (Object.keys(config.lanes ?? {}).length > 0)
     return { roles: null, error: "Remove lane overrides from the fixed-primary V1 configuration." };
-  const parsed = machineList.safeParse(config.machines === undefined ? {} : config.machines);
+  const host = config.runners?.placement === "host";
+  // Host runner projects use a roster only. Ignore any old key fields without parsing them.
+  const hostRoster = z.record(
+    installationId,
+    z.object({ friendlyName: z.string().trim().min(1).optional() }),
+  );
+  const parsed = (host ? hostRoster : machineList).safeParse(config.machines ?? {});
   if (!parsed.success)
     return {
       roles: null,
       error:
         "List machine keys in machines by installation ID. Use Ed25519 PEM for publicKey and any distinct overlapPublicKey.",
     };
-  const machines = new Map(Object.entries(parsed.data));
+  const machines = new Map<
+    string,
+    { publicKey?: string; overlapPublicKey?: string; friendlyName?: string }
+  >(Object.entries(parsed.data));
+  if (host && !machines.has(primary))
+    return { roles: null, error: "List the fixed primary in the project's machine roster." };
   return {
     roles: {
       here,
       primary,
-      canClaim: config.claimers?.includes(here) ?? true,
+      listsMachine: (installation) => machines.has(installation),
+      canClaim: (!host || machines.has(here)) && (config.claimers?.includes(here) ?? true),
       publicKeyFor: (installation) => machines.get(installation)?.publicKey ?? null,
       publicKeysFor(installation) {
         const machine = machines.get(installation);
-        if (!machine) return [];
+        if (!machine?.publicKey) return [];
         return machine.overlapPublicKey
           ? [machine.publicKey, machine.overlapPublicKey]
           : [machine.publicKey];
@@ -234,13 +248,17 @@ export type ReviewIndependence =
 
 /** For a verified foreign submission and a clean, locally bound reviewer of the pinned provider. */
 export function foreignReviewIndependence(
-  submission: NonNullable<VerifiedMachineSubmission["record"]["submission"]>,
+  submission: { readonly builderProviderType?: string },
   reviewerProviderType: string,
   recordedAccountExclusions: boolean,
   allowSameProvider = true,
 ): Exclude<ReviewIndependence, "same-account-recorded"> | null {
-  if (!submission.builderProviderType.trim() || !reviewerProviderType.trim()) return null;
-  if (submission.builderProviderType !== reviewerProviderType) return "different-provider";
+  if (!reviewerProviderType.trim()) return null;
+  if (
+    submission.builderProviderType?.trim() &&
+    submission.builderProviderType !== reviewerProviderType
+  )
+    return "different-provider";
   return allowSameProvider && recordedAccountExclusions ? "unverified-foreign" : null;
 }
 

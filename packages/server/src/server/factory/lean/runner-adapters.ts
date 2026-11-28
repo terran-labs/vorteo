@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { realpath } from "node:fs/promises";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 import { projectFactoryClaimBranch } from "@getpaseo/server/factory-project";
@@ -17,7 +17,13 @@ import { ProviderQuotaExhaustedError } from "../../agent/quota-error.js";
 import type { WorkspaceRegistry } from "../../workspace-registry.js";
 import type { FactoryGitHub } from "../project/claims.js";
 import { createAccountTable, type LeanAccountDependencies } from "./accounts.js";
-import { createRunnerPort, runnerStatusFromAgent, type RunnerDependencies } from "./runners.js";
+import {
+  createRunnerPort,
+  runnerStatusFromAgent,
+  type BoundRunnerOpenInput,
+  type RunnerDependencies,
+} from "./runners.js";
+import type { ForeignReviewOpenEvidence } from "./review-evidence.js";
 import { LEAN_PROTOCOL_MAJOR, type RunnerOpenInput } from "./types.js";
 import type { BuilderIngress } from "./builder-ingress.js";
 import {
@@ -53,7 +59,11 @@ export interface LocalRunnerDependencies extends LeanAccountDependencies {
   workspaces: Pick<WorkspaceRegistry, "get">;
   createAgent: BoundCreateAgentCommand;
   logger: Logger;
-  resolveWorkspace(input: RunnerOpenInput): Promise<WorkspaceBinding>;
+  resolveWorkspace(input: BoundRunnerOpenInput): Promise<WorkspaceBinding>;
+  /** Recheck primary authority, current owner policy and the live signed submission. */
+  verifyForeignReview?(issue: number, binding: ForeignReviewOpenEvidence): Promise<boolean>;
+  authorizePrimaryIssueOperation?(issue: number): Promise<boolean>;
+  machineBuilderGeneration?(issue: number): Promise<string | null>;
   requiredProviderTypes?: Partial<Record<RunnerOpenInput["role"], string>>;
   recoveryIssue?: number;
   deliveryCharter?: string;
@@ -80,7 +90,7 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
   const loader = { agentManager, agentStorage, logger };
 
   async function authorizeIssue(
-    input: Pick<RunnerOpenInput, "projectId" | "issue" | "role">,
+    input: Pick<BoundRunnerOpenInput, "projectId" | "issue" | "role" | "foreignReview">,
   ): Promise<string | null> {
     if (input.projectId !== deps.projectId)
       throw new IssueAuthorityError("The runner belongs to another project.");
@@ -93,12 +103,36 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
     if (!Number.isSafeInteger(input.issue) || input.issue < 1) {
       throw new IssueAuthorityError("The runner needs a valid issue number.");
     }
+    if (input.role === "foreman-op" && deps.authorizePrimaryIssueOperation) {
+      if (await deps.authorizePrimaryIssueOperation(input.issue)) return null;
+      throw new IssueAuthorityError(
+        "The primary no longer holds authority for this issue operation.",
+      );
+    }
     const branch = projectFactoryClaimBranch(input.issue);
+    const foreign = input.foreignReview;
+    if (foreign) {
+      if (
+        input.role !== "reviewer" ||
+        foreign.submission.installation === deps.installation ||
+        !(await deps.verifyForeignReview?.(input.issue, foreign))
+      ) {
+        throw new IssueAuthorityError(
+          "The verified foreign review target is no longer authorized.",
+        );
+      }
+      return branch;
+    }
+    await requireLocalIssueLease(input.issue, branch);
+    return branch;
+  }
+
+  async function requireLocalIssueLease(issue: number, branch: string): Promise<void> {
     const ledger = await deps.state.read(deps.projectId);
-    const lease = ledger.leases[String(input.issue)];
+    const lease = ledger.leases[String(issue)];
     if (
       !lease ||
-      lease.issue !== input.issue ||
+      lease.issue !== issue ||
       lease.branch !== branch ||
       lease.installation !== deps.installation ||
       lease.protocol !== LEAN_PROTOCOL_MAJOR ||
@@ -107,7 +141,6 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
     ) {
       throw new IssueAuthorityError("Factory no longer holds a live lease for this issue.");
     }
-    return branch;
   }
 
   async function activeWorkspace(workspaceId: string) {
@@ -144,14 +177,18 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
     await registerBuilder(agentId, row.issue, workspaceId, workspace.cwd);
   }
 
-  const createAgent: RunnerDependencies["createAgent"] = async (launch) => {
-    const { input, choice } = launch;
-    if (launch.serverId !== null || !choice.account) {
-      throw new Error("Choose an eligible local account before opening a runner.");
-    }
-    const provider = choice.account;
+  async function prepareLaunch(launch: Parameters<RunnerDependencies["createAgent"]>[0]) {
+    const { input } = launch;
     const branch = await authorizeIssue(input);
+    const machineBuilder =
+      input.role === "lead" && input.issue !== null && deps.machineBuilderGeneration;
+    const generation = machineBuilder ? await machineBuilder(input.issue!) : null;
+    if (machineBuilder && !generation)
+      throw new IssueAuthorityError("The Builder needs a live local machine claim.");
     const binding = await deps.resolveWorkspace(input);
+    if (machineBuilder && !shaPattern.test(binding.authorizedBuilderHead ?? "")) {
+      throw new IssueAuthorityError("The Builder needs its verified starting commit.");
+    }
     const workspace = await activeWorkspace(binding.workspaceId);
     if (
       input.worktree &&
@@ -169,6 +206,17 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
     const identity = launch.identity;
     if (!identity) throw new Error("Reserve the Factory runner before launch.");
     await identity.seal(workspace.workspaceId, review ?? undefined);
+    return { branch, machineBuilder, generation, binding, workspace, review, identity };
+  }
+
+  const createAgent: RunnerDependencies["createAgent"] = async (launch) => {
+    const { input, choice } = launch;
+    if (launch.serverId !== null || !choice.account) {
+      throw new Error("Choose an eligible local account before opening a runner.");
+    }
+    const provider = choice.account;
+    const { branch, machineBuilder, generation, binding, workspace, review, identity } =
+      await prepareLaunch(launch);
     const issueIdentity = branch
       ? `Factory issue #${input.issue}, claim branch ${branch}.`
       : "Factory project operation.";
@@ -218,6 +266,27 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
           }
           await authorizeIssue(input);
           if (input.role === "lead" && input.issue !== null) {
+            if (machineBuilder && generation && branch && binding.authorizedBuilderHead) {
+              if ((await machineBuilder(input.issue)) !== generation)
+                throw new IssueAuthorityError("The machine claim changed during Builder launch.");
+              const assignment = {
+                issue: input.issue,
+                generation,
+                workspaceId: workspace.workspaceId,
+                headSha: binding.authorizedBuilderHead,
+                account: provider,
+                branch,
+              };
+              await deps.state.mutate(deps.projectId, (ledger) => {
+                const launches = (ledger.hostBuilderAssignments ??= {});
+                if (
+                  Object.hasOwn(launches, agentId) &&
+                  !isDeepStrictEqual(launches[agentId], assignment)
+                )
+                  throw new IssueAuthorityError("This Builder already has a saved assignment.");
+                launches[agentId] = assignment;
+              });
+            }
             await registerBuilder(agentId, input.issue, workspace.workspaceId, workspace.cwd);
           }
         },
@@ -269,13 +338,20 @@ export function createLocalRunnerRuntime(deps: LocalRunnerDependencies) {
       if (!intent.workspaceId || stored.workspaceId !== intent.workspaceId) return "unverified";
       if (getParentAgentIdFromLabels(stored.labels)) return "unverified";
       if (stored.provider !== intent.runner.account) return "close";
-      await activeWorkspace(intent.workspaceId);
+      const workspace = await activeWorkspace(intent.workspaceId);
+      const foreignReview = intent.choice.foreignReviewDecision?.binding;
       try {
-        await authorizeIssue({
+        const input = {
           projectId: deps.projectId,
           issue: intent.issue,
           role: intent.runner.role,
-        });
+          foreignReview,
+        };
+        const branch = await authorizeIssue(input);
+        if (foreignReview) {
+          if (intent.review?.headSha !== foreignReview.submission.head) return "close";
+          await verifyCheckout(input, workspace.cwd, workspace.kind, branch, intent.review.headSha);
+        }
       } catch (error) {
         if (error instanceof IssueAuthorityError) return "close";
         throw error;
@@ -462,7 +538,7 @@ async function readLeadHead(cwd: string, branch: string): Promise<string> {
 }
 
 async function verifyCheckout(
-  input: RunnerOpenInput,
+  input: Pick<BoundRunnerOpenInput, "role" | "foreignReview">,
   cwd: string,
   kind: string,
   branch: string | null,
@@ -476,6 +552,9 @@ async function verifyCheckout(
   }
   if (!reviewHead || !shaPattern.test(reviewHead)) {
     throw new Error("The reviewer needs an authenticated pull request head.");
+  }
+  if (input.foreignReview && reviewHead !== input.foreignReview.submission.head) {
+    throw new IssueAuthorityError("The reviewer workspace no longer matches the verified head.");
   }
   const [head, currentBranch, dirty] = await Promise.all([
     git(cwd, ["rev-parse", "HEAD^{commit}"]),

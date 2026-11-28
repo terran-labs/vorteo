@@ -5,6 +5,7 @@ import { foremanCharter } from "./charters/foreman.js";
 import { leadCharter } from "./charters/lead.js";
 import { mechanicCharter } from "./charters/mechanic.js";
 import { reviewerCharter } from "./charters/reviewer.js";
+import type { ForeignReviewLaunchEvidence, ForeignReviewOpenEvidence } from "./review-evidence.js";
 import type {
   AccountChoice,
   AccountTable,
@@ -17,11 +18,18 @@ import type {
   RunnerStatus,
 } from "./types.js";
 
-type Record = LeanLedger["runners"][string] & {
+export interface BoundRunnerOpenInput extends RunnerOpenInput {
+  foreignReview?: ForeignReviewOpenEvidence;
+}
+
+export type RunnerRecord = LeanLedger["runners"][string] & {
+  installation?: string;
   reviewAccountSelection?: ReviewAccountSelection;
+  foreignReviewLaunch?: ForeignReviewLaunchEvidence;
   runMetrics?: RunnerMetrics;
   quotaRecoveryPending?: true;
 };
+type Record = RunnerRecord;
 
 export interface RunnerMetrics {
   elapsedMs: number;
@@ -36,7 +44,7 @@ type Open = Awaited<ReturnType<RunnerPort["open"]>>;
 type QuotaStop = Extract<RunnerStatus, { kind: "quota" }>;
 
 interface Launch {
-  input: RunnerOpenInput;
+  input: BoundRunnerOpenInput;
   identity?: LaunchIdentity;
   serverId: string | null;
   worktree: RunnerOpenInput["worktree"];
@@ -52,7 +60,7 @@ interface LaunchIdentity {
 }
 
 export interface PendingRunnerLaunch {
-  runner: RunnerRef;
+  runner: RunnerRef & { installation?: string };
   issue: number | null;
   workspaceId: string | null;
   choice: SelectedChoice;
@@ -83,7 +91,8 @@ export interface RunnerDependencies {
   projectId: string;
   installation: string;
   state: LeanStateStore;
-  accounts: AccountTable & Partial<Pick<LeanAccountTable, "chooseReviewer">>;
+  accounts: AccountTable &
+    Partial<Pick<LeanAccountTable, "chooseReviewer" | "chooseForeignReviewer">>;
   now(): Date;
   /** Owns capacity and connected-host availability. Worktree placement is mandatory when set. */
   place(input: RunnerOpenInput): Promise<Placement>;
@@ -112,7 +121,7 @@ export interface RunnerDependencies {
 export interface LeanRunnerPort extends RunnerPort {
   dispose(): void;
   /** The caller supplies a continuation brief from the claim branch, plan and saved progress. */
-  recover(runner: RunnerRef, status: QuotaStop, input: RunnerOpenInput): Promise<Recovery>;
+  recover(runner: RunnerRef, status: QuotaStop, input: BoundRunnerOpenInput): Promise<Recovery>;
 }
 
 /** Local adapter classification. Read the same structured hold on replay after a restart. */
@@ -195,13 +204,16 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
       .sort((left, right) => right.attempt - left.attempt)[0];
   }
 
-  async function open(input: RunnerOpenInput): Promise<Open> {
+  async function open(input: BoundRunnerOpenInput): Promise<Open> {
     if (input.projectId !== deps.projectId)
       throw new Error("Runner belongs to a different project.");
     await reconcileLaunches(input.issue);
     const ledger = await deps.state.read(deps.projectId);
     const previous = latest(ledger.runners, input);
-    if (previous && previous.closedAt === null) return runnerRef(previous);
+    if (previous && previous.closedAt === null) {
+      if (matchesRunnerReview(previous, input)) return runnerRef(previous);
+      await closeRecord(previous, "The review target changed.");
+    }
 
     const systemPrompt = charters[input.role];
     if (!systemPrompt)
@@ -227,13 +239,14 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
     });
     if ("parked" in launch) return launch;
     const { agentId, choice } = launch;
-    const runner: RunnerRef = {
+    const runner = {
       agentId,
       serverId: where.serverId,
       role: input.role,
       account: choice.account,
       accountDefinition: choice.accountDefinition,
       providerType: choice.providerType,
+      installation: deps.installation,
       openedAt: deps.now().toISOString(),
       attempt: (previous?.attempt ?? 0) + 1,
     };
@@ -243,7 +256,7 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
   }
 
   async function launchOnAvailableAccount(options: {
-    input: RunnerOpenInput;
+    input: BoundRunnerOpenInput;
     serverId: string | null;
     systemPrompt: string;
     builder: ReviewBuilder | null;
@@ -255,10 +268,20 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
     const avoid = withoutBuilder(input.avoidAccounts ?? [], builder);
     const rejectedAccounts = new Set<string>();
     const rejectedResets: string[] = [];
-    const choose = (): Promise<LaunchChoice> =>
-      builder && deps.accounts.chooseReviewer
+    function choose(): Promise<LaunchChoice> {
+      if (input.foreignReview) {
+        if (
+          input.role !== "reviewer" ||
+          input.issue === null ||
+          !deps.accounts.chooseForeignReviewer
+        )
+          throw new Error("The Factory cannot open a foreign Reviewer for this job.");
+        return deps.accounts.chooseForeignReviewer({ serverId, avoid }, input.foreignReview);
+      }
+      return builder && deps.accounts.chooseReviewer
         ? deps.accounts.chooseReviewer({ serverId, avoid }, builder)
         : deps.accounts.choose({ role: input.role, serverId, avoid });
+    }
     for (;;) {
       const choice = await choose();
       if ("parked" in choice) {
@@ -320,12 +343,13 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
   }
 
   async function recordOpen(
-    runner: RunnerRef,
+    runner: PendingRunnerLaunch["runner"],
     issue: number | null,
     launch: { choice: SelectedChoice; review?: ReviewLaunch },
   ): Promise<void> {
     try {
       const decision = launch.choice.reviewDecision;
+      const foreign = launch.choice.foreignReviewDecision;
       let record: Record = { ...runner, issue, closedAt: null, closeReason: null };
       if (decision) {
         if (issue === null || !launch.review) {
@@ -340,6 +364,21 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
             issue,
             at: runner.openedAt,
           },
+        };
+      }
+      if (foreign) {
+        const { binding, ...selection } = foreign;
+        if (issue === null || launch.review?.headSha !== binding.submission.head) {
+          throw new Error("The reviewer launch did not match the verified pull request.");
+        }
+        record.foreignReviewLaunch = {
+          ...selection,
+          ...launch.review,
+          claimGeneration: binding.submission.generation,
+          ...(binding.hostProof && { hostProof: binding.hostProof }),
+          reviewerAgentId: runner.agentId,
+          issue,
+          at: runner.openedAt,
         };
       }
       await deps.state.mutate(deps.projectId, (state: LaunchLedger) => {
@@ -368,13 +407,14 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
   ): Promise<LaunchIdentity> {
     const agentId = await deps.state.mutate(deps.projectId, (state: LaunchLedger) => {
       const id = launchAgentId(deps.installation, deps.projectId, state.revision, input);
-      const runner: RunnerRef = {
+      const runner: PendingRunnerLaunch["runner"] = {
         agentId: id,
         serverId,
         role: input.role,
         account: choice.account,
         accountDefinition: choice.accountDefinition,
         providerType: choice.providerType,
+        installation: deps.installation,
         attempt,
         openedAt: deps.now().toISOString(),
       };
@@ -424,10 +464,11 @@ export function createRunnerPort(deps: RunnerDependencies): LeanRunnerPort {
   }
 
   function reviewBuilder(
-    input: RunnerOpenInput,
+    input: BoundRunnerOpenInput,
     records: LeanLedger["runners"],
   ): ReviewBuilder | null {
-    if (input.role !== "reviewer" || !deps.accounts.chooseReviewer) return null;
+    if (input.role !== "reviewer" || input.foreignReview || !deps.accounts.chooseReviewer)
+      return null;
     const lead = latest(records, { ...input, role: "lead" });
     if (!lead?.account || !lead.accountDefinition) {
       throw new Error("The Factory cannot verify the account of the lead for this review.");
@@ -611,10 +652,24 @@ function runnerRef(record: Record): RunnerRef {
     closedAt: _closedAt,
     closeReason: _closeReason,
     reviewAccountSelection: _reviewAccountSelection,
+    foreignReviewLaunch: _foreignReviewLaunch,
     runMetrics: _runMetrics,
     quotaRecoveryPending: _quotaRecoveryPending,
     ...runner
   } = record;
   return runner;
 }
+
+function matchesRunnerReview(record: Record, input: BoundRunnerOpenInput): boolean {
+  const binding = input.foreignReview;
+  if (!binding) return record.foreignReviewLaunch === undefined;
+  const receipt = record.foreignReviewLaunch;
+  return (
+    receipt?.headSha === binding.submission.head &&
+    receipt.claimGeneration === binding.submission.generation &&
+    isDeepStrictEqual(receipt.hostProof, binding.hostProof) &&
+    record.providerType === binding.policy.providerType
+  );
+}
+import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";

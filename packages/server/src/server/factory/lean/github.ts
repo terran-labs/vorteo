@@ -1,5 +1,18 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import {
+  createObservedSubmission,
+  type ObservedSubmissionOptions,
+} from "./machines/observed-submission.js";
+import { hostPlanRevision, type HostSubmissionProof } from "./review-evidence.js";
 import { z } from "zod";
+import {
+  createMachineLeasePort,
+  createUnsignedHostLeasePort,
+  type ClaimSnapshot,
+  type MachineClaimOptions,
+  type MachineLeasePort,
+} from "./machines/claims.js";
 import {
   claimIssue,
   FactoryGitHubError,
@@ -16,7 +29,7 @@ import {
   readTrustedAccounts,
   type TrustedAccounts,
 } from "../project/trust.js";
-import type { MergeEvidence, MergeGateDeps } from "./merge-gate.js";
+import type { ForeignMergeReview, MergeEvidence, MergeGateDeps } from "./merge-gate.js";
 import type { HostedGateState, IssueGateInputs } from "./gate-runtime.js";
 import {
   LEAN_PROTOCOL_MAJOR,
@@ -30,10 +43,27 @@ import {
 
 export type LeanGitHubApproval = Pick<
   Extract<MergeEvidence, { kind: "open" }>,
-  "lead" | "reviewer" | "verdict" | "acceptance" | "acceptanceSession"
+  | "lead"
+  | "reviewer"
+  | "verdict"
+  | "acceptance"
+  | "acceptanceSession"
+  | "reviewPolicy"
+  | "foreignReview"
 >;
 
 type Completion = Parameters<MergeGateDeps["complete"]>[0];
+type ExpectedSubmission = ForeignMergeReview["submission"];
+
+function matchesSubmission(claim: ClaimSnapshot | null, expected: ExpectedSubmission): boolean {
+  const record = claim?.record;
+  return (
+    record?.installation === expected.installation &&
+    record.generation === expected.generation &&
+    record.submission?.head === expected.head &&
+    record.submission.builderProviderType === expected.builderProviderType
+  );
+}
 
 export interface LeanGitHubOptions<
   Approval extends LeanGitHubApproval = LeanGitHubApproval,
@@ -45,6 +75,14 @@ export interface LeanGitHubOptions<
   repository: string;
   now(): Date;
   leaseTtlMs: number;
+  machineClaims?: Pick<MachineClaimOptions, "refs" | "sign" | "verify" | "isPrimary">;
+  hostDispatch?: Pick<MachineClaimOptions, "refs" | "isPrimary">;
+  hostSourceForHead?: ObservedSubmissionOptions["sourceForHead"];
+  readApprovedForeignPlan?(
+    issue: number,
+    plan: NonNullable<AdmissionFacts["plan"]>,
+  ): Promise<boolean>;
+  pushSavedMachineWork?: MachineClaimOptions["pushSavedWork"];
   mergeMethod?: "MERGE" | "SQUASH" | "REBASE";
   extraChecks?: readonly string[];
   requiredChecks?: readonly string[];
@@ -71,10 +109,17 @@ export interface LeanGitHubFacts extends GitHubFacts {
 }
 
 export interface LeanGitHub {
+  verifyHostSubmission(input: {
+    issue: number;
+    pullNumber: number;
+    head: string;
+  }): Promise<HostSubmissionProof | null>;
+  readForeignPlan(issue: number): Promise<AdmissionFacts["plan"]>;
   readFacts(trackedIssues?: readonly number[]): Promise<LeanGitHubFacts>;
   readIssueGateInputs(issue: number, head: string): Promise<IssueGateInputs | null>;
   gateDeps: MergeGateDeps;
   lease: LeasePort;
+  machineLease?: MachineLeasePort;
 }
 
 const oid = z.string().regex(/^[0-9a-f]{40}$/);
@@ -102,7 +147,7 @@ const restPull = z.object({
   number: z.number().int().positive(),
   node_id: z.string(),
   head: z.object({ ref: z.string(), sha: oid, repo: repoName.nullable() }),
-  base: z.object({ ref: z.string(), repo: repoName }),
+  base: z.object({ ref: z.string(), repo: repoName, sha: oid.optional() }),
   state: z.enum(["open", "closed"]),
   labels: z.array(label),
 });
@@ -264,6 +309,7 @@ function latestPlan(
   comments: Comment[],
   installation: string,
   branch: string,
+  bindContents = false,
 ): AdmissionFacts["plan"] {
   const newest = comments.toReversed();
   for (const entry of newest) {
@@ -294,6 +340,7 @@ function latestPlan(
     }
     return {
       commentId: entry.id,
+      ...(bindContents && { contentDigest: createHash("sha256").update(body).digest("hex") }),
       files: [...new Set(files)],
       heavy: /^Heavy:\s*yes\s*$/im.test(body),
       postedAt: entry.updated_at,
@@ -598,6 +645,7 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
     if (
       after.head.sha !== pull.head.sha ||
       after.base.ref !== pull.base.ref ||
+      after.base.sha !== pull.base.sha ||
       after.changed_files !== pull.changed_files ||
       after.state !== "open"
     ) {
@@ -690,7 +738,9 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
       single && head === inspected.pull.headSha && single.lease.protocol === LEAN_PROTOCOL_MAJOR
         ? single.lease
         : null;
-    if (lease?.installation === here) {
+    if (machineLease) {
+      lease = await machineGateLease(issue, inspected.pull.headSha, head);
+    } else if (lease?.installation === here) {
       const claim = await options.readClaim(issue);
       const ownsLease = ownLease(current, viewer.login);
       if (claim?.status !== "held" || claim.branch !== lease.branch || !ownsLease) lease = null;
@@ -698,6 +748,12 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
     const protectedPaths = protectedChanges(inspected.files, await options.releaseRecipeFiles());
     if (protectedPaths.length) await options.reportProtectedChange(issue, protectedPaths);
     const approval = await options.readApproval(issue, inspected.pull.headSha);
+    if (!(await validateForeignApproval(issue, inspected.pull.headSha, approval))) {
+      return {
+        kind: "unavailable",
+        reason: "The primary could not revalidate the foreign review target.",
+      };
+    }
     const blocked =
       issueData.summary.state !== "open" ||
       issueData.labels.includes("factory:blocked") ||
@@ -753,10 +809,59 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
     return gateConfig.parse(JSON.parse(bytes.toString("utf8")));
   }
 
-  async function readIssueGateInputs(
+  function observedPull(
     issue: number,
-    expectedHead: string,
-  ): Promise<IssueGateInputs | null> {
+    open: PullDetail,
+    inspected: Extract<Awaited<ReturnType<typeof inspectOpen>>, { kind: "open" }>,
+    repo: Repository,
+    config: z.infer<typeof gateConfig> | null,
+    data: Awaited<ReturnType<typeof readIssue>>,
+    branchHead: string,
+  ) {
+    const head = open.head.sha;
+    const configCommit = repo.defaultBranchRef.target.oid;
+    return config && open.base.sha && open.head.repo
+      ? {
+          issue,
+          pullNumber: open.number,
+          state: open.state,
+          draft: inspected.draft,
+          headRepository: open.head.repo.full_name,
+          baseRepository: open.base.repo.full_name,
+          headBranch: open.head.ref,
+          baseBranch: open.base.ref,
+          defaultBranch: repo.defaultBranchRef.name,
+          headSha: head,
+          branchHeadSha: branchHead,
+          baseSha: open.base.sha,
+          defaultHeadSha: configCommit,
+          trusted: data.trust.trusted,
+          blocked:
+            data.summary.state !== "open" ||
+            data.labels.includes("factory:blocked") ||
+            inspected.labels.includes("factory:blocked"),
+          // inspectOpen checks changed_files and includes both names for every rename.
+          filesComplete: true,
+          files: inspected.files.map((path) => ({ path })),
+          protectedPaths: [...ownerOnlyPaths, ...(config.releaseRecipeFiles ?? [])],
+        }
+      : null;
+  }
+
+  function matchesCurrentPull(
+    inspected: Awaited<ReturnType<typeof inspectOpen>>,
+    head: string,
+  ): inspected is Extract<Awaited<ReturnType<typeof inspectOpen>>, { kind: "open" }> {
+    return (
+      inspected.kind === "open" &&
+      !inspected.draft &&
+      inspected.pull.headSha === head &&
+      inspected.pull.sameRepo &&
+      inspected.pull.targetsDefaultBranch
+    );
+  }
+
+  async function readIssueGateInputs(issue: number, expectedHead?: string) {
     if (options.scopeIssue !== undefined && options.scopeIssue !== issue) return null;
     const [{ repository: repo, viewer }, trusted] = await Promise.all([
       graph(repositoryQuery, scope, repositoryData),
@@ -769,64 +874,104 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
       readIssue(issue, trusted),
     ]);
     const open = findOpen(pulls);
-    if (!open || open.head.sha !== expectedHead || open.draft) return null;
-    const inspected = await inspectOpen(open, repo, trusted, config?.checks ?? []);
-    if (
-      inspected.kind !== "open" ||
-      inspected.draft ||
-      inspected.pull.headSha !== expectedHead ||
-      !inspected.pull.sameRepo ||
-      !inspected.pull.targetsDefaultBranch
-    )
+    if (!open || (expectedHead !== undefined && open.head.sha !== expectedHead) || open.draft)
       return null;
+    const head = open.head.sha;
+    const inspected = await inspectOpen(open, repo, trusted, config?.checks ?? []);
+    if (!matchesCurrentPull(inspected, head)) return null;
     const [branchHead, claim, { repository: current }] = await Promise.all([
       readBranch(issue),
-      options.readClaim(issue),
+      machineLease ? undefined : options.readClaim(issue),
       graph(repositoryQuery, scope, repositoryData),
     ]);
     if (
       current.defaultBranchRef.target.oid !== configCommit ||
       current.defaultBranchRef.name !== repo.defaultBranchRef.name ||
-      branchHead !== expectedHead
+      branchHead !== head
     )
       return null;
     return {
       issue,
       repository,
-      head: expectedHead,
+      head,
       configCommit,
+      observation: observedPull(issue, open, inspected, repo, config, data, branchHead),
+      trustedThreadsOpen: inspected.trustedThreadsOpen,
+      mergeable: inspected.mergeable,
       commands: config?.issueGates ?? [],
       hostedChecks: inspected.hostedChecks,
-      trusted: trustedGateClaim({
+      trusted: await trustedGateClaim({
         issue,
         data,
         pullLabels: inspected.labels,
         claim,
         viewer: viewer.login,
+        head,
       }),
       protectedPaths: protectedChanges(inspected.files, config?.releaseRecipeFiles ?? []),
     };
   }
 
-  function trustedGateClaim(input: {
+  async function trustedGateClaim(input: {
     issue: number;
     data: Awaited<ReturnType<typeof readIssue>>;
     pullLabels: string[];
     claim: ClaimState | undefined;
     viewer: string;
-  }): boolean {
-    const { issue, data, pullLabels, claim, viewer } = input;
-    const active = data.leases.filter(({ lease }) => activeLease(lease, options.now()));
-    return (
+    head: string;
+  }): Promise<boolean> {
+    const { issue, data, pullLabels, claim, viewer, head } = input;
+    const admitted =
       data.summary.state === "open" &&
       data.trust.trusted &&
       !data.labels.includes("factory:blocked") &&
-      !pullLabels.includes("factory:blocked") &&
+      !pullLabels.includes("factory:blocked");
+    if (!admitted) return false;
+    if (machineLease) return Boolean(await machineGateLease(issue, head, await readBranch(issue)));
+    const active = data.leases.filter(({ lease }) => activeLease(lease, options.now()));
+    return (
       active.length === 1 &&
       Boolean(ownLease(active, viewer)) &&
       claim?.status === "held" &&
       claim.branch === branch(issue)
     );
+  }
+
+  async function machineGateLease(
+    issue: number,
+    head: string,
+    branchHead: string | null,
+  ): Promise<Lease | null> {
+    if (!machineLease || branchHead !== head) return null;
+    const lease = await machineLease.readLease(issue);
+    if (!lease || lease.released || Date.parse(lease.expiresAt) <= options.now().getTime())
+      return null;
+    if (lease.installation === here || options.hostDispatch) return lease;
+    const signed = await machineLease.readSubmission(issue, head);
+    return signed?.record.installation === lease.installation ? lease : null;
+  }
+
+  async function recheckForeignSubmission(
+    issue: number,
+    head: string,
+    expected: ExpectedSubmission,
+  ): Promise<boolean> {
+    if (!machineLease || expected.installation === here || expected.head !== head) return false;
+    return matchesSubmission(await machineLease.readSubmission(issue, head), expected);
+  }
+
+  async function validateForeignApproval(
+    issue: number,
+    head: string,
+    approval: LeanGitHubApproval,
+  ) {
+    const hostProof = approval.foreignReview?.hostProof;
+    if (hostProof)
+      return (
+        hostProof.issue === issue && hostProof.head === head && (await sameHostProof(hostProof))
+      );
+    const expected = approval.foreignReview?.submission;
+    return !expected || recheckForeignSubmission(issue, head, expected);
   }
 
   async function writeLease(
@@ -891,18 +1036,174 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
     return { ...data, trusted, repo: repo.repository, own, viewer: repo.viewer.login };
   }
 
-  const lease: LeasePort = {
-    async acquire(issue) {
-      const data = await readLeaseContext(issue);
-      const { trust, summary, labels } = data;
-      if (!trust.trusted) return { outcome: "refused", code: "untrusted", reason: trust.reason };
-      if (summary.state !== "open" || labels.includes("factory:blocked")) {
+  async function prepareClaim(
+    issue: number,
+    data: Awaited<ReturnType<typeof readLeaseContext>>,
+  ): ReturnType<MachineClaimOptions["prepare"]> {
+    const { trust, summary, labels } = data;
+    if (!trust.trusted) return { outcome: "refused", code: "untrusted", reason: trust.reason };
+    if (summary.state !== "open" || labels.includes("factory:blocked")) {
+      return {
+        outcome: "refused",
+        code: "blocked",
+        reason: "Resolve the Factory block and open the issue before claiming it.",
+      };
+    }
+    const diff = await ownerOnlyChanges(github, repository, issue);
+    const pull = findOpen(await candidates(issue, data.repo));
+    const paths = pull ? await filePaths(pull) : [];
+    const protectedPaths = [
+      ...new Set([...diff.touched, ...protectedChanges(paths, await options.releaseRecipeFiles())]),
+    ];
+    if (protectedPaths.length) {
+      await options.reportProtectedChange(issue, protectedPaths);
+      return {
+        outcome: "refused",
+        code: "owner-only",
+        reason: "Remove the owner-only changes before claiming this issue.",
+      };
+    }
+    if (pull) {
+      const after = await get(`pulls/${pull.number}`, pullDetail);
+      if (
+        after.head.sha !== diff.checkedHeadSha ||
+        after.head.sha !== pull.head.sha ||
+        after.state !== "open"
+      ) {
         return {
           outcome: "refused",
-          code: "blocked",
-          reason: "Resolve the Factory block and open the issue before claiming it.",
+          code: "head-moved",
+          reason: "Recheck the pull request after its head settles.",
         };
       }
+    }
+    return {
+      brief: await issueBrief(data.facts, data.trusted),
+      checkedHeadSha: diff.checkedHeadSha,
+    };
+  }
+
+  const leaseInputs: Omit<MachineClaimOptions, "refs" | "sign" | "verify" | "isPrimary"> = {
+    repository,
+    installation: here,
+    now: options.now,
+    prepare: async (issue) => prepareClaim(issue, await readLeaseContext(issue)),
+    readWorkHead: readBranch,
+    async ensureWorkBranch(issue) {
+      const { repository: repo } = await graph(repositoryQuery, scope, repositoryData);
+      const ref = "refs/heads/" + branch(issue);
+      const response = await github.rest("POST", root + "/git/refs", {
+        ref,
+        sha: repo.defaultBranchRef.target.oid,
+      });
+      if (response.status !== 201 && !(response.status === 422 && (await readBranch(issue))))
+        throw new FactoryGitHubError("Factory could not create the issue branch.");
+    },
+    async pushSavedWork(issue, expected) {
+      if (!options.pushSavedMachineWork)
+        throw new Error("Save the Builder work before releasing the claim.");
+      return options.pushSavedMachineWork(issue, expected);
+    },
+  };
+  if (options.hostDispatch && options.machineClaims)
+    throw new Error("Select a single Factory machine claim mode.");
+  const machineLease = options.hostDispatch
+    ? createUnsignedHostLeasePort({ ...leaseInputs, ...options.hostDispatch })
+    : options.machineClaims && createMachineLeasePort({ ...leaseInputs, ...options.machineClaims });
+
+  async function dispatchRecord(issue: number) {
+    if (!machineLease || !(await options.hostDispatch?.isPrimary())) return null;
+    const snap = await machineLease.readClaim(issue);
+    const record = snap?.record;
+    if (
+      !record ||
+      record.released ||
+      record.expiresAt * 1000 <= +options.now() ||
+      record.installation === here
+    )
+      return null;
+    return record;
+  }
+
+  async function readForeignPlan(issue: number): Promise<AdmissionFacts["plan"]> {
+    if (options.scopeIssue !== undefined && options.scopeIssue !== issue) return null;
+    const record = await dispatchRecord(issue);
+    if (!record) return null;
+    const data = await readIssue(issue, await readTrustedAccounts(github, repository));
+    if (
+      !data.trust.trusted ||
+      data.summary.state !== "open" ||
+      data.labels.includes("factory:blocked")
+    )
+      return null;
+    // The shared login and marker identify a proposal. Only the primary's own decision approves it.
+    return latestPlan(data.comments, record.installation, branch(issue), true);
+  }
+
+  async function verifyHostSubmission(input: {
+    issue: number;
+    pullNumber: number;
+    head: string;
+  }): Promise<HostSubmissionProof | null> {
+    const sourceForHead = options.hostSourceForHead;
+    const record = await dispatchRecord(input.issue);
+    if (!record || !sourceForHead || !options.readApprovedForeignPlan) return null;
+    const verify = createObservedSubmission({
+      environment: "host",
+      repository,
+      sourceForHead,
+      async readEvidence(issue) {
+        const result = await readIssueGateInputs(issue, input.head);
+        return result?.trusted && !result.protectedPaths.length ? result.observation : null;
+      },
+      async readApprovedPlan(issue) {
+        const plan = await readForeignPlan(issue);
+        if (!plan || !(await options.readApprovedForeignPlan?.(issue, plan))) return null;
+        return { planRevision: hostPlanRevision(plan), approvedPaths: plan.files };
+      },
+    });
+    const proof = await verify(input);
+    if (proof.kind !== "verified") return null;
+    const after = await dispatchRecord(input.issue);
+    if (after?.installation !== record.installation || after.generation !== record.generation)
+      return null;
+    const { issue, pullNumber, head, baseSha, configCommit, planRevision } = proof;
+    return {
+      repository,
+      issue,
+      pullNumber,
+      head,
+      baseSha,
+      configCommit,
+      planRevision,
+      installation: record.installation,
+      generation: record.generation,
+    };
+  }
+
+  // Review threads and configured checks can change without moving the head.
+  async function readyToSubmitHost(expected: HostSubmissionProof) {
+    if (!(await sameHostProof(expected))) return false;
+    const current = await readIssueGateInputs(expected.issue, expected.head);
+    return (
+      current?.trusted === true &&
+      current.configCommit === expected.configCommit &&
+      current.observation?.pullNumber === expected.pullNumber &&
+      !current.protectedPaths.length &&
+      current.trustedThreadsOpen === 0 &&
+      current.mergeable === true &&
+      (current.hostedChecks === "passing" || current.hostedChecks === "absent")
+    );
+  }
+
+  async function sameHostProof(expected: HostSubmissionProof) {
+    return isDeepStrictEqual(expected, await verifyHostSubmission(expected));
+  }
+  const leasePort: LeasePort = machineLease ?? {
+    async acquire(issue) {
+      const data = await readLeaseContext(issue);
+      const ready = await prepareClaim(issue, data);
+      if ("outcome" in ready) return ready;
       const peer = data.leases.find(
         ({ lease: entry }) => entry.installation !== here && !entry.released,
       );
@@ -914,37 +1215,6 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
           code: "lease-identity",
           reason: "The existing lease belongs to a different GitHub account or protocol version.",
         };
-      }
-      const diff = await ownerOnlyChanges(github, repository, issue);
-      const pull = findOpen(await candidates(issue, data.repo));
-      const paths = pull ? await filePaths(pull) : [];
-      const protectedPaths = [
-        ...new Set([
-          ...diff.touched,
-          ...protectedChanges(paths, await options.releaseRecipeFiles()),
-        ]),
-      ];
-      if (protectedPaths.length) {
-        await options.reportProtectedChange(issue, protectedPaths);
-        return {
-          outcome: "refused",
-          code: "owner-only",
-          reason: "Remove the owner-only changes before claiming this issue.",
-        };
-      }
-      if (pull) {
-        const after = await get(`pulls/${pull.number}`, pullDetail);
-        if (
-          after.head.sha !== diff.checkedHeadSha ||
-          after.head.sha !== pull.head.sha ||
-          after.state !== "open"
-        ) {
-          return {
-            outcome: "refused",
-            code: "head-moved",
-            reason: "Recheck the pull request after its head settles.",
-          };
-        }
       }
       const claimed = await claimIssue({
         github,
@@ -959,13 +1229,11 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
       if (claimed.outcome !== "claimed" && claimed.outcome !== "held") {
         return { outcome: "foreign", lease: null };
       }
-      const brief = await issueBrief(data.facts, data.trusted);
       const saved = await writeLease(issue, data.own?.comment ?? null, false);
       return {
         outcome: claimed.outcome,
         lease: saved,
-        brief,
-        checkedHeadSha: diff.checkedHeadSha,
+        ...ready,
         continueFrom: null,
       };
     },
@@ -998,6 +1266,8 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
 
   async function submit(
     target: Parameters<MergeGateDeps["submit"]>[0],
+    expectedForeign?: ExpectedSubmission,
+    expectedHost?: HostSubmissionProof,
   ): ReturnType<MergeGateDeps["submit"]> {
     const epoch = await options.currentMergeEpoch();
     const lost = {
@@ -1024,8 +1294,44 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
         reason: "The approved pull request changed before GitHub could merge it.",
       };
     const input = { pullRequestId: pull.node_id, expectedHeadOid: target.headSha };
+    async function submissionRefusal(mergeEpoch: number) {
+      if (
+        expectedHost &&
+        (expectedForeign ||
+          expectedHost.issue !== target.issue ||
+          expectedHost.pullNumber !== target.number ||
+          expectedHost.head !== target.headSha ||
+          !(await readyToSubmitHost(expectedHost)))
+      ) {
+        return {
+          kind: "refused" as const,
+          reason: "The primary's verified pull request or approved plan changed before merge.",
+        };
+      }
+      const foreignChanged =
+        expectedForeign &&
+        !(await recheckForeignSubmission(target.issue, target.headSha, expectedForeign));
+      if (foreignChanged) {
+        return {
+          kind: "refused" as const,
+          reason: "The signed foreign submission changed before GitHub could merge it.",
+        };
+      }
+      if (machineLease && !expectedForeign && !expectedHost) {
+        const head = await readBranch(target.issue);
+        const lease = await machineGateLease(target.issue, target.headSha, head);
+        if (lease?.installation !== here) {
+          return {
+            kind: "refused" as const,
+            reason: "The local Factory claim moved before merge.",
+          };
+        }
+      }
+      return (await options.fenceMerge(mergeEpoch)) ? null : lost;
+    }
     if (repo.mergeQueue) {
-      if (!(await options.fenceMerge(epoch))) return lost;
+      const refused = await submissionRefusal(epoch);
+      if (refused) return refused;
       await graph(
         `mutation($input:EnqueuePullRequestInput!) { enqueuePullRequest(input:$input) { mergeQueueEntry { id } } }`,
         { input },
@@ -1046,7 +1352,8 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
         kind: "refused",
         reason: "Choose a merge method enabled for the Factory repository.",
       };
-    if (!(await options.fenceMerge(epoch))) return lost;
+    const refused = await submissionRefusal(epoch);
+    if (refused) return refused;
     await graph(
       `mutation($input:MergePullRequestInput!) { mergePullRequest(input:$input) { pullRequest { merged headRefOid } } }`,
       { input: { ...input, mergeMethod } },
@@ -1064,9 +1371,10 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
       done: false as const,
       reason: "Wait until this installation holds the merge lane.",
     };
-    const [data, head] = await Promise.all([
+    const [data, head, claim] = await Promise.all([
       readLeaseContext(completion.issue),
       readBranch(completion.issue),
+      machineLease?.readClaim(completion.issue),
     ]);
     if (head !== null && head !== completion.headSha) {
       return {
@@ -1074,10 +1382,17 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
         reason: "The claim branch moved after merge. Reconcile the remaining lease.",
       };
     }
+    if (!completionMatchesClaim(completion, claim ?? null))
+      return { done: false, reason: "The issue claim changed after merge." };
     if (!(await options.fenceMerge(completion.epoch))) return lost;
     const result = await options.recordMerge(completion);
     if (!result.done) return result;
     if (data.summary.state === "open") {
+      if (
+        machineLease &&
+        !(await unchangedCompletion(machineLease, completion, claim?.record.generation))
+      )
+        return { done: false, reason: "The issue claim or work branch moved before closure." };
       if (!(await options.fenceMerge(completion.epoch))) return lost;
       await graph(
         `mutation($id:ID!) { closeIssue(input:{issueId:$id}) { issue { id state } } }`,
@@ -1089,7 +1404,9 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
         }),
       );
     }
-    if (data.own && !data.own.lease.released) {
+    if (machineLease) {
+      return completeMachineClaim(machineLease, completion, claim?.record.generation);
+    } else if (data.own && !data.own.lease.released) {
       const currentHead = await readBranch(completion.issue);
       if (currentHead !== null && currentHead !== completion.headSha) {
         return {
@@ -1101,6 +1418,91 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
       await writeLease(completion.issue, data.own.comment, true);
     }
     return { done: true };
+  }
+
+  async function unchangedCompletion(
+    claims: MachineLeasePort,
+    completion: Completion,
+    generation: string | undefined,
+  ) {
+    const [current, head] = await Promise.all([
+      claims.readClaim(completion.issue),
+      readBranch(completion.issue),
+    ]);
+    return (
+      (!head || head === completion.headSha) &&
+      (!current ||
+        (current.record.generation === generation && completionMatchesClaim(completion, current)))
+    );
+  }
+
+  async function completeMachineClaim(
+    claims: MachineLeasePort,
+    completion: Completion,
+    initialGeneration: string | undefined,
+  ): ReturnType<MergeGateDeps["complete"]> {
+    const remaining = await claims.readClaim(completion.issue);
+    if (!remaining) return { done: true };
+    if (
+      !completionMatchesClaim(completion, remaining) ||
+      remaining.record.generation !== initialGeneration
+    )
+      return { done: false, reason: "The issue claim changed after merge." };
+    if (!(await options.fenceMerge(completion.epoch)))
+      return { done: false, reason: "Wait until this installation holds the merge lane." };
+    if (!(await unchangedCompletion(claims, completion, initialGeneration)))
+      return { done: false, reason: "The issue claim or work branch moved before cleanup." };
+    if (!(await claims.deleteCompletedClaim(completion.issue, remaining.revision)))
+      return { done: false, reason: "Reconcile the issue claim after merge." };
+    return { done: true };
+  }
+
+  function completionMatchesClaim(completion: Completion, claim: ClaimSnapshot | null): boolean {
+    const verified = completion.hostProof;
+    if (verified)
+      return (
+        !!options.hostDispatch &&
+        verified.repository === repository &&
+        verified.issue === completion.issue &&
+        verified.head === completion.headSha &&
+        (!claim ||
+          (claim.record.installation === verified.installation &&
+            claim.record.generation === verified.generation))
+      );
+    const expected = completion.foreignSubmission;
+    if (expected && (!machineLease || expected.head !== completion.headSha)) return false;
+    if (!claim) return true;
+    return expected ? matchesSubmission(claim, expected) : claim.record.installation === here;
+  }
+
+  async function readClaimFacts(
+    issue: number,
+    data: Awaited<ReturnType<typeof readIssue>>,
+    viewer: string,
+  ) {
+    const now = options.now();
+    let leases: Lease[];
+    let locallyHeld: boolean;
+    if (machineLease) {
+      const observed = await machineLease.readLease(issue);
+      const current =
+        observed && !observed.released && !machineLease.expired([observed], now).length;
+      leases = current ? [observed] : [];
+      locallyHeld = Boolean(
+        observed?.installation === here &&
+        !observed.released &&
+        Date.parse(observed.expiresAt) > +now,
+      );
+    } else {
+      const local = ownLease(data.leases, viewer);
+      leases = data.leases.map((entry) => entry.lease);
+      locallyHeld = Boolean(local && activeLease(local.lease, now));
+    }
+    if (!locallyHeld) return { leases, plan: null };
+    const builderComments = data.comments.filter(
+      (entry) => entry.user?.login.toLowerCase() === viewer.toLowerCase(),
+    );
+    return { leases, plan: latestPlan(builderComments, here, branch(issue)) };
   }
 
   async function readFacts(trackedIssues: readonly number[] = []): Promise<LeanGitHubFacts> {
@@ -1133,16 +1535,8 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
     };
     for (const issue of issueNumbers) {
       const [data, pulls] = await Promise.all([readIssue(issue, trusted), candidates(issue, repo)]);
-      const leases = data.leases.map((entry) => entry.lease);
+      const { leases, plan } = await readClaimFacts(issue, data, viewer.login);
       snapshot.leases.push(...leases);
-      const local = ownLease(data.leases, viewer.login);
-      const builderComments = data.comments.filter(
-        (entry) => entry.user?.login.toLowerCase() === viewer.login.toLowerCase(),
-      );
-      const plan =
-        local && activeLease(local.lease, options.now())
-          ? latestPlan(builderComments, here, branch(issue))
-          : null;
       const go = plan ? await options.readGo(issue, plan) : null;
       if (data.summary.state === "open") {
         snapshot.issues.push({
@@ -1189,8 +1583,11 @@ export function createLeanGitHub<Approval extends LeanGitHubApproval>(
 
   return {
     readFacts,
+    readForeignPlan,
+    verifyHostSubmission,
+    machineLease,
     readIssueGateInputs,
-    lease,
+    lease: leasePort,
     gateDeps: {
       here,
       read: readGate,

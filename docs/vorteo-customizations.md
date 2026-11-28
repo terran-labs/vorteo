@@ -3627,6 +3627,12 @@ The daemon imports the project and Lean Factory contracts through separate packa
 
 The Lean delivery executor records each release step before launch. If the daemon loses the result, recovery waits for the owner to resolve that step before another deployment starts.
 
-Each enrolled Factory installation has a project-specific Ed25519 signing key in private Host state. The owner can stage a replacement and activate it once the project's default-branch configuration lists both public keys. Keep the previous public key enrolled until its outstanding claims and gate receipts have expired.
+For Dev runner placement, an enrolled installation keeps its project-specific Ed25519 signing key in private Host state. The owner can stage a replacement and activate it once the project's default-branch configuration lists both public keys. Keep the previous public key enrolled until its outstanding claims and gate receipts have expired.
 
-The primary can request an owner-configured heavy test batch on a secondary through a dedicated Git ref. Its signed request and the secondary's signed result bind the project, issue, commit, ordered commands and expiry. The primary records each accepted challenge durably. Per-issue gates still run on the primary.
+With explicit Host runner placement, the machine list is a roster. Host projects use no machine signing keys. Secondary machines can build issues in parallel. The primary independently fetches each foreign pull request, checks the changed files against its approved plan and protected paths, reviews the exact commit, and runs all required gates. This includes heavy tests before a beta. Cross-machine account identity remains unverified under a shared GitHub login.
+
+The two-hour issue lease lives on a separate Git ref. Renewing it leaves the reviewed commit intact. Two daemons can briefly do the same local work or race to open a pull request. Conditional Git writes, a unique pull request on the issue branch and final exact-head verification bound that race. Crew recognizes the work branch as a claim. When switching modes, finish or release outstanding claims first. Lean preserves an existing work branch whose ownership it cannot establish.
+
+Signed test offload is reserved for Dev placement with private Host key storage. The request and response bind the repository, issue, commit, commands and expiry. Under Host placement the primary uses its own batch result.
+
+Multi-machine dispatch requires a shared GitHub write charger. The V1 budget uses the machines listed across locally known projects for the same GitHub login, including paused projects and offline machines. Separate installations can have different inventories. Dev and owner writes also use that login. Account-wide admission across installations remains V2 work.

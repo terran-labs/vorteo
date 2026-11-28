@@ -25,7 +25,8 @@ function stage(
 ): IssueStage | null {
   const lease = facts.leases.find((item) => item.issue === issue.number && !item.released);
   if (!lease && !issue.labels.includes("factory:ready")) return null;
-  if (lease && lease.installation !== here)
+  const pull = lease && facts.pulls.find((item) => item.sameRepo && item.branch === lease.branch);
+  if (lease && lease.installation !== here && (!pull || pull.foreignReviewHead !== pull.head))
     return { kind: "foreign", installation: lease.installation };
   if (!issue.trust.trusted)
     return {
@@ -40,7 +41,6 @@ function stage(
   const open = (role: RunnerRole) =>
     runners.find((item) => item.role === role && !item.closedAt) ?? null;
   const lead = open("lead");
-  const pull = facts.pulls.find((item) => item.sameRepo && item.branch === lease.branch);
   if (!pull) {
     if (!lead) return { kind: "claimed", lease };
     if (!issue.plan) return { kind: "planning", lease, lead };

@@ -88,6 +88,18 @@ describe("fixed primary machine roles", () => {
     expect(roles?.publicKeyFor(secondary)).toBe(publicKey);
     expect(roles?.publicKeyFor(primary)).toBeNull();
     expect(installationBadge(roles, primary, secondary).friendlyName).toBe("Studio");
+    const roster = {
+      ...config,
+      runners: { placement: "host" },
+      machines: {
+        [primary]: {},
+        [secondary]: { friendlyName: "Studio", publicKey: "old unused key" },
+      },
+    };
+    const host = resolveMachineRoles(roster, secondary).roles;
+    expect(host?.canClaim).toBe(true);
+    expect(host?.publicKeysFor(secondary)).toEqual([]);
+    expect(resolveMachineRoles(roster, "unknown/project").roles?.canClaim).toBe(false);
     const aliases = new Map([[secondary, "Lab Studio"]]);
     expect(installationBadge(roles, primary, secondary, aliases).friendlyName).toBe("Lab Studio");
     const bad = { [secondary]: { publicKey: "not an Ed25519 public key" } };
@@ -227,6 +239,8 @@ describe("fixed primary machine roles", () => {
 
   it("records foreign same-provider review as unverified only with recorded exclusions", () => {
     const verified = submission.record.submission;
+    expect(foreignReviewIndependence({}, "codex", true)).toBe("unverified-foreign");
+    expect(foreignReviewIndependence({}, "codex", false)).toBeNull();
     expect(foreignReviewIndependence(verified, "claude", false)).toBe("different-provider");
     expect(foreignReviewIndependence(verified, "codex", true)).toBe("unverified-foreign");
     expect(foreignReviewIndependence(verified, "codex", false)).toBeNull();

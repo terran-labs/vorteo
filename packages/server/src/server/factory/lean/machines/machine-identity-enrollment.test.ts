@@ -24,6 +24,7 @@ it("requires both project keys on the same current owner default-branch commit",
   });
   vi.mocked(createLeanGitHubClient).mockReturnValue({ rest });
   const config = {
+    runners: { placement: "dev" },
     version: 1,
     mode: "lean",
     order: [installation],
@@ -32,13 +33,22 @@ it("requires both project keys on the same current owner default-branch commit",
   const input = { repository: "owner/repo", installation, active, pending };
   vi.mocked(readPinnedFactoryConfig).mockResolvedValueOnce({
     ...config,
+    runners: { placement: "host" },
+  });
+  expect(await verifyFactoryMachineOverlap(input)).toBe(false);
+  vi.mocked(readPinnedFactoryConfig).mockResolvedValueOnce({
+    ...config,
     machines: { [installation]: { publicKey: active } },
   });
   expect(await verifyFactoryMachineOverlap(input)).toBe(false);
 
   vi.mocked(readPinnedFactoryConfig).mockResolvedValueOnce(config);
   expect(await verifyFactoryMachineOverlap(input)).toBe(true);
-  expect(readPinnedFactoryConfig).toHaveBeenLastCalledWith({ rest }, "owner/repo", first);
+  expect(readPinnedFactoryConfig).toHaveBeenLastCalledWith(
+    expect.objectContaining({ rest }),
+    "owner/repo",
+    first,
+  );
 
   vi.mocked(readPinnedFactoryConfig).mockImplementationOnce(async () => {
     current = "b".repeat(40);

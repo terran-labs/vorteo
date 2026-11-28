@@ -16,6 +16,8 @@ import type { CreateAgentCommandInput } from "../../agent/create-agent/create.js
 import type { ProviderUsage } from "@getpaseo/protocol/messages";
 import type { StoredSchedule } from "@getpaseo/protocol/schedule/types";
 import { SYSTEM_PROJECT_KIND } from "../../system-project/manifest.js";
+import { finishPausedMachineBuilder } from "../lean/runtime.js";
+import type { LeanModePort } from "../lean/types.js";
 import {
   createPersistedProjectRecord,
   createPersistedWorkspaceRecord,
@@ -382,6 +384,7 @@ function service(
     serverId?: string;
     home?: FactoryHomePort;
     github?: FactoryGitHub;
+    lean?: LeanModePort;
     /** Another installation keeps its own threads. */
     agents?: FakeAgents;
   } = {},
@@ -392,6 +395,7 @@ function service(
     serverId: installation.serverId ?? "srv_test",
     home: installation.home,
     github: installation.github ?? github,
+    lean: installation.lean,
     accounts,
     hosts: () => issueHosts,
     projects,
@@ -718,6 +722,101 @@ describe("enable", () => {
 });
 
 describe("pause, resume and disable", () => {
+  test.each([true, false])(
+    "Lean owner pause keeps intake fenced while checking saved work (%s)",
+    async (saved) => {
+      const installation = `srv_test/${PROJECT}`;
+      const generation = "3e310d32-7437-4c6a-81a4-c4930af201d6";
+      const revision = "a".repeat(40);
+      const head = "b".repeat(40);
+      const archive = vi.fn(async () => {});
+      const release = vi.fn(async () => {});
+      const record = vi.fn(async () => {});
+      const quiesce = vi.fn(async () => {});
+      const factory = service(undefined, {
+        lean: {
+          async start() {},
+          async stop(projectId, reason) {
+            expect(projectId).toBe(PROJECT);
+            expect(reason).toBe("pause");
+            const assertPaused = async () => {
+              const persisted = await new ProjectFactoryStateStore(
+                projectFactoryStatePath(home),
+              ).read();
+              expect(persisted.projects[PROJECT]?.paused).toBe(true);
+            };
+            await finishPausedMachineBuilder({
+              issue: 7,
+              here: installation,
+              now: () => new Date(T0),
+              cleanup: { assertPaused, release, record },
+              async readClaim() {
+                return {
+                  revision,
+                  record: {
+                    version: 1,
+                    installation,
+                    generation,
+                    nonce: generation,
+                    expiresAt: +new Date(T0) / 1000 + 120,
+                    released: false,
+                    submission: null,
+                  },
+                };
+              },
+              async localBuilder() {
+                return {
+                  agentId: "builder",
+                  role: "lead",
+                  serverId: null,
+                  account: "claude",
+                  accountDefinition: "claude",
+                  providerType: "claude",
+                  openedAt: T0,
+                  attempt: 1,
+                  installation,
+                };
+              },
+              quiesce,
+              async savedHead() {
+                if (!saved) throw new Error("Unverified work.");
+                return head;
+              },
+              archive,
+            });
+          },
+        },
+      });
+      await factory.enable({ projectId: PROJECT, repository: REPO, mode: "lean" });
+
+      expect(await factory.invoke("factory.project.pause", { projectId: PROJECT })).toMatchObject({
+        state: "paused",
+      });
+      expect(record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          issue: 7,
+          claimGeneration: generation,
+          result: expect.objectContaining({
+            kind: saved ? "released" : "blocked",
+          }),
+        }),
+      );
+      expect(quiesce).toHaveBeenCalledOnce();
+      if (saved) {
+        expect(archive).toHaveBeenCalledOnce();
+        expect(release).toHaveBeenCalledWith({
+          issue: 7,
+          claimRevision: revision,
+          claimGeneration: generation,
+          savedHead: head,
+        });
+      } else {
+        expect(archive).not.toHaveBeenCalled();
+        expect(release).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   test("pause stops heartbeats, resume restarts them, disable releases the workspaces", async () => {
     const factory = service();
     await enable(factory);

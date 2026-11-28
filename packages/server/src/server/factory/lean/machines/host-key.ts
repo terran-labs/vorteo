@@ -104,13 +104,21 @@ export async function nativeMachineSigningOptions(
   installation: { environment: "host" | "container" } | null,
   paseoHome: string,
   clientConfigFile: string | undefined,
+  allowsDevSigning?: (projectId: string) => Promise<boolean>,
 ): Promise<{ machineSigner?: (projectId: string, payload: Uint8Array) => Promise<string> }> {
-  if (installation?.environment !== "host" || !clientConfigFile || !(await canUseNativeHostKeys()))
+  if (
+    !allowsDevSigning ||
+    installation?.environment !== "host" ||
+    !clientConfigFile ||
+    !(await canUseNativeHostKeys())
+  )
     return {};
   const home = await readFactoryHostHome(dirname(clientConfigFile)).catch(() => null);
   if (paseoHome !== home) return {};
   return {
     async machineSigner(projectId, payload) {
+      if (!(await allowsDevSigning(projectId)))
+        throw new Error("Machine signing requires verified Dev runner placement.");
       const key = await loadNativeHostSigningKey({
         environment: "host",
         keyPath: machineSigningKeyPath(paseoHome, projectId),

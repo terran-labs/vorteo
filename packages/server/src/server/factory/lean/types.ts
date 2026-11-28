@@ -124,6 +124,8 @@ export interface Lease {
 
 /** A runner as the daemon recorded it when it opened it. Labels are display only. */
 export interface RunnerRef {
+  /** Owning Factory installation; the execution connection can be a different daemon. */
+  installation?: Installation;
   agentId: string;
   role: RunnerRole;
   /** Null for this daemon; otherwise the connected host it runs on (Dev). */
@@ -298,6 +300,18 @@ export interface LeanLedger {
   >;
   /** Leases this installation holds, by issue number. */
   leases: Record<string, Lease>;
+  /** Native Host assignment sealed at Builder creation, before its first edit. */
+  hostBuilderAssignments?: Record<
+    string,
+    {
+      issue: number;
+      generation: string;
+      workspaceId: string;
+      headSha: string;
+      account: string;
+      branch: string;
+    }
+  >;
   parkedAccounts: Record<string, { providerType: string; until: string; reason: string }>;
   /** Keyed by a stable deadline key, such as `issue:12:review` or `delivery-lock`. */
   deadlines: Record<
@@ -377,7 +391,13 @@ export interface AdmissionFacts {
   priority: boolean;
   createdAt: string;
   /** The lead's latest Resolution plan, when posted. */
-  plan: { commentId: number; files: string[]; heavy: boolean; postedAt: string } | null;
+  plan: {
+    commentId: number;
+    files: string[];
+    heavy: boolean;
+    postedAt: string;
+    contentDigest?: string;
+  } | null;
   /** Daemon-recorded go for the current plan, if any. */
   go: { at: string; files: string[] } | null;
   /** Unanswered `factory-question` comments from runners, oldest first. */
@@ -387,6 +407,8 @@ export interface AdmissionFacts {
 }
 
 export interface PullFacts {
+  /** The primary verified the foreign pull request at this exact head. */
+  foreignReviewHead?: string;
   /** The daemon verified that a Reviewer can inspect this exact head while checks run. */
   reviewEligible?: boolean;
   number: number;
@@ -484,6 +506,7 @@ export type RunnerStatus =
   | { kind: "detached" };
 
 export interface RunnerOpenInput {
+  foreignReview?: import("./review-evidence.js").ForeignReviewOpenEvidence;
   projectId: string;
   issue: number | null;
   role: RunnerRole;

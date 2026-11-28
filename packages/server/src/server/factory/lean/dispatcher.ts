@@ -1,3 +1,4 @@
+import { allowsMachineAction, resolveMachineRoles } from "./machines/roles.js";
 import type {
   DispatchAction,
   DispatchContext,
@@ -67,12 +68,18 @@ export const plan: PlanActions = (stages, _ledger, ctx) => {
     "claimed",
     "queued",
   ];
+  const multi = ctx.config?.machines !== undefined;
+  const roles = multi ? resolveMachineRoles(ctx.config, ctx.here).roles : null;
   const actions: DispatchAction[] = [];
   for (const kind of order) {
     for (const [issue, stage] of stages) {
       if (stage.kind !== kind) continue;
       const next = action(issue, stage, ctx);
-      if (next) actions.push(next);
+      if (
+        next &&
+        (!multi || allowsMachineAction(roles, next, "lease" in stage ? stage.lease : null))
+      )
+        actions.push(next);
     }
   }
   return actions;

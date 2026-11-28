@@ -17,6 +17,7 @@ interface PublicMachineKey {
 }
 
 export interface FactoryMachineIdentity {
+  signingDisabled?: true;
   installation: string;
   active: PublicMachineKey | null;
   pending: PublicMachineKey | null;
@@ -124,6 +125,7 @@ export async function manageFactoryMachineIdentity(input: {
   projectId: string;
   expectedServerId: string;
   operation: IdentityOperation;
+  allowsDevSigning(): Promise<boolean>;
   verifyOverlap?: VerifyOverlap;
 }): Promise<FactoryMachineIdentity> {
   const { paseoHome, projectId, operation } = input;
@@ -142,6 +144,15 @@ export async function manageFactoryMachineIdentity(input: {
     throw new Error("Factory requires the verified native Host installation.");
   }
   const installation = `${serverId}/${projectId}`;
+  async function requireDevSigning() {
+    if (!(await input.allowsDevSigning()))
+      throw new Error(
+        "Machine signing keys require Dev runner placement in the current owner configuration.",
+      );
+  }
+  if (operation.kind === "show" && !(await input.allowsDevSigning()))
+    return { installation, signingDisabled: true, active: null, pending: null };
+  await requireDevSigning();
   const activePath = machineSigningKeyPath(paseoHome, projectId);
   const directory = dirname(activePath);
   const identityRoot = dirname(directory);
@@ -168,6 +179,7 @@ export async function manageFactoryMachineIdentity(input: {
   }
 
   try {
+    await requireDevSigning();
     const { active, pending } = await read();
     if (operation.kind === "generate" && !active) {
       await writeKey(activePath, generateKeyPairSync("ed25519").privateKey);

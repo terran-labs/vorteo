@@ -6,13 +6,19 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { createGitClaimStore } from "./claim-git.js";
-import { CLAIM_TTL_MS, createMachineLeasePort, type ClaimRefStore } from "./claims.js";
+import { createClosedClaimCleanup } from "./claim-cleanup.js";
+import {
+  CLAIM_TTL_MS,
+  createMachineLeasePort,
+  createUnsignedHostLeasePort,
+  type ClaimRefStore,
+} from "./claims.js";
 
 const base = "a".repeat(40);
 const work = "b".repeat(40);
 const provider = "codex";
 
-function fixture() {
+function fixture(enrolled = true) {
   let now = Date.parse("2026-11-27T12:00:00Z");
   let head: string | null = null;
   const bodies = new Map<number, { revision: string; body: string }>();
@@ -48,7 +54,9 @@ function fixture() {
       sign: (bytes) => sign(null, bytes, keys[installation].privateKey).toString("base64"),
       verify: (holder, bytes, signature) => {
         const key = keys[holder as keyof typeof keys]?.publicKey;
-        return Boolean(key && verify(null, bytes, key, Buffer.from(signature, "base64")));
+        return Boolean(
+          enrolled && key && verify(null, bytes, key, Buffer.from(signature, "base64")),
+        );
       },
       prepare: async () => ({ brief: "Issue brief", checkedHeadSha: null }),
       readWorkHead: async () => head,
@@ -73,6 +81,12 @@ function fixture() {
 }
 
 describe("machine leases", () => {
+  it("leaves the issue available when the local signing key is not enrolled", async () => {
+    const f = fixture(false);
+    await expect(f.a.acquire(3)).rejects.toThrow("not enrolled");
+    expect(f.bodies.size).toBe(0);
+    expect(f.ensureWorkBranch).not.toHaveBeenCalled();
+  });
   it("allows one acquisition and recovers a claim whose work branch creation failed", async () => {
     const f = fixture();
     f.ensureWorkBranch.mockRejectedValueOnce(new Error("branch creation unavailable"));
@@ -185,6 +199,27 @@ describe("machine leases", () => {
   });
 });
 
+it("rechecks primary authority and passes the observed revision when cleaning closed claims", async () => {
+  const holdsPrimary = vi.fn(async () => true);
+  const remove = vi.fn(async () => false);
+  const reconcile = createClosedClaimCleanup({
+    now: () => new Date(0),
+    holdsPrimary,
+    listIssues: async () => [
+      { issue: 1, revision: "open" },
+      { issue: 2, revision: "replaced" },
+      { issue: 3, revision: "fenced" },
+    ],
+    isClosedIssue: async (issue) => {
+      if (issue === 3) holdsPrimary.mockResolvedValue(false);
+      return issue !== 1;
+    },
+    remove,
+  });
+  await Promise.all([reconcile(), reconcile()]);
+  expect(remove.mock.calls).toEqual([[2, "replaced"]]);
+});
+
 it("uses expected-old Git pushes for create, update and deletion", async () => {
   const directory = mkdtempSync(join(tmpdir(), "vorteo-claim-git-"));
   const remote = join(directory, "remote");
@@ -206,9 +241,11 @@ it("uses expected-old Git pushes for create, update and deletion", async () => {
     expect(await store.compareAndSwap(3, null, "competing create")).toBe(false);
     expect(await store.compareAndSwap(3, first.revision, "second")).toBe(true);
     const second = (await store.read(3))!;
+    expect(await store.listIssues()).toEqual([{ issue: 3, revision: second.revision }]);
     expect(await store.compareAndSwap(3, first.revision, null)).toBe(false);
     expect(await store.compareAndSwap(3, second.revision, null)).toBe(true);
     expect(await store.read(3)).toBeNull();
+    expect(await store.listIssues()).toEqual([]);
     expect(chargeMutation).toHaveBeenCalledTimes(5);
     const other = join(directory, "other");
     execFileSync("git", ["init", "--quiet", "--bare", other]);
@@ -217,6 +254,88 @@ it("uses expected-old Git pushes for create, update and deletion", async () => {
       "matching canonical fetch and push URLs",
     );
     expect(execFileSync("git", ["-C", other, "for-each-ref"], { encoding: "utf8" })).toBe("");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+it("uses unsigned Host CAS for dispatch and never returns submission authority", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "host-claim-fixture-"));
+  const remote = join(directory, "remote");
+  const a = join(directory, "a");
+  const b = join(directory, "b");
+  const git = (args: string[]) =>
+    execFileSync("/usr/bin/git", args, {
+      cwd: directory,
+      env: { PATH: "/usr/bin:/bin", HOME: directory, GIT_ALLOW_PROTOCOL: "file" },
+    });
+  try {
+    for (const dir of [remote, a, b]) git(["init", "--quiet", "--bare", dir]);
+    for (const dir of [a, b]) git(["-C", dir, "remote", "add", "origin", remote]);
+    let head: string | null = null;
+    let now = Date.parse("2026-11-27T12:00:00Z");
+    const storeFor = (cwd: string) =>
+      createGitClaimStore({
+        cwd,
+        repository: "test/factory",
+        localRemote: remote,
+        chargeMutation: async () => {},
+      });
+    const port = (cwd: string, installation: string) =>
+      createUnsignedHostLeasePort({
+        repository: "test/factory",
+        installation,
+        refs: storeFor(cwd),
+        now: () => new Date(now),
+        prepare: async () => ({ brief: "fixture", checkedHeadSha: null }),
+        readWorkHead: async () => head,
+        ensureWorkBranch: async () => {
+          head ??= base;
+        },
+        pushSavedWork: async () => {
+          head = work;
+          return work;
+        },
+        isPrimary: () => cwd === a,
+      });
+    const primary = port(a, "host_a");
+    const other = port(b, "host_b");
+    const acquired = await Promise.all([primary.acquire(3), other.acquire(3)]);
+    expect(acquired.map((entry) => entry.outcome).sort()).toEqual(["claimed", "foreign"]);
+    const seen = (await primary.readClaim(3))!;
+    const winner = seen.record.installation === "host_a" ? primary : other;
+    const peer = winner === primary ? other : primary;
+    await peer.readClaim(3);
+    expect(JSON.parse((await storeFor(a).read(3))!.body)).toMatchObject({
+      kind: "unsigned-host",
+      issue: 3,
+      repository: "test/factory",
+      record: { submission: null },
+    });
+    expect(await winner.readSubmission(3, base)).toBeNull();
+    await expect(winner.registerSubmission(3, seen.revision, base, provider)).rejects.toThrow(
+      "cannot register",
+    );
+    await winner.renew(3);
+    expect((await peer.readClaim(3))?.record.generation).toBe(seen.record.generation);
+    now += CLAIM_TTL_MS + 1;
+    expect(await peer.acquire(3)).toMatchObject({
+      outcome: "claimed",
+      continueFrom: "factory/issue-3",
+    });
+    const takeover = (await primary.readClaim(3))!;
+    expect(takeover.record.generation).not.toBe(seen.record.generation);
+    await peer.release(3, "pause");
+    const released = (await primary.readClaim(3))!;
+    expect(released.record).toMatchObject({
+      generation: takeover.record.generation,
+      released: true,
+      submission: null,
+    });
+    expect(head).toBe(work);
+    await expect(other.deleteCompletedClaim(3, released.revision)).rejects.toThrow("primary");
+    expect(await primary.deleteCompletedClaim(3, takeover.revision)).toBe(false);
+    expect(await primary.deleteCompletedClaim(3, released.revision)).toBe(true);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

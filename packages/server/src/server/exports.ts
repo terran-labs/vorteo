@@ -8,7 +8,10 @@ export {
   type FactoryMachineIdentity,
 } from "./factory/lean/machines/machine-identity.js";
 export { resolveInstalledFactoryHost } from "./factory/lean/machines/machine-identity-installation.js";
-export { verifyFactoryMachineOverlap } from "./factory/lean/machines/machine-identity-enrollment.js";
+export {
+  factoryProjectAllowsMachineKeys,
+  verifyFactoryMachineOverlap,
+} from "./factory/lean/machines/machine-identity-enrollment.js";
 export { createRootLogger, type LogLevel, type LogFormat } from "./logger.js";
 export {
   loadPersistedConfig,

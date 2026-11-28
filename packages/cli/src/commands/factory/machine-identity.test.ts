@@ -7,6 +7,7 @@ import { createFactoryMachineIdentityCommand } from "./machine-identity.js";
 
 const dependencies = vi.hoisted(() => ({
   resolveInstalledFactoryHost: vi.fn(),
+  factoryProjectAllowsMachineKeys: vi.fn(async () => true),
   verifyFactoryMachineOverlap: vi.fn(async () => true),
 }));
 vi.mock("@getpaseo/server", async () => ({

@@ -198,6 +198,13 @@ import { createFactoryHomeClient } from "./execution-installation/factory-home.j
 import { daemonFactoryAccounts } from "./factory/project/account-choice.js";
 import { createLeanBootstrap } from "./factory/lean/bootstrap.js";
 import { createLeanHandlers } from "./factory/lean/handlers.js";
+import { InstallationConfigSchema } from "./execution-installation/config.js";
+import { readPrivateBootstrapConfiguration } from "./execution-installation/coordinator-bootstrap-private-configuration.js";
+import { readHostGateExecutorConfig } from "./factory/lean/machines/gate-executor-config.js";
+import {
+  readFactoryHostHome,
+  readFactoryHostServerId,
+} from "./factory/lean/machines/machine-identity-installation.js";
 import { profileProvider, resolveDefaultLaunch } from "./system-project/launch-selection.js";
 import type { SessionHostConnector } from "./session-host/connector.js";
 import { bootstrapWorkspaceRegistries } from "./workspace-registry-bootstrap.js";
@@ -775,6 +782,53 @@ async function migrateMovedCheckouts(config: PaseoDaemonConfig, logger: Logger):
   }).catch((error: unknown) => {
     logger.warn({ err: error }, "Could not move records for relocated checkouts");
   });
+}
+
+async function loadFactoryMachineBootstrap(input: {
+  factoryHome: ReturnType<typeof createFactoryHomeClient>;
+  clientConfigFile: string | undefined;
+  paseoHome: string;
+  serverId: string;
+  logger: Logger;
+}) {
+  const { factoryHome, clientConfigFile, paseoHome, serverId, logger } = input;
+  const uid = process.getuid?.();
+  if (
+    factoryHome?.environment !== "host" ||
+    !clientConfigFile ||
+    uid === undefined ||
+    process.env.PASEO_NETWORK_MODE
+  )
+    return {};
+  const root = path.dirname(clientConfigFile);
+  if (
+    (await readFactoryHostHome(root).catch(() => null)) !== paseoHome ||
+    (await readFactoryHostServerId(paseoHome).catch(() => null)) !== serverId
+  )
+    return {};
+  const placement = { localEnvironment: "host" as const };
+  try {
+    const coordinator = path.join(path.dirname(clientConfigFile), "coordinator.json");
+    const config = InstallationConfigSchema.parse(
+      readPrivateBootstrapConfiguration(coordinator, uid),
+    );
+    const [host] = config.public.environments;
+    if (
+      config.container ||
+      config.public.environments.length !== 1 ||
+      host?.kind !== "host" ||
+      host.serverId !== serverId
+    ) {
+      // Installed mount inspection currently inventories writable mounts only. A read-only
+      // bind can expose a Unix socket too, so enable this boundary only on verified Host-only installs.
+      return placement;
+    }
+    const gateDocker = await readHostGateExecutorConfig({ paseoHome, guestRoots: [] });
+    return { ...placement, verifiedGuestRoots: [] as readonly string[], gateDocker };
+  } catch {
+    logger.warn("Factory could not verify the installed Host gate executor configuration.");
+    return placement;
+  }
 }
 
 export async function createPaseoDaemon(
@@ -2027,6 +2081,15 @@ export async function createPaseoDaemon(
     serverId,
     readInstallationSettings: () => daemonConfigStore.readInstallationSettingsAuthority(),
   });
+  const installationClientFile = process.env.VORTEO_INSTALLATION_CLIENT_CONFIG;
+  const factoryHome = createFactoryHomeClient(installationClientFile);
+  const machineHost = await loadFactoryMachineBootstrap({
+    factoryHome,
+    paseoHome: config.paseoHome,
+    clientConfigFile: installationClientFile,
+    serverId,
+    logger,
+  });
   leanFactory = createLeanBootstrap({
     paseoHome: config.paseoHome,
     serverId,
@@ -2034,6 +2097,7 @@ export async function createPaseoDaemon(
     settings: () => daemonConfigStore.get(),
     readAuthority: () => daemonConfigStore.readInstallationSettingsAuthority(),
     factoryAccounts,
+    ...machineHost,
     readUsage: (options) => providerUsageService.listUsage(options),
     runner: { agentManager, agentStorage, createAgent, logger },
     workspace: {
@@ -2083,7 +2147,7 @@ export async function createPaseoDaemon(
   projectFactoryService = new ProjectFactoryService({
     paseoHome: config.paseoHome,
     serverId,
-    home: createFactoryHomeClient(process.env.VORTEO_INSTALLATION_CLIENT_CONFIG),
+    home: factoryHome,
     projects: projectRegistry,
     workspaces: workspaceRegistry,
     agentStorage,

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 
 import {
@@ -36,6 +37,12 @@ const envelopeSchema = z
     signature: z.string().regex(/^[A-Za-z0-9+/]{86}==$/),
   })
   .strict();
+const unsignedHostEnvelope = z.strictObject({
+  kind: z.literal("unsigned-host"),
+  repository: z.string(),
+  issue: z.number().int().positive().safe(),
+  record: recordSchema.extend({ submission: z.null() }),
+});
 
 export type ClaimRecord = z.infer<typeof recordSchema>;
 export interface ClaimSnapshot {
@@ -82,6 +89,8 @@ export interface MachineClaimOptions {
   isPrimary(): boolean | Promise<boolean>;
 }
 
+export type UnsignedHostClaimOptions = Omit<MachineClaimOptions, "sign" | "verify">;
+
 export interface MachineLeasePort extends LeasePort {
   readClaim(issue: number): Promise<ClaimSnapshot | null>;
   readLease(issue: number): Promise<Lease | null>;
@@ -116,26 +125,231 @@ function workBranch(issue: number): string {
   return `factory/issue-${issue}`;
 }
 
+type ClaimKeys = Pick<MachineClaimOptions, "repository" | "installation" | "sign" | "verify">;
+type ClaimIdentity = Pick<ClaimKeys, "repository" | "installation">;
+type ClaimFields = Omit<ClaimRecord, "version" | "installation" | "nonce">;
+
+interface EncodedClaim {
+  record: ClaimRecord;
+  body: string;
+  assertCurrent(): Promise<void>;
+}
+
+interface ClaimEncoding {
+  signed: boolean;
+  read(refs: ClaimRefStore, issue: number): Promise<ClaimSnapshot | null>;
+  encode(issue: number, fields: ClaimFields): Promise<EncodedClaim>;
+}
+
+async function readVerifiedRecord(
+  options: ClaimKeys,
+  refs: ClaimRefStore,
+  issue: number,
+): Promise<ClaimSnapshot | null> {
+  const current = await refs.read(issue);
+  if (!current) return null;
+  const { record, signature } = envelopeSchema.parse(JSON.parse(current.body));
+  if (
+    Buffer.from(signature, "base64").toString("base64") !== signature ||
+    !(await options.verify(
+      record.installation,
+      signingBytes(options.repository, issue, record),
+      signature,
+    ))
+  ) {
+    throw new Error("Factory claim signature is invalid.");
+  }
+  return { revision: current.revision, record };
+}
+
+async function signRecord(
+  options: ClaimKeys,
+  issue: number,
+  fields: ClaimFields,
+): Promise<EncodedClaim> {
+  const record = recordSchema.parse({
+    version: 1,
+    installation: options.installation,
+    nonce: randomUUID(),
+    ...fields,
+  });
+  const payload = signingBytes(options.repository, issue, record);
+  const signature = await options.sign(payload);
+  if (!(await options.verify(record.installation, payload, signature))) {
+    throw new Error("The active Factory signing key is not enrolled for this installation.");
+  }
+  return {
+    record,
+    body: JSON.stringify(envelopeSchema.parse({ record, signature })),
+    async assertCurrent() {
+      if (!(await options.verify(record.installation, payload, signature)))
+        throw new SavedClaimReleaseRefusal("The paused release signing key is no longer enrolled.");
+    },
+  };
+}
+
+function signedEncoding(options: ClaimKeys): ClaimEncoding {
+  return {
+    signed: true,
+    read: (refs, issue) => readVerifiedRecord(options, refs, issue),
+    encode: (issue, fields) => signRecord(options, issue, fields),
+  };
+}
+
+function unsignedHostEncoding(options: ClaimIdentity): ClaimEncoding {
+  const repository = options.repository.toLowerCase();
+  return {
+    signed: false,
+    async read(refs, issue) {
+      const current = await refs.read(issue);
+      if (!current) return null;
+      const envelope = unsignedHostEnvelope.parse(JSON.parse(current.body));
+      if (envelope.repository !== repository || envelope.issue !== issue)
+        throw new Error(
+          "The unsigned Host dispatch claim belongs to a different issue or repository.",
+        );
+      return { revision: current.revision, record: envelope.record };
+    },
+    async encode(issue, fields) {
+      const envelope = unsignedHostEnvelope.parse({
+        kind: "unsigned-host",
+        repository,
+        issue,
+        record: { version: 1, installation: options.installation, nonce: randomUUID(), ...fields },
+      });
+      return { record: envelope.record, body: JSON.stringify(envelope), async assertCurrent() {} };
+    },
+  };
+}
+
+export class SavedClaimReleaseRefusal extends Error {}
+
+interface SavedClaimReleaseInput {
+  issue: number;
+  claimRevision: string;
+  claimGeneration: string;
+  savedHead: string;
+}
+
+type SavedClaimReleaseOptions = ClaimIdentity &
+  Pick<MachineClaimOptions, "now" | "readWorkHead"> & {
+    assertPaused(): Promise<void>;
+    openReleaseStore(authorizePush: () => Promise<void>): ClaimRefStore;
+  };
+
+export function releaseSavedClaim(
+  options: SavedClaimReleaseOptions & ClaimKeys,
+  target: SavedClaimReleaseInput,
+) {
+  return releaseExactClaim(options, target, signedEncoding(options));
+}
+
+export function releaseSavedHostClaim(
+  options: SavedClaimReleaseOptions,
+  target: SavedClaimReleaseInput,
+) {
+  return releaseExactClaim(options, target, unsignedHostEncoding(options));
+}
+
+/** Release only an exact claim for independently verified saved work. The store
+ * must call authorizePush at its native mutation boundary, after charging and before Git. */
+async function releaseExactClaim(
+  options: SavedClaimReleaseOptions,
+  target: SavedClaimReleaseInput,
+  encoding: ClaimEncoding,
+): Promise<{ expiresAt: string }> {
+  const { issue, claimRevision, claimGeneration, savedHead } = target;
+  z.number().int().positive().safe().parse(issue);
+  sha.parse(claimRevision);
+  sha.parse(savedHead);
+  z.string().uuid().parse(claimGeneration);
+  async function assertHead() {
+    if ((await options.readWorkHead(issue)) !== savedHead) {
+      throw new SavedClaimReleaseRefusal(
+        "The remote Builder branch no longer matches the independently verified saved commit.",
+      );
+    }
+  }
+
+  await options.assertPaused();
+  let deadline: number | undefined;
+  let candidate: EncodedClaim | undefined;
+  let pushAuthorized = false;
+  const refs = options.openReleaseStore(async () => {
+    if (deadline === undefined || !candidate || pushAuthorized)
+      throw new SavedClaimReleaseRefusal("The paused claim push was outside its authorized scope.");
+    await assertHead();
+    await options.assertPaused();
+    if (deadline <= +options.now())
+      throw new SavedClaimReleaseRefusal("The claim expired before its paused release.");
+    await candidate.assertCurrent();
+    pushAuthorized = true;
+  });
+  const original = await encoding.read(refs, issue);
+  if (
+    !original ||
+    original.revision !== claimRevision ||
+    original.record.generation !== claimGeneration ||
+    original.record.installation !== options.installation ||
+    original.record.released ||
+    original.record.expiresAt * 1000 <= +options.now()
+  ) {
+    throw new SavedClaimReleaseRefusal("The claim changed or expired before paused release.");
+  }
+  deadline = original.record.expiresAt * 1000;
+  await assertHead();
+  await options.assertPaused();
+  candidate = await encoding.encode(issue, {
+    generation: claimGeneration,
+    expiresAt: original.record.expiresAt,
+    released: true,
+    submission: null,
+  });
+  const pushed = await refs
+    .compareAndSwap(issue, claimRevision, candidate.body)
+    .catch((error: unknown) => {
+      if (pushAuthorized) throw uncertainRelease(error);
+      throw error;
+    });
+  if (!pushed) {
+    throw new SavedClaimReleaseRefusal(
+      "The claim changed before its paused release could be saved.",
+    );
+  }
+  try {
+    const confirmed = await encoding.read(refs, issue);
+    if (!pushAuthorized || !isDeepStrictEqual(confirmed?.record, candidate.record)) {
+      throw new SavedClaimReleaseRefusal("The paused release could not be verified.");
+    }
+    await assertHead();
+  } catch (error) {
+    throw uncertainRelease(error);
+  }
+  return { expiresAt: new Date(deadline).toISOString() };
+}
+
+function uncertainRelease(cause: unknown): SavedClaimReleaseRefusal {
+  return new SavedClaimReleaseRefusal(
+    "The claim update may have landed, but the saved branch and release could not be confirmed. The Builder worktree was kept.",
+    { cause },
+  );
+}
+
 export function createMachineLeasePort(options: MachineClaimOptions): MachineLeasePort {
+  return createClaimLeasePort(options, signedEncoding(options));
+}
+
+/** Unsigned claims schedule Host builds only. They supply no approval or submission evidence. */
+export function createUnsignedHostLeasePort(options: UnsignedHostClaimOptions): MachineLeasePort {
+  return createClaimLeasePort(options, unsignedHostEncoding(options));
+}
+
+function createClaimLeasePort(
+  options: UnsignedHostClaimOptions,
+  encoding: ClaimEncoding,
+): MachineLeasePort {
   const installation = opaqueId.parse(options.installation);
   const observations = new Map<number, { revision: string; head: string | null; since: number }>();
-
-  async function readRecord(issue: number): Promise<ClaimSnapshot | null> {
-    const current = await options.refs.read(issue);
-    if (!current) return null;
-    const { record, signature } = envelopeSchema.parse(JSON.parse(current.body));
-    if (
-      Buffer.from(signature, "base64").toString("base64") !== signature ||
-      !(await options.verify(
-        record.installation,
-        signingBytes(options.repository, issue, record),
-        signature,
-      ))
-    ) {
-      throw new Error("Factory claim signature is invalid.");
-    }
-    return { revision: current.revision, record };
-  }
 
   function lease(issue: number, record: ClaimRecord, seenSince = options.now().getTime()): Lease {
     return {
@@ -159,9 +373,7 @@ export function createMachineLeasePort(options: MachineClaimOptions): MachineLea
     expected: string | null,
     fields: Omit<ClaimRecord, "version" | "installation" | "nonce">,
   ): Promise<ClaimRecord | null> {
-    const record = recordSchema.parse({ version: 1, installation, nonce: randomUUID(), ...fields });
-    const signature = await options.sign(signingBytes(options.repository, issue, record));
-    const body = JSON.stringify(envelopeSchema.parse({ record, signature }));
+    const { record, body } = await encoding.encode(issue, fields);
     return (await options.refs.compareAndSwap(issue, expected, body)) ? record : null;
   }
 
@@ -178,7 +390,7 @@ export function createMachineLeasePort(options: MachineClaimOptions): MachineLea
   }
 
   async function observe(issue: number) {
-    const current = await readRecord(issue);
+    const current = await encoding.read(options.refs, issue);
     const head = await options.readWorkHead(issue);
     if (!current) {
       observations.delete(issue);
@@ -212,7 +424,7 @@ export function createMachineLeasePort(options: MachineClaimOptions): MachineLea
   ): Promise<Lease> {
     if (!head) await options.ensureWorkBranch(issue);
     const after = await observe(issue);
-    if (!after.head || after.current?.record.nonce !== expected.nonce || !active(expected)) {
+    if (!after.head || !isDeepStrictEqual(after.current?.record, expected) || !active(expected)) {
       throw new Error("Factory could not confirm the claim and work branch after acquisition.");
     }
     return lease(issue, expected, after.since);
@@ -310,6 +522,8 @@ export function createMachineLeasePort(options: MachineClaimOptions): MachineLea
       return entries.filter((entry) => expired(entry, now));
     },
     async registerSubmission(issue, expectedRevision, intendedHead, builderProviderType) {
+      if (!encoding.signed)
+        throw new Error("Unsigned Host claims cannot register trusted submissions.");
       sha.parse(intendedHead);
       const { current, head } = await ownActiveClaim(issue);
       if (
@@ -328,6 +542,7 @@ export function createMachineLeasePort(options: MachineClaimOptions): MachineLea
       if (!saved) throw new Error("Factory claim changed before the submission was registered.");
     },
     async readSubmission(issue, pullHead) {
+      if (!encoding.signed) return null;
       const { current, head } = await observe(issue);
       if (
         !current ||
