@@ -228,6 +228,10 @@ test("PR routing ignores manifests whose only change is the Vorteo version", () 
   const changes = jobBlocks(readFileSync(ciWorkflowPath, "utf8")).get("changes")?.join("\n") ?? "";
   assert.match(changes, /node scripts\/ci-neutralize-version-bumps\.mjs[\s\S]*dorny\/paths-filter/);
   assert.match(changes, /token: ""/);
+  assert.match(
+    changes,
+    /^      installer_inventory: \$\{\{ steps\.filter\.outputs\.installer_inventory \}\}$/m,
+  );
 
   const base =
     '{\n  "version": "1.0.0-vorteo.1",\n  "dependencies": { "@getpaseo/client": "1.0.0-vorteo.1" }\n}\n';
@@ -278,6 +282,11 @@ test("PR routing declares stable behavior ownership", () => {
       "packages/expo-two-way-audio/**",
     ],
     quality: ["**/*.{cjs,js,json,jsx,mjs,ts,tsx}", "packages/expo-two-way-audio/**"],
+    installer_inventory: [
+      "scripts/installer/primitives.mjs",
+      "scripts/installer/container-inventory.mjs",
+      "scripts/install-execution-host.test.mjs",
+    ],
     hub: ["packages/cli/src/commands/hub/**", "packages/server/src/server/hub/**"],
     server: [
       "plugins/**",
@@ -902,7 +911,13 @@ test("quality preserves commands and routes each domain independently after fail
       "npm run typecheck:examples --workspace=@getpaseo/client",
     ],
   };
-  const checks = [...quality.matchAll(/        if: \$\{\{ (.+) \}\}\n        run: (.+)/g)];
+  const allChecks = [...quality.matchAll(/        if: \$\{\{ (.+) \}\}\n        run: (.+)/g)];
+  const inventoryCommand =
+    "node_modules/.bin/vitest run scripts/install-execution-host.test.mjs -t 'container inventory'";
+  const inventoryChecks = allChecks.filter(([, , command]) => command === inventoryCommand);
+  assert.equal(inventoryChecks.length, 1);
+  const [, inventoryCondition] = inventoryChecks[0];
+  const checks = allChecks.filter(([, , command]) => command !== inventoryCommand);
   assert.deepEqual(
     checks.map(([, , command]) => command),
     Object.values(commands).flat(),
@@ -936,6 +951,17 @@ test("quality preserves commands and routes each domain independently after fail
     assert.equal(accepts(expression, {}, { installed: false }), false);
   }
   assert.equal(accepts(jobCondition, {}, { cancelled: true }), false);
+  const inventorySelected = { ...disabled, quality: "true", installer_inventory: "true" };
+  assert.equal(accepts(jobCondition, inventorySelected), true);
+  assert.equal(accepts(inventoryCondition, inventorySelected), true);
+  assert.equal(
+    accepts(inventoryCondition, { ...inventorySelected, installer_inventory: "false" }),
+    false,
+  );
+  assert.equal(accepts(inventoryCondition, { full: "true" }), false);
+  assert.equal(accepts(inventoryCondition, {}), false);
+  assert.equal(accepts(inventoryCondition, inventorySelected, { cancelled: true }), false);
+  assert.equal(accepts(inventoryCondition, inventorySelected, { installed: false }), false);
 });
 
 test("Windows units and integration run independently with complete routed coverage", () => {
