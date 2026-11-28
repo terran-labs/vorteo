@@ -1707,6 +1707,42 @@ describe("WorkspaceGitServiceImpl", () => {
 
     service.dispose();
   });
+  test("a manual refresh after a checkout reads the new branch while an opening refresh is in flight", async () => {
+    let branch = "main";
+    let releaseOpening: () => void = () => {};
+    const openingRead = new Promise<void>((resolve) => {
+      releaseOpening = resolve;
+    });
+    let reads = 0;
+    const getCheckoutSnapshotFacts = vi.fn(async (cwd: string) => {
+      const headAtRead = branch;
+      reads += 1;
+      if (reads === 1) await openingRead;
+      return { ...createCheckoutSnapshotFacts(cwd), currentBranch: headAtRead };
+    });
+    const getCheckoutStatus = vi.fn(
+      async (cwd: string, context?: { facts?: { currentBranch?: string | null } }) => ({
+        ...createCheckoutStatus(cwd),
+        currentBranch: context?.facts?.currentBranch ?? null,
+      }),
+    );
+    const service = createService({ getCheckoutSnapshotFacts, getCheckoutStatus });
+    // Opening a project starts a forced refresh that reads HEAD before a checkout lands.
+    const opening = service.getSnapshot(REPO_CWD, { force: true, reason: "open_project" });
+    await vi.waitFor(() => expect(reads).toBe(1));
+    branch = "feature/x";
+    // Without afterInFlight the manual refresh joins the opening one and keeps "main".
+    const manual = service.getSnapshot(REPO_CWD, {
+      force: true,
+      afterInFlight: true,
+      reason: "manual-refresh",
+    });
+    releaseOpening();
+    await Promise.all([opening, manual]);
+    await waitForRefreshesToSettle(service);
+    expect((await service.getSnapshot(REPO_CWD)).git.currentBranch).toBe("feature/x");
+    await service.dispose();
+  });
 });
 
 describe("WorkspaceGitServiceImpl with workspace folders that no longer exist", () => {
@@ -1761,7 +1797,12 @@ describe("WorkspaceGitServiceImpl with workspace folders that no longer exist", 
       additions: cwd === survivingWorktree ? ++survivingWorktreeEdits : 1,
       deletions: 0,
     }));
-    const service = createService(git.deps);
+    // The first idle release lands at a phase hashed from the repository path, which here is a
+    // random temporary folder. An idle release fetches and restarts the 3 minute fetch clock, so
+    // one landing just after an active fetch adds a third fetch inside the two intervals measured
+    // below. Phase 0 runs it at the first activity check, before the deletion; the next one is 30
+    // minutes later, after this test.
+    const service = createService({ ...git.deps, getIdleGitReleasePhaseMs: () => 0 });
     const deletedSubscription = service.registerWorkspace({ cwd: deletedWorktree }, vi.fn());
     await waitForObservationToSettle(service, 1);
     const survivingSubscription = service.registerWorkspace({ cwd: survivingWorktree }, vi.fn());
@@ -2233,7 +2274,7 @@ describe("workspace polling pressure", () => {
     await service.dispose();
   });
 
-  test("an idle worktree beside an active one gets ref changes at the idle release", async () => {
+  test("an idle worktree beside an active one gets ref changes at the idle release and a checkout at once", async () => {
     const gitCommonDir = join(REPO_CWD, ".git");
     const idleCwd = join(REPO_CWD, "packages", "server");
     const watchCallbacks = new Map<string, WatchCallback>();
@@ -2272,6 +2313,18 @@ describe("workspace polling pressure", () => {
     expect(idleListener).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(IDLE_BACKGROUND_GIT_FETCH_INTERVAL_MS);
+    await waitForRefreshesToSettle(service);
+    expect(calledCwds()).toContain(idleCwd);
+    expect(idleListener).toHaveBeenCalled();
+
+    // HEAD moving is a checkout: the branch every list shows changed, so it cannot wait 30 minutes.
+    await vi.advanceTimersByTimeAsync(5_000);
+    idleListener.mockClear();
+    getCheckoutSnapshotFacts.mockClear();
+    watchCallbacks.get(gitCommonDir)?.(null, [
+      { path: join(gitCommonDir, "HEAD"), type: "update" },
+    ]);
+    await vi.advanceTimersByTimeAsync(1_000);
     await waitForRefreshesToSettle(service);
     expect(calledCwds()).toContain(idleCwd);
     expect(idleListener).toHaveBeenCalled();

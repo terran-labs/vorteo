@@ -969,7 +969,7 @@ export class VoiceAssistantWebSocketServer {
         return state.clients[providerId] ?? null;
       },
       onConnected: (providerId) => {
-        this.providerUsageService.invalidate();
+        this.providerUsageService.invalidate(providerId);
         void this.providerSnapshotManager
           .refreshSettingsSnapshot({ providers: [providerId] })
           .catch((error) => {
@@ -2598,6 +2598,8 @@ export class VoiceAssistantWebSocketServer {
         usageLimitResume: true,
         ...bootstrapReviewFeatures(this.coordinatorBootstrap),
         durableMessageQueue: true,
+        // COMPAT(messageQueueEditHold): added 2026-11-27, remove gate after 2027-05-27.
+        messageQueueEditHold: true,
         // COMPAT(agentThinkingUpdate): added in v0.2.4, remove gate after 2027-01-28.
         agentThinkingUpdate: true,
         // COMPAT(daemonDiagnostics): added in v0.1.100, remove gate after 2026-12-25 once daemon floor >= v0.1.100.
@@ -2626,6 +2628,8 @@ export class VoiceAssistantWebSocketServer {
         agentQuestions: true,
         // COMPAT(agentQuestionInputs): added November 2026; retain until the client floor includes it.
         agentQuestionInputs: true,
+        // COMPAT(agentCreatedBy): added November 2026; retain until the client floor includes it.
+        agentCreatedBy: true,
         // COMPAT(previews): added November 2026; retain until the client floor includes it.
         previews: this.agentManager.previews !== null,
         // COMPAT(projectedSubagentTimeline): added after v0.8.0, remove gates after 2027-03-14; retain advertisement.

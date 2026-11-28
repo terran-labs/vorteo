@@ -31,8 +31,10 @@ import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { useProjectFactory } from "./factory-instructions";
 import {
   factoryOverviewPathTarget,
+  factoryIssueRows,
   factoryRunners,
   factoryStatePill,
+  groupFactoryMembers,
   factoryStateReason,
   type FactoryCardModel,
   type FactoryStatePill,
@@ -43,7 +45,7 @@ import {
   factoryChips,
   splitForeman,
 } from "./factory-card-roles";
-import { FactoryRunners } from "./factory-card-runners";
+import { FactoryIdleWorkspaces, FactoryRunners } from "./factory-card-runners";
 import { FactoryStageBar, type StageBarIssue } from "./factory-card-stage-bar";
 import { useFactoryCardStore } from "./factory-card-store";
 import type { ProjectFactoryState } from "./factory-state";
@@ -102,11 +104,27 @@ export const FactorySection = memo(function FactorySection({
     () => card.members.flatMap((member) => entries.get(member.workspaceKey) ?? []),
     [card.members, entries],
   );
+  // Issue workers are not crew: a running issue's row opens its newest workspace, and every
+  // other issue workspace lists as Idle.
+  const { crew: crewMembers, byIssue } = useMemo(() => groupFactoryMembers(members), [members]);
   const { foreman, crew } = useMemo(
-    () => splitForeman(factoryChips(state?.roles, members)),
-    [state?.roles, members],
+    () => splitForeman(factoryChips(state?.roles, crewMembers)),
+    [state?.roles, crewMembers],
   );
   const runners = useMemo(() => (issues ? factoryRunners(issues) : []), [issues]);
+  const { opened: issueWorkspaces, idle } = useMemo(
+    () => factoryIssueRows(byIssue, new Set(runners.map((issue) => issue.number))),
+    [byIssue, runners],
+  );
+  // Finished: the issue has left the open queue and the workspace's pull request merged.
+  const finished = useMemo(() => {
+    if (!issues) return [];
+    const open = new Set(issues.map((issue) => issue.number));
+    return idle.filter(
+      (workspace) =>
+        workspace.prHint?.state === "merged" && !open.has(workspace.factoryIssue?.issue ?? 0),
+    );
+  }, [idle, issues]);
   const pill = useMemo(
     () =>
       state ? { pill: factoryStatePill(state), description: factoryStateReason(state, t) } : null,
@@ -151,6 +169,14 @@ export const FactorySection = memo(function FactorySection({
         groupKey={`factory-runners:${card.key}`}
         serverId={card.serverId}
         runners={runners}
+        workspaces={issueWorkspaces}
+        level={level + 1}
+        onBeforeNavigate={onWorkspacePress}
+      />
+      <FactoryIdleWorkspaces
+        groupKey={`factory-idle-open:${card.key}`}
+        workspaces={idle}
+        finished={finished}
         level={level + 1}
         onBeforeNavigate={onWorkspacePress}
       />

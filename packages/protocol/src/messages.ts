@@ -1073,6 +1073,8 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
     type: z.literal("notification"),
     level: z.enum(["info", "warning", "error"]),
     message: z.string(),
+    // COMPAT(notificationDetails): added November 2026; older clients ignore it.
+    details: z.string().optional(),
   }),
   z.object({
     type: z.literal("compaction"),
@@ -1194,6 +1196,13 @@ export const AgentSnapshotPayloadSchema = z.object({
   // True when the agent's provider session runs in the durable session host, so its turn survives
   // a daemon restart. Optional on a non-strict schema: older daemons omit it, older clients ignore it.
   hosted: z.boolean().optional(),
+  // COMPAT(agentCreatedBy): added November 2026, advertised by server_info.features.agentCreatedBy.
+  // The agent that created this thread, recorded by the daemon at creation and never changed by
+  // labels; absent or null means no agent created it. Absent from older daemons.
+  createdByAgentId: z.string().nullable().optional(),
+  // COMPAT(agentCreatedBy): whether the creator still holds a finish subscription for this thread,
+  // so it will be told of its approvals. Absent or false means nobody is watching: the owner.
+  permissionWatchedByCreator: z.boolean().optional(),
   id: z.string(),
   profile: z.object({ id: z.string(), name: z.string() }).optional(),
   quotaPausedAt: z.string().optional(),
@@ -4686,6 +4695,8 @@ export const ServerInfoStatusPayloadSchema = z
         agentQuestions: z.boolean().optional(),
         // COMPAT(agentQuestionInputs): added November 2026; send typed answer fields only when advertised.
         agentQuestionInputs: z.boolean().optional(),
+        // COMPAT(agentCreatedBy): added November 2026; agent snapshots carry createdByAgentId.
+        agentCreatedBy: z.boolean().optional(),
         // COMPAT(previews): added November 2026; gate the Previews gallery until the daemon floor includes it.
         previews: z.boolean().optional(),
         // COMPAT(projectedSubagentTimeline): added after v0.8.0, remove gates after 2027-03-14; retain wire field.
@@ -4747,6 +4758,9 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: z.boolean().optional(),
         durableMessageQueue: z.boolean().optional(),
+        // COMPAT(messageQueueEditHold): added 2026-11-27, remove gate after 2027-05-27. The daemon
+        // accepts hold_edit and release_edit queue operations and does not deliver a held item.
+        messageQueueEditHold: z.boolean().optional(),
         agentMessageProvenance: z.boolean().optional(),
         agentMessageBatching: z.boolean().optional(),
         // COMPAT(agentTurnIdentity): accept peers that observed pre-release v0.2.6 through 2027-01-31.

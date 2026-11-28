@@ -1,5 +1,9 @@
 import { expect, it } from "vitest";
-import { providerConnectionAction } from "./connection-action";
+import {
+  accountProviderKind,
+  providerConnectionAction,
+  resolveReconnectRecovery,
+} from "./connection-action";
 import type { ProviderUsage } from "./types";
 
 const providers = { christian: { extends: "codex" }, local: { extends: "pi" } };
@@ -105,4 +109,33 @@ it("retains explicit auth recovery even when Claude's cached snapshot is ready",
       snapshot: { provider: "claude", status: "ready", enabled: true },
     }),
   ).toBe("Reconnect");
+});
+
+it("keeps non-account providers like Antigravity on manual recovery instead of Codex device login", () => {
+  expect(accountProviderKind("antigravity", {})).toBeNull();
+  expect(
+    providerConnectionAction({
+      providerId: "antigravity",
+      providers: {},
+      usage: undefined,
+      snapshot: { provider: "antigravity", status: "unavailable", enabled: true },
+    }),
+  ).toBeNull();
+  expect(
+    resolveReconnectRecovery({
+      accountKind: accountProviderKind("antigravity", {}),
+      authRecovery: undefined,
+      fallbackInstructions:
+        "Install the Antigravity CLI (agy) on the Host, then run agy once to sign in.",
+    }),
+  ).toEqual({
+    instructions: "Install the Antigravity CLI (agy) on the Host, then run agy once to sign in.",
+  });
+  expect(
+    resolveReconnectRecovery({
+      accountKind: accountProviderKind("codex", {}),
+      authRecovery: undefined,
+      fallbackInstructions: "unused",
+    }),
+  ).toEqual({ method: "device_code", instructions: "" });
 });

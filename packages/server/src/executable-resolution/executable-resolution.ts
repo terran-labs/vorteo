@@ -1,12 +1,175 @@
 import { getProviderProbeCwd } from "../utils/provider-probe-cwd.js";
-import { existsSync } from "node:fs";
-import { delimiter, resolve } from "node:path";
+import { constants, existsSync } from "node:fs";
+import { access, lstat, readlink } from "node:fs/promises";
+import { homedir } from "node:os";
+import { delimiter, isAbsolute, resolve } from "node:path";
 import type { ProcessEnvRecord } from "../server/paseo-env.js";
 import { execCommand } from "../utils/spawn.js";
 import which from "which";
 import { windowsExecutableResolution } from "./windows.js";
 
 const PROBE_TIMEOUT_MS = 2000;
+const MAX_SYMLINK_DEPTH = 40;
+
+/** Common per-user and package-manager bin folders searched on POSIX when a daemon PATH omits them. */
+const POSIX_FALLBACK_BIN_DIRS = [
+  { homeRelative: ".local/bin" },
+  { homeRelative: "bin" },
+  { homeRelative: ".cargo/bin" },
+  { absolute: "/opt/homebrew/bin" },
+  { absolute: "/usr/local/bin" },
+] as const;
+
+function resolveAbsoluteHome(env?: ProcessEnvRecord): string | null {
+  for (const candidate of [env?.HOME?.trim(), process.env.HOME?.trim(), homedir()]) {
+    if (candidate && isAbsolute(candidate)) return candidate;
+  }
+  return null;
+}
+
+function isTrustedPosixOwner(info: { uid: number }): boolean {
+  const uid = process.getuid?.();
+  return uid === undefined || info.uid === uid || info.uid === 0;
+}
+
+function isStrictlyNonGroupOrWorldWritable(info: { uid: number; mode: number }): boolean {
+  return (info.mode & 0o022) === 0 && isTrustedPosixOwner(info);
+}
+
+function isTrustedAncestorDir(info: { uid: number; mode: number }): boolean {
+  if (!isTrustedPosixOwner(info)) return false;
+  // Sticky root-owned directories (such as /tmp or /private/tmp) prevent non-owners from
+  // renaming or replacing entries owned by another user.
+  if (info.uid === 0 && (info.mode & 0o1000) !== 0) return true;
+  return (info.mode & 0o022) === 0;
+}
+
+function isTrustedFinalEntry(
+  info: { uid: number; mode: number; isDirectory(): boolean; isFile(): boolean },
+  expect: "dir" | "file",
+): boolean {
+  const matchesKind = expect === "dir" ? info.isDirectory() : info.isFile();
+  return matchesKind && isStrictlyNonGroupOrWorldWritable(info);
+}
+
+/**
+ * Resolves `targetPath` component by component following exact POSIX semantics (expanding each
+ * symlink before evaluating any subsequent `..`) and validates ownership and non-group/world-
+ * writability across every ancestor directory, symlink hop, and final entry.
+ */
+async function resolveTrustedPosixPath(
+  targetPath: string,
+  expect: "dir" | "file",
+): Promise<string | null> {
+  if (!isAbsolute(targetPath)) return null;
+  try {
+    const rootInfo = await lstat("/");
+    if (!rootInfo.isDirectory() || !isTrustedAncestorDir(rootInfo)) return null;
+
+    const resolved: string[] = [];
+    const queue = targetPath.split("/").filter(Boolean);
+    if (targetPath.endsWith("/")) queue.push(".");
+    let symlinksFollowed = 0;
+
+    while (queue.length > 0) {
+      const segment = queue.shift()!;
+      if (segment === ".") continue;
+      if (segment === "..") {
+        // Every entry in `resolved` is a real validated directory, so popping matches POSIX `..`.
+        resolved.pop();
+        continue;
+      }
+
+      const next = resolved.length === 0 ? `/${segment}` : `/${resolved.join("/")}/${segment}`;
+      const info = await lstat(next);
+      if (!isTrustedPosixOwner(info)) return null;
+
+      if (info.isSymbolicLink()) {
+        symlinksFollowed += 1;
+        if (symlinksFollowed > MAX_SYMLINK_DEPTH) return null;
+        const linkTarget = await readlink(next);
+        const linkSegments = linkTarget.split("/").filter(Boolean);
+        if (linkTarget.endsWith("/")) linkSegments.push(".");
+        if (isAbsolute(linkTarget)) resolved.length = 0;
+        queue.unshift(...linkSegments);
+        continue;
+      }
+
+      const trusted =
+        queue.length === 0
+          ? isTrustedFinalEntry(info, expect)
+          : info.isDirectory() && isTrustedAncestorDir(info);
+      if (!trusted) return null;
+
+      resolved.push(segment);
+    }
+
+    if (resolved.length === 0) return null;
+    const finalPath = `/${resolved.join("/")}`;
+    const finalInfo = await lstat(finalPath);
+    return isTrustedFinalEntry(finalInfo, expect) ? finalPath : null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveTrustedExecutableFile(filePath: string): Promise<string | null> {
+  const resolved = await resolveTrustedPosixPath(filePath, "file");
+  if (!resolved) return null;
+  try {
+    await access(resolved, constants.X_OK);
+    return resolved;
+  } catch {
+    return null;
+  }
+}
+
+export function fallbackExecutableDirs(env?: ProcessEnvRecord): string[] {
+  if (process.platform === "win32") return [];
+  const home = resolveAbsoluteHome(env);
+  const pathEntries = new Set(
+    (env?.PATH ?? process.env.PATH ?? "")
+      .split(delimiter)
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  );
+  const dirs: string[] = [];
+  for (const entry of POSIX_FALLBACK_BIN_DIRS) {
+    let dir = "";
+    if ("homeRelative" in entry) {
+      if (home) dir = `${home.replace(/\/+$/, "")}/${entry.homeRelative}`;
+    } else {
+      dir = entry.absolute;
+    }
+    if (dir && !pathEntries.has(dir) && !dirs.includes(dir)) {
+      dirs.push(dir);
+    }
+  }
+  return dirs;
+}
+
+export function describeExecutableSearch(
+  command: string,
+  options?: { env?: ProcessEnvRecord; providerId?: string; includeFallbackDirs?: boolean },
+): string {
+  const configHint = options?.providerId
+    ? ` Set agents.providers.${options.providerId}.command in config.json to point Vorteo at the binary.`
+    : "";
+  if (hasPathSeparator(command.trim())) {
+    return `Could not find executable "${command}".${configHint}`;
+  }
+  const pathValue = options?.env?.PATH ?? process.env.PATH ?? "";
+  const searched = [
+    ...pathValue
+      .split(delimiter)
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+    ...(options?.includeFallbackDirs ? fallbackExecutableDirs(options?.env) : []),
+  ];
+  const unique = Array.from(new Set(searched));
+  const where = unique.length > 0 ? unique.join(", ") : "empty PATH";
+  return `Could not find "${command}" (searched: ${where}).${configHint}`;
+}
 
 function hasPathSeparator(value: string): boolean {
   return value.includes("/") || value.includes("\\");
@@ -142,14 +305,18 @@ export async function findExecutableWithoutProbing(
 export interface ExecutableResolutionOptions {
   probeTimeoutMs?: number;
   env?: ProcessEnvRecord;
+  includeFallbackDirs?: boolean;
 }
 
 export async function findExecutable(
   name: string,
   options: number | ExecutableResolutionOptions = PROBE_TIMEOUT_MS,
 ): Promise<string | null> {
-  const { probeTimeoutMs = PROBE_TIMEOUT_MS, env } =
-    typeof options === "number" ? { probeTimeoutMs: options } : options;
+  const {
+    probeTimeoutMs = PROBE_TIMEOUT_MS,
+    env,
+    includeFallbackDirs = false,
+  } = typeof options === "number" ? { probeTimeoutMs: options } : options;
   const trimmed = name.trim();
   if (!trimmed) {
     return null;
@@ -169,10 +336,25 @@ export async function findExecutable(
     return (await probeExecutable(trimmed, { probeTimeoutMs, env })) ? trimmed : null;
   }
 
-  const candidates = await enumerateCandidates(trimmed, env);
-  for (const candidate of candidates) {
+  const pathCandidates = await enumerateCandidates(trimmed, env);
+  for (const candidate of pathCandidates) {
     if (await probeExecutable(candidate, { probeTimeoutMs, env })) {
       return candidate;
+    }
+  }
+  if (!includeFallbackDirs || trimmed === "." || trimmed === "..") {
+    return null;
+  }
+  const seen = new Set(pathCandidates);
+  for (const dir of fallbackExecutableDirs(env)) {
+    const trustedDir = await resolveTrustedPosixPath(dir, "dir");
+    if (!trustedDir) continue;
+    const trustedCandidate = await resolveTrustedExecutableFile(`${trustedDir}/${trimmed}`);
+    if (trustedCandidate && !seen.has(trustedCandidate)) {
+      seen.add(trustedCandidate);
+      if (await probeExecutable(trustedCandidate, { probeTimeoutMs, env })) {
+        return trustedCandidate;
+      }
     }
   }
   return null;

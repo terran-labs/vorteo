@@ -647,9 +647,29 @@ export interface CreateAgentOptions {
   // undefined is an explicit decision: the agent never appears in the sidebar.
   workspaceId: string | undefined;
   owner?: AgentOwner;
+  createdByAgentId?: string | null;
+}
+
+/** How long an approval waits on a supervising thread before the owner sees it too (#659). */
+export const PERMISSION_OWNER_ESCALATION_MS = 3 * 60_000;
+
+/** The context this daemon records on a permission request (#659), carried across refreshes. */
+const PERMISSION_CONTEXT_KEYS = ["askedAt", "askedSeq", "askedEpoch", "ownerEscalated"] as const;
+
+function pickPermissionContext(
+  recorded: Record<string, unknown>,
+  current: AgentPermissionRequest["metadata"],
+): NonNullable<AgentPermissionRequest["metadata"]> {
+  const context: Record<string, unknown> = { ...current };
+  for (const key of PERMISSION_CONTEXT_KEYS) {
+    if (recorded[key] !== undefined) context[key] = recorded[key];
+  }
+  return context as NonNullable<AgentPermissionRequest["metadata"]>;
 }
 
 export interface AgentManagerOptions {
+  /** Overrides PERMISSION_OWNER_ESCALATION_MS; for tests. */
+  permissionOwnerEscalationMs?: number;
   getSharedProviderConfig?: () => MutableDaemonConfig;
   installationSettingsReader?: InstallationSettingsReader;
   assertWorkspaceArchiveAllowed?: (workspaceId: string) => Promise<void>;
@@ -810,6 +830,11 @@ interface HandleStreamEventOptions {
   fromHistory?: boolean;
 }
 
+interface RegistrationMetadata {
+  title: string | null;
+  authority: Pick<ManagedAgentBase, "workerGovernance" | "createdByAgentId">;
+}
+
 interface ManagedAgentBase {
   journal?: import("@getpaseo/protocol/agent-journal").AgentJournalEntry[];
   questions?: import("@getpaseo/protocol/agent-questions").AgentQuestion[];
@@ -829,6 +854,11 @@ interface ManagedAgentBase {
    */
   workspaceId?: string;
   owner?: AgentOwner;
+  createdByAgentId?: string | null;
+  /** Daemon-authored team authority, restored from the internal thread record. */
+  workerGovernance?: WorkerGovernance;
+  /** The creator holds a live finish subscription for this thread (#659); refreshed on emit. */
+  permissionWatchedByCreator?: boolean;
   capabilities: AgentCapabilityFlags;
   config: AgentSessionConfig;
   /** Explicit launch overrides, before per-opening hooks and daemon-owned variables. */
@@ -1158,6 +1188,9 @@ export interface RetiredInternalAgent {
 }
 
 export class AgentManager {
+  private creatorWatchProbe?: (creatorAgentId: string, childAgentId: string) => boolean;
+  private readonly permissionOwnerEscalationMs: number;
+  private readonly escalationTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly pendingWorkerCreations = new Map<string, number>();
   private readonly pendingReserveWrites = new Map<string, number>();
   private readonly failedReserveWrites = new Set<string>();
@@ -1851,6 +1884,7 @@ export class AgentManager {
   private readonly runtimeCleanupIdentities = new WeakMap<AgentSession, object>();
   private readonly collectingRuntimes = new Set<string>();
   private readonly lifecycleMutationTails = new Map<string, Promise<void>>();
+  private readonly pendingCancellations = new Map<string, Promise<unknown>>();
   private readonly agentStreamCoalescer: AgentStreamCoalescer;
   private mcpBaseUrl: string | null;
   private readonly mcpAuthToken: string | null;
@@ -1936,6 +1970,8 @@ export class AgentManager {
   private readonly assertThreadArchiveAllowed?: AgentManagerOptions["assertThreadArchiveAllowed"];
 
   constructor(options: AgentManagerOptions) {
+    this.permissionOwnerEscalationMs =
+      options.permissionOwnerEscalationMs ?? PERMISSION_OWNER_ESCALATION_MS;
     this.getSharedProviderConfig = options.getSharedProviderConfig;
     this.installationSettingsReader = options.installationSettingsReader;
     this.assertWorkspaceArchiveAllowed = options.assertWorkspaceArchiveAllowed;
@@ -4098,6 +4134,8 @@ export class AgentManager {
       workspaceId: options.workspaceId,
       owner: options.owner,
       workerGovernance: options.workerGovernance,
+      // The authenticated creating agent, passed by create_agent; never read from labels (#659).
+      createdByAgentId: options.createdByAgentId ?? undefined,
       launchEnv: options.env ? { ...options.env } : undefined,
       historyPrimed: true,
     });
@@ -4130,6 +4168,7 @@ export class AgentManager {
       labels?: Record<string, string>;
       workspaceId?: string;
       owner?: AgentOwner;
+      createdByAgentId?: string | null;
       attention?: AttentionState;
       lastUsage?: AgentUsage;
     },
@@ -4193,6 +4232,7 @@ export class AgentManager {
       labels?: Record<string, string>;
       workspaceId?: string;
       owner?: AgentOwner;
+      createdByAgentId?: string | null;
       attention?: AttentionState;
       lastUsage?: AgentUsage;
     },
@@ -4429,7 +4469,7 @@ export class AgentManager {
         reason: "refresh",
         purpose: "interactive",
         workspaceId: existing.workspaceId,
-        title: await this.resolveInitialPersistedTitle(agentId, existing.config, null),
+        title: (await this.readRegistrationMetadata(agentId, existing.config, null)).title,
         labels: existing.labels,
         toolAccess: factoryOpeningToolAccess(storedConfig),
       },
@@ -4478,6 +4518,7 @@ export class AgentManager {
         labels: existing.labels,
         workspaceId: existing.workspaceId,
         owner: existing.owner,
+        createdByAgentId: existing.createdByAgentId,
         launchEnv: existing.launchEnv,
         createdAt: existing.createdAt,
         updatedAt: existing.updatedAt,
@@ -4891,6 +4932,7 @@ export class AgentManager {
         labels: source.labels,
         workspaceId: source.workspaceId,
         owner: source.owner,
+        createdByAgentId: source.createdByAgentId,
         createdAt: source.createdAt,
         updatedAt: source.updatedAt,
         lastUserMessageAt: source.lastUserMessageAt,
@@ -4972,6 +5014,7 @@ export class AgentManager {
       internal: record.internal,
       workspaceId: record.workspaceId,
       owner: record.owner,
+      createdByAgentId: record.createdByAgentId,
       labels: record.labels,
       createdAt: new Date(record.createdAt),
       updatedAt: new Date(record.updatedAt),
@@ -5505,6 +5548,7 @@ export class AgentManager {
         cwd: record.cwd,
         workspaceId: record.workspaceId,
         owner: record.owner,
+        createdByAgentId: record.createdByAgentId,
         session: null,
         capabilities: STORED_AGENT_CAPABILITIES,
         config: buildStoredAgentConfig(record),
@@ -5539,24 +5583,52 @@ export class AgentManager {
     });
   }
 
+  /** Inside the agent's lane: transparently reopens a retired plugin session before applying config. */
+  private async withLiveInteractiveSessionUnlocked<T>(
+    agentId: string,
+    operation: (agent: ActiveManagedAgent) => Promise<T>,
+  ): Promise<T> {
+    const pendingCancellation = this.pendingCancellations.get(agentId);
+    if (pendingCancellation) {
+      await this.waitWithTimeout({
+        operation: pendingCancellation.then(
+          () => undefined,
+          () => undefined,
+        ),
+        timeoutMs: this.rescueTimeouts.interruptSessionMs,
+      });
+    }
+    const agent = this.requireSessionAgent(agentId);
+    try {
+      return await operation(agent);
+    } catch (error) {
+      if (!isStaleProviderSessionError(error)) throw error;
+      await this.runs.getPendingRun(agentId)?.settledPromise.catch(() => undefined);
+      if (this.hasInFlightRun(agentId)) throw error;
+      await this.trackAgentRegistrationOperation(this.reloadAgentSessionInternal(agentId));
+      return await operation(this.requireSessionAgent(agentId));
+    }
+  }
+
   async setAgentMode(agentId: string, modeId: string): Promise<AgentProviderNotice | null> {
-    return this.runLifecycleMutation(agentId, async () => {
-      const agent = this.requireSessionAgent(agentId);
-      const factoryRunner = await this.factoryHostRunner(agentId, agent.workspaceId);
-      if (factoryRunner) this.assertFactoryHostRunner(factoryRunner, agent.config, modeId);
-      const notice = (await agent.session.setMode(modeId)) ?? null;
-      await this.drainSessionEvents(agentId);
-      const currentMode = (await agent.session.getCurrentMode()) ?? modeId;
-      agent.config.modeId = currentMode ?? undefined;
-      agent.currentModeId = currentMode;
-      // Update runtimeInfo to reflect the new mode
-      if (agent.runtimeInfo) {
-        agent.runtimeInfo = { ...agent.runtimeInfo, modeId: currentMode };
-      }
-      this.touchUpdatedAt(agent);
-      this.emitState(agent);
-      return notice;
-    });
+    return this.runLifecycleMutation(agentId, () =>
+      this.withLiveInteractiveSessionUnlocked(agentId, async (agent) => {
+        const factoryRunner = await this.factoryHostRunner(agentId, agent.workspaceId);
+        if (factoryRunner) this.assertFactoryHostRunner(factoryRunner, agent.config, modeId);
+        const notice = (await agent.session.setMode(modeId)) ?? null;
+        await this.drainSessionEvents(agentId);
+        const currentMode = (await agent.session.getCurrentMode()) ?? modeId;
+        agent.config.modeId = currentMode ?? undefined;
+        agent.currentModeId = currentMode;
+        // Update runtimeInfo to reflect the new mode
+        if (agent.runtimeInfo) {
+          agent.runtimeInfo = { ...agent.runtimeInfo, modeId: currentMode };
+        }
+        this.touchUpdatedAt(agent);
+        this.emitState(agent);
+        return notice;
+      }),
+    );
   }
 
   /** Null when the agent's provider does not report a context breakdown. */
@@ -5903,76 +5975,78 @@ export class AgentManager {
   }
 
   async setAgentModel(agentId: string, modelId: string | null): Promise<void> {
-    return this.runLifecycleMutation(agentId, async () => {
-      const agent = this.requireSessionAgent(agentId);
-      const normalizedModelId =
-        typeof modelId === "string" && modelId.trim().length > 0 ? modelId : null;
+    return this.runLifecycleMutation(agentId, () =>
+      this.withLiveInteractiveSessionUnlocked(agentId, async (agent) => {
+        const normalizedModelId =
+          typeof modelId === "string" && modelId.trim().length > 0 ? modelId : null;
 
-      if (agent.session.setModel) {
-        await agent.session.setModel(normalizedModelId);
-      }
-      await this.drainSessionEvents(agentId);
+        if (agent.session.setModel) {
+          await agent.session.setModel(normalizedModelId);
+        }
+        await this.drainSessionEvents(agentId);
 
-      agent.config.model = normalizedModelId ?? undefined;
-      if (agent.runtimeInfo) {
-        agent.runtimeInfo = { ...agent.runtimeInfo, model: normalizedModelId };
-      }
-      this.refreshSessionPersistence(agent);
-      this.touchUpdatedAt(agent);
-      this.emitState(agent);
-    });
+        agent.config.model = normalizedModelId ?? undefined;
+        if (agent.runtimeInfo) {
+          agent.runtimeInfo = { ...agent.runtimeInfo, model: normalizedModelId };
+        }
+        this.refreshSessionPersistence(agent);
+        this.touchUpdatedAt(agent);
+        this.emitState(agent);
+      }),
+    );
   }
 
   async setAgentThinkingOption(
     agentId: string,
     thinkingOptionId: string | null,
   ): Promise<AgentProviderNotice | null> {
-    return this.runLifecycleMutation(agentId, async () => {
-      const agent = this.requireSessionAgent(agentId);
-      const normalizedThinkingOptionId =
-        typeof thinkingOptionId === "string" && thinkingOptionId.trim().length > 0
-          ? thinkingOptionId
-          : null;
+    return this.runLifecycleMutation(agentId, () =>
+      this.withLiveInteractiveSessionUnlocked(agentId, async (agent) => {
+        const normalizedThinkingOptionId =
+          typeof thinkingOptionId === "string" && thinkingOptionId.trim().length > 0
+            ? thinkingOptionId
+            : null;
 
-      let notice: AgentProviderNotice | null = null;
-      if (agent.session.setThinkingOption) {
-        notice = (await agent.session.setThinkingOption(normalizedThinkingOptionId)) ?? null;
-      }
-      await this.drainSessionEvents(agentId);
+        let notice: AgentProviderNotice | null = null;
+        if (agent.session.setThinkingOption) {
+          notice = (await agent.session.setThinkingOption(normalizedThinkingOptionId)) ?? null;
+        }
+        await this.drainSessionEvents(agentId);
 
-      let effectiveThinkingOptionId = normalizedThinkingOptionId;
-      const runtimeInfo = await agent.session.getRuntimeInfo();
-      if (runtimeInfo.thinkingOptionId !== undefined) {
-        effectiveThinkingOptionId = runtimeInfo.thinkingOptionId;
-      }
+        let effectiveThinkingOptionId = normalizedThinkingOptionId;
+        const runtimeInfo = await agent.session.getRuntimeInfo();
+        if (runtimeInfo.thinkingOptionId !== undefined) {
+          effectiveThinkingOptionId = runtimeInfo.thinkingOptionId;
+        }
 
-      agent.config.thinkingOptionId = effectiveThinkingOptionId ?? undefined;
-      if (agent.runtimeInfo) {
-        agent.runtimeInfo = {
-          ...agent.runtimeInfo,
-          thinkingOptionId: effectiveThinkingOptionId,
-        };
-      }
-      this.touchUpdatedAt(agent);
-      this.emitState(agent);
-      return notice;
-    });
+        agent.config.thinkingOptionId = effectiveThinkingOptionId ?? undefined;
+        if (agent.runtimeInfo) {
+          agent.runtimeInfo = {
+            ...agent.runtimeInfo,
+            thinkingOptionId: effectiveThinkingOptionId,
+          };
+        }
+        this.touchUpdatedAt(agent);
+        this.emitState(agent);
+        return notice;
+      }),
+    );
   }
 
   async setAgentFeature(agentId: string, featureId: string, value: unknown): Promise<void> {
-    return this.runLifecycleMutation(agentId, async () => {
-      const agent = this.requireAgent(agentId);
+    return this.runLifecycleMutation(agentId, () =>
+      this.withLiveInteractiveSessionUnlocked(agentId, async (agent) => {
+        if (!agent.session.setFeature) {
+          throw new Error("Agent session does not support setting features");
+        }
 
-      if (!agent.session.setFeature) {
-        throw new Error("Agent session does not support setting features");
-      }
-
-      await agent.session.setFeature(featureId, value);
-      await this.drainSessionEvents(agentId);
-      agent.config.featureValues = { ...agent.config.featureValues, [featureId]: value };
-      this.touchUpdatedAt(agent);
-      this.emitState(agent);
-    });
+        await agent.session.setFeature(featureId, value);
+        await this.drainSessionEvents(agentId);
+        agent.config.featureValues = { ...agent.config.featureValues, [featureId]: value };
+        this.touchUpdatedAt(agent);
+        this.emitState(agent);
+      }),
+    );
   }
 
   async setTitle(agentId: string, title: string): Promise<void> {
@@ -7537,7 +7611,15 @@ export class AgentManager {
       }
       if (!hadRun) return { status: "not_running" };
     }
-    return this.runForegroundMutation(agentId, () => this.cancelAgentRunNow(agentId));
+    const cancellation = this.runForegroundMutation(agentId, () => this.cancelAgentRunNow(agentId));
+    this.pendingCancellations.set(agentId, cancellation);
+    try {
+      return await cancellation;
+    } finally {
+      if (this.pendingCancellations.get(agentId) === cancellation) {
+        this.pendingCancellations.delete(agentId);
+      }
+    }
   }
 
   private async pauseGoalForManualStop(agentId: string): Promise<void> {
@@ -8094,6 +8176,7 @@ export class AgentManager {
       publishWhenReady?: boolean;
       workspaceId?: string;
       owner?: AgentOwner;
+      createdByAgentId?: string | null;
       launchEnv?: Record<string, string>;
       workerGovernance?: WorkerGovernance;
     },
@@ -8105,7 +8188,7 @@ export class AgentManager {
       if (this.agents.has(resolvedAgentId)) {
         throw new Error(`Agent with id ${resolvedAgentId} already exists`);
       }
-      const initialPersistedTitle = await this.resolveInitialPersistedTitle(
+      const { title: initialPersistedTitle, authority } = await this.readRegistrationMetadata(
         resolvedAgentId,
         config,
         options?.initialTitle ?? null,
@@ -8127,6 +8210,7 @@ export class AgentManager {
         options,
       });
 
+      Object.assign(managed, authority);
       await this.restoreGoalPersistence(managed, options);
       // Read history before publishing the agent: a provider failure must leave the
       // session unregistered so the registration catch closes it.
@@ -8321,6 +8405,7 @@ export class AgentManager {
           persistence?: AgentPersistenceHandle;
           workspaceId?: string;
           owner?: AgentOwner;
+          createdByAgentId?: string | null;
           launchEnv?: Record<string, string>;
         }
       | undefined;
@@ -8338,6 +8423,7 @@ export class AgentManager {
       cwd: config.cwd,
       workspaceId: options?.workspaceId,
       owner: options?.owner,
+      createdByAgentId: options?.createdByAgentId,
       launchEnv: options?.launchEnv,
       session,
       capabilities: session.capabilities,
@@ -8653,20 +8739,25 @@ export class AgentManager {
     );
   }
 
-  private async resolveInitialPersistedTitle(
+  private async readRegistrationMetadata(
     agentId: string,
     config: AgentSessionConfig,
     fallbackTitle: string | null,
-  ): Promise<string | null> {
+  ): Promise<RegistrationMetadata> {
     const existing = await this.registry?.get(agentId);
     if (existing) {
-      return existing.title ?? null;
+      return {
+        title: existing.title ?? null,
+        authority: {
+          workerGovernance: structuredClone(existing.workerGovernance),
+          ...(existing.createdByAgentId !== undefined
+            ? { createdByAgentId: existing.createdByAgentId }
+            : {}),
+        },
+      };
     }
-    const explicitTitle =
-      typeof config.title === "string" && config.title.trim().length > 0
-        ? config.title.trim()
-        : null;
-    return explicitTitle ?? fallbackTitle;
+    const title = config.title?.trim() || fallbackTitle;
+    return { title, authority: {} };
   }
 
   private async persistWorkerGovernance(
@@ -8689,6 +8780,7 @@ export class AgentManager {
         "worker-governance-unavailable",
       );
     }
+    agent.workerGovernance = structuredClone(governance);
   }
 
   private async persistSnapshot(
@@ -8743,8 +8835,7 @@ export class AgentManager {
     }
 
     try {
-      const pending = agent.session.getPendingPermissions();
-      agent.pendingPermissions = new Map(pending.map((request) => [request.id, request]));
+      this.adoptPendingPermissions(agent, agent.session.getPendingPermissions());
     } catch {
       agent.pendingPermissions.clear();
     }
@@ -9465,7 +9556,9 @@ export class AgentManager {
     event: Extract<AgentStreamEvent, { type: "permission_requested" }>,
   ): void {
     const hadPendingPermissions = agent.pendingPermissions.size > 0;
-    agent.pendingPermissions.set(event.request.id, event.request);
+    const request = this.recordPermissionContext(agent, event.request);
+    agent.pendingPermissions.set(request.id, request);
+    this.armPermissionEscalation(agent, request);
     this.refreshSessionPersistence(agent);
     if (!hadPendingPermissions && !agent.internal) {
       this.broadcastAgentAttention(agent, "permission");
@@ -9775,7 +9868,124 @@ export class AgentManager {
     return row;
   }
 
+  /**
+   * When and where a permission was requested (#659): the daemon's time, so a client never relies
+   * on its own clock, and the timeline position, so "Open thread" outside the thread lands on it.
+   * A position means something only within its timeline epoch, so both are recorded.
+   */
+  private recordPermissionContext(
+    agent: ManagedAgent,
+    request: AgentPermissionRequest,
+    known?: AgentPermissionRequest,
+  ): AgentPermissionRequest {
+    const recorded = { ...known?.metadata, ...request.metadata };
+    if (typeof recorded.askedAt === "string") {
+      // Already recorded, by this daemon or by the provider: keep it, never restart the clock.
+      return { ...request, metadata: pickPermissionContext(recorded, request.metadata) };
+    }
+    const askedSeq = this.timelineStore.has(agent.id)
+      ? this.timelineStore.getLatestSeq(agent.id)
+      : null;
+    return {
+      ...request,
+      metadata: {
+        ...request.metadata,
+        askedAt: new Date().toISOString(),
+        ...(askedSeq === null
+          ? {}
+          : { askedSeq, askedEpoch: this.timelineStore.getEpoch(agent.id) }),
+      },
+    };
+  }
+
+  /**
+   * Replaces the pending approvals with the session's own list, keeping what this daemon recorded
+   * for each one by id (#659): when it was asked and where. Every approval, however it arrived,
+   * gets its escalation timer.
+   */
+  private adoptPendingPermissions(
+    agent: ManagedAgent,
+    requests: readonly AgentPermissionRequest[],
+  ): void {
+    const previous = agent.pendingPermissions;
+    // Questions have their own card and no escalation; they pass through as the session has them.
+    agent.pendingPermissions = new Map(
+      requests.map((request) => [
+        request.id,
+        request.kind === "question"
+          ? request
+          : this.recordPermissionContext(agent, request, previous.get(request.id)),
+      ]),
+    );
+    for (const request of agent.pendingPermissions.values()) {
+      if (request.kind !== "question") this.armPermissionEscalation(agent, request);
+    }
+  }
+
+  /**
+   * An approval still unanswered PERMISSION_OWNER_ESCALATION_MS after its recorded askedAt reaches
+   * the owner, whoever created the thread (#659): a supervising thread that was told may still
+   * never answer. The flag is derived from askedAt on every emit; this timer only re-sends the
+   * thread's state when the bound passes. One timer per approval id.
+   */
+  private armPermissionEscalation(agent: ManagedAgent, request: AgentPermissionRequest): void {
+    const key = `${agent.id}:${request.id}`;
+    if (this.escalationTimers.has(key)) return;
+    const askedAt = Date.parse(String(request.metadata?.askedAt ?? ""));
+    if (Number.isNaN(askedAt)) return;
+    const remaining = askedAt + this.permissionOwnerEscalationMs - Date.now();
+    const timer = setTimeout(
+      () => {
+        this.escalationTimers.delete(key);
+        // The live agent: the one this timer was armed with may have been replaced since.
+        const live = this.agents.get(agent.id);
+        if (live?.pendingPermissions.has(request.id)) this.emitState(live);
+      },
+      Math.max(0, remaining),
+    );
+    timer.unref?.();
+    this.escalationTimers.set(key, timer);
+  }
+
+  /** Marks approvals pending past the bound, from their recorded askedAt (#659). */
+  private markEscalatedPermissions(agent: ManagedAgent): void {
+    const now = Date.now();
+    for (const [id, request] of agent.pendingPermissions) {
+      if (request.metadata?.ownerEscalated === true) continue;
+      const askedAt = Date.parse(String(request.metadata?.askedAt ?? ""));
+      if (Number.isNaN(askedAt) || now - askedAt < this.permissionOwnerEscalationMs) continue;
+      agent.pendingPermissions.set(id, {
+        ...request,
+        metadata: { ...request.metadata, ownerEscalated: true },
+      });
+    }
+  }
+
+  /**
+   * Supplies whether a thread's creator still holds a live finish subscription for it, so it will
+   * be told of the thread's approvals (#659). Without a probe, no creator counts as watching.
+   */
+  setCreatorWatchProbe(probe: (creatorAgentId: string, childAgentId: string) => boolean): void {
+    this.creatorWatchProbe = probe;
+  }
+
+  /** Re-sends a thread's state after its creator started or stopped watching it. */
+  refreshCreatorWatch(childAgentId: string): void {
+    const agent = this.agents.get(childAgentId);
+    if (!agent || agent.internal || !agent.createdByAgentId) return;
+    const watched = this.isWatchedByCreator(agent);
+    if (watched === agent.permissionWatchedByCreator) return;
+    this.emitState(agent, { persist: false });
+  }
+
+  private isWatchedByCreator(agent: ManagedAgent): boolean {
+    const creator = agent.createdByAgentId;
+    return Boolean(creator && this.creatorWatchProbe?.(creator, agent.id));
+  }
+
   private emitState(agent: ManagedAgent, options?: { persist?: boolean }): void {
+    if (agent.createdByAgentId) agent.permissionWatchedByCreator = this.isWatchedByCreator(agent);
+    this.markEscalatedPermissions(agent);
     // Keep attention as an edge-triggered unread signal, not a level signal.
     this.checkAndSetAttention(agent);
     if (options?.persist !== false) {

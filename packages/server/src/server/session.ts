@@ -25,6 +25,7 @@ import {
 import { browseProjectDirectories, projectDirectoryEnvironment } from "./project-directories.js";
 import { assertWorkspaceEnvironment } from "./execution-installation/settings/project-policies.js";
 import {
+  findNewProjectRejection,
   projectsFolderPolicyFor,
   ProjectsFolderError,
   toLogicalProjectsPath,
@@ -3733,7 +3734,7 @@ export class Session {
           name: msg.name,
         }).then((account) => {
           // Usage and status now read the account's full sign-in instead of its setup token.
-          this.providerUsageService.invalidate();
+          this.providerUsageService.invalidate(account.providerId);
           void this.providerSnapshotManager
             .refreshSettingsSnapshot({ providers: [account.providerId] })
             .catch((error) => {
@@ -6295,6 +6296,19 @@ export class Session {
     msg: Extract<SessionInboundMessage, { type: "set_daemon_config_request" }>,
   ): Promise<void> {
     const { presetFence, ...rest } = msg.config;
+    if (!isOwnerAppClient(this.clientType)) {
+      if (Object.hasOwn(rest, "accountQuotaPolicy"))
+        throw new Error("Only the owner's app can change the account quota policy.");
+      const changesAutomatic = Object.values(rest.providers ?? {}).some((provider) =>
+        Object.hasOwn(provider, "automaticPrimary"),
+      );
+      const removesAutomatic = rest.removeProviders?.some(
+        (id) => this.daemonConfigStore.get().providers[id]?.automaticPrimary !== undefined,
+      );
+      // The store independently admits full installation projections against coordinator state.
+      if (changesAutomatic || removesAutomatic)
+        throw new Error("Only the owner's app can change automatic primary account eligibility.");
+    }
     if (Object.hasOwn(msg.config, "presetFence")) await this.savePresetFence(presetFence ?? null);
     const config =
       Object.keys(rest).length > 0
@@ -9277,22 +9291,10 @@ export class Session {
   private async rejectNewProjectOutsideProjectsFolder(
     cwd: string,
   ): Promise<ProjectsFolderError | null> {
-    if (!this.projectsFolder) return null;
-    const [projects, workspaces] = await Promise.all([
-      this.projectRegistry.list(),
-      this.workspaceRegistry.list(),
-    ]);
-    const paths = [
-      ...projects.map((project) => project.rootPath),
-      ...workspaces.map((workspace) => workspace.cwd),
-    ];
-    try {
-      await this.projectsFolder.assertNewProjectDirectory(cwd, { paths });
-      return null;
-    } catch (error) {
-      if (error instanceof ProjectsFolderError) return error;
-      throw error;
-    }
+    return findNewProjectRejection(this.projectsFolder, cwd, {
+      projectRegistry: this.projectRegistry,
+      workspaceRegistry: this.workspaceRegistry,
+    });
   }
 
   private async projectsFolderBrowseContext(): Promise<{

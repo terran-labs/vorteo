@@ -1,0 +1,5 @@
+{"t_ms": 120, "stream": "stderr", "data": "Authentication required. Please visit the URL to log in:"}
+{"t_ms": 120, "stream": "stderr", "data": "  https://accounts.google.com/o/oauth2/auth?access_type=offline&client_id=example&code_challenge=example&code_challenge_method=S256&prompt=consent&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback&response_type=code&scope=openid&state=example"}
+{"t_ms": 120, "stream": "stderr", "data": ""}
+{"t_ms": 120, "stream": "stderr", "data": "Waiting for authentication (timeout 60s)..."}
+{"t_ms": 120, "stream": "stderr", "data": "Or, paste the authorization code here and press Enter:"}

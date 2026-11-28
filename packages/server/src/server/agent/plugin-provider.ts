@@ -14,6 +14,7 @@ import {
   type ProviderLaunch,
   requireProviderCapabilities,
   type ProviderCapability,
+  type ProviderCommand,
   type ProviderConfigChanges,
   type ProviderConfigState,
   type ProviderConnection,
@@ -63,6 +64,7 @@ import {
   createProviderEnv,
   type ProviderRuntimeSettings,
 } from "./provider-launch-config.js";
+import { describeExecutableSearch } from "../../executable-resolution/executable-resolution.js";
 import type { RegisteredProviderDefinition } from "./provider-registry.js";
 import { runProviderTurn } from "./providers/provider-runner.js";
 import { StaleProviderSessionError } from "./stale-provider-session-error.js";
@@ -126,13 +128,30 @@ function isProviderRequestReply(
   );
 }
 
-/** The provider's CLI is not on PATH. Snapshots report this as unavailable, never as an error. */
+/** The provider's CLI is not on PATH or fallback user bin dirs. Snapshots report this as unavailable. */
 class ProviderExecutableNotFound extends Error {
-  constructor(command: string) {
-    super(`${command} not found on PATH`);
+  constructor(
+    command: string,
+    options?: {
+      env?: Record<string, string>;
+      providerId?: string;
+      includeFallbackDirs?: boolean;
+    },
+  ) {
+    super(describeExecutableSearch(command, options));
     this.name = "ProviderExecutableNotFound";
   }
 }
+
+// Advertise only capabilities this host bridge actually implements and consumes.
+const UNIMPLEMENTED_HOST_CAPABILITIES = new Set<ProviderCapability>([
+  "session.launch_wrap",
+  "session.metrics",
+  "request.cancel",
+]);
+const HOST_PROVIDER_CAPABILITIES: readonly ProviderCapability[] = PROVIDER_CAPABILITIES.filter(
+  (capability) => !UNIMPLEMENTED_HOST_CAPABILITIES.has(capability),
+);
 
 class ProviderRuntime {
   private connection: ProviderConnection | null = null;
@@ -170,10 +189,22 @@ class ProviderRuntime {
       defaultBinary: command[0],
     });
     if (launch.source !== "override") launch.args.unshift(...command.slice(1));
+    const includeFallbackDirs = this.runtimeSettings?.env?.PATH === undefined;
     const env = createProviderEnv({ runtimeSettings: this.runtimeSettings });
+    const rawCommand = launch.command;
+    if (rawCommand.includes("/") || rawCommand.includes("\\")) {
+      launch.command = resolvePath(rawCommand);
+    }
     launch.env = env;
+    launch.includeFallbackDirs = includeFallbackDirs;
     const availability = await checkProviderLaunchAvailable(launch);
-    if (!availability.resolvedPath) throw new ProviderExecutableNotFound(launch.command);
+    if (!availability.resolvedPath) {
+      throw new ProviderExecutableNotFound(rawCommand, {
+        env,
+        providerId: this.registration.id,
+        includeFallbackDirs,
+      });
+    }
     return { command: resolvePath(availability.resolvedPath), args: launch.args, env };
   }
 
@@ -398,7 +429,7 @@ class ProviderRuntime {
     const rawConnection = await this.registration.connect({
       launch: await this.resolveLaunch(),
       versions: [PROVIDER_PROTOCOL_VERSION],
-      capabilities: PROVIDER_CAPABILITIES,
+      capabilities: HOST_PROVIDER_CAPABILITIES,
     });
     if (this.closed || generation !== this.generation) {
       await rawConnection.close().catch(() => undefined);
@@ -622,7 +653,7 @@ class ProviderRuntimeSession {
   private terminal = false;
   private closePromise: Promise<void> | null = null;
   config: ProviderConfigState = { models: [], modes: [], thinkingOptions: [], settings: [] };
-  commands: Array<{ name: string; description: string; argumentHint?: string }> = [];
+  commands: ProviderCommand[] = [];
   persistence: ProviderPersistence | null = null;
 
   constructor(
@@ -698,6 +729,7 @@ class ProviderRuntimeSession {
   }
 
   async configure(changes: ProviderConfigChanges): Promise<void> {
+    if (this.terminal) throw new StaleProviderSessionError(this.id);
     const input: Extract<ProviderInput, { type: "session.configure" }> = {
       type: "session.configure",
       requestId: randomUUID(),
@@ -840,7 +872,9 @@ class ProviderRuntimeSession {
   }
 
   private normalizeSessionCapabilities(capabilities: readonly string[]): ProviderCapability[] {
-    const known = PROVIDER_CAPABILITIES.filter((capability) => capabilities.includes(capability));
+    const known = HOST_PROVIDER_CAPABILITIES.filter((capability) =>
+      capabilities.includes(capability),
+    );
     for (const capability of known) {
       if (!this.connection.capabilities.includes(capability)) {
         throw new Error(`Provider session selected unoffered capability ${capability}`);
@@ -865,7 +899,7 @@ class ProviderRuntimeSession {
 }
 
 function normalizeConnection(connection: ProviderConnection): ProviderConnection {
-  const capabilities = PROVIDER_CAPABILITIES.filter((capability) =>
+  const capabilities = HOST_PROVIDER_CAPABILITIES.filter((capability) =>
     connection.capabilities.includes(capability),
   );
   return {
@@ -1142,7 +1176,7 @@ class PluginAgentClient implements AgentClient {
             mode: state.mode,
             thinkingOption: state.thinkingOption,
             settings: Object.fromEntries(
-              state.settings.map((setting) => [setting.id, setting.value]),
+              (state.settings ?? []).map((setting) => [setting.id, setting.value]),
             ),
           },
           persistence,
@@ -1264,14 +1298,21 @@ class PluginAgentSession implements AgentSession {
   }
 
   get features(): AgentFeature[] {
-    return this.bridge.config.settings.map((setting) =>
-      setting.type === "toggle"
-        ? { ...setting }
-        : {
-            ...setting,
-            options: setting.options.map((option) => ({ ...option, id: option.value })),
-          },
-    );
+    const settings = this.bridge.config.settings;
+    if (!settings) return [];
+    const features: AgentFeature[] = [];
+    for (const setting of settings) {
+      if (setting.type === "toggle") {
+        features.push({ ...setting });
+      } else {
+        const options = [];
+        for (const option of setting.options) {
+          options.push({ ...option, id: option.value });
+        }
+        features.push({ ...setting, options });
+      }
+    }
+    return features;
   }
 
   async run(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentRunResult> {
@@ -1413,7 +1454,7 @@ class PluginAgentSession implements AgentSession {
     return this.bridge.commands.map((command) => ({
       ...command,
       argumentHint: command.argumentHint ?? "",
-      kind: "command",
+      kind: command.kind ?? "command",
     }));
   }
 
@@ -1842,14 +1883,21 @@ function mapModel(
   catalogThinkingOptions: Extract<ProviderEvent, { type: "catalog" }>["catalog"]["thinkingOptions"],
   catalogDefaultThinkingOption: string | undefined,
 ): AgentModelDefinition {
-  const thinkingOptions = model.thinkingOptions ?? catalogThinkingOptions;
+  // A default belongs to the options it was chosen from, so a model with its own options never
+  // takes the catalog's default.
+  const thinking = model.thinkingOptions
+    ? { options: model.thinkingOptions, defaultId: model.defaultThinkingOptionId }
+    : {
+        options: catalogThinkingOptions,
+        defaultId: model.defaultThinkingOptionId ?? catalogDefaultThinkingOption,
+      };
   return {
     ...model,
     provider,
     isDefault: model.isDefault ?? model.id === defaultModel,
     metadata: model.metadata ? { ...model.metadata } : undefined,
-    thinkingOptions: thinkingOptions?.map((option) => Object.assign({}, option)),
-    defaultThinkingOptionId: model.defaultThinkingOptionId ?? catalogDefaultThinkingOption,
+    thinkingOptions: thinking.options?.map((option) => Object.assign({}, option)),
+    defaultThinkingOptionId: thinking.defaultId,
   };
 }
 

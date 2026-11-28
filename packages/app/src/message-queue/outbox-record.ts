@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { QueueOperationSchema, type QueueSnapshot } from "@getpaseo/protocol/message-queue";
+import { QueueChangeOperationSchema, type QueueSnapshot } from "@getpaseo/protocol/message-queue";
 
 export const LocalQueueAttachmentSchema = z.object({
   kind: z.enum(["image", "file"]),
@@ -22,9 +22,9 @@ export const OutboxRecordSchema = z.object({
   revision: z.number().int().nonnegative(),
   createdAt: z.number(),
   order: z.number().int().nonnegative().optional(),
-  operation: QueueOperationSchema,
+  operation: QueueChangeOperationSchema,
   localAttachments: z.array(LocalQueueAttachmentSchema).max(32),
-  prepared: QueueOperationSchema.nullable(),
+  prepared: QueueChangeOperationSchema.nullable(),
   error: z.object({ code: z.string(), message: z.string() }).nullable(),
   dismissed: z.boolean().optional(),
   // An edit keeps the message it replaced, so a rejection can say what happened to it.

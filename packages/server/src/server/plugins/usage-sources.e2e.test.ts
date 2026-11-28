@@ -113,31 +113,38 @@ test("lists built-in and subprocess usage; validates input and isolates fetch er
       problem: { kind: "expired", expiresAt: expect.any(String), refreshedBy: "claude" },
     });
     const legacy = await client.listProviderUsage({ requestId: "account-usage" });
-    expect(legacy).toEqual({
-      requestId: "account-usage",
-      fetchedAt: expect.stringMatching(/^\d{4}-/),
-      providers: [
+    // Each legacy field exactly; the response may carry additive optional fields such as
+    // automaticPrimary (COMPAT(primaryConnectionAutomatic)), which this case does not forbid.
+    expect(legacy.requestId).toBe("account-usage");
+    expect(legacy.fetchedAt).toMatch(/^\d{4}-/);
+    const unavailableEntry = (providerId: string, displayName: string) => ({
+      providerId,
+      displayName,
+      status: "unavailable",
+      planLabel: null,
+      windows: [],
+      balances: [],
+      details: [],
+      error: null,
+    });
+    expect(legacy.providers).toEqual([
+      ...[
         ["copilot", "GitHub Copilot"],
         ["cursor", "Cursor"],
         ["zai", "Z.ai"],
         ["grok", "Grok"],
         ["kimi", "Kimi"],
         ["minimax", "MiniMax"],
-        ["fixture-codex", "Isolated account"],
-      ].map(([providerId, displayName]) => ({
-        providerId,
-        displayName,
-        status: "unavailable",
-        planLabel: null,
-        windows: [],
-        balances: [],
-        details: [],
-        error: null,
-      })),
-      workerActivity: {
-        checkedAt: expect.stringMatching(/^\d{4}-/),
-        runningByProvider: {},
+      ].map(([providerId, displayName]) => unavailableEntry(providerId, displayName)),
+      {
+        ...unavailableEntry("antigravity", "Antigravity"),
+        fetchedAt: expect.stringMatching(/^\d{4}-/),
       },
+      unavailableEntry("fixture-codex", "Isolated account"),
+    ]);
+    expect(legacy.workerActivity).toEqual({
+      checkedAt: expect.stringMatching(/^\d{4}-/),
+      runningByProvider: {},
     });
     expect(network).not.toHaveBeenCalled();
     await client.patchDaemonConfig({ pluginsEnabled: true });

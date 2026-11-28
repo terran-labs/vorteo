@@ -1128,6 +1128,8 @@ async function resolveMcpCreateAgent(
       ...(Object.keys(intent.labels).length > 0 ? { labels: intent.labels } : {}),
       workspaceId: intent.workspaceId,
       owner: input.owner,
+      // The authenticated caller, never a label: whose prompts this thread's approvals reach.
+      ...(intent.parentAgentId ? { createdByAgentId: intent.parentAgentId } : {}),
       env: input.env,
       workerGovernance,
     },

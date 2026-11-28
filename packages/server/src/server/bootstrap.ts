@@ -222,7 +222,12 @@ import {
   FileBackedWorkspaceRegistry,
   type WorkspaceArchiveContext,
 } from "./workspace-registry.js";
-import { setActiveProjectsFolder } from "./projects-folder.js";
+import {
+  findNewProjectRejection,
+  projectsFolderPolicyFor,
+  setActiveProjectsFolder,
+} from "./projects-folder.js";
+import { isDaemonStateDirectory } from "./agent/tools/workspace-ownership.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { ScheduleService } from "./schedule/service.js";
 import { QuotaSchedulePreflight } from "./schedule/quota-preflight.js";
@@ -1186,6 +1191,8 @@ export async function createPaseoDaemon(
   const agentStorage = new AgentStorage(config.agentStoragePath, logger);
   // Before any registry parses a path, so alias paths load and store in logical form.
   setActiveProjectsFolder(config.projectsFolder);
+  // The same Projects folder rule the add project request applies to agent-registered projects.
+  const newProjectPolicy = projectsFolderPolicyFor(config.projectsFolder);
   const projectRegistry = new FileBackedProjectRegistry(
     path.join(config.paseoHome, "projects", "projects.json"),
     logger,
@@ -2319,6 +2326,8 @@ export async function createPaseoDaemon(
     serverId,
     logger,
     waitForRestartHoldRelease: (signal) => agentManager.waitForRestartHoldRelease(signal),
+    // A creator that stops watching a child no longer counts as able to answer its approvals.
+    onWatchesChanged: (childAgentId) => agentManager.refreshCreatorWatch(childAgentId),
     messages: () => {
       if (!wsServer) throw new Error("Daemon is not accepting agent messages");
       return wsServer.agentMessages;
@@ -2353,6 +2362,10 @@ export async function createPaseoDaemon(
       },
     }),
   });
+
+  agentManager.setCreatorWatchProbe((creatorAgentId, childAgentId) =>
+    finishSubscriptions.isWatchedBy(creatorAgentId, childAgentId),
+  );
 
   const idleRuntimeCleanup = createIdleRuntimeCleanup({
     enabled: daemonConfigStore.get().idleRuntimeCleanup !== false,
@@ -2407,6 +2420,20 @@ export async function createPaseoDaemon(
       );
       await emitWorkspaceUpdatesExternal([workspace.workspaceId]);
       return workspace;
+    },
+    registerProjectForDirectory: async (cwd) => {
+      // Whatever the Projects folder policy says, the daemon's own state is never a project.
+      if (isDaemonStateDirectory(cwd, config.paseoHome)) {
+        throw new Error(
+          `${cwd} holds or contains this daemon's own state, so it cannot become a project. Pass projectId to file it under an existing project.`,
+        );
+      }
+      const rejection = await findNewProjectRejection(newProjectPolicy, cwd, {
+        projectRegistry,
+        workspaceRegistry,
+      });
+      if (rejection) throw rejection;
+      return workspaceProvisioning.findOrCreateProjectForDirectory(cwd);
     },
     workspaceScripts: createWorkspaceScriptsService({
       serviceProxy,
@@ -2891,11 +2918,13 @@ export async function createPaseoDaemon(
   };
 
   /** onStep names each awaited stage, so a stalled shutdown reports where it stopped. */
-  const stop = async (options?: { onStep?: (step: string) => void; keepTerminals?: boolean }) => {
+  const stop = async (
+    options: { onStep?: (step: string) => void; keepTerminals?: boolean } = {},
+  ) => {
     // A pending start can finish after shutdown has begun.
     dashboardStopRequested = true;
     const dashboardStopped = dashboard.stop();
-    const step = options?.onStep ?? (() => {});
+    const step = options.onStep ?? (() => {});
     optimizerAgent?.stop();
     projectFactoryService?.stop();
     // A stopped daemon never starts it later, even if seeding settles now.
@@ -2933,7 +2962,7 @@ export async function createPaseoDaemon(
     }
     step("governor observations");
     await governorObservations.stop();
-    const keepTerminals = options?.keepTerminals === true;
+    const keepTerminals = options.keepTerminals === true;
     let terminalShutdownError: unknown = null;
     localCredential = null;
     step("local credential");
@@ -2977,12 +3006,30 @@ export async function createPaseoDaemon(
       label: "drain plugin lifecycle events",
     }).catch((error) => logger.warn({ err: error }, "Plugin lifecycle events did not finish"));
     step("flush agents");
-    await agentManager.flushForShutdown().catch(() => undefined);
+    let shutdownFlushTimedOut = false;
+    await withTimeout({
+      promise: agentManager.flushForShutdown(),
+      timeoutMs: AGENT_CLOSE_TIMEOUT_MS,
+      label: "flush agent shutdown tasks",
+    }).catch((error) => {
+      shutdownFlushTimedOut = true;
+      logger.warn({ err: error }, "Agent shutdown tasks did not finish before provider shutdown");
+    });
     detachAgentStoragePersistence();
     step("agent storage");
     await agentStorage.flush().catch(() => undefined);
     step("provider runtime");
     await agentProviderRuntime.shutdown();
+    if (shutdownFlushTimedOut) {
+      await withTimeout({
+        promise: agentManager.flushForShutdown(),
+        timeoutMs: AGENT_CLOSE_TIMEOUT_MS,
+        label: "flush agent shutdown tasks after provider shutdown",
+      }).catch((error) =>
+        logger.warn({ err: error }, "Agent shutdown tasks did not finish after provider shutdown"),
+      );
+      await agentStorage.flush().catch(() => undefined);
+    }
     // Closing the connection never waits on the host and leaves its sessions running.
     sessionHostConnector.close();
     step("plugins");
