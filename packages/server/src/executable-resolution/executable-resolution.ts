@@ -1,6 +1,6 @@
 import { getProviderProbeCwd } from "../utils/provider-probe-cwd.js";
 import { constants, existsSync } from "node:fs";
-import { access, stat } from "node:fs/promises";
+import { access, lstat, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { ProcessEnvRecord } from "../server/paseo-env.js";
@@ -26,9 +26,32 @@ function resolveAbsoluteHome(env?: ProcessEnvRecord): string | null {
   return null;
 }
 
-async function isExecutableFile(filePath: string): Promise<boolean> {
+function isTrustedPosixOwner(info: { uid: number }): boolean {
+  const uid = process.getuid?.();
+  return uid === undefined || info.uid === uid || info.uid === 0;
+}
+
+function isTrustedPosixOwnerAndMode(info: { uid: number; mode: number }): boolean {
+  return (info.mode & 0o002) === 0 && isTrustedPosixOwner(info);
+}
+
+async function isTrustedFallbackDir(dir: string): Promise<boolean> {
   try {
-    if (!(await stat(filePath)).isFile()) return false;
+    const linkInfo = await lstat(dir);
+    if (!isTrustedPosixOwner(linkInfo)) return false;
+    const info = linkInfo.isSymbolicLink() ? await stat(dir) : linkInfo;
+    return info.isDirectory() && isTrustedPosixOwnerAndMode(info);
+  } catch {
+    return false;
+  }
+}
+
+async function isTrustedExecutableFile(filePath: string): Promise<boolean> {
+  try {
+    const linkInfo = await lstat(filePath);
+    if (!isTrustedPosixOwner(linkInfo)) return false;
+    const targetInfo = linkInfo.isSymbolicLink() ? await stat(filePath) : linkInfo;
+    if (!targetInfo.isFile() || !isTrustedPosixOwnerAndMode(targetInfo)) return false;
     await access(filePath, constants.X_OK);
     return true;
   } catch {
@@ -249,20 +272,24 @@ export async function findExecutable(
     return (await probeExecutable(candidate, { probeTimeoutMs, env })) ? trimmed : null;
   }
 
-  const candidates = await enumerateCandidates(trimmed, env);
-  if (includeFallbackDirs) {
-    const seen = new Set(candidates);
-    for (const dir of fallbackExecutableDirs(env)) {
-      const candidate = join(dir, trimmed);
-      if (!seen.has(candidate) && (await isExecutableFile(candidate))) {
-        seen.add(candidate);
-        candidates.push(candidate);
-      }
-    }
-  }
-  for (const candidate of candidates) {
+  const pathCandidates = await enumerateCandidates(trimmed, env);
+  for (const candidate of pathCandidates) {
     if (await probeExecutable(candidate, { probeTimeoutMs, env })) {
       return candidate;
+    }
+  }
+  if (!includeFallbackDirs) {
+    return null;
+  }
+  const seen = new Set(pathCandidates);
+  for (const dir of fallbackExecutableDirs(env)) {
+    if (!(await isTrustedFallbackDir(dir))) continue;
+    const candidate = join(dir, trimmed);
+    if (!seen.has(candidate) && (await isTrustedExecutableFile(candidate))) {
+      seen.add(candidate);
+      if (await probeExecutable(candidate, { probeTimeoutMs, env })) {
+        return candidate;
+      }
     }
   }
   return null;

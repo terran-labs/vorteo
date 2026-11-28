@@ -1,4 +1,12 @@
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -125,6 +133,42 @@ describe("findExecutable", () => {
       ).resolves.toBeNull();
       await expect(findExecutable(".", { env: { PATH: emptyPathDir } })).resolves.toBeNull();
       await expect(findExecutable("..", { env: { PATH: emptyPathDir } })).resolves.toBeNull();
+    });
+
+    test("refuses world-writable fallback directories and binaries", async () => {
+      const fakeHome = makeTempDir();
+      const localBin = path.join(fakeHome, ".local", "bin");
+      mkdirSync(localBin, { recursive: true });
+      const worldWritableBin = writeExecutable(
+        path.join(localBin, "ww-bin-cli"),
+        "#!/bin/sh\necho 1.0\n",
+      );
+      chmodSync(worldWritableBin, 0o777);
+      const emptyPathDir = makeTempDir();
+
+      await expect(
+        findExecutable("ww-bin-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
+      ).resolves.toBeNull();
+
+      const okBin = writeExecutable(path.join(localBin, "ww-dir-cli"), "#!/bin/sh\necho 1.0\n");
+      chmodSync(okBin, 0o755);
+      const targetDir = makeTempDir();
+      const targetBin = writeExecutable(path.join(targetDir, "real-cli"), "#!/bin/sh\necho 1.0\n");
+      const symlinkBin = path.join(localBin, "sym-cli");
+      symlinkSync(targetBin, symlinkBin);
+      await expect(
+        findExecutable("sym-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
+      ).resolves.toBe(symlinkBin);
+
+      chmodSync(targetBin, 0o777);
+      await expect(
+        findExecutable("sym-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
+      ).resolves.toBeNull();
+
+      chmodSync(localBin, 0o777);
+      await expect(
+        findExecutable("ww-dir-cli", { env: { PATH: emptyPathDir, HOME: fakeHome } }),
+      ).resolves.toBeNull();
     });
 
     test("omits searched PATH directories when describing an explicit missing binary path", () => {
