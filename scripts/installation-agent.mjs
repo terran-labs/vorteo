@@ -9,6 +9,14 @@ import { fileURLToPath } from "node:url";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 
+// Reply capabilities advertised by the standalone installation client.
+export const restartReplyCapabilities = Object.freeze({
+  engineRestart: "1",
+  engineRecovery: "1",
+  hostLauncherUpdate: "1",
+  bootEntrySwitch: "1",
+});
+
 // Same check as scripts/lib/builds-guard.mjs, kept inline because this client is copied and run
 // on its own (Dev guest, standalone coordinator CLI). Only Vorteo :: Builds submits requests.
 function assertBuildsCoordinator(action) {
@@ -926,10 +934,9 @@ if (
   const requestUrl = new URL(resource, base);
   if (["request-restart", "restart-status", "contribution-status"].includes(positionals[0])) {
     requestUrl.searchParams.set("requireOwnerApproval", "1");
-    requestUrl.searchParams.set("engineRestart", "1");
-    requestUrl.searchParams.set("engineRecovery", "1");
-    requestUrl.searchParams.set("hostLauncherUpdate", "1");
-    requestUrl.searchParams.set("bootEntrySwitch", "1");
+    for (const [name, value] of Object.entries(restartReplyCapabilities)) {
+      requestUrl.searchParams.set(name, value);
+    }
   }
   const requestOptions = {
     method: body ? "POST" : "GET",

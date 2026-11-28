@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { relative as relativePath } from "node:path";
 import test from "node:test";
 import { isVersionOnlyChange } from "./ci-neutralize-version-bumps.mjs";
+import { installerJob } from "./installer/ci-job-changed.mjs";
 import { AUDIT_COMMAND, auditInFreshCache, runAuditWithRetry } from "./npm-audit-signatures.mjs";
 import { runInNewContext } from "node:vm";
 
@@ -228,10 +229,6 @@ test("PR routing ignores manifests whose only change is the Vorteo version", () 
   const changes = jobBlocks(readFileSync(ciWorkflowPath, "utf8")).get("changes")?.join("\n") ?? "";
   assert.match(changes, /node scripts\/ci-neutralize-version-bumps\.mjs[\s\S]*dorny\/paths-filter/);
   assert.match(changes, /token: ""/);
-  assert.match(
-    changes,
-    /^      installer_inventory: \$\{\{ steps\.filter\.outputs\.installer_inventory \}\}$/m,
-  );
 
   const base =
     '{\n  "version": "1.0.0-vorteo.1",\n  "dependencies": { "@getpaseo/client": "1.0.0-vorteo.1" }\n}\n';
@@ -262,6 +259,11 @@ test("server builds exclude test utilities at every domain depth", () => {
 test("PR routing declares stable behavior ownership", () => {
   const filters = loadFilters(filtersPath);
   assert.deepEqual(filters, {
+    installer: [
+      "scripts/installer/**",
+      "scripts/install-execution-host*.mjs",
+      "scripts/installation-agent.mjs",
+    ],
     routing: [".github/ci-paths.yml"],
     workspace: [
       ".mise.toml",
@@ -282,11 +284,6 @@ test("PR routing declares stable behavior ownership", () => {
       "packages/expo-two-way-audio/**",
     ],
     quality: ["**/*.{cjs,js,json,jsx,mjs,ts,tsx}", "packages/expo-two-way-audio/**"],
-    installer_inventory: [
-      "scripts/installer/primitives.mjs",
-      "scripts/installer/container-inventory.mjs",
-      "scripts/install-execution-host.test.mjs",
-    ],
     hub: ["packages/cli/src/commands/hub/**", "packages/server/src/server/hub/**"],
     server: [
       "plugins/**",
@@ -498,6 +495,18 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
       cancelled: () => false,
     });
   const all = { full: "true" };
+  const installer = jobs.get("installer-tests").join("\n");
+  const workflow = readFileSync(ciWorkflowPath, "utf8");
+  assert.ok(installerJob(workflow)?.includes("scripts/install-execution-host.test.mjs"));
+  assert.notEqual(
+    installerJob(workflow),
+    installerJob(workflow.replace("name: Installer engine", "name: Installer cases")),
+  );
+  assert.equal(
+    installerJob(workflow),
+    installerJob(workflow.replace("name: changes", "name: Other routing")),
+  );
+  assert.equal(selected(installer, { heavy: "false", installer: "true" }, "pull_request"), true);
   for (const [jobId, lines] of jobs) {
     if (jobId === "changes") continue;
     const job = lines.join("\n");
@@ -911,13 +920,7 @@ test("quality preserves commands and routes each domain independently after fail
       "npm run typecheck:examples --workspace=@getpaseo/client",
     ],
   };
-  const allChecks = [...quality.matchAll(/        if: \$\{\{ (.+) \}\}\n        run: (.+)/g)];
-  const inventoryCommand =
-    "node_modules/.bin/vitest run scripts/install-execution-host.test.mjs -t 'container inventory'";
-  const inventoryChecks = allChecks.filter(([, , command]) => command === inventoryCommand);
-  assert.equal(inventoryChecks.length, 1);
-  const [, inventoryCondition] = inventoryChecks[0];
-  const checks = allChecks.filter(([, , command]) => command !== inventoryCommand);
+  const checks = [...quality.matchAll(/        if: \$\{\{ (.+) \}\}\n        run: (.+)/g)];
   assert.deepEqual(
     checks.map(([, , command]) => command),
     Object.values(commands).flat(),
@@ -951,17 +954,6 @@ test("quality preserves commands and routes each domain independently after fail
     assert.equal(accepts(expression, {}, { installed: false }), false);
   }
   assert.equal(accepts(jobCondition, {}, { cancelled: true }), false);
-  const inventorySelected = { ...disabled, quality: "true", installer_inventory: "true" };
-  assert.equal(accepts(jobCondition, inventorySelected), true);
-  assert.equal(accepts(inventoryCondition, inventorySelected), true);
-  assert.equal(
-    accepts(inventoryCondition, { ...inventorySelected, installer_inventory: "false" }),
-    false,
-  );
-  assert.equal(accepts(inventoryCondition, { full: "true" }), false);
-  assert.equal(accepts(inventoryCondition, {}), false);
-  assert.equal(accepts(inventoryCondition, inventorySelected, { cancelled: true }), false);
-  assert.equal(accepts(inventoryCondition, inventorySelected, { installed: false }), false);
 });
 
 test("Windows units and integration run independently with complete routed coverage", () => {

@@ -42,6 +42,7 @@ jobs:
       # Heavy suites stay off pull requests and main pushes. A job reads it as
       # `heavy != 'false'`, so missing routing outputs fail open to more coverage.
       heavy: ${{ contains(fromJSON('["merge_group","workflow_dispatch","schedule"]'), github.event_name) || startsWith(github.ref, 'refs/tags/release-') }}
+      installer: ${{ steps.filter.outputs.installer == 'true' || steps.installer_job.outputs.changed == 'true' }}
       # The full eight-shard Playwright suite runs nightly, on manual runs and on release
       # tags. Merge groups run the core-flow smoke instead, so a merge waits minutes, not
       # an hour or more. Read as `e2e != 'false'`, so missing outputs fail open to the full suite.
@@ -54,7 +55,6 @@ jobs:
       windows_host: ${{ github.event_name == 'workflow_dispatch' }}
       format: ${{ steps.filter.outputs.format }}
       quality: ${{ steps.filter.outputs.quality }}
-      installer_inventory: ${{ steps.filter.outputs.installer_inventory }}
       hub: ${{ steps.filter.outputs.hub }}
       server: ${{ steps.filter.outputs.server }}
       desktop: ${{ steps.filter.outputs.desktop }}
@@ -92,6 +92,13 @@ jobs:
       - name: Test Vorteo versions and commit checks
         run: node --test scripts/vorteo-version.test.mjs scripts/vorton-version.test.mjs
 
+      - name: Detect installer job edits
+        id: installer_job
+        if: ${{ github.event_name == 'pull_request' && steps.filter.outputs.ci == 'true' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/installer/ci-job-changed.mjs "$BASE_SHA" >> "$GITHUB_OUTPUT"
+
       - name: Test agent lifecycle scripts and instruction budgets
         run: node --test scripts/agent-lifecycle.test.mjs scripts/agent-instructions.test.mjs scripts/vorteo-release.test.mjs
 
@@ -107,7 +114,7 @@ jobs:
   installer-tests:
     name: installer (${{ matrix.os }})
     needs: [changes, format, lint, typecheck]
-    if: ${{ !cancelled() && needs.changes.outputs.heavy != 'false' }}
+    if: ${{ !cancelled() && (needs.changes.outputs.heavy != 'false' || needs.changes.outputs.installer == 'true') }}
     # macOS is the only place bash 3.2 runs install.sh.
     strategy:
       fail-fast: false
@@ -126,7 +133,9 @@ jobs:
       - name: install.sh, prerequisites, QR and progress
         run: node --test scripts/installer/install-sh.test.mjs scripts/installer/prerequisites.test.mjs scripts/installer/qr.test.mjs scripts/installer/progress.test.mjs scripts/installer/build-output.test.mjs scripts/installer/service-path.test.mjs scripts/installer/command.test.mjs
       - name: Installer engine
-        run: npx vitest run scripts/installer/plan.test.mjs scripts/installer/detect.test.mjs scripts/installer/apply.test.mjs scripts/installer/services.test.mjs scripts/installer/gate.test.mjs scripts/installer/host-adoption.test.mjs scripts/installer/upgrade.test.mjs
+        env:
+          npm_config_offline: "true"
+        run: npx vitest run scripts/installer/plan.test.mjs scripts/installer/detect.test.mjs scripts/installer/apply.test.mjs scripts/installer/services.test.mjs scripts/installer/gate.test.mjs scripts/installer/host-adoption.test.mjs scripts/installer/upgrade.test.mjs scripts/install-execution-host.test.mjs
 
   # Vorteo's main ruleset requires the separate format and lint checks by name, so they stay
   # their own jobs; quality runs upstream's remaining lint-rule, relay and SDK steps.
@@ -200,10 +209,6 @@ jobs:
       - name: Test lint rules
         if: ${{ !cancelled() && steps.install.outcome == 'success' && (needs.changes.outputs.full != 'false' || needs.changes.outputs.quality != 'false') }}
         run: node --test scripts/oxlint/paseo-plugin.test.mjs
-
-      - name: Test synthetic container inventory
-        if: ${{ !cancelled() && steps.install.outcome == 'success' && needs.changes.outputs.installer_inventory == 'true' }}
-        run: node_modules/.bin/vitest run scripts/install-execution-host.test.mjs -t 'container inventory'
 
       - name: Build relay
         if: ${{ !cancelled() && steps.install.outcome == 'success' && (needs.changes.outputs.full != 'false' || needs.changes.outputs.relay != 'false') }}
