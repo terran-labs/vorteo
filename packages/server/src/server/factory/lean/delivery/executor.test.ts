@@ -90,7 +90,7 @@ function stepNameOf(command: string): StepName {
   const step = STEP_NAMES.find((name) => commandOf(mira, name) === command);
   if (step) return step;
   if (command === mira.version?.run) return "version";
-  if (command === "npm ci") return "install";
+  if (command.startsWith("npm ci")) return "install";
   const gates = [...mira.gates.beta, ...mira.gates.stable];
   const gate = gates.find((candidate) => candidate.run === command);
   return gate ? `gate:${gate.name}` : "deployBeta";

@@ -89,8 +89,9 @@
       "install": [
         {
           "where": "host",
-          "run": "npm ci",
-          "lockfile": "package-lock.json"
+          "run": "npm ci --ignore-scripts",
+          "lockfile": "package-lock.json",
+          "about": "Install scripts skipped. Tested on 27 November 2026 at eee10bfe in a disposable clone: esbuild, workerd and fsevents scripts skipped, and wrangler --version, typecheck, vitest tests/core (255 tests), wrangler deploy --dry-run with both configs, workerd --version and loading esbuild all passed. vite build and wrangler dev --local were not run."
         }
       ],
       "guard": {
