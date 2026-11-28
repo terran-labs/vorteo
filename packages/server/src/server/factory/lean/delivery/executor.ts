@@ -116,6 +116,7 @@ export interface ReleaseReport {
   version: string;
   commit: string | null;
   artifact: string | null;
+  digest?: string;
 }
 
 export interface OwnerResolution {
@@ -139,6 +140,12 @@ export interface BranchWindow {
   before: string;
   after: string | null;
   commits: BranchCommit[];
+}
+
+export interface TagRef {
+  name: string;
+  /** The tag's object id, annotated or lightweight. */
+  object: string;
 }
 
 export interface RecordsCommit {
@@ -166,7 +173,18 @@ export interface DeliveryRun {
   approval: OwnerApproval | null;
   queuedAt: string;
   notBefore: string | null;
+  /** Written before the notice is handed to the sender; absent on runs from older daemons. */
+  noticeAttemptedAt?: string | null;
+  /** When the sender accepted the notice; not a claim that the owner's device received it. */
   noticeSentAt: string | null;
+  /** The recipe declares steps.fingerprint, so delivery needs an artifact digest. */
+  requiresDigest?: boolean;
+  /** Local tags matching the declared publish patterns just before the deploy. */
+  tagsBefore?: Record<string, string> | null;
+  /** Tags this run published to the origin. */
+  tagsPublished?: TagRef[] | null;
+  /** Set when the release is live but its tags could not be published: the reason. */
+  tagsNotPublished?: string | null;
   /** Current receipts by step key, in execution order. */
   receipts: Record<StepKey, StepReceipt>;
   /** Receipts replaced by an owner resolution, oldest first. */
@@ -188,6 +206,11 @@ export interface DeliveryRun {
 export interface DeliveredReceipt extends DeliveryReceipt {
   branch?: { before: string; after: string; commits: BranchCommit[] };
   records?: RecordsCommit | null;
+  /** The frozen artifact and the digest its verification reported. */
+  artifact?: { id: string; digest: string } | null;
+  /** Tags published to the origin for this release; present when the recipe declares any. */
+  tags?: TagRef[];
+  tagsNotPublished?: string | null;
 }
 
 export interface DeliveryLedger extends LeanLedger {
@@ -248,15 +271,42 @@ export interface RecordsCommitRequest {
   authorizePush(input: { commit: string; parent: string; expectedHead: string }): Promise<boolean>;
 }
 
+export interface CheckoutLink {
+  /** One path segment, created beside the checkout. */
+  name: string;
+  /** Absolute; must be an existing directory and its own real path. */
+  target: string;
+}
+
+export interface PrepareRequest {
+  commit: string;
+  records: readonly string[];
+  importTags: readonly string[];
+}
+
+export interface TagsPushRequest {
+  names: readonly string[];
+  /** Called with the exact tags immediately before the push; push nothing when false. */
+  authorizePush(tags: readonly TagRef[]): Promise<boolean>;
+}
+
+export type TagsPushResult = { pushed: TagRef[] } | { refused: string } | { withheld: true };
+
 /** The daemon-owned delivery checkout for one place. Nobody else moves it. */
 export interface DeliveryCheckoutPort {
-  /** Must equal the accepted commit's `release.checkout` for the Host. */
+  /** Its last segment must equal the accepted commit's `release.checkout.name` for the Host. */
   readonly path: string;
-  /** Creates the worktree on first use, fetches, and detaches at `commit`. */
-  prepare(input: {
-    commit: string;
-    records: readonly string[];
-  }): Promise<{ head: string } | StepNotStarted>;
+  /** Must equal the accepted commit's `release.checkout.links` exactly. */
+  readonly links: readonly CheckoutLink[];
+  /**
+   * Creates the worktree on first use, fetches, and detaches at `commit`. Tags matching
+   * `importTags` come from the origin too, never overwriting a local tag that differs.
+   */
+  prepare(input: PrepareRequest): Promise<{ head: string } | StepNotStarted>;
+  /** Local tags matching the patterns, by name. */
+  tags(patterns: readonly string[]): Promise<Record<string, string>>;
+  /** Pushes exactly these local tags, atomically and without force. */
+  pushTags(request: TagsPushRequest): Promise<TagsPushResult>;
   /** The blob id of a tracked file at the checkout's head, or null when absent. */
   blob(file: string): Promise<string | null>;
   /** A local tag at the head; refuses one naming another commit. Never pushes. */
@@ -315,7 +365,7 @@ export interface CheckPort {
 
 export interface SideEffect {
   runId: string;
-  kind: "deploy" | "records-push";
+  kind: "deploy" | "records-push" | "tags-push";
   expectedHead: string | null;
 }
 
@@ -413,6 +463,24 @@ interface StepCompletion {
   output: StepOutput | null;
 }
 
+interface DeployPreflight {
+  branchBefore: string;
+  tagsBefore: Record<string, string> | null;
+}
+
+interface ProcessLaunch {
+  run: DeliveryRun;
+  key: StepKey;
+  detail: string | null;
+  adapter: DeliveryStepAdapter;
+  head: string;
+  read: RecipeRead;
+  env: Record<string, string>;
+  laneEpoch: number;
+  step: Extract<ResolvedStep, { kind: "command" }>;
+  preflight: DeployPreflight | null;
+}
+
 interface RecipeRead {
   recipe: ReleaseRecipeV1;
   extras: RecipeExtras;
@@ -455,22 +523,54 @@ const CommandStepSchema = z.looseObject({
   heavy: z.boolean().optional(),
 });
 const InstallStepSchema = CommandStepSchema.extend({ lockfile: RepoPathSchema });
+const SegmentSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u);
+const CheckoutSchema = z
+  .looseObject({
+    name: SegmentSchema,
+    links: z
+      .array(
+        z.looseObject({
+          name: SegmentSchema,
+          target: z
+            .string()
+            .regex(/^\/(?:[^/]+\/)*[^/]+$/u)
+            .refine((dir) => !hasDotSegment(dir.slice(1)) && !dir.includes("\u0000")),
+        }),
+      )
+      .optional(),
+  })
+  .refine((checkout) => {
+    const names = (checkout.links ?? []).map((link) => link.name);
+    return new Set(names).size === names.length && !names.includes(checkout.name);
+  });
+/** A tag name, optionally ending in one `*`, such as Mira's `release-*` and `v*`. */
+const TagPatternSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*\*?$/u);
+/** Read-only: its last line is {"artifact": "...", "digest": "<sha256>"}. */
+const FingerprintReportSchema = z.object({
+  artifact: z.string().min(1),
+  digest: z.string().regex(/^[0-9a-f]{64}$/u),
+});
 /** The delivery fields beyond the shared recipe contract; validated here before any use. */
 const RecipeExtrasSchema = z.looseObject({
-  checkout: z
-    .string()
-    .regex(/^\/(?:[^/]+\/)*[^/]+$/u)
-    .refine((dir) => !hasDotSegment(dir.slice(1)) && !dir.includes("\u0000"))
-    .optional(),
+  /** A string is the retired absolute-path form; it decodes but is refused, never trusted. */
+  checkout: z.union([z.string(), CheckoutSchema]).optional(),
   records: z.array(RecordPathSchema).optional(),
   milestoneTag: z
     .string()
     .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u)
     .optional(),
+  /** Absent publishes nothing. `publish` applies to production promotions only. */
+  tags: z
+    .looseObject({
+      import: z.array(TagPatternSchema).optional(),
+      publish: z.array(TagPatternSchema).optional(),
+    })
+    .optional(),
   version: CommandStepSchema.optional(),
   steps: z.looseObject({
     releaseNumber: CommandStepSchema.optional(),
-    install: z.array(InstallStepSchema).optional(),
+    install: z.union([InstallStepSchema, z.array(InstallStepSchema)]).optional(),
+    fingerprint: CommandStepSchema.optional(),
   }),
   channels: z.looseObject({
     beta: z.looseObject({ noticeMinutes: z.number().nonnegative().optional() }),
@@ -481,6 +581,11 @@ const ReportSchema = z.object({
   version: z.string().min(1),
   commit: z.string().nullable(),
   artifact: z.string().nullable(),
+  /** The frozen artifact's digest; required when the recipe declares steps.fingerprint. */
+  digest: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/u)
+    .optional(),
 });
 const NumberReportSchema = z.object({ number: z.string().regex(/^[0-9]+$/u) });
 const VersionLineSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u);
@@ -526,7 +631,9 @@ function gatePlan(recipe: ReleaseRecipeV1, kind: DeliveryRunKind): PlannedGate[]
 }
 
 function installsOf(extras: RecipeExtras): z.infer<typeof InstallStepSchema>[] {
-  return extras.steps.install ?? [];
+  const install = extras.steps.install;
+  if (install === undefined) return [];
+  return Array.isArray(install) ? install : [install];
 }
 
 function wantsVersion(run: DeliveryRun, extras: RecipeExtras): boolean {
@@ -547,11 +654,15 @@ function wantsNumber(run: DeliveryRun, extras: RecipeExtras): boolean {
 function planOf(run: DeliveryRun, read: RecipeRead, places: readonly StepWhere[]): StepKey[] {
   const { extras } = read;
   const keys: StepKey[] = places.map((where) => `prepare:${where}`);
-  for (const install of installsOf(extras)) keys.push(`install:${install.where ?? "container"}`);
+  // Installs run only for betas: frozen copies may link the checkout's dependencies, so an install
+  // between a beta and its promotion would change the bytes being promoted.
+  const installs = run.kind === "beta" ? installsOf(extras) : [];
+  for (const install of installs) keys.push(`install:${install.where ?? "container"}`);
   if (wantsVersion(run, extras)) keys.push("version");
   if (wantsNumber(run, extras)) keys.push("number");
   for (const gate of run.gates) keys.push(`gate:${gate.name}`);
   if (run.kind === "beta" && extras.milestoneTag !== undefined) keys.push("milestone");
+  if (run.kind !== "beta" && extras.steps.fingerprint !== undefined) keys.push("fingerprint");
   keys.push("deploy", "branch");
   return keys;
 }
@@ -599,6 +710,7 @@ function resolveStep(read: RecipeRead, run: DeliveryRun, key: StepKey): Resolved
   const { recipe, extras } = read;
   if (key === "number") return commandStep(extras.steps.releaseNumber, "releaseNumber step");
   if (key === "version") return commandStep(extras.version, "version step");
+  if (key === "fingerprint") return commandStep(extras.steps.fingerprint, "fingerprint step");
   if (key.startsWith("install:")) {
     const where = key.slice("install:".length);
     const install = installsOf(extras).find((step) => (step.where ?? "container") === where);
@@ -623,7 +735,7 @@ function resolveStep(read: RecipeRead, run: DeliveryRun, key: StepKey): Resolved
 
 /** Every place a command step of this run executes, Host first. */
 function placesOf(read: RecipeRead, run: DeliveryRun): StepWhere[] {
-  const keys: StepKey[] = ["number", "version", "deploy", "verify"];
+  const keys: StepKey[] = ["number", "version", "fingerprint", "deploy", "verify"];
   for (const gate of run.gates) keys.push(`gate:${gate.name}`);
   for (const install of installsOf(read.extras))
     keys.push(`install:${install.where ?? "container"}`);
@@ -686,10 +798,26 @@ function lastJsonLine(stdout: string): unknown {
   }
 }
 
+function digestRefusal(
+  run: DeliveryRun,
+  report: ReleaseReport,
+  ledger: DeliveryLedger,
+): string | null {
+  if (run.requiresDigest !== true) return null;
+  if (report.digest === undefined)
+    return "Verification reported no artifact digest; nothing is recorded as shipped.";
+  if (run.kind === "beta") return null;
+  const artifact = run.values.artifact ?? "";
+  if (report.digest !== recordedDigest(ledger, artifact)) {
+    return `Production serves ${artifact} with a digest other than the one its beta recorded.`;
+  }
+  return null;
+}
+
 function reportRefusal(
   run: DeliveryRun,
   report: ReleaseReport,
-  ledger: ReleaseHistory,
+  ledger: DeliveryLedger,
 ): string | null {
   if (run.kind === "beta") {
     if (report.commit !== run.commit) {
@@ -697,13 +825,13 @@ function reportRefusal(
     }
     const known = ledger.releases.some((e) => e.kind === "beta" && e.version === report.version);
     if (known) return `Beta ${report.version} was already recorded; this run shipped nothing new.`;
-    return null;
+    return digestRefusal(run, report, ledger);
   }
   const expected = run.kind === "promote" ? run.values.version : run.values.targetVersion;
   if (report.version !== expected || report.artifact !== run.values.artifact) {
     return `Production reports ${report.version}, not ${expected ?? "the expected release"}.`;
   }
-  return null;
+  return digestRefusal(run, report, ledger);
 }
 
 /** Commits that landed during the deploy may only change release records. */
@@ -834,6 +962,24 @@ export function cancelUnstartedBetas(
   return cancelled;
 }
 
+function sameLinks(a: readonly CheckoutLink[], b: readonly CheckoutLink[]): boolean {
+  const key = (links: readonly CheckoutLink[]) =>
+    JSON.stringify(links.map((link) => [link.name, link.target]).sort());
+  return key(a) === key(b);
+}
+
+/**
+ * The one digest every delivered receipt records for this artifact, including its beta's. Null
+ * when there is none, no beta recorded it, or two receipts disagree.
+ */
+function recordedDigest(ledger: DeliveryLedger, artifact: string): string | null {
+  const receipts = ledger.delivery.receipts.filter((receipt) => receipt.artifact?.id === artifact);
+  const digests = new Set(receipts.map((receipt) => receipt.artifact?.digest));
+  const fromBeta = receipts.some((receipt) => receipt.kind === "cut-beta");
+  const [digest] = [...digests];
+  return fromBeta && digests.size === 1 && typeof digest === "string" ? digest : null;
+}
+
 function logName(runId: string, key: StepKey, attempt: number): string {
   return `${runId}-${key.replace(/[^A-Za-z0-9._-]/gu, "_")}-${attempt}.log`;
 }
@@ -861,8 +1007,21 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
     }
     const host = deps.deliveryCheckouts.host;
     const { checkout, records } = extras.data;
-    if (checkout !== undefined && checkout !== host?.path) {
-      return { refused: `This installation has no delivery checkout at ${checkout}.` };
+    if (typeof checkout === "string") {
+      return {
+        refused:
+          "Re-approve the delivery checkout in the settings file; a bare path is no longer trusted.",
+      };
+    }
+    const placed =
+      checkout === undefined ||
+      (host !== undefined &&
+        path.basename(host.path) === checkout.name &&
+        sameLinks(host.links, checkout.links ?? []));
+    if (!placed) {
+      return {
+        refused: `This installation has no delivery checkout named ${checkout?.name} with those links.`,
+      };
     }
     if ((records?.length ?? 0) > 0 && checkout === undefined) {
       return { refused: "Release records need a Factory delivery checkout (release.checkout)." };
@@ -930,6 +1089,7 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
       run.values = { ...run.values, number: input.number, note: input.note };
       run.contents = input.contents;
       run.gates = gatePlan(read.recipe, "beta");
+      run.requiresDigest = read.extras.steps.fingerprint !== undefined;
       run.notBefore = new Date(deps.now().getTime() + minutes * 60_000).toISOString();
       return enqueue(ledger, run, []);
     });
@@ -958,6 +1118,7 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
       run.approval = input.approval;
       run.contents = event.contents;
       run.gates = gatePlan(read.recipe, "promote");
+      run.requiresDigest = read.extras.steps.fingerprint !== undefined;
       run.values = {
         ...run.values,
         version: event.version,
@@ -972,9 +1133,13 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
   }
 
   async function queueRollback(input: RollbackInput): Promise<Queued | Refused> {
+    const live = production(await state.read(projectId));
+    if (live === null) return { refused: "There is no production release to roll back from." };
+    const read = await readRecipe(live.commit);
+    if ("refused" in read) return read;
     return mutate((ledger) => {
       const current = production(ledger);
-      if (current === null || current.id !== input.expectedProduction) {
+      if (current === null || current.id !== input.expectedProduction || current.id !== live.id) {
         return { refused: "Production changed since you looked; review the releases again." };
       }
       const stable = ledger.releases.filter((e) => e.kind === "promote" || e.kind === "rollback");
@@ -989,6 +1154,7 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
       const cancelled = cancelPendingBetas(ledger, "Cancelled by the owner's rollback.", at);
       // The recipe comes from the release now in production, the newest accepted config.
       const run = baseRun("rollback", current.commit);
+      run.requiresDigest = read.extras.steps.fingerprint !== undefined;
       run.releaseEventId = target.id;
       run.approval = input.approval;
       run.values = {
@@ -1058,7 +1224,7 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
         return { resolved: true as const };
       }
       if (input.action === "verify-only") run.acceptUnknownDeploy = true;
-      const retried = new Set(["verify", "records"]);
+      const retried = new Set(["verify", "records", "tags"]);
       for (const [key, receipt] of Object.entries(run.receipts)) {
         const replace =
           retried.has(key) || (input.action === "rerun" && receipt.status !== "succeeded");
@@ -1177,7 +1343,7 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
   }
 
   async function prepare(run: DeliveryRun, where: StepWhere, read: RecipeRead): Promise<true> {
-    const configured = where === "container" || read.extras.checkout !== undefined;
+    const configured = where === "container" || typeof read.extras.checkout === "object";
     const port = configured ? deps.deliveryCheckouts[where] : undefined;
     if (!port) return settled(run, `prepare:${where}`, null);
     // Betas run at the accepted commit. Promote and rollback ship frozen bytes from the current
@@ -1186,7 +1352,11 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
     if (where === "host" && !(await trusted(target, run))) {
       return refuse(run.id, `The default branch head ${target} has no passed merge gate record.`);
     }
-    const prepared = await port.prepare({ commit: target, records: read.extras.records ?? [] });
+    const prepared = await port.prepare({
+      commit: target,
+      records: read.extras.records ?? [],
+      importTags: read.extras.tags?.import ?? [],
+    });
     if ("notStarted" in prepared) return refuse(run.id, prepared.notStarted);
     return settled(run, `prepare:${where}`, prepared.head);
   }
@@ -1333,7 +1503,7 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
     const { laneEpoch } = fenced;
     if (recipeStep.kind === "lifecycle") return startLifecycle(run, env, laneEpoch);
     if (recipeStep.kind === "check") return runCheck(run, key, recipeStep.name, laneEpoch);
-    const { command, where, heavy } = recipeStep;
+    const { where } = recipeStep;
     const head = headFor(run, where);
     if (where === "host") {
       const refusal = hostGateRefusal(await deps.hostGate(head), head);
@@ -1341,17 +1511,28 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
     }
     const adapter = deps.adapters[where];
     if (!adapter) return refuse(run.id, `This installation cannot run ${where} steps.`);
-    const branchBefore = key === "deploy" ? await deps.branch.head() : null;
-    if (key === "deploy") {
-      const allowed = await deps.authorizeSideEffect({
-        runId: run.id,
-        kind: "deploy",
-        expectedHead: branchBefore,
-      });
-      if (!allowed)
-        return setWaiting(run.id, "Factory's composition did not allow the deploy now.");
+    const preflight = key === "deploy" ? await deployPreflight(run, read) : null;
+    if (preflight === "withheld") {
+      return setWaiting(run.id, "Factory's composition did not allow the deploy now.");
     }
+    return runProcess({
+      run,
+      key,
+      detail,
+      adapter,
+      head,
+      read,
+      env,
+      laneEpoch,
+      step: recipeStep,
+      preflight,
+    });
+  }
 
+  /** Records the launch atomically right before the adapter starts the process, then settles it. */
+  async function runProcess(input: ProcessLaunch): Promise<true> {
+    const { run, key, detail, adapter, head, read, env, laneEpoch, preflight } = input;
+    const { command, where, heavy } = input.step;
     const attempt = attemptOf(run, key);
     const startedAt = nowIso();
     const expectedState = key === "verify" ? "verifying" : "running";
@@ -1371,8 +1552,10 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
           const receipt = startedReceipt({ key, attempt, where, laneEpoch, startedAt });
           receipt.detail = detail;
           target.receipts[key] = receipt;
-          if (branchBefore !== null)
-            target.branch = { before: branchBefore, after: null, commits: [] };
+          if (preflight) {
+            target.branch = { before: preflight.branchBefore, after: null, commits: [] };
+            if (preflight.tagsBefore !== null) target.tagsBefore = preflight.tagsBefore;
+          }
           return true;
         });
         return launched;
@@ -1450,6 +1633,26 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
       run.values.number = parsed.data.number;
       return;
     }
+    if (receipt.key === "fingerprint") {
+      const parsed = FingerprintReportSchema.safeParse(lastJsonLine(stdout));
+      const artifact = run.values.artifact ?? "";
+      if (!parsed.success || parsed.data.artifact !== artifact) {
+        return fail(`The fingerprint step did not report a digest for ${artifact}.`);
+      }
+      const recorded = recordedDigest(ledger, artifact);
+      if (recorded === null) {
+        return fail(
+          `No delivered beta recorded a digest for ${artifact}, so it cannot be shown to be what the owner tested.`,
+        );
+      }
+      if (parsed.data.digest !== recorded) {
+        return fail(
+          `${artifact} changed since its beta was verified; nothing was deployed. Ship a new beta.`,
+        );
+      }
+      receipt.detail = parsed.data.digest;
+      return;
+    }
     if (receipt.key === "version") {
       const parsed = VersionLineSchema.safeParse(lastLine(stdout));
       if (!parsed.success) return fail("The version step printed no version on its last line.");
@@ -1474,9 +1677,119 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
     const receipt = run.receipts.records;
     if (receipt && receipt.status !== "succeeded") return false;
     if (!receipt && records.length > 0 && port) return commitRecords(run, port, records);
+    const publishing = publishPatterns(run, read);
+    if (publishing.length > 0 && port && run.receipts.tags?.status !== "succeeded") {
+      return publishTags(run, read, port, publishing);
+    }
     await mutate((ledger) => {
       const current = ledger.delivery.runs?.[run.id];
       if (current?.state === "verifying" && current.report) deliver(ledger, current, nowIso());
+    });
+    return true;
+  }
+
+  /** What the deploy is bracketed by, read just before it; "withheld" when the composition says no. */
+  async function deployPreflight(
+    run: DeliveryRun,
+    read: RecipeRead,
+  ): Promise<DeployPreflight | "withheld"> {
+    const branchBefore = await deps.branch.head();
+    const tagsBefore = await tagsSnapshot(run, read);
+    const effect = { runId: run.id, kind: "deploy" as const, expectedHead: branchBefore };
+    if (!(await deps.authorizeSideEffect(effect))) return "withheld";
+    return { branchBefore, tagsBefore };
+  }
+
+  /** Tag publication is declared per project and applies to production promotions only. */
+  function publishPatterns(run: DeliveryRun, read: RecipeRead): readonly string[] {
+    return run.kind === "promote" ? (read.extras.tags?.publish ?? []) : [];
+  }
+
+  async function tagsSnapshot(
+    run: DeliveryRun,
+    read: RecipeRead,
+  ): Promise<Record<string, string> | null> {
+    const port = deps.deliveryCheckouts.host;
+    const patterns = publishPatterns(run, read);
+    return port && patterns.length > 0 ? port.tags(patterns) : null;
+  }
+
+  /**
+   * After verification: publish exactly the declared tags the release tool created during this
+   * run. A refusal leaves the release delivered with the reason; it never undoes a live release.
+   */
+  async function publishTags(
+    run: DeliveryRun,
+    read: RecipeRead,
+    port: DeliveryCheckoutPort,
+    patterns: readonly string[],
+  ): Promise<boolean> {
+    const before = run.tagsBefore ?? {};
+    const after = await port.tags(patterns);
+    const milestone = read.extras.milestoneTag;
+    const moved = Object.keys(before).filter((name) => after[name] !== before[name]);
+    const created = Object.keys(after)
+      .filter((name) => !(name in before))
+      .filter((name) => milestone === undefined || !name.startsWith(milestone))
+      .sort();
+    const fenced = await launchRefusal(run);
+    if ("refused" in fenced) return refuse(run.id, fenced.refused);
+    const attempt = attemptOf(run, "tags");
+    const startedAt = nowIso();
+    let result: TagsPushResult = { pushed: [] };
+    if (moved.length > 0) {
+      result = {
+        refused: `The release changed existing tags ${moved.join(", ")}; Factory never moves a tag.`,
+      };
+    } else if (created.length > 0) {
+      result = await port.pushTags({
+        names: created,
+        async authorizePush(tags) {
+          const effect = { runId: run.id, kind: "tags-push" as const, expectedHead: null };
+          if (!(await deps.authorizeSideEffect(effect))) return false;
+          return mutate((ledger) => {
+            const current = ledger.delivery.runs?.[run.id];
+            if (!current || current.state !== "verifying" || current.receipts.tags) return false;
+            const receipt = startedReceipt({
+              key: "tags",
+              attempt,
+              where: "git",
+              laneEpoch: fenced.laneEpoch,
+              startedAt,
+            });
+            receipt.detail = tags.map((tag) => tag.name).join(" ");
+            current.receipts.tags = receipt;
+            return true;
+          });
+        },
+      });
+    }
+    if ("withheld" in result) {
+      return setWaiting(run.id, "Factory's composition did not allow the tag push now.");
+    }
+    await mutate((ledger) => {
+      const current = ledger.delivery.runs?.[run.id];
+      if (!current || current.state !== "verifying") return;
+      const at = nowIso();
+      const receipt =
+        current.receipts.tags ??
+        startedReceipt({
+          key: "tags",
+          attempt,
+          where: "git",
+          laneEpoch: fenced.laneEpoch,
+          startedAt,
+        });
+      receipt.status = "succeeded";
+      receipt.finishedAt = at;
+      current.receipts.tags = receipt;
+      if ("refused" in result) {
+        current.tagsPublished = [];
+        current.tagsNotPublished = result.refused;
+      } else {
+        current.tagsPublished = result.pushed;
+        current.tagsNotPublished = null;
+      }
     });
     return true;
   }
@@ -1554,6 +1867,12 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
     return true;
   }
 
+  function artifactOf(run: DeliveryRun, report: ReleaseReport): DeliveredReceipt["artifact"] {
+    const id = run.kind === "beta" ? report.artifact : run.values.artifact;
+    if (run.requiresDigest !== true || id === null || report.digest === undefined) return null;
+    return { id, digest: report.digest };
+  }
+
   function deliver(ledger: DeliveryLedger, run: DeliveryRun, at: string): void {
     const report = run.report;
     const verify = run.receipts.verify;
@@ -1574,6 +1893,10 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
         ? { branch: { before: branch.before, after: branch.after, commits: branch.commits } }
         : {}),
       records: run.records,
+      artifact: artifactOf(run, report),
+      ...(run.tagsPublished
+        ? { tags: run.tagsPublished, tagsNotPublished: run.tagsNotPublished ?? null }
+        : {}),
     });
     ledger.releases.push(event);
     run.state = "delivered";
@@ -1587,6 +1910,10 @@ export function createDeliveryExecutor(deps: DeliveryExecutorDeps) {
       // The full notice window starts when the owner is told, not when the beta was queued.
       const windowMs = Date.parse(run.notBefore) - Date.parse(run.queuedAt);
       const notBefore = new Date(deps.now().getTime() + windowMs).toISOString();
+      await mutate((ledger) => {
+        const current = ledger.delivery.runs?.[run.id];
+        if (current) current.noticeAttemptedAt = nowIso();
+      });
       await deps.notify({ kind: "beta-notice", runId: run.id, commit: run.commit, notBefore });
       await mutate((ledger) => {
         const current = ledger.delivery.runs?.[run.id];

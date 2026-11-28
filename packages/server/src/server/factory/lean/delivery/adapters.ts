@@ -10,12 +10,28 @@
 
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { lstat, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  readlink,
+  realpath,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type {
+  CheckoutLink,
   DeliveryCheckoutPort,
+  PrepareRequest,
   DeliveryStepAdapter,
   DeliveryStepRequest,
   RecordsCommitRequest,
@@ -151,10 +167,13 @@ export function createContainerGitRunner(input: {
   };
 }
 
-/** Tracked paths with uncommitted changes. Porcelain v1 lines are "XY path". */
+/**
+ * Tracked paths that differ from HEAD, staged or not. NUL-separated names, because the runner
+ * trims its output and porcelain status lines are column-positioned.
+ */
 async function changedPaths(git: GitRunner, cwd: string): Promise<string[]> {
-  const status = await git.run(cwd, ["status", "--porcelain=v1", "--untracked-files=no"]);
-  return status === "" ? [] : status.split("\n").map((line) => line.slice(3));
+  const names = await git.run(cwd, ["diff", "--name-only", "-z", "HEAD"]);
+  return names.split("\0").filter((name) => name !== "");
 }
 
 /**
@@ -329,45 +348,121 @@ function appendsRows(base: string, working: string): boolean {
   return rows.every((row) => row.trim() !== "" && !row.startsWith("#"));
 }
 
+const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
+
+/** A refusal sentence when the links are not a safe, exact set for this checkout. */
+export function linkRefusal(links: readonly CheckoutLink[], checkoutName: string): string | null {
+  const names = new Set<string>();
+  for (const link of links) {
+    if (!SEGMENT.test(link.name) || link.name === checkoutName || names.has(link.name)) {
+      return `The delivery checkout link ${link.name} is not a single unique name beside the checkout.`;
+    }
+    names.add(link.name);
+    const segments = link.target.split("/").slice(1);
+    const dotted = segments.some(
+      (segment) => segment === "." || segment === ".." || segment === "",
+    );
+    if (!path.isAbsolute(link.target) || dotted) {
+      return `The delivery checkout link ${link.name} must name an exact absolute directory.`;
+    }
+  }
+  return null;
+}
+
 /**
- * The daemon-owned delivery checkout: a git worktree of the project's repository at the path the
- * owner-only settings name. It is created on first use and never deleted; an existing path that
- * is not a worktree of this repository is refused. Only the daemon moves it.
+ * The daemon-owned delivery checkout: a worktree of a private bare object pool that only the
+ * daemon writes, fetched from and pushed to the project's trusted origin. No Git command ever
+ * runs in the owner's or a Dev-writable checkout. Pool and worktree are created on first use and
+ * never deleted; an existing path that is not exactly this pool or its worktree is refused.
+ * Links beside the worktree (Mira: Syn3h-stable) are created once and must keep pointing at their
+ * exact configured target; the target is never copied, moved or followed through a chain.
  */
 export function createDeliveryCheckout(input: {
-  /** The repository the project is registered at, such as Mira's trunk checkout. */
-  repository: string;
+  /** The private bare pool, such as `<home>/factory/lean/delivery-checkouts/<project>/repo.git`. */
+  pool: string;
+  /** The worktree, beside the pool's folder: `<same folder>/<release.checkout.name>`. */
   path: string;
+  links: readonly CheckoutLink[];
+  /** The project's authenticated origin; the only remote the pool ever talks to. */
+  remoteUrl: string;
   /** Fetch and push need credentials: give this runner HOME and SSH_AUTH_SOCK, nothing more. */
   git: GitRunner;
-  remote: string;
   defaultBranch: string;
   /** Author and committer of Factory's records commits. */
   identity: { name: string; email: string };
   exists?: (target: string) => Promise<boolean>;
   readWorking?: (file: string) => Promise<string>;
 }): DeliveryCheckoutPort {
-  const { git, repository, remote, defaultBranch } = input;
+  const { git, pool, remoteUrl, defaultBranch } = input;
+  const remote = "origin";
   const dir = input.path;
   const exists = input.exists ?? pathExists;
   const readWorking =
     input.readWorking ?? ((file: string) => readFile(path.join(dir, file), "utf8"));
   const commonDir = ["rev-parse", "--path-format=absolute", "--git-common-dir"];
 
+  /** Built in a staging directory and renamed into place, so a crash never leaves half a pool. */
+  async function ensurePool(): Promise<StepNotStarted | null> {
+    if (!(await exists(pool))) {
+      const parent = path.dirname(pool);
+      await mkdir(parent, { recursive: true, mode: 0o700 });
+      const staging = `${pool}.staging-${randomUUID()}`;
+      await git.run(parent, ["init", "--quiet", "--bare", staging]);
+      await git.run(staging, ["config", "remote.origin.url", remoteUrl]);
+      const refspec = `+refs/heads/*:refs/remotes/origin/*`;
+      await git.run(staging, ["config", "remote.origin.fetch", refspec]);
+      await rename(staging, pool);
+      return null;
+    }
+    const bare = await gitOrNull(git, pool, ["rev-parse", "--is-bare-repository"]);
+    const url = await gitOrNull(git, pool, ["config", "--get", "remote.origin.url"]);
+    if (bare !== "true" || url !== remoteUrl) {
+      return {
+        notStarted: `${pool} is not this project's Factory object pool; Factory will not use or remove it.`,
+      };
+    }
+    return null;
+  }
+
   async function ensureWorktree(commit: string): Promise<StepNotStarted | null> {
+    await fetchDefault();
     if (!(await exists(dir))) {
-      await git.run(repository, ["fetch", "--quiet", "--no-tags", remote, defaultBranch]);
-      await git.run(repository, ["worktree", "add", "--quiet", "--detach", dir, commit]);
+      await git.run(pool, ["worktree", "add", "--quiet", "--detach", dir, commit]);
       return null;
     }
     const [mine, theirs] = await Promise.all([
       gitOrNull(git, dir, commonDir),
-      git.run(repository, commonDir),
+      git.run(pool, commonDir),
     ]);
     if (mine !== theirs) {
       return {
         notStarted: `${dir} exists and is not this project's Factory delivery checkout; Factory will not use or remove it.`,
       };
+    }
+    return null;
+  }
+
+  async function ensureLinks(): Promise<StepNotStarted | null> {
+    const refusal = linkRefusal(input.links, path.basename(dir));
+    if (refusal) return { notStarted: refusal };
+    for (const link of input.links) {
+      const target = await stat(link.target).catch(() => null);
+      if (!target?.isDirectory() || (await realpath(link.target)) !== link.target) {
+        return {
+          notStarted: `The link target ${link.target} is not an existing directory at its own real path.`,
+        };
+      }
+      const beside = path.join(path.dirname(dir), link.name);
+      const existing = await lstat(beside).catch(() => null);
+      if (existing === null) {
+        await symlink(link.target, beside, "dir");
+        continue;
+      }
+      if (!existing.isSymbolicLink() || (await readlink(beside)) !== link.target) {
+        return {
+          notStarted: `${beside} is not a link to exactly ${link.target}; Factory will not use or replace it.`,
+        };
+      }
     }
     return null;
   }
@@ -399,10 +494,30 @@ export function createDeliveryCheckout(input: {
     return null;
   }
 
-  async function prepare({ commit, records }: { commit: string; records: readonly string[] }) {
-    const created = await ensureWorktree(commit);
-    if (created) return created;
-    await git.run(dir, ["fetch", "--quiet", "--no-tags", remote, defaultBranch]);
+  /** Origin tags arrive only where no local tag of that name differs: no `+`, so no clobbering. */
+  async function importTags(patterns: readonly string[]): Promise<StepNotStarted | null> {
+    if (patterns.length === 0) return null;
+    const refspecs = patterns.map((pattern) => `refs/tags/${pattern}:refs/tags/${pattern}`);
+    const fetched = await gitOrNull(git, pool, [
+      "fetch",
+      "--quiet",
+      "--no-tags",
+      remote,
+      ...refspecs,
+    ]);
+    if (fetched !== null) return null;
+    return {
+      notStarted: `The origin has tags matching ${patterns.join(", ")} that differ from the delivery checkout's; nothing was started.`,
+    };
+  }
+
+  async function prepare({ commit, records, importTags: patterns }: PrepareRequest) {
+    const refusal =
+      (await ensurePool()) ??
+      (await ensureWorktree(commit)) ??
+      (await ensureLinks()) ??
+      (await importTags(patterns));
+    if (refusal) return refusal;
     if ((await gitOrNull(git, dir, ["cat-file", "-e", `${commit}^{commit}`])) === null) {
       return { notStarted: `The delivery checkout cannot find ${commit} after fetching.` };
     }
@@ -414,6 +529,22 @@ export function createDeliveryCheckout(input: {
     if (head !== commit || !clean)
       return { notStarted: "The delivery checkout did not settle at the commit." };
     return { head };
+  }
+
+  async function localTags(patterns: readonly string[]): Promise<Record<string, string>> {
+    if (patterns.length === 0) return {};
+    const refs = patterns.map((pattern) => `refs/tags/${pattern}`);
+    const listing = await git.run(dir, [
+      "for-each-ref",
+      "--format=%(refname:strip=2) %(objectname)",
+      ...refs,
+    ]);
+    const tags: Record<string, string> = {};
+    for (const line of listing.split("\n").filter((row) => row !== "")) {
+      const [name = "", object = ""] = line.split(" ");
+      tags[name] = object;
+    }
+    return tags;
   }
 
   async function alreadyPushed(
@@ -438,7 +569,20 @@ export function createDeliveryCheckout(input: {
     return { commit, parent, paths: touched };
   }
 
+  async function fetchDefault(): Promise<void> {
+    const fetched = `+refs/heads/${defaultBranch}:refs/remotes/origin/${defaultBranch}`;
+    await git.run(pool, ["fetch", "--quiet", "--no-tags", remote, fetched]);
+  }
+
   async function commitRecords(request: RecordsCommitRequest): Promise<RecordsCommitResult> {
+    await fetchDefault();
+    if (
+      (await gitOrNull(git, dir, ["cat-file", "-e", `${request.expectedHead}^{commit}`])) === null
+    ) {
+      return {
+        refused: `The delivery checkout cannot find the expected head ${request.expectedHead}.`,
+      };
+    }
     const changed = await changedPaths(git, dir);
     const outside = changed.filter((file) => !request.records.includes(file));
     if (outside.length > 0)
@@ -508,6 +652,7 @@ export function createDeliveryCheckout(input: {
 
   return {
     path: dir,
+    links: input.links,
     prepare,
     async blob(file) {
       return gitOrNull(git, dir, ["rev-parse", "--verify", `HEAD:${file}`]);
@@ -527,5 +672,22 @@ export function createDeliveryCheckout(input: {
       return { tagged: true };
     },
     commitRecords,
+    tags: localTags,
+    async pushTags(request) {
+      const all = await localTags(request.names);
+      const tags = request.names.map((name) => ({ name, object: all[name] ?? "" }));
+      if (tags.some((tag) => tag.object === ""))
+        return { refused: "A tag to publish is missing locally." };
+      if (!(await request.authorizePush(tags))) return { withheld: true };
+      // Atomic and without force: the origin refuses the whole push if any name exists elsewhere.
+      const refs = tags.map((tag) => `refs/tags/${tag.name}`);
+      const pushed = await gitOrNull(git, dir, ["push", "--quiet", "--atomic", remote, ...refs]);
+      if (pushed === null) {
+        return {
+          refused: `The origin refused the tags ${request.names.join(", ")}; one may already name another object there.`,
+        };
+      }
+      return { pushed: tags };
+    },
   };
 }
