@@ -2,6 +2,7 @@
 
 - While a restart or update runs, the bottom of the sidebar, and on phones a line above the page, says what is happening, how long it has run and whether your messages are held; it opens Settings, System at the operation (#720).
 - Settings, System shows each running operation's step, elapsed time, what a turn hold waits for and whether it is overdue, and Health no longer says "All good" while your messages are held (#720).
+- A message sent while a turn runs now says it is queued and will be sent when the turn finishes, and the Queue card opens so you can edit it or send it now (#720).
 - A message the daemon refuses during a restart hold now says it was not sent because of the update, names what the hold waits for, keeps your draft and links to the progress; other send failures are unchanged (#720).
 
 ## Maintenance review

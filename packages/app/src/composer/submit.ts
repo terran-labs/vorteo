@@ -123,3 +123,31 @@ function reportSendFailure<TAttachment>(
       : (input.failedToSendMessage ?? i18n.t("composer.errors.failedToSend")),
   );
 }
+
+/**
+ * Whether a send error is the daemon's restart-hold refusal. STOPGAP (#720): the send response
+ * does not carry the error code yet, so this matches the daemon's RestartHoldError text; switch
+ * to `errorCode === "restart_hold"` once the response carries it.
+ */
+export function isRestartHoldRefusal(message: string): boolean {
+  return message.startsWith("A restart is waiting for current turns to finish.");
+}
+
+/**
+ * What the composer tells the owner about a send (#720), so the three outcomes never look alike:
+ * queued (accepted; it is sent when the running turn finishes), held (not sent; a tracked restart
+ * hold refused it and the draft is kept) and failed (not sent, with its own reason).
+ */
+export type SendNotice = "queued" | "held" | "failed" | null;
+
+export function sendNotice(input: {
+  result: AgentInputSubmitResult | null;
+  error: string | null;
+  /** A tracked restart or update hold is active for this thread's daemon. */
+  holdActive: boolean;
+}): SendNotice {
+  if (input.error) {
+    return input.holdActive && isRestartHoldRefusal(input.error) ? "held" : "failed";
+  }
+  return input.result === "queued" ? "queued" : null;
+}

@@ -28,6 +28,7 @@ import {
   type MaintenanceProgress,
   type MaintenanceTarget,
 } from "./maintenance-progress";
+import { sendNotice } from "@/composer/submit";
 import { useInstallationSystemModel } from "./panel";
 import { readExecutionInstallation } from "./policy";
 
@@ -478,15 +479,6 @@ export function MaintenanceOperationDetail({ target }: { target: MaintenanceTarg
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Whether a send error is the daemon's restart-hold refusal. STOPGAP (#720): the send response
- * does not carry the error code yet, so this matches the daemon's RestartHoldError text; switch
- * to `errorCode === "restart_hold"` once the response carries it.
- */
-export function isRestartHoldRefusal(message: string): boolean {
-  return message.startsWith("A restart is waiting for current turns to finish.");
-}
-
-/**
  * The composer's send error. Only the daemon's restart-hold refusal, while a tracked hold is
  * active for this thread's daemon, reads as held: the daemon did not keep the message, the draft
  * stays in the input, and the line names what the hold waits for and links to its progress.
@@ -503,8 +495,11 @@ export function ComposerSendError({
 }) {
   const progress = useMaintenanceProgress();
   const target = serverTarget(serverId);
+  const tracked = progress && target ? messageHold(progress, target) : null;
   const hold =
-    progress && target && isRestartHoldRefusal(message) ? messageHold(progress, target) : null;
+    sendNotice({ result: "failed", error: message, holdActive: tracked !== null }) === "held"
+      ? tracked
+      : null;
   const open = useOpenMaintenance(hold ? { operations: [hold] } : null);
   if (!hold) {
     return (
@@ -564,6 +559,7 @@ const styles = StyleSheet.create((theme) => ({
   detail: { gap: theme.spacing[2], paddingTop: theme.spacing[1] },
   detailOperation: { gap: 2 },
   detailTitle: { fontSize: theme.fontSize.sm, color: theme.colors.foreground },
-  held: { fontSize: theme.fontSize.sm, color: theme.colors.foregroundMuted },
+  // Held is neither a failure (red) nor queued (muted): the warning colour, as Settings uses for it.
+  held: { fontSize: theme.fontSize.sm, color: theme.colors.statusWarning },
   heldLink: { color: theme.colors.accent, textDecorationLine: "underline" },
 }));

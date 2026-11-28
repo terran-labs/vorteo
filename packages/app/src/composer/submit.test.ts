@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { submitAgentInput } from "./submit";
+import { sendNotice, submitAgentInput } from "./submit";
 
 function createDeferredPromise<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -327,4 +327,17 @@ describe("submitAgentInput", () => {
     });
     expect(clearDraft).toHaveBeenCalledWith("sent");
   });
+});
+
+it("tells queued, held and failed sends apart (#720)", () => {
+  const hold =
+    "A restart is waiting for current turns to finish. New work is held until restart or cancellation.";
+  expect(sendNotice({ result: "queued", error: null, holdActive: true })).toBe("queued");
+  expect(sendNotice({ result: "failed", error: hold, holdActive: true })).toBe("held");
+  // The hold text without a tracked hold, or another error during a hold, is a plain failure.
+  expect(sendNotice({ result: "failed", error: hold, holdActive: false })).toBe("failed");
+  expect(sendNotice({ result: "failed", error: "Message too large", holdActive: true })).toBe(
+    "failed",
+  );
+  expect(sendNotice({ result: "submitted", error: null, holdActive: true })).toBeNull();
 });

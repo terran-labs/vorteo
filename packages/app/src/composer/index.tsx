@@ -1,5 +1,6 @@
 import { FLOATING_PANEL_INSET } from "@/styles/floating-panel";
 import { ComposerSendError } from "@/execution-installation/maintenance-status";
+import { ComposerQueuedNotice, requestQueueReview } from "@/message-queue/queue-review";
 import { COLUMN_COMPOSER_INSET } from "@/agent-stream/columns/geometry";
 import { StreamColumnWidthContext } from "@/agent-stream/columns/layout";
 
@@ -1328,6 +1329,7 @@ function ComposerContentImpl({
   const editingSession = useComposerEditingSession(inputMode, providedEditingSession);
   const isFullscreen = useComposerFullscreen(editingSession);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [queuedAt, setQueuedAt] = useState<number | null>(null);
   const clearSendError = useCallback(() => setSendError(null), []);
   useResetOnReconnect(serverId, clearSendError);
   // A host rejection stays visible until the owner edits the draft it describes.
@@ -1653,8 +1655,14 @@ function ComposerContentImpl({
         result,
         outgoingAttachments,
       });
+      // A queued send says so and unfolds the Queue card, so it is not pressed again (#720).
+      if (result === "queued") {
+        setQueuedAt(Date.now());
+        requestQueueReview(serverId, agentId);
+      }
     },
     [
+      agentId,
       allowEmptySubmit,
       configurationRequired,
       beginSubmit,
@@ -1667,6 +1675,7 @@ function ComposerContentImpl({
       setSelectedAttachments,
       replaceUserInput,
       submitBehavior,
+      serverId,
       submitMessage,
       t,
       textSource,
@@ -2388,11 +2397,13 @@ function ComposerContentImpl({
   const submitLoadingPressHandler = isAgentRunning ? handleCancelAgent : undefined;
   const sendErrorNode = useMemo(
     () =>
+      // Failed, held or queued (#720): each renders differently, never one as another.
       sendError ? (
-        // A refusal during a tracked restart hold reads as held and links to its progress (#720).
         <ComposerSendError serverId={serverId} message={sendError} style={styles.sendErrorText} />
-      ) : null,
-    [sendError, serverId],
+      ) : (
+        <ComposerQueuedNotice queuedAt={queuedAt} />
+      ),
+    [queuedAt, sendError, serverId],
   );
   const githubEmptyText = githubSearchResultsQuery.isFetching
     ? t("composer.github.searching")
