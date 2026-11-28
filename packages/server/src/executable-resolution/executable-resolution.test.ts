@@ -195,6 +195,13 @@ describe("findExecutable", () => {
 
       await expect(findExecutable("sym-cli", opts)).resolves.toBe(realpathSync(targetBin));
 
+      // A symlink target with a trailing slash requires a directory in POSIX; pointing at a file
+      // (directly or via another symlink) must be rejected.
+      symlinkSync(`${targetBin}/`, path.join(localBin, "trailing-slash-file-cli"));
+      await expect(findExecutable("trailing-slash-file-cli", opts)).resolves.toBeNull();
+      symlinkSync(`${intermediateLink}/`, path.join(localBin, "trailing-slash-link-cli"));
+      await expect(findExecutable("trailing-slash-link-cli", opts)).resolves.toBeNull();
+
       // Symlink containing `..` after a directory symlink must follow POSIX semantics, not lexical
       // collapse (so `dir-link/../tricky-bin` resolves inside `outside`, not `localBin`).
       const outsideRoot = makeTempDir();

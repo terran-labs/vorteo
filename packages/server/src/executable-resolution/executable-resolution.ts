@@ -68,6 +68,7 @@ async function resolveTrustedPosixPath(
 
     const resolved: string[] = [];
     const queue = targetPath.split("/").filter(Boolean);
+    if (targetPath.endsWith("/")) queue.push(".");
     let symlinksFollowed = 0;
 
     while (queue.length > 0) {
@@ -87,8 +88,10 @@ async function resolveTrustedPosixPath(
         symlinksFollowed += 1;
         if (symlinksFollowed > MAX_SYMLINK_DEPTH) return null;
         const linkTarget = await readlink(next);
+        const linkSegments = linkTarget.split("/").filter(Boolean);
+        if (linkTarget.endsWith("/")) linkSegments.push(".");
         if (isAbsolute(linkTarget)) resolved.length = 0;
-        queue.unshift(...linkTarget.split("/").filter(Boolean));
+        queue.unshift(...linkSegments);
         continue;
       }
 
