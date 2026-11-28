@@ -349,12 +349,9 @@ export async function checkPresetFence(
     decision = await resolveFenceDecision(dependencies, path, callerAgentId, request);
   } catch (error) {
     if (error instanceof WorkerLaunchRefusal) throw error;
-    const caller =
-      dependencies.getAgent(callerAgentId) ?? lookupCachedFenceAgent(dependencies, callerAgentId);
-    if (caller && isGovernedSelfSwitch(path, caller, request)) throw supervisorSwitchRefusal();
     if (
-      requiresTeamAuthority(path, request) &&
-      hasKnownTeamGovernance(dependencies, callerAgentId)
+      isProfileSwitch(path) ||
+      (request.kind === "launch" && hasKnownTeamGovernance(dependencies, callerAgentId))
     ) {
       throw new WorkerLaunchRefusal(
         "Could not verify worker team authority. Retry after thread storage is available.",
@@ -381,30 +378,6 @@ export async function checkPresetFence(
 
 function isProfileSwitch(path: PresetFencePath): boolean {
   return path === "switch_agent_profile" || path === "session_switch_agent_profile";
-}
-
-function requiresTeamAuthority(path: PresetFencePath, request: PresetFenceRequest): boolean {
-  return request.kind === "launch" || isProfileSwitch(path);
-}
-
-function isGovernedSelfSwitch(
-  path: PresetFencePath,
-  caller: FenceAgent,
-  request: PresetFenceRequest,
-): boolean {
-  return (
-    isProfileSwitch(path) &&
-    request.kind === "change" &&
-    request.targetAgentId === caller.id &&
-    ownGovernance(caller).kind === "supervisor"
-  );
-}
-
-function supervisorSwitchRefusal(): WorkerLaunchRefusal {
-  return new WorkerLaunchRefusal(
-    "A governed supervisor cannot switch its own profile. Ask the owner to switch it.",
-    "supervisor-profile-switch",
-  );
 }
 
 function hasKnownTeamGovernance(dependencies: FenceLookup, callerAgentId: string): boolean {
@@ -449,11 +422,23 @@ interface FenceDecision {
 async function lookupFenceTarget(
   dependencies: FenceLookup,
   path: PresetFencePath,
-  caller: FenceAgent,
   request: PresetFenceRequest,
 ): Promise<FenceAgent | null> {
-  if (isGovernedSelfSwitch(path, caller, request)) throw supervisorSwitchRefusal();
-  return request.kind === "change" ? await lookup(dependencies, request.targetAgentId) : null;
+  if (request.kind !== "change") return null;
+  const target = await lookup(dependencies, request.targetAgentId);
+  if (isProfileSwitch(path)) {
+    if (!target)
+      throw new WorkerLaunchRefusal(
+        "Could not verify the switch target.",
+        "worker-governance-unavailable",
+      );
+    if (ownGovernance(target).kind === "supervisor")
+      throw new WorkerLaunchRefusal(
+        "Ask the owner to switch the governed supervisor's profile.",
+        "supervisor-profile-switch",
+      );
+  }
+  return target;
 }
 
 async function resolveFenceDecision(
@@ -462,9 +447,9 @@ async function resolveFenceDecision(
   callerAgentId: string,
   request: PresetFenceRequest,
 ): Promise<FenceDecision | null> {
+  const target = await lookupFenceTarget(dependencies, path, request);
   const caller = await lookup(dependencies, callerAgentId);
   if (!caller) return null;
-  const target = await lookupFenceTarget(dependencies, path, caller, request);
   const governance = await governingSupervisor(caller, dependencies);
   const supervisor = governance.kind === "supervisor" ? governance.supervisor : null;
   const team = supervisor?.config?.profileLaunch?.workers !== undefined;

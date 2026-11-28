@@ -6727,13 +6727,15 @@ describe("preset fence (#360)", () => {
     }
   });
 
-  it("allows owner switches and refuses agent-attributed self switches by a governed supervisor", async () => {
+  it("allows owner switches and refuses agent-attributed switches targeting a governed supervisor", async () => {
     const lookup = { getAgent: (id: string) => agents[id], logger: createTestLogger() };
     const request = { kind: "change", targetAgentId: supervisor.id, settings: true } as const;
     for (const path of ["switch_agent_profile", "session_switch_agent_profile"] as const) {
-      await expect(checkPresetFence(lookup, path, supervisor.id, request)).rejects.toMatchObject({
-        code: "supervisor-profile-switch",
-      });
+      for (const caller of [supervisor, agents.child!, agents.other!]) {
+        await expect(checkPresetFence(lookup, path, caller.id, request)).rejects.toMatchObject({
+          code: "supervisor-profile-switch",
+        });
+      }
       await expect(checkPresetFence(lookup, path, undefined, request)).resolves.toBeUndefined();
     }
     await expect(
