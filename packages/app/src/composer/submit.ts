@@ -151,3 +151,15 @@ export function sendNotice(input: {
   }
   return input.result === "queued" ? "queued" : null;
 }
+
+/** How long the queued confirmation stays under the composer. */
+export const QUEUED_NOTICE_MS = 6_000;
+
+/**
+ * Milliseconds the queued confirmation still has to show, measured from the queueing itself, so
+ * a remount can never revive an expired or older confirmation. Zero means do not show it.
+ */
+export function queuedNoticeRemainingMs(queuedAt: number | null, now: number): number {
+  if (queuedAt === null) return 0;
+  return Math.max(0, queuedAt + QUEUED_NOTICE_MS - now);
+}

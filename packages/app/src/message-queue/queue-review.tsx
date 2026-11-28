@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { queuedNoticeRemainingMs } from "@/composer/submit";
 import { Text } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 
@@ -36,22 +37,23 @@ export function useQueueReviewRequests(
   }, [agentId, onRequest, serverId]);
 }
 
-/** How long the queued confirmation stays under the composer. */
-export const QUEUED_NOTICE_MS = 6_000;
-
-/** The queued confirmation: accepted, and sent when the running turn finishes. */
+/**
+ * The queued confirmation: committed to this device's outbox, sent when the running turn
+ * finishes. Shown only while younger than its display time, so a remount after a later error
+ * cannot bring it back; a later rejection shows on the item in the Queue card.
+ */
 export function ComposerQueuedNotice({ queuedAt }: { queuedAt: number | null }) {
-  const [visible, setVisible] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  const remaining = queuedNoticeRemainingMs(queuedAt, now);
   useEffect(() => {
-    if (queuedAt === null) return;
-    setVisible(true);
-    const timer = setTimeout(() => setVisible(false), QUEUED_NOTICE_MS);
+    if (remaining <= 0) return;
+    const timer = setTimeout(() => setNow(Date.now()), remaining);
     return () => clearTimeout(timer);
-  }, [queuedAt]);
-  if (!visible) return null;
+  }, [remaining]);
+  if (remaining <= 0) return null;
   return (
     <Text accessibilityRole="text" style={styles.queued} testID="composer-queued-notice">
-      {"✓ Queued; it will be sent when this turn finishes. Edit it or send it now in Queue above."}
+      {"✓ Queued. It sends when this turn finishes; see Queue above to edit it or send it now."}
     </Text>
   );
 }

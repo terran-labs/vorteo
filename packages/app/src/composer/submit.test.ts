@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { sendNotice, submitAgentInput } from "./submit";
+import { queuedNoticeRemainingMs, sendNotice, submitAgentInput } from "./submit";
 
 function createDeferredPromise<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -340,4 +340,12 @@ it("tells queued, held and failed sends apart (#720)", () => {
     "failed",
   );
   expect(sendNotice({ result: "submitted", error: null, holdActive: true })).toBeNull();
+  // A later failure is a failure, never the earlier queued confirmation, and an old queued
+  // confirmation cannot show again once its time is up, even after a remount.
+  expect(sendNotice({ result: "queued", error: "Message too large", holdActive: false })).toBe(
+    "failed",
+  );
+  expect(queuedNoticeRemainingMs(1_000, 1_000)).toBe(6_000);
+  expect(queuedNoticeRemainingMs(1_000, 8_000)).toBe(0);
+  expect(queuedNoticeRemainingMs(null, 1_000)).toBe(0);
 });

@@ -1329,7 +1329,12 @@ function ComposerContentImpl({
   const editingSession = useComposerEditingSession(inputMode, providedEditingSession);
   const isFullscreen = useComposerFullscreen(editingSession);
   const [sendError, setSendError] = useState<string | null>(null);
+  // When this composer last queued a message; cleared by every new submit and by any send
+  // error, so the queued confirmation only ever describes the send that produced it (#720).
   const [queuedAt, setQueuedAt] = useState<number | null>(null);
+  useEffect(() => {
+    if (sendError) setQueuedAt(null);
+  }, [sendError]);
   const clearSendError = useCallback(() => setSendError(null), []);
   useResetOnReconnect(serverId, clearSendError);
   // A host rejection stays visible until the owner edits the draft it describes.
@@ -1614,6 +1619,7 @@ function ComposerContentImpl({
     ) => {
       // A parent-managed submit reports its own failures; the composer only restores the draft.
       const isParentManagedSubmit = Boolean(onSubmitMessageRef.current);
+      setQueuedAt(null);
       const result = await submitAgentInput({
         message: outgoingMessage,
         attachments: outgoingAttachments,
