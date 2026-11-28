@@ -225,7 +225,9 @@ test("an unavailable account can recover in place, with a visible failure and re
         message: { role: "user", content: "Keep the approved recovery plan" },
       }) + "\n",
     );
-    await page.reload();
+    // Retry the failed history read explicitly while automatic reads are still cooling down.
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    await page.getByTestId("agent-load-error-retry").click();
     const savedMessage = page.getByText("Keep the approved recovery plan", { exact: true });
     const recoveryFooter = page.getByTestId("agent-provider-recovery-footer");
     for (const width of [1280, 402]) {

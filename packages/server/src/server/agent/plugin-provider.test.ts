@@ -1869,7 +1869,9 @@ describe("plugin provider launch and status", () => {
       const definition = registry.definitions()[registration.id]!;
       const client = definition.createClient(logger, { env: { PATH: "/paseo-nonexistent-bin" } });
       expect(await client.isAvailable()).toBe(false);
-      expect(await client.getDiagnostic!()).toEqual({ diagnostic: "node not found on PATH" });
+      expect(await client.getDiagnostic!()).toEqual({
+        diagnostic: `Could not find "node" (searched: /paseo-nonexistent-bin). Set agents.providers.${registration.id}.command in config.json to point Vorteo at the binary.`,
+      });
     } finally {
       await registry.shutdown();
     }
@@ -1936,9 +1938,13 @@ describe("plugin provider launch and status", () => {
     try {
       const client = registry.clients()[registration.id]!;
       expect(await client.isAvailable()).toBe(false);
-      expect(await client.getDiagnostic!()).toEqual({
-        diagnostic: "paseo-nonexistent-provider-executable not found on PATH",
-      });
+      const diagnostic = await client.getDiagnostic!();
+      expect(diagnostic.diagnostic).toContain(
+        'Could not find "paseo-nonexistent-provider-executable" (searched:',
+      );
+      expect(diagnostic.diagnostic).toContain(
+        `Set agents.providers.${registration.id}.command in config.json to point Vorteo at the binary.`,
+      );
       expect(harness.inputs).toEqual([]);
     } finally {
       await registry.shutdown();

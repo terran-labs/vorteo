@@ -6727,6 +6727,39 @@ describe("preset fence (#360)", () => {
     }
   });
 
+  it("allows owner switches and refuses agent-attributed switches targeting a governed supervisor", async () => {
+    const lookup = { getAgent: (id: string) => agents[id], logger: createTestLogger() };
+    const request = { kind: "change", targetAgentId: supervisor.id, settings: true } as const;
+    for (const path of ["switch_agent_profile", "session_switch_agent_profile"] as const) {
+      for (const caller of [supervisor, agents.child!, agents.other!]) {
+        await expect(checkPresetFence(lookup, path, caller.id, request)).rejects.toMatchObject({
+          code: "supervisor-profile-switch",
+        });
+      }
+      await expect(checkPresetFence(lookup, path, undefined, request)).resolves.toBeUndefined();
+    }
+    await expect(
+      checkPresetFence(lookup, "update_agent", supervisor.id, request),
+    ).resolves.toBeUndefined();
+  });
+
+  it("traces legacy workers through the daemon-set creator before editable labels", async () => {
+    const caller = {
+      ...agents.child!,
+      createdByAgentId: supervisor.id,
+      labels: { "paseo.parent-agent-id": "other" },
+    };
+    const lookup = { getAgent: (id: string) => agents[id] };
+    expect(await governingSupervisor(caller, lookup)).toMatchObject({
+      kind: "supervisor",
+      supervisor,
+    });
+    expect(await governingSupervisor(agents.child!, lookup)).toMatchObject({
+      kind: "supervisor",
+      supervisor,
+    });
+  });
+
   it("decides each path for a supervisor's own threads and launches", () => {
     const cases: Array<[ManagedAgent | null, PresetFenceRequest, string | null]> = [
       [null, { kind: "launch", profileId: worker.id }, null],

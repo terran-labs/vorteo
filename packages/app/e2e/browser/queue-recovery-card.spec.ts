@@ -106,10 +106,12 @@ test("recovery stays in the Messages card and obsolete send controls retire on r
     await expect(
       card.getByRole("button", { name: "Send queued message now", exact: true }),
     ).toBeDisabled();
-    await card.getByRole("button", { name: "Keep local copy and continue queue" }).click();
-    await expect(card).toContainText("Kept locally");
+    // Since #695 an edit whose message left the queue offers to send it as a new message or
+    // discard it, instead of keeping a local copy. Either one clears the block on send now.
+    await expect(card.getByRole("button", { name: "Send my edit as a new message" })).toBeVisible();
+    await card.getByRole("button", { name: "Discard my edit" }).click();
+    await expect(card).not.toContainText("Keep my unsynchronized edit");
     await expect(card.getByRole("alert")).toHaveCount(0);
-    await expect(card).toContainText("Keep my unsynchronized edit");
     await expect(
       card.getByRole("button", { name: "Send queued message now", exact: true }),
     ).toBeEnabled();

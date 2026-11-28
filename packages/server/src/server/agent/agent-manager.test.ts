@@ -12453,6 +12453,62 @@ test("answering one approval keeps the other's escalation", async () => {
   }
 });
 
+// #646: the escalation timer runs on the monotonic clock, while the bound is checked against the
+// wall clock. A wall clock a few milliseconds behind, as on a loaded or slewed CI runner, made the
+// timer fire "early"; the approval was skipped and, with no timer left, never reached the owner.
+test("an approval escalates even when the wall clock lags its timer", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-escalation-lag-"));
+  class OnePermissionSession extends TestAgentSession {
+    override async startTurn(): Promise<{ turnId: string }> {
+      const turnId = "turn-lag";
+      setTimeout(() => {
+        this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
+        this.pushEvent({
+          type: "permission_requested",
+          provider: this.provider,
+          request: { id: "perm-lag", provider: this.provider, kind: "tool", name: "Bash" },
+          turnId,
+        });
+      }, 0);
+      return { turnId };
+    }
+  }
+  const client = new (class extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new OnePermissionSession(config);
+    }
+  })();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    logger,
+    permissionOwnerEscalationMs: 200,
+  });
+  const realNow = Date.now.bind(Date);
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    const stream = manager.streamAgent(agent.id, "lagging clock");
+    void (async () => {
+      for await (const _event of stream) {
+      }
+    })();
+    await vi.waitFor(() => expect(manager.getAgent(agent.id)?.pendingPermissions.size).toBe(1), {
+      interval: 5,
+    });
+    // Well before the bound, the wall clock starts reading 5 ms behind the timers.
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() - 5);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(
+      manager.getAgent(agent.id)?.pendingPermissions.get("perm-lag")?.metadata?.ownerEscalated,
+    ).toBe(true);
+  } finally {
+    vi.restoreAllMocks();
+    await manager.flush();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
 test("respondToPermission updates currentModeId after plan approval", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
   const storagePath = join(workdir, "agents");
