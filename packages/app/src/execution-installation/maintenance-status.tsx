@@ -1,12 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  type ReactNode,
-} from "react";
+import { useCallback, useMemo, type ReactNode } from "react";
 import { Text, View, type StyleProp, type TextStyle } from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaInsetsContext, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -17,20 +9,25 @@ import { useFooterLeadingRule } from "@/components/sidebar/footer-rules";
 import { PressHighlight } from "@/components/ui/press-highlight";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { requestSettingsJump } from "@/screens/settings/settings-jump";
-import { useSessionStore } from "@/stores/session-store";
 import type { Theme } from "@/styles/theme";
 import {
-  holdLine,
-  maintenanceProgress,
+  blockersLine,
+  clockTime,
   messageHold,
   operationName,
-  type MaintenanceOperation,
+  phaseLine,
+  sinceLine,
+  staleLine,
   type MaintenanceProgress,
-  type MaintenanceTarget,
 } from "./maintenance-progress";
+import {
+  maintenanceAnchorId,
+  useClock,
+  useMaintenanceProgress,
+  type LiveMaintenance,
+} from "./maintenance-detail";
+import { serverTarget } from "./maintenance-model-source";
 import { sendNotice } from "@/composer/submit";
-import { useInstallationSystemModel } from "./panel";
-import { readExecutionInstallation } from "./policy";
 
 /**
  * Running installation maintenance, shown the same way everywhere (#720): one sidebar row, one
@@ -41,215 +38,11 @@ import { readExecutionInstallation } from "./policy";
 const MaintenanceIcon = withUnistyles(Wrench);
 const iconColor = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
-// The installation polls every 5 seconds; re-reading staleness slightly slower is enough.
-const STALE_CHECK_MS = 5_000;
-
-const noSubscription = () => () => {};
-const noState = () => null;
-
-/** An operation that finished while the app was watching, shown briefly so it does not vanish. */
-export interface FinishedOperation {
-  id: string;
-  name: string;
-  at: string;
-}
-export type LiveMaintenance = MaintenanceProgress & { finished: FinishedOperation[] };
-
-/** How long a finished operation stays mentioned. A failure keeps its own attention item. */
-const FINISHED_SHOWN_MS = 60_000;
-
-/** The live maintenance snapshot, or null where this app has no installation. */
-export function useMaintenanceProgress(): LiveMaintenance | null {
-  const model = useInstallationSystemModel();
-  const state = useSyncExternalStore(
-    model?.subscribe ?? noSubscription,
-    model?.getState ?? noState,
-    model?.getState ?? noState,
-  );
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!state) return;
-    const timer = setInterval(() => setNow(Date.now()), STALE_CHECK_MS);
-    return () => clearInterval(timer);
-  }, [state]);
-  const progress = useMemo(() => {
-    if (!state) return null;
-    const servers = targetServers();
-    return maintenanceProgress({
-      unlocked: state.unlocked,
-      jobs: state.jobs,
-      serviceJobs: state.serviceQueue?.jobs ?? [],
-      summary: state.restartSummary,
-      lastUpdatedAt: state.lastUpdatedAt,
-      now,
-      // Only a thread this app lists for that daemon is named; others stay anonymous.
-      visibleThread: (target, agentId) => {
-        const serverId = servers[target];
-        if (!serverId) return null;
-        const agent = useSessionStore.getState().sessions[serverId]?.agents?.get(agentId);
-        return agent ? (agent.title ?? null) : null;
-      },
-    });
-  }, [now, state]);
-  const finished = useRecentlyFinished(progress, state?.jobs, state?.serviceQueue?.jobs);
-  return useMemo(() => (progress ? { ...progress, finished } : null), [finished, progress]);
-}
-
-interface TrackedRecord {
-  id: string;
-  status: string;
-  finishedAt?: string;
-}
-
-/**
- * Operations that left the running list because they succeeded, kept for a minute. The finish
- * time is the coordinator's when it reports one, otherwise when this app saw it end.
- */
-function useRecentlyFinished(
-  progress: MaintenanceProgress | null,
-  jobs: readonly TrackedRecord[] | undefined,
-  serviceJobs: readonly TrackedRecord[] | undefined,
-): FinishedOperation[] {
-  const seen = useRef(new Map<string, MaintenanceOperation>());
-  const [finished, setFinished] = useState<FinishedOperation[]>([]);
-  useEffect(() => {
-    if (!progress) return;
-    const records = [...(jobs ?? []), ...(serviceJobs ?? [])];
-    const active = new Map(progress.operations.map((operation) => [operation.id, operation]));
-    const ended: FinishedOperation[] = [];
-    for (const [id, operation] of seen.current) {
-      if (active.has(id)) continue;
-      const record = records.find((job) => job.id === id);
-      if (record?.status !== "succeeded") continue;
-      ended.push({
-        id,
-        name: operationName(operation),
-        at: record.finishedAt ?? new Date().toISOString(),
-      });
-    }
-    seen.current = active;
-    if (ended.length) setFinished((current) => [...current, ...ended]);
-  }, [jobs, progress, serviceJobs]);
-  useEffect(() => {
-    if (!finished.length) return;
-    const expire = () =>
-      setFinished((current) =>
-        current.filter((entry) => Date.now() - Date.parse(entry.at) < FINISHED_SHOWN_MS),
-      );
-    const timer = setTimeout(expire, FINISHED_SHOWN_MS);
-    return () => clearTimeout(timer);
-  }, [finished]);
-  return finished;
-}
-
-/** Each daemon's server id, from the installation the app was served with. */
-function targetServers(): Partial<Record<"host" | "dev", string>> {
-  const environments = readExecutionInstallation()?.environments ?? [];
-  const servers: Partial<Record<"host" | "dev", string>> = {};
-  for (const environment of environments) {
-    servers[environment.kind === "host" ? "host" : "dev"] = environment.serverId;
-  }
-  return servers;
-}
-
-/** Which daemon a server id belongs to, for the composer's hold check. */
-export function serverTarget(serverId: string): "host" | "dev" | null {
-  const servers = targetServers();
-  if (servers.host === serverId) return "host";
-  if (servers.dev === serverId) return "dev";
-  return null;
-}
-
 // ---------------------------------------------------------------------------------------------
 // Words. Plain English, shared by every surface, as the rest of Settings > System is written.
 // ---------------------------------------------------------------------------------------------
 
-/** What the operation is doing now, from its tracked step. */
-export function phaseLine(operation: MaintenanceOperation): string {
-  switch (operation.phase) {
-    case "preparing":
-      return "Preparing; it will start automatically";
-    case "starting":
-      return "Waiting to start";
-    case "preparing-update":
-      return "Preparing the update";
-    case "waiting-for-idle":
-      return "Waiting for agents to go idle";
-    case "holding-turns": {
-      const count = operation.blockers.length;
-      if (count === 0) return "Waiting for current turns to finish";
-      return `Waiting for ${count} ${count === 1 ? "turn" : "turns"} to finish`;
-    }
-    case "installing":
-      return "Installing the update and restarting";
-    case "restarting":
-      return "Restarting";
-    case "checking":
-      return "Checking the result";
-    case "running":
-      return "Running";
-    case "other":
-      return operation.stepText ?? "Running";
-  }
-}
-
-export function formatDuration(ms: number): string {
-  const minutes = Math.max(0, Math.floor(ms / 60_000));
-  if (minutes < 1) return "under a minute";
-  if (minutes < 60) return `${minutes} min`;
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return rest ? `${hours} h ${rest} min` : `${hours} h`;
-}
-
-/** Time since the operation began, saying what moment the timer counts from. */
-export function sinceLine(operation: MaintenanceOperation, now: number): string | null {
-  if (!operation.since) return null;
-  const elapsed = formatDuration(now - Date.parse(operation.since.at));
-  if (operation.since.from === "started") return `${elapsed} so far`;
-  if (operation.since.from === "approved") return `${elapsed} since approved`;
-  return `${elapsed} since requested`;
-}
-
-/** Time in the current step; null when the coordinator does not report steps. */
-export function stepLine(operation: MaintenanceOperation, now: number): string | null {
-  if (!operation.stepSince) return operation.startUnknown ? "Start time unknown" : null;
-  return `${formatDuration(now - Date.parse(operation.stepSince))} in this step`;
-}
-
-/** The usual duration, or the plain statement that there is none. Never a deadline. */
-export function estimateLine(operation: MaintenanceOperation): string {
-  const estimate = operation.estimate;
-  if (!estimate) return "No estimate available";
-  return `Usually about ${formatDuration(estimate.medianMs)} (${formatDuration(estimate.minMs)} to ${formatDuration(estimate.maxMs)} over the last ${estimate.samples})`;
-}
-
-/** The threads a turn hold waits for, by title where the owner can open them. */
-export function blockersLine(operation: MaintenanceOperation): string | null {
-  if (operation.blockers.length === 0) return null;
-  const named = operation.blockers.flatMap((blocker) => (blocker.title ? [blocker.title] : []));
-  const others = operation.blockers.length - named.length;
-  const parts = [...named];
-  if (others > 0) parts.push(`${others} other ${others === 1 ? "thread" : "threads"}`);
-  return `Waiting for: ${parts.join(", ")}`;
-}
-
-export function overdueLine(operation: MaintenanceOperation): string | null {
-  if (!operation.overdue) return null;
-  const notice = operation.requesterNotNotified ? " The requester has not been told." : "";
-  return `Past its deadline; it needs your decision.${notice}`;
-}
-
-function staleLine(progress: MaintenanceProgress): string | null {
-  if (!progress.staleSince) return null;
-  return `Status not updated since ${clockTime(progress.staleSince)}`;
-}
-
 const LOCKED_DETAIL = "Unlock System settings to see what it is doing.";
-
-function clockTime(at: string): string {
-  return new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-}
 
 /** The one-line summary the sidebar row and the phone entry show. */
 function summary(progress: LiveMaintenance, now: number): { title: string; detail: string } {
@@ -284,28 +77,12 @@ function summary(progress: LiveMaintenance, now: number): { title: string; detai
   };
 }
 
-/** A one-second clock for elapsed times, running only while something is shown. */
-function useClock(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 1_000);
-    return () => clearInterval(timer);
-  }, [active]);
-  return now;
-}
-
 function hasMaintenance(progress: LiveMaintenance | null): progress is LiveMaintenance {
   return Boolean(
     progress && (progress.locked || progress.operations.length > 0 || progress.finished.length > 0),
   );
 }
 
-/** The System page anchor for a target's row; System services share the page's top. */
-export function maintenanceAnchorId(target: MaintenanceTarget): string {
-  return target === "system" ? "settings-system-services" : `settings-system-${target}`;
-}
 const SYSTEM_ROUTE = "/settings/health";
 
 /** Opens Settings > System at the operation, or at the page top when locked or several run. */
@@ -436,41 +213,6 @@ export function MaintenancePhoneEntry({ children }: { children: ReactNode }) {
 // ---------------------------------------------------------------------------------------------
 // Settings > System detail
 // ---------------------------------------------------------------------------------------------
-
-/** The full progress of a target's operations, under its row in Settings > System. */
-export function MaintenanceOperationDetail({ target }: { target: MaintenanceTarget }) {
-  const progress = useMaintenanceProgress();
-  const operations = progress?.operations.filter((operation) => operation.target === target) ?? [];
-  const now = useClock(operations.length > 0);
-  if (!progress || operations.length === 0) return null;
-  const stale = staleLine(progress);
-  return (
-    <View style={styles.detail} testID={`maintenance-detail-${target}`}>
-      {operations.map((operation) => (
-        <View key={operation.id} style={styles.detailOperation}>
-          <Text style={styles.detailTitle}>
-            {`${operationName(operation)}: ${phaseLine(operation)}`}
-          </Text>
-          {[
-            sinceLine(operation, now),
-            stepLine(operation, now),
-            estimateLine(operation),
-            holdLine(operation),
-            blockersLine(operation),
-            overdueLine(operation),
-          ]
-            .filter((line): line is string => Boolean(line))
-            .map((line) => (
-              <Text key={line} style={styles.description}>
-                {line}
-              </Text>
-            ))}
-        </View>
-      ))}
-      {stale ? <Text style={styles.description}>{stale}</Text> : null}
-    </View>
-  );
-}
 
 // ---------------------------------------------------------------------------------------------
 // Composer

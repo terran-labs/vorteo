@@ -1,17 +1,17 @@
 import { useSyncExternalStore } from "react";
 import { holdLine, maintenanceProgress, operationName } from "./maintenance-progress";
-import { useInstallationSystemModel } from "./panel";
+import { useMaintenanceSource } from "./maintenance-model-source";
 
 const noSubscription = () => () => {};
 const noState = () => null;
 
 /**
  * Health's line while a restart or update keeps the owner's messages out (#720): progress, not a
- * request for approval. Kept apart from maintenance-status.tsx so Health loads no navigation or
- * session code.
+ * request for approval. It reads the published installation model, so Health loads no panel,
+ * navigation or session code.
  */
 export function useMessageHoldNotice(): { label: string; hint: string } | null {
-  const model = useInstallationSystemModel();
+  const model = useMaintenanceSource()?.model;
   const state = useSyncExternalStore(
     model?.subscribe ?? noSubscription,
     model?.getState ?? noState,

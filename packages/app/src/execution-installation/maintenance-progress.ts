@@ -407,3 +407,88 @@ export function holdLine(operation: MaintenanceOperation): string | null {
   if (!operation.holdsMessages) return null;
   return `New messages to ${TARGET_NAMES[operation.target]} are held until it finishes.`;
 }
+
+/** What the operation is doing now, from its tracked step. */
+export function phaseLine(operation: MaintenanceOperation): string {
+  switch (operation.phase) {
+    case "preparing":
+      return "Preparing; it will start automatically";
+    case "starting":
+      return "Waiting to start";
+    case "preparing-update":
+      return "Preparing the update";
+    case "waiting-for-idle":
+      return "Waiting for agents to go idle";
+    case "holding-turns": {
+      const count = operation.blockers.length;
+      if (count === 0) return "Waiting for current turns to finish";
+      return `Waiting for ${count} ${count === 1 ? "turn" : "turns"} to finish`;
+    }
+    case "installing":
+      return "Installing the update and restarting";
+    case "restarting":
+      return "Restarting";
+    case "checking":
+      return "Checking the result";
+    case "running":
+      return "Running";
+    case "other":
+      return operation.stepText ?? "Running";
+  }
+}
+
+export function formatDuration(ms: number): string {
+  const minutes = Math.max(0, Math.floor(ms / 60_000));
+  if (minutes < 1) return "under a minute";
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours} h ${rest} min` : `${hours} h`;
+}
+
+/** Time since the operation began, saying what moment the timer counts from. */
+export function sinceLine(operation: MaintenanceOperation, now: number): string | null {
+  if (!operation.since) return null;
+  const elapsed = formatDuration(now - Date.parse(operation.since.at));
+  if (operation.since.from === "started") return `${elapsed} so far`;
+  if (operation.since.from === "approved") return `${elapsed} since approved`;
+  return `${elapsed} since requested`;
+}
+
+/** Time in the current step; null when the coordinator does not report steps. */
+export function stepLine(operation: MaintenanceOperation, now: number): string | null {
+  if (!operation.stepSince) return operation.startUnknown ? "Start time unknown" : null;
+  return `${formatDuration(now - Date.parse(operation.stepSince))} in this step`;
+}
+
+/** The usual duration, or the plain statement that there is none. Never a deadline. */
+export function estimateLine(operation: MaintenanceOperation): string {
+  const estimate = operation.estimate;
+  if (!estimate) return "No estimate available";
+  return `Usually about ${formatDuration(estimate.medianMs)} (${formatDuration(estimate.minMs)} to ${formatDuration(estimate.maxMs)} over the last ${estimate.samples})`;
+}
+
+/** The threads a turn hold waits for, by title where the owner can open them. */
+export function blockersLine(operation: MaintenanceOperation): string | null {
+  if (operation.blockers.length === 0) return null;
+  const named = operation.blockers.flatMap((blocker) => (blocker.title ? [blocker.title] : []));
+  const others = operation.blockers.length - named.length;
+  const parts = [...named];
+  if (others > 0) parts.push(`${others} other ${others === 1 ? "thread" : "threads"}`);
+  return `Waiting for: ${parts.join(", ")}`;
+}
+
+export function overdueLine(operation: MaintenanceOperation): string | null {
+  if (!operation.overdue) return null;
+  const notice = operation.requesterNotNotified ? " The requester has not been told." : "";
+  return `Past its deadline; it needs your decision.${notice}`;
+}
+
+export function staleLine(progress: Pick<MaintenanceProgress, "staleSince">): string | null {
+  if (!progress.staleSince) return null;
+  return `Status not updated since ${clockTime(progress.staleSince)}`;
+}
+
+export function clockTime(at: string): string {
+  return new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}

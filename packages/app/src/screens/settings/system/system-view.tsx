@@ -9,7 +9,7 @@ import { useOnHealthCardReveal } from "@/execution-installation/health-cards";
 import {
   MaintenanceOperationDetail,
   maintenanceAnchorId,
-} from "@/execution-installation/maintenance-status";
+} from "@/execution-installation/maintenance-detail";
 import type { SystemAction, SystemStatus } from "./system-status-model";
 
 const labels: Record<SystemStatus, string> = {
