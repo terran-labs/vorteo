@@ -3637,3 +3637,5 @@ The daemon imports the project and Lean Factory contracts through separate packa
 The Lean delivery executor records each release step before launch. If the daemon loses the result, recovery waits for the owner to resolve that step before another deployment starts.
 
 Lean Factory Builders can return approved file paths to the daemon for a commit, push and pull request scoped to their issue. The worker account picker preserves an extra ten percentage points above the floor when the Builder shares its provider with the Reviewer.
+
+The Dev runner adapter records each issue assignment on the Host before requesting the runner. Recovery checks the bound installation, the Dev daemon's creation receipt, the workspace and the issue branch. A Reviewer uses a separate checkout at the exact pull request head.
