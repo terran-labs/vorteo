@@ -25,6 +25,7 @@ import {
 import { browseProjectDirectories, projectDirectoryEnvironment } from "./project-directories.js";
 import { assertWorkspaceEnvironment } from "./execution-installation/settings/project-policies.js";
 import {
+  findNewProjectRejection,
   projectsFolderPolicyFor,
   ProjectsFolderError,
   toLogicalProjectsPath,
@@ -3717,7 +3718,7 @@ export class Session {
           name: msg.name,
         }).then((account) => {
           // Usage and status now read the account's full sign-in instead of its setup token.
-          this.providerUsageService.invalidate();
+          this.providerUsageService.invalidate(account.providerId);
           void this.providerSnapshotManager
             .refreshSettingsSnapshot({ providers: [account.providerId] })
             .catch((error) => {
@@ -6258,6 +6259,7 @@ export class Session {
       {
         logger: this.sessionLogger,
         getAgent: (id) => this.agentManager.getAgent(id),
+        getCached: (id) => this.agentStorage.getLoadedRecord(id),
         getStored: (id) => this.agentStorage.get(id),
         serverId: this.serverId,
       },
@@ -9260,22 +9262,10 @@ export class Session {
   private async rejectNewProjectOutsideProjectsFolder(
     cwd: string,
   ): Promise<ProjectsFolderError | null> {
-    if (!this.projectsFolder) return null;
-    const [projects, workspaces] = await Promise.all([
-      this.projectRegistry.list(),
-      this.workspaceRegistry.list(),
-    ]);
-    const paths = [
-      ...projects.map((project) => project.rootPath),
-      ...workspaces.map((workspace) => workspace.cwd),
-    ];
-    try {
-      await this.projectsFolder.assertNewProjectDirectory(cwd, { paths });
-      return null;
-    } catch (error) {
-      if (error instanceof ProjectsFolderError) return error;
-      throw error;
-    }
+    return findNewProjectRejection(this.projectsFolder, cwd, {
+      projectRegistry: this.projectRegistry,
+      workspaceRegistry: this.workspaceRegistry,
+    });
   }
 
   private async projectsFolderBrowseContext(): Promise<{

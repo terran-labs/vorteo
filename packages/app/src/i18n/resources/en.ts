@@ -1,6 +1,19 @@
 import { previewStatus } from "./preview-status";
 export const en = {
   previewStatus: previewStatus.en,
+  projectHostTarget: {
+    settingsOfflineOne:
+      "{{project}} can't be edited right now because {{environments}} is offline. Bring it back online, then open these settings again.",
+    settingsOfflineMany:
+      "{{project}} can't be edited right now because {{environments}} are offline. Bring one of them back online, then open these settings again.",
+    settingsNoFolder:
+      "{{project}} has no folder on any environment that is online, so its settings can't be edited here.",
+    factoryOfflineOne: "Factory unavailable: {{environments}} is offline",
+    factoryOfflineMany: "Factory unavailable: {{environments}} are offline",
+    factoryMissingPlugin: "Factory isn't available on {{environment}}.",
+    listPair: "{{first}} and {{last}}",
+    listMany: "{{rest}}, and {{last}}",
+  },
   projectFactory: {
     overview: "Factory Overview",
     projectHeading: "{{project}} Factory",
@@ -138,7 +151,6 @@ export const en = {
       sample: "Sample Factory",
       pipelineSummary:
         "{{queued}} queued · {{active}} active · {{stalled}} stalled · {{review}} review",
-      snapshotAt: "Queue snapshot: {{time}} ({{minutes}} min ago)",
       queueRetry: "Queue unavailable. Retry",
       sidebarSummary_one:
         "{{count}} Factory · {{running}} on · {{paused}} paused · {{held}} held/draining",
@@ -1616,6 +1628,13 @@ export const en = {
       statusAge: "{{line}} · {{age}}",
       openRole: "Open {{role}}",
       openRunner: "Open #{{number}} {{title}}",
+      archiveFinished: "Archive finished issue workspaces",
+      archiveFinishedTitle_one: "Archive {{count}} finished issue workspace?",
+      archiveFinishedTitle_other: "Archive {{count}} finished issue workspaces?",
+      archiveFinishedBody:
+        "These issues are closed and their pull requests are merged. Each workspace is checked for uncommitted work first, and any that has some is skipped.",
+      archiveFinishedConfirm: "Archive",
+      archiveFinishedResult: "Archived {{archived}}. Skipped {{skipped}} with uncommitted work.",
       agentStatus: "{{role}}: {{status}}",
       pullRequestChecks: "PR #{{number}} · {{checks}}",
       pullRequest: "PR #{{number}}",

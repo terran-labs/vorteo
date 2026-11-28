@@ -197,31 +197,59 @@ describe("AgentStorage", () => {
     expect(await reopened.claimBlockedReview(agent.id, now + 7_200_000)).toBe(false);
   });
 
-  test("forwarded governance is written once by the daemon and no snapshot or upsert changes it (#360)", async () => {
-    const agent = createManagedAgent({
-      id: "forwarded-governance",
-      persistence: { provider: "codex", sessionId: "retained" },
-    });
-    agent.labels = {};
-    await storage.applySnapshot(agent);
-    const governance = {
-      supervisorAgentId: "host-coordinator",
-      serverId: "srv_host",
-      workerProfileId: "worker-preset",
-    };
-    // A record write carrying the field, as an import or a crafted record would, is ignored.
-    await storage.upsert({ ...(await storage.get(agent.id))!, forwardedGovernance: governance });
-    expect((await storage.get(agent.id))?.forwardedGovernance).toBeUndefined();
-    expect(await storage.recordForwardedGovernance(agent.id, governance)).toBe(true);
-    // A later forwarded create naming another supervisor cannot replace it.
-    const other = { ...governance, supervisorAgentId: "other", workerProfileId: "strong" };
-    expect(await storage.recordForwardedGovernance(agent.id, other)).toBe(false);
-    // Snapshots and full-record writes without it, or clearing it, keep the recorded value.
-    await storage.applySnapshot(agent);
-    const { forwardedGovernance: _dropped, ...withoutField } = (await storage.get(agent.id))!;
-    await storage.upsert(withoutField as StoredAgentRecord);
-    const reopened = new AgentStorage(storagePath, logger);
-    expect((await reopened.get(agent.id))?.forwardedGovernance).toEqual(governance);
+  test.each(["forwardedGovernance", "workerGovernance"] as const)(
+    "%s is written once by the daemon and preserved by other writers",
+    async (field) => {
+      const agent = createManagedAgent({
+        id: field,
+        persistence: { provider: "codex", sessionId: "retained" },
+      });
+      agent.labels = {};
+      await storage.applySnapshot(agent);
+      const governance = {
+        supervisorAgentId: "host-coordinator",
+        serverId: "srv_host",
+        workerProfileId: "worker-preset",
+      };
+      const record =
+        field === "forwardedGovernance"
+          ? storage.recordForwardedGovernance.bind(storage)
+          : storage.recordWorkerGovernance.bind(storage);
+      // A record write carrying the field, as an import or a crafted record would, is ignored.
+      await storage.upsert({ ...(await storage.get(agent.id))!, [field]: governance });
+      expect((await storage.get(agent.id))?.[field]).toBeUndefined();
+      expect(await record(agent.id, governance)).toBe(true);
+      // A later forwarded create naming another supervisor cannot replace it.
+      const other = { ...governance, supervisorAgentId: "other", workerProfileId: "strong" };
+      expect(await record(agent.id, other)).toBe(false);
+      // Snapshots and full-record writes without it, or clearing it, keep the recorded value.
+      await storage.applySnapshot(agent);
+      const { [field]: _dropped, ...withoutField } = (await storage.get(agent.id))!;
+      await storage.upsert(withoutField as StoredAgentRecord);
+      const reopened = new AgentStorage(storagePath, logger);
+      expect((await reopened.get(agent.id))?.[field]).toEqual(governance);
+    },
+  );
+
+  test("the creator is recorded once, ignores labels, and older records take none (#659)", async () => {
+    const worker = createManagedAgent({ id: "worker", persistence: null });
+    worker.labels = {};
+    worker.createdByAgentId = "lead";
+    await storage.applySnapshot(worker);
+    // Later snapshots and record writes cannot change or clear it.
+    worker.createdByAgentId = null;
+    await storage.applySnapshot(worker);
+    await storage.upsert({ ...(await storage.get(worker.id))!, createdByAgentId: "other" });
+    expect((await storage.get(worker.id))?.createdByAgentId).toBe("lead");
+
+    // A record written before the field existed takes no creator from its label: its approvals
+    // go to the owner, which can always answer them.
+    const legacy = createManagedAgent({ id: "legacy", persistence: null });
+    legacy.labels = { "paseo.parent-agent-id": "old-lead" };
+    await storage.applySnapshot(legacy);
+    expect((await new AgentStorage(storagePath, logger).get("legacy"))?.createdByAgentId).toBe(
+      undefined,
+    );
   });
 
   test("journal appends preserve order, survive stale snapshots and retry without duplication", async () => {

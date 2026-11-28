@@ -372,6 +372,11 @@ export function createHostResolver(input: {
           },
           async createWorkspace(args) {
             const isolation = z.enum(["local", "worktree"]).parse(args.isolation);
+            // The remote request has no newProject field, so it would be dropped silently.
+            if (args.newProject === true)
+              throw new Error(
+                "newProject is not supported when creating a workspace on another host. Omit it so that host decides the project, or pass projectId.",
+              );
             // Locally path defaults to the caller's workspace, which does not exist over there.
             if (typeof args.path !== "string" || args.path.length === 0)
               throw new Error(

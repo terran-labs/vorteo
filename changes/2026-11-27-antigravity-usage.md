@@ -1,0 +1,7 @@
+### Fixes
+
+- Report Antigravity account quota windows in profile selection, the sidebar quota card, and plugin usage reports by reading `agy --log-file /dev/null -p /usage --output-format json` at most once every 5 minutes unless explicitly refreshed by a client (staying unavailable when `agy` is missing, signed out, or has no account quota).
+
+## Maintenance review
+
+Daemon and built-in plugin change; source validated locally and handed to Builds for Host and Dev delivery. Added `AntigravityQuotaProvider` to the server quota fetcher manifest with a 5-minute floor and in-flight deduplication enforced inside the provider and across daemon `forceRefresh` / unrelated `invalidate()` callers (bypassed only by explicit client `userRefresh` or Antigravity-scoped invalidation), preserving each cached reading's true `fetchedAt`, using `findExecutableWithoutProbing`, neutral temp-directory cwd, null log redirection, `SSH_CONNECTION` browser-launch suppression, early abort on signed-out auth prompts, exit-2 unknown-flag error surfacing, stdout size bounds, process-group cleanup on exit and timeout, narrowed signed-out and no-quota classification backed by a real signed-out fixture, and sanitized client error messages; registered the matching usage source in `plugins/antigravity-provider`. Updated the "Usage beside account selection" inventory entry; README overview and onboarding are unchanged.

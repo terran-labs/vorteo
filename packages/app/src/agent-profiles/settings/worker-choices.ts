@@ -1,6 +1,7 @@
 import type { MutableDaemonConfig, AgentProfile } from "@getpaseo/protocol/messages";
 import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import {
+  canonicalProfileId,
   materializeSharedProfiles,
   resolveProviderType,
   sharedWorkflowProfileId,
@@ -26,14 +27,14 @@ interface WorkerChoiceInput {
   environment?: ExecutionEnvironmentKind;
 }
 
-export function workerChoices(input: WorkerChoiceInput) {
+function eligibleWorkerProfiles(input: WorkerChoiceInput) {
   const family = resolveProviderType(input.supervisor.provider, input.providers);
-  const selectedWorkerId = localWorkerId(input);
-  const selected = input.profiles.find((profile) => profile.id === selectedWorkerId);
-  const accountId =
-    input.accountId ?? selected?.provider ?? (input.selectedWorkerId ? "unavailable" : "");
-  const eligible = input.profiles.filter((profile) => {
-    if (!profile.model?.trim() || profile.workerProfileId) return false;
+  return input.profiles.filter((profile) => {
+    if (
+      !profile.model?.trim() ||
+      (profile.workerProfileIds?.length ?? (profile.workerProfileId ? 1 : 0))
+    )
+      return false;
     if (input.environment && profile.excludedEnvironments?.includes(input.environment))
       return false;
     const sameFamily = resolveProviderType(profile.provider, input.providers) === family;
@@ -47,6 +48,42 @@ export function workerChoices(input: WorkerChoiceInput) {
       true
     );
   });
+}
+
+export function workerTeamChoices(
+  input: WorkerChoiceInput,
+  preferences: MutableDaemonConfig["sharedProviderPreferences"],
+  selected: readonly string[],
+): WorkerChoice[] {
+  const choices = new Map<string, WorkerChoice>();
+  for (const profile of eligibleWorkerProfiles(input)) {
+    const id = preferences
+      ? canonicalProfileId(profile.id, preferences, input.providers)
+      : profile.id;
+    const family = resolveProviderType(profile.provider, input.providers);
+    const entry = input.entries.find((candidate) => candidate.provider === family);
+    choices.set(id, { id, value: id, label: profile.name, description: entry?.label ?? family });
+  }
+  for (const id of selected) {
+    if (!choices.has(id)) {
+      const name = input.profiles.find((profile) => profile.id === id)?.name;
+      choices.set(id, {
+        id,
+        value: id,
+        label: name ?? id,
+        description: "Unavailable in this environment",
+      });
+    }
+  }
+  return [...choices.values()];
+}
+
+export function workerChoices(input: WorkerChoiceInput) {
+  const selectedWorkerId = localWorkerId(input);
+  const selected = input.profiles.find((profile) => profile.id === selectedWorkerId);
+  const accountId =
+    input.accountId ?? selected?.provider ?? (input.selectedWorkerId ? "unavailable" : "");
+  const eligible = eligibleWorkerProfiles(input);
   const accounts = new Map<string, WorkerChoice>();
   for (const profile of eligible) {
     const entry = input.entries.find((candidate) => candidate.provider === profile.provider);

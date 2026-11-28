@@ -109,6 +109,7 @@ export function sharedProfileDefinitions(
   return Object.entries(preferences.providers).flatMap(([providerType, group]) =>
     group.workflows.map((workflow) => {
       const worker = workflow.workerProfileId ?? group.defaults.workerProfileId;
+      const workers = workflow.workerProfileIds ?? group.defaults.workerProfileIds;
       return {
         ...group.defaults,
         ...workflow,
@@ -117,6 +118,11 @@ export function sharedProfileDefinitions(
         isDefault: workflow.id === group.defaultWorkflowId,
         featureValues: { ...group.defaults.featureValues, ...workflow.featureValues },
         ...(worker ? { workerProfileId: canonicalProfileId(worker, preferences, providers) } : {}),
+        ...(workers !== undefined
+          ? {
+              workerProfileIds: workers.map((id) => canonicalProfileId(id, preferences, providers)),
+            }
+          : {}),
       };
     }),
   );

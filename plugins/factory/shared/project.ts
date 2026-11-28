@@ -268,6 +268,11 @@ export const ProjectFactoryQueueSchema = z.object({
         })
         .nullable()
         .optional(),
+      /**
+       * Why no trusted account has approved the issue's current text; `factory.project.claim`
+       * refuses it until one does. Absent when trusted, and from daemons without intake trust.
+       */
+      untrusted: z.string().optional(),
     }),
   ),
 });
@@ -472,6 +477,16 @@ export const ProjectFactoryClaimSchema = z.object({
   headSha: z.string().nullable(),
   /** Lines to put in the plan comment and PR body; set when this installation owns the claim. */
   marker: z.string().nullable(),
+  /**
+   * The issue as agents receive it, set with the marker: the trusted task, then outside comments
+   * in a marked block. Absent from daemons without intake trust.
+   */
+  brief: z.string().optional(),
+  /**
+   * The issue's open pull request head that the owner-only file check read. Merge only this
+   * commit, pinned with `gh pr merge --match-head-commit`. Absent without an open pull request.
+   */
+  checkedHeadSha: z.string().optional(),
 });
 export type ProjectFactoryClaim = z.infer<typeof ProjectFactoryClaimSchema>;
 

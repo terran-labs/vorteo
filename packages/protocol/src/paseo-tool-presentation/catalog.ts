@@ -209,6 +209,12 @@ export const PASEO_TOOL_CATALOG = {
     context: field("modeId"),
     detail: { inputOrder: ["agentId", "modeId"] },
   },
+  reopen_worker_after_usage_limit: {
+    label: "Reopen quota-stopped worker",
+    completedLabel: "Checked worker recovery",
+    context: targetAgent(),
+    detail: { inputOrder: ["agentId"] },
+  },
   switch_agent_profile: {
     label: "Switch thread account",
     completedLabel: "Switched thread account",

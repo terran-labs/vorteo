@@ -1761,7 +1761,12 @@ describe("WorkspaceGitServiceImpl with workspace folders that no longer exist", 
       additions: cwd === survivingWorktree ? ++survivingWorktreeEdits : 1,
       deletions: 0,
     }));
-    const service = createService(git.deps);
+    // The first idle release lands at a phase hashed from the repository path, which here is a
+    // random temporary folder. An idle release fetches and restarts the 3 minute fetch clock, so
+    // one landing just after an active fetch adds a third fetch inside the two intervals measured
+    // below. Phase 0 runs it at the first activity check, before the deletion; the next one is 30
+    // minutes later, after this test.
+    const service = createService({ ...git.deps, getIdleGitReleasePhaseMs: () => 0 });
     const deletedSubscription = service.registerWorkspace({ cwd: deletedWorktree }, vi.fn());
     await waitForObservationToSettle(service, 1);
     const survivingSubscription = service.registerWorkspace({ cwd: survivingWorktree }, vi.fn());

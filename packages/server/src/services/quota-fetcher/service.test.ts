@@ -6,6 +6,12 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderUsage } from "../../server/messages.js";
 import type { ProviderUsageFetcher } from "./provider.js";
+import {
+  ANTIGRAVITY_MIN_POLL_INTERVAL_MS,
+  AntigravityQuotaProvider,
+  createAntigravityUsageCache,
+  invalidateAntigravityUsageCache,
+} from "./providers/antigravity.js";
 import { ClaudeQuotaProvider } from "./providers/claude.js";
 import { CodexQuotaProvider } from "./providers/codex.js";
 import { CopilotQuotaProvider } from "./providers/copilot.js";
@@ -486,6 +492,7 @@ describe("ProviderUsageService", () => {
         logger: createLogger(),
         claudeLimitObservations,
         getProviderConfigs: () => ({
+          antigravity: { enabled: false },
           claude: { enabled: false },
           codex: { enabled: false },
           "claude-two": {
@@ -2223,5 +2230,367 @@ describe("KimiQuotaProvider usage windows", () => {
       "coding_limit_300_time_unit_minute",
       "coding_limit_300_time_unit_minute_2",
     ]);
+  });
+});
+
+describe("AntigravityQuotaProvider", () => {
+  beforeEach(() => {
+    invalidateAntigravityUsageCache();
+  });
+
+  const sampleOutput = JSON.stringify({
+    conversation_id: "",
+    status: "SUCCESS",
+    command: {
+      name: "usage",
+      data: {
+        groups: [
+          {
+            name: "Gemini Models",
+            buckets: [
+              {
+                id: "gemini-weekly",
+                name: "Weekly Limit Remaining",
+                window: "weekly",
+                remaining_fraction: 0.9,
+                reset_time: "2026-12-04T20:39:17Z",
+              },
+              {
+                id: "gemini-5h",
+                name: "Five Hour Limit Remaining",
+                window: "5h",
+                remaining_fraction: 0.25,
+                reset_time: "2026-11-28T01:39:17Z",
+              },
+            ],
+          },
+          {
+            name: "Claude and GPT models",
+            buckets: [
+              {
+                id: "3p-weekly",
+                name: "Weekly Limit Remaining",
+                window: "weekly",
+                remaining_fraction: 1,
+                reset_time: "1970-01-01T00:00:00Z",
+              },
+              {
+                id: "3p-5h",
+                name: "Five Hour Limit Remaining",
+                window: "5h",
+                remaining_fraction: 1,
+                reset_time: "1970-01-01T00:00:00Z",
+              },
+            ],
+          },
+        ],
+      },
+    },
+  });
+
+  it("parses grouped windows, normalizes epoch reset times, and honors command overrides", async () => {
+    const runCommand = vi.fn(async () => ({ code: 0, stdout: sampleOutput, stderr: "" }));
+    const provider = new AntigravityQuotaProvider({
+      logger: createLogger(),
+      command: ["/custom/agy", "--flag"],
+      env: { ANTIGRAVITY_APP_DATA_DIR: "/tmp/agy-test" },
+      resolveExecutable: async (command) => command,
+      runCommand,
+      now: () => Date.parse("2026-11-27T21:00:00Z"),
+    });
+
+    const usage = await provider.fetchUsage();
+
+    expect(runCommand).toHaveBeenCalledWith(
+      "/custom/agy",
+      [
+        "--flag",
+        "--log-file",
+        process.platform === "win32" ? "NUL" : "/dev/null",
+        "-p",
+        "/usage",
+        "--output-format",
+        "json",
+      ],
+      expect.objectContaining({
+        cwd: tmpdir(),
+        env: { ANTIGRAVITY_APP_DATA_DIR: "/tmp/agy-test" },
+      }),
+    );
+    expect(usage).toMatchObject({
+      providerId: "antigravity",
+      displayName: "Antigravity",
+      status: "available",
+      sourceLabel: "Antigravity CLI",
+      error: null,
+    });
+    expect(usage.windows).toEqual([
+      expect.objectContaining({
+        id: "gemini-5h",
+        label: "5-hour · Gemini",
+        usedPct: 75,
+        remainingPct: 25,
+        resetsAt: "2026-11-28T01:39:17.000Z",
+        tone: "warning",
+      }),
+      expect.objectContaining({
+        id: "gemini-weekly",
+        label: "Weekly · Gemini",
+        usedPct: 10,
+        remainingPct: 90,
+        resetsAt: "2026-12-04T20:39:17.000Z",
+        tone: "ok",
+      }),
+      expect.objectContaining({
+        id: "3p-5h",
+        label: "5-hour · Claude and GPT",
+        usedPct: 0,
+        remainingPct: 100,
+        resetsAt: null,
+        tone: "ok",
+      }),
+      expect.objectContaining({
+        id: "3p-weekly",
+        label: "Weekly · Claude and GPT",
+        usedPct: 0,
+        remainingPct: 100,
+        resetsAt: null,
+        tone: "ok",
+      }),
+    ]);
+  });
+
+  it("stays unavailable when agy is missing, signed out, or has no account quota", async () => {
+    const missing = new AntigravityQuotaProvider({
+      logger: createLogger(),
+      cache: createAntigravityUsageCache(),
+      resolveExecutable: async () => null,
+      runCommand: vi.fn(),
+    });
+    await expect(missing.fetchUsage()).resolves.toMatchObject({
+      status: "unavailable",
+      error: null,
+    });
+
+    const apiKey = new AntigravityQuotaProvider({
+      logger: createLogger(),
+      cache: createAntigravityUsageCache(),
+      resolveExecutable: async () => "/usr/bin/agy",
+      runCommand: async () => ({
+        code: 2,
+        stdout: "",
+        stderr: "No account quota for GEMINI_API_KEY",
+      }),
+    });
+    await expect(apiKey.fetchUsage()).resolves.toMatchObject({
+      status: "unavailable",
+      error: null,
+    });
+
+    // Real signed-out output captured from `agy -p /usage --output-format json`.
+    const realSignedOut = [
+      "Authentication required. Please visit the URL to log in:",
+      "  https://accounts.google.com/o/oauth2/auth?access_type=offline&state=example",
+      "",
+      "Waiting for authentication (timeout 60s)...",
+      "Or, paste the authorization code here and press Enter:",
+    ].join("\n");
+    for (const stderr of [realSignedOut, "You are not logged into Antigravity."]) {
+      const signedOut = new AntigravityQuotaProvider({
+        logger: createLogger(),
+        cache: createAntigravityUsageCache(),
+        resolveExecutable: async () => "/usr/bin/agy",
+        runCommand: async () => ({ code: 1, stdout: "", stderr }),
+      });
+      await expect(signedOut.fetchUsage()).resolves.toMatchObject({
+        status: "unavailable",
+        error: null,
+      });
+    }
+  });
+
+  it("does not hide network failures or unknown-flag exits and sanitizes error text", async () => {
+    for (const { code, stderr } of [
+      { code: 1, stderr: "network failure while refreshing login" },
+      { code: 1, stderr: "dial tcp timeout while checking api key endpoint" },
+      { code: 2, stderr: "flag provided but not defined: -log-file" },
+    ]) {
+      const broken = new AntigravityQuotaProvider({
+        logger: createLogger(),
+        cache: createAntigravityUsageCache(),
+        resolveExecutable: async () => "/usr/bin/agy",
+        runCommand: async () => ({ code, stdout: "", stderr }),
+      });
+      await expect(broken.fetchUsage()).resolves.toMatchObject({
+        status: "error",
+        error: `Antigravity usage check failed (exit code ${code})`,
+      });
+    }
+
+    const disabled = createProviderUsageFetchers({
+      logger: createLogger(),
+      providers: { antigravity: { enabled: false } },
+    });
+    expect(disabled.some((fetcher) => fetcher.providerId === "antigravity")).toBe(false);
+
+    const enabled = createProviderUsageFetchers({
+      logger: createLogger(),
+      providers: {
+        antigravity: { label: "Antigravity Work", enabled: true },
+        "antigravity-personal": {
+          extends: "antigravity",
+          label: "Antigravity Personal",
+          enabled: true,
+        },
+      },
+    }).filter((fetcher) => fetcher.providerId.startsWith("antigravity"));
+    expect(enabled.map((fetcher) => [fetcher.providerId, fetcher.displayName])).toEqual([
+      ["antigravity", "Antigravity Work"],
+      ["antigravity-personal", "Antigravity Personal"],
+    ]);
+  });
+
+  it("enforces the 5-minute floor across quota-reserve forceRefresh calls and unrelated invalidations", async () => {
+    let now = Date.parse("2026-11-27T21:00:00Z");
+    const runCommand = vi.fn(async () => ({ code: 0, stdout: sampleOutput, stderr: "" }));
+    const service = new ProviderUsageService({
+      logger: createLogger(),
+      now: () => now,
+      createFetchers: () => [
+        new AntigravityQuotaProvider({
+          logger: createLogger(),
+          resolveExecutable: async () => "/usr/bin/agy",
+          runCommand,
+          now: () => now,
+        }),
+      ],
+    });
+
+    const first = await service.listUsage({ forceRefresh: true });
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    const firstReadingAt = findProvider(first, "antigravity").fetchedAt;
+    expect(firstReadingAt).toBe("2026-11-27T21:00:00.000Z");
+
+    // Repeated 30s quota-reserve style forceRefresh calls and background samples must not respawn.
+    now += 30_000;
+    const reserve = await service.listUsage({ forceRefresh: true });
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    expect(findProvider(reserve, "antigravity").fetchedAt).toBe(firstReadingAt);
+
+    now += 30_000;
+    await service.sampleUsage();
+    expect(runCommand).toHaveBeenCalledTimes(1);
+
+    // Invalidating another provider (or a generic reset invalidation) must not reset Antigravity.
+    service.invalidate("claude-account-1");
+    service.invalidate();
+    now += 30_000;
+    const afterOtherInvalidate = await service.listUsage({ forceRefresh: true });
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    expect(findProvider(afterOtherInvalidate, "antigravity").fetchedAt).toBe(firstReadingAt);
+
+    // Once 5 minutes elapse, the next poll spawns once more and stamps a newer fetchedAt.
+    now += ANTIGRAVITY_MIN_POLL_INTERVAL_MS;
+    const refreshed = await service.listUsage({ forceRefresh: true });
+    expect(runCommand).toHaveBeenCalledTimes(2);
+    expect(findProvider(refreshed, "antigravity").fetchedAt).toBe(new Date(now).toISOString());
+
+    // An explicit user-initiated refresh bypasses the floor immediately.
+    now += 10_000;
+    await service.listUsage({ forceRefresh: true, userRefresh: true });
+    expect(runCommand).toHaveBeenCalledTimes(3);
+
+    // Invalidating Antigravity itself also permits an immediate refresh.
+    service.invalidate("antigravity");
+    now += 10_000;
+    await service.listUsage({ forceRefresh: true });
+    expect(runCommand).toHaveBeenCalledTimes(4);
+  });
+
+  it("shares one in-flight spawn across concurrent callers", async () => {
+    const cache = createAntigravityUsageCache();
+    let resolveRun: ((result: { code: number; stdout: string; stderr: string }) => void) | null =
+      null;
+    const runCommand = vi.fn(
+      () =>
+        new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+          resolveRun = resolve;
+        }),
+    );
+    const makeProvider = () =>
+      new AntigravityQuotaProvider({
+        logger: createLogger(),
+        cache,
+        resolveExecutable: async () => "/usr/bin/agy",
+        runCommand,
+      });
+
+    const first = makeProvider().fetchUsage();
+    const second = makeProvider().fetchUsage();
+    await vi.waitFor(() => expect(runCommand).toHaveBeenCalledTimes(1));
+    resolveRun?.({ code: 0, stdout: sampleOutput, stderr: "" });
+
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.status).toBe("available");
+    expect(b.status).toBe("available");
+    expect(runCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts signed-out prompts promptly, caps stdout, and terminates timed-out subprocesses", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agy-runner-test-"));
+    const script = join(dir, "fake-agy.mjs");
+    writeFileSync(
+      script,
+      [
+        "if (process.env.MODE === 'hang') { setInterval(() => {}, 1000); }",
+        "else if (process.env.MODE === 'signed-out-hang') {",
+        "  process.stderr.write('Authentication required. Please visit the URL to log in:\\n');",
+        "  setInterval(() => {}, 1000);",
+        "}",
+        "else if (process.env.MODE === 'oversized') { process.stdout.write('x'.repeat(2048)); }",
+        "else { process.stdout.write(JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(2) })); }",
+      ].join("\n"),
+    );
+    try {
+      const signedOutHang = new AntigravityQuotaProvider({
+        logger: createLogger(),
+        cache: createAntigravityUsageCache(),
+        command: [process.execPath, script],
+        env: { MODE: "signed-out-hang" },
+        timeoutMs: 5_000,
+        resolveExecutable: async (command) => command,
+      });
+      const started = Date.now();
+      await expect(signedOutHang.fetchUsage()).resolves.toMatchObject({
+        status: "unavailable",
+        error: null,
+      });
+      expect(Date.now() - started).toBeLessThan(2_000);
+
+      const hanging = new AntigravityQuotaProvider({
+        logger: createLogger(),
+        cache: createAntigravityUsageCache(),
+        command: [process.execPath, script],
+        env: { MODE: "hang" },
+        timeoutMs: 150,
+        resolveExecutable: async (command) => command,
+      });
+      await expect(hanging.fetchUsage()).rejects.toThrow("Antigravity usage check timed out");
+
+      const oversized = new AntigravityQuotaProvider({
+        logger: createLogger(),
+        cache: createAntigravityUsageCache(),
+        command: [process.execPath, script],
+        env: { MODE: "oversized" },
+        maxOutputBytes: 128,
+        resolveExecutable: async (command) => command,
+      });
+      await expect(oversized.fetchUsage()).resolves.toMatchObject({
+        status: "error",
+        error: "Invalid Antigravity usage output",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
