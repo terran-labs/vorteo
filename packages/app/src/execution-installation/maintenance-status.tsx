@@ -203,7 +203,8 @@ export function formatDuration(ms: number): string {
 }
 
 /** Time since the operation began, saying what moment the timer counts from. */
-export function sinceLine(operation: MaintenanceOperation, now: number): string {
+export function sinceLine(operation: MaintenanceOperation, now: number): string | null {
+  if (!operation.since) return null;
   const elapsed = formatDuration(now - Date.parse(operation.since.at));
   if (operation.since.from === "started") return `${elapsed} so far`;
   if (operation.since.from === "approved") return `${elapsed} since approved`;
@@ -212,7 +213,7 @@ export function sinceLine(operation: MaintenanceOperation, now: number): string 
 
 /** Time in the current step; null when the coordinator does not report steps. */
 export function stepLine(operation: MaintenanceOperation, now: number): string | null {
-  if (!operation.stepSince) return null;
+  if (!operation.stepSince) return operation.startUnknown ? "Start time unknown" : null;
   return `${formatDuration(now - Date.parse(operation.stepSince))} in this step`;
 }
 
@@ -235,10 +236,7 @@ export function blockersLine(operation: MaintenanceOperation): string | null {
 
 export function overdueLine(operation: MaintenanceOperation): string | null {
   if (!operation.overdue) return null;
-  const notice =
-    operation.requesterNotice === "pending-release"
-      ? " Requester not yet notified; will be told at release."
-      : "";
+  const notice = operation.requesterNotNotified ? " The requester has not been told." : "";
   return `Past its deadline; it needs your decision.${notice}`;
 }
 
@@ -271,7 +269,7 @@ function summary(progress: LiveMaintenance, now: number): { title: string; detai
     // Names first, so a narrow phone line still says what is running; the oldest sets the time.
     const holding = progress.operations.some((operation) => operation.holdsMessages);
     const oldest = progress.operations.reduce((left, right) =>
-      Date.parse(right.since.at) < Date.parse(left.since.at) ? right : left,
+      Date.parse(right.since?.at ?? "") < Date.parse(left.since?.at ?? "") ? right : left,
     );
     const details = [holding ? "messages held" : null, sinceLine(oldest, now), stale];
     return {

@@ -1081,12 +1081,24 @@ export class InstallationClient {
       this.installation.idleRestarts && path.startsWith("restarts")
         ? `${path}?idleRestarts=1${this.installation.gracefulRestarts ? "&gracefulRestarts=1" : ""}`
         : path;
-    const query = path.startsWith("restarts")
+    let query = path.startsWith("restarts")
       ? `${resource}${resource.includes("?") ? "&" : "?"}sourceUpdates=1&sourceBatches=1&containerSourceUpdates=1&supervisorMaintenance=1&hostAutomaticRestarts=1&factoryRuntimeAdoption=1&engineRestart=1&engineRecovery=1&hostLauncherUpdate=1&bootEntrySwitch=1&delegatedRequests=1&restartHoldDeadline=1`
       : resource;
+    if (
+      (path.startsWith("restarts") && RESTART_PROGRESS_FIELDS) ||
+      (path.startsWith("maintenance-services") && SERVICE_PROGRESS_FIELDS)
+    )
+      query = `${query}${query.includes("?") ? "&" : "?"}operationProgress=1`;
     return this.ports.request(query, this.password, body);
   }
 }
+
+// COMPAT(operationProgress): added 2026-11-28 (#720). Asks for step and timing fields only once
+// this app's strict schemas define them, so a newer coordinator's fields can never fail an older
+// app's parse; older coordinators read flags by name and ignore this one. Remove the shape checks
+// once every published app includes the fields.
+const RESTART_PROGRESS_FIELDS = "progressReconstructed" in RestartJobSchema.shape;
+const SERVICE_PROGRESS_FIELDS = "startedAt" in MaintenanceServiceViewSchema.shape;
 
 export async function requestInstallationOwner(
   path: string,

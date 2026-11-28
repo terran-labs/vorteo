@@ -1405,8 +1405,13 @@ test("a turn hold holds messages, names only threads the owner can open, and mar
     estimate: null,
   });
   expect(operation!.blockers.map((blocker) => blocker.title)).toEqual(["Fix room reset", null]);
-  const overdue = progressOf({ jobs: [progressJob({ holdDeadlineExceeded: true })] });
-  expect(overdue.operations[0]!.overdue).toBe(true);
+  const overdue = progressOf({
+    jobs: [progressJob({ holdDeadlineExceeded: true, requesterNotice: "not-notified" })],
+  });
+  expect(overdue.operations[0]).toMatchObject({ overdue: true, requesterNotNotified: true });
+  // Rebuilt at coordinator startup: start times are unknown, never the startup time.
+  const rebuilt = progressOf({ jobs: [progressJob({ progressReconstructed: true })] });
+  expect(rebuilt.operations[0]).toMatchObject({ startUnknown: true, since: null, stepSince: null });
   expect(messageHold(overdue, "host")?.id).toBe(progressJob().id);
   expect(messageHold(overdue, "dev")).toBeNull();
 });

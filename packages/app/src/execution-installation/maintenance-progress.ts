@@ -45,6 +45,8 @@ interface ProgressFields {
   holdReleasedAt?: string | null;
   finishedAt?: string;
   requesterNotice?: string;
+  /** History first seen at coordinator startup, past approval: start times are unknown. */
+  progressReconstructed?: boolean;
 }
 type ProgressJob = RestartJob & ProgressFields;
 type ProgressService = MaintenanceServiceView & ProgressFields;
@@ -89,13 +91,15 @@ export interface MaintenanceOperation {
   overdue: boolean;
   /** When the turn hold's deadline falls, when the coordinator reports it. */
   overdueAt: string | null;
+  /** An agent asked for this hold, it passed its deadline, and that agent was not notified. */
+  requesterNotNotified: boolean;
   /**
-   * Whether the agent that asked for an overdue hold has been told: "pending-release" when it
-   * will only hear at release, "delivered" once told, null when no notice applies.
+   * The coordinator rebuilt this operation's history at its startup, so when it and its current
+   * step began is unknown. Shown as unknown, never as the coordinator's startup time.
    */
-  requesterNotice: "pending-release" | "delivered" | null;
+  startUnknown: boolean;
   /** When the operation's timer starts, and what that moment was. */
-  since: { at: string; from: TimerStart };
+  since: { at: string; from: TimerStart } | null;
   /** When the current step began; null until the coordinator reports steps. */
   stepSince: string | null;
   /** Threads a turn hold still waits for. */
@@ -186,6 +190,8 @@ function restartPhase(job: ProgressJob): MaintenancePhase {
 }
 
 function restartSince(job: ProgressJob): MaintenanceOperation["since"] {
+  // Rebuilt at coordinator startup: when it began is unknown, so no timer at all.
+  if (job.progressReconstructed) return null;
   if (job.startedAt) return { at: job.startedAt, from: "started" };
   if (job.approvedAt) return { at: job.approvedAt, from: "approved" };
   return { at: job.createdAt, from: "requested" };
@@ -247,6 +253,7 @@ function restartOperation(
       (other) =>
         other.id !== job.id &&
         other.status === "succeeded" &&
+        !other.progressReconstructed &&
         other.target === job.target &&
         restartKind(other) === kind,
     )
@@ -262,10 +269,8 @@ function restartOperation(
     holdsMessages: holding,
     overdue: job.holdDeadlineExceeded === true,
     overdueAt: holding ? (job.holdDeadlineAt ?? null) : null,
-    requesterNotice:
-      job.requesterNotice === "pending-release" || job.requesterNotice === "delivered"
-        ? job.requesterNotice
-        : null,
+    requesterNotNotified: job.requesterNotice === "not-notified",
+    startUnknown: job.progressReconstructed === true,
     since: restartSince(job),
     stepSince: restartStepSince(job, phase),
     blockers: agents.map((agent) => ({
@@ -280,6 +285,13 @@ function restartOperation(
   };
 }
 
+/** No timer for history rebuilt at coordinator startup; otherwise from start, else request. */
+function serviceSince(job: ProgressService): MaintenanceOperation["since"] {
+  if (job.progressReconstructed) return null;
+  if (job.startedAt) return { at: job.startedAt, from: "started" };
+  return { at: job.createdAt, from: "requested" };
+}
+
 function serviceOperation(
   job: ProgressService,
   services: readonly ProgressService[],
@@ -290,6 +302,7 @@ function serviceOperation(
       (other) =>
         other.id !== job.id &&
         other.status === "succeeded" &&
+        !other.progressReconstructed &&
         other.target === job.target &&
         other.operation === job.operation,
     )
@@ -304,10 +317,9 @@ function serviceOperation(
     holdsMessages: false,
     overdue: false,
     overdueAt: null,
-    requesterNotice: null,
-    since: job.startedAt
-      ? { at: job.startedAt, from: "started" }
-      : { at: job.createdAt, from: "requested" },
+    requesterNotNotified: false,
+    startUnknown: job.progressReconstructed === true,
+    since: serviceSince(job),
     stepSince: job.stepStartedAt ?? null,
     blockers: [],
     blockersCheckedAt: null,
@@ -355,7 +367,7 @@ export function maintenanceProgress(input: MaintenanceProgressInput): Maintenanc
   ].sort(
     (left, right) =>
       TARGET_ORDER.indexOf(left.target) - TARGET_ORDER.indexOf(right.target) ||
-      Date.parse(left.since.at) - Date.parse(right.since.at),
+      Date.parse(left.since?.at ?? "") - Date.parse(right.since?.at ?? ""),
   );
   return { operations, locked: null, staleSince };
 }
