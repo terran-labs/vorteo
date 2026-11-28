@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { relative as relativePath } from "node:path";
 import test from "node:test";
 import { isVersionOnlyChange } from "./ci-neutralize-version-bumps.mjs";
+import { installerJob } from "./installer/ci-job-changed.mjs";
 import { AUDIT_COMMAND, auditInFreshCache, runAuditWithRetry } from "./npm-audit-signatures.mjs";
 import { runInNewContext } from "node:vm";
 
@@ -228,10 +229,6 @@ test("PR routing ignores manifests whose only change is the Vorteo version", () 
   const changes = jobBlocks(readFileSync(ciWorkflowPath, "utf8")).get("changes")?.join("\n") ?? "";
   assert.match(changes, /node scripts\/ci-neutralize-version-bumps\.mjs[\s\S]*dorny\/paths-filter/);
   assert.match(changes, /token: ""/);
-  assert.match(
-    changes,
-    /^      installer_inventory: \$\{\{ steps\.filter\.outputs\.installer_inventory \}\}$/m,
-  );
 
   const base =
     '{\n  "version": "1.0.0-vorteo.1",\n  "dependencies": { "@getpaseo/client": "1.0.0-vorteo.1" }\n}\n';
@@ -243,6 +240,75 @@ test("PR routing ignores manifests whose only change is the Vorteo version", () 
     false,
   );
   assert.equal(isVersionOnlyChange(base, base, "1.0.0-vorteo.1", "1.0.0-vorteo.1"), false);
+});
+
+const contextFor = (event_name, ref = "refs/heads/main") => ({
+  github: { event_name, ref },
+  contains: (list, item) => list.includes(item),
+  fromJSON: JSON.parse,
+  startsWith: (text, prefix) => text.startsWith(prefix),
+});
+
+test("installer detection errors select the installer suite without failing changes", () => {
+  const changes = jobBlocks(readFileSync(ciWorkflowPath, "utf8")).get("changes").join("\n");
+  assert.match(changes, /uses: actions\/checkout@[^\n]+\n        with:\n          fetch-depth: 0/);
+  const step = changes
+    .split("      - name: Detect installer job edits\n")[1]
+    .split("\n      - ")[0];
+  assert.match(step, /continue-on-error: true/);
+  assert.match(step, /BASE_SHA: \$\{\{ github.event.pull_request.base.sha \}\}/);
+  const command = /^        run: (.+)$/m.exec(step)[1];
+
+  for (const base of ["", "HEAD", "0".repeat(40)]) {
+    const detection = spawnSync(process.execPath, ["scripts/installer/ci-job-changed.mjs", base], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    assert.equal(detection.status, 0);
+    assert.equal(detection.stdout.trim(), "changed=true", JSON.stringify(base));
+  }
+
+  // A missing detector exercises the workflow fallback even if Node cannot start the script.
+  const dir = mkdtempSync(join(tmpdir(), "installer-routing-"));
+  try {
+    const output = join(dir, "output");
+    const result = spawnSync("bash", ["-e", "-c", command], {
+      cwd: dir,
+      env: { ...process.env, BASE_SHA: "HEAD", GITHUB_OUTPUT: output },
+    });
+    assert.equal(result.status, 0);
+    assert.equal(readFileSync(output, "utf8"), "changed=true\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  const outputs = changes.split("    outputs:\n")[1].split("    steps:\n")[0];
+  const entries = [...outputs.matchAll(/^      (\w+): \$\{\{ (.*) \}\}$/gm)];
+  function readOutputs(outcome, changed) {
+    const steps = {
+      filter: { outputs: { installer: "false" } },
+      installer_job: { outcome, outputs: changed === undefined ? {} : { changed } },
+    };
+    const context = { ...contextFor("pull_request"), steps };
+    return Object.fromEntries(
+      entries.map(([, name, expr]) => [name, runInNewContext(expr, context)]),
+    );
+  }
+  const before = readOutputs("skipped");
+  assert.equal(before.installer, false);
+  for (const [outcome, changed, installer] of [
+    ["success", "false", false],
+    ["success", "true", true],
+    ["failure", undefined, true],
+    ["success", "invalid", true],
+    ["success", "", true],
+  ]) {
+    assert.deepEqual(
+      readOutputs(outcome, changed),
+      { ...before, installer },
+      `${outcome}: ${changed}`,
+    );
+  }
 });
 
 test("ordinary CI keeps app tests without prebuilding Android modules", () => {
@@ -262,6 +328,11 @@ test("server builds exclude test utilities at every domain depth", () => {
 test("PR routing declares stable behavior ownership", () => {
   const filters = loadFilters(filtersPath);
   assert.deepEqual(filters, {
+    installer: [
+      "scripts/installer/**",
+      "scripts/install-execution-host*.mjs",
+      "scripts/installation-agent.mjs",
+    ],
     routing: [".github/ci-paths.yml"],
     workspace: [
       ".mise.toml",
@@ -282,11 +353,6 @@ test("PR routing declares stable behavior ownership", () => {
       "packages/expo-two-way-audio/**",
     ],
     quality: ["**/*.{cjs,js,json,jsx,mjs,ts,tsx}", "packages/expo-two-way-audio/**"],
-    installer_inventory: [
-      "scripts/installer/primitives.mjs",
-      "scripts/installer/container-inventory.mjs",
-      "scripts/install-execution-host.test.mjs",
-    ],
     hub: ["packages/cli/src/commands/hub/**", "packages/server/src/server/hub/**"],
     server: [
       "plugins/**",
@@ -418,7 +484,7 @@ test("browser and desktop tests have exclusive, directory-owned suites", () => {
 });
 
 /** Desktop and Windows server suites run only on manual runs; see the heavy-suites test. */
-function assertManualOnlyRouting(jobs, contextFor, selected, all) {
+function assertManualOnlyRouting(jobs, selected, all) {
   // Desktop suites (PWA is the only release channel) and Windows server suites (no Windows
   // Host yet) run only on manual runs.
   const manualOnly = [
@@ -473,12 +539,6 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
 
   const jobs = jobBlocks(source);
   const heavy = /^      heavy: \$\{\{ (.+) \}\}$/m.exec(jobs.get("changes").join("\n"))[1];
-  const contextFor = (event_name, ref = "refs/heads/main") => ({
-    github: { event_name, ref },
-    contains: (list, item) => list.includes(item),
-    fromJSON: JSON.parse,
-    startsWith: (text, prefix) => text.startsWith(prefix),
-  });
   for (const [event, ref, expected] of [
     ["pull_request", "refs/pull/1/merge", false],
     ["push", "refs/heads/main", false],
@@ -498,6 +558,18 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
       cancelled: () => false,
     });
   const all = { full: "true" };
+  const installer = jobs.get("installer-tests").join("\n");
+  const workflow = readFileSync(ciWorkflowPath, "utf8");
+  assert.ok(installerJob(workflow)?.includes("scripts/install-execution-host.test.mjs"));
+  assert.notEqual(
+    installerJob(workflow),
+    installerJob(workflow.replace("name: Installer engine", "name: Installer cases")),
+  );
+  assert.equal(
+    installerJob(workflow),
+    installerJob(workflow.replace("name: changes", "name: Other routing")),
+  );
+  assert.equal(selected(installer, { heavy: "false", installer: "true" }, "pull_request"), true);
   for (const [jobId, lines] of jobs) {
     if (jobId === "changes") continue;
     const job = lines.join("\n");
@@ -667,7 +739,7 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
       );
     }
   }
-  assertManualOnlyRouting(jobs, contextFor, selected, all);
+  assertManualOnlyRouting(jobs, selected, all);
   // Cheap runs replace the Ubuntu integration chain with server unit tests.
   const server = jobs.get("server-tests-ubuntu").join("\n");
   assert.match(
@@ -911,13 +983,7 @@ test("quality preserves commands and routes each domain independently after fail
       "npm run typecheck:examples --workspace=@getpaseo/client",
     ],
   };
-  const allChecks = [...quality.matchAll(/        if: \$\{\{ (.+) \}\}\n        run: (.+)/g)];
-  const inventoryCommand =
-    "node_modules/.bin/vitest run scripts/install-execution-host.test.mjs -t 'container inventory'";
-  const inventoryChecks = allChecks.filter(([, , command]) => command === inventoryCommand);
-  assert.equal(inventoryChecks.length, 1);
-  const [, inventoryCondition] = inventoryChecks[0];
-  const checks = allChecks.filter(([, , command]) => command !== inventoryCommand);
+  const checks = [...quality.matchAll(/        if: \$\{\{ (.+) \}\}\n        run: (.+)/g)];
   assert.deepEqual(
     checks.map(([, , command]) => command),
     Object.values(commands).flat(),
@@ -951,17 +1017,6 @@ test("quality preserves commands and routes each domain independently after fail
     assert.equal(accepts(expression, {}, { installed: false }), false);
   }
   assert.equal(accepts(jobCondition, {}, { cancelled: true }), false);
-  const inventorySelected = { ...disabled, quality: "true", installer_inventory: "true" };
-  assert.equal(accepts(jobCondition, inventorySelected), true);
-  assert.equal(accepts(inventoryCondition, inventorySelected), true);
-  assert.equal(
-    accepts(inventoryCondition, { ...inventorySelected, installer_inventory: "false" }),
-    false,
-  );
-  assert.equal(accepts(inventoryCondition, { full: "true" }), false);
-  assert.equal(accepts(inventoryCondition, {}), false);
-  assert.equal(accepts(inventoryCondition, inventorySelected, { cancelled: true }), false);
-  assert.equal(accepts(inventoryCondition, inventorySelected, { installed: false }), false);
 });
 
 test("Windows units and integration run independently with complete routed coverage", () => {

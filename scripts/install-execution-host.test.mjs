@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vitest";
-import { postCoordinatorRequest } from "./installation-agent.mjs";
+import { postCoordinatorRequest, restartReplyCapabilities } from "./installation-agent.mjs";
 import {
   enableDurableSessions,
   writeDurableSessionsSettingIfMissing,
@@ -130,7 +130,7 @@ test("container inventory classifies mounts, socket aliases, stopped siblings an
       Id: siblingId,
       Name: "/fixture-stopped",
       State: { Status: "exited" },
-      HostConfig: { NetworkMode: "bridge", PortBindings: active },
+      HostConfig: { NetworkMode: `container:${dev.Id}`, PortBindings: {} },
       NetworkSettings: { Ports: null, Networks: null },
       Mounts: [
         bindFixture("/fixture-host/old", "/old", true),
@@ -150,6 +150,8 @@ test("container inventory classifies mounts, socket aliases, stopped siblings an
     );
     const [current, sibling, hostNetwork] = result.containers;
     expect(current).toMatchObject({
+      imageId: dev.Image,
+      imageDigest: null,
       engineSocket: true,
       mounts: expect.arrayContaining([
         expect.objectContaining({ source: socket, readWrite: false, engineSocket: true }),
@@ -173,6 +175,8 @@ test("container inventory classifies mounts, socket aliases, stopped siblings an
     expect(sibling).toMatchObject({
       id: siblingId,
       state: "exited",
+      networkOwnerId: dev.Id,
+      effectivePublishedPorts: current.publishedPorts,
       engineSocket: true,
       activePorts: [],
       nonLoopbackPorts: true,
@@ -216,18 +220,26 @@ test("container inventory binds digest to the installation and bound container",
 });
 
 const wrongContainer = inspectFixture({ Id: siblingId });
-const timeout = vi
-  .fn()
-  .mockResolvedValueOnce(inventoryId.slice(0, 12))
-  .mockRejectedValueOnce(new Error("timeout"));
+const failedInspect = (status) =>
+  vi
+    .fn()
+    .mockResolvedValueOnce(inventoryId.slice(0, 12))
+    .mockRejectedValueOnce(Object.assign(new Error("private diagnostic"), status));
 test.each([
   ["truncated inspect JSON", inventoryCommand([], [inventoryId], "["), "inspect failed"],
   ["partial inspect row", inventoryCommand([{ Id: inventoryId, Mounts: [] }]), "Incomplete Docker"],
   ["mismatched inspect ID", inventoryCommand([wrongContainer], [inventoryId]), "Incomplete Docker"],
   ["absent bound container", inventoryCommand([wrongContainer]), "Bound container is absent"],
-  ["inspect timeout", timeout, "inspect failed"],
+  ["inspect timeout signal", failedInspect({ signal: "SIGTERM" }), "inspect failed (SIGTERM)"],
+  ["inspect exit code", failedInspect({ code: 1 }), "inspect failed (exit 1)"],
 ])("container inventory refuses %s", async (_name, run, reason) => {
   await expect(readContainerInventory(inventoryDocker, boundOptions, run)).rejects.toThrow(reason);
+});
+
+test("writable bind checks refuse incomplete inventory", async () => {
+  await expect(writableBindRoots(inventoryDocker, failedInspect({ code: 1 }))).rejects.toThrow(
+    "inspect failed (exit 1)",
+  );
 });
 
 test("Dev bootstrap requires the fixed profile client in both supervisor and worker", () => {
@@ -335,15 +347,19 @@ test("installed agent commands return a public approval link without authorizing
         approvalUrl: `https://installation.example.test/settings/general?installation=1&restart=${id}`,
       });
     }
+    const restartQuery = new URLSearchParams({
+      requireOwnerApproval: "1",
+      ...restartReplyCapabilities,
+    });
     expect(calls).toEqual([
       {
         method: "POST",
-        url: "/api/installation/restart-requests?requireOwnerApproval=1",
+        url: `/api/installation/restart-requests?${restartQuery}`,
         token: "Bearer scoped-test-token",
       },
       {
         method: "GET",
-        url: `/api/installation/restart-requests/${id}?sourceBatches=1&requireOwnerApproval=1`,
+        url: `/api/installation/restart-requests/${id}?sourceBatches=1&${restartQuery}`,
         token: "Bearer scoped-test-token",
       },
     ]);

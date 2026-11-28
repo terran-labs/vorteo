@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
+import { constants } from "node:os";
 import path from "node:path";
 
 const fullId = /^[a-f0-9]{64}$/;
@@ -142,7 +143,8 @@ function containerRecord(raw, canonicalize, overlapsSocket) {
     id: raw.Id,
     name: raw.Name,
     state: raw.State.Status,
-    imageDigest: raw.ImageManifestDescriptor?.digest ?? raw.Image ?? null,
+    imageId: raw.Image ?? null,
+    imageDigest: raw.ImageManifestDescriptor?.digest ?? null,
     mounts,
     declaredMounts,
     tmpfs: tmpfsEntries(raw.HostConfig, mounts, declaredMounts),
@@ -196,15 +198,20 @@ function resolveNetworkOwners(containers) {
 
 async function inspectRows(docker, ids, run) {
   if (!ids.length) return [];
+  let status = "";
   try {
     return JSON.parse(await run(docker, ["inspect", ...ids], { timeout: 15000 }));
-  } catch {
+  } catch (error) {
     // Inspect output may include unrelated private configuration.
-    throw new Error("Incomplete Docker container inventory: inspect failed");
+    if (Number.isInteger(error?.code)) status = ` (exit ${error.code})`;
+    else if (error?.code === "ETIMEDOUT") status = " (ETIMEDOUT)";
+    else if (Object.hasOwn(constants.signals, error?.signal)) status = ` (${error.signal})`;
   }
+  throw new Error(`Incomplete Docker container inventory: inspect failed${status}`);
 }
 
 async function readRows(docker, run) {
+  // Injected command runners must forward the timeout to the child process.
   const listed = await run(docker, ["ps", "-aq"], { timeout: 15000 });
   requireField(typeof listed === "string");
   const ids = listed.trim() ? listed.trim().split(/\s+/) : [];
@@ -284,6 +291,7 @@ export async function collectContainerInventory(docker, options, run, canonicali
           installationId,
           [...new Set(sockets)].sort(),
           id,
+          bound.imageId,
           imageDigest,
           mounts,
           declaredMounts,
